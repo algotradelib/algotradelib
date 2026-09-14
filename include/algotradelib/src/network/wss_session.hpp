@@ -96,6 +96,8 @@ protected:
   std::string host_, port_, host_header_;
 	std::deque<std::string> write_queue_;
 
+	virtual void on_message(std::string_view msg) = 0;
+
 	void on_resolve(beast::error_code ec, tcp::resolver::results_type results) {
 		if (ec) {
 			std::cerr << "resolve: " << ec.message() << "\n";
@@ -200,7 +202,8 @@ protected:
 			std::cerr << "read: " << ec.message() << "\n";
 			return;
 		}
-		std::cout << beast::make_printable(buffer_.data()) << std::endl;
+		auto message = beast::buffers_to_string(buffer_.data());
+		on_message(message);
 		buffer_.consume(buffer_.size());
 		do_read();
   }
