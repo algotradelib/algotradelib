@@ -1,0 +1,11 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+find_dependency(Eigen3 3.4)
+find_dependency(spdlog 1.15.3)
+find_dependency(Boost 1.87.0 COMPONENTS asio beast json)
+
+include("${CMAKE_CURRENT_LIST_DIR}/algotradelibTargets.cmake")
+
+check_required_components(algotradelib)
