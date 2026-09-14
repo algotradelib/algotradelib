@@ -139,14 +139,5 @@ protected:
   }
 };
 
-class WssSession : public std::enable_shared_from_this<WssSession> {
-public:
-	WssSession() {}
-	virtual ~WssSession() = default;
-	/* public */
-protected:
-	// 
-};
-
 } // namespace network
 } // namespace algotradelib
