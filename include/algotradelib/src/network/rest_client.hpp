@@ -21,10 +21,11 @@ using tcp = net::ip::tcp;
 
 namespace network {
 
+// https://www.boost.org/doc/libs/latest/libs/beast/example/http/client/sync-ssl/http_client_sync_ssl.cpp
 class RestClient;
 
-using HttpResponse = http::response<http::string_body>;
-using HttpRequest  = http::request<http::string_body>;
+// using HttpResponse = http::response<http::string_body>;
+// using HttpRequest  = http::request<http::string_body>;
 
 /**
  * @brief Synchronous REST SSL client
@@ -38,14 +39,14 @@ public:
   : ioc_(ioc), ctx_(ctx), host_(host), port_(port) {}
 	virtual ~RestClient() = default;
 	
-	HttpResponse get(
+	http::response<http::string_body> get(
 		const std::string& target,
     const std::map<std::string, std::string>& headers = {}
 	) {
 		return request(http::verb::get, target, "", headers);
 	}
 
-  HttpResponse post(
+  http::response<http::string_body> post(
 		const std::string& target,
     const std::string& body,
     const std::map<std::string, std::string>& headers = {}
@@ -60,7 +61,7 @@ private:
   // std::unique_ptr<beast::ssl_stream<beast::tcp_stream>> stream;
   // bool is_connected = false;
 
-	HttpResponse request(
+	http::response<http::string_body> request(
 		http::verb method,
 		const std::string& target,
 		const std::string& body = "",
