@@ -67,6 +67,12 @@ struct ClientCredentials {
     // body.append(R"("})");
     // return body;
 	}
+
+	const std::string to_form_urlencoded_body() {
+		return "grant_type=" + std::string(grant_type_)
+			+ "&client_id=" + key_
+			+ "&client_secret=" + secret_;
+	}
 };
 
 template <typename BrokerType>

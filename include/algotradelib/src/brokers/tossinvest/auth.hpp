@@ -28,11 +28,11 @@ private:
 	TossRest rest_resp_;
 
 	void refresh() {
-		const std::string jsonbody = req_.to_jsonbody();
+		const std::string formbody = req_.to_form_urlencoded_body();
 		TossHttpClient rest(ioc_, ctx_, "openapi.tossinvest.com", "443");
 		const std::string resp = std::move(rest.post(
 			"/oauth2/token",
-			jsonbody,
+			formbody,
       {{"Content-Type", "application/x-www-form-urlencoded"}}
 		).body());
 		boost::system::error_code ec;
