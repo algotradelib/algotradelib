@@ -5,7 +5,7 @@
 namespace algotradelib {
 namespace tossinvest {
 
-using TossRestClient = network::RestClient;
+using TossHttpClient = network::HttpClient;
 
 } // namespace tossinvest
 } // namespace algotradelib

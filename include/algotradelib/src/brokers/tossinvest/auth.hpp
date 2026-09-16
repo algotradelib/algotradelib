@@ -29,7 +29,7 @@ private:
 
 	void refresh() {
 		const std::string jsonbody = req_.to_jsonbody();
-		TossRestClient rest(ioc_, ctx_, "openapi.tossinvest.com", "443");
+		TossHttpClient rest(ioc_, ctx_, "openapi.tossinvest.com", "443");
 		const std::string resp = std::move(rest.post(
 			"/oauth2/token",
 			jsonbody,

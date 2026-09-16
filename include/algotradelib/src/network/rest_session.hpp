@@ -19,18 +19,18 @@ using tcp = net::ip::tcp;
 namespace network {
 
 // https://www.boost.org/doc/libs/latest/libs/beast/example/http/client/async-ssl/http_client_async_ssl.cpp
-class RestSession;
+class HttpSession;
 
 /**
  * @brief Asynchronous Rest SSL session
  * 
  */
-class RestSession : public std::enable_shared_from_this<RestSession> {
+class HttpSession : public std::enable_shared_from_this<HttpSession> {
 public:
-	RestSession(net::any_io_executor& ex, ssl::context& ctx, const std::string& host, const std::string& port)
+	HttpSession(net::any_io_executor& ex, ssl::context& ctx, const std::string& host, const std::string& port)
 	: resolver_(ex), stream_(ex, ctx),
 		host_(host), port_(port) {}
-	virtual ~RestSession() = default;
+	virtual ~HttpSession() = default;
 	
 	void connect(
 		http::verb method,
@@ -57,7 +57,7 @@ public:
 		req_.set(http::field::user_agent, "algotradelib");
 		resolver_.async_resolve(
 			host_, port_,
-			beast::bind_front_handler(&RestSession::on_resolve, shared_from_this())
+			beast::bind_front_handler(&HttpSession::on_resolve, shared_from_this())
 		);
 	}
 
@@ -78,7 +78,7 @@ protected:
     beast::get_lowest_layer(stream_).expires_after(std::chrono::seconds(30));
     beast::get_lowest_layer(stream_).async_connect(
       results,
-      beast::bind_front_handler(&RestSession::on_connect, shared_from_this())
+      beast::bind_front_handler(&HttpSession::on_connect, shared_from_this())
 		);
   }
 
@@ -89,7 +89,7 @@ protected:
 		}
 		stream_.async_handshake(
 			ssl::stream_base::client,
-      beast::bind_front_handler(&RestSession::on_handshake, shared_from_this())
+      beast::bind_front_handler(&HttpSession::on_handshake, shared_from_this())
 		);
   }
 
@@ -101,7 +101,7 @@ protected:
 		beast::get_lowest_layer(stream_).expires_after(std::chrono::seconds(30));
 		http::async_write(
 			stream_, req_,
-      beast::bind_front_handler(&RestSession::on_write, shared_from_this())
+      beast::bind_front_handler(&HttpSession::on_write, shared_from_this())
 		);
   }
 
@@ -113,7 +113,7 @@ protected:
     }
     http::async_read(
 			stream_, buffer_, res_,
-      beast::bind_front_handler(&RestSession::on_read, shared_from_this())
+      beast::bind_front_handler(&HttpSession::on_read, shared_from_this())
 		);
   }
 
@@ -126,7 +126,7 @@ protected:
 		std::cout << res_ << std::endl;
 		beast::get_lowest_layer(stream_).expires_after(std::chrono::seconds(30));
     stream_.async_shutdown(
-			beast::bind_front_handler(&RestSession::on_shutdown, shared_from_this())
+			beast::bind_front_handler(&HttpSession::on_shutdown, shared_from_this())
 		);
 	}
 

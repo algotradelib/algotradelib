@@ -22,7 +22,7 @@ using tcp = net::ip::tcp;
 namespace network {
 
 // https://www.boost.org/doc/libs/latest/libs/beast/example/http/client/sync-ssl/http_client_sync_ssl.cpp
-class RestClient;
+class HttpClient;
 
 // using HttpResponse = http::response<http::string_body>;
 // using HttpRequest  = http::request<http::string_body>;
@@ -33,11 +33,11 @@ class RestClient;
  * Order by POST, and lookup by GET
  * 
  */
-class RestClient {
+class HttpClient {
 public:
-	RestClient(net::io_context& ioc, ssl::context& ctx, const std::string& host, const std::string& port)
+	HttpClient(net::io_context& ioc, ssl::context& ctx, const std::string& host, const std::string& port)
   : ioc_(ioc), ctx_(ctx), host_(host), port_(port) {}
-	virtual ~RestClient() = default;
+	virtual ~HttpClient() = default;
 	
 	http::response<http::string_body> get(
 		const std::string& target,

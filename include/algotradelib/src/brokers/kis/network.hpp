@@ -12,7 +12,7 @@
 namespace algotradelib {
 namespace kis {
 
-// class KisRestClient;
+// class KisHttpClient;
 // class KisWsSession;
 
 // namespace beast = boost::beast;
@@ -23,7 +23,7 @@ namespace kis {
 // using tcp = net::ip::tcp;
 // namespace json = boost::json;
 
-using KisRestClient = network::RestClient;
+using KisHttpClient = network::HttpClient;
 
 } // namespace kis
 } // namespace algotradelib

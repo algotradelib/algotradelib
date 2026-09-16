@@ -46,7 +46,7 @@ private:
 
 	void refresh() {
 		const std::string jsonbody = req_.to_jsonbody();
-		KisRestClient rest(ioc_, ctx_, req_.rest_host(), req_.rest_port());
+		KisHttpClient rest(ioc_, ctx_, req_.rest_host(), req_.rest_port());
 		const std::string resp = std::move(rest.post(
 			"/oauth2/tokenP",
 			jsonbody,
@@ -71,7 +71,7 @@ private:
 
 	void refreshWebsocket() {
 		const std::string jsonbody = req_.ws_to_jsonbody();
-		KisRestClient rest(ioc_, ctx_, req_.rest_host(), req_.rest_port());
+		KisHttpClient rest(ioc_, ctx_, req_.rest_host(), req_.rest_port());
 		// _base_headers_ws = {
 		// 		"content-type": "utf-8",
 		// }
