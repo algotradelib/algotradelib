@@ -43,11 +43,11 @@ struct ClientCredentials {
 		// Check overhead when converting to std::string
 		return R"({"grant_type":")"
 			+ std::string(grant_type_)
-			+ R"("," )"
+			+ R"(",")"
 			+ std::string(BrokerType::key_field())
 			+ R"(":")"
 			+ key_
-			+ R"("," )"
+			+ R"(",")"
 			+ std::string(BrokerType::secret_field())
 			+ R"(":")"
 			+ secret_
