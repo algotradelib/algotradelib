@@ -1,6 +1,6 @@
 #pragma once
 
-#include "src/network/rest_client.hpp"
+#include "src/network/http_client.hpp"
 #include "src/network/ws_session.hpp"
 #include "src/network/wss_session.hpp"
 #include "src/network/oauth.hpp"
