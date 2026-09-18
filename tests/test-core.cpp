@@ -51,6 +51,18 @@ struct TossClientTestAccess {
   ) {
     return TossClient::parse_quote(std::move(instrument), std::move(response));
   }
+
+  static Result<std::vector<TossAccount>> parse_accounts(
+    Result<network::HttpResponse> response
+  ) {
+    return TossClient::parse_accounts(std::move(response));
+  }
+
+  static Result<HoldingsSnapshot> parse_holdings(
+    Result<network::HttpResponse> response
+  ) {
+    return TossClient::parse_holdings(std::move(response));
+  }
 };
 } // namespace algotradelib::tossinvest
 
@@ -473,6 +485,175 @@ TEST_CASE(
   );
   ioc.run();
   REQUIRE(completed);
+}
+
+TEST_CASE(
+  "Toss account discovery preserves unknown account types",
+  "[broker][toss][accounts]"
+) {
+  network::HttpResponse response{http::status::ok, 11};
+  response.body() = R"({"result":[
+    {"accountNo":"12345678901","accountSeq":1,"accountType":"BROKERAGE"},
+    {"accountNo":"98765432100","accountSeq":2,"accountType":"FUTURE_ACCOUNT_TYPE"}
+  ]})";
+
+  const auto result = tossinvest::TossClientTestAccess::parse_accounts(std::move(response));
+  REQUIRE(result);
+  REQUIRE(result.value().size() == 2);
+  REQUIRE(result.value()[0].sequence == 1);
+  REQUIRE(result.value()[1].account_type == "FUTURE_ACCOUNT_TYPE");
+}
+
+TEST_CASE(
+  "Toss holdings normalize multiple currencies and unknown countries",
+  "[broker][toss][holdings]"
+) {
+  network::HttpResponse response{http::status::ok, 11};
+  response.body() = R"({"result":{
+    "totalPurchaseAmount":{"krw":"6500000","usd":"1553"},
+    "marketValue":{
+      "amount":{"krw":"7200000","usd":"1785"},
+      "amountAfterCost":{"krw":"7050000","usd":"1771.43"}
+    },
+    "profitLoss":{
+      "amount":{"krw":"700000","usd":"232"},
+      "amountAfterCost":{"krw":"550000","usd":"218.43"},
+      "rate":"0.1179",
+      "rateAfterCost":"0.0983"
+    },
+    "dailyProfitLoss":{"amount":{"krw":"100000","usd":"25"},"rate":"0.0141"},
+    "items":[
+      {
+        "symbol":"005930","name":"Samsung Electronics","marketCountry":"KR",
+        "currency":"KRW","quantity":"100","lastPrice":"72000",
+        "averagePurchasePrice":"65000",
+        "marketValue":{"purchaseAmount":"6500000","amount":"7200000","amountAfterCost":"7050000"},
+        "profitLoss":{
+          "amount":"700000","amountAfterCost":"550000",
+          "rate":"0.1077","rateAfterCost":"0.0846"
+        },
+        "dailyProfitLoss":{"amount":"100000","rate":"0.0141"},
+        "cost":{"commission":"14400","tax":"135600"}
+      },
+      {
+        "symbol":"AAPL","name":"Apple Inc.","marketCountry":"US",
+        "currency":"USD","quantity":"10","lastPrice":"178.5",
+        "averagePurchasePrice":"155.3",
+        "marketValue":{"purchaseAmount":"1553","amount":"1785","amountAfterCost":"1771.43"},
+        "profitLoss":{
+          "amount":"232","amountAfterCost":"218.43",
+          "rate":"0.1494","rateAfterCost":"0.1406"
+        },
+        "dailyProfitLoss":{"amount":"25","rate":"0.0142"},
+        "cost":{"commission":"3.57","tax":"10"}
+      }
+    ]
+  }})";
+
+  const auto result = tossinvest::TossClientTestAccess::parse_holdings(std::move(response));
+  REQUIRE(result);
+  REQUIRE(result.value().positions.size() == 2);
+  REQUIRE(result.value().positions[0].instrument.country == Country::KR);
+  REQUIRE(result.value().positions[0].sellable_quantity == std::nullopt);
+  REQUIRE(result.value().positions[1].instrument.country == Country::US);
+  REQUIRE(result.value().positions[1].market_value.amount == Decimal64::parse("1785"));
+  REQUIRE(result.value().totals.size() == 2);
+  REQUIRE(result.value().totals[0].currency == Currency::krw());
+  REQUIRE(result.value().totals[1].currency == Currency::usd());
+  REQUIRE(result.value().totals[1].unrealized_profit_loss == Decimal64::parse("232"));
+
+  network::HttpResponse future_response{http::status::ok, 11};
+  future_response.body() = R"({"result":{
+    "totalPurchaseAmount":{"krw":"0","usd":null},
+    "marketValue":{"amount":{"krw":"0","usd":null}},
+    "profitLoss":{"amount":{"krw":"0","usd":null}},
+    "items":[{
+      "symbol":"7203","name":"Future market","marketCountry":"JP",
+      "currency":"JPY","quantity":"1","lastPrice":"1000","averagePurchasePrice":"900",
+      "marketValue":{"purchaseAmount":"900","amount":"1000"},
+      "profitLoss":{"amount":"100","rate":"0.1111"}
+    }]
+  }})";
+  const auto future =
+    tossinvest::TossClientTestAccess::parse_holdings(std::move(future_response));
+  REQUIRE(future);
+  REQUIRE(future.value().positions.front().instrument.country == Country::UNKNOWN);
+  REQUIRE(future.value().positions.front().market_value.currency == Currency("JPY"));
+}
+
+TEST_CASE(
+  "Toss holdings reject invalid account sequences before network I/O",
+  "[broker][toss][holdings][validation]"
+) {
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  auto client =
+    std::make_shared<tossinvest::TossClient>(ioc.get_executor(), context, tossinvest::TossConfig{});
+  bool completed = false;
+  client->async_holdings(0, [&completed](Result<HoldingsSnapshot> result) {
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().category == ErrorCategory::INVALID_ARGUMENT);
+    REQUIRE(result.error().broker_code == "invalid_account");
+    completed = true;
+  });
+  ioc.run();
+  REQUIRE(completed);
+}
+
+TEST_CASE(
+  "Holdings parsers preserve empty results and broker errors",
+  "[broker][holdings][errors]"
+) {
+  SECTION("Toss accepts an empty portfolio") {
+    network::HttpResponse response{http::status::ok, 11};
+    response.body() = R"({"result":{
+      "totalPurchaseAmount":{"krw":"0","usd":null},
+      "marketValue":{"amount":{"krw":"0","usd":null}},
+      "profitLoss":{"amount":{"krw":"0","usd":null}},
+      "items":[]
+    }})";
+    const auto result = tossinvest::TossClientTestAccess::parse_holdings(std::move(response));
+    REQUIRE(result);
+    REQUIRE(result.value().positions.empty());
+    REQUIRE(result.value().totals.size() == 1);
+    REQUIRE(result.value().totals.front().market_value == Decimal64::parse("0"));
+  }
+
+  SECTION("Toss rejects inconsistent overview currencies") {
+    network::HttpResponse response{http::status::ok, 11};
+    response.body() = R"({"result":{
+      "totalPurchaseAmount":{"krw":"0","usd":"10"},
+      "marketValue":{"amount":{"krw":"0","usd":null}},
+      "profitLoss":{"amount":{"krw":"0","usd":"1"}},
+      "items":[]
+    }})";
+    const auto result = tossinvest::TossClientTestAccess::parse_holdings(std::move(response));
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().category == ErrorCategory::PROTOCOL);
+    REQUIRE(result.error().broker_code == "invalid_holdings_response");
+  }
+
+  SECTION("Toss preserves structured HTTP errors") {
+    network::HttpResponse response{http::status::too_many_requests, 11};
+    response.body() =
+      R"({"error":{"requestId":"holding-1","code":"rate-limit","message":"retry"}})";
+    response.set("Retry-After", "3");
+    const auto result = tossinvest::TossClientTestAccess::parse_holdings(std::move(response));
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().category == ErrorCategory::RATE_LIMIT);
+    REQUIRE(result.error().request_id == "holding-1");
+    REQUIRE(result.error().retry_after == std::chrono::seconds(3));
+  }
+
+  SECTION("KIS preserves response codes") {
+    network::HttpResponse response{http::status::ok, 11};
+    response.body() = R"({"rt_cd":"1","msg_cd":"APBK0919","msg1":"request failed"})";
+    const auto result = kis::KisClientTestAccess::parse_holdings(std::move(response));
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().category == ErrorCategory::PROTOCOL);
+    REQUIRE(result.error().broker_code == "APBK0919");
+    REQUIRE(result.error().message == "request failed");
+  }
 }
 
 } // namespace

@@ -66,6 +66,26 @@ inline std::string json_string(
   return std::string(value->as_string());
 }
 
+inline std::int64_t json_int64(
+  const json::object& object,
+  std::string_view key
+) {
+  const auto value = object.if_contains(key);
+  if (!value) {
+    throw std::runtime_error("missing integer field: " + std::string(key));
+  }
+  if (value->is_int64()) {
+    return value->as_int64();
+  }
+  if (
+    value->is_uint64() &&
+    value->as_uint64() <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())
+  ) {
+    return static_cast<std::int64_t>(value->as_uint64());
+  }
+  throw std::runtime_error("invalid integer field: " + std::string(key));
+}
+
 inline BrokerError toss_error(
   const json::object& document,
   int status = 0
