@@ -2,6 +2,7 @@
 
 Branch: `ai/quote-core`
 Worktree: `algotradelib-ai-quote-core`
+Status: implementation and verification complete; awaiting review
 
 ## Objective
 
@@ -10,6 +11,23 @@ read-only quote workflow implemented by both KIS and Toss Securities. The
 shared surface must expose broker-neutral values to future strategy code while
 keeping authentication, request headers, wire envelopes, and retry policy in
 the transport and broker adapters.
+
+## Implementation Sequence
+
+1. Establish broker-neutral value semantics in `src/core/types.hpp`.
+2. Build the bounded persistent HTTPS transport and authentication helpers.
+3. Implement one quote operation in both KIS and Toss adapters and normalize
+   their responses into the shared values.
+4. Consolidate plain and TLS WebSocket lifecycle behavior into one state
+   machine while retaining thin transport-specific wrappers.
+5. Cover pure value parsing and broker normalization with Catch2.
+6. Exercise connection reuse and retry safety against a deterministic local TLS
+   server.
+7. Harden async teardown and allocation behavior, apply the repository style
+   guide, and verify installation from an external consumer.
+
+Each step should remain a logical commit so transport, broker, test, and
+documentation changes can be reviewed independently.
 
 ## Architecture
 
@@ -48,20 +66,20 @@ the transport and broker adapters.
 
 ## Hardening Before Merge
 
-1. Remove blocking TLS shutdown from `AsyncHttpClient`; failure and reconnect
+1. [x] Remove blocking TLS shutdown from `AsyncHttpClient`; failure and reconnect
    paths must never synchronously wait on the event-loop strand.
-2. Store queued HTTP operations by value where possible instead of allocating a
+2. [x] Store queued HTTP operations by value where possible instead of allocating a
    separate `shared_ptr` for every request.
-3. Add a local TLS Catch2 fixture that verifies:
+3. [x] Add a local TLS Catch2 fixture that verifies:
    - sequential requests reuse one TCP/TLS connection;
    - a server-requested close reconnects successfully;
    - queued responses preserve request order;
    - GET may be retried once after a dropped connection;
    - POST is never automatically replayed;
    - configured response-body limits surface an error.
-4. Apply the repository style guide to new public types and touched networking,
+4. [x] Apply the repository style guide to new public types and touched networking,
    broker, test, and CMake code.
-5. Re-run normal, warnings-as-errors, ASan/UBSan, CTest discovery, installation,
+5. [x] Re-run normal, warnings-as-errors, ASan/UBSan, CTest discovery, installation,
    and an external consumer build.
 
 ## Explicitly Deferred
@@ -76,11 +94,11 @@ the transport and broker adapters.
 
 ## Acceptance Criteria
 
-- Both concrete broker clients compile through installed package metadata.
-- Catch2 tests are individually discoverable by CTest and require no broker
+- [x] Both concrete broker clients compile through installed package metadata.
+- [x] Catch2 tests are individually discoverable by CTest and require no broker
   credentials or public network access.
-- The local TLS fixture demonstrates persistence and retry safety rather than
+- [x] The local TLS fixture demonstrates persistence and retry safety rather than
   relying only on implementation inspection.
-- No async networking handler performs a blocking network operation.
-- The worktree is clean after logically separated commits and all verification
+- [x] No async networking handler performs a blocking network operation.
+- [x] The worktree is clean after logically separated commits and all verification
   commands pass.
