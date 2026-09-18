@@ -21,7 +21,7 @@ public:
 	
 	virtual ~KisAuth() = default;
 	
-	const std::string& accessToken() {
+	std::string accessToken() {
 		std::lock_guard<std::mutex> lock(mtx_);
 		if (!rest_resp_.valid()) {
 			refresh();
@@ -29,7 +29,7 @@ public:
 		return rest_resp_.access_token_;
 	}
 
-	const std::string& accessWebsocket() {
+	std::string accessWebsocket() {
 		std::lock_guard<std::mutex> lock(mtx_);
 		if (!ws_resp_.valid()) {
 			refreshWebsocket();

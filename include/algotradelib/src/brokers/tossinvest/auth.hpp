@@ -15,7 +15,7 @@ public:
 
 	virtual ~TossAuth() = default;
 	
-	const std::string& accessToken() {
+	std::string accessToken() {
 		std::lock_guard<std::mutex> lock(mtx_);
 		if (!rest_resp_.valid()) {
 			refresh();
