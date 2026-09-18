@@ -57,9 +57,7 @@ public:
     });
   }
 
-  void send(
-    std::string message
-  ) {
+  void send(std::string message) {
     net::post(strand_, [self = shared_derived(), message = std::move(message)]() mutable {
       self->write_queue_.push_back(std::move(message));
       if (self->connected_ && !self->closing_ && !self->writing_) {
@@ -108,10 +106,7 @@ protected:
 
   virtual void on_message(std::string_view message) = 0;
   virtual void on_open() {}
-  virtual void on_error(
-    std::string_view stage,
-    beast::error_code error
-  ) {
+  virtual void on_error(std::string_view stage, beast::error_code error) {
     boost::ignore_unused(stage, error);
   }
   virtual void on_closed() {}
@@ -168,10 +163,7 @@ protected:
     );
   }
 
-  void fail(
-    std::string_view stage,
-    beast::error_code error
-  ) {
+  void fail(std::string_view stage, beast::error_code error) {
     connected_ = false;
     connecting_ = false;
     writing_ = false;
@@ -189,10 +181,7 @@ protected:
   }
 
 private:
-  void on_resolve(
-    beast::error_code error,
-    tcp::resolver::results_type endpoints
-  ) {
+  void on_resolve(beast::error_code error, tcp::resolver::results_type endpoints) {
     if (error) {
       fail("resolve", error);
       return;
@@ -203,9 +192,7 @@ private:
     );
   }
 
-  void on_handshake(
-    beast::error_code error
-  ) {
+  void on_handshake(beast::error_code error) {
     if (error) {
       fail("handshake", error);
       return;
@@ -228,10 +215,7 @@ private:
     );
   }
 
-  void on_write(
-    beast::error_code error,
-    std::size_t
-  ) {
+  void on_write(beast::error_code error, std::size_t) {
     writing_ = false;
     if (error) {
       fail("write", error);
@@ -251,10 +235,7 @@ private:
     );
   }
 
-  void on_read(
-    beast::error_code error,
-    std::size_t
-  ) {
+  void on_read(beast::error_code error, std::size_t) {
     if (error == websocket::error::closed) {
       connected_ = false;
       connecting_ = false;
@@ -280,9 +261,7 @@ private:
     );
   }
 
-  void on_close(
-    beast::error_code error
-  ) {
+  void on_close(beast::error_code error) {
     connected_ = false;
     connecting_ = false;
     closing_ = false;

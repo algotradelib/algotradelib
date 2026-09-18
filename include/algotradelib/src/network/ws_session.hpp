@@ -34,10 +34,7 @@ private:
     start_resolve();
   }
 
-  void on_connect(
-    beast::error_code error,
-    tcp::resolver::results_type::endpoint_type endpoint
-  ) {
+  void on_connect(beast::error_code error, tcp::resolver::results_type::endpoint_type endpoint) {
     if (error) {
       fail("connect", error);
       return;

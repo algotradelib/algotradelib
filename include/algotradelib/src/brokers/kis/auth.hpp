@@ -16,11 +16,7 @@ class KisAuth;
  */
 class KisAuth {
 public:
-  KisAuth(
-    net::io_context& ioc,
-    ssl::context& ctx,
-    const KisConfig& config
-  )
+  KisAuth(net::io_context& ioc, ssl::context& ctx, const KisConfig& config)
   : ioc_(ioc), ctx_(ctx), req_(config) {}
 
   virtual ~KisAuth() = default;

@@ -23,9 +23,7 @@ struct KisConfig;
 struct KisRest;
 struct KisWebsocket;
 
-static inline std::chrono::system_clock::time_point parse_expiry(
-  const char* s
-) {
+static inline std::chrono::system_clock::time_point parse_expiry(const char* s) {
   std::tm tm{};
   if (
     std::sscanf(
@@ -138,8 +136,7 @@ struct KisRest : public network::AuthBody<KisRest> {
   // std::string access_token_; // length = 350
   // // std::string token_type; // length = 20, Bearer
   // int64_t expires_in_; // 10-digits
-  std::chrono::system_clock::time_point
-    access_token_expired_; // length = 50, format: "2022-08-30 08:10:10"
+  std::chrono::system_clock::time_point access_token_expired_; // length = 50, format: "2022-08-30 08:10:10"
 
   KisRest() {}
 

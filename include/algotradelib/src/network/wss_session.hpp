@@ -11,8 +11,7 @@ namespace ssl = net::ssl;
 
 using WssSessionOptions = WebSocketSessionOptions;
 
-class WssSession
-: public WebSocketSessionBase<WssSession, websocket::stream<ssl::stream<beast::tcp_stream>>> {
+class WssSession : public WebSocketSessionBase<WssSession, websocket::stream<ssl::stream<beast::tcp_stream>>> {
 public:
   WssSession(
     net::io_context& ioc,
@@ -64,10 +63,7 @@ private:
     start_resolve();
   }
 
-  void on_connect(
-    beast::error_code error,
-    tcp::resolver::results_type::endpoint_type endpoint
-  ) {
+  void on_connect(beast::error_code error, tcp::resolver::results_type::endpoint_type endpoint) {
     if (error) {
       fail("connect", error);
       return;
@@ -80,9 +76,7 @@ private:
     );
   }
 
-  void on_ssl_handshake(
-    beast::error_code error
-  ) {
+  void on_ssl_handshake(beast::error_code error) {
     if (error) {
       fail("ssl_handshake", error);
       return;

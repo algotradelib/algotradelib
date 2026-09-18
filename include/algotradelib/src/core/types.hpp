@@ -45,9 +45,7 @@ class Currency {
 public:
   Currency() : code_{'K', 'R', 'W'} {}
 
-  explicit Currency(
-    std::string_view code
-  ) {
+  explicit Currency(std::string_view code) {
     if (code.size() != code_.size()) {
       throw std::invalid_argument("currency code must contain three characters");
     }
@@ -65,10 +63,7 @@ public:
 
   std::string str() const { return std::string(code_.begin(), code_.end()); }
 
-  friend bool operator==(
-    const Currency& lhs,
-    const Currency& rhs
-  ) {
+  friend bool operator==(const Currency& lhs, const Currency& rhs) {
     return lhs.code_ == rhs.code_;
   }
 
@@ -79,15 +74,10 @@ private:
 class Decimal64 {
 public:
   Decimal64() = default;
-  Decimal64(
-    std::int64_t coefficient,
-    std::uint8_t scale
-  )
+  Decimal64(std::int64_t coefficient, std::uint8_t scale)
   : coefficient_(coefficient), scale_(scale) {}
 
-  static Decimal64 parse(
-    std::string_view input
-  ) {
+  static Decimal64 parse(std::string_view input) {
     if (input.empty()) {
       throw std::invalid_argument("decimal value is empty");
     }
@@ -179,10 +169,7 @@ public:
     return digits;
   }
 
-  friend bool operator==(
-    const Decimal64& lhs,
-    const Decimal64& rhs
-  ) {
+  friend bool operator==(const Decimal64& lhs, const Decimal64& rhs) {
     return lhs.coefficient_ == rhs.coefficient_ && lhs.scale_ == rhs.scale_;
   }
 
@@ -213,14 +200,8 @@ struct BrokerError {
 template <typename T>
 class Result {
 public:
-  Result(
-    T value
-  )
-  : value_(std::move(value)) {}
-  Result(
-    BrokerError error
-  )
-  : value_(std::move(error)) {}
+  Result(T value) : value_(std::move(value)) {}
+  Result(BrokerError error) : value_(std::move(error)) {}
 
   bool has_value() const noexcept { return std::holds_alternative<T>(value_); }
   explicit operator bool() const noexcept { return has_value(); }

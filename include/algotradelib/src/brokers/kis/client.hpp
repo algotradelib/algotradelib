@@ -41,10 +41,7 @@ public:
     ) {}
 
   template <typename CompletionToken>
-  auto async_quote(
-    InstrumentId instrument,
-    CompletionToken&& token
-  ) {
+  auto async_quote(InstrumentId instrument, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<QuoteSnapshot>)>(
       [self = shared_from_this(), instrument = std::move(instrument)](auto&& handler) mutable {
         auto completion = QuoteHandler(std::forward<decltype(handler)>(handler));
@@ -71,10 +68,7 @@ private:
   bool refreshing_{false};
   std::deque<TokenHandler> token_waiters_;
 
-  void start_quote(
-    InstrumentId instrument,
-    QuoteHandler completion
-  ) {
+  void start_quote(InstrumentId instrument, QuoteHandler completion) {
     if (instrument.country != Country::KR || !broker_detail::valid_symbol(instrument.symbol)) {
       BrokerError error;
       error.category = ErrorCategory::INVALID_ARGUMENT;
@@ -103,9 +97,7 @@ private:
     );
   }
 
-  void ensure_token(
-    TokenHandler handler
-  ) {
+  void ensure_token(TokenHandler handler) {
     if (token_.valid()) {
       std::move(handler)(Result<std::string>(token_.access_token_));
       return;
@@ -131,9 +123,7 @@ private:
     );
   }
 
-  void finish_token(
-    Result<network::HttpResponse> result
-  ) {
+  void finish_token(Result<network::HttpResponse> result) {
     refreshing_ = false;
     std::optional<BrokerError> failure;
     if (!result) {
@@ -170,11 +160,7 @@ private:
     }
   }
 
-  void request_quote(
-    InstrumentId instrument,
-    std::string access_token,
-    QuoteHandler completion
-  ) {
+  void request_quote(InstrumentId instrument, std::string access_token, QuoteHandler completion) {
     const char* market = "UN";
     if (instrument.venue == Venue::KRX) {
       market = "J";
@@ -216,10 +202,7 @@ private:
     );
   }
 
-  static Result<QuoteSnapshot> parse_quote(
-    InstrumentId instrument,
-    Result<network::HttpResponse> result
-  ) {
+  static Result<QuoteSnapshot> parse_quote(InstrumentId instrument, Result<network::HttpResponse> result) {
     if (!result) {
       return Result<QuoteSnapshot>(std::move(result.error()));
     }
@@ -270,10 +253,7 @@ private:
     }
   }
 
-  void complete(
-    QuoteHandler handler,
-    Result<QuoteSnapshot> result
-  ) {
+  void complete(QuoteHandler handler, Result<QuoteSnapshot> result) {
     auto executor = net::get_associated_executor(handler, strand_);
     net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
       std::move(handler)(std::move(result));
@@ -291,9 +271,7 @@ public:
   : client_(std::make_shared<KisClient>(ioc_.get_executor(), context, std::move(config), options)) {
   }
 
-  Result<QuoteSnapshot> quote(
-    InstrumentId instrument
-  ) {
+  Result<QuoteSnapshot> quote(InstrumentId instrument) {
     std::optional<Result<QuoteSnapshot>> result;
     ioc_.restart();
     client_->async_quote(std::move(instrument), [&result](Result<QuoteSnapshot> value) {

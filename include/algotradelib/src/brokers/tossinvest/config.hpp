@@ -38,9 +38,7 @@ struct TossConfig : public network::ClientCredentials<TossConfig> {
     secret_ = secret;
   }
 
-  void from_json_impl(
-    const std::string& filename
-  ) {
+  void from_json_impl(const std::string& filename) {
     std::ifstream ifs(filename);
     if (!ifs.is_open()) {
       throw std::runtime_error("Cannot open Toss Invest credential file: " + filename);
@@ -70,9 +68,7 @@ struct TossConfig : public network::ClientCredentials<TossConfig> {
 
 struct TossRest : public network::AuthBody<TossRest> {
 
-  void from_json_impl(
-    const json::object&
-  ) {}
+  void from_json_impl(const json::object&) {}
 
   // bool valid() const noexcept {
   // 	const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
