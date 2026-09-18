@@ -78,6 +78,46 @@ TEST_CASE(
 }
 
 TEST_CASE(
+  "Holdings values preserve quantities and separate currency totals",
+  "[core][holdings]"
+) {
+  HoldingsSnapshot snapshot;
+  HoldingPosition position;
+  position.instrument = InstrumentId{Country::US, Venue::UNSPECIFIED, "AAPL"};
+  position.name = "Apple";
+  position.quantity = Decimal64::parse("1.2500");
+  position.average_purchase_price = Decimal64::parse("180.50");
+  position.last_price = Decimal64::parse("185.70");
+  position.purchase_value = Money{Decimal64::parse("225.625"), Currency::usd()};
+  position.market_value = Money{Decimal64::parse("232.125"), Currency::usd()};
+  position.unrealized_profit_loss = Money{Decimal64::parse("6.50"), Currency::usd()};
+  position.unrealized_return = Decimal64::parse("0.0288088643");
+  snapshot.positions.push_back(position);
+  snapshot.totals.push_back(
+    HoldingsTotals{
+      Currency::krw(),
+      Decimal64::parse("0"),
+      Decimal64::parse("0"),
+      Decimal64::parse("0"),
+    }
+  );
+  snapshot.totals.push_back(
+    HoldingsTotals{
+      Currency::usd(),
+      Decimal64::parse("225.625"),
+      Decimal64::parse("232.125"),
+      Decimal64::parse("6.50"),
+    }
+  );
+
+  REQUIRE(snapshot.positions.front().quantity == Decimal64::parse("1.25"));
+  REQUIRE(snapshot.positions.front().market_value.currency == Currency::usd());
+  REQUIRE(snapshot.totals.size() == 2);
+  REQUIRE(snapshot.totals[0].currency == Currency::krw());
+  REQUIRE(snapshot.totals[1].currency == Currency::usd());
+}
+
+TEST_CASE(
   "Credentials serialize without corrupting reserved characters",
   "[auth][encoding]"
 ) {

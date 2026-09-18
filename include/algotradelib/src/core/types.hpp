@@ -13,10 +13,12 @@
 #include <string_view>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace algotradelib {
 
 enum class Country {
+  UNKNOWN,
   KR,
   US,
 };
@@ -239,6 +241,44 @@ struct QuoteSnapshot {
   Decimal64 last_price;
   Currency currency;
   std::optional<std::chrono::system_clock::time_point> exchange_time;
+  std::chrono::system_clock::time_point received_at;
+};
+
+struct Money {
+  Decimal64 amount;
+  Currency currency;
+
+  friend bool operator==(
+    const Money& lhs,
+    const Money& rhs
+  ) {
+    return lhs.amount == rhs.amount && lhs.currency == rhs.currency;
+  }
+};
+
+struct HoldingPosition {
+  InstrumentId instrument;
+  std::string name;
+  Decimal64 quantity;
+  std::optional<Decimal64> sellable_quantity;
+  Decimal64 average_purchase_price;
+  Decimal64 last_price;
+  Money purchase_value;
+  Money market_value;
+  Money unrealized_profit_loss;
+  Decimal64 unrealized_return;
+};
+
+struct HoldingsTotals {
+  Currency currency;
+  Decimal64 purchase_value;
+  Decimal64 market_value;
+  Decimal64 unrealized_profit_loss;
+};
+
+struct HoldingsSnapshot {
+  std::vector<HoldingPosition> positions;
+  std::vector<HoldingsTotals> totals;
   std::chrono::system_clock::time_point received_at;
 };
 
