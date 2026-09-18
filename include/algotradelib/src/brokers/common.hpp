@@ -5,8 +5,11 @@
 #include <boost/json.hpp>
 
 #include <chrono>
+#include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace algotradelib::broker_detail {
 
@@ -102,6 +105,51 @@ inline bool valid_symbol(
     }
   }
   return true;
+}
+
+inline std::string query_encode(
+  std::string_view value
+) {
+  static constexpr char hex[] = "0123456789ABCDEF";
+  std::string result;
+  result.reserve(value.size());
+  for (const unsigned char ch : value) {
+    const bool unreserved = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+      (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' || ch == '_' || ch == '~';
+    if (unreserved) {
+      result.push_back(static_cast<char>(ch));
+    } else {
+      result.push_back('%');
+      result.push_back(hex[ch >> 4]);
+      result.push_back(hex[ch & 0x0F]);
+    }
+  }
+  return result;
+}
+
+inline bool decimal_digits(
+  std::string_view value,
+  std::size_t length
+) {
+  if (value.size() != length) {
+    return false;
+  }
+  for (const char ch : value) {
+    if (ch < '0' || ch > '9') {
+      return false;
+    }
+  }
+  return true;
+}
+
+inline Decimal64 percent_to_ratio(
+  std::string_view value
+) {
+  const auto percent = Decimal64::parse(value);
+  if (percent.scale() > std::numeric_limits<std::uint8_t>::max() - 2) {
+    throw std::out_of_range("percentage scale exceeds Decimal64 range");
+  }
+  return Decimal64(percent.coefficient(), static_cast<std::uint8_t>(percent.scale() + 2));
 }
 
 } // namespace algotradelib::broker_detail

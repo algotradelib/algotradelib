@@ -11,16 +11,24 @@
 #include <boost/asio/strand.hpp>
 
 #include <deque>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace algotradelib::kis {
+
+struct KisAccount {
+  std::string account_number;
+  std::string product_code;
+};
 
 class KisClient : public std::enable_shared_from_this<KisClient> {
 public:
   using QuoteHandler = net::any_completion_handler<void(Result<QuoteSnapshot>)>;
+  using HoldingsHandler = net::any_completion_handler<void(Result<HoldingsSnapshot>)>;
   using TokenHandler = net::any_completion_handler<void(Result<std::string>)>;
 
   KisClient(
@@ -59,6 +67,25 @@ public:
     );
   }
 
+  template <typename CompletionToken>
+  auto async_holdings(
+    KisAccount account,
+    CompletionToken&& token
+  ) {
+    return net::async_initiate<CompletionToken, void(Result<HoldingsSnapshot>)>(
+      [self = shared_from_this(), account = std::move(account)](auto&& handler) mutable {
+        auto completion = HoldingsHandler(std::forward<decltype(handler)>(handler));
+        net::post(
+          self->strand_,
+          [self, account = std::move(account), completion = std::move(completion)]() mutable {
+            self->start_holdings(std::move(account), std::move(completion));
+          }
+        );
+      },
+      token
+    );
+  }
+
   void close() { http_->close(); }
 
 private:
@@ -70,6 +97,21 @@ private:
   KisRest token_;
   bool refreshing_{false};
   std::deque<TokenHandler> token_waiters_;
+
+  struct HoldingsOperation {
+    KisAccount account;
+    HoldingsSnapshot snapshot;
+    std::string foreign_cursor;
+    std::string domestic_cursor;
+    std::size_t page_count{0};
+    HoldingsHandler completion;
+
+    HoldingsOperation(
+      KisAccount selected_account,
+      HoldingsHandler selected_completion
+    )
+    : account(std::move(selected_account)), completion(std::move(selected_completion)) {}
+  };
 
   void start_quote(
     InstrumentId instrument,
@@ -98,6 +140,42 @@ private:
           self->request_quote(
             std::move(instrument), std::move(token_result.value()), std::move(completion)
           );
+        }
+      )
+    );
+  }
+
+  void start_holdings(
+    KisAccount account,
+    HoldingsHandler completion
+  ) {
+    if (
+      !broker_detail::decimal_digits(account.account_number, 8) ||
+      !broker_detail::decimal_digits(account.product_code, 2)
+    ) {
+      BrokerError error;
+      error.category = ErrorCategory::INVALID_ARGUMENT;
+      error.broker_code = "invalid_account";
+      error.message = "KIS account number must contain eight digits and product code two digits";
+      complete_holdings(
+        std::move(completion), Result<HoldingsSnapshot>(std::move(error))
+      );
+      return;
+    }
+
+    auto operation = std::make_shared<HoldingsOperation>(
+      std::move(account), std::move(completion)
+    );
+    ensure_token(
+      TokenHandler(
+        [self = shared_from_this(), operation](Result<std::string> token_result) mutable {
+          if (!token_result) {
+            self->finish_holdings(
+              operation, Result<HoldingsSnapshot>(std::move(token_result.error()))
+            );
+            return;
+          }
+          self->request_holdings(operation, std::move(token_result.value()));
         }
       )
     );
@@ -216,6 +294,126 @@ private:
     );
   }
 
+  void request_holdings(
+    const std::shared_ptr<HoldingsOperation>& operation,
+    std::string access_token
+  ) {
+    auto request = make_holdings_request(
+      operation->account,
+      config_,
+      access_token,
+      operation->foreign_cursor,
+      operation->domestic_cursor,
+      operation->page_count > 0
+    );
+    http_->async_request(
+      std::move(request),
+      [self = shared_from_this(), operation, access_token = std::move(access_token)](
+        Result<network::HttpResponse> result
+      ) mutable {
+        net::post(
+          self->strand_,
+          [self,
+           operation,
+           access_token = std::move(access_token),
+           result = std::move(result)]() mutable {
+            self->handle_holdings_page(
+              operation, std::move(access_token), std::move(result)
+            );
+          }
+        );
+      }
+    );
+  }
+
+  static network::HttpRequest make_holdings_request(
+    const KisAccount& account,
+    const KisConfig& config,
+    std::string_view access_token,
+    std::string_view foreign_cursor,
+    std::string_view domestic_cursor,
+    bool continuation
+  ) {
+    network::HttpRequest request;
+    request.method = http::verb::get;
+    request.target =
+      "/uapi/domestic-stock/v1/trading/inquire-balance"
+      "?CANO=" +
+      account.account_number + "&ACNT_PRDT_CD=" + account.product_code +
+      "&AFHR_FLPR_YN=Y&INQR_DVSN=01&UNPR_DVSN=01&FUND_STTL_ICLD_YN=N"
+      "&FNCG_AMT_AUTO_RDPT_YN=N&PRCS_DVSN=00&CTX_AREA_FK100=" +
+      broker_detail::query_encode(foreign_cursor) + "&CTX_AREA_NK100=" +
+      broker_detail::query_encode(domestic_cursor);
+    request.headers = {
+      {"authorization", "Bearer " + std::string(access_token)},
+      {"appkey", config.key()},
+      {"appsecret", config.secret()},
+      {"tr_id", config.is_demo_ ? "VTTC8434R" : "TTTC8434R"},
+      {"tr_cont", continuation ? "N" : ""},
+      {"custtype", "P"},
+      {"content-type", "application/json; charset=utf-8"},
+    };
+    return request;
+  }
+
+  void handle_holdings_page(
+    const std::shared_ptr<HoldingsOperation>& operation,
+    std::string access_token,
+    Result<network::HttpResponse> result
+  ) {
+    if (!result) {
+      finish_holdings(operation, Result<HoldingsSnapshot>(std::move(result.error())));
+      return;
+    }
+
+    const auto continuation = result.value().base().find("tr_cont");
+    const bool has_next = continuation != result.value().base().end() &&
+      (continuation->value() == "M" || continuation->value() == "F");
+    std::string foreign_cursor;
+    std::string domestic_cursor;
+    auto page = parse_holdings_page(
+      std::move(result), foreign_cursor, domestic_cursor
+    );
+    if (!page) {
+      finish_holdings(operation, Result<HoldingsSnapshot>(std::move(page.error())));
+      return;
+    }
+
+    operation->snapshot.positions.insert(
+      operation->snapshot.positions.end(),
+      std::make_move_iterator(page.value().positions.begin()),
+      std::make_move_iterator(page.value().positions.end())
+    );
+    if (!page.value().totals.empty()) {
+      operation->snapshot.totals = std::move(page.value().totals);
+    }
+    ++operation->page_count;
+
+    if (has_next) {
+      const bool cursor_did_not_advance = foreign_cursor == operation->foreign_cursor &&
+        domestic_cursor == operation->domestic_cursor;
+      if (
+        operation->page_count >= 100 ||
+        (foreign_cursor.empty() && domestic_cursor.empty()) ||
+        cursor_did_not_advance
+      ) {
+        BrokerError error;
+        error.category = ErrorCategory::PROTOCOL;
+        error.broker_code = "invalid_pagination";
+        error.message = "KIS holdings continuation did not advance";
+        finish_holdings(operation, Result<HoldingsSnapshot>(std::move(error)));
+        return;
+      }
+      operation->foreign_cursor = std::move(foreign_cursor);
+      operation->domestic_cursor = std::move(domestic_cursor);
+      request_holdings(operation, std::move(access_token));
+      return;
+    }
+
+    operation->snapshot.received_at = std::chrono::system_clock::now();
+    finish_holdings(operation, Result<HoldingsSnapshot>(std::move(operation->snapshot)));
+  }
+
   static Result<QuoteSnapshot> parse_quote(
     InstrumentId instrument,
     Result<network::HttpResponse> result
@@ -270,9 +468,144 @@ private:
     }
   }
 
+  static Result<HoldingsSnapshot> parse_holdings(
+    Result<network::HttpResponse> result
+  ) {
+    std::string foreign_cursor;
+    std::string domestic_cursor;
+    return parse_holdings_page(
+      std::move(result), foreign_cursor, domestic_cursor
+    );
+  }
+
+  static Result<HoldingsSnapshot> parse_holdings_page(
+    Result<network::HttpResponse> result,
+    std::string& foreign_cursor,
+    std::string& domestic_cursor
+  ) {
+    if (!result) {
+      return Result<HoldingsSnapshot>(std::move(result.error()));
+    }
+    if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
+      return Result<HoldingsSnapshot>(broker_detail::http_error(result.value()));
+    }
+    BrokerError parse_error;
+    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    if (!document) {
+      return Result<HoldingsSnapshot>(std::move(parse_error));
+    }
+    try {
+      const auto result_code = broker_detail::json_string(*document, "rt_cd");
+      if (result_code != "0") {
+        BrokerError error;
+        error.category = ErrorCategory::PROTOCOL;
+        if (const auto code = document->if_contains("msg_cd"); code && code->is_string()) {
+          error.broker_code = code->as_string().c_str();
+        }
+        if (const auto message = document->if_contains("msg1"); message && message->is_string()) {
+          error.message = message->as_string().c_str();
+        }
+        return Result<HoldingsSnapshot>(std::move(error));
+      }
+
+      const auto positions = document->if_contains("output1");
+      const auto summaries = document->if_contains("output2");
+      if (!positions || !positions->is_array()) {
+        throw std::runtime_error("missing array field: output1");
+      }
+      if (!summaries || !summaries->is_array()) {
+        throw std::runtime_error("missing array field: output2");
+      }
+
+      HoldingsSnapshot snapshot;
+      for (const auto& value : positions->as_array()) {
+        if (!value.is_object()) {
+          throw std::runtime_error("output1 item is not an object");
+        }
+        const auto& output = value.as_object();
+        HoldingPosition position;
+        position.instrument = InstrumentId{
+          Country::KR,
+          Venue::COMBINED,
+          broker_detail::json_string(output, "pdno"),
+        };
+        position.name = broker_detail::json_string(output, "prdt_name");
+        position.quantity = Decimal64::parse(broker_detail::json_string(output, "hldg_qty"));
+        position.sellable_quantity =
+          Decimal64::parse(broker_detail::json_string(output, "ord_psbl_qty"));
+        position.average_purchase_price =
+          Decimal64::parse(broker_detail::json_string(output, "pchs_avg_pric"));
+        position.last_price = Decimal64::parse(broker_detail::json_string(output, "prpr"));
+        position.purchase_value = Money{
+          Decimal64::parse(broker_detail::json_string(output, "pchs_amt")), Currency::krw()
+        };
+        position.market_value = Money{
+          Decimal64::parse(broker_detail::json_string(output, "evlu_amt")), Currency::krw()
+        };
+        position.unrealized_profit_loss = Money{
+          Decimal64::parse(broker_detail::json_string(output, "evlu_pfls_amt")), Currency::krw()
+        };
+        position.unrealized_return =
+          broker_detail::percent_to_ratio(broker_detail::json_string(output, "evlu_pfls_rt"));
+        snapshot.positions.push_back(std::move(position));
+      }
+
+      if (!summaries->as_array().empty()) {
+        const auto& value = summaries->as_array().front();
+        if (!value.is_object()) {
+          throw std::runtime_error("output2 item is not an object");
+        }
+        const auto& output = value.as_object();
+        snapshot.totals.push_back(
+          HoldingsTotals{
+            Currency::krw(),
+            Decimal64::parse(broker_detail::json_string(output, "pchs_amt_smtl_amt")),
+            Decimal64::parse(broker_detail::json_string(output, "evlu_amt_smtl_amt")),
+            Decimal64::parse(broker_detail::json_string(output, "evlu_pfls_smtl_amt")),
+          }
+        );
+      }
+
+      if (
+        const auto value = document->if_contains("ctx_area_fk100"); value && value->is_string()
+      ) {
+        foreign_cursor = value->as_string().c_str();
+      }
+      if (
+        const auto value = document->if_contains("ctx_area_nk100"); value && value->is_string()
+      ) {
+        domestic_cursor = value->as_string().c_str();
+      }
+      return Result<HoldingsSnapshot>(std::move(snapshot));
+    } catch (const std::exception& exception) {
+      BrokerError error;
+      error.category = ErrorCategory::PROTOCOL;
+      error.broker_code = "invalid_holdings_response";
+      error.message = exception.what();
+      return Result<HoldingsSnapshot>(std::move(error));
+    }
+  }
+
   void complete(
     QuoteHandler handler,
     Result<QuoteSnapshot> result
+  ) {
+    auto executor = net::get_associated_executor(handler, strand_);
+    net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
+      std::move(handler)(std::move(result));
+    });
+  }
+
+  void finish_holdings(
+    const std::shared_ptr<HoldingsOperation>& operation,
+    Result<HoldingsSnapshot> result
+  ) {
+    complete_holdings(std::move(operation->completion), std::move(result));
+  }
+
+  void complete_holdings(
+    HoldingsHandler handler,
+    Result<HoldingsSnapshot> result
   ) {
     auto executor = net::get_associated_executor(handler, strand_);
     net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
@@ -306,6 +639,25 @@ public:
       error.broker_code = "event_loop_stopped";
       error.message = "event loop stopped before quote completion";
       return Result<QuoteSnapshot>(std::move(error));
+    }
+    return std::move(*result);
+  }
+
+  Result<HoldingsSnapshot> holdings(
+    KisAccount account
+  ) {
+    std::optional<Result<HoldingsSnapshot>> result;
+    ioc_.restart();
+    client_->async_holdings(std::move(account), [&result](Result<HoldingsSnapshot> value) {
+      result.emplace(std::move(value));
+    });
+    ioc_.run();
+    if (!result) {
+      BrokerError error;
+      error.category = ErrorCategory::TRANSPORT;
+      error.broker_code = "event_loop_stopped";
+      error.message = "event loop stopped before holdings completion";
+      return Result<HoldingsSnapshot>(std::move(error));
     }
     return std::move(*result);
   }

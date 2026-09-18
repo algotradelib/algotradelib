@@ -22,6 +22,24 @@ struct KisClientTestAccess {
   ) {
     return KisClient::parse_quote(std::move(instrument), std::move(response));
   }
+
+  static Result<HoldingsSnapshot> parse_holdings(
+    Result<network::HttpResponse> response
+  ) {
+    return KisClient::parse_holdings(std::move(response));
+  }
+
+  static network::HttpRequest holdings_request(
+    const KisAccount& account,
+    const KisConfig& config,
+    std::string_view foreign_cursor,
+    std::string_view domestic_cursor,
+    bool continuation
+  ) {
+    return KisClient::make_holdings_request(
+      account, config, "access-token", foreign_cursor, domestic_cursor, continuation
+    );
+  }
 };
 } // namespace algotradelib::kis
 
@@ -361,6 +379,100 @@ TEST_CASE(
   REQUIRE_FALSE(error_result);
   REQUIRE(error_result.error().category == ErrorCategory::RATE_LIMIT);
   REQUIRE(error_result.error().request_id == "request-1");
+}
+
+TEST_CASE(
+  "KIS holdings request selects environment and continuation",
+  "[broker][kis][holdings]"
+) {
+  const auto header_value = [](const network::HttpRequest& request, std::string_view name) {
+    for (const auto& header : request.headers) {
+      if (header.first == name) {
+        return header.second;
+      }
+    }
+    return std::string{};
+  };
+  const kis::KisAccount account{"12345678", "01"};
+
+  kis::KisConfig live;
+  const auto initial = kis::KisClientTestAccess::holdings_request(account, live, "", "", false);
+  REQUIRE(header_value(initial, "tr_id") == "TTTC8434R");
+  REQUIRE(header_value(initial, "tr_cont").empty());
+  REQUIRE(initial.target.find("CANO=12345678") != std::string::npos);
+  REQUIRE(initial.target.find("ACNT_PRDT_CD=01") != std::string::npos);
+
+  kis::KisConfig demo;
+  demo.is_demo_ = true;
+  const auto next =
+    kis::KisClientTestAccess::holdings_request(account, demo, "cursor key", "next", true);
+  REQUIRE(header_value(next, "tr_id") == "VTTC8434R");
+  REQUIRE(header_value(next, "tr_cont") == "N");
+  REQUIRE(next.target.find("CTX_AREA_FK100=cursor%20key") != std::string::npos);
+}
+
+TEST_CASE(
+  "KIS holdings payload normalizes positions and summary",
+  "[broker][kis][holdings]"
+) {
+  network::HttpResponse response{http::status::ok, 11};
+  response.body() = R"({
+    "rt_cd":"0",
+    "msg_cd":"MCA00000",
+    "ctx_area_fk100":"foreign-next",
+    "ctx_area_nk100":"domestic-next",
+    "output1":[{
+      "pdno":"005930",
+      "prdt_name":"Samsung Electronics",
+      "hldg_qty":"10",
+      "ord_psbl_qty":"7",
+      "pchs_avg_pric":"70000.0000",
+      "pchs_amt":"700000",
+      "prpr":"72000",
+      "evlu_amt":"720000",
+      "evlu_pfls_amt":"20000",
+      "evlu_pfls_rt":"2.857142"
+    }],
+    "output2":[{
+      "pchs_amt_smtl_amt":"700000",
+      "evlu_amt_smtl_amt":"720000",
+      "evlu_pfls_smtl_amt":"20000"
+    }]
+  })";
+
+  const auto result = kis::KisClientTestAccess::parse_holdings(std::move(response));
+  REQUIRE(result);
+  REQUIRE(result.value().positions.size() == 1);
+  const auto& position = result.value().positions.front();
+  const InstrumentId expected_instrument{Country::KR, Venue::COMBINED, "005930"};
+  REQUIRE(position.instrument == expected_instrument);
+  REQUIRE(position.quantity == Decimal64::parse("10"));
+  REQUIRE(position.sellable_quantity == Decimal64::parse("7"));
+  REQUIRE(position.average_purchase_price == Decimal64::parse("70000"));
+  REQUIRE(position.unrealized_return == Decimal64::parse("0.02857142"));
+  REQUIRE(result.value().totals.size() == 1);
+  REQUIRE(result.value().totals.front().market_value == Decimal64::parse("720000"));
+}
+
+TEST_CASE(
+  "KIS holdings rejects invalid accounts before network I/O",
+  "[broker][kis][holdings][validation]"
+) {
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  auto client = std::make_shared<kis::KisClient>(ioc.get_executor(), context, kis::KisConfig{});
+  bool completed = false;
+  client->async_holdings(
+    kis::KisAccount{"1234-678", "1"},
+    [&completed](Result<HoldingsSnapshot> result) {
+      REQUIRE_FALSE(result);
+      REQUIRE(result.error().category == ErrorCategory::INVALID_ARGUMENT);
+      REQUIRE(result.error().broker_code == "invalid_account");
+      completed = true;
+    }
+  );
+  ioc.run();
+  REQUIRE(completed);
 }
 
 } // namespace
