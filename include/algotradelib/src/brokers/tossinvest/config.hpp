@@ -20,67 +20,62 @@ struct TossRest;
 struct TossWebsocket;
 
 struct TossConfig : public network::ClientCredentials<TossConfig> {
-	// std::string grant_type = "client_credentials"; // length = 18
+  // std::string grant_type = "client_credentials"; // length = 18
   // std::string client_id_;
   // std::string client_secret_;
 
-	/**
-	 * @brief Read from the environment
-	 * 
-	 */
-	void from_env_impl() {
-		const char* key = std::getenv("TOSS_CLIENT_ID");
+  /**
+   * @brief Read from the environment
+   *
+   */
+  void from_env_impl() {
+    const char* key = std::getenv("TOSS_CLIENT_ID");
     const char* secret = std::getenv("TOSS_CLIENT_SECRET");
-		if (!key || !secret) {
-			throw std::runtime_error("Add TOSS_CLIENT_ID and TOSS_CLIENT_SECRET environment variables.");
-		}
-		key_ = key;
-		secret_ = secret;
-	}
+    if (!key || !secret) {
+      throw std::runtime_error("Add TOSS_CLIENT_ID and TOSS_CLIENT_SECRET environment variables.");
+    }
+    key_ = key;
+    secret_ = secret;
+  }
 
-	void from_json_impl(const std::string& filename) {
-		std::ifstream ifs(filename);
-		if (!ifs.is_open()) {
-			throw std::runtime_error("Cannot open Toss Invest credential file: " + filename);
-		}
-		const std::string content(
-			std::istreambuf_iterator<char>(ifs),
-      std::istreambuf_iterator<char>{}
-		);
-		boost::system::error_code ec;
+  void from_json_impl(
+    const std::string& filename) {
+    std::ifstream ifs(filename);
+    if (!ifs.is_open()) {
+      throw std::runtime_error("Cannot open Toss Invest credential file: " + filename);
+    }
+    const std::string content(
+      std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>{});
+    boost::system::error_code ec;
     const auto jv = json::parse(content, ec);
     if (ec) {
-			throw std::runtime_error("Failed to parse Toss Invest credentials file: "
-				+ filename
-				+ " — " + ec.message());
-		}
+      throw std::runtime_error(
+        "Failed to parse Toss Invest credentials file: " + filename + " — " + ec.message());
+    }
     const auto& doc = jv.as_object();
     if (!doc.contains("client_id") || !doc.contains("client_secret")) {
-			throw std::runtime_error("Credential file should contain client_id and client_secret");
-		}
-		key_ = doc.at("client_id").as_string().c_str();
-		secret_ = doc.at("client_secret").as_string().c_str();
-	}
-
-	static constexpr std::string_view key_field() noexcept {
-    return "client_id";
+      throw std::runtime_error("Credential file should contain client_id and client_secret");
+    }
+    key_ = doc.at("client_id").as_string().c_str();
+    secret_ = doc.at("client_secret").as_string().c_str();
   }
 
-  static constexpr std::string_view secret_field() noexcept {
-    return "client_secret";
-  }
+  static constexpr std::string_view key_field() noexcept { return "client_id"; }
+
+  static constexpr std::string_view secret_field() noexcept { return "client_secret"; }
 };
 
 struct TossRest : public network::AuthBody<TossRest> {
 
-	void from_json_impl(const json::object&) {}
+  void from_json_impl(
+    const json::object&) {}
 
-	// bool valid() const noexcept {
-	// 	const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
-	// 		std::chrono::system_clock::now().time_since_epoch()
-	// 	).count();
-	// 	return !access_token_.empty() && (expires_in_ - now) > 300; // 5min
-	// }
+  // bool valid() const noexcept {
+  // 	const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+  // 		std::chrono::system_clock::now().time_since_epoch()
+  // 	).count();
+  // 	return !access_token_.empty() && (expires_in_ - now) > 300; // 5min
+  // }
 };
 
 } // namespace tossinvest

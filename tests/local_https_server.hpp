@@ -76,7 +76,8 @@ OV9IxaWtgjumdgBw478W4w==
 -----END PRIVATE KEY-----
 )";
 
-inline void trustLocalhostCertificate(ssl::context& context) {
+inline void trustLocalhostCertificate(
+  ssl::context& context) {
   context.set_verify_mode(ssl::verify_peer);
   context.add_certificate_authority(net::buffer(LOCALHOST_CERTIFICATE));
 }
@@ -104,15 +105,12 @@ public:
   LocalHttpsServer(const LocalHttpsServer&) = delete;
   LocalHttpsServer& operator=(const LocalHttpsServer&) = delete;
 
-  std::string port() const {
-    return std::to_string(acceptor_.local_endpoint().port());
-  }
+  std::string port() const { return std::to_string(acceptor_.local_endpoint().port()); }
 
-  std::size_t connectionCount() const noexcept {
-    return connection_count_;
-  }
+  std::size_t connectionCount() const noexcept { return connection_count_; }
 
-  std::size_t requestCount(std::string_view target) const {
+  std::size_t requestCount(
+    std::string_view target) const {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto found = request_counts_.find(std::string(target));
     return found == request_counts_.end() ? 0 : found->second;
@@ -152,7 +150,8 @@ private:
     }
   }
 
-  void serve(tcp::socket socket) {
+  void serve(
+    tcp::socket socket) {
     beast::ssl_stream<beast::tcp_stream> stream(std::move(socket), context_);
     beast::error_code ec;
     stream.handshake(ssl::stream_base::server, ec);
@@ -190,12 +189,14 @@ private:
     }
   }
 
-  std::size_t recordRequest(const std::string& target) {
+  std::size_t recordRequest(
+    const std::string& target) {
     std::lock_guard<std::mutex> lock(mutex_);
     return ++request_counts_[target];
   }
 
-  static void close(beast::ssl_stream<beast::tcp_stream>& stream) noexcept {
+  static void close(
+    beast::ssl_stream<beast::tcp_stream>& stream) noexcept {
     beast::error_code ignored;
     beast::get_lowest_layer(stream).socket().shutdown(tcp::socket::shutdown_both, ignored);
     beast::get_lowest_layer(stream).socket().close(ignored);

@@ -4,17 +4,22 @@
 
 namespace algotradelib::network {
 
-class WsSession
-    : public WebSocketSessionBase<WsSession, websocket::stream<beast::tcp_stream>> {
+class WsSession : public WebSocketSessionBase<WsSession, websocket::stream<beast::tcp_stream>> {
 public:
-  WsSession(net::io_context& ioc, std::string host, std::string port,
-            std::string target = "/",
-            std::map<std::string, std::string> headers = {})
-      : WebSocketSessionBase(ioc, std::move(host), std::move(port),
-          WebSocketSessionOptions{std::move(target), std::move(headers)}) {}
+  WsSession(
+    net::io_context& ioc,
+    std::string host,
+    std::string port,
+    std::string target = "/",
+    std::map<std::string, std::string> headers = {})
+  : WebSocketSessionBase(ioc,
+      std::move(host),
+      std::move(port),
+      WebSocketSessionOptions{std::move(target), std::move(headers)}) {}
 
 private:
-  template <typename, typename> friend class WebSocketSessionBase;
+  template <typename, typename>
+  friend class WebSocketSessionBase;
   using Stream = websocket::stream<beast::tcp_stream>;
 
   void do_connect() {
@@ -26,8 +31,9 @@ private:
     start_resolve();
   }
 
-  void on_connect(beast::error_code error,
-                  tcp::resolver::results_type::endpoint_type endpoint) {
+  void on_connect(
+    beast::error_code error,
+    tcp::resolver::results_type::endpoint_type endpoint) {
     if (error) {
       fail("connect", error);
       return;

@@ -57,14 +57,14 @@ public:
     });
   }
 
-  void send(std::string message) {
-    net::post(strand_,
-      [self = shared_derived(), message = std::move(message)]() mutable {
-        self->write_queue_.push_back(std::move(message));
-        if (self->connected_ && !self->closing_ && !self->writing_) {
-          self->do_write();
-        }
-      });
+  void send(
+    std::string message) {
+    net::post(strand_, [self = shared_derived(), message = std::move(message)]() mutable {
+      self->write_queue_.push_back(std::move(message));
+      if (self->connected_ && !self->closing_ && !self->writing_) {
+        self->do_write();
+      }
+    });
   }
 
   void close() {
@@ -93,17 +93,22 @@ public:
   }
 
 protected:
-  WebSocketSessionBase(net::io_context& ioc, std::string host, std::string port,
-                       WebSocketSessionOptions options)
-      : strand_(net::make_strand(ioc)), resolver_(strand_), reconnect_timer_(strand_),
-        host_(std::move(host)), port_(std::move(port)), options_(std::move(options)),
-        reconnect_rng_(std::random_device{}()) {}
+  WebSocketSessionBase(
+    net::io_context& ioc,
+    std::string host,
+    std::string port,
+    WebSocketSessionOptions options)
+  : strand_(net::make_strand(ioc)), resolver_(strand_), reconnect_timer_(strand_),
+    host_(std::move(host)), port_(std::move(port)), options_(std::move(options)),
+    reconnect_rng_(std::random_device{}()) {}
 
   virtual ~WebSocketSessionBase() = default;
 
   virtual void on_message(std::string_view message) = 0;
   virtual void on_open() {}
-  virtual void on_error(std::string_view stage, beast::error_code error) {
+  virtual void on_error(
+    std::string_view stage,
+    beast::error_code error) {
     boost::ignore_unused(stage, error);
   }
   virtual void on_closed() {}
@@ -124,7 +129,7 @@ protected:
   bool writing_{false};
   bool stop_requested_{false};
   unsigned int reconnect_attempt_{0};
-  std::mt19937 reconnect_rng_;
+  std::minstd_rand reconnect_rng_;
 
   std::shared_ptr<Derived> shared_derived() {
     return std::static_pointer_cast<Derived>(this->shared_from_this());
@@ -134,8 +139,8 @@ protected:
   // setup such as SNI) is ready.
   void start_resolve() {
     connecting_ = true;
-    resolver_.async_resolve(host_, port_,
-      beast::bind_front_handler(&WebSocketSessionBase::on_resolve, shared_derived()));
+    resolver_.async_resolve(
+      host_, port_, beast::bind_front_handler(&WebSocketSessionBase::on_resolve, shared_derived()));
   }
 
   // Called by Derived::on_connect() (directly, or after a TLS handshake)
@@ -146,18 +151,19 @@ protected:
     auto timeout = websocket::stream_base::timeout::suggested(beast::role_type::client);
     timeout.keep_alive_pings = true;
     ws_->set_option(timeout);
-    ws_->set_option(websocket::stream_base::decorator(
-      [this](websocket::request_type& request) {
-        request.set(http::field::user_agent, "algotradelib");
-        for (const auto& header : options_.headers) {
-          request.set(header.first, header.second);
-        }
-      }));
+    ws_->set_option(websocket::stream_base::decorator([this](websocket::request_type& request) {
+      request.set(http::field::user_agent, "algotradelib");
+      for (const auto& header : options_.headers) {
+        request.set(header.first, header.second);
+      }
+    }));
     ws_->async_handshake(host_header_, options_.target,
       beast::bind_front_handler(&WebSocketSessionBase::on_handshake, shared_derived()));
   }
 
-  void fail(std::string_view stage, beast::error_code error) {
+  void fail(
+    std::string_view stage,
+    beast::error_code error) {
     connected_ = false;
     connecting_ = false;
     writing_ = false;
@@ -175,17 +181,20 @@ protected:
   }
 
 private:
-  void on_resolve(beast::error_code error, tcp::resolver::results_type endpoints) {
+  void on_resolve(
+    beast::error_code error,
+    tcp::resolver::results_type endpoints) {
     if (error) {
       fail("resolve", error);
       return;
     }
     beast::get_lowest_layer(*ws_).expires_after(options_.operation_timeout);
-    beast::get_lowest_layer(*ws_).async_connect(endpoints,
-      beast::bind_front_handler(&Derived::on_connect, shared_derived()));
+    beast::get_lowest_layer(*ws_).async_connect(
+      endpoints, beast::bind_front_handler(&Derived::on_connect, shared_derived()));
   }
 
-  void on_handshake(beast::error_code error) {
+  void on_handshake(
+    beast::error_code error) {
     if (error) {
       fail("handshake", error);
       return;
@@ -206,7 +215,9 @@ private:
       beast::bind_front_handler(&WebSocketSessionBase::on_write, shared_derived()));
   }
 
-  void on_write(beast::error_code error, std::size_t) {
+  void on_write(
+    beast::error_code error,
+    std::size_t) {
     writing_ = false;
     if (error) {
       fail("write", error);
@@ -221,11 +232,13 @@ private:
   }
 
   void do_read() {
-    ws_->async_read(buffer_,
-      beast::bind_front_handler(&WebSocketSessionBase::on_read, shared_derived()));
+    ws_->async_read(
+      buffer_, beast::bind_front_handler(&WebSocketSessionBase::on_read, shared_derived()));
   }
 
-  void on_read(beast::error_code error, std::size_t) {
+  void on_read(
+    beast::error_code error,
+    std::size_t) {
     if (error == websocket::error::closed) {
       connected_ = false;
       connecting_ = false;
@@ -249,7 +262,8 @@ private:
       beast::bind_front_handler(&WebSocketSessionBase::on_close, shared_derived()));
   }
 
-  void on_close(beast::error_code error) {
+  void on_close(
+    beast::error_code error) {
     connected_ = false;
     connecting_ = false;
     closing_ = false;
@@ -268,15 +282,14 @@ private:
     }
     const auto shift = std::min(reconnect_attempt_, 16U);
     const auto multiplier = static_cast<std::int64_t>(1ULL << shift);
-    const auto delay = std::min(options_.reconnect_initial * multiplier,
-                                options_.reconnect_max);
+    const auto delay = std::min(options_.reconnect_initial * multiplier, options_.reconnect_max);
     ++reconnect_attempt_;
     const auto base_delay = std::chrono::duration_cast<std::chrono::milliseconds>(delay);
     const auto jitter_window = base_delay / 5;
     const auto jitter = jitter_window.count() <= 0
-      ? std::chrono::milliseconds(0)
-      : std::chrono::milliseconds(std::uniform_int_distribution<std::int64_t>(
-          0, jitter_window.count())(reconnect_rng_));
+                          ? std::chrono::milliseconds(0)
+                          : std::chrono::milliseconds(std::uniform_int_distribution<std::int64_t>(
+                              0, jitter_window.count())(reconnect_rng_));
     reconnect_timer_.expires_after(base_delay + jitter);
     reconnect_timer_.async_wait([self = shared_derived()](beast::error_code error) {
       if (!error) {

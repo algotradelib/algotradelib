@@ -23,14 +23,22 @@ public:
   using QuoteHandler = net::any_completion_handler<void(Result<QuoteSnapshot>)>;
   using TokenHandler = net::any_completion_handler<void(Result<std::string>)>;
 
-  KisClient(net::any_io_executor executor, ssl::context& context, KisConfig config,
-            network::HttpClientOptions options = {})
-      : strand_(net::make_strand(std::move(executor))), config_(std::move(config)),
-        http_(std::make_shared<network::AsyncHttpClient>(
-          strand_, context, config_.rest_host(), config_.rest_port(), options)) {}
+  KisClient(
+    net::any_io_executor executor,
+    ssl::context& context,
+    KisConfig config,
+    network::HttpClientOptions options = {})
+  : strand_(net::make_strand(std::move(executor))), config_(std::move(config)),
+    http_(std::make_shared<network::AsyncHttpClient>(strand_,
+      context,
+      config_.rest_host(),
+      config_.rest_port(),
+      options)) {}
 
   template <typename CompletionToken>
-  auto async_quote(InstrumentId instrument, CompletionToken&& token) {
+  auto async_quote(
+    InstrumentId instrument,
+    CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<QuoteSnapshot>)>(
       [self = shared_from_this(), instrument = std::move(instrument)](auto&& handler) mutable {
         auto completion = QuoteHandler(std::forward<decltype(handler)>(handler));
@@ -38,7 +46,8 @@ public:
           [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
             self->start_quote(std::move(instrument), std::move(completion));
           });
-      }, token);
+      },
+      token);
   }
 
   void close() { http_->close(); }
@@ -53,31 +62,33 @@ private:
   bool refreshing_{false};
   std::deque<TokenHandler> token_waiters_;
 
-  void start_quote(InstrumentId instrument, QuoteHandler completion) {
-    if (instrument.country != Country::kr ||
-        !broker_detail::valid_symbol(instrument.symbol)) {
+  void start_quote(
+    InstrumentId instrument,
+    QuoteHandler completion) {
+    if (instrument.country != Country::KR || !broker_detail::valid_symbol(instrument.symbol)) {
       BrokerError error;
-      error.category = ErrorCategory::invalid_argument;
+      error.category = ErrorCategory::INVALID_ARGUMENT;
       error.broker_code = "invalid_instrument";
       error.message = "KIS quote currently supports Korean equity symbols only";
       complete(std::move(completion), Result<QuoteSnapshot>(std::move(error)));
       return;
     }
 
-    ensure_token(TokenHandler(
-      [self = shared_from_this(), instrument = std::move(instrument),
-       completion = std::move(completion)](Result<std::string> token_result) mutable {
+    ensure_token(
+      TokenHandler([self = shared_from_this(), instrument = std::move(instrument),
+                     completion = std::move(completion)](Result<std::string> token_result) mutable {
         if (!token_result) {
-          self->complete(std::move(completion),
-                         Result<QuoteSnapshot>(std::move(token_result.error())));
+          self->complete(
+            std::move(completion), Result<QuoteSnapshot>(std::move(token_result.error())));
           return;
         }
-        self->request_quote(std::move(instrument), std::move(token_result.value()),
-                            std::move(completion));
+        self->request_quote(
+          std::move(instrument), std::move(token_result.value()), std::move(completion));
       }));
   }
 
-  void ensure_token(TokenHandler handler) {
+  void ensure_token(
+    TokenHandler handler) {
     if (token_.valid()) {
       std::move(handler)(Result<std::string>(token_.access_token_));
       return;
@@ -95,20 +106,20 @@ private:
     request.headers.emplace_back("content-type", "application/json");
     http_->async_request(std::move(request),
       [self = shared_from_this()](Result<network::HttpResponse> result) mutable {
-        net::post(self->strand_, [self, result = std::move(result)]() mutable {
-          self->finish_token(std::move(result));
-        });
+        net::post(self->strand_,
+          [self, result = std::move(result)]() mutable { self->finish_token(std::move(result)); });
       });
   }
 
-  void finish_token(Result<network::HttpResponse> result) {
+  void finish_token(
+    Result<network::HttpResponse> result) {
     refreshing_ = false;
     std::optional<BrokerError> failure;
     if (!result) {
       failure = std::move(result.error());
     } else if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
       failure = broker_detail::http_error(result.value());
-      failure->category = ErrorCategory::authentication;
+      failure->category = ErrorCategory::AUTHENTICATION;
     } else {
       BrokerError parse_error;
       auto document = broker_detail::parse_object(result.value().body(), parse_error);
@@ -119,7 +130,7 @@ private:
           token_.from_json(*document);
         } catch (const std::exception& exception) {
           BrokerError error;
-          error.category = ErrorCategory::authentication;
+          error.category = ErrorCategory::AUTHENTICATION;
           error.broker_code = "invalid_token_response";
           error.message = exception.what();
           failure = std::move(error);
@@ -138,20 +149,22 @@ private:
     }
   }
 
-  void request_quote(InstrumentId instrument, std::string access_token,
-                     QuoteHandler completion) {
+  void request_quote(
+    InstrumentId instrument,
+    std::string access_token,
+    QuoteHandler completion) {
     const char* market = "UN";
-    if (instrument.venue == Venue::krx) {
+    if (instrument.venue == Venue::KRX) {
       market = "J";
-    } else if (instrument.venue == Venue::nxt) {
+    } else if (instrument.venue == Venue::NXT) {
       market = "NX";
     }
 
     network::HttpRequest request;
     request.method = http::verb::get;
     request.target = "/uapi/domestic-stock/v1/quotations/inquire-price"
-      "?FID_COND_MRKT_DIV_CODE=" + std::string(market) +
-      "&FID_INPUT_ISCD=" + instrument.symbol;
+                     "?FID_COND_MRKT_DIV_CODE=" +
+                     std::string(market) + "&FID_INPUT_ISCD=" + instrument.symbol;
     request.headers = {
       {"authorization", "Bearer " + access_token},
       {"appkey", config_.key()},
@@ -162,18 +175,19 @@ private:
     };
     http_->async_request(std::move(request),
       [self = shared_from_this(), instrument = std::move(instrument),
-       completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+        completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
         net::post(self->strand_,
           [self, instrument = std::move(instrument), completion = std::move(completion),
-           result = std::move(result)]() mutable {
-            self->complete(std::move(completion),
-              parse_quote(std::move(instrument), std::move(result)));
+            result = std::move(result)]() mutable {
+            self->complete(
+              std::move(completion), parse_quote(std::move(instrument), std::move(result)));
           });
       });
   }
 
   static Result<QuoteSnapshot> parse_quote(
-      InstrumentId instrument, Result<network::HttpResponse> result) {
+    InstrumentId instrument,
+    Result<network::HttpResponse> result) {
     if (!result) {
       return Result<QuoteSnapshot>(std::move(result.error()));
     }
@@ -189,7 +203,7 @@ private:
       const auto result_code = broker_detail::json_string(*document, "rt_cd");
       if (result_code != "0") {
         BrokerError error;
-        error.category = ErrorCategory::protocol;
+        error.category = ErrorCategory::PROTOCOL;
         if (const auto code = document->if_contains("msg_cd"); code && code->is_string()) {
           error.broker_code = code->as_string().c_str();
         }
@@ -203,42 +217,46 @@ private:
         throw std::runtime_error("missing object field: output");
       }
       if (const auto symbol = output->as_object().if_contains("stck_shrn_iscd");
-          symbol && symbol->is_string() && symbol->as_string() != instrument.symbol) {
+        symbol && symbol->is_string() && symbol->as_string() != instrument.symbol) {
         throw std::runtime_error("quote response symbol does not match request");
       }
       QuoteSnapshot quote;
       quote.instrument = std::move(instrument);
-      quote.last_price = Decimal64::parse(
-        broker_detail::json_string(output->as_object(), "stck_prpr"));
+      quote.last_price =
+        Decimal64::parse(broker_detail::json_string(output->as_object(), "stck_prpr"));
       quote.currency = Currency::krw();
       quote.received_at = std::chrono::system_clock::now();
       return Result<QuoteSnapshot>(std::move(quote));
     } catch (const std::exception& exception) {
       BrokerError error;
-      error.category = ErrorCategory::protocol;
+      error.category = ErrorCategory::PROTOCOL;
       error.broker_code = "invalid_quote_response";
       error.message = exception.what();
       return Result<QuoteSnapshot>(std::move(error));
     }
   }
 
-  void complete(QuoteHandler handler, Result<QuoteSnapshot> result) {
+  void complete(
+    QuoteHandler handler,
+    Result<QuoteSnapshot> result) {
     auto executor = net::get_associated_executor(handler, strand_);
-    net::dispatch(executor,
-      [handler = std::move(handler), result = std::move(result)]() mutable {
-        std::move(handler)(std::move(result));
-      });
+    net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
+      std::move(handler)(std::move(result));
+    });
   }
 };
 
 class KisBlockingClient {
 public:
-  KisBlockingClient(ssl::context& context, KisConfig config,
-                    network::HttpClientOptions options = {})
-      : client_(std::make_shared<KisClient>(ioc_.get_executor(), context,
-                                            std::move(config), options)) {}
+  KisBlockingClient(
+    ssl::context& context,
+    KisConfig config,
+    network::HttpClientOptions options = {})
+  : client_(std::make_shared<KisClient>(ioc_.get_executor(), context, std::move(config), options)) {
+  }
 
-  Result<QuoteSnapshot> quote(InstrumentId instrument) {
+  Result<QuoteSnapshot> quote(
+    InstrumentId instrument) {
     std::optional<Result<QuoteSnapshot>> result;
     ioc_.restart();
     client_->async_quote(std::move(instrument),
@@ -246,7 +264,7 @@ public:
     ioc_.run();
     if (!result) {
       BrokerError error;
-      error.category = ErrorCategory::transport;
+      error.category = ErrorCategory::TRANSPORT;
       error.broker_code = "event_loop_stopped";
       error.message = "event loop stopped before quote completion";
       return Result<QuoteSnapshot>(std::move(error));

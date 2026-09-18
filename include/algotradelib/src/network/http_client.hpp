@@ -50,25 +50,29 @@ struct HttpClientOptions {
   std::size_t queue_limit{1024};
 };
 
-inline BrokerError transport_error(std::string stage, beast::error_code ec) {
+inline BrokerError transport_error(
+  std::string stage,
+  beast::error_code ec) {
   BrokerError error;
-  error.category = ec == net::error::operation_aborted
-    ? ErrorCategory::cancelled
-    : ErrorCategory::transport;
+  error.category =
+    ec == net::error::operation_aborted ? ErrorCategory::CANCELLED : ErrorCategory::TRANSPORT;
   error.broker_code = std::move(stage);
   error.message = ec.message();
   return error;
 }
 
-inline std::string make_host_header(const std::string& host, const std::string& port) {
+inline std::string make_host_header(
+  const std::string& host,
+  const std::string& port) {
   return port == "443" ? host : host + ":" + port;
 }
 
 // Shuts the SSL layer down (best-effort close_notify, bounded by `timeout`
 // so an unresponsive peer cannot stall the caller) before hard-closing the
 // underlying TCP socket.
-inline void shutdown_ssl_stream(beast::ssl_stream<beast::tcp_stream>& stream,
-                                std::chrono::seconds timeout) noexcept {
+inline void shutdown_ssl_stream(
+  beast::ssl_stream<beast::tcp_stream>& stream,
+  std::chrono::seconds timeout) noexcept {
   beast::error_code ignored;
   beast::get_lowest_layer(stream).expires_after(timeout);
   stream.shutdown(ignored);
@@ -76,7 +80,8 @@ inline void shutdown_ssl_stream(beast::ssl_stream<beast::tcp_stream>& stream,
   beast::get_lowest_layer(stream).socket().close(ignored);
 }
 
-inline void close_ssl_stream(beast::ssl_stream<beast::tcp_stream>& stream) noexcept {
+inline void close_ssl_stream(
+  beast::ssl_stream<beast::tcp_stream>& stream) noexcept {
   beast::error_code ignored;
   beast::get_lowest_layer(stream).cancel();
   beast::get_lowest_layer(stream).socket().shutdown(tcp::socket::shutdown_both, ignored);
@@ -85,25 +90,34 @@ inline void close_ssl_stream(beast::ssl_stream<beast::tcp_stream>& stream) noexc
 
 class HttpClient {
 public:
-  HttpClient(net::io_context& ioc, ssl::context& context, std::string host,
-             std::string port, HttpClientOptions options = {})
-      : resolver_(ioc), context_(context), host_(std::move(host)),
-        port_(std::move(port)), options_(options) {}
+  HttpClient(
+    net::io_context& ioc,
+    ssl::context& context,
+    std::string host,
+    std::string port,
+    HttpClientOptions options = {})
+  : resolver_(ioc), context_(context), host_(std::move(host)), port_(std::move(port)),
+    options_(options) {}
 
-  HttpResponse get(const std::string& target,
-                   const std::map<std::string, std::string>& headers = {}) {
+  HttpResponse get(
+    const std::string& target,
+    const std::map<std::string, std::string>& headers = {}) {
     return request(http::verb::get, target, "", headers);
   }
 
-  HttpResponse post(const std::string& target, const std::string& body,
-                    const std::map<std::string, std::string>& headers = {}) {
+  HttpResponse post(
+    const std::string& target,
+    const std::string& body,
+    const std::map<std::string, std::string>& headers = {}) {
     return request(http::verb::post, target, body, headers);
   }
 
-  HttpResponse request(http::verb method, const std::string& target,
-                       const std::string& body = {},
-                       const std::map<std::string, std::string>& headers = {}) {
-    for (int attempt = 0; ; ++attempt) {
+  HttpResponse request(
+    http::verb method,
+    const std::string& target,
+    const std::string& body = {},
+    const std::map<std::string, std::string>& headers = {}) {
+    for (int attempt = 0;; ++attempt) {
       try {
         ensure_connected();
         http::request<http::string_body> request_value{method, target, 11};
@@ -152,8 +166,8 @@ private:
     if (stream_ && beast::get_lowest_layer(*stream_).socket().is_open()) {
       return;
     }
-    stream_ = std::make_unique<beast::ssl_stream<beast::tcp_stream>>(
-      resolver_.get_executor(), context_);
+    stream_ =
+      std::make_unique<beast::ssl_stream<beast::tcp_stream>>(resolver_.get_executor(), context_);
     if (!SSL_set_tlsext_host_name(stream_->native_handle(), host_.c_str())) {
       throw beast::system_error(
         static_cast<int>(::ERR_get_error()), net::error::get_ssl_category());
@@ -182,23 +196,28 @@ class AsyncHttpClient : public std::enable_shared_from_this<AsyncHttpClient> {
 public:
   using CompletionHandler = net::any_completion_handler<void(Result<HttpResponse>)>;
 
-  AsyncHttpClient(net::any_io_executor executor, ssl::context& context,
-                  std::string host, std::string port,
-                  HttpClientOptions options = {})
-      : strand_(net::make_strand(std::move(executor))), resolver_(strand_),
-        resolve_timer_(strand_), context_(context), host_(std::move(host)),
-        port_(std::move(port)), options_(options) {}
+  AsyncHttpClient(
+    net::any_io_executor executor,
+    ssl::context& context,
+    std::string host,
+    std::string port,
+    HttpClientOptions options = {})
+  : strand_(net::make_strand(std::move(executor))), resolver_(strand_), resolve_timer_(strand_),
+    context_(context), host_(std::move(host)), port_(std::move(port)), options_(options) {}
 
   template <typename CompletionToken>
-  auto async_request(HttpRequest request_value, CompletionToken&& token) {
+  auto async_request(
+    HttpRequest request_value,
+    CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<HttpResponse>)>(
-      [self = shared_from_this(), request_value = std::move(request_value)](auto&& handler) mutable {
+      [self = shared_from_this(), request_value = std::move(request_value)](
+        auto&& handler) mutable {
         Pending pending(
           std::move(request_value), CompletionHandler(std::forward<decltype(handler)>(handler)));
-        net::post(self->strand_, [self, pending = std::move(pending)]() mutable {
-          self->enqueue(std::move(pending));
-        });
-      }, token);
+        net::post(self->strand_,
+          [self, pending = std::move(pending)]() mutable { self->enqueue(std::move(pending)); });
+      },
+      token);
   }
 
   void close() {
@@ -208,7 +227,7 @@ public:
       self->resolve_timer_.cancel();
       self->disconnect();
       BrokerError error;
-      error.category = ErrorCategory::cancelled;
+      error.category = ErrorCategory::CANCELLED;
       error.broker_code = "close";
       error.message = "HTTP client closed";
       while (!self->queue_.empty()) {
@@ -221,18 +240,20 @@ public:
 
 private:
   enum class State {
-    disconnected,
-    resolving,
-    connecting,
-    handshaking,
-    ready,
-    writing,
-    reading,
+    DISCONNECTED,
+    RESOLVING,
+    CONNECTING,
+    HANDSHAKING,
+    READY,
+    WRITING,
+    READING,
   };
 
   struct Pending {
-    Pending(HttpRequest request_value, CompletionHandler completion)
-        : request(std::move(request_value)), handler(std::move(completion)) {}
+    Pending(
+      HttpRequest request_value,
+      CompletionHandler completion)
+    : request(std::move(request_value)), handler(std::move(completion)) {}
     HttpRequest request;
     CompletionHandler handler;
     bool retried{false};
@@ -247,17 +268,18 @@ private:
   std::string host_;
   std::string port_;
   HttpClientOptions options_;
-  State state_{State::disconnected};
+  State state_{State::DISCONNECTED};
   bool stopped_{false};
   bool resolve_timed_out_{false};
   std::deque<Pending> queue_;
   std::optional<http::request<http::string_body>> active_request_;
   std::optional<http::response_parser<http::string_body>> parser_;
 
-  void enqueue(Pending pending) {
+  void enqueue(
+    Pending pending) {
     if (stopped_) {
       BrokerError error;
-      error.category = ErrorCategory::cancelled;
+      error.category = ErrorCategory::CANCELLED;
       error.broker_code = "enqueue";
       error.message = "HTTP client is closed";
       complete(std::move(pending.handler), Result<HttpResponse>(std::move(error)));
@@ -265,7 +287,7 @@ private:
     }
     if (queue_.size() >= options_.queue_limit) {
       BrokerError error;
-      error.category = ErrorCategory::transport;
+      error.category = ErrorCategory::TRANSPORT;
       error.broker_code = "queue_full";
       error.message = "HTTP request queue limit exceeded";
       complete(std::move(pending.handler), Result<HttpResponse>(std::move(error)));
@@ -279,27 +301,26 @@ private:
     if (stopped_ || queue_.empty()) {
       return;
     }
-    if (state_ == State::disconnected) {
+    if (state_ == State::DISCONNECTED) {
       start_resolve();
-    } else if (state_ == State::ready) {
+    } else if (state_ == State::READY) {
       start_write();
     }
   }
 
   void start_resolve() {
     stream_ = std::make_unique<beast::ssl_stream<beast::tcp_stream>>(strand_, context_);
-    state_ = State::resolving;
+    state_ = State::RESOLVING;
     resolve_timed_out_ = false;
     resolve_timer_.expires_after(options_.timeout);
     resolve_timer_.async_wait([self = shared_from_this()](beast::error_code ec) {
-      if (!ec && self->state_ == State::resolving) {
+      if (!ec && self->state_ == State::RESOLVING) {
         self->resolve_timed_out_ = true;
         self->resolver_.cancel();
       }
     });
     resolver_.async_resolve(host_, port_,
-      [self = shared_from_this()](beast::error_code ec,
-                                  tcp::resolver::results_type endpoints) {
+      [self = shared_from_this()](beast::error_code ec, tcp::resolver::results_type endpoints) {
         self->resolve_timer_.cancel();
         if (ec) {
           if (self->resolve_timed_out_) {
@@ -308,37 +329,36 @@ private:
           self->fail("resolve", ec);
           return;
         }
-        self->state_ = State::connecting;
+        self->state_ = State::CONNECTING;
         beast::get_lowest_layer(*self->stream_).expires_after(self->options_.timeout);
-        beast::get_lowest_layer(*self->stream_).async_connect(
-          endpoints,
-          [self](beast::error_code connect_ec,
-                 tcp::resolver::results_type::endpoint_type) {
-            if (connect_ec) {
-              self->fail("connect", connect_ec);
-              return;
-            }
-            self->start_handshake();
-          });
+        beast::get_lowest_layer(*self->stream_)
+          .async_connect(endpoints,
+            [self](beast::error_code connect_ec, tcp::resolver::results_type::endpoint_type) {
+              if (connect_ec) {
+                self->fail("connect", connect_ec);
+                return;
+              }
+              self->start_handshake();
+            });
       });
   }
 
   void start_handshake() {
     if (!SSL_set_tlsext_host_name(stream_->native_handle(), host_.c_str())) {
-      fail("sni", beast::error_code(
-        static_cast<int>(::ERR_get_error()), net::error::get_ssl_category()));
+      fail("sni",
+        beast::error_code(static_cast<int>(::ERR_get_error()), net::error::get_ssl_category()));
       return;
     }
     stream_->set_verify_callback(ssl::host_name_verification(host_));
-    state_ = State::handshaking;
+    state_ = State::HANDSHAKING;
     beast::get_lowest_layer(*stream_).expires_after(options_.timeout);
-    stream_->async_handshake(ssl::stream_base::client,
-      [self = shared_from_this()](beast::error_code ec) {
+    stream_->async_handshake(
+      ssl::stream_base::client, [self = shared_from_this()](beast::error_code ec) {
         if (ec) {
           self->fail("tls_handshake", ec);
           return;
         }
-        self->state_ = State::ready;
+        self->state_ = State::READY;
         self->pump();
       });
   }
@@ -357,10 +377,10 @@ private:
       active_request_->prepare_payload();
     }
 
-    state_ = State::writing;
+    state_ = State::WRITING;
     beast::get_lowest_layer(*stream_).expires_after(options_.timeout);
-    http::async_write(*stream_, *active_request_,
-      [self = shared_from_this()](beast::error_code ec, std::size_t) {
+    http::async_write(
+      *stream_, *active_request_, [self = shared_from_this()](beast::error_code ec, std::size_t) {
         if (ec) {
           self->fail("write", ec);
           return;
@@ -372,10 +392,10 @@ private:
   void start_read() {
     parser_.emplace();
     parser_->body_limit(options_.body_limit);
-    state_ = State::reading;
+    state_ = State::READING;
     beast::get_lowest_layer(*stream_).expires_after(options_.timeout);
-    http::async_read(*stream_, buffer_, *parser_,
-      [self = shared_from_this()](beast::error_code ec, std::size_t) {
+    http::async_read(
+      *stream_, buffer_, *parser_, [self = shared_from_this()](beast::error_code ec, std::size_t) {
         if (ec) {
           self->fail("read", ec);
           return;
@@ -387,17 +407,18 @@ private:
         auto pending = std::move(self->queue_.front());
         self->queue_.pop_front();
         if (keep_alive) {
-          self->state_ = State::ready;
+          self->state_ = State::READY;
         } else {
           self->disconnect();
         }
-        self->complete(std::move(pending.handler),
-                       Result<HttpResponse>(std::move(response)));
+        self->complete(std::move(pending.handler), Result<HttpResponse>(std::move(response)));
         self->pump();
       });
   }
 
-  void fail(const char* stage, beast::error_code ec) {
+  void fail(
+    const char* stage,
+    beast::error_code ec) {
     disconnect();
     if (queue_.empty()) {
       return;
@@ -411,8 +432,7 @@ private:
     }
     auto completed = std::move(pending);
     queue_.pop_front();
-    complete(std::move(completed.handler),
-             Result<HttpResponse>(transport_error(stage, ec)));
+    complete(std::move(completed.handler), Result<HttpResponse>(transport_error(stage, ec)));
     pump();
   }
 
@@ -425,17 +445,18 @@ private:
     buffer_.consume(buffer_.size());
     parser_.reset();
     active_request_.reset();
-    state_ = State::disconnected;
+    state_ = State::DISCONNECTED;
   }
 
   std::string host_header() const { return make_host_header(host_, port_); }
 
-  void complete(CompletionHandler handler, Result<HttpResponse> result) {
+  void complete(
+    CompletionHandler handler,
+    Result<HttpResponse> result) {
     auto executor = net::get_associated_executor(handler, strand_);
-    net::dispatch(executor,
-      [handler = std::move(handler), result = std::move(result)]() mutable {
-        std::move(handler)(std::move(result));
-      });
+    net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
+      std::move(handler)(std::move(result));
+    });
   }
 };
 

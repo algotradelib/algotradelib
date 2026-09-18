@@ -22,7 +22,7 @@ int main() {
 
   std::cout << "env      : " << (cfg.is_demo_ ? "demo (paper)" : "real") << "\n";
   std::cout << "REST     : " << cfg.rest_host() << ":" << cfg.rest_port() << "\n";
-  std::cout << "WS       : " << cfg.ws_host()   << ":" << cfg.ws_port()   << "\n\n";
+  std::cout << "WS       : " << cfg.ws_host() << ":" << cfg.ws_port() << "\n\n";
 
   net::io_context ioc;
   ssl::context ctx(ssl::context::tlsv12_client); // TLS 1.2 or 1.3

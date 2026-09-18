@@ -24,7 +24,7 @@ auto client = std::make_shared<algotradelib::kis::KisClient>(
   ioc.get_executor(), tls, config);
 
 client->async_quote(
-  {algotradelib::Country::kr, algotradelib::Venue::combined, "005930"},
+  {algotradelib::Country::KR, algotradelib::Venue::COMBINED, "005930"},
   [](algotradelib::Result<algotradelib::QuoteSnapshot> result) {
     if (result) {
       std::cout << result.value().last_price.str() << '\n';

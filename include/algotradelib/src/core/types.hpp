@@ -17,23 +17,25 @@
 namespace algotradelib {
 
 enum class Country {
-  kr,
-  us,
+  KR,
+  US,
 };
 
 enum class Venue {
-  unspecified,
-  krx,
-  nxt,
-  combined,
+  UNSPECIFIED,
+  KRX,
+  NXT,
+  COMBINED,
 };
 
 struct InstrumentId {
-  Country country{Country::kr};
-  Venue venue{Venue::combined};
+  Country country{Country::KR};
+  Venue venue{Venue::COMBINED};
   std::string symbol;
 
-  friend bool operator==(const InstrumentId& lhs, const InstrumentId& rhs) {
+  friend bool operator==(
+    const InstrumentId& lhs,
+    const InstrumentId& rhs) {
     return lhs.country == rhs.country && lhs.venue == rhs.venue && lhs.symbol == rhs.symbol;
   }
 };
@@ -42,7 +44,8 @@ class Currency {
 public:
   Currency() : code_{'K', 'R', 'W'} {}
 
-  explicit Currency(std::string_view code) {
+  explicit Currency(
+    std::string_view code) {
     if (code.size() != code_.size()) {
       throw std::invalid_argument("currency code must contain three characters");
     }
@@ -60,7 +63,9 @@ public:
 
   std::string str() const { return std::string(code_.begin(), code_.end()); }
 
-  friend bool operator==(const Currency& lhs, const Currency& rhs) {
+  friend bool operator==(
+    const Currency& lhs,
+    const Currency& rhs) {
     return lhs.code_ == rhs.code_;
   }
 
@@ -71,10 +76,13 @@ private:
 class Decimal64 {
 public:
   Decimal64() = default;
-  Decimal64(std::int64_t coefficient, std::uint8_t scale)
-      : coefficient_(coefficient), scale_(scale) {}
+  Decimal64(
+    std::int64_t coefficient,
+    std::uint8_t scale)
+  : coefficient_(coefficient), scale_(scale) {}
 
-  static Decimal64 parse(std::string_view input) {
+  static Decimal64 parse(
+    std::string_view input) {
     if (input.empty()) {
       throw std::invalid_argument("decimal value is empty");
     }
@@ -93,9 +101,9 @@ public:
     std::uint8_t scale = 0;
     bool decimal_point = false;
     bool has_digit = false;
-    const std::uint64_t limit = negative
-      ? static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1ULL
-      : static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    const std::uint64_t limit =
+      negative ? static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1ULL
+               : static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
 
     for (; index < input.size(); ++index) {
       const char ch = input[index];
@@ -132,7 +140,8 @@ public:
     }
 
     std::int64_t coefficient;
-    if (negative && magnitude == static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1ULL) {
+    if (negative &&
+        magnitude == static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1ULL) {
       coefficient = std::numeric_limits<std::int64_t>::min();
     } else {
       coefficient = static_cast<std::int64_t>(magnitude);
@@ -148,9 +157,8 @@ public:
 
   std::string str() const {
     const bool negative = coefficient_ < 0;
-    std::uint64_t magnitude = negative
-      ? static_cast<std::uint64_t>(-(coefficient_ + 1)) + 1ULL
-      : static_cast<std::uint64_t>(coefficient_);
+    std::uint64_t magnitude = negative ? static_cast<std::uint64_t>(-(coefficient_ + 1)) + 1ULL
+                                       : static_cast<std::uint64_t>(coefficient_);
     std::string digits = std::to_string(magnitude);
     if (scale_ > 0) {
       if (digits.size() <= scale_) {
@@ -164,7 +172,9 @@ public:
     return digits;
   }
 
-  friend bool operator==(const Decimal64& lhs, const Decimal64& rhs) {
+  friend bool operator==(
+    const Decimal64& lhs,
+    const Decimal64& rhs) {
     return lhs.coefficient_ == rhs.coefficient_ && lhs.scale_ == rhs.scale_;
   }
 
@@ -174,17 +184,17 @@ private:
 };
 
 enum class ErrorCategory {
-  cancelled,
-  transport,
-  http,
-  authentication,
-  rate_limit,
-  protocol,
-  invalid_argument,
+  CANCELLED,
+  TRANSPORT,
+  HTTP,
+  AUTHENTICATION,
+  RATE_LIMIT,
+  PROTOCOL,
+  INVALID_ARGUMENT,
 };
 
 struct BrokerError {
-  ErrorCategory category{ErrorCategory::protocol};
+  ErrorCategory category{ErrorCategory::PROTOCOL};
   int http_status{0};
   std::string broker_code;
   std::string request_id;
@@ -195,8 +205,12 @@ struct BrokerError {
 template <typename T>
 class Result {
 public:
-  Result(T value) : value_(std::move(value)) {}
-  Result(BrokerError error) : value_(std::move(error)) {}
+  Result(
+    T value)
+  : value_(std::move(value)) {}
+  Result(
+    BrokerError error)
+  : value_(std::move(error)) {}
 
   bool has_value() const noexcept { return std::holds_alternative<T>(value_); }
   explicit operator bool() const noexcept { return has_value(); }
@@ -219,10 +233,10 @@ struct QuoteSnapshot {
 };
 
 inline std::optional<std::chrono::system_clock::time_point> parse_iso8601_timestamp(
-    std::string_view value) {
+  std::string_view value) {
   int year, month, day, hour, minute, second;
-  if (std::sscanf(std::string(value).c_str(), "%d-%d-%dT%d:%d:%d",
-                  &year, &month, &day, &hour, &minute, &second) != 6) {
+  if (std::sscanf(std::string(value).c_str(), "%d-%d-%dT%d:%d:%d", &year, &month, &day, &hour,
+        &minute, &second) != 6) {
     return std::nullopt;
   }
 
@@ -250,8 +264,8 @@ inline std::optional<std::chrono::system_clock::time_point> parse_iso8601_timest
 
   if (value[timezone_position] != 'Z') {
     int offset_hour, offset_minute;
-    if (std::sscanf(std::string(value.substr(timezone_position + 1)).c_str(), "%d:%d",
-                    &offset_hour, &offset_minute) != 2) {
+    if (std::sscanf(std::string(value.substr(timezone_position + 1)).c_str(), "%d:%d", &offset_hour,
+          &offset_minute) != 2) {
       return std::nullopt;
     }
     const int offset = offset_hour * 3600 + offset_minute * 60;

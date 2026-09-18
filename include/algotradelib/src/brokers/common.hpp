@@ -10,7 +10,8 @@
 
 namespace algotradelib::broker_detail {
 
-inline std::optional<std::chrono::seconds> retry_after(const network::HttpResponse& response) {
+inline std::optional<std::chrono::seconds> retry_after(
+  const network::HttpResponse& response) {
   const auto value = response.base().find("Retry-After");
   if (value == response.base().end()) {
     return std::nullopt;
@@ -22,23 +23,24 @@ inline std::optional<std::chrono::seconds> retry_after(const network::HttpRespon
   }
 }
 
-inline BrokerError http_error(const network::HttpResponse& response) {
+inline BrokerError http_error(
+  const network::HttpResponse& response) {
   BrokerError error;
   error.http_status = response.result_int();
-  error.category = response.result() == http::status::too_many_requests
-    ? ErrorCategory::rate_limit
-    : ErrorCategory::http;
+  error.category = response.result() == http::status::too_many_requests ? ErrorCategory::RATE_LIMIT
+                                                                        : ErrorCategory::HTTP;
   error.message = response.body();
   error.retry_after = retry_after(response);
   return error;
 }
 
-inline std::optional<json::object> parse_object(std::string_view body,
-                                                BrokerError& error) {
+inline std::optional<json::object> parse_object(
+  std::string_view body,
+  BrokerError& error) {
   boost::system::error_code ec;
   auto value = json::parse(body, ec);
   if (ec || !value.is_object()) {
-    error.category = ErrorCategory::protocol;
+    error.category = ErrorCategory::PROTOCOL;
     error.broker_code = "invalid_json";
     error.message = ec ? ec.message() : "JSON response is not an object";
     return std::nullopt;
@@ -46,7 +48,9 @@ inline std::optional<json::object> parse_object(std::string_view body,
   return value.as_object();
 }
 
-inline std::string json_string(const json::object& object, std::string_view key) {
+inline std::string json_string(
+  const json::object& object,
+  std::string_view key) {
   const auto value = object.if_contains(key);
   if (!value || !value->is_string()) {
     throw std::runtime_error("missing string field: " + std::string(key));
@@ -54,10 +58,12 @@ inline std::string json_string(const json::object& object, std::string_view key)
   return std::string(value->as_string());
 }
 
-inline BrokerError toss_error(const json::object& document, int status = 0) {
+inline BrokerError toss_error(
+  const json::object& document,
+  int status = 0) {
   BrokerError result;
   result.http_status = status;
-  result.category = status == 429 ? ErrorCategory::rate_limit : ErrorCategory::protocol;
+  result.category = status == 429 ? ErrorCategory::RATE_LIMIT : ErrorCategory::PROTOCOL;
   const auto error = document.if_contains("error");
   if (!error || !error->is_object()) {
     result.message = "Toss response has no error object";
@@ -76,14 +82,14 @@ inline BrokerError toss_error(const json::object& document, int status = 0) {
   return result;
 }
 
-inline bool valid_symbol(std::string_view symbol) {
+inline bool valid_symbol(
+  std::string_view symbol) {
   if (symbol.empty()) {
     return false;
   }
   for (const char ch : symbol) {
-    const bool valid = (ch >= '0' && ch <= '9') ||
-      (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
-      ch == '.' || ch == '-';
+    const bool valid = (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') ||
+                       (ch >= 'a' && ch <= 'z') || ch == '.' || ch == '-';
     if (!valid) {
       return false;
     }
