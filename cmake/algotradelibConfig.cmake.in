@@ -2,7 +2,7 @@
 
 include(CMakeFindDependencyMacro)
 
-find_dependency(Boost 1.87.0 COMPONENTS json)
+find_dependency(Boost 1.87.0 CONFIG COMPONENTS json)
 find_dependency(OpenSSL 3.6.2)
 
 include("${CMAKE_CURRENT_LIST_DIR}/algotradelibTargets.cmake")
