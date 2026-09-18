@@ -24,15 +24,15 @@ int main() {
   std::cout << "REST     : " << cfg.rest_host() << ":" << cfg.rest_port() << "\n";
   std::cout << "WS       : " << cfg.ws_host()   << ":" << cfg.ws_port()   << "\n\n";
 
-	net::io_context ioc;
-	ssl::context ctx(ssl::context::tlsv12_client); // TLS 1.2 or 1.3
-	ctx.set_default_verify_paths();
-	ctx.set_verify_mode(ssl::verify_peer);
+  net::io_context ioc;
+  ssl::context ctx(ssl::context::tlsv12_client); // TLS 1.2 or 1.3
+  ctx.set_default_verify_paths();
+  ctx.set_verify_mode(ssl::verify_peer);
   algotradelib::kis::KisAuth auth(ioc, ctx, cfg);
 
   std::cout << "Fetching access token ...";
   try {
-		(void)auth.accessToken();
+    (void)auth.accessToken();
     std::cout << " OK" << "\n\n";
   } catch (const std::exception& e) {
     std::cerr << "  FAIL: " << e.what() << "\n\n";
@@ -41,7 +41,7 @@ int main() {
 
   std::cout << "Fetching WS approval key ...";
   try {
-		(void)auth.accessWebsocket();
+    (void)auth.accessWebsocket();
     std::cout << " OK" << "\n\n";
   } catch (const std::exception& e) {
     std::cerr << "  FAIL: " << e.what() << "\n\n";

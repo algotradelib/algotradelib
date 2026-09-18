@@ -18,16 +18,16 @@ int main() {
     std::cerr << "[error] " << e.what() << "\n";
     return 1;
   }
-	
-	net::io_context ioc;
-	ssl::context ctx(ssl::context::tlsv12_client); // TLS 1.2 or 1.3
-	ctx.set_default_verify_paths();
-	ctx.set_verify_mode(ssl::verify_peer);
+
+  net::io_context ioc;
+  ssl::context ctx(ssl::context::tlsv12_client); // TLS 1.2 or 1.3
+  ctx.set_default_verify_paths();
+  ctx.set_verify_mode(ssl::verify_peer);
   algotradelib::tossinvest::TossAuth auth(ioc, ctx, cfg);
 
   std::cout << "Fetching access token ...";
   try {
-		(void)auth.accessToken();
+    (void)auth.accessToken();
     std::cout << " OK" << "\n\n";
   } catch (const std::exception& e) {
     std::cerr << "  FAIL: " << e.what() << "\n\n";
