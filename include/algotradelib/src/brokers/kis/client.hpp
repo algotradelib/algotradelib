@@ -25,7 +25,7 @@ public:
   using QuoteHandler = net::any_completion_handler<void(Result<QuoteSnapshot>)>;
 
   /** Internal completion handler for a shared access-token refresh. */
-  using TokenHandler = net::any_completion_handler<void(Result<std::string>)>;
+  using TokenHandler = net::any_completion_handler<void(std::optional<BrokerError>)>;
 
   /**
    * Constructs a client for one KIS environment.
@@ -94,16 +94,14 @@ private:
       TokenHandler(
         [self = shared_from_this(),
           instrument = std::move(instrument),
-          completion = std::move(completion)](Result<std::string> token_result) mutable {
-          if (!token_result) {
+          completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+          if (token_error) {
             self->complete(
-              std::move(completion), Result<QuoteSnapshot>(std::move(token_result.error()))
+              std::move(completion), Result<QuoteSnapshot>(std::move(*token_error))
             );
             return;
           }
-          self->request_quote(
-            std::move(instrument), std::move(token_result.value()), std::move(completion)
-          );
+          self->request_quote(std::move(instrument), std::move(completion));
         }
       )
     );
@@ -111,7 +109,7 @@ private:
 
   void ensure_token(TokenHandler handler) {
     if (token_.valid()) {
-      std::move(handler)(Result<std::string>(token_.access_token_));
+      std::move(handler)(std::nullopt);
       return;
     }
     token_waiters_.push_back(std::move(handler));
@@ -165,14 +163,14 @@ private:
     token_waiters_.clear();
     for (auto& waiter : waiters) {
       if (failure) {
-        std::move(waiter)(Result<std::string>(*failure));
+        std::move(waiter)(*failure);
       } else {
-        std::move(waiter)(Result<std::string>(token_.access_token_));
+        std::move(waiter)(std::nullopt);
       }
     }
   }
 
-  void request_quote(InstrumentId instrument, std::string access_token, QuoteHandler completion) {
+  void request_quote(InstrumentId instrument, QuoteHandler completion) {
     const char* market = "UN";
     if (instrument.venue == Venue::KRX) {
       market = "J";
@@ -187,7 +185,7 @@ private:
       "?FID_COND_MRKT_DIV_CODE=" +
       std::string(market) + "&FID_INPUT_ISCD=" + instrument.symbol;
     request.headers = {
-      {"authorization", "Bearer " + access_token},
+      {"authorization", "Bearer " + token_.access_token_},
       {"appkey", config_.key()},
       {"appsecret", config_.secret()},
       {"tr_id", "FHKST01010100"},

@@ -25,7 +25,7 @@ public:
   using QuoteHandler = net::any_completion_handler<void(Result<QuoteSnapshot>)>;
 
   /** Internal completion handler for a shared access-token refresh. */
-  using TokenHandler = net::any_completion_handler<void(Result<std::string>)>;
+  using TokenHandler = net::any_completion_handler<void(std::optional<BrokerError>)>;
 
   /**
    * Constructs a client and takes value ownership of its credentials.
@@ -86,16 +86,14 @@ private:
       TokenHandler(
         [self = shared_from_this(),
           instrument = std::move(instrument),
-          completion = std::move(completion)](Result<std::string> token_result) mutable {
-          if (!token_result) {
+          completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+          if (token_error) {
             self->complete(
-              std::move(completion), Result<QuoteSnapshot>(std::move(token_result.error()))
+              std::move(completion), Result<QuoteSnapshot>(std::move(*token_error))
             );
             return;
           }
-          self->request_quote(
-            std::move(instrument), std::move(token_result.value()), std::move(completion)
-          );
+          self->request_quote(std::move(instrument), std::move(completion));
         }
       )
     );
@@ -103,7 +101,7 @@ private:
 
   void ensure_token(TokenHandler handler) {
     if (token_.valid()) {
-      std::move(handler)(Result<std::string>(token_.access_token_));
+      std::move(handler)(std::nullopt);
       return;
     }
     token_waiters_.push_back(std::move(handler));
@@ -155,18 +153,18 @@ private:
     token_waiters_.clear();
     for (auto& waiter : waiters) {
       if (failure) {
-        std::move(waiter)(Result<std::string>(*failure));
+        std::move(waiter)(*failure);
       } else {
-        std::move(waiter)(Result<std::string>(token_.access_token_));
+        std::move(waiter)(std::nullopt);
       }
     }
   }
 
-  void request_quote(InstrumentId instrument, std::string access_token, QuoteHandler completion) {
+  void request_quote(InstrumentId instrument, QuoteHandler completion) {
     network::HttpRequest request;
     request.method = http::verb::get;
     request.target = "/api/v1/prices?symbols=" + instrument.symbol;
-    request.headers.emplace_back("authorization", "Bearer " + access_token);
+    request.headers.emplace_back("authorization", "Bearer " + token_.access_token_);
     http_->async_request(
       std::move(request),
       [self = shared_from_this(),
