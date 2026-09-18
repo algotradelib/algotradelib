@@ -34,8 +34,10 @@ using tcp = net::ip::tcp;
 
 namespace network {
 
+/** HTTP response type returned by the transport clients. */
 using HttpResponse = http::response<http::string_body>;
 
+/** Value-owned HTTP request accepted by the asynchronous transport. */
 struct HttpRequest {
   http::verb method{http::verb::get};
   std::string target{"/"};
@@ -44,29 +46,34 @@ struct HttpRequest {
   int version{11};
 };
 
+/** Resource and deadline limits for HTTP transports. */
 struct HttpClientOptions {
   std::chrono::seconds timeout{30};
   std::size_t body_limit{8 * 1024 * 1024};
   std::size_t queue_limit{1024};
 };
 
+/** Converts a Boost transport error into a broker-neutral error. */
 inline BrokerError transport_error(std::string stage, beast::error_code ec) {
   BrokerError error;
   error.category = ec == net::error::operation_aborted ?
-		ErrorCategory::CANCELLED :
-		ErrorCategory::TRANSPORT;
+    ErrorCategory::CANCELLED :
+    ErrorCategory::TRANSPORT;
   error.broker_code = std::move(stage);
   error.message = ec.message();
   return error;
 }
 
+/** Builds an HTTP Host header, omitting the default TLS port. */
 inline std::string make_host_header(const std::string& host, const std::string& port) {
   return port == "443" ? host : host + ":" + port;
 }
 
-// Shuts the SSL layer down (best-effort close_notify, bounded by `timeout`
-// so an unresponsive peer cannot stall the caller) before hard-closing the
-// underlying TCP socket.
+/**
+ * Performs a bounded best-effort TLS shutdown before closing the TCP socket.
+ *
+ * This helper is used only by the explicitly blocking client.
+ */
 inline void shutdown_ssl_stream(beast::ssl_stream<beast::tcp_stream>& stream, std::chrono::seconds timeout) noexcept {
   beast::error_code ignored;
   beast::get_lowest_layer(stream).expires_after(timeout);
@@ -75,6 +82,7 @@ inline void shutdown_ssl_stream(beast::ssl_stream<beast::tcp_stream>& stream, st
   beast::get_lowest_layer(stream).socket().close(ignored);
 }
 
+/** Cancels and closes a TLS stream without blocking for close notification. */
 inline void close_ssl_stream(beast::ssl_stream<beast::tcp_stream>& stream) noexcept {
   beast::error_code ignored;
   beast::get_lowest_layer(stream).cancel();
@@ -82,8 +90,10 @@ inline void close_ssl_stream(beast::ssl_stream<beast::tcp_stream>& stream) noexc
   beast::get_lowest_layer(stream).socket().close(ignored);
 }
 
+/** Persistent blocking HTTP/1.1 TLS client for synchronous compatibility APIs. */
 class HttpClient {
 public:
+  /** Constructs a client for one TLS origin. */
   HttpClient(
     net::io_context& ioc,
     ssl::context& context,
@@ -94,6 +104,7 @@ public:
   : resolver_(ioc), context_(context), host_(std::move(host)), port_(std::move(port)),
     options_(options) {}
 
+  /** Performs a blocking GET request. */
   HttpResponse get(
     const std::string& target,
     const std::map<std::string, std::string>& headers = {}
@@ -101,6 +112,7 @@ public:
     return request(http::verb::get, target, "", headers);
   }
 
+  /** Performs a blocking POST request. */
   HttpResponse post(
     const std::string& target,
     const std::string& body,
@@ -109,6 +121,12 @@ public:
     return request(http::verb::post, target, body, headers);
   }
 
+  /**
+   * Performs a blocking request and retries a failed GET at most once.
+   *
+   * Network operations use error-code overloads. A terminal transport error is
+   * converted to `beast::system_error` only after retry policy is resolved.
+   */
   HttpResponse request(
     http::verb method,
     const std::string& target,
@@ -116,8 +134,9 @@ public:
     const std::map<std::string, std::string>& headers = {}
   ) {
     for (int attempt = 0;; ++attempt) {
-      try {
-        ensure_connected();
+      beast::error_code error;
+      ensure_connected(error);
+      if (!error) {
         http::request<http::string_body> request_value{method, target, 11};
         request_value.set(http::field::host, host_header());
         request_value.set(http::field::user_agent, "algotradelib");
@@ -131,24 +150,31 @@ public:
         }
 
         beast::get_lowest_layer(*stream_).expires_after(options_.timeout);
-        http::write(*stream_, request_value);
-        http::response_parser<http::string_body> parser;
+        http::write(*stream_, request_value, error);
+      }
+
+      http::response_parser<http::string_body> parser;
+      if (!error) {
         parser.body_limit(options_.body_limit);
-        http::read(*stream_, buffer_, parser);
+        http::read(*stream_, buffer_, parser, error);
+      }
+
+      if (!error) {
         auto response = parser.release();
         if (!response.keep_alive() || response.need_eof()) {
           disconnect();
         }
         return response;
-      } catch (const beast::system_error&) {
-        disconnect();
-        if (method != http::verb::get || attempt > 0) {
-          throw;
-        }
+      }
+
+      disconnect();
+      if (method != http::verb::get || attempt > 0) {
+        throw beast::system_error(error);
       }
     }
   }
 
+  /** Closes the persistent connection. */
   void close() { disconnect(); }
 
 private:
@@ -160,22 +186,29 @@ private:
   std::unique_ptr<beast::ssl_stream<beast::tcp_stream>> stream_;
   beast::flat_buffer buffer_;
 
-  void ensure_connected() {
+  void ensure_connected(beast::error_code& error) {
     if (stream_ && beast::get_lowest_layer(*stream_).socket().is_open()) {
       return;
     }
     stream_ = std::make_unique<beast::ssl_stream<beast::tcp_stream>>(resolver_.get_executor(), context_);
     if (!SSL_set_tlsext_host_name(stream_->native_handle(), host_.c_str())) {
-      throw beast::system_error(
+      error = beast::error_code(
         static_cast<int>(::ERR_get_error()), net::error::get_ssl_category()
       );
+      return;
     }
     stream_->set_verify_callback(ssl::host_name_verification(host_));
-    const auto endpoints = resolver_.resolve(host_, port_);
+    const auto endpoints = resolver_.resolve(host_, port_, error);
+    if (error) {
+      return;
+    }
     beast::get_lowest_layer(*stream_).expires_after(options_.timeout);
-    beast::get_lowest_layer(*stream_).connect(endpoints);
+    beast::get_lowest_layer(*stream_).connect(endpoints, error);
+    if (error) {
+      return;
+    }
     beast::get_lowest_layer(*stream_).expires_after(options_.timeout);
-    stream_->handshake(ssl::stream_base::client);
+    stream_->handshake(ssl::stream_base::client, error);
   }
 
   std::string host_header() const { return make_host_header(host_, port_); }
@@ -190,10 +223,19 @@ private:
   }
 };
 
+/**
+ * Persistent asynchronous HTTP/1.1 TLS client for one origin.
+ *
+ * Requests are serialized on a strand because HTTP pipelining is not used.
+ * Idempotent GET requests may be replayed once after transport failure; POST
+ * requests are never replayed automatically.
+ */
 class AsyncHttpClient : public std::enable_shared_from_this<AsyncHttpClient> {
 public:
+  /** Type-erased one-shot HTTP completion handler. */
   using CompletionHandler = net::any_completion_handler<void(Result<HttpResponse>)>;
 
+  /** Constructs a client for one TLS origin. */
   AsyncHttpClient(
     net::any_io_executor executor,
     ssl::context& context,
@@ -204,6 +246,7 @@ public:
   : strand_(net::make_strand(std::move(executor))), resolver_(strand_), resolve_timer_(strand_),
     context_(context), host_(std::move(host)), port_(std::move(port)), options_(options) {}
 
+  /** Initiates a queued request and completes with a response or error. */
   template <typename CompletionToken>
   auto async_request(HttpRequest request_value, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<HttpResponse>)>(
@@ -220,6 +263,7 @@ public:
     );
   }
 
+  /** Cancels transport work and completes queued requests as cancelled. */
   void close() {
     net::post(strand_, [self = shared_from_this()] {
       self->stopped_ = true;
@@ -254,7 +298,7 @@ private:
     CompletionHandler handler;
     bool retried{false};
 
-		Pending(HttpRequest request_value, CompletionHandler completion)
+    Pending(HttpRequest request_value, CompletionHandler completion)
     : request(std::move(request_value)), handler(std::move(completion)) {}
   };
 

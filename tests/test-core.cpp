@@ -264,6 +264,39 @@ TEST_CASE(
 }
 
 TEST_CASE(
+  "Blocking HTTP retries GET once without exception-driven control flow",
+  "[http][tls][blocking][retry]"
+) {
+  SECTION("GET is retried after a dropped response") {
+    test::LocalHttpsServer server;
+    net::io_context ioc;
+    ssl::context context(ssl::context::tls_client);
+    test::trustLocalhostCertificate(context);
+    network::HttpClient client(ioc, context, "localhost", server.port());
+
+    const auto response = client.get("/drop-get-once");
+    REQUIRE(response.body() == "/drop-get-once");
+    REQUIRE(server.requestCount("/drop-get-once") == 2);
+    REQUIRE(server.connectionCount() == 2);
+  }
+
+  SECTION("POST reports the first dropped response") {
+    test::LocalHttpsServer server;
+    net::io_context ioc;
+    ssl::context context(ssl::context::tls_client);
+    test::trustLocalhostCertificate(context);
+    network::HttpClient client(ioc, context, "localhost", server.port());
+
+    REQUIRE_THROWS_AS(
+      client.post("/drop-post", "order-like-payload"),
+      beast::system_error
+    );
+    REQUIRE(server.requestCount("/drop-post") == 1);
+    REQUIRE(server.connectionCount() == 1);
+  }
+}
+
+TEST_CASE(
   "Async HTTP enforces the configured response body limit",
   "[http][tls][limits]"
 ) {
