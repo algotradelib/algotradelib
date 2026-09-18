@@ -39,7 +39,7 @@ public:
 
   std::string to_form_urlencoded_body() const {
     return "grant_type=client_credentials&client_id=" + form_encode(key_) +
-           "&client_secret=" + form_encode(secret_);
+      "&client_secret=" + form_encode(secret_);
   }
 
 protected:
@@ -53,9 +53,11 @@ private:
     std::string result;
     result.reserve(value.size());
     for (const unsigned char ch : value) {
-      const bool unreserved = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
-                              (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' || ch == '_' ||
-                              ch == '~';
+      const bool unreserved =
+        (ch >= 'A' && ch <= 'Z') ||
+        (ch >= 'a' && ch <= 'z') ||
+        (ch >= '0' && ch <= '9') ||
+        ch == '-' || ch == '.' || ch == '_' || ch == '~';
       if (unreserved) {
         result.push_back(static_cast<char>(ch));
       } else {

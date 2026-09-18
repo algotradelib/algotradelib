@@ -27,8 +27,9 @@ inline BrokerError http_error(
   const network::HttpResponse& response) {
   BrokerError error;
   error.http_status = response.result_int();
-  error.category = response.result() == http::status::too_many_requests ? ErrorCategory::RATE_LIMIT
-                                                                        : ErrorCategory::HTTP;
+  error.category = response.result() == http::status::too_many_requests ?
+    ErrorCategory::RATE_LIMIT :
+    ErrorCategory::HTTP;
   error.message = response.body();
   error.retry_after = retry_after(response);
   return error;
@@ -88,8 +89,11 @@ inline bool valid_symbol(
     return false;
   }
   for (const char ch : symbol) {
-    const bool valid = (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') ||
-                       (ch >= 'a' && ch <= 'z') || ch == '.' || ch == '-';
+    const bool valid =
+      (ch >= '0' && ch <= '9') ||
+      (ch >= 'A' && ch <= 'Z') ||
+      (ch >= 'a' && ch <= 'z') ||
+      ch == '.' || ch == '-';
     if (!valid) {
       return false;
     }

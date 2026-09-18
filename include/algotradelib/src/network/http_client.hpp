@@ -54,8 +54,9 @@ inline BrokerError transport_error(
   std::string stage,
   beast::error_code ec) {
   BrokerError error;
-  error.category =
-    ec == net::error::operation_aborted ? ErrorCategory::CANCELLED : ErrorCategory::TRANSPORT;
+  error.category = ec == net::error::operation_aborted ?
+    ErrorCategory::CANCELLED :
+    ErrorCategory::TRANSPORT;
   error.broker_code = std::move(stage);
   error.message = ec.message();
   return error;
@@ -425,7 +426,7 @@ private:
     }
     auto& pending = queue_.front();
     if (pending.request.method == http::verb::get && !pending.retried &&
-        ec != net::error::operation_aborted) {
+      ec != net::error::operation_aborted) {
       pending.retried = true;
       pump();
       return;

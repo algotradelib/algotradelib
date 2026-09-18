@@ -185,7 +185,7 @@ private:
     try {
       const auto payload = document->if_contains("result");
       if (!payload || !payload->is_array() || payload->as_array().empty() ||
-          !payload->as_array().front().is_object()) {
+        !payload->as_array().front().is_object()) {
         throw std::runtime_error("missing non-empty result array");
       }
       const auto& output = payload->as_array().front().as_object();

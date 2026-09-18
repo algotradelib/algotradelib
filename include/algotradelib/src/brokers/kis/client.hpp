@@ -162,9 +162,10 @@ private:
 
     network::HttpRequest request;
     request.method = http::verb::get;
-    request.target = "/uapi/domestic-stock/v1/quotations/inquire-price"
-                     "?FID_COND_MRKT_DIV_CODE=" +
-                     std::string(market) + "&FID_INPUT_ISCD=" + instrument.symbol;
+    request.target =
+      "/uapi/domestic-stock/v1/quotations/inquire-price"
+      "?FID_COND_MRKT_DIV_CODE=" +
+      std::string(market) + "&FID_INPUT_ISCD=" + instrument.symbol;
     request.headers = {
       {"authorization", "Bearer " + access_token},
       {"appkey", config_.key()},

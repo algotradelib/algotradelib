@@ -53,8 +53,9 @@ TEST_CASE(
   REQUIRE(Decimal64::parse("72000") == Decimal64(72000, 0));
   REQUIRE(Decimal64::parse("185.700") == Decimal64(1857, 1));
   REQUIRE(Decimal64::parse("-0.050") == Decimal64(-5, 2));
-  REQUIRE(Decimal64::parse("-9223372036854775808").coefficient() ==
-          std::numeric_limits<std::int64_t>::min());
+  REQUIRE(
+    Decimal64::parse("-9223372036854775808").coefficient() ==
+    std::numeric_limits<std::int64_t>::min());
   REQUIRE(Decimal64::parse("000.000").str() == "0");
   REQUIRE_THROWS_AS(Decimal64::parse("9223372036854775808"), std::out_of_range);
 }
@@ -75,8 +76,9 @@ TEST_CASE(
   "[auth][encoding]") {
   TestCredentials credentials;
   credentials.set("client id", "a+b&c");
-  REQUIRE(credentials.to_form_urlencoded_body() ==
-          "grant_type=client_credentials&client_id=client%20id&client_secret=a%2Bb%26c");
+  REQUIRE(
+    credentials.to_form_urlencoded_body() ==
+    "grant_type=client_credentials&client_id=client%20id&client_secret=a%2Bb%26c");
   const auto document = json::parse(credentials.to_jsonbody()).as_object();
   REQUIRE(document.at("key").as_string() == "client id");
   REQUIRE(document.at("secret").as_string() == "a+b&c");

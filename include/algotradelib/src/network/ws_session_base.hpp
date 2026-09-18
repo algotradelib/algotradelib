@@ -286,10 +286,10 @@ private:
     ++reconnect_attempt_;
     const auto base_delay = std::chrono::duration_cast<std::chrono::milliseconds>(delay);
     const auto jitter_window = base_delay / 5;
-    const auto jitter = jitter_window.count() <= 0
-                          ? std::chrono::milliseconds(0)
-                          : std::chrono::milliseconds(std::uniform_int_distribution<std::int64_t>(
-                              0, jitter_window.count())(reconnect_rng_));
+    const auto jitter = jitter_window.count() <= 0 ?
+      std::chrono::milliseconds(0) :
+      std::chrono::milliseconds(std::uniform_int_distribution<std::int64_t>(
+        0, jitter_window.count())(reconnect_rng_));
     reconnect_timer_.expires_after(base_delay + jitter);
     reconnect_timer_.async_wait([self = shared_derived()](beast::error_code error) {
       if (!error) {

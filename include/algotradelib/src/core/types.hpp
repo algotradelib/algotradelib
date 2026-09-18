@@ -101,9 +101,9 @@ public:
     std::uint8_t scale = 0;
     bool decimal_point = false;
     bool has_digit = false;
-    const std::uint64_t limit =
-      negative ? static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1ULL
-               : static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    const std::uint64_t limit = negative ?
+      static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1ULL :
+      static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
 
     for (; index < input.size(); ++index) {
       const char ch = input[index];
@@ -141,7 +141,7 @@ public:
 
     std::int64_t coefficient;
     if (negative &&
-        magnitude == static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1ULL) {
+      magnitude == static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1ULL) {
       coefficient = std::numeric_limits<std::int64_t>::min();
     } else {
       coefficient = static_cast<std::int64_t>(magnitude);
@@ -157,8 +157,9 @@ public:
 
   std::string str() const {
     const bool negative = coefficient_ < 0;
-    std::uint64_t magnitude = negative ? static_cast<std::uint64_t>(-(coefficient_ + 1)) + 1ULL
-                                       : static_cast<std::uint64_t>(coefficient_);
+    std::uint64_t magnitude = negative ?
+      static_cast<std::uint64_t>(-(coefficient_ + 1)) + 1ULL :
+      static_cast<std::uint64_t>(coefficient_);
     std::string digits = std::to_string(magnitude);
     if (scale_ > 0) {
       if (digits.size() <= scale_) {

@@ -83,7 +83,7 @@ private:
     auto response = rest.post("/oauth2/Approval", jsonbody, {{"content-type", "utf-8"}});
     if (response.result_int() < 200 || response.result_int() >= 300) {
       throw std::runtime_error("WebSocket authentication failed with HTTP status " +
-                               std::to_string(response.result_int()));
+        std::to_string(response.result_int()));
     }
     const std::string resp = std::move(response.body());
     boost::system::error_code ec;

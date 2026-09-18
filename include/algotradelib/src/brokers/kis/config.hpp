@@ -112,7 +112,7 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
 
   std::string ws_to_jsonbody() const {
     return R"({"grant_type":"client_credentials","appkey":")" + key_ + R"(","secretkey":")" +
-           secret_ + R"("})";
+      secret_ + R"("})";
   }
 };
 
@@ -138,10 +138,9 @@ struct KisRest : public network::AuthBody<KisRest> {
     // expires_in_ = doc.contains("expires_in")
     //   ? doc.at("expires_in").as_int64()
     //   : 86400;
-    access_token_expired_ =
-      doc.contains("access_token_token_expired")
-        ? parse_expiry(doc.at("access_token_token_expired").as_string().c_str())
-        : expires_at_;
+    access_token_expired_ = doc.contains("access_token_token_expired") ?
+      parse_expiry(doc.at("access_token_token_expired").as_string().c_str()) :
+      expires_at_;
     if (access_token_expired_ != std::chrono::system_clock::time_point{}) {
       expires_at_ = access_token_expired_;
     }
