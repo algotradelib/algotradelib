@@ -10,6 +10,18 @@
 
 namespace algotradelib::broker_detail {
 
+inline std::optional<std::chrono::seconds> retry_after(const network::HttpResponse& response) {
+  const auto value = response.base().find("Retry-After");
+  if (value == response.base().end()) {
+    return std::nullopt;
+  }
+  try {
+    return std::chrono::seconds(std::stoll(std::string(value->value())));
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
 inline BrokerError http_error(const network::HttpResponse& response) {
   BrokerError error;
   error.http_status = response.result_int();
@@ -17,12 +29,7 @@ inline BrokerError http_error(const network::HttpResponse& response) {
     ? ErrorCategory::rate_limit
     : ErrorCategory::http;
   error.message = response.body();
-  if (const auto value = response.base().find("Retry-After"); value != response.base().end()) {
-    try {
-      error.retry_after = std::chrono::seconds(std::stoll(std::string(value->value())));
-    } catch (const std::exception&) {
-    }
-  }
+  error.retry_after = retry_after(response);
   return error;
 }
 

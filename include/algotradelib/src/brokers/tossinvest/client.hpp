@@ -165,7 +165,7 @@ private:
     }
     if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
       auto error = broker_detail::toss_error(*document, result.value().result_int());
-      error.retry_after = broker_detail::http_error(result.value()).retry_after;
+      error.retry_after = broker_detail::retry_after(result.value());
       return Result<QuoteSnapshot>(std::move(error));
     }
     try {
