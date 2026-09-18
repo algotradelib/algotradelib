@@ -46,6 +46,14 @@ cmake --build build --target example-kis-quote
 ./build/bin/example-kis-quote 005930
 ```
 
+[`examples/example-tossinvest-quote.cpp`](examples/example-tossinvest-quote.cpp) provides the same workflow for Toss Securities. It reads `TOSS_CLIENT_ID` and `TOSS_CLIENT_SECRET` from the environment.
+
+```sh
+cmake -S . -B build -DATL_BUILD_EXAMPLES=ON
+cmake --build build --target example-tossinvest-quote
+./build/bin/example-tossinvest-quote 005930
+```
+
 `KisBlockingClient` and `TossBlockingClient` provide blocking convenience APIs.
 They drive the same async implementation on the caller's thread and retain the
 HTTP connection between sequential calls.
