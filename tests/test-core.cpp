@@ -4,10 +4,13 @@
 #include <boost/asio/use_future.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include "local_https_server.hpp"
+
 #include <chrono>
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <vector>
 
 using namespace algotradelib;
 
@@ -124,6 +127,134 @@ TEST_CASE("Async HTTP queue rejects excess callback and future requests",
   const auto future_result = future.get();
   REQUIRE_FALSE(future_result);
   REQUIRE(future_result.error().broker_code == "queue_full");
+}
+
+TEST_CASE("Async HTTP preserves queue order on one TLS connection",
+          "[http][tls][persistence]") {
+  test::LocalHttpsServer server;
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+  auto client = std::make_shared<network::AsyncHttpClient>(
+    ioc.get_executor(), context, "localhost", server.port());
+
+  std::vector<std::string> bodies;
+  for (const std::string target : {"/first", "/second"}) {
+    network::HttpRequest request;
+    request.target = target;
+    client->async_request(std::move(request),
+      [&bodies](Result<network::HttpResponse> result) {
+        REQUIRE(result);
+        bodies.push_back(result.value().body());
+      });
+  }
+
+  ioc.run();
+  REQUIRE(bodies == std::vector<std::string>{"/first", "/second"});
+  REQUIRE(server.connectionCount() == 1);
+}
+
+TEST_CASE("Async HTTP reconnects after a server-requested close",
+          "[http][tls][reconnect]") {
+  test::LocalHttpsServer server;
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+  auto client = std::make_shared<network::AsyncHttpClient>(
+    ioc.get_executor(), context, "localhost", server.port());
+
+  std::vector<std::string> bodies;
+  for (const std::string target : {"/close", "/after-close"}) {
+    network::HttpRequest request;
+    request.target = target;
+    client->async_request(std::move(request),
+      [&bodies](Result<network::HttpResponse> result) {
+        REQUIRE(result);
+        bodies.push_back(result.value().body());
+      });
+  }
+
+  ioc.run();
+  REQUIRE(bodies == std::vector<std::string>{"/close", "/after-close"});
+  REQUIRE(server.connectionCount() == 2);
+}
+
+TEST_CASE("Async HTTP retries GET once but never replays POST",
+          "[http][tls][retry]") {
+  SECTION("GET is retried after a dropped response") {
+    test::LocalHttpsServer server;
+    net::io_context ioc;
+    ssl::context context(ssl::context::tls_client);
+    test::trustLocalhostCertificate(context);
+    auto client = std::make_shared<network::AsyncHttpClient>(
+      ioc.get_executor(), context, "localhost", server.port());
+
+    network::HttpRequest request;
+    request.target = "/drop-get-once";
+    bool completed = false;
+    client->async_request(std::move(request),
+      [&completed](Result<network::HttpResponse> result) {
+        REQUIRE(result);
+        REQUIRE(result.value().body() == "/drop-get-once");
+        completed = true;
+      });
+
+    ioc.run();
+    REQUIRE(completed);
+    REQUIRE(server.requestCount("/drop-get-once") == 2);
+    REQUIRE(server.connectionCount() == 2);
+  }
+
+  SECTION("POST is not replayed after a dropped response") {
+    test::LocalHttpsServer server;
+    net::io_context ioc;
+    ssl::context context(ssl::context::tls_client);
+    test::trustLocalhostCertificate(context);
+    auto client = std::make_shared<network::AsyncHttpClient>(
+      ioc.get_executor(), context, "localhost", server.port());
+
+    network::HttpRequest request;
+    request.method = http::verb::post;
+    request.target = "/drop-post";
+    request.body = "order-like-payload";
+    bool completed = false;
+    client->async_request(std::move(request),
+      [&completed](Result<network::HttpResponse> result) {
+        REQUIRE_FALSE(result);
+        completed = true;
+      });
+
+    ioc.run();
+    REQUIRE(completed);
+    REQUIRE(server.requestCount("/drop-post") == 1);
+    REQUIRE(server.connectionCount() == 1);
+  }
+}
+
+TEST_CASE("Async HTTP enforces the configured response body limit",
+          "[http][tls][limits]") {
+  test::LocalHttpsServer server;
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+  network::HttpClientOptions options;
+  options.body_limit = 128;
+  auto client = std::make_shared<network::AsyncHttpClient>(
+    ioc.get_executor(), context, "localhost", server.port(), options);
+
+  network::HttpRequest request;
+  request.target = "/large";
+  bool completed = false;
+  client->async_request(std::move(request),
+    [&completed](Result<network::HttpResponse> result) {
+      REQUIRE_FALSE(result);
+      REQUIRE(result.error().category == ErrorCategory::transport);
+      REQUIRE(result.error().broker_code == "read");
+      completed = true;
+    });
+
+  ioc.run();
+  REQUIRE(completed);
 }
 
 TEST_CASE("KIS and Toss quote payloads normalize to shared types",
