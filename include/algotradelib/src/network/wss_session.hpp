@@ -5,14 +5,19 @@
 #include <boost/asio/ssl.hpp>
 #include <boost/beast/websocket/ssl.hpp>
 
-namespace algotradelib::network {
+namespace algotradelib {
 
 namespace ssl = net::ssl;
 
+namespace network {
+
+/** Options accepted by a TLS WebSocket session. */
 using WssSessionOptions = WebSocketSessionOptions;
 
+/** WebSocket client session over TLS. */
 class WssSession : public WebSocketSessionBase<WssSession, websocket::stream<ssl::stream<beast::tcp_stream>>> {
 public:
+  /** Constructs a TLS WebSocket session from structured options. */
   WssSession(
     net::io_context& ioc,
     ssl::context& context,
@@ -23,6 +28,7 @@ public:
   : WebSocketSessionBase(ioc, std::move(host), std::move(port), std::move(options)),
     context_(context) {}
 
+  /** Constructs a TLS WebSocket session from a target and headers. */
   WssSession(
     net::io_context& ioc,
     ssl::context& context,
@@ -85,4 +91,5 @@ private:
   }
 };
 
-} // namespace algotradelib::network
+} // namespace network
+} // namespace algotradelib

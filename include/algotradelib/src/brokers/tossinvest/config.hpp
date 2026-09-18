@@ -13,21 +13,17 @@
 namespace algotradelib {
 namespace tossinvest {
 
-namespace json = boost::json;
-
 struct TossConfig;
 struct TossRest;
 struct TossWebsocket;
 
+/** Toss Securities OAuth client credentials. */
 struct TossConfig : public network::ClientCredentials<TossConfig> {
   // std::string grant_type = "client_credentials"; // length = 18
   // std::string client_id_;
   // std::string client_secret_;
 
-  /**
-   * @brief Read from the environment
-   *
-   */
+  /** Reads Toss client credentials from process variables. */
   void from_env_impl() {
     const char* key = std::getenv("TOSS_CLIENT_ID");
     const char* secret = std::getenv("TOSS_CLIENT_SECRET");
@@ -38,6 +34,7 @@ struct TossConfig : public network::ClientCredentials<TossConfig> {
     secret_ = secret;
   }
 
+  /** Reads Toss client credentials from a JSON file. */
   void from_json_impl(const std::string& filename) {
     std::ifstream ifs(filename);
     if (!ifs.is_open()) {
@@ -66,6 +63,7 @@ struct TossConfig : public network::ClientCredentials<TossConfig> {
   static constexpr std::string_view secret_field() noexcept { return "client_secret"; }
 };
 
+/** Parsed Toss Securities REST OAuth token. */
 struct TossRest : public network::AuthBody<TossRest> {
 
   void from_json_impl(const json::object&) {}

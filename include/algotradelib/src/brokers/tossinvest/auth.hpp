@@ -8,13 +8,16 @@ namespace tossinvest {
 
 class TossAuth;
 
+/** Blocking, mutex-protected compatibility wrapper for Toss authentication. */
 class TossAuth {
 public:
+  /** Constructs an authentication wrapper with copied credentials. */
   TossAuth(net::io_context& ioc, ssl::context& ctx, const TossConfig& config)
   : ioc_(ioc), ctx_(ctx), req_(config) {}
 
   virtual ~TossAuth() = default;
 
+  /** Returns a cached REST token, refreshing it synchronously when required. */
   std::string accessToken() {
     std::lock_guard<std::mutex> lock(mtx_);
     if (!rest_resp_.valid()) {

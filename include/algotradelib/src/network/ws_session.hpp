@@ -4,8 +4,10 @@
 
 namespace algotradelib::network {
 
+/** Plain TCP WebSocket client session. */
 class WsSession : public WebSocketSessionBase<WsSession, websocket::stream<beast::tcp_stream>> {
 public:
+  /** Constructs a plain WebSocket session for one endpoint. */
   WsSession(
     net::io_context& ioc,
     std::string host,

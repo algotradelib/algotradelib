@@ -50,20 +50,14 @@ static inline std::chrono::system_clock::time_point parse_expiry(const char* s) 
   return std::chrono::system_clock::from_time_t(utc);
 }
 
-/**
- * @brief Token (Request)
- *
- */
+/** KIS application credentials and live/demo endpoint selection. */
 struct KisConfig : public network::ClientCredentials<KisConfig> {
   // std::string grant_type = "client_credentials"; // length = 18
   // std::string app_key_; // length = 36
   // std::string app_secret_; // length = 180
   bool is_demo_ = false;
 
-  /**
-   * @brief Read from the environment
-   *
-   */
+  /** Reads KIS credentials and environment selection from process variables. */
   void from_env_impl() {
     const char* key = std::getenv("KIS_APP_KEY");
     const char* secret = std::getenv("KIS_APP_SECRET");
@@ -77,10 +71,9 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
   }
 
   /**
-   * @brief Read from json file
-   * Format: { "app_key": "...", "app_secret": "...", "is_demo": false }
+   * Reads credentials from a JSON file.
    *
-   * @param filename
+   * Expected format: `{ "app_key": "...", "app_secret": "...", "demo": false }`.
    */
   void from_json_impl(
     const std::string& filename
@@ -128,10 +121,7 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
   }
 };
 
-/**
- * @brief Token (Response)
- *
- */
+/** Parsed KIS REST OAuth token and absolute expiry time. */
 struct KisRest : public network::AuthBody<KisRest> {
   // std::string access_token_; // length = 350
   // // std::string token_type; // length = 20, Bearer
@@ -161,10 +151,7 @@ struct KisRest : public network::AuthBody<KisRest> {
   bool valid() const noexcept { return network::AuthBody<KisRest>::valid(); }
 };
 
-/**
- * @brief Websocket key
- *
- */
+/** Parsed KIS WebSocket approval key and refresh timestamp. */
 struct KisWebsocket {
   std::string approval_key_; // length = 286
   std::chrono::system_clock::time_point last_auth_time_;

@@ -18,11 +18,21 @@
 
 namespace algotradelib::kis {
 
+/** Persistent asynchronous KIS client with coalesced OAuth refresh. */
 class KisClient : public std::enable_shared_from_this<KisClient> {
 public:
+  /** Completion handler for one normalized quote. */
   using QuoteHandler = net::any_completion_handler<void(Result<QuoteSnapshot>)>;
+
+  /** Internal completion handler for a shared access-token refresh. */
   using TokenHandler = net::any_completion_handler<void(Result<std::string>)>;
 
+  /**
+   * Constructs a client for one KIS environment.
+   *
+   * `config` is a value sink because the client retains its own credentials;
+   * lvalues are copied once and rvalues are moved into the client.
+   */
   KisClient(
     net::any_io_executor executor,
     ssl::context& context,
@@ -40,6 +50,7 @@ public:
       )
     ) {}
 
+  /** Requests and normalizes a current quote. */
   template <typename CompletionToken>
   auto async_quote(InstrumentId instrument, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<QuoteSnapshot>)>(
@@ -56,6 +67,7 @@ public:
     );
   }
 
+  /** Cancels transport work and queued HTTP operations. */
   void close() { http_->close(); }
 
 private:
@@ -261,8 +273,10 @@ private:
   }
 };
 
+/** Blocking facade that drives `KisClient` on a private event loop. */
 class KisBlockingClient {
 public:
+  /** Constructs a blocking client for one KIS environment. */
   KisBlockingClient(
     ssl::context& context,
     KisConfig config,
@@ -271,6 +285,7 @@ public:
   : client_(std::make_shared<KisClient>(ioc_.get_executor(), context, std::move(config), options)) {
   }
 
+  /** Returns the current normalized quote or a structured error. */
   Result<QuoteSnapshot> quote(InstrumentId instrument) {
     std::optional<Result<QuoteSnapshot>> result;
     ioc_.restart();

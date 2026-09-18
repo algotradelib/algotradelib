@@ -18,11 +18,20 @@
 
 namespace algotradelib::tossinvest {
 
+/** Persistent asynchronous Toss Securities client with coalesced OAuth refresh. */
 class TossClient : public std::enable_shared_from_this<TossClient> {
 public:
+  /** Completion handler for one normalized quote. */
   using QuoteHandler = net::any_completion_handler<void(Result<QuoteSnapshot>)>;
+
+  /** Internal completion handler for a shared access-token refresh. */
   using TokenHandler = net::any_completion_handler<void(Result<std::string>)>;
 
+  /**
+   * Constructs a client and takes value ownership of its credentials.
+   *
+   * Lvalue configurations are copied once; rvalue configurations are moved.
+   */
   TossClient(
     net::any_io_executor executor,
     ssl::context& context,
@@ -34,6 +43,7 @@ public:
       std::make_shared<network::AsyncHttpClient>(strand_, context, "openapi.tossinvest.com", "443", options)
     ) {}
 
+  /** Requests and normalizes a current quote. */
   template <typename CompletionToken>
   auto async_quote(InstrumentId instrument, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<QuoteSnapshot>)>(
@@ -50,6 +60,7 @@ public:
     );
   }
 
+  /** Cancels transport work and queued HTTP operations. */
   void close() { http_->close(); }
 
 private:
@@ -126,7 +137,7 @@ private:
       if (!document) {
         failure = std::move(parse_error);
       } else if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-        failure = broker_detail::toss_error(*document, result.value().result_int());
+        failure = toss_error(*document, result.value().result_int());
         failure->category = ErrorCategory::AUTHENTICATION;
       } else {
         try {
@@ -186,7 +197,7 @@ private:
       return Result<QuoteSnapshot>(std::move(parse_error));
     }
     if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-      auto error = broker_detail::toss_error(*document, result.value().result_int());
+      auto error = toss_error(*document, result.value().result_int());
       error.retry_after = broker_detail::retry_after(result.value());
       return Result<QuoteSnapshot>(std::move(error));
     }
@@ -225,6 +236,28 @@ private:
     }
   }
 
+  static BrokerError toss_error(const json::object& document, int status = 0) {
+    BrokerError result;
+    result.http_status = status;
+    result.category = status == 429 ? ErrorCategory::RATE_LIMIT : ErrorCategory::PROTOCOL;
+    const auto error = document.if_contains("error");
+    if (!error || !error->is_object()) {
+      result.message = "Toss response has no error object";
+      return result;
+    }
+    const auto& object = error->as_object();
+    if (const auto value = object.if_contains("code"); value && value->is_string()) {
+      result.broker_code = value->as_string().c_str();
+    }
+    if (const auto value = object.if_contains("requestId"); value && value->is_string()) {
+      result.request_id = value->as_string().c_str();
+    }
+    if (const auto value = object.if_contains("message"); value && value->is_string()) {
+      result.message = value->as_string().c_str();
+    }
+    return result;
+  }
+
   void complete(QuoteHandler handler, Result<QuoteSnapshot> result) {
     auto executor = net::get_associated_executor(handler, strand_);
     net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
@@ -233,8 +266,10 @@ private:
   }
 };
 
+/** Blocking facade that drives `TossClient` on a private event loop. */
 class TossBlockingClient {
 public:
+  /** Constructs a blocking Toss Securities client. */
   TossBlockingClient(
     ssl::context& context,
     TossConfig config,
@@ -244,6 +279,7 @@ public:
       std::make_shared<TossClient>(ioc_.get_executor(), context, std::move(config), options)
     ) {}
 
+  /** Returns the current normalized quote or a structured error. */
   Result<QuoteSnapshot> quote(InstrumentId instrument) {
     std::optional<Result<QuoteSnapshot>> result;
     ioc_.restart();

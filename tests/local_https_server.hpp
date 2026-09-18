@@ -25,6 +25,9 @@ namespace net = boost::asio;
 namespace ssl = net::ssl;
 using tcp = net::ip::tcp;
 
+// Test-only TLS identity. The private key is intentionally public and exists
+// solely to make loopback transport tests deterministic across machines. It
+// must never be used by production or externally reachable services.
 inline constexpr std::string_view LOCALHOST_CERTIFICATE = R"(-----BEGIN CERTIFICATE-----
 MIIDHzCCAgegAwIBAgIUDPB/ppDbPzW9VYCOuxw3EBnOhycwDQYJKoZIhvcNAQEL
 BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDkxODA2NDMzMFoXDTM2MDkx

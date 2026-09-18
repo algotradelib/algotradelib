@@ -4,6 +4,7 @@
 
 #include <boost/json.hpp>
 
+#include <charconv>
 #include <chrono>
 #include <optional>
 #include <string>
@@ -15,11 +16,13 @@ inline std::optional<std::chrono::seconds> retry_after(const network::HttpRespon
   if (value == response.base().end()) {
     return std::nullopt;
   }
-  try {
-    return std::chrono::seconds(std::stoll(std::string(value->value())));
-  } catch (const std::exception&) {
+  const auto text = value->value();
+  std::int64_t seconds{0};
+  const auto parsed = std::from_chars(text.data(), text.data() + text.size(), seconds);
+  if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || seconds < 0) {
     return std::nullopt;
   }
+  return std::chrono::seconds(seconds);
 }
 
 inline BrokerError http_error(const network::HttpResponse& response) {
@@ -51,28 +54,6 @@ inline std::string json_string(const json::object& object, std::string_view key)
     throw std::runtime_error("missing string field: " + std::string(key));
   }
   return std::string(value->as_string());
-}
-
-inline BrokerError toss_error(const json::object& document, int status = 0) {
-  BrokerError result;
-  result.http_status = status;
-  result.category = status == 429 ? ErrorCategory::RATE_LIMIT : ErrorCategory::PROTOCOL;
-  const auto error = document.if_contains("error");
-  if (!error || !error->is_object()) {
-    result.message = "Toss response has no error object";
-    return result;
-  }
-  const auto& object = error->as_object();
-  if (const auto value = object.if_contains("code"); value && value->is_string()) {
-    result.broker_code = value->as_string().c_str();
-  }
-  if (const auto value = object.if_contains("requestId"); value && value->is_string()) {
-    result.request_id = value->as_string().c_str();
-  }
-  if (const auto value = object.if_contains("message"); value && value->is_string()) {
-    result.message = value->as_string().c_str();
-  }
-  return result;
 }
 
 inline bool valid_symbol(std::string_view symbol) {
