@@ -52,11 +52,11 @@ struct HttpClientOptions {
 
 inline BrokerError transport_error(
   std::string stage,
-  beast::error_code ec) {
+  beast::error_code ec
+) {
   BrokerError error;
-  error.category = ec == net::error::operation_aborted ?
-    ErrorCategory::CANCELLED :
-    ErrorCategory::TRANSPORT;
+  error.category =
+    ec == net::error::operation_aborted ? ErrorCategory::CANCELLED : ErrorCategory::TRANSPORT;
   error.broker_code = std::move(stage);
   error.message = ec.message();
   return error;
@@ -64,7 +64,8 @@ inline BrokerError transport_error(
 
 inline std::string make_host_header(
   const std::string& host,
-  const std::string& port) {
+  const std::string& port
+) {
   return port == "443" ? host : host + ":" + port;
 }
 
@@ -73,7 +74,8 @@ inline std::string make_host_header(
 // underlying TCP socket.
 inline void shutdown_ssl_stream(
   beast::ssl_stream<beast::tcp_stream>& stream,
-  std::chrono::seconds timeout) noexcept {
+  std::chrono::seconds timeout
+) noexcept {
   beast::error_code ignored;
   beast::get_lowest_layer(stream).expires_after(timeout);
   stream.shutdown(ignored);
@@ -82,7 +84,8 @@ inline void shutdown_ssl_stream(
 }
 
 inline void close_ssl_stream(
-  beast::ssl_stream<beast::tcp_stream>& stream) noexcept {
+  beast::ssl_stream<beast::tcp_stream>& stream
+) noexcept {
   beast::error_code ignored;
   beast::get_lowest_layer(stream).cancel();
   beast::get_lowest_layer(stream).socket().shutdown(tcp::socket::shutdown_both, ignored);
@@ -96,20 +99,23 @@ public:
     ssl::context& context,
     std::string host,
     std::string port,
-    HttpClientOptions options = {})
+    HttpClientOptions options = {}
+  )
   : resolver_(ioc), context_(context), host_(std::move(host)), port_(std::move(port)),
     options_(options) {}
 
   HttpResponse get(
     const std::string& target,
-    const std::map<std::string, std::string>& headers = {}) {
+    const std::map<std::string, std::string>& headers = {}
+  ) {
     return request(http::verb::get, target, "", headers);
   }
 
   HttpResponse post(
     const std::string& target,
     const std::string& body,
-    const std::map<std::string, std::string>& headers = {}) {
+    const std::map<std::string, std::string>& headers = {}
+  ) {
     return request(http::verb::post, target, body, headers);
   }
 
@@ -117,7 +123,8 @@ public:
     http::verb method,
     const std::string& target,
     const std::string& body = {},
-    const std::map<std::string, std::string>& headers = {}) {
+    const std::map<std::string, std::string>& headers = {}
+  ) {
     for (int attempt = 0;; ++attempt) {
       try {
         ensure_connected();
@@ -171,7 +178,8 @@ private:
       std::make_unique<beast::ssl_stream<beast::tcp_stream>>(resolver_.get_executor(), context_);
     if (!SSL_set_tlsext_host_name(stream_->native_handle(), host_.c_str())) {
       throw beast::system_error(
-        static_cast<int>(::ERR_get_error()), net::error::get_ssl_category());
+        static_cast<int>(::ERR_get_error()), net::error::get_ssl_category()
+      );
     }
     stream_->set_verify_callback(ssl::host_name_verification(host_));
     const auto endpoints = resolver_.resolve(host_, port_);
@@ -202,23 +210,28 @@ public:
     ssl::context& context,
     std::string host,
     std::string port,
-    HttpClientOptions options = {})
+    HttpClientOptions options = {}
+  )
   : strand_(net::make_strand(std::move(executor))), resolver_(strand_), resolve_timer_(strand_),
     context_(context), host_(std::move(host)), port_(std::move(port)), options_(options) {}
 
   template <typename CompletionToken>
   auto async_request(
     HttpRequest request_value,
-    CompletionToken&& token) {
+    CompletionToken&& token
+  ) {
     return net::async_initiate<CompletionToken, void(Result<HttpResponse>)>(
-      [self = shared_from_this(), request_value = std::move(request_value)](
-        auto&& handler) mutable {
+      [self = shared_from_this(),
+       request_value = std::move(request_value)](auto&& handler) mutable {
         Pending pending(
-          std::move(request_value), CompletionHandler(std::forward<decltype(handler)>(handler)));
-        net::post(self->strand_,
-          [self, pending = std::move(pending)]() mutable { self->enqueue(std::move(pending)); });
+          std::move(request_value), CompletionHandler(std::forward<decltype(handler)>(handler))
+        );
+        net::post(self->strand_, [self, pending = std::move(pending)]() mutable {
+          self->enqueue(std::move(pending));
+        });
       },
-      token);
+      token
+    );
   }
 
   void close() {
@@ -253,7 +266,8 @@ private:
   struct Pending {
     Pending(
       HttpRequest request_value,
-      CompletionHandler completion)
+      CompletionHandler completion
+    )
     : request(std::move(request_value)), handler(std::move(completion)) {}
     HttpRequest request;
     CompletionHandler handler;
@@ -277,7 +291,8 @@ private:
   std::optional<http::response_parser<http::string_body>> parser_;
 
   void enqueue(
-    Pending pending) {
+    Pending pending
+  ) {
     if (stopped_) {
       BrokerError error;
       error.category = ErrorCategory::CANCELLED;
@@ -320,7 +335,9 @@ private:
         self->resolver_.cancel();
       }
     });
-    resolver_.async_resolve(host_, port_,
+    resolver_.async_resolve(
+      host_,
+      port_,
       [self = shared_from_this()](beast::error_code ec, tcp::resolver::results_type endpoints) {
         self->resolve_timer_.cancel();
         if (ec) {
@@ -333,21 +350,26 @@ private:
         self->state_ = State::CONNECTING;
         beast::get_lowest_layer(*self->stream_).expires_after(self->options_.timeout);
         beast::get_lowest_layer(*self->stream_)
-          .async_connect(endpoints,
+          .async_connect(
+            endpoints,
             [self](beast::error_code connect_ec, tcp::resolver::results_type::endpoint_type) {
               if (connect_ec) {
                 self->fail("connect", connect_ec);
                 return;
               }
               self->start_handshake();
-            });
-      });
+            }
+          );
+      }
+    );
   }
 
   void start_handshake() {
     if (!SSL_set_tlsext_host_name(stream_->native_handle(), host_.c_str())) {
-      fail("sni",
-        beast::error_code(static_cast<int>(::ERR_get_error()), net::error::get_ssl_category()));
+      fail(
+        "sni",
+        beast::error_code(static_cast<int>(::ERR_get_error()), net::error::get_ssl_category())
+      );
       return;
     }
     stream_->set_verify_callback(ssl::host_name_verification(host_));
@@ -361,7 +383,8 @@ private:
         }
         self->state_ = State::READY;
         self->pump();
-      });
+      }
+    );
   }
 
   void start_write() {
@@ -387,7 +410,8 @@ private:
           return;
         }
         self->start_read();
-      });
+      }
+    );
   }
 
   void start_read() {
@@ -414,19 +438,23 @@ private:
         }
         self->complete(std::move(pending.handler), Result<HttpResponse>(std::move(response)));
         self->pump();
-      });
+      }
+    );
   }
 
   void fail(
     const char* stage,
-    beast::error_code ec) {
+    beast::error_code ec
+  ) {
     disconnect();
     if (queue_.empty()) {
       return;
     }
     auto& pending = queue_.front();
-    if (pending.request.method == http::verb::get && !pending.retried &&
-      ec != net::error::operation_aborted) {
+    if (
+      pending.request.method == http::verb::get && !pending.retried &&
+      ec != net::error::operation_aborted
+    ) {
       pending.retried = true;
       pump();
       return;
@@ -453,7 +481,8 @@ private:
 
   void complete(
     CompletionHandler handler,
-    Result<HttpResponse> result) {
+    Result<HttpResponse> result
+  ) {
     auto executor = net::get_associated_executor(handler, strand_);
     net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
       std::move(handler)(std::move(result));

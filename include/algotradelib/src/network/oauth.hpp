@@ -22,7 +22,8 @@ public:
   void from_env() { static_cast<BrokerType*>(this)->from_env_impl(); }
 
   void from_json(
-    const std::string& filename) {
+    const std::string& filename
+  ) {
     static_cast<BrokerType*>(this)->from_json_impl(filename);
   }
 
@@ -48,16 +49,14 @@ protected:
 
 private:
   static std::string form_encode(
-    std::string_view value) {
+    std::string_view value
+  ) {
     static constexpr char hex[] = "0123456789ABCDEF";
     std::string result;
     result.reserve(value.size());
     for (const unsigned char ch : value) {
-      const bool unreserved =
-        (ch >= 'A' && ch <= 'Z') ||
-        (ch >= 'a' && ch <= 'z') ||
-        (ch >= '0' && ch <= '9') ||
-        ch == '-' || ch == '.' || ch == '_' || ch == '~';
+      const bool unreserved = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+        (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' || ch == '_' || ch == '~';
       if (unreserved) {
         result.push_back(static_cast<char>(ch));
       } else {
@@ -76,7 +75,8 @@ struct AuthBody {
   std::chrono::system_clock::time_point expires_at_{};
 
   void from_json(
-    const json::object& document) {
+    const json::object& document
+  ) {
     const auto token = document.if_contains("access_token");
     if (!token || !token->is_string()) {
       throw std::runtime_error("token response has no access_token string");
@@ -98,7 +98,8 @@ struct AuthBody {
   }
 
   bool valid(
-    std::chrono::seconds margin = std::chrono::minutes(5)) const noexcept {
+    std::chrono::seconds margin = std::chrono::minutes(5)
+  ) const noexcept {
     return !access_token_.empty() && std::chrono::system_clock::now() + margin < expires_at_;
   }
 };

@@ -27,27 +27,31 @@ public:
     net::any_io_executor executor,
     ssl::context& context,
     TossConfig config,
-    network::HttpClientOptions options = {})
+    network::HttpClientOptions options = {}
+  )
   : strand_(net::make_strand(std::move(executor))), config_(std::move(config)),
-    http_(std::make_shared<network::AsyncHttpClient>(strand_,
-      context,
-      "openapi.tossinvest.com",
-      "443",
-      options)) {}
+    http_(
+      std::make_shared<
+        network::AsyncHttpClient>(strand_, context, "openapi.tossinvest.com", "443", options)
+    ) {}
 
   template <typename CompletionToken>
   auto async_quote(
     InstrumentId instrument,
-    CompletionToken&& token) {
+    CompletionToken&& token
+  ) {
     return net::async_initiate<CompletionToken, void(Result<QuoteSnapshot>)>(
       [self = shared_from_this(), instrument = std::move(instrument)](auto&& handler) mutable {
         auto completion = QuoteHandler(std::forward<decltype(handler)>(handler));
-        net::post(self->strand_,
+        net::post(
+          self->strand_,
           [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
             self->start_quote(std::move(instrument), std::move(completion));
-          });
+          }
+        );
       },
-      token);
+      token
+    );
   }
 
   void close() { http_->close(); }
@@ -64,7 +68,8 @@ private:
 
   void start_quote(
     InstrumentId instrument,
-    QuoteHandler completion) {
+    QuoteHandler completion
+  ) {
     if (instrument.country != Country::KR || !broker_detail::valid_symbol(instrument.symbol)) {
       BrokerError error;
       error.category = ErrorCategory::INVALID_ARGUMENT;
@@ -74,20 +79,27 @@ private:
       return;
     }
     ensure_token(
-      TokenHandler([self = shared_from_this(), instrument = std::move(instrument),
-                     completion = std::move(completion)](Result<std::string> token_result) mutable {
-        if (!token_result) {
-          self->complete(
-            std::move(completion), Result<QuoteSnapshot>(std::move(token_result.error())));
-          return;
+      TokenHandler(
+        [self = shared_from_this(),
+          instrument = std::move(instrument),
+          completion = std::move(completion)](Result<std::string> token_result) mutable {
+          if (!token_result) {
+            self->complete(
+              std::move(completion), Result<QuoteSnapshot>(std::move(token_result.error()))
+            );
+            return;
+          }
+          self->request_quote(
+            std::move(instrument), std::move(token_result.value()), std::move(completion)
+          );
         }
-        self->request_quote(
-          std::move(instrument), std::move(token_result.value()), std::move(completion));
-      }));
+      )
+    );
   }
 
   void ensure_token(
-    TokenHandler handler) {
+    TokenHandler handler
+  ) {
     if (token_.valid()) {
       std::move(handler)(Result<std::string>(token_.access_token_));
       return;
@@ -102,15 +114,19 @@ private:
     request.target = "/oauth2/token";
     request.body = config_.to_form_urlencoded_body();
     request.headers.emplace_back("content-type", "application/x-www-form-urlencoded");
-    http_->async_request(std::move(request),
+    http_->async_request(
+      std::move(request),
       [self = shared_from_this()](Result<network::HttpResponse> result) mutable {
-        net::post(self->strand_,
-          [self, result = std::move(result)]() mutable { self->finish_token(std::move(result)); });
-      });
+        net::post(self->strand_, [self, result = std::move(result)]() mutable {
+          self->finish_token(std::move(result));
+        });
+      }
+    );
   }
 
   void finish_token(
-    Result<network::HttpResponse> result) {
+    Result<network::HttpResponse> result
+  ) {
     refreshing_ = false;
     std::optional<BrokerError> failure;
     if (!result) {
@@ -149,26 +165,36 @@ private:
   void request_quote(
     InstrumentId instrument,
     std::string access_token,
-    QuoteHandler completion) {
+    QuoteHandler completion
+  ) {
     network::HttpRequest request;
     request.method = http::verb::get;
     request.target = "/api/v1/prices?symbols=" + instrument.symbol;
     request.headers.emplace_back("authorization", "Bearer " + access_token);
-    http_->async_request(std::move(request),
-      [self = shared_from_this(), instrument = std::move(instrument),
-        completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
-        net::post(self->strand_,
-          [self, instrument = std::move(instrument), completion = std::move(completion),
-            result = std::move(result)]() mutable {
+    http_->async_request(
+      std::move(request),
+      [self = shared_from_this(),
+       instrument = std::move(instrument),
+       completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+        net::post(
+          self->strand_,
+          [self,
+           instrument = std::move(instrument),
+           completion = std::move(completion),
+           result = std::move(result)]() mutable {
             self->complete(
-              std::move(completion), parse_quote(std::move(instrument), std::move(result)));
-          });
-      });
+              std::move(completion), parse_quote(std::move(instrument), std::move(result))
+            );
+          }
+        );
+      }
+    );
   }
 
   static Result<QuoteSnapshot> parse_quote(
     InstrumentId instrument,
-    Result<network::HttpResponse> result) {
+    Result<network::HttpResponse> result
+  ) {
     if (!result) {
       return Result<QuoteSnapshot>(std::move(result.error()));
     }
@@ -184,8 +210,10 @@ private:
     }
     try {
       const auto payload = document->if_contains("result");
-      if (!payload || !payload->is_array() || payload->as_array().empty() ||
-        !payload->as_array().front().is_object()) {
+      if (
+        !payload || !payload->is_array() || payload->as_array().empty() ||
+        !payload->as_array().front().is_object()
+      ) {
         throw std::runtime_error("missing non-empty result array");
       }
       const auto& output = payload->as_array().front().as_object();
@@ -196,8 +224,9 @@ private:
       quote.instrument = std::move(instrument);
       quote.last_price = Decimal64::parse(broker_detail::json_string(output, "lastPrice"));
       quote.currency = Currency(broker_detail::json_string(output, "currency"));
-      if (const auto timestamp = output.if_contains("timestamp");
-        timestamp && timestamp->is_string()) {
+      if (
+        const auto timestamp = output.if_contains("timestamp"); timestamp && timestamp->is_string()
+      ) {
         quote.exchange_time = parse_iso8601_timestamp(timestamp->as_string().c_str());
         if (!quote.exchange_time) {
           throw std::runtime_error("invalid timestamp");
@@ -216,7 +245,8 @@ private:
 
   void complete(
     QuoteHandler handler,
-    Result<QuoteSnapshot> result) {
+    Result<QuoteSnapshot> result
+  ) {
     auto executor = net::get_associated_executor(handler, strand_);
     net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
       std::move(handler)(std::move(result));
@@ -229,16 +259,20 @@ public:
   TossBlockingClient(
     ssl::context& context,
     TossConfig config,
-    network::HttpClientOptions options = {})
+    network::HttpClientOptions options = {}
+  )
   : client_(
-      std::make_shared<TossClient>(ioc_.get_executor(), context, std::move(config), options)) {}
+      std::make_shared<TossClient>(ioc_.get_executor(), context, std::move(config), options)
+    ) {}
 
   Result<QuoteSnapshot> quote(
-    InstrumentId instrument) {
+    InstrumentId instrument
+  ) {
     std::optional<Result<QuoteSnapshot>> result;
     ioc_.restart();
-    client_->async_quote(std::move(instrument),
-      [&result](Result<QuoteSnapshot> value) { result.emplace(std::move(value)); });
+    client_->async_quote(std::move(instrument), [&result](Result<QuoteSnapshot> value) {
+      result.emplace(std::move(value));
+    });
     ioc_.run();
     if (!result) {
       BrokerError error;

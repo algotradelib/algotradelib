@@ -11,7 +11,8 @@
 namespace algotradelib::broker_detail {
 
 inline std::optional<std::chrono::seconds> retry_after(
-  const network::HttpResponse& response) {
+  const network::HttpResponse& response
+) {
   const auto value = response.base().find("Retry-After");
   if (value == response.base().end()) {
     return std::nullopt;
@@ -24,7 +25,8 @@ inline std::optional<std::chrono::seconds> retry_after(
 }
 
 inline BrokerError http_error(
-  const network::HttpResponse& response) {
+  const network::HttpResponse& response
+) {
   BrokerError error;
   error.http_status = response.result_int();
   error.category = response.result() == http::status::too_many_requests ?
@@ -37,7 +39,8 @@ inline BrokerError http_error(
 
 inline std::optional<json::object> parse_object(
   std::string_view body,
-  BrokerError& error) {
+  BrokerError& error
+) {
   boost::system::error_code ec;
   auto value = json::parse(body, ec);
   if (ec || !value.is_object()) {
@@ -51,7 +54,8 @@ inline std::optional<json::object> parse_object(
 
 inline std::string json_string(
   const json::object& object,
-  std::string_view key) {
+  std::string_view key
+) {
   const auto value = object.if_contains(key);
   if (!value || !value->is_string()) {
     throw std::runtime_error("missing string field: " + std::string(key));
@@ -61,7 +65,8 @@ inline std::string json_string(
 
 inline BrokerError toss_error(
   const json::object& document,
-  int status = 0) {
+  int status = 0
+) {
   BrokerError result;
   result.http_status = status;
   result.category = status == 429 ? ErrorCategory::RATE_LIMIT : ErrorCategory::PROTOCOL;
@@ -84,16 +89,14 @@ inline BrokerError toss_error(
 }
 
 inline bool valid_symbol(
-  std::string_view symbol) {
+  std::string_view symbol
+) {
   if (symbol.empty()) {
     return false;
   }
   for (const char ch : symbol) {
-    const bool valid =
-      (ch >= '0' && ch <= '9') ||
-      (ch >= 'A' && ch <= 'Z') ||
-      (ch >= 'a' && ch <= 'z') ||
-      ch == '.' || ch == '-';
+    const bool valid = (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') ||
+      (ch >= 'a' && ch <= 'z') || ch == '.' || ch == '-';
     if (!valid) {
       return false;
     }

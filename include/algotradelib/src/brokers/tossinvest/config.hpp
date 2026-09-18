@@ -39,18 +39,21 @@ struct TossConfig : public network::ClientCredentials<TossConfig> {
   }
 
   void from_json_impl(
-    const std::string& filename) {
+    const std::string& filename
+  ) {
     std::ifstream ifs(filename);
     if (!ifs.is_open()) {
       throw std::runtime_error("Cannot open Toss Invest credential file: " + filename);
     }
     const std::string content(
-      std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>{});
+      std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>{}
+    );
     boost::system::error_code ec;
     const auto jv = json::parse(content, ec);
     if (ec) {
       throw std::runtime_error(
-        "Failed to parse Toss Invest credentials file: " + filename + " — " + ec.message());
+        "Failed to parse Toss Invest credentials file: " + filename + " — " + ec.message()
+      );
     }
     const auto& doc = jv.as_object();
     if (!doc.contains("client_id") || !doc.contains("client_secret")) {
@@ -68,7 +71,8 @@ struct TossConfig : public network::ClientCredentials<TossConfig> {
 struct TossRest : public network::AuthBody<TossRest> {
 
   void from_json_impl(
-    const json::object&) {}
+    const json::object&
+  ) {}
 
   // bool valid() const noexcept {
   // 	const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(

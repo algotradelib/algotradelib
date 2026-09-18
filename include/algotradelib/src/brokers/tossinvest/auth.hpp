@@ -13,7 +13,8 @@ public:
   TossAuth(
     net::io_context& ioc,
     ssl::context& ctx,
-    const TossConfig& config)
+    const TossConfig& config
+  )
   : ioc_(ioc), ctx_(ctx), req_(config) {}
 
   virtual ~TossAuth() = default;
@@ -40,7 +41,8 @@ private:
       rest.post("/oauth2/token", formbody, {{"Content-Type", "application/x-www-form-urlencoded"}});
     if (response.result_int() < 200 || response.result_int() >= 300) {
       throw std::runtime_error(
-        "Token authentication failed with HTTP status " + std::to_string(response.result_int()));
+        "Token authentication failed with HTTP status " + std::to_string(response.result_int())
+      );
     }
     const std::string resp = std::move(response.body());
     boost::system::error_code ec;

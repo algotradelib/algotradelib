@@ -19,7 +19,8 @@ public:
     ssl::context& context,
     std::string host,
     std::string port,
-    WssSessionOptions options = {})
+    WssSessionOptions options = {}
+  )
   : WebSocketSessionBase(ioc, std::move(host), std::move(port), std::move(options)),
     context_(context) {}
 
@@ -29,12 +30,15 @@ public:
     std::string host,
     std::string port,
     std::string target,
-    std::map<std::string, std::string> headers = {})
-  : WssSession(ioc,
+    std::map<std::string, std::string> headers = {}
+  )
+  : WssSession(
+      ioc,
       context,
       std::move(host),
       std::move(port),
-      WssSessionOptions{std::move(target), std::move(headers)}) {}
+      WssSessionOptions{std::move(target), std::move(headers)}
+    ) {}
 
 private:
   template <typename, typename>
@@ -50,8 +54,10 @@ private:
     ws_ = std::make_unique<Stream>(strand_, context_);
     buffer_.consume(buffer_.size());
     if (!SSL_set_tlsext_host_name(ws_->next_layer().native_handle(), host_.c_str())) {
-      fail("sni",
-        beast::error_code(static_cast<int>(::ERR_get_error()), net::error::get_ssl_category()));
+      fail(
+        "sni",
+        beast::error_code(static_cast<int>(::ERR_get_error()), net::error::get_ssl_category())
+      );
       return;
     }
     ws_->next_layer().set_verify_callback(ssl::host_name_verification(host_));
@@ -60,19 +66,23 @@ private:
 
   void on_connect(
     beast::error_code error,
-    tcp::resolver::results_type::endpoint_type endpoint) {
+    tcp::resolver::results_type::endpoint_type endpoint
+  ) {
     if (error) {
       fail("connect", error);
       return;
     }
     host_header_ = host_ + ":" + std::to_string(endpoint.port());
     beast::get_lowest_layer(*ws_).expires_after(options_.operation_timeout);
-    ws_->next_layer().async_handshake(ssl::stream_base::client,
-      beast::bind_front_handler(&WssSession::on_ssl_handshake, shared_derived()));
+    ws_->next_layer().async_handshake(
+      ssl::stream_base::client,
+      beast::bind_front_handler(&WssSession::on_ssl_handshake, shared_derived())
+    );
   }
 
   void on_ssl_handshake(
-    beast::error_code error) {
+    beast::error_code error
+  ) {
     if (error) {
       fail("ssl_handshake", error);
       return;

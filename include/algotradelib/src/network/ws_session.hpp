@@ -11,11 +11,14 @@ public:
     std::string host,
     std::string port,
     std::string target = "/",
-    std::map<std::string, std::string> headers = {})
-  : WebSocketSessionBase(ioc,
+    std::map<std::string, std::string> headers = {}
+  )
+  : WebSocketSessionBase(
+      ioc,
       std::move(host),
       std::move(port),
-      WebSocketSessionOptions{std::move(target), std::move(headers)}) {}
+      WebSocketSessionOptions{std::move(target), std::move(headers)}
+    ) {}
 
 private:
   template <typename, typename>
@@ -33,7 +36,8 @@ private:
 
   void on_connect(
     beast::error_code error,
-    tcp::resolver::results_type::endpoint_type endpoint) {
+    tcp::resolver::results_type::endpoint_type endpoint
+  ) {
     if (error) {
       fail("connect", error);
       return;

@@ -24,10 +24,21 @@ struct KisRest;
 struct KisWebsocket;
 
 static inline std::chrono::system_clock::time_point parse_expiry(
-  const char* s) {
+  const char* s
+) {
   std::tm tm{};
-  if (std::sscanf(s, "%d-%d-%d %d:%d:%d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday, &tm.tm_hour,
-        &tm.tm_min, &tm.tm_sec) != 6) {
+  if (
+    std::sscanf(
+      s,
+      "%d-%d-%d %d:%d:%d",
+      &tm.tm_year,
+      &tm.tm_mon,
+      &tm.tm_mday,
+      &tm.tm_hour,
+      &tm.tm_min,
+      &tm.tm_sec
+    ) != 6
+  ) {
     return {};
   }
   tm.tm_year -= 1900;
@@ -74,18 +85,21 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
    * @param filename
    */
   void from_json_impl(
-    const std::string& filename) {
+    const std::string& filename
+  ) {
     std::ifstream ifs(filename);
     if (!ifs.is_open()) {
       throw std::runtime_error("Cannot open KIS credential file: " + filename);
     }
     const std::string content(
-      std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>{});
+      std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>{}
+    );
     boost::system::error_code ec;
     const auto jv = json::parse(content, ec);
     if (ec) {
       throw std::runtime_error(
-        "Failed to parse KIS credentials file: " + filename + " — " + ec.message());
+        "Failed to parse KIS credentials file: " + filename + " — " + ec.message()
+      );
     }
     const auto& doc = jv.as_object();
     if (!doc.contains("app_key") || !doc.contains("app_secret")) {
@@ -130,7 +144,8 @@ struct KisRest : public network::AuthBody<KisRest> {
   KisRest() {}
 
   void from_json_impl(
-    const json::object& doc) {
+    const json::object& doc
+  ) {
     // if (!doc.contains("access_token")) {
     // 	throw std::runtime_error("Token authentication failed");
     // }
@@ -160,7 +175,8 @@ struct KisWebsocket {
   KisWebsocket() {}
 
   void from_json(
-    const json::object& doc) {
+    const json::object& doc
+  ) {
     if (!doc.contains("approval_key")) {
       throw std::runtime_error("WS approval key authentication failed");
     }
