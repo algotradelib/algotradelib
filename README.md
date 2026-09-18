@@ -35,6 +35,17 @@ client->async_quote(
 ioc.run();
 ```
 
+[`examples/example-kis-quote.cpp`](examples/example-kis-quote.cpp) is the
+complete runnable version. It reads `KIS_APP_KEY`, `KIS_APP_SECRET`, and the
+optional `KIS_DEMO` flag from the environment. The default symbol is Samsung
+Electronics (`005930`); pass another Korean equity symbol as the first argument.
+
+```sh
+cmake -S . -B build -DATL_BUILD_EXAMPLES=ON
+cmake --build build --target example-kis-quote
+./build/bin/example-kis-quote 005930
+```
+
 `KisBlockingClient` and `TossBlockingClient` provide blocking convenience APIs.
 They drive the same async implementation on the caller's thread and retain the
 HTTP connection between sequential calls.
