@@ -60,6 +60,22 @@ inline BrokerError transport_error(std::string stage, beast::error_code ec) {
   return error;
 }
 
+inline std::string make_host_header(const std::string& host, const std::string& port) {
+  return port == "443" ? host : host + ":" + port;
+}
+
+// Shuts the SSL layer down (best-effort close_notify, bounded by `timeout`
+// so an unresponsive peer cannot stall the caller) before hard-closing the
+// underlying TCP socket.
+inline void shutdown_ssl_stream(beast::ssl_stream<beast::tcp_stream>& stream,
+                                std::chrono::seconds timeout) noexcept {
+  beast::error_code ignored;
+  beast::get_lowest_layer(stream).expires_after(timeout);
+  stream.shutdown(ignored);
+  beast::get_lowest_layer(stream).socket().shutdown(tcp::socket::shutdown_both, ignored);
+  beast::get_lowest_layer(stream).socket().close(ignored);
+}
+
 class HttpClient {
 public:
   HttpClient(net::io_context& ioc, ssl::context& context, std::string host,
@@ -143,17 +159,13 @@ private:
     stream_->handshake(ssl::stream_base::client);
   }
 
-  std::string host_header() const {
-    return port_ == "443" ? host_ : host_ + ":" + port_;
-  }
+  std::string host_header() const { return make_host_header(host_, port_); }
 
   void disconnect() noexcept {
     if (!stream_) {
       return;
     }
-    beast::error_code ignored;
-    beast::get_lowest_layer(*stream_).socket().shutdown(tcp::socket::shutdown_both, ignored);
-    beast::get_lowest_layer(*stream_).socket().close(ignored);
+    shutdown_ssl_stream(*stream_, std::chrono::seconds(1));
     stream_.reset();
     buffer_.consume(buffer_.size());
   }
@@ -399,10 +411,8 @@ private:
 
   void disconnect() noexcept {
     resolve_timer_.cancel();
-    beast::error_code ignored;
     if (stream_) {
-      beast::get_lowest_layer(*stream_).socket().shutdown(tcp::socket::shutdown_both, ignored);
-      beast::get_lowest_layer(*stream_).socket().close(ignored);
+      shutdown_ssl_stream(*stream_, std::chrono::seconds(1));
       stream_.reset();
     }
     buffer_.consume(buffer_.size());
@@ -411,9 +421,7 @@ private:
     state_ = State::disconnected;
   }
 
-  std::string host_header() const {
-    return port_ == "443" ? host_ : host_ + ":" + port_;
-  }
+  std::string host_header() const { return make_host_header(host_, port_); }
 
   void complete(CompletionHandler handler, Result<HttpResponse> result) {
     auto executor = net::get_associated_executor(handler, strand_);
