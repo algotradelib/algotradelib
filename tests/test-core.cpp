@@ -29,6 +29,16 @@ struct KisClientTestAccess {
     return KisClient::parse_holdings(std::move(response));
   }
 
+  static Result<HoldingsSnapshot> parse_holdings_page(
+    Result<network::HttpResponse> response,
+    std::string& foreign_cursor,
+    std::string& domestic_cursor
+  ) {
+    return KisClient::parse_holdings_page(
+      std::move(response), foreign_cursor, domestic_cursor
+    );
+  }
+
   static network::HttpRequest holdings_request(
     const KisAccount& account,
     const KisConfig& config,
@@ -452,8 +462,14 @@ TEST_CASE(
     }]
   })";
 
-  const auto result = kis::KisClientTestAccess::parse_holdings(std::move(response));
+  std::string foreign_cursor;
+  std::string domestic_cursor;
+  const auto result = kis::KisClientTestAccess::parse_holdings_page(
+    std::move(response), foreign_cursor, domestic_cursor
+  );
   REQUIRE(result);
+  REQUIRE(foreign_cursor == "foreign-next");
+  REQUIRE(domestic_cursor == "domestic-next");
   REQUIRE(result.value().positions.size() == 1);
   const auto& position = result.value().positions.front();
   const InstrumentId expected_instrument{Country::KR, Venue::COMBINED, "005930"};
