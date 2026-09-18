@@ -76,6 +76,13 @@ inline void shutdown_ssl_stream(beast::ssl_stream<beast::tcp_stream>& stream,
   beast::get_lowest_layer(stream).socket().close(ignored);
 }
 
+inline void close_ssl_stream(beast::ssl_stream<beast::tcp_stream>& stream) noexcept {
+  beast::error_code ignored;
+  beast::get_lowest_layer(stream).cancel();
+  beast::get_lowest_layer(stream).socket().shutdown(tcp::socket::shutdown_both, ignored);
+  beast::get_lowest_layer(stream).socket().close(ignored);
+}
+
 class HttpClient {
 public:
   HttpClient(net::io_context& ioc, ssl::context& context, std::string host,
@@ -186,7 +193,7 @@ public:
   auto async_request(HttpRequest request_value, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<HttpResponse>)>(
       [self = shared_from_this(), request_value = std::move(request_value)](auto&& handler) mutable {
-        auto pending = std::make_shared<Pending>(
+        Pending pending(
           std::move(request_value), CompletionHandler(std::forward<decltype(handler)>(handler)));
         net::post(self->strand_, [self, pending = std::move(pending)]() mutable {
           self->enqueue(std::move(pending));
@@ -207,7 +214,7 @@ public:
       while (!self->queue_.empty()) {
         auto pending = std::move(self->queue_.front());
         self->queue_.pop_front();
-        self->complete(std::move(pending->handler), Result<HttpResponse>(error));
+        self->complete(std::move(pending.handler), Result<HttpResponse>(error));
       }
     });
   }
@@ -243,17 +250,17 @@ private:
   State state_{State::disconnected};
   bool stopped_{false};
   bool resolve_timed_out_{false};
-  std::deque<std::shared_ptr<Pending>> queue_;
+  std::deque<Pending> queue_;
   std::optional<http::request<http::string_body>> active_request_;
   std::optional<http::response_parser<http::string_body>> parser_;
 
-  void enqueue(std::shared_ptr<Pending> pending) {
+  void enqueue(Pending pending) {
     if (stopped_) {
       BrokerError error;
       error.category = ErrorCategory::cancelled;
       error.broker_code = "enqueue";
       error.message = "HTTP client is closed";
-      complete(std::move(pending->handler), Result<HttpResponse>(std::move(error)));
+      complete(std::move(pending.handler), Result<HttpResponse>(std::move(error)));
       return;
     }
     if (queue_.size() >= options_.queue_limit) {
@@ -261,7 +268,7 @@ private:
       error.category = ErrorCategory::transport;
       error.broker_code = "queue_full";
       error.message = "HTTP request queue limit exceeded";
-      complete(std::move(pending->handler), Result<HttpResponse>(std::move(error)));
+      complete(std::move(pending.handler), Result<HttpResponse>(std::move(error)));
       return;
     }
     queue_.push_back(std::move(pending));
@@ -337,7 +344,7 @@ private:
   }
 
   void start_write() {
-    const auto& request_value = queue_.front()->request;
+    const auto& request_value = queue_.front().request;
     active_request_.emplace(request_value.method, request_value.target, request_value.version);
     active_request_->set(http::field::host, host_header());
     active_request_->set(http::field::user_agent, "algotradelib");
@@ -384,7 +391,7 @@ private:
         } else {
           self->disconnect();
         }
-        self->complete(std::move(pending->handler),
+        self->complete(std::move(pending.handler),
                        Result<HttpResponse>(std::move(response)));
         self->pump();
       });
@@ -396,15 +403,15 @@ private:
       return;
     }
     auto& pending = queue_.front();
-    if (pending->request.method == http::verb::get && !pending->retried &&
+    if (pending.request.method == http::verb::get && !pending.retried &&
         ec != net::error::operation_aborted) {
-      pending->retried = true;
+      pending.retried = true;
       pump();
       return;
     }
     auto completed = std::move(pending);
     queue_.pop_front();
-    complete(std::move(completed->handler),
+    complete(std::move(completed.handler),
              Result<HttpResponse>(transport_error(stage, ec)));
     pump();
   }
@@ -412,7 +419,7 @@ private:
   void disconnect() noexcept {
     resolve_timer_.cancel();
     if (stream_) {
-      shutdown_ssl_stream(*stream_, std::chrono::seconds(1));
+      close_ssl_stream(*stream_);
       stream_.reset();
     }
     buffer_.consume(buffer_.size());
