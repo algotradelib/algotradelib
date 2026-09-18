@@ -32,7 +32,7 @@ int main() {
 
   std::cout << "Fetching access token ...";
   try {
-    const std::string& token = auth.accessToken();
+		(void)auth.accessToken();
     std::cout << " OK" << "\n\n";
   } catch (const std::exception& e) {
     std::cerr << "  FAIL: " << e.what() << "\n\n";
@@ -41,7 +41,7 @@ int main() {
 
   std::cout << "Fetching WS approval key ...";
   try {
-    const std::string& ws_key = auth.accessWebsocket();
+		(void)auth.accessWebsocket();
     std::cout << " OK" << "\n\n";
   } catch (const std::exception& e) {
     std::cerr << "  FAIL: " << e.what() << "\n\n";

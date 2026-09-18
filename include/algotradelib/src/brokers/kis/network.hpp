@@ -1,7 +1,6 @@
 #pragma once
 
 #include <algotradelib/network>
-#include <boost/json/src.hpp>
 #include <boost/json.hpp>
 #include <functional>
 #include <unordered_map>

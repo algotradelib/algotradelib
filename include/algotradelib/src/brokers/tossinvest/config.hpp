@@ -3,8 +3,7 @@
 #include "./network.hpp"
 #include <chrono>
 #include <ctime>
-#include <boost/json/src.hpp>
-// #include <boost/json.hpp>
+#include <boost/json.hpp>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -74,7 +73,7 @@ struct TossConfig : public network::ClientCredentials<TossConfig> {
 
 struct TossRest : public network::AuthBody<TossRest> {
 
-	void from_json_impl(const json::object& doc) {}
+	void from_json_impl(const json::object&) {}
 
 	// bool valid() const noexcept {
 	// 	const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(

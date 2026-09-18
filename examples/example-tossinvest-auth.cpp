@@ -27,7 +27,7 @@ int main() {
 
   std::cout << "Fetching access token ...";
   try {
-    const std::string& token = auth.accessToken();
+		(void)auth.accessToken();
     std::cout << " OK" << "\n\n";
   } catch (const std::exception& e) {
     std::cerr << "  FAIL: " << e.what() << "\n\n";

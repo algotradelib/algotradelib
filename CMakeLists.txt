@@ -6,17 +6,15 @@ endif()
 
 project(algotradelib VERSION 0.0.0.9000 LANGUAGES CXX)
 
+include(GNUInstallDirs)
+
 # atomic linking issue in llvm (macos, windows): dummy atomic
 if ((APPLE OR WIN32) AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     add_library(atomic INTERFACE)
 endif()
 
-set(BOOST_INCLUDE_LIBRARIES asio beast json)
-
-find_package(Boost 1.87.0 REQUIRED)
+find_package(Boost 1.87.0 REQUIRED COMPONENTS json)
 find_package(OpenSSL 3.6.2 REQUIRED)
-find_package(spdlog 1.15.3 REQUIRED)
-# find_package(Eigen3 3.4.1 REQUIRED)
 
 # Header-only library
 add_library(algotradelib INTERFACE)
@@ -30,6 +28,7 @@ endif()
 
 target_include_directories(algotradelib INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -38,16 +37,11 @@ option(ATL_BUILD_EXAMPLES "Build example C++ programs" OFF)
 option(ATL_BUILD_TESTS "Build test C++ programs" OFF)
 option(ATL_ENABLE_COVERAGE "Enable C++ test coverage" OFF)
 
-if(TARGET Boost::boost)
+target_link_libraries(algotradelib INTERFACE Boost::json)
+if(TARGET Boost::headers)
+    target_link_libraries(algotradelib INTERFACE Boost::headers)
+elseif(TARGET Boost::boost)
     target_link_libraries(algotradelib INTERFACE Boost::boost)
-endif()
-
-if(TARGET Boost::asio)
-    target_link_libraries(algotradelib INTERFACE
-        Boost::asio
-        Boost::beast
-        Boost::json
-    )
 endif()
 
 target_link_libraries(algotradelib INTERFACE
@@ -60,6 +54,7 @@ if(ATL_BUILD_EXAMPLES)
 endif()
 
 if(ATL_BUILD_TESTS)
+    enable_testing()
     add_subdirectory(tests tests)
 endif()
 
@@ -89,7 +84,6 @@ export(TARGETS algotradelib
     NAMESPACE algotradelib::
     FILE algotradelibTargets.cmake
 )
-export(PACKAGE algotradelib)
 install(EXPORT algotradelibTargets
     NAMESPACE algotradelib::
     FILE algotradelibTargets.cmake

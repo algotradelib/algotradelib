@@ -22,6 +22,7 @@ public:
 	virtual ~KisAuth() = default;
 	
 	const std::string& accessToken() {
+		std::lock_guard<std::mutex> lock(mtx_);
 		if (!rest_resp_.valid()) {
 			refresh();
 		}
@@ -47,11 +48,16 @@ private:
 	void refresh() {
 		const std::string jsonbody = req_.to_jsonbody();
 		KisHttpClient rest(ioc_, ctx_, req_.rest_host(), req_.rest_port());
-		const std::string resp = std::move(rest.post(
+		auto response = rest.post(
 			"/oauth2/tokenP",
 			jsonbody,
       {{"content-type", "application/json"}}
-		).body());
+		);
+		if (response.result_int() < 200 || response.result_int() >= 300) {
+			throw std::runtime_error("Token authentication failed with HTTP status "
+				+ std::to_string(response.result_int()));
+		}
+		const std::string resp = std::move(response.body());
 		boost::system::error_code ec;
     const auto jv = json::parse(resp, ec);
     // const auto* doc = (!ec && jv.is_object()) ? &jv.as_object() : nullptr;
@@ -75,11 +81,16 @@ private:
 		// _base_headers_ws = {
 		// 		"content-type": "utf-8",
 		// }
-		const std::string resp = std::move(rest.post(
+		auto response = rest.post(
 			"/oauth2/Approval",
 			jsonbody,
       {{"content-type", "utf-8"}}
-		).body());
+		);
+		if (response.result_int() < 200 || response.result_int() >= 300) {
+			throw std::runtime_error("WebSocket authentication failed with HTTP status "
+				+ std::to_string(response.result_int()));
+		}
+		const std::string resp = std::move(response.body());
 		boost::system::error_code ec;
     const auto jv = json::parse(resp, ec);
     // const auto* doc = (!ec && jv.is_object()) ? &jv.as_object() : nullptr;

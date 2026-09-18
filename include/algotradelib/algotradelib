@@ -1,3 +1,4 @@
 #pragma once
 
-#include "src/network/http_client.hpp"
+#include "core"
+#include "network"

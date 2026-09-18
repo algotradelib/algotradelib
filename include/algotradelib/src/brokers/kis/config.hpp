@@ -4,7 +4,6 @@
 #include <string>
 #include <chrono>
 #include <ctime>
-#include <boost/json/src.hpp>
 #include <boost/json.hpp>
 #include <cstdlib>
 #include <fstream>
@@ -126,7 +125,7 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
 		return is_demo_ ? "31000" : "21000";
 	}
 
-	const std::string ws_to_jsonbody() {
+	std::string ws_to_jsonbody() const {
 		return R"({"grant_type":"client_credentials","appkey":")"
 			+ key_
 			+ R"(","secretkey":")"
@@ -157,14 +156,14 @@ struct KisRest : public network::AuthBody<KisRest> {
     //   : 86400;
 		access_token_expired_ = doc.contains("access_token_token_expired")
       ? parse_expiry(doc.at("access_token_token_expired").as_string().c_str())
-      : std::chrono::system_clock::now() + std::chrono::seconds(86400);
+			: expires_at_;
+		if (access_token_expired_ != std::chrono::system_clock::time_point{}) {
+			expires_at_ = access_token_expired_;
+		}
 	}
 
 	bool valid() const noexcept {
-		const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
-			std::chrono::system_clock::now().time_since_epoch()
-		).count();
-		return !access_token_.empty() && (expires_in_ - now) > 300; // 5min
+		return network::AuthBody<KisRest>::valid();
 	}
 };
 

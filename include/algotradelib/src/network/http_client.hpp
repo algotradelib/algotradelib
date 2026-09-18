@@ -1,16 +1,28 @@
 #pragma once
 
+#include <algotradelib/core>
+
+#include <boost/asio/any_completion_handler.hpp>
+#include <boost/asio/async_result.hpp>
+#include <boost/asio/associated_executor.hpp>
+#include <boost/asio/connect.hpp>
+#include <boost/asio/dispatch.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/ssl.hpp>
+#include <boost/asio/strand.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/ssl.hpp>
-#include <boost/asio/ssl.hpp>
-#include <boost/asio/strand.hpp>
-#include <boost/asio/connect.hpp>
-#include <boost/asio/ip/tcp.hpp>
-#include <iostream>
+
+#include <chrono>
+#include <deque>
 #include <map>
+#include <memory>
+#include <optional>
 #include <string>
-#include <stdexcept>
+#include <utility>
+#include <vector>
 
 namespace algotradelib {
 
@@ -22,215 +34,394 @@ using tcp = net::ip::tcp;
 
 namespace network {
 
-// https://www.boost.org/doc/libs/latest/libs/beast/example/http/client/sync-ssl/http_client_sync_ssl.cpp
-class HttpClient;
-// https://www.boost.org/doc/libs/latest/libs/beast/example/http/client/async-ssl/http_client_async_ssl.cpp
-class AsyncHttpClient;
+using HttpResponse = http::response<http::string_body>;
 
-// using HttpResponse = http::response<http::string_body>;
-// using HttpRequest  = http::request<http::string_body>;
-
-/**
- * @brief Synchronous REST SSL client
- * 
- * Order by POST, and lookup by GET
- * 
- */
-class HttpClient {
-public:
-	HttpClient(net::io_context& ioc, ssl::context& ctx, const std::string& host, const std::string& port)
-  : ioc_(ioc), ctx_(ctx), host_(host), port_(port) {}
-	virtual ~HttpClient() = default;
-	
-	http::response<http::string_body> get(
-		const std::string& target,
-    const std::map<std::string, std::string>& headers = {}
-	) {
-		return request(http::verb::get, target, "", headers);
-	}
-
-  http::response<http::string_body> post(
-		const std::string& target,
-    const std::string& body,
-    const std::map<std::string, std::string>& headers = {}
-	) {
-		return request(http::verb::post, target, body, headers);
-	}
-
-private:
-	net::io_context& ioc_;
-  ssl::context& ctx_;
-	std::string host_, port_;
-  // std::unique_ptr<beast::ssl_stream<beast::tcp_stream>> stream;
-  // bool is_connected = false;
-
-	http::response<http::string_body> request(
-		http::verb method,
-		const std::string& target,
-		const std::string& body = "",
-		const std::map<std::string, std::string>& headers = {}
-	) {
-		tcp::resolver resolver(ioc_);
-  	beast::ssl_stream<beast::tcp_stream> stream(ioc_, ctx_);
-		if(!SSL_set_tlsext_host_name(stream.native_handle(), host_.c_str())) {
-			throw beast::system_error(
-				static_cast<int>(::ERR_get_error()),
-				net::error::get_ssl_category()
-			);
-  	}
-		auto const results = resolver.resolve(host_, port_);
-		beast::get_lowest_layer(stream).connect(results);
-		stream.handshake(ssl::stream_base::client);
-		// http::request<http::string_body> req{http::verb::get, target, version};
-		http::request<http::string_body> req{method, target, 11}; // set version with macro later
-		req.set(http::field::host, host_);
-		req.set(http::field::user_agent, "algotradelib");
-		for (const auto& [key, val] : headers) {
-			req.set(key, val);
-		}
-		if (!body.empty()) {
-      req.body() = body;
-      req.prepare_payload();
-    }
-    http::write(stream, req);
-		beast::flat_buffer buffer;
-		http::response<http::string_body> res;
-		http::read(stream, buffer, res);
-		beast::error_code ec;
-		stream.shutdown(ec);
-		// if (res.result() != http::status::ok) {
-		// 	throw std::runtime_error(
-		// 		"Authentification failed " + std::to_string(static_cast<int>(res.result()))
-		// 			+ ": " + std::string(res.body())
-		// 	);
-		// }
-		return res;
-		// return HttpResponse{res.result_int(), std::move(res.body())};
-		// HttpResponse response;
-		// response.status_code = res.result_int();
-		// response.body = std::move(res.body());
-		// for (const auto& field : res) {
-    //   response.headers.emplace(field.name_string(), field.value());
-    // }
-		// return response;
-	}
+struct HttpRequest {
+  http::verb method{http::verb::get};
+  std::string target{"/"};
+  std::string body;
+  std::vector<std::pair<std::string, std::string>> headers;
+  int version{11};
 };
 
-/**
- * @brief Asynchronous Rest SSL session
- * 
- */
+struct HttpClientOptions {
+  std::chrono::seconds timeout{30};
+  std::size_t body_limit{8 * 1024 * 1024};
+  std::size_t queue_limit{1024};
+};
+
+inline BrokerError transport_error(std::string stage, beast::error_code ec) {
+  BrokerError error;
+  error.category = ec == net::error::operation_aborted
+    ? ErrorCategory::cancelled
+    : ErrorCategory::transport;
+  error.broker_code = std::move(stage);
+  error.message = ec.message();
+  return error;
+}
+
+class HttpClient {
+public:
+  HttpClient(net::io_context& ioc, ssl::context& context, std::string host,
+             std::string port, HttpClientOptions options = {})
+      : resolver_(ioc), context_(context), host_(std::move(host)),
+        port_(std::move(port)), options_(options) {}
+
+  HttpResponse get(const std::string& target,
+                   const std::map<std::string, std::string>& headers = {}) {
+    return request(http::verb::get, target, "", headers);
+  }
+
+  HttpResponse post(const std::string& target, const std::string& body,
+                    const std::map<std::string, std::string>& headers = {}) {
+    return request(http::verb::post, target, body, headers);
+  }
+
+  HttpResponse request(http::verb method, const std::string& target,
+                       const std::string& body = {},
+                       const std::map<std::string, std::string>& headers = {}) {
+    for (int attempt = 0; ; ++attempt) {
+      try {
+        ensure_connected();
+        http::request<http::string_body> request_value{method, target, 11};
+        request_value.set(http::field::host, host_header());
+        request_value.set(http::field::user_agent, "algotradelib");
+        request_value.keep_alive(true);
+        for (const auto& header : headers) {
+          request_value.set(header.first, header.second);
+        }
+        request_value.body() = body;
+        if (!body.empty()) {
+          request_value.prepare_payload();
+        }
+
+        beast::get_lowest_layer(*stream_).expires_after(options_.timeout);
+        http::write(*stream_, request_value);
+        http::response_parser<http::string_body> parser;
+        parser.body_limit(options_.body_limit);
+        http::read(*stream_, buffer_, parser);
+        auto response = parser.release();
+        if (!response.keep_alive() || response.need_eof()) {
+          disconnect();
+        }
+        return response;
+      } catch (const beast::system_error&) {
+        disconnect();
+        if (method != http::verb::get || attempt > 0) {
+          throw;
+        }
+      }
+    }
+  }
+
+  void close() { disconnect(); }
+
+private:
+  tcp::resolver resolver_;
+  ssl::context& context_;
+  std::string host_;
+  std::string port_;
+  HttpClientOptions options_;
+  std::unique_ptr<beast::ssl_stream<beast::tcp_stream>> stream_;
+  beast::flat_buffer buffer_;
+
+  void ensure_connected() {
+    if (stream_ && beast::get_lowest_layer(*stream_).socket().is_open()) {
+      return;
+    }
+    stream_ = std::make_unique<beast::ssl_stream<beast::tcp_stream>>(
+      resolver_.get_executor(), context_);
+    if (!SSL_set_tlsext_host_name(stream_->native_handle(), host_.c_str())) {
+      throw beast::system_error(
+        static_cast<int>(::ERR_get_error()), net::error::get_ssl_category());
+    }
+    stream_->set_verify_callback(ssl::host_name_verification(host_));
+    const auto endpoints = resolver_.resolve(host_, port_);
+    beast::get_lowest_layer(*stream_).expires_after(options_.timeout);
+    beast::get_lowest_layer(*stream_).connect(endpoints);
+    beast::get_lowest_layer(*stream_).expires_after(options_.timeout);
+    stream_->handshake(ssl::stream_base::client);
+  }
+
+  std::string host_header() const {
+    return port_ == "443" ? host_ : host_ + ":" + port_;
+  }
+
+  void disconnect() noexcept {
+    if (!stream_) {
+      return;
+    }
+    beast::error_code ignored;
+    beast::get_lowest_layer(*stream_).socket().shutdown(tcp::socket::shutdown_both, ignored);
+    beast::get_lowest_layer(*stream_).socket().close(ignored);
+    stream_.reset();
+    buffer_.consume(buffer_.size());
+  }
+};
+
 class AsyncHttpClient : public std::enable_shared_from_this<AsyncHttpClient> {
 public:
-	AsyncHttpClient(net::any_io_executor& ex, ssl::context& ctx, const std::string& host, const std::string& port)
-	: resolver_(ex), stream_(ex, ctx),
-		host_(host), port_(port) {}
-	virtual ~AsyncHttpClient() = default;
-	
-	void connect(
-		http::verb method,
-		const std::string& target,
-		const int& version = 11
-	) {
-		if(!SSL_set_tlsext_host_name(stream_.native_handle(), host_.c_str())) {
-			// throw beast::system_error(
-			// 	static_cast<int>(::ERR_get_error()),
-			// 	net::error::get_ssl_category()
-			// );
-			beast::error_code ec{
-				static_cast<int>(::ERR_get_error()),
-				net::error::get_ssl_category()
-			};
-			std::cerr << ec.message() << "\n";
-      return;
-  	}
-		stream_.set_verify_callback(ssl::host_name_verification(host_));
-		req_.version(version);
-		req_.method(method);
-		req_.target(target);
-		req_.set(http::field::host, host_);
-		req_.set(http::field::user_agent, "algotradelib");
-		resolver_.async_resolve(
-			host_, port_,
-			beast::bind_front_handler(&AsyncHttpClient::on_resolve, shared_from_this())
-		);
-	}
+  using CompletionHandler = net::any_completion_handler<void(Result<HttpResponse>)>;
 
-protected:
+  AsyncHttpClient(net::any_io_executor executor, ssl::context& context,
+                  std::string host, std::string port,
+                  HttpClientOptions options = {})
+      : strand_(net::make_strand(std::move(executor))), resolver_(strand_),
+        resolve_timer_(strand_), context_(context), host_(std::move(host)),
+        port_(std::move(port)), options_(options) {}
+
+  template <typename CompletionToken>
+  auto async_request(HttpRequest request_value, CompletionToken&& token) {
+    return net::async_initiate<CompletionToken, void(Result<HttpResponse>)>(
+      [self = shared_from_this(), request_value = std::move(request_value)](auto&& handler) mutable {
+        auto pending = std::make_shared<Pending>(
+          std::move(request_value), CompletionHandler(std::forward<decltype(handler)>(handler)));
+        net::post(self->strand_, [self, pending = std::move(pending)]() mutable {
+          self->enqueue(std::move(pending));
+        });
+      }, token);
+  }
+
+  void close() {
+    net::post(strand_, [self = shared_from_this()] {
+      self->stopped_ = true;
+      self->resolver_.cancel();
+      self->resolve_timer_.cancel();
+      self->disconnect();
+      BrokerError error;
+      error.category = ErrorCategory::cancelled;
+      error.broker_code = "close";
+      error.message = "HTTP client closed";
+      while (!self->queue_.empty()) {
+        auto pending = std::move(self->queue_.front());
+        self->queue_.pop_front();
+        self->complete(std::move(pending->handler), Result<HttpResponse>(error));
+      }
+    });
+  }
+
+private:
+  enum class State {
+    disconnected,
+    resolving,
+    connecting,
+    handshaking,
+    ready,
+    writing,
+    reading,
+  };
+
+  struct Pending {
+    Pending(HttpRequest request_value, CompletionHandler completion)
+        : request(std::move(request_value)), handler(std::move(completion)) {}
+    HttpRequest request;
+    CompletionHandler handler;
+    bool retried{false};
+  };
+
+  net::strand<net::any_io_executor> strand_;
   tcp::resolver resolver_;
-	ssl::stream<beast::tcp_stream> stream_;
+  net::steady_timer resolve_timer_;
+  ssl::context& context_;
+  std::unique_ptr<beast::ssl_stream<beast::tcp_stream>> stream_;
   beast::flat_buffer buffer_;
-	http::request<http::string_body> req_;
-	http::response<http::string_body> res_;
-	bool connected_, connecting_;
-  std::string host_, port_;
+  std::string host_;
+  std::string port_;
+  HttpClientOptions options_;
+  State state_{State::disconnected};
+  bool stopped_{false};
+  bool resolve_timed_out_{false};
+  std::deque<std::shared_ptr<Pending>> queue_;
+  std::optional<http::request<http::string_body>> active_request_;
+  std::optional<http::response_parser<http::string_body>> parser_;
 
-	void on_resolve(beast::error_code ec, tcp::resolver::results_type results) {
-		if (ec) {
-			std::cerr << "resolve: " << ec.message() << "\n";
-			return;
-		}
-    beast::get_lowest_layer(stream_).expires_after(std::chrono::seconds(30));
-    beast::get_lowest_layer(stream_).async_connect(
-      results,
-      beast::bind_front_handler(&AsyncHttpClient::on_connect, shared_from_this())
-		);
-  }
-
-	void on_connect(beast::error_code ec, tcp::resolver::results_type::endpoint_type) {
-    if (ec) {
-			std::cerr << "connect: " << ec.message() << "\n";
-			return;
-		}
-		stream_.async_handshake(
-			ssl::stream_base::client,
-      beast::bind_front_handler(&AsyncHttpClient::on_handshake, shared_from_this())
-		);
-  }
-
-	void on_handshake(beast::error_code ec) {
-		if (ec) {
-			std::cerr << "handshake: " << ec.message() << "\n";
-			return;
-		}
-		beast::get_lowest_layer(stream_).expires_after(std::chrono::seconds(30));
-		http::async_write(
-			stream_, req_,
-      beast::bind_front_handler(&AsyncHttpClient::on_write, shared_from_this())
-		);
-  }
-
-	void on_write(beast::error_code ec, std::size_t bytes_transferred) {
-		boost::ignore_unused(bytes_transferred);
-    if (ec) {
-      std::cerr << "write: " << ec.message() << "\n";
-			return;
+  void enqueue(std::shared_ptr<Pending> pending) {
+    if (stopped_) {
+      BrokerError error;
+      error.category = ErrorCategory::cancelled;
+      error.broker_code = "enqueue";
+      error.message = "HTTP client is closed";
+      complete(std::move(pending->handler), Result<HttpResponse>(std::move(error)));
+      return;
     }
-    http::async_read(
-			stream_, buffer_, res_,
-      beast::bind_front_handler(&AsyncHttpClient::on_read, shared_from_this())
-		);
+    if (queue_.size() >= options_.queue_limit) {
+      BrokerError error;
+      error.category = ErrorCategory::transport;
+      error.broker_code = "queue_full";
+      error.message = "HTTP request queue limit exceeded";
+      complete(std::move(pending->handler), Result<HttpResponse>(std::move(error)));
+      return;
+    }
+    queue_.push_back(std::move(pending));
+    pump();
   }
 
-	void on_read(beast::error_code ec, std::size_t bytes_transferred) {
-		boost::ignore_unused(bytes_transferred);
-		if (ec) {
-			std::cerr << "read: " << ec.message() << "\n";
-			return;
-		}
-		std::cout << res_ << std::endl;
-		beast::get_lowest_layer(stream_).expires_after(std::chrono::seconds(30));
-    stream_.async_shutdown(
-			beast::bind_front_handler(&AsyncHttpClient::on_shutdown, shared_from_this())
-		);
-	}
+  void pump() {
+    if (stopped_ || queue_.empty()) {
+      return;
+    }
+    if (state_ == State::disconnected) {
+      start_resolve();
+    } else if (state_ == State::ready) {
+      start_write();
+    }
+  }
 
-	void on_shutdown(beast::error_code ec) {
-		if (ec != net::ssl::error::stream_truncated) {
-			std::cerr << "shutdown: " << ec.message() << "\n";
-			return;
-		}
-	}
+  void start_resolve() {
+    stream_ = std::make_unique<beast::ssl_stream<beast::tcp_stream>>(strand_, context_);
+    state_ = State::resolving;
+    resolve_timed_out_ = false;
+    resolve_timer_.expires_after(options_.timeout);
+    resolve_timer_.async_wait([self = shared_from_this()](beast::error_code ec) {
+      if (!ec && self->state_ == State::resolving) {
+        self->resolve_timed_out_ = true;
+        self->resolver_.cancel();
+      }
+    });
+    resolver_.async_resolve(host_, port_,
+      [self = shared_from_this()](beast::error_code ec,
+                                  tcp::resolver::results_type endpoints) {
+        self->resolve_timer_.cancel();
+        if (ec) {
+          if (self->resolve_timed_out_) {
+            ec = beast::error_code(net::error::timed_out);
+          }
+          self->fail("resolve", ec);
+          return;
+        }
+        self->state_ = State::connecting;
+        beast::get_lowest_layer(*self->stream_).expires_after(self->options_.timeout);
+        beast::get_lowest_layer(*self->stream_).async_connect(
+          endpoints,
+          [self](beast::error_code connect_ec,
+                 tcp::resolver::results_type::endpoint_type) {
+            if (connect_ec) {
+              self->fail("connect", connect_ec);
+              return;
+            }
+            self->start_handshake();
+          });
+      });
+  }
+
+  void start_handshake() {
+    if (!SSL_set_tlsext_host_name(stream_->native_handle(), host_.c_str())) {
+      fail("sni", beast::error_code(
+        static_cast<int>(::ERR_get_error()), net::error::get_ssl_category()));
+      return;
+    }
+    stream_->set_verify_callback(ssl::host_name_verification(host_));
+    state_ = State::handshaking;
+    beast::get_lowest_layer(*stream_).expires_after(options_.timeout);
+    stream_->async_handshake(ssl::stream_base::client,
+      [self = shared_from_this()](beast::error_code ec) {
+        if (ec) {
+          self->fail("tls_handshake", ec);
+          return;
+        }
+        self->state_ = State::ready;
+        self->pump();
+      });
+  }
+
+  void start_write() {
+    const auto& request_value = queue_.front()->request;
+    active_request_.emplace(request_value.method, request_value.target, request_value.version);
+    active_request_->set(http::field::host, host_header());
+    active_request_->set(http::field::user_agent, "algotradelib");
+    active_request_->keep_alive(true);
+    for (const auto& header : request_value.headers) {
+      active_request_->set(header.first, header.second);
+    }
+    active_request_->body() = request_value.body;
+    if (!request_value.body.empty()) {
+      active_request_->prepare_payload();
+    }
+
+    state_ = State::writing;
+    beast::get_lowest_layer(*stream_).expires_after(options_.timeout);
+    http::async_write(*stream_, *active_request_,
+      [self = shared_from_this()](beast::error_code ec, std::size_t) {
+        if (ec) {
+          self->fail("write", ec);
+          return;
+        }
+        self->start_read();
+      });
+  }
+
+  void start_read() {
+    parser_.emplace();
+    parser_->body_limit(options_.body_limit);
+    state_ = State::reading;
+    beast::get_lowest_layer(*stream_).expires_after(options_.timeout);
+    http::async_read(*stream_, buffer_, *parser_,
+      [self = shared_from_this()](beast::error_code ec, std::size_t) {
+        if (ec) {
+          self->fail("read", ec);
+          return;
+        }
+        auto response = self->parser_->release();
+        const bool keep_alive = response.keep_alive() && !response.need_eof();
+        self->parser_.reset();
+        self->active_request_.reset();
+        auto pending = std::move(self->queue_.front());
+        self->queue_.pop_front();
+        if (keep_alive) {
+          self->state_ = State::ready;
+        } else {
+          self->disconnect();
+        }
+        self->complete(std::move(pending->handler),
+                       Result<HttpResponse>(std::move(response)));
+        self->pump();
+      });
+  }
+
+  void fail(const char* stage, beast::error_code ec) {
+    disconnect();
+    if (queue_.empty()) {
+      return;
+    }
+    auto& pending = queue_.front();
+    if (pending->request.method == http::verb::get && !pending->retried &&
+        ec != net::error::operation_aborted) {
+      pending->retried = true;
+      pump();
+      return;
+    }
+    auto completed = std::move(pending);
+    queue_.pop_front();
+    complete(std::move(completed->handler),
+             Result<HttpResponse>(transport_error(stage, ec)));
+    pump();
+  }
+
+  void disconnect() noexcept {
+    resolve_timer_.cancel();
+    beast::error_code ignored;
+    if (stream_) {
+      beast::get_lowest_layer(*stream_).socket().shutdown(tcp::socket::shutdown_both, ignored);
+      beast::get_lowest_layer(*stream_).socket().close(ignored);
+      stream_.reset();
+    }
+    buffer_.consume(buffer_.size());
+    parser_.reset();
+    active_request_.reset();
+    state_ = State::disconnected;
+  }
+
+  std::string host_header() const {
+    return port_ == "443" ? host_ : host_ + ":" + port_;
+  }
+
+  void complete(CompletionHandler handler, Result<HttpResponse> result) {
+    auto executor = net::get_associated_executor(handler, strand_);
+    net::dispatch(executor,
+      [handler = std::move(handler), result = std::move(result)]() mutable {
+        std::move(handler)(std::move(result));
+      });
+  }
 };
 
 } // namespace network
