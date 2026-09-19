@@ -344,18 +344,26 @@ enum class OrderSide {
 /**
  * Normalized price instruction for an order.
  *
- * The set is deliberately closed. Conditional, immediate-or-cancel,
- * fill-or-kill, stop, mid-price, and after-market variants exist at KIS but are
- * not normalized by this library yet; adapters reject them rather than
- * approximating them with a nearby value.
+ * Conditional, immediate-or-cancel, fill-or-kill, stop, mid-price, and
+ * after-market variants exist at KIS but are not normalized by this library
+ * yet. On a request path adapters reject them rather than approximating them
+ * with a nearby value. On a read path they surface as `UNKNOWN`, because an
+ * order placed through another channel must still be reportable.
  */
 enum class OrderType {
+  UNKNOWN,
   LIMIT,
   MARKET,
 };
 
-/** Validity condition attached to an order. */
+/**
+ * Validity condition attached to an order.
+ *
+ * `UNKNOWN` appears only on a read path, for a validity condition this
+ * library does not normalize. It is never accepted on a request.
+ */
 enum class TimeInForce {
+  UNKNOWN,
   DAY,
   AT_THE_CLOSE,
   AT_THE_OPEN,
@@ -367,8 +375,13 @@ enum class TimeInForce {
  * `CANCEL_REJECTED`, `REPLACE_REJECTED`, and `REPLACED` describe the fate of a
  * modify or cancel instruction rather than the original order, matching how
  * brokers record those instructions as separate rows.
+ *
+ * `UNKNOWN` carries a lifecycle state this library does not recognize. Both
+ * broker specifications require clients to tolerate unknown status codes, so a
+ * single unrecognized order must not fail an entire order listing.
  */
 enum class OrderStatus {
+  UNKNOWN,
   PENDING,
   PENDING_CANCEL,
   PENDING_REPLACE,
@@ -397,6 +410,7 @@ struct OrderRequest {
   OrderSide side_{OrderSide::BUY};
   OrderType type_{OrderType::LIMIT};
   TimeInForce time_in_force_{TimeInForce::DAY};
+  // `UNKNOWN` in `type_` or `time_in_force_` is rejected before network I/O.
   Decimal64 quantity_;
   std::optional<Decimal64> price_;
   std::optional<std::string> client_order_id_;
@@ -426,9 +440,9 @@ struct OrderSnapshot {
   InstrumentId instrument_;
   std::string name_;
   OrderSide side_{OrderSide::BUY};
-  OrderType type_{OrderType::LIMIT};
-  TimeInForce time_in_force_{TimeInForce::DAY};
-  OrderStatus status_{OrderStatus::PENDING};
+  OrderType type_{OrderType::UNKNOWN};
+  TimeInForce time_in_force_{TimeInForce::UNKNOWN};
+  OrderStatus status_{OrderStatus::UNKNOWN};
   std::optional<Decimal64> price_;
   Decimal64 quantity_;
   Currency currency_;
