@@ -17,12 +17,24 @@
 
 namespace algotradelib {
 
+/**
+ * Identifies a country supported by the compiled library.
+ *
+ * The set is intentionally closed and allocation-free. Supporting a new
+ * country requires adding its normalized value together with broker mapping
+ * and tests; unknown wire values must not silently enter strategy code.
+ */
 enum class Country {
-  UNKNOWN,
   KR,
   US,
 };
 
+/**
+ * Selects a normalized execution or quotation venue supported by the library.
+ *
+ * Broker wire codes remain in adapters. New normalized venues are added with
+ * their broker mappings and tests.
+ */
 enum class Venue {
   UNSPECIFIED,
   KRX,
@@ -30,6 +42,7 @@ enum class Venue {
   COMBINED,
 };
 
+/** Broker-neutral identity for a financial instrument. */
 struct InstrumentId {
   Country country{Country::KR};
   Venue venue{Venue::COMBINED};
@@ -43,13 +56,19 @@ struct InstrumentId {
   }
 };
 
+/** Validated ISO 4217-style three-letter currency code. */
 class Currency {
 public:
+  /** Constructs Korean won. */
   Currency() : code_{'K', 'R', 'W'} {}
 
-  explicit Currency(
-    std::string_view code
-  ) {
+  /**
+   * Constructs a currency from a three-character uppercase code.
+   *
+   * @throws std::invalid_argument if `code` is not three uppercase ASCII
+   * characters.
+   */
+  explicit Currency(std::string_view code) {
     if (code.size() != code_.size()) {
       throw std::invalid_argument("currency code must contain three characters");
     }
@@ -62,15 +81,16 @@ public:
     }
   }
 
+  /** Returns Korean won. */
   static Currency krw() { return Currency("KRW"); }
+
+  /** Returns United States dollars. */
   static Currency usd() { return Currency("USD"); }
 
+  /** Returns the three-letter currency code. */
   std::string str() const { return std::string(code_.begin(), code_.end()); }
 
-  friend bool operator==(
-    const Currency& lhs,
-    const Currency& rhs
-  ) {
+  friend bool operator==(const Currency& lhs, const Currency& rhs) {
     return lhs.code_ == rhs.code_;
   }
 
@@ -78,18 +98,23 @@ private:
   std::array<char, 3> code_{};
 };
 
+/** Exact signed fixed-point decimal represented by a coefficient and scale. */
 class Decimal64 {
 public:
+  /** Constructs zero. */
   Decimal64() = default;
-  Decimal64(
-    std::int64_t coefficient,
-    std::uint8_t scale
-  )
+
+  /** Constructs `coefficient * 10^-scale` without normalization. */
+  Decimal64(std::int64_t coefficient, std::uint8_t scale)
   : coefficient_(coefficient), scale_(scale) {}
 
-  static Decimal64 parse(
-    std::string_view input
-  ) {
+  /**
+   * Parses and normalizes a decimal string without binary floating point.
+   *
+   * @throws std::invalid_argument for malformed input.
+   * @throws std::out_of_range when the coefficient or scale cannot be stored.
+   */
+  static Decimal64 parse(std::string_view input) {
     if (input.empty()) {
       throw std::invalid_argument("decimal value is empty");
     }
@@ -161,9 +186,13 @@ public:
     return Decimal64(coefficient, scale);
   }
 
+  /** Returns the signed integer coefficient. */
   std::int64_t coefficient() const noexcept { return coefficient_; }
+
+  /** Returns the count of fractional decimal digits. */
   std::uint8_t scale() const noexcept { return scale_; }
 
+  /** Returns a normalized decimal string. */
   std::string str() const {
     const bool negative = coefficient_ < 0;
     std::uint64_t magnitude = negative ? static_cast<std::uint64_t>(-(coefficient_ + 1)) + 1ULL :
@@ -181,10 +210,7 @@ public:
     return digits;
   }
 
-  friend bool operator==(
-    const Decimal64& lhs,
-    const Decimal64& rhs
-  ) {
+  friend bool operator==(const Decimal64& lhs, const Decimal64& rhs) {
     return lhs.coefficient_ == rhs.coefficient_ && lhs.scale_ == rhs.scale_;
   }
 
@@ -193,6 +219,7 @@ private:
   std::uint8_t scale_{0};
 };
 
+/** Broad category for transport and broker-operation failures. */
 enum class ErrorCategory {
   CANCELLED,
   TRANSPORT,
@@ -203,6 +230,7 @@ enum class ErrorCategory {
   INVALID_ARGUMENT,
 };
 
+/** Structured error returned by transport and broker operations. */
 struct BrokerError {
   ErrorCategory category{ErrorCategory::PROTOCOL};
   int http_status{0};
@@ -212,30 +240,39 @@ struct BrokerError {
   std::optional<std::chrono::seconds> retry_after;
 };
 
+/** Value-or-error result with no exception required on the success path. */
 template <typename T>
 class Result {
 public:
-  Result(
-    T value
-  )
-  : value_(std::move(value)) {}
-  Result(
-    BrokerError error
-  )
-  : value_(std::move(error)) {}
+  /** Constructs a successful result. */
+  Result(T value) : value_(std::move(value)) {}
 
+  /** Constructs a failed result. */
+  Result(BrokerError error) : value_(std::move(error)) {}
+
+  /** Returns whether this result contains a value. */
   bool has_value() const noexcept { return std::holds_alternative<T>(value_); }
+
+  /** Returns whether this result contains a value. */
   explicit operator bool() const noexcept { return has_value(); }
 
+  /** Returns the contained value. */
   T& value() { return std::get<T>(value_); }
+
+  /** Returns the contained value. */
   const T& value() const { return std::get<T>(value_); }
+
+  /** Returns the contained error. */
   BrokerError& error() { return std::get<BrokerError>(value_); }
+
+  /** Returns the contained error. */
   const BrokerError& error() const { return std::get<BrokerError>(value_); }
 
 private:
   std::variant<T, BrokerError> value_;
 };
 
+/** Normalized point-in-time market quote. */
 struct QuoteSnapshot {
   InstrumentId instrument;
   Decimal64 last_price;
@@ -244,6 +281,7 @@ struct QuoteSnapshot {
   std::chrono::system_clock::time_point received_at;
 };
 
+/** Exact monetary amount paired with its currency. */
 struct Money {
   Decimal64 amount;
   Currency currency;
@@ -256,6 +294,7 @@ struct Money {
   }
 };
 
+/** One broker-neutral position in an account holdings snapshot. */
 struct HoldingPosition {
   InstrumentId instrument;
   std::string name;
@@ -269,6 +308,7 @@ struct HoldingPosition {
   Decimal64 unrealized_return;
 };
 
+/** Gross holdings totals for one currency without implicit conversion. */
 struct HoldingsTotals {
   Currency currency;
   Decimal64 purchase_value;
@@ -276,12 +316,14 @@ struct HoldingsTotals {
   Decimal64 unrealized_profit_loss;
 };
 
+/** Point-in-time normalized positions and per-currency totals. */
 struct HoldingsSnapshot {
   std::vector<HoldingPosition> positions;
   std::vector<HoldingsTotals> totals;
   std::chrono::system_clock::time_point received_at;
 };
 
+/** Parses an ISO 8601 timestamp with a UTC designator or numeric offset. */
 inline std::optional<std::chrono::system_clock::time_point> parse_iso8601_timestamp(
   std::string_view value
 ) {

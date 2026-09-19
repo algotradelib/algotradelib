@@ -5,15 +5,19 @@
 #include <boost/asio/ssl.hpp>
 #include <boost/beast/websocket/ssl.hpp>
 
-namespace algotradelib::network {
+namespace algotradelib {
 
 namespace ssl = net::ssl;
 
+namespace network {
+
+/** Options accepted by a TLS WebSocket session. */
 using WssSessionOptions = WebSocketSessionOptions;
 
-class WssSession
-: public WebSocketSessionBase<WssSession, websocket::stream<ssl::stream<beast::tcp_stream>>> {
+/** WebSocket client session over TLS. */
+class WssSession : public WebSocketSessionBase<WssSession, websocket::stream<ssl::stream<beast::tcp_stream>>> {
 public:
+  /** Constructs a TLS WebSocket session from structured options. */
   WssSession(
     net::io_context& ioc,
     ssl::context& context,
@@ -24,6 +28,7 @@ public:
   : WebSocketSessionBase(ioc, std::move(host), std::move(port), std::move(options)),
     context_(context) {}
 
+  /** Constructs a TLS WebSocket session from a target and headers. */
   WssSession(
     net::io_context& ioc,
     ssl::context& context,
@@ -64,10 +69,7 @@ private:
     start_resolve();
   }
 
-  void on_connect(
-    beast::error_code error,
-    tcp::resolver::results_type::endpoint_type endpoint
-  ) {
+  void on_connect(beast::error_code error, tcp::resolver::results_type::endpoint_type endpoint) {
     if (error) {
       fail("connect", error);
       return;
@@ -80,9 +82,7 @@ private:
     );
   }
 
-  void on_ssl_handshake(
-    beast::error_code error
-  ) {
+  void on_ssl_handshake(beast::error_code error) {
     if (error) {
       fail("ssl_handshake", error);
       return;
@@ -91,4 +91,5 @@ private:
   }
 };
 
-} // namespace algotradelib::network
+} // namespace network
+} // namespace algotradelib

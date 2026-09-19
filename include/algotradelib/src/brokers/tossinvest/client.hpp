@@ -10,8 +10,8 @@
 #include <boost/asio/post.hpp>
 #include <boost/asio/strand.hpp>
 
-#include <deque>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <optional>
 #include <string>
@@ -20,19 +20,32 @@
 
 namespace algotradelib::tossinvest {
 
+/** Toss brokerage account returned by account discovery. */
 struct TossAccount {
   std::string account_number;
   std::int64_t sequence{0};
   std::string account_type;
 };
 
+/** Persistent asynchronous Toss Securities client with coalesced OAuth refresh. */
 class TossClient : public std::enable_shared_from_this<TossClient> {
 public:
+  /** Completion handler for one normalized quote. */
   using QuoteHandler = net::any_completion_handler<void(Result<QuoteSnapshot>)>;
+  /** Completion handler for Toss account discovery. */
   using AccountsHandler = net::any_completion_handler<void(Result<std::vector<TossAccount>>)>;
-  using HoldingsHandler = net::any_completion_handler<void(Result<HoldingsSnapshot>)>;
-  using TokenHandler = net::any_completion_handler<void(Result<std::string>)>;
 
+  /** Completion handler for one normalized holdings snapshot. */
+  using HoldingsHandler = net::any_completion_handler<void(Result<HoldingsSnapshot>)>;
+
+  /** Internal completion handler for a shared access-token refresh. */
+  using TokenHandler = net::any_completion_handler<void(std::optional<BrokerError>)>;
+
+  /**
+   * Constructs a client and takes value ownership of its credentials.
+   *
+   * Lvalue configurations are copied once; rvalue configurations are moved.
+   */
   TossClient(
     net::any_io_executor executor,
     ssl::context& context,
@@ -41,15 +54,12 @@ public:
   )
   : strand_(net::make_strand(std::move(executor))), config_(std::move(config)),
     http_(
-      std::make_shared<
-        network::AsyncHttpClient>(strand_, context, "openapi.tossinvest.com", "443", options)
+      std::make_shared<network::AsyncHttpClient>(strand_, context, "openapi.tossinvest.com", "443", options)
     ) {}
 
+  /** Requests and normalizes a current quote. */
   template <typename CompletionToken>
-  auto async_quote(
-    InstrumentId instrument,
-    CompletionToken&& token
-  ) {
+  auto async_quote(InstrumentId instrument, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<QuoteSnapshot>)>(
       [self = shared_from_this(), instrument = std::move(instrument)](auto&& handler) mutable {
         auto completion = QuoteHandler(std::forward<decltype(handler)>(handler));
@@ -64,6 +74,7 @@ public:
     );
   }
 
+  /** Discovers the brokerage accounts available to the current credentials. */
   template <typename CompletionToken>
   auto async_accounts(
     CompletionToken&& token
@@ -82,6 +93,7 @@ public:
     );
   }
 
+  /** Requests and normalizes holdings for one discovered account sequence. */
   template <typename CompletionToken>
   auto async_holdings(
     std::int64_t account_sequence,
@@ -101,6 +113,7 @@ public:
     );
   }
 
+  /** Cancels transport work and queued HTTP operations. */
   void close() { http_->close(); }
 
 private:
@@ -113,10 +126,7 @@ private:
   bool refreshing_{false};
   std::deque<TokenHandler> token_waiters_;
 
-  void start_quote(
-    InstrumentId instrument,
-    QuoteHandler completion
-  ) {
+  void start_quote(InstrumentId instrument, QuoteHandler completion) {
     if (instrument.country != Country::KR || !broker_detail::valid_symbol(instrument.symbol)) {
       BrokerError error;
       error.category = ErrorCategory::INVALID_ARGUMENT;
@@ -129,39 +139,33 @@ private:
       TokenHandler(
         [self = shared_from_this(),
           instrument = std::move(instrument),
-          completion = std::move(completion)](Result<std::string> token_result) mutable {
-          if (!token_result) {
+          completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+          if (token_error) {
             self->complete(
-              std::move(completion), Result<QuoteSnapshot>(std::move(token_result.error()))
+              std::move(completion), Result<QuoteSnapshot>(std::move(*token_error))
             );
             return;
           }
-          self->request_quote(
-            std::move(instrument), std::move(token_result.value()), std::move(completion)
-          );
+          self->request_quote(std::move(instrument), std::move(completion));
         }
       )
     );
   }
 
-  void start_accounts(
-    AccountsHandler completion
-  ) {
+  void start_accounts(AccountsHandler completion) {
     ensure_token(
       TokenHandler(
         [self = shared_from_this(), completion = std::move(completion)](
-          Result<std::string> token_result
+          std::optional<BrokerError> token_error
         ) mutable {
-          if (!token_result) {
+          if (token_error) {
             self->complete_accounts(
               std::move(completion),
-              Result<std::vector<TossAccount>>(std::move(token_result.error()))
+              Result<std::vector<TossAccount>>(std::move(*token_error))
             );
             return;
           }
-          self->request_accounts(
-            std::move(token_result.value()), std::move(completion)
-          );
+          self->request_accounts(std::move(completion));
         }
       )
     );
@@ -184,27 +188,23 @@ private:
     ensure_token(
       TokenHandler(
         [self = shared_from_this(), account_sequence, completion = std::move(completion)](
-          Result<std::string> token_result
+          std::optional<BrokerError> token_error
         ) mutable {
-          if (!token_result) {
+          if (token_error) {
             self->complete_holdings(
-              std::move(completion), Result<HoldingsSnapshot>(std::move(token_result.error()))
+              std::move(completion), Result<HoldingsSnapshot>(std::move(*token_error))
             );
             return;
           }
-          self->request_holdings(
-            account_sequence, std::move(token_result.value()), std::move(completion)
-          );
+          self->request_holdings(account_sequence, std::move(completion));
         }
       )
     );
   }
 
-  void ensure_token(
-    TokenHandler handler
-  ) {
+  void ensure_token(TokenHandler handler) {
     if (token_.valid()) {
-      std::move(handler)(Result<std::string>(token_.access_token_));
+      std::move(handler)(std::nullopt);
       return;
     }
     token_waiters_.push_back(std::move(handler));
@@ -227,9 +227,7 @@ private:
     );
   }
 
-  void finish_token(
-    Result<network::HttpResponse> result
-  ) {
+  void finish_token(Result<network::HttpResponse> result) {
     refreshing_ = false;
     std::optional<BrokerError> failure;
     if (!result) {
@@ -240,7 +238,7 @@ private:
       if (!document) {
         failure = std::move(parse_error);
       } else if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-        failure = broker_detail::toss_error(*document, result.value().result_int());
+        failure = toss_error(*document, result.value().result_int());
         failure->category = ErrorCategory::AUTHENTICATION;
       } else {
         try {
@@ -258,22 +256,18 @@ private:
     token_waiters_.clear();
     for (auto& waiter : waiters) {
       if (failure) {
-        std::move(waiter)(Result<std::string>(*failure));
+        std::move(waiter)(*failure);
       } else {
-        std::move(waiter)(Result<std::string>(token_.access_token_));
+        std::move(waiter)(std::nullopt);
       }
     }
   }
 
-  void request_quote(
-    InstrumentId instrument,
-    std::string access_token,
-    QuoteHandler completion
-  ) {
+  void request_quote(InstrumentId instrument, QuoteHandler completion) {
     network::HttpRequest request;
     request.method = http::verb::get;
     request.target = "/api/v1/prices?symbols=" + instrument.symbol;
-    request.headers.emplace_back("authorization", "Bearer " + access_token);
+    request.headers.emplace_back("authorization", "Bearer " + token_.access_token_);
     http_->async_request(
       std::move(request),
       [self = shared_from_this(),
@@ -294,14 +288,11 @@ private:
     );
   }
 
-  void request_accounts(
-    std::string access_token,
-    AccountsHandler completion
-  ) {
+  void request_accounts(AccountsHandler completion) {
     network::HttpRequest request;
     request.method = http::verb::get;
     request.target = "/api/v1/accounts";
-    request.headers.emplace_back("authorization", "Bearer " + access_token);
+    request.headers.emplace_back("authorization", "Bearer " + token_.access_token_);
     http_->async_request(
       std::move(request),
       [self = shared_from_this(), completion = std::move(completion)](
@@ -321,14 +312,13 @@ private:
 
   void request_holdings(
     std::int64_t account_sequence,
-    std::string access_token,
     HoldingsHandler completion
   ) {
     network::HttpRequest request;
     request.method = http::verb::get;
     request.target = "/api/v1/holdings";
     request.headers = {
-      {"authorization", "Bearer " + access_token},
+      {"authorization", "Bearer " + token_.access_token_},
       {"X-Tossinvest-Account", std::to_string(account_sequence)},
     };
     http_->async_request(
@@ -348,10 +338,7 @@ private:
     );
   }
 
-  static Result<QuoteSnapshot> parse_quote(
-    InstrumentId instrument,
-    Result<network::HttpResponse> result
-  ) {
+  static Result<QuoteSnapshot> parse_quote(InstrumentId instrument, Result<network::HttpResponse> result) {
     if (!result) {
       return Result<QuoteSnapshot>(std::move(result.error()));
     }
@@ -361,7 +348,7 @@ private:
       return Result<QuoteSnapshot>(std::move(parse_error));
     }
     if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-      auto error = broker_detail::toss_error(*document, result.value().result_int());
+      auto error = toss_error(*document, result.value().result_int());
       error.retry_after = broker_detail::retry_after(result.value());
       return Result<QuoteSnapshot>(std::move(error));
     }
@@ -412,7 +399,7 @@ private:
       return Result<std::vector<TossAccount>>(std::move(parse_error));
     }
     if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-      auto error = broker_detail::toss_error(*document, result.value().result_int());
+      auto error = toss_error(*document, result.value().result_int());
       error.retry_after = broker_detail::retry_after(result.value());
       return Result<std::vector<TossAccount>>(std::move(error));
     }
@@ -462,7 +449,7 @@ private:
       return Result<HoldingsSnapshot>(std::move(parse_error));
     }
     if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-      auto error = broker_detail::toss_error(*document, result.value().result_int());
+      auto error = toss_error(*document, result.value().result_int());
       error.retry_after = broker_detail::retry_after(result.value());
       return Result<HoldingsSnapshot>(std::move(error));
     }
@@ -502,7 +489,7 @@ private:
   ) {
     const auto market_country = broker_detail::json_string(output, "marketCountry");
     const auto currency = Currency(broker_detail::json_string(output, "currency"));
-    Country country = Country::UNKNOWN;
+    Country country;
     Venue venue = Venue::UNSPECIFIED;
     if (market_country == "KR") {
       country = Country::KR;
@@ -515,6 +502,8 @@ private:
       if (!(currency == Currency::usd())) {
         throw std::runtime_error("US holding currency is not USD");
       }
+    } else {
+      throw std::runtime_error("unsupported marketCountry: " + market_country);
     }
 
     const auto& market_value = required_object(output, "marketValue");
@@ -603,10 +592,29 @@ private:
     }
   }
 
-  void complete(
-    QuoteHandler handler,
-    Result<QuoteSnapshot> result
-  ) {
+  static BrokerError toss_error(const json::object& document, int status = 0) {
+    BrokerError result;
+    result.http_status = status;
+    result.category = status == 429 ? ErrorCategory::RATE_LIMIT : ErrorCategory::PROTOCOL;
+    const auto error = document.if_contains("error");
+    if (!error || !error->is_object()) {
+      result.message = "Toss response has no error object";
+      return result;
+    }
+    const auto& object = error->as_object();
+    if (const auto value = object.if_contains("code"); value && value->is_string()) {
+      result.broker_code = value->as_string().c_str();
+    }
+    if (const auto value = object.if_contains("requestId"); value && value->is_string()) {
+      result.request_id = value->as_string().c_str();
+    }
+    if (const auto value = object.if_contains("message"); value && value->is_string()) {
+      result.message = value->as_string().c_str();
+    }
+    return result;
+  }
+
+  void complete(QuoteHandler handler, Result<QuoteSnapshot> result) {
     auto executor = net::get_associated_executor(handler, strand_);
     net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
       std::move(handler)(std::move(result));
@@ -634,8 +642,10 @@ private:
   }
 };
 
+/** Blocking facade that drives `TossClient` on a private event loop. */
 class TossBlockingClient {
 public:
+  /** Constructs a blocking Toss Securities client. */
   TossBlockingClient(
     ssl::context& context,
     TossConfig config,
@@ -645,9 +655,8 @@ public:
       std::make_shared<TossClient>(ioc_.get_executor(), context, std::move(config), options)
     ) {}
 
-  Result<QuoteSnapshot> quote(
-    InstrumentId instrument
-  ) {
+  /** Returns the current normalized quote or a structured error. */
+  Result<QuoteSnapshot> quote(InstrumentId instrument) {
     std::optional<Result<QuoteSnapshot>> result;
     ioc_.restart();
     client_->async_quote(std::move(instrument), [&result](Result<QuoteSnapshot> value) {
@@ -664,6 +673,7 @@ public:
     return std::move(*result);
   }
 
+  /** Discovers the brokerage accounts available to the current credentials. */
   Result<std::vector<TossAccount>> accounts() {
     std::optional<Result<std::vector<TossAccount>>> result;
     ioc_.restart();
@@ -681,9 +691,8 @@ public:
     return std::move(*result);
   }
 
-  Result<HoldingsSnapshot> holdings(
-    std::int64_t account_sequence
-  ) {
+  /** Returns normalized holdings for one discovered account sequence. */
+  Result<HoldingsSnapshot> holdings(std::int64_t account_sequence) {
     std::optional<Result<HoldingsSnapshot>> result;
     ioc_.restart();
     client_->async_holdings(account_sequence, [&result](Result<HoldingsSnapshot> value) {

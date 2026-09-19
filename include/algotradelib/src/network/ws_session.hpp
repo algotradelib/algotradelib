@@ -4,8 +4,10 @@
 
 namespace algotradelib::network {
 
+/** Plain TCP WebSocket client session. */
 class WsSession : public WebSocketSessionBase<WsSession, websocket::stream<beast::tcp_stream>> {
 public:
+  /** Constructs a plain WebSocket session for one endpoint. */
   WsSession(
     net::io_context& ioc,
     std::string host,
@@ -34,10 +36,7 @@ private:
     start_resolve();
   }
 
-  void on_connect(
-    beast::error_code error,
-    tcp::resolver::results_type::endpoint_type endpoint
-  ) {
+  void on_connect(beast::error_code error, tcp::resolver::results_type::endpoint_type endpoint) {
     if (error) {
       fail("connect", error);
       return;

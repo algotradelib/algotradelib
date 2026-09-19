@@ -18,7 +18,7 @@
 #include <string_view>
 #include <utility>
 
-namespace algotradelib::network {
+namespace algotradelib {
 
 namespace beast = boost::beast;
 namespace http = beast::http;
@@ -26,6 +26,9 @@ namespace websocket = beast::websocket;
 namespace net = boost::asio;
 using tcp = net::ip::tcp;
 
+namespace network {
+
+/** Runtime options shared by plain and TLS WebSocket sessions. */
 struct WebSocketSessionOptions {
   std::string target{"/"};
   std::map<std::string, std::string> headers;
@@ -35,21 +38,17 @@ struct WebSocketSessionOptions {
   std::chrono::seconds reconnect_max{30};
 };
 
-// Shared connection state machine for websocket clients: write queueing,
-// the read loop, graceful close, and failure/backoff bookkeeping,
-// parameterized over the concrete `Stream` type (plain TCP or TLS).
-//
-// `Derived` (CRTP) must implement the transport-specific connect sequence
-// and grant this base access to it via
-// `template <typename, typename> friend class WebSocketSessionBase;`:
-//   void do_connect()
-//     Construct `ws_` and call `start_resolve()`.
-//   void on_connect(beast::error_code, tcp::resolver::results_type::endpoint_type)
-//     TCP connect completed; set `host_header_` and either perform a TLS
-//     handshake before calling `start_ws_handshake()`, or call it directly.
+/**
+ * Shared CRTP state machine for plain and TLS WebSocket clients.
+ *
+ * `Derived` supplies transport-specific connection setup through `do_connect`
+ * and `on_connect`. This base owns serialized writes, reads, graceful close,
+ * and reconnect backoff.
+ */
 template <typename Derived, typename Stream>
 class WebSocketSessionBase : public std::enable_shared_from_this<Derived> {
 public:
+  /** Starts or restarts the transport connection asynchronously. */
   void connect() {
     net::post(strand_, [self = shared_derived()] {
       self->stop_requested_ = false;
@@ -57,9 +56,8 @@ public:
     });
   }
 
-  void send(
-    std::string message
-  ) {
+  /** Queues one complete WebSocket message for serialized transmission. */
+  void send(std::string message) {
     net::post(strand_, [self = shared_derived(), message = std::move(message)]() mutable {
       self->write_queue_.push_back(std::move(message));
       if (self->connected_ && !self->closing_ && !self->writing_) {
@@ -68,6 +66,7 @@ public:
     });
   }
 
+  /** Requests an asynchronous graceful close and disables reconnection. */
   void close() {
     net::post(strand_, [self = shared_derived()] {
       self->stop_requested_ = true;
@@ -106,14 +105,18 @@ protected:
 
   virtual ~WebSocketSessionBase() = default;
 
+  /** Receives one complete WebSocket message. */
   virtual void on_message(std::string_view message) = 0;
+
+  /** Called after a successful WebSocket upgrade. */
   virtual void on_open() {}
-  virtual void on_error(
-    std::string_view stage,
-    beast::error_code error
-  ) {
+
+  /** Called when a transport stage fails. */
+  virtual void on_error(std::string_view stage, beast::error_code error) {
     boost::ignore_unused(stage, error);
   }
+
+  /** Called after the session closes. */
   virtual void on_closed() {}
 
   net::strand<net::io_context::executor_type> strand_;
@@ -168,10 +171,7 @@ protected:
     );
   }
 
-  void fail(
-    std::string_view stage,
-    beast::error_code error
-  ) {
+  void fail(std::string_view stage, beast::error_code error) {
     connected_ = false;
     connecting_ = false;
     writing_ = false;
@@ -189,10 +189,7 @@ protected:
   }
 
 private:
-  void on_resolve(
-    beast::error_code error,
-    tcp::resolver::results_type endpoints
-  ) {
+  void on_resolve(beast::error_code error, tcp::resolver::results_type endpoints) {
     if (error) {
       fail("resolve", error);
       return;
@@ -203,9 +200,7 @@ private:
     );
   }
 
-  void on_handshake(
-    beast::error_code error
-  ) {
+  void on_handshake(beast::error_code error) {
     if (error) {
       fail("handshake", error);
       return;
@@ -228,10 +223,8 @@ private:
     );
   }
 
-  void on_write(
-    beast::error_code error,
-    std::size_t
-  ) {
+  void on_write(beast::error_code error, std::size_t bytes_transferred) {
+    boost::ignore_unused(bytes_transferred);
     writing_ = false;
     if (error) {
       fail("write", error);
@@ -251,10 +244,8 @@ private:
     );
   }
 
-  void on_read(
-    beast::error_code error,
-    std::size_t
-  ) {
+  void on_read(beast::error_code error, std::size_t bytes_transferred) {
+    boost::ignore_unused(bytes_transferred);
     if (error == websocket::error::closed) {
       connected_ = false;
       connecting_ = false;
@@ -280,9 +271,7 @@ private:
     );
   }
 
-  void on_close(
-    beast::error_code error
-  ) {
+  void on_close(beast::error_code error) {
     connected_ = false;
     connecting_ = false;
     closing_ = false;
@@ -319,4 +308,5 @@ private:
   }
 };
 
-} // namespace algotradelib::network
+} // namespace network
+} // namespace algotradelib

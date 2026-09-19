@@ -50,6 +50,28 @@ struct KisClientTestAccess {
       account, config, "access-token", foreign_cursor, domestic_cursor, continuation
     );
   }
+
+  static std::optional<BrokerError> append_holdings_page(
+    HoldingsSnapshot& snapshot,
+    std::size_t& page_count,
+    std::string& foreign_cursor,
+    std::string& domestic_cursor,
+    HoldingsSnapshot page,
+    std::string next_foreign_cursor,
+    std::string next_domestic_cursor,
+    bool has_next
+  ) {
+    return KisClient::append_holdings_page(
+      snapshot,
+      page_count,
+      foreign_cursor,
+      domestic_cursor,
+      std::move(page),
+      std::move(next_foreign_cursor),
+      std::move(next_domestic_cursor),
+      has_next
+    );
+  }
 };
 } // namespace algotradelib::kis
 
@@ -344,6 +366,39 @@ TEST_CASE(
 }
 
 TEST_CASE(
+  "Blocking HTTP retries GET once without exception-driven control flow",
+  "[http][tls][blocking][retry]"
+) {
+  SECTION("GET is retried after a dropped response") {
+    test::LocalHttpsServer server;
+    net::io_context ioc;
+    ssl::context context(ssl::context::tls_client);
+    test::trustLocalhostCertificate(context);
+    network::HttpClient client(ioc, context, "localhost", server.port());
+
+    const auto response = client.get("/drop-get-once");
+    REQUIRE(response.body() == "/drop-get-once");
+    REQUIRE(server.requestCount("/drop-get-once") == 2);
+    REQUIRE(server.connectionCount() == 2);
+  }
+
+  SECTION("POST reports the first dropped response") {
+    test::LocalHttpsServer server;
+    net::io_context ioc;
+    ssl::context context(ssl::context::tls_client);
+    test::trustLocalhostCertificate(context);
+    network::HttpClient client(ioc, context, "localhost", server.port());
+
+    REQUIRE_THROWS_AS(
+      client.post("/drop-post", "order-like-payload"),
+      beast::system_error
+    );
+    REQUIRE(server.requestCount("/drop-post") == 1);
+    REQUIRE(server.connectionCount() == 1);
+  }
+}
+
+TEST_CASE(
   "Async HTTP enforces the configured response body limit",
   "[http][tls][limits]"
 ) {
@@ -483,6 +538,87 @@ TEST_CASE(
 }
 
 TEST_CASE(
+  "KIS holdings pagination accumulates pages and rejects repeated cursors",
+  "[broker][kis][holdings][pagination]"
+) {
+  HoldingsSnapshot snapshot;
+  std::size_t page_count{0};
+  std::string foreign_cursor;
+  std::string domestic_cursor;
+
+  HoldingsSnapshot first_page;
+  HoldingPosition first_position;
+  first_position.instrument = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+  first_page.positions.push_back(std::move(first_position));
+  first_page.totals.push_back(
+    HoldingsTotals{
+      Currency::krw(),
+      Decimal64::parse("700000"),
+      Decimal64::parse("720000"),
+      Decimal64::parse("20000"),
+    }
+  );
+  auto error = kis::KisClientTestAccess::append_holdings_page(
+    snapshot,
+    page_count,
+    foreign_cursor,
+    domestic_cursor,
+    std::move(first_page),
+    "foreign-next",
+    "domestic-next",
+    true
+  );
+  REQUIRE_FALSE(error);
+  REQUIRE(page_count == 1);
+  REQUIRE(snapshot.positions.size() == 1);
+  REQUIRE(foreign_cursor == "foreign-next");
+  REQUIRE(domestic_cursor == "domestic-next");
+
+  HoldingsSnapshot second_page;
+  HoldingPosition second_position;
+  second_position.instrument = InstrumentId{Country::KR, Venue::COMBINED, "000660"};
+  second_page.positions.push_back(std::move(second_position));
+  second_page.totals.push_back(
+    HoldingsTotals{
+      Currency::krw(),
+      Decimal64::parse("1000000"),
+      Decimal64::parse("1100000"),
+      Decimal64::parse("100000"),
+    }
+  );
+  error = kis::KisClientTestAccess::append_holdings_page(
+    snapshot,
+    page_count,
+    foreign_cursor,
+    domestic_cursor,
+    std::move(second_page),
+    "",
+    "",
+    false
+  );
+  REQUIRE_FALSE(error);
+  REQUIRE(page_count == 2);
+  REQUIRE(snapshot.positions.size() == 2);
+  REQUIRE(snapshot.positions.back().instrument.symbol == "000660");
+  REQUIRE(snapshot.totals.front().market_value == Decimal64::parse("1100000"));
+
+  HoldingsSnapshot repeated_page;
+  error = kis::KisClientTestAccess::append_holdings_page(
+    snapshot,
+    page_count,
+    foreign_cursor,
+    domestic_cursor,
+    std::move(repeated_page),
+    "foreign-next",
+    "domestic-next",
+    true
+  );
+  REQUIRE(error);
+  REQUIRE(error->broker_code == "invalid_pagination");
+  REQUIRE(page_count == 2);
+}
+
+TEST_CASE(
   "KIS holdings rejects invalid accounts before network I/O",
   "[broker][kis][holdings][validation]"
 ) {
@@ -521,7 +657,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-  "Toss holdings normalize multiple currencies and unknown countries",
+  "Toss holdings normalize multiple currencies and reject unknown countries",
   "[broker][toss][holdings]"
 ) {
   network::HttpResponse response{http::status::ok, 11};
@@ -592,9 +728,10 @@ TEST_CASE(
   }})";
   const auto future =
     tossinvest::TossClientTestAccess::parse_holdings(std::move(future_response));
-  REQUIRE(future);
-  REQUIRE(future.value().positions.front().instrument.country == Country::UNKNOWN);
-  REQUIRE(future.value().positions.front().market_value.currency == Currency("JPY"));
+  REQUIRE_FALSE(future);
+  REQUIRE(future.error().category == ErrorCategory::PROTOCOL);
+  REQUIRE(future.error().broker_code == "invalid_holdings_response");
+  REQUIRE(future.error().message == "unsupported marketCountry: JP");
 }
 
 TEST_CASE(

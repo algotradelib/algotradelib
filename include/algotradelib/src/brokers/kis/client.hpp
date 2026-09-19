@@ -20,17 +20,30 @@
 
 namespace algotradelib::kis {
 
+/** Selects one KIS trading account for a holdings request. */
 struct KisAccount {
   std::string account_number;
   std::string product_code;
 };
 
+/** Persistent asynchronous KIS client with coalesced OAuth refresh. */
 class KisClient : public std::enable_shared_from_this<KisClient> {
 public:
+  /** Completion handler for one normalized quote. */
   using QuoteHandler = net::any_completion_handler<void(Result<QuoteSnapshot>)>;
-  using HoldingsHandler = net::any_completion_handler<void(Result<HoldingsSnapshot>)>;
-  using TokenHandler = net::any_completion_handler<void(Result<std::string>)>;
 
+  /** Completion handler for one normalized holdings snapshot. */
+  using HoldingsHandler = net::any_completion_handler<void(Result<HoldingsSnapshot>)>;
+
+  /** Internal completion handler for a shared access-token refresh. */
+  using TokenHandler = net::any_completion_handler<void(std::optional<BrokerError>)>;
+
+  /**
+   * Constructs a client for one KIS environment.
+   *
+   * `config` is a value sink because the client retains its own credentials;
+   * lvalues are copied once and rvalues are moved into the client.
+   */
   KisClient(
     net::any_io_executor executor,
     ssl::context& context,
@@ -48,11 +61,9 @@ public:
       )
     ) {}
 
+  /** Requests and normalizes a current quote. */
   template <typename CompletionToken>
-  auto async_quote(
-    InstrumentId instrument,
-    CompletionToken&& token
-  ) {
+  auto async_quote(InstrumentId instrument, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<QuoteSnapshot>)>(
       [self = shared_from_this(), instrument = std::move(instrument)](auto&& handler) mutable {
         auto completion = QuoteHandler(std::forward<decltype(handler)>(handler));
@@ -67,6 +78,7 @@ public:
     );
   }
 
+  /** Requests and normalizes all holdings for the selected KIS account. */
   template <typename CompletionToken>
   auto async_holdings(
     KisAccount account,
@@ -86,6 +98,7 @@ public:
     );
   }
 
+  /** Cancels transport work and queued HTTP operations. */
   void close() { http_->close(); }
 
 private:
@@ -113,10 +126,7 @@ private:
     : account(std::move(selected_account)), completion(std::move(selected_completion)) {}
   };
 
-  void start_quote(
-    InstrumentId instrument,
-    QuoteHandler completion
-  ) {
+  void start_quote(InstrumentId instrument, QuoteHandler completion) {
     if (instrument.country != Country::KR || !broker_detail::valid_symbol(instrument.symbol)) {
       BrokerError error;
       error.category = ErrorCategory::INVALID_ARGUMENT;
@@ -130,16 +140,14 @@ private:
       TokenHandler(
         [self = shared_from_this(),
           instrument = std::move(instrument),
-          completion = std::move(completion)](Result<std::string> token_result) mutable {
-          if (!token_result) {
+          completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+          if (token_error) {
             self->complete(
-              std::move(completion), Result<QuoteSnapshot>(std::move(token_result.error()))
+              std::move(completion), Result<QuoteSnapshot>(std::move(*token_error))
             );
             return;
           }
-          self->request_quote(
-            std::move(instrument), std::move(token_result.value()), std::move(completion)
-          );
+          self->request_quote(std::move(instrument), std::move(completion));
         }
       )
     );
@@ -168,24 +176,22 @@ private:
     );
     ensure_token(
       TokenHandler(
-        [self = shared_from_this(), operation](Result<std::string> token_result) mutable {
-          if (!token_result) {
+        [self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
+          if (token_error) {
             self->finish_holdings(
-              operation, Result<HoldingsSnapshot>(std::move(token_result.error()))
+              operation, Result<HoldingsSnapshot>(std::move(*token_error))
             );
             return;
           }
-          self->request_holdings(operation, std::move(token_result.value()));
+          self->request_holdings(operation);
         }
       )
     );
   }
 
-  void ensure_token(
-    TokenHandler handler
-  ) {
+  void ensure_token(TokenHandler handler) {
     if (token_.valid()) {
-      std::move(handler)(Result<std::string>(token_.access_token_));
+      std::move(handler)(std::nullopt);
       return;
     }
     token_waiters_.push_back(std::move(handler));
@@ -209,9 +215,7 @@ private:
     );
   }
 
-  void finish_token(
-    Result<network::HttpResponse> result
-  ) {
+  void finish_token(Result<network::HttpResponse> result) {
     refreshing_ = false;
     std::optional<BrokerError> failure;
     if (!result) {
@@ -241,18 +245,14 @@ private:
     token_waiters_.clear();
     for (auto& waiter : waiters) {
       if (failure) {
-        std::move(waiter)(Result<std::string>(*failure));
+        std::move(waiter)(*failure);
       } else {
-        std::move(waiter)(Result<std::string>(token_.access_token_));
+        std::move(waiter)(std::nullopt);
       }
     }
   }
 
-  void request_quote(
-    InstrumentId instrument,
-    std::string access_token,
-    QuoteHandler completion
-  ) {
+  void request_quote(InstrumentId instrument, QuoteHandler completion) {
     const char* market = "UN";
     if (instrument.venue == Venue::KRX) {
       market = "J";
@@ -267,7 +267,7 @@ private:
       "?FID_COND_MRKT_DIV_CODE=" +
       std::string(market) + "&FID_INPUT_ISCD=" + instrument.symbol;
     request.headers = {
-      {"authorization", "Bearer " + access_token},
+      {"authorization", "Bearer " + token_.access_token_},
       {"appkey", config_.key()},
       {"appsecret", config_.secret()},
       {"tr_id", "FHKST01010100"},
@@ -294,32 +294,22 @@ private:
     );
   }
 
-  void request_holdings(
-    const std::shared_ptr<HoldingsOperation>& operation,
-    std::string access_token
-  ) {
+  void request_holdings(const std::shared_ptr<HoldingsOperation>& operation) {
     auto request = make_holdings_request(
       operation->account,
       config_,
-      access_token,
+      token_.access_token_,
       operation->foreign_cursor,
       operation->domestic_cursor,
       operation->page_count > 0
     );
     http_->async_request(
       std::move(request),
-      [self = shared_from_this(), operation, access_token = std::move(access_token)](
-        Result<network::HttpResponse> result
-      ) mutable {
+      [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
         net::post(
           self->strand_,
-          [self,
-           operation,
-           access_token = std::move(access_token),
-           result = std::move(result)]() mutable {
-            self->handle_holdings_page(
-              operation, std::move(access_token), std::move(result)
-            );
+          [self, operation, result = std::move(result)]() mutable {
+            self->handle_holdings_page(operation, std::move(result));
           }
         );
       }
@@ -356,9 +346,50 @@ private:
     return request;
   }
 
+  static std::optional<BrokerError> append_holdings_page(
+    HoldingsSnapshot& snapshot,
+    std::size_t& page_count,
+    std::string& foreign_cursor,
+    std::string& domestic_cursor,
+    HoldingsSnapshot page,
+    std::string next_foreign_cursor,
+    std::string next_domestic_cursor,
+    bool has_next
+  ) {
+    if (has_next) {
+      const bool cursor_did_not_advance = next_foreign_cursor == foreign_cursor &&
+        next_domestic_cursor == domestic_cursor;
+      if (
+        page_count + 1 >= 100 ||
+        (next_foreign_cursor.empty() && next_domestic_cursor.empty()) ||
+        cursor_did_not_advance
+      ) {
+        BrokerError error;
+        error.category = ErrorCategory::PROTOCOL;
+        error.broker_code = "invalid_pagination";
+        error.message = "KIS holdings continuation did not advance";
+        return error;
+      }
+    }
+
+    snapshot.positions.insert(
+      snapshot.positions.end(),
+      std::make_move_iterator(page.positions.begin()),
+      std::make_move_iterator(page.positions.end())
+    );
+    if (!page.totals.empty()) {
+      snapshot.totals = std::move(page.totals);
+    }
+    ++page_count;
+    if (has_next) {
+      foreign_cursor = std::move(next_foreign_cursor);
+      domestic_cursor = std::move(next_domestic_cursor);
+    }
+    return std::nullopt;
+  }
+
   void handle_holdings_page(
     const std::shared_ptr<HoldingsOperation>& operation,
-    std::string access_token,
     Result<network::HttpResponse> result
   ) {
     if (!result) {
@@ -379,34 +410,25 @@ private:
       return;
     }
 
-    operation->snapshot.positions.insert(
-      operation->snapshot.positions.end(),
-      std::make_move_iterator(page.value().positions.begin()),
-      std::make_move_iterator(page.value().positions.end())
+    auto pagination_error = append_holdings_page(
+      operation->snapshot,
+      operation->page_count,
+      operation->foreign_cursor,
+      operation->domestic_cursor,
+      std::move(page.value()),
+      std::move(foreign_cursor),
+      std::move(domestic_cursor),
+      has_next
     );
-    if (!page.value().totals.empty()) {
-      operation->snapshot.totals = std::move(page.value().totals);
+    if (pagination_error) {
+      finish_holdings(
+        operation, Result<HoldingsSnapshot>(std::move(*pagination_error))
+      );
+      return;
     }
-    ++operation->page_count;
 
     if (has_next) {
-      const bool cursor_did_not_advance = foreign_cursor == operation->foreign_cursor &&
-        domestic_cursor == operation->domestic_cursor;
-      if (
-        operation->page_count >= 100 ||
-        (foreign_cursor.empty() && domestic_cursor.empty()) ||
-        cursor_did_not_advance
-      ) {
-        BrokerError error;
-        error.category = ErrorCategory::PROTOCOL;
-        error.broker_code = "invalid_pagination";
-        error.message = "KIS holdings continuation did not advance";
-        finish_holdings(operation, Result<HoldingsSnapshot>(std::move(error)));
-        return;
-      }
-      operation->foreign_cursor = std::move(foreign_cursor);
-      operation->domestic_cursor = std::move(domestic_cursor);
-      request_holdings(operation, std::move(access_token));
+      request_holdings(operation);
       return;
     }
 
@@ -414,10 +436,7 @@ private:
     finish_holdings(operation, Result<HoldingsSnapshot>(std::move(operation->snapshot)));
   }
 
-  static Result<QuoteSnapshot> parse_quote(
-    InstrumentId instrument,
-    Result<network::HttpResponse> result
-  ) {
+  static Result<QuoteSnapshot> parse_quote(InstrumentId instrument, Result<network::HttpResponse> result) {
     if (!result) {
       return Result<QuoteSnapshot>(std::move(result.error()));
     }
@@ -586,10 +605,7 @@ private:
     }
   }
 
-  void complete(
-    QuoteHandler handler,
-    Result<QuoteSnapshot> result
-  ) {
+  void complete(QuoteHandler handler, Result<QuoteSnapshot> result) {
     auto executor = net::get_associated_executor(handler, strand_);
     net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
       std::move(handler)(std::move(result));
@@ -614,8 +630,10 @@ private:
   }
 };
 
+/** Blocking facade that drives `KisClient` on a private event loop. */
 class KisBlockingClient {
 public:
+  /** Constructs a blocking client for one KIS environment. */
   KisBlockingClient(
     ssl::context& context,
     KisConfig config,
@@ -624,9 +642,8 @@ public:
   : client_(std::make_shared<KisClient>(ioc_.get_executor(), context, std::move(config), options)) {
   }
 
-  Result<QuoteSnapshot> quote(
-    InstrumentId instrument
-  ) {
+  /** Returns the current normalized quote or a structured error. */
+  Result<QuoteSnapshot> quote(InstrumentId instrument) {
     std::optional<Result<QuoteSnapshot>> result;
     ioc_.restart();
     client_->async_quote(std::move(instrument), [&result](Result<QuoteSnapshot> value) {
@@ -643,9 +660,8 @@ public:
     return std::move(*result);
   }
 
-  Result<HoldingsSnapshot> holdings(
-    KisAccount account
-  ) {
+  /** Returns all normalized holdings for the selected KIS account. */
+  Result<HoldingsSnapshot> holdings(KisAccount account) {
     std::optional<Result<HoldingsSnapshot>> result;
     ioc_.restart();
     client_->async_holdings(std::move(account), [&result](Result<HoldingsSnapshot> value) {

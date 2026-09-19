@@ -4,6 +4,7 @@
 
 #include <boost/json.hpp>
 
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <limits>
@@ -13,23 +14,21 @@
 
 namespace algotradelib::broker_detail {
 
-inline std::optional<std::chrono::seconds> retry_after(
-  const network::HttpResponse& response
-) {
+inline std::optional<std::chrono::seconds> retry_after(const network::HttpResponse& response) {
   const auto value = response.base().find("Retry-After");
   if (value == response.base().end()) {
     return std::nullopt;
   }
-  try {
-    return std::chrono::seconds(std::stoll(std::string(value->value())));
-  } catch (const std::exception&) {
+  const auto text = value->value();
+  std::int64_t seconds{0};
+  const auto parsed = std::from_chars(text.data(), text.data() + text.size(), seconds);
+  if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || seconds < 0) {
     return std::nullopt;
   }
+  return std::chrono::seconds(seconds);
 }
 
-inline BrokerError http_error(
-  const network::HttpResponse& response
-) {
+inline BrokerError http_error(const network::HttpResponse& response) {
   BrokerError error;
   error.http_status = response.result_int();
   error.category = response.result() == http::status::too_many_requests ?
@@ -40,10 +39,7 @@ inline BrokerError http_error(
   return error;
 }
 
-inline std::optional<json::object> parse_object(
-  std::string_view body,
-  BrokerError& error
-) {
+inline std::optional<json::object> parse_object(std::string_view body, BrokerError& error) {
   boost::system::error_code ec;
   auto value = json::parse(body, ec);
   if (ec || !value.is_object()) {
@@ -55,10 +51,7 @@ inline std::optional<json::object> parse_object(
   return value.as_object();
 }
 
-inline std::string json_string(
-  const json::object& object,
-  std::string_view key
-) {
+inline std::string json_string(const json::object& object, std::string_view key) {
   const auto value = object.if_contains(key);
   if (!value || !value->is_string()) {
     throw std::runtime_error("missing string field: " + std::string(key));
@@ -86,34 +79,7 @@ inline std::int64_t json_int64(
   throw std::runtime_error("invalid integer field: " + std::string(key));
 }
 
-inline BrokerError toss_error(
-  const json::object& document,
-  int status = 0
-) {
-  BrokerError result;
-  result.http_status = status;
-  result.category = status == 429 ? ErrorCategory::RATE_LIMIT : ErrorCategory::PROTOCOL;
-  const auto error = document.if_contains("error");
-  if (!error || !error->is_object()) {
-    result.message = "Toss response has no error object";
-    return result;
-  }
-  const auto& object = error->as_object();
-  if (const auto value = object.if_contains("code"); value && value->is_string()) {
-    result.broker_code = value->as_string().c_str();
-  }
-  if (const auto value = object.if_contains("requestId"); value && value->is_string()) {
-    result.request_id = value->as_string().c_str();
-  }
-  if (const auto value = object.if_contains("message"); value && value->is_string()) {
-    result.message = value->as_string().c_str();
-  }
-  return result;
-}
-
-inline bool valid_symbol(
-  std::string_view symbol
-) {
+inline bool valid_symbol(std::string_view symbol) {
   if (symbol.empty()) {
     return false;
   }

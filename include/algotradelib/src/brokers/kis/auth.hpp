@@ -10,21 +10,16 @@ namespace kis {
 
 class KisAuth;
 
-/**
- * @brief KIS OAuth Authentication
- *
- */
+/** Blocking, mutex-protected compatibility wrapper for KIS authentication. */
 class KisAuth {
 public:
-  KisAuth(
-    net::io_context& ioc,
-    ssl::context& ctx,
-    const KisConfig& config
-  )
+  /** Constructs an authentication wrapper with copied credentials. */
+  KisAuth(net::io_context& ioc, ssl::context& ctx, const KisConfig& config)
   : ioc_(ioc), ctx_(ctx), req_(config) {}
 
   virtual ~KisAuth() = default;
 
+  /** Returns a cached REST token, refreshing it synchronously when required. */
   std::string accessToken() {
     std::lock_guard<std::mutex> lock(mtx_);
     if (!rest_resp_.valid()) {
@@ -33,6 +28,7 @@ public:
     return rest_resp_.access_token_;
   }
 
+  /** Returns a cached WebSocket key, refreshing it synchronously when required. */
   std::string accessWebsocket() {
     std::lock_guard<std::mutex> lock(mtx_);
     if (!ws_resp_.valid()) {

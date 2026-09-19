@@ -14,22 +14,28 @@ namespace json = boost::json;
 
 namespace network {
 
+/** CRTP storage and serialization for OAuth client credentials. */
 template <typename BrokerType>
 class ClientCredentials {
 public:
+  /** OAuth grant used by the supported broker machine clients. */
   static constexpr std::string_view grant_type = "client_credentials";
 
+  /** Loads credentials using the broker-specific environment mapping. */
   void from_env() { static_cast<BrokerType*>(this)->from_env_impl(); }
 
-  void from_json(
-    const std::string& filename
-  ) {
+  /** Loads credentials using the broker-specific JSON mapping. */
+  void from_json(const std::string& filename) {
     static_cast<BrokerType*>(this)->from_json_impl(filename);
   }
 
+  /** Returns the public application or client identifier. */
   const std::string& key() const noexcept { return key_; }
+
+  /** Returns the application or client secret. */
   const std::string& secret() const noexcept { return secret_; }
 
+  /** Serializes credentials as a JSON OAuth token request. */
   std::string to_jsonbody() const {
     json::object value;
     value["grant_type"] = grant_type;
@@ -38,6 +44,7 @@ public:
     return json::serialize(value);
   }
 
+  /** Serializes credentials as an application/x-www-form-urlencoded request. */
   std::string to_form_urlencoded_body() const {
     return "grant_type=client_credentials&client_id=" + form_encode(key_) +
       "&client_secret=" + form_encode(secret_);
@@ -48,9 +55,13 @@ protected:
   std::string secret_;
 
 private:
-  static std::string form_encode(
-    std::string_view value
-  ) {
+  /**
+   * Percent-encodes one form value using the RFC 3986 unreserved character set.
+   *
+   * Encoding reserved characters such as `&`, `=`, `+`, and `%` prevents a
+   * credential value from changing the surrounding form-field structure.
+   */
+  static std::string form_encode(std::string_view value) {
     static constexpr char hex[] = "0123456789ABCDEF";
     std::string result;
     result.reserve(value.size());
@@ -69,14 +80,14 @@ private:
   }
 };
 
+/** CRTP storage and parsing for an OAuth access-token response. */
 template <typename BrokerType>
 struct AuthBody {
   std::string access_token_;
   std::chrono::system_clock::time_point expires_at_{};
 
-  void from_json(
-    const json::object& document
-  ) {
+  /** Parses common token fields before invoking broker-specific parsing. */
+  void from_json(const json::object& document) {
     const auto token = document.if_contains("access_token");
     if (!token || !token->is_string()) {
       throw std::runtime_error("token response has no access_token string");
@@ -97,9 +108,8 @@ struct AuthBody {
     static_cast<BrokerType*>(this)->from_json_impl(document);
   }
 
-  bool valid(
-    std::chrono::seconds margin = std::chrono::minutes(5)
-  ) const noexcept {
+  /** Returns whether the token remains valid beyond the requested margin. */
+  bool valid(std::chrono::seconds margin = std::chrono::minutes(5)) const noexcept {
     return !access_token_.empty() && std::chrono::system_clock::now() + margin < expires_at_;
   }
 };
