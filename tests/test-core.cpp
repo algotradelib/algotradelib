@@ -75,6 +75,87 @@ struct KisClientTestAccess {
       has_next
     );
   }
+  static network::HttpRequest place_order_request(
+    const KisAccount& account,
+    const KisConfig& config,
+    const OrderRequest& order,
+    std::string_view division
+  ) {
+    return KisClient::make_place_order_request(
+      account, config, "access-token", order, division
+    );
+  }
+
+  static network::HttpRequest amend_order_request(
+    const KisAccount& account,
+    const KisConfig& config,
+    const KisAmendment& amendment,
+    bool cancel,
+    std::string_view division
+  ) {
+    return KisClient::make_amend_order_request(
+      account, config, "access-token", amendment, cancel, division
+    );
+  }
+
+  static network::HttpRequest open_orders_request(
+    const KisAccount& account,
+    const KisConfig& config,
+    std::string_view foreign_cursor,
+    std::string_view domestic_cursor,
+    bool continuation
+  ) {
+    return KisClient::make_open_orders_request(
+      account, config, "access-token", foreign_cursor, domestic_cursor, continuation
+    );
+  }
+
+  static network::HttpRequest order_history_request(
+    const KisAccount& account,
+    const KisConfig& config,
+    const KisHistoryRange& range
+  ) {
+    return KisClient::make_order_history_request(
+      account, config, "access-token", range, "", "", false
+    );
+  }
+
+  static std::optional<BrokerError> validate_order(
+    const OrderRequest& order,
+    std::string& division
+  ) {
+    return KisClient::validate_order(order, division);
+  }
+
+  static Result<KisOrderAck> parse_order_ack(Result<network::HttpResponse> response) {
+    return KisClient::parse_order_ack(std::move(response));
+  }
+
+  static Result<KisOpenOrderPage> parse_open_orders(Result<network::HttpResponse> response) {
+    std::string foreign_cursor;
+    std::string domestic_cursor;
+    return KisClient::parse_open_orders_page(
+      std::move(response), foreign_cursor, domestic_cursor
+    );
+  }
+
+  static Result<OrderPage> parse_order_history(Result<network::HttpResponse> response) {
+    std::string foreign_cursor;
+    std::string domestic_cursor;
+    return KisClient::parse_order_history_page(
+      std::move(response), foreign_cursor, domestic_cursor
+    );
+  }
+
+  static OrderStatus derive_order_status(
+    const Decimal64& ordered,
+    const Decimal64& filled,
+    const Decimal64& remaining,
+    const Decimal64& rejected,
+    bool canceled
+  ) {
+    return KisClient::derive_order_status(ordered, filled, remaining, rejected, canceled);
+  }
 };
 } // namespace algotradelib::kis
 
@@ -97,6 +178,42 @@ struct TossClientTestAccess {
     Result<network::HttpResponse> response
   ) {
     return TossClient::parse_holdings(std::move(response));
+  }
+  static network::HttpRequest place_order_request(
+    std::int64_t account_sequence,
+    const OrderRequest& order
+  ) {
+    return TossClient::make_place_order_request(account_sequence, "access-token", order);
+  }
+
+  static network::HttpRequest replace_order_request(
+    std::int64_t account_sequence,
+    const TossAmendment& amendment
+  ) {
+    return TossClient::make_replace_order_request(account_sequence, "access-token", amendment);
+  }
+
+  static network::HttpRequest cancel_order_request(
+    std::int64_t account_sequence,
+    std::string_view order_id
+  ) {
+    return TossClient::make_cancel_order_request(account_sequence, "access-token", order_id);
+  }
+
+  static network::HttpRequest orders_request(const TossOrderQuery& query) {
+    return TossClient::make_orders_request("access-token", query);
+  }
+
+  static Result<OrderAck> parse_order_ack(Result<network::HttpResponse> response) {
+    return TossClient::parse_order_ack(std::move(response));
+  }
+
+  static Result<OrderPage> parse_orders(Result<network::HttpResponse> response) {
+    return TossClient::parse_orders(std::move(response));
+  }
+
+  static Result<OrderSnapshot> parse_order(Result<network::HttpResponse> response) {
+    return TossClient::parse_order(std::move(response));
   }
 };
 } // namespace algotradelib::tossinvest
@@ -894,3 +1011,875 @@ TEST_CASE(
 }
 
 } // namespace
+
+namespace {
+
+/** Returns one header value from a built request, or an empty string. */
+std::string header_of(const network::HttpRequest& request, std::string_view name) {
+  for (const auto& header : request.headers_) {
+    if (header.first == name) {
+      return header.second;
+    }
+  }
+  return std::string{};
+}
+
+/** Builds a successful JSON response for a parser test. */
+Result<network::HttpResponse> json_response(std::string body, int status = 200) {
+  network::HttpResponse response(static_cast<http::status>(status), 11);
+  response.set(http::field::content_type, "application/json");
+  response.body() = std::move(body);
+  response.prepare_payload();
+  return Result<network::HttpResponse>(std::move(response));
+}
+
+/** Builds a limit buy order for ten shares of one Korean equity. */
+OrderRequest korean_limit_buy() {
+  OrderRequest order;
+  order.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+  order.side_ = OrderSide::BUY;
+  order.type_ = OrderType::LIMIT;
+  order.time_in_force_ = TimeInForce::DAY;
+  order.quantity_ = Decimal64::parse("10");
+  order.price_ = Decimal64::parse("70000");
+  return order;
+}
+
+} // namespace
+
+TEST_CASE(
+  "KIS order request selects the transaction id for side and environment",
+  "[broker][kis][order]"
+) {
+  const kis::KisAccount account{"12345678", "01"};
+  kis::KisConfig live;
+  kis::KisConfig demo;
+  demo.is_demo_ = true;
+
+  SECTION("a live buy and sell use their documented transaction ids") {
+    auto buy = korean_limit_buy();
+    const auto buy_request =
+      kis::KisClientTestAccess::place_order_request(account, live, buy, "00");
+    REQUIRE(buy_request.method_ == http::verb::post);
+    REQUIRE(buy_request.target_ == "/uapi/domestic-stock/v1/trading/order-cash");
+    REQUIRE(header_of(buy_request, "tr_id") == "TTTC0012U");
+
+    buy.side_ = OrderSide::SELL;
+    const auto sell_request =
+      kis::KisClientTestAccess::place_order_request(account, live, buy, "00");
+    REQUIRE(header_of(sell_request, "tr_id") == "TTTC0011U");
+  }
+
+  SECTION("a demo buy and sell use their documented transaction ids") {
+    auto order = korean_limit_buy();
+    REQUIRE(
+      header_of(kis::KisClientTestAccess::place_order_request(account, demo, order, "00"), "tr_id")
+        == "VTTC0012U"
+    );
+    order.side_ = OrderSide::SELL;
+    REQUIRE(
+      header_of(kis::KisClientTestAccess::place_order_request(account, demo, order, "00"), "tr_id")
+        == "VTTC0011U"
+    );
+  }
+
+  SECTION("a limit order transmits its price and account selection") {
+    const auto order = korean_limit_buy();
+    const auto request =
+      kis::KisClientTestAccess::place_order_request(account, live, order, "00");
+    const auto body = json::parse(request.body_).as_object();
+    REQUIRE(body.at("CANO").as_string() == "12345678");
+    REQUIRE(body.at("ACNT_PRDT_CD").as_string() == "01");
+    REQUIRE(body.at("PDNO").as_string() == "005930");
+    REQUIRE(body.at("ORD_DVSN").as_string() == "00");
+    REQUIRE(body.at("ORD_QTY").as_string() == "10");
+    REQUIRE(body.at("ORD_UNPR").as_string() == "70000");
+    REQUIRE_FALSE(body.contains("EXCG_ID_DVSN_CD"));
+  }
+
+  SECTION("a market order sends a zero unit price rather than omitting it") {
+    auto order = korean_limit_buy();
+    order.type_ = OrderType::MARKET;
+    order.price_.reset();
+    const auto request =
+      kis::KisClientTestAccess::place_order_request(account, live, order, "01");
+    const auto body = json::parse(request.body_).as_object();
+    REQUIRE(body.at("ORD_DVSN").as_string() == "01");
+    REQUIRE(body.at("ORD_UNPR").as_string() == "0");
+  }
+
+  SECTION("an explicit venue is transmitted as its exchange code") {
+    auto order = korean_limit_buy();
+    order.instrument_.venue_ = Venue::NXT;
+    const auto request =
+      kis::KisClientTestAccess::place_order_request(account, live, order, "00");
+    REQUIRE(json::parse(request.body_).as_object().at("EXCG_ID_DVSN_CD").as_string() == "NXT");
+  }
+}
+
+TEST_CASE(
+  "KIS amendment distinguishes modification from cancellation",
+  "[broker][kis][order]"
+) {
+  const kis::KisAccount account{"12345678", "01"};
+  kis::KisConfig live;
+
+  kis::KisAmendment amendment;
+  amendment.order_ = kis::KisOrderRef{"06010", "0001569157"};
+  amendment.type_ = OrderType::LIMIT;
+  amendment.quantity_ = Decimal64::parse("3");
+  amendment.price_ = Decimal64::parse("71000");
+
+  SECTION("a partial modification carries the original order and a partial flag") {
+    const auto request =
+      kis::KisClientTestAccess::amend_order_request(account, live, amendment, false, "00");
+    REQUIRE(request.method_ == http::verb::post);
+    REQUIRE(request.target_ == "/uapi/domestic-stock/v1/trading/order-rvsecncl");
+    REQUIRE(header_of(request, "tr_id") == "TTTC0013U");
+    const auto body = json::parse(request.body_).as_object();
+    REQUIRE(body.at("KRX_FWDG_ORD_ORGNO").as_string() == "06010");
+    REQUIRE(body.at("ORGN_ODNO").as_string() == "0001569157");
+    REQUIRE(body.at("RVSE_CNCL_DVSN_CD").as_string() == "01");
+    REQUIRE(body.at("QTY_ALL_ORD_YN").as_string() == "N");
+  }
+
+  SECTION("a whole-remainder cancellation sets both documented flags") {
+    amendment.all_remaining_ = true;
+    const auto request =
+      kis::KisClientTestAccess::amend_order_request(account, live, amendment, true, "00");
+    const auto body = json::parse(request.body_).as_object();
+    REQUIRE(body.at("RVSE_CNCL_DVSN_CD").as_string() == "02");
+    REQUIRE(body.at("QTY_ALL_ORD_YN").as_string() == "Y");
+  }
+}
+
+TEST_CASE(
+  "KIS rejects unrepresentable orders before any network I/O",
+  "[broker][kis][order][validation]"
+) {
+  std::string division;
+
+  SECTION("a fractional quantity is rejected") {
+    auto order = korean_limit_buy();
+    order.quantity_ = Decimal64::parse("1.5");
+    const auto error = kis::KisClientTestAccess::validate_order(order, division);
+    REQUIRE(error);
+    REQUIRE(error->category_ == ErrorCategory::INVALID_ARGUMENT);
+    REQUIRE(error->broker_code_ == "invalid_quantity");
+  }
+
+  SECTION("a zero quantity is rejected") {
+    auto order = korean_limit_buy();
+    order.quantity_ = Decimal64::parse("0");
+    REQUIRE(kis::KisClientTestAccess::validate_order(order, division));
+  }
+
+  SECTION("a limit order without a price is rejected") {
+    auto order = korean_limit_buy();
+    order.price_.reset();
+    const auto error = kis::KisClientTestAccess::validate_order(order, division);
+    REQUIRE(error);
+    REQUIRE(error->broker_code_ == "invalid_price");
+  }
+
+  SECTION("a market order carrying a price is rejected") {
+    auto order = korean_limit_buy();
+    order.type_ = OrderType::MARKET;
+    const auto error = kis::KisClientTestAccess::validate_order(order, division);
+    REQUIRE(error);
+    REQUIRE(error->broker_code_ == "invalid_price");
+  }
+
+  SECTION("an at-the-close condition is rejected rather than downgraded to DAY") {
+    auto order = korean_limit_buy();
+    order.time_in_force_ = TimeInForce::AT_THE_CLOSE;
+    const auto error = kis::KisClientTestAccess::validate_order(order, division);
+    REQUIRE(error);
+    REQUIRE(error->broker_code_ == "unsupported_order");
+  }
+
+  SECTION("an unknown order type is rejected on a request path") {
+    auto order = korean_limit_buy();
+    order.type_ = OrderType::UNKNOWN;
+    REQUIRE(kis::KisClientTestAccess::validate_order(order, division));
+  }
+
+  SECTION("a non-Korean instrument is rejected") {
+    auto order = korean_limit_buy();
+    order.instrument_.country_ = Country::US;
+    const auto error = kis::KisClientTestAccess::validate_order(order, division);
+    REQUIRE(error);
+    REQUIRE(error->broker_code_ == "invalid_instrument");
+  }
+
+  SECTION("a valid day limit order maps to the documented order division") {
+    const auto order = korean_limit_buy();
+    REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division));
+    REQUIRE(division == "00");
+  }
+}
+
+TEST_CASE(
+  "KIS order placement rejects a malformed account before authentication",
+  "[broker][kis][order][validation]"
+) {
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  auto client =
+    std::make_shared<kis::KisClient>(ioc.get_executor(), context, kis::KisConfig{});
+
+  bool completed = false;
+  client->async_place_order(
+    kis::KisAccount{"123", "01"},
+    korean_limit_buy(),
+    [&completed](Result<kis::KisOrderAck> result) {
+      REQUIRE_FALSE(result);
+      REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+      REQUIRE(result.error().broker_code_ == "invalid_account");
+      completed = true;
+    }
+  );
+  ioc.run();
+  REQUIRE(completed);
+}
+
+TEST_CASE(
+  "KIS refuses the modifiable-order inquiry on a demo account",
+  "[broker][kis][order][validation]"
+) {
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  kis::KisConfig demo;
+  demo.is_demo_ = true;
+  auto client = std::make_shared<kis::KisClient>(ioc.get_executor(), context, demo);
+
+  bool completed = false;
+  client->async_open_orders(
+    kis::KisAccount{"12345678", "01"},
+    [&completed](Result<kis::KisOpenOrderPage> result) {
+      REQUIRE_FALSE(result);
+      REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+      REQUIRE(result.error().broker_code_ == "demo_unsupported");
+      completed = true;
+    }
+  );
+  ioc.run();
+  REQUIRE(completed);
+}
+
+TEST_CASE(
+  "KIS order acknowledgement preserves the branch code needed to amend",
+  "[broker][kis][order]"
+) {
+  SECTION("an accepted order reports both identifier parts") {
+    auto result = kis::KisClientTestAccess::parse_order_ack(
+      json_response(
+        R"({"rt_cd":"0","msg_cd":"APBK0013","msg1":"order sent",)"
+        R"("output":{"KRX_FWDG_ORD_ORGNO":"06010","ODNO":"0001569157","ORD_TMD":"155211"}})"
+      )
+    );
+    REQUIRE(result);
+    REQUIRE(result.value().order_.branch_number_ == "06010");
+    REQUIRE(result.value().order_.order_number_ == "0001569157");
+    REQUIRE(result.value().ack_.order_id_ == "0001569157");
+    REQUIRE(result.value().broker_order_time_ == "155211");
+  }
+
+  SECTION("a declared broker failure preserves its code and message") {
+    auto result = kis::KisClientTestAccess::parse_order_ack(
+      json_response(R"({"rt_cd":"1","msg_cd":"APBK0919","msg1":"insufficient balance"})")
+    );
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().category_ == ErrorCategory::PROTOCOL);
+    REQUIRE(result.error().broker_code_ == "APBK0919");
+    REQUIRE(result.error().message_ == "insufficient balance");
+  }
+
+  SECTION("a successful response without an output object is a protocol error") {
+    auto result =
+      kis::KisClientTestAccess::parse_order_ack(json_response(R"({"rt_cd":"0"})"));
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().broker_code_ == "invalid_order_response");
+  }
+
+  SECTION("an HTTP failure is reported without parsing a body") {
+    auto result =
+      kis::KisClientTestAccess::parse_order_ack(json_response("gateway down", 502));
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().category_ == ErrorCategory::HTTP);
+    REQUIRE(result.error().http_status_ == 502);
+  }
+}
+
+TEST_CASE(
+  "KIS derives an order status from quantity columns alone",
+  "[broker][kis][order][status]"
+) {
+  const auto quantity = [](const char* value) { return Decimal64::parse(value); };
+  const auto derive = kis::KisClientTestAccess::derive_order_status;
+
+  SECTION("a rejection with no fill is REJECTED") {
+    REQUIRE(
+      derive(quantity("10"), quantity("0"), quantity("0"), quantity("10"), false) ==
+      OrderStatus::REJECTED
+    );
+  }
+
+  SECTION("a cancellation with no fill is CANCELED") {
+    REQUIRE(
+      derive(quantity("10"), quantity("0"), quantity("10"), quantity("0"), true) ==
+      OrderStatus::CANCELED
+    );
+  }
+
+  SECTION("a cancellation after a partial fill stays CANCELED") {
+    REQUIRE(
+      derive(quantity("10"), quantity("4"), quantity("6"), quantity("0"), true) ==
+      OrderStatus::CANCELED
+    );
+  }
+
+  SECTION("a fully filled order is FILLED") {
+    REQUIRE(
+      derive(quantity("10"), quantity("10"), quantity("0"), quantity("0"), false) ==
+      OrderStatus::FILLED
+    );
+  }
+
+  SECTION("a partially filled order is PARTIAL_FILLED") {
+    REQUIRE(
+      derive(quantity("10"), quantity("4"), quantity("6"), quantity("0"), false) ==
+      OrderStatus::PARTIAL_FILLED
+    );
+  }
+
+  SECTION("an unfilled order with a remainder is PENDING") {
+    REQUIRE(
+      derive(quantity("10"), quantity("0"), quantity("10"), quantity("0"), false) ==
+      OrderStatus::PENDING
+    );
+  }
+
+  SECTION("a row that fits no documented combination is UNKNOWN") {
+    REQUIRE(
+      derive(quantity("10"), quantity("0"), quantity("0"), quantity("0"), false) ==
+      OrderStatus::UNKNOWN
+    );
+  }
+}
+
+TEST_CASE(
+  "KIS modifiable-order inquiry reports the amendable quantity",
+  "[broker][kis][order]"
+) {
+  const kis::KisAccount account{"12345678", "01"};
+  kis::KisConfig live;
+
+  SECTION("the request targets the documented endpoint and transaction id") {
+    const auto request =
+      kis::KisClientTestAccess::open_orders_request(account, live, "", "", false);
+    REQUIRE(request.method_ == http::verb::get);
+    REQUIRE(
+      request.target_.find("/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl") == 0
+    );
+    REQUIRE(header_of(request, "tr_id") == "TTTC0084R");
+  }
+
+  SECTION("a returned row normalizes its order and keeps its amendable quantity") {
+    auto result = kis::KisClientTestAccess::parse_open_orders(
+      json_response(
+        R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"0001569139",)"
+        R"("orgn_odno":"0001569136","ord_dvsn_name":"limit","pdno":"005930",)"
+        R"("prdt_name":"Samsung","rvse_cncl_dvsn_name":"modify","ord_qty":"10",)"
+        R"("ord_unpr":"70000","ord_tmd":"131438","tot_ccld_qty":"4","tot_ccld_amt":"280000",)"
+        R"("psbl_qty":"6","sll_buy_dvsn_cd":"02","ord_dvsn_cd":"00"}]})"
+      )
+    );
+    REQUIRE(result);
+    REQUIRE(result.value().orders_.size() == 1);
+    const auto& open_order = result.value().orders_.front();
+    REQUIRE(open_order.order_ref_.branch_number_ == "06010");
+    REQUIRE(open_order.order_ref_.order_number_ == "0001569139");
+    REQUIRE(open_order.original_order_.order_number_ == "0001569136");
+    REQUIRE(open_order.amendable_quantity_ == Decimal64::parse("6"));
+    REQUIRE(open_order.order_.side_ == OrderSide::BUY);
+    REQUIRE(open_order.order_.type_ == OrderType::LIMIT);
+    REQUIRE(open_order.order_.price_ == Decimal64::parse("70000"));
+    REQUIRE(open_order.order_.status_ == OrderStatus::PARTIAL_FILLED);
+  }
+
+  SECTION("an unrecognized order division does not fail the listing") {
+    auto result = kis::KisClientTestAccess::parse_open_orders(
+      json_response(
+        R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"1","orgn_odno":"",)"
+        R"("ord_dvsn_name":"x","pdno":"005930","prdt_name":"Samsung",)"
+        R"("rvse_cncl_dvsn_name":"x","ord_qty":"10","ord_unpr":"0","ord_tmd":"131438",)"
+        R"("tot_ccld_qty":"0","tot_ccld_amt":"0","psbl_qty":"10","sll_buy_dvsn_cd":"01",)"
+        R"("ord_dvsn_cd":"23"}]})"
+      )
+    );
+    REQUIRE(result);
+    const auto& open_order = result.value().orders_.front();
+    REQUIRE(open_order.order_.type_ == OrderType::UNKNOWN);
+    REQUIRE(open_order.order_.time_in_force_ == TimeInForce::UNKNOWN);
+    REQUIRE_FALSE(open_order.order_.price_);
+    REQUIRE(open_order.order_.side_ == OrderSide::SELL);
+  }
+
+  SECTION("an empty result is an empty page rather than an error") {
+    auto result =
+      kis::KisClientTestAccess::parse_open_orders(json_response(R"({"rt_cd":"0","output":[]})"));
+    REQUIRE(result);
+    REQUIRE(result.value().orders_.empty());
+  }
+}
+
+TEST_CASE(
+  "KIS order history normalizes executions and Korean order times",
+  "[broker][kis][order][history]"
+) {
+  const kis::KisAccount account{"12345678", "01"};
+
+  SECTION("the request carries the inclusive range and environment transaction id") {
+    kis::KisConfig live;
+    const auto request = kis::KisClientTestAccess::order_history_request(
+      account, live, kis::KisHistoryRange{Date{2026, 3, 1}, Date{2026, 3, 31}}
+    );
+    REQUIRE(request.target_.find("INQR_STRT_DT=20260301") != std::string::npos);
+    REQUIRE(request.target_.find("INQR_END_DT=20260331") != std::string::npos);
+    REQUIRE(request.target_.find("EXCG_ID_DVSN_CD=ALL") != std::string::npos);
+    REQUIRE(header_of(request, "tr_id") == "TTTC0081R");
+
+    kis::KisConfig demo;
+    demo.is_demo_ = true;
+    const auto demo_request = kis::KisClientTestAccess::order_history_request(
+      account, demo, kis::KisHistoryRange{Date{2026, 3, 1}, Date{2026, 3, 31}}
+    );
+    REQUIRE(header_of(demo_request, "tr_id") == "VTTC0081R");
+    REQUIRE(demo_request.target_.find("EXCG_ID_DVSN_CD=KRX") != std::string::npos);
+  }
+
+  SECTION("a filled row reports its execution and Korea Standard Time order stamp") {
+    auto result = kis::KisClientTestAccess::parse_order_history(
+      json_response(
+        R"({"rt_cd":"0","output1":[{"ord_dt":"20260328","ord_gno_brno":"06010",)"
+        R"("odno":"0001569157","orgn_odno":"","ord_dvsn_name":"limit",)"
+        R"("sll_buy_dvsn_cd":"02","sll_buy_dvsn_cd_name":"buy","pdno":"005930",)"
+        R"("prdt_name":"Samsung","ord_qty":"10","ord_unpr":"70000","ord_tmd":"093000",)"
+        R"("tot_ccld_qty":"10","avg_prvs":"70000","cncl_yn":"N","tot_ccld_amt":"700000",)"
+        R"("ord_dvsn_cd":"00","cncl_cfrm_qty":"0","rmn_qty":"0","rjct_qty":"0"}]})"
+      )
+    );
+    REQUIRE(result);
+    REQUIRE(result.value().orders_.size() == 1);
+    const auto& order = result.value().orders_.front();
+    REQUIRE(order.order_id_ == "0001569157");
+    REQUIRE(order.status_ == OrderStatus::FILLED);
+    REQUIRE(order.side_ == OrderSide::BUY);
+    REQUIRE(order.execution_.filled_quantity_ == Decimal64::parse("10"));
+    REQUIRE(order.execution_.average_filled_price_ == Decimal64::parse("70000"));
+    REQUIRE(order.execution_.filled_amount_->amount_ == Decimal64::parse("700000"));
+    REQUIRE(order.execution_.filled_amount_->currency_ == Currency::krw());
+    REQUIRE(order.ordered_at_);
+    REQUIRE(
+      *order.ordered_at_ == *parse_iso8601_timestamp("2026-03-28T09:30:00+09:00")
+    );
+  }
+
+  SECTION("an unfilled row reports no average price and stays PENDING") {
+    auto result = kis::KisClientTestAccess::parse_order_history(
+      json_response(
+        R"({"rt_cd":"0","output1":[{"ord_dt":"20260328","ord_gno_brno":"06010",)"
+        R"("odno":"0001569158","orgn_odno":"","ord_dvsn_name":"limit",)"
+        R"("sll_buy_dvsn_cd":"01","sll_buy_dvsn_cd_name":"sell","pdno":"005930",)"
+        R"("prdt_name":"Samsung","ord_qty":"10","ord_unpr":"70000","ord_tmd":"093000",)"
+        R"("tot_ccld_qty":"0","avg_prvs":"0","cncl_yn":"N","tot_ccld_amt":"0",)"
+        R"("ord_dvsn_cd":"00","cncl_cfrm_qty":"0","rmn_qty":"10","rjct_qty":"0"}]})"
+      )
+    );
+    REQUIRE(result);
+    const auto& order = result.value().orders_.front();
+    REQUIRE(order.status_ == OrderStatus::PENDING);
+    REQUIRE_FALSE(order.execution_.average_filled_price_);
+    REQUIRE(order.side_ == OrderSide::SELL);
+  }
+
+  SECTION("a declared broker failure is reported rather than an empty page") {
+    auto result = kis::KisClientTestAccess::parse_order_history(
+      json_response(R"({"rt_cd":"1","msg_cd":"APBK0656","msg1":"invalid period"})")
+    );
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().broker_code_ == "APBK0656");
+  }
+}
+
+TEST_CASE(
+  "Toss order creation transmits the documented request shape",
+  "[broker][toss][order]"
+) {
+  SECTION("a Korean limit buy carries its price and default validity") {
+    const auto request =
+      tossinvest::TossClientTestAccess::place_order_request(7, korean_limit_buy());
+    REQUIRE(request.method_ == http::verb::post);
+    REQUIRE(request.target_ == "/api/v1/orders");
+    REQUIRE(header_of(request, "X-Tossinvest-Account") == "7");
+    REQUIRE(header_of(request, "Authorization") == "Bearer access-token");
+    const auto body = json::parse(request.body_).as_object();
+    REQUIRE(body.at("symbol").as_string() == "005930");
+    REQUIRE(body.at("side").as_string() == "BUY");
+    REQUIRE(body.at("orderType").as_string() == "LIMIT");
+    REQUIRE(body.at("timeInForce").as_string() == "DAY");
+    REQUIRE(body.at("quantity").as_string() == "10");
+    REQUIRE(body.at("price").as_string() == "70000");
+    REQUIRE_FALSE(body.contains("clientOrderId"));
+    REQUIRE_FALSE(body.contains("confirmHighValueOrder"));
+  }
+
+  SECTION("a market order omits the price entirely") {
+    auto order = korean_limit_buy();
+    order.type_ = OrderType::MARKET;
+    order.price_.reset();
+    const auto body =
+      json::parse(tossinvest::TossClientTestAccess::place_order_request(7, order).body_)
+        .as_object();
+    REQUIRE(body.at("orderType").as_string() == "MARKET");
+    REQUIRE_FALSE(body.contains("price"));
+  }
+
+  SECTION("an idempotency key and high-value confirmation are transmitted when given") {
+    auto order = korean_limit_buy();
+    order.client_order_id_ = "my-order-001";
+    order.confirm_high_value_ = true;
+    const auto body =
+      json::parse(tossinvest::TossClientTestAccess::place_order_request(7, order).body_)
+        .as_object();
+    REQUIRE(body.at("clientOrderId").as_string() == "my-order-001");
+    REQUIRE(body.at("confirmHighValueOrder").as_bool());
+  }
+
+  SECTION("a US at-the-close limit order uses the documented validity code") {
+    auto order = korean_limit_buy();
+    order.instrument_ = InstrumentId{Country::US, Venue::UNSPECIFIED, "AAPL"};
+    order.time_in_force_ = TimeInForce::AT_THE_CLOSE;
+    order.price_ = Decimal64::parse("185.5");
+    const auto body =
+      json::parse(tossinvest::TossClientTestAccess::place_order_request(7, order).body_)
+        .as_object();
+    REQUIRE(body.at("timeInForce").as_string() == "CLS");
+    REQUIRE(body.at("price").as_string() == "185.5");
+  }
+}
+
+TEST_CASE(
+  "Toss amendment and cancellation target one order",
+  "[broker][toss][order]"
+) {
+  SECTION("a modification sends only the fields it changes") {
+    tossinvest::TossAmendment amendment;
+    amendment.order_id_ = "order-1";
+    amendment.type_ = OrderType::LIMIT;
+    amendment.quantity_ = Decimal64::parse("15");
+    amendment.price_ = Decimal64::parse("71000");
+    const auto request =
+      tossinvest::TossClientTestAccess::replace_order_request(7, amendment);
+    REQUIRE(request.method_ == http::verb::post);
+    REQUIRE(request.target_ == "/api/v1/orders/order-1/modify");
+    const auto body = json::parse(request.body_).as_object();
+    REQUIRE(body.at("orderType").as_string() == "LIMIT");
+    REQUIRE(body.at("quantity").as_string() == "15");
+    REQUIRE(body.at("price").as_string() == "71000");
+  }
+
+  SECTION("a US modification may omit the quantity Toss forbids") {
+    tossinvest::TossAmendment amendment;
+    amendment.order_id_ = "order-1";
+    amendment.price_ = Decimal64::parse("185.5");
+    const auto body =
+      json::parse(tossinvest::TossClientTestAccess::replace_order_request(7, amendment).body_)
+        .as_object();
+    REQUIRE_FALSE(body.contains("quantity"));
+  }
+
+  SECTION("a cancellation posts an empty body to the order's cancel route") {
+    const auto request = tossinvest::TossClientTestAccess::cancel_order_request(7, "order-1");
+    REQUIRE(request.method_ == http::verb::post);
+    REQUIRE(request.target_ == "/api/v1/orders/order-1/cancel");
+    REQUIRE(request.body_ == "{}");
+  }
+}
+
+TEST_CASE(
+  "Toss order listing omits paging where Toss ignores it",
+  "[broker][toss][order]"
+) {
+  tossinvest::TossOrderQuery query;
+  query.account_sequence_ = 7;
+  query.cursor_ = "cursor value";
+  query.limit_ = 50;
+
+  SECTION("an open listing sends neither cursor nor limit") {
+    query.scope_ = tossinvest::TossOrderScope::OPEN;
+    const auto request = tossinvest::TossClientTestAccess::orders_request(query);
+    REQUIRE(request.target_.find("status=OPEN") != std::string::npos);
+    REQUIRE(request.target_.find("cursor=") == std::string::npos);
+    REQUIRE(request.target_.find("limit=") == std::string::npos);
+  }
+
+  SECTION("a closed listing pages and encodes its cursor") {
+    query.scope_ = tossinvest::TossOrderScope::CLOSED;
+    query.symbol_ = "005930";
+    query.from_ = Date{2026, 3, 1};
+    query.to_ = Date{2026, 3, 31};
+    const auto request = tossinvest::TossClientTestAccess::orders_request(query);
+    REQUIRE(request.target_.find("status=CLOSED") != std::string::npos);
+    REQUIRE(request.target_.find("cursor=cursor%20value") != std::string::npos);
+    REQUIRE(request.target_.find("limit=50") != std::string::npos);
+    REQUIRE(request.target_.find("symbol=005930") != std::string::npos);
+    REQUIRE(request.target_.find("from=2026-03-01") != std::string::npos);
+    REQUIRE(request.target_.find("to=2026-03-31") != std::string::npos);
+  }
+}
+
+TEST_CASE(
+  "Toss rejects unusable order instructions before any network I/O",
+  "[broker][toss][order][validation]"
+) {
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  auto client =
+    std::make_shared<tossinvest::TossClient>(ioc.get_executor(), context, tossinvest::TossConfig{});
+
+  const auto expect_rejection = [&](OrderRequest order, std::string_view code) {
+    bool completed = false;
+    client->async_place_order(7, std::move(order), [&](Result<OrderAck> result) {
+      REQUIRE_FALSE(result);
+      REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+      REQUIRE(result.error().broker_code_ == code);
+      completed = true;
+    });
+    ioc.restart();
+    ioc.run();
+    REQUIRE(completed);
+  };
+
+  SECTION("a fractional quantity is rejected") {
+    auto order = korean_limit_buy();
+    order.quantity_ = Decimal64::parse("0.5");
+    expect_rejection(std::move(order), "invalid_quantity");
+  }
+
+  SECTION("a malformed idempotency key is rejected") {
+    auto order = korean_limit_buy();
+    order.client_order_id_ = "not valid!";
+    expect_rejection(std::move(order), "invalid_client_order_id");
+  }
+
+  SECTION("an at-the-close condition on a Korean order is rejected") {
+    auto order = korean_limit_buy();
+    order.time_in_force_ = TimeInForce::AT_THE_CLOSE;
+    expect_rejection(std::move(order), "unsupported_time_in_force");
+  }
+
+  SECTION("an at-the-open condition on a US order is rejected") {
+    auto order = korean_limit_buy();
+    order.instrument_ = InstrumentId{Country::US, Venue::UNSPECIFIED, "AAPL"};
+    order.time_in_force_ = TimeInForce::AT_THE_OPEN;
+    expect_rejection(std::move(order), "unsupported_time_in_force");
+  }
+
+  SECTION("a non-positive account sequence is rejected") {
+    bool completed = false;
+    client->async_place_order(0, korean_limit_buy(), [&completed](Result<OrderAck> result) {
+      REQUIRE_FALSE(result);
+      REQUIRE(result.error().broker_code_ == "invalid_account");
+      completed = true;
+    });
+    ioc.restart();
+    ioc.run();
+    REQUIRE(completed);
+  }
+
+  SECTION("an empty order identifier is rejected on cancellation") {
+    bool completed = false;
+    client->async_cancel_order(7, "", [&completed](Result<OrderAck> result) {
+      REQUIRE_FALSE(result);
+      REQUIRE(result.error().broker_code_ == "invalid_order_reference");
+      completed = true;
+    });
+    ioc.restart();
+    ioc.run();
+    REQUIRE(completed);
+  }
+}
+
+TEST_CASE(
+  "Toss order responses normalize fills and tolerate unknown codes",
+  "[broker][toss][order]"
+) {
+  SECTION("an acknowledgement echoes the idempotency key when one was sent") {
+    auto result = tossinvest::TossClientTestAccess::parse_order_ack(
+      json_response(R"({"result":{"orderId":"order-1","clientOrderId":"my-order-001"}})")
+    );
+    REQUIRE(result);
+    REQUIRE(result.value().order_id_ == "order-1");
+    REQUIRE(result.value().client_order_id_ == "my-order-001");
+  }
+
+  SECTION("a conflict preserves its broker code and request id") {
+    auto result = tossinvest::TossClientTestAccess::parse_order_ack(
+      json_response(
+        R"({"error":{"requestId":"01HXYZ","code":"already-filled",)"
+        R"("message":"already filled"}})",
+        409
+      )
+    );
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().http_status_ == 409);
+    REQUIRE(result.error().broker_code_ == "already-filled");
+    REQUIRE(result.error().request_id_ == "01HXYZ");
+  }
+
+  SECTION("a rate-limited response is categorized as such") {
+    auto result = tossinvest::TossClientTestAccess::parse_order_ack(
+      json_response(R"({"error":{"code":"too-many-requests","message":"slow down"}})", 429)
+    );
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().category_ == ErrorCategory::RATE_LIMIT);
+  }
+
+  SECTION("a listing normalizes a Korean and a US order independently") {
+    auto result = tossinvest::TossClientTestAccess::parse_orders(
+      json_response(
+        R"({"result":{"orders":[)"
+        R"({"orderId":"a","symbol":"005930","side":"BUY","orderType":"LIMIT",)"
+        R"("timeInForce":"DAY","status":"PENDING","price":"70000","quantity":"10",)"
+        R"("orderAmount":null,"currency":"KRW","orderedAt":"2026-03-29T09:30:00+09:00",)"
+        R"("canceledAt":null,"execution":{"filledQuantity":"0","averageFilledPrice":null,)"
+        R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
+        R"("settlementDate":null}},)"
+        R"({"orderId":"b","symbol":"AAPL","side":"SELL","orderType":"LIMIT",)"
+        R"("timeInForce":"DAY","status":"PARTIAL_FILLED","price":"185.5","quantity":"5",)"
+        R"("orderAmount":null,"currency":"USD","orderedAt":"2026-03-29T10:00:00+09:00",)"
+        R"("canceledAt":null,"execution":{"filledQuantity":"2",)"
+        R"("averageFilledPrice":"185.25","filledAmount":"370.5","commission":"0.66",)"
+        R"("tax":"0","filledAt":"2026-03-29T10:00:05+09:00","settlementDate":"2026-03-31"}}],)"
+        R"("nextCursor":null,"hasNext":false}})"
+      )
+    );
+    REQUIRE(result);
+    REQUIRE(result.value().orders_.size() == 2);
+    REQUIRE_FALSE(result.value().next_cursor_);
+
+    const auto& korean = result.value().orders_.front();
+    REQUIRE(korean.instrument_.country_ == Country::KR);
+    REQUIRE(korean.currency_ == Currency::krw());
+    REQUIRE(korean.status_ == OrderStatus::PENDING);
+    REQUIRE(korean.execution_.filled_quantity_ == Decimal64::parse("0"));
+    REQUIRE_FALSE(korean.execution_.filled_amount_);
+    REQUIRE_FALSE(korean.canceled_at_);
+
+    const auto& american = result.value().orders_.back();
+    REQUIRE(american.instrument_.country_ == Country::US);
+    REQUIRE(american.currency_ == Currency::usd());
+    REQUIRE(american.status_ == OrderStatus::PARTIAL_FILLED);
+    REQUIRE(american.execution_.commission_->currency_ == Currency::usd());
+    REQUIRE(american.execution_.commission_->amount_ == Decimal64::parse("0.66"));
+    REQUIRE(american.execution_.settlement_date_ == Date{2026, 3, 31});
+    REQUIRE(american.execution_.filled_at_);
+  }
+
+  SECTION("an unknown status, type, and validity do not fail the listing") {
+    auto result = tossinvest::TossClientTestAccess::parse_orders(
+      json_response(
+        R"({"result":{"orders":[{"orderId":"a","symbol":"005930","side":"BUY",)"
+        R"("orderType":"TRAILING_STOP","timeInForce":"GTC","status":"SUSPENDED",)"
+        R"("quantity":"10","currency":"KRW","orderedAt":"2026-03-29T09:30:00+09:00",)"
+        R"("execution":{"filledQuantity":"0","averageFilledPrice":null,)"
+        R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
+        R"("settlementDate":null}}],"nextCursor":"next-page","hasNext":true}})"
+      )
+    );
+    REQUIRE(result);
+    const auto& order = result.value().orders_.front();
+    REQUIRE(order.type_ == OrderType::UNKNOWN);
+    REQUIRE(order.time_in_force_ == TimeInForce::UNKNOWN);
+    REQUIRE(order.status_ == OrderStatus::UNKNOWN);
+    REQUIRE_FALSE(order.price_);
+    REQUIRE(result.value().next_cursor_ == "next-page");
+  }
+
+  SECTION("an empty listing is an empty page rather than an error") {
+    auto result = tossinvest::TossClientTestAccess::parse_orders(
+      json_response(R"({"result":{"orders":[],"nextCursor":null,"hasNext":false}})")
+    );
+    REQUIRE(result);
+    REQUIRE(result.value().orders_.empty());
+  }
+
+  SECTION("a malformed order object is a protocol error") {
+    auto result = tossinvest::TossClientTestAccess::parse_orders(
+      json_response(R"({"result":{"orders":[{"orderId":"a"}],"hasNext":false}})")
+    );
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().category_ == ErrorCategory::PROTOCOL);
+    REQUIRE(result.error().broker_code_ == "invalid_orders_response");
+  }
+
+  SECTION("a single order detail normalizes the same way as a listing row") {
+    auto result = tossinvest::TossClientTestAccess::parse_order(
+      json_response(
+        R"({"result":{"orderId":"a","symbol":"005930","side":"BUY","orderType":"MARKET",)"
+        R"("timeInForce":"DAY","status":"FILLED","price":null,"quantity":"10",)"
+        R"("currency":"KRW","orderedAt":"2026-03-28T09:30:00+09:00",)"
+        R"("canceledAt":null,"execution":{"filledQuantity":"10",)"
+        R"("averageFilledPrice":"70000","filledAmount":"700000","commission":"1400",)"
+        R"("tax":"0","filledAt":"2026-03-28T09:31:15+09:00","settlementDate":"2026-03-30"}}})"
+      )
+    );
+    REQUIRE(result);
+    REQUIRE(result.value().type_ == OrderType::MARKET);
+    REQUIRE_FALSE(result.value().price_);
+    REQUIRE(result.value().status_ == OrderStatus::FILLED);
+    REQUIRE(result.value().execution_.commission_->amount_ == Decimal64::parse("1400"));
+  }
+}
+
+TEST_CASE(
+  "A dropped connection during an order POST is never replayed",
+  "[broker][order][tls][retry]"
+) {
+  const kis::KisAccount account{"12345678", "01"};
+  kis::KisConfig live;
+  auto order_request = kis::KisClientTestAccess::place_order_request(
+    account, live, korean_limit_buy(), "00"
+  );
+  REQUIRE(order_request.method_ == http::verb::post);
+  REQUIRE_FALSE(order_request.body_.empty());
+
+  // The transport decides replay policy from the method, so the real order
+  // body is sent against a server that drops the connection mid-response.
+  order_request.target_ = "/drop-post";
+
+  test::LocalHttpsServer server;
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+  auto client = std::make_shared<network::AsyncHttpClient>(
+    ioc.get_executor(), context, "localhost", server.port()
+  );
+
+  bool completed = false;
+  client->async_request(
+    std::move(order_request),
+    [&completed](Result<network::HttpResponse> result) {
+      REQUIRE_FALSE(result);
+      REQUIRE(result.error().category_ == ErrorCategory::TRANSPORT);
+      completed = true;
+    }
+  );
+
+  ioc.run();
+  REQUIRE(completed);
+  REQUIRE(server.requestCount("/drop-post") == 1);
+  REQUIRE(server.connectionCount() == 1);
+}
