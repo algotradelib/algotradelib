@@ -318,6 +318,150 @@ struct HoldingsSnapshot {
   std::chrono::system_clock::time_point received_at_;
 };
 
+/**
+ * Calendar date without a time of day or zone.
+ *
+ * Settlement and inquiry-range values are calendar dates in the broker's own
+ * locale. Converting them to a time point would attach a zone the broker never
+ * stated, so they are kept as plain dates.
+ */
+struct Date {
+  int year_{0};
+  unsigned month_{0};
+  unsigned day_{0};
+
+  friend bool operator==(const Date& lhs, const Date& rhs) {
+    return lhs.year_ == rhs.year_ && lhs.month_ == rhs.month_ && lhs.day_ == rhs.day_;
+  }
+};
+
+/** Direction of an order. */
+enum class OrderSide {
+  BUY,
+  SELL,
+};
+
+/**
+ * Normalized price instruction for an order.
+ *
+ * The set is deliberately closed. Conditional, immediate-or-cancel,
+ * fill-or-kill, stop, mid-price, and after-market variants exist at KIS but are
+ * not normalized by this library yet; adapters reject them rather than
+ * approximating them with a nearby value.
+ */
+enum class OrderType {
+  LIMIT,
+  MARKET,
+};
+
+/** Validity condition attached to an order. */
+enum class TimeInForce {
+  DAY,
+  AT_THE_CLOSE,
+  AT_THE_OPEN,
+};
+
+/**
+ * Lifecycle state of an order.
+ *
+ * `CANCEL_REJECTED`, `REPLACE_REJECTED`, and `REPLACED` describe the fate of a
+ * modify or cancel instruction rather than the original order, matching how
+ * brokers record those instructions as separate rows.
+ */
+enum class OrderStatus {
+  PENDING,
+  PENDING_CANCEL,
+  PENDING_REPLACE,
+  PARTIAL_FILLED,
+  FILLED,
+  CANCELED,
+  REJECTED,
+  CANCEL_REJECTED,
+  REPLACE_REJECTED,
+  REPLACED,
+};
+
+/**
+ * Broker-neutral instruction to open a new order.
+ *
+ * `price_` must be present for `OrderType::LIMIT` and absent for
+ * `OrderType::MARKET`; adapters reject any other combination before performing
+ * network I/O.
+ *
+ * `client_order_id_` is an idempotency key where the broker supports one. It is
+ * never generated automatically, because a generated key would make a retry
+ * look safe on brokers that provide no such guarantee.
+ */
+struct OrderRequest {
+  InstrumentId instrument_;
+  OrderSide side_{OrderSide::BUY};
+  OrderType type_{OrderType::LIMIT};
+  TimeInForce time_in_force_{TimeInForce::DAY};
+  Decimal64 quantity_;
+  std::optional<Decimal64> price_;
+  std::optional<std::string> client_order_id_;
+  bool confirm_high_value_{false};
+};
+
+/**
+ * Realized execution totals for one order.
+ *
+ * Monetary members are optional because a broker reports them only once the
+ * corresponding amount exists; an unfilled order has a filled quantity of zero
+ * and no amounts at all.
+ */
+struct OrderExecution {
+  Decimal64 filled_quantity_;
+  std::optional<Decimal64> average_filled_price_;
+  std::optional<Money> filled_amount_;
+  std::optional<Money> commission_;
+  std::optional<Money> tax_;
+  std::optional<std::chrono::system_clock::time_point> filled_at_;
+  std::optional<Date> settlement_date_;
+};
+
+/** Point-in-time normalized state of one order. */
+struct OrderSnapshot {
+  std::string order_id_;
+  InstrumentId instrument_;
+  std::string name_;
+  OrderSide side_{OrderSide::BUY};
+  OrderType type_{OrderType::LIMIT};
+  TimeInForce time_in_force_{TimeInForce::DAY};
+  OrderStatus status_{OrderStatus::PENDING};
+  std::optional<Decimal64> price_;
+  Decimal64 quantity_;
+  Currency currency_;
+  std::optional<std::chrono::system_clock::time_point> ordered_at_;
+  std::optional<std::chrono::system_clock::time_point> canceled_at_;
+  OrderExecution execution_;
+};
+
+/**
+ * One page of normalized orders.
+ *
+ * `next_cursor_` is empty when the broker reported no further page. Callers
+ * pass it back unchanged; its content is broker-specific and opaque.
+ */
+struct OrderPage {
+  std::vector<OrderSnapshot> orders_;
+  std::optional<std::string> next_cursor_;
+  std::chrono::system_clock::time_point received_at_;
+};
+
+/**
+ * Broker acknowledgement that an order instruction was accepted.
+ *
+ * An acknowledgement means the broker recorded the instruction, not that the
+ * order executed. The resulting state must be read back through an order
+ * inquiry.
+ */
+struct OrderAck {
+  std::string order_id_;
+  std::optional<std::string> client_order_id_;
+  std::chrono::system_clock::time_point accepted_at_;
+};
+
 /** Parses an ISO 8601 timestamp with a UTC designator or numeric offset. */
 inline std::optional<std::chrono::system_clock::time_point> parse_iso8601_timestamp(
   std::string_view value
