@@ -84,6 +84,90 @@ cmake --build build --target example-tossinvest-account
 ./build/bin/example-tossinvest-account 123456
 ```
 
+## Order clients
+
+Both brokers expose order placement, modification, cancellation, and order
+inquiry through matching async and blocking entry points.
+
+### Ordering safety
+
+Read these before using the order clients.
+
+- **An order POST is never replayed.** A `TRANSPORT` error therefore leaves the
+  outcome *indeterminate*: the order may or may not have reached the broker.
+  Reconcile against an order inquiry before resubmitting; do not retry blindly.
+- **Toss supports idempotency; KIS does not.** Setting
+  `OrderRequest::client_order_id_` makes a Toss resubmission safe for ten
+  minutes. KIS offers no such key for individual customers, so a KIS
+  resubmission always risks a duplicate order. The library never generates a
+  key on its own, so its absence stays a visible caller decision.
+- **Acceptance is not execution.** An `OrderAck` means the broker recorded the
+  instruction. Read the resulting state back through an order inquiry.
+- **Unsupported instructions are rejected, never downgraded.** An at-the-close
+  or at-the-open condition the broker cannot honour for that instrument fails
+  with `ErrorCategory::INVALID_ARGUMENT` rather than silently becoming a
+  day order, because a downgrade changes when the order executes.
+- KIS's modifiable-order inquiry is unavailable on demo accounts and fails
+  immediately there.
+- KIS's daily inquiry reports no status column, so an order's status is derived
+  from its quantity, fill, remainder, rejection, and cancellation columns.
+
+### Order inquiries
+
+[`examples/example-kis-orders.cpp`](examples/example-kis-orders.cpp) is
+read-only. It lists every modifiable or cancellable order with its amendable
+quantity and branch code, then prints today's orders and executions. It uses
+the same environment variables as the KIS account example.
+
+```sh
+cmake --build build --target example-kis-orders
+./build/bin/example-kis-orders
+```
+
+[`examples/example-tossinvest-orders.cpp`](examples/example-tossinvest-orders.cpp)
+is also read-only. It lists every open order, then pages through closed orders
+using the returned cursor. It uses the same environment variables as the Toss
+account example, and accepts an account sequence as its first argument.
+
+```sh
+cmake --build build --target example-tossinvest-orders
+./build/bin/example-tossinvest-orders
+./build/bin/example-tossinvest-orders 123456
+```
+
+### Placing an order
+
+[`examples/example-kis-place-order.cpp`](examples/example-kis-place-order.cpp)
+transmits a real instruction, so it is inert unless explicitly confirmed. It
+prints the order it would send and exits unless `ATL_CONFIRM_LIVE_ORDER=1` is
+set, in every environment. The order itself comes from `ATL_ORDER_SYMBOL`,
+`ATL_ORDER_QUANTITY`, optional `ATL_ORDER_PRICE` (omit for a market order), and
+optional `ATL_ORDER_SIDE` (`BUY` by default).
+
+```sh
+cmake --build build --target example-kis-place-order
+
+# Prints the order and sends nothing.
+ATL_ORDER_SYMBOL=005930 ATL_ORDER_QUANTITY=1 ATL_ORDER_PRICE=70000 \
+  ./build/bin/example-kis-place-order
+
+# Actually places the order.
+ATL_CONFIRM_LIVE_ORDER=1 \
+  ATL_ORDER_SYMBOL=005930 ATL_ORDER_QUANTITY=1 ATL_ORDER_PRICE=70000 \
+  ./build/bin/example-kis-place-order
+```
+
+Toss order placement follows the same shape through
+`TossBlockingClient::place_order`, with `OrderRequest::client_order_id_`
+carrying the idempotency key.
+
+### Not supported yet
+
+Toss amount-based and fractional orders, Toss conditional orders, KIS
+conditional/IOC/FOK/stop/after-market order divisions, KIS credit, reserved,
+and overseas orders, KIS history older than three months, and real-time
+execution notifications.
+
 ## Transport behavior
 
 - HTTPS connections are persistent per client and requests are serialized on a
