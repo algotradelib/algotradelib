@@ -16,6 +16,7 @@ namespace atl = algotradelib;
 
 namespace {
 
+/** Prints one structured broker failure and order-reconciliation guidance. */
 void print_error(std::string_view operation, const atl::BrokerError& error) {
   std::cerr << operation << " failed";
   if (!error.broker_code_.empty()) {
@@ -35,6 +36,7 @@ void print_error(std::string_view operation, const atl::BrokerError& error) {
   }
 }
 
+/** Returns a printable name for a normalized order status. */
 std::string_view status_name(atl::OrderStatus status) {
   switch (status) {
     case atl::OrderStatus::PENDING:
@@ -62,6 +64,7 @@ std::string_view status_name(atl::OrderStatus status) {
   }
 }
 
+/** Prints one normalized order and its aggregate fill state. */
 void print_order(const atl::OrderSnapshot& order) {
   std::cout << order.order_id_ << "  " << order.instrument_.symbol_ << "  " << order.name_ << '\n';
   std::cout << "  " << (order.side_ == atl::OrderSide::BUY ? "BUY" : "SELL") << "  "
@@ -95,6 +98,7 @@ atl::Date today() {
 
 } // namespace
 
+/** Lists the selected KIS account's modifiable orders and today's history. */
 int main() {
   try {
     atl::kis::KisConfig config;

@@ -15,6 +15,7 @@ namespace atl = algotradelib;
 
 namespace {
 
+/** Prints one structured broker failure and its retry delay when supplied. */
 void print_error(std::string_view operation, const atl::BrokerError& error) {
   std::cerr << operation << " failed";
   if (!error.broker_code_.empty()) {
@@ -35,6 +36,7 @@ void print_error(std::string_view operation, const atl::BrokerError& error) {
   }
 }
 
+/** Returns a printable name for a normalized order status. */
 std::string_view status_name(atl::OrderStatus status) {
   switch (status) {
     case atl::OrderStatus::PENDING:
@@ -62,6 +64,7 @@ std::string_view status_name(atl::OrderStatus status) {
   }
 }
 
+/** Prints one normalized order and its aggregate fill state. */
 void print_order(const atl::OrderSnapshot& order) {
   std::cout << order.instrument_.symbol_ << ' '
     << (order.side_ == atl::OrderSide::BUY ? "BUY" : "SELL") << ' '
@@ -76,6 +79,7 @@ void print_order(const atl::OrderSnapshot& order) {
   std::cout << " " << order.currency_.str() << " id=" << order.order_id_ << '\n';
 }
 
+/** Parses a positive Toss account sequence from one command-line argument. */
 std::int64_t parse_account_sequence(const char* value) {
   const std::string text(value);
   std::size_t parsed = 0;
@@ -88,6 +92,7 @@ std::int64_t parse_account_sequence(const char* value) {
 
 } // namespace
 
+/** Lists open orders and the first page of closed Toss orders. */
 int main(int argc, char* argv[]) {
   try {
     atl::tossinvest::TossConfig config;

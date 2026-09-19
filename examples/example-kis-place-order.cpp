@@ -42,6 +42,7 @@ void print_usage(const char* program) {
 
 } // namespace
 
+/** Constructs and prints one KIS order request without network I/O. */
 int main(int argc, char* argv[]) {
   try {
     if (argc > 6) {

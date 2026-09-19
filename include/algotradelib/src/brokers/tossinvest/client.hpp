@@ -977,6 +977,7 @@ private:
     }
   }
 
+  /** Builds the authenticated Toss order-placement POST request. */
   static network::HttpRequest make_place_order_request(
     std::int64_t account_sequence,
     std::string_view access_token,
@@ -1011,6 +1012,7 @@ private:
     return request;
   }
 
+  /** Builds the authenticated Toss order-modification POST request. */
   static network::HttpRequest make_replace_order_request(
     std::int64_t account_sequence,
     std::string_view access_token,
@@ -1040,6 +1042,7 @@ private:
     return request;
   }
 
+  /** Builds the authenticated Toss order-cancellation POST request. */
   static network::HttpRequest make_cancel_order_request(
     std::int64_t account_sequence,
     std::string_view access_token,
@@ -1057,6 +1060,7 @@ private:
     return request;
   }
 
+  /** Builds a Toss order-list request from the supplied filters. */
   static network::HttpRequest make_orders_request(
     std::string_view access_token,
     const TossOrderQuery& query
@@ -1095,6 +1099,7 @@ private:
     return request;
   }
 
+  /** Builds a Toss request for one order by broker identifier. */
   static network::HttpRequest make_order_request(
     std::int64_t account_sequence,
     std::string_view access_token,
@@ -1110,6 +1115,7 @@ private:
     return request;
   }
 
+  /** Validates and starts one Toss order submission. */
   void start_place_order(
     std::int64_t account_sequence,
     OrderRequest order,
@@ -1147,6 +1153,7 @@ private:
     );
   }
 
+  /** Validates and starts one Toss order modification. */
   void start_replace_order(
     std::int64_t account_sequence,
     TossAmendment amendment,
@@ -1190,6 +1197,7 @@ private:
     );
   }
 
+  /** Validates and starts one Toss order cancellation. */
   void start_cancel_order(
     std::int64_t account_sequence,
     std::string order_id,
@@ -1227,6 +1235,7 @@ private:
     );
   }
 
+  /** Sends an order-writing request and dispatches its parsed acknowledgement. */
   void request_order_ack(network::HttpRequest request, OrderAckHandler completion) {
     http_->async_request(
       std::move(request),
@@ -1243,6 +1252,7 @@ private:
     );
   }
 
+  /** Validates and starts one filtered Toss order listing. */
   void start_orders(TossOrderQuery query, OrderPageHandler completion) {
     if (auto invalid = validate_account_sequence(query.account_sequence_)) {
       complete_order_page(std::move(completion), Result<OrderPage>(std::move(*invalid)));
@@ -1309,6 +1319,7 @@ private:
     );
   }
 
+  /** Validates and starts an inquiry for one Toss order. */
   void start_order(std::int64_t account_sequence, std::string order_id, OrderHandler completion) {
     auto invalid = validate_account_sequence(account_sequence);
     if (!invalid) {
@@ -1354,6 +1365,7 @@ private:
     );
   }
 
+  /** Parses a Toss order-instruction response into an acknowledgement. */
   static Result<OrderAck> parse_order_ack(Result<network::HttpResponse> result) {
     if (!result) {
       return Result<OrderAck>(std::move(result.error()));
@@ -1391,6 +1403,7 @@ private:
     }
   }
 
+  /** Parses one Toss order-list response and its continuation cursor. */
   static Result<OrderPage> parse_orders(Result<network::HttpResponse> result) {
     if (!result) {
       return Result<OrderPage>(std::move(result.error()));
@@ -1438,6 +1451,7 @@ private:
     }
   }
 
+  /** Parses a Toss single-order response into a normalized snapshot. */
   static Result<OrderSnapshot> parse_order(Result<network::HttpResponse> result) {
     if (!result) {
       return Result<OrderSnapshot>(std::move(result.error()));
@@ -1682,6 +1696,7 @@ private:
     return std::string(buffer);
   }
 
+  /** Dispatches an order acknowledgement through its associated executor. */
   void complete_order_ack(OrderAckHandler handler, Result<OrderAck> result) {
     auto executor = net::get_associated_executor(handler, strand_);
     net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
@@ -1689,6 +1704,7 @@ private:
     });
   }
 
+  /** Dispatches an order-list result through its associated executor. */
   void complete_order_page(OrderPageHandler handler, Result<OrderPage> result) {
     auto executor = net::get_associated_executor(handler, strand_);
     net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
@@ -1696,6 +1712,7 @@ private:
     });
   }
 
+  /** Dispatches a single-order result through its associated executor. */
   void complete_order(OrderHandler handler, Result<OrderSnapshot> result) {
     auto executor = net::get_associated_executor(handler, strand_);
     net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {

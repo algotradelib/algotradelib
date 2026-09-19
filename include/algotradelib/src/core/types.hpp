@@ -330,10 +330,12 @@ struct Date {
   unsigned month_{0};
   unsigned day_{0};
 
+  /** Compares two calendar dates for component-wise equality. */
   friend bool operator==(const Date& lhs, const Date& rhs) {
     return lhs.year_ == rhs.year_ && lhs.month_ == rhs.month_ && lhs.day_ == rhs.day_;
   }
 
+  /** Orders calendar dates chronologically. */
   friend bool operator<(const Date& lhs, const Date& rhs) {
     if (lhs.year_ != rhs.year_) {
       return lhs.year_ < rhs.year_;

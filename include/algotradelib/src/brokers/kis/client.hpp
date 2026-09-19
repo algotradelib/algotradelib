@@ -833,6 +833,7 @@ private:
     }
   }
 
+  /** Mutable state shared across a paginated modifiable-order inquiry. */
   struct OpenOrderOperation {
     KisAccount account_;
     KisOpenOrderPage page_;
@@ -841,10 +842,12 @@ private:
     std::size_t page_count_{0};
     OpenOrderHandler completion_;
 
+    /** Captures the selected account and final completion handler. */
     OpenOrderOperation(KisAccount selected_account, OpenOrderHandler selected_completion)
     : account_(std::move(selected_account)), completion_(std::move(selected_completion)) {}
   };
 
+  /** Mutable state shared across a paginated order-history inquiry. */
   struct OrderHistoryOperation {
     KisAccount account_;
     KisHistoryRange range_;
@@ -854,6 +857,7 @@ private:
     std::size_t page_count_{0};
     OrderPageHandler completion_;
 
+    /** Captures the inquiry inputs and final completion handler. */
     OrderHistoryOperation(
       KisAccount selected_account,
       KisHistoryRange selected_range,
@@ -1009,6 +1013,7 @@ private:
     }
   }
 
+  /** Builds the authenticated KIS cash-order POST request. */
   static network::HttpRequest make_place_order_request(
     const KisAccount& account,
     const KisConfig& config,
@@ -1046,6 +1051,7 @@ private:
     return request;
   }
 
+  /** Builds the authenticated KIS modification or cancellation POST request. */
   static network::HttpRequest make_amend_order_request(
     const KisAccount& account,
     const KisConfig& config,
@@ -1097,6 +1103,7 @@ private:
     return error;
   }
 
+  /** Parses a KIS order-instruction response into its composite acknowledgement. */
   static Result<KisOrderAck> parse_order_ack(Result<network::HttpResponse> result) {
     if (!result) {
       return Result<KisOrderAck>(std::move(result.error()));
@@ -1135,6 +1142,7 @@ private:
     }
   }
 
+  /** Validates and starts one KIS cash-order submission. */
   void start_place_order(KisAccount account, OrderRequest order, OrderAckHandler completion) {
     std::string division;
     auto invalid = validate_account(account);
@@ -1170,6 +1178,7 @@ private:
     );
   }
 
+  /** Validates and starts one KIS modification or cancellation submission. */
   void start_amend_order(
     KisAccount account,
     KisAmendment amendment,
@@ -1229,6 +1238,7 @@ private:
     );
   }
 
+  /** Sends an order-writing request and dispatches its parsed acknowledgement. */
   void request_order_ack(network::HttpRequest request, OrderAckHandler completion) {
     http_->async_request(
       std::move(request),
@@ -1245,6 +1255,7 @@ private:
     );
   }
 
+  /** Validates and starts a complete modifiable-order inquiry. */
   void start_open_orders(KisAccount account, OpenOrderHandler completion) {
     auto invalid = validate_account(account);
     if (!invalid && config_.is_demo_) {
@@ -1278,6 +1289,7 @@ private:
     );
   }
 
+  /** Builds one page request for KIS orders that remain modifiable. */
   static network::HttpRequest make_open_orders_request(
     const KisAccount& account,
     const KisConfig& config,
@@ -1307,6 +1319,7 @@ private:
     return request;
   }
 
+  /** Sends the next modifiable-order page request for `operation`. */
   void request_open_orders(const std::shared_ptr<OpenOrderOperation>& operation) {
     auto request = make_open_orders_request(
       operation->account_,
@@ -1329,6 +1342,7 @@ private:
     );
   }
 
+  /** Accumulates one modifiable-order page and advances its continuation. */
   void handle_open_orders_page(
     const std::shared_ptr<OpenOrderOperation>& operation,
     Result<network::HttpResponse> result
@@ -1383,6 +1397,7 @@ private:
     );
   }
 
+  /** Parses one KIS modifiable-order response page and its cursors. */
   static Result<KisOpenOrderPage> parse_open_orders_page(
     Result<network::HttpResponse> result,
     std::string& foreign_cursor,
@@ -1463,6 +1478,7 @@ private:
     }
   }
 
+  /** Validates and starts a complete KIS order-history inquiry. */
   void start_order_history(KisAccount account, KisHistoryRange range, OrderPageHandler completion) {
     auto invalid = validate_account(account);
     if (
@@ -1498,6 +1514,7 @@ private:
     );
   }
 
+  /** Builds one page request for KIS daily order and execution history. */
   static network::HttpRequest make_order_history_request(
     const KisAccount& account,
     const KisConfig& config,
@@ -1531,6 +1548,7 @@ private:
     return request;
   }
 
+  /** Sends the next order-history page request for `operation`. */
   void request_order_history(const std::shared_ptr<OrderHistoryOperation>& operation) {
     auto request = make_order_history_request(
       operation->account_,
@@ -1554,6 +1572,7 @@ private:
     );
   }
 
+  /** Accumulates one order-history page and advances its continuation. */
   void handle_order_history_page(
     const std::shared_ptr<OrderHistoryOperation>& operation,
     Result<network::HttpResponse> result
@@ -1608,6 +1627,7 @@ private:
     );
   }
 
+  /** Parses one KIS daily order-history response page and its cursors. */
   static Result<OrderPage> parse_order_history_page(
     Result<network::HttpResponse> result,
     std::string& foreign_cursor,
@@ -1835,6 +1855,7 @@ private:
     return parse_iso8601_timestamp(iso);
   }
 
+  /** Dispatches an order acknowledgement through its associated executor. */
   void complete_order_ack(OrderAckHandler handler, Result<KisOrderAck> result) {
     auto executor = net::get_associated_executor(handler, strand_);
     net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
@@ -1842,6 +1863,7 @@ private:
     });
   }
 
+  /** Dispatches a modifiable-order result through its associated executor. */
   void complete_open_orders(OpenOrderHandler handler, Result<KisOpenOrderPage> result) {
     auto executor = net::get_associated_executor(handler, strand_);
     net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
@@ -1849,6 +1871,7 @@ private:
     });
   }
 
+  /** Dispatches an order-history result through its associated executor. */
   void complete_order_page(OrderPageHandler handler, Result<OrderPage> result) {
     auto executor = net::get_associated_executor(handler, strand_);
     net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
