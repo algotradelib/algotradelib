@@ -7,9 +7,12 @@
 #include "local_https_server.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 using namespace algotradelib;
@@ -100,6 +103,51 @@ struct TossClientTestAccess {
 
 namespace {
 
+class ScopedEnvironmentVariable {
+public:
+  explicit ScopedEnvironmentVariable(std::string name) : name_(std::move(name)) {
+    if (const char* value = std::getenv(name_.c_str())) {
+      original_ = value;
+    }
+  }
+
+  ~ScopedEnvironmentVariable() noexcept {
+    if (!original_) {
+      unset();
+      return;
+    }
+#ifdef _WIN32
+    (void)_putenv_s(name_.c_str(), original_->c_str());
+#else
+    (void)::setenv(name_.c_str(), original_->c_str(), 1);
+#endif
+  }
+
+  void set(const std::string& value) const {
+#ifdef _WIN32
+    if (_putenv_s(name_.c_str(), value.c_str()) != 0) {
+      throw std::runtime_error("failed to set test environment variable");
+    }
+#else
+    if (::setenv(name_.c_str(), value.c_str(), 1) != 0) {
+      throw std::runtime_error("failed to set test environment variable");
+    }
+#endif
+  }
+
+  void unset() const noexcept {
+#ifdef _WIN32
+    (void)_putenv_s(name_.c_str(), "");
+#else
+    (void)::unsetenv(name_.c_str());
+#endif
+  }
+
+private:
+  std::string name_;
+  std::optional<std::string> original_;
+};
+
 struct TestCredentials : network::ClientCredentials<TestCredentials> {
   static constexpr std::string_view key_field() { return "key"; }
   static constexpr std::string_view secret_field() { return "secret"; }
@@ -145,17 +193,17 @@ TEST_CASE(
 ) {
   HoldingsSnapshot snapshot;
   HoldingPosition position;
-  position.instrument = InstrumentId{Country::US, Venue::UNSPECIFIED, "AAPL"};
-  position.name = "Apple";
-  position.quantity = Decimal64::parse("1.2500");
-  position.average_purchase_price = Decimal64::parse("180.50");
-  position.last_price = Decimal64::parse("185.70");
-  position.purchase_value = Money{Decimal64::parse("225.625"), Currency::usd()};
-  position.market_value = Money{Decimal64::parse("232.125"), Currency::usd()};
-  position.unrealized_profit_loss = Money{Decimal64::parse("6.50"), Currency::usd()};
-  position.unrealized_return = Decimal64::parse("0.0288088643");
-  snapshot.positions.push_back(position);
-  snapshot.totals.push_back(
+  position.instrument_ = InstrumentId{Country::US, Venue::UNSPECIFIED, "AAPL"};
+  position.name_ = "Apple";
+  position.quantity_ = Decimal64::parse("1.2500");
+  position.average_purchase_price_ = Decimal64::parse("180.50");
+  position.last_price_ = Decimal64::parse("185.70");
+  position.purchase_value_ = Money{Decimal64::parse("225.625"), Currency::usd()};
+  position.market_value_ = Money{Decimal64::parse("232.125"), Currency::usd()};
+  position.unrealized_profit_loss_ = Money{Decimal64::parse("6.50"), Currency::usd()};
+  position.unrealized_return_ = Decimal64::parse("0.0288088643");
+  snapshot.positions_.push_back(position);
+  snapshot.totals_.push_back(
     HoldingsTotals{
       Currency::krw(),
       Decimal64::parse("0"),
@@ -163,7 +211,7 @@ TEST_CASE(
       Decimal64::parse("0"),
     }
   );
-  snapshot.totals.push_back(
+  snapshot.totals_.push_back(
     HoldingsTotals{
       Currency::usd(),
       Decimal64::parse("225.625"),
@@ -172,11 +220,36 @@ TEST_CASE(
     }
   );
 
-  REQUIRE(snapshot.positions.front().quantity == Decimal64::parse("1.25"));
-  REQUIRE(snapshot.positions.front().market_value.currency == Currency::usd());
-  REQUIRE(snapshot.totals.size() == 2);
-  REQUIRE(snapshot.totals[0].currency == Currency::krw());
-  REQUIRE(snapshot.totals[1].currency == Currency::usd());
+  REQUIRE(snapshot.positions_.front().quantity_ == Decimal64::parse("1.25"));
+  REQUIRE(snapshot.positions_.front().market_value_.currency_ == Currency::usd());
+  REQUIRE(snapshot.totals_.size() == 2);
+  REQUIRE(snapshot.totals_[0].currency_ == Currency::krw());
+  REQUIRE(snapshot.totals_[1].currency_ == Currency::usd());
+}
+
+TEST_CASE(
+  "KIS account loads explicit and default product codes from environment",
+  "[broker][kis][account][environment]"
+) {
+  ScopedEnvironmentVariable account_number("KIS_CANO");
+  ScopedEnvironmentVariable product_code("KIS_ACNT_PRDT_CD");
+
+  account_number.set("12345678");
+  product_code.set("02");
+  kis::KisAccount explicit_account;
+  explicit_account.from_env();
+  REQUIRE(explicit_account.account_number_ == "12345678");
+  REQUIRE(explicit_account.product_code_ == "02");
+
+  product_code.unset();
+  kis::KisAccount default_account;
+  default_account.from_env();
+  REQUIRE(default_account.account_number_ == "12345678");
+  REQUIRE(default_account.product_code_ == "01");
+
+  account_number.unset();
+  kis::KisAccount missing_account;
+  REQUIRE_THROWS_AS(missing_account.from_env(), std::runtime_error);
 }
 
 TEST_CASE(
@@ -525,16 +598,16 @@ TEST_CASE(
   REQUIRE(result);
   REQUIRE(foreign_cursor == "foreign-next");
   REQUIRE(domestic_cursor == "domestic-next");
-  REQUIRE(result.value().positions.size() == 1);
-  const auto& position = result.value().positions.front();
+  REQUIRE(result.value().positions_.size() == 1);
+  const auto& position = result.value().positions_.front();
   const InstrumentId expected_instrument{Country::KR, Venue::COMBINED, "005930"};
-  REQUIRE(position.instrument == expected_instrument);
-  REQUIRE(position.quantity == Decimal64::parse("10"));
-  REQUIRE(position.sellable_quantity == Decimal64::parse("7"));
-  REQUIRE(position.average_purchase_price == Decimal64::parse("70000"));
-  REQUIRE(position.unrealized_return == Decimal64::parse("0.02857142"));
-  REQUIRE(result.value().totals.size() == 1);
-  REQUIRE(result.value().totals.front().market_value == Decimal64::parse("720000"));
+  REQUIRE(position.instrument_ == expected_instrument);
+  REQUIRE(position.quantity_ == Decimal64::parse("10"));
+  REQUIRE(position.sellable_quantity_ == Decimal64::parse("7"));
+  REQUIRE(position.average_purchase_price_ == Decimal64::parse("70000"));
+  REQUIRE(position.unrealized_return_ == Decimal64::parse("0.02857142"));
+  REQUIRE(result.value().totals_.size() == 1);
+  REQUIRE(result.value().totals_.front().market_value_ == Decimal64::parse("720000"));
 }
 
 TEST_CASE(
@@ -548,9 +621,9 @@ TEST_CASE(
 
   HoldingsSnapshot first_page;
   HoldingPosition first_position;
-  first_position.instrument = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
-  first_page.positions.push_back(std::move(first_position));
-  first_page.totals.push_back(
+  first_position.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+  first_page.positions_.push_back(std::move(first_position));
+  first_page.totals_.push_back(
     HoldingsTotals{
       Currency::krw(),
       Decimal64::parse("700000"),
@@ -570,15 +643,15 @@ TEST_CASE(
   );
   REQUIRE_FALSE(error);
   REQUIRE(page_count == 1);
-  REQUIRE(snapshot.positions.size() == 1);
+  REQUIRE(snapshot.positions_.size() == 1);
   REQUIRE(foreign_cursor == "foreign-next");
   REQUIRE(domestic_cursor == "domestic-next");
 
   HoldingsSnapshot second_page;
   HoldingPosition second_position;
-  second_position.instrument = InstrumentId{Country::KR, Venue::COMBINED, "000660"};
-  second_page.positions.push_back(std::move(second_position));
-  second_page.totals.push_back(
+  second_position.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "000660"};
+  second_page.positions_.push_back(std::move(second_position));
+  second_page.totals_.push_back(
     HoldingsTotals{
       Currency::krw(),
       Decimal64::parse("1000000"),
@@ -598,9 +671,9 @@ TEST_CASE(
   );
   REQUIRE_FALSE(error);
   REQUIRE(page_count == 2);
-  REQUIRE(snapshot.positions.size() == 2);
-  REQUIRE(snapshot.positions.back().instrument.symbol == "000660");
-  REQUIRE(snapshot.totals.front().market_value == Decimal64::parse("1100000"));
+  REQUIRE(snapshot.positions_.size() == 2);
+  REQUIRE(snapshot.positions_.back().instrument_.symbol == "000660");
+  REQUIRE(snapshot.totals_.front().market_value_ == Decimal64::parse("1100000"));
 
   HoldingsSnapshot repeated_page;
   error = kis::KisClientTestAccess::append_holdings_page(
@@ -652,8 +725,8 @@ TEST_CASE(
   const auto result = tossinvest::TossClientTestAccess::parse_accounts(std::move(response));
   REQUIRE(result);
   REQUIRE(result.value().size() == 2);
-  REQUIRE(result.value()[0].sequence == 1);
-  REQUIRE(result.value()[1].account_type == "FUTURE_ACCOUNT_TYPE");
+  REQUIRE(result.value()[0].sequence_ == 1);
+  REQUIRE(result.value()[1].account_type_ == "FUTURE_ACCOUNT_TYPE");
 }
 
 TEST_CASE(
@@ -704,15 +777,15 @@ TEST_CASE(
 
   const auto result = tossinvest::TossClientTestAccess::parse_holdings(std::move(response));
   REQUIRE(result);
-  REQUIRE(result.value().positions.size() == 2);
-  REQUIRE(result.value().positions[0].instrument.country == Country::KR);
-  REQUIRE(result.value().positions[0].sellable_quantity == std::nullopt);
-  REQUIRE(result.value().positions[1].instrument.country == Country::US);
-  REQUIRE(result.value().positions[1].market_value.amount == Decimal64::parse("1785"));
-  REQUIRE(result.value().totals.size() == 2);
-  REQUIRE(result.value().totals[0].currency == Currency::krw());
-  REQUIRE(result.value().totals[1].currency == Currency::usd());
-  REQUIRE(result.value().totals[1].unrealized_profit_loss == Decimal64::parse("232"));
+  REQUIRE(result.value().positions_.size() == 2);
+  REQUIRE(result.value().positions_[0].instrument_.country == Country::KR);
+  REQUIRE(result.value().positions_[0].sellable_quantity_ == std::nullopt);
+  REQUIRE(result.value().positions_[1].instrument_.country == Country::US);
+  REQUIRE(result.value().positions_[1].market_value_.amount_ == Decimal64::parse("1785"));
+  REQUIRE(result.value().totals_.size() == 2);
+  REQUIRE(result.value().totals_[0].currency_ == Currency::krw());
+  REQUIRE(result.value().totals_[1].currency_ == Currency::usd());
+  REQUIRE(result.value().totals_[1].unrealized_profit_loss_ == Decimal64::parse("232"));
 
   network::HttpResponse future_response{http::status::ok, 11};
   future_response.body() = R"({"result":{
@@ -767,9 +840,9 @@ TEST_CASE(
     }})";
     const auto result = tossinvest::TossClientTestAccess::parse_holdings(std::move(response));
     REQUIRE(result);
-    REQUIRE(result.value().positions.empty());
-    REQUIRE(result.value().totals.size() == 1);
-    REQUIRE(result.value().totals.front().market_value == Decimal64::parse("0"));
+    REQUIRE(result.value().positions_.empty());
+    REQUIRE(result.value().totals_.size() == 1);
+    REQUIRE(result.value().totals_.front().market_value_ == Decimal64::parse("0"));
   }
 
   SECTION("Toss rejects inconsistent overview currencies") {

@@ -48,10 +48,7 @@ struct InstrumentId {
   Venue venue{Venue::COMBINED};
   std::string symbol;
 
-  friend bool operator==(
-    const InstrumentId& lhs,
-    const InstrumentId& rhs
-  ) {
+  friend bool operator==(const InstrumentId& lhs, const InstrumentId& rhs) {
     return lhs.country == rhs.country && lhs.venue == rhs.venue && lhs.symbol == rhs.symbol;
   }
 };
@@ -195,8 +192,9 @@ public:
   /** Returns a normalized decimal string. */
   std::string str() const {
     const bool negative = coefficient_ < 0;
-    std::uint64_t magnitude = negative ? static_cast<std::uint64_t>(-(coefficient_ + 1)) + 1ULL :
-                                         static_cast<std::uint64_t>(coefficient_);
+    std::uint64_t magnitude = negative ?
+      static_cast<std::uint64_t>(-(coefficient_ + 1)) + 1ULL :
+      static_cast<std::uint64_t>(coefficient_);
     std::string digits = std::to_string(magnitude);
     if (scale_ > 0) {
       if (digits.size() <= scale_) {
@@ -283,44 +281,41 @@ struct QuoteSnapshot {
 
 /** Exact monetary amount paired with its currency. */
 struct Money {
-  Decimal64 amount;
-  Currency currency;
+  Decimal64 amount_;
+  Currency currency_;
 
-  friend bool operator==(
-    const Money& lhs,
-    const Money& rhs
-  ) {
-    return lhs.amount == rhs.amount && lhs.currency == rhs.currency;
+  friend bool operator==(const Money& lhs, const Money& rhs) {
+    return lhs.amount_ == rhs.amount_ && lhs.currency_ == rhs.currency_;
   }
 };
 
 /** One broker-neutral position in an account holdings snapshot. */
 struct HoldingPosition {
-  InstrumentId instrument;
-  std::string name;
-  Decimal64 quantity;
-  std::optional<Decimal64> sellable_quantity;
-  Decimal64 average_purchase_price;
-  Decimal64 last_price;
-  Money purchase_value;
-  Money market_value;
-  Money unrealized_profit_loss;
-  Decimal64 unrealized_return;
+  InstrumentId instrument_;
+  std::string name_;
+  Decimal64 quantity_;
+  std::optional<Decimal64> sellable_quantity_;
+  Decimal64 average_purchase_price_;
+  Decimal64 last_price_;
+  Money purchase_value_;
+  Money market_value_;
+  Money unrealized_profit_loss_;
+  Decimal64 unrealized_return_;
 };
 
 /** Gross holdings totals for one currency without implicit conversion. */
 struct HoldingsTotals {
-  Currency currency;
-  Decimal64 purchase_value;
-  Decimal64 market_value;
-  Decimal64 unrealized_profit_loss;
+  Currency currency_;
+  Decimal64 purchase_value_;
+  Decimal64 market_value_;
+  Decimal64 unrealized_profit_loss_;
 };
 
 /** Point-in-time normalized positions and per-currency totals. */
 struct HoldingsSnapshot {
-  std::vector<HoldingPosition> positions;
-  std::vector<HoldingsTotals> totals;
-  std::chrono::system_clock::time_point received_at;
+  std::vector<HoldingPosition> positions_;
+  std::vector<HoldingsTotals> totals_;
+  std::chrono::system_clock::time_point received_at_;
 };
 
 /** Parses an ISO 8601 timestamp with a UTC designator or numeric offset. */

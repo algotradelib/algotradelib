@@ -10,10 +10,12 @@
 #include <boost/asio/post.hpp>
 #include <boost/asio/strand.hpp>
 
+#include <cstdlib>
 #include <deque>
 #include <iterator>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -22,8 +24,19 @@ namespace algotradelib::kis {
 
 /** Selects one KIS trading account for a holdings request. */
 struct KisAccount {
-  std::string account_number;
-  std::string product_code;
+  std::string account_number_;
+  std::string product_code_;
+
+  /** Loads account selection from `KIS_CANO` and optional `KIS_ACNT_PRDT_CD`. */
+  void from_env() {
+    const char* account_number = std::getenv("KIS_CANO");
+    if (!account_number) {
+      throw std::runtime_error("KIS_CANO not set (8-digit account number)");
+    }
+    const char* product_code = std::getenv("KIS_ACNT_PRDT_CD");
+    account_number_ = account_number;
+    product_code_ = product_code ? product_code : "01";
+  }
 };
 
 /** Persistent asynchronous KIS client with coalesced OAuth refresh. */
@@ -80,10 +93,7 @@ public:
 
   /** Requests and normalizes all holdings for the selected KIS account. */
   template <typename CompletionToken>
-  auto async_holdings(
-    KisAccount account,
-    CompletionToken&& token
-  ) {
+  auto async_holdings(KisAccount account, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<HoldingsSnapshot>)>(
       [self = shared_from_this(), account = std::move(account)](auto&& handler) mutable {
         auto completion = HoldingsHandler(std::forward<decltype(handler)>(handler));
@@ -112,18 +122,18 @@ private:
   std::deque<TokenHandler> token_waiters_;
 
   struct HoldingsOperation {
-    KisAccount account;
-    HoldingsSnapshot snapshot;
-    std::string foreign_cursor;
-    std::string domestic_cursor;
-    std::size_t page_count{0};
-    HoldingsHandler completion;
+    KisAccount account_;
+    HoldingsSnapshot snapshot_;
+    std::string foreign_cursor_;
+    std::string domestic_cursor_;
+    std::size_t page_count_{0};
+    HoldingsHandler completion_;
 
     HoldingsOperation(
       KisAccount selected_account,
       HoldingsHandler selected_completion
     )
-    : account(std::move(selected_account)), completion(std::move(selected_completion)) {}
+    : account_(std::move(selected_account)), completion_(std::move(selected_completion)) {}
   };
 
   void start_quote(InstrumentId instrument, QuoteHandler completion) {
@@ -158,8 +168,8 @@ private:
     HoldingsHandler completion
   ) {
     if (
-      !broker_detail::decimal_digits(account.account_number, 8) ||
-      !broker_detail::decimal_digits(account.product_code, 2)
+      !broker_detail::decimal_digits(account.account_number_, 8) ||
+      !broker_detail::decimal_digits(account.product_code_, 2)
     ) {
       BrokerError error;
       error.category = ErrorCategory::INVALID_ARGUMENT;
@@ -296,12 +306,12 @@ private:
 
   void request_holdings(const std::shared_ptr<HoldingsOperation>& operation) {
     auto request = make_holdings_request(
-      operation->account,
+      operation->account_,
       config_,
       token_.access_token_,
-      operation->foreign_cursor,
-      operation->domestic_cursor,
-      operation->page_count > 0
+      operation->foreign_cursor_,
+      operation->domestic_cursor_,
+      operation->page_count_ > 0
     );
     http_->async_request(
       std::move(request),
@@ -329,7 +339,7 @@ private:
     request.target =
       "/uapi/domestic-stock/v1/trading/inquire-balance"
       "?CANO=" +
-      account.account_number + "&ACNT_PRDT_CD=" + account.product_code +
+      account.account_number_ + "&ACNT_PRDT_CD=" + account.product_code_ +
       "&AFHR_FLPR_YN=Y&INQR_DVSN=01&UNPR_DVSN=01&FUND_STTL_ICLD_YN=N"
       "&FNCG_AMT_AUTO_RDPT_YN=N&PRCS_DVSN=00&CTX_AREA_FK100=" +
       broker_detail::query_encode(foreign_cursor) + "&CTX_AREA_NK100=" +
@@ -372,13 +382,13 @@ private:
       }
     }
 
-    snapshot.positions.insert(
-      snapshot.positions.end(),
-      std::make_move_iterator(page.positions.begin()),
-      std::make_move_iterator(page.positions.end())
+    snapshot.positions_.insert(
+      snapshot.positions_.end(),
+      std::make_move_iterator(page.positions_.begin()),
+      std::make_move_iterator(page.positions_.end())
     );
-    if (!page.totals.empty()) {
-      snapshot.totals = std::move(page.totals);
+    if (!page.totals_.empty()) {
+      snapshot.totals_ = std::move(page.totals_);
     }
     ++page_count;
     if (has_next) {
@@ -411,10 +421,10 @@ private:
     }
 
     auto pagination_error = append_holdings_page(
-      operation->snapshot,
-      operation->page_count,
-      operation->foreign_cursor,
-      operation->domestic_cursor,
+      operation->snapshot_,
+      operation->page_count_,
+      operation->foreign_cursor_,
+      operation->domestic_cursor_,
       std::move(page.value()),
       std::move(foreign_cursor),
       std::move(domestic_cursor),
@@ -432,8 +442,8 @@ private:
       return;
     }
 
-    operation->snapshot.received_at = std::chrono::system_clock::now();
-    finish_holdings(operation, Result<HoldingsSnapshot>(std::move(operation->snapshot)));
+    operation->snapshot_.received_at_ = std::chrono::system_clock::now();
+    finish_holdings(operation, Result<HoldingsSnapshot>(std::move(operation->snapshot_)));
   }
 
   static Result<QuoteSnapshot> parse_quote(InstrumentId instrument, Result<network::HttpResponse> result) {
@@ -543,30 +553,30 @@ private:
         }
         const auto& output = value.as_object();
         HoldingPosition position;
-        position.instrument = InstrumentId{
+        position.instrument_ = InstrumentId{
           Country::KR,
           Venue::COMBINED,
           broker_detail::json_string(output, "pdno"),
         };
-        position.name = broker_detail::json_string(output, "prdt_name");
-        position.quantity = Decimal64::parse(broker_detail::json_string(output, "hldg_qty"));
-        position.sellable_quantity =
+        position.name_ = broker_detail::json_string(output, "prdt_name");
+        position.quantity_ = Decimal64::parse(broker_detail::json_string(output, "hldg_qty"));
+        position.sellable_quantity_ =
           Decimal64::parse(broker_detail::json_string(output, "ord_psbl_qty"));
-        position.average_purchase_price =
+        position.average_purchase_price_ =
           Decimal64::parse(broker_detail::json_string(output, "pchs_avg_pric"));
-        position.last_price = Decimal64::parse(broker_detail::json_string(output, "prpr"));
-        position.purchase_value = Money{
+        position.last_price_ = Decimal64::parse(broker_detail::json_string(output, "prpr"));
+        position.purchase_value_ = Money{
           Decimal64::parse(broker_detail::json_string(output, "pchs_amt")), Currency::krw()
         };
-        position.market_value = Money{
+        position.market_value_ = Money{
           Decimal64::parse(broker_detail::json_string(output, "evlu_amt")), Currency::krw()
         };
-        position.unrealized_profit_loss = Money{
+        position.unrealized_profit_loss_ = Money{
           Decimal64::parse(broker_detail::json_string(output, "evlu_pfls_amt")), Currency::krw()
         };
-        position.unrealized_return =
+        position.unrealized_return_ =
           broker_detail::percent_to_ratio(broker_detail::json_string(output, "evlu_pfls_rt"));
-        snapshot.positions.push_back(std::move(position));
+        snapshot.positions_.push_back(std::move(position));
       }
 
       if (!summaries->as_array().empty()) {
@@ -575,7 +585,7 @@ private:
           throw std::runtime_error("output2 item is not an object");
         }
         const auto& output = value.as_object();
-        snapshot.totals.push_back(
+        snapshot.totals_.push_back(
           HoldingsTotals{
             Currency::krw(),
             Decimal64::parse(broker_detail::json_string(output, "pchs_amt_smtl_amt")),
@@ -616,7 +626,7 @@ private:
     const std::shared_ptr<HoldingsOperation>& operation,
     Result<HoldingsSnapshot> result
   ) {
-    complete_holdings(std::move(operation->completion), std::move(result));
+    complete_holdings(std::move(operation->completion_), std::move(result));
   }
 
   void complete_holdings(

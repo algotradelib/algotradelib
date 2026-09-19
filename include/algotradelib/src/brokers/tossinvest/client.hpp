@@ -22,9 +22,9 @@ namespace algotradelib::tossinvest {
 
 /** Toss brokerage account returned by account discovery. */
 struct TossAccount {
-  std::string account_number;
-  std::int64_t sequence{0};
-  std::string account_type;
+  std::string account_number_;
+  std::int64_t sequence_{0};
+  std::string account_type_;
 };
 
 /** Persistent asynchronous Toss Securities client with coalesced OAuth refresh. */
@@ -465,15 +465,15 @@ private:
       }
 
       HoldingsSnapshot snapshot;
-      snapshot.positions.reserve(items->as_array().size());
+      snapshot.positions_.reserve(items->as_array().size());
       for (const auto& value : items->as_array()) {
         if (!value.is_object()) {
           throw std::runtime_error("holdings item is not an object");
         }
-        snapshot.positions.push_back(parse_position(value.as_object()));
+        snapshot.positions_.push_back(parse_position(value.as_object()));
       }
-      append_totals(output, snapshot.totals);
-      snapshot.received_at = std::chrono::system_clock::now();
+      append_totals(output, snapshot.totals_);
+      snapshot.received_at_ = std::chrono::system_clock::now();
       return Result<HoldingsSnapshot>(std::move(snapshot));
     } catch (const std::exception& exception) {
       BrokerError error;
@@ -509,24 +509,24 @@ private:
     const auto& market_value = required_object(output, "marketValue");
     const auto& profit_loss = required_object(output, "profitLoss");
     HoldingPosition position;
-    position.instrument = InstrumentId{
+    position.instrument_ = InstrumentId{
       country, venue, broker_detail::json_string(output, "symbol")
     };
-    position.name = broker_detail::json_string(output, "name");
-    position.quantity = Decimal64::parse(broker_detail::json_string(output, "quantity"));
-    position.average_purchase_price =
+    position.name_ = broker_detail::json_string(output, "name");
+    position.quantity_ = Decimal64::parse(broker_detail::json_string(output, "quantity"));
+    position.average_purchase_price_ =
       Decimal64::parse(broker_detail::json_string(output, "averagePurchasePrice"));
-    position.last_price = Decimal64::parse(broker_detail::json_string(output, "lastPrice"));
-    position.purchase_value = Money{
+    position.last_price_ = Decimal64::parse(broker_detail::json_string(output, "lastPrice"));
+    position.purchase_value_ = Money{
       Decimal64::parse(broker_detail::json_string(market_value, "purchaseAmount")), currency
     };
-    position.market_value = Money{
+    position.market_value_ = Money{
       Decimal64::parse(broker_detail::json_string(market_value, "amount")), currency
     };
-    position.unrealized_profit_loss = Money{
+    position.unrealized_profit_loss_ = Money{
       Decimal64::parse(broker_detail::json_string(profit_loss, "amount")), currency
     };
-    position.unrealized_return =
+    position.unrealized_return_ =
       Decimal64::parse(broker_detail::json_string(profit_loss, "rate"));
     return position;
   }
