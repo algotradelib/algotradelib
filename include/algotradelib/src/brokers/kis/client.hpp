@@ -338,7 +338,7 @@ private:
       "/uapi/domestic-stock/v1/trading/inquire-balance"
       "?CANO=" +
       account.account_number_ + "&ACNT_PRDT_CD=" + account.product_code_ +
-      "&AFHR_FLPR_YN=Y&INQR_DVSN=01&UNPR_DVSN=01&FUND_STTL_ICLD_YN=N"
+      "&AFHR_FLPR_YN=Y&OFL_YN=&INQR_DVSN=01&UNPR_DVSN=01&FUND_STTL_ICLD_YN=N"
       "&FNCG_AMT_AUTO_RDPT_YN=N&PRCS_DVSN=00&CTX_AREA_FK100=" +
       broker_detail::query_encode(foreign_cursor) + "&CTX_AREA_NK100=" +
       broker_detail::query_encode(domestic_cursor);
