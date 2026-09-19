@@ -27,9 +27,9 @@ client->async_quote(
   {algotradelib::Country::KR, algotradelib::Venue::COMBINED, "005930"},
   [](algotradelib::Result<algotradelib::QuoteSnapshot> result) {
     if (result) {
-      std::cout << result.value().last_price.str() << '\n';
+      std::cout << result.value().last_price_.str() << '\n';
     } else {
-      std::cerr << result.error().message << '\n';
+      std::cerr << result.error().message_ << '\n';
     }
   });
 ioc.run();

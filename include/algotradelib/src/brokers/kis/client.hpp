@@ -129,28 +129,27 @@ private:
     std::size_t page_count_{0};
     HoldingsHandler completion_;
 
-    HoldingsOperation(
-      KisAccount selected_account,
-      HoldingsHandler selected_completion
-    )
+    HoldingsOperation(KisAccount selected_account, HoldingsHandler selected_completion)
     : account_(std::move(selected_account)), completion_(std::move(selected_completion)) {}
   };
 
   void start_quote(InstrumentId instrument, QuoteHandler completion) {
-    if (instrument.country != Country::KR || !broker_detail::valid_symbol(instrument.symbol)) {
+    if (instrument.country_ != Country::KR || !broker_detail::valid_symbol(instrument.symbol_)) {
       BrokerError error;
-      error.category = ErrorCategory::INVALID_ARGUMENT;
-      error.broker_code = "invalid_instrument";
-      error.message = "KIS quote currently supports Korean equity symbols only";
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.broker_code_ = "invalid_instrument";
+      error.message_ = "KIS quote currently supports Korean equity symbols only";
       complete(std::move(completion), Result<QuoteSnapshot>(std::move(error)));
       return;
     }
 
     ensure_token(
       TokenHandler(
-        [self = shared_from_this(),
+        [
+          self = shared_from_this(),
           instrument = std::move(instrument),
-          completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+          completion = std::move(completion)
+        ](std::optional<BrokerError> token_error) mutable {
           if (token_error) {
             self->complete(
               std::move(completion), Result<QuoteSnapshot>(std::move(*token_error))
@@ -163,18 +162,15 @@ private:
     );
   }
 
-  void start_holdings(
-    KisAccount account,
-    HoldingsHandler completion
-  ) {
+  void start_holdings(KisAccount account, HoldingsHandler completion) {
     if (
       !broker_detail::decimal_digits(account.account_number_, 8) ||
       !broker_detail::decimal_digits(account.product_code_, 2)
     ) {
       BrokerError error;
-      error.category = ErrorCategory::INVALID_ARGUMENT;
-      error.broker_code = "invalid_account";
-      error.message = "KIS account number must contain eight digits and product code two digits";
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.broker_code_ = "invalid_account";
+      error.message_ = "KIS account number must contain eight digits and product code two digits";
       complete_holdings(
         std::move(completion), Result<HoldingsSnapshot>(std::move(error))
       );
@@ -188,9 +184,7 @@ private:
       TokenHandler(
         [self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
           if (token_error) {
-            self->finish_holdings(
-              operation, Result<HoldingsSnapshot>(std::move(*token_error))
-            );
+            self->finish_holdings(operation, Result<HoldingsSnapshot>(std::move(*token_error)));
             return;
           }
           self->request_holdings(operation);
@@ -211,10 +205,10 @@ private:
     refreshing_ = true;
 
     network::HttpRequest request;
-    request.method = http::verb::post;
-    request.target = "/oauth2/tokenP";
-    request.body = config_.to_jsonbody();
-    request.headers.emplace_back("content-type", "application/json");
+    request.method_ = http::verb::post;
+    request.target_ = "/oauth2/tokenP";
+    request.body_ = config_.to_jsonbody();
+    request.headers_.emplace_back("content-type", "application/json");
     http_->async_request(
       std::move(request),
       [self = shared_from_this()](Result<network::HttpResponse> result) mutable {
@@ -232,7 +226,7 @@ private:
       failure = std::move(result.error());
     } else if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
       failure = broker_detail::http_error(result.value());
-      failure->category = ErrorCategory::AUTHENTICATION;
+      failure->category_ = ErrorCategory::AUTHENTICATION;
     } else {
       BrokerError parse_error;
       auto document = broker_detail::parse_object(result.value().body(), parse_error);
@@ -243,9 +237,9 @@ private:
           token_.from_json(*document);
         } catch (const std::exception& exception) {
           BrokerError error;
-          error.category = ErrorCategory::AUTHENTICATION;
-          error.broker_code = "invalid_token_response";
-          error.message = exception.what();
+          error.category_ = ErrorCategory::AUTHENTICATION;
+          error.broker_code_ = "invalid_token_response";
+          error.message_ = exception.what();
           failure = std::move(error);
         }
       }
@@ -264,19 +258,19 @@ private:
 
   void request_quote(InstrumentId instrument, QuoteHandler completion) {
     const char* market = "UN";
-    if (instrument.venue == Venue::KRX) {
+    if (instrument.venue_ == Venue::KRX) {
       market = "J";
-    } else if (instrument.venue == Venue::NXT) {
+    } else if (instrument.venue_ == Venue::NXT) {
       market = "NX";
     }
 
     network::HttpRequest request;
-    request.method = http::verb::get;
-    request.target =
+    request.method_ = http::verb::get;
+    request.target_ =
       "/uapi/domestic-stock/v1/quotations/inquire-price"
       "?FID_COND_MRKT_DIV_CODE=" +
-      std::string(market) + "&FID_INPUT_ISCD=" + instrument.symbol;
-    request.headers = {
+      std::string(market) + "&FID_INPUT_ISCD=" + instrument.symbol_;
+    request.headers_ = {
       {"authorization", "Bearer " + token_.access_token_},
       {"appkey", config_.key()},
       {"appsecret", config_.secret()},
@@ -286,15 +280,19 @@ private:
     };
     http_->async_request(
       std::move(request),
-      [self = shared_from_this(),
-       instrument = std::move(instrument),
-       completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+      [
+        self = shared_from_this(),
+        instrument = std::move(instrument),
+        completion = std::move(completion)
+      ](Result<network::HttpResponse> result) mutable {
         net::post(
           self->strand_,
-          [self,
-           instrument = std::move(instrument),
-           completion = std::move(completion),
-           result = std::move(result)]() mutable {
+          [
+            self,
+            instrument = std::move(instrument),
+            completion = std::move(completion),
+            result = std::move(result)
+          ]() mutable {
             self->complete(
               std::move(completion), parse_quote(std::move(instrument), std::move(result))
             );
@@ -335,8 +333,8 @@ private:
     bool continuation
   ) {
     network::HttpRequest request;
-    request.method = http::verb::get;
-    request.target =
+    request.method_ = http::verb::get;
+    request.target_ =
       "/uapi/domestic-stock/v1/trading/inquire-balance"
       "?CANO=" +
       account.account_number_ + "&ACNT_PRDT_CD=" + account.product_code_ +
@@ -344,7 +342,7 @@ private:
       "&FNCG_AMT_AUTO_RDPT_YN=N&PRCS_DVSN=00&CTX_AREA_FK100=" +
       broker_detail::query_encode(foreign_cursor) + "&CTX_AREA_NK100=" +
       broker_detail::query_encode(domestic_cursor);
-    request.headers = {
+    request.headers_ = {
       {"authorization", "Bearer " + std::string(access_token)},
       {"appkey", config.key()},
       {"appsecret", config.secret()},
@@ -375,9 +373,9 @@ private:
         cursor_did_not_advance
       ) {
         BrokerError error;
-        error.category = ErrorCategory::PROTOCOL;
-        error.broker_code = "invalid_pagination";
-        error.message = "KIS holdings continuation did not advance";
+        error.category_ = ErrorCategory::PROTOCOL;
+        error.broker_code_ = "invalid_pagination";
+        error.message_ = "KIS holdings continuation did not advance";
         return error;
       }
     }
@@ -398,10 +396,7 @@ private:
     return std::nullopt;
   }
 
-  void handle_holdings_page(
-    const std::shared_ptr<HoldingsOperation>& operation,
-    Result<network::HttpResponse> result
-  ) {
+  void handle_holdings_page(const std::shared_ptr<HoldingsOperation>& operation, Result<network::HttpResponse> result) {
     if (!result) {
       finish_holdings(operation, Result<HoldingsSnapshot>(std::move(result.error())));
       return;
@@ -462,12 +457,12 @@ private:
       const auto result_code = broker_detail::json_string(*document, "rt_cd");
       if (result_code != "0") {
         BrokerError error;
-        error.category = ErrorCategory::PROTOCOL;
+        error.category_ = ErrorCategory::PROTOCOL;
         if (const auto code = document->if_contains("msg_cd"); code && code->is_string()) {
-          error.broker_code = code->as_string().c_str();
+          error.broker_code_ = code->as_string().c_str();
         }
         if (const auto message = document->if_contains("msg1"); message && message->is_string()) {
-          error.message = message->as_string().c_str();
+          error.message_ = message->as_string().c_str();
         }
         return Result<QuoteSnapshot>(std::move(error));
       }
@@ -477,29 +472,27 @@ private:
       }
       if (
         const auto symbol = output->as_object().if_contains("stck_shrn_iscd");
-        symbol && symbol->is_string() && symbol->as_string() != instrument.symbol
+        symbol && symbol->is_string() && symbol->as_string() != instrument.symbol_
       ) {
         throw std::runtime_error("quote response symbol does not match request");
       }
       QuoteSnapshot quote;
-      quote.instrument = std::move(instrument);
-      quote.last_price =
+      quote.instrument_ = std::move(instrument);
+      quote.last_price_ =
         Decimal64::parse(broker_detail::json_string(output->as_object(), "stck_prpr"));
-      quote.currency = Currency::krw();
-      quote.received_at = std::chrono::system_clock::now();
+      quote.currency_ = Currency::krw();
+      quote.received_at_ = std::chrono::system_clock::now();
       return Result<QuoteSnapshot>(std::move(quote));
     } catch (const std::exception& exception) {
       BrokerError error;
-      error.category = ErrorCategory::PROTOCOL;
-      error.broker_code = "invalid_quote_response";
-      error.message = exception.what();
+      error.category_ = ErrorCategory::PROTOCOL;
+      error.broker_code_ = "invalid_quote_response";
+      error.message_ = exception.what();
       return Result<QuoteSnapshot>(std::move(error));
     }
   }
 
-  static Result<HoldingsSnapshot> parse_holdings(
-    Result<network::HttpResponse> result
-  ) {
+  static Result<HoldingsSnapshot> parse_holdings(Result<network::HttpResponse> result) {
     std::string foreign_cursor;
     std::string domestic_cursor;
     return parse_holdings_page(
@@ -527,12 +520,12 @@ private:
       const auto result_code = broker_detail::json_string(*document, "rt_cd");
       if (result_code != "0") {
         BrokerError error;
-        error.category = ErrorCategory::PROTOCOL;
+        error.category_ = ErrorCategory::PROTOCOL;
         if (const auto code = document->if_contains("msg_cd"); code && code->is_string()) {
-          error.broker_code = code->as_string().c_str();
+          error.broker_code_ = code->as_string().c_str();
         }
         if (const auto message = document->if_contains("msg1"); message && message->is_string()) {
-          error.message = message->as_string().c_str();
+          error.message_ = message->as_string().c_str();
         }
         return Result<HoldingsSnapshot>(std::move(error));
       }
@@ -608,9 +601,9 @@ private:
       return Result<HoldingsSnapshot>(std::move(snapshot));
     } catch (const std::exception& exception) {
       BrokerError error;
-      error.category = ErrorCategory::PROTOCOL;
-      error.broker_code = "invalid_holdings_response";
-      error.message = exception.what();
+      error.category_ = ErrorCategory::PROTOCOL;
+      error.broker_code_ = "invalid_holdings_response";
+      error.message_ = exception.what();
       return Result<HoldingsSnapshot>(std::move(error));
     }
   }
@@ -629,10 +622,7 @@ private:
     complete_holdings(std::move(operation->completion_), std::move(result));
   }
 
-  void complete_holdings(
-    HoldingsHandler handler,
-    Result<HoldingsSnapshot> result
-  ) {
+  void complete_holdings(HoldingsHandler handler, Result<HoldingsSnapshot> result) {
     auto executor = net::get_associated_executor(handler, strand_);
     net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
       std::move(handler)(std::move(result));
@@ -649,8 +639,7 @@ public:
     KisConfig config,
     network::HttpClientOptions options = {}
   )
-  : client_(std::make_shared<KisClient>(ioc_.get_executor(), context, std::move(config), options)) {
-  }
+  : client_(std::make_shared<KisClient>(ioc_.get_executor(), context, std::move(config), options)) {}
 
   /** Returns the current normalized quote or a structured error. */
   Result<QuoteSnapshot> quote(InstrumentId instrument) {
@@ -662,9 +651,9 @@ public:
     ioc_.run();
     if (!result) {
       BrokerError error;
-      error.category = ErrorCategory::TRANSPORT;
-      error.broker_code = "event_loop_stopped";
-      error.message = "event loop stopped before quote completion";
+      error.category_ = ErrorCategory::TRANSPORT;
+      error.broker_code_ = "event_loop_stopped";
+      error.message_ = "event loop stopped before quote completion";
       return Result<QuoteSnapshot>(std::move(error));
     }
     return std::move(*result);
@@ -680,9 +669,9 @@ public:
     ioc_.run();
     if (!result) {
       BrokerError error;
-      error.category = ErrorCategory::TRANSPORT;
-      error.broker_code = "event_loop_stopped";
-      error.message = "event loop stopped before holdings completion";
+      error.category_ = ErrorCategory::TRANSPORT;
+      error.broker_code_ = "event_loop_stopped";
+      error.message_ = "event loop stopped before holdings completion";
       return Result<HoldingsSnapshot>(std::move(error));
     }
     return std::move(*result);

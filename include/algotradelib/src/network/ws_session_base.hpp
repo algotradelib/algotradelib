@@ -30,12 +30,12 @@ namespace network {
 
 /** Runtime options shared by plain and TLS WebSocket sessions. */
 struct WebSocketSessionOptions {
-  std::string target{"/"};
-  std::map<std::string, std::string> headers;
-  std::chrono::seconds operation_timeout{30};
-  bool automatic_reconnect{false};
-  std::chrono::seconds reconnect_initial{1};
-  std::chrono::seconds reconnect_max{30};
+  std::string target_{"/"};
+  std::map<std::string, std::string> headers_;
+  std::chrono::seconds operation_timeout_{30};
+  bool automatic_reconnect_{false};
+  std::chrono::seconds reconnect_initial_{1};
+  std::chrono::seconds reconnect_max_{30};
 };
 
 /**
@@ -160,13 +160,13 @@ protected:
     ws_->set_option(timeout);
     ws_->set_option(websocket::stream_base::decorator([this](websocket::request_type& request) {
       request.set(http::field::user_agent, "algotradelib");
-      for (const auto& header : options_.headers) {
+      for (const auto& header : options_.headers_) {
         request.set(header.first, header.second);
       }
     }));
     ws_->async_handshake(
       host_header_,
-      options_.target,
+      options_.target_,
       beast::bind_front_handler(&WebSocketSessionBase::on_handshake, shared_derived())
     );
   }
@@ -194,7 +194,7 @@ private:
       fail("resolve", error);
       return;
     }
-    beast::get_lowest_layer(*ws_).expires_after(options_.operation_timeout);
+    beast::get_lowest_layer(*ws_).expires_after(options_.operation_timeout_);
     beast::get_lowest_layer(*ws_).async_connect(
       endpoints, beast::bind_front_handler(&Derived::on_connect, shared_derived())
     );
@@ -285,12 +285,12 @@ private:
   }
 
   void schedule_reconnect() {
-    if (stop_requested_ || !options_.automatic_reconnect || closing_) {
+    if (stop_requested_ || !options_.automatic_reconnect_ || closing_) {
       return;
     }
     const auto shift = std::min(reconnect_attempt_, 16U);
     const auto multiplier = static_cast<std::int64_t>(1ULL << shift);
-    const auto delay = std::min(options_.reconnect_initial * multiplier, options_.reconnect_max);
+    const auto delay = std::min(options_.reconnect_initial_ * multiplier, options_.reconnect_max_);
     ++reconnect_attempt_;
     const auto base_delay = std::chrono::duration_cast<std::chrono::milliseconds>(delay);
     const auto jitter_window = base_delay / 5;

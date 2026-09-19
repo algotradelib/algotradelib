@@ -75,7 +75,7 @@ private:
       return;
     }
     host_header_ = host_ + ":" + std::to_string(endpoint.port());
-    beast::get_lowest_layer(*ws_).expires_after(options_.operation_timeout);
+    beast::get_lowest_layer(*ws_).expires_after(options_.operation_timeout_);
     ws_->next_layer().async_handshake(
       ssl::stream_base::client,
       beast::bind_front_handler(&WssSession::on_ssl_handshake, shared_derived())

@@ -39,28 +39,28 @@ using HttpResponse = http::response<http::string_body>;
 
 /** Value-owned HTTP request accepted by the asynchronous transport. */
 struct HttpRequest {
-  http::verb method{http::verb::get};
-  std::string target{"/"};
-  std::string body;
-  std::vector<std::pair<std::string, std::string>> headers;
-  int version{11};
+  http::verb method_{http::verb::get};
+  std::string target_{"/"};
+  std::string body_;
+  std::vector<std::pair<std::string, std::string>> headers_;
+  int version_{11};
 };
 
 /** Resource and deadline limits for HTTP transports. */
 struct HttpClientOptions {
-  std::chrono::seconds timeout{30};
-  std::size_t body_limit{8 * 1024 * 1024};
-  std::size_t queue_limit{1024};
+  std::chrono::seconds timeout_{30};
+  std::size_t body_limit_{8 * 1024 * 1024};
+  std::size_t queue_limit_{1024};
 };
 
 /** Converts a Boost transport error into a broker-neutral error. */
 inline BrokerError transport_error(std::string stage, beast::error_code ec) {
   BrokerError error;
-  error.category = ec == net::error::operation_aborted ?
+  error.category_ = ec == net::error::operation_aborted ?
     ErrorCategory::CANCELLED :
     ErrorCategory::TRANSPORT;
-  error.broker_code = std::move(stage);
-  error.message = ec.message();
+  error.broker_code_ = std::move(stage);
+  error.message_ = ec.message();
   return error;
 }
 
@@ -149,13 +149,13 @@ public:
           request_value.prepare_payload();
         }
 
-        beast::get_lowest_layer(*stream_).expires_after(options_.timeout);
+        beast::get_lowest_layer(*stream_).expires_after(options_.timeout_);
         http::write(*stream_, request_value, error);
       }
 
       http::response_parser<http::string_body> parser;
       if (!error) {
-        parser.body_limit(options_.body_limit);
+        parser.body_limit(options_.body_limit_);
         http::read(*stream_, buffer_, parser, error);
       }
 
@@ -202,12 +202,12 @@ private:
     if (error) {
       return;
     }
-    beast::get_lowest_layer(*stream_).expires_after(options_.timeout);
+    beast::get_lowest_layer(*stream_).expires_after(options_.timeout_);
     beast::get_lowest_layer(*stream_).connect(endpoints, error);
     if (error) {
       return;
     }
-    beast::get_lowest_layer(*stream_).expires_after(options_.timeout);
+    beast::get_lowest_layer(*stream_).expires_after(options_.timeout_);
     stream_->handshake(ssl::stream_base::client, error);
   }
 
@@ -271,13 +271,13 @@ public:
       self->resolve_timer_.cancel();
       self->disconnect();
       BrokerError error;
-      error.category = ErrorCategory::CANCELLED;
-      error.broker_code = "close";
-      error.message = "HTTP client closed";
+      error.category_ = ErrorCategory::CANCELLED;
+      error.broker_code_ = "close";
+      error.message_ = "HTTP client closed";
       while (!self->queue_.empty()) {
         auto pending = std::move(self->queue_.front());
         self->queue_.pop_front();
-        self->complete(std::move(pending.handler), Result<HttpResponse>(error));
+        self->complete(std::move(pending.handler_), Result<HttpResponse>(error));
       }
     });
   }
@@ -294,12 +294,12 @@ private:
   };
 
   struct Pending {
-    HttpRequest request;
-    CompletionHandler handler;
-    bool retried{false};
+    HttpRequest request_;
+    CompletionHandler handler_;
+    bool retried_{false};
 
     Pending(HttpRequest request_value, CompletionHandler completion)
-    : request(std::move(request_value)), handler(std::move(completion)) {}
+    : request_(std::move(request_value)), handler_(std::move(completion)) {}
   };
 
   net::strand<net::any_io_executor> strand_;
@@ -321,18 +321,18 @@ private:
   void enqueue(Pending pending) {
     if (stopped_) {
       BrokerError error;
-      error.category = ErrorCategory::CANCELLED;
-      error.broker_code = "enqueue";
-      error.message = "HTTP client is closed";
-      complete(std::move(pending.handler), Result<HttpResponse>(std::move(error)));
+      error.category_ = ErrorCategory::CANCELLED;
+      error.broker_code_ = "enqueue";
+      error.message_ = "HTTP client is closed";
+      complete(std::move(pending.handler_), Result<HttpResponse>(std::move(error)));
       return;
     }
-    if (queue_.size() >= options_.queue_limit) {
+    if (queue_.size() >= options_.queue_limit_) {
       BrokerError error;
-      error.category = ErrorCategory::TRANSPORT;
-      error.broker_code = "queue_full";
-      error.message = "HTTP request queue limit exceeded";
-      complete(std::move(pending.handler), Result<HttpResponse>(std::move(error)));
+      error.category_ = ErrorCategory::TRANSPORT;
+      error.broker_code_ = "queue_full";
+      error.message_ = "HTTP request queue limit exceeded";
+      complete(std::move(pending.handler_), Result<HttpResponse>(std::move(error)));
       return;
     }
     queue_.push_back(std::move(pending));
@@ -354,7 +354,7 @@ private:
     stream_ = std::make_unique<beast::ssl_stream<beast::tcp_stream>>(strand_, context_);
     state_ = State::RESOLVING;
     resolve_timed_out_ = false;
-    resolve_timer_.expires_after(options_.timeout);
+    resolve_timer_.expires_after(options_.timeout_);
     resolve_timer_.async_wait([self = shared_from_this()](beast::error_code ec) {
       if (!ec && self->state_ == State::RESOLVING) {
         self->resolve_timed_out_ = true;
@@ -374,7 +374,7 @@ private:
           return;
         }
         self->state_ = State::CONNECTING;
-        beast::get_lowest_layer(*self->stream_).expires_after(self->options_.timeout);
+        beast::get_lowest_layer(*self->stream_).expires_after(self->options_.timeout_);
         beast::get_lowest_layer(*self->stream_)
           .async_connect(
             endpoints,
@@ -400,7 +400,7 @@ private:
     }
     stream_->set_verify_callback(ssl::host_name_verification(host_));
     state_ = State::HANDSHAKING;
-    beast::get_lowest_layer(*stream_).expires_after(options_.timeout);
+    beast::get_lowest_layer(*stream_).expires_after(options_.timeout_);
     stream_->async_handshake(
       ssl::stream_base::client, [self = shared_from_this()](beast::error_code ec) {
         if (ec) {
@@ -414,21 +414,21 @@ private:
   }
 
   void start_write() {
-    const auto& request_value = queue_.front().request;
-    active_request_.emplace(request_value.method, request_value.target, request_value.version);
+    const auto& request_value = queue_.front().request_;
+    active_request_.emplace(request_value.method_, request_value.target_, request_value.version_);
     active_request_->set(http::field::host, host_header());
     active_request_->set(http::field::user_agent, "algotradelib");
     active_request_->keep_alive(true);
-    for (const auto& header : request_value.headers) {
+    for (const auto& header : request_value.headers_) {
       active_request_->set(header.first, header.second);
     }
-    active_request_->body() = request_value.body;
-    if (!request_value.body.empty()) {
+    active_request_->body() = request_value.body_;
+    if (!request_value.body_.empty()) {
       active_request_->prepare_payload();
     }
 
     state_ = State::WRITING;
-    beast::get_lowest_layer(*stream_).expires_after(options_.timeout);
+    beast::get_lowest_layer(*stream_).expires_after(options_.timeout_);
     http::async_write(
       *stream_, *active_request_, [self = shared_from_this()](beast::error_code ec, std::size_t) {
         if (ec) {
@@ -442,9 +442,9 @@ private:
 
   void start_read() {
     parser_.emplace();
-    parser_->body_limit(options_.body_limit);
+    parser_->body_limit(options_.body_limit_);
     state_ = State::READING;
-    beast::get_lowest_layer(*stream_).expires_after(options_.timeout);
+    beast::get_lowest_layer(*stream_).expires_after(options_.timeout_);
     http::async_read(
       *stream_, buffer_, *parser_, [self = shared_from_this()](beast::error_code ec, std::size_t) {
         if (ec) {
@@ -462,7 +462,7 @@ private:
         } else {
           self->disconnect();
         }
-        self->complete(std::move(pending.handler), Result<HttpResponse>(std::move(response)));
+        self->complete(std::move(pending.handler_), Result<HttpResponse>(std::move(response)));
         self->pump();
       }
     );
@@ -475,16 +475,16 @@ private:
     }
     auto& pending = queue_.front();
     if (
-      pending.request.method == http::verb::get && !pending.retried &&
+      pending.request_.method_ == http::verb::get && !pending.retried_ &&
       ec != net::error::operation_aborted
     ) {
-      pending.retried = true;
+      pending.retried_ = true;
       pump();
       return;
     }
     auto completed = std::move(pending);
     queue_.pop_front();
-    complete(std::move(completed.handler), Result<HttpResponse>(transport_error(stage, ec)));
+    complete(std::move(completed.handler_), Result<HttpResponse>(transport_error(stage, ec)));
     pump();
   }
 

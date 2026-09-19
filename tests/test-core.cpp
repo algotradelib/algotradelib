@@ -280,7 +280,7 @@ TEST_CASE(
     InstrumentId{Country::US, Venue::UNSPECIFIED, "AAPL"},
     [&kis_completed](Result<QuoteSnapshot> result) {
       REQUIRE_FALSE(result);
-      REQUIRE(result.error().category == ErrorCategory::INVALID_ARGUMENT);
+      REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
       kis_completed = true;
     }
   );
@@ -292,7 +292,7 @@ TEST_CASE(
     InstrumentId{Country::KR, Venue::COMBINED, "bad symbol"},
     [&toss_completed](Result<QuoteSnapshot> result) {
       REQUIRE_FALSE(result);
-      REQUIRE(result.error().category == ErrorCategory::INVALID_ARGUMENT);
+      REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
       toss_completed = true;
     }
   );
@@ -309,14 +309,14 @@ TEST_CASE(
   net::io_context ioc;
   ssl::context context(ssl::context::tls_client);
   network::HttpClientOptions options;
-  options.queue_limit = 0;
+  options.queue_limit_ = 0;
   auto client = std::make_shared<network::AsyncHttpClient>(
     ioc.get_executor(), context, "localhost", "443", options
   );
   bool completed = false;
   client->async_request(network::HttpRequest{}, [&completed](Result<network::HttpResponse> result) {
     REQUIRE_FALSE(result);
-    REQUIRE(result.error().broker_code == "queue_full");
+    REQUIRE(result.error().broker_code_ == "queue_full");
     completed = true;
   });
   ioc.run();
@@ -327,7 +327,7 @@ TEST_CASE(
   ioc.run();
   const auto future_result = future.get();
   REQUIRE_FALSE(future_result);
-  REQUIRE(future_result.error().broker_code == "queue_full");
+  REQUIRE(future_result.error().broker_code_ == "queue_full");
 }
 
 TEST_CASE(
@@ -345,7 +345,7 @@ TEST_CASE(
   std::vector<std::string> bodies;
   for (const std::string target : {"/first", "/second"}) {
     network::HttpRequest request;
-    request.target = target;
+    request.target_ = target;
     client->async_request(std::move(request), [&bodies](Result<network::HttpResponse> result) {
       REQUIRE(result);
       bodies.push_back(result.value().body());
@@ -372,7 +372,7 @@ TEST_CASE(
   std::vector<std::string> bodies;
   for (const std::string target : {"/close", "/after-close"}) {
     network::HttpRequest request;
-    request.target = target;
+    request.target_ = target;
     client->async_request(std::move(request), [&bodies](Result<network::HttpResponse> result) {
       REQUIRE(result);
       bodies.push_back(result.value().body());
@@ -398,7 +398,7 @@ TEST_CASE(
     );
 
     network::HttpRequest request;
-    request.target = "/drop-get-once";
+    request.target_ = "/drop-get-once";
     bool completed = false;
     client->async_request(std::move(request), [&completed](Result<network::HttpResponse> result) {
       REQUIRE(result);
@@ -422,9 +422,9 @@ TEST_CASE(
     );
 
     network::HttpRequest request;
-    request.method = http::verb::post;
-    request.target = "/drop-post";
-    request.body = "order-like-payload";
+    request.method_ = http::verb::post;
+    request.target_ = "/drop-post";
+    request.body_ = "order-like-payload";
     bool completed = false;
     client->async_request(std::move(request), [&completed](Result<network::HttpResponse> result) {
       REQUIRE_FALSE(result);
@@ -480,18 +480,18 @@ TEST_CASE(
   ssl::context context(ssl::context::tls_client);
   test::trustLocalhostCertificate(context);
   network::HttpClientOptions options;
-  options.body_limit = 128;
+  options.body_limit_ = 128;
   auto client = std::make_shared<network::AsyncHttpClient>(
     ioc.get_executor(), context, "localhost", server.port(), options
   );
 
   network::HttpRequest request;
-  request.target = "/large";
+  request.target_ = "/large";
   bool completed = false;
   client->async_request(std::move(request), [&completed](Result<network::HttpResponse> result) {
     REQUIRE_FALSE(result);
-    REQUIRE(result.error().category == ErrorCategory::TRANSPORT);
-    REQUIRE(result.error().broker_code == "read");
+    REQUIRE(result.error().category_ == ErrorCategory::TRANSPORT);
+    REQUIRE(result.error().broker_code_ == "read");
     completed = true;
   });
 
@@ -509,26 +509,26 @@ TEST_CASE(
   kis_response.body() = R"({"rt_cd":"0","msg_cd":"MCA00000","output":{"stck_prpr":"72000"}})";
   auto kis_result = kis::KisClientTestAccess::parse(samsung, std::move(kis_response));
   REQUIRE(kis_result);
-  REQUIRE(kis_result.value().last_price == Decimal64(72000, 0));
-  REQUIRE(kis_result.value().currency == Currency::krw());
-  REQUIRE_FALSE(kis_result.value().exchange_time);
+  REQUIRE(kis_result.value().last_price_ == Decimal64(72000, 0));
+  REQUIRE(kis_result.value().currency_ == Currency::krw());
+  REQUIRE_FALSE(kis_result.value().exchange_time_);
 
   network::HttpResponse toss_response{http::status::ok, 11};
   toss_response.body() =
     R"({"result":[{"symbol":"005930","timestamp":"2026-03-25T09:30:00.123+09:00","lastPrice":"72000","currency":"KRW"}]})";
   auto toss_result = tossinvest::TossClientTestAccess::parse(samsung, std::move(toss_response));
   REQUIRE(toss_result);
-  REQUIRE(toss_result.value().last_price == Decimal64(72000, 0));
-  REQUIRE(toss_result.value().currency == Currency::krw());
-  REQUIRE(toss_result.value().exchange_time);
+  REQUIRE(toss_result.value().last_price_ == Decimal64(72000, 0));
+  REQUIRE(toss_result.value().currency_ == Currency::krw());
+  REQUIRE(toss_result.value().exchange_time_);
 
   network::HttpResponse toss_error{http::status::too_many_requests, 11};
   toss_error.body() =
     R"({"error":{"requestId":"request-1","code":"rate-limit-exceeded","message":"retry later"}})";
   auto error_result = tossinvest::TossClientTestAccess::parse(samsung, std::move(toss_error));
   REQUIRE_FALSE(error_result);
-  REQUIRE(error_result.error().category == ErrorCategory::RATE_LIMIT);
-  REQUIRE(error_result.error().request_id == "request-1");
+  REQUIRE(error_result.error().category_ == ErrorCategory::RATE_LIMIT);
+  REQUIRE(error_result.error().request_id_ == "request-1");
 }
 
 TEST_CASE(
@@ -536,7 +536,7 @@ TEST_CASE(
   "[broker][kis][holdings]"
 ) {
   const auto header_value = [](const network::HttpRequest& request, std::string_view name) {
-    for (const auto& header : request.headers) {
+    for (const auto& header : request.headers_) {
       if (header.first == name) {
         return header.second;
       }
@@ -549,8 +549,8 @@ TEST_CASE(
   const auto initial = kis::KisClientTestAccess::holdings_request(account, live, "", "", false);
   REQUIRE(header_value(initial, "tr_id") == "TTTC8434R");
   REQUIRE(header_value(initial, "tr_cont").empty());
-  REQUIRE(initial.target.find("CANO=12345678") != std::string::npos);
-  REQUIRE(initial.target.find("ACNT_PRDT_CD=01") != std::string::npos);
+  REQUIRE(initial.target_.find("CANO=12345678") != std::string::npos);
+  REQUIRE(initial.target_.find("ACNT_PRDT_CD=01") != std::string::npos);
 
   kis::KisConfig demo;
   demo.is_demo_ = true;
@@ -558,7 +558,7 @@ TEST_CASE(
     kis::KisClientTestAccess::holdings_request(account, demo, "cursor key", "next", true);
   REQUIRE(header_value(next, "tr_id") == "VTTC8434R");
   REQUIRE(header_value(next, "tr_cont") == "N");
-  REQUIRE(next.target.find("CTX_AREA_FK100=cursor%20key") != std::string::npos);
+  REQUIRE(next.target_.find("CTX_AREA_FK100=cursor%20key") != std::string::npos);
 }
 
 TEST_CASE(
@@ -672,7 +672,7 @@ TEST_CASE(
   REQUIRE_FALSE(error);
   REQUIRE(page_count == 2);
   REQUIRE(snapshot.positions_.size() == 2);
-  REQUIRE(snapshot.positions_.back().instrument_.symbol == "000660");
+  REQUIRE(snapshot.positions_.back().instrument_.symbol_ == "000660");
   REQUIRE(snapshot.totals_.front().market_value_ == Decimal64::parse("1100000"));
 
   HoldingsSnapshot repeated_page;
@@ -687,7 +687,7 @@ TEST_CASE(
     true
   );
   REQUIRE(error);
-  REQUIRE(error->broker_code == "invalid_pagination");
+  REQUIRE(error->broker_code_ == "invalid_pagination");
   REQUIRE(page_count == 2);
 }
 
@@ -703,8 +703,8 @@ TEST_CASE(
     kis::KisAccount{"1234-678", "1"},
     [&completed](Result<HoldingsSnapshot> result) {
       REQUIRE_FALSE(result);
-      REQUIRE(result.error().category == ErrorCategory::INVALID_ARGUMENT);
-      REQUIRE(result.error().broker_code == "invalid_account");
+      REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+      REQUIRE(result.error().broker_code_ == "invalid_account");
       completed = true;
     }
   );
@@ -778,9 +778,9 @@ TEST_CASE(
   const auto result = tossinvest::TossClientTestAccess::parse_holdings(std::move(response));
   REQUIRE(result);
   REQUIRE(result.value().positions_.size() == 2);
-  REQUIRE(result.value().positions_[0].instrument_.country == Country::KR);
+  REQUIRE(result.value().positions_[0].instrument_.country_ == Country::KR);
   REQUIRE(result.value().positions_[0].sellable_quantity_ == std::nullopt);
-  REQUIRE(result.value().positions_[1].instrument_.country == Country::US);
+  REQUIRE(result.value().positions_[1].instrument_.country_ == Country::US);
   REQUIRE(result.value().positions_[1].market_value_.amount_ == Decimal64::parse("1785"));
   REQUIRE(result.value().totals_.size() == 2);
   REQUIRE(result.value().totals_[0].currency_ == Currency::krw());
@@ -802,9 +802,9 @@ TEST_CASE(
   const auto future =
     tossinvest::TossClientTestAccess::parse_holdings(std::move(future_response));
   REQUIRE_FALSE(future);
-  REQUIRE(future.error().category == ErrorCategory::PROTOCOL);
-  REQUIRE(future.error().broker_code == "invalid_holdings_response");
-  REQUIRE(future.error().message == "unsupported marketCountry: JP");
+  REQUIRE(future.error().category_ == ErrorCategory::PROTOCOL);
+  REQUIRE(future.error().broker_code_ == "invalid_holdings_response");
+  REQUIRE(future.error().message_ == "unsupported marketCountry: JP");
 }
 
 TEST_CASE(
@@ -818,8 +818,8 @@ TEST_CASE(
   bool completed = false;
   client->async_holdings(0, [&completed](Result<HoldingsSnapshot> result) {
     REQUIRE_FALSE(result);
-    REQUIRE(result.error().category == ErrorCategory::INVALID_ARGUMENT);
-    REQUIRE(result.error().broker_code == "invalid_account");
+    REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+    REQUIRE(result.error().broker_code_ == "invalid_account");
     completed = true;
   });
   ioc.run();
@@ -855,8 +855,8 @@ TEST_CASE(
     }})";
     const auto result = tossinvest::TossClientTestAccess::parse_holdings(std::move(response));
     REQUIRE_FALSE(result);
-    REQUIRE(result.error().category == ErrorCategory::PROTOCOL);
-    REQUIRE(result.error().broker_code == "invalid_holdings_response");
+    REQUIRE(result.error().category_ == ErrorCategory::PROTOCOL);
+    REQUIRE(result.error().broker_code_ == "invalid_holdings_response");
   }
 
   SECTION("Toss preserves structured HTTP errors") {
@@ -866,9 +866,9 @@ TEST_CASE(
     response.set("Retry-After", "3");
     const auto result = tossinvest::TossClientTestAccess::parse_holdings(std::move(response));
     REQUIRE_FALSE(result);
-    REQUIRE(result.error().category == ErrorCategory::RATE_LIMIT);
-    REQUIRE(result.error().request_id == "holding-1");
-    REQUIRE(result.error().retry_after == std::chrono::seconds(3));
+    REQUIRE(result.error().category_ == ErrorCategory::RATE_LIMIT);
+    REQUIRE(result.error().request_id_ == "holding-1");
+    REQUIRE(result.error().retry_after_ == std::chrono::seconds(3));
   }
 
   SECTION("KIS preserves response codes") {
@@ -876,9 +876,9 @@ TEST_CASE(
     response.body() = R"({"rt_cd":"1","msg_cd":"APBK0919","msg1":"request failed"})";
     const auto result = kis::KisClientTestAccess::parse_holdings(std::move(response));
     REQUIRE_FALSE(result);
-    REQUIRE(result.error().category == ErrorCategory::PROTOCOL);
-    REQUIRE(result.error().broker_code == "APBK0919");
-    REQUIRE(result.error().message == "request failed");
+    REQUIRE(result.error().category_ == ErrorCategory::PROTOCOL);
+    REQUIRE(result.error().broker_code_ == "APBK0919");
+    REQUIRE(result.error().message_ == "request failed");
   }
 }
 

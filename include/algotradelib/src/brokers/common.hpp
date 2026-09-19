@@ -30,12 +30,12 @@ inline std::optional<std::chrono::seconds> retry_after(const network::HttpRespon
 
 inline BrokerError http_error(const network::HttpResponse& response) {
   BrokerError error;
-  error.http_status = response.result_int();
-  error.category = response.result() == http::status::too_many_requests ?
+  error.http_status_ = response.result_int();
+  error.category_ = response.result() == http::status::too_many_requests ?
     ErrorCategory::RATE_LIMIT :
     ErrorCategory::HTTP;
-  error.message = response.body();
-  error.retry_after = retry_after(response);
+  error.message_ = response.body();
+  error.retry_after_ = retry_after(response);
   return error;
 }
 
@@ -43,9 +43,9 @@ inline std::optional<json::object> parse_object(std::string_view body, BrokerErr
   boost::system::error_code ec;
   auto value = json::parse(body, ec);
   if (ec || !value.is_object()) {
-    error.category = ErrorCategory::PROTOCOL;
-    error.broker_code = "invalid_json";
-    error.message = ec ? ec.message() : "JSON response is not an object";
+    error.category_ = ErrorCategory::PROTOCOL;
+    error.broker_code_ = "invalid_json";
+    error.message_ = ec ? ec.message() : "JSON response is not an object";
     return std::nullopt;
   }
   return value.as_object();
@@ -59,10 +59,7 @@ inline std::string json_string(const json::object& object, std::string_view key)
   return std::string(value->as_string());
 }
 
-inline std::int64_t json_int64(
-  const json::object& object,
-  std::string_view key
-) {
+inline std::int64_t json_int64(const json::object& object, std::string_view key) {
   const auto value = object.if_contains(key);
   if (!value) {
     throw std::runtime_error("missing integer field: " + std::string(key));
@@ -93,9 +90,7 @@ inline bool valid_symbol(std::string_view symbol) {
   return true;
 }
 
-inline std::string query_encode(
-  std::string_view value
-) {
+inline std::string query_encode(std::string_view value) {
   static constexpr char hex[] = "0123456789ABCDEF";
   std::string result;
   result.reserve(value.size());
@@ -113,10 +108,7 @@ inline std::string query_encode(
   return result;
 }
 
-inline bool decimal_digits(
-  std::string_view value,
-  std::size_t length
-) {
+inline bool decimal_digits(std::string_view value, std::size_t length) {
   if (value.size() != length) {
     return false;
   }
@@ -128,9 +120,7 @@ inline bool decimal_digits(
   return true;
 }
 
-inline Decimal64 percent_to_ratio(
-  std::string_view value
-) {
+inline Decimal64 percent_to_ratio(std::string_view value) {
   const auto percent = Decimal64::parse(value);
   if (percent.scale() > std::numeric_limits<std::uint8_t>::max() - 2) {
     throw std::out_of_range("percentage scale exceeds Decimal64 range");

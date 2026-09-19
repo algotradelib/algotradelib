@@ -76,9 +76,7 @@ public:
 
   /** Discovers the brokerage accounts available to the current credentials. */
   template <typename CompletionToken>
-  auto async_accounts(
-    CompletionToken&& token
-  ) {
+  auto async_accounts(CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<std::vector<TossAccount>>)>(
       [self = shared_from_this()](auto&& handler) mutable {
         auto completion = AccountsHandler(std::forward<decltype(handler)>(handler));
@@ -95,10 +93,7 @@ public:
 
   /** Requests and normalizes holdings for one discovered account sequence. */
   template <typename CompletionToken>
-  auto async_holdings(
-    std::int64_t account_sequence,
-    CompletionToken&& token
-  ) {
+  auto async_holdings(std::int64_t account_sequence, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<HoldingsSnapshot>)>(
       [self = shared_from_this(), account_sequence](auto&& handler) mutable {
         auto completion = HoldingsHandler(std::forward<decltype(handler)>(handler));
@@ -127,11 +122,11 @@ private:
   std::deque<TokenHandler> token_waiters_;
 
   void start_quote(InstrumentId instrument, QuoteHandler completion) {
-    if (instrument.country != Country::KR || !broker_detail::valid_symbol(instrument.symbol)) {
+    if (instrument.country_ != Country::KR || !broker_detail::valid_symbol(instrument.symbol_)) {
       BrokerError error;
-      error.category = ErrorCategory::INVALID_ARGUMENT;
-      error.broker_code = "invalid_instrument";
-      error.message = "Toss quote currently supports Korean equity symbols only";
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.broker_code_ = "invalid_instrument";
+      error.message_ = "Toss quote currently supports Korean equity symbols only";
       complete(std::move(completion), Result<QuoteSnapshot>(std::move(error)));
       return;
     }
@@ -171,15 +166,12 @@ private:
     );
   }
 
-  void start_holdings(
-    std::int64_t account_sequence,
-    HoldingsHandler completion
-  ) {
+  void start_holdings(std::int64_t account_sequence, HoldingsHandler completion) {
     if (account_sequence <= 0) {
       BrokerError error;
-      error.category = ErrorCategory::INVALID_ARGUMENT;
-      error.broker_code = "invalid_account";
-      error.message = "Toss account sequence must be positive";
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.broker_code_ = "invalid_account";
+      error.message_ = "Toss account sequence must be positive";
       complete_holdings(
         std::move(completion), Result<HoldingsSnapshot>(std::move(error))
       );
@@ -213,10 +205,10 @@ private:
     }
     refreshing_ = true;
     network::HttpRequest request;
-    request.method = http::verb::post;
-    request.target = "/oauth2/token";
-    request.body = config_.to_form_urlencoded_body();
-    request.headers.emplace_back("content-type", "application/x-www-form-urlencoded");
+    request.method_ = http::verb::post;
+    request.target_ = "/oauth2/token";
+    request.body_ = config_.to_form_urlencoded_body();
+    request.headers_.emplace_back("content-type", "application/x-www-form-urlencoded");
     http_->async_request(
       std::move(request),
       [self = shared_from_this()](Result<network::HttpResponse> result) mutable {
@@ -239,15 +231,15 @@ private:
         failure = std::move(parse_error);
       } else if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
         failure = toss_error(*document, result.value().result_int());
-        failure->category = ErrorCategory::AUTHENTICATION;
+        failure->category_ = ErrorCategory::AUTHENTICATION;
       } else {
         try {
           token_.from_json(*document);
         } catch (const std::exception& exception) {
           BrokerError error;
-          error.category = ErrorCategory::AUTHENTICATION;
-          error.broker_code = "invalid_token_response";
-          error.message = exception.what();
+          error.category_ = ErrorCategory::AUTHENTICATION;
+          error.broker_code_ = "invalid_token_response";
+          error.message_ = exception.what();
           failure = std::move(error);
         }
       }
@@ -265,20 +257,24 @@ private:
 
   void request_quote(InstrumentId instrument, QuoteHandler completion) {
     network::HttpRequest request;
-    request.method = http::verb::get;
-    request.target = "/api/v1/prices?symbols=" + instrument.symbol;
-    request.headers.emplace_back("authorization", "Bearer " + token_.access_token_);
+    request.method_ = http::verb::get;
+    request.target_ = "/api/v1/prices?symbols=" + instrument.symbol_;
+    request.headers_.emplace_back("Authorization", "Bearer " + token_.access_token_);
     http_->async_request(
       std::move(request),
-      [self = shared_from_this(),
-       instrument = std::move(instrument),
-       completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+      [
+        self = shared_from_this(),
+        instrument = std::move(instrument),
+        completion = std::move(completion)
+      ](Result<network::HttpResponse> result) mutable {
         net::post(
           self->strand_,
-          [self,
-           instrument = std::move(instrument),
-           completion = std::move(completion),
-           result = std::move(result)]() mutable {
+          [
+            self,
+            instrument = std::move(instrument),
+            completion = std::move(completion),
+            result = std::move(result)
+          ]() mutable {
             self->complete(
               std::move(completion), parse_quote(std::move(instrument), std::move(result))
             );
@@ -290,9 +286,9 @@ private:
 
   void request_accounts(AccountsHandler completion) {
     network::HttpRequest request;
-    request.method = http::verb::get;
-    request.target = "/api/v1/accounts";
-    request.headers.emplace_back("authorization", "Bearer " + token_.access_token_);
+    request.method_ = http::verb::get;
+    request.target_ = "/api/v1/accounts";
+    request.headers_.emplace_back("Authorization", "Bearer " + token_.access_token_);
     http_->async_request(
       std::move(request),
       [self = shared_from_this(), completion = std::move(completion)](
@@ -310,15 +306,12 @@ private:
     );
   }
 
-  void request_holdings(
-    std::int64_t account_sequence,
-    HoldingsHandler completion
-  ) {
+  void request_holdings(std::int64_t account_sequence, HoldingsHandler completion) {
     network::HttpRequest request;
-    request.method = http::verb::get;
-    request.target = "/api/v1/holdings";
-    request.headers = {
-      {"authorization", "Bearer " + token_.access_token_},
+    request.method_ = http::verb::get;
+    request.target_ = "/api/v1/holdings";
+    request.headers_ = {
+      {"Authorization", "Bearer " + token_.access_token_},
       {"X-Tossinvest-Account", std::to_string(account_sequence)},
     };
     http_->async_request(
@@ -349,7 +342,7 @@ private:
     }
     if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
       auto error = toss_error(*document, result.value().result_int());
-      error.retry_after = broker_detail::retry_after(result.value());
+      error.retry_after_ = broker_detail::retry_after(result.value());
       return Result<QuoteSnapshot>(std::move(error));
     }
     try {
@@ -361,35 +354,33 @@ private:
         throw std::runtime_error("missing non-empty result array");
       }
       const auto& output = payload->as_array().front().as_object();
-      if (broker_detail::json_string(output, "symbol") != instrument.symbol) {
+      if (broker_detail::json_string(output, "symbol") != instrument.symbol_) {
         throw std::runtime_error("quote response symbol does not match request");
       }
       QuoteSnapshot quote;
-      quote.instrument = std::move(instrument);
-      quote.last_price = Decimal64::parse(broker_detail::json_string(output, "lastPrice"));
-      quote.currency = Currency(broker_detail::json_string(output, "currency"));
+      quote.instrument_ = std::move(instrument);
+      quote.last_price_ = Decimal64::parse(broker_detail::json_string(output, "lastPrice"));
+      quote.currency_ = Currency(broker_detail::json_string(output, "currency"));
       if (
         const auto timestamp = output.if_contains("timestamp"); timestamp && timestamp->is_string()
       ) {
-        quote.exchange_time = parse_iso8601_timestamp(timestamp->as_string().c_str());
-        if (!quote.exchange_time) {
+        quote.exchange_time_ = parse_iso8601_timestamp(timestamp->as_string().c_str());
+        if (!quote.exchange_time_) {
           throw std::runtime_error("invalid timestamp");
         }
       }
-      quote.received_at = std::chrono::system_clock::now();
+      quote.received_at_ = std::chrono::system_clock::now();
       return Result<QuoteSnapshot>(std::move(quote));
     } catch (const std::exception& exception) {
       BrokerError error;
-      error.category = ErrorCategory::PROTOCOL;
-      error.broker_code = "invalid_quote_response";
-      error.message = exception.what();
+      error.category_ = ErrorCategory::PROTOCOL;
+      error.broker_code_ = "invalid_quote_response";
+      error.message_ = exception.what();
       return Result<QuoteSnapshot>(std::move(error));
     }
   }
 
-  static Result<std::vector<TossAccount>> parse_accounts(
-    Result<network::HttpResponse> result
-  ) {
+  static Result<std::vector<TossAccount>> parse_accounts(Result<network::HttpResponse> result) {
     if (!result) {
       return Result<std::vector<TossAccount>>(std::move(result.error()));
     }
@@ -400,7 +391,7 @@ private:
     }
     if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
       auto error = toss_error(*document, result.value().result_int());
-      error.retry_after = broker_detail::retry_after(result.value());
+      error.retry_after_ = broker_detail::retry_after(result.value());
       return Result<std::vector<TossAccount>>(std::move(error));
     }
     try {
@@ -430,16 +421,14 @@ private:
       return Result<std::vector<TossAccount>>(std::move(accounts));
     } catch (const std::exception& exception) {
       BrokerError error;
-      error.category = ErrorCategory::PROTOCOL;
-      error.broker_code = "invalid_accounts_response";
-      error.message = exception.what();
+      error.category_ = ErrorCategory::PROTOCOL;
+      error.broker_code_ = "invalid_accounts_response";
+      error.message_ = exception.what();
       return Result<std::vector<TossAccount>>(std::move(error));
     }
   }
 
-  static Result<HoldingsSnapshot> parse_holdings(
-    Result<network::HttpResponse> result
-  ) {
+  static Result<HoldingsSnapshot> parse_holdings(Result<network::HttpResponse> result) {
     if (!result) {
       return Result<HoldingsSnapshot>(std::move(result.error()));
     }
@@ -450,7 +439,7 @@ private:
     }
     if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
       auto error = toss_error(*document, result.value().result_int());
-      error.retry_after = broker_detail::retry_after(result.value());
+      error.retry_after_ = broker_detail::retry_after(result.value());
       return Result<HoldingsSnapshot>(std::move(error));
     }
     try {
@@ -477,16 +466,14 @@ private:
       return Result<HoldingsSnapshot>(std::move(snapshot));
     } catch (const std::exception& exception) {
       BrokerError error;
-      error.category = ErrorCategory::PROTOCOL;
-      error.broker_code = "invalid_holdings_response";
-      error.message = exception.what();
+      error.category_ = ErrorCategory::PROTOCOL;
+      error.broker_code_ = "invalid_holdings_response";
+      error.message_ = exception.what();
       return Result<HoldingsSnapshot>(std::move(error));
     }
   }
 
-  static HoldingPosition parse_position(
-    const json::object& output
-  ) {
+  static HoldingPosition parse_position(const json::object& output) {
     const auto market_country = broker_detail::json_string(output, "marketCountry");
     const auto currency = Currency(broker_detail::json_string(output, "currency"));
     Country country;
@@ -531,10 +518,7 @@ private:
     return position;
   }
 
-  static const json::object& required_object(
-    const json::object& parent,
-    std::string_view key
-  ) {
+  static const json::object& required_object(const json::object& parent, std::string_view key) {
     const auto value = parent.if_contains(key);
     if (!value || !value->is_object()) {
       throw std::runtime_error("missing object field: " + std::string(key));
@@ -542,10 +526,7 @@ private:
     return value->as_object();
   }
 
-  static std::optional<Decimal64> optional_decimal(
-    const json::object& object,
-    std::string_view key
-  ) {
+  static std::optional<Decimal64> optional_decimal(const json::object& object, std::string_view key) {
     const auto value = object.if_contains(key);
     if (!value) {
       throw std::runtime_error("missing decimal field: " + std::string(key));
@@ -559,10 +540,7 @@ private:
     return Decimal64::parse(value->as_string().c_str());
   }
 
-  static void append_totals(
-    const json::object& output,
-    std::vector<HoldingsTotals>& totals
-  ) {
+  static void append_totals(const json::object& output, std::vector<HoldingsTotals>& totals) {
     const auto& purchase = required_object(output, "totalPurchaseAmount");
     const auto& market = required_object(required_object(output, "marketValue"), "amount");
     const auto& profit_loss = required_object(required_object(output, "profitLoss"), "amount");
@@ -594,22 +572,22 @@ private:
 
   static BrokerError toss_error(const json::object& document, int status = 0) {
     BrokerError result;
-    result.http_status = status;
-    result.category = status == 429 ? ErrorCategory::RATE_LIMIT : ErrorCategory::PROTOCOL;
+    result.http_status_ = status;
+    result.category_ = status == 429 ? ErrorCategory::RATE_LIMIT : ErrorCategory::PROTOCOL;
     const auto error = document.if_contains("error");
     if (!error || !error->is_object()) {
-      result.message = "Toss response has no error object";
+      result.message_ = "Toss response has no error object";
       return result;
     }
     const auto& object = error->as_object();
     if (const auto value = object.if_contains("code"); value && value->is_string()) {
-      result.broker_code = value->as_string().c_str();
+      result.broker_code_ = value->as_string().c_str();
     }
     if (const auto value = object.if_contains("requestId"); value && value->is_string()) {
-      result.request_id = value->as_string().c_str();
+      result.request_id_ = value->as_string().c_str();
     }
     if (const auto value = object.if_contains("message"); value && value->is_string()) {
-      result.message = value->as_string().c_str();
+      result.message_ = value->as_string().c_str();
     }
     return result;
   }
@@ -621,20 +599,14 @@ private:
     });
   }
 
-  void complete_accounts(
-    AccountsHandler handler,
-    Result<std::vector<TossAccount>> result
-  ) {
+  void complete_accounts(AccountsHandler handler, Result<std::vector<TossAccount>> result) {
     auto executor = net::get_associated_executor(handler, strand_);
     net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
       std::move(handler)(std::move(result));
     });
   }
 
-  void complete_holdings(
-    HoldingsHandler handler,
-    Result<HoldingsSnapshot> result
-  ) {
+  void complete_holdings(HoldingsHandler handler, Result<HoldingsSnapshot> result) {
     auto executor = net::get_associated_executor(handler, strand_);
     net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
       std::move(handler)(std::move(result));
@@ -665,9 +637,9 @@ public:
     ioc_.run();
     if (!result) {
       BrokerError error;
-      error.category = ErrorCategory::TRANSPORT;
-      error.broker_code = "event_loop_stopped";
-      error.message = "event loop stopped before quote completion";
+      error.category_ = ErrorCategory::TRANSPORT;
+      error.broker_code_ = "event_loop_stopped";
+      error.message_ = "event loop stopped before quote completion";
       return Result<QuoteSnapshot>(std::move(error));
     }
     return std::move(*result);
@@ -683,9 +655,9 @@ public:
     ioc_.run();
     if (!result) {
       BrokerError error;
-      error.category = ErrorCategory::TRANSPORT;
-      error.broker_code = "event_loop_stopped";
-      error.message = "event loop stopped before accounts completion";
+      error.category_ = ErrorCategory::TRANSPORT;
+      error.broker_code_ = "event_loop_stopped";
+      error.message_ = "event loop stopped before accounts completion";
       return Result<std::vector<TossAccount>>(std::move(error));
     }
     return std::move(*result);
@@ -701,9 +673,9 @@ public:
     ioc_.run();
     if (!result) {
       BrokerError error;
-      error.category = ErrorCategory::TRANSPORT;
-      error.broker_code = "event_loop_stopped";
-      error.message = "event loop stopped before holdings completion";
+      error.category_ = ErrorCategory::TRANSPORT;
+      error.broker_code_ = "event_loop_stopped";
+      error.message_ = "event loop stopped before holdings completion";
       return Result<HoldingsSnapshot>(std::move(error));
     }
     return std::move(*result);

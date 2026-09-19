@@ -44,12 +44,12 @@ enum class Venue {
 
 /** Broker-neutral identity for a financial instrument. */
 struct InstrumentId {
-  Country country{Country::KR};
-  Venue venue{Venue::COMBINED};
-  std::string symbol;
+  Country country_{Country::KR};
+  Venue venue_{Venue::COMBINED};
+  std::string symbol_;
 
   friend bool operator==(const InstrumentId& lhs, const InstrumentId& rhs) {
-    return lhs.country == rhs.country && lhs.venue == rhs.venue && lhs.symbol == rhs.symbol;
+    return lhs.country_ == rhs.country_ && lhs.venue_ == rhs.venue_ && lhs.symbol_ == rhs.symbol_;
   }
 };
 
@@ -230,12 +230,12 @@ enum class ErrorCategory {
 
 /** Structured error returned by transport and broker operations. */
 struct BrokerError {
-  ErrorCategory category{ErrorCategory::PROTOCOL};
-  int http_status{0};
-  std::string broker_code;
-  std::string request_id;
-  std::string message;
-  std::optional<std::chrono::seconds> retry_after;
+  ErrorCategory category_{ErrorCategory::PROTOCOL};
+  int http_status_{0};
+  std::string broker_code_;
+  std::string request_id_;
+  std::string message_;
+  std::optional<std::chrono::seconds> retry_after_;
 };
 
 /** Value-or-error result with no exception required on the success path. */
@@ -272,11 +272,11 @@ private:
 
 /** Normalized point-in-time market quote. */
 struct QuoteSnapshot {
-  InstrumentId instrument;
-  Decimal64 last_price;
-  Currency currency;
-  std::optional<std::chrono::system_clock::time_point> exchange_time;
-  std::chrono::system_clock::time_point received_at;
+  InstrumentId instrument_;
+  Decimal64 last_price_;
+  Currency currency_;
+  std::optional<std::chrono::system_clock::time_point> exchange_time_;
+  std::chrono::system_clock::time_point received_at_;
 };
 
 /** Exact monetary amount paired with its currency. */

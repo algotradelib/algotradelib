@@ -37,22 +37,22 @@ int main(int argc, char* argv[]) {
         if (!result) {
           const auto& error = result.error();
           std::cerr << "quote failed";
-          if (!error.broker_code.empty()) {
-            std::cerr << " [" << error.broker_code << ']';
+          if (!error.broker_code_.empty()) {
+            std::cerr << " [" << error.broker_code_ << ']';
           }
-          if (error.http_status != 0) {
-            std::cerr << " HTTP " << error.http_status;
+          if (error.http_status_ != 0) {
+            std::cerr << " HTTP " << error.http_status_;
           }
-          if (!error.message.empty()) {
-            std::cerr << ": " << error.message;
+          if (!error.message_.empty()) {
+            std::cerr << ": " << error.message_;
           }
           std::cerr << '\n';
           return;
         }
 
         const auto& quote = result.value();
-        std::cout << quote.instrument.symbol << ' ' << quote.last_price.str() << ' '
-          << quote.currency.str() << '\n';
+        std::cout << quote.instrument_.symbol_ << ' ' << quote.last_price_.str() << ' '
+          << quote.currency_.str() << '\n';
         exit_code = 0;
       }
     );
