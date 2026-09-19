@@ -125,10 +125,12 @@ cmake --build build --target example-kis-orders
 ```
 
 [`examples/example-tossinvest-orders.cpp`](examples/example-tossinvest-orders.cpp)
-is also read-only. It prints each open order on one line, then follows at most
-ten pages of closed orders and prints only the total and page count. It uses
-the same environment variables as the Toss account example, and accepts an
-account sequence as its first argument.
+is also read-only. It prints each open order on one line, then requests only
+the first page of closed orders and reports whether another cursor is
+available. It does not automatically exhaust closed-order history because both
+requests use Toss's `ORDER_HISTORY` rate-limit group. It uses the same
+environment variables as the Toss account example and accepts an account
+sequence as its first argument.
 
 ```sh
 cmake --build build --target example-tossinvest-orders
@@ -173,6 +175,10 @@ execution notifications.
 - DNS, connect, TLS, write, and read operations have deadlines.
 - A failed GET may be replayed once after reconnect. POST requests are never
   replayed automatically.
+- HTTP 429 responses surface as `ErrorCategory::RATE_LIMIT`; a numeric
+  `Retry-After` header is preserved in `BrokerError::retry_after_`. The library
+  does not yet expose per-group remaining/reset counters or schedule requests
+  against a shared rate budget.
 - TLS performs SNI and certificate hostname verification.
 - WebSocket sessions accept a target path and handshake headers, serialize
   writes and close, send idle keep-alive pings, and report lifecycle events

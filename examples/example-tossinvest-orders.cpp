@@ -30,6 +30,9 @@ void print_error(std::string_view operation, const atl::BrokerError& error) {
     std::cerr << ": " << error.message_;
   }
   std::cerr << '\n';
+  if (error.retry_after_) {
+    std::cerr << "  retry after " << error.retry_after_->count() << " seconds\n";
+  }
 }
 
 std::string_view status_name(atl::OrderStatus status) {
@@ -126,39 +129,21 @@ int main(int argc, char* argv[]) {
       print_order(order);
     }
 
-    // A closed listing pages; the returned cursor is passed back unchanged
-    // until Toss reports no further page.
+    // Fetch only the first closed page. Following every cursor automatically
+    // can consume the ORDER_HISTORY request budget; callers decide explicitly
+    // whether and when to request another page.
     atl::tossinvest::TossOrderQuery closed_query;
     closed_query.account_sequence_ = sequence;
     closed_query.scope_ = atl::tossinvest::TossOrderScope::CLOSED;
     closed_query.limit_ = 20;
-
-    std::size_t closed_count = 0;
-    std::size_t closed_pages = 0;
-    bool more_closed_orders = false;
-    for (std::size_t page = 0; page < 10; ++page) {
-      auto closed_result = client.orders(closed_query);
-      if (!closed_result) {
-        print_error("closed order listing", closed_result.error());
-        return 1;
-      }
-      ++closed_pages;
-      closed_count += closed_result.value().orders_.size();
-      if (!closed_result.value().next_cursor_) {
-        break;
-      }
-      if (page + 1 == 10) {
-        more_closed_orders = true;
-        break;
-      }
-      closed_query.cursor_ = closed_result.value().next_cursor_;
+    auto closed_result = client.orders(closed_query);
+    if (!closed_result) {
+      print_error("closed order listing", closed_result.error());
+      return 1;
     }
-    std::cout << "closed orders: " << closed_count << " across " << closed_pages
-      << (closed_pages == 1 ? " page" : " pages");
-    if (more_closed_orders) {
-      std::cout << " (more available)";
-    }
-    std::cout << '\n';
+    std::cout << "closed orders on first page: " << closed_result.value().orders_.size() << '\n';
+    std::cout << "more closed orders: "
+      << (closed_result.value().next_cursor_ ? "yes" : "no") << '\n';
     return 0;
   } catch (const std::exception& exception) {
     std::cerr << "example failed: " << exception.what() << '\n';
