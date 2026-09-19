@@ -144,9 +144,9 @@ cmake --build build --target example-tossinvest-orders
 only constructs and prints an `OrderRequest`. It never creates a client, loads
 credentials, or performs network I/O, so no environment setting can make it
 submit an order. With no arguments it shows a one-share limit buy of `005930`
-at KRW 70,000. Optional `ATL_ORDER_SYMBOL`, `ATL_ORDER_QUANTITY`,
-`ATL_ORDER_PRICE`, `ATL_ORDER_SIDE`, and `ATL_ORDER_TYPE` values override the
-displayed request; `ATL_ORDER_TYPE` accepts `LIMIT` or `MARKET`.
+at KRW 70,000. Optional positional arguments are `symbol`, `quantity`, side,
+type, and limit price, in that order. Side accepts `BUY` or `SELL`; type accepts
+`LIMIT` or `MARKET`. A market dry-run takes no price.
 
 ```sh
 cmake --build build --target example-kis-place-order
@@ -154,7 +154,10 @@ cmake --build build --target example-kis-place-order
 ./build/bin/example-kis-place-order
 
 # Shows a different dry-run request; still sends nothing.
-ATL_ORDER_SIDE=SELL ATL_ORDER_TYPE=MARKET ./build/bin/example-kis-place-order
+./build/bin/example-kis-place-order 000660 2 SELL MARKET
+
+# Shows a two-share limit buy at KRW 180,000.
+./build/bin/example-kis-place-order 005380 2 BUY LIMIT 180000
 ```
 
 Toss order placement follows the same shape through

@@ -2,63 +2,65 @@
 // client or performing network I/O. This example is always a dry-run.
 #include <algotradelib/kis>
 
-#include <cstdlib>
 #include <exception>
 #include <iostream>
 #include <stdexcept>
 #include <string>
-#include <utility>
+#include <string_view>
 
 namespace atl = algotradelib;
 
 namespace {
 
-std::string environment_value_or(const char* name, std::string fallback) {
-  const char* value = std::getenv(name);
-  return value && *value != '\0' ? std::string(value) : std::move(fallback);
-}
-
-atl::OrderSide order_side() {
-  const auto side = environment_value_or("ATL_ORDER_SIDE", "BUY");
+/** Parses one command-line order side. */
+atl::OrderSide parse_order_side(std::string_view side) {
   if (side == "BUY") {
     return atl::OrderSide::BUY;
   }
   if (side == "SELL") {
     return atl::OrderSide::SELL;
   }
-  throw std::invalid_argument("ATL_ORDER_SIDE must be BUY or SELL");
+  throw std::invalid_argument("side must be BUY or SELL");
 }
 
-atl::OrderType order_type() {
-  const auto type = environment_value_or("ATL_ORDER_TYPE", "LIMIT");
+/** Parses one command-line order type. */
+atl::OrderType parse_order_type(std::string_view type) {
   if (type == "LIMIT") {
     return atl::OrderType::LIMIT;
   }
   if (type == "MARKET") {
     return atl::OrderType::MARKET;
   }
-  throw std::invalid_argument("ATL_ORDER_TYPE must be LIMIT or MARKET");
+  throw std::invalid_argument("type must be LIMIT or MARKET");
+}
+
+/** Prints the positional dry-run interface. */
+void print_usage(const char* program) {
+  std::cerr << "usage: " << program << " [symbol] [quantity] [BUY|SELL] "
+    << "[LIMIT|MARKET] [limit-price]\n";
 }
 
 } // namespace
 
-int main() {
+int main(int argc, char* argv[]) {
   try {
+    if (argc > 6) {
+      throw std::invalid_argument("too many arguments");
+    }
+
     atl::OrderRequest order;
     order.instrument_ = atl::InstrumentId{
       atl::Country::KR,
       atl::Venue::COMBINED,
-      environment_value_or("ATL_ORDER_SYMBOL", "005930"),
+      argc > 1 ? argv[1] : "005930",
     };
-    order.quantity_ = atl::Decimal64::parse(
-      environment_value_or("ATL_ORDER_QUANTITY", "1")
-    );
-    order.side_ = order_side();
-    order.type_ = order_type();
+    order.quantity_ = atl::Decimal64::parse(argc > 2 ? argv[2] : "1");
+    order.side_ = parse_order_side(argc > 3 ? argv[3] : "BUY");
+    order.type_ = parse_order_type(argc > 4 ? argv[4] : "LIMIT");
     if (order.type_ == atl::OrderType::LIMIT) {
-      order.price_ = atl::Decimal64::parse(
-        environment_value_or("ATL_ORDER_PRICE", "70000")
-      );
+      order.price_ = atl::Decimal64::parse(argc > 5 ? argv[5] : "70000");
+    } else if (argc > 5) {
+      throw std::invalid_argument("a MARKET dry-run must not include a limit price");
     }
 
     std::cout << "dry-run: this example never sends an order\n";
@@ -73,6 +75,7 @@ int main() {
     return 0;
   } catch (const std::exception& exception) {
     std::cerr << "example failed: " << exception.what() << '\n';
+    print_usage(argv[0]);
     return 1;
   }
 }
