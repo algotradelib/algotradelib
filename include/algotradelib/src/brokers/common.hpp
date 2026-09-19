@@ -125,7 +125,14 @@ inline Decimal64 percent_to_ratio(std::string_view value) {
   if (percent.scale() > std::numeric_limits<std::uint8_t>::max() - 2) {
     throw std::out_of_range("percentage scale exceeds Decimal64 range");
   }
-  return Decimal64(percent.coefficient(), static_cast<std::uint8_t>(percent.scale() + 2));
+
+  auto coefficient = percent.coefficient();
+  auto scale = static_cast<std::uint8_t>(percent.scale() + 2);
+  while (scale > 0 && coefficient % 10 == 0) {
+    coefficient /= 10;
+    --scale;
+  }
+  return Decimal64(coefficient, scale);
 }
 
 } // namespace algotradelib::broker_detail

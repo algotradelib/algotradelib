@@ -611,6 +611,17 @@ TEST_CASE(
 }
 
 TEST_CASE(
+  "KIS percentage values use normalized ratio representation",
+  "[broker][kis][holdings][decimal]"
+) {
+  REQUIRE(broker_detail::percent_to_ratio("0.00") == Decimal64::parse("0"));
+  REQUIRE(broker_detail::percent_to_ratio("10.00") == Decimal64::parse("0.1"));
+  REQUIRE(broker_detail::percent_to_ratio("100.00") == Decimal64::parse("1"));
+  REQUIRE(broker_detail::percent_to_ratio("2.857142") == Decimal64::parse("0.02857142"));
+  REQUIRE(broker_detail::percent_to_ratio("-12.50") == Decimal64::parse("-0.125"));
+}
+
+TEST_CASE(
   "KIS holdings pagination accumulates pages and rejects repeated cursors",
   "[broker][kis][holdings][pagination]"
 ) {
