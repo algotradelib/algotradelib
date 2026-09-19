@@ -58,6 +58,32 @@ cmake --build build --target example-tossinvest-quote
 They drive the same async implementation on the caller's thread and retain the
 HTTP connection between sequential calls.
 
+## Account and holdings clients
+
+[`examples/example-kis-account.cpp`](examples/example-kis-account.cpp) loads
+KIS credentials from `KIS_APP_KEY` and `KIS_APP_SECRET`, selects the live or
+demo environment with optional `KIS_DEMO=1`, and selects an account using
+`KIS_CANO` plus optional `KIS_ACNT_PRDT_CD` (default `01`). It requests and
+prints normalized positions and KRW totals without displaying the account
+number.
+
+```sh
+cmake --build build --target example-kis-account
+./build/bin/example-kis-account
+```
+
+[`examples/example-tossinvest-account.cpp`](examples/example-tossinvest-account.cpp)
+loads `TOSS_CLIENT_ID` and `TOSS_CLIENT_SECRET`, discovers brokerage accounts,
+prints masked account numbers, and requests holdings for the first account. To
+select another discovered account, pass its displayed sequence as the first
+argument.
+
+```sh
+cmake --build build --target example-tossinvest-account
+./build/bin/example-tossinvest-account
+./build/bin/example-tossinvest-account 123456
+```
+
 ## Transport behavior
 
 - HTTPS connections are persistent per client and requests are serialized on a
