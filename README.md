@@ -128,9 +128,10 @@ cmake --build build --target example-kis-orders
 is also read-only. It prints each open order on one line, then requests only
 the first page of closed orders and reports whether another cursor is
 available. It does not automatically exhaust closed-order history because both
-requests use Toss's `ORDER_HISTORY` rate-limit group. It uses the same
-environment variables as the Toss account example and accepts an account
-sequence as its first argument.
+order-list requests use Toss's `ORDER_HISTORY` rate-limit group. It uses the
+same environment variables as the Toss account example. Pass an account
+sequence as the first argument to avoid an additional account-discovery
+request; without one, the example selects the first returned account.
 
 ```sh
 cmake --build build --target example-tossinvest-orders
@@ -142,11 +143,15 @@ cmake --build build --target example-tossinvest-orders
 
 [`examples/example-kis-place-order.cpp`](examples/example-kis-place-order.cpp)
 only constructs and prints an `OrderRequest`. It never creates a client, loads
-credentials, or performs network I/O, so no environment setting can make it
-submit an order. With no arguments it shows a one-share limit buy of `005930`
-at KRW 70,000. Optional positional arguments are `symbol`, `quantity`, side,
-type, and limit price, in that order. Side accepts `BUY` or `SELL`; type accepts
-`LIMIT` or `MARKET`. A market dry-run takes no price.
+credentials, reads environment variables, or performs network I/O, so it
+cannot submit an order. Every argument is optional and positional:
+
+```text
+example-kis-place-order [symbol] [quantity] [BUY|SELL] [LIMIT|MARKET] [limit-price]
+```
+
+With no arguments it shows a one-share limit buy of `005930` at KRW 70,000.
+The limit price applies only to `LIMIT`; a `MARKET` dry-run must omit it.
 
 ```sh
 cmake --build build --target example-kis-place-order
@@ -160,9 +165,10 @@ cmake --build build --target example-kis-place-order
 ./build/bin/example-kis-place-order 005380 2 BUY LIMIT 180000
 ```
 
-Toss order placement follows the same shape through
-`TossBlockingClient::place_order`, with `OrderRequest::client_order_id_`
-carrying the idempotency key.
+This executable deliberately demonstrates request construction rather than
+broker submission. Applications place orders through
+`KisBlockingClient::place_order` or `TossBlockingClient::place_order`; for
+Toss, `OrderRequest::client_order_id_` carries the idempotency key.
 
 ### Not supported yet
 
