@@ -913,6 +913,10 @@ private:
         error.message_ = "KIS limit order price must be positive";
         return error;
       }
+      if (price->scale() != 0) {
+        error.message_ = "KIS domestic limit order price must be a whole number of won";
+        return error;
+      }
       return std::nullopt;
     }
     if (price) {
@@ -953,6 +957,21 @@ private:
     return error;
   }
 
+  /** Returns whether a symbol has KIS's six-character domestic-stock form. */
+  static bool valid_domestic_symbol(std::string_view symbol) {
+    if (symbol.size() != 6) {
+      return false;
+    }
+    for (const char ch : symbol) {
+      const bool valid = (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') ||
+        (ch >= 'a' && ch <= 'z');
+      if (!valid) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   /** Returns an error when the order cannot be represented as a KIS cash order. */
   static std::optional<BrokerError> validate_order(const OrderRequest& order, std::string& division) {
     if (order.instrument_.country_ != Country::KR) {
@@ -962,11 +981,11 @@ private:
       error.message_ = "KIS cash orders currently support Korean equities only";
       return error;
     }
-    if (!broker_detail::valid_symbol(order.instrument_.symbol_)) {
+    if (!valid_domestic_symbol(order.instrument_.symbol_)) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
       error.broker_code_ = "invalid_instrument";
-      error.message_ = "KIS order symbol contains unsupported characters";
+      error.message_ = "KIS domestic order symbol must contain six letters or digits";
       return error;
     }
     if (auto error = validate_quantity(order.quantity_)) {
@@ -1157,11 +1176,16 @@ private:
   ) {
     std::string division;
     auto invalid = validate_account(account);
-    if (!invalid && amendment.order_.order_number_.empty()) {
+    if (
+      !invalid &&
+      (!broker_detail::decimal_digits(amendment.order_.branch_number_, 5) ||
+       !broker_detail::decimal_digits(amendment.order_.order_number_, 10))
+    ) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
       error.broker_code_ = "invalid_order_reference";
-      error.message_ = "KIS amendment requires the original order number";
+      error.message_ =
+        "KIS amendment requires a five-digit branch number and ten-digit order number";
       invalid = std::move(error);
     }
     if (!invalid) {
@@ -1403,9 +1427,9 @@ private:
           Country::KR, Venue::COMBINED, broker_detail::json_string(row, "pdno")
         };
         order.name_ = broker_detail::json_string(row, "prdt_name");
-        order.side_ = broker_detail::json_string(row, "sll_buy_dvsn_cd") == "01" ?
-          OrderSide::SELL :
-          OrderSide::BUY;
+        order.side_ = normalized_order_side(
+          broker_detail::json_string(row, "sll_buy_dvsn_cd")
+        );
         order.type_ = normalized_order_type(broker_detail::json_string(row, "ord_dvsn_cd"));
         order.time_in_force_ = order.type_ == OrderType::UNKNOWN ?
           TimeInForce::UNKNOWN :
@@ -1439,7 +1463,10 @@ private:
 
   void start_order_history(KisAccount account, KisHistoryRange range, OrderPageHandler completion) {
     auto invalid = validate_account(account);
-    if (!invalid && (!valid_date(range.from_) || !valid_date(range.to_))) {
+    if (
+      !invalid &&
+      (!is_valid_date(range.from_) || !is_valid_date(range.to_) || range.to_ < range.from_)
+    ) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
       error.broker_code_ = "invalid_date_range";
@@ -1617,9 +1644,9 @@ private:
           Country::KR, Venue::COMBINED, broker_detail::json_string(row, "pdno")
         };
         order.name_ = broker_detail::json_string(row, "prdt_name");
-        order.side_ = broker_detail::json_string(row, "sll_buy_dvsn_cd") == "01" ?
-          OrderSide::SELL :
-          OrderSide::BUY;
+        order.side_ = normalized_order_side(
+          broker_detail::json_string(row, "sll_buy_dvsn_cd")
+        );
         order.type_ = normalized_order_type(broker_detail::json_string(row, "ord_dvsn_cd"));
         order.time_in_force_ = order.type_ == OrderType::UNKNOWN ?
           TimeInForce::UNKNOWN :
@@ -1705,6 +1732,17 @@ private:
     return OrderType::UNKNOWN;
   }
 
+  /** Maps a KIS side code or rejects an invalid broker response. */
+  static OrderSide normalized_order_side(std::string_view code) {
+    if (code == "01") {
+      return OrderSide::SELL;
+    }
+    if (code == "02") {
+      return OrderSide::BUY;
+    }
+    throw std::runtime_error("invalid KIS order side code");
+  }
+
   /** Returns whether the response header requests another continuation page. */
   static bool continuation_pending(const network::HttpResponse& response) {
     const auto continuation = response.base().find("tr_cont");
@@ -1762,12 +1800,6 @@ private:
       domestic_cursor = std::move(next_domestic_cursor);
     }
     return std::nullopt;
-  }
-
-  /** Returns whether a calendar date is a plausible KIS inquiry bound. */
-  static bool valid_date(const Date& date) {
-    return date.year_ >= 1900 && date.year_ <= 9999 && date.month_ >= 1 && date.month_ <= 12 &&
-      date.day_ >= 1 && date.day_ <= 31;
   }
 
   /** Formats a calendar date as KIS's `YYYYMMDD` inquiry bound. */

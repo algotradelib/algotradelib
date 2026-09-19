@@ -948,6 +948,15 @@ private:
     if (auto error = validate_price(order.type_, order.price_)) {
       return error;
     }
+    if (
+      order.instrument_.country_ == Country::KR && order.price_ && order.price_->scale() != 0
+    ) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.broker_code_ = "invalid_price";
+      error.message_ = "Toss Korean limit order price must be a whole number of won";
+      return error;
+    }
     return validate_time_in_force(order.time_in_force_, order.type_, order.instrument_.country_);
   }
 
@@ -1255,6 +1264,18 @@ private:
       complete_order_page(std::move(completion), Result<OrderPage>(std::move(error)));
       return;
     }
+    if (
+      (query.from_ && !is_valid_date(*query.from_)) ||
+      (query.to_ && !is_valid_date(*query.to_)) ||
+      (query.from_ && query.to_ && *query.to_ < *query.from_)
+    ) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.broker_code_ = "invalid_date_range";
+      error.message_ = "Toss order listing requires valid inclusive calendar bounds";
+      complete_order_page(std::move(completion), Result<OrderPage>(std::move(error)));
+      return;
+    }
 
     ensure_token(
       TokenHandler(
@@ -1460,16 +1481,23 @@ private:
   static OrderSnapshot parse_order_object(const json::object& row) {
     const auto currency = Currency(broker_detail::json_string(row, "currency"));
 
+    Country country;
+    if (currency == Currency::krw()) {
+      country = Country::KR;
+    } else if (currency == Currency::usd()) {
+      country = Country::US;
+    } else {
+      throw std::runtime_error("unsupported Toss order currency: " + currency.str());
+    }
+
     OrderSnapshot order;
     order.order_id_ = broker_detail::json_string(row, "orderId");
     order.instrument_ = InstrumentId{
-      currency == Currency::usd() ? Country::US : Country::KR,
+      country,
       Venue::UNSPECIFIED,
       broker_detail::json_string(row, "symbol"),
     };
-    order.side_ = broker_detail::json_string(row, "side") == "SELL" ?
-      OrderSide::SELL :
-      OrderSide::BUY;
+    order.side_ = normalized_order_side(broker_detail::json_string(row, "side"));
     order.type_ = normalized_order_type(broker_detail::json_string(row, "orderType"));
     order.time_in_force_ =
       normalized_time_in_force(broker_detail::json_string(row, "timeInForce"));
@@ -1556,6 +1584,17 @@ private:
     return OrderStatus::UNKNOWN;
   }
 
+  /** Maps a Toss side code or rejects an invalid broker response. */
+  static OrderSide normalized_order_side(std::string_view code) {
+    if (code == "BUY") {
+      return OrderSide::BUY;
+    }
+    if (code == "SELL") {
+      return OrderSide::SELL;
+    }
+    throw std::runtime_error("invalid Toss order side code");
+  }
+
   /**
    * Reads a decimal string field that Toss may omit entirely.
    *
@@ -1629,7 +1668,11 @@ private:
     ) {
       throw std::runtime_error("invalid date field: " + std::string(key));
     }
-    return Date{year, month, day};
+    Date date{year, month, day};
+    if (!is_valid_date(date)) {
+      throw std::runtime_error("invalid date field: " + std::string(key));
+    }
+    return date;
   }
 
   /** Formats a calendar date as Toss's `YYYY-MM-DD` filter bound. */

@@ -333,7 +333,33 @@ struct Date {
   friend bool operator==(const Date& lhs, const Date& rhs) {
     return lhs.year_ == rhs.year_ && lhs.month_ == rhs.month_ && lhs.day_ == rhs.day_;
   }
+
+  friend bool operator<(const Date& lhs, const Date& rhs) {
+    if (lhs.year_ != rhs.year_) {
+      return lhs.year_ < rhs.year_;
+    }
+    if (lhs.month_ != rhs.month_) {
+      return lhs.month_ < rhs.month_;
+    }
+    return lhs.day_ < rhs.day_;
+  }
 };
+
+/** Returns whether `date` is a valid Gregorian calendar date. */
+inline bool is_valid_date(const Date& date) {
+  if (date.year_ < 1 || date.year_ > 9999 || date.month_ < 1 || date.month_ > 12) {
+    return false;
+  }
+  static constexpr unsigned days_per_month[] = {
+    31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+  };
+  unsigned days = days_per_month[date.month_ - 1];
+  const bool leap = date.year_ % 4 == 0 && (date.year_ % 100 != 0 || date.year_ % 400 == 0);
+  if (date.month_ == 2 && leap) {
+    ++days;
+  }
+  return date.day_ >= 1 && date.day_ <= days;
+}
 
 /** Direction of an order. */
 enum class OrderSide {
@@ -486,6 +512,10 @@ inline std::optional<std::chrono::system_clock::time_point> parse_iso8601_timest
       std::string(value).c_str(), "%d-%d-%dT%d:%d:%d", &year, &month, &day, &hour, &minute, &second
     ) != 6
   ) {
+    return std::nullopt;
+  }
+  if (!is_valid_date(Date{year, static_cast<unsigned>(month), static_cast<unsigned>(day)}) ||
+      hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 60) {
     return std::nullopt;
   }
 

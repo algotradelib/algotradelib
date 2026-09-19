@@ -1047,6 +1047,13 @@ OrderRequest korean_limit_buy() {
 
 } // namespace
 
+TEST_CASE("Calendar dates validate Gregorian boundaries", "[core][order][date]") {
+  REQUIRE(is_valid_date(Date{2024, 2, 29}));
+  REQUIRE_FALSE(is_valid_date(Date{2025, 2, 29}));
+  REQUIRE_FALSE(is_valid_date(Date{2026, 4, 31}));
+  REQUIRE(Date{2026, 3, 1} < Date{2026, 3, 31});
+}
+
 TEST_CASE(
   "KIS order request selects the transaction id for side and environment",
   "[broker][kis][order]"
@@ -1212,6 +1219,22 @@ TEST_CASE(
     REQUIRE(error->broker_code_ == "invalid_instrument");
   }
 
+  SECTION("a malformed domestic symbol is rejected") {
+    auto order = korean_limit_buy();
+    order.instrument_.symbol_ = "5930";
+    const auto error = kis::KisClientTestAccess::validate_order(order, division);
+    REQUIRE(error);
+    REQUIRE(error->broker_code_ == "invalid_instrument");
+  }
+
+  SECTION("a fractional won price is rejected") {
+    auto order = korean_limit_buy();
+    order.price_ = Decimal64::parse("70000.5");
+    const auto error = kis::KisClientTestAccess::validate_order(order, division);
+    REQUIRE(error);
+    REQUIRE(error->broker_code_ == "invalid_price");
+  }
+
   SECTION("a valid day limit order maps to the documented order division") {
     const auto order = korean_limit_buy();
     REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division));
@@ -1241,6 +1264,65 @@ TEST_CASE(
   );
   ioc.run();
   REQUIRE(completed);
+}
+
+TEST_CASE(
+  "KIS amendment rejects malformed order references before authentication",
+  "[broker][kis][order][validation]"
+) {
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  auto client =
+    std::make_shared<kis::KisClient>(ioc.get_executor(), context, kis::KisConfig{});
+
+  kis::KisAmendment amendment;
+  amendment.order_ = kis::KisOrderRef{"", "0001569157"};
+  amendment.quantity_ = Decimal64::parse("1");
+  amendment.price_ = Decimal64::parse("70000");
+
+  bool completed = false;
+  client->async_replace_order(
+    kis::KisAccount{"12345678", "01"},
+    std::move(amendment),
+    [&completed](Result<kis::KisOrderAck> result) {
+      REQUIRE_FALSE(result);
+      REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+      REQUIRE(result.error().broker_code_ == "invalid_order_reference");
+      completed = true;
+    }
+  );
+  ioc.run();
+  REQUIRE(completed);
+}
+
+TEST_CASE(
+  "KIS order history rejects invalid or reversed dates before authentication",
+  "[broker][kis][order][validation]"
+) {
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  auto client =
+    std::make_shared<kis::KisClient>(ioc.get_executor(), context, kis::KisConfig{});
+
+  const auto expect_rejection = [&](kis::KisHistoryRange range) {
+    bool completed = false;
+    client->async_order_history(
+      kis::KisAccount{"12345678", "01"},
+      range,
+      [&completed](Result<OrderPage> result) {
+        REQUIRE_FALSE(result);
+        REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+        REQUIRE(result.error().broker_code_ == "invalid_date_range");
+        completed = true;
+      }
+    );
+    ioc.restart();
+    ioc.run();
+    REQUIRE(completed);
+  };
+
+  expect_rejection(kis::KisHistoryRange{Date{2026, 2, 29}, Date{2026, 3, 1}});
+  expect_rejection(kis::KisHistoryRange{Date{2026, 3, 31}, Date{2026, 3, 1}});
 }
 
 TEST_CASE(
@@ -1431,6 +1513,21 @@ TEST_CASE(
       kis::KisClientTestAccess::parse_open_orders(json_response(R"({"rt_cd":"0","output":[]})"));
     REQUIRE(result);
     REQUIRE(result.value().orders_.empty());
+  }
+
+  SECTION("an unknown side is a protocol error rather than a buy order") {
+    auto result = kis::KisClientTestAccess::parse_open_orders(
+      json_response(
+        R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"1","orgn_odno":"",)"
+        R"("ord_dvsn_name":"limit","pdno":"005930","prdt_name":"Samsung",)"
+        R"("rvse_cncl_dvsn_name":"","ord_qty":"10","ord_unpr":"70000",)"
+        R"("ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0",)"
+        R"("psbl_qty":"10","sll_buy_dvsn_cd":"03","ord_dvsn_cd":"00"}]})"
+      )
+    );
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().category_ == ErrorCategory::PROTOCOL);
+    REQUIRE(result.error().broker_code_ == "invalid_open_order_response");
   }
 }
 
@@ -1674,6 +1771,12 @@ TEST_CASE(
     expect_rejection(std::move(order), "invalid_client_order_id");
   }
 
+  SECTION("a fractional won price is rejected") {
+    auto order = korean_limit_buy();
+    order.price_ = Decimal64::parse("70000.5");
+    expect_rejection(std::move(order), "invalid_price");
+  }
+
   SECTION("an at-the-close condition on a Korean order is rejected") {
     auto order = korean_limit_buy();
     order.time_in_force_ = TimeInForce::AT_THE_CLOSE;
@@ -1704,6 +1807,37 @@ TEST_CASE(
     client->async_cancel_order(7, "", [&completed](Result<OrderAck> result) {
       REQUIRE_FALSE(result);
       REQUIRE(result.error().broker_code_ == "invalid_order_reference");
+      completed = true;
+    });
+    ioc.restart();
+    ioc.run();
+    REQUIRE(completed);
+  }
+
+  SECTION("an invalid order-list date is rejected") {
+    tossinvest::TossOrderQuery query;
+    query.account_sequence_ = 7;
+    query.from_ = Date{2026, 2, 29};
+    bool completed = false;
+    client->async_orders(std::move(query), [&completed](Result<OrderPage> result) {
+      REQUIRE_FALSE(result);
+      REQUIRE(result.error().broker_code_ == "invalid_date_range");
+      completed = true;
+    });
+    ioc.restart();
+    ioc.run();
+    REQUIRE(completed);
+  }
+
+  SECTION("a reversed order-list range is rejected") {
+    tossinvest::TossOrderQuery query;
+    query.account_sequence_ = 7;
+    query.from_ = Date{2026, 3, 31};
+    query.to_ = Date{2026, 3, 1};
+    bool completed = false;
+    client->async_orders(std::move(query), [&completed](Result<OrderPage> result) {
+      REQUIRE_FALSE(result);
+      REQUIRE(result.error().broker_code_ == "invalid_date_range");
       completed = true;
     });
     ioc.restart();
@@ -1806,6 +1940,38 @@ TEST_CASE(
     REQUIRE(order.status_ == OrderStatus::UNKNOWN);
     REQUIRE_FALSE(order.price_);
     REQUIRE(result.value().next_cursor_ == "next-page");
+  }
+
+  SECTION("an unknown side is a protocol error rather than a buy order") {
+    auto result = tossinvest::TossClientTestAccess::parse_orders(
+      json_response(
+        R"({"result":{"orders":[{"orderId":"a","symbol":"005930","side":"HOLD",)"
+        R"("orderType":"LIMIT","timeInForce":"DAY","status":"PENDING","price":"70000",)"
+        R"("quantity":"10","currency":"KRW","orderedAt":"2026-03-29T09:30:00+09:00",)"
+        R"("execution":{"filledQuantity":"0","averageFilledPrice":null,)"
+        R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
+        R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
+      )
+    );
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().category_ == ErrorCategory::PROTOCOL);
+    REQUIRE(result.error().broker_code_ == "invalid_orders_response");
+  }
+
+  SECTION("an unsupported currency is not silently classified as Korean") {
+    auto result = tossinvest::TossClientTestAccess::parse_orders(
+      json_response(
+        R"({"result":{"orders":[{"orderId":"a","symbol":"7203","side":"BUY",)"
+        R"("orderType":"LIMIT","timeInForce":"DAY","status":"PENDING","price":"1000",)"
+        R"("quantity":"10","currency":"JPY","orderedAt":"2026-03-29T09:30:00+09:00",)"
+        R"("execution":{"filledQuantity":"0","averageFilledPrice":null,)"
+        R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
+        R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
+      )
+    );
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().category_ == ErrorCategory::PROTOCOL);
+    REQUIRE(result.error().broker_code_ == "invalid_orders_response");
   }
 
   SECTION("an empty listing is an empty page rather than an error") {
