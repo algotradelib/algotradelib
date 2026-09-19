@@ -961,9 +961,15 @@ private:
     return error;
   }
 
-  /** Returns whether a symbol has KIS's six-character domestic-stock form. */
+  /**
+   * Returns whether a symbol has one of KIS's domestic product-number forms.
+   *
+   * KIS documents `PDNO` as a six-character stock code, or seven characters for
+   * an ETN. Both lengths are accepted so an ETN order is not rejected locally
+   * for a length the broker itself documents.
+   */
   static bool valid_domestic_symbol(std::string_view symbol) {
-    if (symbol.size() != 6) {
+    if (symbol.size() != 6 && symbol.size() != 7) {
       return false;
     }
     for (const char ch : symbol) {
@@ -974,6 +980,23 @@ private:
       }
     }
     return true;
+  }
+
+  /**
+   * Returns whether an order reference can address a KIS order for amendment.
+   *
+   * The order number is always required and always ten digits. The branch
+   * number may be empty: KIS's own documented `order-rvsecncl` request example
+   * sends `KRX_FWDG_ORD_ORGNO` blank, so requiring it would reject a usage the
+   * broker publishes. When it is supplied it must be the documented five
+   * digits, which is what an acknowledgement or an open-order row returns.
+   */
+  static bool valid_order_reference(const KisOrderRef& order) {
+    if (!broker_detail::decimal_digits(order.order_number_, 10)) {
+      return false;
+    }
+    return order.branch_number_.empty() ||
+      broker_detail::decimal_digits(order.branch_number_, 5);
   }
 
   /** Returns an error when the order cannot be represented as a KIS cash order. */
@@ -989,7 +1012,8 @@ private:
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
       error.broker_code_ = "invalid_instrument";
-      error.message_ = "KIS domestic order symbol must contain six letters or digits";
+      error.message_ =
+        "KIS domestic order symbol must contain six letters or digits, or seven for an ETN";
       return error;
     }
     if (auto error = validate_quantity(order.quantity_)) {
@@ -1187,16 +1211,13 @@ private:
   ) {
     std::string division;
     auto invalid = validate_account(account);
-    if (
-      !invalid &&
-      (!broker_detail::decimal_digits(amendment.order_.branch_number_, 5) ||
-       !broker_detail::decimal_digits(amendment.order_.order_number_, 10))
-    ) {
+    if (!invalid && !valid_order_reference(amendment.order_)) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
       error.broker_code_ = "invalid_order_reference";
       error.message_ =
-        "KIS amendment requires a five-digit branch number and ten-digit order number";
+        "KIS amendment requires a ten-digit order number and an empty or "
+        "five-digit branch number";
       invalid = std::move(error);
     }
     if (!invalid) {

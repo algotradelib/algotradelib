@@ -127,6 +127,10 @@ struct KisClientTestAccess {
     return KisClient::validate_order(order, division);
   }
 
+  static bool valid_order_reference(const KisOrderRef& order) {
+    return KisClient::valid_order_reference(order);
+  }
+
   static Result<KisOrderAck> parse_order_ack(Result<network::HttpResponse> response) {
     return KisClient::parse_order_ack(std::move(response));
   }
@@ -1227,6 +1231,22 @@ TEST_CASE(
     REQUIRE(error->broker_code_ == "invalid_instrument");
   }
 
+  SECTION("a seven-character ETN product number is accepted") {
+    // KIS documents PDNO as six characters, or seven for an ETN, so a
+    // seven-character symbol must not be rejected before the wire.
+    auto order = korean_limit_buy();
+    order.instrument_.symbol_ = "5800010";
+    REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division));
+  }
+
+  SECTION("a symbol longer than an ETN product number is rejected") {
+    auto order = korean_limit_buy();
+    order.instrument_.symbol_ = "58000101";
+    const auto error = kis::KisClientTestAccess::validate_order(order, division);
+    REQUIRE(error);
+    REQUIRE(error->broker_code_ == "invalid_instrument");
+  }
+
   SECTION("a fractional won price is rejected") {
     auto order = korean_limit_buy();
     order.price_ = Decimal64::parse("70000.5");
@@ -1267,32 +1287,65 @@ TEST_CASE(
 }
 
 TEST_CASE(
-  "KIS amendment rejects malformed order references before authentication",
+  "KIS amendment validates an order reference before authentication",
   "[broker][kis][order][validation]"
 ) {
-  net::io_context ioc;
-  ssl::context context(ssl::context::tls_client);
-  auto client =
-    std::make_shared<kis::KisClient>(ioc.get_executor(), context, kis::KisConfig{});
+  // KIS's own documented order-rvsecncl request example sends
+  // KRX_FWDG_ORD_ORGNO blank, so an empty branch number must stay usable. The
+  // predicate is checked directly for the accepted cases because a valid
+  // reference would otherwise continue to authentication and network I/O.
+  SECTION("an empty branch number is accepted with a ten-digit order number") {
+    REQUIRE(
+      kis::KisClientTestAccess::valid_order_reference(kis::KisOrderRef{"", "0001569157"})
+    );
+  }
 
-  kis::KisAmendment amendment;
-  amendment.order_ = kis::KisOrderRef{"", "0001569157"};
-  amendment.quantity_ = Decimal64::parse("1");
-  amendment.price_ = Decimal64::parse("70000");
+  SECTION("a five-digit branch number is accepted") {
+    REQUIRE(
+      kis::KisClientTestAccess::valid_order_reference(kis::KisOrderRef{"06010", "0001569157"})
+    );
+  }
 
-  bool completed = false;
-  client->async_replace_order(
-    kis::KisAccount{"12345678", "01"},
-    std::move(amendment),
-    [&completed](Result<kis::KisOrderAck> result) {
-      REQUIRE_FALSE(result);
-      REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
-      REQUIRE(result.error().broker_code_ == "invalid_order_reference");
-      completed = true;
-    }
-  );
-  ioc.run();
-  REQUIRE(completed);
+  SECTION("a malformed non-empty branch number is rejected") {
+    REQUIRE_FALSE(
+      kis::KisClientTestAccess::valid_order_reference(kis::KisOrderRef{"610", "0001569157"})
+    );
+  }
+
+  SECTION("an order number that is not ten digits is rejected") {
+    REQUIRE_FALSE(
+      kis::KisClientTestAccess::valid_order_reference(kis::KisOrderRef{"06010", "1569157"})
+    );
+    REQUIRE_FALSE(
+      kis::KisClientTestAccess::valid_order_reference(kis::KisOrderRef{"06010", ""})
+    );
+  }
+
+  SECTION("a malformed reference fails through the async entry point") {
+    net::io_context ioc;
+    ssl::context context(ssl::context::tls_client);
+    auto client =
+      std::make_shared<kis::KisClient>(ioc.get_executor(), context, kis::KisConfig{});
+
+    kis::KisAmendment amendment;
+    amendment.order_ = kis::KisOrderRef{"06010", "not-a-number"};
+    amendment.quantity_ = Decimal64::parse("1");
+    amendment.price_ = Decimal64::parse("70000");
+
+    bool completed = false;
+    client->async_replace_order(
+      kis::KisAccount{"12345678", "01"},
+      std::move(amendment),
+      [&completed](Result<kis::KisOrderAck> result) {
+        REQUIRE_FALSE(result);
+        REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+        REQUIRE(result.error().broker_code_ == "invalid_order_reference");
+        completed = true;
+      }
+    );
+    ioc.run();
+    REQUIRE(completed);
+  }
 }
 
 TEST_CASE(
