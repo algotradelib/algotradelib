@@ -1016,15 +1016,16 @@ private:
     const OrderRequest& order,
     std::string_view division
   ) {
-    json::object body;
-    body["CANO"] = account.account_number_;
-    body["ACNT_PRDT_CD"] = account.product_code_;
-    body["PDNO"] = order.instrument_.symbol_;
-    body["ORD_DVSN"] = std::string(division);
-    body["ORD_QTY"] = order.quantity_.str();
-    body["ORD_UNPR"] = order.price_ ? order.price_->str() : std::string("0");
+    json::object body{
+      {"CANO", account.account_number_},
+      {"ACNT_PRDT_CD", account.product_code_},
+      {"PDNO", order.instrument_.symbol_},
+      {"ORD_DVSN", std::string(division)},
+      {"ORD_QTY", order.quantity_.str()},
+      {"ORD_UNPR", order.price_ ? order.price_->str() : std::string("0")},
+    };
     if (const auto* exchange = exchange_code(order.instrument_.venue_); *exchange != '\0') {
-      body["EXCG_ID_DVSN_CD"] = exchange;
+      body.emplace("EXCG_ID_DVSN_CD", exchange);
     }
 
     const bool buy = order.side_ == OrderSide::BUY;
@@ -1053,16 +1054,17 @@ private:
     bool cancel,
     std::string_view division
   ) {
-    json::object body;
-    body["CANO"] = account.account_number_;
-    body["ACNT_PRDT_CD"] = account.product_code_;
-    body["KRX_FWDG_ORD_ORGNO"] = amendment.order_.branch_number_;
-    body["ORGN_ODNO"] = amendment.order_.order_number_;
-    body["ORD_DVSN"] = std::string(division);
-    body["RVSE_CNCL_DVSN_CD"] = cancel ? "02" : "01";
-    body["ORD_QTY"] = amendment.quantity_.str();
-    body["ORD_UNPR"] = amendment.price_ ? amendment.price_->str() : std::string("0");
-    body["QTY_ALL_ORD_YN"] = amendment.all_remaining_ ? "Y" : "N";
+    json::object body{
+      {"CANO", account.account_number_},
+      {"ACNT_PRDT_CD", account.product_code_},
+      {"KRX_FWDG_ORD_ORGNO", amendment.order_.branch_number_},
+      {"ORGN_ODNO", amendment.order_.order_number_},
+      {"ORD_DVSN", std::string(division)},
+      {"RVSE_CNCL_DVSN_CD", cancel ? "02" : "01"},
+      {"ORD_QTY", amendment.quantity_.str()},
+      {"ORD_UNPR", amendment.price_ ? amendment.price_->str() : std::string("0")},
+      {"QTY_ALL_ORD_YN", amendment.all_remaining_ ? "Y" : "N"},
+    };
 
     network::HttpRequest request;
     request.method_ = http::verb::post;

@@ -982,20 +982,21 @@ private:
     std::string_view access_token,
     const OrderRequest& order
   ) {
-    json::object body;
+    json::object body{
+      {"symbol", order.instrument_.symbol_},
+      {"side", order.side_ == OrderSide::SELL ? "SELL" : "BUY"},
+      {"orderType", order_type_code(order.type_)},
+      {"timeInForce", time_in_force_code(order.time_in_force_)},
+      {"quantity", order.quantity_.str()},
+    };
     if (order.client_order_id_) {
-      body["clientOrderId"] = *order.client_order_id_;
+      body.emplace("clientOrderId", *order.client_order_id_);
     }
-    body["symbol"] = order.instrument_.symbol_;
-    body["side"] = order.side_ == OrderSide::SELL ? "SELL" : "BUY";
-    body["orderType"] = order_type_code(order.type_);
-    body["timeInForce"] = time_in_force_code(order.time_in_force_);
-    body["quantity"] = order.quantity_.str();
     if (order.price_) {
-      body["price"] = order.price_->str();
+      body.emplace("price", order.price_->str());
     }
     if (order.confirm_high_value_) {
-      body["confirmHighValueOrder"] = true;
+      body.emplace("confirmHighValueOrder", true);
     }
 
     network::HttpRequest request;
@@ -1015,16 +1016,15 @@ private:
     std::string_view access_token,
     const TossAmendment& amendment
   ) {
-    json::object body;
-    body["orderType"] = order_type_code(amendment.type_);
+    json::object body{{"orderType", order_type_code(amendment.type_)}};
     if (amendment.quantity_) {
-      body["quantity"] = amendment.quantity_->str();
+      body.emplace("quantity", amendment.quantity_->str());
     }
     if (amendment.price_) {
-      body["price"] = amendment.price_->str();
+      body.emplace("price", amendment.price_->str());
     }
     if (amendment.confirm_high_value_) {
-      body["confirmHighValueOrder"] = true;
+      body.emplace("confirmHighValueOrder", true);
     }
 
     network::HttpRequest request;
