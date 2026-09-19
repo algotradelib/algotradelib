@@ -125,9 +125,10 @@ cmake --build build --target example-kis-orders
 ```
 
 [`examples/example-tossinvest-orders.cpp`](examples/example-tossinvest-orders.cpp)
-is also read-only. It lists every open order, then pages through closed orders
-using the returned cursor. It uses the same environment variables as the Toss
-account example, and accepts an account sequence as its first argument.
+is also read-only. It prints each open order on one line, then follows at most
+ten pages of closed orders and prints only the total and page count. It uses
+the same environment variables as the Toss account example, and accepts an
+account sequence as its first argument.
 
 ```sh
 cmake --build build --target example-tossinvest-orders
@@ -135,26 +136,23 @@ cmake --build build --target example-tossinvest-orders
 ./build/bin/example-tossinvest-orders 123456
 ```
 
-### Placing an order
+### Order request dry-run
 
 [`examples/example-kis-place-order.cpp`](examples/example-kis-place-order.cpp)
-transmits a real instruction, so it is inert unless explicitly confirmed. It
-prints the order it would send and exits unless `ATL_CONFIRM_LIVE_ORDER=1` is
-set, in every environment. The order itself comes from `ATL_ORDER_SYMBOL`,
-`ATL_ORDER_QUANTITY`, optional `ATL_ORDER_PRICE` (omit for a market order), and
-optional `ATL_ORDER_SIDE` (`BUY` by default).
+only constructs and prints an `OrderRequest`. It never creates a client, loads
+credentials, or performs network I/O, so no environment setting can make it
+submit an order. With no arguments it shows a one-share limit buy of `005930`
+at KRW 70,000. Optional `ATL_ORDER_SYMBOL`, `ATL_ORDER_QUANTITY`,
+`ATL_ORDER_PRICE`, `ATL_ORDER_SIDE`, and `ATL_ORDER_TYPE` values override the
+displayed request; `ATL_ORDER_TYPE` accepts `LIMIT` or `MARKET`.
 
 ```sh
 cmake --build build --target example-kis-place-order
 
-# Prints the order and sends nothing.
-ATL_ORDER_SYMBOL=005930 ATL_ORDER_QUANTITY=1 ATL_ORDER_PRICE=70000 \
-  ./build/bin/example-kis-place-order
+./build/bin/example-kis-place-order
 
-# Actually places the order.
-ATL_CONFIRM_LIVE_ORDER=1 \
-  ATL_ORDER_SYMBOL=005930 ATL_ORDER_QUANTITY=1 ATL_ORDER_PRICE=70000 \
-  ./build/bin/example-kis-place-order
+# Shows a different dry-run request; still sends nothing.
+ATL_ORDER_SIDE=SELL ATL_ORDER_TYPE=MARKET ./build/bin/example-kis-place-order
 ```
 
 Toss order placement follows the same shape through

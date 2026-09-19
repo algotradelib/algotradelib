@@ -60,22 +60,17 @@ std::string_view status_name(atl::OrderStatus status) {
 }
 
 void print_order(const atl::OrderSnapshot& order) {
-  std::cout << order.order_id_ << "  " << order.instrument_.symbol_ << "  "
-    << order.currency_.str() << '\n';
-  std::cout << "  " << (order.side_ == atl::OrderSide::BUY ? "BUY" : "SELL") << "  "
-    << status_name(order.status_) << "  quantity " << order.quantity_.str();
+  std::cout << order.instrument_.symbol_ << ' '
+    << (order.side_ == atl::OrderSide::BUY ? "BUY" : "SELL") << ' '
+    << status_name(order.status_) << " qty=" << order.quantity_.str();
   if (order.price_) {
-    std::cout << " @ " << order.price_->str();
+    std::cout << " price=" << order.price_->str();
   }
-  std::cout << '\n';
-  std::cout << "  filled: " << order.execution_.filled_quantity_.str();
+  std::cout << " filled=" << order.execution_.filled_quantity_.str();
   if (order.execution_.average_filled_price_) {
-    std::cout << " @ average " << order.execution_.average_filled_price_->str();
+    std::cout << " avg=" << order.execution_.average_filled_price_->str();
   }
-  if (order.execution_.commission_) {
-    std::cout << "  commission " << order.execution_.commission_->amount_.str();
-  }
-  std::cout << '\n';
+  std::cout << " " << order.currency_.str() << " id=" << order.order_id_ << '\n';
 }
 
 std::int64_t parse_account_sequence(const char* value) {
@@ -139,22 +134,31 @@ int main(int argc, char* argv[]) {
     closed_query.limit_ = 20;
 
     std::size_t closed_count = 0;
+    std::size_t closed_pages = 0;
+    bool more_closed_orders = false;
     for (std::size_t page = 0; page < 10; ++page) {
       auto closed_result = client.orders(closed_query);
       if (!closed_result) {
         print_error("closed order listing", closed_result.error());
         return 1;
       }
-      for (const auto& order : closed_result.value().orders_) {
-        print_order(order);
-        ++closed_count;
-      }
+      ++closed_pages;
+      closed_count += closed_result.value().orders_.size();
       if (!closed_result.value().next_cursor_) {
+        break;
+      }
+      if (page + 1 == 10) {
+        more_closed_orders = true;
         break;
       }
       closed_query.cursor_ = closed_result.value().next_cursor_;
     }
-    std::cout << "closed orders listed: " << closed_count << '\n';
+    std::cout << "closed orders: " << closed_count << " across " << closed_pages
+      << (closed_pages == 1 ? " page" : " pages");
+    if (more_closed_orders) {
+      std::cout << " (more available)";
+    }
+    std::cout << '\n';
     return 0;
   } catch (const std::exception& exception) {
     std::cerr << "example failed: " << exception.what() << '\n';
