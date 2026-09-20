@@ -140,6 +140,10 @@ struct KisClientTestAccess {
     return KisClient::parse_bars_page(std::move(response), query, minutes, into);
   }
 
+  static constexpr int shortest_days_per_bar(BarInterval interval) {
+    return KisClient::shortest_days_per_bar(interval);
+  }
+
   static Result<KisOrderAck> parse_order_ack(Result<network::HttpResponse> response) {
     return KisClient::parse_order_ack(std::move(response));
   }
@@ -2422,4 +2426,24 @@ TEST_CASE(
     REQUIRE(failure->broker_code_ == "APBK0919");
     REQUIRE(bars.empty());
   }
+}
+
+TEST_CASE(
+  "a KIS period page spans enough calendar days to hold a page of bars",
+  "[broker][kis][bars]"
+) {
+  // KIS selects period bars by date range, so the range has to be sized in calendar
+  // days. A fixed span would under-deliver badly for the longer intervals: a
+  // hundred monthly bars would need thirty pages and a hundred yearly bars would
+  // exhaust the page budget, returning a fraction of the request silently.
+  using kis::KisClientTestAccess;
+  REQUIRE(KisClientTestAccess::shortest_days_per_bar(BarInterval::ONE_DAY) == 1);
+  REQUIRE(KisClientTestAccess::shortest_days_per_bar(BarInterval::ONE_WEEK) == 7);
+  REQUIRE(KisClientTestAccess::shortest_days_per_bar(BarInterval::ONE_MONTH) == 28);
+  REQUIRE(KisClientTestAccess::shortest_days_per_bar(BarInterval::ONE_YEAR) == 365);
+
+  // The multiplier is the shortest a bar of that interval can be, so one page's
+  // range can never hold more than the hundred rows KIS returns.
+  REQUIRE(100 * KisClientTestAccess::shortest_days_per_bar(BarInterval::ONE_WEEK) == 700);
+  REQUIRE(100 * KisClientTestAccess::shortest_days_per_bar(BarInterval::ONE_YEAR) == 36500);
 }

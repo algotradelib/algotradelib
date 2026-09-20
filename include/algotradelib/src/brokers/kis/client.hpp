@@ -598,6 +598,37 @@ private:
     return "D";
   }
 
+  /**
+   * Returns the fewest calendar days one bar of `interval` can span.
+   *
+   * A period request asks KIS for a *date range* and KIS answers with at most 100
+   * rows, so the range has to be sized to hold about one page of bars. Sizing it in
+   * bars is not possible and sizing it as a fixed number of days is wrong: 100
+   * calendar days is at most 100 daily bars, but only about fourteen weekly bars,
+   * three monthly ones, and a quarter of a yearly one. A fixed span would have made
+   * a request for a hundred monthly bars take thirty pages and a hundred yearly
+   * bars exceed the page budget outright, returning a fraction of what was asked
+   * for and reporting nothing wrong.
+   *
+   * The multiplier is the *shortest* a bar of that interval can be, so a range
+   * never holds more than a page and the row cap cannot truncate it from an end
+   * this code has not established.
+   */
+  static constexpr int shortest_days_per_bar(BarInterval interval) {
+    switch (interval) {
+      case BarInterval::ONE_WEEK:
+        return 7;
+      case BarInterval::ONE_MONTH:
+        return 28;
+      case BarInterval::ONE_YEAR:
+        return 365;
+      case BarInterval::ONE_DAY:
+      case BarInterval::ONE_MINUTE:
+        break;
+    }
+    return 1;
+  }
+
   /** Splits an instant into the KST calendar date and `HHMMSS` KIS asks for. */
   static void korea_calendar(
     std::chrono::system_clock::time_point value,
@@ -657,9 +688,12 @@ private:
 
     std::string transaction;
     if (!operation->minutes_) {
-      // A period request selects bars by date range, oldest bound included.
+      // A period request selects bars by date range, oldest bound included. The
+      // range has to be sized in calendar days, and how many calendar days a page
+      // of bars spans depends entirely on the interval.
       Date from = operation->date_;
-      for (int step = 0; step < period_page_limit_ && from.year_ > 1; ++step) {
+      const int span = period_page_limit_ * shortest_days_per_bar(operation->query_.interval_);
+      for (int step = 0; step < span && from.year_ > 1; ++step) {
         from = previous_day(from);
       }
       request.target_ =
@@ -738,9 +772,12 @@ private:
       return;
     }
 
-    // Step the bound to just before the oldest bar this page returned. A minute
-    // request stops at the day boundary rather than guessing the previous trading
-    // day, and reports where it stopped.
+    // Step the bound to just before the oldest bar this page returned. Within a
+    // session that walks backwards a page at a time; once the session start is
+    // passed KIS returns nothing and the empty-page guard above ends the request.
+    // The date check below is the second line of defence, for a bound that crosses
+    // midnight: a minute request never steps to another calendar day, because
+    // choosing the previous *trading* day needs a calendar this slice has not built.
     const auto& oldest = operation->descending_.back();
     Date date{};
     std::string time;
