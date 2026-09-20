@@ -37,6 +37,29 @@ option(ATL_BUILD_EXAMPLES "Build example C++ programs" OFF)
 option(ATL_BUILD_TESTS "Build test C++ programs" OFF)
 option(ATL_ENABLE_COVERAGE "Enable C++ test coverage" OFF)
 
+# The analytics layer needs a linear algebra backend; quote, order, and market-data
+# behaviour does not. The option is named for the backend rather than for a feature
+# because the backend is expected to change: a consumer may prefer another library, or
+# this one may carry its own, and the analytics API is written so that would be a new
+# implementation rather than a new public surface.
+option(ATL_USE_EIGEN "Build the analytics layer against Eigen" ON)
+
+if(ATL_USE_EIGEN)
+    # Requested without a version on purpose. Eigen's package config declares
+    # same-major-version compatibility, so asking for "3.4 or newer" is *rejected* by
+    # Eigen 5 rather than satisfied by it. The minimum is therefore checked afterwards,
+    # which accepts every release that actually works.
+    find_package(Eigen3 REQUIRED CONFIG)
+    if(Eigen3_VERSION AND Eigen3_VERSION VERSION_LESS 3.4)
+        message(FATAL_ERROR
+            "algotradelib analytics needs Eigen 3.4 or newer; found ${Eigen3_VERSION}. "
+            "Configure with -DATL_USE_EIGEN=OFF to build without the analytics layer.")
+    endif()
+    target_link_libraries(algotradelib INTERFACE Eigen3::Eigen)
+    target_compile_definitions(algotradelib INTERFACE ATL_HAS_EIGEN=1)
+    message(STATUS "algotradelib analytics: Eigen ${Eigen3_VERSION}")
+endif()
+
 target_link_libraries(algotradelib INTERFACE Boost::json)
 if(TARGET Boost::headers)
     target_link_libraries(algotradelib INTERFACE Boost::headers)
@@ -74,6 +97,10 @@ write_basic_package_version_file(
     VERSION ${PROJECT_VERSION}
     COMPATIBILITY AnyNewerVersion
 )
+# Recorded so an installed consumer resolves the same dependency the build used, and
+# so a consumer of a build made without the backend is not asked for it.
+set(ATL_INSTALLED_WITH_EIGEN ${ATL_USE_EIGEN})
+
 configure_package_config_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/cmake/algotradelibConfig.cmake.in
     ${CMAKE_CURRENT_BINARY_DIR}/algotradelibConfig.cmake

@@ -5,6 +5,15 @@ include(CMakeFindDependencyMacro)
 find_dependency(Boost 1.87.0 CONFIG COMPONENTS json)
 find_dependency(OpenSSL 3.6.2)
 
+# Only when this package was built with the analytics backend. A consumer of a build
+# made without it must not be asked to provide it.
+# Without a version for the reason the build states: Eigen's config declares
+# same-major-version compatibility, so a minimum-version request fails against a newer
+# major release instead of being satisfied by it.
+if(@ATL_INSTALLED_WITH_EIGEN@)
+    find_dependency(Eigen3 CONFIG)
+endif()
+
 include("${CMAKE_CURRENT_LIST_DIR}/algotradelibTargets.cmake")
 
 check_required_components(algotradelib)

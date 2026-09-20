@@ -1,0 +1,10 @@
+#pragma once
+
+#if !defined(ATL_HAS_EIGEN)
+#error \
+  "<algotradelib/analytics> needs a linear algebra backend. Configure the library with \
+ATL_USE_EIGEN=ON, or link algotradelib::algotradelib from a build that was configured \
+with it. Quote, order, and market-data headers do not require it."
+#endif
+
+#include "src/analytics/scalar.hpp"
