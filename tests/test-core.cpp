@@ -1430,6 +1430,41 @@ TEST_CASE(
     REQUIRE(result.error().message_ == "insufficient balance");
   }
 
+  SECTION("a rate limit declared in the response body is categorized as one") {
+    // KIS reports a rate limit as a message code in an HTTP 200 body, with no
+    // Retry-After header, so it has to be recognized while parsing or it reaches
+    // the caller as an ordinary protocol failure.
+    auto ledger = kis::KisClientTestAccess::parse_order_ack(
+      json_response(
+        R"({"rt_cd":"1","msg_cd":"EGW00215",)"
+        R"("msg1":"원장에서 허용 가능한 초당 거래건수를 초과하였습니다."})"
+      )
+    );
+    REQUIRE_FALSE(ledger);
+    REQUIRE(ledger.error().category_ == ErrorCategory::RATE_LIMIT);
+    REQUIRE(ledger.error().broker_code_ == "EGW00215");
+
+    auto personal = kis::KisClientTestAccess::parse_order_ack(
+      json_response(R"({"rt_cd":"1","msg_cd":"","msg1":"초당 거래건수를 초과하였습니다."})")
+    );
+    REQUIRE_FALSE(personal);
+    REQUIRE(personal.error().category_ == ErrorCategory::RATE_LIMIT);
+  }
+
+  SECTION("a scheduled trading-control window is not a rate limit") {
+    // EGW00317 reports a window during which the endpoint is unavailable. Backing
+    // off would misreport a closed window as congestion.
+    auto result = kis::KisClientTestAccess::parse_order_ack(
+      json_response(
+        R"({"rt_cd":"1","msg_cd":"EGW00317",)"
+        R"("msg1":"09:00 ~ 09:30 시간 동안에는 조회하실 수 없습니다."})"
+      )
+    );
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().category_ == ErrorCategory::PROTOCOL);
+    REQUIRE(result.error().broker_code_ == "EGW00317");
+  }
+
   SECTION("a successful response without an output object is a protocol error") {
     auto result =
       kis::KisClientTestAccess::parse_order_ack(json_response(R"({"rt_cd":"0"})"));

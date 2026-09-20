@@ -17,6 +17,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -106,6 +107,62 @@ struct KisHistoryRange {
   Date from_;
   Date to_;
 };
+
+/**
+ * Which of KIS's two request-rate limits a declared failure reports.
+ *
+ * KIS meters requests in two independent layers and its documentation is explicit
+ * that they must not be confused: "원장 언급이 없는 '초당 거래건수를 초과하였습니다.'
+ * 메시지는 개인 유량 초과 시 발생하는 메시지로 착오 없으시길 바랍니다."
+ *
+ * Both are rate limits, but they call for different responses, which is why the
+ * layer is preserved rather than collapsed into one category.
+ */
+enum class KisRateLimitLayer {
+  /** Not a rate limit. */
+  NONE,
+  /**
+   * The ledger's own per-endpoint cap, shared across all customers.
+   *
+   * Documented for 주식잔고조회 and ETF 현재가 호가 as 초당 120 TPS "개인 고객 유량
+   * 무관하게". Pacing this client's own traffic cannot prevent it, because the
+   * capacity is not this client's to spend; the documented remedy is to retry.
+   */
+  LEDGER,
+  /**
+   * This application key's own per-second allowance.
+   *
+   * This is the layer a request pacer governs: exceeding it means the client's
+   * own budget is mis-sized.
+   */
+  PERSONAL,
+};
+
+/**
+ * Classifies a declared KIS failure as one of the two rate-limit layers.
+ *
+ * `EGW00215` names the ledger layer explicitly and is matched by code. The
+ * personal layer has no documented code, so it is matched on the exact phrase
+ * KIS documents, and only in the absence of the ledger's own "원장" wording. That
+ * asymmetry is deliberate: a missed classification loses pacing, while a false
+ * one would make the library back off from a failure that is not congestion.
+ *
+ * `EGW00317` is deliberately not a rate limit. It reports a scheduled
+ * trading-control window — 해외주식 상품기본정보 between 08:59 and 09:31 — during
+ * which the endpoint is unavailable. Backing off would misreport a closed window
+ * as congestion.
+ */
+inline KisRateLimitLayer kis_rate_limit_layer(std::string_view code, std::string_view message) {
+  if (code == "EGW00215") {
+    return KisRateLimitLayer::LEDGER;
+  }
+  if (message.find("초당 거래건수를 초과") == std::string_view::npos) {
+    return KisRateLimitLayer::NONE;
+  }
+  return message.find("원장") == std::string_view::npos ?
+    KisRateLimitLayer::PERSONAL :
+    KisRateLimitLayer::LEDGER;
+}
 
 /** Persistent asynchronous KIS client with coalesced OAuth refresh. */
 class KisClient : public std::enable_shared_from_this<KisClient> {
@@ -1123,6 +1180,13 @@ private:
     }
     if (const auto message = document.if_contains("msg1"); message && message->is_string()) {
       error.message_ = message->as_string().c_str();
+    }
+
+    // KIS reports a rate limit in the response body rather than as HTTP 429 with
+    // a Retry-After header, so it has to be recognized here or it reaches the
+    // caller as an ordinary protocol failure.
+    if (kis_rate_limit_layer(error.broker_code_, error.message_) != KisRateLimitLayer::NONE) {
+      error.category_ = ErrorCategory::RATE_LIMIT;
     }
     return error;
   }
