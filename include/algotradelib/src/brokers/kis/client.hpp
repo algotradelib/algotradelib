@@ -397,6 +397,18 @@ public:
     );
   }
 
+  /**
+   * Returns this connection's pacing statistics, or null when it is unpaced.
+   *
+   * The counters live on the client's strand. Read them from a completion
+   * handler, where that strand is already current; on a blocking facade any
+   * moment between calls is safe, because its event loop is idle then.
+   */
+  const network::RateLimitStats* rate_limit_stats() const {
+    const auto* limiter = http_->rate_limits();
+    return limiter ? &limiter->stats() : nullptr;
+  }
+
   /** Cancels transport work and queued HTTP operations. */
   void close() { http_->close(); }
 
@@ -487,6 +499,8 @@ private:
     refreshing_ = true;
 
     network::HttpRequest request;
+    // Every other request waits behind a token refresh, including a cancellation.
+    request.group_ = network::RateLimitGroup::AUTH;
     request.method_ = http::verb::post;
     request.target_ = "/oauth2/tokenP";
     request.body_ = config_.to_jsonbody();
@@ -547,6 +561,8 @@ private:
     }
 
     network::HttpRequest request;
+    // Quote polling is the traffic a reserve exists to hold back.
+    request.group_ = network::RateLimitGroup::MARKET_DATA;
     request.method_ = http::verb::get;
     request.target_ =
       "/uapi/domestic-stock/v1/quotations/inquire-price"
@@ -615,6 +631,8 @@ private:
     bool continuation
   ) {
     network::HttpRequest request;
+    // Holdings rank above polling but may not spend the trading reserve.
+    request.group_ = network::RateLimitGroup::ACCOUNT;
     request.method_ = http::verb::get;
     request.target_ =
       "/uapi/domestic-stock/v1/trading/inquire-balance"
@@ -1116,6 +1134,8 @@ private:
 
     const bool buy = order.side_ == OrderSide::BUY;
     network::HttpRequest request;
+    // An order is what the reserve is held for.
+    request.group_ = network::RateLimitGroup::TRADING;
     request.method_ = http::verb::post;
     request.target_ = "/uapi/domestic-stock/v1/trading/order-cash";
     request.body_ = json::serialize(body);
@@ -1154,6 +1174,8 @@ private:
     };
 
     network::HttpRequest request;
+    // A modification and a cancellation share the order endpoint and its priority.
+    request.group_ = network::RateLimitGroup::TRADING;
     request.method_ = http::verb::post;
     request.target_ = "/uapi/domestic-stock/v1/trading/order-rvsecncl";
     request.body_ = json::serialize(body);
@@ -1384,6 +1406,9 @@ private:
     bool continuation
   ) {
     network::HttpRequest request;
+    // KIS requires this inquiry before an amendment, so it ranks above polling; it
+    // stays outside the reserve because a strategy may also poll it continuously.
+    request.group_ = network::RateLimitGroup::ACCOUNT;
     request.method_ = http::verb::get;
     request.target_ =
       "/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl"
@@ -1610,6 +1635,8 @@ private:
     bool continuation
   ) {
     network::HttpRequest request;
+    // Order history is account monitoring, not order submission.
+    request.group_ = network::RateLimitGroup::ACCOUNT;
     request.method_ = http::verb::get;
     request.target_ =
       "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
@@ -1941,34 +1968,70 @@ private:
   }
 
   /** Dispatches an order acknowledgement through its associated executor. */
-  void complete_order_ack(OrderAckHandler handler, Result<KisOrderAck> result) {
+  /**
+   * Dispatches one result through its associated executor, exactly once.
+   *
+   * Every operation's result passes through here, which makes it the one place a
+   * broker's own rate-limit refusal can be fed back into this connection's pacer
+   * without each operation having to remember to do it.
+   */
+  template <typename Handler, typename T>
+  void deliver(Handler handler, Result<T> result) {
+    if (!result) {
+      note_rate_limit(result.error());
+    }
     auto executor = net::get_associated_executor(handler, strand_);
     net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
       std::move(handler)(std::move(result));
     });
+  }
+
+  /**
+   * Corrects this connection's pacing from a KIS rate-limit refusal.
+   *
+   * The two KIS limit layers call for different corrections. A ledger refusal is
+   * a cap shared with every other customer, so the budget was not the problem and
+   * only a wait helps. A personal refusal means this key's own allowance was
+   * exceeded, and KIS reports no number to correct to, so the rate is halved.
+   */
+  void note_rate_limit(const BrokerError& error) {
+    if (error.category_ != ErrorCategory::RATE_LIMIT) {
+      return;
+    }
+    auto* limiter = http_->rate_limits();
+    if (!limiter) {
+      return;
+    }
+    const auto retry = error.retry_after_ ?
+      std::chrono::duration_cast<network::RateLimitController::Duration>(*error.retry_after_) :
+      std::chrono::duration_cast<network::RateLimitController::Duration>(std::chrono::seconds(1));
+    if (error.rate_limit_) {
+      limiter->shrink(*error.rate_limit_, *error.rate_limit_, retry);
+      return;
+    }
+    if (kis_rate_limit_layer(error.broker_code_, error.message_) == KisRateLimitLayer::LEDGER) {
+      limiter->hold(retry);
+      return;
+    }
+    limiter->back_off(retry);
+  }
+
+  void complete_order_ack(OrderAckHandler handler, Result<KisOrderAck> result) {
+    deliver(std::move(handler), std::move(result));
   }
 
   /** Dispatches a modifiable-order result through its associated executor. */
   void complete_open_orders(OpenOrderHandler handler, Result<KisOpenOrderPage> result) {
-    auto executor = net::get_associated_executor(handler, strand_);
-    net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
-      std::move(handler)(std::move(result));
-    });
+    deliver(std::move(handler), std::move(result));
   }
 
   /** Dispatches an order-history result through its associated executor. */
   void complete_order_page(OrderPageHandler handler, Result<OrderPage> result) {
-    auto executor = net::get_associated_executor(handler, strand_);
-    net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
-      std::move(handler)(std::move(result));
-    });
+    deliver(std::move(handler), std::move(result));
   }
 
   void complete(QuoteHandler handler, Result<QuoteSnapshot> result) {
-    auto executor = net::get_associated_executor(handler, strand_);
-    net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
-      std::move(handler)(std::move(result));
-    });
+    deliver(std::move(handler), std::move(result));
   }
 
   void finish_holdings(
@@ -1979,10 +2042,7 @@ private:
   }
 
   void complete_holdings(HoldingsHandler handler, Result<HoldingsSnapshot> result) {
-    auto executor = net::get_associated_executor(handler, strand_);
-    net::dispatch(executor, [handler = std::move(handler), result = std::move(result)]() mutable {
-      std::move(handler)(std::move(result));
-    });
+    deliver(std::move(handler), std::move(result));
   }
 };
 
@@ -2066,6 +2126,16 @@ public:
       },
       "order-history inquiry"
     );
+  }
+
+  /**
+   * Returns this connection's pacing statistics, or null when it is unpaced.
+   *
+   * A blocking facade's event loop is idle between calls, so any moment between
+   * them is safe to read from.
+   */
+  const network::RateLimitStats* rate_limit_stats() const {
+    return client_->rate_limit_stats();
   }
 
 private:
