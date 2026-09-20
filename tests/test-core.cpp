@@ -151,6 +151,17 @@ struct KisClientTestAccess {
     return KisClient::parse_depth(std::move(instrument), std::move(response));
   }
 
+  static Result<PriceLimits> parse_price_limits(Result<network::HttpResponse> response) {
+    return KisClient::parse_price_limits(InstrumentId{}, std::move(response));
+  }
+
+  static Result<std::vector<TradePrint>> parse_trades(
+    Result<network::HttpResponse> response,
+    int count
+  ) {
+    return KisClient::parse_trades(InstrumentId{}, std::move(response), count);
+  }
+
   static Result<KisOrderAck> parse_order_ack(Result<network::HttpResponse> response) {
     return KisClient::parse_order_ack(std::move(response));
   }
@@ -242,6 +253,21 @@ struct TossClientTestAccess {
     Result<network::HttpResponse> response
   ) {
     return TossClient::parse_depth(std::move(instrument), std::move(response));
+  }
+
+  static Result<PriceLimits> parse_price_limits(Result<network::HttpResponse> response) {
+    return TossClient::parse_price_limits(InstrumentId{}, std::move(response));
+  }
+
+  static Result<std::vector<TradePrint>> parse_trades(Result<network::HttpResponse> response) {
+    return TossClient::parse_trades(InstrumentId{}, std::move(response));
+  }
+
+  static Result<std::vector<QuoteSnapshot>> parse_prices(
+    const std::vector<InstrumentId>& requested,
+    Result<network::HttpResponse> response
+  ) {
+    return TossClient::parse_prices(requested, std::move(response));
   }
 
   static Result<OrderAck> parse_order_ack(Result<network::HttpResponse> response) {
@@ -2574,5 +2600,147 @@ TEST_CASE(
     );
     REQUIRE_FALSE(result);
     REQUIRE(result.error().broker_code_ == "APBK0919");
+  }
+}
+
+TEST_CASE("price bounds distinguish a market with no limit from a limit of zero") {
+  SECTION("Toss reports both bounds for a Korean equity") {
+    auto result = tossinvest::TossClientTestAccess::parse_price_limits(
+      json_response(
+        R"({"result":{"timestamp":"2026-03-25T09:30:00.123+09:00",)"
+        R"("upperLimitPrice":"93000","lowerLimitPrice":"50400","currency":"KRW"}})"
+      )
+    );
+    REQUIRE(result);
+    REQUIRE(*result.value().upper_ == Decimal64::parse("93000"));
+    REQUIRE(*result.value().lower_ == Decimal64::parse("50400"));
+    REQUIRE(result.value().currency_ == Currency::krw());
+    REQUIRE(result.value().exchange_time_.has_value());
+  }
+
+  SECTION("Toss reports null bounds for a market without a price limit") {
+    // A bound of zero would read as "may not trade above nothing", which is the
+    // opposite of what an unlimited market means.
+    auto result = tossinvest::TossClientTestAccess::parse_price_limits(
+      json_response(
+        R"({"result":{"timestamp":"2026-03-25T22:30:00.456+09:00",)"
+        R"("upperLimitPrice":null,"lowerLimitPrice":null,"currency":"USD"}})"
+      )
+    );
+    REQUIRE(result);
+    REQUIRE_FALSE(result.value().upper_.has_value());
+    REQUIRE_FALSE(result.value().lower_.has_value());
+    REQUIRE(result.value().currency_ == Currency::usd());
+  }
+
+  SECTION("KIS reports both bounds on its current-price inquiry") {
+    auto result = kis::KisClientTestAccess::parse_price_limits(
+      json_response(
+        R"({"rt_cd":"0","msg_cd":"MCA00000","output":{"stck_prpr":"72000",)"
+        R"("stck_mxpr":"93000","stck_llam":"50400"}})"
+      )
+    );
+    REQUIRE(result);
+    REQUIRE(*result.value().upper_ == Decimal64::parse("93000"));
+    REQUIRE(*result.value().lower_ == Decimal64::parse("50400"));
+    REQUIRE(result.value().currency_ == Currency::krw());
+  }
+
+  SECTION("a blank or zero KIS bound is absent rather than a bound of nothing") {
+    auto result = kis::KisClientTestAccess::parse_price_limits(
+      json_response(R"({"rt_cd":"0","output":{"stck_mxpr":"0","stck_llam":""}})")
+    );
+    REQUIRE(result);
+    REQUIRE_FALSE(result.value().upper_.has_value());
+    REQUIRE_FALSE(result.value().lower_.has_value());
+  }
+}
+
+TEST_CASE("recent executions normalize from both brokers") {
+  SECTION("Toss returns a bare array of prints") {
+    auto result = tossinvest::TossClientTestAccess::parse_trades(
+      json_response(
+        R"({"result":[)"
+        R"({"price":"72000","volume":"120","timestamp":"2026-03-25T09:30:42.000+09:00",)"
+        R"("currency":"KRW"},)"
+        R"({"price":"71900","volume":"50","timestamp":"2026-03-25T09:30:41.500+09:00",)"
+        R"("currency":"KRW"}]})"
+      )
+    );
+    REQUIRE(result);
+    REQUIRE(result.value().size() == 2);
+    REQUIRE(result.value().front().price_ == Decimal64::parse("72000"));
+    REQUIRE(result.value().front().quantity_ == Decimal64::parse("120"));
+    REQUIRE(result.value().front().currency_ == Currency::krw());
+    REQUIRE(result.value().front().exchange_time_.has_value());
+  }
+
+  SECTION("KIS pads its window with blank rows, which are skipped") {
+    auto result = kis::KisClientTestAccess::parse_trades(
+      json_response(
+        R"({"rt_cd":"0","output":[)"
+        R"({"stck_cntg_hour":"093042","stck_prpr":"72000","cntg_vol":"120"},)"
+        R"({"stck_cntg_hour":"093041","stck_prpr":"71900","cntg_vol":"50"},)"
+        R"({"stck_cntg_hour":"","stck_prpr":"","cntg_vol":""}]})"
+      ),
+      0
+    );
+    REQUIRE(result);
+    REQUIRE(result.value().size() == 2);
+    REQUIRE(result.value().front().price_ == Decimal64::parse("72000"));
+    REQUIRE(result.value().front().currency_ == Currency::krw());
+  }
+
+  SECTION("a KIS count trims the fixed window KIS returns") {
+    // KIS answers with a window of its own choosing rather than a requested size,
+    // so the count trims what arrived instead of asking for less.
+    auto result = kis::KisClientTestAccess::parse_trades(
+      json_response(
+        R"({"rt_cd":"0","output":[)"
+        R"({"stck_cntg_hour":"093042","stck_prpr":"72000","cntg_vol":"120"},)"
+        R"({"stck_cntg_hour":"093041","stck_prpr":"71900","cntg_vol":"50"}]})"
+      ),
+      1
+    );
+    REQUIRE(result);
+    REQUIRE(result.value().size() == 1);
+  }
+}
+
+TEST_CASE("a batch quote keeps the instrument identities the caller stated") {
+  const std::vector<InstrumentId> requested = {
+    InstrumentId{Country::KR, Venue::KRX, "005930"},
+    InstrumentId{Country::US, Venue::UNSPECIFIED, "AAPL"},
+  };
+
+  SECTION("each row is matched back to the instrument it was asked about") {
+    // Rebuilding an instrument from the symbol alone would lose the country and
+    // venue the caller stated, which is how a KRX-only quote becomes ambiguous.
+    auto result = tossinvest::TossClientTestAccess::parse_prices(
+      requested,
+      json_response(
+        R"({"result":[)"
+        R"({"symbol":"005930","timestamp":"2026-03-25T09:30:00.123+09:00",)"
+        R"("lastPrice":"72000","currency":"KRW"},)"
+        R"({"symbol":"AAPL","timestamp":"2026-03-25T22:30:00.456+09:00",)"
+        R"("lastPrice":"185.70","currency":"USD"}]})"
+      )
+    );
+    REQUIRE(result);
+    REQUIRE(result.value().size() == 2);
+    REQUIRE(result.value()[0].instrument_.venue_ == Venue::KRX);
+    REQUIRE(result.value()[0].last_price_ == Decimal64::parse("72000"));
+    REQUIRE(result.value()[1].instrument_.country_ == Country::US);
+    REQUIRE(result.value()[1].currency_ == Currency::usd());
+  }
+
+  SECTION("a row for a symbol that was not asked for is a protocol error") {
+    auto result = tossinvest::TossClientTestAccess::parse_prices(
+      requested,
+      json_response(R"({"result":[{"symbol":"000660","lastPrice":"1","currency":"KRW"}]})")
+    );
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().category_ == ErrorCategory::PROTOCOL);
+    REQUIRE(result.error().broker_code_ == "invalid_price_response");
   }
 }

@@ -378,8 +378,11 @@ struct BrokerTraits<mock::MockClient> {
   /** Does not filter by instrument. */
   static constexpr bool has_history_symbol_filter = false;
 
-  /** The in-memory broker publishes no order book, so the verb does not compile. */
+  /** The in-memory broker publishes no market data beyond bars. */
   static constexpr bool has_depth = false;
+  static constexpr bool has_price_limits = false;
+  static constexpr bool has_trade_prints = false;
+  static constexpr bool has_batch_prices = false;
 
   /**
    * The in-memory broker publishes minute and daily bars, like both real ones, and

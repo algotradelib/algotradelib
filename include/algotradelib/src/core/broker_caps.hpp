@@ -55,6 +55,15 @@ struct BrokerCaps {
   /** Whether the broker publishes resting orders on both sides of the book. */
   static constexpr bool has_depth = Traits::has_depth;
 
+  /** Whether the broker publishes today's upper and lower price bound. */
+  static constexpr bool has_price_limits = Traits::has_price_limits;
+
+  /** Whether the broker publishes recent executions. */
+  static constexpr bool has_trade_prints = Traits::has_trade_prints;
+
+  /** Whether the broker quotes several instruments in one request. */
+  static constexpr bool has_batch_prices = Traits::has_batch_prices;
+
   /**
    * Whether the broker publishes bars at `interval`.
    *

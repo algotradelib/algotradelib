@@ -360,6 +360,76 @@ public:
     );
   }
 
+  /** Retrieves today's upper and lower price bound for one instrument. */
+  template <typename CompletionToken>
+  auto async_price_limits(InstrumentId instrument, CompletionToken&& token) {
+    if constexpr (Caps::has_price_limits) {
+      return translate<PriceLimits>(
+        std::forward<CompletionToken>(token),
+        [client = client_, instrument = std::move(instrument)](auto&& sink) mutable {
+          Traits::price_limits(
+            *client, std::move(instrument), std::forward<decltype(sink)>(sink)
+          );
+        },
+        [](Result<PriceLimits> raw) { return raw; }
+      );
+    } else {
+      static_assert(
+        port_detail::dependent_false<Client>,
+        "this broker does not publish price limits; gate the call with "
+        "BrokerCaps<Client>::has_price_limits"
+      );
+    }
+  }
+
+  /** Retrieves recent executions for one instrument, newest first. */
+  template <typename CompletionToken>
+  auto async_trades(InstrumentId instrument, int count, CompletionToken&& token) {
+    if constexpr (Caps::has_trade_prints) {
+      return translate<std::vector<TradePrint>>(
+        std::forward<CompletionToken>(token),
+        [client = client_, instrument = std::move(instrument), count](auto&& sink) mutable {
+          Traits::trades(
+            *client, std::move(instrument), count, std::forward<decltype(sink)>(sink)
+          );
+        },
+        [](Result<std::vector<TradePrint>> raw) { return raw; }
+      );
+    } else {
+      static_assert(
+        port_detail::dependent_false<Client>,
+        "this broker does not publish recent executions; gate the call with "
+        "BrokerCaps<Client>::has_trade_prints"
+      );
+    }
+  }
+
+  /**
+   * Quotes several instruments in one request.
+   *
+   * Only on a broker that offers it. Looping `async_quote` instead would wear the
+   * same signature with a different cost, and on a paced connection a materially
+   * different one, so the absence is a compile error rather than an emulation.
+   */
+  template <typename CompletionToken>
+  auto async_prices(std::vector<InstrumentId> instruments, CompletionToken&& token) {
+    if constexpr (Caps::has_batch_prices) {
+      return translate<std::vector<QuoteSnapshot>>(
+        std::forward<CompletionToken>(token),
+        [client = client_, instruments = std::move(instruments)](auto&& sink) mutable {
+          Traits::prices(*client, std::move(instruments), std::forward<decltype(sink)>(sink));
+        },
+        [](Result<std::vector<QuoteSnapshot>> raw) { return raw; }
+      );
+    } else {
+      static_assert(
+        port_detail::dependent_false<Client>,
+        "this broker quotes one instrument per request; gate the call with "
+        "BrokerCaps<Client>::has_batch_prices and call async_quote per instrument"
+      );
+    }
+  }
+
   /**
    * Retrieves the resting orders on both sides of one instrument's book.
    *

@@ -41,6 +41,15 @@ struct Normalizers {
   /** Both brokers publish resting orders on both sides of the book. */
   static constexpr bool has_depth = true;
 
+  /** Both brokers publish today's price bounds. */
+  static constexpr bool has_price_limits = true;
+
+  /** Both brokers publish recent executions. */
+  static constexpr bool has_trade_prints = true;
+
+  /** Only Toss quotes several instruments in one request. */
+  static constexpr bool has_batch_prices = true;
+
   /** Returns whether this broker publishes bars at `interval`. */
   static constexpr bool supports_interval(BarInterval interval) {
     static_cast<void>(interval);
@@ -273,6 +282,24 @@ struct BrokerTraits<tossinvest::TossClient>
     return client.rate_limit_stats();
   }
 
+  /** Forwards a price-bound request. */
+  template <typename Token>
+  static auto price_limits(Client& client, InstrumentId instrument, Token&& token) {
+    return client.async_price_limits(std::move(instrument), std::forward<Token>(token));
+  }
+
+  /** Forwards a recent-execution request. */
+  template <typename Token>
+  static auto trades(Client& client, InstrumentId instrument, int count, Token&& token) {
+    return client.async_trades(std::move(instrument), count, std::forward<Token>(token));
+  }
+
+  /** Forwards a batch quote request. */
+  template <typename Token>
+  static auto prices(Client& client, std::vector<InstrumentId> instruments, Token&& token) {
+    return client.async_prices(std::move(instruments), std::forward<Token>(token));
+  }
+
   /** Forwards an order book request. */
   template <typename Token>
   static auto depth(Client& client, InstrumentId instrument, Token&& token) {
@@ -403,6 +430,28 @@ struct BrokerTraits<tossinvest::TossBlockingClient>
   /** Returns this client's pacing statistics, or null when it is unpaced. */
   static const network::RateLimitStats* rate_limit_stats(const Client& client) {
     return client.rate_limit_stats();
+  }
+
+  /** Returns today's price bounds. */
+  static Result<PriceLimits> price_limits(Client& client, InstrumentId instrument) {
+    return client.price_limits(std::move(instrument));
+  }
+
+  /** Returns recent executions. */
+  static Result<std::vector<TradePrint>> trades(
+    Client& client,
+    InstrumentId instrument,
+    int count
+  ) {
+    return client.trades(std::move(instrument), count);
+  }
+
+  /** Returns a quote for every instrument in one request. */
+  static Result<std::vector<QuoteSnapshot>> prices(
+    Client& client,
+    std::vector<InstrumentId> instruments
+  ) {
+    return client.prices(std::move(instruments));
   }
 
   /** Returns the order book. */

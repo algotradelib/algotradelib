@@ -10,8 +10,10 @@
 #include <boost/asio/post.hpp>
 #include <boost/asio/strand.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <type_traits>
 #include <cstdio>
 #include <deque>
 #include <memory>
@@ -139,6 +141,15 @@ public:
 
   /** Completion handler for one normalized order book. */
   using DepthHandler = net::any_completion_handler<void(Result<DepthSnapshot>)>;
+
+  /** Completion handler for one instrument's price bounds. */
+  using PriceLimitsHandler = net::any_completion_handler<void(Result<PriceLimits>)>;
+
+  /** Completion handler for recent executions. */
+  using TradesHandler = net::any_completion_handler<void(Result<std::vector<TradePrint>>)>;
+
+  /** Completion handler for several instruments quoted at once. */
+  using PricesHandler = net::any_completion_handler<void(Result<std::vector<QuoteSnapshot>>)>;
   /** Completion handler for Toss account discovery. */
   using AccountsHandler = net::any_completion_handler<void(Result<std::vector<TossAccount>>)>;
 
@@ -189,6 +200,81 @@ public:
           self->strand_,
           [self, query = std::move(query), completion = std::move(completion)]() mutable {
             self->start_bars(std::move(query), std::move(completion));
+          }
+        );
+      },
+      token
+    );
+  }
+
+  /** Requests today's upper and lower price bound for one instrument. */
+  template <typename CompletionToken>
+  auto async_price_limits(InstrumentId instrument, CompletionToken&& token) {
+    return net::async_initiate<CompletionToken, void(Result<PriceLimits>)>(
+      [self = shared_from_this(), instrument = std::move(instrument)](auto&& handler) mutable {
+        auto completion = PriceLimitsHandler(std::forward<decltype(handler)>(handler));
+        net::post(
+          self->strand_,
+          [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
+            self->start_market_read(
+              std::move(instrument),
+              "/api/v1/price-limits?symbol=",
+              std::move(completion),
+              parse_price_limits
+            );
+          }
+        );
+      },
+      token
+    );
+  }
+
+  /** Requests recent executions for one instrument, newest first. */
+  template <typename CompletionToken>
+  auto async_trades(InstrumentId instrument, int count, CompletionToken&& token) {
+    return net::async_initiate<CompletionToken, void(Result<std::vector<TradePrint>>)>(
+      [self = shared_from_this(), instrument = std::move(instrument), count](
+        auto&& handler
+      ) mutable {
+        auto completion = TradesHandler(std::forward<decltype(handler)>(handler));
+        net::post(
+          self->strand_,
+          [self, instrument = std::move(instrument), count, completion = std::move(completion)]()
+            mutable {
+            // Toss caps this at fifty prints; asking for more would be answered with
+            // fifty anyway, so the cap is applied here rather than silently by the
+            // broker.
+            const int wanted = count < 1 ? 1 : (count > trade_limit_ ? trade_limit_ : count);
+            self->start_market_read(
+              std::move(instrument),
+              "/api/v1/trades?count=" + std::to_string(wanted) + "&symbol=",
+              std::move(completion),
+              parse_trades
+            );
+          }
+        );
+      },
+      token
+    );
+  }
+
+  /**
+   * Quotes up to two hundred instruments in one request.
+   *
+   * The whole point of the call is that it is one request rather than many, so a
+   * list longer than Toss accepts is refused rather than split: splitting would
+   * quietly spend several times the rate-limit budget the caller was economising.
+   */
+  template <typename CompletionToken>
+  auto async_prices(std::vector<InstrumentId> instruments, CompletionToken&& token) {
+    return net::async_initiate<CompletionToken, void(Result<std::vector<QuoteSnapshot>>)>(
+      [self = shared_from_this(), instruments = std::move(instruments)](auto&& handler) mutable {
+        auto completion = PricesHandler(std::forward<decltype(handler)>(handler));
+        net::post(
+          self->strand_,
+          [self, instruments = std::move(instruments), completion = std::move(completion)]()
+            mutable {
+            self->start_prices(std::move(instruments), std::move(completion));
           }
         );
       },
@@ -694,6 +780,308 @@ private:
       series.next_cursor_ = *cursor;
     }
     deliver(std::move(operation->completion_), Result<BarSeries>(std::move(series)));
+  }
+
+  /**
+   * Returns the `result` member of a market-data response, or the error ending it.
+   *
+   * Toss wraps every market-data answer in `result`, sometimes as an object and
+   * sometimes as a bare array, so the shape check belongs to each parser while the
+   * status, envelope, and JSON handling belong here once.
+   */
+  static Result<json::value> market_result(Result<network::HttpResponse> response) {
+    if (!response) {
+      return Result<json::value>(std::move(response.error()));
+    }
+    BrokerError parse_error;
+    auto document = broker_detail::parse_object(response.value().body(), parse_error);
+    if (!document) {
+      return Result<json::value>(std::move(parse_error));
+    }
+    if (response.value().result_int() < 200 || response.value().result_int() >= 300) {
+      return Result<json::value>(toss_error(response.value(), *document));
+    }
+    const auto payload = document->if_contains("result");
+    if (!payload) {
+      BrokerError error;
+      error.category_ = ErrorCategory::PROTOCOL;
+      error.broker_code_ = "invalid_market_response";
+      error.message_ = "response carries no result";
+      return Result<json::value>(std::move(error));
+    }
+    return Result<json::value>(*payload);
+  }
+
+  /** Most executions Toss returns in one request. */
+  static constexpr int trade_limit_ = 50;
+
+  /** Most instruments Toss quotes in one request. */
+  static constexpr int price_batch_limit_ = 200;
+
+  /**
+   * Issues one authenticated market-data GET for a single instrument.
+   *
+   * The three single-instrument reads differ only in their path and their parser,
+   * so the token handling, the traffic class, and the validation live here once.
+   */
+  template <typename Handler, typename Parse>
+  void start_market_read(
+    InstrumentId instrument,
+    std::string prefix,
+    Handler completion,
+    Parse parse
+  ) {
+    using ResultType = decltype(parse(InstrumentId{}, Result<network::HttpResponse>(BrokerError{})));
+    static_assert(!std::is_void<ResultType>::value, "a market-data parser must return a Result");
+    if (!broker_detail::valid_symbol(instrument.symbol_)) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.broker_code_ = "invalid_instrument";
+      error.message_ = "market data request requires a symbol";
+      deliver(std::move(completion), ResultType(std::move(error)));
+      return;
+    }
+
+    ensure_token(
+      TokenHandler(
+        [
+          self = shared_from_this(),
+          instrument = std::move(instrument),
+          prefix = std::move(prefix),
+          completion = std::move(completion),
+          parse
+        ](std::optional<BrokerError> token_error) mutable {
+          if (token_error) {
+            self->deliver(std::move(completion), ResultType(std::move(*token_error)));
+            return;
+          }
+          network::HttpRequest request;
+          // Market data is the traffic the trading reserve holds back.
+          request.group_ = network::RateLimitGroup::MARKET_DATA;
+          request.method_ = http::verb::get;
+          request.target_ = prefix + broker_detail::query_encode(instrument.symbol_);
+          request.headers_.emplace_back(
+            "Authorization", "Bearer " + self->token_.access_token_
+          );
+          self->http_->async_request(
+            std::move(request),
+            [self, instrument = std::move(instrument), completion = std::move(completion), parse](
+              Result<network::HttpResponse> result
+            ) mutable {
+              self->deliver(
+                std::move(completion), parse(std::move(instrument), std::move(result))
+              );
+            }
+          );
+        }
+      )
+    );
+  }
+
+  /**
+   * Normalizes Toss's price bounds.
+   *
+   * Both bounds are null in a market without a price limit, and the absence is
+   * preserved: a bound of zero would read as "this instrument may not trade above
+   * nothing", which is not what an unlimited market means.
+   */
+  static Result<PriceLimits> parse_price_limits(
+    InstrumentId instrument,
+    Result<network::HttpResponse> result
+  ) {
+    static_cast<void>(instrument);
+    auto payload = market_result(std::move(result));
+    if (!payload) {
+      return Result<PriceLimits>(std::move(payload.error()));
+    }
+    try {
+      if (!payload.value().is_object()) {
+        throw std::runtime_error("price limit result is not an object");
+      }
+      const auto& object = payload.value().as_object();
+      PriceLimits limits;
+      limits.currency_ = Currency(broker_detail::json_string(object, "currency"));
+      limits.upper_ = nullable_decimal(object, "upperLimitPrice");
+      limits.lower_ = nullable_decimal(object, "lowerLimitPrice");
+      if (const auto stamp = object.if_contains("timestamp"); stamp && stamp->is_string()) {
+        limits.exchange_time_ = parse_iso8601_timestamp(stamp->as_string().c_str());
+      }
+      return Result<PriceLimits>(std::move(limits));
+    } catch (const std::exception& exception) {
+      return Result<PriceLimits>(market_error("invalid_price_limit_response", exception));
+    }
+  }
+
+  /** Normalizes Toss's recent executions. */
+  static Result<std::vector<TradePrint>> parse_trades(
+    InstrumentId instrument,
+    Result<network::HttpResponse> result
+  ) {
+    static_cast<void>(instrument);
+    auto payload = market_result(std::move(result));
+    if (!payload) {
+      return Result<std::vector<TradePrint>>(std::move(payload.error()));
+    }
+    try {
+      if (!payload.value().is_array()) {
+        throw std::runtime_error("trade result is not an array");
+      }
+      const auto& rows = payload.value().as_array();
+      std::vector<TradePrint> prints;
+      prints.reserve(rows.size());
+      for (const auto& value : rows) {
+        if (!value.is_object()) {
+          throw std::runtime_error("trade entry is not an object");
+        }
+        const auto& row = value.as_object();
+        TradePrint print;
+        print.price_ = Decimal64::parse(broker_detail::json_string(row, "price"));
+        print.quantity_ = Decimal64::parse(broker_detail::json_string(row, "volume"));
+        print.currency_ = Currency(broker_detail::json_string(row, "currency"));
+        print.exchange_time_ =
+          parse_iso8601_timestamp(broker_detail::json_string(row, "timestamp"));
+        if (!print.exchange_time_) {
+          throw std::runtime_error("invalid trade timestamp");
+        }
+        prints.push_back(std::move(print));
+      }
+      return Result<std::vector<TradePrint>>(std::move(prints));
+    } catch (const std::exception& exception) {
+      return Result<std::vector<TradePrint>>(market_error("invalid_trade_response", exception));
+    }
+  }
+
+  /** Validates a batch and requests every instrument's price in one call. */
+  void start_prices(std::vector<InstrumentId> instruments, PricesHandler completion) {
+    BrokerError error;
+    error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    if (instruments.empty()) {
+      error.broker_code_ = "empty_batch";
+      error.message_ = "a batch price request needs at least one instrument";
+      deliver(std::move(completion), Result<std::vector<QuoteSnapshot>>(std::move(error)));
+      return;
+    }
+    if (static_cast<int>(instruments.size()) > price_batch_limit_) {
+      error.broker_code_ = "batch_too_large";
+      error.message_ =
+        "Toss quotes at most two hundred instruments per request; a longer list is "
+        "refused rather than split, because splitting would spend several times the "
+        "request budget a batch call exists to save";
+      deliver(std::move(completion), Result<std::vector<QuoteSnapshot>>(std::move(error)));
+      return;
+    }
+
+    std::string symbols;
+    for (const auto& instrument : instruments) {
+      if (!broker_detail::valid_symbol(instrument.symbol_)) {
+        error.broker_code_ = "invalid_instrument";
+        error.message_ = "batch price request requires a symbol for every instrument";
+        deliver(std::move(completion), Result<std::vector<QuoteSnapshot>>(std::move(error)));
+        return;
+      }
+      if (!symbols.empty()) {
+        symbols += ',';
+      }
+      symbols += instrument.symbol_;
+    }
+
+    ensure_token(
+      TokenHandler(
+        [
+          self = shared_from_this(),
+          instruments = std::move(instruments),
+          symbols = std::move(symbols),
+          completion = std::move(completion)
+        ](std::optional<BrokerError> token_error) mutable {
+          if (token_error) {
+            self->deliver(
+              std::move(completion),
+              Result<std::vector<QuoteSnapshot>>(std::move(*token_error))
+            );
+            return;
+          }
+          network::HttpRequest request;
+          request.group_ = network::RateLimitGroup::MARKET_DATA;
+          request.method_ = http::verb::get;
+          request.target_ = "/api/v1/prices?symbols=" + broker_detail::query_encode(symbols);
+          request.headers_.emplace_back(
+            "Authorization", "Bearer " + self->token_.access_token_
+          );
+          self->http_->async_request(
+            std::move(request),
+            [self, instruments = std::move(instruments), completion = std::move(completion)](
+              Result<network::HttpResponse> result
+            ) mutable {
+              self->deliver(
+                std::move(completion), parse_prices(instruments, std::move(result))
+              );
+            }
+          );
+        }
+      )
+    );
+  }
+
+  /**
+   * Normalizes a batch of quotes, keeping the caller's instrument identities.
+   *
+   * Toss answers with a symbol per row, so each row is matched back to the
+   * instrument the caller asked about rather than being rebuilt from the symbol
+   * alone, which would lose the country and venue the caller stated. A row for a
+   * symbol that was not asked for is a protocol error.
+   */
+  static Result<std::vector<QuoteSnapshot>> parse_prices(
+    const std::vector<InstrumentId>& requested,
+    Result<network::HttpResponse> result
+  ) {
+    auto payload = market_result(std::move(result));
+    if (!payload) {
+      return Result<std::vector<QuoteSnapshot>>(std::move(payload.error()));
+    }
+    try {
+      if (!payload.value().is_array()) {
+        throw std::runtime_error("price result is not an array");
+      }
+      const auto& rows = payload.value().as_array();
+      std::vector<QuoteSnapshot> quotes;
+      quotes.reserve(rows.size());
+      for (const auto& value : rows) {
+        if (!value.is_object()) {
+          throw std::runtime_error("price entry is not an object");
+        }
+        const auto& row = value.as_object();
+        const auto symbol = broker_detail::json_string(row, "symbol");
+        const auto match = std::find_if(
+          requested.begin(),
+          requested.end(),
+          [&symbol](const InstrumentId& candidate) { return candidate.symbol_ == symbol; }
+        );
+        if (match == requested.end()) {
+          throw std::runtime_error("price response carries an unrequested symbol");
+        }
+        QuoteSnapshot quote;
+        quote.instrument_ = *match;
+        quote.last_price_ = Decimal64::parse(broker_detail::json_string(row, "lastPrice"));
+        quote.currency_ = Currency(broker_detail::json_string(row, "currency"));
+        if (const auto stamp = row.if_contains("timestamp"); stamp && stamp->is_string()) {
+          quote.exchange_time_ = parse_iso8601_timestamp(stamp->as_string().c_str());
+        }
+        quote.received_at_ = std::chrono::system_clock::now();
+        quotes.push_back(std::move(quote));
+      }
+      return Result<std::vector<QuoteSnapshot>>(std::move(quotes));
+    } catch (const std::exception& exception) {
+      return Result<std::vector<QuoteSnapshot>>(market_error("invalid_price_response", exception));
+    }
+  }
+
+  /** Returns a protocol error naming the response that could not be read. */
+  static BrokerError market_error(const char* code, const std::exception& cause) {
+    BrokerError error;
+    error.category_ = ErrorCategory::PROTOCOL;
+    error.broker_code_ = code;
+    error.message_ = cause.what();
+    return error;
   }
 
   /** Validates the instrument and requests its book. */
@@ -2308,6 +2696,32 @@ public:
   }
 
   /** Returns normalized holdings for one discovered account sequence. */
+  /** Returns today's upper and lower price bound. */
+  Result<PriceLimits> price_limits(InstrumentId instrument) {
+    return run<PriceLimits>(
+      [&](auto&& sink) { client_->async_price_limits(std::move(instrument), std::move(sink)); },
+      "price_limits"
+    );
+  }
+
+  /** Returns recent executions for one instrument. */
+  Result<std::vector<TradePrint>> trades(InstrumentId instrument, int count) {
+    return run<std::vector<TradePrint>>(
+      [&](auto&& sink) {
+        client_->async_trades(std::move(instrument), count, std::move(sink));
+      },
+      "trades"
+    );
+  }
+
+  /** Returns a quote for every instrument in one request. */
+  Result<std::vector<QuoteSnapshot>> prices(std::vector<InstrumentId> instruments) {
+    return run<std::vector<QuoteSnapshot>>(
+      [&](auto&& sink) { client_->async_prices(std::move(instruments), std::move(sink)); },
+      "prices"
+    );
+  }
+
   /** Returns the resting orders on both sides of the book. */
   Result<DepthSnapshot> depth(InstrumentId instrument) {
     return run<DepthSnapshot>(

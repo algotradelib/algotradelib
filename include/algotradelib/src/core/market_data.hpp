@@ -213,12 +213,16 @@ inline void order_depth(DepthSnapshot& book) {
 /**
  * One executed trade as the broker reported it.
  *
- * `aggressor_` is optional because only some brokers say which side initiated.
+ * There is deliberately no aggressor side. Neither supported broker publishes one —
+ * KIS's recent-execution endpoint reports time, price, and quantity, and Toss's
+ * reports the same three with a currency — so a member for it would be empty on
+ * every path in the library. A field that is always absent tells a reader the
+ * information might arrive one day, which is worse than not offering it.
  */
 struct TradePrint {
   Decimal64 price_;
   Decimal64 quantity_;
-  std::optional<OrderSide> aggressor_;
+  Currency currency_;
   std::optional<std::chrono::system_clock::time_point> exchange_time_;
 };
 

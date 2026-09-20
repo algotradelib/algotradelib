@@ -741,3 +741,25 @@ TEST_CASE("an order book verb exists only on a broker that publishes one") {
   // recorded in the pull-request report.
   SUCCEED("order book support is a compile-time capability");
 }
+
+TEST_CASE("market-data capabilities record what each broker actually offers") {
+  // Both publish a book, price bounds, and recent executions.
+  static_assert(BrokerCaps<kis::KisClient>::has_price_limits);
+  static_assert(BrokerCaps<tossinvest::TossClient>::has_price_limits);
+  static_assert(BrokerCaps<kis::KisClient>::has_trade_prints);
+  static_assert(BrokerCaps<tossinvest::TossClient>::has_trade_prints);
+
+  // Only Toss quotes a list in one request. Looping single quotes instead would
+  // wear the same signature with several times the request cost, so the absence is
+  // a compile error rather than an emulation.
+  static_assert(!BrokerCaps<kis::KisClient>::has_batch_prices);
+  static_assert(BrokerCaps<tossinvest::TossClient>::has_batch_prices);
+  static_assert(!BrokerCaps<kis::KisBlockingClient>::has_batch_prices);
+  static_assert(BrokerCaps<tossinvest::TossBlockingClient>::has_batch_prices);
+
+  // The in-memory broker offers only bars, which is what keeps the gates honest.
+  static_assert(!BrokerCaps<mock::MockClient>::has_price_limits);
+  static_assert(!BrokerCaps<mock::MockClient>::has_trade_prints);
+  static_assert(!BrokerCaps<mock::MockClient>::has_batch_prices);
+  SUCCEED("market-data support is a compile-time capability");
+}

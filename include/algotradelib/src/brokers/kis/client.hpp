@@ -217,6 +217,12 @@ public:
   /** Completion handler for one normalized order book. */
   using DepthHandler = net::any_completion_handler<void(Result<DepthSnapshot>)>;
 
+  /** Completion handler for one instrument's price bounds. */
+  using PriceLimitsHandler = net::any_completion_handler<void(Result<PriceLimits>)>;
+
+  /** Completion handler for recent executions. */
+  using TradesHandler = net::any_completion_handler<void(Result<std::vector<TradePrint>>)>;
+
   /** Completion handler for one normalized holdings snapshot. */
   using HoldingsHandler = net::any_completion_handler<void(Result<HoldingsSnapshot>)>;
 
@@ -277,6 +283,67 @@ public:
           self->strand_,
           [self, query = std::move(query), completion = std::move(completion)]() mutable {
             self->start_bars(std::move(query), std::move(completion));
+          }
+        );
+      },
+      token
+    );
+  }
+
+  /**
+   * Requests today's upper and lower price bound for one instrument.
+   *
+   * KIS reports both on its current-price inquiry rather than on an endpoint of
+   * their own, so this reads `stck_mxpr` and `stck_llam` from there.
+   */
+  template <typename CompletionToken>
+  auto async_price_limits(InstrumentId instrument, CompletionToken&& token) {
+    return net::async_initiate<CompletionToken, void(Result<PriceLimits>)>(
+      [self = shared_from_this(), instrument = std::move(instrument)](auto&& handler) mutable {
+        auto completion = PriceLimitsHandler(std::forward<decltype(handler)>(handler));
+        net::post(
+          self->strand_,
+          [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
+            self->start_market_read(
+              std::move(instrument),
+              "/uapi/domestic-stock/v1/quotations/inquire-price",
+              "FHKST01010100",
+              std::move(completion),
+              parse_price_limits
+            );
+          }
+        );
+      },
+      token
+    );
+  }
+
+  /**
+   * Requests recent executions for one instrument.
+   *
+   * KIS returns a fixed window on this endpoint rather than a requested count, so
+   * `count` trims what arrived instead of asking for less.
+   */
+  template <typename CompletionToken>
+  auto async_trades(InstrumentId instrument, int count, CompletionToken&& token) {
+    return net::async_initiate<CompletionToken, void(Result<std::vector<TradePrint>>)>(
+      [self = shared_from_this(), instrument = std::move(instrument), count](
+        auto&& handler
+      ) mutable {
+        auto completion = TradesHandler(std::forward<decltype(handler)>(handler));
+        net::post(
+          self->strand_,
+          [self, instrument = std::move(instrument), count, completion = std::move(completion)]()
+            mutable {
+            self->start_market_read(
+              std::move(instrument),
+              "/uapi/domestic-stock/v1/quotations/inquire-ccnl",
+              "FHKST01010300",
+              std::move(completion),
+              [count](InstrumentId subject, Result<network::HttpResponse> response) {
+                return parse_trades(std::move(subject), std::move(response), count);
+              }
+            );
           }
         );
       },
@@ -926,6 +993,222 @@ private:
       series.next_cursor_ = format_iso8601_utc(series.bars_.front().timestamp_);
     }
     deliver(std::move(operation->completion_), Result<BarSeries>(std::move(series)));
+  }
+
+  /**
+   * Issues one authenticated market-data GET for a single instrument.
+   *
+   * The single-instrument reads differ only in path, transaction id, and parser, so
+   * the validation, token handling, and traffic class live here once.
+   */
+  template <typename Handler, typename Parse>
+  void start_market_read(
+    InstrumentId instrument,
+    std::string path,
+    std::string transaction,
+    Handler completion,
+    Parse parse
+  ) {
+    using ResultType = decltype(parse(InstrumentId{}, Result<network::HttpResponse>(BrokerError{})));
+    if (instrument.country_ != Country::KR || !valid_domestic_symbol(instrument.symbol_)) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.broker_code_ = "invalid_instrument";
+      error.message_ = "KIS market data covers Korean equities addressed by product number";
+      deliver(std::move(completion), ResultType(std::move(error)));
+      return;
+    }
+
+    ensure_token(
+      TokenHandler(
+        [
+          self = shared_from_this(),
+          instrument = std::move(instrument),
+          path = std::move(path),
+          transaction = std::move(transaction),
+          completion = std::move(completion),
+          parse
+        ](std::optional<BrokerError> token_error) mutable {
+          if (token_error) {
+            self->deliver(std::move(completion), ResultType(std::move(*token_error)));
+            return;
+          }
+          network::HttpRequest request;
+          // Market data is the traffic the trading reserve holds back.
+          request.group_ = network::RateLimitGroup::MARKET_DATA;
+          request.method_ = http::verb::get;
+          request.target_ = path + "?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=" +
+            broker_detail::query_encode(instrument.symbol_);
+          request.headers_ = {
+            {"authorization", "Bearer " + self->token_.access_token_},
+            {"appkey", self->config_.key()},
+            {"appsecret", self->config_.secret()},
+            {"tr_id", transaction},
+            {"custtype", "P"},
+            {"content-type", "application/json; charset=utf-8"},
+          };
+          self->http_->async_request(
+            std::move(request),
+            [self, instrument = std::move(instrument), completion = std::move(completion), parse](
+              Result<network::HttpResponse> result
+            ) mutable {
+              self->deliver(
+                std::move(completion), parse(std::move(instrument), std::move(result))
+              );
+            }
+          );
+        }
+      )
+    );
+  }
+
+  /**
+   * Returns a market-data response's declared payload, or the error ending it.
+   *
+   * Applies the HTTP status check, the JSON parse, and KIS's own `rt_cd` before a
+   * parser looks at any field, so a declared failure is never read as data.
+   */
+  static Result<json::object> market_document(Result<network::HttpResponse> response) {
+    if (!response) {
+      return Result<json::object>(std::move(response.error()));
+    }
+    if (response.value().result_int() < 200 || response.value().result_int() >= 300) {
+      return Result<json::object>(broker_detail::http_error(response.value()));
+    }
+    BrokerError parse_error;
+    auto document = broker_detail::parse_object(response.value().body(), parse_error);
+    if (!document) {
+      return Result<json::object>(std::move(parse_error));
+    }
+    try {
+      if (auto declared = kis_declared_error(*document)) {
+        return Result<json::object>(std::move(*declared));
+      }
+    } catch (const std::exception& exception) {
+      BrokerError error;
+      error.category_ = ErrorCategory::PROTOCOL;
+      error.broker_code_ = "invalid_market_response";
+      error.message_ = exception.what();
+      return Result<json::object>(std::move(error));
+    }
+    return Result<json::object>(*document);
+  }
+
+  /**
+   * Normalizes KIS's price bounds from its current-price inquiry.
+   *
+   * KRX sets a limit on every listed equity, so both bounds are expected here; a
+   * blank or zero bound is reported as absent rather than as a bound of nothing.
+   */
+  static Result<PriceLimits> parse_price_limits(
+    InstrumentId instrument,
+    Result<network::HttpResponse> result
+  ) {
+    static_cast<void>(instrument);
+    auto document = market_document(std::move(result));
+    if (!document) {
+      return Result<PriceLimits>(std::move(document.error()));
+    }
+    try {
+      const auto output = document.value().if_contains("output");
+      if (!output || !output->is_object()) {
+        throw std::runtime_error("missing object field: output");
+      }
+      const auto& row = output->as_object();
+      PriceLimits limits;
+      limits.currency_ = Currency::krw();
+      limits.upper_ = positive_decimal(row, "stck_mxpr");
+      limits.lower_ = positive_decimal(row, "stck_llam");
+      return Result<PriceLimits>(std::move(limits));
+    } catch (const std::exception& exception) {
+      BrokerError error;
+      error.category_ = ErrorCategory::PROTOCOL;
+      error.broker_code_ = "invalid_price_limit_response";
+      error.message_ = exception.what();
+      return Result<PriceLimits>(std::move(error));
+    }
+  }
+
+  /** Reads a decimal that KIS leaves blank or zero when it has no value. */
+  static std::optional<Decimal64> positive_decimal(
+    const json::object& row,
+    std::string_view key
+  ) {
+    const auto value = row.if_contains(key);
+    if (!value || !value->is_string()) {
+      return std::nullopt;
+    }
+    const std::string text(value->as_string());
+    if (text.empty()) {
+      return std::nullopt;
+    }
+    const auto parsed = Decimal64::parse(text);
+    if (parsed.coefficient() == 0) {
+      return std::nullopt;
+    }
+    return parsed;
+  }
+
+  /**
+   * Normalizes KIS's recent executions, newest first as KIS sends them.
+   *
+   * KIS reports an execution's time as `HHMMSS` with no date, so the KST calendar
+   * day is supplied from the clock. A print is intraday by construction, so this is
+   * the day it happened on.
+   */
+  static Result<std::vector<TradePrint>> parse_trades(
+    InstrumentId instrument,
+    Result<network::HttpResponse> result,
+    int count
+  ) {
+    static_cast<void>(instrument);
+    auto document = market_document(std::move(result));
+    if (!document) {
+      return Result<std::vector<TradePrint>>(std::move(document.error()));
+    }
+    try {
+      const auto rows = document.value().if_contains("output");
+      if (!rows || !rows->is_array()) {
+        throw std::runtime_error("missing array field: output");
+      }
+      Date today{};
+      std::string ignored;
+      korea_calendar(std::chrono::system_clock::now(), today, ignored);
+      const auto date = compact_date(today);
+
+      std::vector<TradePrint> prints;
+      prints.reserve(rows->as_array().size());
+      for (const auto& value : rows->as_array()) {
+        if (!value.is_object()) {
+          throw std::runtime_error("execution entry is not an object");
+        }
+        const auto& row = value.as_object();
+        const auto time = broker_detail::json_string(row, "stck_cntg_hour");
+        // KIS pads a short window with blank rows rather than shortening it.
+        if (time.empty()) {
+          continue;
+        }
+        TradePrint print;
+        print.price_ = Decimal64::parse(broker_detail::json_string(row, "stck_prpr"));
+        print.quantity_ = Decimal64::parse(broker_detail::json_string(row, "cntg_vol"));
+        print.currency_ = Currency::krw();
+        print.exchange_time_ = korea_timestamp(date, time);
+        if (!print.exchange_time_) {
+          throw std::runtime_error("invalid execution time");
+        }
+        prints.push_back(std::move(print));
+        if (count > 0 && static_cast<int>(prints.size()) >= count) {
+          break;
+        }
+      }
+      return Result<std::vector<TradePrint>>(std::move(prints));
+    } catch (const std::exception& exception) {
+      BrokerError error;
+      error.category_ = ErrorCategory::PROTOCOL;
+      error.broker_code_ = "invalid_execution_response";
+      error.message_ = exception.what();
+      return Result<std::vector<TradePrint>>(std::move(error));
+    }
   }
 
   /** Validates the instrument and requests its book. */
@@ -2708,6 +2991,24 @@ public:
     return run<QuoteSnapshot>(
       [&](auto&& sink) { client_->async_quote(std::move(instrument), std::move(sink)); },
       "quote"
+    );
+  }
+
+  /** Returns today's upper and lower price bound. */
+  Result<PriceLimits> price_limits(InstrumentId instrument) {
+    return run<PriceLimits>(
+      [&](auto&& sink) { client_->async_price_limits(std::move(instrument), std::move(sink)); },
+      "price_limits"
+    );
+  }
+
+  /** Returns recent executions for one instrument. */
+  Result<std::vector<TradePrint>> trades(InstrumentId instrument, int count) {
+    return run<std::vector<TradePrint>>(
+      [&](auto&& sink) {
+        client_->async_trades(std::move(instrument), count, std::move(sink));
+      },
+      "trades"
     );
   }
 
