@@ -17,5 +17,12 @@ target_link_libraries(algotradelib-core-tests PRIVATE
     Catch2::Catch2WithMain
 )
 
+add_executable(algotradelib-broker-port-tests test-broker-port.cpp)
+target_link_libraries(algotradelib-broker-port-tests PRIVATE
+    algotradelib::algotradelib
+    Catch2::Catch2WithMain
+)
+
 include(Catch)
 catch_discover_tests(algotradelib-core-tests)
+catch_discover_tests(algotradelib-broker-port-tests)
