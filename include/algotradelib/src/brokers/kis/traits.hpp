@@ -280,6 +280,11 @@ struct BrokerTraits<kis::KisClient>
   /** This client completes through a completion token. */
   static constexpr bool blocking = false;
 
+  /** Returns this client's pacing statistics, or null when it is unpaced. */
+  static const network::RateLimitStats* rate_limit_stats(const Client& client) {
+    return client.rate_limit_stats();
+  }
+
   /** Forwards a quote request. */
   template <typename Token>
   static auto quote(Client& client, InstrumentId instrument, Token&& token) {
@@ -371,6 +376,11 @@ struct BrokerTraits<kis::KisBlockingClient>
 
   /** This client drives its own event loop and returns a result directly. */
   static constexpr bool blocking = true;
+
+  /** Returns this client's pacing statistics, or null when it is unpaced. */
+  static const network::RateLimitStats* rate_limit_stats(const Client& client) {
+    return client.rate_limit_stats();
+  }
 
   /** Returns a quote. */
   static Result<QuoteSnapshot> quote(Client& client, InstrumentId instrument) {

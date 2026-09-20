@@ -139,6 +139,20 @@ public:
   /** Returns the shared client pointer, for constructing a second session. */
   const std::shared_ptr<Client>& shared_client() const noexcept { return client_; }
 
+  /**
+   * Returns how this broker's connection has been paced, or null when unpaced.
+   *
+   * A runner reads this to tell whether it is asking for more capacity than it
+   * has: rising `delayed_` on a polling group while `TRADING` stays undelayed is
+   * the reservation doing its job, and rising `shed_` means the queue is full.
+   *
+   * The counters live on the client's strand, so read them from a completion
+   * handler; on a blocking session any moment between calls is safe.
+   */
+  const network::RateLimitStats* rate_limit_stats() const {
+    return Traits::rate_limit_stats(*client_);
+  }
+
   /** Cancels transport work and queued operations on the bound client. */
   void close() { client_->close(); }
 
@@ -470,6 +484,20 @@ public:
 
   /** Returns the concrete client. */
   const Client& client() const noexcept { return *client_; }
+
+  /**
+   * Returns how this broker's connection has been paced, or null when unpaced.
+   *
+   * A runner reads this to tell whether it is asking for more capacity than it
+   * has: rising `delayed_` on a polling group while `TRADING` stays undelayed is
+   * the reservation doing its job, and rising `shed_` means the queue is full.
+   *
+   * The counters live on the client's strand, so read them from a completion
+   * handler; on a blocking session any moment between calls is safe.
+   */
+  const network::RateLimitStats* rate_limit_stats() const {
+    return Traits::rate_limit_stats(*client_);
+  }
 
   /** Returns the current normalized quote. */
   Result<QuoteSnapshot> quote(InstrumentId instrument) {

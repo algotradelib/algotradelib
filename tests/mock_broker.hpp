@@ -445,6 +445,9 @@ struct BrokerTraits<mock::MockClient> {
     return Result<HistoryQuery>(std::move(selector));
   }
 
+  /** The in-memory broker issues no network requests and is never paced. */
+  static const network::RateLimitStats* rate_limit_stats(const Client&) { return nullptr; }
+
   /** Forwards a quote request. */
   template <typename Token>
   static auto quote(Client& client, InstrumentId instrument, Token&& token) {
