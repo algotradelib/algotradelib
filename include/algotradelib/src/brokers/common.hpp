@@ -14,7 +14,13 @@
 
 namespace algotradelib::broker_detail {
 
-/** Reads a whole-number header, or nothing when it is absent or malformed. */
+/**
+ * Reads a whole-number header, or nothing when it is absent or malformed.
+ *
+ * Which headers carry meaning is a broker's own contract, so each adapter reads
+ * the ones its documentation promises. Only the parsing lives here, which is what
+ * keeps a new broker from having to restate this guard.
+ */
 inline std::optional<std::int64_t> integer_header(
   const network::HttpResponse& response,
   std::string_view name
@@ -32,29 +38,7 @@ inline std::optional<std::int64_t> integer_header(
   return number;
 }
 
-inline std::optional<std::chrono::seconds> retry_after(const network::HttpResponse& response) {
-  const auto seconds = integer_header(response, "Retry-After");
-  if (!seconds) {
-    return std::nullopt;
-  }
-  return std::chrono::seconds(*seconds);
-}
 
-/**
- * Reads the allowance a broker says it is enforcing, in requests per second.
- *
- * Toss documents `X-RateLimit-Limit` as the burst capacity per second on its
- * rate-limit response. It is treated as observed-when-present and never
- * required, because the header is documented on the refusal and not promised on
- * a successful response.
- */
-inline std::optional<int> reported_rate_limit(const network::HttpResponse& response) {
-  const auto limit = integer_header(response, "X-RateLimit-Limit");
-  if (!limit || *limit < 1 || *limit > std::numeric_limits<int>::max()) {
-    return std::nullopt;
-  }
-  return static_cast<int>(*limit);
-}
 
 inline BrokerError http_error(const network::HttpResponse& response) {
   BrokerError error;
@@ -63,10 +47,6 @@ inline BrokerError http_error(const network::HttpResponse& response) {
     ErrorCategory::RATE_LIMIT :
     ErrorCategory::HTTP;
   error.message_ = response.body();
-  if (error.category_ == ErrorCategory::RATE_LIMIT) {
-    error.retry_after_ = retry_after(response);
-    error.rate_limit_ = reported_rate_limit(response);
-  }
   return error;
 }
 

@@ -291,7 +291,13 @@ kis::KisBlockingClient client(tls, std::move(config), options);
 is the sustained rate, and `trading_reserve_` is the part of the burst that only
 order traffic may spend. The defaults are deliberately conservative: KIS's per-key
 allowance is an account-level portal setting its documentation does not state, so
-the library cannot assert a number.
+the library cannot assert a number. KIS does note that demo accounts are metered
+more tightly than live ones, again without stating either figure.
+
+**Leaving `rate_limit_` unset issues requests unpaced**, which is the default. Not
+every endpoint is metered, and one that is not should not be slowed down; an
+unpaced client also keeps strict arrival order, exactly as it did before pacing
+existed.
 
 ### Traffic classes
 
@@ -315,9 +321,10 @@ Two consequences are worth knowing:
 - `AUTH` outranks `TRADING` because every request waits behind a token refresh, a
   cancellation included. It cannot flood, because refreshes are coalesced.
 
-KIS's amendable-order inquiry is `ACCOUNT` even though KIS requires it before an
-amendment. It outranks polling, but it may not spend the reserve, because a
-strategy can equally well poll it continuously.
+KIS's amendable-order inquiry is `ACCOUNT`, not `TRADING`. KIS recommends it before
+an amendment but does not require it: a caller tracking its own working orders
+already holds the amendable quantity. It outranks polling, and the reserve stays
+held for the amendment itself.
 
 ### How the two brokers report a refusal
 
@@ -325,21 +332,33 @@ They differ enough that the same handling would be wrong for one of them.
 
 **Toss** answers HTTP 429 and documents a token bucket, publishing
 `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, and
-`Retry-After` on the refusal. The reported allowance is adopted directly, because
-it is the number the broker is enforcing. `BrokerError::rate_limit_` carries it.
+`Retry-After` on the refusal. A stated allowance is adopted directly, because it is
+the number the broker is enforcing; `BrokerError::rate_limit_` carries it. The
+headers are documented *on the refusal* rather than promised, so an absent one
+means waiting rather than guessing.
 
 **KIS** answers HTTP 200 with a message code in the body — no 429, no
 `Retry-After`, no allowance — and meters in two independent layers its
 documentation insists not be confused:
 
-| Layer | Signal | Scope | Reaction |
-| --- | --- | --- | --- |
-| 원장 (ledger) | `EGW00215` | per endpoint, shared with all customers | wait; the budget was not the problem |
-| 개인 유량 | the same phrase without "원장" | per application key | halve the rate |
+| Layer | Code | Scope |
+| --- | --- | --- |
+| 개인 유량 | `EGW00201` | this application key's own per-second allowance |
+| 원장 (ledger) | `EGW00215` | one endpoint's cap, shared with every other customer |
+
+Only `EGW00215` appears in the API workbook; `EGW00201` is documented in KIS's
+example repository, which is worth consulting wherever the workbook is silent.
+`KisRateLimitLayer` exposes the distinction, because it tells a caller whether the
+limit reached was its own or one it shares and cannot influence.
+
+Since KIS states no allowance with either, both hold admission and count the
+refusal, and **the configured budget is left exactly as set**. Reducing a stated
+budget from a guess would be the same silent downgrade this library refuses
+everywhere else; rising `broker_rejections_` is the signal to lower it.
 
 `EGW00317` is deliberately not treated as a rate limit: it reports a scheduled
-trading-control window, and backing off would misreport a closed window as
-congestion.
+trading-control window, and waiting it out as congestion would misreport a closed
+window.
 
 ### Reading the counters
 

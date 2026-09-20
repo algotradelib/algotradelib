@@ -1430,6 +1430,28 @@ TEST_CASE(
     REQUIRE(result.error().message_ == "insufficient balance");
   }
 
+  SECTION("a Toss rate-limit refusal carries both hints it publishes") {
+    // Toss reports its allowance and its retry delay as headers, and the hints are
+    // read where the refusal is built, so no operation can omit one of them.
+    network::HttpResponse response(http::status::too_many_requests, 11);
+    response.set(http::field::content_type, "application/json");
+    response.set("Retry-After", "2");
+    response.set("X-RateLimit-Limit", "5");
+    response.body() = R"({"error":{"code":"rate-limit-exceeded","message":"slow down"}})";
+    response.prepare_payload();
+
+    auto result = tossinvest::TossClientTestAccess::parse_order_ack(
+      Result<network::HttpResponse>(std::move(response))
+    );
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().category_ == ErrorCategory::RATE_LIMIT);
+    REQUIRE(result.error().broker_code_ == "rate-limit-exceeded");
+    REQUIRE(result.error().retry_after_.has_value());
+    REQUIRE(*result.error().retry_after_ == std::chrono::seconds(2));
+    REQUIRE(result.error().rate_limit_.has_value());
+    REQUIRE(*result.error().rate_limit_ == 5);
+  }
+
   SECTION("a rate limit declared in the response body is categorized as one") {
     // KIS reports a rate limit as a message code in an HTTP 200 body, with no
     // Retry-After header, so it has to be recognized while parsing or it reaches
@@ -1445,7 +1467,9 @@ TEST_CASE(
     REQUIRE(ledger.error().broker_code_ == "EGW00215");
 
     auto personal = kis::KisClientTestAccess::parse_order_ack(
-      json_response(R"({"rt_cd":"1","msg_cd":"","msg1":"초당 거래건수를 초과하였습니다."})")
+      json_response(
+        R"({"rt_cd":"1","msg_cd":"EGW00201","msg1":"초당 거래건수를 초과하였습니다."})"
+      )
     );
     REQUIRE_FALSE(personal);
     REQUIRE(personal.error().category_ == ErrorCategory::RATE_LIMIT);

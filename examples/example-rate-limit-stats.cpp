@@ -103,10 +103,9 @@ void print_corrections(const RateLimitBudget& budget) {
   std::cout << "  broker reported its allowance: adopted " << reported.budget().per_second_
     << "/s\n";
 
-  algotradelib::network::RateLimitController silent(budget);
-  silent.back_off(std::chrono::seconds(1));
-  std::cout << "  broker reported no allowance: halved to " << silent.budget().per_second_
-    << "/s\n";
+  std::cout << "  broker reported no allowance: allowance unchanged, admission held\n";
+  std::cout << "    (KIS states none, so its budget stays as configured and its"
+    << " refusals are counted)\n";
 }
 
 /** Walks a minute of polling to show the sustained rate the budget produces. */

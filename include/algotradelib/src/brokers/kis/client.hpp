@@ -115,8 +115,9 @@ struct KisHistoryRange {
  * that they must not be confused: "원장 언급이 없는 '초당 거래건수를 초과하였습니다.'
  * 메시지는 개인 유량 초과 시 발생하는 메시지로 착오 없으시길 바랍니다."
  *
- * Both are rate limits, but they call for different responses, which is why the
- * layer is preserved rather than collapsed into one category.
+ * The layer is preserved rather than collapsed into one category because it tells
+ * a caller whose limit was reached: its own, or one it shares with every other
+ * customer and can do nothing about.
  */
 enum class KisRateLimitLayer {
   /** Not a rate limit. */
@@ -125,43 +126,40 @@ enum class KisRateLimitLayer {
    * The ledger's own per-endpoint cap, shared across all customers.
    *
    * Documented for 주식잔고조회 and ETF 현재가 호가 as 초당 120 TPS "개인 고객 유량
-   * 무관하게". Pacing this client's own traffic cannot prevent it, because the
-   * capacity is not this client's to spend; the documented remedy is to retry.
+   * 무관하게". The capacity is not this client's to spend, so no budget it could
+   * configure would have avoided the refusal; the documented remedy is to retry.
    */
   LEDGER,
-  /**
-   * This application key's own per-second allowance.
-   *
-   * This is the layer a request pacer governs: exceeding it means the client's
-   * own budget is mis-sized.
-   */
+  /** This application key's own per-second allowance was exceeded. */
   PERSONAL,
 };
 
 /**
  * Classifies a declared KIS failure as one of the two rate-limit layers.
  *
- * `EGW00215` names the ledger layer explicitly and is matched by code. The
- * personal layer has no documented code, so it is matched on the exact phrase
- * KIS documents, and only in the absence of the ledger's own "원장" wording. That
- * asymmetry is deliberate: a missed classification loses pacing, while a false
- * one would make the library back off from a failure that is not congestion.
+ * Matching is by message code only: two integer-width string comparisons on a path
+ * that is already an error, and nothing that depends on the broker's wording or
+ * locale.
  *
- * `EGW00317` is deliberately not a rate limit. It reports a scheduled
- * trading-control window — 해외주식 상품기본정보 between 08:59 and 09:31 — during
- * which the endpoint is unavailable. Backing off would misreport a closed window
- * as congestion.
+ * `EGW00201` is the personal layer and `EGW00215` the ledger layer. Only
+ * `EGW00215` appears in the API workbook; `EGW00201` is documented in KIS's
+ * example repository as "초당 거래건수를 초과하였습니다", which is why that repository
+ * is worth consulting where the workbook is silent.
+ *
+ * An unrecognized code stays unclassified and therefore reaches the caller as an
+ * ordinary protocol failure. That is the safe direction: a missed classification
+ * costs pacing, while a false one would make the library wait out a failure that
+ * is not congestion at all.
+ *
+ * `EGW00317` is deliberately excluded. It reports a scheduled trading-control
+ * window — 해외주식 상품기본정보 between 08:59 and 09:31 — during which the endpoint
+ * is unavailable; treating it as congestion would misreport a closed window.
  */
-inline KisRateLimitLayer kis_rate_limit_layer(std::string_view code, std::string_view message) {
-  if (code == "EGW00215") {
-    return KisRateLimitLayer::LEDGER;
+inline KisRateLimitLayer kis_rate_limit_layer(std::string_view code) {
+  if (code == "EGW00201") {
+    return KisRateLimitLayer::PERSONAL;
   }
-  if (message.find("초당 거래건수를 초과") == std::string_view::npos) {
-    return KisRateLimitLayer::NONE;
-  }
-  return message.find("원장") == std::string_view::npos ?
-    KisRateLimitLayer::PERSONAL :
-    KisRateLimitLayer::LEDGER;
+  return code == "EGW00215" ? KisRateLimitLayer::LEDGER : KisRateLimitLayer::NONE;
 }
 
 /** Persistent asynchronous KIS client with coalesced OAuth refresh. */
@@ -1207,7 +1205,7 @@ private:
     // KIS reports a rate limit in the response body rather than as HTTP 429 with
     // a Retry-After header, so it has to be recognized here or it reaches the
     // caller as an ordinary protocol failure.
-    if (kis_rate_limit_layer(error.broker_code_, error.message_) != KisRateLimitLayer::NONE) {
+    if (kis_rate_limit_layer(error.broker_code_) != KisRateLimitLayer::NONE) {
       error.category_ = ErrorCategory::RATE_LIMIT;
     }
     return error;
@@ -1406,8 +1404,10 @@ private:
     bool continuation
   ) {
     network::HttpRequest request;
-    // KIS requires this inquiry before an amendment, so it ranks above polling; it
-    // stays outside the reserve because a strategy may also poll it continuously.
+    // KIS recommends this inquiry before an amendment, but does not require it: a
+    // caller tracking its own working orders already holds the amendable quantity,
+    // and KIS's own examples amend without re-reading it. It ranks above polling and
+    // stays outside the reserve, which is held for the amendment itself.
     request.group_ = network::RateLimitGroup::ACCOUNT;
     request.method_ = http::verb::get;
     request.target_ =
@@ -2002,18 +2002,18 @@ private:
     if (!limiter) {
       return;
     }
-    const auto retry = error.retry_after_ ?
-      std::chrono::duration_cast<network::RateLimitController::Duration>(*error.retry_after_) :
-      std::chrono::duration_cast<network::RateLimitController::Duration>(std::chrono::seconds(1));
-    if (error.rate_limit_) {
-      limiter->shrink(*error.rate_limit_, *error.rate_limit_, retry);
-      return;
-    }
-    if (kis_rate_limit_layer(error.broker_code_, error.message_) == KisRateLimitLayer::LEDGER) {
-      limiter->hold(retry);
-      return;
-    }
-    limiter->back_off(retry);
+
+    // KIS states no allowance with a refusal, of either layer, so there is nothing
+    // to correct the budget *to*. Admission is held and the refusal is counted; the
+    // configured budget is left exactly as the caller set it, because reducing a
+    // stated budget from a guess is the kind of silent downgrade this library
+    // refuses everywhere else. A caller watching `broker_rejections_` climb is being
+    // told to lower it.
+    limiter->hold(
+      error.retry_after_ ?
+        std::chrono::duration_cast<network::RateLimitController::Duration>(*error.retry_after_) :
+        std::chrono::duration_cast<network::RateLimitController::Duration>(std::chrono::seconds(1))
+    );
   }
 
   void complete_order_ack(OrderAckHandler handler, Result<KisOrderAck> result) {

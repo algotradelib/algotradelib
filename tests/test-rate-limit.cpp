@@ -1,4 +1,5 @@
 #include <algotradelib/kis>
+#include <algotradelib/tossinvest>
 #include <algotradelib/src/network/rate_limit.hpp>
 
 #include "local_https_server.hpp"
@@ -247,32 +248,20 @@ TEST_CASE("the KIS rate-limit classification table covers both layers") {
   using kis::KisRateLimitLayer;
   using kis::kis_rate_limit_layer;
 
-  // The ledger's own per-endpoint cap, named by code.
-  REQUIRE(
-    kis_rate_limit_layer("EGW00215", "원장에서 허용 가능한 초당 거래건수를 초과하였습니다.") ==
-    KisRateLimitLayer::LEDGER
-  );
+  // This key's own per-second allowance. Documented in KIS's example repository
+  // rather than in the API workbook, which carries only the ledger code.
+  REQUIRE(kis_rate_limit_layer("EGW00201") == KisRateLimitLayer::PERSONAL);
 
-  // The same shortage without the ledger's wording is this key's own allowance.
-  REQUIRE(
-    kis_rate_limit_layer("", "초당 거래건수를 초과하였습니다.") == KisRateLimitLayer::PERSONAL
-  );
+  // The ledger's per-endpoint cap, shared with every other customer.
+  REQUIRE(kis_rate_limit_layer("EGW00215") == KisRateLimitLayer::LEDGER);
 
-  // The ledger wording alone is enough even with no code.
-  REQUIRE(
-    kis_rate_limit_layer("", "원장에서 허용 가능한 초당 거래건수를 초과하였습니다.") ==
-    KisRateLimitLayer::LEDGER
-  );
+  // A scheduled trading-control window is not congestion and must not be waited out
+  // as though it were.
+  REQUIRE(kis_rate_limit_layer("EGW00317") == KisRateLimitLayer::NONE);
 
-  // A scheduled trading-control window is not congestion and must not back off.
-  REQUIRE(
-    kis_rate_limit_layer("EGW00317", "09:00 ~ 09:30 시간 동안에는 조회하실 수 없습니다.") ==
-    KisRateLimitLayer::NONE
-  );
-
-  // An ordinary declared failure stays unclassified.
-  REQUIRE(kis_rate_limit_layer("APBK0013", "주문 전송 완료 되었습니다.") == KisRateLimitLayer::NONE);
-  REQUIRE(kis_rate_limit_layer("", "") == KisRateLimitLayer::NONE);
+  // An ordinary declared failure, and an absent code, stay unclassified.
+  REQUIRE(kis_rate_limit_layer("APBK0013") == KisRateLimitLayer::NONE);
+  REQUIRE(kis_rate_limit_layer("") == KisRateLimitLayer::NONE);
 }
 
 
@@ -422,42 +411,81 @@ TEST_CASE(
   REQUIRE(response->result_int() == 429);
   REQUIRE(server.requestCount("/rate-limited") == 1);
 
-  // The transport surfaces the refusal; the broker adapter classifies it.
+  // The transport surfaces the refusal and says only what HTTP says; which headers
+  // carry meaning is the broker's contract, so the broker reads them.
   auto error = broker_detail::http_error(*response);
   REQUIRE(error.category_ == ErrorCategory::RATE_LIMIT);
-  REQUIRE(error.retry_after_.has_value());
-  REQUIRE(*error.retry_after_ == std::chrono::seconds(1));
-  REQUIRE(error.rate_limit_.has_value());
-  REQUIRE(*error.rate_limit_ == 3);
+  REQUIRE_FALSE(error.retry_after_.has_value());
+
+  const auto delay = tossinvest::retry_after(*response);
+  REQUIRE(delay.has_value());
+  REQUIRE(*delay == std::chrono::seconds(1));
+
+  const auto allowance = tossinvest::reported_rate_limit(*response);
+  REQUIRE(allowance.has_value());
+  REQUIRE(*allowance == 3);
 }
 
-TEST_CASE("a reported allowance corrects the pacer, an unreported one halves it") {
+TEST_CASE("an unspecified budget leaves the transport entirely unpaced") {
+  test::LocalHttpsServer server;
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+
+  // No budget: not every API is metered, and one that is not must not be paced.
+  network::HttpClientOptions options;
+  REQUIRE_FALSE(options.rate_limit_.has_value());
+  auto client = std::make_shared<network::AsyncHttpClient>(
+    ioc.get_executor(), context, "localhost", server.port(), options
+  );
+
+  REQUIRE(client->rate_limits() == nullptr);
+
+  int completed = 0;
+  for (const std::string target : {"/a", "/b", "/c", "/d", "/e", "/f"}) {
+    network::HttpRequest request;
+    request.target_ = target;
+    request.group_ = RateLimitGroup::MARKET_DATA;
+    client->async_request(std::move(request), [&completed](Result<network::HttpResponse> result) {
+      REQUIRE(result);
+      ++completed;
+    });
+  }
+
+  const auto began = std::chrono::steady_clock::now();
+  ioc.run();
+  const auto elapsed = std::chrono::steady_clock::now() - began;
+
+  // Six requests that a budget would have spaced out go straight through.
+  REQUIRE(completed == 6);
+  REQUIRE(elapsed < std::chrono::milliseconds(500));
+  REQUIRE(server.connectionCount() == 1);
+}
+
+TEST_CASE("a stated allowance is adopted and an unstated one is waited out") {
   network::RateLimitController controller(RateLimitBudget{8, 8, 2});
   REQUIRE(controller.budget().per_second_ == 8);
   REQUIRE(controller.stats().broker_rejections_ == 0);
 
-  // A broker that names its allowance is believed.
+  // A broker that states its allowance is believed over the configured one.
   controller.shrink(3, 3, std::chrono::milliseconds(1));
   REQUIRE(controller.budget().burst_ == 3);
   REQUIRE(controller.budget().per_second_ == 3);
   REQUIRE(controller.budget().trading_reserve_ == 2);
   REQUIRE(controller.stats().broker_rejections_ == 1);
 
-  // A broker that names none is backed off from, halving each time.
-  controller.back_off(std::chrono::milliseconds(1));
-  REQUIRE(controller.budget().per_second_ == 1);
+  // A stated allowance below the reserve keeps the reserve usable.
+  controller.shrink(1, 1, std::chrono::milliseconds(1));
   REQUIRE(controller.budget().burst_ == 1);
   REQUIRE(controller.budget().trading_reserve_ == 0);
-  REQUIRE(controller.stats().broker_rejections_ == 2);
+  REQUIRE(usable_burst(controller.budget(), RateLimitGroup::MARKET_DATA) == 1);
 
-  // Backing off never reaches zero, which would stop the client permanently.
-  controller.back_off(std::chrono::milliseconds(1));
-  REQUIRE(controller.budget().per_second_ == 1);
-
-  // A hold leaves the allowance alone; the capacity was never this client's.
+  // A refusal that states nothing is waited out, and the configured budget stands.
+  // Reducing a stated budget from a guess would be a silent downgrade.
   network::RateLimitController shared(RateLimitBudget{8, 8, 2});
   shared.hold(std::chrono::milliseconds(1));
   REQUIRE(shared.budget().per_second_ == 8);
+  REQUIRE(shared.budget().burst_ == 8);
   REQUIRE(shared.stats().broker_rejections_ == 1);
 }
 

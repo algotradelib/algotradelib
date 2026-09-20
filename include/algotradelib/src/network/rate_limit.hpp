@@ -394,32 +394,15 @@ public:
   /**
    * Shrinks the allowance to what the broker reported and then holds.
    *
-   * For a refusal that means the configured budget was simply larger than the
-   * broker's. A reported allowance is the best correction available, because it
-   * is the number the broker is actually enforcing.
+   * Only ever called with a number a broker actually stated. This module applies
+   * allowances; it does not invent them. A broker that reports no allowance is
+   * handled by `hold()`, and deciding what to do about a budget that keeps being
+   * refused belongs to whoever configured it, not to the transport.
    */
   void shrink(int burst, int per_second, Duration retry) {
     ++stats_.broker_rejections_;
     apply_budget(burst, per_second);
     bucket_.observe_limit(RateLimitBucket::ClockType::now(), burst, per_second, retry);
-  }
-
-  /**
-   * Halves the sustained rate and holds, for a refusal with no reported allowance.
-   *
-   * KIS reports no allowance with a rate-limit refusal, so there is nothing to
-   * correct *to*. Halving is a heuristic, named as one: it converges downward
-   * quickly without ever reaching zero, and a caller who knows the real number
-   * should configure it instead of relying on this.
-   */
-  void back_off(Duration retry) {
-    ++stats_.broker_rejections_;
-    const int reduced = budget_.per_second_ > 1 ? budget_.per_second_ / 2 : 1;
-    const int burst = budget_.burst_ > reduced ? reduced : budget_.burst_;
-    apply_budget(burst > 0 ? burst : 1, reduced);
-    bucket_.observe_limit(
-      RateLimitBucket::ClockType::now(), budget_.burst_, budget_.per_second_, retry
-    );
   }
 
   /** Returns the allowance currently in force. */

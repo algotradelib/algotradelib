@@ -11,6 +11,7 @@
 #include <boost/asio/strand.hpp>
 
 #include <cstdint>
+#include <limits>
 #include <cstdio>
 #include <deque>
 #include <memory>
@@ -73,6 +74,37 @@ struct TossAmendment {
   std::optional<Decimal64> price_;
   bool confirm_high_value_{false};
 };
+
+/**
+ * Reads the retry delay Toss publishes with a rate-limit refusal.
+ *
+ * `Retry-After` is documented on Toss's `429` response. It is read here rather
+ * than in shared broker code because which headers carry meaning is each
+ * broker's own contract: KIS publishes neither this one nor any equivalent, and a
+ * future broker will publish its own set.
+ */
+inline std::optional<std::chrono::seconds> retry_after(const network::HttpResponse& response) {
+  const auto seconds = broker_detail::integer_header(response, "Retry-After");
+  if (!seconds) {
+    return std::nullopt;
+  }
+  return std::chrono::seconds(*seconds);
+}
+
+/**
+ * Reads the allowance Toss says it is enforcing, in requests per second.
+ *
+ * Toss documents `X-RateLimit-Limit` as the burst capacity per second on the same
+ * refusal. It is observed when present and never required, because the header is
+ * documented on the refusal rather than promised on a successful response.
+ */
+inline std::optional<int> reported_rate_limit(const network::HttpResponse& response) {
+  const auto limit = broker_detail::integer_header(response, "X-RateLimit-Limit");
+  if (!limit || *limit < 1 || *limit > std::numeric_limits<int>::max()) {
+    return std::nullopt;
+  }
+  return static_cast<int>(*limit);
+}
 
 /** Persistent asynchronous Toss Securities client with coalesced OAuth refresh. */
 class TossClient : public std::enable_shared_from_this<TossClient> {
@@ -448,7 +480,7 @@ private:
       if (!document) {
         failure = std::move(parse_error);
       } else if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-        failure = toss_error(*document, result.value().result_int());
+        failure = toss_error(result.value(), *document);
         failure->category_ = ErrorCategory::AUTHENTICATION;
       } else {
         try {
@@ -565,8 +597,7 @@ private:
       return Result<QuoteSnapshot>(std::move(parse_error));
     }
     if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-      auto error = toss_error(*document, result.value().result_int());
-      error.retry_after_ = broker_detail::retry_after(result.value());
+      auto error = toss_error(result.value(), *document);
       return Result<QuoteSnapshot>(std::move(error));
     }
     try {
@@ -614,8 +645,7 @@ private:
       return Result<std::vector<TossAccount>>(std::move(parse_error));
     }
     if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-      auto error = toss_error(*document, result.value().result_int());
-      error.retry_after_ = broker_detail::retry_after(result.value());
+      auto error = toss_error(result.value(), *document);
       return Result<std::vector<TossAccount>>(std::move(error));
     }
     try {
@@ -662,8 +692,7 @@ private:
       return Result<HoldingsSnapshot>(std::move(parse_error));
     }
     if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-      auto error = toss_error(*document, result.value().result_int());
-      error.retry_after_ = broker_detail::retry_after(result.value());
+      auto error = toss_error(result.value(), *document);
       return Result<HoldingsSnapshot>(std::move(error));
     }
     try {
@@ -794,10 +823,17 @@ private:
     }
   }
 
-  static BrokerError toss_error(const json::object& document, int status = 0) {
+  static BrokerError toss_error(const network::HttpResponse& response, const json::object& document) {
+    const int status = response.result_int();
     BrokerError result;
     result.http_status_ = status;
     result.category_ = status == 429 ? ErrorCategory::RATE_LIMIT : ErrorCategory::PROTOCOL;
+    if (result.category_ == ErrorCategory::RATE_LIMIT) {
+      // Both hints Toss documents on a refusal, read in the one place a refusal is
+      // built so no call site can forget one of them.
+      result.retry_after_ = retry_after(response);
+      result.rate_limit_ = reported_rate_limit(response);
+    }
     const auto error = document.if_contains("error");
     if (!error || !error->is_object()) {
       result.message_ = "Toss response has no error object";
@@ -1406,8 +1442,7 @@ private:
       return Result<OrderAck>(std::move(parse_error));
     }
     if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-      auto error = toss_error(*document, result.value().result_int());
-      error.retry_after_ = broker_detail::retry_after(result.value());
+      auto error = toss_error(result.value(), *document);
       return Result<OrderAck>(std::move(error));
     }
     try {
@@ -1444,8 +1479,7 @@ private:
       return Result<OrderPage>(std::move(parse_error));
     }
     if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-      auto error = toss_error(*document, result.value().result_int());
-      error.retry_after_ = broker_detail::retry_after(result.value());
+      auto error = toss_error(result.value(), *document);
       return Result<OrderPage>(std::move(error));
     }
     try {
@@ -1492,8 +1526,7 @@ private:
       return Result<OrderSnapshot>(std::move(parse_error));
     }
     if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-      auto error = toss_error(*document, result.value().result_int());
-      error.retry_after_ = broker_detail::retry_after(result.value());
+      auto error = toss_error(result.value(), *document);
       return Result<OrderSnapshot>(std::move(error));
     }
     try {
@@ -1768,7 +1801,10 @@ private:
       limiter->shrink(*error.rate_limit_, *error.rate_limit_, retry);
       return;
     }
-    limiter->back_off(retry);
+
+    // The headers are documented on the refusal rather than promised on it, so an
+    // absent allowance means waiting rather than guessing a smaller one.
+    limiter->hold(retry);
   }
 
   void complete_order_ack(OrderAckHandler handler, Result<OrderAck> result) {
