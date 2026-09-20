@@ -162,6 +162,13 @@ struct KisClientTestAccess {
     return KisClient::parse_trades(InstrumentId{}, std::move(response), count);
   }
 
+  static Result<Instrument> parse_instrument(
+    InstrumentId requested,
+    Result<network::HttpResponse> response
+  ) {
+    return KisClient::parse_instrument(std::move(requested), std::move(response));
+  }
+
   static std::optional<BrokerError> parse_calendar_page(
     Result<network::HttpResponse> response,
     TradingCalendar& calendar,
@@ -279,6 +286,13 @@ struct TossClientTestAccess {
     Result<network::HttpResponse> response
   ) {
     return TossClient::parse_prices(requested, std::move(response));
+  }
+
+  static Result<Instrument> parse_instrument(
+    InstrumentId requested,
+    Result<network::HttpResponse> response
+  ) {
+    return TossClient::parse_instrument(std::move(requested), std::move(response));
   }
 
   static Result<TradingCalendar> parse_calendar(
@@ -2883,5 +2897,126 @@ TEST_CASE("both brokers' calendars normalize to the same trading days") {
     );
     REQUIRE_FALSE(result);
     REQUIRE(result.error().broker_code_ == "invalid_calendar_response");
+  }
+}
+
+TEST_CASE("instrument reference data normalizes from both brokers") {
+  const auto hynix = InstrumentId{Country::KR, Venue::KRX, "000660"};
+
+  SECTION("Toss reports a rich record and the caller's identity survives") {
+    auto result = tossinvest::TossClientTestAccess::parse_instrument(
+      hynix,
+      json_response(
+        R"({"result":[{"symbol":"000660","name":"SK하이닉스","englishName":"SKhynix",)"
+        R"("isinCode":"KR7000660001","market":"KOSPI","securityType":"STOCK",)"
+        R"("isCommonShare":true,"status":"ACTIVE","currency":"KRW",)"
+        R"("listDate":"1996-12-26","delistDate":null,"sharesOutstanding":"728002365"}]})"
+      )
+    );
+    REQUIRE(result);
+    const auto& instrument = result.value();
+
+    // The venue the caller stated survives; it is not rebuilt from the symbol.
+    REQUIRE(instrument.id_.venue_ == Venue::KRX);
+    REQUIRE(instrument.name_ == "SK하이닉스");
+    REQUIRE(instrument.isin_ == "KR7000660001");
+    REQUIRE(instrument.segment_.known_ == MarketSegment::Known::KOSPI);
+    REQUIRE(instrument.type_ == SecurityType::STOCK);
+    REQUIRE(instrument.status_ == InstrumentStatus::ACTIVE);
+    REQUIRE(instrument.common_share_);
+    REQUIRE(instrument.listed_on_ == Date{1996, 12, 26});
+    REQUIRE_FALSE(instrument.delisted_on_.has_value());
+    REQUIRE(*instrument.shares_outstanding_ == Decimal64::parse("728002365"));
+
+    // The grid is the library's own, because no broker publishes tick size.
+    REQUIRE_FALSE(instrument.price_rule_.bands_.empty());
+    REQUIRE(instrument.price_rule_.tick_at(Decimal64::parse("70000"))->str() == "100");
+  }
+
+  SECTION("an unfamiliar Toss security type stays unknown rather than nearby") {
+    auto result = tossinvest::TossClientTestAccess::parse_instrument(
+      hynix,
+      json_response(
+        R"({"result":[{"symbol":"000660","name":"x","englishName":"x","isinCode":"x",)"
+        R"("market":"KR_ETC","securityType":"SOMETHING_NEW","status":"ACTIVE",)"
+        R"("currency":"KRW"}]})"
+      )
+    );
+    REQUIRE(result);
+    REQUIRE(result.value().type_ == SecurityType::UNKNOWN);
+
+    // And the unfamiliar market segment is preserved rather than discarded.
+    REQUIRE(result.value().segment_.other_.view() == "KR_ETC");
+  }
+
+  SECTION("KIS reports a padded product number, so the symbol is not parsed from it") {
+    // KIS answers with pdno 00000A000660 for 000660. Parsing a symbol back out would
+    // be inventing a rule KIS has not stated, so the caller's identity is kept.
+    auto result = kis::KisClientTestAccess::parse_instrument(
+      hynix,
+      json_response(
+        R"({"rt_cd":"0","msg_cd":"MCA00000","output":{"pdno":"00000A000660",)"
+        R"("prdt_type_cd":"300","mket_id_cd":"STK","scty_grp_id_cd":"ST",)"
+        R"("std_pdno":"KR7000660001","lstg_stqt":"728002365",)"
+        R"("scts_mket_lstg_dt":"19961226","scts_mket_lstg_abol_dt":"",)"
+        R"("kosdaq_mket_lstg_dt":"","prdt_name":"SK하이닉스","prdt_eng_name":"SKhynix"}})"
+      )
+    );
+    REQUIRE(result);
+    REQUIRE(result.value().id_.symbol_ == "000660");
+    REQUIRE(result.value().id_.venue_ == Venue::KRX);
+    REQUIRE(result.value().segment_.known_ == MarketSegment::Known::KOSPI);
+    REQUIRE(result.value().type_ == SecurityType::STOCK);
+    REQUIRE(result.value().isin_ == "KR7000660001");
+
+    // KIS reports a listing date per market and blanks the ones that do not apply.
+    REQUIRE(result.value().listed_on_ == Date{1996, 12, 26});
+    REQUIRE_FALSE(result.value().delisted_on_.has_value());
+
+    // KIS publishes no listing status, and one is not inferred from a date.
+    REQUIRE(result.value().status_ == InstrumentStatus::UNKNOWN);
+  }
+
+  SECTION("a KOSDAQ listing takes its date from the KOSDAQ column") {
+    auto result = kis::KisClientTestAccess::parse_instrument(
+      InstrumentId{Country::KR, Venue::COMBINED, "035720"},
+      json_response(
+        R"({"rt_cd":"0","output":{"mket_id_cd":"KSQ","scty_grp_id_cd":"ST",)"
+        R"("std_pdno":"x","prdt_name":"x","prdt_eng_name":"x",)"
+        R"("scts_mket_lstg_dt":"","kosdaq_mket_lstg_dt":"20170101",)"
+        R"("kosdaq_mket_lstg_abol_dt":""}})"
+      )
+    );
+    REQUIRE(result);
+    REQUIRE(result.value().segment_.known_ == MarketSegment::Known::KOSDAQ);
+    REQUIRE(result.value().listed_on_ == Date{2017, 1, 1});
+  }
+
+  SECTION("a KONEX listing keeps its own market code rather than a nearby one") {
+    auto result = kis::KisClientTestAccess::parse_instrument(
+      InstrumentId{Country::KR, Venue::COMBINED, "123456"},
+      json_response(
+        R"({"rt_cd":"0","output":{"mket_id_cd":"KNX","scty_grp_id_cd":"KN",)"
+        R"("std_pdno":"x","prdt_name":"x","prdt_eng_name":"x"}})"
+      )
+    );
+    REQUIRE(result);
+    REQUIRE(result.value().segment_.known_ == MarketSegment::Known::UNKNOWN);
+    REQUIRE(result.value().segment_.other_.view() == "KNX");
+    REQUIRE(result.value().type_ == SecurityType::STOCK);
+  }
+
+  SECTION("a KIS security group with no counterpart stays unknown") {
+    // An ELW is a warrant, but not the 신주인수권 Toss's STOCK_WARRANTS means, so it is
+    // not forced into a nearby value.
+    auto result = kis::KisClientTestAccess::parse_instrument(
+      InstrumentId{Country::KR, Venue::COMBINED, "555555"},
+      json_response(
+        R"({"rt_cd":"0","output":{"mket_id_cd":"STK","scty_grp_id_cd":"EW",)"
+        R"("std_pdno":"x","prdt_name":"x","prdt_eng_name":"x"}})"
+      )
+    );
+    REQUIRE(result);
+    REQUIRE(result.value().type_ == SecurityType::UNKNOWN);
   }
 }

@@ -49,6 +49,12 @@ struct Normalizers {
   /** Only Toss quotes several instruments in one request. */
   static constexpr bool has_batch_prices = false;
 
+  /** Both brokers publish static reference data for an instrument. */
+  static constexpr bool has_reference_data = true;
+
+  /** Only Toss answers for several instruments in one reference-data request. */
+  static constexpr bool has_batch_reference_data = false;
+
   /** KIS publishes the trading calendar, from a base date onwards. */
   static constexpr bool has_calendar = true;
 
@@ -459,6 +465,11 @@ struct BrokerTraits<kis::KisBlockingClient>
   /** Returns this client's pacing statistics, or null when it is unpaced. */
   static const network::RateLimitStats* rate_limit_stats(const Client& client) {
     return client.rate_limit_stats();
+  }
+
+  /** Returns static reference data for one instrument. */
+  static Result<Instrument> instrument(Client& client, InstrumentId subject) {
+    return client.instrument(std::move(subject));
   }
 
   /** Returns the calendar, supplying today when no date was given. */

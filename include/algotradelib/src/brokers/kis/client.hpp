@@ -250,6 +250,9 @@ public:
   /** Completion handler for one trading calendar. */
   using CalendarHandler = net::any_completion_handler<void(Result<TradingCalendar>)>;
 
+  /** Completion handler for one instrument's reference data. */
+  using InstrumentHandler = net::any_completion_handler<void(Result<Instrument>)>;
+
   /** Completion handler for one normalized holdings snapshot. */
   using HoldingsHandler = net::any_completion_handler<void(Result<HoldingsSnapshot>)>;
 
@@ -310,6 +313,23 @@ public:
           self->strand_,
           [self, query = std::move(query), completion = std::move(completion)]() mutable {
             self->start_bars(std::move(query), std::move(completion));
+          }
+        );
+      },
+      token
+    );
+  }
+
+  /** Requests static reference data for one instrument. */
+  template <typename CompletionToken>
+  auto async_instrument(InstrumentId instrument, CompletionToken&& token) {
+    return net::async_initiate<CompletionToken, void(Result<Instrument>)>(
+      [self = shared_from_this(), instrument = std::move(instrument)](auto&& handler) mutable {
+        auto completion = InstrumentHandler(std::forward<decltype(handler)>(handler));
+        net::post(
+          self->strand_,
+          [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
+            self->start_instrument(std::move(instrument), std::move(completion));
           }
         );
       },
@@ -1050,6 +1070,218 @@ private:
       series.next_cursor_ = format_iso8601_utc(series.bars_.front().timestamp_);
     }
     deliver(std::move(operation->completion_), Result<BarSeries>(std::move(series)));
+  }
+
+  /**
+   * Requests reference data, which KIS addresses differently from market data.
+   *
+   * `search-stock-info` takes a product-type code and a product number rather than
+   * the market division every quotation endpoint takes, so it does not go through
+   * the shared market-data helper.
+   */
+  void start_instrument(InstrumentId instrument, InstrumentHandler completion) {
+    if (instrument.country_ != Country::KR || !valid_domestic_symbol(instrument.symbol_)) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.broker_code_ = "invalid_instrument";
+      error.message_ = "KIS reference data covers Korean equities addressed by product number";
+      deliver(std::move(completion), Result<Instrument>(std::move(error)));
+      return;
+    }
+
+    ensure_token(
+      TokenHandler(
+        [
+          self = shared_from_this(),
+          instrument = std::move(instrument),
+          completion = std::move(completion)
+        ](std::optional<BrokerError> token_error) mutable {
+          if (token_error) {
+            self->deliver(std::move(completion), Result<Instrument>(std::move(*token_error)));
+            return;
+          }
+          network::HttpRequest request;
+          // Reference data is the lowest-priority traffic there is.
+          request.group_ = network::RateLimitGroup::REFERENCE;
+          request.method_ = http::verb::get;
+          // 300 covers 주식, ETF, ETN, and ELW, which is the whole equity universe
+          // this library addresses.
+          request.target_ =
+            "/uapi/domestic-stock/v1/quotations/search-stock-info?PRDT_TYPE_CD=300&PDNO=" +
+            broker_detail::query_encode(instrument.symbol_);
+          request.headers_ = {
+            {"authorization", "Bearer " + self->token_.access_token_},
+            {"appkey", self->config_.key()},
+            {"appsecret", self->config_.secret()},
+            {"tr_id", "CTPF1002R"},
+            {"custtype", "P"},
+            {"content-type", "application/json; charset=utf-8"},
+          };
+          self->http_->async_request(
+            std::move(request),
+            [self, instrument = std::move(instrument), completion = std::move(completion)](
+              Result<network::HttpResponse> result
+            ) mutable {
+              self->deliver(
+                std::move(completion), parse_instrument(std::move(instrument), std::move(result))
+              );
+            }
+          );
+        }
+      )
+    );
+  }
+
+  /**
+   * Normalizes KIS's reference data for one instrument.
+   *
+   * The identity comes from the instrument the caller asked about, not from `pdno`:
+   * KIS returns that zero-padded and prefixed — `00000A000660` for `000660` — so
+   * parsing a symbol back out of it would be inventing a rule KIS has not stated.
+   *
+   * KIS reports a listing date per market rather than one date, and blanks the ones
+   * that do not apply, so the date is taken from the market the instrument is listed
+   * on. It publishes no listing *status* at all, so `status_` stays `UNKNOWN` rather
+   * than being inferred from the presence of a delisting date — a future delisting
+   * date belongs to an instrument that is still trading.
+   *
+   * `price_rule_` is the library's own grid, because no broker publishes tick size.
+   */
+  static Result<Instrument> parse_instrument(
+    InstrumentId requested,
+    Result<network::HttpResponse> result
+  ) {
+    auto document = market_document(std::move(result));
+    if (!document) {
+      return Result<Instrument>(std::move(document.error()));
+    }
+    try {
+      const auto output = document.value().if_contains("output");
+      if (!output || !output->is_object()) {
+        throw std::runtime_error("missing object field: output");
+      }
+      const auto& row = output->as_object();
+
+      Instrument instrument;
+      instrument.id_ = std::move(requested);
+      instrument.name_ = broker_detail::json_string(row, "prdt_name");
+      instrument.english_name_ = broker_detail::json_string(row, "prdt_eng_name");
+      // KIS's 표준상품번호 is the KRX standard code, which for a listed domestic equity
+      // is also its ISIN. Recorded as one, and flagged for review as an assumption
+      // rather than a documented equivalence.
+      instrument.isin_ = broker_detail::json_string(row, "std_pdno");
+      const auto market = broker_detail::json_string(row, "mket_id_cd");
+      instrument.segment_ = kis_market_segment(market);
+      instrument.type_ =
+        kis_security_type(broker_detail::json_string(row, "scty_grp_id_cd"));
+      instrument.currency_ = Currency::krw();
+      instrument.shares_outstanding_ = positive_decimal(row, "lstg_stqt");
+      instrument.listed_on_ = compact_date_field(row, listing_date_field(market));
+      instrument.delisted_on_ = compact_date_field(row, delisting_date_field(market));
+      instrument.price_rule_ = PriceRule::krx_equity();
+      return Result<Instrument>(std::move(instrument));
+    } catch (const std::exception& exception) {
+      BrokerError error;
+      error.category_ = ErrorCategory::PROTOCOL;
+      error.broker_code_ = "invalid_reference_response";
+      error.message_ = exception.what();
+      return Result<Instrument>(std::move(error));
+    }
+  }
+
+  /** Maps KIS's market identifier, preserving one this library has not normalized. */
+  static MarketSegment kis_market_segment(std::string_view code) {
+    if (code == "STK") {
+      return market_segment("KOSPI");
+    }
+    if (code == "KSQ") {
+      return market_segment("KOSDAQ");
+    }
+    // KONEX has no normalized segment, so its own code is preserved instead of
+    // being collapsed into one of the two that do.
+    return market_segment(code);
+  }
+
+  /**
+   * Maps KIS's security group to a normalized type.
+   *
+   * KIS's group covers instruments far beyond equities — futures, options, gold,
+   * ship-investment companies — and the ones with no normalized counterpart stay
+   * `UNKNOWN` rather than being forced into a nearby value. An ELW is the notable
+   * one: it is a warrant, but not the 신주인수권 Toss's `STOCK_WARRANTS` means.
+   */
+  static SecurityType kis_security_type(std::string_view group) {
+    if (group == "ST" || group == "KN") {
+      return SecurityType::STOCK;
+    }
+    if (group == "FS") {
+      return SecurityType::FOREIGN_STOCK;
+    }
+    if (group == "DR") {
+      return SecurityType::DEPOSITARY_RECEIPT;
+    }
+    if (group == "IF") {
+      return SecurityType::INFRASTRUCTURE_FUND;
+    }
+    if (group == "RT") {
+      return SecurityType::REIT;
+    }
+    if (group == "EF") {
+      return SecurityType::ETF;
+    }
+    if (group == "FE") {
+      return SecurityType::FOREIGN_ETF;
+    }
+    if (group == "EN") {
+      return SecurityType::ETN;
+    }
+    if (group == "SW" || group == "SR") {
+      return SecurityType::STOCK_WARRANT;
+    }
+    return SecurityType::UNKNOWN;
+  }
+
+  /** Returns which listing-date column applies to `market`. */
+  static const char* listing_date_field(std::string_view market) {
+    if (market == "KSQ") {
+      return "kosdaq_mket_lstg_dt";
+    }
+    if (market == "STK") {
+      return "scts_mket_lstg_dt";
+    }
+    return "frbd_mket_lstg_dt";
+  }
+
+  /** Returns which delisting-date column applies to `market`. */
+  static const char* delisting_date_field(std::string_view market) {
+    if (market == "KSQ") {
+      return "kosdaq_mket_lstg_abol_dt";
+    }
+    if (market == "STK") {
+      return "scts_mket_lstg_abol_dt";
+    }
+    return "frbd_mket_lstg_abol_dt";
+  }
+
+  /** Reads a `YYYYMMDD` field that KIS blanks when it does not apply. */
+  static std::optional<Date> compact_date_field(
+    const json::object& row,
+    std::string_view key
+  ) {
+    const auto value = row.if_contains(key);
+    if (!value || !value->is_string()) {
+      return std::nullopt;
+    }
+    const std::string text(value->as_string());
+    if (text.size() != 8) {
+      return std::nullopt;
+    }
+    Date date{
+      std::stoi(text.substr(0, 4)),
+      static_cast<unsigned>(std::stoi(text.substr(4, 2))),
+      static_cast<unsigned>(std::stoi(text.substr(6, 2))),
+    };
+    return is_valid_date(date) ? std::optional<Date>(date) : std::nullopt;
   }
 
   /** One calendar request spanning however many continuation pages it needs. */
@@ -3236,6 +3468,14 @@ public:
     return run<QuoteSnapshot>(
       [&](auto&& sink) { client_->async_quote(std::move(instrument), std::move(sink)); },
       "quote"
+    );
+  }
+
+  /** Returns static reference data for one instrument. */
+  Result<Instrument> instrument(InstrumentId subject) {
+    return run<Instrument>(
+      [&](auto&& sink) { client_->async_instrument(std::move(subject), std::move(sink)); },
+      "instrument"
     );
   }
 

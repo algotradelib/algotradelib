@@ -361,6 +361,36 @@ public:
   }
 
   /**
+   * Retrieves static reference data for one instrument.
+   *
+   * One instrument per call, because that is what both brokers answer. Toss can
+   * answer for up to two hundred at once and KIS for one, so a caller building a
+   * universe checks `BrokerCaps<Client>::has_batch_reference_data` and goes through
+   * `session.client()` rather than having this verb loop on its behalf.
+   *
+   * The returned `price_rule_` is the library's own grid: no broker publishes tick
+   * size, so it is chosen from the market rather than normalized from a field.
+   */
+  template <typename CompletionToken>
+  auto async_instrument(InstrumentId instrument, CompletionToken&& token) {
+    if constexpr (Caps::has_reference_data) {
+      return translate<Instrument>(
+        std::forward<CompletionToken>(token),
+        [client = client_, instrument = std::move(instrument)](auto&& sink) mutable {
+          Traits::instrument(*client, std::move(instrument), std::forward<decltype(sink)>(sink));
+        },
+        [](Result<Instrument> raw) { return raw; }
+      );
+    } else {
+      static_assert(
+        port_detail::dependent_false<Client>,
+        "this broker does not publish instrument reference data; gate the call with "
+        "BrokerCaps<Client>::has_reference_data"
+      );
+    }
+  }
+
+  /**
    * Retrieves which dates the market trades on.
    *
    * `from` selects the date the answer is anchored to, defaulting to today. How much
@@ -660,6 +690,19 @@ public:
 
   /** Returns all normalized holdings for the bound account. */
   Result<HoldingsSnapshot> holdings() { return Traits::holdings(*client_, account_); }
+
+  /** Returns static reference data for one instrument. */
+  Result<Instrument> instrument(InstrumentId subject) {
+    if constexpr (Caps::has_reference_data) {
+      return Traits::instrument(*client_, std::move(subject));
+    } else {
+      static_assert(
+        port_detail::dependent_false<Client>,
+        "this broker does not publish instrument reference data; gate the call with "
+        "BrokerCaps<Client>::has_reference_data"
+      );
+    }
+  }
 
   /** Returns which dates the market trades on. */
   Result<TradingCalendar> calendar(Country country, std::optional<Date> from = std::nullopt) {

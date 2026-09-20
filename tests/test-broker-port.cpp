@@ -809,3 +809,16 @@ TEST_CASE("KIS refuses a calendar for a market it does not publish") {
       .has_value()
   );
 }
+
+TEST_CASE("reference data is answered one instrument at a time by both brokers") {
+  static_assert(BrokerCaps<kis::KisClient>::has_reference_data);
+  static_assert(BrokerCaps<tossinvest::TossClient>::has_reference_data);
+  static_assert(!BrokerCaps<mock::MockClient>::has_reference_data);
+
+  // Toss answers for up to two hundred symbols and KIS for one, so the port asks for
+  // one — which both can do — and a caller building a universe goes through
+  // `session.client()` rather than having the verb loop on its behalf.
+  static_assert(!BrokerCaps<kis::KisClient>::has_batch_reference_data);
+  static_assert(BrokerCaps<tossinvest::TossClient>::has_batch_reference_data);
+  SUCCEED("reference-data reach is a compile-time capability");
+}

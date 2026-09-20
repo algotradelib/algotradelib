@@ -2,6 +2,7 @@
 
 #include "./broker_traits.hpp"
 #include "./calendar.hpp"
+#include "./instrument.hpp"
 #include "./market_data.hpp"
 
 namespace algotradelib {
@@ -64,6 +65,18 @@ struct BrokerCaps {
 
   /** Whether the broker quotes several instruments in one request. */
   static constexpr bool has_batch_prices = Traits::has_batch_prices;
+
+  /** Whether the broker publishes static reference data for an instrument. */
+  static constexpr bool has_reference_data = Traits::has_reference_data;
+
+  /**
+   * Whether one reference-data request covers several instruments.
+   *
+   * Toss takes up to two hundred symbols; KIS takes one product number. The port
+   * asks for one instrument, which both can answer, and this says whether a caller
+   * building a universe can do it in one request through `session.client()`.
+   */
+  static constexpr bool has_batch_reference_data = Traits::has_batch_reference_data;
 
   /** Whether the broker publishes which dates the market trades on. */
   static constexpr bool has_calendar = Traits::has_calendar;

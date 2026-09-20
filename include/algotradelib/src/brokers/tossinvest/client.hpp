@@ -153,6 +153,9 @@ public:
 
   /** Completion handler for one trading calendar. */
   using CalendarHandler = net::any_completion_handler<void(Result<TradingCalendar>)>;
+
+  /** Completion handler for one instrument's reference data. */
+  using InstrumentHandler = net::any_completion_handler<void(Result<Instrument>)>;
   /** Completion handler for Toss account discovery. */
   using AccountsHandler = net::any_completion_handler<void(Result<std::vector<TossAccount>>)>;
 
@@ -226,6 +229,28 @@ public:
           self->strand_,
           [self, country, from, completion = std::move(completion)]() mutable {
             self->start_calendar(country, from, std::move(completion));
+          }
+        );
+      },
+      token
+    );
+  }
+
+  /** Requests static reference data for one instrument. */
+  template <typename CompletionToken>
+  auto async_instrument(InstrumentId instrument, CompletionToken&& token) {
+    return net::async_initiate<CompletionToken, void(Result<Instrument>)>(
+      [self = shared_from_this(), instrument = std::move(instrument)](auto&& handler) mutable {
+        auto completion = InstrumentHandler(std::forward<decltype(handler)>(handler));
+        net::post(
+          self->strand_,
+          [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
+            self->start_market_read(
+              std::move(instrument),
+              "/api/v1/stocks?symbols=",
+              std::move(completion),
+              parse_instrument
+            );
           }
         );
       },
@@ -836,6 +861,121 @@ private:
       return Result<json::value>(std::move(error));
     }
     return Result<json::value>(*payload);
+  }
+
+  /**
+   * Normalizes Toss's reference data for one instrument.
+   *
+   * The identity comes from the instrument the caller asked about rather than from
+   * the response's symbol, so the country and venue the caller stated survive.
+   *
+   * `price_rule_` is the library's own grid, not Toss's: no broker publishes tick
+   * size, so the rule is chosen from the market rather than normalized from a field.
+   */
+  static Result<Instrument> parse_instrument(
+    InstrumentId requested,
+    Result<network::HttpResponse> result
+  ) {
+    auto payload = market_result(std::move(result));
+    if (!payload) {
+      return Result<Instrument>(std::move(payload.error()));
+    }
+    try {
+      if (!payload.value().is_array() || payload.value().as_array().empty()) {
+        throw std::runtime_error("reference data result is not a non-empty array");
+      }
+      const auto& row = payload.value().as_array().front().as_object();
+      if (broker_detail::json_string(row, "symbol") != requested.symbol_) {
+        throw std::runtime_error("reference data response symbol does not match request");
+      }
+
+      Instrument instrument;
+      instrument.id_ = std::move(requested);
+      instrument.name_ = broker_detail::json_string(row, "name");
+      instrument.english_name_ = broker_detail::json_string(row, "englishName");
+      instrument.isin_ = broker_detail::json_string(row, "isinCode");
+      instrument.segment_ = market_segment(broker_detail::json_string(row, "market"));
+      instrument.type_ = normalized_security_type(broker_detail::json_string(row, "securityType"));
+      instrument.status_ =
+        normalized_listing_status(broker_detail::json_string(row, "status"));
+      instrument.currency_ = Currency(broker_detail::json_string(row, "currency"));
+      if (const auto value = row.if_contains("isCommonShare"); value && value->is_bool()) {
+        instrument.common_share_ = value->as_bool();
+      }
+      instrument.listed_on_ = optional_calendar_date(row, "listDate");
+      instrument.delisted_on_ = optional_calendar_date(row, "delistDate");
+      instrument.shares_outstanding_ = nullable_decimal(row, "sharesOutstanding");
+      instrument.price_rule_ = instrument.id_.country_ == Country::KR ?
+        PriceRule::krx_equity() :
+        PriceRule::unconstrained();
+      return Result<Instrument>(std::move(instrument));
+    } catch (const std::exception& exception) {
+      return Result<Instrument>(market_error("invalid_reference_response", exception));
+    }
+  }
+
+  /** Maps Toss's security type, tolerating a value this library has not normalized. */
+  static SecurityType normalized_security_type(std::string_view code) {
+    if (code == "STOCK") {
+      return SecurityType::STOCK;
+    }
+    if (code == "FOREIGN_STOCK") {
+      return SecurityType::FOREIGN_STOCK;
+    }
+    if (code == "DEPOSITARY_RECEIPT") {
+      return SecurityType::DEPOSITARY_RECEIPT;
+    }
+    if (code == "INFRASTRUCTURE_FUND") {
+      return SecurityType::INFRASTRUCTURE_FUND;
+    }
+    if (code == "REIT") {
+      return SecurityType::REIT;
+    }
+    if (code == "ETF") {
+      return SecurityType::ETF;
+    }
+    if (code == "FOREIGN_ETF") {
+      return SecurityType::FOREIGN_ETF;
+    }
+    if (code == "ETN") {
+      return SecurityType::ETN;
+    }
+    if (code == "STOCK_WARRANTS") {
+      return SecurityType::STOCK_WARRANT;
+    }
+    return SecurityType::UNKNOWN;
+  }
+
+  /**
+   * Maps Toss's listing status, tolerating an unfamiliar value.
+   *
+   * Named apart from the order-status mapper on purpose: a listing status and an
+   * order status are unrelated vocabularies that happen to share a broker field
+   * name, and overloading on return type alone would not compile anyway.
+   */
+  static InstrumentStatus normalized_listing_status(std::string_view code) {
+    if (code == "SCHEDULED") {
+      return InstrumentStatus::SCHEDULED;
+    }
+    if (code == "ACTIVE") {
+      return InstrumentStatus::ACTIVE;
+    }
+    if (code == "DELISTED") {
+      return InstrumentStatus::DELISTED;
+    }
+    return InstrumentStatus::UNKNOWN;
+  }
+
+  /** Reads a `YYYY-MM-DD` field that Toss may report as null. */
+  static std::optional<Date> optional_calendar_date(
+    const json::object& row,
+    std::string_view key
+  ) {
+    const auto value = row.if_contains(key);
+    if (!value || !value->is_string()) {
+      return std::nullopt;
+    }
+    return parse_calendar_date(value->as_string().c_str());
   }
 
   /** Validates the request and asks for the calendar of one market. */
@@ -2853,6 +2993,14 @@ public:
   }
 
   /** Returns normalized holdings for one discovered account sequence. */
+  /** Returns static reference data for one instrument. */
+  Result<Instrument> instrument(InstrumentId subject) {
+    return run<Instrument>(
+      [&](auto&& sink) { client_->async_instrument(std::move(subject), std::move(sink)); },
+      "instrument"
+    );
+  }
+
   /** Returns the trading calendar around `from` for one market. */
   Result<TradingCalendar> calendar(Country country, std::optional<Date> from = std::nullopt) {
     return run<TradingCalendar>(

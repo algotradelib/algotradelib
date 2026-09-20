@@ -383,6 +383,8 @@ struct BrokerTraits<mock::MockClient> {
   static constexpr bool has_price_limits = false;
   static constexpr bool has_trade_prints = false;
   static constexpr bool has_batch_prices = false;
+  static constexpr bool has_reference_data = false;
+  static constexpr bool has_batch_reference_data = false;
   static constexpr bool has_calendar = false;
   static constexpr bool has_calendar_range = false;
   static constexpr bool has_calendar_sessions = false;

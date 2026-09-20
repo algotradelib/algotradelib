@@ -50,6 +50,12 @@ struct Normalizers {
   /** Only Toss quotes several instruments in one request. */
   static constexpr bool has_batch_prices = true;
 
+  /** Both brokers publish static reference data for an instrument. */
+  static constexpr bool has_reference_data = true;
+
+  /** Only Toss answers for several instruments in one reference-data request. */
+  static constexpr bool has_batch_reference_data = true;
+
   /** Toss publishes the trading calendar for both markets it serves. */
   static constexpr bool has_calendar = true;
 
@@ -303,6 +309,12 @@ struct BrokerTraits<tossinvest::TossClient>
     return client.rate_limit_stats();
   }
 
+  /** Forwards a reference-data request. */
+  template <typename Token>
+  static auto instrument(Client& client, InstrumentId subject, Token&& token) {
+    return client.async_instrument(std::move(subject), std::forward<Token>(token));
+  }
+
   /** Forwards a calendar request. */
   template <typename Token>
   static auto calendar(Client& client, Country country, std::optional<Date> from, Token&& token) {
@@ -457,6 +469,11 @@ struct BrokerTraits<tossinvest::TossBlockingClient>
   /** Returns this client's pacing statistics, or null when it is unpaced. */
   static const network::RateLimitStats* rate_limit_stats(const Client& client) {
     return client.rate_limit_stats();
+  }
+
+  /** Returns static reference data for one instrument. */
+  static Result<Instrument> instrument(Client& client, InstrumentId subject) {
+    return client.instrument(std::move(subject));
   }
 
   /** Returns the calendar for one market. */
