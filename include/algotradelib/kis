@@ -2,3 +2,4 @@
 
 #include "src/brokers/kis/auth.hpp"
 #include "src/brokers/kis/client.hpp"
+#include "src/brokers/kis/traits.hpp"
