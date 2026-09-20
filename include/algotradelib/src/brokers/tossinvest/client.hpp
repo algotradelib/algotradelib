@@ -150,6 +150,9 @@ public:
 
   /** Completion handler for several instruments quoted at once. */
   using PricesHandler = net::any_completion_handler<void(Result<std::vector<QuoteSnapshot>>)>;
+
+  /** Completion handler for one trading calendar. */
+  using CalendarHandler = net::any_completion_handler<void(Result<TradingCalendar>)>;
   /** Completion handler for Toss account discovery. */
   using AccountsHandler = net::any_completion_handler<void(Result<std::vector<TossAccount>>)>;
 
@@ -200,6 +203,29 @@ public:
           self->strand_,
           [self, query = std::move(query), completion = std::move(completion)]() mutable {
             self->start_bars(std::move(query), std::move(completion));
+          }
+        );
+      },
+      token
+    );
+  }
+
+  /**
+   * Requests the trading calendar around `from`.
+   *
+   * Toss answers with three days — the requested one and the business days either
+   * side of it — rather than a span, so the calendar returned covers exactly those
+   * three. A caller needing more asks again from a different date.
+   */
+  template <typename CompletionToken>
+  auto async_calendar(Country country, std::optional<Date> from, CompletionToken&& token) {
+    return net::async_initiate<CompletionToken, void(Result<TradingCalendar>)>(
+      [self = shared_from_this(), country, from](auto&& handler) mutable {
+        auto completion = CalendarHandler(std::forward<decltype(handler)>(handler));
+        net::post(
+          self->strand_,
+          [self, country, from, completion = std::move(completion)]() mutable {
+            self->start_calendar(country, from, std::move(completion));
           }
         );
       },
@@ -810,6 +836,137 @@ private:
       return Result<json::value>(std::move(error));
     }
     return Result<json::value>(*payload);
+  }
+
+  /** Validates the request and asks for the calendar of one market. */
+  void start_calendar(Country country, std::optional<Date> from, CalendarHandler completion) {
+    if (from && !is_valid_date(*from)) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.broker_code_ = "invalid_date";
+      error.message_ = "calendar request requires a valid Gregorian date";
+      deliver(std::move(completion), Result<TradingCalendar>(std::move(error)));
+      return;
+    }
+
+    ensure_token(
+      TokenHandler(
+        [self = shared_from_this(), country, from, completion = std::move(completion)](
+          std::optional<BrokerError> token_error
+        ) mutable {
+          if (token_error) {
+            self->deliver(
+              std::move(completion), Result<TradingCalendar>(std::move(*token_error))
+            );
+            return;
+          }
+          network::HttpRequest request;
+          // The calendar is reference data, the lowest-priority traffic there is.
+          request.group_ = network::RateLimitGroup::REFERENCE;
+          request.method_ = http::verb::get;
+          request.target_ = std::string("/api/v1/market-calendar/") +
+            (country == Country::US ? "US" : "KR");
+          if (from) {
+            request.target_ += "?date=" + iso_date(*from);
+          }
+          request.headers_.emplace_back(
+            "Authorization", "Bearer " + self->token_.access_token_
+          );
+          self->http_->async_request(
+            std::move(request),
+            [self, country, completion = std::move(completion)](
+              Result<network::HttpResponse> result
+            ) mutable {
+              self->deliver(
+                std::move(completion), parse_calendar(country, std::move(result))
+              );
+            }
+          );
+        }
+      )
+    );
+  }
+
+  /**
+   * Normalizes Toss's calendar into the three days it reports.
+   *
+   * A day is a trading day when Toss reports trading hours for it: it documents the
+   * hours as null "둘 다 휴장이면", when both KRX and NXT are closed. So the presence of
+   * the hours *is* the answer, and the hours themselves are not normalized — only
+   * Toss publishes them, so they stay reachable on this client rather than becoming
+   * a field permanently empty for KIS.
+   *
+   * The two days either side are reported as business days, which is why they are
+   * recorded as open without consulting their hours: Toss has already answered the
+   * question by calling them that.
+   */
+  static Result<TradingCalendar> parse_calendar(
+    Country country,
+    Result<network::HttpResponse> result
+  ) {
+    auto payload = market_result(std::move(result));
+    if (!payload) {
+      return Result<TradingCalendar>(std::move(payload.error()));
+    }
+    try {
+      if (!payload.value().is_object()) {
+        throw std::runtime_error("calendar result is not an object");
+      }
+      const auto& object = payload.value().as_object();
+      TradingCalendar calendar;
+      calendar.country_ = country;
+      append_calendar_day(object, "previousBusinessDay", true, calendar);
+      append_calendar_day(object, "today", false, calendar);
+      append_calendar_day(object, "nextBusinessDay", true, calendar);
+      std::sort(
+        calendar.days_.begin(),
+        calendar.days_.end(),
+        [](const TradingDay& lhs, const TradingDay& rhs) { return lhs.date_ < rhs.date_; }
+      );
+      calendar.received_at_ = std::chrono::system_clock::now();
+      return Result<TradingCalendar>(std::move(calendar));
+    } catch (const std::exception& exception) {
+      return Result<TradingCalendar>(market_error("invalid_calendar_response", exception));
+    }
+  }
+
+  /** Reads one reported day, deciding whether the market opens on it. */
+  static void append_calendar_day(
+    const json::object& object,
+    std::string_view key,
+    bool business_day,
+    TradingCalendar& calendar
+  ) {
+    const auto value = object.if_contains(key);
+    if (!value || !value->is_object()) {
+      return;
+    }
+    const auto& row = value->as_object();
+    const auto date = parse_calendar_date(broker_detail::json_string(row, "date"));
+    if (!date) {
+      throw std::runtime_error("invalid calendar date");
+    }
+    TradingDay day;
+    day.date_ = *date;
+    if (business_day) {
+      day.open_ = true;
+    } else {
+      const auto hours = row.if_contains("integrated");
+      day.open_ = hours && !hours->is_null();
+    }
+    calendar.days_.push_back(day);
+  }
+
+  /** Parses a `YYYY-MM-DD` calendar date. */
+  static std::optional<Date> parse_calendar_date(std::string_view text) {
+    if (text.size() != 10 || text[4] != '-' || text[7] != '-') {
+      return std::nullopt;
+    }
+    Date date;
+    date.year_ = std::stoi(std::string(text.substr(0, 4)));
+    date.month_ = static_cast<unsigned>(std::stoi(std::string(text.substr(5, 2))));
+    date.day_ = static_cast<unsigned>(std::stoi(std::string(text.substr(8, 2))));
+    return is_valid_date(date) ? std::optional<Date>(date) : std::nullopt;
   }
 
   /** Most executions Toss returns in one request. */
@@ -2696,6 +2853,14 @@ public:
   }
 
   /** Returns normalized holdings for one discovered account sequence. */
+  /** Returns the trading calendar around `from` for one market. */
+  Result<TradingCalendar> calendar(Country country, std::optional<Date> from = std::nullopt) {
+    return run<TradingCalendar>(
+      [&](auto&& sink) { client_->async_calendar(country, from, std::move(sink)); },
+      "calendar"
+    );
+  }
+
   /** Returns today's upper and lower price bound. */
   Result<PriceLimits> price_limits(InstrumentId instrument) {
     return run<PriceLimits>(

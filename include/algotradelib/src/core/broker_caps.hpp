@@ -1,6 +1,7 @@
 #pragma once
 
 #include "./broker_traits.hpp"
+#include "./calendar.hpp"
 #include "./market_data.hpp"
 
 namespace algotradelib {
@@ -63,6 +64,28 @@ struct BrokerCaps {
 
   /** Whether the broker quotes several instruments in one request. */
   static constexpr bool has_batch_prices = Traits::has_batch_prices;
+
+  /** Whether the broker publishes which dates the market trades on. */
+  static constexpr bool has_calendar = Traits::has_calendar;
+
+  /**
+   * Whether one calendar request covers a span of dates rather than a few.
+   *
+   * KIS answers from a base date onwards; Toss answers with the requested day and
+   * the business day either side. A caller that needs a month of dates can get it
+   * in one request from one broker and not the other, which is worth knowing before
+   * writing the loop.
+   */
+  static constexpr bool has_calendar_range = Traits::has_calendar_range;
+
+  /**
+   * Whether the broker publishes intraday session windows.
+   *
+   * Only Toss does, and they are deliberately not normalized, so this capability
+   * exists to point a caller at `session.client()` rather than to gate a port verb.
+   * Gating broker-specific work on it is the intended use.
+   */
+  static constexpr bool has_calendar_sessions = Traits::has_calendar_sessions;
 
   /**
    * Whether the broker publishes bars at `interval`.

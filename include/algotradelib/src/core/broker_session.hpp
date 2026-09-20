@@ -360,6 +360,38 @@ public:
     );
   }
 
+  /**
+   * Retrieves which dates the market trades on.
+   *
+   * `from` selects the date the answer is anchored to, defaulting to today. How much
+   * a single answer covers differs by broker — `BrokerCaps<Client>::has_calendar_range`
+   * says whether one request spans many dates — so every lookup on the result
+   * distinguishes "closed" from "not covered".
+   */
+  template <typename CompletionToken>
+  auto async_calendar(Country country, std::optional<Date> from, CompletionToken&& token) {
+    if constexpr (Caps::has_calendar) {
+      if (auto invalid = Traits::validate_calendar(country, from)) {
+        return complete_error<TradingCalendar>(
+          std::forward<CompletionToken>(token), std::move(*invalid)
+        );
+      }
+      return translate<TradingCalendar>(
+        std::forward<CompletionToken>(token),
+        [client = client_, country, from](auto&& sink) mutable {
+          Traits::calendar(*client, country, from, std::forward<decltype(sink)>(sink));
+        },
+        [](Result<TradingCalendar> raw) { return raw; }
+      );
+    } else {
+      static_assert(
+        port_detail::dependent_false<Client>,
+        "this broker does not publish a trading calendar; gate the call with "
+        "BrokerCaps<Client>::has_calendar"
+      );
+    }
+  }
+
   /** Retrieves today's upper and lower price bound for one instrument. */
   template <typename CompletionToken>
   auto async_price_limits(InstrumentId instrument, CompletionToken&& token) {
@@ -628,6 +660,22 @@ public:
 
   /** Returns all normalized holdings for the bound account. */
   Result<HoldingsSnapshot> holdings() { return Traits::holdings(*client_, account_); }
+
+  /** Returns which dates the market trades on. */
+  Result<TradingCalendar> calendar(Country country, std::optional<Date> from = std::nullopt) {
+    if constexpr (Caps::has_calendar) {
+      if (auto invalid = Traits::validate_calendar(country, from)) {
+        return Result<TradingCalendar>(std::move(*invalid));
+      }
+      return Traits::calendar(*client_, country, from);
+    } else {
+      static_assert(
+        port_detail::dependent_false<Client>,
+        "this broker does not publish a trading calendar; gate the call with "
+        "BrokerCaps<Client>::has_calendar"
+      );
+    }
+  }
 
   /** Returns the resting orders on both sides of one instrument's book. */
   Result<DepthSnapshot> depth(InstrumentId instrument) {

@@ -763,3 +763,49 @@ TEST_CASE("market-data capabilities record what each broker actually offers") {
   static_assert(!BrokerCaps<mock::MockClient>::has_batch_prices);
   SUCCEED("market-data support is a compile-time capability");
 }
+
+TEST_CASE("calendar capabilities record how much one request answers") {
+  static_assert(BrokerCaps<kis::KisClient>::has_calendar);
+  static_assert(BrokerCaps<tossinvest::TossClient>::has_calendar);
+
+  // KIS answers from a base date onwards; Toss answers with the requested day and
+  // the business day either side. A caller needing a month in one call can have it
+  // from one broker and not the other.
+  static_assert(BrokerCaps<kis::KisClient>::has_calendar_range);
+  static_assert(!BrokerCaps<tossinvest::TossClient>::has_calendar_range);
+
+  // Session windows are Toss's alone and are not normalized, so this capability
+  // points at `session.client()` rather than gating a port verb.
+  static_assert(!BrokerCaps<kis::KisClient>::has_calendar_sessions);
+  static_assert(BrokerCaps<tossinvest::TossClient>::has_calendar_sessions);
+
+  static_assert(!BrokerCaps<mock::MockClient>::has_calendar);
+  SUCCEED("calendar reach is a compile-time capability");
+}
+
+TEST_CASE("KIS refuses a calendar for a market it does not publish") {
+  // Its holiday inquiry is the domestic market's, so another country is refused
+  // rather than answered with Korea's dates.
+  const auto refused = BrokerTraits<kis::KisClient>::validate_calendar(Country::US, std::nullopt);
+  REQUIRE(refused.has_value());
+  REQUIRE(refused->category_ == ErrorCategory::INVALID_ARGUMENT);
+  REQUIRE(refused->broker_code_ == "unsupported_market");
+
+  REQUIRE_FALSE(
+    BrokerTraits<kis::KisClient>::validate_calendar(Country::KR, std::nullopt).has_value()
+  );
+
+  // Toss publishes both markets it serves.
+  REQUIRE_FALSE(
+    BrokerTraits<tossinvest::TossClient>::validate_calendar(Country::US, std::nullopt).has_value()
+  );
+
+  // An impossible date is refused by both, before any request.
+  REQUIRE(
+    BrokerTraits<kis::KisClient>::validate_calendar(Country::KR, Date{2026, 2, 30}).has_value()
+  );
+  REQUIRE(
+    BrokerTraits<tossinvest::TossClient>::validate_calendar(Country::KR, Date{2026, 2, 30})
+      .has_value()
+  );
+}

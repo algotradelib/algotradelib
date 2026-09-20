@@ -50,6 +50,27 @@ struct Normalizers {
   /** Only Toss quotes several instruments in one request. */
   static constexpr bool has_batch_prices = true;
 
+  /** Toss publishes the trading calendar for both markets it serves. */
+  static constexpr bool has_calendar = true;
+
+  /** One Toss calendar request covers the requested day and the ones either side. */
+  static constexpr bool has_calendar_range = false;
+
+  /** Toss publishes intraday session windows, reachable on the concrete client. */
+  static constexpr bool has_calendar_sessions = true;
+
+  /** Refuses a calendar request with an invalid date. */
+  static std::optional<BrokerError> validate_calendar(Country, std::optional<Date> from) {
+    if (!from || is_valid_date(*from)) {
+      return std::nullopt;
+    }
+    BrokerError error;
+    error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.broker_code_ = "invalid_date";
+    error.message_ = "calendar request requires a valid Gregorian date";
+    return error;
+  }
+
   /** Returns whether this broker publishes bars at `interval`. */
   static constexpr bool supports_interval(BarInterval interval) {
     static_cast<void>(interval);
@@ -282,6 +303,12 @@ struct BrokerTraits<tossinvest::TossClient>
     return client.rate_limit_stats();
   }
 
+  /** Forwards a calendar request. */
+  template <typename Token>
+  static auto calendar(Client& client, Country country, std::optional<Date> from, Token&& token) {
+    return client.async_calendar(country, from, std::forward<Token>(token));
+  }
+
   /** Forwards a price-bound request. */
   template <typename Token>
   static auto price_limits(Client& client, InstrumentId instrument, Token&& token) {
@@ -430,6 +457,11 @@ struct BrokerTraits<tossinvest::TossBlockingClient>
   /** Returns this client's pacing statistics, or null when it is unpaced. */
   static const network::RateLimitStats* rate_limit_stats(const Client& client) {
     return client.rate_limit_stats();
+  }
+
+  /** Returns the calendar for one market. */
+  static Result<TradingCalendar> calendar(Client& client, Country country, std::optional<Date> from) {
+    return client.calendar(country, from);
   }
 
   /** Returns today's price bounds. */

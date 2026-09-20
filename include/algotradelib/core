@@ -1,5 +1,6 @@
 #pragma once
 
+#include "src/core/calendar.hpp"
 #include "src/core/instrument.hpp"
 #include "src/core/market_data.hpp"
 #include "src/core/types.hpp"

@@ -49,6 +49,37 @@ struct Normalizers {
   /** Only Toss quotes several instruments in one request. */
   static constexpr bool has_batch_prices = false;
 
+  /** KIS publishes the trading calendar, from a base date onwards. */
+  static constexpr bool has_calendar = true;
+
+  /** One KIS calendar request covers a span of dates. */
+  static constexpr bool has_calendar_range = true;
+
+  /** KIS publishes no intraday session windows. */
+  static constexpr bool has_calendar_sessions = false;
+
+  /**
+   * Refuses a calendar request KIS cannot answer.
+   *
+   * KIS's holiday inquiry is the domestic market's, so another country is refused
+   * rather than answered with Korea's dates.
+   */
+  static std::optional<BrokerError> validate_calendar(Country country, std::optional<Date> from) {
+    BrokerError error;
+    error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    if (country != Country::KR) {
+      error.broker_code_ = "unsupported_market";
+      error.message_ = "KIS publishes the domestic trading calendar only";
+      return error;
+    }
+    if (from && !is_valid_date(*from)) {
+      error.broker_code_ = "invalid_date";
+      error.message_ = "calendar request requires a valid Gregorian date";
+      return error;
+    }
+    return std::nullopt;
+  }
+
   /** Returns whether this broker publishes bars at `interval`. */
   static constexpr bool supports_interval(BarInterval interval) {
     static_cast<void>(interval);
@@ -296,6 +327,19 @@ struct BrokerTraits<kis::KisClient>
     return client.rate_limit_stats();
   }
 
+  /**
+   * Forwards a calendar request, supplying today when no date was given.
+   *
+   * KIS requires a base date, so an absent one becomes today in Seoul rather than
+   * being passed through as a blank the broker would reject.
+   */
+  template <typename Token>
+  static auto calendar(Client& client, Country, std::optional<Date> from, Token&& token) {
+    return client.async_calendar(
+      from ? *from : kis::today_in_seoul(), false, std::forward<Token>(token)
+    );
+  }
+
   /** Forwards a price-bound request. */
   template <typename Token>
   static auto price_limits(Client& client, InstrumentId instrument, Token&& token) {
@@ -415,6 +459,11 @@ struct BrokerTraits<kis::KisBlockingClient>
   /** Returns this client's pacing statistics, or null when it is unpaced. */
   static const network::RateLimitStats* rate_limit_stats(const Client& client) {
     return client.rate_limit_stats();
+  }
+
+  /** Returns the calendar, supplying today when no date was given. */
+  static Result<TradingCalendar> calendar(Client& client, Country, std::optional<Date> from) {
+    return client.calendar(from ? *from : kis::today_in_seoul());
   }
 
   /** Returns today's price bounds. */

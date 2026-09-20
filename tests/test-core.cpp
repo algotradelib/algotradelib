@@ -162,6 +162,17 @@ struct KisClientTestAccess {
     return KisClient::parse_trades(InstrumentId{}, std::move(response), count);
   }
 
+  static std::optional<BrokerError> parse_calendar_page(
+    Result<network::HttpResponse> response,
+    TradingCalendar& calendar,
+    std::string& search_cursor,
+    std::string& next_cursor
+  ) {
+    return KisClient::parse_calendar_page(
+      std::move(response), calendar, search_cursor, next_cursor
+    );
+  }
+
   static Result<KisOrderAck> parse_order_ack(Result<network::HttpResponse> response) {
     return KisClient::parse_order_ack(std::move(response));
   }
@@ -268,6 +279,13 @@ struct TossClientTestAccess {
     Result<network::HttpResponse> response
   ) {
     return TossClient::parse_prices(requested, std::move(response));
+  }
+
+  static Result<TradingCalendar> parse_calendar(
+    Country country,
+    Result<network::HttpResponse> response
+  ) {
+    return TossClient::parse_calendar(country, std::move(response));
   }
 
   static Result<OrderAck> parse_order_ack(Result<network::HttpResponse> response) {
@@ -2742,5 +2760,128 @@ TEST_CASE("a batch quote keeps the instrument identities the caller stated") {
     REQUIRE_FALSE(result);
     REQUIRE(result.error().category_ == ErrorCategory::PROTOCOL);
     REQUIRE(result.error().broker_code_ == "invalid_price_response");
+  }
+}
+
+TEST_CASE("a trading calendar tells closed apart from not covered") {
+  TradingCalendar calendar;
+  calendar.days_ = {
+    TradingDay{Date{2026, 3, 20}, true},   // Friday
+    TradingDay{Date{2026, 3, 21}, false},  // Saturday
+    TradingDay{Date{2026, 3, 22}, false},  // Sunday
+    TradingDay{Date{2026, 3, 23}, true},   // Monday
+  };
+
+  REQUIRE(calendar.is_trading_day(Date{2026, 3, 20}) == true);
+  REQUIRE(calendar.is_trading_day(Date{2026, 3, 21}) == false);
+
+  // A date the calendar does not cover is unknown, not closed. Reporting closed
+  // would stop a strategy on a day that is in fact open; reporting open would let
+  // it place orders into a holiday.
+  REQUIRE_FALSE(calendar.is_trading_day(Date{2026, 3, 24}).has_value());
+  REQUIRE_FALSE(calendar.is_trading_day(Date{2026, 3, 19}).has_value());
+
+  REQUIRE(calendar.next_trading_day(Date{2026, 3, 20}) == Date{2026, 3, 23});
+  REQUIRE(calendar.previous_trading_day(Date{2026, 3, 23}) == Date{2026, 3, 20});
+  REQUIRE_FALSE(calendar.next_trading_day(Date{2026, 3, 23}).has_value());
+  REQUIRE_FALSE(calendar.previous_trading_day(Date{2026, 3, 20}).has_value());
+
+  REQUIRE(calendar.covered()->first == Date{2026, 3, 20});
+  REQUIRE(calendar.covered()->second == Date{2026, 3, 23});
+  REQUIRE_FALSE(TradingCalendar{}.covered().has_value());
+}
+
+TEST_CASE("both brokers' calendars normalize to the same trading days") {
+  SECTION("KIS reports four flags per date and only the market-open one is read") {
+    // KIS separately reports a banking business day, a securities business day, a
+    // market-open day, and a settlement day. It directs callers placing an order to
+    // use opnd_yn, so that is the one normalized; folding the four into one would
+    // silently pick a meaning.
+    TradingCalendar calendar;
+    std::string search;
+    std::string next;
+    const auto failure = kis::KisClientTestAccess::parse_calendar_page(
+      json_response(
+        R"({"rt_cd":"0","msg_cd":"MCA00000","ctx_area_fk":"","ctx_area_nk":"","output":[)"
+        R"({"bass_dt":"20260320","wday_dvsn_cd":"06","bzdy_yn":"Y","tr_day_yn":"Y",)"
+        R"("opnd_yn":"Y","sttl_day_yn":"Y"},)"
+        R"({"bass_dt":"20260321","wday_dvsn_cd":"07","bzdy_yn":"N","tr_day_yn":"N",)"
+        R"("opnd_yn":"N","sttl_day_yn":"N"},)"
+        R"({"bass_dt":"20260323","wday_dvsn_cd":"02","bzdy_yn":"Y","tr_day_yn":"Y",)"
+        R"("opnd_yn":"Y","sttl_day_yn":"Y"}]})"
+      ),
+      calendar,
+      search,
+      next
+    );
+    REQUIRE_FALSE(failure);
+    REQUIRE(calendar.days_.size() == 3);
+    REQUIRE(calendar.is_trading_day(Date{2026, 3, 20}) == true);
+    REQUIRE(calendar.is_trading_day(Date{2026, 3, 21}) == false);
+    REQUIRE(calendar.is_trading_day(Date{2026, 3, 23}) == true);
+  }
+
+  SECTION("a bank holiday that is not a market holiday still closes the market") {
+    // bzdy_yn and opnd_yn genuinely disagree on some dates, which is the reason
+    // only one of them is the answer.
+    TradingCalendar calendar;
+    std::string search;
+    std::string next;
+    kis::KisClientTestAccess::parse_calendar_page(
+      json_response(
+        R"({"rt_cd":"0","output":[)"
+        R"({"bass_dt":"20260501","bzdy_yn":"Y","tr_day_yn":"Y","opnd_yn":"N",)"
+        R"("sttl_day_yn":"N"}]})"
+      ),
+      calendar,
+      search,
+      next
+    );
+    REQUIRE(calendar.is_trading_day(Date{2026, 5, 1}) == false);
+  }
+
+  SECTION("Toss reports three days and marks the open one by its trading hours") {
+    // Toss documents the hours as null when both KRX and NXT are closed, so the
+    // presence of the hours is the answer; the hours themselves are Toss's own and
+    // are not normalized.
+    auto result = tossinvest::TossClientTestAccess::parse_calendar(
+      Country::KR,
+      json_response(
+        R"({"result":{)"
+        R"("previousBusinessDay":{"date":"2026-03-20"},)"
+        R"("today":{"date":"2026-03-23","integrated":{"open":"09:00","close":"15:30"}},)"
+        R"("nextBusinessDay":{"date":"2026-03-24"}}})"
+      )
+    );
+    REQUIRE(result);
+    REQUIRE(result.value().country_ == Country::KR);
+    REQUIRE(result.value().days_.size() == 3);
+
+    // Ascending, whatever order the object listed them in.
+    REQUIRE(result.value().days_.front().date_ == Date{2026, 3, 20});
+    REQUIRE(result.value().days_.back().date_ == Date{2026, 3, 24});
+    REQUIRE(result.value().is_trading_day(Date{2026, 3, 23}) == true);
+  }
+
+  SECTION("Toss reporting no hours for today means the market is closed") {
+    auto result = tossinvest::TossClientTestAccess::parse_calendar(
+      Country::KR,
+      json_response(
+        R"({"result":{"previousBusinessDay":{"date":"2026-03-20"},)"
+        R"("today":{"date":"2026-03-21","integrated":null},)"
+        R"("nextBusinessDay":{"date":"2026-03-23"}}})"
+      )
+    );
+    REQUIRE(result);
+    REQUIRE(result.value().is_trading_day(Date{2026, 3, 21}) == false);
+    REQUIRE(result.value().is_trading_day(Date{2026, 3, 20}) == true);
+  }
+
+  SECTION("a malformed calendar date is a protocol error") {
+    auto result = tossinvest::TossClientTestAccess::parse_calendar(
+      Country::KR, json_response(R"({"result":{"today":{"date":"2026-13-45"}}})")
+    );
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().broker_code_ == "invalid_calendar_response");
   }
 }

@@ -109,6 +109,30 @@ struct KisHistoryRange {
 };
 
 /**
+ * Returns today's calendar date in Seoul.
+ *
+ * KIS dates every request and response in Korean local time, so "today" for a KIS
+ * call is today there, not wherever the process happens to run.
+ */
+inline Date today_in_seoul() {
+  const auto seoul = std::chrono::system_clock::now() + std::chrono::hours(9);
+  const std::time_t raw = std::chrono::system_clock::to_time_t(
+    std::chrono::time_point_cast<std::chrono::seconds>(seoul)
+  );
+  std::tm parts{};
+#ifdef _WIN32
+  gmtime_s(&parts, &raw);
+#else
+  gmtime_r(&raw, &parts);
+#endif
+  return Date{
+    parts.tm_year + 1900,
+    static_cast<unsigned>(parts.tm_mon + 1),
+    static_cast<unsigned>(parts.tm_mday),
+  };
+}
+
+/**
  * Which of KIS's two request-rate limits a declared failure reports.
  *
  * KIS meters requests in two independent layers and its documentation is explicit
@@ -223,6 +247,9 @@ public:
   /** Completion handler for recent executions. */
   using TradesHandler = net::any_completion_handler<void(Result<std::vector<TradePrint>>)>;
 
+  /** Completion handler for one trading calendar. */
+  using CalendarHandler = net::any_completion_handler<void(Result<TradingCalendar>)>;
+
   /** Completion handler for one normalized holdings snapshot. */
   using HoldingsHandler = net::any_completion_handler<void(Result<HoldingsSnapshot>)>;
 
@@ -283,6 +310,35 @@ public:
           self->strand_,
           [self, query = std::move(query), completion = std::move(completion)]() mutable {
             self->start_bars(std::move(query), std::move(completion));
+          }
+        );
+      },
+      token
+    );
+  }
+
+  /**
+   * Requests the trading calendar from `from` onwards, and caches it.
+   *
+   * **KIS asks that this endpoint be called at most once a day.** Its documentation
+   * is explicit: "(★중요) 국내휴장일조회 … 당사 원장서비스와 연관되어 있어 단시간 내 다수
+   * 호출시 서비스에 영향을 줄 수 있어 가급적 1일 1회 호출 부탁드립니다." The cost of
+   * ignoring that falls on the broker's ledger service, not on this client, so it
+   * cannot be discovered by being rate limited.
+   *
+   * So the answer is cached for the life of the client, and a second call for a
+   * date the cache already covers is answered from it without a request. Pass
+   * `refresh` to fetch again deliberately.
+   */
+  template <typename CompletionToken>
+  auto async_calendar(Date from, bool refresh, CompletionToken&& token) {
+    return net::async_initiate<CompletionToken, void(Result<TradingCalendar>)>(
+      [self = shared_from_this(), from, refresh](auto&& handler) mutable {
+        auto completion = CalendarHandler(std::forward<decltype(handler)>(handler));
+        net::post(
+          self->strand_,
+          [self, from, refresh, completion = std::move(completion)]() mutable {
+            self->start_calendar(from, refresh, std::move(completion));
           }
         );
       },
@@ -579,6 +635,7 @@ private:
   KisConfig config_;
   std::shared_ptr<network::AsyncHttpClient> http_;
   KisRest token_;
+  TradingCalendar calendar_;
   bool refreshing_{false};
   std::deque<TokenHandler> token_waiters_;
 
@@ -993,6 +1050,194 @@ private:
       series.next_cursor_ = format_iso8601_utc(series.bars_.front().timestamp_);
     }
     deliver(std::move(operation->completion_), Result<BarSeries>(std::move(series)));
+  }
+
+  /** One calendar request spanning however many continuation pages it needs. */
+  struct CalendarOperation {
+    Date from_{};
+    TradingCalendar calendar_;
+    std::string search_cursor_;
+    std::string next_cursor_;
+    int pages_{0};
+    CalendarHandler completion_;
+
+    CalendarOperation(Date from, CalendarHandler completion)
+    : from_(from), completion_(std::move(completion)) {}
+  };
+
+  /** Most continuation pages one calendar request may consume. */
+  static constexpr int calendar_page_budget_ = 20;
+
+  /**
+   * Answers from the cache when it covers `from`, and otherwise fetches once.
+   *
+   * The cache exists because of the broker's once-a-day request, not as an
+   * optimization, so it is consulted before anything else and is only bypassed when
+   * the caller asks for a refresh explicitly.
+   */
+  void start_calendar(Date from, bool refresh, CalendarHandler completion) {
+    if (!is_valid_date(from)) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.broker_code_ = "invalid_date";
+      error.message_ = "calendar request requires a valid Gregorian date";
+      deliver(std::move(completion), Result<TradingCalendar>(std::move(error)));
+      return;
+    }
+    if (!refresh && calendar_covers(from)) {
+      deliver(std::move(completion), Result<TradingCalendar>(calendar_));
+      return;
+    }
+
+    auto operation = std::make_shared<CalendarOperation>(from, std::move(completion));
+    operation->calendar_.country_ = Country::KR;
+    ensure_token(
+      TokenHandler(
+        [self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
+          if (token_error) {
+            self->deliver(
+              std::move(operation->completion_), Result<TradingCalendar>(std::move(*token_error))
+            );
+            return;
+          }
+          self->request_calendar(operation);
+        }
+      )
+    );
+  }
+
+  /** Returns whether the cached calendar already answers for `from` onwards. */
+  bool calendar_covers(const Date& from) const {
+    const auto covered = calendar_.covered();
+    return covered && !(from < covered->first) && !(covered->second < from);
+  }
+
+  /** Sends one calendar page, continuing from the cursors KIS returned. */
+  void request_calendar(const std::shared_ptr<CalendarOperation>& operation) {
+    network::HttpRequest request;
+    // The calendar is reference data, the lowest-priority traffic there is.
+    request.group_ = network::RateLimitGroup::REFERENCE;
+    request.method_ = http::verb::get;
+    request.target_ =
+      "/uapi/domestic-stock/v1/quotations/chk-holiday?BASS_DT=" +
+      compact_date(operation->from_) +
+      "&CTX_AREA_NK=" + broker_detail::query_encode(operation->next_cursor_) +
+      "&CTX_AREA_FK=" + broker_detail::query_encode(operation->search_cursor_);
+    request.headers_ = {
+      {"authorization", "Bearer " + token_.access_token_},
+      {"appkey", config_.key()},
+      {"appsecret", config_.secret()},
+      {"tr_id", "CTCA0903R"},
+      {"tr_cont", operation->pages_ == 0 ? "" : "N"},
+      {"custtype", "P"},
+      {"content-type", "application/json; charset=utf-8"},
+    };
+
+    ++operation->pages_;
+    http_->async_request(
+      std::move(request),
+      [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
+        self->handle_calendar_page(operation, std::move(result));
+      }
+    );
+  }
+
+  /** Accumulates one page and either continues or finishes and caches. */
+  void handle_calendar_page(
+    const std::shared_ptr<CalendarOperation>& operation,
+    Result<network::HttpResponse> result
+  ) {
+    const auto before = operation->calendar_.days_.size();
+    const bool more = result && continuation_pending(result.value());
+    std::string search = operation->search_cursor_;
+    std::string next = operation->next_cursor_;
+
+    if (auto failure = parse_calendar_page(std::move(result), operation->calendar_, search, next)) {
+      deliver(
+        std::move(operation->completion_), Result<TradingCalendar>(std::move(*failure))
+      );
+      return;
+    }
+
+    const bool empty_page = operation->calendar_.days_.size() == before;
+    const bool repeated = next == operation->next_cursor_ && search == operation->search_cursor_;
+    if (!more || empty_page || repeated || operation->pages_ >= calendar_page_budget_) {
+      operation->calendar_.received_at_ = std::chrono::system_clock::now();
+      calendar_ = operation->calendar_;
+      deliver(std::move(operation->completion_), Result<TradingCalendar>(calendar_));
+      return;
+    }
+
+    operation->search_cursor_ = std::move(search);
+    operation->next_cursor_ = std::move(next);
+    request_calendar(operation);
+  }
+
+  /**
+   * Parses one calendar page.
+   *
+   * KIS reports four related flags per date — a banking business day, a securities
+   * business day, a market-open day, and a settlement day. Only `opnd_yn` is
+   * normalized, because it is the one KIS itself directs callers to use before
+   * placing an order: "주문을 넣고자 할 경우 개장일여부(opnd_yn)를 사용". The other three
+   * stay unread rather than being folded into one meaning.
+   */
+  static std::optional<BrokerError> parse_calendar_page(
+    Result<network::HttpResponse> result,
+    TradingCalendar& calendar,
+    std::string& search_cursor,
+    std::string& next_cursor
+  ) {
+    auto document = market_document(std::move(result));
+    if (!document) {
+      return std::move(document.error());
+    }
+    try {
+      const auto rows = document.value().if_contains("output");
+      if (!rows || !rows->is_array()) {
+        throw std::runtime_error("missing array field: output");
+      }
+      for (const auto& value : rows->as_array()) {
+        if (!value.is_object()) {
+          throw std::runtime_error("calendar entry is not an object");
+        }
+        const auto& row = value.as_object();
+        const auto date = broker_detail::json_string(row, "bass_dt");
+        if (date.size() != 8) {
+          continue;
+        }
+        TradingDay day;
+        day.date_ = Date{
+          std::stoi(date.substr(0, 4)),
+          static_cast<unsigned>(std::stoi(date.substr(4, 2))),
+          static_cast<unsigned>(std::stoi(date.substr(6, 2))),
+        };
+        day.open_ = broker_detail::json_string(row, "opnd_yn") == "Y";
+        calendar.days_.push_back(day);
+      }
+      read_calendar_cursors(document.value(), search_cursor, next_cursor);
+      return std::nullopt;
+    } catch (const std::exception& exception) {
+      BrokerError error;
+      error.category_ = ErrorCategory::PROTOCOL;
+      error.broker_code_ = "invalid_calendar_response";
+      error.message_ = exception.what();
+      return error;
+    }
+  }
+
+  /** Reads the calendar continuation cursors, which KIS names without the 100 suffix. */
+  static void read_calendar_cursors(
+    const json::object& document,
+    std::string& search_cursor,
+    std::string& next_cursor
+  ) {
+    if (const auto value = document.if_contains("ctx_area_fk"); value && value->is_string()) {
+      search_cursor = std::string(value->as_string());
+    }
+    if (const auto value = document.if_contains("ctx_area_nk"); value && value->is_string()) {
+      next_cursor = std::string(value->as_string());
+    }
   }
 
   /**
@@ -2991,6 +3236,19 @@ public:
     return run<QuoteSnapshot>(
       [&](auto&& sink) { client_->async_quote(std::move(instrument), std::move(sink)); },
       "quote"
+    );
+  }
+
+  /**
+   * Returns the trading calendar from `from` onwards, cached after the first call.
+   *
+   * KIS asks that its holiday endpoint be called at most once a day, so a repeat
+   * call for a covered date is answered from the cache without a request.
+   */
+  Result<TradingCalendar> calendar(Date from, bool refresh = false) {
+    return run<TradingCalendar>(
+      [&](auto&& sink) { client_->async_calendar(from, refresh, std::move(sink)); },
+      "calendar"
     );
   }
 
