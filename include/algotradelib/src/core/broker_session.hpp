@@ -720,6 +720,45 @@ public:
     }
   }
 
+  /** Returns today's upper and lower price bound for one instrument. */
+  Result<PriceLimits> price_limits(InstrumentId instrument) {
+    if constexpr (Caps::has_price_limits) {
+      return Traits::price_limits(*client_, std::move(instrument));
+    } else {
+      static_assert(
+        port_detail::dependent_false<Client>,
+        "this broker does not publish price limits; gate the call with "
+        "BrokerCaps<Client>::has_price_limits"
+      );
+    }
+  }
+
+  /** Returns recent executions for one instrument, newest first. */
+  Result<std::vector<TradePrint>> trades(InstrumentId instrument, int count) {
+    if constexpr (Caps::has_trade_prints) {
+      return Traits::trades(*client_, std::move(instrument), count);
+    } else {
+      static_assert(
+        port_detail::dependent_false<Client>,
+        "this broker does not publish recent executions; gate the call with "
+        "BrokerCaps<Client>::has_trade_prints"
+      );
+    }
+  }
+
+  /** Quotes several instruments in one request, where the broker offers it. */
+  Result<std::vector<QuoteSnapshot>> prices(std::vector<InstrumentId> instruments) {
+    if constexpr (Caps::has_batch_prices) {
+      return Traits::prices(*client_, std::move(instruments));
+    } else {
+      static_assert(
+        port_detail::dependent_false<Client>,
+        "this broker quotes one instrument per request; gate the call with "
+        "BrokerCaps<Client>::has_batch_prices and call quote per instrument"
+      );
+    }
+  }
+
   /** Returns the resting orders on both sides of one instrument's book. */
   Result<DepthSnapshot> depth(InstrumentId instrument) {
     if constexpr (Caps::has_depth) {
