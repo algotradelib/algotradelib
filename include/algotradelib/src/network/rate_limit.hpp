@@ -290,7 +290,6 @@ struct RateLimitGroupStats {
   std::uint64_t admitted_{0};
   std::uint64_t delayed_{0};
   std::uint64_t shed_{0};
-  std::uint64_t rejected_{0};
   std::chrono::nanoseconds waited_{0};
 };
 
@@ -316,6 +315,134 @@ struct RateLimitStats {
   const RateLimitGroupStats& group(RateLimitGroup value) const {
     return groups_[rate_limit_group_index(value)];
   }
+};
+
+/**
+ * Paces one broker connection and records what it did.
+ *
+ * The controller is the stateful, real-time half of the pacer: it owns the
+ * schedule for one application key, reads the steady clock, and keeps the
+ * per-group counters. All pacing arithmetic stays in `RateLimitBucket`, which
+ * takes its instants as arguments and is therefore tested exactly; the controller
+ * is exercised end to end against the local TLS fixture instead.
+ *
+ * It is not synchronized. Every caller is the owning transport's strand, which is
+ * also what serializes the requests being paced.
+ */
+class RateLimitController {
+public:
+  /** Duration used for all pacing arithmetic. */
+  using Duration = RateLimitBucket::Duration;
+
+  /** Constructs a controller for one application key's allowance. */
+  explicit RateLimitController(RateLimitBudget budget = {})
+  : budget_(budget), bucket_(budget) {
+    stats_.burst_ = budget.burst_;
+    stats_.per_second_ = budget.per_second_;
+  }
+
+  /** Returns how long a request of `group` must wait, zero if it may go now. */
+  Duration delay_until(RateLimitGroup group) const {
+    return bucket_.delay_until(RateLimitBucket::ClockType::now(), usable_burst(budget_, group));
+  }
+
+  /**
+   * Admits one request of `group`, advancing the schedule.
+   *
+   * Returns false when the request must still wait, in which case nothing is
+   * consumed and nothing is recorded as admitted.
+   */
+  bool acquire(RateLimitGroup group) {
+    const auto now = RateLimitBucket::ClockType::now();
+    if (!bucket_.try_acquire(now, usable_burst(budget_, group))) {
+      return false;
+    }
+    ++stats_.group(group).admitted_;
+    stats_.available_ = bucket_.available(now, usable_burst(budget_, group));
+    return true;
+  }
+
+  /** Records that a request of `group` had to wait `waited`. */
+  void record_delay(RateLimitGroup group, Duration waited) {
+    auto& counters = stats_.group(group);
+    ++counters.delayed_;
+    counters.waited_ += waited;
+  }
+
+  /** Records that a request of `group` was refused admission locally. */
+  void record_shed(RateLimitGroup group) { ++stats_.group(group).shed_; }
+
+  /**
+   * Holds admission for `duration` without changing the configured allowance.
+   *
+   * For a broker refusal this client's own pacing could not have prevented,
+   * where the capacity is shared with other customers and the remedy is to wait.
+   * Shrinking the budget here would be wrong: the allowance was never the
+   * problem, so the client would pace itself slower for no benefit.
+   *
+   * A refusal is counted globally rather than per group. At the point a broker
+   * refusal is recognized the request's group is no longer in hand, and
+   * inventing an attribution would be worse than not reporting one; the per-group
+   * counters that matter for pacing — admitted, delayed, and shed — are recorded
+   * where the group *is* known.
+   */
+  void hold(Duration duration) {
+    ++stats_.broker_rejections_;
+    bucket_.cool_down(RateLimitBucket::ClockType::now(), duration);
+  }
+
+  /**
+   * Shrinks the allowance to what the broker reported and then holds.
+   *
+   * For a refusal that means the configured budget was simply larger than the
+   * broker's. A reported allowance is the best correction available, because it
+   * is the number the broker is actually enforcing.
+   */
+  void shrink(int burst, int per_second, Duration retry) {
+    ++stats_.broker_rejections_;
+    apply_budget(burst, per_second);
+    bucket_.observe_limit(RateLimitBucket::ClockType::now(), burst, per_second, retry);
+  }
+
+  /**
+   * Halves the sustained rate and holds, for a refusal with no reported allowance.
+   *
+   * KIS reports no allowance with a rate-limit refusal, so there is nothing to
+   * correct *to*. Halving is a heuristic, named as one: it converges downward
+   * quickly without ever reaching zero, and a caller who knows the real number
+   * should configure it instead of relying on this.
+   */
+  void back_off(Duration retry) {
+    ++stats_.broker_rejections_;
+    const int reduced = budget_.per_second_ > 1 ? budget_.per_second_ / 2 : 1;
+    const int burst = budget_.burst_ > reduced ? reduced : budget_.burst_;
+    apply_budget(burst > 0 ? burst : 1, reduced);
+    bucket_.observe_limit(
+      RateLimitBucket::ClockType::now(), budget_.burst_, budget_.per_second_, retry
+    );
+  }
+
+  /** Returns the allowance currently in force. */
+  const RateLimitBudget& budget() const noexcept { return budget_; }
+
+  /** Returns what the pacer has admitted, delayed, shed, and been refused. */
+  const RateLimitStats& stats() const noexcept { return stats_; }
+
+private:
+  /** Records a new allowance, keeping the reserve smaller than the burst. */
+  void apply_budget(int burst, int per_second) {
+    budget_.burst_ = burst;
+    budget_.per_second_ = per_second;
+    if (budget_.trading_reserve_ >= burst) {
+      budget_.trading_reserve_ = burst > 1 ? burst - 1 : 0;
+    }
+    stats_.burst_ = burst;
+    stats_.per_second_ = per_second;
+  }
+
+  RateLimitBudget budget_;
+  RateLimitBucket bucket_;
+  RateLimitStats stats_{};
 };
 
 } // namespace network

@@ -1,15 +1,23 @@
 #include <algotradelib/kis>
 #include <algotradelib/src/network/rate_limit.hpp>
 
+#include "local_https_server.hpp"
+
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/ssl/context.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
+#include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 using namespace algotradelib;
 using network::RateLimitBudget;
 using network::RateLimitGroup;
 using network::usable_burst;
+using network::RateLimitBudget;
 
 namespace {
 
@@ -266,4 +274,190 @@ TEST_CASE("the KIS rate-limit classification table covers both layers") {
   // An ordinary declared failure stays unclassified.
   REQUIRE(kis_rate_limit_layer("APBK0013", "주문 전송 완료 되었습니다.") == KisRateLimitLayer::NONE);
   REQUIRE(kis_rate_limit_layer("", "") == KisRateLimitLayer::NONE);
+}
+
+
+TEST_CASE(
+  "a trading request is served before a queued polling backlog",
+  "[rate-limit][tls][priority]"
+) {
+  test::LocalHttpsServer server;
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+  auto client = std::make_shared<network::AsyncHttpClient>(
+    ioc.get_executor(), context, "localhost", server.port()
+  );
+
+  std::vector<std::string> bodies;
+  const auto send = [&](const std::string& target, RateLimitGroup group) {
+    network::HttpRequest request;
+    request.target_ = target;
+    request.group_ = group;
+    client->async_request(std::move(request), [&bodies](Result<network::HttpResponse> result) {
+      REQUIRE(result);
+      bodies.push_back(result.value().body());
+    });
+  };
+
+  // A polling loop fills the queue, and only then does a cancellation arrive.
+  send("/poll-1", RateLimitGroup::MARKET_DATA);
+  send("/poll-2", RateLimitGroup::MARKET_DATA);
+  send("/poll-3", RateLimitGroup::MARKET_DATA);
+  send("/cancel", RateLimitGroup::TRADING);
+  send("/poll-4", RateLimitGroup::MARKET_DATA);
+
+  ioc.run();
+
+  REQUIRE(bodies.size() == 5);
+  REQUIRE(bodies.front() == "/cancel");
+
+  // Equal priority keeps arrival order, so the backlog is otherwise untouched.
+  REQUIRE(
+    bodies == std::vector<std::string>{"/cancel", "/poll-1", "/poll-2", "/poll-3", "/poll-4"}
+  );
+  REQUIRE(server.connectionCount() == 1);
+}
+
+TEST_CASE(
+  "an unpaced transport keeps strict arrival order",
+  "[rate-limit][tls][priority]"
+) {
+  // One traffic class must behave exactly as the FIFO queue did before priority
+  // existed, which is what keeps every merged transport guarantee intact.
+  test::LocalHttpsServer server;
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+  auto client = std::make_shared<network::AsyncHttpClient>(
+    ioc.get_executor(), context, "localhost", server.port()
+  );
+
+  std::vector<std::string> bodies;
+  for (const std::string target : {"/a", "/b", "/c"}) {
+    network::HttpRequest request;
+    request.target_ = target;
+    request.group_ = RateLimitGroup::MARKET_DATA;
+    client->async_request(std::move(request), [&bodies](Result<network::HttpResponse> result) {
+      REQUIRE(result);
+      bodies.push_back(result.value().body());
+    });
+  }
+
+  ioc.run();
+  REQUIRE(bodies == std::vector<std::string>{"/a", "/b", "/c"});
+}
+
+TEST_CASE(
+  "pacing delays requests past the burst and records the wait",
+  "[rate-limit][tls][pacing]"
+) {
+  test::LocalHttpsServer server;
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+
+  network::HttpClientOptions options;
+  options.rate_limit_ = RateLimitBudget{1, 50, 0};  // one now, then one every 20ms
+  auto client = std::make_shared<network::AsyncHttpClient>(
+    ioc.get_executor(), context, "localhost", server.port(), options
+  );
+
+  int completed = 0;
+  for (const std::string target : {"/one", "/two", "/three"}) {
+    network::HttpRequest request;
+    request.target_ = target;
+    request.group_ = RateLimitGroup::MARKET_DATA;
+    client->async_request(std::move(request), [&completed](Result<network::HttpResponse> result) {
+      REQUIRE(result);
+      ++completed;
+    });
+  }
+
+  const auto began = std::chrono::steady_clock::now();
+  ioc.run();
+  const auto elapsed = std::chrono::steady_clock::now() - began;
+
+  REQUIRE(completed == 3);
+
+  // Two of the three had to wait a full interval each.
+  REQUIRE(elapsed >= std::chrono::milliseconds(40));
+
+  const auto* stats = client->rate_limits() ? &client->rate_limits()->stats() : nullptr;
+  REQUIRE(stats != nullptr);
+  REQUIRE(stats->group(RateLimitGroup::MARKET_DATA).admitted_ == 3);
+  REQUIRE(stats->group(RateLimitGroup::MARKET_DATA).delayed_ == 2);
+  REQUIRE(stats->group(RateLimitGroup::MARKET_DATA).waited_ > std::chrono::nanoseconds::zero());
+}
+
+TEST_CASE(
+  "a rate-limited response is surfaced with its hints and never retried",
+  "[rate-limit][tls][retry]"
+) {
+  test::LocalHttpsServer server;
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+
+  network::HttpClientOptions options;
+  options.rate_limit_ = RateLimitBudget{8, 8, 2};
+  auto client = std::make_shared<network::AsyncHttpClient>(
+    ioc.get_executor(), context, "localhost", server.port(), options
+  );
+
+  // An order POST is the case that matters: a refused order must not be replayed.
+  network::HttpRequest request;
+  request.method_ = http::verb::post;
+  request.target_ = "/rate-limited";
+  request.body_ = "{}";
+  request.group_ = RateLimitGroup::TRADING;
+
+  std::optional<network::HttpResponse> response;
+  client->async_request(std::move(request), [&response](Result<network::HttpResponse> result) {
+    REQUIRE(result);
+    response = std::move(result.value());
+  });
+  ioc.run();
+
+  REQUIRE(response.has_value());
+  REQUIRE(response->result_int() == 429);
+  REQUIRE(server.requestCount("/rate-limited") == 1);
+
+  // The transport surfaces the refusal; the broker adapter classifies it.
+  auto error = broker_detail::http_error(*response);
+  REQUIRE(error.category_ == ErrorCategory::RATE_LIMIT);
+  REQUIRE(error.retry_after_.has_value());
+  REQUIRE(*error.retry_after_ == std::chrono::seconds(1));
+  REQUIRE(error.rate_limit_.has_value());
+  REQUIRE(*error.rate_limit_ == 3);
+}
+
+TEST_CASE("a reported allowance corrects the pacer, an unreported one halves it") {
+  network::RateLimitController controller(RateLimitBudget{8, 8, 2});
+  REQUIRE(controller.budget().per_second_ == 8);
+  REQUIRE(controller.stats().broker_rejections_ == 0);
+
+  // A broker that names its allowance is believed.
+  controller.shrink(3, 3, std::chrono::milliseconds(1));
+  REQUIRE(controller.budget().burst_ == 3);
+  REQUIRE(controller.budget().per_second_ == 3);
+  REQUIRE(controller.budget().trading_reserve_ == 2);
+  REQUIRE(controller.stats().broker_rejections_ == 1);
+
+  // A broker that names none is backed off from, halving each time.
+  controller.back_off(std::chrono::milliseconds(1));
+  REQUIRE(controller.budget().per_second_ == 1);
+  REQUIRE(controller.budget().burst_ == 1);
+  REQUIRE(controller.budget().trading_reserve_ == 0);
+  REQUIRE(controller.stats().broker_rejections_ == 2);
+
+  // Backing off never reaches zero, which would stop the client permanently.
+  controller.back_off(std::chrono::milliseconds(1));
+  REQUIRE(controller.budget().per_second_ == 1);
+
+  // A hold leaves the allowance alone; the capacity was never this client's.
+  network::RateLimitController shared(RateLimitBudget{8, 8, 2});
+  shared.hold(std::chrono::milliseconds(1));
+  REQUIRE(shared.budget().per_second_ == 8);
+  REQUIRE(shared.stats().broker_rejections_ == 1);
 }

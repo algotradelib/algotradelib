@@ -180,6 +180,27 @@ private:
         return;
       }
 
+      if (target == "/rate-limited") {
+        // A broker refusal carrying both hints Toss documents on its 429: the
+        // allowance being enforced, and how long to wait.
+        http::response<http::string_body> limited(
+          http::status::too_many_requests, request.version()
+        );
+        limited.set(http::field::server, "algotradelib-test");
+        limited.set(http::field::content_type, "application/json");
+        limited.set("Retry-After", "1");
+        limited.set("X-RateLimit-Limit", "3");
+        limited.set("X-RateLimit-Remaining", "0");
+        limited.keep_alive(request.keep_alive());
+        limited.body() = R"({"error":{"code":"rate-limit-exceeded","message":"slow down"}})";
+        limited.prepare_payload();
+        http::write(stream, limited, ec);
+        if (ec) {
+          return;
+        }
+        continue;
+      }
+
       http::response<http::string_body> response(http::status::ok, request.version());
       response.set(http::field::server, "algotradelib-test");
       response.set(http::field::content_type, "text/plain");

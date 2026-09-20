@@ -2,6 +2,8 @@
 
 #include <algotradelib/core>
 
+#include "./rate_limit.hpp"
+
 #include <boost/asio/any_completion_handler.hpp>
 #include <boost/asio/async_result.hpp>
 #include <boost/asio/associated_executor.hpp>
@@ -37,13 +39,22 @@ namespace network {
 /** HTTP response type returned by the transport clients. */
 using HttpResponse = http::response<http::string_body>;
 
-/** Value-owned HTTP request accepted by the asynchronous transport. */
+/**
+ * Value-owned HTTP request accepted by the asynchronous transport.
+ *
+ * `group_` is the request's traffic class, used for admission and for queue
+ * priority. It is assigned by the broker adapter that builds the request, never
+ * by the caller, so a strategy cannot label its own chart polling as trading
+ * traffic. The default is the most restricted class, so an unlabelled request
+ * can never displace an order.
+ */
 struct HttpRequest {
   http::verb method_{http::verb::get};
   std::string target_{"/"};
   std::string body_;
   std::vector<std::pair<std::string, std::string>> headers_;
   int version_{11};
+  RateLimitGroup group_{RateLimitGroup::REFERENCE};
 };
 
 /** Resource and deadline limits for HTTP transports. */
@@ -51,6 +62,15 @@ struct HttpClientOptions {
   std::chrono::seconds timeout_{30};
   std::size_t body_limit_{8 * 1024 * 1024};
   std::size_t queue_limit_{1024};
+
+  /**
+   * Request allowance for this connection, or empty to issue requests unpaced.
+   *
+   * Empty is the default so that pacing is something a broker adapter turns on
+   * deliberately with a budget it can justify, rather than something every
+   * transport user inherits with a number the library guessed.
+   */
+  std::optional<RateLimitBudget> rate_limit_;
 };
 
 /** Converts a Boost transport error into a broker-neutral error. */
@@ -244,7 +264,27 @@ public:
     HttpClientOptions options = {}
   )
   : strand_(net::make_strand(std::move(executor))), resolver_(strand_), resolve_timer_(strand_),
-    context_(context), host_(std::move(host)), port_(std::move(port)), options_(options) {}
+    admission_timer_(strand_), context_(context), host_(std::move(host)),
+    port_(std::move(port)), options_(options) {
+    if (options_.rate_limit_) {
+      limiter_.emplace(*options_.rate_limit_);
+    }
+  }
+
+  /**
+   * Returns this connection's pacer, or null when requests are unpaced.
+   *
+   * Callers must use it only from this client's strand, which is where every
+   * response handler already runs.
+   */
+  RateLimitController* rate_limits() noexcept {
+    return limiter_ ? &*limiter_ : nullptr;
+  }
+
+  /** Returns this connection's pacer, or null when requests are unpaced. */
+  const RateLimitController* rate_limits() const noexcept {
+    return limiter_ ? &*limiter_ : nullptr;
+  }
 
   /** Initiates a queued request and completes with a response or error. */
   template <typename CompletionToken>
@@ -269,6 +309,7 @@ public:
       self->stopped_ = true;
       self->resolver_.cancel();
       self->resolve_timer_.cancel();
+      self->admission_timer_.cancel();
       self->disconnect();
       BrokerError error;
       error.category_ = ErrorCategory::CANCELLED;
@@ -305,6 +346,7 @@ private:
   net::strand<net::any_io_executor> strand_;
   tcp::resolver resolver_;
   net::steady_timer resolve_timer_;
+  net::steady_timer admission_timer_;
   ssl::context& context_;
   std::unique_ptr<beast::ssl_stream<beast::tcp_stream>> stream_;
   beast::flat_buffer buffer_;
@@ -315,6 +357,8 @@ private:
   bool stopped_{false};
   bool resolve_timed_out_{false};
   std::deque<Pending> queue_;
+  std::optional<RateLimitController> limiter_;
+  std::optional<std::chrono::steady_clock::time_point> waiting_since_;
   std::optional<http::request<http::string_body>> active_request_;
   std::optional<http::response_parser<http::string_body>> parser_;
 
@@ -328,6 +372,9 @@ private:
       return;
     }
     if (queue_.size() >= options_.queue_limit_) {
+      if (limiter_) {
+        limiter_->record_shed(pending.request_.group_);
+      }
       BrokerError error;
       error.category_ = ErrorCategory::TRANSPORT;
       error.broker_code_ = "queue_full";
@@ -335,8 +382,36 @@ private:
       complete(std::move(pending.handler_), Result<HttpResponse>(std::move(error)));
       return;
     }
-    queue_.push_back(std::move(pending));
+    queue_.insert(insertion_point(pending.request_.group_), std::move(pending));
     pump();
+  }
+
+  /**
+   * Returns where a request of `group` belongs in the pending queue.
+   *
+   * Higher priority is served first, and equal priority keeps arrival order, so
+   * a queue carrying one traffic class behaves exactly as a FIFO queue does.
+   *
+   * The front request is skipped while it is on the wire. Reordering around an
+   * in-flight request would detach it from the response being read for it, which
+   * is the one thing priority must never be allowed to do.
+   */
+  std::deque<Pending>::iterator insertion_point(RateLimitGroup group) {
+    auto position = queue_.begin();
+    if (front_in_flight() && position != queue_.end()) {
+      ++position;
+    }
+    const int priority = rate_limit_priority(group);
+    while (position != queue_.end() &&
+           rate_limit_priority(position->request_.group_) >= priority) {
+      ++position;
+    }
+    return position;
+  }
+
+  /** Returns whether the front request has already been committed to the wire. */
+  bool front_in_flight() const noexcept {
+    return state_ == State::WRITING || state_ == State::READING;
   }
 
   void pump() {
@@ -345,9 +420,47 @@ private:
     }
     if (state_ == State::DISCONNECTED) {
       start_resolve();
-    } else if (state_ == State::READY) {
-      start_write();
+      return;
     }
+    if (state_ != State::READY) {
+      return;
+    }
+    if (!limiter_) {
+      start_write();
+      return;
+    }
+
+    // Admission is evaluated for whichever request is at the front *now*, so a
+    // trading request that arrives while a polling request is waiting is
+    // reconsidered immediately rather than inheriting the wait it did not earn.
+    const auto group = queue_.front().request_.group_;
+    const auto delay = limiter_->delay_until(group);
+    if (delay > RateLimitController::Duration::zero()) {
+      if (!waiting_since_) {
+        waiting_since_ = std::chrono::steady_clock::now();
+      }
+      admission_timer_.expires_after(delay);
+      admission_timer_.async_wait([self = shared_from_this()](beast::error_code ec) {
+        if (ec) {
+          return;
+        }
+        self->pump();
+      });
+      return;
+    }
+
+    if (waiting_since_) {
+      limiter_->record_delay(
+        group,
+        std::chrono::duration_cast<RateLimitController::Duration>(
+          std::chrono::steady_clock::now() - *waiting_since_
+        )
+      );
+      waiting_since_.reset();
+    }
+    admission_timer_.cancel();
+    limiter_->acquire(group);
+    start_write();
   }
 
   void start_resolve() {
