@@ -229,7 +229,16 @@ enum class ErrorCategory {
   INVALID_ARGUMENT,
 };
 
-/** Structured error returned by transport and broker operations. */
+/**
+ * Structured error returned by transport and broker operations.
+ *
+ * `retry_after_` and `rate_limit_` are populated only for
+ * `ErrorCategory::RATE_LIMIT`, and only where the broker reported them.
+ * `rate_limit_` is the allowance the broker says it is enforcing, in requests per
+ * second, which is a better correction than any guess a client could make. A
+ * broker that reports neither leaves both empty rather than having a number
+ * invented for it.
+ */
 struct BrokerError {
   ErrorCategory category_{ErrorCategory::PROTOCOL};
   int http_status_{0};
@@ -237,6 +246,7 @@ struct BrokerError {
   std::string request_id_;
   std::string message_;
   std::optional<std::chrono::seconds> retry_after_;
+  std::optional<int> rate_limit_;
 };
 
 /** Value-or-error result with no exception required on the success path. */

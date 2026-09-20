@@ -14,18 +14,46 @@
 
 namespace algotradelib::broker_detail {
 
-inline std::optional<std::chrono::seconds> retry_after(const network::HttpResponse& response) {
-  const auto value = response.base().find("Retry-After");
+/** Reads a whole-number header, or nothing when it is absent or malformed. */
+inline std::optional<std::int64_t> integer_header(
+  const network::HttpResponse& response,
+  std::string_view name
+) {
+  const auto value = response.base().find(name);
   if (value == response.base().end()) {
     return std::nullopt;
   }
   const auto text = value->value();
-  std::int64_t seconds{0};
-  const auto parsed = std::from_chars(text.data(), text.data() + text.size(), seconds);
-  if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || seconds < 0) {
+  std::int64_t number{0};
+  const auto parsed = std::from_chars(text.data(), text.data() + text.size(), number);
+  if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || number < 0) {
     return std::nullopt;
   }
-  return std::chrono::seconds(seconds);
+  return number;
+}
+
+inline std::optional<std::chrono::seconds> retry_after(const network::HttpResponse& response) {
+  const auto seconds = integer_header(response, "Retry-After");
+  if (!seconds) {
+    return std::nullopt;
+  }
+  return std::chrono::seconds(*seconds);
+}
+
+/**
+ * Reads the allowance a broker says it is enforcing, in requests per second.
+ *
+ * Toss documents `X-RateLimit-Limit` as the burst capacity per second on its
+ * rate-limit response. It is treated as observed-when-present and never
+ * required, because the header is documented on the refusal and not promised on
+ * a successful response.
+ */
+inline std::optional<int> reported_rate_limit(const network::HttpResponse& response) {
+  const auto limit = integer_header(response, "X-RateLimit-Limit");
+  if (!limit || *limit < 1 || *limit > std::numeric_limits<int>::max()) {
+    return std::nullopt;
+  }
+  return static_cast<int>(*limit);
 }
 
 inline BrokerError http_error(const network::HttpResponse& response) {
@@ -35,7 +63,10 @@ inline BrokerError http_error(const network::HttpResponse& response) {
     ErrorCategory::RATE_LIMIT :
     ErrorCategory::HTTP;
   error.message_ = response.body();
-  error.retry_after_ = retry_after(response);
+  if (error.category_ == ErrorCategory::RATE_LIMIT) {
+    error.retry_after_ = retry_after(response);
+    error.rate_limit_ = reported_rate_limit(response);
+  }
   return error;
 }
 
