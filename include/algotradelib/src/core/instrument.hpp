@@ -132,14 +132,36 @@ struct TickBand {
  * its rules, which is why it is data a caller can replace rather than logic
  * compiled in, and why `source_` records what it came from.
  *
- * An empty `bands_` means "no constraint", which is the correct description of a
- * market quoted in free decimals.
+ * `kind_` distinguishes the two reasons a rule can have no bands, which behave
+ * differently and must not be confused: a market that genuinely imposes no grid, and
+ * an instrument this library has no table for. The second refuses to round rather
+ * than passing a price through unchanged, because a caller that cannot round cannot
+ * safely send a computed price.
  */
 struct PriceRule {
+  /** Why a rule has no bands, which is not always the same reason. */
+  enum class Kind {
+    /** The bands below describe the market's grid. */
+    STATED,
+    /** The market quotes in free decimals and imposes no grid. */
+    UNCONSTRAINED,
+    /**
+     * The library has no grid for this instrument and will not guess one.
+     *
+     * KRX prices exchange-traded funds and notes on a different grid from cash
+     * equities, and neither broker publishes either, so an ETF gets this rather than
+     * the equity table. Attaching the wrong grid would be worse than attaching none:
+     * it would round a price onto a ladder the exchange does not use and the order
+     * would be rejected, with the library having confidently produced the price.
+     */
+    UNKNOWN,
+  };
+
+  Kind kind_{Kind::UNKNOWN};
   std::vector<TickBand> bands_;
   std::string source_;
 
-  /** Returns the tick that applies at `price`, or nothing when unconstrained. */
+  /** Returns the tick that applies at `price`, or nothing when there is no grid. */
   std::optional<Decimal64> tick_at(const Decimal64& price) const {
     std::optional<Decimal64> tick;
     for (const auto& band : bands_) {
@@ -151,14 +173,22 @@ struct PriceRule {
     return tick;
   }
 
-  /** Returns whether `price` already sits on the grid. */
-  bool on_tick(const Decimal64& price) const {
+  /**
+   * Returns whether `price` sits on the grid, or nothing when that is unknown.
+   *
+   * An unknown grid answers neither yes nor no. Answering yes would let an off-grid
+   * price through a check that appeared to have passed.
+   */
+  std::optional<bool> on_tick(const Decimal64& price) const {
+    if (kind_ == Kind::UNKNOWN) {
+      return std::nullopt;
+    }
     const auto tick = tick_at(price);
     if (!tick) {
       return true;
     }
-    return remainder(price, *tick).has_value() &&
-      remainder(price, *tick)->coefficient() == 0;
+    const auto rest = remainder(price, *tick);
+    return rest.has_value() && rest->coefficient() == 0;
   }
 
   /**
@@ -167,8 +197,14 @@ struct PriceRule {
    * A buy rounds **down** and a sell rounds **up**, so rounding never improves a
    * price into territory the caller did not ask for: a buy limit that rounded up
    * would be willing to pay more than instructed.
+   *
+   * Returns nothing when the grid is unknown. A caller that cannot round cannot
+   * safely send a computed price, and saying so is the only honest answer.
    */
   std::optional<Decimal64> round_to_tick(const Decimal64& price, OrderSide side) const {
+    if (kind_ == Kind::UNKNOWN) {
+      return std::nullopt;
+    }
     const auto tick = tick_at(price);
     if (!tick) {
       return price;
@@ -193,6 +229,7 @@ struct PriceRule {
   /** Returns the KRX cash-equity grid revised in January 2023. */
   static PriceRule krx_equity() {
     PriceRule rule;
+    rule.kind_ = Kind::STATED;
     rule.source_ = "KRX cash equity tick table, 2023-01 revision (library-maintained)";
     rule.bands_ = {
       TickBand{Decimal64::parse("0"), Decimal64::parse("1")},
@@ -209,7 +246,21 @@ struct PriceRule {
   /** Returns a rule imposing no grid, for a market quoted in free decimals. */
   static PriceRule unconstrained() {
     PriceRule rule;
+    rule.kind_ = Kind::UNCONSTRAINED;
     rule.source_ = "no exchange price grid";
+    return rule;
+  }
+
+  /**
+   * Returns a rule stating that this library has no grid for the instrument.
+   *
+   * `reason` records why, so a caller reading `source_` learns what is missing rather
+   * than only that something is.
+   */
+  static PriceRule unknown(std::string reason) {
+    PriceRule rule;
+    rule.kind_ = Kind::UNKNOWN;
+    rule.source_ = std::move(reason);
     return rule;
   }
 
@@ -231,10 +282,45 @@ private:
 };
 
 /**
+ * Returns the price grid this library has for an instrument of `type` in `country`.
+ *
+ * Both adapters choose through this, so the decision has one definition. Cash
+ * equities and the share-like types listed on KRX get the equity ladder; funds,
+ * notes, warrants, and anything unrecognized get an unknown grid, because KRX prices
+ * them differently and neither broker publishes the table.
+ */
+inline PriceRule price_rule_for(Country country, SecurityType type) {
+  if (country != Country::KR) {
+    return PriceRule::unconstrained();
+  }
+  switch (type) {
+    case SecurityType::STOCK:
+    case SecurityType::FOREIGN_STOCK:
+    case SecurityType::DEPOSITARY_RECEIPT:
+    case SecurityType::INFRASTRUCTURE_FUND:
+    case SecurityType::REIT:
+      return PriceRule::krx_equity();
+    case SecurityType::ETF:
+    case SecurityType::FOREIGN_ETF:
+    case SecurityType::ETN:
+      return PriceRule::unknown(
+        "KRX prices funds and notes on a ladder this library does not carry"
+      );
+    case SecurityType::STOCK_WARRANT:
+    case SecurityType::UNKNOWN:
+      break;
+  }
+  return PriceRule::unknown("no price grid is known for this security type");
+}
+
+/**
  * Static reference data for one instrument.
  *
- * Everything a broker may omit is optional. `price_rule_` is the library's own
- * grid rather than the broker's, because no broker publishes one.
+ * Everything a broker may omit is optional. `price_rule_` is the library's own grid
+ * rather than the broker's, because no broker publishes one — and it depends on what
+ * the instrument *is*, not only on where it trades: KRX prices funds and notes on a
+ * different ladder from cash equities, so those arrive with an unknown grid rather
+ * than the equity one.
  */
 struct Instrument {
   InstrumentId id_;

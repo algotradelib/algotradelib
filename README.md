@@ -307,12 +307,18 @@ is bounded by a page budget and stops on an empty page.
 
 ### Two conventions that prevent a silent lookahead
 
-**`Bar::stamp_` says which edge of its period the timestamp marks.** Toss stamps a
-minute bar at its close and a daily bar at local midnight; KIS reports a period bar
-by trading date and a minute bar by execution time. The convention travels in the
-value because a timestamp alone cannot reveal it, and reading one as the other is a
-lookahead. `BarSeries::ascending()` makes the ordering invariant checkable — both
+**`BarSeries::stamp_` says which edge of its periods the timestamps mark.** Toss
+stamps a minute bar at its close and a daily bar at local midnight; KIS reports a
+period bar by trading date and a minute bar by execution time. The convention travels
+in the value because a timestamp alone cannot reveal it, and reading one as the other
+is a lookahead. `BarSeries::ascending()` makes the ordering invariant checkable — both
 brokers send newest first and the adapter reverses once.
+
+The interval, the stamp convention, and the currency live on the series rather than on
+each bar, because all three are constant across one. A `Bar` is therefore 120 bytes of
+prices and a timestamp and nothing else — still an exact-decimal value type for the
+wire and for accounting, not a layout for modelling. Converting a series into columnar
+floating-point storage is `market-analytics`'s job, at one documented boundary.
 
 **`Bar::open_` is optional.** A trading day can produce no execution at all, which
 KIS reports with `mod_yn`. An absent open is neither zero nor the previous close.
@@ -320,18 +326,35 @@ KIS reports with `mod_yn`. An absent open is neither zero nor the previous close
 ### The price grid is the library's own
 
 **Neither broker publishes tick size anywhere in its API.** `PriceRule` is therefore
-a table this library maintains, carried on `Instrument::price_rule_` and available
-directly as `PriceRule::krx_equity()`. It records its own `source_` so a stale table
-is visible rather than assumed, and it is data a caller can replace.
+a table this library maintains, carried on `Instrument::price_rule_`. It records its
+own `source_` so a stale table is visible rather than assumed, and it is data a caller
+can replace.
 
 ```cpp
-const auto rule = PriceRule::krx_equity();
-auto limit = rule.round_to_tick(computed_price, OrderSide::BUY);
+const auto& rule = instrument.price_rule_;            // depends on what it is
+if (auto limit = rule.round_to_tick(computed_price, OrderSide::BUY)) {
+  order.price_ = *limit;
+}
 ```
 
 A buy rounds **down** and a sell rounds **up**, so rounding never improves a price
-past the instruction. ETF and ETN grids are deliberately absent rather than guessed:
-a wrong tick gets an order rejected.
+past the instruction.
+
+`round_to_tick` returns an **optional**, and that is the important part. A rule has
+three states:
+
+| `kind_` | Meaning | `round_to_tick` |
+| --- | --- | --- |
+| `STATED` | the bands describe the market's grid | rounds |
+| `UNCONSTRAINED` | the market quotes in free decimals | returns the price unchanged |
+| `UNKNOWN` | this library has no table for the instrument | **returns nothing** |
+
+KRX prices funds and notes on a different ladder from cash equities and neither broker
+publishes either, so an ETF or ETN arrives with `UNKNOWN` rather than the equity table.
+Attaching the equity grid would be worse than attaching none: it would round onto a
+ladder the exchange does not use and the order would be rejected, with the library
+having confidently produced the price. A default-constructed rule is `UNKNOWN` too, so
+a rule that was never set cannot silently approve anything.
 
 ### What differs between the brokers
 

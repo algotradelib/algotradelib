@@ -588,6 +588,7 @@ private:
    */
   struct BarOperation {
     BarQuery query_;
+    Currency currency_;
     std::vector<Bar> descending_;
     std::optional<std::string> before_;
     std::optional<std::string> last_cursor_;
@@ -698,7 +699,7 @@ private:
   ) {
     std::optional<std::string> cursor;
     auto appended = parse_bars_page(
-      std::move(result), operation->query_, operation->descending_, cursor
+      std::move(result), operation->query_, operation->descending_, cursor, operation->currency_
     );
     if (appended) {
       deliver(std::move(operation->completion_), Result<BarSeries>(std::move(*appended)));
@@ -734,7 +735,8 @@ private:
     Result<network::HttpResponse> result,
     const BarQuery& query,
     std::vector<Bar>& into,
-    std::optional<std::string>& cursor
+    std::optional<std::string>& cursor,
+    Currency& currency
   ) {
     if (!result) {
       return std::move(result.error());
@@ -759,7 +761,16 @@ private:
         if (!value.is_object()) {
           throw std::runtime_error("candle entry is not an object");
         }
-        into.push_back(parse_bar(value.as_object(), query));
+        const auto& row = value.as_object();
+        // The currency belongs to the series, so it is read once and then checked:
+        // a page that changed currency mid-series would not be one series.
+        const auto stated = Currency(broker_detail::json_string(row, "currency"));
+        if (into.empty() && before == 0) {
+          currency = stated;
+        } else if (!(stated == currency)) {
+          throw std::runtime_error("candle currency changed within one series");
+        }
+        into.push_back(parse_bar(row, query));
       }
       if (into.size() == before) {
         cursor.reset();
@@ -789,20 +800,18 @@ private:
    * no timestamp can reveal.
    */
   static Bar parse_bar(const json::object& row, const BarQuery& query) {
+    static_cast<void>(query);
     Bar bar;
     const auto timestamp = parse_iso8601_timestamp(broker_detail::json_string(row, "timestamp"));
     if (!timestamp) {
       throw std::runtime_error("invalid candle timestamp");
     }
     bar.timestamp_ = *timestamp;
-    bar.interval_ = query.interval_;
-    bar.stamp_ = query.interval_ == BarInterval::ONE_MINUTE ? BarStamp::CLOSE : BarStamp::OPEN;
     bar.open_ = Decimal64::parse(broker_detail::json_string(row, "openPrice"));
     bar.high_ = Decimal64::parse(broker_detail::json_string(row, "highPrice"));
     bar.low_ = Decimal64::parse(broker_detail::json_string(row, "lowPrice"));
     bar.close_ = Decimal64::parse(broker_detail::json_string(row, "closePrice"));
     bar.volume_ = Decimal64::parse(broker_detail::json_string(row, "volume"));
-    bar.currency_ = Currency(broker_detail::json_string(row, "currency"));
     return bar;
   }
 
@@ -819,6 +828,12 @@ private:
     BarSeries series;
     series.instrument_ = operation->query_.instrument_;
     series.interval_ = operation->query_.interval_;
+    // Toss stamps a one-minute bar at the instant it closed, aggregating
+    // `[t - 1m, t)`, and a one-day bar at local midnight, which is its open.
+    series.stamp_ = operation->query_.interval_ == BarInterval::ONE_MINUTE ?
+      BarStamp::CLOSE :
+      BarStamp::OPEN;
+    series.currency_ = operation->currency_;
     series.adjusted_ = operation->query_.adjusted_;
     series.received_at_ = std::chrono::system_clock::now();
 
@@ -905,9 +920,8 @@ private:
       instrument.listed_on_ = optional_calendar_date(row, "listDate");
       instrument.delisted_on_ = optional_calendar_date(row, "delistDate");
       instrument.shares_outstanding_ = nullable_decimal(row, "sharesOutstanding");
-      instrument.price_rule_ = instrument.id_.country_ == Country::KR ?
-        PriceRule::krx_equity() :
-        PriceRule::unconstrained();
+      instrument.price_rule_ =
+        price_rule_for(instrument.id_.country_, instrument.type_);
       return Result<Instrument>(std::move(instrument));
     } catch (const std::exception& exception) {
       return Result<Instrument>(market_error("invalid_reference_response", exception));

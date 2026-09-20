@@ -78,18 +78,21 @@ enum class BarStamp {
  * `open_` is optional because a trading day can produce no trade at all, which
  * KIS reports with `mod_yn`. An absent open means the broker stated none, never
  * zero, and never the previous close.
+ *
+ * A bar carries no interval, stamp convention, or currency of its own. All three are
+ * constant across a series — an instrument does not change currency between bars,
+ * and a series has one period and one stamping rule — so they live on `BarSeries`.
+ * Repeating them per bar would cost sixteen bytes each and, worse, allow a series
+ * whose bars disagreed with it.
  */
 struct Bar {
   std::chrono::system_clock::time_point timestamp_;
-  BarStamp stamp_{BarStamp::CLOSE};
-  BarInterval interval_{BarInterval::ONE_DAY};
   std::optional<Decimal64> open_;
   Decimal64 high_;
   Decimal64 low_;
   Decimal64 close_;
   Decimal64 volume_;
   std::optional<Decimal64> traded_value_;
-  Currency currency_;
 };
 
 /**
@@ -99,10 +102,15 @@ struct Bar {
  * that everything above it can assume ascending time. `adjusted_` records whether
  * the prices account for corporate actions, because the two brokers spell that
  * request differently and a caller cannot otherwise tell what it received.
+ *
+ * `interval_`, `stamp_`, and `currency_` are stated once here rather than on every
+ * bar, because they are properties of the series and not of its individual periods.
  */
 struct BarSeries {
   InstrumentId instrument_;
   BarInterval interval_{BarInterval::ONE_DAY};
+  BarStamp stamp_{BarStamp::CLOSE};
+  Currency currency_;
   bool adjusted_{true};
   std::vector<Bar> bars_;
   std::optional<std::string> next_cursor_;

@@ -62,7 +62,9 @@ void print_error(std::string_view operation, const BrokerError& error) {
 /** Prints the oldest and newest bar, and the convention their stamps follow. */
 void print_bars(const BarSeries& series) {
   std::cout << "bars: " << series.bars_.size() << ' '
-    << bar_interval_name(series.interval_) << (series.adjusted_ ? " adjusted" : " raw") << '\n';
+    << bar_interval_name(series.interval_) << (series.adjusted_ ? " adjusted" : " raw")
+    << ' ' << series.currency_.str() << ", stamped at each period's "
+    << (series.stamp_ == algotradelib::BarStamp::OPEN ? "open" : "close") << '\n';
   if (series.bars_.empty()) {
     return;
   }
@@ -70,9 +72,7 @@ void print_bars(const BarSeries& series) {
   for (const auto* bar : {&series.bars_.front(), &series.bars_.back()}) {
     std::cout << "  " << (bar == &series.bars_.front() ? "oldest" : "newest")
       << " close=" << bar->close_.str() << " volume=" << bar->volume_.str()
-      << " open=" << (bar->open_ ? bar->open_->str() : std::string("not reported"))
-      << " stamped at the period's "
-      << (bar->stamp_ == algotradelib::BarStamp::OPEN ? "open" : "close") << '\n';
+      << " open=" << (bar->open_ ? bar->open_->str() : std::string("not reported")) << '\n';
   }
   if (series.next_cursor_) {
     std::cout << "  more history available from " << *series.next_cursor_ << '\n';
@@ -139,8 +139,10 @@ int report(BlockingSession<Client>& session, const InstrumentId& subject) {
 
   std::cout << "broker: " << session.broker_name() << "\n\n";
 
+  algotradelib::PriceRule reference_rule;
   if (auto reference = session.instrument(subject)) {
     print_instrument(reference.value());
+    reference_rule = reference.value().price_rule_;
   } else {
     print_error("reference data", reference.error());
   }
@@ -177,10 +179,13 @@ int report(BlockingSession<Client>& session, const InstrumentId& subject) {
       // A computed price has to sit on the exchange's grid, and the grid is the
       // library's own because no broker publishes one.
       if (const auto mid = book.value().mid()) {
-        const auto rule = algotradelib::PriceRule::krx_equity();
+        // The grid comes from the instrument, because it depends on what the
+        // instrument is: KRX prices funds and notes on a ladder this library does not
+        // carry, and those refuse to round rather than rounding onto the wrong one.
+        const auto rule = reference_rule;
         const auto buy = rule.round_to_tick(*mid, OrderSide::BUY);
         std::cout << "  a buy at the midpoint would rest at "
-          << (buy ? buy->str() : std::string("no representable tick")) << '\n';
+          << (buy ? buy->str() : std::string("no grid known for this instrument")) << '\n';
       }
     } else {
       print_error("order book", book.error());

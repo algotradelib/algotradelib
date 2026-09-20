@@ -1019,6 +1019,7 @@ private:
    * previous close, which is the only honest reading of a day with no trade.
    */
   static Bar parse_bar(const json::object& row, const BarQuery& query, bool minutes) {
+    static_cast<void>(query);
     Bar bar;
     const auto date = broker_detail::json_string(row, "stck_bsop_date");
     const auto time = minutes ? broker_detail::json_string(row, "stck_cntg_hour") : "000000";
@@ -1027,8 +1028,6 @@ private:
       throw std::runtime_error("invalid bar timestamp");
     }
     bar.timestamp_ = *timestamp;
-    bar.interval_ = query.interval_;
-    bar.stamp_ = minutes ? BarStamp::CLOSE : BarStamp::OPEN;
     bar.high_ = Decimal64::parse(broker_detail::json_string(row, "stck_hgpr"));
     bar.low_ = Decimal64::parse(broker_detail::json_string(row, "stck_lwpr"));
     bar.close_ = Decimal64::parse(
@@ -1049,7 +1048,6 @@ private:
     if (!no_trade) {
       bar.open_ = Decimal64::parse(broker_detail::json_string(row, "stck_oprc"));
     }
-    bar.currency_ = Currency::krw();
     return bar;
   }
 
@@ -1058,6 +1056,10 @@ private:
     BarSeries series;
     series.instrument_ = operation->query_.instrument_;
     series.interval_ = operation->query_.interval_;
+    // A period bar is reported by its trading date, so its timestamp marks the
+    // period's open; a minute bar carries the execution time it aggregated to.
+    series.stamp_ = operation->minutes_ ? BarStamp::CLOSE : BarStamp::OPEN;
+    series.currency_ = Currency::krw();
     series.adjusted_ = operation->query_.adjusted_;
     series.received_at_ = std::chrono::system_clock::now();
 
@@ -1166,9 +1168,10 @@ private:
       instrument.id_ = std::move(requested);
       instrument.name_ = broker_detail::json_string(row, "prdt_name");
       instrument.english_name_ = broker_detail::json_string(row, "prdt_eng_name");
-      // KIS's 표준상품번호 is the KRX standard code, which for a listed domestic equity
-      // is also its ISIN. Recorded as one, and flagged for review as an assumption
-      // rather than a documented equivalence.
+      // KIS's 표준상품번호 is the KRX standard code, which is also the ISIN. KIS does not
+      // say so in as many words, but it documents the field as twelve characters for
+      // both domestic and foreign instruments, which is the ISIN's length and not the
+      // length of any domestic-only code. Confirmed in review.
       instrument.isin_ = broker_detail::json_string(row, "std_pdno");
       const auto market = broker_detail::json_string(row, "mket_id_cd");
       instrument.segment_ = kis_market_segment(market);
@@ -1178,7 +1181,8 @@ private:
       instrument.shares_outstanding_ = positive_decimal(row, "lstg_stqt");
       instrument.listed_on_ = compact_date_field(row, listing_date_field(market));
       instrument.delisted_on_ = compact_date_field(row, delisting_date_field(market));
-      instrument.price_rule_ = PriceRule::krx_equity();
+      instrument.price_rule_ =
+        price_rule_for(instrument.id_.country_, instrument.type_);
       return Result<Instrument>(std::move(instrument));
     } catch (const std::exception& exception) {
       BrokerError error;

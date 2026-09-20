@@ -19,8 +19,6 @@ InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "0059
 Bar bar_at(std::chrono::system_clock::time_point when, const char* close) {
   Bar bar;
   bar.timestamp_ = when;
-  bar.interval_ = BarInterval::ONE_DAY;
-  bar.stamp_ = BarStamp::OPEN;
   bar.open_ = Decimal64::parse(close);
   bar.high_ = Decimal64::parse(close);
   bar.low_ = Decimal64::parse(close);
@@ -149,21 +147,22 @@ TEST_CASE("a bar series knows whether it is in ascending order") {
   REQUIRE(BarSeries{}.ascending());
 }
 
-TEST_CASE("a bar records which edge of its period it is stamped at") {
+TEST_CASE("a series records which edge of its periods it is stamped at") {
   // The convention lives in the value because a timestamp alone cannot reveal it,
-  // and reading a close-stamped bar as open-stamped is a lookahead.
-  Bar minute;
-  minute.interval_ = BarInterval::ONE_MINUTE;
-  minute.stamp_ = BarStamp::CLOSE;
-  REQUIRE(minute.stamp_ == BarStamp::CLOSE);
+  // and reading a close-stamped bar as open-stamped is a lookahead. It sits on the
+  // series, not on each bar, because every bar in a series follows the same rule.
+  BarSeries minutes;
+  minutes.interval_ = BarInterval::ONE_MINUTE;
+  minutes.stamp_ = BarStamp::CLOSE;
+  REQUIRE(minutes.stamp_ == BarStamp::CLOSE);
 
-  Bar daily;
+  BarSeries daily;
   daily.interval_ = BarInterval::ONE_DAY;
   daily.stamp_ = BarStamp::OPEN;
   REQUIRE(daily.stamp_ == BarStamp::OPEN);
 
   // A trading day with no trade has no open, and that is not zero.
-  REQUIRE_FALSE(daily.open_.has_value());
+  REQUIRE_FALSE(Bar{}.open_.has_value());
 
   REQUIRE(bar_interval_name(BarInterval::ONE_MINUTE) == "1m");
   REQUIRE(bar_interval_name(BarInterval::ONE_DAY) == "1d");
@@ -195,6 +194,7 @@ TEST_CASE("an empty side of the book yields no price rather than zero") {
 TEST_CASE("the KRX grid selects the right tick at every band boundary") {
   const auto rule = PriceRule::krx_equity();
   REQUIRE_FALSE(rule.source_.empty());
+  REQUIRE(rule.kind_ == PriceRule::Kind::STATED);
 
   struct Case {
     const char* price;
@@ -230,10 +230,10 @@ TEST_CASE("rounding to the grid never improves a price past the instruction") {
   REQUIRE(sell->str() == "70200");
 
   // A price already on the grid is returned unchanged, either way.
-  REQUIRE(rule.on_tick(Decimal64::parse("70100")));
+  REQUIRE(rule.on_tick(Decimal64::parse("70100")) == true);
   REQUIRE(rule.round_to_tick(Decimal64::parse("70100"), OrderSide::BUY)->str() == "70100");
   REQUIRE(rule.round_to_tick(Decimal64::parse("70100"), OrderSide::SELL)->str() == "70100");
-  REQUIRE_FALSE(rule.on_tick(Decimal64::parse("70123")));
+  REQUIRE(rule.on_tick(Decimal64::parse("70123")) == false);
 
   // Rounding crosses a band boundary correctly.
   REQUIRE(rule.round_to_tick(Decimal64::parse("1999.5"), OrderSide::BUY)->str() == "1999");
@@ -244,9 +244,51 @@ TEST_CASE("a market with no grid leaves prices untouched") {
   const auto rule = PriceRule::unconstrained();
   const auto price = Decimal64::parse("123.4567");
   REQUIRE_FALSE(rule.tick_at(price).has_value());
-  REQUIRE(rule.on_tick(price));
+  REQUIRE(rule.on_tick(price) == true);
   REQUIRE(rule.round_to_tick(price, OrderSide::BUY)->str() == "123.4567");
   REQUIRE(rule.round_to_tick(price, OrderSide::SELL)->str() == "123.4567");
+}
+
+TEST_CASE("an unknown grid refuses to round rather than passing a price through") {
+  // The two reasons a rule has no bands behave differently on purpose. A market that
+  // imposes no grid accepts any price; an instrument this library has no table for
+  // cannot answer, and saying "fine" would let an off-grid price through a check that
+  // appeared to pass.
+  const auto rule = PriceRule::unknown("no table for this instrument");
+  const auto price = Decimal64::parse("70123");
+  REQUIRE(rule.kind_ == PriceRule::Kind::UNKNOWN);
+  REQUIRE_FALSE(rule.on_tick(price).has_value());
+  REQUIRE_FALSE(rule.round_to_tick(price, OrderSide::BUY).has_value());
+  REQUIRE_FALSE(rule.round_to_tick(price, OrderSide::SELL).has_value());
+  REQUIRE(rule.source_ == "no table for this instrument");
+
+  // A default-constructed rule is unknown, not unconstrained, so a rule that was
+  // never set cannot silently approve a price.
+  REQUIRE(PriceRule{}.kind_ == PriceRule::Kind::UNKNOWN);
+  REQUIRE_FALSE(PriceRule{}.round_to_tick(price, OrderSide::BUY).has_value());
+}
+
+TEST_CASE("the grid an instrument gets depends on what it is, not only where") {
+  // KRX prices funds and notes on a different ladder from cash equities, and neither
+  // broker publishes either, so attaching the equity table to an ETF would round a
+  // price onto a ladder the exchange does not use.
+  REQUIRE(price_rule_for(Country::KR, SecurityType::STOCK).kind_ == PriceRule::Kind::STATED);
+  REQUIRE(price_rule_for(Country::KR, SecurityType::REIT).kind_ == PriceRule::Kind::STATED);
+  REQUIRE(
+    price_rule_for(Country::KR, SecurityType::DEPOSITARY_RECEIPT).kind_ ==
+    PriceRule::Kind::STATED
+  );
+
+  REQUIRE(price_rule_for(Country::KR, SecurityType::ETF).kind_ == PriceRule::Kind::UNKNOWN);
+  REQUIRE(price_rule_for(Country::KR, SecurityType::ETN).kind_ == PriceRule::Kind::UNKNOWN);
+  REQUIRE(
+    price_rule_for(Country::KR, SecurityType::UNKNOWN).kind_ == PriceRule::Kind::UNKNOWN
+  );
+
+  // A market quoted in free decimals is unconstrained, which is a different answer.
+  REQUIRE(
+    price_rule_for(Country::US, SecurityType::STOCK).kind_ == PriceRule::Kind::UNCONSTRAINED
+  );
 }
 
 TEST_CASE("a market segment normalizes what it knows and preserves what it does not") {

@@ -257,15 +257,6 @@ struct TossClientTestAccess {
     return TossClient::make_orders_request("access-token", query);
   }
 
-  static std::optional<BrokerError> parse_bars_page(
-    Result<network::HttpResponse> response,
-    const BarQuery& query,
-    std::vector<Bar>& into,
-    std::optional<std::string>& cursor
-  ) {
-    return TossClient::parse_bars_page(std::move(response), query, into, cursor);
-  }
-
   static Result<DepthSnapshot> parse_depth(
     InstrumentId instrument,
     Result<network::HttpResponse> response
@@ -279,6 +270,16 @@ struct TossClientTestAccess {
 
   static Result<std::vector<TradePrint>> parse_trades(Result<network::HttpResponse> response) {
     return TossClient::parse_trades(InstrumentId{}, std::move(response));
+  }
+
+  static std::optional<BrokerError> parse_bars_page(
+    Result<network::HttpResponse> response,
+    const BarQuery& query,
+    std::vector<Bar>& into,
+    std::optional<std::string>& cursor,
+    Currency& currency
+  ) {
+    return TossClient::parse_bars_page(std::move(response), query, into, cursor, currency);
   }
 
   static Result<std::vector<QuoteSnapshot>> parse_prices(
@@ -2321,6 +2322,7 @@ TEST_CASE(
   query.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
   std::vector<Bar> bars;
   std::optional<std::string> cursor;
+  Currency currency;
 
   SECTION("a daily page is stamped at the open and reports its cursor") {
     query.interval_ = BarInterval::ONE_DAY;
@@ -2336,7 +2338,8 @@ TEST_CASE(
       ),
       query,
       bars,
-      cursor
+      cursor,
+      currency
     );
     REQUIRE_FALSE(failure);
     REQUIRE(bars.size() == 2);
@@ -2345,13 +2348,12 @@ TEST_CASE(
     REQUIRE(bars.front().close_ == Decimal64::parse("72000"));
     REQUIRE(bars.back().close_ == Decimal64::parse("71600"));
 
-    // A daily bar is stamped at local midnight, which is its open.
-    REQUIRE(bars.front().stamp_ == BarStamp::OPEN);
-    REQUIRE(bars.front().interval_ == BarInterval::ONE_DAY);
+    // The stamp and currency belong to the series and are asserted where the series
+    // is built; a bar carries neither.
     REQUIRE(bars.front().open_.has_value());
     REQUIRE(*bars.front().open_ == Decimal64::parse("71600"));
     REQUIRE(bars.front().volume_ == Decimal64::parse("3521000"));
-    REQUIRE(bars.front().currency_ == Currency::krw());
+    REQUIRE(currency == Currency::krw());
     REQUIRE(cursor == std::string("2026-03-24T00:00:00+09:00"));
   }
 
@@ -2366,11 +2368,11 @@ TEST_CASE(
       ),
       query,
       bars,
-      cursor
+      cursor,
+      currency
     );
     REQUIRE_FALSE(failure);
     REQUIRE(bars.size() == 1);
-    REQUIRE(bars.front().stamp_ == BarStamp::CLOSE);
 
     // A null cursor is the last page, and is not a cursor of its own.
     REQUIRE_FALSE(cursor.has_value());
@@ -2382,7 +2384,8 @@ TEST_CASE(
       json_response(R"({"result":{"candles":[],"nextBefore":"2026-03-24T00:00:00+09:00"}})"),
       query,
       bars,
-      cursor
+      cursor,
+      currency
     );
     REQUIRE_FALSE(failure);
     REQUIRE(bars.empty());
@@ -2392,7 +2395,11 @@ TEST_CASE(
   SECTION("a malformed candle is a protocol error") {
     query.interval_ = BarInterval::ONE_DAY;
     const auto failure = tossinvest::TossClientTestAccess::parse_bars_page(
-      json_response(R"({"result":{"candles":[{"timestamp":"not-a-time"}]}})"), query, bars, cursor
+      json_response(R"({"result":{"candles":[{"timestamp":"not-a-time"}]}})"),
+      query,
+      bars,
+      cursor,
+      currency
     );
     REQUIRE(failure);
     REQUIRE(failure->category_ == ErrorCategory::PROTOCOL);
@@ -2423,12 +2430,10 @@ TEST_CASE(
     );
     REQUIRE_FALSE(failure);
     REQUIRE(bars.size() == 1);
-    REQUIRE(bars.front().stamp_ == BarStamp::OPEN);
     REQUIRE(*bars.front().open_ == Decimal64::parse("71600"));
     REQUIRE(bars.front().close_ == Decimal64::parse("72000"));
     REQUIRE(bars.front().volume_ == Decimal64::parse("3521000"));
     REQUIRE(bars.front().traded_value_.has_value());
-    REQUIRE(bars.front().currency_ == Currency::krw());
   }
 
   SECTION("a trading day with no trade has no open, and that is not zero") {
@@ -2465,7 +2470,6 @@ TEST_CASE(
     );
     REQUIRE_FALSE(failure);
     REQUIRE(bars.size() == 1);
-    REQUIRE(bars.front().stamp_ == BarStamp::CLOSE);
     REQUIRE(bars.front().close_ == Decimal64::parse("72050"));
     REQUIRE(bars.front().volume_ == Decimal64::parse("15200"));
   }
@@ -2928,8 +2932,9 @@ TEST_CASE("instrument reference data normalizes from both brokers") {
     REQUIRE_FALSE(instrument.delisted_on_.has_value());
     REQUIRE(*instrument.shares_outstanding_ == Decimal64::parse("728002365"));
 
-    // The grid is the library's own, because no broker publishes tick size.
-    REQUIRE_FALSE(instrument.price_rule_.bands_.empty());
+    // The grid is the library's own, because no broker publishes tick size, and this
+    // is a cash equity so the equity ladder applies.
+    REQUIRE(instrument.price_rule_.kind_ == PriceRule::Kind::STATED);
     REQUIRE(instrument.price_rule_.tick_at(Decimal64::parse("70000"))->str() == "100");
   }
 
@@ -3019,4 +3024,49 @@ TEST_CASE("instrument reference data normalizes from both brokers") {
     REQUIRE(result);
     REQUIRE(result.value().type_ == SecurityType::UNKNOWN);
   }
+}
+
+TEST_CASE("an ETF gets no price grid rather than the equity one", "[broker][reference]") {
+  // KRX prices funds on a different ladder from cash equities, and neither broker
+  // publishes either. Attaching the equity table would round a price onto a ladder the
+  // exchange does not use, and the order would be rejected with the library having
+  // confidently produced the price.
+  auto result = tossinvest::TossClientTestAccess::parse_instrument(
+    InstrumentId{Country::KR, Venue::COMBINED, "069500"},
+    json_response(
+      R"({"result":[{"symbol":"069500","name":"KODEX 200","englishName":"KODEX200",)"
+      R"("isinCode":"KR7069500007","market":"KOSPI","securityType":"ETF",)"
+      R"("status":"ACTIVE","currency":"KRW"}]})"
+    )
+  );
+  REQUIRE(result);
+  REQUIRE(result.value().type_ == SecurityType::ETF);
+  REQUIRE(result.value().price_rule_.kind_ == PriceRule::Kind::UNKNOWN);
+  REQUIRE_FALSE(
+    result.value().price_rule_.round_to_tick(Decimal64::parse("34567"), OrderSide::BUY)
+      .has_value()
+  );
+
+  // The same instrument's cash-equity neighbour does get the ladder.
+  auto equity = kis::KisClientTestAccess::parse_instrument(
+    InstrumentId{Country::KR, Venue::COMBINED, "005930"},
+    json_response(
+      R"({"rt_cd":"0","output":{"mket_id_cd":"STK","scty_grp_id_cd":"ST","std_pdno":"x",)"
+      R"("prdt_name":"x","prdt_eng_name":"x"}})"
+    )
+  );
+  REQUIRE(equity);
+  REQUIRE(equity.value().price_rule_.kind_ == PriceRule::Kind::STATED);
+
+  // And a KIS ETN, whose security group is EN, is unknown for the same reason.
+  auto note = kis::KisClientTestAccess::parse_instrument(
+    InstrumentId{Country::KR, Venue::COMBINED, "550011"},
+    json_response(
+      R"({"rt_cd":"0","output":{"mket_id_cd":"STK","scty_grp_id_cd":"EN","std_pdno":"x",)"
+      R"("prdt_name":"x","prdt_eng_name":"x"}})"
+    )
+  );
+  REQUIRE(note);
+  REQUIRE(note.value().type_ == SecurityType::ETN);
+  REQUIRE(note.value().price_rule_.kind_ == PriceRule::Kind::UNKNOWN);
 }
