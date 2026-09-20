@@ -460,3 +460,130 @@ TEST_CASE("a reported allowance corrects the pacer, an unreported one halves it"
   REQUIRE(shared.budget().per_second_ == 8);
   REQUIRE(shared.stats().broker_rejections_ == 1);
 }
+
+TEST_CASE(
+  "a request that would wait past its deadline fails before the wire",
+  "[rate-limit][tls][deadline]"
+) {
+  test::LocalHttpsServer server;
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+
+  network::HttpClientOptions options;
+  options.timeout_ = std::chrono::seconds(1);
+  // One request per five seconds, so the second one cannot start inside a
+  // one-second deadline however long it waits.
+  options.rate_limit_ = RateLimitBudget{1, 1, 0};
+  auto client = std::make_shared<network::AsyncHttpClient>(
+    ioc.get_executor(), context, "localhost", server.port(), options
+  );
+  client->rate_limits()->shrink(1, 1, std::chrono::seconds(5));
+
+  std::vector<BrokerError> errors;
+  int succeeded = 0;
+  for (const std::string target : {"/first", "/second"}) {
+    network::HttpRequest request;
+    request.target_ = target;
+    request.group_ = RateLimitGroup::MARKET_DATA;
+    client->async_request(
+      std::move(request),
+      [&errors, &succeeded](Result<network::HttpResponse> result) {
+        if (result) {
+          ++succeeded;
+        } else {
+          errors.push_back(result.error());
+        }
+      }
+    );
+  }
+
+  ioc.run();
+
+  // Neither reached the wire: the hold is in force from the first evaluation.
+  REQUIRE(succeeded == 0);
+  REQUIRE(errors.size() == 2);
+  for (const auto& error : errors) {
+    REQUIRE(error.category_ == ErrorCategory::CANCELLED);
+    REQUIRE(error.broker_code_ == "admission_deadline");
+  }
+  REQUIRE(server.requestCount("/first") == 0);
+  REQUIRE(client->rate_limits()->stats().group(RateLimitGroup::MARKET_DATA).shed_ == 2);
+}
+
+TEST_CASE("a full queue sheds with a structured error rather than growing") {
+  test::LocalHttpsServer server;
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+
+  network::HttpClientOptions options;
+  options.queue_limit_ = 2;
+  options.rate_limit_ = RateLimitBudget{1, 1, 0};
+  auto client = std::make_shared<network::AsyncHttpClient>(
+    ioc.get_executor(), context, "localhost", server.port(), options
+  );
+
+  int shed = 0;
+  for (const std::string target : {"/a", "/b", "/c", "/d"}) {
+    network::HttpRequest request;
+    request.target_ = target;
+    request.group_ = RateLimitGroup::REFERENCE;
+    client->async_request(std::move(request), [&shed](Result<network::HttpResponse> result) {
+      if (!result && result.error().broker_code_ == "queue_full") {
+        ++shed;
+      }
+    });
+  }
+
+  client->close();
+  ioc.run();
+
+  REQUIRE(shed == 2);
+  REQUIRE(client->rate_limits()->stats().group(RateLimitGroup::REFERENCE).shed_ == 2);
+}
+
+TEST_CASE(
+  "closing a client while it is still connecting cancels rather than crashes",
+  "[http][tls][close]"
+) {
+  // Regression: `close()` completes every queued request and releases the stream,
+  // but the resolve, connect, and handshake continuations advanced the connection
+  // unconditionally, so one arriving after a close dereferenced a released stream.
+  // A paced client makes this ordinary rather than rare: it can sit waiting for
+  // admission for as long as its budget says, and a caller may close it meanwhile.
+  test::LocalHttpsServer server;
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+  auto client = std::make_shared<network::AsyncHttpClient>(
+    ioc.get_executor(), context, "localhost", server.port()
+  );
+
+  std::vector<BrokerError> errors;
+  int succeeded = 0;
+  for (const std::string target : {"/one", "/two"}) {
+    network::HttpRequest request;
+    request.target_ = target;
+    client->async_request(
+      std::move(request),
+      [&errors, &succeeded](Result<network::HttpResponse> result) {
+        if (result) {
+          ++succeeded;
+        } else {
+          errors.push_back(result.error());
+        }
+      }
+    );
+  }
+
+  client->close();
+  ioc.run();
+
+  REQUIRE(succeeded == 0);
+  REQUIRE(errors.size() == 2);
+  for (const auto& error : errors) {
+    REQUIRE(error.category_ == ErrorCategory::CANCELLED);
+  }
+  REQUIRE(server.requestCount("/one") == 0);
+}

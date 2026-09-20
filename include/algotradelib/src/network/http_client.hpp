@@ -436,6 +436,22 @@ private:
     const auto group = queue_.front().request_.group_;
     const auto delay = limiter_->delay_until(group);
     if (delay > RateLimitController::Duration::zero()) {
+      // Waiting longer than the operation's own deadline would queue a request
+      // only to time it out on the wire. Failing now says the same thing sooner,
+      // and says it before the request is sent rather than after.
+      if (delay > std::chrono::duration_cast<RateLimitController::Duration>(options_.timeout_)) {
+        limiter_->record_shed(group);
+        auto pending = std::move(queue_.front());
+        queue_.pop_front();
+        waiting_since_.reset();
+        BrokerError error;
+        error.category_ = ErrorCategory::CANCELLED;
+        error.broker_code_ = "admission_deadline";
+        error.message_ = "request would wait for rate-limit admission beyond its deadline";
+        complete(std::move(pending.handler_), Result<HttpResponse>(std::move(error)));
+        pump();
+        return;
+      }
       if (!waiting_since_) {
         waiting_since_ = std::chrono::steady_clock::now();
       }
@@ -479,6 +495,11 @@ private:
       port_,
       [self = shared_from_this()](beast::error_code ec, tcp::resolver::results_type endpoints) {
         self->resolve_timer_.cancel();
+        // `close()` completes every queued request and releases the stream, so a
+        // continuation that arrives afterwards has nothing left to advance.
+        if (self->stopped_ || !self->stream_) {
+          return;
+        }
         if (ec) {
           if (self->resolve_timed_out_) {
             ec = beast::error_code(net::error::timed_out);
@@ -492,6 +513,9 @@ private:
           .async_connect(
             endpoints,
             [self](beast::error_code connect_ec, tcp::resolver::results_type::endpoint_type) {
+              if (self->stopped_ || !self->stream_) {
+                return;
+              }
               if (connect_ec) {
                 self->fail("connect", connect_ec);
                 return;
@@ -516,6 +540,9 @@ private:
     beast::get_lowest_layer(*stream_).expires_after(options_.timeout_);
     stream_->async_handshake(
       ssl::stream_base::client, [self = shared_from_this()](beast::error_code ec) {
+        if (self->stopped_ || !self->stream_) {
+          return;
+        }
         if (ec) {
           self->fail("tls_handshake", ec);
           return;
@@ -544,6 +571,9 @@ private:
     beast::get_lowest_layer(*stream_).expires_after(options_.timeout_);
     http::async_write(
       *stream_, *active_request_, [self = shared_from_this()](beast::error_code ec, std::size_t) {
+        if (self->stopped_ || self->queue_.empty()) {
+          return;
+        }
         if (ec) {
           self->fail("write", ec);
           return;
@@ -560,6 +590,9 @@ private:
     beast::get_lowest_layer(*stream_).expires_after(options_.timeout_);
     http::async_read(
       *stream_, buffer_, *parser_, [self = shared_from_this()](beast::error_code ec, std::size_t) {
+        if (self->stopped_ || self->queue_.empty()) {
+          return;
+        }
         if (ec) {
           self->fail("read", ec);
           return;
