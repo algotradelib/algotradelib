@@ -2,6 +2,7 @@
 
 #include <array>
 #include <chrono>
+#include <functional>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -504,6 +505,184 @@ struct OrderAck {
   std::chrono::system_clock::time_point accepted_at_;
 };
 
+/**
+ * Opaque broker-defined identity for one order.
+ *
+ * Two parts are stored because addressing an order is not uniformly reducible
+ * to one string: KIS needs a branch code together with an order number, while
+ * Toss needs one identifier. `primary_` carries the order number or identifier
+ * and `secondary_` carries the additional part when a broker has one.
+ *
+ * The parts are opaque. Strategy code stores, compares, and hashes a reference
+ * but never parses it, so a broker may change its internal composition without
+ * breaking a caller.
+ *
+ * `broker_` names the trait that produced the reference and points at static
+ * storage owned by that trait. It makes a reference from one broker
+ * distinguishable from another broker's, which is what lets a port reject a
+ * reference that cannot address an order on the bound client.
+ */
+struct OrderRef {
+  std::string_view broker_;
+  std::string primary_;
+  std::string secondary_;
+
+  /** Returns a stable human-readable form for logs and order attribution. */
+  std::string str() const {
+    std::string text(broker_);
+    text += ':';
+    text += primary_;
+    if (!secondary_.empty()) {
+      text += ':';
+      text += secondary_;
+    }
+    return text;
+  }
+
+  /** Compares two references, including the broker that issued them. */
+  friend bool operator==(const OrderRef& lhs, const OrderRef& rhs) {
+    return lhs.broker_ == rhs.broker_ && lhs.primary_ == rhs.primary_ &&
+      lhs.secondary_ == rhs.secondary_;
+  }
+
+  /** Compares two references for inequality. */
+  friend bool operator!=(const OrderRef& lhs, const OrderRef& rhs) { return !(lhs == rhs); }
+};
+
+/**
+ * Broker acknowledgement of an accepted order together with its reference.
+ *
+ * Acceptance means the broker recorded the instruction, not that the order
+ * executed. `ref_` is what a later modification or cancellation must address.
+ */
+struct PlacedOrder {
+  OrderAck ack_;
+  OrderRef ref_;
+};
+
+/**
+ * The price shape of an order: its type and, for a limit order, its price.
+ *
+ * A shape is carried explicitly because some brokers require the shape to be
+ * restated on a modification or a cancellation. KIS's `order-rvsecncl` re-sends
+ * `ORD_DVSN` and `ORD_UNPR` for both, and rejects a limit shape with no price.
+ * Toss requires a shape for a modification and not for a cancellation. Stating
+ * the shape keeps the port from inventing a value the broker will act on.
+ */
+struct OrderShape {
+  OrderType type_{OrderType::LIMIT};
+  std::optional<Decimal64> price_;
+};
+
+/**
+ * Broker-neutral instruction for a modification or a cancellation.
+ *
+ * `all_remaining_` states whether the whole remaining quantity is affected or
+ * only `quantity_`. It is never inferred, because guessing changes how much of
+ * a live order is withdrawn.
+ *
+ * `quantity_` is optional in this shared value because brokers disagree about
+ * needing it: KIS validates a positive whole quantity even for a full
+ * cancellation, and Toss cancels in full with no quantity at all. A broker that
+ * requires one rejects an instruction that omits it rather than substituting a
+ * value. Building the instruction with `cancel_all()`, `cancel_quantity()`, or
+ * `replace_with()` fills whatever the bound broker needs from a `WorkingOrder`.
+ */
+struct AmendInstruction {
+  OrderShape shape_;
+  std::optional<Decimal64> quantity_;
+  bool all_remaining_{false};
+  bool confirm_high_value_{false};
+};
+
+/**
+ * One order that is still open to modification or cancellation.
+ *
+ * `amendable_quantity_` is optional because a broker reports it only where it
+ * publishes one. An empty value means the broker did not state a quantity, not
+ * that the quantity is zero.
+ *
+ * `amend_ref_` is present only where a broker addresses an amendment by a
+ * different reference from the one identifying the row. Callers should use
+ * `amend_reference()` rather than choosing between the two.
+ */
+struct WorkingOrder {
+  OrderSnapshot order_;
+  OrderRef ref_;
+  std::optional<OrderRef> amend_ref_;
+  std::optional<Decimal64> amendable_quantity_;
+
+  /** Returns the reference a modification or cancellation must address. */
+  const OrderRef& amend_reference() const noexcept {
+    return amend_ref_ ? *amend_ref_ : ref_;
+  }
+};
+
+/** Point-in-time set of orders open to modification or cancellation. */
+struct WorkingOrders {
+  std::vector<WorkingOrder> orders_;
+  std::chrono::system_clock::time_point received_at_;
+};
+
+/**
+ * Filter for one order-history inquiry.
+ *
+ * A broker that cannot express a stated filter rejects the query with
+ * `ErrorCategory::INVALID_ARGUMENT` before any network I/O. A filter is never
+ * dropped silently, because a listing that ignored it would answer a different
+ * question from the one asked.
+ */
+struct OrderHistoryQuery {
+  std::optional<Date> from_;
+  std::optional<Date> to_;
+  std::optional<std::string> symbol_;
+  std::optional<std::string> cursor_;
+  std::optional<int> limit_;
+};
+
+/**
+ * Returns an instruction cancelling the whole remaining quantity of `order`.
+ *
+ * The order's own shape and reported amendable quantity are carried through, so
+ * a broker that requires either receives it without the caller restating it.
+ */
+inline AmendInstruction cancel_all(const WorkingOrder& order) {
+  AmendInstruction instruction;
+  instruction.shape_.type_ = order.order_.type_;
+  instruction.shape_.price_ = order.order_.price_;
+  instruction.quantity_ = order.amendable_quantity_;
+  instruction.all_remaining_ = true;
+  return instruction;
+}
+
+/** Returns an instruction cancelling exactly `quantity` of `order`. */
+inline AmendInstruction cancel_quantity(const WorkingOrder& order, Decimal64 quantity) {
+  AmendInstruction instruction;
+  instruction.shape_.type_ = order.order_.type_;
+  instruction.shape_.price_ = order.order_.price_;
+  instruction.quantity_ = quantity;
+  instruction.all_remaining_ = false;
+  return instruction;
+}
+
+/**
+ * Returns an instruction moving `order` to `shape`.
+ *
+ * Omitting `quantity` amends the whole remaining quantity; supplying one amends
+ * exactly that quantity.
+ */
+inline AmendInstruction replace_with(
+  const WorkingOrder& order,
+  OrderShape shape,
+  std::optional<Decimal64> quantity = std::nullopt
+) {
+  AmendInstruction instruction;
+  instruction.shape_ = std::move(shape);
+  instruction.all_remaining_ = !quantity.has_value();
+  instruction.quantity_ = quantity ? quantity : order.amendable_quantity_;
+  return instruction;
+}
+
 /** Parses an ISO 8601 timestamp with a UTC designator or numeric offset. */
 inline std::optional<std::chrono::system_clock::time_point> parse_iso8601_timestamp(
   std::string_view value
@@ -577,3 +756,22 @@ inline std::optional<std::chrono::system_clock::time_point> parse_iso8601_timest
 }
 
 } // namespace algotradelib
+
+namespace std {
+
+/** Hashes an opaque order reference so callers can key an order book on it. */
+template <>
+struct hash<algotradelib::OrderRef> {
+  /** Combines the broker tag and both reference parts. */
+  std::size_t operator()(const algotradelib::OrderRef& ref) const noexcept {
+    std::size_t seed = hash<std::string_view>{}(ref.broker_);
+    const auto mix = [&seed](std::size_t value) {
+      seed ^= value + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+    };
+    mix(hash<std::string>{}(ref.primary_));
+    mix(hash<std::string>{}(ref.secondary_));
+    return seed;
+  }
+};
+
+} // namespace std
