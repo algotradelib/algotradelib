@@ -162,6 +162,40 @@ inline KisRateLimitLayer kis_rate_limit_layer(std::string_view code) {
   return code == "EGW00215" ? KisRateLimitLayer::LEDGER : KisRateLimitLayer::NONE;
 }
 
+/**
+ * Returns an error when an order carries something KIS cannot honour.
+ *
+ * KIS documents no client-supplied idempotency key for an individual customer.
+ * `gt_uid` exists but is marked `[법인 전용]`, corporate only, so for everyone else
+ * there is nothing for `OrderRequest::client_order_id_` to be written to.
+ *
+ * Dropping it silently is the dangerous option, not the convenient one. A
+ * `TRANSPORT` error on an order POST leaves the outcome indeterminate, and a caller
+ * who set a client order id has been taught by every broker that honours one that
+ * resubmitting is the safe response to exactly that situation. At KIS it produces a
+ * second live order. Refusing the field before the order is sent says plainly that
+ * the guarantee the caller is relying on does not exist here.
+ *
+ * `OrderRequest::confirm_high_value_` is deliberately *not* refused. It has no KIS
+ * counterpart either, but it gates an order rather than describing one: ignoring it
+ * cannot make KIS transmit an order the caller did not describe, because the caller
+ * was confirming that the order should proceed and it does.
+ *
+ * Both the client and the broker port call this, so the rule has one definition.
+ */
+inline std::optional<BrokerError> unsupported_client_order_id(const OrderRequest& order) {
+  if (!order.client_order_id_) {
+    return std::nullopt;
+  }
+  BrokerError error;
+  error.category_ = ErrorCategory::INVALID_ARGUMENT;
+  error.broker_code_ = "idempotency_key_unsupported";
+  error.message_ =
+    "KIS offers no client-supplied idempotency key for individual customers; clear "
+    "client_order_id_ and reconcile through an order inquiry after a transport failure";
+  return error;
+}
+
 /** Persistent asynchronous KIS client with coalesced OAuth refresh. */
 class KisClient : public std::enable_shared_from_this<KisClient> {
 public:
@@ -1074,6 +1108,9 @@ private:
 
   /** Returns an error when the order cannot be represented as a KIS cash order. */
   static std::optional<BrokerError> validate_order(const OrderRequest& order, std::string& division) {
+    if (auto error = unsupported_client_order_id(order)) {
+      return error;
+    }
     if (order.instrument_.country_ != Country::KR) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;

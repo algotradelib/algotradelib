@@ -96,11 +96,15 @@ Read these before using the order clients.
 - **An order POST is never replayed.** A `TRANSPORT` error therefore leaves the
   outcome *indeterminate*: the order may or may not have reached the broker.
   Reconcile against an order inquiry before resubmitting; do not retry blindly.
-- **Toss supports idempotency; KIS does not.** Setting
+- **Toss supports idempotency; KIS does not, and KIS says so.** Setting
   `OrderRequest::client_order_id_` makes a Toss resubmission safe for ten
-  minutes. KIS offers no such key for individual customers, so a KIS
-  resubmission always risks a duplicate order. The library never generates a
-  key on its own, so its absence stays a visible caller decision.
+  minutes. KIS offers no such key for individual customers — `gt_uid` is
+  documented `[법인 전용]` — so **KIS refuses an order carrying one** with
+  `ErrorCategory::INVALID_ARGUMENT` and `idempotency_key_unsupported`, before
+  authentication and before any socket write. Accepting it and dropping it would
+  leave a caller believing a resubmission is safe when it would place a second
+  live order. The library never generates a key on its own either, so its absence
+  stays a visible caller decision.
 - **Acceptance is not execution.** An `OrderAck` means the broker recorded the
   instruction. Read the resulting state back through an order inquiry.
 - **Unsupported instructions are rejected, never downgraded.** An at-the-close
@@ -168,7 +172,8 @@ cmake --build build --target example-kis-place-order
 This executable deliberately demonstrates request construction rather than
 broker submission. Applications place orders through
 `KisBlockingClient::place_order` or `TossBlockingClient::place_order`; for
-Toss, `OrderRequest::client_order_id_` carries the idempotency key.
+Toss, `OrderRequest::client_order_id_` carries the idempotency key, and KIS
+refuses an order that sets it.
 
 ### Not supported yet
 

@@ -56,25 +56,13 @@ struct Normalizers {
   /**
    * Rejects an order KIS cannot carry out as described.
    *
-   * KIS documents no client-supplied idempotency key for individual customers,
-   * so a supplied key is refused rather than dropped: a caller who set one would
-   * otherwise believe a resubmission was safe when KIS offers no such guarantee.
-   *
-   * `OrderRequest::confirm_high_value_` has no KIS counterpart and is ignored.
-   * It gates an order at Toss rather than describing one, so ignoring it cannot
-   * make KIS transmit an order the caller did not describe.
+   * The rule itself lives in `kis::unsupported_client_order_id`, which the client
+   * also applies, so the port cannot drift from the client it fronts. The port
+   * refuses earlier — before a client is even asked — and the client refuses
+   * regardless of whether a caller came through the port at all.
    */
   static std::optional<BrokerError> validate_place(const OrderRequest& order) {
-    if (!order.client_order_id_) {
-      return std::nullopt;
-    }
-    BrokerError error;
-    error.category_ = ErrorCategory::INVALID_ARGUMENT;
-    error.broker_code_ = "idempotency_key_unsupported";
-    error.message_ =
-      "KIS offers no client-supplied idempotency key for individual customers; clear "
-      "client_order_id_ and reconcile through an order inquiry after a transport failure";
-    return error;
+    return kis::unsupported_client_order_id(order);
   }
 
   /** Normalizes a KIS acknowledgement into an acknowledgement and a reference. */

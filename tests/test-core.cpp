@@ -1051,6 +1051,38 @@ OrderRequest korean_limit_buy() {
 
 } // namespace
 
+TEST_CASE(
+  "KIS refuses a client order id through the whole placement path",
+  "[broker][kis][order][validation]"
+) {
+  // No credentials and no reachable server: the refusal has to arrive before
+  // authentication, which is the only way this test can pass at all.
+  ssl::context tls(ssl::context::tls_client);
+  kis::KisConfig config;
+  kis::KisBlockingClient client(tls, std::move(config));
+
+  auto order = korean_limit_buy();
+  order.client_order_id_ = std::string("key-1");
+
+  const auto result = client.place_order(kis::KisAccount{"12345678", "01"}, order);
+  REQUIRE_FALSE(result);
+  REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+  REQUIRE(result.error().broker_code_ == "idempotency_key_unsupported");
+
+  // The predicate is shared, so the broker port cannot disagree with the client.
+  const auto direct = kis::unsupported_client_order_id(order);
+  REQUIRE(direct);
+  REQUIRE(direct->broker_code_ == result.error().broker_code_);
+  REQUIRE(direct->message_ == result.error().message_);
+
+  const auto through_port = BrokerTraits<kis::KisClient>::validate_place(order);
+  REQUIRE(through_port);
+  REQUIRE(through_port->broker_code_ == result.error().broker_code_);
+
+  // Toss honours the key, so the identical order passes there.
+  REQUIRE_FALSE(BrokerTraits<tossinvest::TossClient>::validate_place(order));
+}
+
 TEST_CASE("Calendar dates validate Gregorian boundaries", "[core][order][date]") {
   REQUIRE(is_valid_date(Date{2024, 2, 29}));
   REQUIRE_FALSE(is_valid_date(Date{2025, 2, 29}));
@@ -1169,6 +1201,31 @@ TEST_CASE(
   "[broker][kis][order][validation]"
 ) {
   std::string division;
+
+  SECTION("an order carrying a client order id is rejected") {
+    // KIS has nowhere to put it — `gt_uid` is documented `[법인 전용]` — and dropping
+    // it would leave a caller believing a resubmission after an indeterminate POST
+    // is safe when it would place a second live order.
+    auto order = korean_limit_buy();
+    order.client_order_id_ = std::string("key-1");
+    const auto error = kis::KisClientTestAccess::validate_order(order, division);
+    REQUIRE(error);
+    REQUIRE(error->category_ == ErrorCategory::INVALID_ARGUMENT);
+    REQUIRE(error->broker_code_ == "idempotency_key_unsupported");
+
+    // The same order without the field is representable.
+    order.client_order_id_.reset();
+    REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division));
+    REQUIRE(division == "00");
+  }
+
+  SECTION("a high-value confirmation is accepted and ignored") {
+    // Unlike a client order id, this gates an order rather than describing one:
+    // ignoring it cannot make KIS transmit an order the caller did not describe.
+    auto order = korean_limit_buy();
+    order.confirm_high_value_ = true;
+    REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division));
+  }
 
   SECTION("a fractional quantity is rejected") {
     auto order = korean_limit_buy();
