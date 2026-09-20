@@ -275,6 +275,84 @@ It prints normalized holdings and working orders through the port only, reads
 credentials from the same environment variables as the other examples, and places
 no order. Without a broker argument it prints usage and exits.
 
+
+## Request pacing
+
+Requests are paced per connection, and the pacing is opt-in: with no budget
+configured the transport behaves exactly as an unpaced one.
+
+```cpp
+network::HttpClientOptions options;
+options.rate_limit_ = network::RateLimitBudget{8, 8, 2};  // burst, per second, reserve
+kis::KisBlockingClient client(tls, std::move(config), options);
+```
+
+`burst_` is how many requests may be issued back to back from idle, `per_second_`
+is the sustained rate, and `trading_reserve_` is the part of the burst that only
+order traffic may spend. The defaults are deliberately conservative: KIS's per-key
+allowance is an account-level portal setting its documentation does not state, so
+the library cannot assert a number.
+
+### Traffic classes
+
+Every request carries a class, assigned by the adapter that builds it rather than
+by the caller, so a strategy cannot label its own polling as trading traffic.
+
+| Class | Priority | Spends the reserve | Examples |
+| --- | --- | --- | --- |
+| `AUTH` | highest | yes | token issue and refresh |
+| `TRADING` | | yes | place, modify, cancel |
+| `ACCOUNT` | | no | holdings, working orders, order history |
+| `MARKET_DATA` | | no | quotes |
+| `REFERENCE` | lowest | no | anything unlabelled |
+
+Two consequences are worth knowing:
+
+- The pending queue is priority-ordered, so a cancellation is sent ahead of a
+  queued chart backlog rather than behind it. Ordering is stable within a class, so
+  a queue carrying one class behaves exactly as a FIFO queue does, and a request
+  already on the wire is never reordered around.
+- `AUTH` outranks `TRADING` because every request waits behind a token refresh, a
+  cancellation included. It cannot flood, because refreshes are coalesced.
+
+KIS's amendable-order inquiry is `ACCOUNT` even though KIS requires it before an
+amendment. It outranks polling, but it may not spend the reserve, because a
+strategy can equally well poll it continuously.
+
+### How the two brokers report a refusal
+
+They differ enough that the same handling would be wrong for one of them.
+
+**Toss** answers HTTP 429 and documents a token bucket, publishing
+`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, and
+`Retry-After` on the refusal. The reported allowance is adopted directly, because
+it is the number the broker is enforcing. `BrokerError::rate_limit_` carries it.
+
+**KIS** answers HTTP 200 with a message code in the body — no 429, no
+`Retry-After`, no allowance — and meters in two independent layers its
+documentation insists not be confused:
+
+| Layer | Signal | Scope | Reaction |
+| --- | --- | --- | --- |
+| 원장 (ledger) | `EGW00215` | per endpoint, shared with all customers | wait; the budget was not the problem |
+| 개인 유량 | the same phrase without "원장" | per application key | halve the rate |
+
+`EGW00317` is deliberately not treated as a rate limit: it reports a scheduled
+trading-control window, and backing off would misreport a closed window as
+congestion.
+
+### Reading the counters
+
+`BrokerSession::rate_limit_stats()` returns per-class `admitted_`, `delayed_`,
+`shed_`, and accumulated `waited_`, plus the allowance currently in force and the
+number of broker refusals seen. Rising `delayed_` on a polling class while
+`TRADING` stays undelayed is the reserve working; rising `shed_` means the queue is
+full rather than the pacer slow. Read them from a completion handler, or between
+calls on a blocking session.
+
+`example-rate-limit-stats [burst] [per-second] [reserve]` prints all of this for a
+budget offline, with no credentials and no network access.
+
 ## Transport behavior
 
 - HTTPS connections are persistent per client and requests are serialized on a
@@ -282,10 +360,9 @@ no order. Without a broker argument it prints usage and exits.
 - DNS, connect, TLS, write, and read operations have deadlines.
 - A failed GET may be replayed once after reconnect. POST requests are never
   replayed automatically.
-- HTTP 429 responses surface as `ErrorCategory::RATE_LIMIT`; a numeric
-  `Retry-After` header is preserved in `BrokerError::retry_after_`. The library
-  does not yet expose per-group remaining/reset counters or schedule requests
-  against a shared rate budget.
+- Rate-limit refusals surface as `ErrorCategory::RATE_LIMIT` with whatever hints
+  the broker published, and requests are paced against a budget. See
+  [Request pacing](#request-pacing).
 - TLS performs SNI and certificate hostname verification.
 - WebSocket sessions accept a target path and handshake headers, serialize
   writes and close, send idle keep-alive pings, and report lifecycle events

@@ -33,7 +33,6 @@ struct TestClock {
   using rep = duration::rep;
   using period = duration::period;
   using time_point = std::chrono::time_point<TestClock, duration>;
-  static constexpr bool is_steady = true;
 
   /** Returns the epoch; tests pass instants explicitly instead. */
   static time_point now() { return time_point{}; }
