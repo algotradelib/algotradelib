@@ -213,4 +213,29 @@ struct PriceLimits {
   std::optional<std::chrono::system_clock::time_point> exchange_time_;
 };
 
+/**
+ * What bars to fetch.
+ *
+ * `count_` is how many bars the caller wants, not how many one request returns.
+ * Every broker caps a page well below a useful window — 200 at Toss, 100 for KIS
+ * daily bars, 30 or 120 for KIS minute bars — so satisfying `count_` is the port's
+ * job, bounded by the same paging guards the holdings and order slices established.
+ *
+ * `before_` bounds the newest bar returned, so a caller can page backwards through
+ * history by passing the oldest timestamp it has already seen. It is inclusive,
+ * matching Toss's `before`; the KIS adapter walks its date and time inputs to the
+ * same effect.
+ *
+ * `adjusted_` asks for prices that account for corporate actions. It is spelled
+ * once here because the brokers disagree about how to ask: Toss takes a boolean,
+ * and KIS takes `FID_ORG_ADJ_PRC` where `0` means adjusted and `1` means raw.
+ */
+struct BarQuery {
+  InstrumentId instrument_;
+  BarInterval interval_{BarInterval::ONE_DAY};
+  int count_{100};
+  std::optional<std::chrono::system_clock::time_point> before_;
+  bool adjusted_{true};
+};
+
 } // namespace algotradelib
