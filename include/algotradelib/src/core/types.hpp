@@ -54,6 +54,98 @@ struct InstrumentId {
   }
 };
 
+/**
+ * Fixed-capacity uppercase code, stored without allocating.
+ *
+ * Some broker vocabularies are open sets: a market segment, a venue, or an
+ * exchange identifier may take a value this library has not seen. A closed
+ * `enum class` would have to either reject it or collapse it into a sentinel, and
+ * both lose information the broker actually sent.
+ *
+ * `Code` preserves such a value exactly, in place, so an unrecognized code can be
+ * carried through normalization, compared, and displayed without a heap
+ * allocation and without pretending to be understood. Where a value *is*
+ * understood, a normalized enum stays the right representation; this is the
+ * companion for the rest.
+ */
+template <std::size_t N>
+class Code {
+public:
+  /** Constructs an empty code. */
+  Code() = default;
+
+  /**
+   * Constructs a code from up to `N` uppercase ASCII characters or digits.
+   *
+   * @throws std::invalid_argument if `text` is too long or contains anything
+   * other than `A`-`Z`, `0`-`9`, or `_`.
+   */
+  explicit Code(std::string_view text) {
+    if (text.size() > N) {
+      throw std::invalid_argument("code is longer than its capacity");
+    }
+    for (std::size_t i = 0; i < text.size(); ++i) {
+      const char ch = text[i];
+      const bool valid = (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_';
+      if (!valid) {
+        throw std::invalid_argument("code must use uppercase ASCII, digits, or underscore");
+      }
+      characters_[i] = ch;
+    }
+    size_ = static_cast<std::uint8_t>(text.size());
+  }
+
+  /**
+   * Returns a code holding `text`, or nothing when it cannot be stored.
+   *
+   * Normalization paths use this rather than the throwing constructor. An
+   * unfamiliar code is exactly the case this type exists for, so encountering one
+   * must not throw out of a response parse and fail an entire listing over a
+   * single odd value.
+   */
+  static std::optional<Code> try_make(std::string_view text) {
+    if (text.size() > N) {
+      return std::nullopt;
+    }
+    Code code;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+      const char ch = text[i];
+      const bool valid = (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_';
+      if (!valid) {
+        return std::nullopt;
+      }
+      code.characters_[i] = ch;
+    }
+    code.size_ = static_cast<std::uint8_t>(text.size());
+    return code;
+  }
+
+  /** Returns the code as a view over its own storage. */
+  std::string_view view() const noexcept {
+    return std::string_view(characters_.data(), size_);
+  }
+
+  /** Returns the code as a string. */
+  std::string str() const { return std::string(view()); }
+
+  /** Returns whether the code carries no value. */
+  bool empty() const noexcept { return size_ == 0; }
+
+  /** Returns how many characters the code holds. */
+  std::size_t size() const noexcept { return size_; }
+
+  /** Returns the greatest number of characters a code of this width can hold. */
+  static constexpr std::size_t capacity() noexcept { return N; }
+
+  friend bool operator==(const Code& lhs, const Code& rhs) { return lhs.view() == rhs.view(); }
+
+  friend bool operator!=(const Code& lhs, const Code& rhs) { return !(lhs == rhs); }
+
+private:
+  std::array<char, N> characters_{};
+  std::uint8_t size_{0};
+};
+
 /** Validated ISO 4217-style three-letter currency code. */
 class Currency {
 public:
@@ -218,6 +310,134 @@ private:
   std::uint8_t scale_{0};
 };
 
+/**
+ * Returns `value` with trailing fractional zeros removed.
+ *
+ * `Decimal64` equality compares the coefficient and the scale, so `1.50` and
+ * `1.5` are distinct values. Normalizing an arithmetic result keeps it comparable
+ * to the same number parsed from a broker's string.
+ */
+inline Decimal64 decimal_normalized(const Decimal64& value) {
+  auto coefficient = value.coefficient();
+  auto scale = value.scale();
+  while (scale > 0 && coefficient % 10 == 0) {
+    coefficient /= 10;
+    --scale;
+  }
+  return Decimal64(coefficient, scale);
+}
+
+namespace decimal_detail {
+
+/**
+ * Rescales both values to their common scale.
+ *
+ * Returns false when the rescaling would not fit, which is the only way exact
+ * fixed-width arithmetic can fail.
+ */
+inline bool align(
+  const Decimal64& lhs,
+  const Decimal64& rhs,
+  std::int64_t& left,
+  std::int64_t& right,
+  std::uint8_t& scale
+) {
+  scale = lhs.scale() > rhs.scale() ? lhs.scale() : rhs.scale();
+  left = lhs.coefficient();
+  right = rhs.coefficient();
+  for (std::uint8_t step = lhs.scale(); step < scale; ++step) {
+    if (left > std::numeric_limits<std::int64_t>::max() / 10 ||
+        left < std::numeric_limits<std::int64_t>::min() / 10) {
+      return false;
+    }
+    left *= 10;
+  }
+  for (std::uint8_t step = rhs.scale(); step < scale; ++step) {
+    if (right > std::numeric_limits<std::int64_t>::max() / 10 ||
+        right < std::numeric_limits<std::int64_t>::min() / 10) {
+      return false;
+    }
+    right *= 10;
+  }
+  return true;
+}
+
+} // namespace decimal_detail
+
+/**
+ * Returns the exact sum, or nothing when it does not fit.
+ *
+ * The result is optional rather than wrapping or throwing. These operations sit on
+ * paths that run per quote and per bar, where a throw is the wrong cost and a
+ * silent wrap on a price is never acceptable; an empty result says "this number
+ * cannot be represented" in the same vocabulary the rest of the library already
+ * uses for absent values.
+ */
+inline std::optional<Decimal64> decimal_add(const Decimal64& lhs, const Decimal64& rhs) {
+  std::int64_t left = 0;
+  std::int64_t right = 0;
+  std::uint8_t scale = 0;
+  if (!decimal_detail::align(lhs, rhs, left, right, scale)) {
+    return std::nullopt;
+  }
+  if ((right > 0 && left > std::numeric_limits<std::int64_t>::max() - right) ||
+      (right < 0 && left < std::numeric_limits<std::int64_t>::min() - right)) {
+    return std::nullopt;
+  }
+  return decimal_normalized(Decimal64(left + right, scale));
+}
+
+/** Returns the exact difference, or nothing when it does not fit. */
+inline std::optional<Decimal64> decimal_subtract(const Decimal64& lhs, const Decimal64& rhs) {
+  std::int64_t left = 0;
+  std::int64_t right = 0;
+  std::uint8_t scale = 0;
+  if (!decimal_detail::align(lhs, rhs, left, right, scale)) {
+    return std::nullopt;
+  }
+  if ((right < 0 && left > std::numeric_limits<std::int64_t>::max() + right) ||
+      (right > 0 && left < std::numeric_limits<std::int64_t>::min() + right)) {
+    return std::nullopt;
+  }
+  return decimal_normalized(Decimal64(left - right, scale));
+}
+
+/**
+ * Returns exactly half of `value`, or nothing when it does not fit.
+ *
+ * Halving an odd coefficient needs one more decimal place, so it is taken rather
+ * than rounded away: rounding belongs to whoever is about to act on the number,
+ * not to the arithmetic that produced it.
+ */
+inline std::optional<Decimal64> decimal_halve(const Decimal64& value) {
+  const auto coefficient = value.coefficient();
+  if (coefficient % 2 == 0) {
+    return decimal_normalized(Decimal64(coefficient / 2, value.scale()));
+  }
+  if (value.scale() == std::numeric_limits<std::uint8_t>::max() ||
+      coefficient > std::numeric_limits<std::int64_t>::max() / 5 ||
+      coefficient < std::numeric_limits<std::int64_t>::min() / 5) {
+    return std::nullopt;
+  }
+  return decimal_normalized(
+    Decimal64(coefficient * 5, static_cast<std::uint8_t>(value.scale() + 1))
+  );
+}
+
+/** Returns whether `lhs` is numerically less than `rhs`, comparing exactly. */
+inline bool decimal_less(const Decimal64& lhs, const Decimal64& rhs) {
+  std::int64_t left = 0;
+  std::int64_t right = 0;
+  std::uint8_t scale = 0;
+  if (decimal_detail::align(lhs, rhs, left, right, scale)) {
+    return left < right;
+  }
+  // Rescaling overflowed, so the values differ by more than any shared scale can
+  // express; the one with the larger magnitude and its sign decides.
+  const bool left_negative = lhs.coefficient() < 0;
+  return left_negative != (rhs.coefficient() < 0) ? left_negative : lhs.scale() > rhs.scale();
+}
+
 /** Broad category for transport and broker-operation failures. */
 enum class ErrorCategory {
   CANCELLED,
@@ -281,13 +501,35 @@ private:
   std::variant<T, BrokerError> value_;
 };
 
-/** Normalized point-in-time market quote. */
+/**
+ * Best bid and offer, with the size resting at each.
+ *
+ * Every member is optional because a quote may arrive before either side has a
+ * resting order, and because a broker may publish a price without a size. An
+ * absent value means the broker did not state one, never zero.
+ */
+struct TopOfBook {
+  std::optional<Decimal64> bid_price_;
+  std::optional<Decimal64> bid_quantity_;
+  std::optional<Decimal64> ask_price_;
+  std::optional<Decimal64> ask_quantity_;
+};
+
+/**
+ * Normalized point-in-time market quote.
+ *
+ * `top_of_book_` and `volume_` are optional additions: the members that existed
+ * before keep their meaning, so a caller written against the earlier shape is
+ * unaffected.
+ */
 struct QuoteSnapshot {
   InstrumentId instrument_;
   Decimal64 last_price_;
   Currency currency_;
   std::optional<std::chrono::system_clock::time_point> exchange_time_;
   std::chrono::system_clock::time_point received_at_;
+  std::optional<TopOfBook> top_of_book_;
+  std::optional<Decimal64> volume_;
 };
 
 /** Exact monetary amount paired with its currency. */
