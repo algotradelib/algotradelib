@@ -83,6 +83,21 @@ public:
   /** Broker-specific configuration type. */
   using Config = typename Traits::Config;
 
+  /** Compile-time identity of the bound broker. */
+  using BrokerTag = typename Traits::BrokerTag;
+
+  /** Opaque order reference this session issues and accepts. */
+  using Ref = OrderRef<BrokerTag>;
+
+  /** Acknowledgement and reference returned by an order-writing verb. */
+  using Placed = PlacedOrder<BrokerTag>;
+
+  /** One amendable order of this broker. */
+  using Working = WorkingOrder<BrokerTag>;
+
+  /** Amendable orders of this broker. */
+  using WorkingSet = WorkingOrders<BrokerTag>;
+
   ATL_ASSERT_BROKER(Client);
 
   static_assert(
@@ -166,11 +181,11 @@ public:
   template <typename CompletionToken>
   auto async_place(OrderRequest order, CompletionToken&& token) {
     if (auto invalid = Traits::validate_place(order)) {
-      return complete_error<PlacedOrder>(
+      return complete_error<Placed>(
         std::forward<CompletionToken>(token), std::move(*invalid)
       );
     }
-    return translate<PlacedOrder>(
+    return translate<Placed>(
       std::forward<CompletionToken>(token),
       [client = client_, account = account_, order = std::move(order)](auto&& sink) mutable {
         Traits::place_order(
@@ -188,14 +203,14 @@ public:
    * failure does not mean the modification was rejected.
    */
   template <typename CompletionToken>
-  auto async_replace(OrderRef ref, AmendInstruction instruction, CompletionToken&& token) {
+  auto async_replace(Ref ref, AmendInstruction instruction, CompletionToken&& token) {
     auto amendment = Traits::to_replacement(ref, instruction);
     if (!amendment) {
-      return complete_error<PlacedOrder>(
+      return complete_error<Placed>(
         std::forward<CompletionToken>(token), std::move(amendment.error())
       );
     }
-    return translate<PlacedOrder>(
+    return translate<Placed>(
       std::forward<CompletionToken>(token),
       [
         client = client_,
@@ -219,16 +234,19 @@ public:
    * Build `instruction` with `cancel_all()` or `cancel_quantity()` on the
    * `WorkingOrder`, which supplies whatever the bound broker requires. A partial
    * cancellation is rejected before any I/O on a broker that cancels in full.
+   *
+   * `Ref` is typed by broker, so a reference issued by another broker is a
+   * compile error rather than a run-time rejection.
    */
   template <typename CompletionToken>
-  auto async_cancel(OrderRef ref, AmendInstruction instruction, CompletionToken&& token) {
+  auto async_cancel(Ref ref, AmendInstruction instruction, CompletionToken&& token) {
     auto amendment = Traits::to_cancellation(ref, instruction);
     if (!amendment) {
-      return complete_error<PlacedOrder>(
+      return complete_error<Placed>(
         std::forward<CompletionToken>(token), std::move(amendment.error())
       );
     }
-    return translate<PlacedOrder>(
+    return translate<Placed>(
       std::forward<CompletionToken>(token),
       [
         client = client_,
@@ -253,7 +271,7 @@ public:
   template <typename CompletionToken>
   auto async_working_orders(CompletionToken&& token) {
     if constexpr (Caps::has_working_orders) {
-      return translate<WorkingOrders>(
+      return translate<WorkingSet>(
         std::forward<CompletionToken>(token),
         [client = client_, account = account_](auto&& sink) mutable {
           Traits::working_orders(*client, account, std::forward<decltype(sink)>(sink));
@@ -303,17 +321,8 @@ public:
 
   /** Retrieves one order by reference, on a broker that addresses one directly. */
   template <typename CompletionToken>
-  auto async_order(OrderRef ref, CompletionToken&& token) {
+  auto async_order(Ref ref, CompletionToken&& token) {
     if constexpr (Caps::has_order_by_id) {
-      if (ref.broker_ != Traits::name) {
-        BrokerError error;
-        error.category_ = ErrorCategory::INVALID_ARGUMENT;
-        error.broker_code_ = "foreign_order_reference";
-        error.message_ = "order reference was issued by a different broker";
-        return complete_error<OrderSnapshot>(
-          std::forward<CompletionToken>(token), std::move(error)
-        );
-      }
       return translate<OrderSnapshot>(
         std::forward<CompletionToken>(token),
         [client = client_, account = account_, id = ref.primary_](auto&& sink) mutable {
@@ -415,6 +424,21 @@ public:
   /** Broker-specific configuration type. */
   using Config = typename Traits::Config;
 
+  /** Compile-time identity of the bound broker. */
+  using BrokerTag = typename Traits::BrokerTag;
+
+  /** Opaque order reference this session issues and accepts. */
+  using Ref = OrderRef<BrokerTag>;
+
+  /** Acknowledgement and reference returned by an order-writing verb. */
+  using Placed = PlacedOrder<BrokerTag>;
+
+  /** One amendable order of this broker. */
+  using Working = WorkingOrder<BrokerTag>;
+
+  /** Amendable orders of this broker. */
+  using WorkingSet = WorkingOrders<BrokerTag>;
+
   ATL_ASSERT_BROKER(Client);
 
   static_assert(
@@ -456,18 +480,18 @@ public:
   Result<HoldingsSnapshot> holdings() { return Traits::holdings(*client_, account_); }
 
   /** Submits a new order. The indeterminacy rule of `BrokerSession::async_place` applies. */
-  Result<PlacedOrder> place(OrderRequest order) {
+  Result<Placed> place(OrderRequest order) {
     if (auto invalid = Traits::validate_place(order)) {
-      return Result<PlacedOrder>(std::move(*invalid));
+      return Result<Placed>(std::move(*invalid));
     }
     return Traits::normalize_place(Traits::place_order(*client_, account_, std::move(order)));
   }
 
   /** Modifies an existing order. */
-  Result<PlacedOrder> replace(const OrderRef& ref, const AmendInstruction& instruction) {
+  Result<Placed> replace(const Ref& ref, const AmendInstruction& instruction) {
     auto amendment = Traits::to_replacement(ref, instruction);
     if (!amendment) {
-      return Result<PlacedOrder>(std::move(amendment.error()));
+      return Result<Placed>(std::move(amendment.error()));
     }
     return Traits::normalize_place(
       Traits::replace_order(*client_, account_, std::move(amendment.value()))
@@ -475,10 +499,10 @@ public:
   }
 
   /** Cancels an existing order. */
-  Result<PlacedOrder> cancel(const OrderRef& ref, const AmendInstruction& instruction) {
+  Result<Placed> cancel(const Ref& ref, const AmendInstruction& instruction) {
     auto amendment = Traits::to_cancellation(ref, instruction);
     if (!amendment) {
-      return Result<PlacedOrder>(std::move(amendment.error()));
+      return Result<Placed>(std::move(amendment.error()));
     }
     return Traits::normalize_place(
       Traits::cancel_order(*client_, account_, std::move(amendment.value()))
@@ -486,7 +510,7 @@ public:
   }
 
   /** Returns every order still open to modification or cancellation. */
-  Result<WorkingOrders> working_orders() {
+  Result<WorkingSet> working_orders() {
     if constexpr (Caps::has_working_orders) {
       return Traits::normalize_working_orders(Traits::working_orders(*client_, account_));
     } else {
@@ -508,15 +532,8 @@ public:
   }
 
   /** Returns one order by reference, on a broker that addresses one directly. */
-  Result<OrderSnapshot> order(const OrderRef& ref) {
+  Result<OrderSnapshot> order(const Ref& ref) {
     if constexpr (Caps::has_order_by_id) {
-      if (ref.broker_ != Traits::name) {
-        BrokerError error;
-        error.category_ = ErrorCategory::INVALID_ARGUMENT;
-        error.broker_code_ = "foreign_order_reference";
-        error.message_ = "order reference was issued by a different broker";
-        return Result<OrderSnapshot>(std::move(error));
-      }
       return Traits::order_by_id(*client_, account_, ref.primary_);
     } else {
       static_assert(

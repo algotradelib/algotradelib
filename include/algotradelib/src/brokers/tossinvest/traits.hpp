@@ -12,10 +12,23 @@
 
 namespace algotradelib {
 
-namespace tossinvest::traits_detail {
+namespace tossinvest {
 
-/** Normalized broker name carried by every Toss order reference. */
-inline constexpr std::string_view broker_name = "tossinvest";
+/**
+ * Compile-time identity of Toss Securities, shared by both of its clients.
+ *
+ * Sharing one tag is what makes a reference obtained from `TossBlockingClient`
+ * usable with `TossClient`, while keeping it distinct from another broker's.
+ */
+struct Broker {
+  /** Normalized broker name. */
+  static constexpr std::string_view name = "tossinvest";
+};
+
+namespace traits_detail {
+
+/** Opaque order reference issued by the Toss adapter. */
+using Ref = OrderRef<tossinvest::Broker>;
 
 /**
  * Pure conversions shared by the asynchronous and blocking Toss traits.
@@ -26,23 +39,10 @@ inline constexpr std::string_view broker_name = "tossinvest";
  */
 struct Normalizers {
   /** Returns an opaque reference carrying Toss's order identifier. */
-  static OrderRef make_ref(std::string order_id) {
-    OrderRef ref;
-    ref.broker_ = broker_name;
+  static Ref make_ref(std::string order_id) {
+    Ref ref;
     ref.primary_ = std::move(order_id);
     return ref;
-  }
-
-  /** Returns an error when `ref` was not issued for Toss. */
-  static std::optional<BrokerError> check_ref(const OrderRef& ref) {
-    if (ref.broker_ == broker_name) {
-      return std::nullopt;
-    }
-    BrokerError error;
-    error.category_ = ErrorCategory::INVALID_ARGUMENT;
-    error.broker_code_ = "foreign_order_reference";
-    error.message_ = "order reference was not issued by the Toss Securities adapter";
-    return error;
   }
 
   /**
@@ -56,38 +56,39 @@ struct Normalizers {
   static std::optional<BrokerError> validate_place(const OrderRequest&) { return std::nullopt; }
 
   /** Normalizes a Toss acknowledgement into an acknowledgement and a reference. */
-  static Result<PlacedOrder> normalize_place(Result<OrderAck> raw) {
+  static Result<PlacedOrder<tossinvest::Broker>> normalize_place(Result<OrderAck> raw) {
     if (!raw) {
-      return Result<PlacedOrder>(std::move(raw.error()));
+      return Result<PlacedOrder<tossinvest::Broker>>(std::move(raw.error()));
     }
-    PlacedOrder placed;
+    PlacedOrder<tossinvest::Broker> placed;
     placed.ref_ = make_ref(raw.value().order_id_);
     placed.ack_ = std::move(raw.value());
-    return Result<PlacedOrder>(std::move(placed));
+    return Result<PlacedOrder<tossinvest::Broker>>(std::move(placed));
   }
 
   /**
    * Normalizes a Toss `OPEN` listing into working orders.
    *
-   * Toss addresses an order by one identifier, so no separate amendment
-   * reference exists. It reports no amendable quantity either, and the absence
-   * is preserved as an empty optional rather than as a zero a caller could
-   * mistake for "nothing left to cancel".
+   * Toss addresses an order by one identifier and reports no amendable quantity.
+   * The absence is preserved as an empty optional rather than as a zero a caller
+   * could mistake for "nothing left to cancel".
    */
-  static Result<WorkingOrders> normalize_working_orders(Result<OrderPage> raw) {
+  static Result<WorkingOrders<tossinvest::Broker>> normalize_working_orders(
+    Result<OrderPage> raw
+  ) {
     if (!raw) {
-      return Result<WorkingOrders>(std::move(raw.error()));
+      return Result<WorkingOrders<tossinvest::Broker>>(std::move(raw.error()));
     }
-    WorkingOrders orders;
+    WorkingOrders<tossinvest::Broker> orders;
     orders.received_at_ = raw.value().received_at_;
     orders.orders_.reserve(raw.value().orders_.size());
     for (auto& order : raw.value().orders_) {
-      WorkingOrder working;
+      WorkingOrder<tossinvest::Broker> working;
       working.ref_ = make_ref(order.order_id_);
       working.order_ = std::move(order);
       orders.orders_.push_back(std::move(working));
     }
-    return Result<WorkingOrders>(std::move(orders));
+    return Result<WorkingOrders<tossinvest::Broker>>(std::move(orders));
   }
 
   /**
@@ -99,12 +100,9 @@ struct Normalizers {
    * quantity carries none; state the quantity for a Korean order.
    */
   static Result<tossinvest::TossAmendment> to_replacement(
-    const OrderRef& ref,
+    const Ref& ref,
     const AmendInstruction& instruction
   ) {
-    if (auto invalid = check_ref(ref)) {
-      return Result<tossinvest::TossAmendment>(std::move(*invalid));
-    }
     tossinvest::TossAmendment amendment;
     amendment.order_id_ = ref.primary_;
     amendment.type_ = instruction.shape_.type_;
@@ -123,12 +121,9 @@ struct Normalizers {
    * order than the caller asked to withdraw.
    */
   static Result<tossinvest::TossAmendment> to_cancellation(
-    const OrderRef& ref,
+    const Ref& ref,
     const AmendInstruction& instruction
   ) {
-    if (auto invalid = check_ref(ref)) {
-      return Result<tossinvest::TossAmendment>(std::move(*invalid));
-    }
     if (!instruction.all_remaining_) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
@@ -219,7 +214,8 @@ struct Capabilities {
   static constexpr bool has_history_symbol_filter = true;
 };
 
-} // namespace tossinvest::traits_detail
+} // namespace traits_detail
+} // namespace tossinvest
 
 /** Broker port adaptation for the asynchronous Toss Securities client. */
 template <>
@@ -233,6 +229,9 @@ struct BrokerTraits<tossinvest::TossClient>
 
   /** Toss account selector, the numeric account sequence. */
   using Account = std::int64_t;
+
+  /** Compile-time identity of Toss Securities. */
+  using BrokerTag = tossinvest::Broker;
 
   /** Acknowledgement Toss returns for an order instruction. */
   using PlaceAck = OrderAck;
@@ -250,7 +249,7 @@ struct BrokerTraits<tossinvest::TossClient>
   using AccountListItem = tossinvest::TossAccount;
 
   /** Normalized broker name. */
-  static constexpr std::string_view name = tossinvest::traits_detail::broker_name;
+  static constexpr std::string_view name = tossinvest::Broker::name;
 
   /** This client completes through a completion token. */
   static constexpr bool blocking = false;
@@ -346,6 +345,9 @@ struct BrokerTraits<tossinvest::TossBlockingClient>
   /** Toss account selector, the numeric account sequence. */
   using Account = std::int64_t;
 
+  /** Compile-time identity of Toss Securities. */
+  using BrokerTag = tossinvest::Broker;
+
   /** Acknowledgement Toss returns for an order instruction. */
   using PlaceAck = OrderAck;
 
@@ -362,7 +364,7 @@ struct BrokerTraits<tossinvest::TossBlockingClient>
   using AccountListItem = tossinvest::TossAccount;
 
   /** Normalized broker name. */
-  static constexpr std::string_view name = tossinvest::traits_detail::broker_name;
+  static constexpr std::string_view name = tossinvest::Broker::name;
 
   /** This client drives its own event loop and returns a result directly. */
   static constexpr bool blocking = true;

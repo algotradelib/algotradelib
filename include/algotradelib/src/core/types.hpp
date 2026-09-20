@@ -506,30 +506,41 @@ struct OrderAck {
 };
 
 /**
- * Opaque broker-defined identity for one order.
+ * Compile-time identity of the broker that issued an order reference.
  *
- * Two parts are stored because addressing an order is not uniformly reducible
- * to one string: KIS needs a branch code together with an order number, while
- * Toss needs one identifier. `primary_` carries the order number or identifier
- * and `secondary_` carries the additional part when a broker has one.
+ * A broker declares a tag type carrying `static constexpr std::string_view name`
+ * and names it in its `BrokerTraits` specialization. The tag is a template
+ * parameter rather than a stored field, so the broker costs nothing at run time
+ * and a reference from one broker is a different *type* from another's: handing a
+ * reference to the wrong session fails to compile instead of failing a check.
+ *
+ * Both of a broker's clients — asynchronous and blocking — share one tag, so a
+ * reference obtained through either is usable with the other.
+ */
+
+/**
+ * Opaque order identity issued by broker `Broker`.
+ *
+ * Two parts are stored because addressing an order is not uniformly reducible to
+ * one string: KIS needs a branch code together with an order number, while Toss
+ * needs one identifier. `primary_` carries the order number or identifier and
+ * `secondary_` carries the additional part when a broker has one.
  *
  * The parts are opaque. Strategy code stores, compares, and hashes a reference
  * but never parses it, so a broker may change its internal composition without
  * breaking a caller.
- *
- * `broker_` names the trait that produced the reference and points at static
- * storage owned by that trait. It makes a reference from one broker
- * distinguishable from another broker's, which is what lets a port reject a
- * reference that cannot address an order on the bound client.
  */
+template <typename Broker>
 struct OrderRef {
-  std::string_view broker_;
   std::string primary_;
   std::string secondary_;
 
+  /** Returns the issuing broker's normalized name, known at compile time. */
+  static constexpr std::string_view broker() noexcept { return Broker::name; }
+
   /** Returns a stable human-readable form for logs and order attribution. */
   std::string str() const {
-    std::string text(broker_);
+    std::string text(broker());
     text += ':';
     text += primary_;
     if (!secondary_.empty()) {
@@ -539,13 +550,12 @@ struct OrderRef {
     return text;
   }
 
-  /** Compares two references, including the broker that issued them. */
+  /** Compares two references of the same broker. */
   friend bool operator==(const OrderRef& lhs, const OrderRef& rhs) {
-    return lhs.broker_ == rhs.broker_ && lhs.primary_ == rhs.primary_ &&
-      lhs.secondary_ == rhs.secondary_;
+    return lhs.primary_ == rhs.primary_ && lhs.secondary_ == rhs.secondary_;
   }
 
-  /** Compares two references for inequality. */
+  /** Compares two references of the same broker for inequality. */
   friend bool operator!=(const OrderRef& lhs, const OrderRef& rhs) { return !(lhs == rhs); }
 };
 
@@ -555,9 +565,10 @@ struct OrderRef {
  * Acceptance means the broker recorded the instruction, not that the order
  * executed. `ref_` is what a later modification or cancellation must address.
  */
+template <typename Broker>
 struct PlacedOrder {
   OrderAck ack_;
-  OrderRef ref_;
+  OrderRef<Broker> ref_;
 };
 
 /**
@@ -598,29 +609,27 @@ struct AmendInstruction {
 /**
  * One order that is still open to modification or cancellation.
  *
+ * `ref_` is the reference a modification or cancellation must address. A broker
+ * may also report which earlier order this one superseded — KIS's `orgn_odno` —
+ * but that is lineage, not an address: amending it would address an order that is
+ * no longer live. Lineage stays reachable through the concrete client and is not
+ * normalized here.
+ *
  * `amendable_quantity_` is optional because a broker reports it only where it
  * publishes one. An empty value means the broker did not state a quantity, not
  * that the quantity is zero.
- *
- * `amend_ref_` is present only where a broker addresses an amendment by a
- * different reference from the one identifying the row. Callers should use
- * `amend_reference()` rather than choosing between the two.
  */
+template <typename Broker>
 struct WorkingOrder {
   OrderSnapshot order_;
-  OrderRef ref_;
-  std::optional<OrderRef> amend_ref_;
+  OrderRef<Broker> ref_;
   std::optional<Decimal64> amendable_quantity_;
-
-  /** Returns the reference a modification or cancellation must address. */
-  const OrderRef& amend_reference() const noexcept {
-    return amend_ref_ ? *amend_ref_ : ref_;
-  }
 };
 
 /** Point-in-time set of orders open to modification or cancellation. */
+template <typename Broker>
 struct WorkingOrders {
-  std::vector<WorkingOrder> orders_;
+  std::vector<WorkingOrder<Broker>> orders_;
   std::chrono::system_clock::time_point received_at_;
 };
 
@@ -646,7 +655,8 @@ struct OrderHistoryQuery {
  * The order's own shape and reported amendable quantity are carried through, so
  * a broker that requires either receives it without the caller restating it.
  */
-inline AmendInstruction cancel_all(const WorkingOrder& order) {
+template <typename Broker>
+inline AmendInstruction cancel_all(const WorkingOrder<Broker>& order) {
   AmendInstruction instruction;
   instruction.shape_.type_ = order.order_.type_;
   instruction.shape_.price_ = order.order_.price_;
@@ -656,7 +666,8 @@ inline AmendInstruction cancel_all(const WorkingOrder& order) {
 }
 
 /** Returns an instruction cancelling exactly `quantity` of `order`. */
-inline AmendInstruction cancel_quantity(const WorkingOrder& order, Decimal64 quantity) {
+template <typename Broker>
+inline AmendInstruction cancel_quantity(const WorkingOrder<Broker>& order, Decimal64 quantity) {
   AmendInstruction instruction;
   instruction.shape_.type_ = order.order_.type_;
   instruction.shape_.price_ = order.order_.price_;
@@ -671,8 +682,9 @@ inline AmendInstruction cancel_quantity(const WorkingOrder& order, Decimal64 qua
  * Omitting `quantity` amends the whole remaining quantity; supplying one amends
  * exactly that quantity.
  */
+template <typename Broker>
 inline AmendInstruction replace_with(
-  const WorkingOrder& order,
+  const WorkingOrder<Broker>& order,
   OrderShape shape,
   std::optional<Decimal64> quantity = std::nullopt
 ) {
@@ -759,17 +771,19 @@ inline std::optional<std::chrono::system_clock::time_point> parse_iso8601_timest
 
 namespace std {
 
-/** Hashes an opaque order reference so callers can key an order book on it. */
-template <>
-struct hash<algotradelib::OrderRef> {
-  /** Combines the broker tag and both reference parts. */
-  std::size_t operator()(const algotradelib::OrderRef& ref) const noexcept {
-    std::size_t seed = hash<std::string_view>{}(ref.broker_);
-    const auto mix = [&seed](std::size_t value) {
-      seed ^= value + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
-    };
-    mix(hash<std::string>{}(ref.primary_));
-    mix(hash<std::string>{}(ref.secondary_));
+/**
+ * Hashes an opaque order reference so callers can key an order book on it.
+ *
+ * The broker is part of the type rather than the value, so only the two parts
+ * are hashed; two brokers' references cannot collide because they cannot share a
+ * container.
+ */
+template <typename Broker>
+struct hash<algotradelib::OrderRef<Broker>> {
+  /** Combines both reference parts. */
+  std::size_t operator()(const algotradelib::OrderRef<Broker>& ref) const noexcept {
+    std::size_t seed = hash<std::string>{}(ref.primary_);
+    seed ^= hash<std::string>{}(ref.secondary_) + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
     return seed;
   }
 };

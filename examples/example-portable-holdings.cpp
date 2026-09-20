@@ -36,7 +36,6 @@ using algotradelib::BlockingSession;
 using algotradelib::BrokerCaps;
 using algotradelib::BrokerError;
 using algotradelib::HoldingsSnapshot;
-using algotradelib::WorkingOrders;
 
 /** Prints a structured broker or transport failure. */
 void print_error(std::string_view operation, const BrokerError& error) {
@@ -74,12 +73,12 @@ void print_holdings(const HoldingsSnapshot& snapshot) {
 }
 
 /** Prints normalized working orders and the reference each amendment would use. */
-void print_working_orders(const WorkingOrders& orders) {
+template <typename Broker>
+void print_working_orders(const algotradelib::WorkingOrders<Broker>& orders) {
   std::cout << "working orders: " << orders.orders_.size() << '\n';
   for (const auto& working : orders.orders_) {
     std::cout << "  " << working.order_.instrument_.symbol_
       << "  reference=" << working.ref_.str()
-      << "  amend as=" << working.amend_reference().str()
       << "  ordered=" << working.order_.quantity_.str()
       << "  filled=" << working.order_.execution_.filled_quantity_.str();
     if (working.amendable_quantity_) {

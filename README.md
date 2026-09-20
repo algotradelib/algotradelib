@@ -192,7 +192,7 @@ template <typename Client>
 void report(BlockingSession<Client>& session) {
   auto holdings = session.holdings();          // no account argument
   auto working = session.working_orders();     // normalized WorkingOrders
-  auto placed = session.place(order);          // Result<PlacedOrder>
+  auto placed = session.place(order);          // Result<PlacedOrder<Broker>>
   session.cancel(placed.value().ref_, cancel_all(working.value().orders_.front()));
 }
 
@@ -214,17 +214,27 @@ member by name.
 
 ### Order identity
 
-`OrderRef` is an opaque, comparable, hashable reference issued by the adapter.
-KIS needs a branch code together with an order number and Toss needs one string,
-so a reference carries both parts without a caller parsing either. A
-`WorkingOrder` additionally exposes `amend_reference()`, which is the reference
-an amendment must address where a broker distinguishes it from the row's own
-identity.
+`OrderRef<Broker>` is an opaque, comparable, hashable reference issued by the
+adapter. KIS needs a branch code together with an order number and Toss needs one
+string, so a reference carries both parts without a caller parsing either.
+
+The broker is a **template parameter, not a stored field**: it costs nothing at
+run time, and handing a KIS reference to a Toss session fails to compile rather
+than failing a check. A broker's asynchronous and blocking clients share one tag,
+so a reference read through `TossBlockingClient` is usable with `TossClient`. Each
+session publishes the types it accepts as `Session::Ref`, `Session::Placed`,
+`Session::Working`, and `Session::WorkingSet`.
 
 Build a modification or cancellation with `cancel_all()`, `cancel_quantity()`, or
 `replace_with()` on a `WorkingOrder`. They fill in whatever the bound broker
 requires: KIS validates a positive whole quantity even for a full cancellation,
 while Toss needs only the identifier.
+
+A `WorkingOrder::ref_` is the reference an amendment addresses. Where a broker
+also reports which earlier order a correction replaced — KIS's `orgn_odno` — that
+is lineage rather than an address and is not normalized; amending it would
+address an order that is no longer live. It stays reachable through
+`session.client()`.
 
 ### Capabilities
 

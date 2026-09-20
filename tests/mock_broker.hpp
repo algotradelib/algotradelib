@@ -280,8 +280,11 @@ private:
   net::strand<net::any_io_executor> strand_;
 };
 
-/** Normalized broker name carried by every in-memory order reference. */
-inline constexpr std::string_view broker_name = "mock";
+/** Compile-time identity of the in-memory broker. */
+struct Broker {
+  /** Normalized broker name. */
+  static constexpr std::string_view name = "mock";
+};
 
 } // namespace mock
 
@@ -304,6 +307,9 @@ struct BrokerTraits<mock::MockClient> {
   /** Account selector type. */
   using Account = mock::MockAccount;
 
+  /** Compile-time identity of the in-memory broker. */
+  using BrokerTag = mock::Broker;
+
   /** Acknowledgement type. */
   using PlaceAck = mock::MockAck;
 
@@ -317,7 +323,7 @@ struct BrokerTraits<mock::MockClient> {
   using WorkingOrdersResult = mock::MockLiveOrders;
 
   /** Normalized broker name. */
-  static constexpr std::string_view name = mock::broker_name;
+  static constexpr std::string_view name = mock::Broker::name;
 
   /** This client completes through a completion token. */
   static constexpr bool blocking = false;
@@ -350,23 +356,10 @@ struct BrokerTraits<mock::MockClient> {
   static constexpr bool has_history_symbol_filter = false;
 
   /** Returns an opaque reference carrying the broker's ticket. */
-  static OrderRef make_ref(std::string ticket) {
-    OrderRef ref;
-    ref.broker_ = name;
+  static OrderRef<mock::Broker> make_ref(std::string ticket) {
+    OrderRef<mock::Broker> ref;
     ref.primary_ = std::move(ticket);
     return ref;
-  }
-
-  /** Returns an error when `ref` was not issued for this broker. */
-  static std::optional<BrokerError> check_ref(const OrderRef& ref) {
-    if (ref.broker_ == name) {
-      return std::nullopt;
-    }
-    BrokerError error;
-    error.category_ = ErrorCategory::INVALID_ARGUMENT;
-    error.broker_code_ = "foreign_order_reference";
-    error.message_ = "order reference was not issued by the in-memory adapter";
-    return error;
   }
 
   /** Refuses an idempotency key this broker does not honor. */
@@ -382,43 +375,42 @@ struct BrokerTraits<mock::MockClient> {
   }
 
   /** Normalizes the broker's acknowledgement. */
-  static Result<PlacedOrder> normalize_place(Result<PlaceAck> raw) {
+  static Result<PlacedOrder<mock::Broker>> normalize_place(Result<PlaceAck> raw) {
     if (!raw) {
-      return Result<PlacedOrder>(std::move(raw.error()));
+      return Result<PlacedOrder<mock::Broker>>(std::move(raw.error()));
     }
-    PlacedOrder placed;
+    PlacedOrder<mock::Broker> placed;
     placed.ack_.order_id_ = raw.value().ticket_;
     placed.ack_.accepted_at_ = raw.value().stamped_at_;
     placed.ref_ = make_ref(raw.value().ticket_);
-    return Result<PlacedOrder>(std::move(placed));
+    return Result<PlacedOrder<mock::Broker>>(std::move(placed));
   }
 
   /** Normalizes the broker's amendable-order rows. */
-  static Result<WorkingOrders> normalize_working_orders(Result<WorkingOrdersResult> raw) {
+  static Result<WorkingOrders<mock::Broker>> normalize_working_orders(
+    Result<WorkingOrdersResult> raw
+  ) {
     if (!raw) {
-      return Result<WorkingOrders>(std::move(raw.error()));
+      return Result<WorkingOrders<mock::Broker>>(std::move(raw.error()));
     }
-    WorkingOrders orders;
+    WorkingOrders<mock::Broker> orders;
     orders.received_at_ = raw.value().read_at_;
     orders.orders_.reserve(raw.value().rows_.size());
     for (auto& row : raw.value().rows_) {
-      WorkingOrder working;
+      WorkingOrder<mock::Broker> working;
       working.order_ = std::move(row.order_);
       working.ref_ = make_ref(row.ticket_);
       working.amendable_quantity_ = row.open_quantity_;
       orders.orders_.push_back(std::move(working));
     }
-    return Result<WorkingOrders>(std::move(orders));
+    return Result<WorkingOrders<mock::Broker>>(std::move(orders));
   }
 
   /** Converts a normalized modification. */
   static Result<Amendment> to_replacement(
-    const OrderRef& ref,
+    const OrderRef<mock::Broker>& ref,
     const AmendInstruction& instruction
   ) {
-    if (auto invalid = check_ref(ref)) {
-      return Result<Amendment>(std::move(*invalid));
-    }
     Amendment amendment;
     amendment.ticket_ = ref.primary_;
     amendment.whole_ = instruction.all_remaining_;
@@ -429,7 +421,7 @@ struct BrokerTraits<mock::MockClient> {
 
   /** Converts a normalized cancellation. */
   static Result<Amendment> to_cancellation(
-    const OrderRef& ref,
+    const OrderRef<mock::Broker>& ref,
     const AmendInstruction& instruction
   ) {
     return to_replacement(ref, instruction);

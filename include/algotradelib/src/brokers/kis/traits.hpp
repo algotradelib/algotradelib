@@ -11,10 +11,23 @@
 
 namespace algotradelib {
 
-namespace kis::traits_detail {
+namespace kis {
 
-/** Normalized broker name carried by every KIS order reference. */
-inline constexpr std::string_view broker_name = "kis";
+/**
+ * Compile-time identity of KIS, shared by its asynchronous and blocking clients.
+ *
+ * Sharing one tag is what makes a reference obtained from `KisBlockingClient`
+ * usable with `KisClient`, while keeping it distinct from another broker's.
+ */
+struct Broker {
+  /** Normalized broker name. */
+  static constexpr std::string_view name = "kis";
+};
+
+namespace traits_detail {
+
+/** Opaque order reference issued by the KIS adapter. */
+using Ref = OrderRef<kis::Broker>;
 
 /**
  * Pure conversions shared by the asynchronous and blocking KIS traits.
@@ -25,32 +38,19 @@ inline constexpr std::string_view broker_name = "kis";
  */
 struct Normalizers {
   /** Returns an opaque reference carrying KIS's order number and branch code. */
-  static OrderRef make_ref(const KisOrderRef& order) {
-    OrderRef ref;
-    ref.broker_ = broker_name;
+  static Ref make_ref(const KisOrderRef& order) {
+    Ref ref;
     ref.primary_ = order.order_number_;
     ref.secondary_ = order.branch_number_;
     return ref;
   }
 
   /** Returns KIS's own reference form from an opaque reference. */
-  static KisOrderRef from_ref(const OrderRef& ref) {
+  static KisOrderRef from_ref(const Ref& ref) {
     KisOrderRef order;
     order.order_number_ = ref.primary_;
     order.branch_number_ = ref.secondary_;
     return order;
-  }
-
-  /** Returns an error when `ref` was not issued for KIS. */
-  static std::optional<BrokerError> check_ref(const OrderRef& ref) {
-    if (ref.broker_ == broker_name) {
-      return std::nullopt;
-    }
-    BrokerError error;
-    error.category_ = ErrorCategory::INVALID_ARGUMENT;
-    error.broker_code_ = "foreign_order_reference";
-    error.message_ = "order reference was not issued by the KIS adapter";
-    return error;
   }
 
   /**
@@ -78,43 +78,48 @@ struct Normalizers {
   }
 
   /** Normalizes a KIS acknowledgement into an acknowledgement and a reference. */
-  static Result<PlacedOrder> normalize_place(Result<KisOrderAck> raw) {
+  static Result<PlacedOrder<kis::Broker>> normalize_place(Result<KisOrderAck> raw) {
     if (!raw) {
-      return Result<PlacedOrder>(std::move(raw.error()));
+      return Result<PlacedOrder<kis::Broker>>(std::move(raw.error()));
     }
-    PlacedOrder placed;
+    PlacedOrder<kis::Broker> placed;
     placed.ack_ = std::move(raw.value().ack_);
     placed.ref_ = make_ref(raw.value().order_);
-    return Result<PlacedOrder>(std::move(placed));
+    return Result<PlacedOrder<kis::Broker>>(std::move(placed));
   }
 
   /**
    * Normalizes one page of KIS amendable orders.
    *
-   * KIS reports both the row's own order number and the original order number an
-   * amendment must address. Both are preserved: `ref_` identifies the row and
-   * `amend_ref_` is set only where KIS's original order number differs, so a
-   * caller uses `amend_reference()` without choosing between them.
+   * The reference is the row's own `odno`, which KIS documents as "주문시 한국투자
+   * 증권 시스템에서 채번된 주문번호" and which is the value `order-rvsecncl` carries
+   * in `ORGN_ODNO`.
+   *
+   * `orgn_odno` is deliberately *not* used. KIS documents it as "정정/취소주문 인경우
+   * 원주문번호": it is populated only when the row is itself a correction, and it
+   * names the order that correction replaced. The inquiry's own response example
+   * shows a row with `odno` `0001569139`, `orgn_odno` `0001569136`, and
+   * `rvse_cncl_dvsn_name` `BUY AMEND*` — amending `0001569136` would address an
+   * order that is no longer live. The field is lineage, not an address, and stays
+   * reachable through `KisOpenOrder::original_order_` on the concrete client.
    */
-  static Result<WorkingOrders> normalize_working_orders(Result<KisOpenOrderPage> raw) {
+  static Result<WorkingOrders<kis::Broker>> normalize_working_orders(
+    Result<KisOpenOrderPage> raw
+  ) {
     if (!raw) {
-      return Result<WorkingOrders>(std::move(raw.error()));
+      return Result<WorkingOrders<kis::Broker>>(std::move(raw.error()));
     }
-    WorkingOrders orders;
+    WorkingOrders<kis::Broker> orders;
     orders.received_at_ = raw.value().received_at_;
     orders.orders_.reserve(raw.value().orders_.size());
     for (auto& open_order : raw.value().orders_) {
-      WorkingOrder working;
+      WorkingOrder<kis::Broker> working;
       working.order_ = std::move(open_order.order_);
       working.ref_ = make_ref(open_order.order_ref_);
-      const auto& original = open_order.original_order_.order_number_;
-      if (!original.empty() && original != open_order.order_ref_.order_number_) {
-        working.amend_ref_ = make_ref(open_order.original_order_);
-      }
       working.amendable_quantity_ = open_order.amendable_quantity_;
       orders.orders_.push_back(std::move(working));
     }
-    return Result<WorkingOrders>(std::move(orders));
+    return Result<WorkingOrders<kis::Broker>>(std::move(orders));
   }
 
   /**
@@ -130,12 +135,9 @@ struct Normalizers {
    * ignored, for the reason given on `validate_place`.
    */
   static Result<KisAmendment> to_amendment(
-    const OrderRef& ref,
+    const Ref& ref,
     const AmendInstruction& instruction
   ) {
-    if (auto invalid = check_ref(ref)) {
-      return Result<KisAmendment>(std::move(*invalid));
-    }
     if (!instruction.quantity_) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
@@ -157,7 +159,7 @@ struct Normalizers {
 
   /** Converts a normalized modification into KIS's own amendment. */
   static Result<KisAmendment> to_replacement(
-    const OrderRef& ref,
+    const Ref& ref,
     const AmendInstruction& instruction
   ) {
     return to_amendment(ref, instruction);
@@ -165,7 +167,7 @@ struct Normalizers {
 
   /** Converts a normalized cancellation into KIS's own amendment. */
   static Result<KisAmendment> to_cancellation(
-    const OrderRef& ref,
+    const Ref& ref,
     const AmendInstruction& instruction
   ) {
     return to_amendment(ref, instruction);
@@ -241,7 +243,8 @@ struct Capabilities {
   static constexpr bool has_history_symbol_filter = false;
 };
 
-} // namespace kis::traits_detail
+} // namespace traits_detail
+} // namespace kis
 
 /** Broker port adaptation for the asynchronous KIS client. */
 template <>
@@ -256,6 +259,9 @@ struct BrokerTraits<kis::KisClient>
   /** KIS account selector. */
   using Account = kis::KisAccount;
 
+  /** Compile-time identity of KIS. */
+  using BrokerTag = kis::Broker;
+
   /** Acknowledgement KIS returns for an order instruction. */
   using PlaceAck = kis::KisOrderAck;
 
@@ -269,7 +275,7 @@ struct BrokerTraits<kis::KisClient>
   using WorkingOrdersResult = kis::KisOpenOrderPage;
 
   /** Normalized broker name. */
-  static constexpr std::string_view name = kis::traits_detail::broker_name;
+  static constexpr std::string_view name = kis::Broker::name;
 
   /** This client completes through a completion token. */
   static constexpr bool blocking = false;
@@ -345,6 +351,9 @@ struct BrokerTraits<kis::KisBlockingClient>
   /** KIS account selector. */
   using Account = kis::KisAccount;
 
+  /** Compile-time identity of KIS. */
+  using BrokerTag = kis::Broker;
+
   /** Acknowledgement KIS returns for an order instruction. */
   using PlaceAck = kis::KisOrderAck;
 
@@ -358,7 +367,7 @@ struct BrokerTraits<kis::KisBlockingClient>
   using WorkingOrdersResult = kis::KisOpenOrderPage;
 
   /** Normalized broker name. */
-  static constexpr std::string_view name = kis::traits_detail::broker_name;
+  static constexpr std::string_view name = kis::Broker::name;
 
   /** This client drives its own event loop and returns a result directly. */
   static constexpr bool blocking = true;

@@ -25,9 +25,9 @@ namespace algotradelib {
  *
  * A specialization contributes exactly three kinds of member and nothing else:
  *
- * - associated types and constants: `Client`, `Config`, `Account`, `PlaceAck`,
- *   `Amendment`, `HistoryQuery`, `WorkingOrdersResult`, `name`, and the
- *   capability constants read by `BrokerCaps`;
+ * - associated types and constants: `Client`, `Config`, `Account`, `BrokerTag`,
+ *   `PlaceAck`, `Amendment`, `HistoryQuery`, `WorkingOrdersResult`, `name`, and
+ *   the capability constants read by `BrokerCaps`;
  * - raw call thunks forwarding to the client's own entry points, taking the
  *   broker's own argument types;
  * - pure normalizers and converters, which hold no state and perform no I/O.
@@ -70,6 +70,7 @@ using Sink = std::function<void(Result<T>)>;
   struct NAME<T, std::void_t<typename BrokerTraits<T>::MEMBER>> : std::true_type {}
 
 ATL_DETECT_TYPE(has_account_type, Account);
+ATL_DETECT_TYPE(has_broker_tag, BrokerTag);
 ATL_DETECT_TYPE(has_config_type, Config);
 ATL_DETECT_TYPE(has_place_ack_type, PlaceAck);
 ATL_DETECT_TYPE(has_amendment_type, Amendment);
@@ -153,6 +154,11 @@ struct BrokerConformance {
   static_assert(
     port_detail::has_account_type<Client>::value,
     "BrokerTraits<Client>::Account is missing: declare the broker's account selector type"
+  );
+  static_assert(
+    port_detail::has_broker_tag<Client>::value,
+    "BrokerTraits<Client>::BrokerTag is missing: declare the broker's compile-time tag type, "
+    "shared by its asynchronous and blocking clients"
   );
   static_assert(
     port_detail::has_config_type<Client>::value,
