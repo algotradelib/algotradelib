@@ -214,6 +214,9 @@ public:
   /** Completion handler for one normalized bar series. */
   using BarsHandler = net::any_completion_handler<void(Result<BarSeries>)>;
 
+  /** Completion handler for one normalized order book. */
+  using DepthHandler = net::any_completion_handler<void(Result<DepthSnapshot>)>;
+
   /** Completion handler for one normalized holdings snapshot. */
   using HoldingsHandler = net::any_completion_handler<void(Result<HoldingsSnapshot>)>;
 
@@ -274,6 +277,23 @@ public:
           self->strand_,
           [self, query = std::move(query), completion = std::move(completion)]() mutable {
             self->start_bars(std::move(query), std::move(completion));
+          }
+        );
+      },
+      token
+    );
+  }
+
+  /** Requests and normalizes the ten resting levels on each side of the book. */
+  template <typename CompletionToken>
+  auto async_depth(InstrumentId instrument, CompletionToken&& token) {
+    return net::async_initiate<CompletionToken, void(Result<DepthSnapshot>)>(
+      [self = shared_from_this(), instrument = std::move(instrument)](auto&& handler) mutable {
+        auto completion = DepthHandler(std::forward<decltype(handler)>(handler));
+        net::post(
+          self->strand_,
+          [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
+            self->start_depth(std::move(instrument), std::move(completion));
           }
         );
       },
@@ -906,6 +926,153 @@ private:
       series.next_cursor_ = format_iso8601_utc(series.bars_.front().timestamp_);
     }
     deliver(std::move(operation->completion_), Result<BarSeries>(std::move(series)));
+  }
+
+  /** Validates the instrument and requests its book. */
+  void start_depth(InstrumentId instrument, DepthHandler completion) {
+    if (instrument.country_ != Country::KR || !valid_domestic_symbol(instrument.symbol_)) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.broker_code_ = "invalid_instrument";
+      error.message_ = "KIS order book covers Korean equities addressed by product number";
+      deliver(std::move(completion), Result<DepthSnapshot>(std::move(error)));
+      return;
+    }
+
+    ensure_token(
+      TokenHandler(
+        [
+          self = shared_from_this(),
+          instrument = std::move(instrument),
+          completion = std::move(completion)
+        ](std::optional<BrokerError> token_error) mutable {
+          if (token_error) {
+            self->deliver(
+              std::move(completion), Result<DepthSnapshot>(std::move(*token_error))
+            );
+            return;
+          }
+          network::HttpRequest request;
+          // The book is polling traffic, held back by the trading reserve.
+          request.group_ = network::RateLimitGroup::MARKET_DATA;
+          request.method_ = http::verb::get;
+          request.target_ =
+            "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+            "?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=" +
+            broker_detail::query_encode(instrument.symbol_);
+          request.headers_ = {
+            {"authorization", "Bearer " + self->token_.access_token_},
+            {"appkey", self->config_.key()},
+            {"appsecret", self->config_.secret()},
+            {"tr_id", "FHKST01010200"},
+            {"custtype", "P"},
+            {"content-type", "application/json; charset=utf-8"},
+          };
+          self->http_->async_request(
+            std::move(request),
+            [self, instrument = std::move(instrument), completion = std::move(completion)](
+              Result<network::HttpResponse> result
+            ) mutable {
+              self->deliver(
+                std::move(completion), parse_depth(std::move(instrument), std::move(result))
+              );
+            }
+          );
+        }
+      )
+    );
+  }
+
+  /**
+   * Normalizes one KIS order book.
+   *
+   * KIS numbers its levels into flat fields — `askp1` through `askp10` with
+   * `askp_rsqn1` through `askp_rsqn10`, and the same for bids — rather than sending
+   * arrays. A level whose price is absent, blank, or zero is a level that is not
+   * resting, and is skipped rather than recorded as an offer at nothing.
+   *
+   * The after-hours totals KIS also reports (`ovtm_total_askp_rsqn` and its
+   * siblings) and its expected-execution columns are deliberately not normalized:
+   * Toss publishes no counterpart, so they stay reachable on this client.
+   */
+  static Result<DepthSnapshot> parse_depth(
+    InstrumentId instrument,
+    Result<network::HttpResponse> result
+  ) {
+    if (!result) {
+      return Result<DepthSnapshot>(std::move(result.error()));
+    }
+    if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
+      return Result<DepthSnapshot>(broker_detail::http_error(result.value()));
+    }
+    BrokerError parse_error;
+    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    if (!document) {
+      return Result<DepthSnapshot>(std::move(parse_error));
+    }
+    try {
+      if (auto declared = kis_declared_error(*document)) {
+        return Result<DepthSnapshot>(std::move(*declared));
+      }
+      const auto output = document->if_contains("output1");
+      if (!output || !output->is_object()) {
+        throw std::runtime_error("missing object field: output1");
+      }
+      const auto& row = output->as_object();
+
+      DepthSnapshot book;
+      book.instrument_ = std::move(instrument);
+      book.currency_ = Currency::krw();
+      for (int level = 1; level <= depth_levels_; ++level) {
+        append_level(row, "askp", "askp_rsqn", level, book.asks_);
+        append_level(row, "bidp", "bidp_rsqn", level, book.bids_);
+      }
+      order_depth(book);
+      if (const auto hour = row.if_contains("aspr_acpt_hour"); hour && hour->is_string()) {
+        const std::string time(hour->as_string());
+        Date today{};
+        std::string ignored;
+        korea_calendar(std::chrono::system_clock::now(), today, ignored);
+        book.exchange_time_ = korea_timestamp(compact_date(today), time);
+      }
+      book.received_at_ = std::chrono::system_clock::now();
+      return Result<DepthSnapshot>(std::move(book));
+    } catch (const std::exception& exception) {
+      BrokerError error;
+      error.category_ = ErrorCategory::PROTOCOL;
+      error.broker_code_ = "invalid_orderbook_response";
+      error.message_ = exception.what();
+      return Result<DepthSnapshot>(std::move(error));
+    }
+  }
+
+  /** How many resting levels KIS publishes on each side. */
+  static constexpr int depth_levels_ = 10;
+
+  /** Reads one numbered level, skipping a level that is not resting. */
+  static void append_level(
+    const json::object& row,
+    std::string_view price_prefix,
+    std::string_view quantity_prefix,
+    int level,
+    std::vector<DepthLevel>& levels
+  ) {
+    const auto suffix = std::to_string(level);
+    const auto price = row.if_contains(std::string(price_prefix) + suffix);
+    const auto quantity = row.if_contains(std::string(quantity_prefix) + suffix);
+    if (!price || !price->is_string() || !quantity || !quantity->is_string()) {
+      return;
+    }
+    const std::string price_text(price->as_string());
+    const std::string quantity_text(quantity->as_string());
+    if (price_text.empty() || quantity_text.empty()) {
+      return;
+    }
+    const auto value = Decimal64::parse(price_text);
+    if (value.coefficient() == 0) {
+      return;
+    }
+    levels.push_back(DepthLevel{value, Decimal64::parse(quantity_text)});
   }
 
   void start_quote(InstrumentId instrument, QuoteHandler completion) {
@@ -2541,6 +2708,14 @@ public:
     return run<QuoteSnapshot>(
       [&](auto&& sink) { client_->async_quote(std::move(instrument), std::move(sink)); },
       "quote"
+    );
+  }
+
+  /** Returns the ten resting levels on each side of the book. */
+  Result<DepthSnapshot> depth(InstrumentId instrument) {
+    return run<DepthSnapshot>(
+      [&](auto&& sink) { client_->async_depth(std::move(instrument), std::move(sink)); },
+      "depth"
     );
   }
 

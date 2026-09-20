@@ -378,6 +378,9 @@ struct BrokerTraits<mock::MockClient> {
   /** Does not filter by instrument. */
   static constexpr bool has_history_symbol_filter = false;
 
+  /** The in-memory broker publishes no order book, so the verb does not compile. */
+  static constexpr bool has_depth = false;
+
   /**
    * The in-memory broker publishes minute and daily bars, like both real ones, and
    * refuses the longer periods only KIS has.

@@ -131,6 +131,13 @@ struct DepthLevel {
  * `bids_` descend by price and `asks_` ascend, so index zero is the best level on
  * either side. A side may be empty, which is why every accessor returns an
  * optional rather than a zero a caller could mistake for a real price.
+ *
+ * Adapters establish that ordering themselves rather than trusting the broker to
+ * have sent it. Toss's specification contradicts itself — it documents `asks` as
+ * ascending and its own worked example lists them descending — and reading the best
+ * offer off the wrong end of the book would make the spread negative and the
+ * midpoint meaningless. Sorting a book of ten levels costs nothing next to being
+ * wrong about which price is best.
  */
 struct DepthSnapshot {
   InstrumentId instrument_;
@@ -186,6 +193,22 @@ struct DepthSnapshot {
     return decimal_halve(*sum);
   }
 };
+
+
+/**
+ * Puts a book's levels in the order `DepthSnapshot` promises.
+ *
+ * Best first on both sides: bids descending, asks ascending.
+ */
+inline void order_depth(DepthSnapshot& book) {
+  const auto by_price = [](const DepthLevel& lhs, const DepthLevel& rhs) {
+    return decimal_less(lhs.price_, rhs.price_);
+  };
+  std::sort(book.asks_.begin(), book.asks_.end(), by_price);
+  std::sort(book.bids_.begin(), book.bids_.end(), [&by_price](const auto& l, const auto& r) {
+    return by_price(r, l);
+  });
+}
 
 /**
  * One executed trade as the broker reported it.

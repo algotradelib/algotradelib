@@ -37,6 +37,9 @@ using Ref = OrderRef<kis::Broker>;
  * the same KIS response.
  */
 struct Normalizers {
+  /** Both brokers publish resting orders on both sides of the book. */
+  static constexpr bool has_depth = true;
+
   /** Returns whether this broker publishes bars at `interval`. */
   static constexpr bool supports_interval(BarInterval interval) {
     static_cast<void>(interval);
@@ -284,6 +287,12 @@ struct BrokerTraits<kis::KisClient>
     return client.rate_limit_stats();
   }
 
+  /** Forwards an order book request. */
+  template <typename Token>
+  static auto depth(Client& client, InstrumentId instrument, Token&& token) {
+    return client.async_depth(std::move(instrument), std::forward<Token>(token));
+  }
+
   /** Forwards a bar request. */
   template <typename Token>
   static auto bars(Client& client, BarQuery query, Token&& token) {
@@ -385,6 +394,11 @@ struct BrokerTraits<kis::KisBlockingClient>
   /** Returns this client's pacing statistics, or null when it is unpaced. */
   static const network::RateLimitStats* rate_limit_stats(const Client& client) {
     return client.rate_limit_stats();
+  }
+
+  /** Returns the order book. */
+  static Result<DepthSnapshot> depth(Client& client, InstrumentId instrument) {
+    return client.depth(std::move(instrument));
   }
 
   /** Returns bars, paging inside the client. */

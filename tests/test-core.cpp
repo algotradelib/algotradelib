@@ -144,6 +144,13 @@ struct KisClientTestAccess {
     return KisClient::shortest_days_per_bar(interval);
   }
 
+  static Result<DepthSnapshot> parse_depth(
+    InstrumentId instrument,
+    Result<network::HttpResponse> response
+  ) {
+    return KisClient::parse_depth(std::move(instrument), std::move(response));
+  }
+
   static Result<KisOrderAck> parse_order_ack(Result<network::HttpResponse> response) {
     return KisClient::parse_order_ack(std::move(response));
   }
@@ -228,6 +235,13 @@ struct TossClientTestAccess {
     std::optional<std::string>& cursor
   ) {
     return TossClient::parse_bars_page(std::move(response), query, into, cursor);
+  }
+
+  static Result<DepthSnapshot> parse_depth(
+    InstrumentId instrument,
+    Result<network::HttpResponse> response
+  ) {
+    return TossClient::parse_depth(std::move(instrument), std::move(response));
   }
 
   static Result<OrderAck> parse_order_ack(Result<network::HttpResponse> response) {
@@ -2446,4 +2460,119 @@ TEST_CASE(
   // range can never hold more than the hundred rows KIS returns.
   REQUIRE(100 * KisClientTestAccess::shortest_days_per_bar(BarInterval::ONE_WEEK) == 700);
   REQUIRE(100 * KisClientTestAccess::shortest_days_per_bar(BarInterval::ONE_YEAR) == 36500);
+}
+
+TEST_CASE(
+  "an order book is ordered best first whatever order the broker sent",
+  "[broker][depth]"
+) {
+  const auto samsung = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+
+  SECTION("Toss asks arrive descending in its own example and are still corrected") {
+    // Toss documents `asks` as ascending and its worked example lists them
+    // descending. Trusting either would be a guess, and taking the best offer off
+    // the wrong end of the book makes the spread negative.
+    auto result = tossinvest::TossClientTestAccess::parse_depth(
+      samsung,
+      json_response(
+        R"({"result":{"timestamp":"2026-03-25T09:30:00.123+09:00","currency":"KRW",)"
+        R"("asks":[{"price":"72300","volume":"1200"},{"price":"72200","volume":"3400"},)"
+        R"({"price":"72100","volume":"8500"}],)"
+        R"("bids":[{"price":"72000","volume":"5200"},{"price":"71900","volume":"4100"},)"
+        R"({"price":"71800","volume":"2700"}]}})"
+      )
+    );
+    REQUIRE(result);
+    const auto& book = result.value();
+    REQUIRE(book.asks_.size() == 3);
+    REQUIRE(book.bids_.size() == 3);
+
+    REQUIRE(book.best_ask()->price_ == Decimal64::parse("72100"));
+    REQUIRE(book.best_ask()->quantity_ == Decimal64::parse("8500"));
+    REQUIRE(book.best_bid()->price_ == Decimal64::parse("72000"));
+    REQUIRE(book.asks_.back().price_ == Decimal64::parse("72300"));
+    REQUIRE(book.bids_.back().price_ == Decimal64::parse("71800"));
+
+    REQUIRE(book.spread()->str() == "100");
+    REQUIRE(book.mid()->str() == "72050");
+    REQUIRE(book.currency_ == Currency::krw());
+    REQUIRE(book.exchange_time_.has_value());
+  }
+
+  SECTION("a United States book keeps its own currency and decimal prices") {
+    const auto apple = InstrumentId{Country::US, Venue::UNSPECIFIED, "AAPL"};
+    auto result = tossinvest::TossClientTestAccess::parse_depth(
+      apple,
+      json_response(
+        R"({"result":{"currency":"USD",)"
+        R"("asks":[{"price":"185.75","volume":"250"},{"price":"185.70","volume":"410"}],)"
+        R"("bids":[{"price":"185.65","volume":"180"},{"price":"185.60","volume":"320"}]}})"
+      )
+    );
+    REQUIRE(result);
+    REQUIRE(result.value().best_ask()->price_ == Decimal64::parse("185.70"));
+    REQUIRE(result.value().best_bid()->price_ == Decimal64::parse("185.65"));
+    REQUIRE(result.value().spread()->str() == "0.05");
+    REQUIRE(result.value().currency_ == Currency::usd());
+
+    // No timestamp is reported for this book, and that is not the epoch.
+    REQUIRE_FALSE(result.value().exchange_time_.has_value());
+  }
+
+  SECTION("an empty side yields no best price rather than zero") {
+    auto result = tossinvest::TossClientTestAccess::parse_depth(
+      samsung, json_response(R"({"result":{"currency":"KRW","asks":[],"bids":[]}})")
+    );
+    REQUIRE(result);
+    REQUIRE_FALSE(result.value().best_bid().has_value());
+    REQUIRE_FALSE(result.value().best_ask().has_value());
+    REQUIRE_FALSE(result.value().spread().has_value());
+  }
+
+  SECTION("KIS numbered level fields normalize into the same book") {
+    // KIS sends ten flat field groups rather than arrays, nearest level first.
+    auto result = kis::KisClientTestAccess::parse_depth(
+      samsung,
+      json_response(
+        R"({"rt_cd":"0","msg_cd":"MCA00000","output1":{"aspr_acpt_hour":"093000",)"
+        R"("askp1":"72100","askp2":"72200","askp3":"72300",)"
+        R"("askp_rsqn1":"8500","askp_rsqn2":"3400","askp_rsqn3":"1200",)"
+        R"("bidp1":"72000","bidp2":"71900","bidp3":"71800",)"
+        R"("bidp_rsqn1":"5200","bidp_rsqn2":"4100","bidp_rsqn3":"2700"}})"
+      )
+    );
+    REQUIRE(result);
+    const auto& book = result.value();
+    REQUIRE(book.asks_.size() == 3);
+    REQUIRE(book.bids_.size() == 3);
+    REQUIRE(book.best_ask()->price_ == Decimal64::parse("72100"));
+    REQUIRE(book.best_bid()->price_ == Decimal64::parse("72000"));
+    REQUIRE(book.spread()->str() == "100");
+    REQUIRE(book.exchange_time_.has_value());
+  }
+
+  SECTION("a KIS level that is not resting is skipped, not recorded at zero") {
+    // Outside trading hours KIS reports the far levels as zero or blank. An offer
+    // at nothing would be the best offer in the book.
+    auto result = kis::KisClientTestAccess::parse_depth(
+      samsung,
+      json_response(
+        R"({"rt_cd":"0","output1":{"askp1":"72100","askp2":"0","askp3":"",)"
+        R"("askp_rsqn1":"8500","askp_rsqn2":"0","askp_rsqn3":"",)"
+        R"("bidp1":"72000","bidp2":"0","bidp_rsqn1":"5200","bidp_rsqn2":"0"}})"
+      )
+    );
+    REQUIRE(result);
+    REQUIRE(result.value().asks_.size() == 1);
+    REQUIRE(result.value().bids_.size() == 1);
+    REQUIRE(result.value().best_ask()->price_ == Decimal64::parse("72100"));
+  }
+
+  SECTION("a declared KIS failure is reported rather than an empty book") {
+    auto result = kis::KisClientTestAccess::parse_depth(
+      samsung, json_response(R"({"rt_cd":"1","msg_cd":"APBK0919","msg1":"no data"})")
+    );
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().broker_code_ == "APBK0919");
+  }
 }

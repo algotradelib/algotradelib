@@ -360,6 +360,31 @@ public:
     );
   }
 
+  /**
+   * Retrieves the resting orders on both sides of one instrument's book.
+   *
+   * Levels come back best first on both sides, whatever order the broker sent them
+   * in, so `best_bid()` and `best_ask()` mean what they say.
+   */
+  template <typename CompletionToken>
+  auto async_depth(InstrumentId instrument, CompletionToken&& token) {
+    if constexpr (Caps::has_depth) {
+      return translate<DepthSnapshot>(
+        std::forward<CompletionToken>(token),
+        [client = client_, instrument = std::move(instrument)](auto&& sink) mutable {
+          Traits::depth(*client, std::move(instrument), std::forward<decltype(sink)>(sink));
+        },
+        [](Result<DepthSnapshot> raw) { return raw; }
+      );
+    } else {
+      static_assert(
+        port_detail::dependent_false<Client>,
+        "this broker does not publish an order book; gate the call with "
+        "BrokerCaps<Client>::has_depth"
+      );
+    }
+  }
+
   /** Retrieves one order by reference, on a broker that addresses one directly. */
   template <typename CompletionToken>
   auto async_order(Ref ref, CompletionToken&& token) {
@@ -533,6 +558,19 @@ public:
 
   /** Returns all normalized holdings for the bound account. */
   Result<HoldingsSnapshot> holdings() { return Traits::holdings(*client_, account_); }
+
+  /** Returns the resting orders on both sides of one instrument's book. */
+  Result<DepthSnapshot> depth(InstrumentId instrument) {
+    if constexpr (Caps::has_depth) {
+      return Traits::depth(*client_, std::move(instrument));
+    } else {
+      static_assert(
+        port_detail::dependent_false<Client>,
+        "this broker does not publish an order book; gate the call with "
+        "BrokerCaps<Client>::has_depth"
+      );
+    }
+  }
 
   /** Returns bars for one instrument, paging until the query's count is satisfied. */
   Result<BarSeries> bars(BarQuery query) {

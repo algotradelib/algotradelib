@@ -136,6 +136,9 @@ public:
 
   /** Completion handler for one normalized bar series. */
   using BarsHandler = net::any_completion_handler<void(Result<BarSeries>)>;
+
+  /** Completion handler for one normalized order book. */
+  using DepthHandler = net::any_completion_handler<void(Result<DepthSnapshot>)>;
   /** Completion handler for Toss account discovery. */
   using AccountsHandler = net::any_completion_handler<void(Result<std::vector<TossAccount>>)>;
 
@@ -186,6 +189,23 @@ public:
           self->strand_,
           [self, query = std::move(query), completion = std::move(completion)]() mutable {
             self->start_bars(std::move(query), std::move(completion));
+          }
+        );
+      },
+      token
+    );
+  }
+
+  /** Requests and normalizes the resting orders on both sides of the book. */
+  template <typename CompletionToken>
+  auto async_depth(InstrumentId instrument, CompletionToken&& token) {
+    return net::async_initiate<CompletionToken, void(Result<DepthSnapshot>)>(
+      [self = shared_from_this(), instrument = std::move(instrument)](auto&& handler) mutable {
+        auto completion = DepthHandler(std::forward<decltype(handler)>(handler));
+        net::post(
+          self->strand_,
+          [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
+            self->start_depth(std::move(instrument), std::move(completion));
           }
         );
       },
@@ -674,6 +694,127 @@ private:
       series.next_cursor_ = *cursor;
     }
     deliver(std::move(operation->completion_), Result<BarSeries>(std::move(series)));
+  }
+
+  /** Validates the instrument and requests its book. */
+  void start_depth(InstrumentId instrument, DepthHandler completion) {
+    if (!broker_detail::valid_symbol(instrument.symbol_)) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.broker_code_ = "invalid_instrument";
+      error.message_ = "order book request requires a symbol";
+      deliver(std::move(completion), Result<DepthSnapshot>(std::move(error)));
+      return;
+    }
+
+    ensure_token(
+      TokenHandler(
+        [
+          self = shared_from_this(),
+          instrument = std::move(instrument),
+          completion = std::move(completion)
+        ](std::optional<BrokerError> token_error) mutable {
+          if (token_error) {
+            self->deliver(
+              std::move(completion), Result<DepthSnapshot>(std::move(*token_error))
+            );
+            return;
+          }
+          network::HttpRequest request;
+          // The book is polling traffic, held back by the trading reserve.
+          request.group_ = network::RateLimitGroup::MARKET_DATA;
+          request.method_ = http::verb::get;
+          request.target_ = "/api/v1/orderbook?symbol=" +
+            broker_detail::query_encode(instrument.symbol_);
+          request.headers_.emplace_back(
+            "Authorization", "Bearer " + self->token_.access_token_
+          );
+          self->http_->async_request(
+            std::move(request),
+            [self, instrument = std::move(instrument), completion = std::move(completion)](
+              Result<network::HttpResponse> result
+            ) mutable {
+              self->deliver(
+                std::move(completion), parse_depth(std::move(instrument), std::move(result))
+              );
+            }
+          );
+        }
+      )
+    );
+  }
+
+  /**
+   * Normalizes one Toss order book.
+   *
+   * The levels are sorted rather than taken in the order they arrive. Toss's
+   * specification documents `asks` as ascending and its own worked example lists
+   * them descending, so trusting either would be a guess, and reading the best
+   * offer off the wrong end of the book makes the spread negative.
+   */
+  static Result<DepthSnapshot> parse_depth(
+    InstrumentId instrument,
+    Result<network::HttpResponse> result
+  ) {
+    if (!result) {
+      return Result<DepthSnapshot>(std::move(result.error()));
+    }
+    BrokerError parse_error;
+    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    if (!document) {
+      return Result<DepthSnapshot>(std::move(parse_error));
+    }
+    if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
+      return Result<DepthSnapshot>(toss_error(result.value(), *document));
+    }
+    try {
+      const auto& payload = required_object(*document, "result");
+      DepthSnapshot book;
+      book.instrument_ = std::move(instrument);
+      book.currency_ = Currency(broker_detail::json_string(payload, "currency"));
+      append_levels(payload, "bids", book.bids_);
+      append_levels(payload, "asks", book.asks_);
+      order_depth(book);
+      if (const auto stamp = payload.if_contains("timestamp"); stamp && stamp->is_string()) {
+        book.exchange_time_ = parse_iso8601_timestamp(stamp->as_string().c_str());
+        if (!book.exchange_time_) {
+          throw std::runtime_error("invalid order book timestamp");
+        }
+      }
+      book.received_at_ = std::chrono::system_clock::now();
+      return Result<DepthSnapshot>(std::move(book));
+    } catch (const std::exception& exception) {
+      BrokerError error;
+      error.category_ = ErrorCategory::PROTOCOL;
+      error.broker_code_ = "invalid_orderbook_response";
+      error.message_ = exception.what();
+      return Result<DepthSnapshot>(std::move(error));
+    }
+  }
+
+  /** Reads one side of the book into `levels`. */
+  static void append_levels(
+    const json::object& payload,
+    std::string_view key,
+    std::vector<DepthLevel>& levels
+  ) {
+    const auto rows = payload.if_contains(key);
+    if (!rows || !rows->is_array()) {
+      throw std::runtime_error("missing array field: " + std::string(key));
+    }
+    levels.reserve(rows->as_array().size());
+    for (const auto& value : rows->as_array()) {
+      if (!value.is_object()) {
+        throw std::runtime_error("order book entry is not an object");
+      }
+      const auto& row = value.as_object();
+      levels.push_back(
+        DepthLevel{
+          Decimal64::parse(broker_detail::json_string(row, "price")),
+          Decimal64::parse(broker_detail::json_string(row, "volume")),
+        }
+      );
+    }
   }
 
   void start_quote(InstrumentId instrument, QuoteHandler completion) {
@@ -2167,6 +2308,14 @@ public:
   }
 
   /** Returns normalized holdings for one discovered account sequence. */
+  /** Returns the resting orders on both sides of the book. */
+  Result<DepthSnapshot> depth(InstrumentId instrument) {
+    return run<DepthSnapshot>(
+      [&](auto&& sink) { client_->async_depth(std::move(instrument), std::move(sink)); },
+      "depth"
+    );
+  }
+
   /** Returns bars, paging until the query's count is satisfied. */
   Result<BarSeries> bars(BarQuery query) {
     return run<BarSeries>(

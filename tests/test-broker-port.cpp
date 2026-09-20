@@ -725,3 +725,19 @@ TEST_CASE("a supported interval reaches the client with the query intact") {
   REQUIRE_FALSE(client->last_bar_query_->adjusted_);
   REQUIRE(client->last_bar_query_->instrument_.symbol_ == "005930");
 }
+
+TEST_CASE("an order book verb exists only on a broker that publishes one") {
+  static_assert(BrokerCaps<kis::KisClient>::has_depth);
+  static_assert(BrokerCaps<tossinvest::TossClient>::has_depth);
+  static_assert(BrokerCaps<kis::KisBlockingClient>::has_depth);
+  static_assert(!BrokerCaps<mock::MockClient>::has_depth);
+
+  // Unlike a reference from the wrong broker, this one cannot be probed with the
+  // detection idiom. A foreign reference fails overload resolution, which is
+  // SFINAE-friendly; an unsupported verb exists as a member and fails a
+  // `static_assert` inside its body, which is a hard error by design — the message
+  // naming the verb and the capability is worth more to whoever hits it than
+  // detectability is to this test. The diagnostic itself is verified by hand and
+  // recorded in the pull-request report.
+  SUCCEED("order book support is a compile-time capability");
+}

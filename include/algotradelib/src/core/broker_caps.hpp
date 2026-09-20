@@ -52,6 +52,9 @@ struct BrokerCaps {
   /** Whether an order-history inquiry can filter by instrument. */
   static constexpr bool has_history_symbol_filter = Traits::has_history_symbol_filter;
 
+  /** Whether the broker publishes resting orders on both sides of the book. */
+  static constexpr bool has_depth = Traits::has_depth;
+
   /**
    * Whether the broker publishes bars at `interval`.
    *
