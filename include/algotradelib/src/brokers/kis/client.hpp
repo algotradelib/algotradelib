@@ -196,11 +196,23 @@ inline std::optional<BrokerError> unsupported_client_order_id(const OrderRequest
   return error;
 }
 
+/**
+ * Returns an error when KIS does not publish bars at `interval`.
+ *
+ * KIS publishes all of them — minute, daily, weekly, monthly, and yearly — so this
+ * always accepts. It exists so that the port asks both brokers the same question
+ * in the same way rather than special-casing the one that happens to say yes.
+ */
+inline std::optional<BrokerError> unsupported_bar_interval(BarInterval) { return std::nullopt; }
+
 /** Persistent asynchronous KIS client with coalesced OAuth refresh. */
 class KisClient : public std::enable_shared_from_this<KisClient> {
 public:
   /** Completion handler for one normalized quote. */
   using QuoteHandler = net::any_completion_handler<void(Result<QuoteSnapshot>)>;
+
+  /** Completion handler for one normalized bar series. */
+  using BarsHandler = net::any_completion_handler<void(Result<BarSeries>)>;
 
   /** Completion handler for one normalized holdings snapshot. */
   using HoldingsHandler = net::any_completion_handler<void(Result<HoldingsSnapshot>)>;
@@ -239,6 +251,35 @@ public:
         options
       )
     ) {}
+
+  /**
+   * Requests bars, walking KIS's date and time inputs until `count_` is satisfied.
+   *
+   * KIS answers this question from three endpoints — period bars, today's minute
+   * bars, and past days' minute bars — with different page sizes and no cursor of
+   * any kind. Which one is called is chosen from the interval and the requested
+   * upper bound; a caller sees one verb.
+   *
+   * A minute request does not cross a trading day. KIS pages minutes by time
+   * within a day, and stepping to the previous *trading* day needs a calendar this
+   * library does not have yet, so a series may be shorter than `count_` and
+   * carries `next_cursor_` for the caller to continue from deliberately.
+   */
+  template <typename CompletionToken>
+  auto async_bars(BarQuery query, CompletionToken&& token) {
+    return net::async_initiate<CompletionToken, void(Result<BarSeries>)>(
+      [self = shared_from_this(), query = std::move(query)](auto&& handler) mutable {
+        auto completion = BarsHandler(std::forward<decltype(handler)>(handler));
+        net::post(
+          self->strand_,
+          [self, query = std::move(query), completion = std::move(completion)]() mutable {
+            self->start_bars(std::move(query), std::move(completion));
+          }
+        );
+      },
+      token
+    );
+  }
 
   /** Requests and normalizes a current quote. */
   template <typename CompletionToken>
@@ -465,6 +506,370 @@ private:
     HoldingsOperation(KisAccount selected_account, HoldingsHandler selected_completion)
     : account_(std::move(selected_account)), completion_(std::move(selected_completion)) {}
   };
+
+  /** One bar request spanning however many KIS pages it needs. */
+  struct BarOperation {
+    BarQuery query_;
+    std::vector<Bar> descending_;
+    /** Upper bound for the next page, as a KST calendar date and time. */
+    Date date_{};
+    std::string time_;
+    int pages_{0};
+    bool minutes_{false};
+    BarsHandler completion_;
+
+    BarOperation(BarQuery query, BarsHandler completion)
+    : query_(std::move(query)), completion_(std::move(completion)) {}
+  };
+
+  /** Bars KIS returns per page, per endpoint. */
+  static constexpr int period_page_limit_ = 100;
+  static constexpr int today_minute_page_limit_ = 30;
+  static constexpr int daily_minute_page_limit_ = 120;
+
+  /** Most pages one bar request may consume, for the reason paging is bounded. */
+  static constexpr int bar_page_budget_ = 50;
+
+  /** Validates a bar request and starts walking KIS's inputs. */
+  void start_bars(BarQuery query, BarsHandler completion) {
+    if (auto invalid = validate_bar_query(query)) {
+      deliver(std::move(completion), Result<BarSeries>(std::move(*invalid)));
+      return;
+    }
+
+    auto operation = std::make_shared<BarOperation>(std::move(query), std::move(completion));
+    operation->minutes_ = operation->query_.interval_ == BarInterval::ONE_MINUTE;
+    const auto bound = operation->query_.before_ ?
+      *operation->query_.before_ :
+      std::chrono::system_clock::now();
+    korea_calendar(bound, operation->date_, operation->time_);
+
+    ensure_token(
+      TokenHandler(
+        [self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
+          if (token_error) {
+            self->deliver(
+              std::move(operation->completion_), Result<BarSeries>(std::move(*token_error))
+            );
+            return;
+          }
+          self->request_bars(operation);
+        }
+      )
+    );
+  }
+
+  /** Returns an error when KIS cannot answer the request as described. */
+  static std::optional<BrokerError> validate_bar_query(const BarQuery& query) {
+    BrokerError error;
+    error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    if (query.instrument_.country_ != Country::KR) {
+      error.broker_code_ = "invalid_instrument";
+      error.message_ = "KIS bars currently cover Korean equities only";
+      return error;
+    }
+    if (!valid_domestic_symbol(query.instrument_.symbol_)) {
+      error.broker_code_ = "invalid_instrument";
+      error.message_ =
+        "KIS bar symbol must contain six letters or digits, or seven for an ETN";
+      return error;
+    }
+    if (query.count_ < 1) {
+      error.broker_code_ = "invalid_count";
+      error.message_ = "bar request must ask for at least one bar";
+      return error;
+    }
+    return std::nullopt;
+  }
+
+  /** Returns KIS's `FID_PERIOD_DIV_CODE` for a period interval. */
+  static const char* period_code(BarInterval interval) {
+    switch (interval) {
+      case BarInterval::ONE_WEEK:
+        return "W";
+      case BarInterval::ONE_MONTH:
+        return "M";
+      case BarInterval::ONE_YEAR:
+        return "Y";
+      case BarInterval::ONE_DAY:
+      case BarInterval::ONE_MINUTE:
+        break;
+    }
+    return "D";
+  }
+
+  /** Splits an instant into the KST calendar date and `HHMMSS` KIS asks for. */
+  static void korea_calendar(
+    std::chrono::system_clock::time_point value,
+    Date& date,
+    std::string& time
+  ) {
+    const auto seoul = value + std::chrono::hours(9);
+    const std::time_t raw = std::chrono::system_clock::to_time_t(
+      std::chrono::time_point_cast<std::chrono::seconds>(seoul)
+    );
+    std::tm parts{};
+#ifdef _WIN32
+    gmtime_s(&parts, &raw);
+#else
+    gmtime_r(&raw, &parts);
+#endif
+    date.year_ = parts.tm_year + 1900;
+    date.month_ = static_cast<unsigned>(parts.tm_mon + 1);
+    date.day_ = static_cast<unsigned>(parts.tm_mday);
+    char buffer[7];
+    std::snprintf(buffer, sizeof(buffer), "%02d%02d%02d", parts.tm_hour, parts.tm_min, parts.tm_sec);
+    time.assign(buffer, 6);
+  }
+
+  /** Returns the calendar day before `date`, without a calendar of trading days. */
+  static Date previous_day(const Date& date) {
+    Date earlier = date;
+    if (earlier.day_ > 1) {
+      --earlier.day_;
+      return earlier;
+    }
+    if (earlier.month_ > 1) {
+      --earlier.month_;
+    } else {
+      earlier.month_ = 12;
+      --earlier.year_;
+    }
+    static constexpr unsigned days_per_month[] = {
+      31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    };
+    unsigned days = days_per_month[earlier.month_ - 1];
+    const bool leap =
+      earlier.year_ % 4 == 0 && (earlier.year_ % 100 != 0 || earlier.year_ % 400 == 0);
+    if (earlier.month_ == 2 && leap) {
+      ++days;
+    }
+    earlier.day_ = days;
+    return earlier;
+  }
+
+  /** Sends the next page, choosing the endpoint the interval and bound imply. */
+  void request_bars(const std::shared_ptr<BarOperation>& operation) {
+    network::HttpRequest request;
+    // Bars are the traffic a trading reserve exists to hold back.
+    request.group_ = network::RateLimitGroup::MARKET_DATA;
+    request.method_ = http::verb::get;
+
+    std::string transaction;
+    if (!operation->minutes_) {
+      // A period request selects bars by date range, oldest bound included.
+      Date from = operation->date_;
+      for (int step = 0; step < period_page_limit_ && from.year_ > 1; ++step) {
+        from = previous_day(from);
+      }
+      request.target_ =
+        "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+        "?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=" +
+        broker_detail::query_encode(operation->query_.instrument_.symbol_) +
+        "&FID_INPUT_DATE_1=" + compact_date(from) +
+        "&FID_INPUT_DATE_2=" + compact_date(operation->date_) +
+        "&FID_PERIOD_DIV_CODE=" + period_code(operation->query_.interval_) +
+        // KIS spells this the other way round from every reading of its name:
+        // `0` asks for adjusted prices and `1` for raw ones.
+        "&FID_ORG_ADJ_PRC=" + std::string(operation->query_.adjusted_ ? "0" : "1");
+      transaction = "FHKST03010100";
+    } else if (today_in_korea(operation->date_)) {
+      request.target_ =
+        "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
+        "?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=" +
+        broker_detail::query_encode(operation->query_.instrument_.symbol_) +
+        "&FID_INPUT_HOUR_1=" + operation->time_ + "&FID_PW_DATA_INCU_YN=Y&FID_ETC_CLS_CODE=";
+      transaction = "FHKST03010200";
+    } else {
+      request.target_ =
+        "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"
+        "?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=" +
+        broker_detail::query_encode(operation->query_.instrument_.symbol_) +
+        "&FID_INPUT_DATE_1=" + compact_date(operation->date_) +
+        "&FID_INPUT_HOUR_1=" + operation->time_ + "&FID_PW_DATA_INCU_YN=Y&FID_FAKE_TICK_INCU_YN=N";
+      transaction = "FHKST03010230";
+    }
+
+    request.headers_ = {
+      {"authorization", "Bearer " + token_.access_token_},
+      {"appkey", config_.key()},
+      {"appsecret", config_.secret()},
+      {"tr_id", transaction},
+      {"custtype", "P"},
+      {"content-type", "application/json; charset=utf-8"},
+    };
+
+    ++operation->pages_;
+    http_->async_request(
+      std::move(request),
+      [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
+        self->handle_bars_page(operation, std::move(result));
+      }
+    );
+  }
+
+  /** Returns whether `date` is today in Seoul, which decides the minute endpoint. */
+  static bool today_in_korea(const Date& date) {
+    Date today{};
+    std::string ignored;
+    korea_calendar(std::chrono::system_clock::now(), today, ignored);
+    return today == date;
+  }
+
+  /** Accumulates one page and either continues or finishes the request. */
+  void handle_bars_page(
+    const std::shared_ptr<BarOperation>& operation,
+    Result<network::HttpResponse> result
+  ) {
+    const auto before = operation->descending_.size();
+    if (auto failure = parse_bars_page(
+          std::move(result), operation->query_, operation->minutes_, operation->descending_
+        )) {
+      deliver(std::move(operation->completion_), Result<BarSeries>(std::move(*failure)));
+      return;
+    }
+
+    const bool empty_page = operation->descending_.size() == before;
+    const int collected = static_cast<int>(operation->descending_.size());
+    const bool satisfied = collected >= operation->query_.count_;
+    const bool spent = operation->pages_ >= bar_page_budget_;
+    if (satisfied || empty_page || spent) {
+      finish_bars(operation);
+      return;
+    }
+
+    // Step the bound to just before the oldest bar this page returned. A minute
+    // request stops at the day boundary rather than guessing the previous trading
+    // day, and reports where it stopped.
+    const auto& oldest = operation->descending_.back();
+    Date date{};
+    std::string time;
+    korea_calendar(oldest.timestamp_ - std::chrono::seconds(1), date, time);
+    if (operation->minutes_ && !(date == operation->date_)) {
+      finish_bars(operation);
+      return;
+    }
+    operation->date_ = date;
+    operation->time_ = time;
+    request_bars(operation);
+  }
+
+  /**
+   * Parses one page into `into`, or returns the error that ends the request.
+   *
+   * Takes the accumulation by reference rather than an operation, so the
+   * normalization is a pure function of a response and can be tested as one.
+   */
+  static std::optional<BrokerError> parse_bars_page(
+    Result<network::HttpResponse> result,
+    const BarQuery& query,
+    bool minutes,
+    std::vector<Bar>& into
+  ) {
+    if (!result) {
+      return std::move(result.error());
+    }
+    if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
+      return broker_detail::http_error(result.value());
+    }
+    BrokerError parse_error;
+    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    if (!document) {
+      return parse_error;
+    }
+    try {
+      if (auto declared = kis_declared_error(*document)) {
+        return declared;
+      }
+      const auto rows = document->if_contains("output2");
+      if (!rows || !rows->is_array()) {
+        throw std::runtime_error("missing array field: output2");
+      }
+      for (const auto& value : rows->as_array()) {
+        if (!value.is_object()) {
+          throw std::runtime_error("bar entry is not an object");
+        }
+        const auto& row = value.as_object();
+        // KIS pads a page with blank rows rather than shortening it.
+        if (broker_detail::json_string(row, "stck_bsop_date").empty()) {
+          continue;
+        }
+        into.push_back(parse_bar(row, query, minutes));
+      }
+      return std::nullopt;
+    } catch (const std::exception& exception) {
+      BrokerError error;
+      error.category_ = ErrorCategory::PROTOCOL;
+      error.broker_code_ = "invalid_bar_response";
+      error.message_ = exception.what();
+      return error;
+    }
+  }
+
+  /**
+   * Normalizes one KIS bar.
+   *
+   * A period bar is reported by its trading date, so its timestamp marks the
+   * period's open. A minute bar carries `stck_cntg_hour`, the execution time the
+   * bar was aggregated to, so it marks the close.
+   *
+   * `mod_yn` marks a trading day on which nothing traded, so the bar has no open.
+   * An absent open is preserved as absent rather than becoming zero or the
+   * previous close, which is the only honest reading of a day with no trade.
+   */
+  static Bar parse_bar(const json::object& row, const BarQuery& query, bool minutes) {
+    Bar bar;
+    const auto date = broker_detail::json_string(row, "stck_bsop_date");
+    const auto time = minutes ? broker_detail::json_string(row, "stck_cntg_hour") : "000000";
+    const auto timestamp = korea_timestamp(date, time);
+    if (!timestamp) {
+      throw std::runtime_error("invalid bar timestamp");
+    }
+    bar.timestamp_ = *timestamp;
+    bar.interval_ = query.interval_;
+    bar.stamp_ = minutes ? BarStamp::CLOSE : BarStamp::OPEN;
+    bar.high_ = Decimal64::parse(broker_detail::json_string(row, "stck_hgpr"));
+    bar.low_ = Decimal64::parse(broker_detail::json_string(row, "stck_lwpr"));
+    bar.close_ = Decimal64::parse(
+      broker_detail::json_string(row, minutes ? "stck_prpr" : "stck_clpr")
+    );
+    bar.volume_ = Decimal64::parse(
+      broker_detail::json_string(row, minutes ? "cntg_vol" : "acml_vol")
+    );
+    if (const auto value = row.if_contains("acml_tr_pbmn"); value && value->is_string()) {
+      const std::string traded(value->as_string());
+      if (!traded.empty()) {
+        bar.traded_value_ = Decimal64::parse(traded);
+      }
+    }
+    const auto unchanged = row.if_contains("mod_yn");
+    const bool no_trade =
+      unchanged && unchanged->is_string() && std::string_view(unchanged->as_string()) == "Y";
+    if (!no_trade) {
+      bar.open_ = Decimal64::parse(broker_detail::json_string(row, "stck_oprc"));
+    }
+    bar.currency_ = Currency::krw();
+    return bar;
+  }
+
+  /** Reverses the accumulation, trims to the requested count, and completes. */
+  void finish_bars(const std::shared_ptr<BarOperation>& operation) {
+    BarSeries series;
+    series.instrument_ = operation->query_.instrument_;
+    series.interval_ = operation->query_.interval_;
+    series.adjusted_ = operation->query_.adjusted_;
+    series.received_at_ = std::chrono::system_clock::now();
+
+    auto& bars = operation->descending_;
+    if (static_cast<int>(bars.size()) > operation->query_.count_) {
+      bars.resize(static_cast<std::size_t>(operation->query_.count_));
+    }
+    series.bars_.assign(bars.rbegin(), bars.rend());
+    if (!series.bars_.empty() && static_cast<int>(series.bars_.size()) < operation->query_.count_) {
+      series.next_cursor_ = format_iso8601_utc(series.bars_.front().timestamp_);
+    }
+    deliver(std::move(operation->completion_), Result<BarSeries>(std::move(series)));
+  }
 
   void start_quote(InstrumentId instrument, QuoteHandler completion) {
     if (instrument.country_ != Country::KR || !broker_detail::valid_symbol(instrument.symbol_)) {
@@ -2099,6 +2504,14 @@ public:
     return run<QuoteSnapshot>(
       [&](auto&& sink) { client_->async_quote(std::move(instrument), std::move(sink)); },
       "quote"
+    );
+  }
+
+  /** Returns bars, walking KIS's date and time inputs until the count is met. */
+  Result<BarSeries> bars(BarQuery query) {
+    return run<BarSeries>(
+      [&](auto&& sink) { client_->async_bars(std::move(query), std::move(sink)); },
+      "bars"
     );
   }
 

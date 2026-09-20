@@ -947,6 +947,28 @@ inline AmendInstruction replace_with(
   return instruction;
 }
 
+/**
+ * Formats an instant as an ISO 8601 timestamp in UTC.
+ *
+ * Emitted with a `Z` designator rather than a numeric offset, so the value cannot
+ * be read against the wrong zone. Brokers that accept an ISO 8601 bound accept
+ * this form; a broker that wants a local calendar date converts from it in its own
+ * adapter, where the zone it means is known.
+ */
+inline std::string format_iso8601_utc(std::chrono::system_clock::time_point value) {
+  const auto seconds = std::chrono::time_point_cast<std::chrono::seconds>(value);
+  const std::time_t raw = std::chrono::system_clock::to_time_t(seconds);
+  std::tm utc{};
+#ifdef _WIN32
+  gmtime_s(&utc, &raw);
+#else
+  gmtime_r(&raw, &utc);
+#endif
+  char buffer[32];
+  const auto written = std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &utc);
+  return std::string(buffer, written);
+}
+
 /** Parses an ISO 8601 timestamp with a UTC designator or numeric offset. */
 inline std::optional<std::chrono::system_clock::time_point> parse_iso8601_timestamp(
   std::string_view value

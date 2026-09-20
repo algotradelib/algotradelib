@@ -630,3 +630,98 @@ TEST_CASE("the port passes an expressible history filter through unchanged") {
   REQUIRE(client->last_selector_->customer_ == "cust-7");
   REQUIRE(client->last_selector_->cursor_ == std::string("page-2"));
 }
+
+TEST_CASE("bar intervals are a per-interval capability, not one flag") {
+  // Both brokers publish minute and daily bars; only KIS publishes the longer
+  // periods, so a strategy wanting weekly bars knowingly binds itself to KIS.
+  static_assert(BrokerCaps<kis::KisClient>::supports_interval(BarInterval::ONE_MINUTE));
+  static_assert(BrokerCaps<kis::KisClient>::supports_interval(BarInterval::ONE_DAY));
+  static_assert(BrokerCaps<kis::KisClient>::supports_interval(BarInterval::ONE_WEEK));
+  static_assert(BrokerCaps<kis::KisClient>::supports_interval(BarInterval::ONE_YEAR));
+
+  static_assert(BrokerCaps<tossinvest::TossClient>::supports_interval(BarInterval::ONE_MINUTE));
+  static_assert(BrokerCaps<tossinvest::TossClient>::supports_interval(BarInterval::ONE_DAY));
+  static_assert(!BrokerCaps<tossinvest::TossClient>::supports_interval(BarInterval::ONE_WEEK));
+  static_assert(!BrokerCaps<tossinvest::TossClient>::supports_interval(BarInterval::ONE_MONTH));
+
+  // A blocking facade answers as its asynchronous client does.
+  static_assert(
+    BrokerCaps<tossinvest::TossBlockingClient>::supports_interval(BarInterval::ONE_WEEK) ==
+    BrokerCaps<tossinvest::TossClient>::supports_interval(BarInterval::ONE_WEEK)
+  );
+  SUCCEED("interval support is a compile-time predicate");
+}
+
+TEST_CASE("an interval a broker does not publish is refused before any request") {
+  net::io_context ioc;
+  auto client = std::make_shared<mock::MockClient>(ioc.get_executor());
+  BarSeries scripted;
+  scripted.instrument_ = samsung();
+  client->bars_ = scripted;
+
+  BrokerSession<mock::MockClient> session(client, mock::MockAccount{"cust", 1});
+  auto strand = net::make_strand(ioc);
+
+  BarQuery weekly;
+  weekly.instrument_ = samsung();
+  weekly.interval_ = BarInterval::ONE_WEEK;
+
+  bool completed = false;
+  session.async_bars(
+    weekly,
+    net::bind_executor(
+      strand,
+      [&](Result<BarSeries> result) {
+        completed = true;
+        REQUIRE_FALSE(result.has_value());
+        REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+        REQUIRE(result.error().broker_code_ == "unsupported_interval");
+      }
+    )
+  );
+
+  REQUIRE_FALSE(completed);
+  ioc.run();
+  REQUIRE(completed);
+
+  // Refused before the wire: resampling a shorter interval would have answered a
+  // different question from the one asked.
+  REQUIRE(client->bar_calls_ == 0);
+}
+
+TEST_CASE("a supported interval reaches the client with the query intact") {
+  net::io_context ioc;
+  auto client = std::make_shared<mock::MockClient>(ioc.get_executor());
+  BarSeries scripted;
+  scripted.instrument_ = samsung();
+  scripted.interval_ = BarInterval::ONE_DAY;
+  scripted.received_at_ = std::chrono::system_clock::now();
+  client->bars_ = scripted;
+
+  BrokerSession<mock::MockClient> session(client, mock::MockAccount{"cust", 1});
+  auto strand = net::make_strand(ioc);
+
+  BarQuery daily;
+  daily.instrument_ = samsung();
+  daily.interval_ = BarInterval::ONE_DAY;
+  daily.count_ = 250;
+  daily.adjusted_ = false;
+
+  session.async_bars(
+    daily,
+    net::bind_executor(
+      strand,
+      [](Result<BarSeries> result) {
+        REQUIRE(result.has_value());
+        REQUIRE(result.value().interval_ == BarInterval::ONE_DAY);
+      }
+    )
+  );
+  ioc.run();
+
+  REQUIRE(client->bar_calls_ == 1);
+  REQUIRE(client->last_bar_query_.has_value());
+  REQUIRE(client->last_bar_query_->count_ == 250);
+  REQUIRE_FALSE(client->last_bar_query_->adjusted_);
+  REQUIRE(client->last_bar_query_->instrument_.symbol_ == "005930");
+}

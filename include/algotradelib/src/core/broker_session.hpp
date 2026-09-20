@@ -333,6 +333,33 @@ public:
     );
   }
 
+  /**
+   * Retrieves bars for one instrument, paging until `count_` is satisfied.
+   *
+   * Bars arrive oldest first whatever order the broker sent them in, and carry the
+   * stamp convention the broker uses, because a timestamp alone cannot say whether
+   * it marks a period's open or its close.
+   *
+   * An interval the bound broker does not publish is refused before any I/O rather
+   * than produced by aggregating a shorter one; `BrokerCaps<Client>::supports_interval`
+   * answers the same question at compile time.
+   */
+  template <typename CompletionToken>
+  auto async_bars(BarQuery query, CompletionToken&& token) {
+    if (auto invalid = Traits::validate_bars(query)) {
+      return complete_error<BarSeries>(
+        std::forward<CompletionToken>(token), std::move(*invalid)
+      );
+    }
+    return translate<BarSeries>(
+      std::forward<CompletionToken>(token),
+      [client = client_, query = std::move(query)](auto&& sink) mutable {
+        Traits::bars(*client, std::move(query), std::forward<decltype(sink)>(sink));
+      },
+      [](Result<BarSeries> raw) { return raw; }
+    );
+  }
+
   /** Retrieves one order by reference, on a broker that addresses one directly. */
   template <typename CompletionToken>
   auto async_order(Ref ref, CompletionToken&& token) {
@@ -506,6 +533,14 @@ public:
 
   /** Returns all normalized holdings for the bound account. */
   Result<HoldingsSnapshot> holdings() { return Traits::holdings(*client_, account_); }
+
+  /** Returns bars for one instrument, paging until the query's count is satisfied. */
+  Result<BarSeries> bars(BarQuery query) {
+    if (auto invalid = Traits::validate_bars(query)) {
+      return Result<BarSeries>(std::move(*invalid));
+    }
+    return Traits::bars(*client_, std::move(query));
+  }
 
   /** Submits a new order. The indeterminacy rule of `BrokerSession::async_place` applies. */
   Result<Placed> place(OrderRequest order) {

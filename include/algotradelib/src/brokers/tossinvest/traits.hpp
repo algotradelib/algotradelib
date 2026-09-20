@@ -38,6 +38,17 @@ using Ref = OrderRef<tossinvest::Broker>;
  * normalize the same Toss response.
  */
 struct Normalizers {
+  /** Returns whether this broker publishes bars at `interval`. */
+  static constexpr bool supports_interval(BarInterval interval) {
+    static_cast<void>(interval);
+    return interval == BarInterval::ONE_MINUTE || interval == BarInterval::ONE_DAY;
+  }
+
+  /** Refuses a bar request this broker cannot answer, before any I/O. */
+  static std::optional<BrokerError> validate_bars(const BarQuery& query) {
+    return tossinvest::unsupported_bar_interval(query.interval_);
+  }
+
   /** Returns an opaque reference carrying Toss's order identifier. */
   static Ref make_ref(std::string order_id) {
     Ref ref;
@@ -259,6 +270,12 @@ struct BrokerTraits<tossinvest::TossClient>
     return client.rate_limit_stats();
   }
 
+  /** Forwards a bar request. */
+  template <typename Token>
+  static auto bars(Client& client, BarQuery query, Token&& token) {
+    return client.async_bars(std::move(query), std::forward<Token>(token));
+  }
+
   /** Forwards a quote request. */
   template <typename Token>
   static auto quote(Client& client, InstrumentId instrument, Token&& token) {
@@ -377,6 +394,11 @@ struct BrokerTraits<tossinvest::TossBlockingClient>
   /** Returns this client's pacing statistics, or null when it is unpaced. */
   static const network::RateLimitStats* rate_limit_stats(const Client& client) {
     return client.rate_limit_stats();
+  }
+
+  /** Returns bars, paging inside the client. */
+  static Result<BarSeries> bars(Client& client, BarQuery query) {
+    return client.bars(std::move(query));
   }
 
   /** Returns a quote. */

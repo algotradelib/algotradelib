@@ -1,6 +1,7 @@
 #pragma once
 
 #include "./broker_traits.hpp"
+#include "./market_data.hpp"
 
 namespace algotradelib {
 
@@ -50,6 +51,19 @@ struct BrokerCaps {
 
   /** Whether an order-history inquiry can filter by instrument. */
   static constexpr bool has_history_symbol_filter = Traits::has_history_symbol_filter;
+
+  /**
+   * Whether the broker publishes bars at `interval`.
+   *
+   * A predicate rather than a constant, because the answer differs per interval.
+   * Both brokers publish one-minute and one-day bars; only KIS publishes weekly,
+   * monthly, and yearly ones. An interval a broker does not publish is refused,
+   * never produced by aggregating a shorter one, so a strategy that wants a weekly
+   * bar gates on this and knowingly binds itself to the broker that has them.
+   */
+  static constexpr bool supports_interval(BarInterval interval) {
+    return Traits::supports_interval(interval);
+  }
 };
 
 } // namespace algotradelib

@@ -131,6 +131,15 @@ struct KisClientTestAccess {
     return KisClient::valid_order_reference(order);
   }
 
+  static std::optional<BrokerError> parse_bars_page(
+    Result<network::HttpResponse> response,
+    const BarQuery& query,
+    bool minutes,
+    std::vector<Bar>& into
+  ) {
+    return KisClient::parse_bars_page(std::move(response), query, minutes, into);
+  }
+
   static Result<KisOrderAck> parse_order_ack(Result<network::HttpResponse> response) {
     return KisClient::parse_order_ack(std::move(response));
   }
@@ -206,6 +215,15 @@ struct TossClientTestAccess {
 
   static network::HttpRequest orders_request(const TossOrderQuery& query) {
     return TossClient::make_orders_request("access-token", query);
+  }
+
+  static std::optional<BrokerError> parse_bars_page(
+    Result<network::HttpResponse> response,
+    const BarQuery& query,
+    std::vector<Bar>& into,
+    std::optional<std::string>& cursor
+  ) {
+    return TossClient::parse_bars_page(std::move(response), query, into, cursor);
   }
 
   static Result<OrderAck> parse_order_ack(Result<network::HttpResponse> response) {
@@ -2217,4 +2235,191 @@ TEST_CASE(
   REQUIRE(completed);
   REQUIRE(server.requestCount("/drop-post") == 1);
   REQUIRE(server.connectionCount() == 1);
+}
+
+TEST_CASE(
+  "Toss candles normalize into ascending bars with its stamp convention",
+  "[broker][tossinvest][bars]"
+) {
+  BarQuery query;
+  query.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+  std::vector<Bar> bars;
+  std::optional<std::string> cursor;
+
+  SECTION("a daily page is stamped at the open and reports its cursor") {
+    query.interval_ = BarInterval::ONE_DAY;
+    // The documented response example, newest first.
+    const auto failure = tossinvest::TossClientTestAccess::parse_bars_page(
+      json_response(
+        R"({"result":{"candles":[)"
+        R"({"timestamp":"2026-03-25T00:00:00+09:00","openPrice":"71600","highPrice":"72300",)"
+        R"("lowPrice":"71500","closePrice":"72000","volume":"3521000","currency":"KRW"},)"
+        R"({"timestamp":"2026-03-24T00:00:00+09:00","openPrice":"71200","highPrice":"71800",)"
+        R"("lowPrice":"71000","closePrice":"71600","volume":"2984000","currency":"KRW"}],)"
+        R"("nextBefore":"2026-03-24T00:00:00+09:00"}})"
+      ),
+      query,
+      bars,
+      cursor
+    );
+    REQUIRE_FALSE(failure);
+    REQUIRE(bars.size() == 2);
+
+    // Accumulated in the order Toss sent them: newest first, reversed once at the end.
+    REQUIRE(bars.front().close_ == Decimal64::parse("72000"));
+    REQUIRE(bars.back().close_ == Decimal64::parse("71600"));
+
+    // A daily bar is stamped at local midnight, which is its open.
+    REQUIRE(bars.front().stamp_ == BarStamp::OPEN);
+    REQUIRE(bars.front().interval_ == BarInterval::ONE_DAY);
+    REQUIRE(bars.front().open_.has_value());
+    REQUIRE(*bars.front().open_ == Decimal64::parse("71600"));
+    REQUIRE(bars.front().volume_ == Decimal64::parse("3521000"));
+    REQUIRE(bars.front().currency_ == Currency::krw());
+    REQUIRE(cursor == std::string("2026-03-24T00:00:00+09:00"));
+  }
+
+  SECTION("a minute page is stamped at the close") {
+    query.interval_ = BarInterval::ONE_MINUTE;
+    const auto failure = tossinvest::TossClientTestAccess::parse_bars_page(
+      json_response(
+        R"({"result":{"candles":[)"
+        R"({"timestamp":"2026-03-25T09:32:00+09:00","openPrice":"72000","highPrice":"72100",)"
+        R"("lowPrice":"71950","closePrice":"72050","volume":"15200","currency":"KRW"}],)"
+        R"("nextBefore":null}})"
+      ),
+      query,
+      bars,
+      cursor
+    );
+    REQUIRE_FALSE(failure);
+    REQUIRE(bars.size() == 1);
+    REQUIRE(bars.front().stamp_ == BarStamp::CLOSE);
+
+    // A null cursor is the last page, and is not a cursor of its own.
+    REQUIRE_FALSE(cursor.has_value());
+  }
+
+  SECTION("an empty page reports no cursor so paging cannot continue forever") {
+    query.interval_ = BarInterval::ONE_DAY;
+    const auto failure = tossinvest::TossClientTestAccess::parse_bars_page(
+      json_response(R"({"result":{"candles":[],"nextBefore":"2026-03-24T00:00:00+09:00"}})"),
+      query,
+      bars,
+      cursor
+    );
+    REQUIRE_FALSE(failure);
+    REQUIRE(bars.empty());
+    REQUIRE_FALSE(cursor.has_value());
+  }
+
+  SECTION("a malformed candle is a protocol error") {
+    query.interval_ = BarInterval::ONE_DAY;
+    const auto failure = tossinvest::TossClientTestAccess::parse_bars_page(
+      json_response(R"({"result":{"candles":[{"timestamp":"not-a-time"}]}})"), query, bars, cursor
+    );
+    REQUIRE(failure);
+    REQUIRE(failure->category_ == ErrorCategory::PROTOCOL);
+    REQUIRE(failure->broker_code_ == "invalid_candle_response");
+  }
+}
+
+TEST_CASE(
+  "KIS bars normalize from its period and minute endpoints",
+  "[broker][kis][bars]"
+) {
+  BarQuery query;
+  query.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+  std::vector<Bar> bars;
+
+  SECTION("a period bar is stamped by its trading date") {
+    query.interval_ = BarInterval::ONE_DAY;
+    const auto failure = kis::KisClientTestAccess::parse_bars_page(
+      json_response(
+        R"({"rt_cd":"0","msg_cd":"MCA00000","output2":[)"
+        R"({"stck_bsop_date":"20260325","stck_clpr":"72000","stck_oprc":"71600",)"
+        R"("stck_hgpr":"72300","stck_lwpr":"71500","acml_vol":"3521000",)"
+        R"("acml_tr_pbmn":"253000000000","mod_yn":"N"}]})"
+      ),
+      query,
+      false,
+      bars
+    );
+    REQUIRE_FALSE(failure);
+    REQUIRE(bars.size() == 1);
+    REQUIRE(bars.front().stamp_ == BarStamp::OPEN);
+    REQUIRE(*bars.front().open_ == Decimal64::parse("71600"));
+    REQUIRE(bars.front().close_ == Decimal64::parse("72000"));
+    REQUIRE(bars.front().volume_ == Decimal64::parse("3521000"));
+    REQUIRE(bars.front().traded_value_.has_value());
+    REQUIRE(bars.front().currency_ == Currency::krw());
+  }
+
+  SECTION("a trading day with no trade has no open, and that is not zero") {
+    // KIS sets mod_yn when the day produced no execution, so there is no open price
+    // to report. Substituting zero or the previous close would invent a bar.
+    query.interval_ = BarInterval::ONE_DAY;
+    const auto failure = kis::KisClientTestAccess::parse_bars_page(
+      json_response(
+        R"({"rt_cd":"0","output2":[)"
+        R"({"stck_bsop_date":"20260325","stck_clpr":"72000","stck_oprc":"0",)"
+        R"("stck_hgpr":"72000","stck_lwpr":"72000","acml_vol":"0","mod_yn":"Y"}]})"
+      ),
+      query,
+      false,
+      bars
+    );
+    REQUIRE_FALSE(failure);
+    REQUIRE(bars.size() == 1);
+    REQUIRE_FALSE(bars.front().open_.has_value());
+    REQUIRE(bars.front().close_ == Decimal64::parse("72000"));
+  }
+
+  SECTION("a minute bar reads the execution time, price, and volume columns") {
+    query.interval_ = BarInterval::ONE_MINUTE;
+    const auto failure = kis::KisClientTestAccess::parse_bars_page(
+      json_response(
+        R"({"rt_cd":"0","output2":[)"
+        R"({"stck_bsop_date":"20260325","stck_cntg_hour":"093200","stck_prpr":"72050",)"
+        R"("stck_oprc":"72000","stck_hgpr":"72100","stck_lwpr":"71950","cntg_vol":"15200"}]})"
+      ),
+      query,
+      true,
+      bars
+    );
+    REQUIRE_FALSE(failure);
+    REQUIRE(bars.size() == 1);
+    REQUIRE(bars.front().stamp_ == BarStamp::CLOSE);
+    REQUIRE(bars.front().close_ == Decimal64::parse("72050"));
+    REQUIRE(bars.front().volume_ == Decimal64::parse("15200"));
+  }
+
+  SECTION("blank padding rows are skipped rather than parsed") {
+    // KIS pads a short page with empty rows instead of shortening the array.
+    query.interval_ = BarInterval::ONE_DAY;
+    const auto failure = kis::KisClientTestAccess::parse_bars_page(
+      json_response(
+        R"({"rt_cd":"0","output2":[)"
+        R"({"stck_bsop_date":"20260325","stck_clpr":"72000","stck_oprc":"71600",)"
+        R"("stck_hgpr":"72300","stck_lwpr":"71500","acml_vol":"3521000","mod_yn":"N"},)"
+        R"({"stck_bsop_date":"","stck_clpr":"","stck_oprc":"","stck_hgpr":"",)"
+        R"("stck_lwpr":"","acml_vol":""}]})"
+      ),
+      query,
+      false,
+      bars
+    );
+    REQUIRE_FALSE(failure);
+    REQUIRE(bars.size() == 1);
+  }
+
+  SECTION("a declared broker failure ends the page") {
+    query.interval_ = BarInterval::ONE_DAY;
+    const auto failure = kis::KisClientTestAccess::parse_bars_page(
+      json_response(R"({"rt_cd":"1","msg_cd":"APBK0919","msg1":"no data"})"), query, false, bars
+    );
+    REQUIRE(failure);
+    REQUIRE(failure->broker_code_ == "APBK0919");
+    REQUIRE(bars.empty());
+  }
 }

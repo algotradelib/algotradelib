@@ -106,11 +106,36 @@ inline std::optional<int> reported_rate_limit(const network::HttpResponse& respo
   return static_cast<int>(*limit);
 }
 
+/**
+ * Returns an error when Toss does not publish bars at `interval`.
+ *
+ * Toss publishes one-minute and one-day bars only. An interval it does not publish
+ * is refused rather than produced by aggregating a shorter one, which would answer
+ * a different question from the one asked.
+ *
+ * Both the client and the broker port call this, so the rule has one definition.
+ */
+inline std::optional<BrokerError> unsupported_bar_interval(BarInterval interval) {
+  if (interval == BarInterval::ONE_MINUTE || interval == BarInterval::ONE_DAY) {
+    return std::nullopt;
+  }
+  BrokerError error;
+  error.category_ = ErrorCategory::INVALID_ARGUMENT;
+  error.broker_code_ = "unsupported_interval";
+  error.message_ =
+    "Toss publishes one-minute and one-day bars only; gate on "
+    "BrokerCaps<Client>::supports_interval before asking for another";
+  return error;
+}
+
 /** Persistent asynchronous Toss Securities client with coalesced OAuth refresh. */
 class TossClient : public std::enable_shared_from_this<TossClient> {
 public:
   /** Completion handler for one normalized quote. */
   using QuoteHandler = net::any_completion_handler<void(Result<QuoteSnapshot>)>;
+
+  /** Completion handler for one normalized bar series. */
+  using BarsHandler = net::any_completion_handler<void(Result<BarSeries>)>;
   /** Completion handler for Toss account discovery. */
   using AccountsHandler = net::any_completion_handler<void(Result<std::vector<TossAccount>>)>;
 
@@ -144,6 +169,29 @@ public:
     http_(
       std::make_shared<network::AsyncHttpClient>(strand_, context, "openapi.tossinvest.com", "443", options)
     ) {}
+
+  /**
+   * Requests bars, following Toss's cursor until `count_` is satisfied.
+   *
+   * Toss returns at most 200 bars per page, newest first, with `nextBefore` as the
+   * cursor for the page before. The adapter pages backwards and reverses once at
+   * the end, so the caller receives ascending bars however many pages it took.
+   */
+  template <typename CompletionToken>
+  auto async_bars(BarQuery query, CompletionToken&& token) {
+    return net::async_initiate<CompletionToken, void(Result<BarSeries>)>(
+      [self = shared_from_this(), query = std::move(query)](auto&& handler) mutable {
+        auto completion = BarsHandler(std::forward<decltype(handler)>(handler));
+        net::post(
+          self->strand_,
+          [self, query = std::move(query), completion = std::move(completion)]() mutable {
+            self->start_bars(std::move(query), std::move(completion));
+          }
+        );
+      },
+      token
+    );
+  }
 
   /** Requests and normalizes a current quote. */
   template <typename CompletionToken>
@@ -372,6 +420,261 @@ private:
   TossRest token_;
   bool refreshing_{false};
   std::deque<TokenHandler> token_waiters_;
+
+  /**
+   * One bar request spanning however many pages Toss needs to answer it.
+   *
+   * `descending_` accumulates pages exactly as Toss sends them — newest first,
+   * each page older than the last — and is reversed once when the operation
+   * finishes. Reversing per page, or inserting at the front, would do the same
+   * work repeatedly for no benefit.
+   */
+  struct BarOperation {
+    BarQuery query_;
+    std::vector<Bar> descending_;
+    std::optional<std::string> before_;
+    std::optional<std::string> last_cursor_;
+    int pages_{0};
+    BarsHandler completion_;
+
+    BarOperation(BarQuery query, BarsHandler completion)
+    : query_(std::move(query)), completion_(std::move(completion)) {
+      if (query_.before_) {
+        before_ = format_iso8601_utc(*query_.before_);
+      }
+    }
+  };
+
+  /** Largest number of bars Toss returns in one page. */
+  static constexpr int bar_page_limit_ = 200;
+
+  /**
+   * Most pages one bar request may consume.
+   *
+   * A bound is needed because a broker that kept returning a cursor would
+   * otherwise page forever. Fifty pages is 10,000 bars, far beyond any window a
+   * caller asks for in one call, so reaching it means something is wrong rather
+   * than that the caller was unlucky.
+   */
+  static constexpr int bar_page_budget_ = 50;
+
+  /** Validates a bar request and starts paging. */
+  void start_bars(BarQuery query, BarsHandler completion) {
+    if (auto invalid = validate_bar_query(query)) {
+      deliver(std::move(completion), Result<BarSeries>(std::move(*invalid)));
+      return;
+    }
+
+    auto operation = std::make_shared<BarOperation>(std::move(query), std::move(completion));
+    ensure_token(
+      TokenHandler(
+        [self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
+          if (token_error) {
+            self->deliver(
+              std::move(operation->completion_), Result<BarSeries>(std::move(*token_error))
+            );
+            return;
+          }
+          self->request_bars(operation);
+        }
+      )
+    );
+  }
+
+  /** Returns an error when Toss cannot answer the request as described. */
+  static std::optional<BrokerError> validate_bar_query(const BarQuery& query) {
+    BrokerError error;
+    error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    if (!broker_detail::valid_symbol(query.instrument_.symbol_)) {
+      error.broker_code_ = "invalid_instrument";
+      error.message_ = "bar request requires a symbol";
+      return error;
+    }
+    if (query.count_ < 1) {
+      error.broker_code_ = "invalid_count";
+      error.message_ = "bar request must ask for at least one bar";
+      return error;
+    }
+    return unsupported_bar_interval(query.interval_);
+  }
+
+  /** Returns Toss's code for a supported interval. */
+  static const char* bar_interval_code(BarInterval interval) {
+    return interval == BarInterval::ONE_MINUTE ? "1m" : "1d";
+  }
+
+  /** Sends the next page of a bar request. */
+  void request_bars(const std::shared_ptr<BarOperation>& operation) {
+    const int outstanding = operation->query_.count_ -
+      static_cast<int>(operation->descending_.size());
+    const int wanted = outstanding > bar_page_limit_ ? bar_page_limit_ : outstanding;
+
+    std::string target = "/api/v1/candles?symbol=" +
+      broker_detail::query_encode(operation->query_.instrument_.symbol_) +
+      "&interval=" + bar_interval_code(operation->query_.interval_) +
+      "&count=" + std::to_string(wanted) +
+      "&adjusted=" + (operation->query_.adjusted_ ? "true" : "false");
+    if (operation->before_) {
+      target += "&before=" + broker_detail::query_encode(*operation->before_);
+    }
+
+    network::HttpRequest request;
+    // Bars are the traffic a trading reserve exists to hold back.
+    request.group_ = network::RateLimitGroup::MARKET_DATA;
+    request.method_ = http::verb::get;
+    request.target_ = std::move(target);
+    request.headers_.emplace_back("Authorization", "Bearer " + token_.access_token_);
+
+    ++operation->pages_;
+    http_->async_request(
+      std::move(request),
+      [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
+        self->handle_bars_page(operation, std::move(result));
+      }
+    );
+  }
+
+  /** Accumulates one page and either continues or finishes the request. */
+  void handle_bars_page(
+    const std::shared_ptr<BarOperation>& operation,
+    Result<network::HttpResponse> result
+  ) {
+    std::optional<std::string> cursor;
+    auto appended = parse_bars_page(
+      std::move(result), operation->query_, operation->descending_, cursor
+    );
+    if (appended) {
+      deliver(std::move(operation->completion_), Result<BarSeries>(std::move(*appended)));
+      return;
+    }
+
+    const int collected = static_cast<int>(operation->descending_.size());
+    const bool satisfied = collected >= operation->query_.count_;
+    const bool exhausted = !cursor || cursor->empty();
+    const bool repeated = cursor && operation->last_cursor_ && *cursor == *operation->last_cursor_;
+    const bool spent = operation->pages_ >= bar_page_budget_;
+    if (satisfied || exhausted || repeated || spent) {
+      finish_bars(operation, cursor);
+      return;
+    }
+
+    operation->last_cursor_ = cursor;
+    operation->before_ = cursor;
+    request_bars(operation);
+  }
+
+  /**
+   * Parses one page into the operation, or returns the error that ends it.
+   *
+   * A page that parses but contains no bar also ends the request: a broker that
+   * returns an empty page while still reporting a cursor would otherwise be paged
+   * forever, and `holdings-core` established the same guard.
+   *
+   * Takes the accumulation and cursor by reference rather than an operation, so the
+   * normalization is a pure function of a response and can be tested as one.
+   */
+  static std::optional<BrokerError> parse_bars_page(
+    Result<network::HttpResponse> result,
+    const BarQuery& query,
+    std::vector<Bar>& into,
+    std::optional<std::string>& cursor
+  ) {
+    if (!result) {
+      return std::move(result.error());
+    }
+    BrokerError parse_error;
+    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    if (!document) {
+      return parse_error;
+    }
+    if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
+      return toss_error(result.value(), *document);
+    }
+
+    try {
+      const auto& payload = required_object(*document, "result");
+      const auto rows = payload.if_contains("candles");
+      if (!rows || !rows->is_array()) {
+        throw std::runtime_error("missing array field: candles");
+      }
+      const auto before = into.size();
+      for (const auto& value : rows->as_array()) {
+        if (!value.is_object()) {
+          throw std::runtime_error("candle entry is not an object");
+        }
+        into.push_back(parse_bar(value.as_object(), query));
+      }
+      if (into.size() == before) {
+        cursor.reset();
+        return std::nullopt;
+      }
+      if (const auto next = payload.if_contains("nextBefore"); next && next->is_string()) {
+        cursor = std::string(next->as_string());
+      } else {
+        cursor.reset();
+      }
+      return std::nullopt;
+    } catch (const std::exception& exception) {
+      BrokerError error;
+      error.category_ = ErrorCategory::PROTOCOL;
+      error.broker_code_ = "invalid_candle_response";
+      error.message_ = exception.what();
+      return error;
+    }
+  }
+
+  /**
+   * Normalizes one Toss candle.
+   *
+   * Toss stamps a one-minute bar at the instant it closed, aggregating
+   * `[t - 1m, t)`, and a one-day bar at local midnight, which is its open. The
+   * convention travels in the bar, because reading one as the other is a lookahead
+   * no timestamp can reveal.
+   */
+  static Bar parse_bar(const json::object& row, const BarQuery& query) {
+    Bar bar;
+    const auto timestamp = parse_iso8601_timestamp(broker_detail::json_string(row, "timestamp"));
+    if (!timestamp) {
+      throw std::runtime_error("invalid candle timestamp");
+    }
+    bar.timestamp_ = *timestamp;
+    bar.interval_ = query.interval_;
+    bar.stamp_ = query.interval_ == BarInterval::ONE_MINUTE ? BarStamp::CLOSE : BarStamp::OPEN;
+    bar.open_ = Decimal64::parse(broker_detail::json_string(row, "openPrice"));
+    bar.high_ = Decimal64::parse(broker_detail::json_string(row, "highPrice"));
+    bar.low_ = Decimal64::parse(broker_detail::json_string(row, "lowPrice"));
+    bar.close_ = Decimal64::parse(broker_detail::json_string(row, "closePrice"));
+    bar.volume_ = Decimal64::parse(broker_detail::json_string(row, "volume"));
+    bar.currency_ = Currency(broker_detail::json_string(row, "currency"));
+    return bar;
+  }
+
+  /**
+   * Reverses the accumulation and trims to the requested count.
+   *
+   * Paging runs backwards from the newest bar, so an overshoot is always at the
+   * old end; the newest `count_` bars are what the caller asked for.
+   */
+  void finish_bars(
+    const std::shared_ptr<BarOperation>& operation,
+    const std::optional<std::string>& cursor
+  ) {
+    BarSeries series;
+    series.instrument_ = operation->query_.instrument_;
+    series.interval_ = operation->query_.interval_;
+    series.adjusted_ = operation->query_.adjusted_;
+    series.received_at_ = std::chrono::system_clock::now();
+
+    auto& bars = operation->descending_;
+    if (static_cast<int>(bars.size()) > operation->query_.count_) {
+      bars.resize(static_cast<std::size_t>(operation->query_.count_));
+    }
+    series.bars_.assign(bars.rbegin(), bars.rend());
+    if (cursor && !cursor->empty()) {
+      series.next_cursor_ = *cursor;
+    }
+    deliver(std::move(operation->completion_), Result<BarSeries>(std::move(series)));
+  }
 
   void start_quote(InstrumentId instrument, QuoteHandler completion) {
     if (instrument.country_ != Country::KR || !broker_detail::valid_symbol(instrument.symbol_)) {
@@ -1864,6 +2167,14 @@ public:
   }
 
   /** Returns normalized holdings for one discovered account sequence. */
+  /** Returns bars, paging until the query's count is satisfied. */
+  Result<BarSeries> bars(BarQuery query) {
+    return run<BarSeries>(
+      [&](auto&& sink) { client_->async_bars(std::move(query), std::move(sink)); },
+      "bars"
+    );
+  }
+
   Result<HoldingsSnapshot> holdings(std::int64_t account_sequence) {
     return run<HoldingsSnapshot>(
       [&](auto&& sink) { client_->async_holdings(account_sequence, std::move(sink)); },

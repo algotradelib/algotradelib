@@ -42,6 +42,9 @@ using algotradelib::HoldingsSnapshot;
 using algotradelib::InstrumentId;
 using algotradelib::OrderPage;
 using algotradelib::OrderRequest;
+using algotradelib::BarInterval;
+using algotradelib::BarQuery;
+using algotradelib::BarSeries;
 using algotradelib::OrderSnapshot;
 using algotradelib::QuoteSnapshot;
 using algotradelib::Result;
@@ -118,6 +121,12 @@ public:
   /** Scripted order-history answer. */
   std::optional<OrderPage> history_;
 
+  /** Scripted bar answer. */
+  std::optional<BarSeries> bars_;
+
+  /** The last bar query this client was asked to answer. */
+  std::optional<BarQuery> last_bar_query_;
+
   /** Count of wire-equivalent attempts per operation, for exactly-once checks. */
   int quote_calls_{0};
   int holdings_calls_{0};
@@ -126,6 +135,7 @@ public:
   int cancel_calls_{0};
   int live_order_calls_{0};
   int history_calls_{0};
+  int bar_calls_{0};
 
   /** The last amendment this client was asked to carry out. */
   std::optional<MockAmendment> last_amendment_;
@@ -142,6 +152,19 @@ public:
       [](MockClient& client) {
         ++client.quote_calls_;
         return client.answer<QuoteSnapshot>(client.quote_, "no quote scripted");
+      }
+    );
+  }
+
+  /** Answers a bar request. */
+  template <typename Token>
+  auto async_bars(BarQuery query, Token&& token) {
+    return start<BarSeries>(
+      token,
+      [query = std::move(query)](MockClient& client) mutable {
+        ++client.bar_calls_;
+        client.last_bar_query_ = std::move(query);
+        return client.answer<BarSeries>(client.bars_, "no bars scripted");
       }
     );
   }
@@ -354,6 +377,32 @@ struct BrokerTraits<mock::MockClient> {
 
   /** Does not filter by instrument. */
   static constexpr bool has_history_symbol_filter = false;
+
+  /**
+   * The in-memory broker publishes minute and daily bars, like both real ones, and
+   * refuses the longer periods only KIS has.
+   */
+  static constexpr bool supports_interval(BarInterval interval) {
+    return interval == BarInterval::ONE_MINUTE || interval == BarInterval::ONE_DAY;
+  }
+
+  /** Refuses a bar request this broker cannot answer, before any I/O. */
+  static std::optional<BrokerError> validate_bars(const BarQuery& query) {
+    if (supports_interval(query.interval_)) {
+      return std::nullopt;
+    }
+    BrokerError error;
+    error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.broker_code_ = "unsupported_interval";
+    error.message_ = "the in-memory broker publishes minute and daily bars only";
+    return error;
+  }
+
+  /** Forwards a bar request. */
+  template <typename Token>
+  static auto bars(Client& client, BarQuery query, Token&& token) {
+    return client.async_bars(std::move(query), std::forward<Token>(token));
+  }
 
   /** Returns an opaque reference carrying the broker's ticket. */
   static OrderRef<mock::Broker> make_ref(std::string ticket) {
