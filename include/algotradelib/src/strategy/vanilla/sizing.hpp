@@ -2,6 +2,9 @@
 
 #include "./signal.hpp"
 
+#include <algotradelib/analytics>
+#include <algotradelib/core>
+
 #include <cstddef>
 #include <string>
 #include <vector>

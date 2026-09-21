@@ -111,11 +111,21 @@ file(GLOB_RECURSE ATL_ALL_HEADERS
 
 set(ATL_STANDALONE_SOURCES "")
 foreach(header IN LISTS ATL_ALL_HEADERS)
-    # The analytics layer and the linear-algebra seam require a backend on purpose: their umbrella
-    # refuses to compile without one, naming the option to set. Checking them in a build that has
-    # no backend would be asserting that the deliberate diagnostic does not happen.
-    if(NOT ATL_USE_EIGEN AND header MATCHES "src/(analytics|math)/(matrix|eigen)|src/analytics/")
-        continue()
+    # Some headers require a linear-algebra backend on purpose: the analytics umbrella refuses to
+    # compile without one, naming the option to set. Checking those in a build that has no backend
+    # would be asserting that a deliberate diagnostic does not happen.
+    #
+    # Decided from each header's own text rather than from a path list, so a new header that reaches
+    # analytics is skipped without anyone remembering to extend a regex here -- which is exactly the
+    # maintenance this check exists to avoid needing.
+    if(NOT ATL_USE_EIGEN)
+        file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../include/${header}" ATL_HEADER_TEXT)
+        if(header MATCHES "src/analytics/" OR
+           header MATCHES "src/math/(matrix|eigen)" OR
+           ATL_HEADER_TEXT MATCHES "include <algotradelib/analytics>" OR
+           ATL_HEADER_TEXT MATCHES "include \"[./]*math/matrix.hpp\"")
+            continue()
+        endif()
     endif()
     string(MAKE_C_IDENTIFIER "${header}" slug)
     set(generated "${CMAKE_CURRENT_BINARY_DIR}/standalone/${slug}.cpp")

@@ -134,6 +134,9 @@ TEST_CASE("an accepted order reaches the session with its fields intact") {
   // And the reference the broker issued is kept, which is what a later amendment must address.
   REQUIRE(executor.last_ref());
   REQUIRE(executor.last_ref()->primary_ == "0001569139");
+  // The compile-time broker tag travels with it, which is what stops one broker's reference being
+  // handed to another's session.
+  REQUIRE(executor.last_ref()->str() == "fake:0001569139");
   REQUIRE_FALSE(executor.last_error());
 }
 
