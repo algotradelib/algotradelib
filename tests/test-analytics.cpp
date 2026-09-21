@@ -1454,3 +1454,149 @@ TEST_CASE("an exponentially weighted covariance refuses a decay that is not one"
   REQUIRE_THROWS_AS(analytics::ewma_covariance(observations, 1.0), std::invalid_argument);
   REQUIRE_THROWS_AS(analytics::ewma_covariance(observations, 1.5), std::invalid_argument);
 }
+
+// ---------------------------------------------------------------------------
+// Evaluation metrics
+// ---------------------------------------------------------------------------
+
+TEST_CASE("the worst drawdown is the deepest one, not the most recent") {
+  const math::Vector levels = series({100.0, 120.0, 90.0, 150.0, 100.0});
+  const auto worst = analytics::max_drawdown(levels);
+
+  // 25% below the peak of 120 at row 2, then a third below the peak of 150 at row 4.
+  REQUIRE(worst.magnitude_ == Catch::Approx(1.0 / 3.0));
+  REQUIRE(worst.peak_row_ == 3);
+  REQUIRE(worst.trough_row_ == 4);
+}
+
+TEST_CASE("a monotonically rising curve has no drawdown at all") {
+  const math::Vector levels = series({100.0, 110.0, 120.0});
+  const auto worst = analytics::max_drawdown(levels);
+
+  REQUIRE(worst.magnitude_ == Catch::Approx(0.0));
+}
+
+TEST_CASE("a drawdown over nothing observable reports nothing rather than zero") {
+  const math::Vector levels = series({missing(), missing()});
+  const auto worst = analytics::max_drawdown(levels);
+
+  REQUIRE_FALSE(observed(worst.magnitude_));
+  REQUIRE(worst.peak_row_ == -1);
+  REQUIRE(worst.trough_row_ == -1);
+}
+
+TEST_CASE("the running drawdown and the whole-series one report the same worst decline") {
+  // The same number from the accumulator a live loop updates and from the pass an
+  // evaluation makes. If these disagreed, one of the two would be lying about the same run.
+  const math::Vector levels = series({100.0, 120.0, 90.0, 150.0, 100.0, 75.0});
+  analytics::RunningDrawdown running;
+  for (math::Index row = 0; row < levels.size(); ++row) {
+    running.update(levels[row]);
+  }
+
+  REQUIRE(running.max_drawdown() == Catch::Approx(analytics::max_drawdown(levels).magnitude_));
+}
+
+TEST_CASE("a Sharpe ratio is per period and the excess is over a per-period rate") {
+  const math::Vector period_returns = series({0.01, 0.02, 0.03});
+
+  // Mean 0.02, sample deviation 0.01.
+  REQUIRE(analytics::sharpe(period_returns) == Catch::Approx(2.0));
+  REQUIRE(analytics::sharpe(period_returns, 0.01) == Catch::Approx(1.0));
+}
+
+TEST_CASE("annualizing a ratio takes the square root of the period count") {
+  // The mean scales with the number of periods and the deviation with its square root, so
+  // the ratio scales with the square root. Scaling by 252 rather than sqrt(252) overstates
+  // a daily Sharpe ratio by about sixteen times, which is worth its own assertion.
+  REQUIRE(analytics::annualize_ratio(2.0, 252.0) == Catch::Approx(2.0 * std::sqrt(252.0)));
+  REQUIRE(analytics::annualize_ratio(2.0, 252.0) < 2.0 * 252.0);
+
+  // An unobserved ratio stays unobserved rather than becoming a number.
+  REQUIRE_FALSE(observed(analytics::annualize_ratio(missing(), 252.0)));
+  REQUIRE_THROWS_AS(analytics::annualize_ratio(1.0, 0.0), std::invalid_argument);
+}
+
+TEST_CASE("a Sharpe ratio over a flat or a single return is unobserved") {
+  REQUIRE_FALSE(observed(analytics::sharpe(series({0.01}))));
+  // A strategy whose returns never varied has no risk-adjusted return to report.
+  REQUIRE_FALSE(observed(analytics::sharpe(series({0.01, 0.01, 0.01}))));
+}
+
+TEST_CASE("a Sortino ratio divides by the whole count, not by the losses alone") {
+  const math::Vector period_returns = series({0.01, -0.02, 0.03});
+
+  // Mean 0.02/3. One shortfall of 0.02, and the downside deviation is
+  // sqrt(0.02^2 / 3) -- divided by all three observations. That makes the ratio
+  // exactly 1/sqrt(3).
+  REQUIRE(analytics::sortino(period_returns) == Catch::Approx(1.0 / std::sqrt(3.0)));
+
+  // Had the divisor been the single losing observation, the deviation would be 0.02 and
+  // the ratio 1/3 -- a *lower* number here, but systematically higher for the strategies
+  // this is usually applied to, where losses are rare. Pinning the definition is the point.
+  REQUIRE(analytics::sortino(period_returns) != Catch::Approx(1.0 / 3.0));
+}
+
+TEST_CASE("a Sortino ratio measures shortfalls from its target, not from the mean") {
+  const math::Vector period_returns = series({0.01, 0.02, 0.03});
+
+  // Against a target of zero nothing fell short, so there is no downside risk to divide
+  // by and the ratio is unobserved rather than infinite.
+  REQUIRE_FALSE(observed(analytics::sortino(period_returns)));
+
+  // Against a target of 0.02 the first return falls short by 0.01.
+  const Scalar downside = std::sqrt(0.01 * 0.01 / 3.0);
+  REQUIRE(analytics::sortino(period_returns, 0.02) == Catch::Approx(0.0 / downside));
+}
+
+TEST_CASE("turnover is the one-way fraction of the portfolio that changed hands") {
+  const math::Matrix weights = columns({
+    {0.5, 0.5, 1.0},
+    {0.5, 0.5, 0.0},
+  });
+  const math::Vector traded = analytics::turnover(weights);
+
+  // Row 0 builds the first position from cash: the whole book is deployed, which the
+  // one-way convention reports as 0.5.
+  REQUIRE(traded[0] == Catch::Approx(0.5));
+  // Row 1 changed nothing.
+  REQUIRE(traded[1] == Catch::Approx(0.0));
+  // Row 2 moved the whole book from one name to the other: a turnover of 1 one-way, which
+  // the two-way convention would report as 2.
+  REQUIRE(traded[2] == Catch::Approx(0.5));
+}
+
+TEST_CASE("turnover moving a whole book between instruments is one, not two") {
+  const math::Matrix weights = columns({
+    {1.0, 0.0},
+    {0.0, 1.0},
+  });
+  const math::Vector traded = analytics::turnover(weights);
+
+  REQUIRE(traded[0] == Catch::Approx(0.5));
+  // Selling all of one name and buying all of another: 0.5 * (1 + 1).
+  REQUIRE(traded[1] == Catch::Approx(1.0));
+}
+
+TEST_CASE("an absent weight is no position, unlike an absent price") {
+  // A weight is a decision, so its absence means no position was held. That is the
+  // opposite reading from a price, where absence means the value is unknown.
+  const math::Matrix absent = columns({
+    {1.0, missing()},
+    {0.0, 1.0},
+  });
+  const math::Matrix explicit_zero = columns({
+    {1.0, 0.0},
+    {0.0, 1.0},
+  });
+  const math::Vector over_absence = analytics::turnover(absent);
+  const math::Vector over_zero = analytics::turnover(explicit_zero);
+
+  // Which is the whole assertion: an absent weight and an explicit zero give the same
+  // answer, because both say the same thing about the position.
+  for (math::Index row = 0; row < over_absence.size(); ++row) {
+    REQUIRE(over_absence[row] == over_zero[row]);
+  }
+  // Row 1 leaves the first name and takes the second, a full rotation: 0.5 * (1 + 1).
+  REQUIRE(over_absence[1] == Catch::Approx(1.0));
+}
