@@ -36,6 +36,27 @@ namespace analytics {
  * so a compaction can only happen once per `capacity` pushes, and each moves at most
  * `capacity` rows. That is one row moved per push, amortized, and `compactions()` exposes
  * the count so the bound can be asserted rather than asserted *about*.
+ *
+ * **It expands, then it rolls.** Until `capacity` observations have arrived the window
+ * holds everything it has been given and `size()` grows; from then on each push drops the
+ * oldest. That is the shape a trailing indicator needs, and it is also why `full()` exists:
+ * an indicator must not report a value computed from fewer observations than its window,
+ * and asking whether the window is full is how it knows.
+ *
+ * It is deliberately *not* an unbounded expanding window. A statistic over all history —
+ * a cumulative return, an all-time high, a maximum drawdown — does not need the history
+ * stored to be computed, only an accumulator updated, so a growing buffer would spend
+ * `O(n)` memory answering questions that need `O(1)`. Where the values themselves are
+ * genuinely required, a `SeriesFrame` is the container that holds a whole series.
+ *
+ * **Not synchronized, and owned by one caller.** A window belongs to one strategy, which
+ * belongs to one runner, which runs on one strand — the ownership model every stateful
+ * type in this library follows, from `AsyncHttpClient` to `RateLimitController`. Pushing
+ * from one thread while reading from another is a data race, and a mutex here would not
+ * fix the real problem: reading a trailing window and then acting on it is a *sequence*
+ * that has to be atomic with respect to the next push, which no lock inside this class can
+ * provide. Parallelism over *many* windows, each owned by one worker, is the arrangement
+ * that works, and it needs nothing from this class.
  */
 class RollingWindow {
 public:
