@@ -11,4 +11,5 @@
  * one strategy source compile against every broker. A test asserts that.
  */
 
+#include "src/strategy/event.hpp"
 #include "src/strategy/intent.hpp"

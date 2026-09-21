@@ -188,3 +188,104 @@ TEST_CASE("the strategy surface needs no linear algebra backend") {
   // alone should not have to acquire Eigen to do it.
   STATIC_REQUIRE(sizeof(strategy::SizeSpec) > 0);
 }
+
+// ---------------------------------------------------------------------------
+// Market phase
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using Clock = std::chrono::system_clock;
+
+/** Builds a UTC instant, so a test states the moment it means without a zone database. */
+Clock::time_point utc(int year, int month, int day, int hour, int minute) {
+  // Days since the epoch by proleptic Gregorian arithmetic, valid for the dates used here.
+  const long long a = (month <= 2) ? year - 1 : year;
+  const long long m = (month <= 2) ? month + 12 : month;
+  const long long era_days =
+    365 * a + a / 4 - a / 100 + a / 400 + (153 * (m - 3) + 2) / 5 + day - 1;
+  const long long epoch_days = era_days - 719468;
+  return Clock::time_point{} + std::chrono::hours(epoch_days * 24 + hour) +
+    std::chrono::minutes(minute);
+}
+
+} // namespace
+
+TEST_CASE("an uncovered date is unknown, never assumed closed or open") {
+  // The same distinction TradingCalendar draws. Assuming closed stops a strategy on a day that
+  // is in fact open; assuming open lets it order into a holiday.
+  const auto session = strategy::SessionWindow::krx();
+  REQUIRE(session.phase(utc(2026, 3, 10, 2, 0), std::nullopt) == strategy::MarketPhase::UNKNOWN);
+  REQUIRE(session.phase(utc(2026, 3, 10, 2, 0), false) == strategy::MarketPhase::CLOSED);
+}
+
+TEST_CASE("the KRX session boundaries fall where the exchange publishes them") {
+  const auto session = strategy::SessionWindow::krx();
+  // KST is UTC+9, so 09:00 KST is 00:00 UTC and 15:30 KST is 06:30 UTC.
+  REQUIRE(session.phase(utc(2026, 3, 10, 23, 59), true) == strategy::MarketPhase::PRE_OPEN);
+  REQUIRE(session.phase(utc(2026, 3, 10, 0, 0), true) == strategy::MarketPhase::OPEN);
+  REQUIRE(session.phase(utc(2026, 3, 10, 3, 0), true) == strategy::MarketPhase::OPEN);
+  REQUIRE(session.phase(utc(2026, 3, 10, 6, 29), true) == strategy::MarketPhase::OPEN);
+  // The close is exclusive: at exactly 15:30 KST the session is over.
+  REQUIRE(session.phase(utc(2026, 3, 10, 6, 30), true) == strategy::MarketPhase::POST_CLOSE);
+  REQUIRE(session.phase(utc(2026, 3, 10, 14, 0), true) == strategy::MarketPhase::POST_CLOSE);
+}
+
+TEST_CASE("a phase name is stable for every enumerator") {
+  REQUIRE(strategy::market_phase_name(strategy::MarketPhase::UNKNOWN) == "unknown");
+  REQUIRE(strategy::market_phase_name(strategy::MarketPhase::CLOSED) == "closed");
+  REQUIRE(strategy::market_phase_name(strategy::MarketPhase::PRE_OPEN) == "pre_open");
+  REQUIRE(strategy::market_phase_name(strategy::MarketPhase::OPEN) == "open");
+  REQUIRE(strategy::market_phase_name(strategy::MarketPhase::POST_CLOSE) == "post_close");
+}
+
+// ---------------------------------------------------------------------------
+// Bar events
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a bar event states when its period ended, whichever edge it is stamped on") {
+  Bar bar;
+  bar.timestamp_ = utc(2026, 3, 10, 0, 0);
+  bar.high_ = Decimal64::parse("70500");
+  bar.low_ = Decimal64::parse("69400");
+  bar.close_ = Decimal64::parse("70000");
+  bar.volume_ = Decimal64::parse("1200000");
+
+  // A close-stamped bar already carries the end of its period.
+  const auto closed = strategy::make_bar_event(
+    samsung(), BarInterval::ONE_MINUTE, BarStamp::CLOSE, bar
+  );
+  REQUIRE(closed.period_end_ == bar.timestamp_);
+
+  // An open-stamped bar ends one interval later. Getting this wrong is the off-by-one-bar
+  // lookahead that BarStamp exists to prevent, which is why it is computed once here.
+  const auto opened = strategy::make_bar_event(
+    samsung(), BarInterval::ONE_MINUTE, BarStamp::OPEN, bar
+  );
+  REQUIRE(opened.period_end_ == bar.timestamp_ + std::chrono::minutes(1));
+
+  const auto daily = strategy::make_bar_event(
+    samsung(), BarInterval::ONE_DAY, BarStamp::OPEN, bar
+  );
+  REQUIRE(daily.period_end_ == bar.timestamp_ + std::chrono::hours(24));
+  REQUIRE(daily.interval_ == BarInterval::ONE_DAY);
+  REQUIRE(daily.stamp_ == BarStamp::OPEN);
+  REQUIRE(daily.instrument_.symbol_ == "005930");
+}
+
+TEST_CASE("a fill reports one execution, not an order's running total") {
+  // A partial fill arrives as one event per execution. Summing them is the strategy's business;
+  // the running total lives in the portfolio.
+  strategy::Fill fill;
+  fill.order_id_ = "0001569139";
+  fill.instrument_ = samsung();
+  fill.side_ = OrderSide::BUY;
+  fill.quantity_ = Decimal64::parse("40");
+  fill.price_ = Decimal64::parse("70000");
+  fill.tag_ = "sma-crossover";
+
+  REQUIRE(fill.quantity_ == Decimal64::parse("40"));
+  REQUIRE(fill.tag_ == "sma-crossover");
+  // Broker-neutral: an order id as text, so on_fill's signature names no broker.
+  REQUIRE(fill.order_id_ == "0001569139");
+}
