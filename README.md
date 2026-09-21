@@ -699,9 +699,11 @@ and therefore that it will run under every runner rather than only the one it wa
 | `<algotradelib/live>` | `SessionExecutor` over a bound `BrokerSession` | yes |
 
 `<algotradelib/runner>` reaches no broker adapter, no Boost.Asio and no OpenSSL, asserted at compile
-time from a translation unit that includes nothing else. A dry-run binary therefore contains no
-symbol that could place an order, which is a stronger promise than a flag: a function that is not
-linked cannot be called.
+time from a translation unit that includes nothing else. A dry-run binary therefore instantiates no
+adapter or transport code — verified by symbol inspection of an installed consumer — so there is no
+instantiated code path from a dry run to a market. libssl is still on the link line, because the
+package exports one interface target for every consumer; making the promise literal would need a
+second, transport-free target.
 
 ### Emit a target, not an order
 

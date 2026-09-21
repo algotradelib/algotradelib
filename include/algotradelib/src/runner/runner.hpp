@@ -34,9 +34,14 @@ namespace runner {
  * - the proof that a strategy is portable, since a strategy that runs here and live has used
  *   nothing broker-shaped.
  *
- * **No client exists in the binary.** This header reaches no broker and no transport, so a dry-run
- * program links no TLS and has no code path that could place an order. That is a stronger promise
- * than a flag: a flag can be wrong, whereas a symbol that is not linked cannot be called.
+ * **No adapter code exists in the binary.** This header reaches no broker and no transport header,
+ * so a dry-run program instantiates none of either, and an installed consumer's symbol table
+ * confirms it: no `algotradelib::network`, `algotradelib::kis` or `algotradelib::tossinvest` symbol
+ * appears at all. There is no instantiated code path from a dry run to a market, which is stronger
+ * than a runtime flag that can be set wrong.
+ *
+ * It does not mean libssl is off the link line: the package exports one interface target carrying
+ * the transport dependencies for every consumer. See `plan/todo/offline-only-target.md`.
  *
  * Events are fed in rather than polled, which is also how a backtest will drive it. A live runner
  * polls and calls the same `on_*` methods.
@@ -405,9 +410,14 @@ private:
  * implementation. That matters beyond tidiness: a dry run that ran different code from a live
  * session would be testing something other than what ships.
  *
- * **No client exists in the binary.** This header reaches no broker and no transport, so a dry-run
- * program links no TLS and has no symbol that could place an order -- a stronger promise than a
- * flag, because a function that is not linked cannot be called.
+ * **No adapter code exists in the binary.** This header reaches no broker and no transport header,
+ * so a dry-run program instantiates none of either -- confirmed by symbol inspection of an installed
+ * consumer, which finds no `algotradelib::network`, `algotradelib::kis` or
+ * `algotradelib::tossinvest` symbol. There is therefore no instantiated code path from a dry run to
+ * a market, which is a stronger guarantee than a runtime flag.
+ *
+ * It does not mean libssl is off the link line: the package exports one interface target carrying
+ * the transport dependencies for every consumer. See `plan/todo/offline-only-target.md`.
  */
 template <typename Strategy, typename CapsType = strategy::NoCaps>
 using DryRunner = Runner<Strategy, CapsType, DryTag, RecordingExecutor<DryTag>>;

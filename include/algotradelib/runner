@@ -8,10 +8,19 @@
  * the handlers a strategy defines, and `DryRunner`, which exercises a strategy end to end and
  * sends nothing.
  *
- * **Reaches no broker and no transport.** A dry run has no session, so a dry-run binary links no
- * TLS and no HTTP: `tests/test-runner-isolation.cpp` asserts that from a translation unit that
- * includes nothing else. `LiveRunner` is in `<algotradelib/live>` precisely because it does need
- * them, and separating the two is what keeps that promise checkable.
+ * **Reaches no broker and no transport header.** A dry run holds no session, so a dry-run
+ * translation unit compiles no call into TLS or HTTP and instantiates no adapter code: verified both
+ * by `tests/test-runner-isolation.cpp`, which asserts it from a unit including nothing else, and by
+ * symbol inspection of an installed consumer, which finds no `algotradelib::network`,
+ * `algotradelib::kis` or `algotradelib::tossinvest` symbol at all.
+ *
+ * What it does **not** promise is that the OpenSSL library is absent from the link line. The
+ * package exports one interface target that carries the transport dependencies for every consumer,
+ * so a dry-run binary still has libssl as a dylib dependency it never calls. Making that literal
+ * needs a second, transport-free target; see `plan/todo/offline-only-target.md`.
+ *
+ * `LiveRunner` is in `<algotradelib/live>` precisely because it does need them, and separating the
+ * two is what keeps the compile-time half of that checkable.
  *
  * It does reach `<algotradelib/analytics>` when the library was built with a linear-algebra
  * backend, because a cached bar series is an analytics type. Without one the context simply offers

@@ -4,10 +4,19 @@
 // `<algotradelib/runner>`, so every macro visible below arrived through it and the check cannot be
 // fooled by include order.
 //
-// The promise is stronger than a flag. A dry-run program links no TLS and no HTTP, so there is no
-// symbol in the binary that could place an order — a flag can be set wrong, whereas a function
-// that is not linked cannot be called. `LiveRunner` lives in `<algotradelib/live>` precisely
-// because it does need a session, and keeping the two apart is what makes this assertable.
+// What this establishes, stated exactly: a dry-run translation unit compiles no call into TLS or
+// HTTP and instantiates no adapter code, so there is no instantiated code path from a dry run to a
+// market. Stronger than a runtime flag, which can be set wrong. An installed consumer's symbol
+// table bears it out: no algotradelib::network, algotradelib::kis or algotradelib::tossinvest
+// symbol appears at all.
+//
+// It does *not* establish that libssl is absent from the link line. The package exports one
+// interface target carrying the transport dependencies for every consumer, so a dry-run binary has
+// the library as a dylib dependency it never calls. Making that literal needs a second,
+// transport-free target — see plan/todo/offline-only-target.md.
+//
+// `LiveRunner` lives in `<algotradelib/live>` precisely because it does need a session, and keeping
+// the two apart is what makes the compile-time half assertable.
 
 #include <algotradelib/runner>
 

@@ -15,11 +15,18 @@ See @ref writing-a-strategy for writing the strategy itself.
 | `<algotradelib/live>` | `SessionExecutor`, over a bound `BrokerSession` | yes |
 
 The split is load-bearing rather than tidy. `<algotradelib/runner>` reaches no broker adapter, no
-Boost.Asio, and no OpenSSL, which is asserted at compile time from a translation unit that includes
-nothing else. So a dry-run binary contains **no symbol that could place an order** — a stronger
-promise than a flag, because a function that is not linked cannot be called.
+Boost.Asio, and no OpenSSL, asserted at compile time from a translation unit that includes nothing
+else. So a dry-run binary instantiates **no adapter and no transport code** — confirmed by symbol
+inspection of an installed consumer, which finds no `algotradelib::network`, `algotradelib::kis` or
+`algotradelib::tossinvest` symbol at all. There is no instantiated code path from a dry run to a
+market, which is a stronger guarantee than a runtime flag that can be set wrong.
 
-Including `<algotradelib/live>` deliberately gives that up.
+Be precise about what that is not: libssl is still on the link line. The package exports one
+interface target carrying the transport dependencies for every consumer, so a dry-run binary has the
+library as a dylib dependency it never calls. Making the promise literal needs a second,
+transport-free target, which is recorded as a todo rather than done.
+
+Including `<algotradelib/live>` deliberately gives up the compile-time half as well.
 
 ## Running with no broker
 
