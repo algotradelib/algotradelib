@@ -508,6 +508,114 @@ calls on a blocking session.
 `example-rate-limit-stats [burst] [per-second] [reserve]` prints all of this for a
 budget offline, with no credentials and no network access.
 
+## Analytics
+
+The numeric layer a strategy computes on. It is the one part of the library that needs a
+linear algebra backend, and it is optional: configure with `-DATL_USE_EIGEN=OFF` and the
+quote, order, holdings, and market-data headers all still build. `<algotradelib/analytics>`
+then refuses to compile with a message naming the option to set, rather than producing twenty
+errors about missing types.
+
+```cpp
+#include <algotradelib/analytics>
+
+namespace analytics = algotradelib::analytics;
+
+// The one place a broker's exact decimals become scalars.
+const analytics::SeriesFrame frame = analytics::from_bars(bars);
+
+const auto close = frame.close();               // a view, not a copy
+const auto average = analytics::sma(close, 20);
+const auto bands = analytics::bollinger(close, 20, 2.0);
+const auto strength = analytics::rsi(close, 14);
+
+// And the one route back to something a broker will accept.
+const auto rule = algotradelib::price_rule_for(instrument.country_, SecurityType::STOCK);
+const auto limit = analytics::round_scalar_to_tick(
+  bands.upper_[close.size() - 1], rule, OrderSide::SELL
+);
+```
+
+`example-analytics-offline` runs the whole path with bars built in code — no credentials, no
+network, identical output every time.
+
+### Two numeric types, one boundary
+
+`Decimal64` holds what a broker said, exactly, and stays exact through a round trip and a
+reconciliation. `math::Scalar` (`double` by default) holds what a computation needs. They meet
+only in `analytics/conversion.hpp`, and the outbound direction is narrower than the inbound
+one: `to_scalar` is total, while `to_decimal` and `round_scalar_to_tick` return
+`std::optional` and refuse a non-finite or unrepresentable value.
+
+`round_scalar_to_tick` is the only sanctioned route from a computed number to an order price,
+because a value correct to four decimal places and off the exchange's tick ladder is rejected
+just as firmly as a wrong one. An instrument whose ladder the library does not know
+(`PriceRule::Kind::UNKNOWN`) gets no answer rather than a guess.
+
+### Conventions that prevent a silent lookahead
+
+- **A result is as long as its input.** Row `i` of the output describes row `i` of the input,
+  so it binds to the same index with no shifting. The warm-up region is present and
+  unobserved, not absent — a shorter result would hand the caller an off-by-one that shows up
+  only as a backtest that performs impossibly well.
+- **`math::missing()` is the one value for "no observation"**, a quiet `NaN`, checked with
+  `math::observed()`. It covers a warm-up row, a gap in a panel, and a field a broker did not
+  report. Never zero: a return of zero is a claim the price did not move.
+- **Every reduction masks it**, so one absent print does not blank a column. A window's
+  divisor is therefore the count of values it actually saw.
+- **A window reports only when it holds enough.** `min_observations` defaults to the whole
+  window; a partial warm-up has to be asked for at the call site.
+
+### Conventions that are stated because packages disagree
+
+| Function | What this library implements |
+| --- | --- |
+| `ema` | `alpha = 2 / (span + 1)`, seeded on the first observed value |
+| `rsi`, `atr` | Wilder's `1 / n` smoothing with Wilder's seed |
+| `rolling_stdev`, `covariance` | sample divisor `count - 1` |
+| `sortino` | squared shortfalls divided by **all** observations, not the losing ones |
+| `turnover` | one-way, `0.5 * sum(abs(delta w))` |
+| `sharpe` | per period; `annualize_ratio` is a separate call scaling by `sqrt(periods)` |
+
+### Storage, and why it is column-major
+
+| Type | Holds |
+| --- | --- |
+| `TimeIndex` | the instants rows correspond to, with `asof` that never reaches forward |
+| `SeriesFrame` | one instrument, every bar field |
+| `Panel` | one field across many instruments, aligned by an explicit policy |
+| `RollingWindow` | the trailing `n` observations a live loop feeds |
+
+Time is on the rows and a series is a column, so one series is contiguous and `column()`
+returns a `math::SeriesView` referencing the frame's own memory. That is also why the same
+`sma` call serves a completed frame and a live rolling window: both are one contiguous
+series, which is what keeps a backtest and a live loop from computing different things.
+
+`RollingWindow` expands until it is full and rolls afterwards, in storage taken once — `2n`
+rows, compacted at an amortized one row moved per push, with `compactions()` exposing the
+bound. There is no unbounded expanding window, because the statistics that would want one —
+a cumulative return, an all-time high, the worst drawdown so far — are answered by the
+running accumulators in constant space: `RunningSum`, `RunningMoments`, `RunningExtremes`,
+`RunningDrawdown`, and `RunningEma`.
+
+`RunningEma` exists for a specific reason. An exponential average depends on all its history,
+so recomputing one over a trailing window does not reproduce what a live loop would have
+produced. A strategy fitted over frames and traded from a window would be trading a slightly
+different indicator, and the difference does not announce itself.
+
+### Threading
+
+Every stateful type here is owned by one caller and is not synchronized, the model the rest of
+the library follows. Parallelism belongs across units of work — one instrument, one parameter
+set — each owning its own containers. Eigen's own threading is left alone: this library never
+defines `EIGEN_DONT_PARALLELIZE`. When the build's flags define `_OPENMP`, the configure step
+links an OpenMP runtime so Eigen's threaded matrix products resolve rather than failing at
+link time.
+
+See the [analytics conventions](doxygen/vignettes/analytics-conventions.md) vignette for the
+numerical reasoning behind the two-pass variance, Welford, Neumaier, the pivoting QR, and the
+pairwise-deletion caveat on `covariance`.
+
 ## Transport behavior
 
 - HTTPS connections are persistent per client and requests are serialized on a

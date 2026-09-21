@@ -1,5 +1,12 @@
 file(GLOB_RECURSE CPP_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
 
+# The analytics examples include <algotradelib/analytics>, which refuses to compile
+# without a linear algebra backend -- on purpose, so the diagnostic names the option to
+# set. A build configured with ATL_USE_EIGEN=OFF must therefore not try to build them.
+if(NOT ATL_USE_EIGEN)
+    list(FILTER CPP_SOURCES EXCLUDE REGEX "analytics")
+endif()
+
 if(NOT CPP_SOURCES)
     message(FATAL_ERROR "No C++ source files found in examples/")
 endif()
