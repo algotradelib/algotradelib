@@ -1387,7 +1387,7 @@ TEST_CASE("a shortfall below the tolerance is left alone rather than chased") {
   // With one, the drift is ignored entirely -- and crucially the cancellation is dropped too.
   // Withdrawing the working order and then declining to replace it would leave the position
   // further from the target than doing nothing at all.
-  inputs.minimum_trade_ = Decimal64::parse("5");
+  inputs.tolerance_.minimum_quantity_ = Decimal64::parse("5");
   const auto left_alone = strategy::reconcile(target("99"), portfolio, inputs);
   REQUIRE(left_alone.empty());
 }
@@ -1397,7 +1397,7 @@ TEST_CASE("a shortfall at or above the tolerance is still acted on") {
   const auto reference = samsung_reference();
   ReconcileInputs inputs;
   inputs.instrument_ = &reference;
-  inputs.minimum_trade_ = Decimal64::parse("5");
+  inputs.tolerance_.minimum_quantity_ = Decimal64::parse("5");
 
   // Exactly at the tolerance is traded: it is a minimum, not a bound to exceed.
   const auto at = strategy::reconcile(target("5"), portfolio, inputs);
@@ -1415,7 +1415,7 @@ TEST_CASE("the tolerance is absent by default, so nothing changes without asking
   const auto reference = samsung_reference();
   ReconcileInputs inputs;
   inputs.instrument_ = &reference;
-  REQUIRE_FALSE(inputs.minimum_trade_);
+  REQUIRE_FALSE(inputs.tolerance_.stated());
 
   const auto one_share = strategy::reconcile(target("1"), portfolio, inputs);
   REQUIRE(one_share.place_.size() == 1);
@@ -1430,7 +1430,7 @@ TEST_CASE("the tolerance measures the drift, not the quantity that would be sent
   const auto reference = samsung_reference();
   ReconcileInputs inputs;
   inputs.instrument_ = &reference;
-  inputs.minimum_trade_ = Decimal64::parse("5");
+  inputs.tolerance_.minimum_quantity_ = Decimal64::parse("5");
 
   REQUIRE(strategy::reconcile(target("99"), portfolio, inputs).empty());
   // A drift of five is at the tolerance and is acted on.
@@ -1449,9 +1449,111 @@ TEST_CASE("an order working the wrong way is withdrawn however small the drift")
   const auto reference = samsung_reference();
   ReconcileInputs inputs;
   inputs.instrument_ = &reference;
-  inputs.minimum_trade_ = Decimal64::parse("5");
+  inputs.tolerance_.minimum_quantity_ = Decimal64::parse("5");
 
   // Wanting 100 while holding 99 is a drift of one, below the tolerance -- but a sell is resting.
   const auto plan = strategy::reconcile(target("100"), portfolio, inputs);
   REQUIRE(plan.cancel_.size() == 1);
+}
+
+TEST_CASE("a notional floor keys on value, so one setting travels across price levels") {
+  // The reason a share count alone is the weakest unit. With `minimum_quantity_ = 5`, the implied
+  // value threshold is 350,000 won on a 70,000-won share and 15,000 won on a 3,000-won one -- a factor
+  // of more than twenty for the same setting. A notional floor is the same everywhere.
+  const auto reference = samsung_reference();
+  ReconcileInputs expensive;
+  expensive.instrument_ = &reference;
+  expensive.reference_price_ = Decimal64::parse("70000");
+  expensive.tolerance_.minimum_notional_ = Decimal64::parse("100000");
+
+  ProbePortfolio flat;
+  // One share of a 70,000-won name is 70,000 -- below the floor.
+  REQUIRE(strategy::reconcile(target("1"), flat, expensive).empty());
+  // Two is 140,000 -- above it.
+  REQUIRE(strategy::reconcile(target("2"), flat, expensive).place_.size() == 1);
+
+  // The same floor on a cheap name admits a much larger share count, which is the point.
+  Instrument cheap_reference = samsung_reference();
+  ReconcileInputs cheap;
+  cheap.instrument_ = &cheap_reference;
+  cheap.reference_price_ = Decimal64::parse("3000");
+  cheap.tolerance_.minimum_notional_ = Decimal64::parse("100000");
+  REQUIRE(strategy::reconcile(target("30"), flat, cheap).empty());
+  REQUIRE(strategy::reconcile(target("40"), flat, cheap).place_.size() == 1);
+}
+
+TEST_CASE("a notional floor with no price to evaluate it does not suppress") {
+  // The opposite of RiskGuard, deliberately. There, a limit that cannot be evaluated refuses, because
+  // failing to refuse risks an oversized position. Here, failing to trade leaves an invisible
+  // shortfall, which is the worse error -- so an unevaluable floor stays out of the way.
+  const auto reference = samsung_reference();
+  ReconcileInputs inputs;
+  inputs.instrument_ = &reference;
+  inputs.tolerance_.minimum_notional_ = Decimal64::parse("100000");
+  // Deliberately no reference price.
+
+  ProbePortfolio flat;
+  REQUIRE(strategy::reconcile(target("1"), flat, inputs).place_.size() == 1);
+}
+
+TEST_CASE("a fractional floor keys on the queue position being given up") {
+  // Often the largest cost and the least obvious: replacing a working order for 100 to change it by
+  // one share risks that order's whole place in the book to adjust one percent of it, and the loss is
+  // proportional to the 100 rather than to the 1.
+  ProbePortfolio portfolio;
+  portfolio.working_.push_back(working("100", "0", OrderStatus::PENDING));
+  const auto reference = samsung_reference();
+  ReconcileInputs inputs;
+  inputs.instrument_ = &reference;
+  inputs.tolerance_.minimum_fraction_of_working_ = Decimal64::parse("0.02");
+
+  // A drift of one against 100 working is 1%, below the 2% floor.
+  REQUIRE(strategy::reconcile(target("99"), portfolio, inputs).empty());
+  // A drift of three is 3%, above it, and the side is replaced.
+  const auto acted = strategy::reconcile(target("97"), portfolio, inputs);
+  REQUIRE(acted.cancel_.size() == 1);
+  REQUIRE(acted.place_[0].quantity_ == Decimal64::parse("97"));
+}
+
+TEST_CASE("a fractional floor says nothing when nothing is working") {
+  // With no order resting there is no queue position to give up, so a drift is simply a new order and
+  // this floor has no cost to weigh. Suppressing here would refuse a first order for being small.
+  ProbePortfolio flat;
+  const auto reference = samsung_reference();
+  ReconcileInputs inputs;
+  inputs.instrument_ = &reference;
+  inputs.tolerance_.minimum_fraction_of_working_ = Decimal64::parse("0.5");
+
+  REQUIRE(strategy::reconcile(target("1"), flat, inputs).place_.size() == 1);
+}
+
+TEST_CASE("any one floor being met is enough to suppress") {
+  // Each expresses an independent reason not to trade, so requiring all of them would mean a drift
+  // worth less than a fixed fee still traded because it was a large fraction of a tiny working order.
+  ProbePortfolio portfolio;
+  portfolio.working_.push_back(working("2", "0", OrderStatus::PENDING));
+  const auto reference = samsung_reference();
+  ReconcileInputs inputs;
+  inputs.instrument_ = &reference;
+  inputs.reference_price_ = Decimal64::parse("70000");
+  inputs.tolerance_.minimum_notional_ = Decimal64::parse("100000");
+  inputs.tolerance_.minimum_fraction_of_working_ = Decimal64::parse("0.02");
+
+  // Target 1 against 2 working: the drift is one share, worth 70,000 -- under the notional floor --
+  // while being 50% of the working order, far over the fractional one. The notional floor alone
+  // suppresses it.
+  REQUIRE(strategy::reconcile(target("1"), portfolio, inputs).empty());
+}
+
+TEST_CASE("the runner's simple setter still sets only the share-count floor") {
+  // Kept for the case it suits -- a large lot size, or a per-share fee -- without pretending it is
+  // right for a portfolio spanning price levels.
+  strategy::TradeTolerance tolerance;
+  tolerance.minimum_quantity_ = Decimal64::parse("5");
+  REQUIRE(tolerance.stated());
+  REQUIRE_FALSE(tolerance.minimum_notional_);
+  REQUIRE_FALSE(tolerance.minimum_fraction_of_working_);
+
+  const strategy::TradeTolerance none;
+  REQUIRE_FALSE(none.stated());
 }

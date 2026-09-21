@@ -106,21 +106,64 @@ it is checked.
 ## How finely a target is chased
 
 ```cpp
-runner.set_minimum_trade(algotradelib::Decimal64::parse("5"));
+strategy::TradeTolerance tolerance;
+tolerance.minimum_notional_ = algotradelib::Decimal64::parse("100000");
+tolerance.minimum_fraction_of_working_ = algotradelib::Decimal64::parse("0.02");
+runner.set_trade_tolerance(tolerance);
 ```
 
 An execution-cost policy, so it lives with the runner rather than in a strategy: a strategy states the
 position it wants, and whether a one-share drift is worth an instruction depends on commission, on
 whether the venue charges per instruction, and on what queue priority is worth.
 
-Unset by default, which chases every share. Set, it suppresses a drift smaller than the value — a
-target moving from 100 to 99 would otherwise withdraw a working order for 100 and place a new one for
-99, spending two instructions to move the position by one share.
+**Every floor is unset by default, which chases every share.** No number is invented, because each
+depends on a broker's own fee schedule.
 
-Two things it deliberately does not do. It measures the **drift**, not the quantity that would be
-sent, because those differ in exactly the case it exists for. And it never suppresses withdrawing an
-order that is working the *wrong way*: leaving a sell resting while buying toward a target works
-against the target rather than merely failing to reach it.
+### Three units, and why one share count is the weakest
+
+A single share count means very different things across a portfolio. With `minimum_quantity_` set to
+five:
+
+| Instrument at | Implied value threshold |
+| --- | --- |
+| 200,000 | 1,000,000 |
+| 70,000 | 350,000 |
+| 20,000 | 100,000 |
+| 3,000 | 15,000 |
+
+A factor of sixty-seven for one setting. So there are three floors, and which one matters depends on
+which cost dominates:
+
+| Floor | Keys on | The cost it answers |
+| --- | --- | --- |
+| `minimum_quantity_` | the drift in shares | lot economics, or a per-share fee |
+| `minimum_notional_` | the drift's value | a fixed or minimum fee per order |
+| `minimum_fraction_of_working_` | drift over what is working | queue priority given up |
+
+The third is the subtle one and often the largest. Take Samsung at 70,000 with a target of 100 drifting
+to 99: the drift is one share, worth 70,000, and one percent of the order already resting. Replacing
+that order risks its **whole** place in the book to adjust one percent of it — the loss is proportional
+to the 100, not to the 1. Which is why it applies only when something is working: with nothing resting
+there is no priority to give up, and a drift is simply a new order.
+
+### Two rules worth knowing
+
+**Any stated floor being met is enough to suppress**, because each is an independent reason not to
+trade. Requiring all of them would mean a drift worth less than a fixed fee still traded because it
+happened to be a large fraction of a tiny working order.
+
+**A floor that cannot be evaluated does not suppress.** Without a reference price the notional floor is
+unknowable, and the honest response is to trade. That is the opposite of `RiskGuard`, where a limit that
+cannot be evaluated *refuses* — same reasoning, mirrored consequences: there, failing to refuse risks an
+oversized position; here, failing to trade leaves an invisible shortfall, and an invisible shortfall is
+worse than visible churn.
+
+### What it does not do
+
+It measures the **drift**, not the quantity that would be sent, because those differ in exactly the
+case it exists for. And it never suppresses withdrawing an order that is working the *wrong way*:
+leaving a sell resting while buying toward a target works against the target rather than merely failing
+to reach it.
 
 ## Binding a real broker
 

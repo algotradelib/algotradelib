@@ -185,13 +185,26 @@ public:
   }
 
   /**
-   * Sets the smallest shortfall worth an instruction, in shares.
+   * Sets how small a drift is not worth an instruction.
    *
-   * An execution-cost policy and therefore the operator's, alongside `RiskLimits`. Unset by default,
-   * which chases every share -- the behaviour before this knob existed. See
-   * `ReconcileInputs::minimum_trade_` for what it prevents and why no default is invented.
+   * An execution-cost policy and therefore the operator's, alongside `RiskLimits`. Every floor unset
+   * by default, which chases every share. See `strategy::TradeTolerance` for the three units, why one
+   * share count is the weakest of them, and why no default is invented.
    */
-  void set_minimum_trade(Decimal64 quantity) { minimum_trade_ = std::move(quantity); }
+  void set_trade_tolerance(strategy::TradeTolerance tolerance) {
+    tolerance_ = std::move(tolerance);
+  }
+
+  /**
+   * Sets only the share-count floor, for the simple case.
+   *
+   * Right where a lot size is large or a venue charges per share. For a portfolio spanning price
+   * levels, prefer a notional or fractional floor: one share count implies a value threshold that
+   * differs by the ratio of the prices involved.
+   */
+  void set_minimum_trade(Decimal64 quantity) {
+    tolerance_.minimum_quantity_ = std::move(quantity);
+  }
 
   /**
    * Records the portfolio's total value, which sizing a target weight needs.
@@ -390,7 +403,7 @@ private:
     inputs.reference_price_ = context_.last_price(id);
     inputs.limits_ = limits_for(id);
     inputs.portfolio_value_ = portfolio_value_;
-    inputs.minimum_trade_ = minimum_trade_;
+    inputs.tolerance_ = tolerance_;
 
     if (const auto* target = std::get_if<strategy::TargetPosition>(&instruction)) {
       return strategy::reconcile(*target, context_.portfolio(), inputs);
@@ -428,7 +441,7 @@ private:
   IndeterminacyLedger ledger_;
   std::map<std::string, PriceLimits> price_limits_;
   std::optional<Decimal64> portfolio_value_;
-  std::optional<Decimal64> minimum_trade_;
+  strategy::TradeTolerance tolerance_;
 };
 
 /**

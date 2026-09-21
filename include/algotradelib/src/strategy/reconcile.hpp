@@ -126,6 +126,66 @@ struct Plan {
 };
 
 /**
+ * How small a drift is not worth an instruction.
+ *
+ * An execution-cost policy, which is why it arrives from the runner rather than from a strategy: a
+ * strategy states the position it wants, and how finely that is chased depends on commission, on
+ * whether the venue charges per instruction, and on what queue priority is worth -- none of which a
+ * signal knows.
+ *
+ * **Three units, because the right one depends on which cost dominates, and one number in shares is
+ * the weakest of them.** A single share count means wildly different things across a portfolio: with
+ * `minimum_quantity_` set to five, the implied value threshold is 1,000,000 won on a 200,000-won share
+ * and 15,000 won on a 3,000-won one, a factor of sixty-seven. There is no share count that is right
+ * for a portfolio, so the other two exist.
+ *
+ * | Floor | Keys on | The cost it answers |
+ * | --- | --- | --- |
+ * | `minimum_quantity_` | the drift in shares | lot economics, or a per-share fee |
+ * | `minimum_notional_` | the drift's value at the reference price | a fixed or minimum fee per order |
+ * | `minimum_fraction_of_working_` | the drift over what is already working | queue priority given up |
+ *
+ * The third is the subtle one and often the largest cost. Replacing a working order for 100 to change
+ * it by one share risks that order's whole place in the book to adjust one percent of it -- and the
+ * loss is proportional to the 100, not to the 1. It therefore applies **only when something is
+ * working**: with nothing resting there is no priority to give up, and a drift is simply a new order.
+ *
+ * **Every floor is absent by default, which is exactly the behaviour before any of this existed.** No
+ * number is invented here, because each depends on a broker's own fee schedule. A tolerance guessed at
+ * would silently hold back orders a strategy asked for, and an invisible shortfall is worse than
+ * visible churn.
+ *
+ * **Any stated floor being met is sufficient to suppress.** Each expresses an independent reason the
+ * trade is not worth making, so one of them triggering is enough; requiring all of them would mean a
+ * drift worth less than a fixed fee still traded because it happened to be a large fraction of a tiny
+ * working order.
+ *
+ * **A floor that cannot be evaluated does not suppress.** Without a reference price the notional floor
+ * is unknowable, and the honest response is to trade -- the opposite of `RiskGuard`, where a limit that
+ * cannot be evaluated refuses. The reasoning is the same and the consequences are mirrored: there,
+ * failing to refuse risks an oversized position; here, failing to trade leaves an invisible shortfall.
+ */
+struct TradeTolerance {
+  /** Smallest drift worth trading, in shares. */
+  std::optional<Decimal64> minimum_quantity_;
+  /** Smallest drift worth trading, valued at the reference price. */
+  std::optional<Decimal64> minimum_notional_;
+  /**
+   * Smallest drift worth trading, as a fraction of the quantity already working.
+   *
+   * `0.02` is two percent. Ignored when nothing is working, since there is then no queue position to
+   * give up.
+   */
+  std::optional<Decimal64> minimum_fraction_of_working_;
+
+  /** Returns whether any floor is stated. */
+  bool stated() const noexcept {
+    return minimum_quantity_.has_value() || minimum_notional_.has_value() ||
+      minimum_fraction_of_working_.has_value();
+  }
+};
+
+/**
  * Everything reconciliation needs that is not the intent or the portfolio.
  *
  * Gathered by the runner, which has the caches; passed in so the arithmetic stays a pure
@@ -143,23 +203,8 @@ struct ReconcileInputs {
   /** Total portfolio value in the instrument's currency, for weight sizing. */
   std::optional<Decimal64> portfolio_value_;
 
-  /**
-   * Smallest shortfall worth an instruction, in shares. Absent means chase every share.
-   *
-   * An execution-cost policy, which is why it arrives from the runner rather than from the strategy:
-   * a strategy states the position it wants, and how finely that is chased depends on commission,
-   * on whether the venue charges per instruction, and on what queue priority is worth -- none of
-   * which a signal knows.
-   *
-   * **Absent by default, which is exactly the behaviour before this existed.** No number is invented
-   * here. A tolerance guessed at would silently hold back orders a strategy asked for, and an
-   * invisible shortfall is worse than visible churn.
-   *
-   * What it prevents when set: a target drifting from 100 to 99 cancels a working order for 100 and
-   * places a new one for 99, spending two instructions and whatever queue priority the first had, to
-   * move the position by one share.
-   */
-  std::optional<Decimal64> minimum_trade_;
+  /** How small a drift is not worth an instruction. Every floor absent means chase every share. */
+  TradeTolerance tolerance_;
 };
 
 namespace reconcile_detail {
@@ -263,6 +308,44 @@ inline std::optional<Decimal64> prepare_price(
   return on_grid;
 }
 
+/**
+ * Returns whether `drift` is small enough that no instruction is worth issuing.
+ *
+ * Any stated floor being met is sufficient, because each expresses an independent reason not to trade.
+ * A floor that cannot be evaluated -- a notional one with no price -- does not suppress: failing to
+ * trade leaves an invisible shortfall, which is the worse of the two errors here.
+ */
+inline bool below_tolerance(
+  const Decimal64& drift,
+  const Decimal64& already_working,
+  const ReconcileInputs& inputs
+) {
+  const auto& tolerance = inputs.tolerance_;
+
+  if (tolerance.minimum_quantity_ && decimal_less(drift, *tolerance.minimum_quantity_)) {
+    return true;
+  }
+
+  if (tolerance.minimum_notional_ && inputs.reference_price_) {
+    const auto value = decimal_multiply(drift, *inputs.reference_price_);
+    if (value && decimal_less(*value, *tolerance.minimum_notional_)) {
+      return true;
+    }
+  }
+
+  // Only meaningful against something resting: with nothing working there is no queue position to
+  // give up, so a drift is simply a new order and this floor has nothing to say about it.
+  if (tolerance.minimum_fraction_of_working_ && already_working.coefficient() > 0) {
+    // Six places, which resolves a fraction far finer than any threshold an operator would state.
+    const auto fraction = decimal_divide(drift, already_working, 6);
+    if (fraction && decimal_less(*fraction, *tolerance.minimum_fraction_of_working_)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 } // namespace reconcile_detail
 
 /**
@@ -354,11 +437,11 @@ Plan<Broker> reconcile(
   // against the target rather than merely failing to reach it. And returning an empty plan rather
   // than the accumulated one matters for the same reason: withdrawing a working order and then
   // declining to replace it would leave the position further from the target than doing nothing.
-  if (inputs.minimum_trade_ && plan.cancel_.empty()) {
+  if (inputs.tolerance_.stated() && plan.cancel_.empty()) {
     const auto drift = decimal_less(*remaining, zero) ?
       decimal_subtract(zero, *remaining) :
       std::optional<Decimal64>(*remaining);
-    if (drift && decimal_less(*drift, *inputs.minimum_trade_)) {
+    if (drift && reconcile_detail::below_tolerance(*drift, already, inputs)) {
       return Plan<Broker>{};
     }
   }
