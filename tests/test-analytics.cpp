@@ -1205,7 +1205,7 @@ TEST_CASE("a running exponential average honours its warm-up and rejects a zero 
 }
 
 // ---------------------------------------------------------------------------
-// Covariance, and the decompositions behind it
+// Decompositions, used directly
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -1291,118 +1291,6 @@ TEST_CASE("a rank-deficient design is reported by the decomposition itself") {
   const auto svd = math::thin_svd(design);
   REQUIRE(svd.singularValues().size() == 3);
   REQUIRE(svd.singularValues()[2] == Catch::Approx(0.0).margin(1e-12));
-}
-
-TEST_CASE("a covariance matrix is symmetric and uses the sample divisor") {
-  const math::Matrix observations = columns({{1.0, 2.0, 3.0, 4.0}, {2.0, 4.0, 6.0, 8.0}});
-  const math::Matrix result = analytics::covariance(observations);
-
-  REQUIRE(result.rows() == 2);
-  REQUIRE(result(0, 0) == Catch::Approx(5.0 / 3.0));
-  REQUIRE(result(1, 1) == Catch::Approx(20.0 / 3.0));
-  REQUIRE(result(0, 1) == Catch::Approx(10.0 / 3.0));
-  REQUIRE(result(0, 1) == result(1, 0));
-
-  // Which is the same number the trailing covariance reports over the whole series.
-  REQUIRE(
-    result(0, 1) ==
-    Catch::Approx(analytics::rolling_cov(observations.col(0), observations.col(1), 4)[3])
-  );
-}
-
-TEST_CASE("pairwise deletion really can produce a covariance matrix that is not PSD") {
-  // Three variables whose observed rows overlap in three disjoint pairs, arranged so the
-  // implied correlations are +1, +1 and -1. No set of three series can do that at once, so
-  // the matrix assembled from the three pairs is not one any data produced: its smallest
-  // eigenvalue is -2/3. An optimizer handed this reports a portfolio with negative
-  // variance, which is why the documentation points at the repair rather than pretending
-  // the problem away.
-  const math::Matrix observations = columns({
-    {1.0, 2.0, missing(), missing(), 1.0, 2.0},
-    {1.0, 2.0, 1.0, 2.0, missing(), missing()},
-    {missing(), missing(), 1.0, 2.0, 2.0, 1.0},
-  });
-  const math::Matrix result = analytics::covariance(observations);
-
-  REQUIRE(result(0, 1) == Catch::Approx(0.5));
-  REQUIRE(result(1, 2) == Catch::Approx(0.5));
-  REQUIRE(result(0, 2) == Catch::Approx(-0.5));
-
-  const math::SelfAdjointEigen spectrum(result.selfadjointView<math::LOWER>());
-  REQUIRE(spectrum.info() == math::SUCCESS);
-  REQUIRE(spectrum.eigenvalues()[0] == Catch::Approx(-2.0 / 3.0));
-
-  // And the repair puts every eigenvalue back at or above the floor.
-  const math::Matrix repaired = analytics::nearest_positive_definite(result, 1.0e-8);
-  const math::SelfAdjointEigen fixed(repaired.selfadjointView<math::LOWER>());
-  REQUIRE(fixed.info() == math::SUCCESS);
-  for (math::Index at = 0; at < fixed.eigenvalues().size(); ++at) {
-    REQUIRE(fixed.eigenvalues()[at] >= 1.0e-8 - 1.0e-12);
-  }
-  // Symmetry survives the round trip, which an optimizer relies on.
-  REQUIRE(repaired(0, 2) == Catch::Approx(repaired(2, 0)));
-}
-
-TEST_CASE("the repair leaves an already positive definite matrix where it is") {
-  const math::Matrix good = columns({{2.0, 0.5}, {0.5, 1.0}});
-  const math::Matrix repaired = analytics::nearest_positive_definite(good);
-
-  REQUIRE(repaired(0, 0) == Catch::Approx(2.0));
-  REQUIRE(repaired(1, 1) == Catch::Approx(1.0));
-  REQUIRE(repaired(0, 1) == Catch::Approx(0.5));
-}
-
-TEST_CASE("the repair raises the diagonal, which is the documented cost of clipping") {
-  // Clipping an eigenvalue upward raises the trace, so a correlation matrix does not come
-  // back with a unit diagonal. This is asserted rather than left implicit because a caller
-  // who needs the unit diagonal has to rescale, and nothing here will do it for them.
-  const math::Matrix correlations = columns({
-    {1.0, 0.9, -0.9},
-    {0.9, 1.0, 0.9},
-    {-0.9, 0.9, 1.0},
-  });
-  const math::Matrix repaired = analytics::nearest_positive_definite(correlations, 1.0e-8);
-
-  REQUIRE(repaired(0, 0) > 1.0);
-  REQUIRE(repaired.trace() > correlations.trace());
-}
-
-TEST_CASE("the repair refuses a shape it cannot decompose") {
-  REQUIRE_THROWS_AS(
-    analytics::nearest_positive_definite(math::Matrix(2, 3)), std::invalid_argument
-  );
-  REQUIRE_THROWS_AS(
-    analytics::nearest_positive_definite(columns({{1.0, 0.0}, {0.0, 1.0}}), -1.0),
-    std::invalid_argument
-  );
-}
-
-TEST_CASE("an exponentially weighted covariance centres on its own weighted mean") {
-  // Two rows, decay 0.5, so weights are 0.5 and 1 and the weighted mean of {0, 3} is 2 --
-  // not 1.5. Subtracting the unweighted mean instead is the common shortcut, and it gives
-  // 2.25 here rather than 2.
-  const math::Matrix observations = columns({{0.0, 3.0}});
-  const math::Matrix result = analytics::ewma_covariance(observations, 0.5);
-
-  REQUIRE(result(0, 0) == Catch::Approx(2.0));
-}
-
-TEST_CASE("an exponentially weighted covariance leans on the recent rows") {
-  // A series that is calm and then volatile. The weighted variance has to exceed the
-  // unweighted one, because the volatile half is the recent half.
-  const math::Matrix observations =
-    columns({{10.0, 10.1, 9.9, 10.0, 12.0, 8.0, 13.0, 7.0}});
-  const math::Matrix weighted = analytics::ewma_covariance(observations, 0.9);
-  const math::Matrix plain = analytics::covariance(observations);
-
-  REQUIRE(weighted(0, 0) > plain(0, 0));
-}
-
-TEST_CASE("an exponentially weighted covariance refuses a decay that is not one") {
-  const math::Matrix observations = columns({{1.0, 2.0, 3.0}});
-  REQUIRE_THROWS_AS(analytics::ewma_covariance(observations, 0.0), std::invalid_argument);
-  REQUIRE_THROWS_AS(analytics::ewma_covariance(observations, 1.0), std::invalid_argument);
-  REQUIRE_THROWS_AS(analytics::ewma_covariance(observations, 1.5), std::invalid_argument);
 }
 
 // ---------------------------------------------------------------------------

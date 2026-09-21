@@ -92,7 +92,7 @@ rather than decorating them:
 | --- | --- |
 | `ema` | `alpha = 2 / (span + 1)`, seeded on the first observed value |
 | `rsi`, `atr` | Wilder's `1 / n` with Wilder's seed, not `2 / (n + 1)` |
-| `rolling_stdev`, `covariance` | sample divisor `count - 1`, not the population `count` |
+| `rolling_stdev`, `rolling_cov` | sample divisor `count - 1`, not the population `count` |
 | `sortino` | shortfalls divided by **all** observations, not by the losing ones |
 | `turnover` | one-way, `0.5 * sum(abs(delta w))`; doubling gives two-way |
 | `sharpe` | per period. `annualize_ratio` is separate, and scales by `sqrt(periods)` |
@@ -138,27 +138,40 @@ And two places where the honest answer is a flag rather than a number:
   vocabulary — `Matrix`, `Vector`, `SeriesView` — really is portable. That distinction is worth
   stating instead of letting a uniform-looking `math::` prefix imply more than it delivers.
 
-- **`covariance` deletes pairwise, so its result need not be positive semi-definite.** That is
-  not a bug to be hidden: a panel of a few hundred instruments with scattered gaps may have no
-  complete row at all, so listwise deletion would return nothing. Running
-  `nearest_positive_definite` over the result is the expected next step. Note what clipping
-  does not preserve — the diagonal — so a *correlation* matrix comes back with a diagonal
-  slightly above one and needs rescaling if that matters.
+## What this layer deliberately does not compute
 
-## What this layer deliberately does not fit
+There is no regression and no covariance estimator, and the omission is settled rather than
+pending.
 
-There is no `ols`, no `ridge`, and no design-matrix builder, and the omission is deliberate
-rather than pending. Fitting is one call — `math::ColPivQr(x).solve(y)`, where `y` may be a
-matrix of targets and the result a matrix of coefficients — and everything that carries
-judgement happens before it: which predictors, over what estimation window, how a target aligns
-to lagged features, and what to do with an incomplete row. Those are modelling decisions, and a
-library that answered them with defaults would be making a strategy's choices while appearing
-to offer only a utility.
+Fitting is one call — `math::ColPivQr(x).solve(y)`, where `y` may be a matrix of targets and the
+result a matrix of coefficients. A sample covariance of a complete observation matrix is two lines:
 
-What remains here is the part that is knowledge about market data rather than a per-strategy
-choice: estimating a covariance matrix when instruments have different gaps, weighting recent
-observations, and repairing the result when the estimator's own deletion policy leaves it
-indefinite.
+```cpp
+const math::Matrix centered = observations.rowwise() - observations.colwise().mean();
+const math::Matrix result = (centered.transpose() * centered) / (observations.rows() - 1);
+```
+
+What a library function would add on top of those is not arithmetic but *choices*: which
+predictors, over what estimation window, how a target aligns to lagged features, whether an
+incomplete row is dropped or imputed, pairwise or listwise deletion. Those are modelling decisions,
+and answering them with defaults would make a strategy's choices while appearing to offer a utility.
+
+An earlier draft of this layer shipped `covariance` with pairwise deletion, and the forty lines of
+scalar loops it took were *entirely* the deletion policy — which also made it an order of magnitude
+slower than the vectorized complete-data form above. The overreach and the inefficiency had one
+cause.
+
+**The line, stated so it can be applied again:** ship what has one right answer everyone agrees on;
+defer what requires choosing. `macd(12, 26, 9)` means one thing, and the value of shipping it is
+that Wilder's seed and the span convention are got right once instead of re-derived. `sortino`
+ships with its divisor documented rather than parameterized because there *is* a correct answer.
+"Covariance of series with gaps" has no canonical answer, so it waits for a consumer that can say
+what it needs — see `plan/todo/covariance-estimation.md` and `plan/todo/factor-models.md`.
+
+Note that this is not the same rule as "remove anything the next branch does not use". Applied
+that way it would also delete `macd`, `bollinger`, `atr`, `wma`, `sharpe`, `turnover`,
+`max_drawdown`, and every accumulator, since the first set of vanilla strategies needs only `sma`,
+`ema`, `rolling_min`/`rolling_max`, `zscore`, `rsi`, `rolling_stdev`, and `Panel`.
 
 ## Where the numbers live
 

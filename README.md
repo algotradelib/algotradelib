@@ -572,7 +572,7 @@ just as firmly as a wrong one. An instrument whose ladder the library does not k
 | --- | --- |
 | `ema` | `alpha = 2 / (span + 1)`, seeded on the first observed value |
 | `rsi`, `atr` | Wilder's `1 / n` smoothing with Wilder's seed |
-| `rolling_stdev`, `covariance` | sample divisor `count - 1` |
+| `rolling_stdev`, `rolling_cov` | sample divisor `count - 1` |
 | `sortino` | squared shortfalls divided by **all** observations, not the losing ones |
 | `turnover` | one-way, `0.5 * sum(abs(delta w))` |
 | `sharpe` | per period; `annualize_ratio` is a separate call scaling by `sqrt(periods)` |
@@ -612,30 +612,34 @@ defines `EIGEN_DONT_PARALLELIZE`. When the build's flags define `_OPENMP`, the c
 links an OpenMP runtime so Eigen's threaded matrix products resolve rather than failing at
 link time.
 
-### Linear algebra, and what this layer does not fit
+### Linear algebra, and what this layer does not compute
 
 Eigen's decompositions are exposed as aliases rather than wrapped: `math::Llt`, `math::Ldlt`,
 `math::HouseholderQr`, `math::ColPivQr`, `math::FullPivQr`, `math::FullPivLu`, `math::Svd`,
-`math::SelfAdjointEigen`. Use them directly, so one factorization serves many right-hand sides
-and a right-hand side may be a matrix:
+`math::SelfAdjointEigen`, plus the triangular and self-adjoint view modes. Use them directly, so
+one factorization serves many right-hand sides and a right-hand side may be a matrix:
 
 ```cpp
-const math::ColPivQr qr(design);      // pivoting, so it also knows the rank
+const math::ColPivQr qr(design);                       // pivoting, so it knows the rank too
 const math::Matrix coefficients = qr.solve(targets);   // targets may be a matrix
-if (qr.rank() < design.cols()) { /* the columns were not independent */ }
 ```
 
-There is deliberately **no `ols` and no `ridge`**. Fitting is that one call; everything
-carrying judgement happens before it — which predictors, what estimation window, how a target
-aligns to lagged features, what to do with an incomplete row — and those are a strategy's
-decisions, not a library's defaults. What stays here is knowledge about market data instead:
-`covariance` (pairwise deletion, so the result may be indefinite), `ewma_covariance`
-(RiskMetrics weighting, centred on the weighted mean), and `nearest_positive_definite` (the
-exact Frobenius projection onto the PSD cone, which does not preserve the diagonal).
+There is deliberately **no regression and no covariance estimator**. Fitting is that one call, and
+a sample covariance over a complete matrix is two lines of Eigen. What such functions would add is
+not arithmetic but *choices* — which predictors, over what estimation window, how a target aligns
+to lagged features, whether an incomplete row is dropped or imputed, pairwise or listwise deletion
+— and those belong to a strategy. See [factor-models.md](../plan/todo/factor-models.md) and
+[covariance-estimation.md](../plan/todo/covariance-estimation.md).
+
+The line, which is why `macd` ships and `covariance` does not: **this layer implements what has one
+right answer everyone agrees on, and defers what requires choosing.** Getting Wilder's seed or
+Sortino's divisor right is work worth doing once so nobody re-derives a convention and gets it
+subtly wrong. "Covariance of series with gaps" has no such canonical answer. `rolling_cov`,
+`rolling_corr` and `beta` over two aligned series do, so they stay.
 
 See the [analytics conventions](doxygen/vignettes/analytics-conventions.md) vignette for the
-numerical reasoning behind the two-pass variance, Welford, Neumaier, the choice of
-decomposition, and the pairwise-deletion caveat on `covariance`.
+numerical reasoning behind the two-pass variance, Welford, Neumaier, and the choice of
+decomposition.
 
 ## Transport behavior
 
