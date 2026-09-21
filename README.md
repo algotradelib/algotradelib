@@ -665,6 +665,76 @@ See the [analytics conventions](doxygen/vignettes/analytics-conventions.md) vign
 numerical reasoning behind the two-pass variance, Welford, Neumaier, and the choice of
 decomposition.
 
+## Strategies
+
+A strategy is a plain struct with template member functions. It receives events and emits intents; it
+performs no I/O, holds no session, and names no broker, so one source runs unchanged in a dry run, in
+a live session against either broker, and later in a backtest.
+
+```cpp
+#include <algotradelib/strategy>
+
+struct MyStrategy {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = Decimal64::parse("10");
+    ctx.submit(target);
+  }
+};
+```
+
+`ATL_ASSERT_STRATEGY(MyStrategy, Ctx)` checks that at least one handler is detected and that every
+handler is also detected for two unrelated probe contexts — which is what proves it is a template,
+and therefore that it will run under every runner rather than only the one it was written against.
+
+### Three umbrellas, and why they are separate
+
+| Header | What it gives you | Links TLS? |
+| --- | --- | --- |
+| `<algotradelib/strategy>` | the surface a strategy is written against | no |
+| `<algotradelib/strategies>` | the vanilla strategies | no |
+| `<algotradelib/runner>` | the context, the dispatcher, `DryRunner` | **no** |
+| `<algotradelib/live>` | `SessionExecutor` over a bound `BrokerSession` | yes |
+
+`<algotradelib/runner>` reaches no broker adapter, no Boost.Asio and no OpenSSL, asserted at compile
+time from a translation unit that includes nothing else. A dry-run binary therefore contains no
+symbol that could place an order, which is a stronger promise than a flag: a function that is not
+linked cannot be called.
+
+### Emit a target, not an order
+
+Every shipped strategy emits `TargetPosition`, and the reason is concrete. A strategy emitting orders
+must remember whether it already entered — and after a restart it does not know, so it either misses
+an exit or re-enters a position it holds. It also double-sizes after a partial fill: the signal still
+says "hold 100", forty are filled and sixty are working, and sizing against the position alone asks
+for sixty more on top.
+
+Stating the position leaves that to reconciliation, which sees the portfolio *and* the working
+orders. `BuyAndHold` never trades twice while remembering nothing at all.
+
+### A limit price cannot be off the grid
+
+`strategy::Price` has no public constructor. The only routes in validate against the instrument's
+`PriceRule`, and an unknown ladder refuses every price rather than guessing a tick — a guessed tick is
+an order the exchange rejects at best. `Price::rounded` moves a price the way that cannot cross your
+intent: a buy down, a sell up.
+
+### What the runner does so a strategy need not
+
+Rounding to tick and lot, clamping into today's price band, diffing a target against the portfolio and
+working orders, every risk limit and the kill switch, and the order-safety rules. The most important
+of those: a request that fails **in transit** leaves the outcome unknown, so the runner marks that
+instrument and withholds everything further for it until the broker's own order list has been read.
+It is never retried, because a retry is what doubles a position.
+
+`example-strategy-dryrun` runs four strategies over bars built in code — no credentials, no network.
+`example-strategy-live` compiles one `trade()` function template for both brokers.
+
+See the [writing a strategy](doxygen/vignettes/writing-a-strategy.md) and
+[binding a broker](doxygen/vignettes/binding-a-broker.md) vignettes.
+
 ## Transport behavior
 
 - HTTPS connections are persistent per client and requests are serialized on a
