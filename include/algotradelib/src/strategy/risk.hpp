@@ -153,10 +153,19 @@ public:
   /**
    * Stops every order until `resume()`. Takes effect before any other check.
    *
-   * In-process and in-memory. It stops this runner from *sending*; it does not withdraw anything
-   * already sent, and it does not survive the process. Killing a program is not a kill switch in the
-   * exchange's sense: orders the broker accepted stay live. Flattening is a strategy's decision --
-   * see `vanilla::TimedLiquidation` -- or an operator's, through the broker's own tools.
+   * **This is *quiesce*, and only that**: it stops this runner from *sending*. Three things an
+   * operator might mean by "stop" are worth keeping apart, because each leaves a different position:
+   *
+   * - *quiesce* -- no new orders; positions held, working orders still resting. This.
+   * - *withdraw* -- quiesce, then cancel the working orders. Nothing resting.
+   * - *flatten* -- withdraw, then close the positions. Out of the market.
+   *
+   * Flattening is a strategy's decision, which is what `vanilla::TimedLiquidation` exists for, or an
+   * operator's through the broker's own tools. It is deliberately not something a risk limit does.
+   *
+   * In-process and in-memory: nothing reaches this from outside the program, and it does not survive
+   * the process. See `plan/todo/operator-stop-control.md` for the out-of-band control a long-running
+   * session will need, and why the *safest* stop is not the fastest one.
    */
   void halt() noexcept { halted_ = true; }
 

@@ -205,6 +205,12 @@ Worth being exact about, because the answer is reassuring in one direction and n
 **It stops the runner.** There is no runner, so nothing further is sent. `guard().halt()` is the same
 kind of thing: it stops *this program* from sending.
 
+Three things "stop" can mean, which are worth keeping apart because each leaves a different position:
+*quiesce* (no new orders, positions held, working orders still resting — this is what `halt()` does),
+*withdraw* (quiesce, then cancel the working orders), and *flatten* (withdraw, then close the
+positions). Flattening is a strategy's decision — `vanilla::TimedLiquidation` makes it on a session
+boundary — or an operator's through the broker's own tools.
+
 **It does not withdraw anything.** An order the broker already accepted stays live on the exchange,
 which knows nothing about a process that died. Killing a program is not a kill switch in the
 exchange's sense, and `halt()` is not a flatten. Flattening is a decision — `vanilla::TimedLiquidation`
@@ -225,6 +231,14 @@ nothing is *remembered*. Until that is automatic, it is the operator's obligatio
 
 The exposure is bounded in practice by how long a runner runs: this branch ships no polling loop, so a
 program does one pass and exits, and at most the orders of that pass can be in doubt.
+
+One counter-intuitive point for whenever a long-running session does arrive: **the fastest stop is the
+worst one.** Closing the session out from under an in-flight request surfaces as
+`ErrorCategory::CANCELLED`, which is classified `INDETERMINATE` — so aborting the connection
+*manufactures* the very state that requires reading the broker's order list. A graceful stop that
+quiesces and lets the request in flight complete leaves nothing in doubt, at the cost of one loop
+iteration. `plan/todo/operator-stop-control.md` sets out the hierarchy and the out-of-band control it
+needs.
 
 ## Order of operations
 
