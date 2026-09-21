@@ -289,3 +289,273 @@ TEST_CASE("a fill reports one execution, not an order's running total") {
   // Broker-neutral: an order id as text, so on_fill's signature names no broker.
   REQUIRE(fill.order_id_ == "0001569139");
 }
+
+// ---------------------------------------------------------------------------
+// The strategy surface, and what its conformance check catches
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using strategy::FullContext;
+using strategy::MinimalContext;
+
+/** A portable strategy: one templated handler, no broker named anywhere. */
+struct BarOnly {
+  std::size_t bars_seen_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ++bars_seen_;
+    ctx.log().note("bar");
+    (void)bar;
+  }
+};
+
+/** A strategy using every handler, to prove the detection covers all of them. */
+struct EveryHandler {
+  template <class Ctx> void on_start(Ctx&) {}
+  template <class Ctx> void on_stop(Ctx&) {}
+  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx> void on_quote(Ctx&, const strategy::QuoteEvent&) {}
+  template <class Ctx> void on_fill(Ctx&, const strategy::Fill&) {}
+  template <class Ctx> void on_order_update(Ctx&, const OrderSnapshot&) {}
+  template <class Ctx> void on_phase(Ctx&, strategy::MarketPhase) {}
+};
+
+/** Not a strategy: no handler the runner can call. */
+struct NoHandlers {
+  void step() {}
+};
+
+/** Not portable: the handler is bound to one concrete context type. */
+struct BoundToOneContext {
+  void on_bar(FullContext&, const strategy::BarEvent&) {}
+};
+
+/** A handler whose event parameter is the wrong type, so it is not detected. */
+struct WrongEventType {
+  template <class Ctx> void on_bar(Ctx&, const strategy::QuoteEvent&) {}
+};
+
+/** A strategy that reads a capability, to prove both branches type-check. */
+struct CapabilityGated {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    auto intent = strategy::OrderIntent::market(
+      bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
+    );
+    if constexpr (Ctx::caps::has_client_order_id) {
+      ctx.submit(intent.with_client_order_id("idem-1"));
+    } else {
+      ctx.submit(intent.with_tag("no-key"));
+    }
+  }
+};
+
+} // namespace
+
+// The assertion itself, at namespace scope, which is where a runner would put it.
+ATL_ASSERT_STRATEGY(BarOnly, MinimalContext);
+ATL_ASSERT_STRATEGY(BarOnly, FullContext);
+ATL_ASSERT_STRATEGY(EveryHandler, MinimalContext);
+ATL_ASSERT_STRATEGY(CapabilityGated, MinimalContext);
+ATL_ASSERT_STRATEGY(CapabilityGated, FullContext);
+
+TEST_CASE("a templated handler is detected for every context") {
+  namespace detail = strategy::strategy_detail;
+  STATIC_REQUIRE(detail::has_on_bar<BarOnly, MinimalContext>::value);
+  STATIC_REQUIRE(detail::has_on_bar<BarOnly, FullContext>::value);
+  // And the handlers it does not define are absent, which is what makes them optional.
+  STATIC_REQUIRE_FALSE(detail::has_on_quote<BarOnly, MinimalContext>::value);
+  STATIC_REQUIRE_FALSE(detail::has_on_start<BarOnly, MinimalContext>::value);
+}
+
+TEST_CASE("every handler in the surface is detectable") {
+  namespace detail = strategy::strategy_detail;
+  STATIC_REQUIRE(detail::has_on_start<EveryHandler, MinimalContext>::value);
+  STATIC_REQUIRE(detail::has_on_stop<EveryHandler, MinimalContext>::value);
+  STATIC_REQUIRE(detail::has_on_bar<EveryHandler, MinimalContext>::value);
+  STATIC_REQUIRE(detail::has_on_quote<EveryHandler, MinimalContext>::value);
+  STATIC_REQUIRE(detail::has_on_fill<EveryHandler, MinimalContext>::value);
+  STATIC_REQUIRE(detail::has_on_order_update<EveryHandler, MinimalContext>::value);
+  STATIC_REQUIRE(detail::has_on_phase<EveryHandler, MinimalContext>::value);
+}
+
+TEST_CASE("a type with no handler is rejected") {
+  namespace detail = strategy::strategy_detail;
+  STATIC_REQUIRE_FALSE(detail::has_any_handler<NoHandlers, MinimalContext>);
+  // Which is what ATL_ASSERT_STRATEGY reports on, naming the handlers it looked for.
+}
+
+TEST_CASE("a handler bound to one concrete context fails the genericity test") {
+  // The failure this check exists for. It compiles for the runner it was written against and
+  // silently excludes every other, so the strategy could not be dry-run or backtested without
+  // being rewritten -- and nothing would say so until someone tried.
+  namespace detail = strategy::strategy_detail;
+  STATIC_REQUIRE(detail::has_on_bar<BoundToOneContext, FullContext>::value);
+  STATIC_REQUIRE_FALSE(detail::has_on_bar<BoundToOneContext, MinimalContext>::value);
+  STATIC_REQUIRE_FALSE(
+    detail::handlers_are_generic<BoundToOneContext, FullContext, MinimalContext>
+  );
+  // A properly templated one passes against both probes.
+  STATIC_REQUIRE(detail::handlers_are_generic<BarOnly, FullContext, MinimalContext>);
+  STATIC_REQUIRE(detail::handlers_are_generic<BarOnly, MinimalContext, FullContext>);
+}
+
+TEST_CASE("a handler with the wrong event type is not detected as that handler") {
+  // An honest limitation, worth pinning: detection matches a signature, so a misspelled
+  // parameter type reads as an absent handler rather than as a wrong one. The assertion message
+  // therefore names the expected signatures instead of claiming the handler is missing.
+  namespace detail = strategy::strategy_detail;
+  // `on_bar` taking a QuoteEvent is neither: not `on_bar`, because the event type is wrong, and
+  // not `on_quote`, because the name is. So the strategy reads as having no handler at all,
+  // which is exactly what the assertion reports -- and why its message lists the expected
+  // signatures rather than claiming a handler is absent.
+  STATIC_REQUIRE_FALSE(detail::has_on_bar<WrongEventType, MinimalContext>::value);
+  STATIC_REQUIRE_FALSE(detail::has_on_quote<WrongEventType, MinimalContext>::value);
+  STATIC_REQUIRE_FALSE(detail::has_any_handler<WrongEventType, MinimalContext>);
+}
+
+TEST_CASE("a probe context records what a strategy asked for") {
+  MinimalContext ctx;
+  BarOnly strategy_instance;
+
+  Bar bar;
+  bar.timestamp_ = utc(2026, 3, 10, 0, 0);
+  bar.high_ = Decimal64::parse("70500");
+  bar.low_ = Decimal64::parse("69400");
+  bar.close_ = Decimal64::parse("70000");
+  bar.volume_ = Decimal64::parse("1200000");
+  const auto event =
+    strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, bar);
+
+  strategy_instance.on_bar(ctx, event);
+  strategy_instance.on_bar(ctx, event);
+
+  REQUIRE(strategy_instance.bars_seen_ == 2);
+  REQUIRE(ctx.log().lines().size() == 2);
+  REQUIRE(ctx.log().lines()[0] == "bar");
+  REQUIRE(ctx.submitted().empty());
+}
+
+TEST_CASE("both branches of a capability gate are exercised by the two probes") {
+  Bar bar;
+  bar.timestamp_ = utc(2026, 3, 10, 0, 0);
+  bar.high_ = Decimal64::parse("70500");
+  bar.low_ = Decimal64::parse("69400");
+  bar.close_ = Decimal64::parse("70000");
+  bar.volume_ = Decimal64::parse("1200000");
+  const auto event =
+    strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, bar);
+
+  // A broker with no idempotency key: the strategy takes the other path.
+  MinimalContext without;
+  CapabilityGated gated;
+  gated.on_bar(without, event);
+  REQUIRE(without.submitted().size() == 1);
+  REQUIRE_FALSE(without.submitted()[0].client_order_id());
+  REQUIRE(without.submitted()[0].tag() == "no-key");
+
+  // A broker that has one: the same source takes the key path.
+  FullContext with;
+  gated.on_bar(with, event);
+  REQUIRE(with.submitted().size() == 1);
+  REQUIRE(with.submitted()[0].client_order_id() == std::optional<std::string>("idem-1"));
+}
+
+// ---------------------------------------------------------------------------
+// Portfolio: the arithmetic that prevents double-sizing
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using ProbePortfolio = strategy::Portfolio<strategy::ProbeBroker>;
+
+/** Builds a working order with an ordered and a filled quantity. */
+WorkingOrder<strategy::ProbeBroker> working(
+  const char* ordered,
+  const char* filled,
+  OrderStatus status,
+  OrderSide side = OrderSide::BUY
+) {
+  WorkingOrder<strategy::ProbeBroker> order;
+  order.order_.instrument_ = samsung();
+  order.order_.side_ = side;
+  order.order_.status_ = status;
+  order.order_.quantity_ = Decimal64::parse(ordered);
+  order.order_.execution_.filled_quantity_ = Decimal64::parse(filled);
+  order.ref_ = OrderRef<strategy::ProbeBroker>{"0001569139", ""};
+  return order;
+}
+
+} // namespace
+
+TEST_CASE("working quantity counts what is still in the market, not what was ordered") {
+  // The partial-fill case that causes double-sizing: 100 ordered, 40 filled, so 60 is still
+  // working. A strategy sizing against the position alone would ask for 60 more on top.
+  ProbePortfolio portfolio;
+  portfolio.working_.push_back(working("100", "40", OrderStatus::PARTIAL_FILLED));
+
+  REQUIRE(portfolio.working_quantity(samsung(), OrderSide::BUY) == Decimal64::parse("60"));
+  // The other side has nothing working.
+  REQUIRE(portfolio.working_quantity(samsung(), OrderSide::SELL) == Decimal64::parse("0"));
+}
+
+TEST_CASE("a terminal order contributes no working quantity") {
+  ProbePortfolio portfolio;
+  portfolio.working_.push_back(working("100", "100", OrderStatus::FILLED));
+  portfolio.working_.push_back(working("50", "0", OrderStatus::CANCELED));
+  portfolio.working_.push_back(working("30", "0", OrderStatus::REJECTED));
+
+  REQUIRE(portfolio.working_quantity(samsung(), OrderSide::BUY) == Decimal64::parse("0"));
+}
+
+TEST_CASE("an order in an unrecognized state still counts as working") {
+  // Under-counting working quantity is what causes double-sizing, so an order whose status this
+  // library does not recognize is assumed live. Over-counting merely holds back an order.
+  ProbePortfolio portfolio;
+  portfolio.working_.push_back(working("100", "0", OrderStatus::UNKNOWN));
+
+  REQUIRE(portfolio.working_quantity(samsung(), OrderSide::BUY) == Decimal64::parse("100"));
+}
+
+TEST_CASE("a pending cancel or replace is still working until it is confirmed") {
+  ProbePortfolio portfolio;
+  portfolio.working_.push_back(working("100", "0", OrderStatus::PENDING_CANCEL));
+  portfolio.working_.push_back(working("40", "0", OrderStatus::PENDING_REPLACE));
+
+  REQUIRE(portfolio.working_quantity(samsung(), OrderSide::BUY) == Decimal64::parse("140"));
+}
+
+TEST_CASE("an absent position is nothing, not a position of zero") {
+  ProbePortfolio portfolio;
+  REQUIRE_FALSE(portfolio.quantity_of(samsung()));
+
+  HoldingPosition held;
+  held.instrument_ = samsung();
+  held.quantity_ = Decimal64::parse("0");
+  portfolio.positions_.push_back(held);
+  // Now there *is* a position, and it happens to be flat. A broker omitting a closed position
+  // and a broker reporting a flat one are making different claims.
+  REQUIRE(portfolio.quantity_of(samsung()));
+  REQUIRE(portfolio.quantity_of(samsung())->coefficient() == 0);
+}
+
+TEST_CASE("cash is per currency with no implicit conversion") {
+  ProbePortfolio portfolio;
+  portfolio.cash_.push_back(Money{Decimal64::parse("1000000"), Currency{"KRW"}});
+
+  REQUIRE(portfolio.cash_in(Currency{"KRW"}) == std::optional<Decimal64>(Decimal64::parse("1000000")));
+  REQUIRE_FALSE(portfolio.cash_in(Currency{"USD"}));
+}
+
+TEST_CASE("a working order is found by the reference that addresses it") {
+  ProbePortfolio portfolio;
+  portfolio.working_.push_back(working("100", "0", OrderStatus::PENDING));
+
+  const OrderRef<strategy::ProbeBroker> present{"0001569139", ""};
+  const OrderRef<strategy::ProbeBroker> absent{"0009999999", ""};
+  REQUIRE(portfolio.find_working(present) != nullptr);
+  REQUIRE(portfolio.find_working(absent) == nullptr);
+  REQUIRE(present.str() == "probe:0001569139");
+}
