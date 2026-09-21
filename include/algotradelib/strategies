@@ -1,0 +1,30 @@
+#pragma once
+
+/**
+ * The strategies this library ships, as headers.
+ *
+ * They exist as much to prove the interface as to be traded: if a vanilla strategy needs something
+ * the context does not expose, the context is wrong. Each states its own warm-up requirement, and
+ * each has a test that it emits nothing before that requirement is met.
+ *
+ * Every one of them emits a **target position** rather than an order. That is not a stylistic
+ * preference. A strategy that emitted orders would have to remember whether it had already entered,
+ * and after a restart it does not know — so it would either miss an exit or re-enter a position it
+ * already holds. Stating the position it wants leaves the arithmetic to reconciliation, which can
+ * see the portfolio and the orders already working.
+ *
+ * `BuyAndHold` and `TimedLiquidation` read no series and are available in every build.
+ * The rest compute indicators and therefore need a linear-algebra backend.
+ */
+
+#include "src/strategy/vanilla/buy_and_hold.hpp"
+#include "src/strategy/vanilla/timed_liquidation.hpp"
+
+#if defined(ATL_HAS_EIGEN)
+#include "src/strategy/vanilla/crossover.hpp"
+#include "src/strategy/vanilla/reversion.hpp"
+#include "src/strategy/vanilla/signal.hpp"
+#include "src/strategy/vanilla/sizing.hpp"
+#endif
+
+#include <algotradelib/strategy>
