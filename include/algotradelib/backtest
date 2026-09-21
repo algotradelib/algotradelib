@@ -21,4 +21,8 @@
 #include "src/backtest/fill.hpp"
 #include "src/backtest/ledger.hpp"
 
+#if defined(ATL_HAS_EIGEN)
+#include "src/backtest/report.hpp"
+#endif
+
 #include <algotradelib/runner>

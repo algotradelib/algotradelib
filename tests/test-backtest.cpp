@@ -4,7 +4,10 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <optional>
+#include <string>
+#include <vector>
 
 using namespace algotradelib;
 
@@ -826,3 +829,169 @@ TEST_CASE("costs reach the replay's executions, so a report can separate them ou
   // And the model still reports what it assumed.
   REQUIRE(engine.fills().limit_price() == backtest::LimitFillPrice::AT_LIMIT);
 }
+
+// ---------------------------------------------------------------------------
+// The report, and the caveats that travel with the figures
+// ---------------------------------------------------------------------------
+
+#if defined(ATL_HAS_EIGEN)
+
+TEST_CASE("a report summarizes a replay and states what the model assumed") {
+  backtest::Backtester<HoldsTen> engine(
+    HoldsTen{},
+    replay_config(),
+    backtest::NextBarFillModel(
+      backtest::CommissionModel::of(Decimal64::parse("0.00015"), Decimal64::parse("100")),
+      backtest::SlippageModel::of_ticks(1)
+    )
+  );
+  for (int day = 10; day < 20; ++day) {
+    const auto close = std::to_string(70000 + 500 * (day - 10));
+    engine.feed(moving_bar(utc(2026, 3, day, 6, 30), BarInterval::ONE_DAY, close.c_str(), close.c_str()));
+  }
+  engine.finish();
+
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  REQUIRE(report.bars_ == 10);
+  REQUIRE(report.executions_ == 1);
+  REQUIRE(report.commission_paid_.coefficient() > 0);
+  REQUIRE(report.slippage_paid_.coefficient() > 0);
+
+  // The assumptions travel with the figures, as fields rather than as documentation a reader has to
+  // remember applied to their run.
+  REQUIRE(report.caveats_.limit_fill_ == backtest::LimitFillPrice::AT_LIMIT);
+  REQUIRE(report.caveats_.commission_rate_ == Decimal64::parse("0.00015"));
+  REQUIRE(report.caveats_.commission_minimum_ == Decimal64::parse("100"));
+  REQUIRE(report.caveats_.slippage_ticks_ == 1);
+  REQUIRE(backtest::ReportCaveats::volume_ignored);
+}
+
+TEST_CASE("a zero-cost run says so rather than leaving it to be assumed") {
+  // Charging nothing is a model, and a reader must be able to see that it was the one applied.
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.finish();
+
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  REQUIRE(report.caveats_.commission_rate_.coefficient() == 0);
+  REQUIRE(report.caveats_.slippage_ticks_ == 0);
+  REQUIRE(report.commission_paid_.coefficient() == 0);
+}
+
+TEST_CASE("an annualized figure is unobserved unless a period count was supplied") {
+  // The reason analytics::annualize_ratio takes the count rather than assuming: 245 for daily bars and
+  // 95,550 for minute bars over the same year. Absent leaves it unobserved rather than scaled by a guess.
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, replay_config());
+  for (int day = 10; day < 20; ++day) {
+    const auto close = std::to_string(70000 + 500 * (day - 10));
+    engine.feed(moving_bar(utc(2026, 3, day, 6, 30), BarInterval::ONE_DAY, close.c_str(), close.c_str()));
+  }
+  engine.finish();
+
+  const auto without = backtest::summarize(engine.result(), engine.fills());
+  REQUIRE_FALSE(math::observed(without.annualized_sharpe_));
+
+  const auto periods =
+    backtest::periods_per_year(BarInterval::ONE_DAY, strategy::SessionWindow::krx(), 245.0);
+  REQUIRE(periods);
+  const auto with = backtest::summarize(engine.result(), engine.fills(), *periods);
+  if (math::observed(with.sharpe_)) {
+    REQUIRE(math::observed(with.annualized_sharpe_));
+    // The square root of the period count, not the count -- confusing them overstates a daily Sharpe
+    // about sixteenfold.
+    REQUIRE(with.annualized_sharpe_ ==
+            Catch::Approx(with.sharpe_ * std::sqrt(245.0)).epsilon(1e-9));
+  }
+}
+
+TEST_CASE("a replay with nothing to measure leaves every figure unobserved, not zero") {
+  // Zero would read as a flat result; absent reads as an absent one, which is what it is.
+  backtest::ReplayResult empty;
+  const backtest::NextBarFillModel fills;
+  const auto report = backtest::summarize(empty, fills);
+
+  REQUIRE_FALSE(math::observed(report.total_return_));
+  REQUIRE_FALSE(math::observed(report.sharpe_));
+  REQUIRE_FALSE(math::observed(report.sortino_));
+  REQUIRE_FALSE(math::observed(report.max_drawdown_));
+  REQUIRE_FALSE(math::observed(report.total_turnover_));
+}
+
+TEST_CASE("a Sortino ratio over a run that never lost is undefined, not infinite") {
+  // Carried straight through from analytics, and distinguishable from a warm-up by is_undefined.
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, replay_config());
+  for (int day = 10; day < 20; ++day) {
+    const auto close = std::to_string(70000 + 500 * (day - 10));
+    engine.feed(moving_bar(utc(2026, 3, day, 6, 30), BarInterval::ONE_DAY, close.c_str(), close.c_str()));
+  }
+  engine.finish();
+
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  // A rising run with a single entry never fell below zero, so there is no downside to divide by.
+  REQUIRE_FALSE(math::observed(report.sortino_));
+  REQUIRE(math::is_undefined(report.sortino_));
+}
+
+TEST_CASE("a multi-instrument replay is flagged for survivorship bias") {
+  // The engine cannot fix it -- broker reference data lists instruments that exist now, so a universe
+  // assembled from it excludes everything delisted in the period. So it says so instead.
+  const auto other = InstrumentId{Country::KR, Venue::COMBINED, "000660"};
+  auto config = replay_config();
+  auto second = samsung_reference();
+  second.id_ = other;
+  config.instruments_.push_back(second);
+
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, std::move(config));
+  // Interleaved, as a cross-sectional replay would be.
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  auto bar = moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "50000", "50000");
+  bar.instrument_ = other;
+  engine.feed(bar);
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  auto next = moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "50000", "50000");
+  next.instrument_ = other;
+  engine.feed(next);
+  engine.finish();
+
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  REQUIRE(report.executions_ == 2);
+  REQUIRE(report.caveats_.multiple_instruments_);
+}
+
+TEST_CASE("a single-instrument replay is not flagged, because the bias does not apply") {
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.finish();
+
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  REQUIRE_FALSE(report.caveats_.multiple_instruments_);
+}
+
+TEST_CASE("gaps and unfilled orders reach the report rather than staying in the engine") {
+  backtest::Backtester<BuysOnce> engine(BuysOnce{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 29), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 0, 1), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.finish();
+
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  REQUIRE(report.caveats_.gaps_ == 1);
+  // Submitted on bar one, filled against bar two, so nothing is left over here.
+  REQUIRE(report.caveats_.unfilled_ == 0);
+  REQUIRE(report.executions_ == 1);
+}
+
+TEST_CASE("turnover is measured from what was actually traded") {
+  // From the executions rather than from a weight matrix, because a replay knows what it traded.
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.finish();
+
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  // Ten at 70,000 is 700,000 against a 100,000,000 book: 0.7%.
+  REQUIRE(report.total_turnover_ == Catch::Approx(0.007).epsilon(0.01));
+}
+
+#endif
