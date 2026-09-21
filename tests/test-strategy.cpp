@@ -1367,3 +1367,91 @@ TEST_CASE("every guard reason has a stable name") {
   REQUIRE(strategy::guard_reason_name(GuardReason::ORDER_RATE_EXCEEDED) == "order_rate_exceeded");
   REQUIRE(strategy::guard_reason_name(GuardReason::VALUE_NOT_KNOWN) == "value_not_known");
 }
+
+TEST_CASE("a shortfall below the tolerance is left alone rather than chased") {
+  // The churn case: a target drifting by one share would otherwise cancel a working order for 100
+  // and place a new one for 99, spending two instructions and the first order's queue priority to
+  // move the position by one.
+  ProbePortfolio portfolio;
+  portfolio.working_.push_back(working("100", "0", OrderStatus::PENDING));
+  const auto reference = samsung_reference();
+  ReconcileInputs inputs;
+  inputs.instrument_ = &reference;
+
+  // Without a tolerance, every share is chased: the side is withdrawn and 99 sent fresh.
+  const auto chased = strategy::reconcile(target("99"), portfolio, inputs);
+  REQUIRE(chased.cancel_.size() == 1);
+  REQUIRE(chased.place_.size() == 1);
+  REQUIRE(chased.place_[0].quantity_ == Decimal64::parse("99"));
+
+  // With one, the drift is ignored entirely -- and crucially the cancellation is dropped too.
+  // Withdrawing the working order and then declining to replace it would leave the position
+  // further from the target than doing nothing at all.
+  inputs.minimum_trade_ = Decimal64::parse("5");
+  const auto left_alone = strategy::reconcile(target("99"), portfolio, inputs);
+  REQUIRE(left_alone.empty());
+}
+
+TEST_CASE("a shortfall at or above the tolerance is still acted on") {
+  ProbePortfolio portfolio;
+  const auto reference = samsung_reference();
+  ReconcileInputs inputs;
+  inputs.instrument_ = &reference;
+  inputs.minimum_trade_ = Decimal64::parse("5");
+
+  // Exactly at the tolerance is traded: it is a minimum, not a bound to exceed.
+  const auto at = strategy::reconcile(target("5"), portfolio, inputs);
+  REQUIRE(at.place_.size() == 1);
+  REQUIRE(at.place_[0].quantity_ == Decimal64::parse("5"));
+
+  const auto below = strategy::reconcile(target("4"), portfolio, inputs);
+  REQUIRE(below.empty());
+}
+
+TEST_CASE("the tolerance is absent by default, so nothing changes without asking") {
+  // No number is invented. A guessed tolerance would silently hold back orders a strategy asked
+  // for, and an invisible shortfall is worse than visible churn.
+  ProbePortfolio portfolio;
+  const auto reference = samsung_reference();
+  ReconcileInputs inputs;
+  inputs.instrument_ = &reference;
+  REQUIRE_FALSE(inputs.minimum_trade_);
+
+  const auto one_share = strategy::reconcile(target("1"), portfolio, inputs);
+  REQUIRE(one_share.place_.size() == 1);
+}
+
+TEST_CASE("the tolerance measures the drift, not the quantity that would be sent") {
+  // These differ exactly in the case the tolerance exists for. 100 working against a target of 99
+  // would withdraw the side and re-place 99, so the quantity sent is 99 while the drift is one
+  // share. Measuring the wrong one makes the tolerance useless here.
+  ProbePortfolio portfolio;
+  portfolio.working_.push_back(working("100", "0", OrderStatus::PENDING));
+  const auto reference = samsung_reference();
+  ReconcileInputs inputs;
+  inputs.instrument_ = &reference;
+  inputs.minimum_trade_ = Decimal64::parse("5");
+
+  REQUIRE(strategy::reconcile(target("99"), portfolio, inputs).empty());
+  // A drift of five is at the tolerance and is acted on.
+  const auto acted = strategy::reconcile(target("95"), portfolio, inputs);
+  REQUIRE(acted.cancel_.size() == 1);
+  REQUIRE(acted.place_.size() == 1);
+  REQUIRE(acted.place_[0].quantity_ == Decimal64::parse("95"));
+}
+
+TEST_CASE("an order working the wrong way is withdrawn however small the drift") {
+  // Leaving it resting works *against* the target rather than merely failing to reach it, so the
+  // tolerance must not suppress a cancellation.
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("99"));
+  portfolio.working_.push_back(working("50", "0", OrderStatus::PENDING, OrderSide::SELL));
+  const auto reference = samsung_reference();
+  ReconcileInputs inputs;
+  inputs.instrument_ = &reference;
+  inputs.minimum_trade_ = Decimal64::parse("5");
+
+  // Wanting 100 while holding 99 is a drift of one, below the tolerance -- but a sell is resting.
+  const auto plan = strategy::reconcile(target("100"), portfolio, inputs);
+  REQUIRE(plan.cancel_.size() == 1);
+}

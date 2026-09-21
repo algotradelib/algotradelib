@@ -142,6 +142,24 @@ struct ReconcileInputs {
   std::optional<PriceLimits> limits_;
   /** Total portfolio value in the instrument's currency, for weight sizing. */
   std::optional<Decimal64> portfolio_value_;
+
+  /**
+   * Smallest shortfall worth an instruction, in shares. Absent means chase every share.
+   *
+   * An execution-cost policy, which is why it arrives from the runner rather than from the strategy:
+   * a strategy states the position it wants, and how finely that is chased depends on commission,
+   * on whether the venue charges per instruction, and on what queue priority is worth -- none of
+   * which a signal knows.
+   *
+   * **Absent by default, which is exactly the behaviour before this existed.** No number is invented
+   * here. A tolerance guessed at would silently hold back orders a strategy asked for, and an
+   * invisible shortfall is worse than visible churn.
+   *
+   * What it prevents when set: a target drifting from 100 to 99 cancels a working order for 100 and
+   * places a new one for 99, spending two instructions and whatever queue priority the first had, to
+   * move the position by one share.
+   */
+  std::optional<Decimal64> minimum_trade_;
 };
 
 namespace reconcile_detail {
@@ -322,6 +340,27 @@ Plan<Broker> reconcile(
   auto remaining = decimal_subtract(magnitude, already);
   if (!remaining) {
     return reject(RejectReason::NOT_REPRESENTABLE);
+  }
+
+  // Step 3a: a drift smaller than the tolerance is not worth an instruction.
+  //
+  // Measured on the *drift* -- how far the in-flight position is from the target -- and not on what
+  // would be sent. Those differ exactly in the case the tolerance exists for: 100 working against a
+  // target of 99 would withdraw the side and re-place 99, so the quantity sent is 99 while the drift
+  // is one share.
+  //
+  // Suppressed only when nothing has already been queued for cancellation. An order working the
+  // *wrong way* still has to be withdrawn however small the drift, because leaving it resting works
+  // against the target rather than merely failing to reach it. And returning an empty plan rather
+  // than the accumulated one matters for the same reason: withdrawing a working order and then
+  // declining to replace it would leave the position further from the target than doing nothing.
+  if (inputs.minimum_trade_ && plan.cancel_.empty()) {
+    const auto drift = decimal_less(*remaining, zero) ?
+      decimal_subtract(zero, *remaining) :
+      std::optional<Decimal64>(*remaining);
+    if (drift && decimal_less(*drift, *inputs.minimum_trade_)) {
+      return Plan<Broker>{};
+    }
   }
 
   // Step 4: more working than wanted, so withdraw the side and send the whole remainder.

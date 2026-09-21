@@ -104,7 +104,24 @@ struct DryTag {
  * fails on purpose. That is what makes the transport-indeterminacy behaviour -- the most important
  * in this branch and the least reachable through a real broker -- exercisable without one.
  *
- * Holds the strategy by value so a caller can read the state it kept afterwards.
+ * **Everything it owns is held by value; everything it borrows is held by pointer.** That split is
+ * worth stating, because a runner looks like the sort of object one would reach for a smart pointer
+ * with, and it is not:
+ *
+ * - The **strategy** is a template parameter, resolved at compile time. There is no base class to
+ *   point at and no dynamic dispatch to enable, so an indirection would buy nothing and cost a
+ *   dereference in a handler that is otherwise inlined. Holding it by value is also what lets a
+ *   caller read the state it kept -- `dry.strategy().bars_seen_` -- which is most of what a strategy
+ *   test wants to assert.
+ * - The **context, guard, ledger and executor** are parts of the runner, not things shared with it.
+ *   A runner is constructed once per program or per test, never per bar, so a heap allocation here
+ *   would be a cost with no corresponding benefit.
+ * - A **session** is borrowed, and `SessionExecutor` holds it by pointer for exactly that reason: it
+ *   owns a connection with executor affinity, and a runner uses it without owning it. The client
+ *   underneath is a `shared_ptr` because the transport layer genuinely shares it.
+ *
+ * So the rule is ownership, not size: by value when the runner's lifetime governs it and the type is
+ * known at compile time, by pointer when something else owns it.
  */
 template <
   typename Strategy,
@@ -166,6 +183,15 @@ public:
   void set_price_limits(const InstrumentId& id, PriceLimits limits) {
     price_limits_.insert_or_assign(id.symbol_, std::move(limits));
   }
+
+  /**
+   * Sets the smallest shortfall worth an instruction, in shares.
+   *
+   * An execution-cost policy and therefore the operator's, alongside `RiskLimits`. Unset by default,
+   * which chases every share -- the behaviour before this knob existed. See
+   * `ReconcileInputs::minimum_trade_` for what it prevents and why no default is invented.
+   */
+  void set_minimum_trade(Decimal64 quantity) { minimum_trade_ = std::move(quantity); }
 
   /**
    * Records the portfolio's total value, which sizing a target weight needs.
@@ -364,6 +390,7 @@ private:
     inputs.reference_price_ = context_.last_price(id);
     inputs.limits_ = limits_for(id);
     inputs.portfolio_value_ = portfolio_value_;
+    inputs.minimum_trade_ = minimum_trade_;
 
     if (const auto* target = std::get_if<strategy::TargetPosition>(&instruction)) {
       return strategy::reconcile(*target, context_.portfolio(), inputs);
@@ -401,6 +428,7 @@ private:
   IndeterminacyLedger ledger_;
   std::map<std::string, PriceLimits> price_limits_;
   std::optional<Decimal64> portfolio_value_;
+  std::optional<Decimal64> minimum_trade_;
 };
 
 /**

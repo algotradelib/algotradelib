@@ -694,7 +694,7 @@ and therefore that it will run under every runner rather than only the one it wa
 | Header | What it gives you | Links TLS? |
 | --- | --- | --- |
 | `<algotradelib/strategy>` | the surface a strategy is written against | no |
-| `<algotradelib/strategies>` | the vanilla strategies | no |
+| `<algotradelib/vanilla>` | the vanilla strategies | no |
 | `<algotradelib/runner>` | the context, the dispatcher, `DryRunner` | **no** |
 | `<algotradelib/live>` | `SessionExecutor` over a bound `BrokerSession` | yes |
 

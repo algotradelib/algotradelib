@@ -4,8 +4,12 @@
 // by template parameter, and everything broker-specific is either behind a capability gate or
 // inside the adapter. Swapping KIS for Toss changes which overload `main` calls, nothing else.
 //
-// **It can place real orders.** Run it with `--dry-run` to see every decision with nothing sent,
-// which needs no credentials at all. Without that flag it binds a live session and will trade.
+// **It can place real orders.** Three modes, and only the last one trades:
+//
+//   --dry-run     no session at all, bars built in code, no credentials needed
+//   (default)     a real session for market data, but the send step goes to an executor that holds
+//                 no session, so there is nothing for an order to be sent through
+//   --live        the send step goes to the bound session
 //
 // Run it as:
 //
@@ -18,7 +22,7 @@
 
 #include <algotradelib/kis>
 #include <algotradelib/live>
-#include <algotradelib/strategies>
+#include <algotradelib/vanilla>
 #include <algotradelib/tossinvest>
 
 #include <boost/asio/ssl/context.hpp>
@@ -52,11 +56,15 @@ using algotradelib::InstrumentId;
 using algotradelib::OrderSide;
 using algotradelib::Venue;
 
-/** How the example is being run, which decides whether anything may be sent. */
+/** How the example is being run, which decides where the send step goes. */
 enum class Mode {
-  /** Read market data, print decisions, send nothing. */
+  /**
+   * Read real market data, run the real pipeline, and send through an executor with no session.
+   *
+   * Not a check that declines to send: there is nothing to send *through*.
+   */
   OBSERVE,
-  /** Send what the strategy decides. */
+  /** Send what the strategy decides, through the bound session. */
   TRADE,
 };
 
@@ -86,75 +94,40 @@ strategy::RiskLimits example_limits() {
  * template parameter; the capability gate below is how a broker-specific feature is reached when one
  * is wanted, and it compiles to nothing on the broker that lacks it.
  */
-template <typename Session>
-int trade(Session& session, const InstrumentId& instrument, Mode mode) {
-  using Caps = typename Session::Caps;
-  using Tag = typename Session::BrokerTag;
-  using Executor = live::SessionExecutor<Session>;
+/** What the session was read for, so the pipeline can be driven without reading it twice. */
+struct MarketState {
+  algotradelib::Instrument reference_;
+  algotradelib::BarSeries bars_;
+  algotradelib::HoldingsSnapshot holdings_;
+};
 
-  std::cout << "broker: " << Tag::name << "   instrument: " << instrument.symbol_
-            << "   mode: " << (mode == Mode::TRADE ? "TRADE" : "observe") << "\n\n";
-
-  if constexpr (Caps::has_client_order_id) {
-    std::cout << "this broker accepts an idempotency key, so a retry could be made safe\n";
-  } else {
-    std::cout << "this broker accepts no idempotency key, so no order is ever replayed\n";
-  }
-
-  // Reference data first: without a tick grid and a lot size there is nothing reconciliation can
-  // build, and it would refuse every order by name.
-  auto reference = session.instrument(instrument);
-  if (!reference) {
-    std::cerr << "could not read reference data: " << reference.error().message_ << '\n';
-    return 1;
-  }
-
-  BarQuery query;
-  query.instrument_ = instrument;
-  query.interval_ = BarInterval::ONE_DAY;
-  query.count_ = 30;
-  auto bars = session.bars(query);
-  if (!bars) {
-    std::cerr << "could not read bars: " << bars.error().message_ << '\n';
-    return 1;
-  }
-  if (bars.value().bars_.empty()) {
-    std::cerr << "the broker returned no bars\n";
-    return 1;
-  }
-
-  auto holdings = session.holdings();
-  if (!holdings) {
-    std::cerr << "could not read holdings: " << holdings.error().message_ << '\n';
-    return 1;
-  }
-
-  Executor executor(session);
+/**
+ * Runs the pipeline over `state`, sending through whichever executor it is given.
+ *
+ * Names no broker: the tag and the capabilities arrive as template parameters and the executor
+ * decides where instructions go. That is the portability claim in executable form -- and it is also
+ * how observing works, below.
+ */
+template <typename Caps, typename Tag, typename Executor>
+int drive(const InstrumentId& instrument, const MarketState& state, Executor executor) {
   runner::Runner<vanilla::BuyAndHold, Caps, Tag, Executor> live_runner(
-    strategy_for(instrument), example_limits(), 512, Executor(session)
+    strategy_for(instrument), example_limits(), 512, std::move(executor)
   );
-  live_runner.context().set_instrument(reference.value());
+  live_runner.context().set_instrument(state.reference_);
   live_runner.context().set_phase(strategy::MarketPhase::OPEN);
 
   strategy::Portfolio<Tag> portfolio;
-  portfolio.positions_ = holdings.value().positions_;
+  portfolio.positions_ = state.holdings_.positions_;
   live_runner.context().set_portfolio(std::move(portfolio));
 
-  // Observing is enforced by halting the guard, not by skipping the send. The pipeline then runs
-  // exactly as it would live, and what stops the order is the same kill switch an operator uses.
-  if (mode == Mode::OBSERVE) {
-    live_runner.guard().halt();
-  }
-
-  const auto& series = bars.value();
-  const auto& last = series.bars_.back();
+  const auto& last = state.bars_.bars_.back();
   live_runner.context().set_last_price(instrument, last.close_);
   const auto report = live_runner.feed(
-    strategy::make_bar_event(instrument, series.interval_, series.stamp_, last)
+    strategy::make_bar_event(instrument, state.bars_.interval_, state.bars_.stamp_, last)
   );
 
   for (const auto& order : report.would_place_) {
-    std::cout << "sent: " << (order.side_ == OrderSide::BUY ? "BUY " : "SELL") << ' '
+    std::cout << "order: " << (order.side_ == OrderSide::BUY ? "BUY " : "SELL") << ' '
               << order.quantity_.str() << " at "
               << (order.price_ ? order.price_->str() : std::string("market")) << '\n';
   }
@@ -180,6 +153,72 @@ int trade(Session& session, const InstrumentId& instrument, Mode mode) {
     return 1;
   }
   return 0;
+}
+
+/**
+ * Reads what the strategy needs from `session`, then drives the pipeline over it.
+ *
+ * **How observing works, and why it is not a flag.** Both modes run the identical pipeline over
+ * identical real market data; they differ only in which executor the send step goes to. Trading
+ * supplies `SessionExecutor`, which calls the broker. Observing supplies `RecordingExecutor`, which
+ * holds no session at all -- so there is nothing for an order to be sent *through*, rather than a
+ * check that decides not to send it.
+ *
+ * That is better than the obvious alternative of halting the guard. A halt would report every
+ * decision as `refused_` with `TRADING_HALTED`, which reads like a failure when it is the intended
+ * mode, and it would leave the send path present and merely unreached.
+ */
+template <typename Session>
+int trade(Session& session, const InstrumentId& instrument, Mode mode) {
+  using Caps = typename Session::Caps;
+  using Tag = typename Session::BrokerTag;
+
+  std::cout << "broker: " << Tag::name << "   instrument: " << instrument.symbol_
+            << "   mode: " << (mode == Mode::TRADE ? "TRADE" : "observe") << "\n\n";
+
+  if constexpr (Caps::has_client_order_id) {
+    std::cout << "this broker accepts an idempotency key, so a retry could be made safe\n";
+  } else {
+    std::cout << "this broker accepts no idempotency key, so no order is ever replayed\n";
+  }
+
+  MarketState state;
+
+  // Reference data first: without a tick grid and a lot size there is nothing reconciliation can
+  // build, and it would refuse every order by name.
+  auto reference = session.instrument(instrument);
+  if (!reference) {
+    std::cerr << "could not read reference data: " << reference.error().message_ << '\n';
+    return 1;
+  }
+  state.reference_ = std::move(reference.value());
+
+  BarQuery query;
+  query.instrument_ = instrument;
+  query.interval_ = BarInterval::ONE_DAY;
+  query.count_ = 30;
+  auto bars = session.bars(query);
+  if (!bars) {
+    std::cerr << "could not read bars: " << bars.error().message_ << '\n';
+    return 1;
+  }
+  if (bars.value().bars_.empty()) {
+    std::cerr << "the broker returned no bars\n";
+    return 1;
+  }
+  state.bars_ = std::move(bars.value());
+
+  auto holdings = session.holdings();
+  if (!holdings) {
+    std::cerr << "could not read holdings: " << holdings.error().message_ << '\n';
+    return 1;
+  }
+  state.holdings_ = std::move(holdings.value());
+
+  if (mode == Mode::TRADE) {
+    return drive<Caps, Tag>(instrument, state, live::SessionExecutor<Session>(session));
+  }
+  return drive<Caps, Tag>(instrument, state, runner::RecordingExecutor<Tag>{});
 }
 
 int trade_kis(ssl::context& tls, const std::string& symbol, Mode mode) {
@@ -292,7 +331,8 @@ int main(int argc, char** argv) {
     std::cerr
       << "usage: example-strategy-live --dry-run\n"
       << "       example-strategy-live <kis|tossinvest> [symbol] [account-sequence] [--live]\n\n"
-      << "Without --live a bound session only reads and prints what it would do.\n";
+      << "Without --live the session is used for market data only: the send step goes to an\n"
+      << "executor that holds no session, so there is nothing for an order to be sent through.\n";
     return 2;
   }
 

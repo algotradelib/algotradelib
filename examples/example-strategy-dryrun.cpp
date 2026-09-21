@@ -10,7 +10,7 @@
 //   example-strategy-dryrun
 
 #include <algotradelib/runner>
-#include <algotradelib/strategies>
+#include <algotradelib/vanilla>
 
 #include <chrono>
 #include <cstddef>

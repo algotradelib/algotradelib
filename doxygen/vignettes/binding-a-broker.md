@@ -6,13 +6,18 @@ real one.
 
 See @ref writing-a-strategy for writing the strategy itself.
 
-## Three umbrellas, and the line between them
+## Four umbrellas, and the line between them
 
-| Header | What it gives you | Links TLS? |
+| Header | What it gives you | Reaches transport? |
 | --- | --- | --- |
 | `<algotradelib/strategy>` | the surface a strategy is written against | no |
+| `<algotradelib/vanilla>` | the strategies this library ships | no |
 | `<algotradelib/runner>` | the context, the dispatcher, `DryRunner` | **no** |
 | `<algotradelib/live>` | `SessionExecutor`, over a bound `BrokerSession` | yes |
+
+`<algotradelib/vanilla>` is named for the namespace it fills, `strategy::vanilla`, rather than as a
+plural of `strategy` — two headers differing only in an `s` are indistinguishable in an autocomplete
+list.
 
 The split is load-bearing rather than tidy. `<algotradelib/runner>` reaches no broker adapter, no
 Boost.Asio, and no OpenSSL, asserted at compile time from a translation unit that includes nothing
@@ -32,7 +37,7 @@ Including `<algotradelib/live>` deliberately gives up the compile-time half as w
 
 ```cpp
 #include <algotradelib/runner>
-#include <algotradelib/strategies>
+#include <algotradelib/vanilla>
 
 namespace runner = algotradelib::runner;
 namespace strategy = algotradelib::strategy;
@@ -98,6 +103,25 @@ uncovered calendar date — is refused unless you ask for it. The rate limit cou
 window rather than resetting on a boundary, and budget is consumed when an order is *sent*, not when
 it is checked.
 
+## How finely a target is chased
+
+```cpp
+runner.set_minimum_trade(algotradelib::Decimal64::parse("5"));
+```
+
+An execution-cost policy, so it lives with the runner rather than in a strategy: a strategy states the
+position it wants, and whether a one-share drift is worth an instruction depends on commission, on
+whether the venue charges per instruction, and on what queue priority is worth.
+
+Unset by default, which chases every share. Set, it suppresses a drift smaller than the value — a
+target moving from 100 to 99 would otherwise withdraw a working order for 100 and place a new one for
+99, spending two instructions to move the position by one share.
+
+Two things it deliberately does not do. It measures the **drift**, not the quantity that would be
+sent, because those differ in exactly the case it exists for. And it never suppresses withdrawing an
+order that is working the *wrong way*: leaving a sell resting while buying toward a target works
+against the target rather than merely failing to reach it.
+
 ## Binding a real broker
 
 ```cpp
@@ -121,6 +145,13 @@ changes, and nothing in the loop around it changes. `example-strategy-live` comp
 
 Fill the context from what the session reads — reference data first, because without a tick grid and
 a lot size reconciliation has nothing to build and will refuse every order by name.
+
+Note that the runner is held **by value**, not behind a smart pointer, and so is the strategy inside
+it. The strategy is a template parameter resolved at compile time, so there is no base class to point
+at and no dynamic dispatch to enable; an indirection would cost a dereference in an otherwise inlined
+handler and buy nothing. Holding by value is also what lets a caller read the state a strategy kept.
+What *is* held by pointer is the session, because `SessionExecutor` borrows a connection it does not
+own. The rule is ownership rather than size.
 
 ## The rule that matters most
 
@@ -176,13 +207,26 @@ exposure and the one a strategy can reason about.
 
 ## Observing against a live session
 
-The honest way to watch a strategy against real market data without trading is to halt the guard
-rather than to skip the send:
+To watch a strategy against real market data without trading, keep the session for the data and give
+the *send step* an executor that has no session:
 
 ```cpp
-live.guard().halt();
+// Trading: instructions go to the broker.
+drive<Caps, Tag>(instrument, state, live::SessionExecutor<Session>(session));
+
+// Observing: identical pipeline, identical data, and nothing for an order to go through.
+drive<Caps, Tag>(instrument, state, runner::RecordingExecutor<Tag>{});
 ```
 
-The pipeline then runs exactly as it would live, and what stops the order is the same kill switch an
-operator uses. Skipping the send instead would exercise a different code path from the one that
-ships, which is the defect this whole arrangement exists to avoid.
+Both paths run the same `Runner` over the same real bars. The difference is where the send goes, which
+is the one thing that should differ — so observing exercises the code that ships rather than a
+variant of it.
+
+Two alternatives are worth rejecting explicitly. **Skipping the send** behind an `if` would leave the
+observe path running different code from the live one, which is the defect this whole arrangement
+exists to avoid. **Halting the guard** keeps the code path but reports every decision as `refused_`
+with `TRADING_HALTED` — which reads like a failure when it is the intended mode, and leaves the send
+path present and merely unreached. Neither is wrong exactly; swapping the executor is simply more
+honest about what is happening.
+
+The kill switch is still the right tool for its own job: stopping a *live* runner that is trading.
