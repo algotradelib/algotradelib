@@ -1,7 +1,9 @@
 #pragma once
 
-#include "./backend.hpp"
+#include "./conversion.hpp"
 #include "./time_index.hpp"
+
+#include "../math/matrix.hpp"
 
 #include <algotradelib/core>
 
@@ -59,7 +61,7 @@ inline constexpr std::string_view bar_field_name(BarField field) noexcept {
  * exact decimals become `Scalar`.
  *
  * Column-major storage with time on the rows means one field is contiguous, so
- * `column()` hands out a `SeriesView` that references the frame's own memory. Nothing
+ * `column()` hands out a `math::SeriesView` that references the frame's own memory. Nothing
  * is copied to read a series, and an indicator never walks a strided view of its input.
  *
  * A field a broker did not report — an open on a day with no trade, a traded value a
@@ -79,9 +81,9 @@ public:
    */
   explicit SeriesFrame(TimeIndex index, InstrumentId instrument = {})
   : instrument_(std::move(instrument)), index_(std::move(index)) {
-    values_ = Matrix::Constant(
-      static_cast<Eigen::Index>(index_.size()),
-      static_cast<Eigen::Index>(bar_field_count),
+    values_ = math::Matrix::Constant(
+      static_cast<math::Index>(index_.size()),
+      static_cast<math::Index>(bar_field_count),
       missing()
     );
   }
@@ -99,24 +101,24 @@ public:
   const InstrumentId& instrument() const noexcept { return instrument_; }
 
   /** Returns one field as a reference into the frame's own storage. */
-  SeriesView column(BarField field) const {
-    return values_.col(static_cast<Eigen::Index>(bar_field_index(field)));
+  math::SeriesView column(BarField field) const {
+    return values_.col(static_cast<math::Index>(bar_field_index(field)));
   }
 
   /** Returns the close column, the series most work starts from. */
-  SeriesView close() const { return column(BarField::CLOSE); }
+  math::SeriesView close() const { return column(BarField::CLOSE); }
 
   /** Returns the open column. */
-  SeriesView open() const { return column(BarField::OPEN); }
+  math::SeriesView open() const { return column(BarField::OPEN); }
 
   /** Returns the high column. */
-  SeriesView high() const { return column(BarField::HIGH); }
+  math::SeriesView high() const { return column(BarField::HIGH); }
 
   /** Returns the low column. */
-  SeriesView low() const { return column(BarField::LOW); }
+  math::SeriesView low() const { return column(BarField::LOW); }
 
   /** Returns the volume column. */
-  SeriesView volume() const { return column(BarField::VOLUME); }
+  math::SeriesView volume() const { return column(BarField::VOLUME); }
 
   /**
    * Returns one value.
@@ -128,7 +130,7 @@ public:
       throw std::out_of_range("frame row is past the end");
     }
     return values_(
-      static_cast<Eigen::Index>(row), static_cast<Eigen::Index>(bar_field_index(field))
+      static_cast<math::Index>(row), static_cast<math::Index>(bar_field_index(field))
     );
   }
 
@@ -142,17 +144,17 @@ public:
       throw std::out_of_range("frame row is past the end");
     }
     values_(
-      static_cast<Eigen::Index>(row), static_cast<Eigen::Index>(bar_field_index(field))
+      static_cast<math::Index>(row), static_cast<math::Index>(bar_field_index(field))
     ) = value;
   }
 
   /** Returns the whole storage as a reference, for a computation over every field. */
-  MatrixView values() const { return values_; }
+  math::MatrixView values() const { return values_; }
 
 private:
   InstrumentId instrument_;
   TimeIndex index_;
-  Matrix values_;
+  math::Matrix values_;
 };
 
 /**

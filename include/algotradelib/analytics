@@ -1,14 +1,28 @@
 #pragma once
 
+/**
+ * The numeric layer a strategy computes on.
+ *
+ * Needs the `math` module's linear algebra, and therefore a configured backend. The
+ * trading headers — quote, order, market data — need neither.
+ */
+
 #if !defined(ATL_HAS_EIGEN)
+// Checked here, before anything is included, so the first thing a reader sees is the
+// option to set rather than twenty consequential errors about missing types. Including
+// `math/matrix.hpp` directly gives the same diagnostic from there.
 #error \
   "<algotradelib/analytics> needs a linear algebra backend. Configure the library with \
 ATL_USE_EIGEN=ON, or link algotradelib::algotradelib from a build that was configured \
-with it. Quote, order, and market-data headers do not require it."
-#endif
+with it. Quote, order, and market-data headers do not require one, and neither does \
+<algotradelib/math>'s scalar."
+#else
 
-#include "src/analytics/backend.hpp"
+#include "math"
+
+#include "src/analytics/conversion.hpp"
 #include "src/analytics/frame.hpp"
 #include "src/analytics/panel.hpp"
-#include "src/analytics/scalar.hpp"
 #include "src/analytics/time_index.hpp"
+
+#endif

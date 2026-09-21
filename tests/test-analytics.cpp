@@ -12,6 +12,7 @@
 #include <vector>
 
 using namespace algotradelib;
+namespace math = algotradelib::math;
 using analytics::Scalar;
 using analytics::missing;
 using analytics::observed;
@@ -338,4 +339,71 @@ TEST_CASE("a panel locates an instrument by identity and reports its own shape")
   REQUIRE(Panel::from_bars({}, BarField::CLOSE, Alignment::INTERSECTION).rows() == 0);
   REQUIRE(analytics::alignment_name(Alignment::FORWARD_FILL) == "forward_fill");
   REQUIRE(analytics::bar_field_name(BarField::CLOSE) == "close");
+}
+
+TEST_CASE("the math module's scalar needs no linear algebra backend") {
+  // `math/scalar.hpp` is deliberately backend-free, so the numeric vocabulary is
+  // available to code that does no linear algebra at all.
+  REQUIRE_FALSE(math::observed(math::missing()));
+  REQUIRE(math::observed(math::Scalar(0)));
+  REQUIRE(std::isnan(math::missing()));
+
+  // The linear algebra vocabulary is the module's, not the analytics layer's.
+  const auto blank = math::unobserved(3);
+  REQUIRE(blank.size() == 3);
+  for (math::Index position = 0; position < blank.size(); ++position) {
+    REQUIRE_FALSE(math::observed(blank(position)));
+  }
+
+  const auto grid = math::unobserved(2, 4);
+  REQUIRE(grid.rows() == 2);
+  REQUIRE(grid.cols() == 4);
+  REQUIRE_FALSE(math::observed(grid(1, 3)));
+}
+
+TEST_CASE("aligning a panel walks both indices and stops at their edges") {
+  // The alignment walks two ascending indices together rather than searching per row, so
+  // its boundaries are worth pinning: a target instant before the source's first
+  // observation, and one after its last.
+  const std::vector<BarSeries> staggered = {
+    series_for("005930", {{1, "100"}, {2, "110"}, {3, "120"}, {4, "130"}}),
+    series_for("000660", {{2, "200"}, {3, "210"}}),
+  };
+
+  SECTION("an exact alignment matches only where both reported") {
+    const auto panel = Panel::from_bars(staggered, BarField::CLOSE, Alignment::UNION_UNOBSERVED);
+    REQUIRE(panel.rows() == 4);
+
+    // Before the second instrument's history, and after it.
+    REQUIRE_FALSE(observed(panel.at(0, 1)));
+    REQUIRE(panel.at(1, 1) == 200.0);
+    REQUIRE(panel.at(2, 1) == 210.0);
+    REQUIRE_FALSE(observed(panel.at(3, 1)));
+
+    // The first instrument reported on every row.
+    for (std::size_t row = 0; row < panel.rows(); ++row) {
+      REQUIRE(observed(panel.at(row, 0)));
+    }
+  }
+
+  SECTION("a carried alignment stops before the first and holds after the last") {
+    const auto panel = Panel::from_bars(staggered, BarField::CLOSE, Alignment::FORWARD_FILL);
+
+    // Nothing to carry backwards, so the row before the history stays unobserved.
+    REQUIRE_FALSE(observed(panel.at(0, 1)));
+
+    // After the last observation the value is held, which is the behaviour the
+    // alignment promises and the reason it is the easiest to misuse.
+    REQUIRE(panel.at(3, 1) == 210.0);
+  }
+
+  SECTION("a source entirely outside the target contributes nothing") {
+    const std::vector<BarSeries> disjoint = {
+      series_for("005930", {{1, "100"}, {2, "110"}}),
+      series_for("000660", {{50, "900"}}),
+    };
+    const auto panel = Panel::from_bars(disjoint, BarField::CLOSE, Alignment::INTERSECTION);
+    REQUIRE(panel.rows() == 0);
+    REQUIRE(panel.columns() == 2);
+  }
 }

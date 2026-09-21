@@ -1,14 +1,15 @@
 #pragma once
 
-#include "./backend.hpp"
+#include "./conversion.hpp"
 #include "./frame.hpp"
 #include "./time_index.hpp"
+
+#include "../math/matrix.hpp"
 
 #include <algorithm>
 #include <cstddef>
 #include <iterator>
 #include <optional>
-#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -115,11 +116,11 @@ public:
   }
 
   /** Returns one instrument's series as a reference into the panel's own storage. */
-  SeriesView column(std::size_t position) const {
+  math::SeriesView column(std::size_t position) const {
     if (position >= instruments_.size()) {
       throw std::out_of_range("panel column is past the end");
     }
-    return values_.col(static_cast<Eigen::Index>(position));
+    return values_.col(static_cast<math::Index>(position));
   }
 
   /** Returns one value. */
@@ -127,11 +128,11 @@ public:
     if (row >= rows() || column >= columns()) {
       throw std::out_of_range("panel position is past the end");
     }
-    return values_(static_cast<Eigen::Index>(row), static_cast<Eigen::Index>(column));
+    return values_(static_cast<math::Index>(row), static_cast<math::Index>(column));
   }
 
   /** Returns the whole storage as a reference, for a cross-sectional computation. */
-  MatrixView values() const { return values_; }
+  math::MatrixView values() const { return values_; }
 
   /**
    * Builds a panel from several bar series.
@@ -164,9 +165,9 @@ public:
       combined_instants(frames);
     panel.index_ = TimeIndex(std::move(stamps));
 
-    panel.values_ = Matrix::Constant(
-      static_cast<Eigen::Index>(panel.index_.size()),
-      static_cast<Eigen::Index>(frames.size()),
+    panel.values_ = math::Matrix::Constant(
+      static_cast<math::Index>(panel.index_.size()),
+      static_cast<math::Index>(frames.size()),
       missing()
     );
 
@@ -177,32 +178,63 @@ public:
   }
 
 private:
-  /** Returns every instant any frame reported, ascending and deduplicated. */
+  /**
+   * Returns every instant any frame reported, ascending and deduplicated.
+   *
+   * Collected into one contiguous buffer and then sorted, rather than accumulated in an
+   * ordered set. A set would cost a node allocation and two pointers per instant — about
+   * six times the memory — and scatter them across the heap, to produce the same
+   * sequence this does in one pass over reserved storage.
+   */
   static std::vector<TimeIndex::Instant> combined_instants(const std::vector<SeriesFrame>& frames) {
-    std::set<TimeIndex::Instant> ordered;
+    std::size_t total = 0;
     for (const auto& frame : frames) {
-      for (const auto& stamp : frame.time().stamps()) {
-        ordered.insert(stamp);
-      }
+      total += frame.time().size();
     }
-    return std::vector<TimeIndex::Instant>(ordered.begin(), ordered.end());
+    std::vector<TimeIndex::Instant> all;
+    all.reserve(total);
+    for (const auto& frame : frames) {
+      const auto& stamps = frame.time().stamps();
+      all.insert(all.end(), stamps.begin(), stamps.end());
+    }
+    std::sort(all.begin(), all.end());
+    all.erase(std::unique(all.begin(), all.end()), all.end());
+    return all;
   }
 
-  /** Returns only the instants every frame reported. */
+  /**
+   * Returns only the instants every frame reported.
+   *
+   * Two buffers are reused across the fold rather than one allocated per instrument,
+   * since an intersection only ever shrinks and the capacity already held is enough.
+   */
   static std::vector<TimeIndex::Instant> shared_instants(const std::vector<SeriesFrame>& frames) {
     std::vector<TimeIndex::Instant> shared = frames.front().time().stamps();
+    std::vector<TimeIndex::Instant> narrowed;
+    narrowed.reserve(shared.size());
     for (std::size_t position = 1; position < frames.size(); ++position) {
       const auto& other = frames[position].time().stamps();
-      std::vector<TimeIndex::Instant> narrowed;
+      narrowed.clear();
       std::set_intersection(
         shared.begin(), shared.end(), other.begin(), other.end(), std::back_inserter(narrowed)
       );
-      shared = std::move(narrowed);
+      shared.swap(narrowed);
     }
     return shared;
   }
 
-  /** Writes one instrument's column under the chosen alignment. */
+  /**
+   * Writes one instrument's column under the chosen alignment.
+   *
+   * Both indices are ascending, so this walks them together in one pass rather than
+   * searching the source index once per row. The position into the source only ever moves
+   * forward, which makes the whole column `O(rows + observations)` instead of
+   * `O(rows · log observations)` — for a panel of a million minute bars across a hundred
+   * instruments that is the difference between a hundred million steps and two billion.
+   *
+   * The column is bound once outside the loop, so each cell is a direct read rather than
+   * a bounds-checked lookup.
+   */
   static void fill_column(
     Panel& panel,
     std::size_t column,
@@ -210,28 +242,37 @@ private:
     BarField field,
     Alignment alignment
   ) {
-    for (std::size_t row = 0; row < panel.rows(); ++row) {
-      const auto& when = panel.index_.at(row);
-      std::optional<std::size_t> source;
-      if (alignment == Alignment::FORWARD_FILL) {
-        // The latest observation at or before this instant. Before the instrument's
-        // first observation there is nothing to carry, and `asof` reports that rather
-        // than reaching forward.
-        source = frame.time().asof(when);
-      } else {
-        source = frame.time().find(when);
+    const auto& target = panel.index_.stamps();
+    const auto& source = frame.time().stamps();
+    if (target.empty() || source.empty()) {
+      return;
+    }
+    const auto series = frame.column(field);
+    const bool carry = alignment == Alignment::FORWARD_FILL;
+
+    std::size_t at = 0;
+    for (std::size_t row = 0; row < target.size(); ++row) {
+      const auto& when = target[row];
+      while (at + 1 < source.size() && !(when < source[at + 1])) {
+        ++at;
       }
-      if (!source) {
+      // `source[at]` is now the latest instant at or before `when`, unless the source
+      // begins after it — in which case there is nothing observed yet, and carrying
+      // backwards would be inventing a price the instrument never had.
+      if (when < source[at]) {
         continue;
       }
-      panel.values_(static_cast<Eigen::Index>(row), static_cast<Eigen::Index>(column)) =
-        frame.at(*source, field);
+      if (!carry && source[at] != when) {
+        continue;
+      }
+      panel.values_(static_cast<math::Index>(row), static_cast<math::Index>(column)) =
+        series(static_cast<math::Index>(at));
     }
   }
 
   std::vector<InstrumentId> instruments_;
   TimeIndex index_;
-  Matrix values_;
+  math::Matrix values_;
   BarField field_{BarField::CLOSE};
   Alignment alignment_{Alignment::UNION_UNOBSERVED};
 };

@@ -1,0 +1,16 @@
+#pragma once
+
+/**
+ * Basic mathematics: the scalar type, and linear algebra.
+ *
+ * `scalar.hpp` needs no backend. The linear algebra does, and is included only when one
+ * is configured, so this header is usable either way — a consumer that wants matrices in
+ * a build without a backend gets the diagnostic from `matrix.hpp` by including it
+ * directly.
+ */
+
+#include "src/math/scalar.hpp"
+
+#if defined(ATL_HAS_EIGEN)
+#include "src/math/matrix.hpp"
+#endif

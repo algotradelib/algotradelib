@@ -1,6 +1,6 @@
 #pragma once
 
-#include "./scalar.hpp"
+#include "./conversion.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -22,6 +22,23 @@ namespace analytics {
  * produces plausible, wrong cross-sectional numbers. `BarSeries::ascending()` checks
  * the same invariant one layer down, so a series that passed it converts here without
  * incident.
+ *
+ * **What this costs, and why it is not competing with the backend's indexing.** The two
+ * answer different questions. The backend indexes a row you already know, in constant
+ * time; this maps an *instant* to that row, which the backend cannot do at all. So there
+ * is no version of this layer without something like it, and once a row is known every
+ * access is the backend's.
+ *
+ * Storage is one contiguous eight-byte instant per row — about a sixth of the frame it
+ * indexes, which carries six scalar fields per row — and lookup is a binary search over
+ * that contiguous run. Nothing cheaper exists for an arbitrary instant: the instants are
+ * irregular in practice, because holidays and halts put gaps in them, so a row cannot be
+ * computed from an offset.
+ *
+ * What matters more than the per-lookup cost is not paying it per row. Building a frame
+ * walks its own bars once, and aligning a panel walks two ascending indices together,
+ * so neither does a search per row. `find` and `asof` are for a caller asking about one
+ * instant, which is what a strategy does — not for bulk work.
  */
 class TimeIndex {
 public:

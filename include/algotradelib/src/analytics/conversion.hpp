@@ -2,43 +2,36 @@
 
 #include <algotradelib/core>
 
+#include "../math/scalar.hpp"
+
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <optional>
-#include <string>
 
 namespace algotradelib {
 namespace analytics {
 
 /**
- * Numeric type the analytics layer computes in.
+ * The bridge between the trading domain and the numeric one.
  *
- * `double` by default. It is an alias rather than a hard-coded type so a consumer can
- * build the layer in `float` or `long double` without touching any strategy code;
- * `double` is the default because covariance and regression on price levels lose too
- * much in `float`.
- *
- * This is deliberately *not* the type the rest of the library uses. Prices,
- * quantities, and money stay `Decimal64` everywhere they cross a wire or are
- * reconciled, and the two meet only at the conversions below.
+ * `Decimal64` holds what a broker said, exactly. `math::Scalar` holds what a computation
+ * needs, approximately. Nothing else in the library converts between them, which is what
+ * makes the loss auditable — and why the return direction is narrower than the outward
+ * one.
  */
-using Scalar = double;
+
+/** The numeric type this layer computes in, from the math module. */
+using math::Scalar;
+
+/** The value standing for "no observation". */
+using math::missing;
+
+/** Returns whether a value carries an observation. */
+using math::observed;
 
 /**
- * The value standing for "no observation".
- *
- * One representation, used everywhere: an indicator's warm-up region, a gap in a
- * panel, a field a broker did not report. Every reduction in this layer masks it, so
- * one missing bar cannot poison a whole column.
- */
-inline Scalar missing() { return std::numeric_limits<Scalar>::quiet_NaN(); }
-
-/** Returns whether `value` carries an observation. */
-inline bool observed(Scalar value) { return !std::isnan(value); }
-
-/**
- * Converts an exact decimal to the analytics scalar.
+ * Converts an exact decimal to the numeric scalar.
  *
  * **This is lossy and one-directional by intent.** A `Decimal64` holds a value
  * exactly; a `Scalar` holds the nearest representable binary approximation of it. For
