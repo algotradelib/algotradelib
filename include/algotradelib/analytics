@@ -20,6 +20,7 @@ with it. Quote, order, and market-data headers do not require one, and neither d
 
 #include "math"
 
+#include "src/analytics/accumulator.hpp"
 #include "src/analytics/conversion.hpp"
 #include "src/analytics/frame.hpp"
 #include "src/analytics/indicators.hpp"

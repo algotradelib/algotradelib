@@ -1047,3 +1047,159 @@ TEST_CASE("beta is the covariance over the market's own variance") {
   // And an asset that is exactly the market has a beta of one, whatever the market did.
   REQUIRE(analytics::beta(market, market, 3)[3] == Catch::Approx(1.0));
 }
+
+// ---------------------------------------------------------------------------
+// Running accumulators
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a running sum keeps the small terms a naive total would lose") {
+  // The classic demonstration. Added in this order, a naive `total += value` returns 0:
+  // adding 1 to 1e100 rounds straight back to 1e100, twice, and the two huge terms then
+  // cancel exactly. Neumaier carries the discarded parts and gives the right answer.
+  analytics::RunningSum sum;
+  for (const Scalar value : {1.0, 1.0e100, 1.0, -1.0e100}) {
+    sum.update(value);
+  }
+
+  REQUIRE(sum.count() == 4);
+  REQUIRE(sum.total() == 2.0);
+}
+
+TEST_CASE("a running sum reports nothing before its first observation") {
+  analytics::RunningSum sum;
+  REQUIRE_FALSE(observed(sum.total()));
+
+  sum.update(missing());
+  // An unobserved value is skipped, not counted as a zero contribution.
+  REQUIRE(sum.count() == 0);
+  REQUIRE_FALSE(observed(sum.total()));
+
+  sum.update(3.0);
+  REQUIRE(sum.total() == Catch::Approx(3.0));
+}
+
+TEST_CASE("running moments agree with the trailing statistics over a whole series") {
+  const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0});
+  analytics::RunningMoments moments;
+  for (math::Index row = 0; row < values.size(); ++row) {
+    moments.update(values[row]);
+  }
+
+  REQUIRE(moments.count() == 5);
+  REQUIRE(moments.mean() == Catch::Approx(3.0));
+  REQUIRE(moments.variance() == Catch::Approx(2.5));
+  // Which is what a trailing window covering the whole series reports, because both use
+  // the sample divisor. That agreement is the reason the divisor is stated in both places.
+  REQUIRE(moments.stdev() == Catch::Approx(analytics::rolling_stdev(values, 5)[4]));
+}
+
+TEST_CASE("Welford's method survives the price levels that break a sum of squares") {
+  // The same trap `rolling_stdev` avoids by taking two passes -- which an accumulator
+  // cannot do, because it never sees a value twice. Welford never forms a sum of squares
+  // at all, so the answer is exact here too.
+  analytics::RunningMoments moments;
+  for (const Scalar value : {1.0e8, 1.0e8 + 1.0, 1.0e8 + 2.0}) {
+    moments.update(value);
+  }
+
+  REQUIRE(moments.mean() == Catch::Approx(1.0e8 + 1.0));
+  REQUIRE(moments.variance() == 1.0);
+  REQUIRE(moments.stdev() == 1.0);
+}
+
+TEST_CASE("running moments report nothing until they can") {
+  analytics::RunningMoments moments;
+  REQUIRE_FALSE(observed(moments.mean()));
+  REQUIRE_FALSE(observed(moments.variance()));
+
+  moments.update(7.0);
+  REQUIRE(moments.mean() == Catch::Approx(7.0));
+  // One point has no dispersion, and `count - 1` would be a division by zero.
+  REQUIRE_FALSE(observed(moments.variance()));
+  REQUIRE_FALSE(observed(moments.stdev()));
+
+  moments.update(9.0);
+  REQUIRE(moments.variance() == Catch::Approx(2.0));
+}
+
+TEST_CASE("running extremes track both ends and start unobserved") {
+  analytics::RunningExtremes extremes;
+  REQUIRE_FALSE(observed(extremes.smallest()));
+  REQUIRE_FALSE(observed(extremes.largest()));
+
+  for (const Scalar value : {3.0, -1.0, 8.0, missing(), 2.0}) {
+    extremes.update(value);
+  }
+
+  REQUIRE(extremes.count() == 4);
+  REQUIRE(extremes.smallest() == Catch::Approx(-1.0));
+  REQUIRE(extremes.largest() == Catch::Approx(8.0));
+}
+
+TEST_CASE("a running drawdown measures from the high-water mark it has seen") {
+  analytics::RunningDrawdown drawdown;
+  for (const Scalar level : {100.0, 120.0, 90.0, 150.0, 100.0}) {
+    drawdown.update(level);
+  }
+
+  REQUIRE(drawdown.peak() == Catch::Approx(150.0));
+  // A third below the peak of 150, reported as a non-negative fraction.
+  REQUIRE(drawdown.drawdown() == Catch::Approx(1.0 / 3.0));
+  // And the worst so far is that same third, deeper than the 25% seen at 90 under 120.
+  REQUIRE(drawdown.max_drawdown() == Catch::Approx(1.0 / 3.0));
+}
+
+TEST_CASE("a running drawdown at a new high is flat, not negative") {
+  analytics::RunningDrawdown drawdown;
+  drawdown.update(100.0);
+  REQUIRE(drawdown.drawdown() == Catch::Approx(0.0));
+
+  drawdown.update(200.0);
+  REQUIRE(drawdown.peak() == Catch::Approx(200.0));
+  REQUIRE(drawdown.drawdown() == Catch::Approx(0.0));
+  REQUIRE(drawdown.max_drawdown() == Catch::Approx(0.0));
+}
+
+TEST_CASE("a running drawdown refuses to express a ratio of a non-positive peak") {
+  // An equity curve that reaches zero has not drawn down by some percentage; it is gone.
+  analytics::RunningDrawdown drawdown;
+  drawdown.update(0.0);
+
+  REQUIRE(drawdown.peak() == Catch::Approx(0.0));
+  REQUIRE_FALSE(observed(drawdown.drawdown()));
+  REQUIRE_FALSE(observed(drawdown.max_drawdown()));
+}
+
+TEST_CASE("a running exponential average reproduces the vectorized one exactly") {
+  // The whole reason this class exists. A strategy fitted on frames and traded from a
+  // live loop has to be running the same recurrence, and this is the assertion that says
+  // so -- bit for bit, not approximately.
+  const math::Vector values = series({1.0, 2.0, 3.0, missing(), 5.0, 6.0});
+  const math::Vector vectorized = analytics::ema(values, 3);
+
+  analytics::RunningEma running(3);
+  for (math::Index row = 0; row < values.size(); ++row) {
+    running.update(values[row]);
+    if (observed(values[row])) {
+      REQUIRE(running.value() == vectorized[row]);
+    } else {
+      // The row itself says nothing, but the level carried across it in both.
+      REQUIRE_FALSE(observed(vectorized[row]));
+    }
+  }
+}
+
+TEST_CASE("a running exponential average honours its warm-up and rejects a zero span") {
+  analytics::RunningEma running(3, 3);
+  REQUIRE(running.alpha() == Catch::Approx(0.5));
+  REQUIRE_FALSE(observed(running.value()));
+
+  running.update(1.0);
+  running.update(2.0);
+  REQUIRE_FALSE(observed(running.value()));
+
+  running.update(3.0);
+  REQUIRE(running.value() == Catch::Approx(2.25));
+
+  REQUIRE_THROWS_AS(analytics::RunningEma(0), std::invalid_argument);
+}
