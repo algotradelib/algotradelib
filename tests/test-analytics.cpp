@@ -407,3 +407,149 @@ TEST_CASE("aligning a panel walks both indices and stops at their edges") {
     REQUIRE(panel.columns() == 2);
   }
 }
+
+TEST_CASE("a rolling window keeps the last observations in one contiguous run") {
+  analytics::RollingWindow window(4, 1);
+  REQUIRE(window.capacity() == 4);
+  REQUIRE(window.fields() == 1);
+  REQUIRE(window.empty());
+  REQUIRE_FALSE(window.full());
+
+  for (int value = 1; value <= 4; ++value) {
+    window.push(day_of(value), std::vector<math::Scalar>{double(value)});
+  }
+  REQUIRE(window.size() == 4);
+  REQUIRE(window.full());
+
+  const auto series = window.column(std::size_t{0});
+  REQUIRE(series.size() == 4);
+  REQUIRE(series(0) == 1.0);
+  REQUIRE(series(3) == 4.0);
+
+  // Oldest first, and one span with no stride, which is what a computation needs.
+  REQUIRE(series.innerStride() == 1);
+  REQUIRE(window.instant(0) == day_of(1));
+  REQUIRE(window.newest_instant() == day_of(4));
+
+  // Past capacity the oldest is dropped rather than the newest refused.
+  window.push(day_of(5), std::vector<math::Scalar>{5.0});
+  REQUIRE(window.size() == 4);
+  REQUIRE(window.column(std::size_t{0})(0) == 2.0);
+  REQUIRE(window.column(std::size_t{0})(3) == 5.0);
+  REQUIRE(window.instant(0) == day_of(2));
+}
+
+TEST_CASE("a rolling window compacts at its amortized bound and never allocates for it") {
+  constexpr std::size_t capacity = 8;
+  analytics::RollingWindow window(capacity, 2);
+
+  // Storage holds twice the capacity, so a compaction can only happen once per capacity
+  // pushes. Asserting the count is what makes the amortized bound a fact rather than a
+  // claim in a comment.
+  constexpr std::size_t pushes = 800;
+  for (std::size_t step = 0; step < pushes; ++step) {
+    window.push(day_of(static_cast<int>(step)), std::vector<math::Scalar>{double(step), 0.0});
+  }
+
+  REQUIRE(window.size() == capacity);
+  REQUIRE(window.compactions() <= pushes / capacity + 1);
+  REQUIRE(window.compactions() >= pushes / (capacity * 2));
+
+  // The contents survive every compaction: the window still holds exactly the last
+  // `capacity` observations, oldest first.
+  const auto series = window.column(std::size_t{0});
+  REQUIRE(series.size() == static_cast<math::Index>(capacity));
+  for (std::size_t position = 0; position < capacity; ++position) {
+    REQUIRE(series(static_cast<math::Index>(position)) == double(pushes - capacity + position));
+  }
+  REQUIRE(series.innerStride() == 1);
+
+  // And a view is still one contiguous run after all of that, which is the property the
+  // compaction exists to preserve and a ring buffer would have lost.
+  REQUIRE(window.at(0, 0) == double(pushes - capacity));
+  REQUIRE(window.newest_instant() == day_of(static_cast<int>(pushes - 1)));
+}
+
+TEST_CASE("a rolling window refuses an observation that would break its ordering") {
+  analytics::RollingWindow window(3, 1);
+  window.push(day_of(5), std::vector<math::Scalar>{1.0});
+
+  // Out of order, and repeated, both make a trailing computation over the window
+  // meaningless, so neither is accepted.
+  REQUIRE_THROWS_AS(
+    window.push(day_of(4), std::vector<math::Scalar>{2.0}), std::invalid_argument
+  );
+  REQUIRE_THROWS_AS(
+    window.push(day_of(5), std::vector<math::Scalar>{2.0}), std::invalid_argument
+  );
+  REQUIRE_NOTHROW(window.push(day_of(6), std::vector<math::Scalar>{2.0}));
+
+  // A row that does not carry every field is refused rather than padded.
+  REQUIRE_THROWS_AS(
+    window.push(day_of(7), std::vector<math::Scalar>{1.0, 2.0}), std::invalid_argument
+  );
+
+  REQUIRE_THROWS_AS(analytics::RollingWindow(0, 1), std::invalid_argument);
+  REQUIRE_THROWS_AS(analytics::RollingWindow(4, 0), std::invalid_argument);
+}
+
+TEST_CASE("a rolling window takes a bar the way a live loop receives one") {
+  analytics::RollingWindow window(2);
+  REQUIRE(window.fields() == analytics::bar_field_count);
+
+  auto first = day_bar(1, "70000");
+  auto second = day_bar(2, "71000");
+  // A trading day on which nothing traded has no open, and that stays unobserved here too.
+  second.open_.reset();
+
+  window.push(first);
+  window.push(second);
+
+  REQUIRE(window.size() == 2);
+  REQUIRE(window.column(BarField::CLOSE)(0) == 70000.0);
+  REQUIRE(window.column(BarField::CLOSE)(1) == 71000.0);
+  REQUIRE(observed(window.column(BarField::OPEN)(0)));
+  REQUIRE_FALSE(observed(window.column(BarField::OPEN)(1)));
+
+  // A field neither bar reported is unobserved rather than zero.
+  REQUIRE_FALSE(observed(window.column(BarField::TRADED_VALUE)(0)));
+
+  window.clear();
+  REQUIRE(window.empty());
+  REQUIRE(window.capacity() == 2);
+}
+
+TEST_CASE("a rolling window's storage is taken once and never grows") {
+  // The claim is that a live loop does not allocate on the path that runs every tick.
+  // Storage is one matrix taken at construction, so its base address never moves; the
+  // only thing that moves is where the held run starts inside it, and that is bounded by
+  // the capacity. If the buffer were regrowing, the observed addresses would wander by
+  // arbitrary amounts instead of within that bound.
+  constexpr std::size_t capacity = 16;
+  analytics::RollingWindow window(capacity, 1);
+
+  const char* lowest = nullptr;
+  const char* highest = nullptr;
+  for (std::size_t step = 0; step < 5000; ++step) {
+    window.push(day_of(static_cast<int>(step)), std::vector<math::Scalar>{double(step)});
+    const auto* address = reinterpret_cast<const char*>(window.column(std::size_t{0}).data());
+    if (!lowest || address < lowest) {
+      lowest = address;
+    }
+    if (!highest || address > highest) {
+      highest = address;
+    }
+  }
+
+  REQUIRE(lowest != nullptr);
+  REQUIRE(highest != nullptr);
+
+  // Every observed start sits inside one buffer of twice the capacity, so the span can be
+  // at most `capacity` elements: the run's start never passes the compaction point.
+  const auto span = static_cast<std::size_t>(highest - lowest);
+  REQUIRE(span <= capacity * sizeof(math::Scalar));
+
+  // And after five thousand pushes the window still holds exactly its capacity.
+  REQUIRE(window.size() == capacity);
+  REQUIRE(window.compactions() > 0);
+}
