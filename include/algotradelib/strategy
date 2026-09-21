@@ -1,0 +1,14 @@
+#pragma once
+
+/**
+ * The strategy surface: what a strategy sees, and what it may ask for.
+ *
+ * Needs no linear-algebra backend. A strategy that computes indicators includes
+ * `<algotradelib/analytics>` as well and therefore needs one; a strategy that acts on prices
+ * and positions alone does not, and this header does not impose it.
+ *
+ * It also includes no broker, network, or transport header, which is the property that makes
+ * one strategy source compile against every broker. A test asserts that.
+ */
+
+#include "src/strategy/intent.hpp"
