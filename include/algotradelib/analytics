@@ -26,6 +26,7 @@ with it. Quote, order, and market-data headers do not require one, and neither d
 #include "src/analytics/indicators.hpp"
 #include "src/analytics/numeric.hpp"
 #include "src/analytics/panel.hpp"
+#include "src/analytics/regression.hpp"
 #include "src/analytics/returns.hpp"
 #include "src/analytics/rolling.hpp"
 #include "src/analytics/rolling_window.hpp"

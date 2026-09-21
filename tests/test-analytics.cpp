@@ -1203,3 +1203,254 @@ TEST_CASE("a running exponential average honours its warm-up and rejects a zero 
 
   REQUIRE_THROWS_AS(analytics::RunningEma(0), std::invalid_argument);
 }
+
+// ---------------------------------------------------------------------------
+// Regression and covariance
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** Builds a matrix from a list of columns, so a fixture reads the way a frame is laid out. */
+math::Matrix columns(std::initializer_list<std::initializer_list<Scalar>> values) {
+  const auto width = static_cast<math::Index>(values.size());
+  const auto height = static_cast<math::Index>(values.begin()->size());
+  math::Matrix result(height, width);
+  math::Index column = 0;
+  for (const auto& entries : values) {
+    math::Index row = 0;
+    for (const Scalar value : entries) {
+      result(row++, column) = value;
+    }
+    ++column;
+  }
+  return result;
+}
+
+} // namespace
+
+TEST_CASE("least squares recovers a line it was given exactly") {
+  const math::Vector y = series({5.0, 8.0, 11.0, 14.0});
+  const math::Matrix x = analytics::with_intercept(columns({{1.0, 2.0, 3.0, 4.0}}));
+  const auto fit = analytics::ols(y, x);
+
+  // y = 2 + 3x, and the intercept is the first column because `with_intercept` prepends it.
+  REQUIRE(fit.coefficients_.size() == 2);
+  REQUIRE(fit.coefficients_[0] == Catch::Approx(2.0));
+  REQUIRE(fit.coefficients_[1] == Catch::Approx(3.0));
+  REQUIRE(fit.r_squared_ == Catch::Approx(1.0));
+  REQUIRE(fit.observations_ == 4);
+  REQUIRE(fit.rank_ == 2);
+  REQUIRE(fit.full_rank_);
+  for (math::Index row = 0; row < y.size(); ++row) {
+    REQUIRE(fit.residuals_[row] == Catch::Approx(0.0).margin(1e-12));
+  }
+}
+
+TEST_CASE("least squares reports a rank-deficient design instead of hiding it") {
+  // The second and third columns are the same factor twice. The fitted values are still
+  // right; the individual coefficients are one solution of infinitely many, which is
+  // exactly the case where a factor model reports a loading that is not really there.
+  const math::Vector y = series({5.0, 8.0, 11.0, 14.0});
+  const math::Matrix x =
+    analytics::with_intercept(columns({{1.0, 2.0, 3.0, 4.0}, {1.0, 2.0, 3.0, 4.0}}));
+  const auto fit = analytics::ols(y, x);
+
+  REQUIRE(fit.coefficients_.size() == 3);
+  REQUIRE_FALSE(fit.full_rank_);
+  REQUIRE(fit.rank_ == 2);
+  // And the fit itself is still exact, which is why the flag is the only warning there is.
+  REQUIRE(fit.r_squared_ == Catch::Approx(1.0));
+  for (math::Index row = 0; row < y.size(); ++row) {
+    REQUIRE(fit.fitted_[row] == Catch::Approx(y[row]));
+  }
+}
+
+TEST_CASE("least squares drops a row with any gap and says how many it used") {
+  const math::Vector y = series({5.0, missing(), 11.0, 14.0});
+  const math::Matrix x =
+    analytics::with_intercept(columns({{1.0, 2.0, missing(), 4.0}}));
+  const auto fit = analytics::ols(y, x);
+
+  // Rows 1 and 2 each have a gap, so two whole rows remain -- enough for a line.
+  REQUIRE(fit.observations_ == 2);
+  REQUIRE(fit.coefficients_[1] == Catch::Approx(3.0));
+  // A dropped row gets no fitted value, so the columns stay as long as the input and line
+  // up with the same index.
+  REQUIRE(fit.fitted_.size() == y.size());
+  REQUIRE_FALSE(observed(fit.fitted_[1]));
+  REQUIRE_FALSE(observed(fit.residuals_[2]));
+  REQUIRE(observed(fit.fitted_[0]));
+}
+
+TEST_CASE("a fit against a constant response reports no R-squared rather than zero or one") {
+  const math::Vector y = series({7.0, 7.0, 7.0, 7.0});
+  const math::Matrix x = analytics::with_intercept(columns({{1.0, 2.0, 3.0, 4.0}}));
+  const auto fit = analytics::ols(y, x);
+
+  // There is no variance to explain. Either number would be a claim about fit quality.
+  REQUIRE_FALSE(observed(fit.r_squared_));
+}
+
+TEST_CASE("a fit with nothing usable left returns unobserved coefficients") {
+  const math::Vector y = series({missing(), missing()});
+  const math::Matrix x = columns({{1.0, 2.0}});
+  const auto fit = analytics::ols(y, x);
+
+  REQUIRE(fit.observations_ == 0);
+  REQUIRE_FALSE(observed(fit.coefficients_[0]));
+  REQUIRE_FALSE(observed(fit.r_squared_));
+}
+
+TEST_CASE("a malformed regression is refused at the call rather than fitted to nonsense") {
+  const math::Vector y = series({1.0, 2.0, 3.0});
+  REQUIRE_THROWS_AS(
+    analytics::ols(y, columns({{1.0, 2.0}})), std::invalid_argument
+  );
+  REQUIRE_THROWS_AS(
+    analytics::ols(y, math::Matrix(3, 0)), std::invalid_argument
+  );
+  REQUIRE_THROWS_AS(
+    analytics::ridge(y, columns({{1.0, 2.0, 3.0}}), 0.0), std::invalid_argument
+  );
+  REQUIRE_THROWS_AS(
+    analytics::ridge(y, columns({{1.0, 2.0, 3.0}}), -1.0), std::invalid_argument
+  );
+}
+
+TEST_CASE("ridge shrinks a coefficient toward zero by exactly its penalty") {
+  // y = 3x with no intercept. Unpenalized this is 3; penalized it is
+  // sum(xy) / (sum(x^2) + penalty) = 90 / 31.
+  const math::Vector y = series({3.0, 6.0, 9.0, 12.0});
+  const math::Matrix x = columns({{1.0, 2.0, 3.0, 4.0}});
+
+  REQUIRE(analytics::ols(y, x).coefficients_[0] == Catch::Approx(3.0));
+  REQUIRE(analytics::ridge(y, x, 1.0).coefficients_[0] == Catch::Approx(90.0 / 31.0));
+
+  // And a large penalty drives it toward zero rather than toward anything else.
+  REQUIRE(analytics::ridge(y, x, 1.0e9).coefficients_[0] == Catch::Approx(0.0).margin(1e-6));
+}
+
+TEST_CASE("ridge fits a design that ordinary least squares cannot resolve") {
+  // Two identical columns. The penalty is what makes the normal equations positive
+  // definite, which is the whole reason this one is allowed to use them.
+  const math::Vector y = series({2.0, 4.0, 6.0, 8.0});
+  const math::Matrix x = columns({{1.0, 2.0, 3.0, 4.0}, {1.0, 2.0, 3.0, 4.0}});
+  const auto fit = analytics::ridge(y, x, 0.5);
+
+  // The penalty splits the loading evenly between the two copies instead of leaving the
+  // split arbitrary, which is the other thing ridge buys on collinear factors.
+  REQUIRE(fit.coefficients_[0] == Catch::Approx(fit.coefficients_[1]));
+  REQUIRE(fit.r_squared_ == Catch::Approx(1.0).epsilon(0.01));
+}
+
+TEST_CASE("a covariance matrix is symmetric and uses the sample divisor") {
+  const math::Matrix observations = columns({{1.0, 2.0, 3.0, 4.0}, {2.0, 4.0, 6.0, 8.0}});
+  const math::Matrix result = analytics::covariance(observations);
+
+  REQUIRE(result.rows() == 2);
+  REQUIRE(result(0, 0) == Catch::Approx(5.0 / 3.0));
+  REQUIRE(result(1, 1) == Catch::Approx(20.0 / 3.0));
+  REQUIRE(result(0, 1) == Catch::Approx(10.0 / 3.0));
+  REQUIRE(result(0, 1) == result(1, 0));
+
+  // Which is the same number the trailing covariance reports over the whole series.
+  REQUIRE(
+    result(0, 1) ==
+    Catch::Approx(analytics::rolling_cov(observations.col(0), observations.col(1), 4)[3])
+  );
+}
+
+TEST_CASE("pairwise deletion really can produce a covariance matrix that is not PSD") {
+  // Three variables whose observed rows overlap in three disjoint pairs, arranged so the
+  // implied correlations are +1, +1 and -1. No set of three series can do that at once, so
+  // the matrix assembled from the three pairs is not one any data produced: its smallest
+  // eigenvalue is -2/3. An optimizer handed this reports a portfolio with negative
+  // variance, which is why the documentation points at the repair rather than pretending
+  // the problem away.
+  const math::Matrix observations = columns({
+    {1.0, 2.0, missing(), missing(), 1.0, 2.0},
+    {1.0, 2.0, 1.0, 2.0, missing(), missing()},
+    {missing(), missing(), 1.0, 2.0, 2.0, 1.0},
+  });
+  const math::Matrix result = analytics::covariance(observations);
+
+  REQUIRE(result(0, 1) == Catch::Approx(0.5));
+  REQUIRE(result(1, 2) == Catch::Approx(0.5));
+  REQUIRE(result(0, 2) == Catch::Approx(-0.5));
+
+  const auto spectrum = math::symmetric_eigen(result);
+  REQUIRE(spectrum.converged_);
+  REQUIRE(spectrum.values_[0] == Catch::Approx(-2.0 / 3.0));
+
+  // And the repair puts every eigenvalue back at or above the floor.
+  const math::Matrix repaired = analytics::nearest_positive_definite(result, 1.0e-8);
+  const auto fixed = math::symmetric_eigen(repaired);
+  REQUIRE(fixed.converged_);
+  for (math::Index at = 0; at < fixed.values_.size(); ++at) {
+    REQUIRE(fixed.values_[at] >= 1.0e-8 - 1.0e-12);
+  }
+  // Symmetry survives the round trip, which an optimizer relies on.
+  REQUIRE(repaired(0, 2) == Catch::Approx(repaired(2, 0)));
+}
+
+TEST_CASE("the repair leaves an already positive definite matrix where it is") {
+  const math::Matrix good = columns({{2.0, 0.5}, {0.5, 1.0}});
+  const math::Matrix repaired = analytics::nearest_positive_definite(good);
+
+  REQUIRE(repaired(0, 0) == Catch::Approx(2.0));
+  REQUIRE(repaired(1, 1) == Catch::Approx(1.0));
+  REQUIRE(repaired(0, 1) == Catch::Approx(0.5));
+}
+
+TEST_CASE("the repair raises the diagonal, which is the documented cost of clipping") {
+  // Clipping an eigenvalue upward raises the trace, so a correlation matrix does not come
+  // back with a unit diagonal. This is asserted rather than left implicit because a caller
+  // who needs the unit diagonal has to rescale, and nothing here will do it for them.
+  const math::Matrix correlations = columns({
+    {1.0, 0.9, -0.9},
+    {0.9, 1.0, 0.9},
+    {-0.9, 0.9, 1.0},
+  });
+  const math::Matrix repaired = analytics::nearest_positive_definite(correlations, 1.0e-8);
+
+  REQUIRE(repaired(0, 0) > 1.0);
+  REQUIRE(repaired.trace() > correlations.trace());
+}
+
+TEST_CASE("the repair refuses a shape it cannot decompose") {
+  REQUIRE_THROWS_AS(
+    analytics::nearest_positive_definite(math::Matrix(2, 3)), std::invalid_argument
+  );
+  REQUIRE_THROWS_AS(
+    analytics::nearest_positive_definite(columns({{1.0, 0.0}, {0.0, 1.0}}), -1.0),
+    std::invalid_argument
+  );
+}
+
+TEST_CASE("an exponentially weighted covariance centres on its own weighted mean") {
+  // Two rows, decay 0.5, so weights are 0.5 and 1 and the weighted mean of {0, 3} is 2 --
+  // not 1.5. Subtracting the unweighted mean instead is the common shortcut, and it gives
+  // 2.25 here rather than 2.
+  const math::Matrix observations = columns({{0.0, 3.0}});
+  const math::Matrix result = analytics::ewma_covariance(observations, 0.5);
+
+  REQUIRE(result(0, 0) == Catch::Approx(2.0));
+}
+
+TEST_CASE("an exponentially weighted covariance leans on the recent rows") {
+  // A series that is calm and then volatile. The weighted variance has to exceed the
+  // unweighted one, because the volatile half is the recent half.
+  const math::Matrix observations =
+    columns({{10.0, 10.1, 9.9, 10.0, 12.0, 8.0, 13.0, 7.0}});
+  const math::Matrix weighted = analytics::ewma_covariance(observations, 0.9);
+  const math::Matrix plain = analytics::covariance(observations);
+
+  REQUIRE(weighted(0, 0) > plain(0, 0));
+}
+
+TEST_CASE("an exponentially weighted covariance refuses a decay that is not one") {
+  const math::Matrix observations = columns({{1.0, 2.0, 3.0}});
+  REQUIRE_THROWS_AS(analytics::ewma_covariance(observations, 0.0), std::invalid_argument);
+  REQUIRE_THROWS_AS(analytics::ewma_covariance(observations, 1.0), std::invalid_argument);
+  REQUIRE_THROWS_AS(analytics::ewma_covariance(observations, 1.5), std::invalid_argument);
+}

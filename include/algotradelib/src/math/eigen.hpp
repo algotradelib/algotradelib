@@ -63,5 +63,100 @@ inline Matrix unobserved(std::size_t rows, std::size_t columns) {
   return Matrix::Constant(static_cast<Index>(rows), static_cast<Index>(columns), missing());
 }
 
+/**
+ * The decompositions the layers above need, as free functions.
+ *
+ * These exist for the same reason the type aliases do. A regression needs a QR and a
+ * covariance repair needs a symmetric eigendecomposition, and if the callers named
+ * `Eigen::ColPivHouseholderQR` directly then Eigen would be spread across the analytics
+ * layer and a second backend would be a rewrite rather than a sibling header. So the seam
+ * carries the *operations* as well as the types, and stays the one place Eigen appears.
+ *
+ * Each reports failure in its result rather than throwing or returning something plausible.
+ * A rank-deficient design matrix and a covariance matrix that is not positive definite are
+ * both ordinary conditions in market data -- more instruments than observations, or a pair
+ * of instruments that moved identically -- not exceptional ones.
+ */
+
+/** A least-squares solution together with what the decomposition learned about the fit. */
+struct LeastSquares {
+  Vector coefficients_;
+  /** Numerical rank of the design matrix, from the pivoting. */
+  Index rank_{0};
+  /** Whether the design matrix had full column rank, so the solution is unique. */
+  bool full_rank_{false};
+};
+
+/**
+ * Solves `min ||a x - b||` by column-pivoting Householder QR.
+ *
+ * Column pivoting rather than the plain QR or the normal equations. `a` is a design matrix
+ * of market data, where two columns being nearly collinear is the normal case rather than a
+ * pathology -- two instruments in the same sector, or a factor that is almost a combination
+ * of two others. The normal equations square the condition number, which for such a matrix
+ * is the difference between a usable answer and noise; pivoting also produces the rank,
+ * which is the only honest way to tell a caller that its factors were not independent.
+ */
+inline LeastSquares least_squares(MatrixView a, SeriesView b) {
+  LeastSquares result;
+  Eigen::ColPivHouseholderQR<Matrix> decomposition(a);
+  result.rank_ = decomposition.rank();
+  result.full_rank_ = result.rank_ == a.cols();
+  result.coefficients_ = decomposition.solve(b);
+  return result;
+}
+
+/** A solution of a symmetric positive-definite system, and whether it was one. */
+struct PositiveDefiniteSolution {
+  Vector values_;
+  /** False when the Cholesky factorization failed, which means `a` was not definite. */
+  bool definite_{false};
+};
+
+/**
+ * Solves `a x = b` for symmetric positive-definite `a` by Cholesky factorization.
+ *
+ * Reports `definite_ == false` rather than throwing when the factorization fails, and leaves
+ * `values_` empty. A caller that ignored the flag and used the values would be acting on a
+ * solution to a system that has none.
+ */
+inline PositiveDefiniteSolution solve_positive_definite(MatrixView a, SeriesView b) {
+  PositiveDefiniteSolution result;
+  Eigen::LLT<Matrix> factorization(a);
+  if (factorization.info() != Eigen::Success) {
+    return result;
+  }
+  result.values_ = factorization.solve(b);
+  result.definite_ = true;
+  return result;
+}
+
+/** A symmetric eigendecomposition: `a == vectors_ * values_.asDiagonal() * vectors_^T`. */
+struct SymmetricEigen {
+  /** Eigenvalues in ascending order. */
+  Vector values_;
+  /** The corresponding orthonormal eigenvectors, one per column. */
+  Matrix vectors_;
+  bool converged_{false};
+};
+
+/**
+ * Decomposes a symmetric matrix into its eigenvalues and eigenvectors.
+ *
+ * Only the lower triangle is read, so a matrix that is symmetric up to rounding is handled
+ * without the caller having to symmetrize it first.
+ */
+inline SymmetricEigen symmetric_eigen(MatrixView a) {
+  SymmetricEigen result;
+  Eigen::SelfAdjointEigenSolver<Matrix> solver(a);
+  if (solver.info() != Eigen::Success) {
+    return result;
+  }
+  result.values_ = solver.eigenvalues();
+  result.vectors_ = solver.eigenvectors();
+  result.converged_ = true;
+  return result;
+}
+
 } // namespace math
 } // namespace algotradelib
