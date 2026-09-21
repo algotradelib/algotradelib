@@ -4,6 +4,7 @@
 
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 using namespace algotradelib;
@@ -316,4 +317,63 @@ TEST_CASE("a mid-flight failure on the live path stops the next order for that i
   const auto third = live_runner.feed(bar_at(48, "70000"));
   REQUIRE(third.would_place_.size() == 1);
   REQUIRE(session.placed().size() == 2);
+}
+
+// ---------------------------------------------------------------------------
+// Binding in one call
+// ---------------------------------------------------------------------------
+
+TEST_CASE("binding reads the capabilities and the tag off the session") {
+  // The repetition the factories remove, and the mismatch they make unexpressible: writing the four
+  // parameters out lets a caller pair one broker's tag with another's capabilities.
+  FakeSession<WithKey> session;
+  auto bound = live::bind(session, HoldTen{}, {});
+
+  STATIC_REQUIRE(std::is_same_v<decltype(bound)::Tag, FakeBroker>);
+  STATIC_REQUIRE(decltype(bound)::Context::caps::has_client_order_id);
+
+  bound.context().set_instrument(samsung_reference());
+  bound.context().set_phase(strategy::MarketPhase::OPEN);
+  bound.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+  const auto report = bound.feed(bar_at(0, "70000"));
+  REQUIRE(report.would_place_.size() == 1);
+  // It reached the session, which is what `bind` is for.
+  REQUIRE(session.placed().size() == 1);
+}
+
+TEST_CASE("an observing binding has the same types and nothing to send through") {
+  // Same Caps and BrokerTag as the live binding, so a capability-gated strategy compiles the same
+  // branch in both and observing cannot diverge from trading.
+  FakeSession<WithKey> session;
+  auto observing = live::bind_observer(session, HoldTen{}, {});
+
+  STATIC_REQUIRE(std::is_same_v<decltype(observing)::Tag, FakeBroker>);
+  STATIC_REQUIRE(decltype(observing)::Context::caps::has_client_order_id);
+
+  observing.context().set_instrument(samsung_reference());
+  observing.context().set_phase(strategy::MarketPhase::OPEN);
+  observing.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+  const auto report = observing.feed(bar_at(0, "70000"));
+  // The decision is reported as a placement, where it belongs -- not as a refusal, which is what
+  // halting the guard would have produced.
+  REQUIRE(report.would_place_.size() == 1);
+  REQUIRE(report.refused_.empty());
+  // And the session was never touched: there is nothing to send through, rather than a check that
+  // declined to send.
+  REQUIRE(session.placed().empty());
+}
+
+TEST_CASE("an observing binding records nothing in the ledger, because nothing was sent") {
+  FakeSession<WithKey> session;
+  session.fail_with(ErrorCategory::TRANSPORT);
+  auto observing = live::bind_observer(session, HoldTen{}, {});
+  observing.context().set_instrument(samsung_reference());
+  observing.context().set_phase(strategy::MarketPhase::OPEN);
+  observing.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+  // The session would have failed, and it is never asked, so no doubt is created.
+  observing.feed(bar_at(0, "70000"));
+  REQUIRE(observing.ledger().empty());
 }

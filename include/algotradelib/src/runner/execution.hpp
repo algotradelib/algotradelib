@@ -136,6 +136,22 @@ struct WithheldOrder {
  * **Nothing clears an entry except reading the broker's own order list.** Not a timeout, not a
  * later success, and not a subsequent bar. A timeout would resume trading on a guess; a later
  * success on a *different* instruction says nothing about the one that vanished.
+ *
+ * **It does not survive the process, and that is a real limitation rather than an oversight to
+ * discover later.** The entries live in memory. Three consequences, in increasing order of how much
+ * they matter:
+ *
+ * 1. Killing a runner sends nothing further, because there is no runner. But it is **not a
+ *    flatten**: an order the broker already accepted stays live on the exchange, which knows nothing
+ *    about a process that died.
+ * 2. A mark made a moment before termination is lost with the rest of the ledger.
+ * 3. Worse, an order *in flight* when the process is killed never reaches the classification at all.
+ *    A default `SIGINT` handler terminates immediately, so no error path runs, `outcome_of` is never
+ *    called, and nothing records that the outcome is unknown.
+ *
+ * So after any abnormal termination, the broker's order list has to be read before trading resumes,
+ * and a restarted runner cannot infer from an empty ledger that nothing is owed. Until that is
+ * automatic, it is an operator's obligation. See `plan/todo/durable-indeterminacy.md`.
  */
 class IndeterminacyLedger {
 public:

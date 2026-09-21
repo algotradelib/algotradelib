@@ -198,6 +198,34 @@ rejection risks an unwatched live order and a doubled position, while calling a 
 indeterminate costs one reconciliation. Only one of those can lose money, so an unrecognized error
 category is treated as unknown.
 
+## What killing the process does, and does not do
+
+Worth being exact about, because the answer is reassuring in one direction and not in the other.
+
+**It stops the runner.** There is no runner, so nothing further is sent. `guard().halt()` is the same
+kind of thing: it stops *this program* from sending.
+
+**It does not withdraw anything.** An order the broker already accepted stays live on the exchange,
+which knows nothing about a process that died. Killing a program is not a kill switch in the
+exchange's sense, and `halt()` is not a flatten. Flattening is a decision — `vanilla::TimedLiquidation`
+makes it on a session boundary, or an operator makes it through the broker's own tools.
+
+**And the reconciliation obligation is lost with it.** `IndeterminacyLedger` lives in memory. Two
+distinct problems follow:
+
+- A mark made a moment before termination is gone.
+- An order *in flight* at the moment of a `Ctrl+C` never reaches the classification at all. A default
+  `SIGINT` handler terminates immediately, so no error path runs, `outcome_of` is never called, and
+  nothing records that the outcome is unknown.
+
+So **after any abnormal termination, read the broker's order list before trading again.** A restarted
+runner starts with an empty ledger, and an empty ledger does not mean nothing is owed — it means
+nothing is *remembered*. Until that is automatic, it is the operator's obligation; see
+`plan/todo/durable-indeterminacy.md`.
+
+The exposure is bounded in practice by how long a runner runs: this branch ships no polling loop, so a
+program does one pass and exits, and at most the orders of that pass can be in doubt.
+
 ## Order of operations
 
 `Plan` returns cancellations and placements separately, and the runner applies **cancellations

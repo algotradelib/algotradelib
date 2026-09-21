@@ -150,7 +150,14 @@ public:
   /** Returns the limits in force. */
   const RiskLimits& limits() const noexcept { return limits_; }
 
-  /** Stops every order until `resume()`. Takes effect before any other check. */
+  /**
+   * Stops every order until `resume()`. Takes effect before any other check.
+   *
+   * In-process and in-memory. It stops this runner from *sending*; it does not withdraw anything
+   * already sent, and it does not survive the process. Killing a program is not a kill switch in the
+   * exchange's sense: orders the broker accepted stay live. Flattening is a strategy's decision --
+   * see `vanilla::TimedLiquidation` -- or an operator's, through the broker's own tools.
+   */
   void halt() noexcept { halted_ = true; }
 
   /** Allows orders again. */

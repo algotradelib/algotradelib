@@ -19,6 +19,13 @@
 //
 // Credentials come from the same environment variables the other examples document. Without
 // `--live` a bound session still only *reads*: it fetches bars and prints what it would do.
+//
+// **On interrupting it.** A `Ctrl+C` stops this program, and that is all it does. An order the broker
+// already accepted stays live on the exchange, which knows nothing about a process that died -- and an
+// order *in flight* at that moment never reaches the classification that would have recorded its
+// outcome as unknown, because the default signal handler terminates immediately. So after
+// interrupting a `--live` run, read the broker's order list before running it again. This example
+// places at most one order per run, which bounds what can be in doubt to that one.
 
 #include <algotradelib/kis>
 #include <algotradelib/live>
@@ -102,17 +109,14 @@ struct MarketState {
 };
 
 /**
- * Runs the pipeline over `state`, sending through whichever executor it is given.
+ * Runs the pipeline over `state` with an already-bound runner.
  *
- * Names no broker: the tag and the capabilities arrive as template parameters and the executor
- * decides where instructions go. That is the portability claim in executable form -- and it is also
- * how observing works, below.
+ * Names no broker: the tag arrives as a template parameter and the runner was bound by
+ * `live::bind` or `live::bind_observer`, which read the broker's capabilities and tag off the
+ * session. That is the portability claim in executable form -- and it is also how observing works.
  */
-template <typename Caps, typename Tag, typename Executor>
-int drive(const InstrumentId& instrument, const MarketState& state, Executor executor) {
-  runner::Runner<vanilla::BuyAndHold, Caps, Tag, Executor> live_runner(
-    strategy_for(instrument), example_limits(), 512, std::move(executor)
-  );
+template <typename Tag, typename R>
+int drive(const InstrumentId& instrument, const MarketState& state, R live_runner) {
   live_runner.context().set_instrument(state.reference_);
   live_runner.context().set_phase(strategy::MarketPhase::OPEN);
 
@@ -153,6 +157,14 @@ int drive(const InstrumentId& instrument, const MarketState& state, Executor exe
     return 1;
   }
   return 0;
+}
+
+/** Warns, after a live run, about what an interruption would have left unrecorded. */
+void note_interruption_hazard() {
+  std::cout
+    << "\nnote: interrupting a live run does not withdraw an accepted order, and an order in\n"
+    << "      flight at that moment leaves no record that its outcome is unknown. Read the\n"
+    << "      broker's order list before running again.\n";
 }
 
 /**
@@ -215,10 +227,18 @@ int trade(Session& session, const InstrumentId& instrument, Mode mode) {
   }
   state.holdings_ = std::move(holdings.value());
 
+  // One line per mode. The factories read the capabilities and the tag off the session, so the two
+  // runners differ in exactly one thing -- where the send goes -- and cannot differ in any other.
   if (mode == Mode::TRADE) {
-    return drive<Caps, Tag>(instrument, state, live::SessionExecutor<Session>(session));
+    const auto status = drive<Tag>(
+      instrument, state, live::bind(session, strategy_for(instrument), example_limits())
+    );
+    note_interruption_hazard();
+    return status;
   }
-  return drive<Caps, Tag>(instrument, state, runner::RecordingExecutor<Tag>{});
+  return drive<Tag>(
+    instrument, state, live::bind_observer(session, strategy_for(instrument), example_limits())
+  );
 }
 
 int trade_kis(ssl::context& tls, const std::string& symbol, Mode mode) {

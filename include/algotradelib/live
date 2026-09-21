@@ -14,6 +14,7 @@
  * adds is a translation to `OrderRequest` and the session call.
  */
 
+#include "src/live/bind.hpp"
 #include "src/live/session_executor.hpp"
 
 #include <algotradelib/runner>
