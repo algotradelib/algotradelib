@@ -737,6 +737,54 @@ It is never retried, because a retry is what doubles a position.
 See the [writing a strategy](doxygen/vignettes/writing-a-strategy.md) and
 [binding a broker](doxygen/vignettes/binding-a-broker.md) vignettes.
 
+## Backtesting
+
+Replay history through the same context a live session uses, so a strategy's source is identical in
+both. `Backtester` is the third configuration of `Runner`, after `DryRunner` and the session-backed one.
+
+```cpp
+#include <algotradelib/backtest>
+
+backtest::Backtester<MyStrategy> engine(MyStrategy{}, config, fills);
+for (const auto& bar : series.bars_) {
+  engine.feed(strategy::make_bar_event(series.instrument_, series.interval_, series.stamp_, bar));
+}
+engine.finish();
+const auto report = backtest::summarize(engine.result(), engine.fills(), periods_per_year);
+```
+
+### A fill never comes from the bar that produced the order
+
+`NextBarFillModel::decide` takes the next bar and nothing else, so it cannot see the signal's own bar —
+the lookahead discipline is structural rather than a rule to remember. An order submitted on the last
+bar never fills and is counted, because there is no next bar and inventing one would be inventing data.
+
+### Interval-agnostic by construction
+
+Nothing assumes a bar is a day. The clock advances by each bar's own `period_end_`, phases come from a
+`SessionWindow`, and annualizing takes its period count from the caller — 245 for daily bars on KRX,
+95,550 for minute bars. The same strategy replayed at both granularities is asserted **equal to itself**
+on execution count, position, cash and realized profit.
+
+What limits intraday work is data rather than the engine: KIS serves minute bars one trading day at a
+time. A broker that serves intraday history replays with no engine change.
+
+### Every caveat is a field
+
+`ReportCaveats` travels with the figures — the limit-fill assumption, the commission and slippage models
+applied, gaps not interpolated across, orders that never filled, `volume_ignored` (always true), and
+`multiple_instruments_` for the survivorship bias no broker data can remove. A reader who has to
+remember which assumptions applied to their run eventually will not.
+
+Costs are models you state; `analytics` carries none. Charging nothing is itself a model and the report
+says so, because a zero-cost run should be an informed choice rather than an undetectable oversight.
+
+`example-backtest-offline` replays four strategies over bars built in code. `example-backtest-broker`
+fetches real history, then replays it with the session finished with first.
+
+See the [reading a backtest honestly](doxygen/vignettes/reading-a-backtest.md) vignette for what the
+fill model assumes, what it does not model, and which figures to distrust first.
+
 ## Transport behavior
 
 - HTTPS connections are persistent per client and requests are serialized on a
