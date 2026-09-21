@@ -54,6 +54,50 @@ inline constexpr std::string_view send_outcome_name(SendOutcome outcome) noexcep
   return "unknown";
 }
 
+/**
+ * Returns what an order-writing failure means for the order's existence.
+ *
+ * The single most consequential function in the runner, because it decides whether the position is
+ * known. Four categories leave the outcome unknown, and three of them are not obvious:
+ *
+ * - **`TRANSPORT`** is the expected one. The connection failed, and whether the bytes arrived is
+ *   exactly what is not known.
+ * - **`CANCELLED`** is a *local* abandonment — a deadline expired, or the session closed — and says
+ *   nothing about whether the request had already gone out. Treating a local timeout as a failure
+ *   is how an order nobody is watching ends up resting on an exchange.
+ * - **`PROTOCOL`** means the broker answered and the answer could not be parsed. That answer may
+ *   well have been an acknowledgement. This is the trap: the request plainly succeeded at the
+ *   transport level, so it reads like a client-side problem, and the order may be live.
+ * - **An HTTP 5xx** is the broker's own infrastructure failing, which can happen after the
+ *   instruction reached the matching engine. A 4xx is the broker declining to act, which is an
+ *   answer.
+ *
+ * Everything else is a refusal: authentication fails before processing, a rate limit is refused
+ * before processing, and an invalid argument is either rejected locally or declined by the broker.
+ * In each case the order does not exist.
+ *
+ * The asymmetry is deliberate. Calling an indeterminate outcome a rejection risks an unwatched live
+ * order and a doubled position; calling a rejection indeterminate costs one reconciliation. Only
+ * one of those can lose money.
+ */
+inline SendOutcome outcome_of(const BrokerError& error) {
+  switch (error.category_) {
+    case ErrorCategory::TRANSPORT:
+    case ErrorCategory::CANCELLED:
+    case ErrorCategory::PROTOCOL:
+      return SendOutcome::INDETERMINATE;
+    case ErrorCategory::HTTP:
+      return error.http_status_ >= 500 ? SendOutcome::INDETERMINATE : SendOutcome::REJECTED;
+    case ErrorCategory::AUTHENTICATION:
+    case ErrorCategory::RATE_LIMIT:
+    case ErrorCategory::INVALID_ARGUMENT:
+      return SendOutcome::REJECTED;
+  }
+  // A category this library does not recognize is treated as unknown rather than as a refusal,
+  // for the same asymmetry: the cost of being wrong is not the same in both directions.
+  return SendOutcome::INDETERMINATE;
+}
+
 /** Why a planned order was held back rather than sent or refused. */
 enum class WithheldReason {
   /**
@@ -181,8 +225,8 @@ public:
   }
 
   /** Accepts a cancellation and records it. */
-  SendOutcome cancel(const OrderRef<BrokerTag>& ref) {
-    canceled_.push_back(ref);
+  SendOutcome cancel(const WorkingOrder<BrokerTag>& working) {
+    canceled_.push_back(working.ref_);
     return SendOutcome::ACCEPTED;
   }
 

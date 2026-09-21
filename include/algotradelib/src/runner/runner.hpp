@@ -62,13 +62,21 @@ struct DryRunReport {
   std::vector<WithheldOrder> withheld_;
   /** Instructions whose send failed in transit, leaving their outcome unknown. */
   std::vector<strategy::PlannedOrder> indeterminate_;
+  /**
+   * Cancellations naming an order the portfolio snapshot does not hold.
+   *
+   * Reported rather than sent blind. The snapshot is stale, and the order may already be gone; a
+   * cancellation the runner cannot describe is one it should not invent.
+   */
+  std::vector<OrderRef<BrokerTag>> unresolved_cancel_;
   /** Lines the strategy logged. */
   std::vector<std::string> log_;
 
   /** Returns whether the run decided to do nothing at all. */
   bool quiet() const noexcept {
     return would_place_.empty() && would_cancel_.empty() && rejected_.empty() &&
-      refused_.empty() && withheld_.empty() && indeterminate_.empty();
+      refused_.empty() && withheld_.empty() && indeterminate_.empty() &&
+      unresolved_cancel_.empty();
   }
 };
 
@@ -318,19 +326,20 @@ private:
    * cannot make an unresolved position worse.
    */
   void send_cancel(const OrderRef<Tag>& ref, Report& report) {
-    const auto outcome = executor_.cancel(ref);
+    // Resolved against the portfolio first, because building a cancellation needs the order's own
+    // quantity on a broker that requires one. A reference not in the snapshot means the snapshot is
+    // stale, and sending a cancellation for an order the runner cannot describe is exactly the kind
+    // of blind instruction that should be visible instead.
+    const auto* working = context_.portfolio().find_working(ref);
+    if (working == nullptr) {
+      report.unresolved_cancel_.push_back(ref);
+      return;
+    }
+    const auto outcome = executor_.cancel(*working);
     if (outcome == SendOutcome::INDETERMINATE) {
-      ledger_.mark(instrument_of_ref(ref), "a cancellation request failed in transit");
+      ledger_.mark(working->order_.instrument_, "a cancellation request failed in transit");
     }
     report.would_cancel_.push_back(ref);
-  }
-
-  /** Returns which instrument a working order reference belongs to, from the portfolio. */
-  InstrumentId instrument_of_ref(const OrderRef<Tag>& ref) const {
-    if (const auto* working = context_.portfolio().find_working(ref)) {
-      return working->order_.instrument_;
-    }
-    return InstrumentId{};
   }
 
   /**

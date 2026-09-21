@@ -384,8 +384,8 @@ public:
     return place_outcome_;
   }
 
-  SendOutcome cancel(const OrderRef<Tag>& ref) {
-    canceled_.push_back(ref);
+  SendOutcome cancel(const WorkingOrder<Tag>& working) {
+    canceled_.push_back(working.ref_);
     return cancel_outcome_;
   }
 
@@ -398,6 +398,14 @@ public:
 private:
   std::vector<strategy::PlannedOrder> placed_;
   std::vector<OrderRef<Tag>> canceled_;
+};
+
+/** Cancels a reference the portfolio does not hold, to show it being reported rather than sent. */
+struct CancelGhost {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent&) {
+    ctx.cancel(OrderRef<runner::DryTag>{"never-seen", ""}, "ghost");
+  }
 };
 
 using ScriptedRunner = runner::Runner<
@@ -561,4 +569,58 @@ TEST_CASE("every send outcome and withheld reason has a stable name") {
   REQUIRE(
     runner::withheld_reason_name(WithheldReason::RECONCILE_REQUIRED) == "reconcile_required"
   );
+}
+
+TEST_CASE("every error category is classified by whether the order might exist") {
+  const auto classify = [](ErrorCategory category, int status = 0) {
+    BrokerError error;
+    error.category_ = category;
+    error.http_status_ = status;
+    return runner::outcome_of(error);
+  };
+
+  // The connection failed; whether the bytes arrived is exactly what is unknown.
+  REQUIRE(classify(ErrorCategory::TRANSPORT) == SendOutcome::INDETERMINATE);
+  // A local abandonment -- a deadline, a closing session -- says nothing about whether the request
+  // had already gone out. Treating it as failure is how an unwatched order ends up resting.
+  REQUIRE(classify(ErrorCategory::CANCELLED) == SendOutcome::INDETERMINATE);
+  // The broker answered and the answer could not be parsed. It may well have been an
+  // acknowledgement, which is the trap: it reads like a client-side problem.
+  REQUIRE(classify(ErrorCategory::PROTOCOL) == SendOutcome::INDETERMINATE);
+  // The broker's own infrastructure failing, possibly after the instruction reached the engine.
+  REQUIRE(classify(ErrorCategory::HTTP, 500) == SendOutcome::INDETERMINATE);
+  REQUIRE(classify(ErrorCategory::HTTP, 503) == SendOutcome::INDETERMINATE);
+
+  // A 4xx is the broker declining to act, which is an answer.
+  REQUIRE(classify(ErrorCategory::HTTP, 400) == SendOutcome::REJECTED);
+  REQUIRE(classify(ErrorCategory::HTTP, 404) == SendOutcome::REJECTED);
+  // Authentication and rate limiting are both refused before processing.
+  REQUIRE(classify(ErrorCategory::AUTHENTICATION) == SendOutcome::REJECTED);
+  REQUIRE(classify(ErrorCategory::RATE_LIMIT) == SendOutcome::REJECTED);
+  // An invalid argument is rejected locally or declined by the broker; either way it does not exist.
+  REQUIRE(classify(ErrorCategory::INVALID_ARGUMENT) == SendOutcome::REJECTED);
+}
+
+TEST_CASE("the asymmetry is the point: an unknown classification errs toward reconciling") {
+  // Calling an indeterminate outcome a rejection risks an unwatched live order and a doubled
+  // position. Calling a rejection indeterminate costs one reconciliation. Only one loses money, so
+  // a category this library does not recognize is treated as unknown.
+  BrokerError error;
+  error.category_ = static_cast<ErrorCategory>(99);
+  REQUIRE(runner::outcome_of(error) == SendOutcome::INDETERMINATE);
+}
+
+TEST_CASE("a cancellation naming an order the snapshot does not hold is reported, not sent blind") {
+  // The snapshot is stale and the order may already be gone. Building a cancellation needs the
+  // order's own quantity on a broker that requires one, so an order the runner cannot describe is
+  // one it must not invent an instruction for.
+  using Tag = runner::DryTag;
+  using Tag = runner::DryTag;
+  runner::Runner<CancelGhost, strategy::NoCaps, Tag, ScriptedExecutor<Tag>> dry;
+  arrange(dry);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.unresolved_cancel_.size() == 1);
+  REQUIRE(report.would_cancel_.empty());
+  REQUIRE(dry.executor().canceled().empty());
 }
