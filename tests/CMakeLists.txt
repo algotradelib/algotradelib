@@ -35,6 +35,12 @@ target_link_libraries(algotradelib-market-data-tests PRIVATE
     Catch2::Catch2WithMain
 )
 
+add_executable(algotradelib-runner-tests test-runner.cpp)
+target_link_libraries(algotradelib-runner-tests PRIVATE
+    algotradelib::algotradelib
+    Catch2::Catch2WithMain
+)
+
 add_executable(algotradelib-strategy-tests test-strategy.cpp)
 target_link_libraries(algotradelib-strategy-tests PRIVATE
     algotradelib::algotradelib
@@ -55,6 +61,7 @@ catch_discover_tests(algotradelib-broker-port-tests)
 catch_discover_tests(algotradelib-rate-limit-tests)
 catch_discover_tests(algotradelib-market-data-tests)
 catch_discover_tests(algotradelib-strategy-tests)
+catch_discover_tests(algotradelib-runner-tests)
 if(ATL_USE_EIGEN)
     catch_discover_tests(algotradelib-analytics-tests)
 endif()
@@ -65,6 +72,12 @@ endif()
 add_executable(algotradelib-strategy-isolation test-strategy-isolation.cpp)
 target_link_libraries(algotradelib-strategy-isolation PRIVATE algotradelib::algotradelib)
 add_test(NAME strategy-surface-stays-isolated COMMAND algotradelib-strategy-isolation)
+
+# The same guarantee for the dry runner: a dry run links no transport, so a dry-run binary has no
+# code path that could place an order.
+add_executable(algotradelib-runner-isolation test-runner-isolation.cpp)
+target_link_libraries(algotradelib-runner-isolation PRIVATE algotradelib::algotradelib)
+add_test(NAME dry-runner-stays-isolated COMMAND algotradelib-runner-isolation)
 
 # Every header must compile on its own.
 #

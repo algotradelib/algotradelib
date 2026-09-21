@@ -1,0 +1,353 @@
+#include <algotradelib/runner>
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <chrono>
+#include <optional>
+#include <string>
+#include <vector>
+
+using namespace algotradelib;
+
+namespace strategy = algotradelib::strategy;
+namespace runner = algotradelib::runner;
+
+namespace {
+
+using Clock = std::chrono::system_clock;
+
+/** Builds a UTC instant without a zone database. */
+Clock::time_point utc(int year, int month, int day, int hour, int minute) {
+  const long long a = (month <= 2) ? year - 1 : year;
+  const long long m = (month <= 2) ? month + 12 : month;
+  const long long era_days =
+    365 * a + a / 4 - a / 100 + a / 400 + (153 * (m - 3) + 2) / 5 + day - 1;
+  return Clock::time_point{} + std::chrono::hours((era_days - 719468) * 24 + hour) +
+    std::chrono::minutes(minute);
+}
+
+InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
+
+Instrument samsung_reference() {
+  Instrument reference;
+  reference.id_ = samsung();
+  reference.type_ = SecurityType::STOCK;
+  reference.currency_ = Currency{"KRW"};
+  reference.lot_size_ = Decimal64::parse("1");
+  reference.price_rule_ = PriceRule::krx_equity();
+  return reference;
+}
+
+strategy::BarEvent bar_at(int day, const char* close) {
+  Bar bar;
+  bar.timestamp_ = utc(2026, 3, day, 6, 30);
+  bar.high_ = Decimal64::parse(close);
+  bar.low_ = Decimal64::parse(close);
+  bar.close_ = Decimal64::parse(close);
+  bar.volume_ = Decimal64::parse("1000000");
+  return strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, bar);
+}
+
+/** Holds a fixed number of shares, stated as a target. */
+struct HoldTen {
+  std::size_t bars_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ++bars_;
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = Decimal64::parse("10");
+    target.tag_ = "hold-ten";
+    ctx.submit(target);
+    ctx.log().note("targeted ten");
+  }
+};
+
+/** Cancels every working order, then states a target — order matters. */
+struct CancelThenTarget {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    for (const auto& working : ctx.portfolio().working_) {
+      ctx.cancel(working.ref_, "clear");
+    }
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = Decimal64::parse("5");
+    ctx.submit(target);
+  }
+};
+
+/** Defines only on_start, to prove the other handlers cost nothing. */
+struct StartOnly {
+  bool started_{false};
+  template <class Ctx> void on_start(Ctx&) { started_ = true; }
+};
+
+/** Prices a limit above today's band, to show the runner clamping it. */
+struct LimitAt80k {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    const auto reference = ctx.instrument(bar.instrument_);
+    if (!reference) {
+      return;
+    }
+    const auto limit =
+      strategy::Price::checked(Decimal64::parse("80000"), reference->price_rule_);
+    if (!limit) {
+      return;
+    }
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = Decimal64::parse("1");
+    target.limit_ = limit;
+    ctx.submit(target);
+  }
+};
+
+/** Asks for a quarter of the portfolio, to show weight sizing needing a total. */
+struct QuarterWeight {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ctx.submit(
+      strategy::OrderIntent::market(
+        bar.instrument_,
+        OrderSide::BUY,
+        strategy::SizeSpec::target_weight(Decimal64::parse("0.25"))
+      )
+    );
+  }
+};
+
+/** Arranges a runner with reference data, an open market, and a last price. */
+template <typename S>
+void arrange(runner::DryRunner<S>& dry) {
+  dry.context().set_instrument(samsung_reference());
+  dry.context().set_phase(strategy::MarketPhase::OPEN);
+  dry.context().set_last_price(samsung(), Decimal64::parse("70000"));
+}
+
+} // namespace
+
+TEST_CASE("a dry run turns a target into the order it would have sent") {
+  runner::DryRunner<HoldTen> dry;
+  arrange(dry);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.would_place_.size() == 1);
+  REQUIRE(report.would_place_[0].quantity_ == Decimal64::parse("10"));
+  REQUIRE(report.would_place_[0].side_ == OrderSide::BUY);
+  REQUIRE(report.would_place_[0].tag_ == "hold-ten");
+  REQUIRE(report.rejected_.empty());
+  REQUIRE(report.refused_.empty());
+  REQUIRE(report.log_.size() == 1);
+  REQUIRE(report.log_[0] == "targeted ten");
+  REQUIRE(dry.strategy().bars_ == 1);
+}
+
+TEST_CASE("a bar advances the clock to its period end, not into the bar") {
+  // Advancing to a timestamp that marks the period's open would place the runner inside a bar it
+  // is being told about, which is the off-by-one that makes a backtest unreproducible.
+  runner::DryRunner<HoldTen> dry;
+  arrange(dry);
+  const auto event = bar_at(10, "70000");
+
+  dry.feed(event);
+  REQUIRE(dry.context().now() == event.period_end_);
+  REQUIRE(dry.context().now() == event.bar_.timestamp_);
+}
+
+TEST_CASE("a target already held asks for nothing on the next bar") {
+  runner::DryRunner<HoldTen> dry;
+  arrange(dry);
+  strategy::Portfolio<runner::DryRunner<HoldTen>::Tag> portfolio;
+  HoldingPosition held;
+  held.instrument_ = samsung();
+  held.quantity_ = Decimal64::parse("10");
+  portfolio.positions_.push_back(held);
+  dry.context().set_portfolio(portfolio);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.quiet());
+}
+
+TEST_CASE("cancellations are collected before anything would be placed") {
+  // The sequencing Plan documents as the caller's obligation, and here is the caller. A
+  // replacement placed before its predecessor is withdrawn is briefly a double position.
+  using Tag = runner::DryRunner<CancelThenTarget>::Tag;
+  runner::DryRunner<CancelThenTarget> dry;
+  arrange(dry);
+
+  strategy::Portfolio<Tag> portfolio;
+  WorkingOrder<Tag> working;
+  working.order_.instrument_ = samsung();
+  working.order_.side_ = OrderSide::BUY;
+  working.order_.status_ = OrderStatus::PENDING;
+  working.order_.quantity_ = Decimal64::parse("3");
+  working.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+  working.ref_ = OrderRef<Tag>{"0001", ""};
+  portfolio.working_.push_back(working);
+  dry.context().set_portfolio(portfolio);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE_FALSE(report.would_cancel_.empty());
+  REQUIRE(report.would_place_.size() == 1);
+  // Target five with three working and none held, so two more after the cancellation.
+  REQUIRE(report.would_place_[0].quantity_ == Decimal64::parse("2"));
+}
+
+TEST_CASE("a strategy defining one handler is driven without the others existing") {
+  runner::DryRunner<StartOnly> dry;
+  arrange(dry);
+
+  REQUIRE(dry.start().quiet());
+  REQUIRE(dry.strategy().started_);
+  // Feeding a bar to a strategy with no on_bar compiles and does nothing.
+  REQUIRE(dry.feed(bar_at(10, "70000")).quiet());
+  REQUIRE(dry.stop().quiet());
+}
+
+TEST_CASE("a guard refusal is reported and no order survives it") {
+  strategy::RiskLimits limits;
+  limits.max_order_notional_ = Decimal64::parse("100000");
+  runner::DryRunner<HoldTen> dry(HoldTen{}, limits);
+  arrange(dry);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.would_place_.empty());
+  REQUIRE(report.refused_.size() == 1);
+  REQUIRE(report.refused_[0].reason_ == strategy::GuardReason::ORDER_NOTIONAL_TOO_LARGE);
+  REQUIRE(report.refused_[0].tag_ == "hold-ten");
+}
+
+TEST_CASE("the kill switch stops a dry run as it would a live one") {
+  runner::DryRunner<HoldTen> dry;
+  arrange(dry);
+  dry.guard().halt();
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.would_place_.empty());
+  REQUIRE(report.refused_.size() == 1);
+  REQUIRE(report.refused_[0].reason_ == strategy::GuardReason::TRADING_HALTED);
+}
+
+TEST_CASE("the market phase the runner is in gates the order") {
+  runner::DryRunner<HoldTen> dry;
+  arrange(dry);
+  dry.context().set_phase(strategy::MarketPhase::POST_CLOSE);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.refused_.size() == 1);
+  REQUIRE(report.refused_[0].reason_ == strategy::GuardReason::PHASE_NOT_PERMITTED);
+}
+
+TEST_CASE("an instrument the runner has not loaded is rejected, not guessed at") {
+  runner::DryRunner<HoldTen> dry;
+  dry.context().set_phase(strategy::MarketPhase::OPEN);
+  // Deliberately no reference data: without a tick grid and a lot size there is nothing to build.
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.would_place_.empty());
+  REQUIRE(report.rejected_.size() == 1);
+  REQUIRE(report.rejected_[0].reason_ == strategy::RejectReason::NO_REFERENCE_DATA);
+}
+
+TEST_CASE("rate budget is consumed across bars, as it will be in production") {
+  // A dry run records the send a live runner would perform, so the rate limit behaves the same
+  // here rather than being permanently unused and therefore untested until production.
+  strategy::RiskLimits limits;
+  limits.max_orders_per_window_ = 1;
+  // Wider than the gap between the two bars on purpose. A window of exactly one day against bars
+  // exactly a day apart would let the first send age out at the boundary -- correct behaviour for
+  // a half-open window, and a fixture that would have tested nothing.
+  limits.rate_window_ = std::chrono::hours(48);
+  runner::DryRunner<HoldTen> dry(HoldTen{}, limits);
+  arrange(dry);
+
+  REQUIRE(dry.feed(bar_at(10, "70000")).would_place_.size() == 1);
+  // The position is still flat in this stub portfolio, so the strategy asks again -- and the rate
+  // limit is what stops it.
+  const auto second = dry.feed(bar_at(11, "70000"));
+  REQUIRE(second.would_place_.empty());
+  REQUIRE(second.refused_.size() == 1);
+  REQUIRE(second.refused_[0].reason_ == strategy::GuardReason::ORDER_RATE_EXCEEDED);
+}
+
+TEST_CASE("a price band recorded on the runner clamps the order it produces") {
+  runner::DryRunner<LimitAt80k> dry;
+  arrange(dry);
+  PriceLimits band;
+  band.upper_ = Decimal64::parse("71000");
+  dry.set_price_limits(samsung(), band);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.would_place_.size() == 1);
+  REQUIRE(report.would_place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("71000")));
+  REQUIRE(report.would_place_[0].price_clamped_);
+}
+
+TEST_CASE("a weighted intent needs the portfolio value the runner was given") {
+  runner::DryRunner<QuarterWeight> dry;
+  arrange(dry);
+  const auto without = dry.feed(bar_at(10, "70000"));
+  REQUIRE(without.rejected_.size() == 1);
+  REQUIRE(without.rejected_[0].reason_ == strategy::RejectReason::NO_PORTFOLIO_VALUE);
+
+  dry.set_portfolio_value(Decimal64::parse("10000000"));
+  const auto with = dry.feed(bar_at(11, "70000"));
+  REQUIRE(with.would_place_.size() == 1);
+  REQUIRE(with.would_place_[0].quantity_ == Decimal64::parse("35"));
+}
+
+TEST_CASE("the log is bounded, so a long session cannot grow it without limit") {
+  runner::Context<runner::DryRunner<HoldTen>::Tag, strategy::NoCaps> context;
+  for (int at = 0; at < 5000; ++at) {
+    context.log().note("line");
+  }
+  REQUIRE(context.log().lines().size() <= 4096);
+
+  const auto taken = context.log().take();
+  REQUIRE_FALSE(taken.empty());
+  REQUIRE(context.log().lines().empty());
+}
+
+TEST_CASE("the queue keeps the order a strategy asked in") {
+  // A single ordered queue rather than one list per kind, because a cancellation followed by a
+  // target means something different from the reverse.
+  runner::Context<runner::DryRunner<HoldTen>::Tag, strategy::NoCaps> context;
+  using Tag = runner::DryRunner<HoldTen>::Tag;
+
+  context.cancel(OrderRef<Tag>{"0001", ""}, "first");
+  strategy::TargetPosition target;
+  target.instrument_ = samsung();
+  target.target_quantity_ = Decimal64::parse("1");
+  context.submit(target);
+
+  const auto queued = context.drain();
+  REQUIRE(queued.size() == 2);
+  REQUIRE(std::holds_alternative<strategy::CancelIntent<Tag>>(queued[0]));
+  REQUIRE(std::holds_alternative<strategy::TargetPosition>(queued[1]));
+  REQUIRE(context.queued().empty());
+}
+
+#if defined(ATL_HAS_EIGEN)
+TEST_CASE("the runner caches bars as a contiguous series an indicator can read") {
+  runner::DryRunner<HoldTen> dry(HoldTen{}, {}, 8);
+  arrange(dry);
+
+  for (int day = 10; day < 16; ++day) {
+    dry.feed(bar_at(day, "70000"));
+  }
+
+  const auto* series = dry.context().bars(samsung(), BarInterval::ONE_DAY);
+  REQUIRE(series != nullptr);
+  REQUIRE(series->size() == 6);
+  // The same call an indicator makes, over the runner's own memory.
+  const auto closes = series->column(analytics::BarField::CLOSE);
+  REQUIRE(closes.size() == 6);
+  REQUIRE(closes[5] == 70000.0);
+
+  // An instrument never seen has no series, rather than an empty one that looks like a gap.
+  REQUIRE(dry.context().bars(InstrumentId{Country::KR, Venue::COMBINED, "000660"}) == nullptr);
+}
+#endif

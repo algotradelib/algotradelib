@@ -1,0 +1,25 @@
+#pragma once
+
+/**
+ * The machinery that drives a strategy without a broker.
+ *
+ * Where `<algotradelib/strategy>` is what a strategy author includes, this is what a program
+ * includes to run one. It holds the context a strategy reads from, the dispatcher that calls only
+ * the handlers a strategy defines, and `DryRunner`, which exercises a strategy end to end and
+ * sends nothing.
+ *
+ * **Reaches no broker and no transport.** A dry run has no session, so a dry-run binary links no
+ * TLS and no HTTP: `tests/test-runner-isolation.cpp` asserts that from a translation unit that
+ * includes nothing else. `LiveRunner` is in `<algotradelib/live>` precisely because it does need
+ * them, and separating the two is what keeps that promise checkable.
+ *
+ * It does reach `<algotradelib/analytics>` when the library was built with a linear-algebra
+ * backend, because a cached bar series is an analytics type. Without one the context simply offers
+ * no series accessors, and a strategy trading on prices and positions alone is unaffected.
+ */
+
+#include "src/runner/context.hpp"
+#include "src/runner/dispatch.hpp"
+#include "src/runner/dry_runner.hpp"
+
+#include <algotradelib/strategy>
