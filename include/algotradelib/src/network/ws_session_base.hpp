@@ -1,5 +1,17 @@
 #pragma once
 
+/**
+ * Declares that this translation unit has reached the transport layer.
+ *
+ * Read by `tests/test-strategy-isolation.cpp` to assert that the strategy surface does not. A
+ * strategy must name no broker and perform no I/O, and that property degrades silently: one
+ * convenience include in a strategy header would couple every strategy to a vendor, and nothing
+ * would fail until someone built the same source against the other broker. Declaring the layer
+ * here makes the assertion an architectural statement rather than a search for a third-party
+ * macro that happens to come along for the ride.
+ */
+#define ATL_TRANSPORT_LAYER_PRESENT 1
+
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>

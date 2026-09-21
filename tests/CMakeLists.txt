@@ -59,26 +59,50 @@ if(ATL_USE_EIGEN)
     catch_discover_tests(algotradelib-analytics-tests)
 endif()
 
-# Guards the acceptance criterion that a strategy names no broker and performs no I/O, by
-# reading the compiler's own dependency output for <algotradelib/strategy>. Not a Catch2 test
-# because the property is about the include graph rather than about runtime behaviour.
-get_target_property(ATL_BOOST_INCLUDES Boost::json INTERFACE_INCLUDE_DIRECTORIES)
-if(NOT ATL_BOOST_INCLUDES)
-    set(ATL_BOOST_INCLUDES "")
-endif()
-if(ATL_USE_EIGEN)
-    get_target_property(ATL_EIGEN_INCLUDES Eigen3::Eigen INTERFACE_INCLUDE_DIRECTORIES)
-    if(ATL_EIGEN_INCLUDES)
-        list(APPEND ATL_BOOST_INCLUDES ${ATL_EIGEN_INCLUDES})
-    endif()
-endif()
+# The strategy surface's isolation is asserted in source, by a translation unit that includes
+# only <algotradelib/strategy>; see tests/test-strategy-isolation.cpp. It is built rather than
+# merely run, because a violation should fail the build.
+add_executable(algotradelib-strategy-isolation test-strategy-isolation.cpp)
+target_link_libraries(algotradelib-strategy-isolation PRIVATE algotradelib::algotradelib)
+add_test(NAME strategy-surface-stays-isolated COMMAND algotradelib-strategy-isolation)
 
-add_test(
-    NAME strategy-surface-includes-no-broker-or-transport
-    COMMAND ${CMAKE_COMMAND}
-        -DATL_COMPILER=${CMAKE_CXX_COMPILER}
-        -DATL_INCLUDE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../include
-        -DATL_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/strategy-include-check
-        "-DATL_EXTRA_INCLUDES=${ATL_BOOST_INCLUDES}"
-        -P ${CMAKE_CURRENT_SOURCE_DIR}/check-strategy-includes.cmake
+# Every header must compile on its own.
+#
+# This is what makes include *order* irrelevant: a header that includes everything it uses can be
+# included first, last, or alone, and no caller has to know a required predecessor. Without it the
+# library would work only in the orders that happen to have been tried, and a new consumer would
+# hit an error in a header they did not write.
+#
+# Checked by generating one translation unit per header, because the property is per-header and a
+# single unit including them all would prove nothing: the first include would satisfy the second.
+# A violation fails the build rather than a test run.
+file(GLOB_RECURSE ATL_ALL_HEADERS
+    RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/../include"
+    CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/algotradelib/*.hpp"
 )
+
+set(ATL_STANDALONE_SOURCES "")
+foreach(header IN LISTS ATL_ALL_HEADERS)
+    # The analytics layer and the linear-algebra seam require a backend on purpose: their umbrella
+    # refuses to compile without one, naming the option to set. Checking them in a build that has
+    # no backend would be asserting that the deliberate diagnostic does not happen.
+    if(NOT ATL_USE_EIGEN AND header MATCHES "src/(analytics|math)/(matrix|eigen)|src/analytics/")
+        continue()
+    endif()
+    string(MAKE_C_IDENTIFIER "${header}" slug)
+    set(generated "${CMAKE_CURRENT_BINARY_DIR}/standalone/${slug}.cpp")
+    file(WRITE "${generated}"
+        "// Generated: asserts <${header}> compiles with nothing included before it.\n"
+        "#include <${header}>\n"
+    )
+    list(APPEND ATL_STANDALONE_SOURCES "${generated}")
+endforeach()
+
+list(LENGTH ATL_STANDALONE_SOURCES ATL_STANDALONE_COUNT)
+message(STATUS "algotradelib headers checked standalone: ${ATL_STANDALONE_COUNT}")
+
+if(ATL_STANDALONE_SOURCES)
+    add_library(algotradelib-header-standalone OBJECT ${ATL_STANDALONE_SOURCES})
+    target_link_libraries(algotradelib-header-standalone PRIVATE algotradelib::algotradelib)
+endif()

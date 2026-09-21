@@ -1,8 +1,8 @@
 #pragma once
 
-#include <algotradelib/core>
-
 #include "./numeric.hpp"
+
+#include <algotradelib/core>
 
 #include <cmath>
 #include <cstdint>

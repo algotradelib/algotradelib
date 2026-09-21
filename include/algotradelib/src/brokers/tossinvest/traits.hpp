@@ -1,5 +1,13 @@
 #pragma once
 
+/**
+ * Declares that this translation unit has reached a broker adapter.
+ *
+ * Read by `tests/test-strategy-isolation.cpp`; see `ATL_TRANSPORT_LAYER_PRESENT` for why the
+ * layers announce themselves rather than being inferred.
+ */
+#define ATL_BROKER_ADAPTER_PRESENT 1
+
 #include "./client.hpp"
 
 #include "../../core/broker_session.hpp"

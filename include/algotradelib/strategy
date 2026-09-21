@@ -7,9 +7,15 @@
  * `<algotradelib/analytics>` as well and therefore needs one; a strategy that acts on prices
  * and positions alone does not, and this header does not impose it.
  *
- * It also includes no broker, network, or transport header, which is the property that makes
- * one strategy source compile against every broker. A test asserts that.
+ * It also includes no broker, network, or transport header, which is the property that makes one
+ * strategy source compile against every broker, and run unchanged under a dry-run, a live
+ * session, and later a backtest. `tests/test-strategy-isolation.cpp` asserts it at compile time
+ * from a translation unit that includes nothing else, so the check cannot be fooled by include
+ * order.
  */
+
+/** Declares that this translation unit has reached the strategy surface. */
+#define ATL_STRATEGY_SURFACE_PRESENT 1
 
 #include "src/strategy/concept.hpp"
 #include "src/strategy/event.hpp"
