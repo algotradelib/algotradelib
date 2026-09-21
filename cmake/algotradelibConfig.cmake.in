@@ -14,6 +14,13 @@ if(@ATL_INSTALLED_WITH_EIGEN@)
     find_dependency(Eigen3 CONFIG)
 endif()
 
+# This package was built with _OPENMP defined, so the exported target references an OpenMP
+# runtime -- Eigen emits calls into one from its matrix products. Resolving the target here
+# is what keeps a consumer from seeing unresolved `__kmpc_*` symbols with no explanation.
+if(@ATL_INSTALLED_WITH_OPENMP@)
+    find_dependency(OpenMP COMPONENTS CXX)
+endif()
+
 include("${CMAKE_CURRENT_LIST_DIR}/algotradelibTargets.cmake")
 
 check_required_components(algotradelib)

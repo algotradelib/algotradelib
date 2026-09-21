@@ -58,6 +58,39 @@ if(ATL_USE_EIGEN)
     target_link_libraries(algotradelib INTERFACE Eigen3::Eigen)
     target_compile_definitions(algotradelib INTERFACE ATL_HAS_EIGEN=1)
     message(STATUS "algotradelib analytics: Eigen ${Eigen3_VERSION}")
+
+    # Eigen threads its dense matrix products when, and only when, `_OPENMP` is defined in
+    # the translation unit. That is the consumer's decision, not this library's, and it is
+    # left alone -- no EIGEN_DONT_PARALLELIZE here or anywhere else. But a build whose flags
+    # define `_OPENMP` without linking an OpenMP runtime fails at link time, on `__kmpc_*`
+    # and `omp_get_*` symbols emitted from deep inside an Eigen template, with nothing in the
+    # message to connect it to a matrix product. `-Xpreprocessor -fopenmp` alone does exactly
+    # that, and it is a common way to reach OpenMP with Apple's clang.
+    #
+    # So the runtime is supplied when the flags say it is needed. This is not enabling
+    # anything: the consumer already asked for OpenMP, and this only makes the request work.
+    include(CheckCXXSourceCompiles)
+    check_cxx_source_compiles("
+#ifndef _OPENMP
+#error openmp is not enabled in these flags
+#endif
+int main() { return 0; }
+" ATL_OPENMP_IN_FLAGS)
+    if(ATL_OPENMP_IN_FLAGS)
+        find_package(OpenMP QUIET COMPONENTS CXX)
+        if(OpenMP_CXX_FOUND)
+            target_link_libraries(algotradelib INTERFACE OpenMP::OpenMP_CXX)
+            message(STATUS
+                "algotradelib analytics: _OPENMP is set, so Eigen will thread its matrix "
+                "products; linking OpenMP::OpenMP_CXX")
+        else()
+            message(FATAL_ERROR
+                "The C++ flags define _OPENMP, so Eigen will emit calls into an OpenMP "
+                "runtime from its matrix products, but no OpenMP runtime could be found. "
+                "Install one (libomp), or remove the OpenMP flag from CMAKE_CXX_FLAGS and "
+                "the CXXFLAGS environment variable.")
+        endif()
+    endif()
 endif()
 
 target_link_libraries(algotradelib INTERFACE Boost::json)
@@ -100,6 +133,7 @@ write_basic_package_version_file(
 # Recorded so an installed consumer resolves the same dependency the build used, and
 # so a consumer of a build made without the backend is not asked for it.
 set(ATL_INSTALLED_WITH_EIGEN ${ATL_USE_EIGEN})
+set(ATL_INSTALLED_WITH_OPENMP ${ATL_OPENMP_IN_FLAGS})
 
 configure_package_config_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/cmake/algotradelibConfig.cmake.in
