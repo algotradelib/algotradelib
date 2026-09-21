@@ -33,15 +33,18 @@ namespace analytics {
  * reduction that masks `NaN` but not `inf`.
  */
 inline math::Vector returns(math::SeriesView prices) {
-  math::Vector result = math::unobserved(static_cast<std::size_t>(prices.size()));
-  for (math::Index row = 1; row < prices.size(); ++row) {
-    const Scalar previous = prices[row - 1];
-    const Scalar current = prices[row];
-    if (!observed(previous) || !observed(current) || previous == Scalar{0}) {
-      continue;
-    }
-    result[row] = current / previous - Scalar{1};
+  const auto rows = prices.size();
+  math::Vector result = math::unobserved(static_cast<std::size_t>(rows));
+  if (rows < 2) {
+    return result;
   }
+  // One vectorized division over the whole series, then the guards. An unobserved price on either
+  // side makes the quotient NaN by itself, which is already the answer; a zero prior price would
+  // make it an infinity, so that row is replaced explicitly.
+  const auto current = prices.tail(rows - 1).array();
+  const auto previous = prices.head(rows - 1).array();
+  result.tail(rows - 1) =
+    (previous == Scalar{0}).select(missing(), current / previous - Scalar{1});
   return result;
 }
 
@@ -57,18 +60,17 @@ inline math::Vector returns(math::SeriesView prices) {
  * produce a `NaN` from the standard library with no indication of why.
  */
 inline math::Vector log_returns(math::SeriesView prices) {
-  math::Vector result = math::unobserved(static_cast<std::size_t>(prices.size()));
-  for (math::Index row = 1; row < prices.size(); ++row) {
-    const Scalar previous = prices[row - 1];
-    const Scalar current = prices[row];
-    if (!observed(previous) || !observed(current)) {
-      continue;
-    }
-    if (previous <= Scalar{0} || current <= Scalar{0}) {
-      continue;
-    }
-    result[row] = std::log(current / previous);
+  const auto rows = prices.size();
+  math::Vector result = math::unobserved(static_cast<std::size_t>(rows));
+  if (rows < 2) {
+    return result;
   }
+  const auto current = prices.tail(rows - 1).array();
+  const auto previous = prices.head(rows - 1).array();
+  // A non-positive price on either side is refused before the logarithm rather than left to
+  // produce a bare NaN with nothing to say which row or which side caused it.
+  const auto usable = (previous > Scalar{0}) && (current > Scalar{0});
+  result.tail(rows - 1) = usable.select((current / previous).log(), missing());
   return result;
 }
 

@@ -64,48 +64,68 @@ inline math::Vector wilder(math::SeriesView values, std::size_t period) {
   return result;
 }
 
-/** The observed *pairs* of two windows, which is the only set a co-moment may use. */
-struct Pairing {
-  bool reported{false};
-  std::size_t count{0};
-  Scalar mean_left{0};
-  Scalar mean_right{0};
+/**
+ * Two series split so a co-moment over their shared rows is a pair of vectorized reductions.
+ *
+ * `present_` is `1` only where **both** series carry a value, and each `left_`/`right_` is zeroed
+ * wherever that is false. Pairing matters, and getting it wrong is subtle: a covariance taken
+ * over the rows where both are present, divided by deviations each taken over its own series'
+ * rows, is not a correlation — the three numbers describe different samples, and the quotient can
+ * leave `[-1, 1]` entirely. So every co-moment here reduces over one row set, and this is it.
+ */
+struct Paired {
+  math::Vector left_;
+  math::Vector right_;
+  math::Vector present_;
 };
 
-/**
- * Reduces the rows of two windows on which **both** series are observed.
- *
- * Pairing matters, and getting it wrong is subtle. A covariance computed over the rows
- * where both series are present, divided by deviations each computed over its own series'
- * rows, is not a correlation -- the three numbers describe different samples, and the
- * quotient can exceed one. So every co-moment here is computed over one row set, and that
- * set is this one.
- */
-inline Pairing pair(
-  math::SeriesView left,
-  math::SeriesView right,
+/** Splits two series onto their shared observed rows, in one pass each. */
+inline Paired pair_series(math::SeriesView left, math::SeriesView right) {
+  const auto left_parts = math::observed_parts(left);
+  const auto right_parts = math::observed_parts(right);
+  Paired paired;
+  paired.present_ = math::both_present(left_parts.present_, right_parts.present_);
+  paired.left_ = left_parts.values_.cwiseProduct(paired.present_);
+  paired.right_ = right_parts.values_.cwiseProduct(paired.present_);
+  return paired;
+}
+
+/** One window of a `Paired` series, reduced to the means a co-moment is taken about. */
+struct Pairing {
+  bool reported_{false};
+  std::size_t count_{0};
+  Scalar mean_left_{0};
+  Scalar mean_right_{0};
+};
+
+/** Reduces one window of a paired series. */
+inline Pairing reduce_pair(
+  const Paired& paired,
   math::Index first,
   math::Index length,
   std::size_t needed
 ) {
   Pairing result;
-  Scalar sum_left{0};
-  Scalar sum_right{0};
-  for (math::Index row = first; row < first + length; ++row) {
-    if (!observed(left[row]) || !observed(right[row])) {
-      continue;
-    }
-    ++result.count;
-    sum_left += left[row];
-    sum_right += right[row];
-  }
-  if (result.count < needed || result.count < 2) {
+  const Scalar count = paired.present_.segment(first, length).sum();
+  result.count_ = static_cast<std::size_t>(count);
+  if (result.count_ < needed || result.count_ < 2) {
     return result;
   }
-  result.mean_left = sum_left / static_cast<Scalar>(result.count);
-  result.mean_right = sum_right / static_cast<Scalar>(result.count);
-  result.reported = true;
+  result.mean_left_ = paired.left_.segment(first, length).sum() / count;
+  result.mean_right_ = paired.right_.segment(first, length).sum() / count;
+  result.reported_ = true;
   return result;
+}
+
+/** Returns one window's values centred on its own mean, absent rows contributing zero. */
+inline math::Vector centred(
+  const math::Vector& values,
+  const math::Vector& present,
+  math::Index first,
+  math::Index length,
+  Scalar mean
+) {
+  return values.segment(first, length) - mean * present.segment(first, length);
 }
 
 /**
@@ -135,22 +155,34 @@ inline void require_same_rows(math::SeriesView left, math::SeriesView right) {
 inline math::Vector zscore(
   math::SeriesView values,
   std::size_t window,
-  std::size_t min_observations = 0
+  std::size_t min_observed
 ) {
-  const std::size_t needed = rolling_detail::required(window, min_observations);
+  rolling_detail::check(window, min_observed);
+  const auto parts = math::observed_parts(values);
   math::Vector result = math::unobserved(static_cast<std::size_t>(values.size()));
   for (math::Index row = 0; row < values.size(); ++row) {
     if (!observed(values[row])) {
       continue;
     }
     const math::Index first = rolling_detail::window_start(row, window);
-    const auto spread = rolling_detail::dispersion(values, first, row - first + 1, needed);
-    if (!spread.reported || spread.deviation == Scalar{0}) {
+    const auto spread = rolling_detail::dispersion(parts, first, row - first + 1, min_observed);
+    if (!spread.reported_) {
       continue;
     }
-    result[row] = (values[row] - spread.mean) / spread.deviation;
+    if (spread.deviation_ == Scalar{0}) {
+      // The data was there and the statistic does not exist for it, which is a different
+      // answer from "no data yet" and now says so.
+      result[row] = math::undefined();
+      continue;
+    }
+    result[row] = (values[row] - spread.mean_) / spread.deviation_;
   }
   return result;
+}
+
+/** Returns the trailing z-score, requiring every row of the window to be observed. */
+inline math::Vector zscore(math::SeriesView values, std::size_t window) {
+  return zscore(values, window, window);
 }
 
 /** The three lines of a Bollinger band, all on the same rows as the input. */
@@ -175,24 +207,34 @@ struct BollingerBands {
  */
 inline BollingerBands bollinger(
   math::SeriesView values,
-  std::size_t window = 20,
-  Scalar multiplier = Scalar{2},
-  std::size_t min_observations = 0
+  std::size_t window,
+  Scalar multiplier,
+  std::size_t min_observed
 ) {
-  const std::size_t needed = rolling_detail::required(window, min_observations);
+  rolling_detail::check(window, min_observed);
+  const auto parts = math::observed_parts(values);
   const auto rows = static_cast<std::size_t>(values.size());
   BollingerBands bands{math::unobserved(rows), math::unobserved(rows), math::unobserved(rows)};
   for (math::Index row = 0; row < values.size(); ++row) {
     const math::Index first = rolling_detail::window_start(row, window);
-    const auto spread = rolling_detail::dispersion(values, first, row - first + 1, needed);
-    if (!spread.reported) {
+    const auto spread = rolling_detail::dispersion(parts, first, row - first + 1, min_observed);
+    if (!spread.reported_) {
       continue;
     }
-    bands.middle_[row] = spread.mean;
-    bands.upper_[row] = spread.mean + multiplier * spread.deviation;
-    bands.lower_[row] = spread.mean - multiplier * spread.deviation;
+    bands.middle_[row] = spread.mean_;
+    bands.upper_[row] = spread.mean_ + multiplier * spread.deviation_;
+    bands.lower_[row] = spread.mean_ - multiplier * spread.deviation_;
   }
   return bands;
+}
+
+/** Returns Bollinger bands, requiring every row of the window to be observed. */
+inline BollingerBands bollinger(
+  math::SeriesView values,
+  std::size_t window = 20,
+  Scalar multiplier = Scalar{2}
+) {
+  return bollinger(values, window, multiplier, window);
 }
 
 /**
@@ -362,28 +404,37 @@ inline math::Vector rolling_cov(
   math::SeriesView left,
   math::SeriesView right,
   std::size_t window,
-  std::size_t min_observations = 0
+  std::size_t min_observed
 ) {
   indicator_detail::require_same_rows(left, right);
-  const std::size_t needed = rolling_detail::required(window, min_observations);
+  rolling_detail::check(window, min_observed);
+  const auto paired = indicator_detail::pair_series(left, right);
   math::Vector result = math::unobserved(static_cast<std::size_t>(left.size()));
   for (math::Index row = 0; row < left.size(); ++row) {
     const math::Index first = rolling_detail::window_start(row, window);
     const math::Index length = row - first + 1;
-    const auto paired = indicator_detail::pair(left, right, first, length, needed);
-    if (!paired.reported) {
+    const auto reduced = indicator_detail::reduce_pair(paired, first, length, min_observed);
+    if (!reduced.reported_) {
       continue;
     }
-    Scalar product{0};
-    for (math::Index at = first; at < first + length; ++at) {
-      if (!observed(left[at]) || !observed(right[at])) {
-        continue;
-      }
-      product += (left[at] - paired.mean_left) * (right[at] - paired.mean_right);
-    }
-    result[row] = product / static_cast<Scalar>(paired.count - 1);
+    const math::Vector left_centred = indicator_detail::centred(
+      paired.left_, paired.present_, first, length, reduced.mean_left_
+    );
+    const math::Vector right_centred = indicator_detail::centred(
+      paired.right_, paired.present_, first, length, reduced.mean_right_
+    );
+    result[row] = left_centred.dot(right_centred) / static_cast<Scalar>(reduced.count_ - 1);
   }
   return result;
+}
+
+/** Returns the trailing sample covariance, requiring every row of the window to be paired. */
+inline math::Vector rolling_cov(
+  math::SeriesView left,
+  math::SeriesView right,
+  std::size_t window
+) {
+  return rolling_cov(left, right, window, window);
 }
 
 /**
@@ -401,37 +452,44 @@ inline math::Vector rolling_corr(
   math::SeriesView left,
   math::SeriesView right,
   std::size_t window,
-  std::size_t min_observations = 0
+  std::size_t min_observed
 ) {
   indicator_detail::require_same_rows(left, right);
-  const std::size_t needed = rolling_detail::required(window, min_observations);
+  rolling_detail::check(window, min_observed);
+  const auto paired = indicator_detail::pair_series(left, right);
   math::Vector result = math::unobserved(static_cast<std::size_t>(left.size()));
   for (math::Index row = 0; row < left.size(); ++row) {
     const math::Index first = rolling_detail::window_start(row, window);
     const math::Index length = row - first + 1;
-    const auto paired = indicator_detail::pair(left, right, first, length, needed);
-    if (!paired.reported) {
+    const auto reduced = indicator_detail::reduce_pair(paired, first, length, min_observed);
+    if (!reduced.reported_) {
       continue;
     }
-    Scalar product{0};
-    Scalar squared_left{0};
-    Scalar squared_right{0};
-    for (math::Index at = first; at < first + length; ++at) {
-      if (!observed(left[at]) || !observed(right[at])) {
-        continue;
-      }
-      const Scalar deviation_left = left[at] - paired.mean_left;
-      const Scalar deviation_right = right[at] - paired.mean_right;
-      product += deviation_left * deviation_right;
-      squared_left += deviation_left * deviation_left;
-      squared_right += deviation_right * deviation_right;
-    }
+    const math::Vector left_centred = indicator_detail::centred(
+      paired.left_, paired.present_, first, length, reduced.mean_left_
+    );
+    const math::Vector right_centred = indicator_detail::centred(
+      paired.right_, paired.present_, first, length, reduced.mean_right_
+    );
+    const Scalar squared_left = left_centred.squaredNorm();
+    const Scalar squared_right = right_centred.squaredNorm();
     if (squared_left == Scalar{0} || squared_right == Scalar{0}) {
+      // A constant series. Correlation with it is undefined, not zero.
+      result[row] = math::undefined();
       continue;
     }
-    result[row] = product / std::sqrt(squared_left * squared_right);
+    result[row] = left_centred.dot(right_centred) / std::sqrt(squared_left * squared_right);
   }
   return result;
+}
+
+/** Returns the trailing correlation, requiring every row of the window to be paired. */
+inline math::Vector rolling_corr(
+  math::SeriesView left,
+  math::SeriesView right,
+  std::size_t window
+) {
+  return rolling_corr(left, right, window, window);
 }
 
 /**
@@ -448,34 +506,43 @@ inline math::Vector beta(
   math::SeriesView asset,
   math::SeriesView market,
   std::size_t window,
-  std::size_t min_observations = 0
+  std::size_t min_observed
 ) {
   indicator_detail::require_same_rows(asset, market);
-  const std::size_t needed = rolling_detail::required(window, min_observations);
+  rolling_detail::check(window, min_observed);
+  const auto paired = indicator_detail::pair_series(asset, market);
   math::Vector result = math::unobserved(static_cast<std::size_t>(asset.size()));
   for (math::Index row = 0; row < asset.size(); ++row) {
     const math::Index first = rolling_detail::window_start(row, window);
     const math::Index length = row - first + 1;
-    const auto paired = indicator_detail::pair(asset, market, first, length, needed);
-    if (!paired.reported) {
+    const auto reduced = indicator_detail::reduce_pair(paired, first, length, min_observed);
+    if (!reduced.reported_) {
       continue;
     }
-    Scalar product{0};
-    Scalar squared_market{0};
-    for (math::Index at = first; at < first + length; ++at) {
-      if (!observed(asset[at]) || !observed(market[at])) {
-        continue;
-      }
-      const Scalar deviation_market = market[at] - paired.mean_right;
-      product += (asset[at] - paired.mean_left) * deviation_market;
-      squared_market += deviation_market * deviation_market;
-    }
+    const math::Vector market_centred = indicator_detail::centred(
+      paired.right_, paired.present_, first, length, reduced.mean_right_
+    );
+    const Scalar squared_market = market_centred.squaredNorm();
     if (squared_market == Scalar{0}) {
+      // No market movement to attribute the asset's movement to.
+      result[row] = math::undefined();
       continue;
     }
-    result[row] = product / squared_market;
+    const math::Vector asset_centred = indicator_detail::centred(
+      paired.left_, paired.present_, first, length, reduced.mean_left_
+    );
+    result[row] = asset_centred.dot(market_centred) / squared_market;
   }
   return result;
+}
+
+/** Returns the trailing beta, requiring every row of the window to be paired. */
+inline math::Vector beta(
+  math::SeriesView asset,
+  math::SeriesView market,
+  std::size_t window
+) {
+  return beta(asset, market, window, window);
 }
 
 } // namespace analytics

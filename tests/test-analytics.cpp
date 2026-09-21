@@ -1392,7 +1392,7 @@ TEST_CASE("turnover is the one-way fraction of the portfolio that changed hands"
     {0.5, 0.5, 1.0},
     {0.5, 0.5, 0.0},
   });
-  const math::Vector traded = analytics::turnover(weights);
+  const math::Vector traded = analytics::one_way_turnover(weights);
 
   // Row 0 builds the first position from cash: the whole book is deployed, which the
   // one-way convention reports as 0.5.
@@ -1409,7 +1409,7 @@ TEST_CASE("turnover moving a whole book between instruments is one, not two") {
     {1.0, 0.0},
     {0.0, 1.0},
   });
-  const math::Vector traded = analytics::turnover(weights);
+  const math::Vector traded = analytics::one_way_turnover(weights);
 
   REQUIRE(traded[0] == Catch::Approx(0.5));
   // Selling all of one name and buying all of another: 0.5 * (1 + 1).
@@ -1427,8 +1427,8 @@ TEST_CASE("an absent weight is no position, unlike an absent price") {
     {1.0, 0.0},
     {0.0, 1.0},
   });
-  const math::Vector over_absence = analytics::turnover(absent);
-  const math::Vector over_zero = analytics::turnover(explicit_zero);
+  const math::Vector over_absence = analytics::one_way_turnover(absent);
+  const math::Vector over_zero = analytics::one_way_turnover(explicit_zero);
 
   // Which is the whole assertion: an absent weight and an explicit zero give the same
   // answer, because both say the same thing about the position.
@@ -1437,4 +1437,162 @@ TEST_CASE("an absent weight is no position, unlike an absent price") {
   }
   // Row 1 leaves the first name and takes the second, a full rotation: 0.5 * (1 + 1).
   REQUIRE(over_absence[1] == Catch::Approx(1.0));
+}
+
+// ---------------------------------------------------------------------------
+// The two kinds of absence, and the vectorized reductions
+// ---------------------------------------------------------------------------
+
+TEST_CASE("undefined is distinguishable from missing and both read as unobserved") {
+  REQUIRE_FALSE(observed(missing()));
+  REQUIRE_FALSE(observed(math::undefined()));
+
+  // Which is the point: every reduction masks both, so nothing downstream changes, and a caller
+  // that wants the distinction can ask for it.
+  REQUIRE(math::is_undefined(math::undefined()));
+  REQUIRE_FALSE(math::is_undefined(missing()));
+  REQUIRE_FALSE(math::is_undefined(0.0));
+  REQUIRE_FALSE(math::is_undefined(1.0e308));
+
+  // It survives a round trip through matrix storage, which is a bit copy.
+  math::Vector held(2);
+  held[0] = missing();
+  held[1] = math::undefined();
+  REQUIRE(math::is_undefined(held[1]));
+  REQUIRE_FALSE(math::is_undefined(held[0]));
+}
+
+TEST_CASE("a statistic that cannot exist says so, distinctly from having no data") {
+  // A flat window: the data is there and the z-score does not exist for it.
+  const math::Vector flat = series({5.0, 5.0, 5.0, 5.0});
+  const math::Vector score = analytics::zscore(flat, 3);
+  REQUIRE_FALSE(observed(score[0]));
+  REQUIRE_FALSE(math::is_undefined(score[0]));   // warm-up: simply absent
+  REQUIRE(math::is_undefined(score[2]));         // computed, and undefined
+
+  // Returns that never varied have no risk-adjusted return; too few returns have no answer yet.
+  REQUIRE(math::is_undefined(analytics::sharpe(series({0.01, 0.01, 0.01}))));
+  REQUIRE_FALSE(math::is_undefined(analytics::sharpe(series({0.01}))));
+
+  // Nothing fell short of the target, so there is no downside risk to divide by.
+  REQUIRE(math::is_undefined(analytics::sortino(series({0.01, 0.02, 0.03}))));
+
+  // Correlation with a constant, and beta against a market that did not move.
+  const math::Vector moving = series({1.0, 2.0, 3.0, 4.0});
+  const math::Vector still = series({3.0, 3.0, 3.0, 3.0});
+  REQUIRE(math::is_undefined(analytics::rolling_corr(moving, still, 3)[3]));
+  REQUIRE(math::is_undefined(analytics::beta(moving, still, 3)[3]));
+
+  // An equity curve at zero has not declined by a percentage; it is gone.
+  analytics::RunningDrawdown drawdown;
+  drawdown.update(0.0);
+  REQUIRE(math::is_undefined(drawdown.max_drawdown()));
+  REQUIRE(math::is_undefined(analytics::max_drawdown(series({0.0, 0.0})).magnitude_));
+}
+
+TEST_CASE("the vectorized reductions agree with a scalar reference, gaps and all") {
+  // The masking moved out of the per-window loop into one pass per series. This pins that the
+  // move changed no answer: a deliberately awkward series, checked against a plain loop.
+  math::Vector values(60);
+  for (math::Index row = 0; row < values.size(); ++row) {
+    values[row] = row % 7 == 3 ?
+      missing() :
+      1.0e6 + static_cast<Scalar>((row * 37) % 23) - 11.0;
+  }
+
+  const std::size_t window = 9;
+  const std::size_t min_observed = 4;
+  const math::Vector mean = analytics::rolling_mean(values, window, min_observed);
+  const math::Vector deviation = analytics::rolling_stdev(values, window, min_observed);
+  const math::Vector smallest = analytics::rolling_min(values, window, min_observed);
+  const math::Vector largest = analytics::rolling_max(values, window, min_observed);
+
+  for (math::Index row = 0; row < values.size(); ++row) {
+    const math::Index first =
+      row + 1 >= static_cast<math::Index>(window) ? row + 1 - static_cast<math::Index>(window) : 0;
+    std::size_t count = 0;
+    Scalar sum = 0.0;
+    Scalar low = 0.0;
+    Scalar high = 0.0;
+    for (math::Index at = first; at <= row; ++at) {
+      if (!observed(values[at])) {
+        continue;
+      }
+      if (count == 0 || values[at] < low) {
+        low = values[at];
+      }
+      if (count == 0 || high < values[at]) {
+        high = values[at];
+      }
+      ++count;
+      sum += values[at];
+    }
+
+    if (count < min_observed) {
+      REQUIRE_FALSE(observed(mean[row]));
+      REQUIRE_FALSE(observed(smallest[row]));
+      continue;
+    }
+
+    const Scalar expected = sum / static_cast<Scalar>(count);
+    REQUIRE(mean[row] == Catch::Approx(expected).epsilon(1e-14));
+    REQUIRE(smallest[row] == low);
+    REQUIRE(largest[row] == high);
+
+    Scalar squared = 0.0;
+    for (math::Index at = first; at <= row; ++at) {
+      if (observed(values[at])) {
+        squared += (values[at] - expected) * (values[at] - expected);
+      }
+    }
+    REQUIRE(
+      deviation[row] ==
+      Catch::Approx(std::sqrt(squared / static_cast<Scalar>(count - 1))).epsilon(1e-12)
+    );
+  }
+}
+
+TEST_CASE("the window overloads say what the three-argument form spells out") {
+  const math::Vector values = series({1.0, missing(), 3.0, 4.0, 5.0});
+
+  // Two arguments demands every row of the window. There is no zero-means-all sentinel any more.
+  for (math::Index row = 0; row < values.size(); ++row) {
+    const Scalar strict = analytics::rolling_mean(values, 3)[row];
+    const Scalar spelt = analytics::rolling_mean(values, 3, 3)[row];
+    REQUIRE(observed(strict) == observed(spelt));
+    if (observed(strict)) {
+      REQUIRE(strict == spelt);
+    }
+  }
+
+  // And zero observations is now refused rather than meaning "all".
+  REQUIRE_THROWS_AS(analytics::rolling_mean(values, 3, 0), std::invalid_argument);
+  REQUIRE_THROWS_AS(analytics::rolling_stdev(values, 3, 0), std::invalid_argument);
+  REQUIRE_THROWS_AS(analytics::ema(values, 3, 0), std::invalid_argument);
+}
+
+TEST_CASE("turnover names its convention, and both start policies are available") {
+  const math::Matrix weights = columns({
+    {1.0, 0.0},
+    {0.0, 1.0},
+  });
+
+  const math::Vector one_way = analytics::one_way_turnover(weights);
+  const math::Vector two_way = analytics::two_way_turnover(weights);
+
+  // Row 1 rotates the whole book: one, one-way; two, two-way. Naming both is what stops a
+  // silent factor of two reaching a cost estimate.
+  REQUIRE(one_way[1] == Catch::Approx(1.0));
+  REQUIRE(two_way[1] == Catch::Approx(2.0));
+  for (math::Index row = 0; row < one_way.size(); ++row) {
+    REQUIRE(two_way[row] == Catch::Approx(2.0 * one_way[row]));
+  }
+
+  // Building the first position from cash counts by default, and can be skipped when comparing
+  // strategies whose histories start on different dates.
+  REQUIRE(one_way[0] == Catch::Approx(0.5));
+  const math::Vector skipped =
+    analytics::one_way_turnover(weights, analytics::TurnoverStart::SKIP);
+  REQUIRE_FALSE(observed(skipped[0]));
+  REQUIRE(skipped[1] == Catch::Approx(1.0));
 }

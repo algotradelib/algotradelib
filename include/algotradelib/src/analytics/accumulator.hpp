@@ -180,7 +180,12 @@ public:
     }
     ++count_;
     const Scalar decline = relative(level);
-    if (observed(decline) && (!observed(worst_) || worst_ < decline)) {
+    if (observed(decline)) {
+      if (!observed(worst_) || worst_ < decline) {
+        worst_ = decline;
+      }
+    } else if (!observed(worst_)) {
+      // Carries the reason forward: undefined, not merely absent.
       worst_ = decline;
     }
     current_ = decline;
@@ -201,16 +206,17 @@ public:
 private:
   Scalar relative(Scalar level) const {
     if (peak_ <= Scalar{0}) {
-      return missing();
+      // Levels arrived, and no ratio exists for them. `undefined()` rather than `missing()`, so a
+      // caller can tell an equity curve that reached zero from one that has not started.
+      return math::undefined();
     }
     return (peak_ - level) / peak_;
   }
 
   std::size_t count_{0};
   Scalar peak_{0};
-  // Both start unobserved rather than at zero. A first level at or below zero leaves the
-  // fraction undefined, and reporting a worst drawdown of zero there would be a claim that
-  // nothing had gone wrong.
+  // Both start unobserved rather than at zero. Reporting a worst drawdown of zero before any
+  // level has arrived would be a claim that nothing had gone wrong.
   Scalar current_{missing()};
   Scalar worst_{missing()};
 };

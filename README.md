@@ -554,17 +554,22 @@ just as firmly as a wrong one. An instrument whose ladder the library does not k
 
 ### Conventions that prevent a silent lookahead
 
-- **A result is as long as its input.** Row `i` of the output describes row `i` of the input,
-  so it binds to the same index with no shifting. The warm-up region is present and
-  unobserved, not absent — a shorter result would hand the caller an off-by-one that shows up
-  only as a backtest that performs impossibly well.
-- **`math::missing()` is the one value for "no observation"**, a quiet `NaN`, checked with
-  `math::observed()`. It covers a warm-up row, a gap in a panel, and a field a broker did not
-  report. Never zero: a return of zero is a claim the price did not move.
-- **Every reduction masks it**, so one absent print does not blank a column. A window's
-  divisor is therefore the count of values it actually saw.
-- **A window reports only when it holds enough.** `min_observations` defaults to the whole
-  window; a partial warm-up has to be asked for at the call site.
+- **A result is as long as its input.** Row `i` of the output describes row `i` of the input, so it
+  binds to the same index with no shifting. The warm-up region is present and unobserved, not
+  absent — a shorter result would hand the caller an off-by-one that shows up only as a backtest
+  that performs impossibly well.
+- **Two kinds of absence, both quiet `NaN`s.** `math::missing()` means no observation was
+  available; `math::undefined()` means the data was there and the statistic does not exist for it
+  (a z-score over a flat window, a Sortino ratio with no downside, a beta against a market that did
+  not move). `math::observed()` is false for both and every reduction masks both;
+  `math::is_undefined()` tells them apart where a caller would act differently. Never zero: a
+  return of zero is a claim the price did not move.
+- **Every reduction masks them**, so one absent print does not blank a column. A window's divisor is
+  therefore the count of values it actually saw.
+- **A window is two numbers.** `window` is how many rows are looked at; `min_observed` is how many
+  of them must carry a value before anything is reported. `rolling_mean(closes, 20)` demands all
+  twenty; `rolling_mean(closes, 20, 15)` reports from fifteen. No sentinel means "all" — the
+  default is the overload.
 
 ### Conventions that are stated because packages disagree
 
@@ -574,8 +579,27 @@ just as firmly as a wrong one. An instrument whose ladder the library does not k
 | `rsi`, `atr` | Wilder's `1 / n` smoothing with Wilder's seed |
 | `rolling_stdev`, `rolling_cov` | sample divisor `count - 1` |
 | `sortino` | squared shortfalls divided by **all** observations, not the losing ones |
-| `turnover` | one-way, `0.5 * sum(abs(delta w))` |
+| `one_way_turnover` | `0.5 * sum(abs(delta w))`; `two_way_turnover` is exactly twice it |
 | `sharpe` | per period; `annualize_ratio` is a separate call scaling by `sqrt(periods)` |
+
+Turnover ships as two named functions rather than one with a flag, because it is usually multiplied
+by a cost per unit traded and a silent factor of two there separates a profitable strategy from a
+losing one. `TurnoverStart` chooses whether the first period is measured against an all-cash
+portfolio (the default — building a position is real trading) or left unobserved (for comparing
+strategies whose histories start on different dates).
+
+### Speed, and where it comes from
+
+Trailing statistics mask their input **once per series** rather than once per window, through
+`math::observed_parts`: absent entries become zero and a parallel 0/1 mask carries the count. Each
+window is then two plain contiguous reductions with no branch and no per-element predicate — about
+**7x faster** than the equivalent scalar loop, and identical to the last bit apart from summation
+order. Deviations go through the same pair, so a variance is one `squaredNorm()`.
+
+That vocabulary lives in `math/eigen.hpp`, not in the indicators, so no analytics header names a
+backend operation and a second backend implements three small functions instead of having its
+expression API assumed throughout. `ema` and `cumulative_returns` stay sequential because each
+value depends on the previous one.
 
 ### Storage, and why it is column-major
 

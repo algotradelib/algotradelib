@@ -46,25 +46,38 @@ library does not know — an ETN, a foreign listing on a venue with its own rule
 answer rather than a guess, because a guessed tick is an order the exchange will reject at
 best and fill at the wrong price at worst.
 
-## Convention 2: `missing()` is one value, and every reduction masks it
+## Convention 2: two kinds of absence, and every reduction masks both
 
-There is one representation for "no observation": `math::missing()`, a quiet `NaN`. It stands
-for an indicator's warm-up region, a gap in a panel, a field a broker did not report, and a
-window that did not hold enough data — all of them, so a caller learns one check,
+There is one representation for "no observation": `math::missing()`, a quiet `NaN`. It stands for
+an indicator's warm-up region, a gap in a panel, a field a broker did not report, and a window
+that did not hold enough data — all of them, so a caller learns one check,
 `math::observed(value)`.
 
-Every reduction in the layer skips it rather than propagating it. One absent print does not
-blank a column. The consequence to keep in mind is that a window's divisor is the count of
-values it actually saw, which is why `min_observations` counts observations rather than rows.
+There is a second: `math::undefined()`, for "the data was there and the statistic does not exist
+for it". A z-score over a window with no dispersion. A correlation against a constant series. A
+Sortino ratio over returns that never fell below their target. A beta against a market that did
+not move. A drawdown ratio on an equity curve whose peak is zero.
 
-`missing()` rather than zero, always. Zero is a number that means something: a return of
-zero is a claim the price did not move, a weight of zero is a decision to hold nothing. An
-absent value is not a claim.
+Both are quiet `NaN`s, so `observed()` is false for both and every reduction masks both — nothing
+downstream has to know the difference. It is readable only through `math::is_undefined()`, and it
+exists because there are decisions where it matters: ranking strategies, "not enough history yet"
+and "no downside risk at all" are very different answers, and collapsing them loses the
+distinction exactly where a caller would act on it.
 
-One thing `missing()` does **not** cover: an infinity. `NaN` is masked everywhere; `inf`
-would survive every reduction and arrive at a comparison as the best result ever measured.
-So the functions that could produce one refuse instead — a return over a zero prior price, a
-Sortino ratio with no downside, a beta against a market that did not move.
+**The caveat, stated precisely.** The distinction lives in the `NaN` payload, and IEEE-754 leaves
+the payload of a propagated `NaN` implementation-defined. `undefined() + 1.0` is still a `NaN` but
+need not still be *this* one. So test it on a value a function returned, and treat anything
+computed from it as merely absent. Storing it in a matrix and reading it back is a bit copy and
+preserves it.
+
+`missing()` rather than zero, always. Zero is a number that means something: a return of zero is a
+claim the price did not move, a weight of zero is a decision to hold nothing. An absent value is
+not a claim.
+
+One thing neither covers: an infinity. `NaN` is masked everywhere; `inf` would survive every
+reduction and arrive at a comparison as the best result ever measured. So the functions that could
+produce one refuse instead — a return over a zero prior price, a Sortino ratio with no downside, a
+beta against a market that did not move.
 
 ## Convention 3: a result is as long as its input
 
@@ -78,15 +91,37 @@ same length as `prices` with an unobserved row 0. `rolling_mean(values, 20)` has
 unobserved rows before its first answer. A fitted regression's residuals carry `missing()`
 on the rows the fit could not use.
 
-## Convention 4: a window reports only when it has enough, and nothing is annualized for you
+## Convention 4: two numbers describe a window, and nothing is annualized for you
 
-`min_observations` defaults to the whole window. Answering from a partially filled window is
-the second most common source of lookahead bias after bar stamping, and it will not happen
-here without being asked for in the call.
+A window is described by two numbers that answer different questions, and the names say which:
 
-The same principle governs the conventions that differ between packages. Each function states
-which one it implements, next to the arithmetic, because the differences change decisions
-rather than decorating them:
+- **`window`** is how many rows are looked at — the trailing span, in rows of the input, whether or
+  not those rows carry observations.
+- **`min_observed`** is how many of those rows must actually carry a value before a result is
+  reported. A count of observations, never a span.
+
+They differ exactly when a series has gaps. `rolling_mean(closes, 20, 15)` looks at twenty rows
+and reports as soon as fifteen are observed, dividing by however many it saw. The two-argument
+overload, `rolling_mean(closes, 20)`, demands all twenty — the safe default, and what you get
+without asking. There is no sentinel value meaning "all": the default is expressed by the overload,
+and asking for zero observations is an error.
+
+The check is what masking makes necessary. Because an absent value inside a window is skipped
+rather than propagated, a window's divisor is the count of values it saw — so without
+`min_observed`, a twenty-row mean computed from three observations would be reported as though it
+were a twenty-observation mean, with nothing in the result to say otherwise. That is the second
+most common source of lookahead bias after bar stamping, so relaxing it is an explicit request at
+the call site.
+
+Every trailing function advances one row at a time. A stride greater than one is not offered and is
+also not foreclosed: because the result is always as long as the input, a stride means "compute at
+every `k`-th row, leave the rest unobserved", which reaches the API as a trailing defaulted
+parameter without changing any existing meaning. Usually the need behind it is resampling rather
+than subsampling — see `plan/todo/bar-resampling.md`.
+
+The same principle governs the conventions that differ between packages. Each function states which
+one it implements, next to the arithmetic, because the differences change decisions rather than
+decorating them:
 
 | Function | Convention, and the other one |
 | --- | --- |
@@ -94,13 +129,16 @@ rather than decorating them:
 | `rsi`, `atr` | Wilder's `1 / n` with Wilder's seed, not `2 / (n + 1)` |
 | `rolling_stdev`, `rolling_cov` | sample divisor `count - 1`, not the population `count` |
 | `sortino` | shortfalls divided by **all** observations, not by the losing ones |
-| `turnover` | one-way, `0.5 * sum(abs(delta w))`; doubling gives two-way |
+| `one_way_turnover` | `0.5 * sum(abs(delta w))`; `two_way_turnover` is exactly twice it |
 | `sharpe` | per period. `annualize_ratio` is separate, and scales by `sqrt(periods)` |
 
-Annualization is a separate named call for two reasons. The factor is the square root of the
-period count, not the count — confusing them overstates a daily Sharpe ratio about sixteen
-fold — and the period count is a calendar question (245 KRX trading days, 252 US, 12 months)
-that no default answers correctly for everyone.
+Two of those are named rather than parameterized on purpose. `one_way_turnover` and
+`two_way_turnover` exist as separate functions because turnover is usually multiplied by a cost per
+unit traded, and a silent factor of two there separates a profitable strategy from a losing one —
+the convention belongs in the name, not only in the documentation. Annualization is a separate call
+because the factor is the square root of the period count, not the count (confusing them overstates
+a daily Sharpe ratio about sixteenfold), and because the period count is a calendar question — 245
+KRX trading days, 252 US, 12 months — that no default answers correctly for everyone.
 
 ## Numerical choices that are not stylistic
 
@@ -114,6 +152,38 @@ where they break:
   square root, with nothing to say arithmetic rather than data produced it.
 - **Running variance.** `RunningMoments` uses Welford's method, because an accumulator cannot
   take the second pass. It never forms a sum of squares at all.
+- **Masking is paid for once per series, not once per window.** Every trailing function splits its
+  input through `math::observed_parts` into values-with-absences-zeroed plus a 0/1 presence mask.
+  A window's sum is then `values_.segment(...).sum()` and its divisor `present_.segment(...).sum()`
+  — two reductions over contiguous memory with no branch and no per-element predicate. Adding zero
+  for an absent entry is exact, so the answers are unchanged; only the summation order differs, and
+  the backend's is the more accurate.
+
+  Measured on 200k rows with a 200-row window and a gap every 97th row, this is **7x faster** than
+  the equivalent scalar loop, and about 5x faster than masking inside each window — the cost was
+  re-deriving the mask, not the loop. Deviations vectorize through the same pair, which is the
+  non-obvious part: subtracting `mean * present_` leaves an absent row contributing exactly zero,
+  so a variance is one `squaredNorm()`.
+
+  The remaining `O(rows x window)` structure is deliberate. A prefix-sum would make it linear and
+  would lose exactly the significant digits the two-pass variance exists to protect.
+
+  `ema` and `cumulative_returns` are the exceptions and cannot be vectorized at all: each value
+  depends on the one before it, so there is no reduction to hand a backend.
+
+- **The masking vocabulary lives in the seam, not in the indicators.** `observed_parts`,
+  `observed_or` and `both_present` are defined in `math/eigen.hpp`, so no analytics header writes
+  `.array().isNaN().select(...)` and the layer above stays backend-agnostic while still running at
+  full speed. A second backend implements three small functions rather than having its expression
+  API assumed throughout.
+
+  Eigen's plugin macros (`EIGEN_MATRIXBASE_PLUGIN` and friends) would allow `series.observedSum()`
+  instead, and are deliberately not used: they must be defined before any Eigen header anywhere in
+  the translation unit, so a consumer who includes Eigen first would silently get a different
+  `Eigen::Matrix` than this library's own translation units — an ODR violation with no diagnostic.
+  Appropriate for an application that owns its whole build; not for a header-only library other
+  people include.
+
 - **Running sums.** `RunningSum` uses Neumaier compensation. A live total grows far larger
   than the returns being added to it, and a naive `total += value` loses roughly a digit per
   factor of ten between them.
@@ -169,7 +239,7 @@ ships with its divisor documented rather than parameterized because there *is* a
 what it needs — see `plan/todo/covariance-estimation.md` and `plan/todo/factor-models.md`.
 
 Note that this is not the same rule as "remove anything the next branch does not use". Applied
-that way it would also delete `macd`, `bollinger`, `atr`, `wma`, `sharpe`, `turnover`,
+that way it would also delete `macd`, `bollinger`, `atr`, `wma`, `sharpe`, `one_way_turnover`,
 `max_drawdown`, and every accumulator, since the first set of vanilla strategies needs only `sma`,
 `ema`, `rolling_min`/`rolling_max`, `zscore`, `rsi`, `rolling_stdev`, and `Panel`.
 
