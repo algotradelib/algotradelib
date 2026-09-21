@@ -20,6 +20,7 @@
 
 #include "src/runner/context.hpp"
 #include "src/runner/dispatch.hpp"
-#include "src/runner/dry_runner.hpp"
+#include "src/runner/runner.hpp"
+#include "src/runner/execution.hpp"
 
 #include <algotradelib/strategy>

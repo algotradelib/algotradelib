@@ -119,9 +119,22 @@ struct QuarterWeight {
   }
 };
 
+/** Targets two instruments per bar, to show a hold on one not silencing the other. */
+struct TwoNames {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent&) {
+    for (const char* symbol : {"005930", "000660"}) {
+      strategy::TargetPosition target;
+      target.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, symbol};
+      target.target_quantity_ = Decimal64::parse("1");
+      ctx.submit(target);
+    }
+  }
+};
+
 /** Arranges a runner with reference data, an open market, and a last price. */
-template <typename S>
-void arrange(runner::DryRunner<S>& dry) {
+template <typename R>
+void arrange(R& dry) {
   dry.context().set_instrument(samsung_reference());
   dry.context().set_phase(strategy::MarketPhase::OPEN);
   dry.context().set_last_price(samsung(), Decimal64::parse("70000"));
@@ -351,3 +364,201 @@ TEST_CASE("the runner caches bars as a contiguous series an indicator can read")
   REQUIRE(dry.context().bars(InstrumentId{Country::KR, Venue::COMBINED, "000660"}) == nullptr);
 }
 #endif
+
+// ---------------------------------------------------------------------------
+// Transport indeterminacy: the most important behaviour in the branch
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using runner::IndeterminacyLedger;
+using runner::SendOutcome;
+using runner::WithheldReason;
+
+/** An executor that reports a chosen outcome, so the failure paths are reachable without a broker. */
+template <typename Tag>
+class ScriptedExecutor {
+public:
+  SendOutcome place(const strategy::PlannedOrder& order) {
+    placed_.push_back(order);
+    return place_outcome_;
+  }
+
+  SendOutcome cancel(const OrderRef<Tag>& ref) {
+    canceled_.push_back(ref);
+    return cancel_outcome_;
+  }
+
+  const std::vector<strategy::PlannedOrder>& placed() const noexcept { return placed_; }
+  const std::vector<OrderRef<Tag>>& canceled() const noexcept { return canceled_; }
+
+  SendOutcome place_outcome_{SendOutcome::ACCEPTED};
+  SendOutcome cancel_outcome_{SendOutcome::ACCEPTED};
+
+private:
+  std::vector<strategy::PlannedOrder> placed_;
+  std::vector<OrderRef<Tag>> canceled_;
+};
+
+using ScriptedRunner = runner::Runner<
+  HoldTen, strategy::NoCaps, runner::DryTag, ScriptedExecutor<runner::DryTag>
+>;
+
+} // namespace
+
+TEST_CASE("the ledger only forgets after the broker's order list has been read") {
+  // Not on a timeout, not on a later success, and not on a subsequent bar. A timeout would resume
+  // trading on a guess; a success on a different instruction says nothing about the one that
+  // vanished.
+  IndeterminacyLedger ledger;
+  REQUIRE(ledger.empty());
+  REQUIRE_FALSE(ledger.requires_reconcile(samsung()));
+
+  ledger.mark(samsung(), "an order request failed in transit");
+  REQUIRE(ledger.requires_reconcile(samsung()));
+  REQUIRE(ledger.detail(samsung()) == "an order request failed in transit");
+  REQUIRE(ledger.pending().size() == 1);
+
+  // A second failure keeps the first reason: the earliest unresolved instruction is the one whose
+  // existence is in doubt, and a later failure adds nothing about it.
+  ledger.mark(samsung(), "a later, different failure");
+  REQUIRE(ledger.pending().size() == 1);
+  REQUIRE(ledger.detail(samsung()) == "an order request failed in transit");
+
+  // Another instrument is unaffected: the hold is per instrument, not global.
+  REQUIRE_FALSE(ledger.requires_reconcile(InstrumentId{Country::KR, Venue::COMBINED, "000660"}));
+
+  ledger.resolve_after_reading_orders(samsung());
+  REQUIRE(ledger.empty());
+  REQUIRE_FALSE(ledger.requires_reconcile(samsung()));
+}
+
+TEST_CASE("an order that fails in transit leaves the instrument requiring reconciliation") {
+  ScriptedRunner dry;
+  arrange(dry);
+  dry.executor().place_outcome_ = SendOutcome::INDETERMINATE;
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.indeterminate_.size() == 1);
+  REQUIRE(report.would_place_.empty());
+  REQUIRE(dry.ledger().requires_reconcile(samsung()));
+}
+
+TEST_CASE("nothing further is submitted for an instrument whose state is unknown") {
+  // **The rule this whole mechanism exists for.** The order may or may not be live, so sending
+  // another could double the position. It is withheld and reported, never retried.
+  ScriptedRunner dry;
+  arrange(dry);
+  dry.executor().place_outcome_ = SendOutcome::INDETERMINATE;
+  REQUIRE(dry.feed(bar_at(10, "70000")).indeterminate_.size() == 1);
+
+  // The transport recovers, and it changes nothing: the question is about the earlier order.
+  dry.executor().place_outcome_ = SendOutcome::ACCEPTED;
+  const auto second = dry.feed(bar_at(11, "70000"));
+  REQUIRE(second.would_place_.empty());
+  REQUIRE(second.withheld_.size() == 1);
+  REQUIRE(second.withheld_[0].reason_ == WithheldReason::RECONCILE_REQUIRED);
+  REQUIRE(second.withheld_[0].detail_ == "an order request failed in transit");
+  // And it reached the executor exactly once, on the failing attempt -- never again.
+  REQUIRE(dry.executor().placed().size() == 1);
+}
+
+TEST_CASE("reading the broker's order list is what allows trading to resume") {
+  ScriptedRunner dry;
+  arrange(dry);
+  dry.executor().place_outcome_ = SendOutcome::INDETERMINATE;
+  dry.feed(bar_at(10, "70000"));
+  dry.executor().place_outcome_ = SendOutcome::ACCEPTED;
+  REQUIRE(dry.feed(bar_at(11, "70000")).withheld_.size() == 1);
+
+  // An operator, or the runner's own reconciliation step, having read the order list:
+  dry.ledger().resolve_after_reading_orders(samsung());
+  const auto resumed = dry.feed(bar_at(12, "70000"));
+  REQUIRE(resumed.would_place_.size() == 1);
+  REQUIRE(resumed.withheld_.empty());
+}
+
+TEST_CASE("a hold on one instrument does not stop trading in another") {
+  // A cross-sectional strategy must not be silenced entirely because one name is unresolved.
+  runner::Runner<TwoNames, strategy::NoCaps, runner::DryTag, ScriptedExecutor<runner::DryTag>> dry;
+  dry.context().set_phase(strategy::MarketPhase::OPEN);
+  for (const char* symbol : {"005930", "000660"}) {
+    auto reference = samsung_reference();
+    reference.id_ = InstrumentId{Country::KR, Venue::COMBINED, symbol};
+    dry.context().set_instrument(reference);
+    dry.context().set_last_price(reference.id_, Decimal64::parse("70000"));
+  }
+
+  dry.ledger().mark(samsung(), "earlier failure");
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.withheld_.size() == 1);
+  REQUIRE(report.withheld_[0].order_.instrument_.symbol_ == "005930");
+  REQUIRE(report.would_place_.size() == 1);
+  REQUIRE(report.would_place_[0].instrument_.symbol_ == "000660");
+}
+
+TEST_CASE("a broker refusal needs no reconciliation, because it is an answer") {
+  // The distinction that makes three outcomes necessary rather than two: a rejection says the order
+  // does not exist, so nothing is in doubt.
+  ScriptedRunner dry;
+  arrange(dry);
+  dry.executor().place_outcome_ = SendOutcome::REJECTED;
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.would_place_.empty());
+  REQUIRE_FALSE(report.rejected_.empty());
+  REQUIRE(dry.ledger().empty());
+
+  // So the next bar is free to try again.
+  dry.executor().place_outcome_ = SendOutcome::ACCEPTED;
+  REQUIRE(dry.feed(bar_at(11, "70000")).would_place_.size() == 1);
+}
+
+TEST_CASE("a cancellation that fails in transit also obliges reconciliation") {
+  // The order may now be withdrawn or may still be resting, which is the same question an order
+  // POST leaves.
+  using Tag = runner::DryTag;
+  runner::Runner<CancelThenTarget, strategy::NoCaps, Tag, ScriptedExecutor<Tag>> dry;
+  dry.context().set_instrument(samsung_reference());
+  dry.context().set_phase(strategy::MarketPhase::OPEN);
+  dry.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+  strategy::Portfolio<Tag> portfolio;
+  WorkingOrder<Tag> working;
+  working.order_.instrument_ = samsung();
+  working.order_.side_ = OrderSide::BUY;
+  working.order_.status_ = OrderStatus::PENDING;
+  working.order_.quantity_ = Decimal64::parse("3");
+  working.ref_ = OrderRef<Tag>{"0001", ""};
+  portfolio.working_.push_back(working);
+  dry.context().set_portfolio(portfolio);
+
+  dry.executor().cancel_outcome_ = SendOutcome::INDETERMINATE;
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(dry.ledger().requires_reconcile(samsung()));
+  REQUIRE(dry.ledger().detail(samsung()) == "a cancellation request failed in transit");
+  // The order that would have followed the cancellation is withheld, not sent into the doubt.
+  REQUIRE(report.would_place_.empty());
+  REQUIRE(report.withheld_.size() == 1);
+}
+
+TEST_CASE("a withheld order is never handed to the executor at all") {
+  // Belt and braces on the promise: the executor is the only thing that can reach a broker, so
+  // asserting it was not called is asserting nothing was sent.
+  ScriptedRunner dry;
+  arrange(dry);
+  dry.ledger().mark(samsung(), "earlier failure");
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.withheld_.size() == 1);
+  REQUIRE(dry.executor().placed().empty());
+}
+
+TEST_CASE("every send outcome and withheld reason has a stable name") {
+  REQUIRE(runner::send_outcome_name(SendOutcome::ACCEPTED) == "accepted");
+  REQUIRE(runner::send_outcome_name(SendOutcome::REJECTED) == "rejected");
+  REQUIRE(runner::send_outcome_name(SendOutcome::INDETERMINATE) == "indeterminate");
+  REQUIRE(
+    runner::withheld_reason_name(WithheldReason::RECONCILE_REQUIRED) == "reconcile_required"
+  );
+}

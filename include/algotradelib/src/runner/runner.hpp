@@ -2,6 +2,7 @@
 
 #include "./context.hpp"
 #include "./dispatch.hpp"
+#include "./execution.hpp"
 
 #include "../strategy/reconcile.hpp"
 #include "../strategy/risk.hpp"
@@ -52,13 +53,22 @@ struct DryRunReport {
   std::vector<strategy::Rejection> rejected_;
   /** Instructions a guard refused, with the limit and what was attempted. */
   std::vector<strategy::GuardRejection> refused_;
+  /**
+   * Orders the runner declined to send because the instrument's state is unresolved.
+   *
+   * Reported rather than retried. A retry is exactly what must not happen after a transport
+   * failure, so these are surfaced for an operator and left alone.
+   */
+  std::vector<WithheldOrder> withheld_;
+  /** Instructions whose send failed in transit, leaving their outcome unknown. */
+  std::vector<strategy::PlannedOrder> indeterminate_;
   /** Lines the strategy logged. */
   std::vector<std::string> log_;
 
   /** Returns whether the run decided to do nothing at all. */
   bool quiet() const noexcept {
     return would_place_.empty() && would_cancel_.empty() && rejected_.empty() &&
-      refused_.empty();
+      refused_.empty() && withheld_.empty() && indeterminate_.empty();
   }
 };
 
@@ -68,26 +78,59 @@ struct DryRunReport {
  * Holds the strategy by value so a caller can read its state afterwards — a warm-up count, a
  * position it tracked — which is most of what a strategy test wants to assert.
  */
-template <typename Strategy, typename CapsType = strategy::NoCaps>
-class DryRunner {
-public:
-  /** The broker tag a dry run stands in for. References are never sent anywhere. */
-  struct Tag {
-    static constexpr std::string_view name = "dryrun";
-  };
+/** The broker tag a runner with no broker stands in for. References are never sent anywhere. */
+struct DryTag {
+  static constexpr std::string_view name = "dryrun";
+};
 
-  using Context = runner::Context<Tag, CapsType>;
-  using Report = DryRunReport<Tag>;
+/**
+ * Drives one strategy through the whole pipeline, sending through `Executor`.
+ *
+ * One implementation, parameterized on where instructions go. A dry run supplies an executor that
+ * records and accepts; a live session supplies one that calls the broker; a test supplies one that
+ * fails on purpose. That is what makes the transport-indeterminacy behaviour -- the most important
+ * in this branch and the least reachable through a real broker -- exercisable without one.
+ *
+ * Holds the strategy by value so a caller can read the state it kept afterwards.
+ */
+template <
+  typename Strategy,
+  typename CapsType = strategy::NoCaps,
+  typename BrokerTag = DryTag,
+  typename Executor = RecordingExecutor<DryTag>
+>
+class Runner {
+public:
+  using Tag = BrokerTag;
+  using Context = runner::Context<BrokerTag, CapsType>;
+  using Report = DryRunReport<BrokerTag>;
 
   ATL_ASSERT_STRATEGY(Strategy, Context);
 
   /** Constructs a runner with the given strategy, limits, and series warm-up window. */
-  explicit DryRunner(
+  explicit Runner(
     Strategy strategy = {},
     strategy::RiskLimits limits = {},
-    std::size_t series_capacity = 512
+    std::size_t series_capacity = 512,
+    Executor executor = {}
   )
-  : strategy_(std::move(strategy)), guard_(std::move(limits)), context_(series_capacity) {}
+  : strategy_(std::move(strategy)),
+    guard_(std::move(limits)),
+    context_(series_capacity),
+    executor_(std::move(executor)) {}
+
+  /** Returns the executor, so a caller can read what it was handed. */
+  const Executor& executor() const noexcept { return executor_; }
+  Executor& executor() noexcept { return executor_; }
+
+  /**
+   * Returns the ledger of instruments whose order state is unresolved.
+   *
+   * Non-const so an operator, having read the broker's order list, can clear an entry. Nothing
+   * else clears one.
+   */
+  const IndeterminacyLedger& ledger() const noexcept { return ledger_; }
+  IndeterminacyLedger& ledger() noexcept { return ledger_; }
 
   /** Returns the strategy, so a test can read the state it kept. */
   const Strategy& strategy() const noexcept { return strategy_; }
@@ -196,13 +239,13 @@ private:
 
     for (const auto& instruction : instructions) {
       if (const auto* cancel = std::get_if<strategy::CancelIntent<Tag>>(&instruction)) {
-        report.would_cancel_.push_back(cancel->ref_);
+        send_cancel(cancel->ref_, report);
         continue;
       }
 
       const auto planned = plan_for(instruction);
       for (const auto& ref : planned.cancel_) {
-        report.would_cancel_.push_back(ref);
+        send_cancel(ref, report);
       }
       for (const auto& rejection : planned.rejected_) {
         report.rejected_.push_back(rejection);
@@ -216,19 +259,78 @@ private:
     inputs.now_ = context_.now();
     inputs.phase_ = context_.phase();
     for (auto& order : pending) {
+      // Checked before the guards, because an unresolved instrument is a safety hold rather than a
+      // limit breach: reporting a notional ceiling for an order that was never going to be sent
+      // would point an operator at the wrong problem.
+      if (ledger_.requires_reconcile(order.instrument_)) {
+        report.withheld_.push_back(
+          WithheldOrder{
+            WithheldReason::RECONCILE_REQUIRED,
+            order,
+            std::string(ledger_.detail(order.instrument_)),
+          }
+        );
+        continue;
+      }
+
       inputs.reference_price_ = context_.last_price(order.instrument_);
       if (auto refusal = guard_.check(order, context_.portfolio(), inputs)) {
         report.refused_.push_back(std::move(*refusal));
         continue;
       }
-      // A dry run records the send that a live runner would perform, so the rate limit behaves
-      // exactly as it will in production rather than being permanently unused here.
-      guard_.note_sent(inputs.now_);
-      report.would_place_.push_back(std::move(order));
+
+      const auto outcome = executor_.place(order);
+      switch (outcome) {
+        case SendOutcome::ACCEPTED:
+          // Counted against the rate limit only once the instruction actually went, so an order a
+          // guard refused or the ledger withheld does not spend budget.
+          guard_.note_sent(inputs.now_);
+          report.would_place_.push_back(std::move(order));
+          break;
+        case SendOutcome::REJECTED:
+          // A refusal is an answer: the order does not exist, so nothing needs reconciling. It
+          // still consumed a request, which is what the broker will have counted.
+          guard_.note_sent(inputs.now_);
+          report.rejected_.push_back(
+            strategy::Rejection{
+              strategy::RejectReason::NOT_REPRESENTABLE, order.instrument_, order.tag_
+            }
+          );
+          break;
+        case SendOutcome::INDETERMINATE:
+          guard_.note_sent(inputs.now_);
+          ledger_.mark(order.instrument_, "an order request failed in transit");
+          report.indeterminate_.push_back(std::move(order));
+          break;
+      }
     }
 
     report.log_ = context_.log().take();
     return report;
+  }
+
+  /**
+   * Sends one cancellation, and marks the instrument when its outcome is unknown.
+   *
+   * A cancellation that fails in transit leaves the same question an order does -- the order may
+   * now be withdrawn or may still be resting -- so it obliges the same reconciliation. A
+   * cancellation is not gated by the ledger, because withdrawing an order is the one action that
+   * cannot make an unresolved position worse.
+   */
+  void send_cancel(const OrderRef<Tag>& ref, Report& report) {
+    const auto outcome = executor_.cancel(ref);
+    if (outcome == SendOutcome::INDETERMINATE) {
+      ledger_.mark(instrument_of_ref(ref), "a cancellation request failed in transit");
+    }
+    report.would_cancel_.push_back(ref);
+  }
+
+  /** Returns which instrument a working order reference belongs to, from the portfolio. */
+  InstrumentId instrument_of_ref(const OrderRef<Tag>& ref) const {
+    if (const auto* working = context_.portfolio().find_working(ref)) {
+      return working->order_.instrument_;
+    }
+    return InstrumentId{};
   }
 
   /**
@@ -281,9 +383,25 @@ private:
   Strategy strategy_;
   strategy::RiskGuard guard_;
   Context context_;
+  Executor executor_;
+  IndeterminacyLedger ledger_;
   std::map<std::string, PriceLimits> price_limits_;
   std::optional<Decimal64> portfolio_value_;
 };
+
+/**
+ * A runner with no broker attached: handlers fire, instructions are recorded, nothing is sent.
+ *
+ * The plan's `DryRunner`, and now one configuration of the shared pipeline rather than a separate
+ * implementation. That matters beyond tidiness: a dry run that ran different code from a live
+ * session would be testing something other than what ships.
+ *
+ * **No client exists in the binary.** This header reaches no broker and no transport, so a dry-run
+ * program links no TLS and has no symbol that could place an order -- a stronger promise than a
+ * flag, because a function that is not linked cannot be called.
+ */
+template <typename Strategy, typename CapsType = strategy::NoCaps>
+using DryRunner = Runner<Strategy, CapsType, DryTag, RecordingExecutor<DryTag>>;
 
 } // namespace runner
 } // namespace algotradelib
