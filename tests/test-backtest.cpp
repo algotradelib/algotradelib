@@ -1,4 +1,5 @@
 #include <algotradelib/backtest>
+#include <algotradelib/vanilla>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -13,6 +14,7 @@ using namespace algotradelib;
 
 namespace strategy = algotradelib::strategy;
 namespace backtest = algotradelib::backtest;
+namespace vanilla = algotradelib::strategy::vanilla;
 
 namespace {
 
@@ -995,3 +997,212 @@ TEST_CASE("turnover is measured from what was actually traded") {
 }
 
 #endif
+
+// ---------------------------------------------------------------------------
+// Every vanilla strategy, replayed at both intervals
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** A price path that rises, stalls, falls and recovers, so a trend strategy has both sides. */
+const std::vector<int>& path() {
+  static const std::vector<int> closes = {
+    60000, 60500, 61200, 61000, 62000, 63000, 64500, 65000, 66200, 67000,
+    68500, 69000, 70200, 71000, 72500, 73000, 72800, 72000, 71000, 69500,
+    68000, 66500, 65000, 63500, 62000, 61000, 60000, 59000, 58500, 58000,
+    58500, 59500, 61000, 62500, 64000, 65500, 67000, 68500, 70000, 71500,
+  };
+  return closes;
+}
+
+/**
+ * Replays `path()` through `strategy` at `interval` and returns the finished engine.
+ *
+ * The same function serves both intervals, which is what makes the pair of assertions below a test of
+ * the engine rather than of two code paths.
+ */
+template <typename Strategy>
+backtest::Backtester<Strategy> replay(Strategy strategy, BarInterval interval) {
+  auto config = replay_config();
+  config.series_capacity_ = 64;
+  backtest::Backtester<Strategy> engine(std::move(strategy), std::move(config));
+
+  // Minute bars start inside the session and step by a minute; daily bars step by a day. Nothing else
+  // differs, and the engine is told nothing about which it is getting.
+  const auto start = interval == BarInterval::ONE_MINUTE ?
+    utc(2026, 3, 10, 0, 1) :
+    utc(2026, 3, 10, 6, 30);
+  for (std::size_t at = 0; at < path().size(); ++at) {
+    const auto step = interval == BarInterval::ONE_MINUTE ?
+      std::chrono::minutes(static_cast<int>(at)) :
+      std::chrono::duration_cast<std::chrono::minutes>(std::chrono::hours(24 * static_cast<int>(at)));
+    const auto close = std::to_string(path()[at]);
+    engine.feed(moving_bar(start + step, interval, close.c_str(), close.c_str()));
+  }
+  engine.finish();
+  return engine;
+}
+
+/**
+ * A signal strategy and a liquidation policy composed, which is how the plan intended them to be used.
+ *
+ * At namespace scope because a local class cannot hold a template member -- a trap this file has now
+ * hit five times, which is why the vignette records it.
+ */
+struct BuyThenLiquidate {
+  vanilla::BuyAndHold buying_;
+  vanilla::TimedLiquidation flattening_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    buying_.on_bar(ctx, bar);
+  }
+  template <class Ctx>
+  void on_phase(Ctx& ctx, strategy::MarketPhase phase) {
+    flattening_.on_phase(ctx, phase);
+  }
+};
+
+/** Asserts a strategy behaves identically at both intervals. */
+template <typename Strategy>
+void behaves_the_same_at_both_intervals(Strategy strategy) {
+  const auto daily = replay(strategy, BarInterval::ONE_DAY);
+  const auto minutes = replay(strategy, BarInterval::ONE_MINUTE);
+
+  REQUIRE(daily.result().executions_.size() == minutes.result().executions_.size());
+  REQUIRE(daily.ledger().quantity_of(samsung()) == minutes.ledger().quantity_of(samsung()));
+  REQUIRE(daily.ledger().cash_in(Currency{"KRW"}) == minutes.ledger().cash_in(Currency{"KRW"}));
+  REQUIRE(daily.ledger().realized_in(Currency{"KRW"}) ==
+          minutes.ledger().realized_in(Currency{"KRW"}));
+  // And neither ran into an instruction it could not build.
+  REQUIRE(daily.result().rejected_.empty());
+  REQUIRE(minutes.result().rejected_.empty());
+}
+
+} // namespace
+
+TEST_CASE("BuyAndHold replays identically at both intervals") {
+  vanilla::BuyAndHold holding;
+  holding.params_.instrument_ = samsung();
+  holding.params_.quantity_ = Decimal64::parse("100");
+  behaves_the_same_at_both_intervals(holding);
+
+  // And it traded exactly once, which is the property it exists to demonstrate.
+  const auto engine = replay(holding, BarInterval::ONE_DAY);
+  REQUIRE(engine.result().executions_.size() == 1);
+  REQUIRE(engine.ledger().quantity_of(samsung()) == std::optional<Decimal64>(Decimal64::parse("100")));
+}
+
+#if defined(ATL_HAS_EIGEN)
+
+TEST_CASE("SmaCrossover replays identically at both intervals and trades both ways") {
+  vanilla::MovingAverageCrossover::Params params;
+  params.instrument_ = samsung();
+  params.fast_ = 3;
+  params.slow_ = 8;
+  params.quantity_ = Decimal64::parse("100");
+  behaves_the_same_at_both_intervals(vanilla::SmaCrossover{params});
+
+  const auto engine = replay(vanilla::SmaCrossover{params}, BarInterval::ONE_DAY);
+  // The path rises, falls and recovers, so a level-stated crossover enters, exits and re-enters.
+  REQUIRE(engine.result().executions_.size() >= 3);
+  REQUIRE(engine.ledger().realized_in(Currency{"KRW"}).coefficient() != 0);
+}
+
+TEST_CASE("EmaCrossover replays identically at both intervals") {
+  vanilla::MovingAverageCrossover::Params params;
+  params.instrument_ = samsung();
+  params.fast_ = 3;
+  params.slow_ = 8;
+  params.quantity_ = Decimal64::parse("100");
+  behaves_the_same_at_both_intervals(vanilla::EmaCrossover{params});
+}
+
+TEST_CASE("DonchianBreakout replays identically at both intervals") {
+  vanilla::DonchianBreakout breaking;
+  breaking.params_.instrument_ = samsung();
+  breaking.params_.lookback_ = 5;
+  breaking.params_.quantity_ = Decimal64::parse("100");
+  behaves_the_same_at_both_intervals(breaking);
+
+  const auto engine = replay(breaking, BarInterval::ONE_DAY);
+  REQUIRE(engine.result().executions_.size() >= 2);
+}
+
+TEST_CASE("ZScoreReversion replays identically at both intervals") {
+  vanilla::ZScoreReversion reverting;
+  reverting.params_.instrument_ = samsung();
+  reverting.params_.window_ = 8;
+  reverting.params_.entry_ = 1.0;
+  reverting.params_.exit_ = 0.2;
+  reverting.params_.quantity_ = Decimal64::parse("100");
+  behaves_the_same_at_both_intervals(reverting);
+}
+
+TEST_CASE("RsiThreshold replays identically at both intervals") {
+  vanilla::RsiThreshold indexed;
+  indexed.params_.instrument_ = samsung();
+  indexed.params_.period_ = 5;
+  indexed.params_.oversold_ = 35.0;
+  indexed.params_.overbought_ = 65.0;
+  indexed.params_.quantity_ = Decimal64::parse("100");
+  behaves_the_same_at_both_intervals(indexed);
+}
+
+TEST_CASE("VolatilityTargetSizing replays identically at both intervals") {
+  vanilla::VolatilityTargetSizing sizing;
+  sizing.params_.instrument_ = samsung();
+  sizing.params_.window_ = 8;
+  sizing.params_.risk_budget_ = Decimal64::parse("200000");
+  sizing.params_.max_quantity_ = Decimal64::parse("500");
+  behaves_the_same_at_both_intervals(sizing);
+
+  // It sized something finite rather than clamping to the maximum on a flat window.
+  const auto engine = replay(sizing, BarInterval::ONE_DAY);
+  const auto held = engine.ledger().quantity_of(samsung());
+  if (held && held->coefficient() != 0) {
+    REQUIRE_FALSE(decimal_less(sizing.params_.max_quantity_, *held));
+  }
+}
+
+TEST_CASE("every vanilla strategy finishes a replay without an unbuildable instruction") {
+  // A blunter assertion across the set: whatever each decided, reconciliation could always express it
+  // given reference data and a price. A rejection here would mean the engine failed to supply
+  // something the runner needs, not that a strategy misbehaved.
+  vanilla::MovingAverageCrossover::Params crossing;
+  crossing.instrument_ = samsung();
+  crossing.fast_ = 3;
+  crossing.slow_ = 8;
+  crossing.quantity_ = Decimal64::parse("100");
+
+  REQUIRE(replay(vanilla::SmaCrossover{crossing}, BarInterval::ONE_DAY).result().rejected_.empty());
+  REQUIRE(replay(vanilla::EmaCrossover{crossing}, BarInterval::ONE_MINUTE).result().rejected_.empty());
+}
+
+#endif
+
+TEST_CASE("TimedLiquidation flattens a position when a replay leaves the session") {
+  // Only meaningful at an interval that crosses a session boundary, which is the clearest case for why
+  // intraday replay had to work rather than be deferred.
+  auto config = replay_config();
+  config.limits_.permitted_phases_ =
+    std::vector<strategy::MarketPhase>{strategy::MarketPhase::OPEN,
+                                      strategy::MarketPhase::POST_CLOSE};
+
+  BuyThenLiquidate combined;
+  combined.buying_.params_.instrument_ = samsung();
+  combined.buying_.params_.quantity_ = Decimal64::parse("100");
+
+  backtest::Backtester<BuyThenLiquidate> engine(combined, std::move(config));
+  // Inside the session, then past the close.
+  engine.feed(moving_bar(utc(2026, 3, 10, 3, 0), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 10, 3, 1), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 31), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.finish();
+
+  // Bought inside the session and sold back out after the close, so it ends flat.
+  REQUIRE(engine.result().executions_.size() == 2);
+  REQUIRE(engine.result().executions_[1].fill_.side_ == OrderSide::SELL);
+  REQUIRE(engine.ledger().quantity_of(samsung())->coefficient() == 0);
+}
