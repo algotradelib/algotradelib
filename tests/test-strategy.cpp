@@ -1046,3 +1046,324 @@ TEST_CASE("the open-order predicate is exhaustive over every status") {
   REQUIRE_FALSE(strategy::order_is_open(OrderStatus::REPLACE_REJECTED));
   REQUIRE_FALSE(strategy::order_is_open(OrderStatus::REPLACED));
 }
+
+// ---------------------------------------------------------------------------
+// Risk guards: one test per limit, and none of them resizes
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using strategy::GuardInputs;
+using strategy::GuardReason;
+using strategy::RiskGuard;
+using strategy::RiskLimits;
+
+/** A planned order of `quantity` shares at `price`, as reconciliation would have produced it. */
+PlannedOrder planned(
+  const char* quantity,
+  const char* price = nullptr,
+  OrderSide side = OrderSide::BUY
+) {
+  PlannedOrder order;
+  order.instrument_ = samsung();
+  order.side_ = side;
+  order.quantity_ = Decimal64::parse(quantity);
+  order.tag_ = "test";
+  if (price != nullptr) {
+    order.type_ = OrderType::LIMIT;
+    order.price_ = Decimal64::parse(price);
+  } else {
+    order.type_ = OrderType::MARKET;
+  }
+  return order;
+}
+
+/** Inputs with the market open and a price available, so one limit is tested at a time. */
+GuardInputs open_market() {
+  GuardInputs inputs;
+  inputs.now_ = utc(2026, 3, 10, 3, 0);
+  inputs.phase_ = strategy::MarketPhase::OPEN;
+  inputs.reference_price_ = Decimal64::parse("70000");
+  return inputs;
+}
+
+} // namespace
+
+TEST_CASE("an unconfigured guard permits an ordinary order while the market is open") {
+  const RiskGuard guard;
+  ProbePortfolio portfolio;
+  REQUIRE_FALSE(guard.check(planned("10", "70000"), portfolio, open_market()));
+}
+
+TEST_CASE("the kill switch refuses everything, and reports the halt above any other reason") {
+  // An operator reading a log should see the halt rather than an incidental ceiling the order also
+  // happened to exceed, so it is checked first.
+  RiskLimits limits;
+  limits.max_order_notional_ = Decimal64::parse("1");
+  RiskGuard guard(limits);
+  ProbePortfolio portfolio;
+
+  guard.halt();
+  REQUIRE(guard.halted());
+  const auto refused = guard.check(planned("10", "70000"), portfolio, open_market());
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::TRADING_HALTED);
+
+  guard.resume();
+  // Now the notional ceiling is the reason, which it was all along.
+  const auto after = guard.check(planned("10", "70000"), portfolio, open_market());
+  REQUIRE(after);
+  REQUIRE(after->reason_ == GuardReason::ORDER_NOTIONAL_TOO_LARGE);
+}
+
+TEST_CASE("only the market phases the operator permits are traded in") {
+  const RiskGuard guard;  // defaults to OPEN alone
+  ProbePortfolio portfolio;
+
+  for (const auto phase : {
+         strategy::MarketPhase::PRE_OPEN,
+         strategy::MarketPhase::POST_CLOSE,
+         strategy::MarketPhase::CLOSED,
+       }) {
+    auto inputs = open_market();
+    inputs.phase_ = phase;
+    const auto refused = guard.check(planned("10", "70000"), portfolio, inputs);
+    REQUIRE(refused);
+    REQUIRE(refused->reason_ == GuardReason::PHASE_NOT_PERMITTED);
+  }
+}
+
+TEST_CASE("an uncovered calendar date does not become an order placed into a holiday") {
+  // The reason UNKNOWN is a distinct phase rather than a synonym for CLOSED, carried all the way
+  // through to a refusal by default.
+  const RiskGuard guard;
+  ProbePortfolio portfolio;
+  auto inputs = open_market();
+  inputs.phase_ = strategy::MarketPhase::UNKNOWN;
+
+  const auto refused = guard.check(planned("10", "70000"), portfolio, inputs);
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::PHASE_NOT_PERMITTED);
+}
+
+TEST_CASE("permitting any phase has to be asked for explicitly") {
+  RiskLimits limits;
+  limits.permitted_phases_ = std::nullopt;  // explicitly: any
+  const RiskGuard guard(limits);
+  ProbePortfolio portfolio;
+  auto inputs = open_market();
+  inputs.phase_ = strategy::MarketPhase::UNKNOWN;
+
+  REQUIRE_FALSE(guard.check(planned("10", "70000"), portfolio, inputs));
+}
+
+TEST_CASE("an instrument outside the permitted universe is refused") {
+  RiskLimits limits;
+  limits.permitted_universe_ = std::vector<InstrumentId>{
+    InstrumentId{Country::KR, Venue::COMBINED, "000660"}
+  };
+  const RiskGuard guard(limits);
+  ProbePortfolio portfolio;
+
+  const auto refused = guard.check(planned("10", "70000"), portfolio, open_market());
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::INSTRUMENT_NOT_PERMITTED);
+
+  // And the one that is listed goes through.
+  auto allowed = planned("10", "70000");
+  allowed.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "000660"};
+  REQUIRE_FALSE(guard.check(allowed, portfolio, open_market()));
+}
+
+TEST_CASE("an order worth more than the per-order ceiling is refused, not halved") {
+  // The central promise: halving would place a position the strategy never sized against a signal
+  // it never gave, and the strategy would then reconcile against that position and compound it.
+  RiskLimits limits;
+  limits.max_order_notional_ = Decimal64::parse("500000");
+  const RiskGuard guard(limits);
+  ProbePortfolio portfolio;
+
+  const auto order = planned("10", "70000");  // 700,000 won
+  const auto refused = guard.check(order, portfolio, open_market());
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::ORDER_NOTIONAL_TOO_LARGE);
+  // The arithmetic comes back so an operator need not reconstruct it, and a strategy can adapt
+  // rather than retry the same size.
+  REQUIRE(refused->limit_ == std::optional<Decimal64>(Decimal64::parse("500000")));
+  REQUIRE(refused->attempted_ == std::optional<Decimal64>(Decimal64::parse("700000")));
+  REQUIRE(refused->tag_ == "test");
+  // The order itself is untouched. A guard returns a reason; it does not edit the instruction.
+  REQUIRE(order.quantity_ == Decimal64::parse("10"));
+
+  // Exactly at the ceiling is permitted; the limit is a maximum, not a bound to stay under.
+  REQUIRE_FALSE(guard.check(planned("50000", "10"), portfolio, open_market()));
+}
+
+TEST_CASE("a market order is valued from the reference price the runner supplies") {
+  RiskLimits limits;
+  limits.max_order_notional_ = Decimal64::parse("500000");
+  const RiskGuard guard(limits);
+  ProbePortfolio portfolio;
+
+  // A market order carries no price of its own, so the last quote is what values it.
+  const auto refused = guard.check(planned("10"), portfolio, open_market());
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::ORDER_NOTIONAL_TOO_LARGE);
+}
+
+TEST_CASE("a limit that cannot be evaluated refuses rather than waving the order through") {
+  // No price anywhere, so the notional is unknown. Permitting it would make the ceiling advisory.
+  RiskLimits limits;
+  limits.max_order_notional_ = Decimal64::parse("500000");
+  const RiskGuard guard(limits);
+  ProbePortfolio portfolio;
+  auto inputs = open_market();
+  inputs.reference_price_ = std::nullopt;
+
+  const auto refused = guard.check(planned("10"), portfolio, inputs);
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::VALUE_NOT_KNOWN);
+
+  // With no value-dependent limit configured, the same order is fine: an absent price only
+  // matters to a limit that needed it.
+  const RiskGuard unlimited;
+  REQUIRE_FALSE(unlimited.check(planned("10"), portfolio, inputs));
+}
+
+TEST_CASE("the position ceiling counts what the order would make the position, not the order") {
+  RiskLimits limits;
+  limits.max_position_quantity_ = Decimal64::parse("100");
+  const RiskGuard guard(limits);
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("95"));
+
+  // Ten more would reach 105.
+  const auto refused = guard.check(planned("10", "70000"), portfolio, open_market());
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::POSITION_LIMIT_EXCEEDED);
+  REQUIRE(refused->attempted_ == std::optional<Decimal64>(Decimal64::parse("105")));
+
+  // Five reaches exactly the ceiling, which is permitted.
+  REQUIRE_FALSE(guard.check(planned("5", "70000"), portfolio, open_market()));
+
+  // And selling reduces it, so it is never refused by this limit.
+  REQUIRE_FALSE(guard.check(planned("50", "70000", OrderSide::SELL), portfolio, open_market()));
+}
+
+TEST_CASE("the position ceiling limits a short as firmly as a long") {
+  // The ceiling is on magnitude. A limit that only counted longs would let a strategy build an
+  // unbounded short while appearing to be risk-limited.
+  RiskLimits limits;
+  limits.max_position_quantity_ = Decimal64::parse("100");
+  const RiskGuard guard(limits);
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("-95"));
+
+  const auto refused =
+    guard.check(planned("10", "70000", OrderSide::SELL), portfolio, open_market());
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::POSITION_LIMIT_EXCEEDED);
+  REQUIRE(refused->attempted_ == std::optional<Decimal64>(Decimal64::parse("105")));
+}
+
+TEST_CASE("the gross exposure ceiling adds the order to what is already exposed") {
+  RiskLimits limits;
+  limits.max_gross_exposure_ = Decimal64::parse("10000000");
+  const RiskGuard guard(limits);
+  ProbePortfolio portfolio;
+  auto inputs = open_market();
+  inputs.gross_exposure_ = Decimal64::parse("9500000");
+
+  // 10 at 70,000 is 700,000 more, reaching 10.2 million.
+  const auto refused = guard.check(planned("10", "70000"), portfolio, inputs);
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::GROSS_EXPOSURE_EXCEEDED);
+  REQUIRE(refused->attempted_ == std::optional<Decimal64>(Decimal64::parse("10200000")));
+
+  // Seven at 70,000 reaches exactly the ceiling.
+  REQUIRE_FALSE(guard.check(planned("7", "70000"), portfolio, inputs));
+}
+
+TEST_CASE("the order rate is counted over a sliding window, not reset on a boundary") {
+  // A counter reset on a boundary lets twice the limit through across one, which is the classic
+  // way a rate limit is wrong. The window slides instead.
+  RiskLimits limits;
+  limits.max_orders_per_window_ = 3;
+  limits.rate_window_ = std::chrono::seconds(60);
+  RiskGuard guard(limits);
+  ProbePortfolio portfolio;
+
+  auto inputs = open_market();
+  const auto start = inputs.now_;
+  for (int at = 0; at < 3; ++at) {
+    inputs.now_ = start + std::chrono::seconds(at * 10);
+    REQUIRE_FALSE(guard.check(planned("1", "70000"), portfolio, inputs));
+    guard.note_sent(inputs.now_);
+  }
+
+  // The fourth inside the window is refused, and reports the ceiling it hit.
+  inputs.now_ = start + std::chrono::seconds(30);
+  const auto refused = guard.check(planned("1", "70000"), portfolio, inputs);
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::ORDER_RATE_EXCEEDED);
+  REQUIRE(refused->limit_ == std::optional<Decimal64>(Decimal64::parse("3")));
+  REQUIRE(refused->attempted_ == std::optional<Decimal64>(Decimal64::parse("4")));
+
+  // Once the first has aged out of the window, one more is permitted -- and not three, which is
+  // what a boundary reset would have allowed.
+  inputs.now_ = start + std::chrono::seconds(61);
+  REQUIRE(guard.recent_orders(inputs.now_) == 2);
+  REQUIRE_FALSE(guard.check(planned("1", "70000"), portfolio, inputs));
+}
+
+TEST_CASE("rate budget is consumed by what was sent, not by what was checked") {
+  // An order that was checked and then refused by a later guard, or that never reached the broker,
+  // must not consume budget. Recording at the point of sending is what keeps the count honest.
+  RiskLimits limits;
+  limits.max_orders_per_window_ = 1;
+  RiskGuard guard(limits);
+  ProbePortfolio portfolio;
+  const auto inputs = open_market();
+
+  REQUIRE_FALSE(guard.check(planned("1", "70000"), portfolio, inputs));
+  REQUIRE_FALSE(guard.check(planned("1", "70000"), portfolio, inputs));
+  REQUIRE(guard.recent_orders(inputs.now_) == 0);
+
+  guard.note_sent(inputs.now_);
+  REQUIRE(guard.check(planned("1", "70000"), portfolio, inputs));
+}
+
+TEST_CASE("forgetting old sends bounds the memory a long session accumulates") {
+  RiskLimits limits;
+  limits.max_orders_per_window_ = 100;
+  RiskGuard guard(limits);
+  const auto start = utc(2026, 3, 10, 3, 0);
+  for (int at = 0; at < 50; ++at) {
+    guard.note_sent(start + std::chrono::seconds(at));
+  }
+
+  guard.forget_before(start + std::chrono::seconds(40));
+  REQUIRE(guard.recent_orders(start + std::chrono::seconds(60)) == 10);
+}
+
+TEST_CASE("every guard reason has a stable name") {
+  REQUIRE(strategy::guard_reason_name(GuardReason::TRADING_HALTED) == "trading_halted");
+  REQUIRE(
+    strategy::guard_reason_name(GuardReason::INSTRUMENT_NOT_PERMITTED) ==
+    "instrument_not_permitted"
+  );
+  REQUIRE(strategy::guard_reason_name(GuardReason::PHASE_NOT_PERMITTED) == "phase_not_permitted");
+  REQUIRE(
+    strategy::guard_reason_name(GuardReason::ORDER_NOTIONAL_TOO_LARGE) ==
+    "order_notional_too_large"
+  );
+  REQUIRE(
+    strategy::guard_reason_name(GuardReason::POSITION_LIMIT_EXCEEDED) == "position_limit_exceeded"
+  );
+  REQUIRE(
+    strategy::guard_reason_name(GuardReason::GROSS_EXPOSURE_EXCEEDED) ==
+    "gross_exposure_exceeded"
+  );
+  REQUIRE(strategy::guard_reason_name(GuardReason::ORDER_RATE_EXCEEDED) == "order_rate_exceeded");
+  REQUIRE(strategy::guard_reason_name(GuardReason::VALUE_NOT_KNOWN) == "value_not_known");
+}

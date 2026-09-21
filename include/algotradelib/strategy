@@ -22,3 +22,4 @@
 #include "src/strategy/intent.hpp"
 #include "src/strategy/portfolio.hpp"
 #include "src/strategy/reconcile.hpp"
+#include "src/strategy/risk.hpp"
