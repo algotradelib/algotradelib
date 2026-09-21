@@ -120,17 +120,45 @@ where they break:
 
 And two places where the honest answer is a flag rather than a number:
 
-- **`ols` uses column-pivoting QR**, not the normal equations. Nearly collinear factor columns
-  are the normal case in market data, the normal equations square the condition number, and
-  the pivoting yields the rank — the only honest way to tell a caller its factors were not
-  independent. `Regression::full_rank_` is worth checking: with it false the fitted values are
-  still meaningful and the individual coefficients are not.
-- **`covariance` deletes pairwise**, so its result need not be positive semi-definite. That is
+- **The decompositions are Eigen's own, exposed as aliases**, not wrapped. `math::Llt`,
+  `math::Ldlt`, `math::HouseholderQr`, `math::ColPivQr`, `math::FullPivQr`, `math::FullPivLu`,
+  `math::Svd` and `math::SelfAdjointEigen` are used directly, so one factorization solves many
+  right-hand sides, a right-hand side may be a matrix as easily as a vector, and the rank,
+  permutation, singular values and `info()` a decomposition already knows are all still there.
+  Wrapping each in a result struct would have copied the factors out and thrown the rest away.
+
+  Which to reach for is a trade-off the caller makes: `ColPivQr` for a design matrix of market
+  data, where nearly collinear columns are the normal case and the normal equations square the
+  condition number; `Llt` when the system is known symmetric positive definite and speed
+  matters; `Ldlt` when it is only semi-definite; `Svd` when the answer must be the minimum-norm
+  one or the conditioning is itself the question.
+
+  For decompositions the backend seam is a naming convention rather than a portability
+  guarantee, because no two libraries agree on what a factorization object exposes. The numeric
+  vocabulary — `Matrix`, `Vector`, `SeriesView` — really is portable. That distinction is worth
+  stating instead of letting a uniform-looking `math::` prefix imply more than it delivers.
+
+- **`covariance` deletes pairwise, so its result need not be positive semi-definite.** That is
   not a bug to be hidden: a panel of a few hundred instruments with scattered gaps may have no
   complete row at all, so listwise deletion would return nothing. Running
   `nearest_positive_definite` over the result is the expected next step. Note what clipping
   does not preserve — the diagonal — so a *correlation* matrix comes back with a diagonal
   slightly above one and needs rescaling if that matters.
+
+## What this layer deliberately does not fit
+
+There is no `ols`, no `ridge`, and no design-matrix builder, and the omission is deliberate
+rather than pending. Fitting is one call — `math::ColPivQr(x).solve(y)`, where `y` may be a
+matrix of targets and the result a matrix of coefficients — and everything that carries
+judgement happens before it: which predictors, over what estimation window, how a target aligns
+to lagged features, and what to do with an incomplete row. Those are modelling decisions, and a
+library that answered them with defaults would be making a strategy's choices while appearing
+to offer only a utility.
+
+What remains here is the part that is knowledge about market data rather than a per-strategy
+choice: estimating a covariance matrix when instruments have different gaps, weighting recent
+observations, and repairing the result when the estimator's own deletion policy leaves it
+indefinite.
 
 ## Where the numbers live
 

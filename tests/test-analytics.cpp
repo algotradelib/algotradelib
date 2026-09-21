@@ -1205,7 +1205,7 @@ TEST_CASE("a running exponential average honours its warm-up and rejects a zero 
 }
 
 // ---------------------------------------------------------------------------
-// Regression and covariance
+// Covariance, and the decompositions behind it
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -1228,119 +1228,69 @@ math::Matrix columns(std::initializer_list<std::initializer_list<Scalar>> values
 
 } // namespace
 
-TEST_CASE("least squares recovers a line it was given exactly") {
-  const math::Vector y = series({5.0, 8.0, 11.0, 14.0});
-  const math::Matrix x = analytics::with_intercept(columns({{1.0, 2.0, 3.0, 4.0}}));
-  const auto fit = analytics::ols(y, x);
+TEST_CASE("one factorization solves a matrix of right-hand sides at once") {
+  // The shape the old wrapper could not express. `b` is a matrix of two targets, so the
+  // solution is a matrix of two coefficient columns, and both come from the same
+  // factorization rather than from two calls.
+  math::Matrix design(4, 2);
+  design << 1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0;
+  math::Matrix targets(4, 2);
+  // First target is 2 + 3x, second is -1 + 5x.
+  targets << 5.0, 4.0, 8.0, 9.0, 11.0, 14.0, 14.0, 19.0;
 
-  // y = 2 + 3x, and the intercept is the first column because `with_intercept` prepends it.
-  REQUIRE(fit.coefficients_.size() == 2);
-  REQUIRE(fit.coefficients_[0] == Catch::Approx(2.0));
-  REQUIRE(fit.coefficients_[1] == Catch::Approx(3.0));
-  REQUIRE(fit.r_squared_ == Catch::Approx(1.0));
-  REQUIRE(fit.observations_ == 4);
-  REQUIRE(fit.rank_ == 2);
-  REQUIRE(fit.full_rank_);
-  for (math::Index row = 0; row < y.size(); ++row) {
-    REQUIRE(fit.residuals_[row] == Catch::Approx(0.0).margin(1e-12));
-  }
+  const math::ColPivQr qr(design);
+  REQUIRE(qr.rank() == 2);
+
+  const math::Matrix coefficients = qr.solve(targets);
+  REQUIRE(coefficients.rows() == 2);
+  REQUIRE(coefficients.cols() == 2);
+  REQUIRE(coefficients(0, 0) == Catch::Approx(2.0));
+  REQUIRE(coefficients(1, 0) == Catch::Approx(3.0));
+  REQUIRE(coefficients(0, 1) == Catch::Approx(-1.0));
+  REQUIRE(coefficients(1, 1) == Catch::Approx(5.0));
+
+  // And the same factorization answers a vector right-hand side too, with no second
+  // decomposition and no separate entry point.
+  const math::Vector single = qr.solve(math::Vector(targets.col(0)));
+  REQUIRE(single[1] == Catch::Approx(3.0));
 }
 
-TEST_CASE("least squares reports a rank-deficient design instead of hiding it") {
-  // The second and third columns are the same factor twice. The fitted values are still
-  // right; the individual coefficients are one solution of infinitely many, which is
-  // exactly the case where a factor model reports a loading that is not really there.
-  const math::Vector y = series({5.0, 8.0, 11.0, 14.0});
-  const math::Matrix x =
-    analytics::with_intercept(columns({{1.0, 2.0, 3.0, 4.0}, {1.0, 2.0, 3.0, 4.0}}));
-  const auto fit = analytics::ols(y, x);
+TEST_CASE("the caller picks the decomposition, and each reports its own failure") {
+  math::Matrix design(4, 2);
+  design << 1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0;
+  const math::Vector target = series({5.0, 8.0, 11.0, 14.0});
 
-  REQUIRE(fit.coefficients_.size() == 3);
-  REQUIRE_FALSE(fit.full_rank_);
-  REQUIRE(fit.rank_ == 2);
-  // And the fit itself is still exact, which is why the flag is the only warning there is.
-  REQUIRE(fit.r_squared_ == Catch::Approx(1.0));
-  for (math::Index row = 0; row < y.size(); ++row) {
-    REQUIRE(fit.fitted_[row] == Catch::Approx(y[row]));
-  }
+  // Cholesky on the normal equations: allowed here only because the matrix is known
+  // positive definite, and `info()` is what says so rather than a bool we invented.
+  const math::Matrix normal = design.transpose() * design;
+  const math::Llt chol(normal);
+  REQUIRE(chol.info() == math::SUCCESS);
+  const math::Vector via_chol = chol.solve(design.transpose() * target);
+  REQUIRE(via_chol[1] == Catch::Approx(3.0));
+
+  // The same answer through a pivoting QR and through an SVD, which is the point of
+  // exposing all three: the choice is a trade-off the caller makes, not one we make.
+  REQUIRE(math::ColPivQr(design).solve(target)[1] == Catch::Approx(3.0));
+  REQUIRE(math::thin_svd(design).solve(target)[1] == Catch::Approx(3.0));
+
+  // Cholesky refuses an indefinite matrix rather than returning plausible numbers.
+  math::Matrix indefinite(2, 2);
+  indefinite << 1.0, 2.0, 2.0, 1.0;
+  REQUIRE(math::Llt(indefinite).info() != math::SUCCESS);
 }
 
-TEST_CASE("least squares drops a row with any gap and says how many it used") {
-  const math::Vector y = series({5.0, missing(), 11.0, 14.0});
-  const math::Matrix x =
-    analytics::with_intercept(columns({{1.0, 2.0, missing(), 4.0}}));
-  const auto fit = analytics::ols(y, x);
+TEST_CASE("a rank-deficient design is reported by the decomposition itself") {
+  // Two identical columns. The pivoting QR knows the rank; an SVD's singular values say
+  // the same thing in a different language. Neither needed a wrapper to tell us.
+  math::Matrix design(4, 3);
+  design << 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 1.0, 3.0, 3.0, 1.0, 4.0, 4.0;
 
-  // Rows 1 and 2 each have a gap, so two whole rows remain -- enough for a line.
-  REQUIRE(fit.observations_ == 2);
-  REQUIRE(fit.coefficients_[1] == Catch::Approx(3.0));
-  // A dropped row gets no fitted value, so the columns stay as long as the input and line
-  // up with the same index.
-  REQUIRE(fit.fitted_.size() == y.size());
-  REQUIRE_FALSE(observed(fit.fitted_[1]));
-  REQUIRE_FALSE(observed(fit.residuals_[2]));
-  REQUIRE(observed(fit.fitted_[0]));
-}
+  REQUIRE(math::ColPivQr(design).rank() == 2);
+  REQUIRE(math::FullPivQr(design).rank() == 2);
 
-TEST_CASE("a fit against a constant response reports no R-squared rather than zero or one") {
-  const math::Vector y = series({7.0, 7.0, 7.0, 7.0});
-  const math::Matrix x = analytics::with_intercept(columns({{1.0, 2.0, 3.0, 4.0}}));
-  const auto fit = analytics::ols(y, x);
-
-  // There is no variance to explain. Either number would be a claim about fit quality.
-  REQUIRE_FALSE(observed(fit.r_squared_));
-}
-
-TEST_CASE("a fit with nothing usable left returns unobserved coefficients") {
-  const math::Vector y = series({missing(), missing()});
-  const math::Matrix x = columns({{1.0, 2.0}});
-  const auto fit = analytics::ols(y, x);
-
-  REQUIRE(fit.observations_ == 0);
-  REQUIRE_FALSE(observed(fit.coefficients_[0]));
-  REQUIRE_FALSE(observed(fit.r_squared_));
-}
-
-TEST_CASE("a malformed regression is refused at the call rather than fitted to nonsense") {
-  const math::Vector y = series({1.0, 2.0, 3.0});
-  REQUIRE_THROWS_AS(
-    analytics::ols(y, columns({{1.0, 2.0}})), std::invalid_argument
-  );
-  REQUIRE_THROWS_AS(
-    analytics::ols(y, math::Matrix(3, 0)), std::invalid_argument
-  );
-  REQUIRE_THROWS_AS(
-    analytics::ridge(y, columns({{1.0, 2.0, 3.0}}), 0.0), std::invalid_argument
-  );
-  REQUIRE_THROWS_AS(
-    analytics::ridge(y, columns({{1.0, 2.0, 3.0}}), -1.0), std::invalid_argument
-  );
-}
-
-TEST_CASE("ridge shrinks a coefficient toward zero by exactly its penalty") {
-  // y = 3x with no intercept. Unpenalized this is 3; penalized it is
-  // sum(xy) / (sum(x^2) + penalty) = 90 / 31.
-  const math::Vector y = series({3.0, 6.0, 9.0, 12.0});
-  const math::Matrix x = columns({{1.0, 2.0, 3.0, 4.0}});
-
-  REQUIRE(analytics::ols(y, x).coefficients_[0] == Catch::Approx(3.0));
-  REQUIRE(analytics::ridge(y, x, 1.0).coefficients_[0] == Catch::Approx(90.0 / 31.0));
-
-  // And a large penalty drives it toward zero rather than toward anything else.
-  REQUIRE(analytics::ridge(y, x, 1.0e9).coefficients_[0] == Catch::Approx(0.0).margin(1e-6));
-}
-
-TEST_CASE("ridge fits a design that ordinary least squares cannot resolve") {
-  // Two identical columns. The penalty is what makes the normal equations positive
-  // definite, which is the whole reason this one is allowed to use them.
-  const math::Vector y = series({2.0, 4.0, 6.0, 8.0});
-  const math::Matrix x = columns({{1.0, 2.0, 3.0, 4.0}, {1.0, 2.0, 3.0, 4.0}});
-  const auto fit = analytics::ridge(y, x, 0.5);
-
-  // The penalty splits the loading evenly between the two copies instead of leaving the
-  // split arbitrary, which is the other thing ridge buys on collinear factors.
-  REQUIRE(fit.coefficients_[0] == Catch::Approx(fit.coefficients_[1]));
-  REQUIRE(fit.r_squared_ == Catch::Approx(1.0).epsilon(0.01));
+  const auto svd = math::thin_svd(design);
+  REQUIRE(svd.singularValues().size() == 3);
+  REQUIRE(svd.singularValues()[2] == Catch::Approx(0.0).margin(1e-12));
 }
 
 TEST_CASE("a covariance matrix is symmetric and uses the sample divisor") {
@@ -1378,16 +1328,16 @@ TEST_CASE("pairwise deletion really can produce a covariance matrix that is not 
   REQUIRE(result(1, 2) == Catch::Approx(0.5));
   REQUIRE(result(0, 2) == Catch::Approx(-0.5));
 
-  const auto spectrum = math::symmetric_eigen(result);
-  REQUIRE(spectrum.converged_);
-  REQUIRE(spectrum.values_[0] == Catch::Approx(-2.0 / 3.0));
+  const math::SelfAdjointEigen spectrum(result.selfadjointView<math::LOWER>());
+  REQUIRE(spectrum.info() == math::SUCCESS);
+  REQUIRE(spectrum.eigenvalues()[0] == Catch::Approx(-2.0 / 3.0));
 
   // And the repair puts every eigenvalue back at or above the floor.
   const math::Matrix repaired = analytics::nearest_positive_definite(result, 1.0e-8);
-  const auto fixed = math::symmetric_eigen(repaired);
-  REQUIRE(fixed.converged_);
-  for (math::Index at = 0; at < fixed.values_.size(); ++at) {
-    REQUIRE(fixed.values_[at] >= 1.0e-8 - 1.0e-12);
+  const math::SelfAdjointEigen fixed(repaired.selfadjointView<math::LOWER>());
+  REQUIRE(fixed.info() == math::SUCCESS);
+  for (math::Index at = 0; at < fixed.eigenvalues().size(); ++at) {
+    REQUIRE(fixed.eigenvalues()[at] >= 1.0e-8 - 1.0e-12);
   }
   // Symmetry survives the round trip, which an optimizer relies on.
   REQUIRE(repaired(0, 2) == Catch::Approx(repaired(2, 0)));

@@ -612,9 +612,30 @@ defines `EIGEN_DONT_PARALLELIZE`. When the build's flags define `_OPENMP`, the c
 links an OpenMP runtime so Eigen's threaded matrix products resolve rather than failing at
 link time.
 
+### Linear algebra, and what this layer does not fit
+
+Eigen's decompositions are exposed as aliases rather than wrapped: `math::Llt`, `math::Ldlt`,
+`math::HouseholderQr`, `math::ColPivQr`, `math::FullPivQr`, `math::FullPivLu`, `math::Svd`,
+`math::SelfAdjointEigen`. Use them directly, so one factorization serves many right-hand sides
+and a right-hand side may be a matrix:
+
+```cpp
+const math::ColPivQr qr(design);      // pivoting, so it also knows the rank
+const math::Matrix coefficients = qr.solve(targets);   // targets may be a matrix
+if (qr.rank() < design.cols()) { /* the columns were not independent */ }
+```
+
+There is deliberately **no `ols` and no `ridge`**. Fitting is that one call; everything
+carrying judgement happens before it — which predictors, what estimation window, how a target
+aligns to lagged features, what to do with an incomplete row — and those are a strategy's
+decisions, not a library's defaults. What stays here is knowledge about market data instead:
+`covariance` (pairwise deletion, so the result may be indefinite), `ewma_covariance`
+(RiskMetrics weighting, centred on the weighted mean), and `nearest_positive_definite` (the
+exact Frobenius projection onto the PSD cone, which does not preserve the diagonal).
+
 See the [analytics conventions](doxygen/vignettes/analytics-conventions.md) vignette for the
-numerical reasoning behind the two-pass variance, Welford, Neumaier, the pivoting QR, and the
-pairwise-deletion caveat on `covariance`.
+numerical reasoning behind the two-pass variance, Welford, Neumaier, the choice of
+decomposition, and the pairwise-deletion caveat on `covariance`.
 
 ## Transport behavior
 

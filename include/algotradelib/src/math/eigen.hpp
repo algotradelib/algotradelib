@@ -64,99 +64,108 @@ inline Matrix unobserved(std::size_t rows, std::size_t columns) {
 }
 
 /**
- * The decompositions the layers above need, as free functions.
+ * Triangular and self-adjoint view modes.
  *
- * These exist for the same reason the type aliases do. A regression needs a QR and a
- * covariance repair needs a symmetric eigendecomposition, and if the callers named
- * `Eigen::ColPivHouseholderQR` directly then Eigen would be spread across the analytics
- * layer and a second backend would be a rewrite rather than a sibling header. So the seam
- * carries the *operations* as well as the types, and stays the one place Eigen appears.
- *
- * Each reports failure in its result rather than throwing or returning something plausible.
- * A rank-deficient design matrix and a covariance matrix that is not positive definite are
- * both ordinary conditions in market data -- more instruments than observations, or a pair
- * of instruments that moved identically -- not exceptional ones.
+ * Aliased as plain constants so a caller writes `matrix.selfadjointView<math::LOWER>()`
+ * without naming Eigen. A self-adjoint view is worth reaching for: it tells a decomposition
+ * to read one triangle and assume the other, which halves the traffic and removes any
+ * question of what a not-quite-symmetric input meant.
  */
-
-/** A least-squares solution together with what the decomposition learned about the fit. */
-struct LeastSquares {
-  Vector coefficients_;
-  /** Numerical rank of the design matrix, from the pivoting. */
-  Index rank_{0};
-  /** Whether the design matrix had full column rank, so the solution is unique. */
-  bool full_rank_{false};
-};
+inline constexpr unsigned int LOWER = Eigen::Lower;
+inline constexpr unsigned int UPPER = Eigen::Upper;
+inline constexpr unsigned int UNIT_LOWER = Eigen::UnitLower;
+inline constexpr unsigned int UNIT_UPPER = Eigen::UnitUpper;
 
 /**
- * Solves `min ||a x - b||` by column-pivoting Householder QR.
+ * The decompositions, as aliases rather than as wrappers.
  *
- * Column pivoting rather than the plain QR or the normal equations. `a` is a design matrix
- * of market data, where two columns being nearly collinear is the normal case rather than a
- * pathology -- two instruments in the same sector, or a factor that is almost a combination
- * of two others. The normal equations square the condition number, which for such a matrix
- * is the difference between a usable answer and noise; pivoting also produces the rank,
- * which is the only honest way to tell a caller that its factors were not independent.
+ * These are Eigen's own decomposition classes, named through this header so that callers
+ * still write `math::` and a different backend could alias its own equivalents. That is the
+ * honest extent of the seam here: for the numeric *vocabulary* the aliases really are
+ * portable, because every backend has a dense matrix and a vector; for decompositions they
+ * are a naming convention, because no two libraries agree on what a factorization object
+ * exposes. Pretending otherwise by wrapping each one in a result struct would cost more than
+ * it bought -- it would copy the factors out, discard the rank, the permutation, and the
+ * conditioning the decomposition already knows, and allow only one right-hand side per
+ * factorization.
+ *
+ * So callers use them directly, and get everything Eigen offers:
+ *
+ * ```cpp
+ * // One factorization, many right-hand sides. `b` may be a vector or a matrix, and the
+ * // solution comes back with the matching shape -- which is what a multivariate regression
+ * // or a whole panel of targets needs.
+ * const math::ColPivQr qr(a);
+ * const math::Matrix coefficients = qr.solve(b);
+ * if (qr.rank() < a.cols()) { ... }  // the columns were not independent
+ *
+ * // Or pick a different trade-off without a new function: LLT for a symmetric positive
+ * // definite system, LDLT when it is only semi-definite, SVD when the answer must be the
+ * // minimum-norm one, HouseholderQr when pivoting is not needed.
+ * const math::Llt chol(normal);
+ * if (chol.info() == math::SUCCESS) { x = chol.solve(b); }
+ * ```
+ *
+ * `Matrix::ldlt()`, `Matrix::colPivHouseholderQr()` and the other member forms work too, as
+ * does `A.fullPivLu().solve(b)` for a square system where no structure is known.
  */
-inline LeastSquares least_squares(MatrixView a, SeriesView b) {
-  LeastSquares result;
-  Eigen::ColPivHouseholderQR<Matrix> decomposition(a);
-  result.rank_ = decomposition.rank();
-  result.full_rank_ = result.rank_ == a.cols();
-  result.coefficients_ = decomposition.solve(b);
-  return result;
-}
 
-/** A solution of a symmetric positive-definite system, and whether it was one. */
-struct PositiveDefiniteSolution {
-  Vector values_;
-  /** False when the Cholesky factorization failed, which means `a` was not definite. */
-  bool definite_{false};
-};
+/** Cholesky, for a symmetric positive-definite matrix. Check `info()`. */
+using Llt = Eigen::LLT<Matrix>;
+
+/** Cholesky with pivoting, for a symmetric matrix that may only be semi-definite. */
+using Ldlt = Eigen::LDLT<Matrix>;
+
+/** Householder QR. Fastest of the QRs, and gives no rank information. */
+using HouseholderQr = Eigen::HouseholderQR<Matrix>;
 
 /**
- * Solves `a x = b` for symmetric positive-definite `a` by Cholesky factorization.
+ * Column-pivoting Householder QR: a rank and a least-squares solution.
  *
- * Reports `definite_ == false` rather than throwing when the factorization fails, and leaves
- * `values_` empty. A caller that ignored the flag and used the values would be acting on a
- * solution to a system that has none.
+ * The default choice for a design matrix of market data, where two nearly collinear columns
+ * are the normal case rather than a pathology. The normal equations square the condition
+ * number, which for such a matrix is the difference between a usable answer and noise, and
+ * they cannot report a rank at all.
  */
-inline PositiveDefiniteSolution solve_positive_definite(MatrixView a, SeriesView b) {
-  PositiveDefiniteSolution result;
-  Eigen::LLT<Matrix> factorization(a);
-  if (factorization.info() != Eigen::Success) {
-    return result;
-  }
-  result.values_ = factorization.solve(b);
-  result.definite_ = true;
-  return result;
-}
+using ColPivQr = Eigen::ColPivHouseholderQR<Matrix>;
 
-/** A symmetric eigendecomposition: `a == vectors_ * values_.asDiagonal() * vectors_^T`. */
-struct SymmetricEigen {
-  /** Eigenvalues in ascending order. */
-  Vector values_;
-  /** The corresponding orthonormal eigenvectors, one per column. */
-  Matrix vectors_;
-  bool converged_{false};
-};
+/** Full-pivoting QR. Slower than `ColPivQr` and the most reliable rank of the three. */
+using FullPivQr = Eigen::FullPivHouseholderQR<Matrix>;
+
+/** LU with full pivoting, for a square system with no exploitable structure. */
+using FullPivLu = Eigen::FullPivLU<Matrix>;
 
 /**
- * Decomposes a symmetric matrix into its eigenvalues and eigenvectors.
+ * Divide-and-conquer SVD: the minimum-norm least-squares solution, and singular values.
  *
- * Only the lower triangle is read, so a matrix that is symmetric up to rounding is handled
- * without the caller having to symmetrize it first.
+ * An SVD needs its thin factors computed before it can solve, and *how* they are requested
+ * changed between the supported Eigen releases: 3.4 takes runtime flags the current release
+ * deprecates in favour of a class template argument. `thin_svd` picks the right one, which is
+ * the only reason a factory exists here at all.
+ *
+ * Reach for it when the answer must be the minimum-norm solution of a rank-deficient system,
+ * or when the conditioning is itself the question -- `singularValues()` answers it.
  */
-inline SymmetricEigen symmetric_eigen(MatrixView a) {
-  SymmetricEigen result;
-  Eigen::SelfAdjointEigenSolver<Matrix> solver(a);
-  if (solver.info() != Eigen::Success) {
-    return result;
-  }
-  result.values_ = solver.eigenvalues();
-  result.vectors_ = solver.eigenvectors();
-  result.converged_ = true;
-  return result;
+#if EIGEN_VERSION_AT_LEAST(3, 4, 90)
+using Svd = Eigen::BDCSVD<Matrix, Eigen::ComputeThinU | Eigen::ComputeThinV>;
+#else
+using Svd = Eigen::BDCSVD<Matrix>;
+#endif
+
+/** Returns a thin SVD of `a`, ready to `solve()`, on either supported Eigen release. */
+inline Svd thin_svd(const Matrix& a) {
+#if EIGEN_VERSION_AT_LEAST(3, 4, 90)
+  return Svd(a);
+#else
+  return Svd(a, Eigen::ComputeThinU | Eigen::ComputeThinV);
+#endif
 }
+
+/** Eigenvalues and eigenvectors of a symmetric matrix, ascending. Check `info()`. */
+using SelfAdjointEigen = Eigen::SelfAdjointEigenSolver<Matrix>;
+
+/** The value a decomposition's `info()` returns when it succeeded. */
+inline constexpr auto SUCCESS = Eigen::Success;
 
 } // namespace math
 } // namespace algotradelib
