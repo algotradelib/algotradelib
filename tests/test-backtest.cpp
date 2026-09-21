@@ -320,3 +320,240 @@ TEST_CASE("cash in another currency is neither converted nor counted") {
   REQUIRE_FALSE(ledger.cash_in(Currency{"USD"}));
   REQUIRE(ledger.equity_in(Currency{"USD"}) == std::optional<Decimal64>(Decimal64::parse("0")));
 }
+
+// ---------------------------------------------------------------------------
+// Costs: stated models, never defaults that flatter
+// ---------------------------------------------------------------------------
+
+namespace {
+
+const PriceRule& krx_grid() {
+  static const PriceRule rule = PriceRule::krx_equity();
+  return rule;
+}
+
+strategy::PlannedOrder order_of(
+  OrderSide side,
+  const char* quantity,
+  OrderType type = OrderType::MARKET,
+  const char* limit = nullptr
+) {
+  strategy::PlannedOrder order;
+  order.instrument_ = samsung();
+  order.side_ = side;
+  order.type_ = type;
+  order.quantity_ = Decimal64::parse(quantity);
+  if (limit != nullptr) {
+    order.price_ = Decimal64::parse(limit);
+  }
+  order.tag_ = "test";
+  return order;
+}
+
+/** A bar with a stated open, high, low and close. */
+strategy::BarEvent ohlc(const char* o, const char* h, const char* l, const char* c) {
+  Bar bar;
+  bar.timestamp_ = utc(2026, 3, 10, 6, 30);
+  bar.open_ = Decimal64::parse(o);
+  bar.high_ = Decimal64::parse(h);
+  bar.low_ = Decimal64::parse(l);
+  bar.close_ = Decimal64::parse(c);
+  bar.volume_ = Decimal64::parse("1000");
+  return strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, bar);
+}
+
+} // namespace
+
+TEST_CASE("commission charges a rate and honours a per-order floor") {
+  const auto model = backtest::CommissionModel::of(Decimal64::parse("0.00015"));
+  // Ten shares at 70,000 is 700,000, and 0.015% of that is 105.
+  REQUIRE(model.on(Decimal64::parse("10"), Decimal64::parse("70000")) ==
+          std::optional<Decimal64>(Decimal64::parse("105")));
+
+  // The floor is what makes a small trade uneconomic, and it is why a notional trade tolerance exists.
+  const auto floored =
+    backtest::CommissionModel::of(Decimal64::parse("0.00015"), Decimal64::parse("1000"));
+  REQUIRE(floored.on(Decimal64::parse("10"), Decimal64::parse("70000")) ==
+          std::optional<Decimal64>(Decimal64::parse("1000")));
+  // A large enough trade passes the floor and pays the rate.
+  REQUIRE(floored.on(Decimal64::parse("1000"), Decimal64::parse("70000")) ==
+          std::optional<Decimal64>(Decimal64::parse("10500")));
+}
+
+TEST_CASE("charging nothing is a model, so a report can say it was applied") {
+  const auto model = backtest::CommissionModel::none();
+  REQUIRE(model.on(Decimal64::parse("10"), Decimal64::parse("70000")) ==
+          std::optional<Decimal64>(Decimal64::parse("0")));
+}
+
+TEST_CASE("slippage always moves against the order, never for it") {
+  // Slippage that helped would not be slippage, and a model cutting both ways would be right on
+  // average and flattering in exactly the cases a strategy trades most.
+  const auto model = backtest::SlippageModel::of_basis_points(Decimal64::parse("10"));
+
+  const auto buying = model.apply(Decimal64::parse("70000"), OrderSide::BUY, krx_grid());
+  REQUIRE(buying);
+  // Ten basis points of 70,000 is 70, paid.
+  REQUIRE(buying->first == Decimal64::parse("70070"));
+  REQUIRE(buying->second == Decimal64::parse("70"));
+
+  const auto selling = model.apply(Decimal64::parse("70000"), OrderSide::SELL, krx_grid());
+  REQUIRE(selling);
+  REQUIRE(selling->first == Decimal64::parse("69930"));
+  REQUIRE(selling->second == Decimal64::parse("70"));
+}
+
+TEST_CASE("a tick of slippage means a tick at that price level, not an invented step") {
+  // The KRX grid is 100 won above 50,000 and 50 between 20,000 and 50,000, so one tick is a different
+  // amount at each -- which is the reason this goes through the instrument's own rule.
+  const auto model = backtest::SlippageModel::of_ticks(1);
+
+  const auto high = model.apply(Decimal64::parse("70000"), OrderSide::BUY, krx_grid());
+  REQUIRE(high);
+  REQUIRE(high->second == Decimal64::parse("100"));
+
+  const auto low = model.apply(Decimal64::parse("30000"), OrderSide::BUY, krx_grid());
+  REQUIRE(low);
+  REQUIRE(low->second == Decimal64::parse("50"));
+}
+
+TEST_CASE("an unknown grid contributes no tick slippage rather than a guessed step") {
+  // The same refusal PriceRule::UNKNOWN makes everywhere else: a guessed tick is worse than none.
+  const auto model = backtest::SlippageModel::of_ticks(1);
+  const auto rule = PriceRule::unknown("no table for this type");
+  const auto applied = model.apply(Decimal64::parse("70000"), OrderSide::BUY, rule);
+  REQUIRE(applied);
+  REQUIRE(applied->second == Decimal64::parse("0"));
+}
+
+// ---------------------------------------------------------------------------
+// Filling, and the lookahead discipline that is structural rather than a rule
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a market order fills at the next bar's open") {
+  // "The next bar's open" is the same sentence for a minute bar and a daily one, which is why the rule
+  // is expressed that way rather than as "the next day's open".
+  const backtest::NextBarFillModel model;
+  const auto decision =
+    model.decide(order_of(OrderSide::BUY, "10"), ohlc("70000", "71000", "69000", "70500"), krx_grid());
+
+  REQUIRE(decision.execution_);
+  REQUIRE(decision.execution_->fill_.price_ == Decimal64::parse("70000"));
+  REQUIRE(decision.execution_->fill_.quantity_ == Decimal64::parse("10"));
+  REQUIRE(decision.execution_->fill_.tag_ == "test");
+  REQUIRE_FALSE(decision.still_working_);
+}
+
+TEST_CASE("a buy limit fills only when the bar's low reaches it") {
+  const backtest::NextBarFillModel model;
+  const auto reached = model.decide(
+    order_of(OrderSide::BUY, "10", OrderType::LIMIT, "69500"),
+    ohlc("70000", "71000", "69000", "70500"),
+    krx_grid()
+  );
+  REQUIRE(reached.execution_);
+  // At the limit, not at the low: see the conservative default below.
+  REQUIRE(reached.execution_->fill_.price_ == Decimal64::parse("69500"));
+
+  // A bar that never touched the price is a bar in which the order sat unfilled, however close.
+  const auto missed = model.decide(
+    order_of(OrderSide::BUY, "10", OrderType::LIMIT, "68000"),
+    ohlc("70000", "71000", "69000", "70500"),
+    krx_grid()
+  );
+  REQUIRE_FALSE(missed.execution_);
+  // And it stays queued: a resting order does not expire because one bar passed it by, and discarding
+  // it would silently turn every limit into a fill-or-kill.
+  REQUIRE(missed.still_working_);
+}
+
+TEST_CASE("a sell limit fills only when the bar's high reaches it") {
+  const backtest::NextBarFillModel model;
+  const auto reached = model.decide(
+    order_of(OrderSide::SELL, "10", OrderType::LIMIT, "70800"),
+    ohlc("70000", "71000", "69000", "70500"),
+    krx_grid()
+  );
+  REQUIRE(reached.execution_);
+  REQUIRE(reached.execution_->fill_.price_ == Decimal64::parse("70800"));
+
+  const auto missed = model.decide(
+    order_of(OrderSide::SELL, "10", OrderType::LIMIT, "72000"),
+    ohlc("70000", "71000", "69000", "70500"),
+    krx_grid()
+  );
+  REQUIRE_FALSE(missed.execution_);
+  REQUIRE(missed.still_working_);
+}
+
+TEST_CASE("the conservative default refuses a price improvement it cannot justify") {
+  // A bar opening at 69,000 through a buy limit of 70,000 would often fill better in reality, but
+  // claiming it assumes the order was in the book before the auction *and* that volume existed at that
+  // level -- neither of which a bar can tell us. Refusing understates a result; claiming overstates one.
+  const backtest::NextBarFillModel conservative;
+  const auto held = conservative.decide(
+    order_of(OrderSide::BUY, "10", OrderType::LIMIT, "70000"),
+    ohlc("69000", "70000", "68500", "69500"),
+    krx_grid()
+  );
+  REQUIRE(held.execution_);
+  REQUIRE(held.execution_->fill_.price_ == Decimal64::parse("70000"));
+
+  // The optimistic variant exists, opt-in, because that assumption is the caller's to make.
+  const backtest::NextBarFillModel optimistic(
+    backtest::CommissionModel::none(),
+    backtest::SlippageModel::none(),
+    backtest::LimitFillPrice::AT_OPEN_IF_BETTER
+  );
+  const auto improved = optimistic.decide(
+    order_of(OrderSide::BUY, "10", OrderType::LIMIT, "70000"),
+    ohlc("69000", "70000", "68500", "69500"),
+    krx_grid()
+  );
+  REQUIRE(improved.execution_);
+  REQUIRE(improved.execution_->fill_.price_ == Decimal64::parse("69000"));
+}
+
+TEST_CASE("a fill is stamped at the bar it filled against, not at the signal's bar") {
+  const backtest::NextBarFillModel model;
+  const auto next = ohlc("70000", "71000", "69000", "70500");
+  const auto decision = model.decide(order_of(OrderSide::BUY, "10"), next, krx_grid());
+  REQUIRE(decision.execution_);
+  REQUIRE(decision.execution_->fill_.at_ == next.period_end_);
+}
+
+TEST_CASE("costs reach the execution, so a report can separate them from the strategy") {
+  const backtest::NextBarFillModel model(
+    backtest::CommissionModel::of(Decimal64::parse("0.00015")),
+    backtest::SlippageModel::of_ticks(1)
+  );
+  const auto decision =
+    model.decide(order_of(OrderSide::BUY, "10"), ohlc("70000", "71000", "69000", "70500"), krx_grid());
+
+  REQUIRE(decision.execution_);
+  // One tick above 70,000 is 70,100, and the slippage is recorded rather than folded away.
+  REQUIRE(decision.execution_->fill_.price_ == Decimal64::parse("70100"));
+  REQUIRE(decision.execution_->slippage_ == Decimal64::parse("100"));
+  // Commission on 701,000 at 0.015% is 105, rounded to whole won.
+  REQUIRE(decision.execution_->commission_ == Decimal64::parse("105"));
+}
+
+TEST_CASE("a bar with no open falls back to its close rather than refusing to fill") {
+  // A trading day on which nothing traded at the auction reports no open. Refusing to fill would
+  // silently skip the bar; using the close is the only price the bar actually states.
+  const backtest::NextBarFillModel model;
+  auto next = ohlc("70000", "71000", "69000", "70500");
+  next.bar_.open_ = std::nullopt;
+
+  const auto decision = model.decide(order_of(OrderSide::BUY, "10"), next, krx_grid());
+  REQUIRE(decision.execution_);
+  REQUIRE(decision.execution_->fill_.price_ == Decimal64::parse("70500"));
+}
+
+TEST_CASE("the fill model states what it assumed, for a report to carry") {
+  const backtest::NextBarFillModel model;
+  REQUIRE(model.limit_price() == backtest::LimitFillPrice::AT_LIMIT);
+  REQUIRE(backtest::limit_fill_price_name(model.limit_price()) == "at_limit");
+  REQUIRE(backtest::limit_fill_price_name(backtest::LimitFillPrice::AT_OPEN_IF_BETTER) ==
+          "at_open_if_better");
+}

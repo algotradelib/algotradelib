@@ -1,0 +1,164 @@
+#pragma once
+
+#include "./cost.hpp"
+#include "./ledger.hpp"
+
+#include "../strategy/event.hpp"
+#include "../strategy/reconcile.hpp"
+
+#include <algotradelib/core>
+
+#include <optional>
+#include <utility>
+
+namespace algotradelib {
+namespace backtest {
+
+/**
+ * Deciding whether a queued order trades, and at what price.
+ *
+ * **The lookahead discipline is structural here rather than a rule to remember.** A fill is always
+ * computed against the bar *after* the one that produced the order, because the function has no way to
+ * see any other: it takes the next bar and nothing else. An engine that passed the signal's own bar
+ * would have to do so deliberately, and the test suite asserts that it does not.
+ *
+ * That is why `Runner`'s executor accepts an order without filling it. Filling at the moment of
+ * submission would mean filling from a bar the strategy has just been shown, which is reading the
+ * future — the most common defect in backtesting code and the reason `BarStamp` and
+ * `BarEvent::period_end_` exist at all.
+ */
+
+/** What a fill model decided, and what it assumed. */
+struct FillDecision {
+  /** The execution, absent when the order did not trade against this bar. */
+  std::optional<Execution> execution_;
+  /** Whether the order should stay queued for a later bar rather than being discarded. */
+  bool still_working_{false};
+};
+
+/**
+ * Fills market orders at the next bar's open and limit orders when the bar's range reaches them.
+ *
+ * The plain model, and the one whose assumptions are easiest to state — which matters more than
+ * sophistication in a component whose output somebody will act on.
+ *
+ * **Interval-agnostic.** "The next bar's open" is the same sentence for a minute bar and a daily one,
+ * which is the whole reason the rule is expressed that way rather than as "the next day's open".
+ *
+ * **Volume is not consulted**, so a fill is never partial and never capped by what traded. A bar's
+ * volume says how much changed hands in total, not how much would have been available to *this* order
+ * at *its* price, and inventing a participation rate would be inventing a number with no data behind
+ * it. The report states this rather than leaving a reader to assume otherwise.
+ */
+class NextBarFillModel {
+public:
+  /** Constructs a model with the given costs and limit-price assumption. */
+  explicit NextBarFillModel(
+    CommissionModel commission = CommissionModel::none(),
+    SlippageModel slippage = SlippageModel::none(),
+    LimitFillPrice limit_price = LimitFillPrice::AT_LIMIT
+  )
+  : commission_(std::move(commission)),
+    slippage_(std::move(slippage)),
+    limit_price_(limit_price) {}
+
+  /** Returns the commission model in force, so a report can state it. */
+  const CommissionModel& commission() const noexcept { return commission_; }
+
+  /** Returns the slippage model in force. */
+  const SlippageModel& slippage() const noexcept { return slippage_; }
+
+  /** Returns what a limit order is credited with. */
+  LimitFillPrice limit_price() const noexcept { return limit_price_; }
+
+  /**
+   * Decides `order` against `next`, the bar after the one that produced it.
+   *
+   * @param order the queued instruction
+   * @param next the bar to fill against; never the bar the order was decided on
+   * @param rule the instrument's price grid, for the tick component of slippage
+   */
+  FillDecision decide(
+    const strategy::PlannedOrder& order,
+    const strategy::BarEvent& next,
+    const PriceRule& rule
+  ) const {
+    FillDecision decision;
+
+    const auto reference = reference_price(order, next);
+    if (!reference) {
+      // A limit the bar never reached. It stays queued: a resting order does not expire because one
+      // bar passed it by, and discarding it would silently turn every limit into a fill-or-kill.
+      decision.still_working_ = order.type_ == OrderType::LIMIT;
+      return decision;
+    }
+
+    const auto slipped = slippage_.apply(*reference, order.side_, rule);
+    if (!slipped) {
+      decision.still_working_ = order.type_ == OrderType::LIMIT;
+      return decision;
+    }
+    const auto charged = commission_.on(order.quantity_, slipped->first);
+    if (!charged) {
+      decision.still_working_ = order.type_ == OrderType::LIMIT;
+      return decision;
+    }
+
+    Execution execution;
+    execution.fill_.instrument_ = order.instrument_;
+    execution.fill_.side_ = order.side_;
+    execution.fill_.quantity_ = order.quantity_;
+    execution.fill_.price_ = slipped->first;
+    execution.fill_.tag_ = order.tag_;
+    execution.fill_.at_ = next.period_end_;
+    execution.commission_ = *charged;
+    execution.slippage_ = slipped->second;
+    decision.execution_ = std::move(execution);
+    return decision;
+  }
+
+private:
+  /**
+   * Returns the price before slippage, or nothing when the order does not trade against this bar.
+   *
+   * A market order takes the open. A limit trades only if the bar's range reached it — a buy needs the
+   * low at or below the limit, a sell needs the high at or above it — because a bar that never touched
+   * the price is a bar in which the order sat unfilled, however close it came.
+   */
+  std::optional<Decimal64> reference_price(
+    const strategy::PlannedOrder& order,
+    const strategy::BarEvent& next
+  ) const {
+    const auto open = next.bar_.open_ ? *next.bar_.open_ : next.bar_.close_;
+
+    if (order.type_ != OrderType::LIMIT || !order.price_) {
+      return open;
+    }
+    const auto& limit = *order.price_;
+
+    if (order.side_ == OrderSide::BUY) {
+      if (decimal_less(limit, next.bar_.low_)) {
+        return std::nullopt;
+      }
+      if (limit_price_ == LimitFillPrice::AT_OPEN_IF_BETTER && decimal_less(open, limit)) {
+        return open;
+      }
+      return limit;
+    }
+
+    if (decimal_less(next.bar_.high_, limit)) {
+      return std::nullopt;
+    }
+    if (limit_price_ == LimitFillPrice::AT_OPEN_IF_BETTER && decimal_less(limit, open)) {
+      return open;
+    }
+    return limit;
+  }
+
+  CommissionModel commission_;
+  SlippageModel slippage_;
+  LimitFillPrice limit_price_;
+};
+
+} // namespace backtest
+} // namespace algotradelib
