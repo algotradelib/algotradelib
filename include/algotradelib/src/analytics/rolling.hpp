@@ -78,6 +78,50 @@ inline std::size_t required(std::size_t window, std::size_t min_observations) {
   return min_observations == 0 ? window : min_observations;
 }
 
+/**
+ * The mean and sample deviation of one window, in a single pass over its rows plus one.
+ *
+ * Shared by `rolling_stdev`, `zscore`, and `bollinger`, all of which need both numbers for
+ * the same window. Computing them through separate calls would walk every window twice and
+ * materialize a whole intermediate column to throw away.
+ *
+ * `reported` is false when the window holds fewer than `needed` observations, or fewer than
+ * two -- one point has no dispersion, and `count - 1` would be a division by zero.
+ */
+struct Dispersion {
+  bool reported{false};
+  std::size_t count{0};
+  Scalar mean{0};
+  Scalar deviation{0};
+};
+
+/** Computes the mean and sample deviation of `values[first, first + length)`. */
+inline Dispersion dispersion(
+  math::SeriesView values,
+  math::Index first,
+  math::Index length,
+  std::size_t needed
+) {
+  Dispersion result;
+  const auto reduced = reduce(values, first, length);
+  result.count = reduced.count;
+  if (reduced.count < needed || reduced.count < 2) {
+    return result;
+  }
+  result.mean = reduced.sum / static_cast<Scalar>(reduced.count);
+  Scalar squared{0};
+  for (math::Index row = first; row < first + length; ++row) {
+    const Scalar value = values[row];
+    if (observed(value)) {
+      const Scalar deviation = value - result.mean;
+      squared += deviation * deviation;
+    }
+  }
+  result.deviation = std::sqrt(squared / static_cast<Scalar>(reduced.count - 1));
+  result.reported = true;
+  return result;
+}
+
 /** Returns the first row of the window ending at `row`, clamped to the start of series. */
 inline math::Index window_start(math::Index row, std::size_t window) {
   const auto span = static_cast<math::Index>(window);
@@ -146,21 +190,10 @@ inline math::Vector rolling_stdev(
   math::Vector result = math::unobserved(static_cast<std::size_t>(values.size()));
   for (math::Index row = 0; row < values.size(); ++row) {
     const math::Index first = rolling_detail::window_start(row, window);
-    const math::Index length = row - first + 1;
-    const auto reduced = rolling_detail::reduce(values, first, length);
-    if (reduced.count < needed || reduced.count < 2) {
-      continue;
+    const auto spread = rolling_detail::dispersion(values, first, row - first + 1, needed);
+    if (spread.reported) {
+      result[row] = spread.deviation;
     }
-    const Scalar mean = reduced.sum / static_cast<Scalar>(reduced.count);
-    Scalar squared{0};
-    for (math::Index at = first; at < first + length; ++at) {
-      const Scalar value = values[at];
-      if (observed(value)) {
-        const Scalar deviation = value - mean;
-        squared += deviation * deviation;
-      }
-    }
-    result[row] = std::sqrt(squared / static_cast<Scalar>(reduced.count - 1));
   }
   return result;
 }

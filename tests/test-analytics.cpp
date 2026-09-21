@@ -832,3 +832,218 @@ TEST_CASE("an indicator reads a frame column and a rolling window the same way")
   const math::Vector direct = analytics::sma(series({10.0, 20.0, 30.0}), 3);
   REQUIRE(direct[2] == from_window[2]);
 }
+
+// ---------------------------------------------------------------------------
+// Named indicators
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a z-score measures distance from the trailing mean in trailing deviations") {
+  const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 10.0});
+  const math::Vector score = analytics::zscore(values, 3);
+
+  REQUIRE_FALSE(observed(score[0]));
+  REQUIRE_FALSE(observed(score[1]));
+  // Window {1,2,3}: mean 2, sample deviation 1, so 3 sits one deviation above.
+  REQUIRE(score[2] == Catch::Approx(1.0));
+  REQUIRE(score[3] == Catch::Approx(1.0));
+  // Window {3,4,10}: mean 17/3, squared deviations summing to 86/3, so a sample
+  // variance of 43/3.
+  const Scalar mean = 17.0 / 3.0;
+  REQUIRE(score[4] == Catch::Approx((10.0 - mean) / std::sqrt(43.0 / 3.0)));
+}
+
+TEST_CASE("a z-score over a flat window is undefined rather than zero") {
+  // A halted instrument, or a tick-constrained price that did not move. Zero would read
+  // as "exactly at the mean", which is a different claim from "cannot be computed".
+  const math::Vector values = series({5.0, 5.0, 5.0, 5.0});
+  const math::Vector score = analytics::zscore(values, 3);
+
+  REQUIRE_FALSE(observed(score[2]));
+  REQUIRE_FALSE(observed(score[3]));
+}
+
+TEST_CASE("Bollinger bands straddle the trailing mean by the deviation asked for") {
+  const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0});
+  const auto bands = analytics::bollinger(values, 3, 2.0);
+
+  REQUIRE(bands.middle_.size() == values.size());
+  REQUIRE_FALSE(observed(bands.upper_[1]));
+  // Window {1,2,3}: mean 2, sample deviation 1.
+  REQUIRE(bands.middle_[2] == Catch::Approx(2.0));
+  REQUIRE(bands.upper_[2] == Catch::Approx(4.0));
+  REQUIRE(bands.lower_[2] == Catch::Approx(0.0));
+
+  // A flat window's band genuinely has zero width, and nothing here divides by the
+  // deviation, so all three lines collapse onto the mean and are reported. That is the
+  // deliberate difference from `zscore`, which is undefined on the very same window.
+  const math::Vector flat = series({7.0, 7.0, 7.0});
+  const auto collapsed = analytics::bollinger(flat, 3);
+  REQUIRE(collapsed.middle_[2] == Catch::Approx(7.0));
+  REQUIRE(collapsed.upper_[2] == Catch::Approx(7.0));
+  REQUIRE(collapsed.lower_[2] == Catch::Approx(7.0));
+  REQUIRE_FALSE(observed(analytics::zscore(flat, 3)[2]));
+}
+
+TEST_CASE("the relative strength index matches Wilder's published series") {
+  // Wilder's own fixture, as reproduced in every reference table for the indicator. The
+  // point of testing against a published series rather than a second implementation of
+  // our own is that it catches a wrong *convention*, not just a wrong loop.
+  const math::Vector closes = series({
+    44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10, 45.42, 45.84, 46.08,
+    45.89, 46.03, 45.61, 46.28, 46.28, 46.00, 46.03, 46.41, 46.22, 45.64,
+  });
+  const math::Vector strength = analytics::rsi(closes, 14);
+
+  // Row 0 has no change, and the smoothing needs fourteen changes before it has a seed.
+  for (math::Index row = 0; row < 14; ++row) {
+    REQUIRE_FALSE(observed(strength[row]));
+  }
+  REQUIRE(strength[14] == Catch::Approx(70.46413502109705).epsilon(1e-10));
+  REQUIRE(strength[15] == Catch::Approx(66.24961855355505).epsilon(1e-10));
+  REQUIRE(strength[16] == Catch::Approx(66.48094183471265).epsilon(1e-10));
+  REQUIRE(strength[19] == Catch::Approx(57.91502067008556).epsilon(1e-10));
+}
+
+TEST_CASE("the relative strength index decides its degenerate cases instead of dividing") {
+  const math::Vector rising = series({1.0, 2.0, 3.0, 4.0});
+  REQUIRE(analytics::rsi(rising, 3)[3] == Catch::Approx(100.0));
+
+  const math::Vector falling = series({4.0, 3.0, 2.0, 1.0});
+  REQUIRE(analytics::rsi(falling, 3)[3] == Catch::Approx(0.0));
+
+  // Neither strength nor weakness. Any other answer here would read as a signal.
+  const math::Vector flat = series({2.0, 2.0, 2.0, 2.0});
+  REQUIRE(analytics::rsi(flat, 3)[3] == Catch::Approx(50.0));
+}
+
+TEST_CASE("a true range counts the overnight gap, not just the bar's own height") {
+  const math::Vector highs = series({10.0, 11.0, 12.5, 11.5, 13.0});
+  const math::Vector lows = series({9.0, 9.5, 11.0, 10.0, 11.5});
+  const math::Vector closes = series({9.5, 10.5, 12.0, 10.5, 12.5});
+  const math::Vector range = analytics::true_range(highs, lows, closes);
+
+  // Row 0 has no previous close, so it is the bar's height: 10 - 9.
+  REQUIRE(range[0] == Catch::Approx(1.0));
+  // Row 1's own height is 1.5, and its span from the previous close of 9.5 is also 1.5,
+  // so the two agree and either would do.
+  REQUIRE(range[1] == Catch::Approx(1.5));
+  // Row 3 fell from a close of 12 to a low of 10: the gap span, 2.0, exceeds the bar's
+  // height of 1.5. A measure that missed that would understate the risk of holding it.
+  REQUIRE(range[3] == Catch::Approx(2.0));
+  REQUIRE(range[4] == Catch::Approx(2.5));
+}
+
+TEST_CASE("the average true range seeds on a simple mean then smooths Wilder's way") {
+  const math::Vector highs = series({10.0, 11.0, 12.5, 11.5, 13.0});
+  const math::Vector lows = series({9.0, 9.5, 11.0, 10.0, 11.5});
+  const math::Vector closes = series({9.5, 10.5, 12.0, 10.5, 12.5});
+  const math::Vector average = analytics::atr(highs, lows, closes, 3);
+
+  REQUIRE_FALSE(observed(average[0]));
+  REQUIRE_FALSE(observed(average[1]));
+  // The seed is the simple mean of the first three true ranges, 1.0, 1.5 and 2.0.
+  REQUIRE(average[2] == Catch::Approx(1.5));
+  // Then (1.5 * 2 + 2.0) / 3.
+  REQUIRE(average[3] == Catch::Approx(5.0 / 3.0));
+  REQUIRE(average[4] == Catch::Approx(1.9444444444444446));
+}
+
+TEST_CASE("mismatched series lengths are refused rather than reduced to the shorter one") {
+  const math::Vector four = series({1.0, 2.0, 3.0, 4.0});
+  const math::Vector three = series({1.0, 2.0, 3.0});
+
+  REQUIRE_THROWS_AS(analytics::true_range(four, three, four), std::invalid_argument);
+  REQUIRE_THROWS_AS(analytics::rolling_cov(four, three, 2), std::invalid_argument);
+  REQUIRE_THROWS_AS(analytics::rolling_corr(four, three, 2), std::invalid_argument);
+  REQUIRE_THROWS_AS(analytics::beta(four, three, 2), std::invalid_argument);
+}
+
+TEST_CASE("MACD is the difference of two exponential averages and its own average") {
+  const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0});
+  const auto lines = analytics::macd(values, 2, 4, 3);
+
+  const math::Vector quick = analytics::ema(values, 2);
+  const math::Vector slower = analytics::ema(values, 4);
+  for (math::Index row = 0; row < values.size(); ++row) {
+    REQUIRE(lines.macd_[row] == Catch::Approx(quick[row] - slower[row]));
+  }
+  // The signal line is the exponential average of the MACD itself, and the histogram is
+  // the gap between them.
+  const math::Vector signal = analytics::ema(lines.macd_, 3);
+  for (math::Index row = 0; row < values.size(); ++row) {
+    REQUIRE(lines.signal_[row] == Catch::Approx(signal[row]));
+    REQUIRE(lines.histogram_[row] == Catch::Approx(lines.macd_[row] - signal[row]));
+  }
+}
+
+TEST_CASE("MACD refuses a fast span that is not faster") {
+  // The reversed pair is the negation of the intended indicator: a sign error that
+  // survives every test of magnitude and shows up only as a strategy trading backwards.
+  const math::Vector values = series({1.0, 2.0, 3.0});
+  REQUIRE_THROWS_AS(analytics::macd(values, 26, 12), std::invalid_argument);
+  REQUIRE_THROWS_AS(analytics::macd(values, 12, 12), std::invalid_argument);
+}
+
+TEST_CASE("a trailing covariance is the sample one over paired rows") {
+  const math::Vector left = series({1.0, 2.0, 3.0, 4.0});
+  const math::Vector right = series({2.0, 4.0, 6.0, 8.0});
+  const math::Vector covariance = analytics::rolling_cov(left, right, 3);
+
+  REQUIRE_FALSE(observed(covariance[1]));
+  REQUIRE(covariance[3] == Catch::Approx(2.0));
+}
+
+TEST_CASE("a trailing correlation is bounded because it uses one sample for all three parts") {
+  const math::Vector left = series({1.0, 2.0, 3.0, 4.0});
+  const math::Vector right = series({2.0, 1.0, 4.0, 3.0});
+  const math::Vector correlation = analytics::rolling_corr(left, right, 3);
+
+  REQUIRE(correlation[3] == Catch::Approx(0.6546536707079771));
+
+  // A series perfectly tracking another correlates at exactly one, and the opposite sign
+  // at exactly minus one. These are the values that a mismatched sample would overshoot.
+  const math::Vector doubled = series({2.0, 4.0, 6.0, 8.0});
+  const math::Vector negated = series({-1.0, -2.0, -3.0, -4.0});
+  REQUIRE(analytics::rolling_corr(left, doubled, 3)[3] == Catch::Approx(1.0));
+  REQUIRE(analytics::rolling_corr(left, negated, 3)[3] == Catch::Approx(-1.0));
+}
+
+TEST_CASE("a correlation stays bounded when the two series have different gaps") {
+  // The trap this guards. Reducing the covariance over the rows where both are present
+  // while taking each deviation over its own rows describes three different samples, and
+  // the quotient can leave [-1, 1] entirely.
+  const math::Vector left = series({1.0, 2.0, missing(), 4.0, 5.0, 100.0});
+  const math::Vector right = series({2.0, missing(), 6.0, 8.0, 10.0, 12.0});
+  const math::Vector correlation = analytics::rolling_corr(left, right, 4, 2);
+
+  for (math::Index row = 0; row < left.size(); ++row) {
+    if (observed(correlation[row])) {
+      REQUIRE(correlation[row] >= -1.0);
+      REQUIRE(correlation[row] <= 1.0);
+    }
+  }
+}
+
+TEST_CASE("a correlation against a constant is undefined rather than zero") {
+  const math::Vector left = series({1.0, 2.0, 3.0, 4.0});
+  const math::Vector constant = series({3.0, 3.0, 3.0, 3.0});
+  const math::Vector correlation = analytics::rolling_corr(left, constant, 3);
+
+  REQUIRE_FALSE(observed(correlation[2]));
+  REQUIRE_FALSE(observed(correlation[3]));
+}
+
+TEST_CASE("beta is the covariance over the market's own variance") {
+  const math::Vector asset = series({1.0, 2.0, 3.0, 4.0});
+  const math::Vector market = series({2.0, 1.0, 4.0, 3.0});
+
+  REQUIRE(analytics::beta(asset, market, 3)[3] == Catch::Approx(0.42857142857142855));
+
+  // A market that did not move gives nothing to attribute the asset's movement to, so
+  // beta is unobserved rather than zero or an infinity.
+  const math::Vector still = series({1.0, 1.0, 1.0, 1.0});
+  REQUIRE_FALSE(observed(analytics::beta(asset, still, 3)[3]));
+
+  // And an asset that is exactly the market has a beta of one, whatever the market did.
+  REQUIRE(analytics::beta(market, market, 3)[3] == Catch::Approx(1.0));
+}
