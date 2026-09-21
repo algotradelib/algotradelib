@@ -424,6 +424,99 @@ inline std::optional<Decimal64> decimal_halve(const Decimal64& value) {
   );
 }
 
+/**
+ * Returns the exact product, or nothing when it does not fit.
+ *
+ * The scales add, which is what makes the product exact: two prices at scale 2 multiply to a
+ * value at scale 4, and truncating that here would be rounding on behalf of a caller who has
+ * not yet said where they want it. `decimal_normalized` then removes only trailing zeros, which
+ * changes no value.
+ */
+inline std::optional<Decimal64> decimal_multiply(const Decimal64& lhs, const Decimal64& rhs) {
+  const auto left = lhs.coefficient();
+  const auto right = rhs.coefficient();
+  const int scale = static_cast<int>(lhs.scale()) + static_cast<int>(rhs.scale());
+  if (scale > std::numeric_limits<std::uint8_t>::max()) {
+    return std::nullopt;
+  }
+  if (left != 0 && right != 0) {
+    // Checked before multiplying rather than after, because signed overflow is undefined and a
+    // wrapped price is exactly the failure this type exists to prevent.
+    if (left > 0 ? (right > 0 ? left > std::numeric_limits<std::int64_t>::max() / right
+                              : right < std::numeric_limits<std::int64_t>::min() / left)
+                 : (right > 0 ? left < std::numeric_limits<std::int64_t>::min() / right
+                              : left < std::numeric_limits<std::int64_t>::max() / right)) {
+      return std::nullopt;
+    }
+  }
+  return decimal_normalized(Decimal64(left * right, static_cast<std::uint8_t>(scale)));
+}
+
+/**
+ * Returns `lhs / rhs` truncated toward zero at `scale`, or nothing when it does not fit.
+ *
+ * The result scale is stated by the caller because a quotient has no natural one: a division
+ * that does not terminate has to stop somewhere, and only the caller knows where. Truncation
+ * rather than rounding, for the same reason: a quotient this library rounded would be a value
+ * the caller did not choose. `decimal_divide(x, y, 0)` is therefore "how many whole `y` fit in
+ * `x`", which is what sizing an order in shares needs.
+ *
+ * Division by zero returns nothing rather than throwing, matching how the rest of this
+ * arithmetic reports a value it cannot produce.
+ */
+inline std::optional<Decimal64> decimal_divide(
+  const Decimal64& lhs,
+  const Decimal64& rhs,
+  std::uint8_t scale
+) {
+  std::int64_t left = 0;
+  std::int64_t right = 0;
+  std::uint8_t common = 0;
+  if (!decimal_detail::align(lhs, rhs, left, right, common) || right == 0) {
+    return std::nullopt;
+  }
+  // Aligning cancels the scales, so `left / right` is the plain ratio. Each requested decimal
+  // place is one more factor of ten taken before the division.
+  for (std::uint8_t step = 0; step < scale; ++step) {
+    if (left > std::numeric_limits<std::int64_t>::max() / 10 ||
+        left < std::numeric_limits<std::int64_t>::min() / 10) {
+      return std::nullopt;
+    }
+    left *= 10;
+  }
+  if (left == std::numeric_limits<std::int64_t>::min() && right == -1) {
+    return std::nullopt;
+  }
+  return decimal_normalized(Decimal64(left / right, scale));
+}
+
+/**
+ * Returns the largest multiple of `step` not exceeding `value`, or nothing when it does not fit.
+ *
+ * Toward negative infinity, not toward zero, so the guarantee holds on both sides of zero: the
+ * result is always less than or equal to the input. A caller rounding a quantity relies on that
+ * — rounding a sell quantity toward zero would sell less than asked while rounding a negative
+ * target toward zero would hold more than asked, and only one of those is a shortfall.
+ *
+ * `step` must be positive; a zero or negative step has no multiples to choose between.
+ */
+inline std::optional<Decimal64> decimal_floor_to_multiple(
+  const Decimal64& value,
+  const Decimal64& step
+) {
+  std::int64_t left = 0;
+  std::int64_t right = 0;
+  std::uint8_t scale = 0;
+  if (!decimal_detail::align(value, step, left, right, scale) || right <= 0) {
+    return std::nullopt;
+  }
+  auto rest = left % right;
+  if (rest < 0) {
+    rest += right;
+  }
+  return decimal_normalized(Decimal64(left - rest, scale));
+}
+
 /** Returns whether `lhs` is numerically less than `rhs`, comparing exactly. */
 inline bool decimal_less(const Decimal64& lhs, const Decimal64& rhs) {
   std::int64_t left = 0;

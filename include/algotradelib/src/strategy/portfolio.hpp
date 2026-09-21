@@ -12,6 +12,34 @@ namespace algotradelib {
 namespace strategy {
 
 /**
+ * Returns whether a status describes an order that can still trade.
+ *
+ * Listed explicitly rather than as "not terminal", so a status this library gains later does not
+ * silently start counting as live. `UNKNOWN` counts as open: an order whose state is unrecognized
+ * may still be working, and the two consequences of being wrong are not symmetric. Under-counting
+ * a working quantity causes double-sizing; over-counting merely holds an order back. Treating an
+ * unrecognized state as closed would also mean never trying to cancel it.
+ */
+inline bool order_is_open(OrderStatus status) {
+  switch (status) {
+    case OrderStatus::UNKNOWN:
+    case OrderStatus::PENDING:
+    case OrderStatus::PENDING_CANCEL:
+    case OrderStatus::PENDING_REPLACE:
+    case OrderStatus::PARTIAL_FILLED:
+      return true;
+    case OrderStatus::FILLED:
+    case OrderStatus::CANCELED:
+    case OrderStatus::REJECTED:
+    case OrderStatus::CANCEL_REJECTED:
+    case OrderStatus::REPLACE_REJECTED:
+    case OrderStatus::REPLACED:
+      return false;
+  }
+  return true;
+}
+
+/**
  * What a strategy is currently holding, and what it has already asked for.
  *
  * Templated on the broker because a working order carries an `OrderRef<Broker>`, which is only
@@ -61,7 +89,7 @@ struct Portfolio {
       if (!(order.order_.instrument_ == instrument) || order.order_.side_ != side) {
         continue;
       }
-      if (!open_status(order.order_.status_)) {
+      if (!order_is_open(order.order_.status_)) {
         continue;
       }
       const auto remaining = decimal_subtract(
@@ -99,33 +127,6 @@ struct Portfolio {
     return nullptr;
   }
 
-private:
-  /**
-   * Returns whether a status describes an order that can still trade.
-   *
-   * Listed explicitly rather than as "not terminal", so a status this library gains later does
-   * not silently start counting toward a working quantity. `UNKNOWN` counts as open: an order
-   * whose state is unrecognized may still be live, and under-counting working quantity is what
-   * causes double-sizing, which is the failure this member exists to prevent.
-   */
-  static bool open_status(OrderStatus status) {
-    switch (status) {
-      case OrderStatus::UNKNOWN:
-      case OrderStatus::PENDING:
-      case OrderStatus::PENDING_CANCEL:
-      case OrderStatus::PENDING_REPLACE:
-      case OrderStatus::PARTIAL_FILLED:
-        return true;
-      case OrderStatus::FILLED:
-      case OrderStatus::CANCELED:
-      case OrderStatus::REJECTED:
-      case OrderStatus::CANCEL_REJECTED:
-      case OrderStatus::REPLACE_REJECTED:
-      case OrderStatus::REPLACED:
-        return false;
-    }
-    return true;
-  }
 };
 
 } // namespace strategy

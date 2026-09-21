@@ -3070,3 +3070,77 @@ TEST_CASE("an ETF gets no price grid rather than the equity one", "[broker][refe
   REQUIRE(note.value().type_ == SecurityType::ETN);
   REQUIRE(note.value().price_rule_.kind_ == PriceRule::Kind::UNKNOWN);
 }
+
+// ---------------------------------------------------------------------------
+// Decimal multiplication, division, and flooring onto a multiple
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a product adds the scales so it stays exact") {
+  const auto product =
+    decimal_multiply(Decimal64::parse("1.25"), Decimal64::parse("4.2"));
+  REQUIRE(product);
+  // 1.25 * 4.2 is exactly 5.25, and nothing has rounded it.
+  REQUIRE(*product == Decimal64::parse("5.25"));
+
+  const auto shares = decimal_multiply(Decimal64::parse("70000"), Decimal64::parse("10"));
+  REQUIRE(shares);
+  REQUIRE(*shares == Decimal64::parse("700000"));
+
+  const auto signed_product =
+    decimal_multiply(Decimal64::parse("-2.5"), Decimal64::parse("4"));
+  REQUIRE(signed_product);
+  REQUIRE(*signed_product == Decimal64::parse("-10"));
+}
+
+TEST_CASE("a product that would overflow is refused rather than wrapped") {
+  // A wrapped price is exactly the failure this type exists to prevent, so the check happens
+  // before the multiplication: signed overflow is undefined behaviour, not a large number.
+  const Decimal64 huge(4000000000LL, 0);
+  REQUIRE_FALSE(decimal_multiply(huge, huge));
+
+  // And a scale sum past what the type can hold is refused too.
+  const Decimal64 deep(1, 200);
+  REQUIRE_FALSE(decimal_multiply(deep, deep));
+}
+
+TEST_CASE("a quotient truncates at the scale the caller asked for") {
+  // At scale zero this answers "how many whole divisors fit", which is what sizing shares needs.
+  const auto whole = decimal_divide(Decimal64::parse("1000000"), Decimal64::parse("70000"), 0);
+  REQUIRE(whole);
+  REQUIRE(*whole == Decimal64::parse("14"));
+
+  // More places, more of the answer -- and still truncated rather than rounded, because a value
+  // this library rounded would be one the caller did not choose.
+  const auto precise = decimal_divide(Decimal64::parse("10"), Decimal64::parse("3"), 4);
+  REQUIRE(precise);
+  REQUIRE(*precise == Decimal64::parse("3.3333"));
+
+  // Truncation toward zero on a negative quotient.
+  const auto negative = decimal_divide(Decimal64::parse("-10"), Decimal64::parse("3"), 0);
+  REQUIRE(negative);
+  REQUIRE(*negative == Decimal64::parse("-3"));
+}
+
+TEST_CASE("dividing by zero reports nothing rather than throwing") {
+  REQUIRE_FALSE(decimal_divide(Decimal64::parse("1"), Decimal64::parse("0"), 2));
+}
+
+TEST_CASE("flooring onto a multiple goes toward negative infinity on both sides of zero") {
+  const auto lot = Decimal64::parse("10");
+  REQUIRE(*decimal_floor_to_multiple(Decimal64::parse("47"), lot) == Decimal64::parse("40"));
+  REQUIRE(*decimal_floor_to_multiple(Decimal64::parse("40"), lot) == Decimal64::parse("40"));
+  REQUIRE(*decimal_floor_to_multiple(Decimal64::parse("7"), lot) == Decimal64::parse("0"));
+  // Toward negative infinity, not toward zero: the result is always at most the input, which is
+  // what makes a rounded quantity a shortfall rather than an excess on either side.
+  REQUIRE(*decimal_floor_to_multiple(Decimal64::parse("-47"), lot) == Decimal64::parse("-50"));
+
+  // A fractional step works the same way.
+  REQUIRE(
+    *decimal_floor_to_multiple(Decimal64::parse("1.07"), Decimal64::parse("0.25")) ==
+    Decimal64::parse("1")
+  );
+
+  // A step with no multiples to choose between is refused.
+  REQUIRE_FALSE(decimal_floor_to_multiple(Decimal64::parse("47"), Decimal64::parse("0")));
+  REQUIRE_FALSE(decimal_floor_to_multiple(Decimal64::parse("47"), Decimal64::parse("-10")));
+}

@@ -1,7 +1,5 @@
 #pragma once
 
-#include "../math/scalar.hpp"
-
 #include <algotradelib/core>
 
 #include <optional>
@@ -149,14 +147,17 @@ public:
   /**
    * Returns a size expressed as a fraction of portfolio value.
    *
-   * A `Scalar` rather than a `Decimal64` because a weight is inherently approximate: one third
-   * of a portfolio has no exact decimal form, and pretending otherwise would fix a scale that
-   * means nothing. The quantity it becomes is exact, and the runner rounds it to a lot.
+   * An exact decimal, not a `Scalar`, and at whatever scale the caller chooses: a third of a
+   * portfolio is `0.3333` or `0.333333` depending on how precisely they mean it, and making them
+   * say leaves no doubt. A strategy computing weights from indicators — inverse volatility, say —
+   * crosses the boundary once through `analytics::to_decimal` and passes the exact result, the
+   * same pattern `Price` follows. That keeps this whole layer free of any decimal/scalar crossing
+   * and therefore free of a linear-algebra backend.
    */
-  static SizeSpec target_weight(math::Scalar fraction) {
+  static SizeSpec target_weight(Decimal64 fraction) {
     SizeSpec size;
     size.kind_ = SizeKind::TARGET_WEIGHT;
-    size.weight_ = fraction;
+    size.weight_ = std::move(fraction);
     return size;
   }
 
@@ -188,7 +189,7 @@ public:
    *
    * @throws std::logic_error unless the size is a target weight.
    */
-  math::Scalar as_target_weight() const {
+  const Decimal64& as_target_weight() const {
     require(SizeKind::TARGET_WEIGHT, "target weight");
     return weight_;
   }
@@ -203,7 +204,7 @@ private:
   SizeKind kind_{SizeKind::QUANTITY};
   Decimal64 quantity_;
   Money notional_;
-  math::Scalar weight_{0};
+  Decimal64 weight_;
 };
 
 /**

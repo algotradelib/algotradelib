@@ -21,3 +21,4 @@
 #include "src/strategy/event.hpp"
 #include "src/strategy/intent.hpp"
 #include "src/strategy/portfolio.hpp"
+#include "src/strategy/reconcile.hpp"
