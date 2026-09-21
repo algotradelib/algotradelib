@@ -3,8 +3,19 @@ file(GLOB_RECURSE CPP_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.c
 # The analytics examples include <algotradelib/analytics>, which refuses to compile
 # without a linear algebra backend -- on purpose, so the diagnostic names the option to
 # set. A build configured with ATL_USE_EIGEN=OFF must therefore not try to build them.
+#
+# Matched on the file name rather than on the glob's absolute paths: a worktree directory
+# can itself be named after the branch, and a bare "analytics" regex over full paths then
+# excludes every example in the directory.
 if(NOT ATL_USE_EIGEN)
-    list(FILTER CPP_SOURCES EXCLUDE REGEX "analytics")
+    set(ATL_PORTABLE_EXAMPLES "")
+    foreach(CPP_FILE ${CPP_SOURCES})
+        get_filename_component(ATL_EXAMPLE_NAME ${CPP_FILE} NAME)
+        if(NOT ATL_EXAMPLE_NAME MATCHES "analytics")
+            list(APPEND ATL_PORTABLE_EXAMPLES ${CPP_FILE})
+        endif()
+    endforeach()
+    set(CPP_SOURCES ${ATL_PORTABLE_EXAMPLES})
 endif()
 
 if(NOT CPP_SOURCES)

@@ -133,7 +133,15 @@ write_basic_package_version_file(
 # Recorded so an installed consumer resolves the same dependency the build used, and
 # so a consumer of a build made without the backend is not asked for it.
 set(ATL_INSTALLED_WITH_EIGEN ${ATL_USE_EIGEN})
-set(ATL_INSTALLED_WITH_OPENMP ${ATL_OPENMP_IN_FLAGS})
+
+# Normalized to a literal rather than passed through, because the OpenMP check only runs
+# when the backend is enabled: without this, a no-backend install writes a bare `if()` into
+# the package config, whose meaning depends on the consumer's CMake version.
+if(ATL_OPENMP_IN_FLAGS)
+    set(ATL_INSTALLED_WITH_OPENMP ON)
+else()
+    set(ATL_INSTALLED_WITH_OPENMP OFF)
+endif()
 
 configure_package_config_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/cmake/algotradelibConfig.cmake.in
