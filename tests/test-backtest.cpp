@@ -557,3 +557,272 @@ TEST_CASE("the fill model states what it assumed, for a report to carry") {
   REQUIRE(backtest::limit_fill_price_name(backtest::LimitFillPrice::AT_OPEN_IF_BETTER) ==
           "at_open_if_better");
 }
+
+// ---------------------------------------------------------------------------
+// The engine, and the discipline it exists to keep
+// ---------------------------------------------------------------------------
+
+namespace {
+
+Instrument samsung_reference() {
+  Instrument reference;
+  reference.id_ = samsung();
+  reference.type_ = SecurityType::STOCK;
+  reference.currency_ = Currency{"KRW"};
+  reference.lot_size_ = Decimal64::parse("1");
+  reference.price_rule_ = PriceRule::krx_equity();
+  return reference;
+}
+
+backtest::ReplayConfig replay_config() {
+  backtest::ReplayConfig config;
+  config.cash_ = Decimal64::parse("100000000");
+  config.instruments_ = {samsung_reference()};
+  // Any phase, so a minute replay's pre-open and post-close bars are not refused by the guard while
+  // the point of the test is the fill timing.
+  config.limits_.permitted_phases_ = std::nullopt;
+  return config;
+}
+
+/** Buys ten on the first bar it sees, and records every fill it is told about. */
+struct BuysOnce {
+  bool submitted_{false};
+  std::vector<Decimal64> fill_prices_;
+  std::vector<Decimal64> close_when_submitted_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (submitted_) {
+      return;
+    }
+    submitted_ = true;
+    close_when_submitted_.push_back(bar.bar_.close_);
+    ctx.submit(
+      strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
+      ).with_tag("buys-once")
+    );
+  }
+
+  template <class Ctx>
+  void on_fill(Ctx&, const strategy::Fill& fill) {
+    fill_prices_.push_back(fill.price_);
+  }
+};
+
+/** Holds a fixed target, so the position moves as the ledger changes. */
+struct HoldsTen {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = Decimal64::parse("10");
+    target.tag_ = "holds-ten";
+    ctx.submit(target);
+  }
+};
+
+/** Records every phase transition it is told about. */
+struct RecordsPhases {
+  std::vector<strategy::MarketPhase> seen_;
+  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx> void on_phase(Ctx&, strategy::MarketPhase phase) { seen_.push_back(phase); }
+};
+
+/** A bar of the given interval at `at`, with a distinct open and close. */
+strategy::BarEvent moving_bar(
+  Clock::time_point at,
+  BarInterval interval,
+  const char* open,
+  const char* close
+) {
+  Bar bar;
+  bar.timestamp_ = at;
+  bar.open_ = Decimal64::parse(open);
+  bar.high_ = Decimal64::parse(close);
+  bar.low_ = Decimal64::parse(open);
+  bar.close_ = Decimal64::parse(close);
+  bar.volume_ = Decimal64::parse("1000");
+  return strategy::make_bar_event(samsung(), interval, BarStamp::CLOSE, bar);
+}
+
+} // namespace
+
+TEST_CASE("an order is never filled from the bar that produced it") {
+  // **The defect a backtester exists to prevent.** The strategy submits on the first bar, whose close
+  // is 70,000. If the engine filled from that bar it would fill at 70,000 or 70,500; filling from the
+  // next bar gives that bar's open, 80,000. The difference is the whole point.
+  backtest::Backtester<BuysOnce> engine(BuysOnce{}, replay_config());
+
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().close_when_submitted_.size() == 1);
+  REQUIRE(engine.strategy().close_when_submitted_[0] == Decimal64::parse("70000"));
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  // The next bar's open, not anything from the signal's own bar.
+  REQUIRE(engine.strategy().fill_prices_[0] == Decimal64::parse("80000"));
+}
+
+TEST_CASE("an order submitted on the last bar never fills, and is counted") {
+  // There is no next bar to fill against, and inventing one would be inventing data. Counting it is how
+  // a reader learns a result excluded a trade the strategy asked for.
+  backtest::Backtester<BuysOnce> engine(BuysOnce{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().fill_prices_.empty());
+  REQUIRE(engine.result().unfilled_ == 1);
+  REQUIRE(engine.result().executions_.empty());
+}
+
+TEST_CASE("the strategy is told about its own fills, and the ledger moves") {
+  backtest::Backtester<BuysOnce> engine(BuysOnce{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
+  engine.finish();
+
+  REQUIRE(engine.ledger().quantity_of(samsung()) == std::optional<Decimal64>(Decimal64::parse("10")));
+  REQUIRE(engine.ledger().average_price_of(samsung()) ==
+          std::optional<Decimal64>(Decimal64::parse("80000")));
+  // 100,000,000 less ten at 80,000.
+  REQUIRE(engine.ledger().cash_in(Currency{"KRW"}) ==
+          std::optional<Decimal64>(Decimal64::parse("99200000")));
+}
+
+TEST_CASE("a target already reached stops asking, because the ledger tells it so") {
+  // The reason the engine must maintain the portfolio: without it, a target-stating strategy repeats its
+  // target forever and the position never moves, which looks like a strategy doing nothing.
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, replay_config());
+  for (int day = 10; day < 16; ++day) {
+    engine.feed(moving_bar(utc(2026, 3, day, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  }
+  engine.finish();
+
+  // One fill, not five: once the position matched, reconciliation produced nothing.
+  REQUIRE(engine.result().executions_.size() == 1);
+  REQUIRE(engine.ledger().quantity_of(samsung()) == std::optional<Decimal64>(Decimal64::parse("10")));
+}
+
+TEST_CASE("equity is recorded per bar and the curve carries period returns") {
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "77000"));
+  engine.finish();
+
+  const auto& curve = engine.result().equity_;
+  REQUIRE(curve.size() == 3);
+  // The first point has no predecessor, so no return exists for it -- absent rather than zero.
+  REQUIRE_FALSE(math::observed(curve[0].period_return_));
+  REQUIRE(math::observed(curve[2].period_return_));
+  // Ten shares marking up 7,000 each on a 100,000,000 book is 70,000, or 0.07%.
+  REQUIRE(curve[2].period_return_ == Catch::Approx(0.0007).epsilon(0.01));
+}
+
+TEST_CASE("a guard refusal is collected rather than lost in a per-bar report") {
+  auto config = replay_config();
+  config.limits_.max_order_notional_ = Decimal64::parse("100000");
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, std::move(config));
+
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.finish();
+
+  REQUIRE_FALSE(engine.result().refused_.empty());
+  REQUIRE(engine.result().refused_[0].reason_ == strategy::GuardReason::ORDER_NOTIONAL_TOO_LARGE);
+  REQUIRE(engine.result().executions_.empty());
+}
+
+TEST_CASE("an instrument with no reference data is rejected, not guessed at") {
+  backtest::ReplayConfig config;
+  config.cash_ = Decimal64::parse("100000000");
+  config.limits_.permitted_phases_ = std::nullopt;
+  // Deliberately no instruments.
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, std::move(config));
+
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.finish();
+  REQUIRE_FALSE(engine.result().rejected_.empty());
+  REQUIRE(engine.result().rejected_[0].reason_ == strategy::RejectReason::NO_REFERENCE_DATA);
+}
+
+TEST_CASE("a gap between sessions is counted rather than interpolated across") {
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 29), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_MINUTE, "70000", "70000"));
+  // The next session's first minute, hours later.
+  engine.feed(moving_bar(utc(2026, 3, 11, 0, 1), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.finish();
+
+  REQUIRE(engine.result().gaps_ == 1);
+  REQUIRE(engine.result().bars_ == 3);
+}
+
+// ---------------------------------------------------------------------------
+// The same strategy, the same assertions, at two intervals
+// ---------------------------------------------------------------------------
+
+TEST_CASE("the engine replays minute bars exactly as it replays daily ones") {
+  // Interval-independence as a property under test rather than an intention. The same strategy, the
+  // same assertions, and no engine change -- which is what makes the engine usable with a broker that
+  // serves intraday history even though neither current one does easily.
+  const auto run_at = [](BarInterval interval, Clock::time_point start, auto step) {
+    backtest::Backtester<BuysOnce> engine(BuysOnce{}, replay_config());
+    engine.feed(moving_bar(start, interval, "69000", "70000"));
+    engine.feed(moving_bar(start + step, interval, "80000", "81000"));
+    engine.finish();
+    return engine;
+  };
+
+  const auto daily = run_at(BarInterval::ONE_DAY, utc(2026, 3, 10, 6, 30), std::chrono::hours(24));
+  const auto minutes =
+    run_at(BarInterval::ONE_MINUTE, utc(2026, 3, 10, 3, 0), std::chrono::minutes(1));
+
+  // Identical decisions, identical fills, identical ledger.
+  REQUIRE(daily.strategy().fill_prices_ == minutes.strategy().fill_prices_);
+  REQUIRE(daily.strategy().fill_prices_[0] == Decimal64::parse("80000"));
+  REQUIRE(daily.ledger().quantity_of(samsung()) == minutes.ledger().quantity_of(samsung()));
+  REQUIRE(daily.ledger().cash_in(Currency{"KRW"}) == minutes.ledger().cash_in(Currency{"KRW"}));
+  REQUIRE(daily.result().executions_.size() == minutes.result().executions_.size());
+}
+
+TEST_CASE("a minute replay sees intraday phases while a daily one does not") {
+  // The one place the two intervals *should* differ, and it comes from the session window rather than
+  // from any special casing in the engine.
+  backtest::Backtester<RecordsPhases> intraday(RecordsPhases{}, replay_config());
+  intraday.feed(moving_bar(utc(2026, 3, 9, 23, 30), BarInterval::ONE_MINUTE, "70000", "70000"));
+  intraday.feed(moving_bar(utc(2026, 3, 10, 0, 1), BarInterval::ONE_MINUTE, "70000", "70000"));
+  intraday.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_MINUTE, "70000", "70000"));
+  intraday.finish();
+
+  const auto& seen = intraday.strategy().seen_;
+  REQUIRE(seen.size() == 3);
+  REQUIRE(seen[0] == strategy::MarketPhase::PRE_OPEN);
+  REQUIRE(seen[1] == strategy::MarketPhase::OPEN);
+  REQUIRE(seen[2] == strategy::MarketPhase::POST_CLOSE);
+}
+
+TEST_CASE("costs reach the replay's executions, so a report can separate them out") {
+  backtest::Backtester<BuysOnce> engine(
+    BuysOnce{},
+    replay_config(),
+    backtest::NextBarFillModel(
+      backtest::CommissionModel::of(Decimal64::parse("0.00015")),
+      backtest::SlippageModel::of_ticks(1)
+    )
+  );
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
+  engine.finish();
+
+  REQUIRE(engine.result().executions_.size() == 1);
+  const auto& execution = engine.result().executions_[0];
+  // One tick above 80,000 on the KRX grid is 80,100.
+  REQUIRE(execution.fill_.price_ == Decimal64::parse("80100"));
+  REQUIRE(execution.slippage_ == Decimal64::parse("100"));
+  REQUIRE(execution.commission_.coefficient() > 0);
+  // And the model still reports what it assumed.
+  REQUIRE(engine.fills().limit_price() == backtest::LimitFillPrice::AT_LIMIT);
+}

@@ -17,6 +17,7 @@
 
 #include "src/backtest/clock.hpp"
 #include "src/backtest/cost.hpp"
+#include "src/backtest/engine.hpp"
 #include "src/backtest/fill.hpp"
 #include "src/backtest/ledger.hpp"
 
