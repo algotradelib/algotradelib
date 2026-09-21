@@ -1,9 +1,11 @@
 #include <algotradelib/analytics>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
 #include <cmath>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -552,4 +554,281 @@ TEST_CASE("a rolling window's storage is taken once and never grows") {
   // And after five thousand pushes the window still holds exactly its capacity.
   REQUIRE(window.size() == capacity);
   REQUIRE(window.compactions() > 0);
+}
+
+// ---------------------------------------------------------------------------
+// Returns and trailing statistics
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** Builds a series from a literal list, so a fixture reads as the numbers it is. */
+math::Vector series(std::initializer_list<Scalar> values) {
+  math::Vector result(static_cast<math::Index>(values.size()));
+  math::Index row = 0;
+  for (const Scalar value : values) {
+    result[row++] = value;
+  }
+  return result;
+}
+
+} // namespace
+
+TEST_CASE("simple returns are unobserved wherever no return exists") {
+  const math::Vector prices = series({100.0, 110.0, 99.0, 99.0, 108.9});
+  const math::Vector result = analytics::returns(prices);
+
+  REQUIRE(result.size() == prices.size());
+  // Row 0 has no prior price. It is unobserved rather than zero, which would be a claim
+  // the price did not move.
+  REQUIRE_FALSE(observed(result[0]));
+  REQUIRE(result[1] == Catch::Approx(0.1));
+  REQUIRE(result[2] == Catch::Approx(-0.1));
+  REQUIRE(result[3] == Catch::Approx(0.0));
+  REQUIRE(result[4] == Catch::Approx(0.1));
+}
+
+TEST_CASE("a simple return refuses to divide by a zero prior price") {
+  // An infinity here would survive every later reduction: they mask NaN, not inf.
+  const math::Vector prices = series({0.0, 10.0, 11.0});
+  const math::Vector result = analytics::returns(prices);
+
+  REQUIRE_FALSE(observed(result[1]));
+  REQUIRE(result[2] == Catch::Approx(0.1));
+}
+
+TEST_CASE("a return spanning an unobserved price is unobserved on both sides") {
+  const math::Vector prices = series({100.0, missing(), 121.0});
+  const math::Vector result = analytics::returns(prices);
+
+  REQUIRE_FALSE(observed(result[1]));
+  // And row 2, whose prior price is the absent one, does not reach back past it to
+  // manufacture a two-period return.
+  REQUIRE_FALSE(observed(result[2]));
+}
+
+TEST_CASE("log returns add where simple returns compound") {
+  const math::Vector prices = series({100.0, 110.0, 99.0, 99.0, 108.9});
+  const math::Vector result = analytics::log_returns(prices);
+
+  REQUIRE_FALSE(observed(result[0]));
+  REQUIRE(result[1] == Catch::Approx(0.09531017980432493));
+  REQUIRE(result[2] == Catch::Approx(-0.10536051565782628));
+  REQUIRE(result[3] == Catch::Approx(0.0));
+  REQUIRE(result[4] == Catch::Approx(0.09531017980432493));
+
+  // The property that makes them worth having: their sum is the total log return.
+  const Scalar total = result[1] + result[2] + result[3] + result[4];
+  REQUIRE(total == Catch::Approx(std::log(108.9 / 100.0)));
+}
+
+TEST_CASE("a log return refuses a non-positive price instead of returning a bare NaN") {
+  const math::Vector prices = series({10.0, -1.0, 10.0});
+  const math::Vector result = analytics::log_returns(prices);
+
+  REQUIRE_FALSE(observed(result[1]));
+  REQUIRE_FALSE(observed(result[2]));
+}
+
+TEST_CASE("cumulative returns compound to the total the price series implies") {
+  const math::Vector prices = series({100.0, 110.0, 99.0, 99.0, 108.9});
+  const math::Vector result = analytics::cumulative_returns(analytics::returns(prices));
+
+  // No capital has been at risk before the first observed return.
+  REQUIRE_FALSE(observed(result[0]));
+  REQUIRE(result[1] == Catch::Approx(0.1));
+  REQUIRE(result[2] == Catch::Approx(-0.01));
+  REQUIRE(result[3] == Catch::Approx(-0.01));
+  // Which is exactly the return of holding from the first price to the last.
+  REQUIRE(result[4] == Catch::Approx(108.9 / 100.0 - 1.0));
+}
+
+TEST_CASE("trailing statistics report nothing until their window is full") {
+  const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0});
+
+  const math::Vector sum = analytics::rolling_sum(values, 3);
+  const math::Vector mean = analytics::rolling_mean(values, 3);
+  const math::Vector smallest = analytics::rolling_min(values, 3);
+  const math::Vector largest = analytics::rolling_max(values, 3);
+
+  // The warm-up region is asserted explicitly. An indicator that answers from a
+  // partially filled window is a lookahead bug that looks like a good backtest.
+  for (math::Index row = 0; row < 2; ++row) {
+    REQUIRE_FALSE(observed(sum[row]));
+    REQUIRE_FALSE(observed(mean[row]));
+    REQUIRE_FALSE(observed(smallest[row]));
+    REQUIRE_FALSE(observed(largest[row]));
+  }
+
+  REQUIRE(sum[2] == Catch::Approx(6.0));
+  REQUIRE(sum[3] == Catch::Approx(9.0));
+  REQUIRE(sum[4] == Catch::Approx(12.0));
+  REQUIRE(mean[2] == Catch::Approx(2.0));
+  REQUIRE(mean[4] == Catch::Approx(4.0));
+  REQUIRE(smallest[2] == Catch::Approx(1.0));
+  REQUIRE(smallest[4] == Catch::Approx(3.0));
+  REQUIRE(largest[2] == Catch::Approx(3.0));
+  REQUIRE(largest[4] == Catch::Approx(5.0));
+}
+
+TEST_CASE("a shorter warm-up is available but has to be asked for") {
+  const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0});
+  const math::Vector mean = analytics::rolling_mean(values, 3, 1);
+
+  REQUIRE(mean[0] == Catch::Approx(1.0));
+  REQUIRE(mean[1] == Catch::Approx(1.5));
+  REQUIRE(mean[2] == Catch::Approx(2.0));
+  REQUIRE(mean[4] == Catch::Approx(4.0));
+}
+
+TEST_CASE("a window skips an unobserved value rather than being blanked by it") {
+  const math::Vector values = series({1.0, missing(), 3.0, 4.0, 5.0});
+
+  // With the whole window demanded, the two windows containing the gap hold only two
+  // observations and stay unobserved.
+  const math::Vector strict = analytics::rolling_mean(values, 3);
+  REQUIRE_FALSE(observed(strict[2]));
+  REQUIRE_FALSE(observed(strict[3]));
+  REQUIRE(strict[4] == Catch::Approx(4.0));
+
+  // Relaxed to two observations, the gap is masked and the divisor is the count actually
+  // seen -- two, not three.
+  const math::Vector relaxed = analytics::rolling_mean(values, 3, 2);
+  REQUIRE_FALSE(observed(relaxed[1]));
+  REQUIRE(relaxed[2] == Catch::Approx(2.0));
+  REQUIRE(relaxed[3] == Catch::Approx(3.5));
+  REQUIRE(relaxed[4] == Catch::Approx(4.0));
+}
+
+TEST_CASE("a trailing deviation is the sample one and needs two observations") {
+  const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0});
+  const math::Vector deviation = analytics::rolling_stdev(values, 3);
+
+  REQUIRE_FALSE(observed(deviation[0]));
+  REQUIRE_FALSE(observed(deviation[1]));
+  REQUIRE(deviation[2] == Catch::Approx(1.0));
+  REQUIRE(deviation[3] == Catch::Approx(1.0));
+  REQUIRE(deviation[4] == Catch::Approx(1.0));
+
+  // Even asked for a one-observation warm-up, a single point has no dispersion to
+  // report: `count - 1` would be a division by zero.
+  const math::Vector relaxed = analytics::rolling_stdev(values, 3, 1);
+  REQUIRE_FALSE(observed(relaxed[0]));
+  REQUIRE(relaxed[1] == Catch::Approx(std::sqrt(0.5)));
+}
+
+TEST_CASE("a trailing deviation survives the price levels that break the one-pass form") {
+  // Three values one apart, around a level whose square exceeds what a double holds
+  // exactly. The sample deviation is 1 by construction. The one-pass
+  // `E[x^2] - E[x]^2` form returns a variance of 2 here -- a deviation of 1.414,
+  // wrong by 41% with no warning -- because the two terms agree to more digits than a
+  // double has. Two passes over the window is what buys the right answer.
+  const math::Vector values = series({1.0e8, 1.0e8 + 1.0, 1.0e8 + 2.0});
+  const math::Vector deviation = analytics::rolling_stdev(values, 3);
+
+  REQUIRE(deviation[2] == 1.0);
+}
+
+TEST_CASE("a weighted average leans on its most recent row and renormalizes over gaps") {
+  const math::Vector values = series({1.0, 2.0, 3.0});
+  const math::Vector weighted = analytics::wma(values, 3);
+
+  REQUIRE_FALSE(observed(weighted[0]));
+  REQUIRE_FALSE(observed(weighted[1]));
+  // (1*1 + 2*2 + 3*3) / (1 + 2 + 3)
+  REQUIRE(weighted[2] == Catch::Approx(14.0 / 6.0));
+
+  // Dropping a row drops its weight with it. Keeping the weight in the divisor would
+  // bias every window containing a gap toward zero.
+  const math::Vector gapped = series({1.0, missing(), 3.0});
+  const math::Vector over_gap = analytics::wma(gapped, 3, 2);
+  REQUIRE(over_gap[2] == Catch::Approx((1.0 * 1.0 + 3.0 * 3.0) / (1.0 + 3.0)));
+}
+
+TEST_CASE("the simple moving average is the trailing mean, and stays that way") {
+  const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0});
+  const math::Vector average = analytics::sma(values, 3);
+  const math::Vector mean = analytics::rolling_mean(values, 3);
+
+  for (math::Index row = 0; row < values.size(); ++row) {
+    REQUIRE(observed(average[row]) == observed(mean[row]));
+    if (observed(mean[row])) {
+      REQUIRE(average[row] == mean[row]);
+    }
+  }
+}
+
+TEST_CASE("an exponential average uses the span convention and seeds on its first value") {
+  const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0});
+
+  // span 3 is alpha = 2 / (3 + 1) = 0.5, so each level is the midpoint of the previous
+  // level and the new value.
+  const math::Vector smoothed = analytics::ema(values, 3);
+  REQUIRE(smoothed[0] == Catch::Approx(1.0));
+  REQUIRE(smoothed[1] == Catch::Approx(1.5));
+  REQUIRE(smoothed[2] == Catch::Approx(2.25));
+  REQUIRE(smoothed[3] == Catch::Approx(3.125));
+  REQUIRE(smoothed[4] == Catch::Approx(4.0625));
+
+  // span 1 is alpha = 1, which is no smoothing at all. A degenerate span should give
+  // the series back rather than divide by something.
+  const math::Vector unsmoothed = analytics::ema(values, 1);
+  for (math::Index row = 0; row < values.size(); ++row) {
+    REQUIRE(unsmoothed[row] == values[row]);
+  }
+}
+
+TEST_CASE("an exponential average carries its level across a gap without reporting one") {
+  const math::Vector values = series({1.0, missing(), 3.0});
+  const math::Vector smoothed = analytics::ema(values, 3);
+
+  REQUIRE(smoothed[0] == Catch::Approx(1.0));
+  // The row itself has no observation, so the indicator says nothing about it.
+  REQUIRE_FALSE(observed(smoothed[1]));
+  // But the level was not lost: 1 + 0.5 * (3 - 1).
+  REQUIRE(smoothed[2] == Catch::Approx(2.0));
+}
+
+TEST_CASE("an exponential average can suppress the region its seed still dominates") {
+  const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0});
+  const math::Vector smoothed = analytics::ema(values, 3, 3);
+
+  REQUIRE_FALSE(observed(smoothed[0]));
+  REQUIRE_FALSE(observed(smoothed[1]));
+  REQUIRE(smoothed[2] == Catch::Approx(2.25));
+  REQUIRE(smoothed[4] == Catch::Approx(4.0625));
+}
+
+TEST_CASE("an impossible window is refused rather than answered with nothing") {
+  const math::Vector values = series({1.0, 2.0, 3.0});
+
+  // Both of these would otherwise produce an all-unobserved column, which looks
+  // identical to a series that simply had no data.
+  REQUIRE_THROWS_AS(analytics::rolling_mean(values, 0), std::invalid_argument);
+  REQUIRE_THROWS_AS(analytics::rolling_mean(values, 3, 4), std::invalid_argument);
+  REQUIRE_THROWS_AS(analytics::ema(values, 0), std::invalid_argument);
+}
+
+TEST_CASE("an indicator reads a frame column and a rolling window the same way") {
+  // The point of one contiguous series per column: the same function serves a completed
+  // frame and a live window, so a backtest and a live loop cannot diverge here.
+  using namespace std::chrono_literals;
+  const auto base = std::chrono::system_clock::time_point{} + 24h;
+
+  analytics::RollingWindow window(3);
+  const std::vector<Scalar> rows[] = {
+    {0, 0, 0, 10.0, 0, 0},
+    {0, 0, 0, 20.0, 0, 0},
+    {0, 0, 0, 30.0, 0, 0},
+  };
+  for (std::size_t at = 0; at < 3; ++at) {
+    window.push(base + std::chrono::hours(24 * static_cast<int>(at)), rows[at]);
+  }
+
+  const math::Vector from_window =
+    analytics::sma(window.column(analytics::BarField::CLOSE), 3);
+  REQUIRE(from_window[2] == Catch::Approx(20.0));
+
+  const math::Vector direct = analytics::sma(series({10.0, 20.0, 30.0}), 3);
+  REQUIRE(direct[2] == from_window[2]);
 }

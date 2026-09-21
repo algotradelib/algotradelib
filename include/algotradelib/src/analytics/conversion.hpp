@@ -2,7 +2,7 @@
 
 #include <algotradelib/core>
 
-#include "../math/scalar.hpp"
+#include "./numeric.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -20,15 +20,6 @@ namespace analytics {
  * makes the loss auditable — and why the return direction is narrower than the outward
  * one.
  */
-
-/** The numeric type this layer computes in, from the math module. */
-using math::Scalar;
-
-/** The value standing for "no observation". */
-using math::missing;
-
-/** Returns whether a value carries an observation. */
-using math::observed;
 
 /**
  * Converts an exact decimal to the numeric scalar.
