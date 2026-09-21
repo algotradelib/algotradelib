@@ -35,6 +35,12 @@ target_link_libraries(algotradelib-market-data-tests PRIVATE
     Catch2::Catch2WithMain
 )
 
+add_executable(algotradelib-live-tests test-live.cpp)
+target_link_libraries(algotradelib-live-tests PRIVATE
+    algotradelib::algotradelib
+    Catch2::Catch2WithMain
+)
+
 add_executable(algotradelib-runner-tests test-runner.cpp)
 target_link_libraries(algotradelib-runner-tests PRIVATE
     algotradelib::algotradelib
@@ -62,6 +68,7 @@ catch_discover_tests(algotradelib-rate-limit-tests)
 catch_discover_tests(algotradelib-market-data-tests)
 catch_discover_tests(algotradelib-strategy-tests)
 catch_discover_tests(algotradelib-runner-tests)
+catch_discover_tests(algotradelib-live-tests)
 if(ATL_USE_EIGEN)
     catch_discover_tests(algotradelib-analytics-tests)
 endif()
