@@ -44,6 +44,15 @@ enum class MatchVerdict {
   AMBIGUOUS,
   /** No row yet, and the window is still open. Wait for the next sweep. */
   UNDECIDED,
+  /**
+   * The instruction came from a damaged journal line, so no sweep may decide it.
+   *
+   * Not a weaker `AMBIGUOUS`. An ambiguous instruction has too many candidate rows; this one has
+   * untrustworthy *criteria* -- a salvaged line has no recorded timestamp, and may be missing side,
+   * type, quantity or price. Matching on what survived would be matching on a guess, and the window
+   * arithmetic would resolve it to `NOT_PLACED` immediately, which is the unsafe direction.
+   */
+  NEEDS_OPERATOR,
 };
 
 /** Returns a stable lowercase name for `verdict`, for logs and structured reporting. */
@@ -57,6 +66,8 @@ inline constexpr std::string_view match_verdict_name(MatchVerdict verdict) noexc
       return "ambiguous";
     case MatchVerdict::UNDECIDED:
       return "undecided";
+    case MatchVerdict::NEEDS_OPERATOR:
+      return "needs_operator";
   }
   return "unknown";
 }
@@ -238,6 +249,17 @@ inline OrderMatch match_against(
   OrderMatch match;
   match.instrument_ = instruction.entry_.instrument_;
   match.entry_id_ = instruction.entry_.id_;
+
+  if (instruction.entry_.requires_operator_) {
+    // Checked before anything else, so no window arithmetic runs on a timestamp that was never
+    // recorded. This is the entry the file-journal documentation calls "something nothing can ever
+    // resolve", and this branch is what makes that true rather than aspirational.
+    match.verdict_ = MatchVerdict::NEEDS_OPERATOR;
+    match.detail_ = instruction.entry_.detail_.empty() ?
+      "recovered from a damaged journal line; only an operator can resolve it" :
+      instruction.entry_.detail_;
+    return match;
+  }
 
   const OrderSnapshot* found = nullptr;
   if (instruction.entry_.action_ == JournalAction::CANCEL) {
@@ -434,6 +456,33 @@ inline RecoveryReport recover_into(const JournalReplay& replay, IndeterminacyLed
 template <typename Journal>
 RecoveryReport recover_into(const Journal& journal, IndeterminacyLedger& ledger) {
   return recover_into(journal.replay(), ledger);
+}
+
+/**
+ * Recovers `journal` into `runner_instance`, halting it outright when the damage names nothing.
+ *
+ * **The entry point a program should use**, rather than `recover_into` with a bare ledger, because
+ * one of the outcomes cannot be expressed as a ledger mark at all.
+ *
+ * A journal whose torn line was too short to yield a symbol says *something was in flight* and
+ * cannot say for what. There is no instrument to withhold, so withholding one is not an option and
+ * withholding everything is the only honest response. Leaving it to the loop's startup gate is not
+ * enough: that gate lifts after a single successful order-list read, and a read cannot answer a
+ * question nobody can pose -- there is no instrument to look for. So this halts the runner, and an
+ * operator clears it with `resume_after_local_failure` once they have read the broker's list
+ * themselves.
+ */
+template <typename Runner, typename Journal>
+RecoveryReport recover_runner(Runner& runner_instance, const Journal& journal) {
+  auto report = recover_into(journal.replay(), runner_instance.ledger());
+  if (report.unattributable_) {
+    runner_instance.halt_locally(
+      report.detail_.empty() ?
+        "the order journal was damaged in a way that names no instrument" :
+        report.detail_
+    );
+  }
+  return report;
 }
 
 } // namespace runner

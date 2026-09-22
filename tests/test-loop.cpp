@@ -777,7 +777,7 @@ TEST_CASE("a local failure halts the loop and nothing lifts it", "[loop][gate]")
   CHECK(before.final_gate_ == runner::GateReason::NONE);
 
   // What `SendOutcome::UNAVAILABLE` leaves behind on the runner.
-  runner_instance.note_local_failure_for_test("the order journal could not be written");
+  runner_instance.halt_locally("the order journal could not be written");
 
   const auto report = loop.run(stop, 3);
   CHECK(report.final_gate_ == runner::GateReason::LOCAL_FAILURE);

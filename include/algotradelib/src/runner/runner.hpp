@@ -187,13 +187,14 @@ public:
   void resume_after_local_failure() noexcept { local_failure_.reset(); }
 
   /**
-   * Sets the local failure directly, for tests that drive the gate without a broken journal.
+   * Stops this runner sending, for a reason that has nothing to do with any one instruction.
    *
-   * Named for what it is rather than hidden behind a friend declaration: the condition is otherwise
-   * only reachable by making storage fail, and a loop test should not have to own a filesystem to
-   * assert what the loop does about it.
+   * Public because the conditions that warrant it are not all inside the runner. Recovery is the
+   * motivating one: a journal whose damaged tail named no instrument says something was in flight
+   * and cannot say what, so there is nothing to withhold and the only safe response is to withhold
+   * everything. Sticky, like a failure the executor raises, and cleared the same way.
    */
-  void note_local_failure_for_test(std::string detail) { note_local_failure(std::move(detail)); }
+  void halt_locally(std::string detail) { note_local_failure(std::move(detail)); }
 
   /** Returns the strategy, so a test can read the state it kept. */
   const Strategy& strategy() const noexcept { return strategy_; }

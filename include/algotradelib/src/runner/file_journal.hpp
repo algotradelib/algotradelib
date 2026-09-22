@@ -216,6 +216,9 @@ inline std::string journal_entry_to_line(const JournalEntry& entry) {
   if (!entry.detail_.empty()) {
     row["detail"] = entry.detail_;
   }
+  if (entry.requires_operator_) {
+    row["requires_operator"] = true;
+  }
   return json::serialize(row);
 }
 
@@ -259,6 +262,9 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
   entry.recorded_at_ = journal_detail::instant_from(at->as_int64());
   entry.order_id_ = journal_detail::string_field(row, "order_id");
   entry.detail_ = journal_detail::string_field(row, "detail");
+  const auto operator_only = row.if_contains("requires_operator");
+  entry.requires_operator_ = operator_only != nullptr && operator_only->is_bool() &&
+    operator_only->as_bool();
   return entry;
 }
 
@@ -280,6 +286,10 @@ inline std::optional<JournalEntry> salvage_journal_line(std::string_view line) {
     return std::nullopt;
   }
   JournalEntry entry;
+  // The flag that makes the promise in this comment block true. Without it the entry's missing
+  // timestamp reads as the epoch, every window test passes immediately, no real row falls inside
+  // the window, and the first sweep resolves it `NOT_PLACED`.
+  entry.requires_operator_ = true;
   const auto id = journal_detail::salvage_string(line, "id");
   entry.id_ = (id ? *id : std::string("unknown")) + "~truncated";
   entry.action_ =
@@ -304,7 +314,24 @@ inline std::optional<JournalEntry> salvage_journal_line(std::string_view line) {
   if (const auto price = journal_detail::salvage_string(line, "price")) {
     entry.price_ = Decimal64::parse(*price);
   }
-  entry.detail_ = "recovered from a truncated journal line";
+  entry.detail_ = "recovered from a truncated journal line; only an operator can resolve it";
+  return entry;
+}
+
+/**
+ * Returns the record that stands for a torn line too short to name anything.
+ *
+ * Carries no instrument, which is exactly what makes it dangerous and exactly what it has to say:
+ * something was in flight and the journal cannot name it. Recovery turns this into a global halt
+ * rather than withholding one instrument, because there is no instrument to withhold.
+ */
+inline JournalEntry unattributable_journal_entry(std::string_view line) {
+  JournalEntry entry;
+  entry.id_ = "unknown~truncated";
+  entry.outcome_ = JournalOutcome::PENDING;
+  entry.requires_operator_ = true;
+  entry.detail_ = "a truncated journal line named no instrument; something was in flight: " +
+    std::string(line.substr(0, line.size() < 120 ? line.size() : 120));
   return entry;
 }
 
@@ -398,11 +425,27 @@ public:
    * cannot journal should refuse to trade, and that decision belongs to the program, not to a
    * constructor.
    */
-  explicit FileJournal(std::string path)
-  : path_(std::move(path)), handle_(std::fopen(path_.c_str(), "ab"), &closer) {}
+  explicit FileJournal(std::string path) : path_(std::move(path)), handle_(nullptr, &closer) {
+    repair_torn_tail();
+    handle_.reset(std::fopen(path_.c_str(), "ab"));
+    if (open() && !pending_repair_.empty()) {
+      finish_repair();
+    }
+  }
 
   /** Returns whether the file is open for appending. */
   bool open() const noexcept { return handle_ != nullptr; }
+
+  /**
+   * Returns what opening the file had to repair, or an empty view when nothing was wrong.
+   *
+   * A predecessor killed mid-append leaves a line with no newline. Appending straight onto it would
+   * glue the next JSON object to the fragment, and the *combined* text would then carry a newline --
+   * so the next replay would see one complete unreadable line rather than a torn tail, losing both
+   * the fragment and the new instruction with it. Opening therefore terminates the fragment and
+   * writes a salvaged record beside it before accepting anything new.
+   */
+  const std::string& repaired() const noexcept { return repaired_; }
 
   /** Returns the path being written. */
   const std::string& path() const noexcept { return path_; }
@@ -444,8 +487,68 @@ private:
     }
   }
 
+  /**
+   * Reads the file and works out what a torn final line needs, without writing anything yet.
+   *
+   * Split from the writing half because the file must be inspected *before* it is opened for
+   * appending: once a stream is in append mode, everything written goes to the end, which is
+   * precisely what must not happen until the fragment is terminated.
+   */
+  void repair_torn_tail() {
+    const auto replay = read_journal_file(path_);
+    if (!replay.truncated_tail_) {
+      return;
+    }
+    const auto tail = read_torn_tail(path_);
+    auto salvaged = salvage_journal_line(tail);
+    pending_repair_ = salvaged ?
+      journal_entry_to_line(*salvaged) :
+      journal_entry_to_line(unattributable_journal_entry(tail));
+    repaired_ = salvaged ?
+      "a torn final line was terminated and salvaged as " + salvaged->instrument_.symbol_ :
+      "a torn final line was terminated; it named no instrument";
+  }
+
+  /** Terminates the fragment and appends the record that stands for it, durably. */
+  void finish_repair() {
+    // The newline first and on its own: it is what turns the fragment into a complete -- if
+    // unreadable -- line, so that the record written next is a line of its own rather than a
+    // continuation of a half-written one.
+    std::string repair = "\n";
+    repair += pending_repair_;
+    repair += '\n';
+    const auto written = std::fwrite(repair.data(), 1, repair.size(), handle_.get());
+    if (written != repair.size() || !journal_detail::flush_to_disk(handle_.get())) {
+      // The repair itself failed, so the file is still torn. Refusing to be open is the only safe
+      // answer: a caller that cannot journal must not trade, and `open()` is how it finds out.
+      handle_.reset();
+      repaired_ = "a torn final line could not be repaired";
+      return;
+    }
+    pending_repair_.clear();
+  }
+
+  /** Returns the text after the file's last newline, which is the fragment a kill left behind. */
+  static std::string read_torn_tail(const std::string& path) {
+    std::unique_ptr<std::FILE, void (*)(std::FILE*)> reader(
+      std::fopen(path.c_str(), "rb"), &closer
+    );
+    if (reader == nullptr) {
+      return {};
+    }
+    std::string text;
+    char buffer[4096];
+    while (const auto read = std::fread(buffer, 1, sizeof(buffer), reader.get())) {
+      text.append(buffer, read);
+    }
+    const auto last = text.rfind('\n');
+    return last == std::string::npos ? text : text.substr(last + 1);
+  }
+
   std::string path_;
   std::unique_ptr<std::FILE, void (*)(std::FILE*)> handle_;
+  std::string pending_repair_;
+  std::string repaired_;
 };
 
 } // namespace runner

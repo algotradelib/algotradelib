@@ -636,6 +636,10 @@ TEST_CASE("a truncated final line is reported and treated as unresolved", "[jour
   // itself be the part that was cut off.
   REQUIRE(open.front().entry_.id_ != "run-2");
   REQUIRE(open.front().entry_.outcome_ == JournalOutcome::PENDING);
+  // And flagged, which is what actually makes it unresolvable. Without this the entry's missing
+  // timestamp reads as the epoch, so the window is long closed and no real row can fall inside it:
+  // the very first sweep would call it `not_placed` and clear the ledger.
+  REQUIRE(open.front().entry_.requires_operator_);
 }
 
 TEST_CASE("a truncated line is never allowed to resolve a pending one", "[journal][file]") {
@@ -862,4 +866,114 @@ TEST_CASE("a broken journal stops the runner rather than refusing per bar", "[jo
 
   dry.resume_after_local_failure();
   REQUIRE_FALSE(dry.local_failure().has_value());
+}
+
+// ---------------------------------------------------------------------------
+// A damaged journal must not repair itself into a wrong answer
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a salvaged entry is never resolved by a sweep", "[journal][file]") {
+  const TempJournal path("salvage-verdict");
+  auto torn = sample_entry();
+  torn.id_ = "run-2";
+  const auto torn_line = runner::journal_entry_to_line(torn);
+  write_file(path.str(), torn_line.substr(0, torn_line.size() * 2 / 3));
+
+  const auto replay = runner::read_journal_file(path.str());
+  const auto open = runner::unresolved_instructions(replay);
+  REQUIRE(open.size() == 1);
+
+  runner::IndeterminacyLedger ledger;
+  const auto recovery = runner::recover_into(replay, ledger);
+  REQUIRE(recovery.marked_.size() == 1);
+
+  // Years later, with a listing that plainly does not contain it. Before the flag existed this
+  // returned `not_placed` and cleared the ledger -- resolving on missing data, in the one direction
+  // that can leave a live order unwatched.
+  const auto swept = runner::reconcile_against(
+    recovery.open_, {}, utc(2030, 1, 1, 0, 0), ledger
+  );
+  REQUIRE(swept.matches_.front().verdict_ == runner::MatchVerdict::NEEDS_OPERATOR);
+  REQUIRE_FALSE(runner::match_verdict_resolves(runner::MatchVerdict::NEEDS_OPERATOR));
+  REQUIRE_FALSE(swept.settled());
+  REQUIRE(ledger.requires_reconcile(samsung()));
+}
+
+TEST_CASE("opening a torn journal terminates the fragment before appending", "[journal][file]") {
+  // Appending straight onto a line with no newline glues the next object to the fragment. The
+  // combined text then carries a newline, so the following replay reads one complete unreadable
+  // line -- losing the fragment *and* the new instruction with it.
+  const TempJournal path("torn-append");
+  auto torn = sample_entry();
+  torn.id_ = "run-1";
+  const auto torn_line = runner::journal_entry_to_line(torn);
+  write_file(path.str(), torn_line.substr(0, torn_line.size() * 2 / 3));
+
+  auto fresh = sample_entry();
+  fresh.id_ = "run-2";
+  fresh.instrument_ = hynix();
+  {
+    runner::FileJournal journal(path.str());
+    REQUIRE(journal.open());
+    REQUIRE_FALSE(journal.repaired().empty());
+    REQUIRE(journal.append(fresh));
+  }
+
+  const auto replay = runner::read_journal_file(path.str());
+  // The fragment is now a complete line that does not parse, counted rather than silently dropped.
+  REQUIRE(replay.unreadable_lines_ == 1);
+  REQUIRE_FALSE(replay.truncated_tail_);
+
+  const auto open = runner::unresolved_instructions(replay);
+  REQUIRE(open.size() == 2);
+  // The salvaged stand-in for the fragment, still operator-only.
+  REQUIRE(open[0].entry_.requires_operator_);
+  REQUIRE(open[0].entry_.instrument_ == samsung());
+  // And the new instruction, intact rather than swallowed by the fragment.
+  REQUIRE(open[1].entry_.id_ == "run-2");
+  REQUIRE(open[1].entry_.instrument_ == hynix());
+  REQUIRE_FALSE(open[1].entry_.requires_operator_);
+}
+
+TEST_CASE("a repair survives a second restart", "[journal][file]") {
+  const TempJournal path("torn-twice");
+  auto torn = sample_entry();
+  const auto torn_line = runner::journal_entry_to_line(torn);
+  write_file(path.str(), torn_line.substr(0, torn_line.size() * 2 / 3));
+
+  {
+    runner::FileJournal first(path.str());
+    REQUIRE(first.open());
+  }
+  {
+    // Nothing left to repair: the file is well formed now.
+    runner::FileJournal second(path.str());
+    REQUIRE(second.open());
+    REQUIRE(second.repaired().empty());
+  }
+
+  runner::IndeterminacyLedger ledger;
+  const auto recovery = runner::recover_into(runner::read_journal_file(path.str()), ledger);
+  REQUIRE(recovery.open_.size() == 1);
+  REQUIRE(recovery.open_.front().entry_.requires_operator_);
+  REQUIRE(ledger.requires_reconcile(samsung()));
+}
+
+TEST_CASE("a torn line naming nothing halts the runner outright", "[journal][file]") {
+  // There is no instrument to withhold, so withholding one is not an option and withholding
+  // everything is the only honest response. The loop's startup gate is not enough on its own: it
+  // lifts after one order-list read, and a read cannot answer a question nobody can pose.
+  const TempJournal path("torn-nameless");
+  write_file(path.str(), R"({"id":"run-2","ac)");
+
+  {
+    runner::FileJournal journal(path.str());
+    REQUIRE(journal.open());
+  }
+
+  runner::DryRunner<HoldTen> dry;
+  const auto recovery = runner::recover_runner(dry, runner::FileJournal(path.str()));
+  REQUIRE(recovery.unattributable_);
+  REQUIRE(dry.local_failure().has_value());
+  REQUIRE(dry.ledger().empty());
 }

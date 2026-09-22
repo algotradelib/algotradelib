@@ -189,6 +189,20 @@ struct JournalEntry {
   std::string order_id_;
   /** Why a terminal line says what it says, for an operator reading the file. */
   std::string detail_;
+  /**
+   * Whether only a person may resolve this instruction.
+   *
+   * Set on an entry recovered from a damaged line, where some of the fields matching depends on are
+   * missing or untrustworthy. Such an entry must never be resolved by a sweep, and the reason is
+   * specific rather than precautionary: a salvaged entry has no recorded timestamp, so its matching
+   * window sits at the epoch. Every window test would pass instantly and no real row could fall
+   * inside it, so the very first sweep would call it `NOT_PLACED` and clear the ledger -- resolving,
+   * on the strength of missing data, in the one direction that can leave a live order unwatched.
+   *
+   * Carried in the file rather than derived at read time, because a damaged tail is repaired into a
+   * complete record on the next open, and the flag has to survive that.
+   */
+  bool requires_operator_{false};
 };
 
 /**
