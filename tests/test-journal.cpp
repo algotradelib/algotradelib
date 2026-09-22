@@ -890,9 +890,12 @@ TEST_CASE("a salvaged entry is never resolved by a sweep", "[journal][file]") {
   // Years later, with a listing that plainly does not contain it. Before the flag existed this
   // returned `not_placed` and cleared the ledger -- resolving on missing data, in the one direction
   // that can leave a live order unwatched.
+  MemoryJournal sink;
   const auto swept = runner::reconcile_against(
-    recovery.open_, {}, utc(2030, 1, 1, 0, 0), ledger
+    recovery.open_, {}, utc(2030, 1, 1, 0, 0), ledger, sink
   );
+  // Nothing was written back either, because nothing was decided.
+  REQUIRE(swept.recorded_ == 0);
   REQUIRE(swept.matches_.front().verdict_ == runner::MatchVerdict::NEEDS_OPERATOR);
   REQUIRE_FALSE(runner::match_verdict_resolves(runner::MatchVerdict::NEEDS_OPERATOR));
   REQUIRE_FALSE(swept.settled());

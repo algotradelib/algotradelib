@@ -292,8 +292,17 @@ private:
       rows,
       runner_instance.context().now(),
       runner_instance.ledger(),
+      *journal_,
       window_
     );
+    if (reconcile_.unrecorded_) {
+      // The sweep decided, and the decision could not be written down. Trading on a resolution that
+      // exists only in memory is how a restart re-opens a question that was already answered -- and
+      // a journal that cannot be written will not manage the next order either.
+      runner_instance.halt_locally(
+        "the order journal could not record a reconciliation, so the hold stands"
+      );
+    }
   }
 
   Session* session_;

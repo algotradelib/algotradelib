@@ -315,10 +315,43 @@ struct ReconcileReport {
   std::vector<InstrumentId> withheld_;
   /** Whether any instruction could correspond to more than one row. */
   bool ambiguous_{false};
+  /** How many resolutions were written back to the journal. */
+  std::size_t recorded_{0};
+  /**
+   * Whether a resolution could not be recorded, so its ledger entry was deliberately left standing.
+   *
+   * The same discipline as writing before a send, applied to the other end: a sweep that cleared
+   * the ledger without recording why would resolve the instruction in memory and leave it owed on
+   * disk, so the next restart would withhold the instrument all over again.
+   */
+  bool unrecorded_{false};
 
   /** Returns whether the sweep settled everything the journal owed. */
   bool settled() const noexcept { return withheld_.empty(); }
 };
+
+/** Returns the terminal line that records how a sweep resolved `instruction`. */
+inline JournalEntry resolution_entry(
+  const OpenInstruction& instruction,
+  const OrderMatch& match,
+  std::chrono::system_clock::time_point now
+) {
+  auto entry = instruction.entry_;
+  // The broker's own vocabulary, because that is genuinely what was learned: `MATCHED` means the
+  // order is in the broker's listing, and `NOT_PLACED` means it is not. Reusing the outcomes rather
+  // than inventing a "reconciled" one is what lets `unresolved_instructions` close the instruction
+  // with no special case.
+  entry.outcome_ = match.verdict_ == MatchVerdict::MATCHED ?
+    JournalOutcome::ACCEPTED :
+    JournalOutcome::REJECTED;
+  entry.recorded_at_ = now;
+  entry.requires_operator_ = false;
+  if (!match.order_id_.empty()) {
+    entry.order_id_ = match.order_id_;
+  }
+  entry.detail_ = "resolved by reading the broker's order list: " + match.detail_;
+  return entry;
+}
 
 /**
  * Resolves what the broker's order list settles, and leaves the rest withheld.
@@ -332,11 +365,13 @@ struct ReconcileReport {
  * journal knows nothing about — one made before journaling was configured, or by an operator —
  * stays exactly where it is.
  */
-inline ReconcileReport reconcile_against(
+template <typename Journal>
+ReconcileReport reconcile_against(
   const std::vector<OpenInstruction>& open,
   const std::vector<OrderSnapshot>& rows,
   std::chrono::system_clock::time_point now,
   IndeterminacyLedger& ledger,
+  Journal& journal,
   const MatchWindow& window = {}
 ) {
   ReconcileReport report;
@@ -350,7 +385,19 @@ inline ReconcileReport reconcile_against(
     if (match.verdict_ == MatchVerdict::AMBIGUOUS) {
       report.ambiguous_ = true;
     }
-    if (!match_verdict_resolves(match.verdict_)) {
+    if (match_verdict_resolves(match.verdict_)) {
+      // Written before the ledger is cleared, for the same reason a placement is written before it
+      // is sent: the durable record has to be the conservative one. A sweep that cleared memory and
+      // failed to record why would leave the instruction owed on disk, and the next restart would
+      // withhold the instrument again for a question that had already been answered.
+      if (journal.append(resolution_entry(instruction, match, now))) {
+        ++report.recorded_;
+      } else {
+        report.unrecorded_ = true;
+        undecided.push_back(instrument);
+        match.detail_ += " (not recorded: the journal could not be written, so the hold stands)";
+      }
+    } else {
       undecided.push_back(instrument);
     }
     report.matches_.push_back(std::move(match));

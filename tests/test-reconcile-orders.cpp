@@ -96,6 +96,22 @@ Clock::time_point after_the_window() { return sent_at() + std::chrono::minutes(1
 /** An instant at which absence still means nothing. */
 Clock::time_point inside_the_window() { return sent_at() + std::chrono::seconds(5); }
 
+/**
+ * Somewhere for a sweep to record its resolutions when the test is about the verdict.
+ *
+ * A journal is a required argument rather than an optional one, deliberately: a sweep that clears
+ * the ledger without writing down why leaves the instruction owed on disk, so every caller has to
+ * say where the record goes. Tests that care about the record use their own.
+ */
+runner::MemoryJournal sink;
+
+/** A journal that refuses to record, so the write-back failure path is reachable. */
+class FailingSink {
+public:
+  bool append(const JournalEntry&) { return false; }
+  runner::JournalReplay replay() const { return {}; }
+};
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -299,7 +315,7 @@ TEST_CASE("a sweep clears what the listing settles", "[reconcile]") {
   ledger.mark(samsung(), "an order request failed in transit");
 
   const auto report =
-    runner::reconcile_against({placement()}, {row("KRX-1")}, after_the_window(), ledger);
+    runner::reconcile_against({placement()}, {row("KRX-1")}, after_the_window(), ledger, sink);
   REQUIRE(report.settled());
   REQUIRE(report.resolved_.size() == 1);
   REQUIRE(report.resolved_.front() == samsung());
@@ -311,7 +327,7 @@ TEST_CASE("an ambiguous instruction leaves its instrument withheld", "[reconcile
   ledger.mark(samsung(), "an order request failed in transit");
 
   const auto report = runner::reconcile_against(
-    {placement()}, {row("KRX-1"), row("KRX-2")}, after_the_window(), ledger
+    {placement()}, {row("KRX-1"), row("KRX-2")}, after_the_window(), ledger, sink
   );
   REQUIRE(report.ambiguous_);
   REQUIRE_FALSE(report.settled());
@@ -330,7 +346,7 @@ TEST_CASE("an instrument clears only when every instruction for it is decided", 
   // The first instruction is answered by the listing; the second is not, and the window is still
   // open. Clearing on the first would lift the hold with a question still outstanding.
   const auto report = runner::reconcile_against(
-    {matched, pending}, {row("KRX-1")}, inside_the_window(), ledger
+    {matched, pending}, {row("KRX-1")}, inside_the_window(), ledger, sink
   );
   REQUIRE(report.matches_.size() == 2);
   REQUIRE(report.matches_[0].verdict_ == MatchVerdict::MATCHED);
@@ -344,7 +360,7 @@ TEST_CASE("a sweep does not touch a mark the journal knows nothing about", "[rec
   ledger.mark(hynix(), "an operator marked this by hand");
 
   const auto report =
-    runner::reconcile_against({placement()}, {row("KRX-1")}, after_the_window(), ledger);
+    runner::reconcile_against({placement()}, {row("KRX-1")}, after_the_window(), ledger, sink);
   REQUIRE(report.resolved_.size() == 1);
   REQUIRE(ledger.requires_reconcile(hynix()));
 }
@@ -487,13 +503,13 @@ TEST_CASE("a crash and a restart, end to end", "[reconcile][recover]") {
 
   // The first sweep finds nothing and settles nothing, because absence this soon means nothing.
   const auto early =
-    runner::reconcile_against(recovery.open_, {}, inside_the_window(), ledger);
+    runner::reconcile_against(recovery.open_, {}, inside_the_window(), ledger, sink);
   REQUIRE_FALSE(early.settled());
   REQUIRE(ledger.requires_reconcile(samsung()));
 
   // A later sweep finds the order. It existed after all, and the instrument may trade again.
   const auto later =
-    runner::reconcile_against(recovery.open_, {row("KRX-1")}, after_the_window(), ledger);
+    runner::reconcile_against(recovery.open_, {row("KRX-1")}, after_the_window(), ledger, sink);
   REQUIRE(later.settled());
   REQUIRE(later.matches_.front().order_id_ == "KRX-1");
   REQUIRE_FALSE(ledger.requires_reconcile(samsung()));
@@ -511,4 +527,97 @@ TEST_CASE("recovering twice marks an instrument once", "[reconcile][recover]") {
   REQUIRE(report.open_.size() == 2);
   REQUIRE(report.marked_.size() == 1);
   REQUIRE(ledger.pending().size() == 1);
+}
+
+// ---------------------------------------------------------------------------
+// Resolutions are written back, so a restart does not re-ask a settled question
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a resolved instruction is closed in the journal", "[reconcile][recover]") {
+  runner::MemoryJournal journal;
+  journal.append(entry_at("run-1", JournalOutcome::PENDING));
+
+  IndeterminacyLedger ledger;
+  const auto recovery = runner::recover_into(journal, ledger);
+  REQUIRE(ledger.requires_reconcile(samsung()));
+
+  const auto report = runner::reconcile_against(
+    recovery.open_, {row("KRX-1")}, after_the_window(), ledger, journal
+  );
+  REQUIRE(report.settled());
+  REQUIRE(report.recorded_ == 1);
+  REQUIRE_FALSE(report.unrecorded_);
+
+  // The terminal line closes the pending one by id, in the broker's own vocabulary: the order is in
+  // the listing, so it exists.
+  REQUIRE(journal.records().size() == 2);
+  REQUIRE(journal.records().back().id_ == "run-1");
+  REQUIRE(journal.records().back().outcome_ == JournalOutcome::ACCEPTED);
+  REQUIRE(journal.records().back().order_id_ == "KRX-1");
+
+  // A second restart finds nothing owed. Before the write-back this recovered and withheld again,
+  // forever, on every restart.
+  IndeterminacyLedger fresh;
+  const auto again = runner::recover_into(journal, fresh);
+  REQUIRE(again.clean());
+  REQUIRE(fresh.empty());
+}
+
+TEST_CASE("an order that never existed is closed as a refusal", "[reconcile][recover]") {
+  runner::MemoryJournal journal;
+  journal.append(entry_at("run-1", JournalOutcome::PENDING));
+
+  IndeterminacyLedger ledger;
+  const auto recovery = runner::recover_into(journal, ledger);
+  const auto report =
+    runner::reconcile_against(recovery.open_, {}, after_the_window(), ledger, journal);
+  REQUIRE(report.matches_.front().verdict_ == MatchVerdict::NOT_PLACED);
+  REQUIRE(journal.records().back().outcome_ == JournalOutcome::REJECTED);
+
+  IndeterminacyLedger fresh;
+  REQUIRE(runner::recover_into(journal, fresh).clean());
+}
+
+TEST_CASE("repeated sweeps do not contradict each other", "[reconcile][recover]") {
+  // Without the write-back, a later sweep replayed the unchanged journal and could report the same
+  // instruction `UNDECIDED` after an earlier sweep had already cleared the ledger on `MATCHED` --
+  // leaving the report inconsistent with the actual gate.
+  runner::MemoryJournal journal;
+  journal.append(entry_at("run-1", JournalOutcome::PENDING));
+
+  IndeterminacyLedger ledger;
+  auto open = runner::unresolved_instructions(journal.replay());
+  runner::recover_into(journal, ledger);
+
+  const auto first =
+    runner::reconcile_against(open, {row("KRX-1")}, after_the_window(), ledger, journal);
+  REQUIRE(first.settled());
+
+  // The next sweep replays the journal, as a source does, and finds the question closed.
+  open = runner::unresolved_instructions(journal.replay());
+  REQUIRE(open.empty());
+  const auto second = runner::reconcile_against(open, {}, after_the_window(), ledger, journal);
+  REQUIRE(second.matches_.empty());
+  REQUIRE(second.settled());
+  REQUIRE_FALSE(ledger.requires_reconcile(samsung()));
+}
+
+TEST_CASE("a resolution that cannot be recorded leaves the hold standing", "[reconcile][recover]") {
+  // The same discipline as writing before a send, applied to the other end. Clearing memory while
+  // failing to record why would resolve the instruction here and leave it owed on disk.
+  runner::MemoryJournal source;
+  source.append(entry_at("run-1", JournalOutcome::PENDING));
+
+  IndeterminacyLedger ledger;
+  const auto recovery = runner::recover_into(source, ledger);
+
+  FailingSink sink;
+  const auto report = runner::reconcile_against(
+    recovery.open_, {row("KRX-1")}, after_the_window(), ledger, sink
+  );
+  REQUIRE(report.matches_.front().verdict_ == MatchVerdict::MATCHED);
+  REQUIRE(report.unrecorded_);
+  REQUIRE(report.recorded_ == 0);
+  REQUIRE_FALSE(report.settled());
+  REQUIRE(ledger.requires_reconcile(samsung()));
 }

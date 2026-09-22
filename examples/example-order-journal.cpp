@@ -158,8 +158,9 @@ int main() {
 
   // Too soon. An accepted write does not appear in a listing instantly, so an absent row this early
   // is not evidence that the order does not exist.
+  runner::FileJournal journal(path);
   const auto early = runner::reconcile_against(
-    recovery.open_, {}, sent_at() + std::chrono::seconds(5), ledger
+    recovery.open_, {}, sent_at() + std::chrono::seconds(5), ledger, journal
   );
   std::cout << "   Five seconds later, an empty listing: "
     << runner::match_verdict_name(early.matches_.front().verdict_)
@@ -167,13 +168,23 @@ int main() {
 
   // Later, the row is there. The order existed after all.
   const auto settled = runner::reconcile_against(
-    recovery.open_, {listed_order()}, sent_at() + std::chrono::minutes(10), ledger
+    recovery.open_, {listed_order()}, sent_at() + std::chrono::minutes(10), ledger, journal
   );
   std::cout << "   Ten minutes later, the order is listed: "
     << runner::match_verdict_name(settled.matches_.front().verdict_) << " as "
     << settled.matches_.front().order_id_ << "\n";
   std::cout << "   May it trade " << samsung().symbol_ << " now? "
     << (ledger.requires_reconcile(samsung()) ? "no" : "yes") << "\n\n";
+
+  std::cout << "4. The resolution is written back, so a second restart finds nothing owed.\n\n";
+  std::cout << "   What the file holds now:\n";
+  show_journal(path);
+
+  runner::IndeterminacyLedger later;
+  const auto again = runner::recover_into(runner::read_journal_file(path), later);
+  std::cout << "\n   A third process recovers: instructions owed: " << again.open_.size()
+    << ", may it trade " << samsung().symbol_ << "? "
+    << (later.requires_reconcile(samsung()) ? "no" : "yes") << "\n\n";
 
   std::cout
     << "Had the listing stayed empty past the window, the verdict would have been `not_placed`\n"
