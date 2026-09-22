@@ -185,8 +185,20 @@ public:
    */
   const std::optional<std::string>& local_failure() const noexcept { return local_failure_; }
 
-  /** Clears the local failure, after an operator has fixed what caused it. */
-  void resume_after_local_failure() noexcept { local_failure_.reset(); }
+  /**
+   * Clears the local failure, after an operator has fixed what caused it.
+   *
+   * **Acknowledges the executor's failure count as well as clearing the flag**, and without that
+   * second half the call does nothing useful. `JournalingExecutor::last_journal_error()` keeps its
+   * first reason forever -- correct for diagnosis -- so a runner that only reset its own flag would
+   * read that stale reason after the very next send and halt again immediately. Recording the count
+   * already seen is what lets the runner tell a *new* failure from the one that has been dealt
+   * with.
+   */
+  void resume_after_local_failure() {
+    local_failure_.reset();
+    acknowledged_journal_failures_ = executor_journal_failures();
+  }
 
   /**
    * Stops this runner sending, for a reason that has nothing to do with any one instruction.
@@ -532,14 +544,32 @@ private:
    * that the journal is no longer trustworthy.
    */
   void note_executor_failure(bool refused) {
-    auto detail = executor_journal_error();
-    if (detail.empty() && refused) {
-      detail = "local machinery refused to send";
+    const auto failures = executor_journal_failures();
+    if (failures > acknowledged_journal_failures_) {
+      auto detail = executor_journal_error();
+      note_local_failure(
+        detail.empty() ? std::string("the order journal could not be written") : std::move(detail)
+      );
+      return;
     }
-    if (!detail.empty()) {
-      note_local_failure(std::move(detail));
+    if (refused && failures == 0) {
+      // An executor with no journal behind it can still refuse locally, and it reports no count.
+      // Nothing to acknowledge, so a refusal always halts and a resume that does not fix the cause
+      // simply halts again on the next send -- which is the truthful outcome.
+      note_local_failure("local machinery refused to send");
     }
   }
+
+  /** Returns how many journal writes the executor has had fail, or zero when it cannot say. */
+  std::size_t executor_journal_failures() const { return executor_journal_failures_impl(0); }
+
+  template <typename E = Executor>
+  auto executor_journal_failures_impl(int) const
+    -> decltype(std::declval<const E&>().journal_failures()) {
+    return executor_.journal_failures();
+  }
+
+  std::size_t executor_journal_failures_impl(...) const { return 0; }
 
   /** Returns what the executor says went wrong, or empty when it reports nothing or cannot. */
   std::string executor_journal_error() const { return executor_journal_error_impl(0); }
@@ -555,6 +585,7 @@ private:
   Executor executor_;
   IndeterminacyLedger ledger_;
   std::optional<std::string> local_failure_;
+  std::size_t acknowledged_journal_failures_{0};
   std::map<std::string, PriceLimits> price_limits_;
   std::optional<Decimal64> portfolio_value_;
   strategy::TradeTolerance tolerance_;

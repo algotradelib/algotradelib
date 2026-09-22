@@ -561,12 +561,20 @@ struct RecoveryReport {
   bool unattributable_{false};
   /** Complete lines that were not written by this library. */
   std::size_t unreadable_lines_{0};
+  /**
+   * Whether the journal file exists and could not be read at all.
+   *
+   * Nothing about its contents is known, so nothing specific can be withheld -- and unlike a
+   * missing journal, this one may hold every order a predecessor left in flight.
+   */
+  bool unreadable_file_{false};
   /** What was found, in a sentence an operator reads. */
   std::string detail_;
 
   /** Returns whether the journal left nothing owed and nothing damaged. */
   bool clean() const noexcept {
-    return marked_.empty() && !truncated_ && !unattributable_ && unreadable_lines_ == 0;
+    return marked_.empty() && !truncated_ && !unattributable_ && unreadable_lines_ == 0 &&
+      !unreadable_file_;
   }
 };
 
@@ -587,6 +595,7 @@ inline RecoveryReport recover_into(const JournalReplay& replay, IndeterminacyLed
   RecoveryReport report;
   report.truncated_ = replay.truncated_tail_;
   report.unreadable_lines_ = replay.unreadable_lines_;
+  report.unreadable_file_ = !replay.readable();
   report.detail_ = replay.detail_;
   report.open_ = unresolved_instructions(replay);
 
@@ -655,6 +664,15 @@ RecoveryReport recover_runner(Runner& runner_instance, const Journal& journal) {
     runner_instance.halt_locally(
       "the order journal holds " + std::to_string(report.unreadable_lines_) +
       " line(s) this library did not write, so it cannot account for what was in flight"
+    );
+  }
+  if (report.unreadable_file_) {
+    // Nothing about the file's contents is known, and unlike a missing journal this one may hold
+    // every order a predecessor left in flight. There is nothing to withhold specifically.
+    runner_instance.halt_locally(
+      report.detail_.empty() ?
+        "the order journal exists and could not be read" :
+        report.detail_
     );
   }
   return report;

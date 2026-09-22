@@ -6,6 +6,7 @@
 
 #include <boost/json.hpp>
 
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -222,6 +223,13 @@ inline std::optional<std::string> journal_header_scope(std::string_view line) {
   return journal_detail::string_field(row, "scope");
 }
 
+/** A journal file's bytes, and whether they were obtained at all. */
+struct JournalBytes {
+  JournalReadStatus status_{JournalReadStatus::MISSING};
+  std::string text_;
+  std::string detail_;
+};
+
 /** Renders one entry as the single JSON object that becomes one line of the journal. */
 inline std::string journal_entry_to_line(const JournalEntry& entry) {
   json::object row;
@@ -385,21 +393,63 @@ inline JournalEntry unattributable_journal_entry(std::string_view line) {
  * has no journal and owes nothing, and that is a different situation from a journal that exists and
  * cannot be read.
  */
-inline JournalReplay read_journal_file(const std::string& path) {
-  JournalReplay replay;
+inline JournalBytes read_journal_bytes(const std::string& path) {
+  JournalBytes bytes;
+  errno = 0;
   std::unique_ptr<std::FILE, int (*)(std::FILE*)> handle(
     std::fopen(path.c_str(), "rb"), [](std::FILE* file) { return file ? std::fclose(file) : 0; }
   );
   if (handle == nullptr) {
+    if (errno == ENOENT) {
+      bytes.status_ = JournalReadStatus::MISSING;
+      return bytes;
+    }
+    // Every other reason -- a permission the process does not have, a directory where a file was
+    // expected, a device error -- means the file exists and its contents are unknown. Reporting
+    // that as "no journal" is how a process claims a path holding its predecessor's in-flight
+    // orders and then trades on an empty ledger.
+    bytes.status_ = JournalReadStatus::UNREADABLE;
+    bytes.detail_ = "the order journal at " + path + " exists and could not be opened for reading";
+    return bytes;
+  }
+
+  char buffer[4096];
+  while (const auto read = std::fread(buffer, 1, sizeof(buffer), handle.get())) {
+    bytes.text_.append(buffer, read);
+  }
+  if (std::ferror(handle.get()) != 0) {
+    // A read that stopped partway looks exactly like an ordinary end of file to the loop above, so
+    // the truncated tail it produces would be a fiction about where the journal ends.
+    bytes.status_ = JournalReadStatus::UNREADABLE;
+    bytes.detail_ = "the order journal at " + path + " could not be read to the end";
+    bytes.text_.clear();
+    return bytes;
+  }
+  bytes.status_ = JournalReadStatus::READ;
+  return bytes;
+}
+
+/**
+ * Parses journal bytes into a replay, salvaging a truncated final line.
+ *
+ * Split from the reading so the failure paths are drivable without a filesystem: a test hands this
+ * an `UNREADABLE` status directly rather than arranging a permission the platform may or may not
+ * enforce the same way twice.
+ *
+ * An absent file is an intact, empty journal, not an error. A runner starting for the first time has
+ * no journal and owes nothing, and that is a different situation from a journal that exists and
+ * cannot be read -- which is why the two arrive here as different statuses rather than as the same
+ * empty result.
+ */
+inline JournalReplay parse_journal_bytes(const JournalBytes& bytes) {
+  JournalReplay replay;
+  replay.status_ = bytes.status_;
+  if (bytes.status_ != JournalReadStatus::READ) {
+    replay.detail_ = bytes.detail_;
     return replay;
   }
 
-  std::string text;
-  char buffer[4096];
-  while (const auto read = std::fread(buffer, 1, sizeof(buffer), handle.get())) {
-    text.append(buffer, read);
-  }
-
+  const auto& text = bytes.text_;
   std::size_t begin = 0;
   while (begin < text.size()) {
     const auto end = text.find('\n', begin);
@@ -434,7 +484,8 @@ inline JournalReplay read_journal_file(const std::string& path) {
       replay.entries_.push_back(std::move(*entry));
     } else {
       // A complete line that is not a journal entry. Not expected from this writer, so it means
-      // the file was edited or written by something else; counted rather than ignored.
+      // the file was edited or written by something else, or a repair was interrupted; counted
+      // rather than ignored, and recovery halts on it.
       ++replay.unreadable_lines_;
       if (replay.detail_.empty()) {
         replay.detail_ = "the journal contains a line this library did not write";
@@ -442,6 +493,11 @@ inline JournalReplay read_journal_file(const std::string& path) {
     }
   }
   return replay;
+}
+
+/** Reads a journal file into a replay, reporting a file that exists and cannot be read. */
+inline JournalReplay read_journal_file(const std::string& path) {
+  return parse_journal_bytes(read_journal_bytes(path));
 }
 
 /**
@@ -582,6 +638,15 @@ private:
    */
   bool claim_file() {
     const auto replay = read_journal_file(path_);
+    if (!replay.readable()) {
+      // Opening for *append* can succeed on a file that cannot be read -- a write-only file is the
+      // plain case -- so without this the journal would claim a path whose contents it has never
+      // seen, write a header into it, and report nothing owed.
+      rejection_ = replay.detail_.empty() ?
+        "the journal at " + path_ + " exists and cannot be read" :
+        replay.detail_;
+      return false;
+    }
     const bool empty = !replay.has_header_ && replay.entries_.empty() &&
       replay.unreadable_lines_ == 0 && !replay.truncated_tail_;
     if (empty) {

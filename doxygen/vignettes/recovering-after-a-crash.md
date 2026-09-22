@@ -51,10 +51,21 @@ anywhere reports a problem. `bind_journaled` exists so that mistake is unexpress
 every recovered instrument stays withheld forever, and you will conclude the feature is broken when it
 is merely deaf.
 
-**Step 3 does more than mark the ledger.** If the journal's damage named no instrument, there is
-nothing to withhold, so `recover_runner` halts the runner outright — `local_failure()` is set and the
-loop gates on it. Clear it with `resume_after_local_failure()` once you have read the broker's list
-yourself.
+**Step 3 does more than mark the ledger.** Three kinds of damage cannot be expressed as a mark on
+one instrument, so `recover_runner` halts the runner outright for each — `local_failure()` is set and
+the loop gates on it:
+
+- the torn line named no instrument, so there is nothing to withhold;
+- a *complete* line does not parse, which means something else edited the file or a repair was
+  itself interrupted;
+- the file **exists and could not be read**. That is not the same as no journal at all: a missing
+  file means a first start and nothing owed, while an unreadable one may hold every order a
+  predecessor left in flight. Only `ENOENT` counts as a clean start.
+
+Clear any of them with `resume_after_local_failure()` once you have read the broker's list yourself.
+That call also acknowledges the executor's failure count, which is what lets the runner tell a new
+storage failure from the one you just fixed — without it, the next send would re-read the first
+error and halt again immediately.
 
 A **backtest journals nothing**, because it wraps nothing. There is no flag to remember to turn off.
 

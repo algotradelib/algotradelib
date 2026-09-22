@@ -238,6 +238,36 @@ struct JournalEntry {
 };
 
 /**
+ * Whether a journal's bytes were obtained at all, before anything in them was parsed.
+ *
+ * The distinction `MISSING` and `UNREADABLE` draw is the whole point, and collapsing them is a live
+ * hazard: a runner starting for the first time has no journal and owes nothing, while a journal that
+ * *exists* and cannot be read may hold every order its predecessor left in flight. Treating the
+ * second as the first lets a process claim a file it never read and trade on an empty ledger.
+ */
+enum class JournalReadStatus {
+  /** No such file. A first start, and genuinely nothing owed. */
+  MISSING,
+  /** The bytes were read in full. */
+  READ,
+  /** The file exists and could not be read, so nothing about its contents is known. */
+  UNREADABLE,
+};
+
+/** Returns a stable lowercase name for `status`. */
+inline constexpr std::string_view journal_read_status_name(JournalReadStatus status) noexcept {
+  switch (status) {
+    case JournalReadStatus::MISSING:
+      return "missing";
+    case JournalReadStatus::READ:
+      return "read";
+    case JournalReadStatus::UNREADABLE:
+      return "unreadable";
+  }
+  return "unknown";
+}
+
+/**
  * Everything a journal held, and everything about it that could not be read.
  *
  * The second half is not an afterthought. A journal exists to be read after a crash, and a crash is
@@ -271,9 +301,21 @@ struct JournalReplay {
   std::string scope_;
   /** Whether a header was found at all. A non-empty file without one is not ours to write to. */
   bool has_header_{false};
+  /**
+   * Whether the bytes were obtained, and if not, why that matters.
+   *
+   * `READ` by default, because a journal held in memory always is. Only the file reader reports
+   * anything else.
+   */
+  JournalReadStatus status_{JournalReadStatus::READ};
+
+  /** Returns whether the file could be read at all. */
+  bool readable() const noexcept { return status_ != JournalReadStatus::UNREADABLE; }
 
   /** Returns whether every line was read. */
-  bool intact() const noexcept { return unreadable_lines_ == 0 && !truncated_tail_; }
+  bool intact() const noexcept {
+    return readable() && unreadable_lines_ == 0 && !truncated_tail_;
+  }
 };
 
 /**
@@ -437,9 +479,10 @@ private:
  * made durable — a full disk, a revoked permission, a path that stopped existing — the send does
  * not happen. Sending anyway would produce the exact situation the journal exists to prevent, with
  * the added insult that the runner would believe itself protected. The instruction is reported as
- * `REJECTED`, which is the truthful classification: nothing was sent, so the order does not exist
- * and nothing needs reconciling. `last_journal_error()` says why, because a `REJECTED` with no
- * broker behind it is otherwise indistinguishable from a broker's refusal.
+ * `SendOutcome::UNAVAILABLE`: nothing was sent, so the order does not exist and nothing needs
+ * reconciling, and it is deliberately distinct from a broker's `REJECTED`, which says something
+ * about one instruction rather than about whether the runner should still be trading at all.
+ * `Runner` turns it into a sticky condition the loop gates on.
  */
 template <typename Inner, typename Journal, typename Clock = SteadyClock>
 class JournalingExecutor {
@@ -553,6 +596,17 @@ public:
   /** Returns how many instructions were refused because they could not be journaled. */
   std::size_t unjournaled_refusals() const noexcept { return refusals_; }
 
+  /**
+   * Returns how many journal writes have failed, counting every one.
+   *
+   * A *generation*, not a status. `last_journal_error()` keeps the first reason forever, which is
+   * right for diagnosis and useless for recovery: a runner watching only that would re-halt on the
+   * next send after an operator fixed the storage and resumed, because the stale reason is still
+   * there. Comparing this count against the one already acknowledged is what distinguishes a new
+   * failure from one that has been dealt with.
+   */
+  std::size_t journal_failures() const noexcept { return failures_; }
+
   /** Forwards the reference the broker issued for the last accepted order, where the inner has one. */
   template <typename Executor = Inner>
   auto last_ref() const noexcept -> decltype(std::declval<const Executor&>().last_ref()) {
@@ -573,8 +627,15 @@ private:
     return SendOutcome::UNAVAILABLE;
   }
 
-  /** Records why the journal failed, keeping the first reason rather than the latest. */
+  /**
+   * Records why the journal failed, keeping the first reason and counting every failure.
+   *
+   * The two halves answer different questions. The reason is for a person reading a report, and the
+   * first one is the useful one. The count is for the runner, which needs to know whether anything
+   * has gone wrong *since* it last acknowledged a problem.
+   */
   void note_failure(std::string detail) {
+    ++failures_;
     if (journal_error_.empty()) {
       journal_error_ = std::move(detail);
     }
@@ -635,6 +696,7 @@ private:
   std::string prefix_;
   std::string journal_error_;
   std::size_t refusals_{0};
+  std::size_t failures_{0};
   std::uint64_t sequence_{0};
 };
 

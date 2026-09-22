@@ -779,10 +779,14 @@ TEST_CASE("the first journal failure is the one reported", "[journal]") {
 
 namespace {
 
-/** A journal that records the first line and then refuses, losing only the answer. */
+/** A journal that records a fixed number of lines and then refuses, until it is repaired. */
 class HalfFailingJournal {
 public:
   bool append(const JournalEntry& entry) {
+    if (repaired_) {
+      entries_.push_back(entry);
+      return true;
+    }
     if (accepted_ >= limit_) {
       return false;
     }
@@ -790,6 +794,9 @@ public:
     entries_.push_back(entry);
     return true;
   }
+
+  /** Stands in for an operator emptying the disk. */
+  void repair() { repaired_ = true; }
 
   runner::JournalReplay replay() const {
     runner::JournalReplay replay;
@@ -799,8 +806,12 @@ public:
 
   std::size_t limit_{1};
 
+  /** Everything recorded, so a test can count sends that actually happened. */
+  const std::vector<JournalEntry>& records() const noexcept { return entries_; }
+
 private:
   std::size_t accepted_{0};
+  bool repaired_{false};
   std::vector<JournalEntry> entries_;
 };
 
@@ -1301,4 +1312,202 @@ TEST_CASE("an intact journal does not halt recovery", "[journal][file]") {
   const auto recovery = runner::recover_runner(dry, runner::FileJournal(path.str(), "test:account"));
   REQUIRE(recovery.clean());
   REQUIRE_FALSE(dry.local_failure().has_value());
+}
+
+// ---------------------------------------------------------------------------
+// A journal that cannot be read is not an empty journal
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a missing journal and an unreadable one are different things", "[journal][file]") {
+  // Collapsing them is a live hazard: a first start owes nothing, while a journal that *exists* and
+  // cannot be read may hold every order a predecessor left in flight.
+  const TempJournal path("read-status");
+  REQUIRE(runner::read_journal_bytes(path.str()).status_ == runner::JournalReadStatus::MISSING);
+
+  {
+    runner::FileJournal journal(path.str(), "test:account");
+    REQUIRE(journal.append(sample_entry()));
+  }
+  REQUIRE(runner::read_journal_bytes(path.str()).status_ == runner::JournalReadStatus::READ);
+}
+
+TEST_CASE("an unreadable journal is parsed as unreadable, not as empty", "[journal][file]") {
+  // Driven through the parse seam rather than by arranging a file permission, because what is being
+  // tested is the decision, not the platform's enforcement of a mode bit.
+  runner::JournalBytes bytes;
+  bytes.status_ = runner::JournalReadStatus::UNREADABLE;
+  bytes.detail_ = "the order journal at /some/path exists and could not be opened for reading";
+
+  const auto replay = runner::parse_journal_bytes(bytes);
+  REQUIRE_FALSE(replay.readable());
+  REQUIRE_FALSE(replay.intact());
+  REQUIRE(replay.entries_.empty());
+  REQUIRE(replay.detail_ == bytes.detail_);
+  // Crucially not mistaken for a file with no header, which would be a different refusal.
+  REQUIRE_FALSE(replay.has_header_);
+}
+
+TEST_CASE("recovery halts when the journal cannot be read", "[journal][file]") {
+  runner::JournalBytes bytes;
+  bytes.status_ = runner::JournalReadStatus::UNREADABLE;
+  bytes.detail_ = "the order journal exists and could not be opened for reading";
+
+  runner::DryRunner<HoldTen> dry;
+  const auto recovery = runner::recover_into(runner::parse_journal_bytes(bytes), dry.ledger());
+  REQUIRE(recovery.unreadable_file_);
+  REQUIRE_FALSE(recovery.clean());
+
+  // And through the entry point a program actually uses.
+  struct UnreadableJournal {
+    runner::JournalReplay replay() const {
+      runner::JournalBytes bytes;
+      bytes.status_ = runner::JournalReadStatus::UNREADABLE;
+      bytes.detail_ = "the order journal exists and could not be opened for reading";
+      return runner::parse_journal_bytes(bytes);
+    }
+  };
+  runner::DryRunner<HoldTen> halted;
+  const auto report = runner::recover_runner(halted, UnreadableJournal{});
+  REQUIRE(report.unreadable_file_);
+  REQUIRE(halted.local_failure().has_value());
+  // Nothing specific can be withheld, so everything is.
+  REQUIRE(halted.ledger().empty());
+}
+
+TEST_CASE("a missing journal recovers clean", "[journal][file]") {
+  runner::JournalBytes bytes;
+  bytes.status_ = runner::JournalReadStatus::MISSING;
+
+  runner::DryRunner<HoldTen> dry;
+  const auto recovery = runner::recover_into(runner::parse_journal_bytes(bytes), dry.ledger());
+  REQUIRE(recovery.clean());
+  REQUIRE_FALSE(recovery.unreadable_file_);
+}
+
+// ---------------------------------------------------------------------------
+// Resuming after the storage is fixed
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** A journal that refuses a fixed number of times and then works. */
+class RepairableJournal {
+public:
+  bool append(const JournalEntry& entry) {
+    if (failures_remaining_ > 0) {
+      --failures_remaining_;
+      return false;
+    }
+    entries_.push_back(entry);
+    return true;
+  }
+
+  runner::JournalReplay replay() const {
+    runner::JournalReplay replay;
+    replay.entries_ = entries_;
+    return replay;
+  }
+
+  const std::vector<JournalEntry>& records() const noexcept { return entries_; }
+
+  std::size_t failures_remaining_{1};
+
+private:
+  std::vector<JournalEntry> entries_;
+};
+
+using RepairableExecutor = runner::JournalingExecutor<
+  runner::RecordingExecutor<runner::DryTag>, RepairableJournal, runner::ManualClock>;
+
+} // namespace
+
+TEST_CASE("resuming after a repaired journal actually resumes", "[journal]") {
+  // The API is documented as the way back from a storage failure, and before this it could not get
+  // there: the executor keeps its first error forever, so the runner read that stale reason after
+  // the very next send and halted again immediately. The old test asserted only that the flag was
+  // cleared and never sent again.
+  RepairableJournal journal;
+  journal.failures_remaining_ = 1;
+  runner::Runner<HoldTen, strategy::NoCaps, runner::DryTag, RepairableExecutor> dry{
+    HoldTen{},
+    {},
+    512,
+    RepairableExecutor{runner::RecordingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}}
+  };
+  dry.context().set_instrument(samsung_reference());
+  dry.context().set_phase(strategy::MarketPhase::OPEN);
+  dry.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+  const auto failed = dry.feed(bar_at(30));
+  REQUIRE(failed.unavailable_.size() == 1);
+  REQUIRE(dry.local_failure().has_value());
+
+  // The operator fixes the disk and resumes.
+  dry.resume_after_local_failure();
+  REQUIRE_FALSE(dry.local_failure().has_value());
+
+  // Two successful sends, not one. The second is what the stale-error bug broke.
+  const auto first = dry.feed(bar_at(31));
+  REQUIRE(first.would_place_.size() == 1);
+  REQUIRE_FALSE(dry.local_failure().has_value());
+
+  const auto second = dry.feed(bar_at(32));
+  REQUIRE(second.would_place_.size() == 1);
+  REQUIRE_FALSE(dry.local_failure().has_value());
+}
+
+TEST_CASE("resuming after a terminal-write failure also resumes", "[journal]") {
+  // The other half: the broker answered, the journal could not record the answer, the runner
+  // halted. A repair and a resume must get it trading again.
+  HalfFailingJournal journal;
+  journal.limit_ = 1;
+  using HalfExecutor = runner::JournalingExecutor<
+    runner::RecordingExecutor<runner::DryTag>, HalfFailingJournal, runner::ManualClock>;
+  runner::Runner<HoldTen, strategy::NoCaps, runner::DryTag, HalfExecutor> dry{
+    HoldTen{},
+    {},
+    512,
+    HalfExecutor{runner::RecordingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}}
+  };
+  dry.context().set_instrument(samsung_reference());
+  dry.context().set_phase(strategy::MarketPhase::OPEN);
+  dry.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+  dry.feed(bar_at(30));
+  REQUIRE(dry.local_failure().has_value());
+
+  dry.executor().inner();  // the send really did happen
+  journal.repair();
+  dry.resume_after_local_failure();
+
+  const auto first = dry.feed(bar_at(31));
+  REQUIRE(first.would_place_.size() == 1);
+  REQUIRE_FALSE(dry.local_failure().has_value());
+
+  const auto second = dry.feed(bar_at(32));
+  REQUIRE(second.would_place_.size() == 1);
+  REQUIRE_FALSE(dry.local_failure().has_value());
+}
+
+TEST_CASE("resuming without fixing anything halts again on the next send", "[journal]") {
+  RepairableJournal journal;
+  journal.failures_remaining_ = 5;
+  runner::Runner<HoldTen, strategy::NoCaps, runner::DryTag, RepairableExecutor> dry{
+    HoldTen{},
+    {},
+    512,
+    RepairableExecutor{runner::RecordingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}}
+  };
+  dry.context().set_instrument(samsung_reference());
+  dry.context().set_phase(strategy::MarketPhase::OPEN);
+  dry.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+  dry.feed(bar_at(30));
+  REQUIRE(dry.local_failure().has_value());
+  dry.resume_after_local_failure();
+
+  // Acknowledging a failure is not the same as fixing it.
+  const auto again = dry.feed(bar_at(31));
+  REQUIRE(again.unavailable_.size() == 1);
+  REQUIRE(dry.local_failure().has_value());
 }
