@@ -66,6 +66,8 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+# journals a test binary run outside a build directory leaves behind
+atl-test-*.jsonl
 
 CMakeLists.txt.user
 CMakeCache.txt

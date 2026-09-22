@@ -1,2 +1,0 @@
-{"id":"run-1","action":"place","outcome":"pending","country":"KR","venue":"COMBINED","symbol":"005930","side":"SELL","type":"LIMIT","quantity":"10","price":"70000","at":1774833300000000,"at_text":"2026-03-30T01:15:00Z"}
-{"id":"run-1","action":"place","outcome":"accepted","country":"KR","venue":"COMBINED","symbol":"005930","side":"SELL","type":"LIMIT","quantity":"10","price":"70000","at":1774833300000000,"at_text":"2026-03-30T01:15:00Z","order_id":"KRX-99"}

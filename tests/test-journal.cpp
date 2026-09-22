@@ -473,13 +473,33 @@ std::string read_file(const std::string& path) {
   return text;
 }
 
-/** Returns a path inside the build directory, unique per test. */
-std::string journal_path(const char* name) {
-  return std::string("atl-test-journal-") + name + ".jsonl";
-}
+/**
+ * A journal path that exists only for the duration of one test.
+ *
+ * Removed on the way in *and* on the way out. Only the first is about correctness -- a test must
+ * start from nothing -- but leaving the file behind puts an artifact in whatever directory the
+ * binary was run from, and a run from the worktree root then offers it to `git add`. Cleaning up is
+ * cheaper than remembering to ignore it.
+ */
+class TempJournal {
+public:
+  explicit TempJournal(const char* name)
+  : path_(std::string("atl-test-journal-") + name + ".jsonl") {
+    std::remove(path_.c_str());
+  }
 
-/** Removes a journal left by an earlier run, so a test starts from nothing. */
-void reset_journal(const std::string& path) { std::remove(path.c_str()); }
+  ~TempJournal() { std::remove(path_.c_str()); }
+
+  TempJournal(const TempJournal&) = delete;
+  TempJournal& operator=(const TempJournal&) = delete;
+
+  /** Returns the path, so a test reads like it holds a string. */
+  operator const std::string&() const noexcept { return path_; }
+  const std::string& str() const noexcept { return path_; }
+
+private:
+  std::string path_;
+};
 
 JournalEntry sample_entry() {
   JournalEntry entry;
@@ -532,10 +552,9 @@ TEST_CASE("a line this library did not write is not an entry", "[journal][file]"
 }
 
 TEST_CASE("appends accumulate, one whole line each", "[journal][file]") {
-  const auto path = journal_path("append");
-  reset_journal(path);
+  const TempJournal path("append");
   {
-    runner::FileJournal journal(path);
+    runner::FileJournal journal(path.str());
     REQUIRE(journal.open());
     auto entry = sample_entry();
     REQUIRE(journal.append(entry));
@@ -544,11 +563,11 @@ TEST_CASE("appends accumulate, one whole line each", "[journal][file]") {
     REQUIRE(journal.append(entry));
   }
 
-  const auto text = read_file(path);
+  const auto text = read_file(path.str());
   REQUIRE(text.back() == '\n');
   REQUIRE(std::count(text.begin(), text.end(), '\n') == 2);
 
-  const auto replay = runner::read_journal_file(path);
+  const auto replay = runner::read_journal_file(path.str());
   REQUIRE(replay.intact());
   REQUIRE(replay.entries_.size() == 2);
   REQUIRE(replay.entries_[1].order_id_ == "KRX-99");
@@ -556,14 +575,13 @@ TEST_CASE("appends accumulate, one whole line each", "[journal][file]") {
 }
 
 TEST_CASE("a restarted process appends to its predecessor's file", "[journal][file]") {
-  const auto path = journal_path("restart");
-  reset_journal(path);
+  const TempJournal path("restart");
   {
-    runner::FileJournal first(path);
+    runner::FileJournal first(path.str());
     REQUIRE(first.append(sample_entry()));
   }
   {
-    runner::FileJournal second(path);
+    runner::FileJournal second(path.str());
     auto entry = sample_entry();
     entry.id_ = "run-2";
     REQUIRE(second.append(entry));
@@ -572,9 +590,8 @@ TEST_CASE("a restarted process appends to its predecessor's file", "[journal][fi
 }
 
 TEST_CASE("an absent journal is intact and empty, not an error", "[journal][file]") {
-  const auto path = journal_path("absent");
-  reset_journal(path);
-  const auto replay = runner::read_journal_file(path);
+  const TempJournal path("absent");
+  const auto replay = runner::read_journal_file(path.str());
   REQUIRE(replay.intact());
   REQUIRE(replay.entries_.empty());
   REQUIRE(replay.detail_.empty());
@@ -585,8 +602,7 @@ TEST_CASE("an absent journal is intact and empty, not an error", "[journal][file
 // ---------------------------------------------------------------------------
 
 TEST_CASE("a truncated final line is reported and treated as unresolved", "[journal][file]") {
-  const auto path = journal_path("truncated");
-  reset_journal(path);
+  const TempJournal path("truncated");
 
   auto complete = sample_entry();
   complete.id_ = "run-1";
@@ -601,13 +617,13 @@ TEST_CASE("a truncated final line is reported and treated as unresolved", "[jour
   // A process killed mid-append leaves the prefix of its last line and no newline. Cut at two
   // thirds so the instrument is still legible, which is the case worth salvaging.
   write_file(
-    path,
+    path.str(),
     runner::journal_entry_to_line(complete) + "\n" +
       runner::journal_entry_to_line(resolved) + "\n" +
       torn_line.substr(0, torn_line.size() * 2 / 3)
   );
 
-  const auto replay = runner::read_journal_file(path);
+  const auto replay = runner::read_journal_file(path.str());
   REQUIRE(replay.truncated_tail_);
   REQUIRE_FALSE(replay.intact());
   REQUIRE(replay.detail_.find("000660") != std::string::npos);
@@ -622,8 +638,7 @@ TEST_CASE("a truncated final line is reported and treated as unresolved", "[jour
 }
 
 TEST_CASE("a truncated line is never allowed to resolve a pending one", "[journal][file]") {
-  const auto path = journal_path("truncated-terminal");
-  reset_journal(path);
+  const TempJournal path("truncated-terminal");
 
   auto pending = sample_entry();
   pending.id_ = "run-1";
@@ -636,12 +651,12 @@ TEST_CASE("a truncated line is never allowed to resolve a pending one", "[journa
   // its legible prefix would mark the order resolved on the strength of a write that never
   // finished.
   write_file(
-    path,
+    path.str(),
     runner::journal_entry_to_line(pending) + "\n" +
       terminal_line.substr(0, terminal_line.size() * 2 / 3)
   );
 
-  const auto replay = runner::read_journal_file(path);
+  const auto replay = runner::read_journal_file(path.str());
   REQUIRE(replay.truncated_tail_);
   const auto open = runner::unresolved_instructions(replay);
   REQUIRE(open.size() == 2);
@@ -650,24 +665,22 @@ TEST_CASE("a truncated line is never allowed to resolve a pending one", "[journa
 }
 
 TEST_CASE("a truncated line naming no instrument is still reported", "[journal][file]") {
-  const auto path = journal_path("truncated-early");
-  reset_journal(path);
-  write_file(path, runner::journal_entry_to_line(sample_entry()) + "\n" + R"({"id":"run-2","ac)");
+  const TempJournal path("truncated-early");
+  write_file(path.str(), runner::journal_entry_to_line(sample_entry()) + "\n" + R"({"id":"run-2","ac)");
 
-  const auto replay = runner::read_journal_file(path);
+  const auto replay = runner::read_journal_file(path.str());
   REQUIRE(replay.truncated_tail_);
   REQUIRE(replay.entries_.size() == 1);
   REQUIRE(replay.detail_.find("something was in flight") != std::string::npos);
 }
 
 TEST_CASE("a complete line that is not a journal entry is counted", "[journal][file]") {
-  const auto path = journal_path("foreign");
-  reset_journal(path);
+  const TempJournal path("foreign");
   write_file(
-    path, runner::journal_entry_to_line(sample_entry()) + "\n" + R"({"hello":"world"})" + "\n"
+    path.str(), runner::journal_entry_to_line(sample_entry()) + "\n" + R"({"hello":"world"})" + "\n"
   );
 
-  const auto replay = runner::read_journal_file(path);
+  const auto replay = runner::read_journal_file(path.str());
   REQUIRE_FALSE(replay.truncated_tail_);
   REQUIRE(replay.unreadable_lines_ == 1);
   REQUIRE(replay.entries_.size() == 1);
