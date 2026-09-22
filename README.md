@@ -842,6 +842,46 @@ See the [running a strategy live](doxygen/vignettes/running-a-strategy-live.md) 
 operational half — including the supervisor grace period that silently turns the cleanest shutdown into
 the worst one, and why a flatten outside market hours is refused rather than performed.
 
+## Surviving a restart
+
+The indeterminacy ledger above is what stops a runner sending a second order for an instrument whose
+first order might exist — and on its own it lives in memory, so **an empty ledger does not mean nothing
+is owed, it means nothing is remembered**. An order in flight when a `SIGKILL` arrives never reaches the
+classification at all: no error path runs, so nothing is marked.
+
+`runner::FileJournal` puts that on disk. One JSON object per line, appended, flushed and `fsync`ed
+**before** the send is attempted, so the record exists during the exact window the process may vanish in.
+
+```cpp
+runner::FileJournal journal("/var/lib/mybot/orders.jsonl");
+
+auto live_runner = live::bind(session, MyStrategy{}, limits);
+const auto recovery = runner::recover_into(journal, live_runner.ledger());
+
+auto executor = runner::JournalingExecutor<live::SessionExecutor<Session>, runner::FileJournal>(
+  live::SessionExecutor<Session>(session), journal
+);
+
+live::SessionSource<Session, runner::FileJournal> source(session, {samsung()});
+source.set_journal(journal);
+```
+
+It is a **decorator**, so `Runner` is unchanged, it composes with the recording executor every test
+uses, and a backtest journals nothing because it wraps nothing — there is no flag to turn off. The
+source then matches owed instructions against the listings it already polls, so reconciliation costs no
+request of its own, and reports one of four verdicts: `matched`, `not_placed`, `ambiguous`, `undecided`.
+
+`ambiguous` is a stop, not a retry. A journal narrows the window and makes ambiguity machine-visible; it
+cannot manufacture idempotency, and neither broker offers a recovery handle — Toss echoes a
+`clientOrderId` on the acknowledgement but not on a listing row, and KIS's `gt_uid` is corporate-only.
+
+`example-order-journal` runs the whole story — a send that never returns, a restarted process that would
+happily trade until recovery stops it, and the sweep that resolves it — with no broker and no network.
+
+See the [recovering after a crash](doxygen/vignettes/recovering-after-a-crash.md) vignette for what the
+file looks like during an incident and how to read the verdicts without talking yourself into the wrong
+one.
+
 ## Transport behavior
 
 - HTTPS connections are persistent per client and requests are serialized on a

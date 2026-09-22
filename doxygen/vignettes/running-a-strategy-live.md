@@ -181,14 +181,14 @@ already holds capacity back from polling so that an order is never the request t
 
 ## What this does not do yet
 
-- **Survive a restart.** The indeterminacy ledger is in memory. The startup gate above is what makes
-  that safe rather than merely documented, but after any abnormal exit you should still read the
-  broker's order list yourself before resuming. See `plan/todo/durable-indeterminacy.md`.
-- **Match broker rows to ledger entries automatically.** Matching on attributes is a heuristic, not an
-  identity: two identical orders seconds apart are indistinguishable in a listing. See
-  `plan/todo/order-journal-reconciliation.md`.
 - **Stream.** It polls. `plan/todo/realtime-streaming.md` drops into the same source seam.
 - **Run more than one loop.** One loop, one thread. See `plan/todo/parallel-execution.md`.
+
+Surviving a restart is no longer on this list. Bind a `runner::FileJournal` and the ledger becomes
+durable: every instruction is recorded before it is sent, a restarted runner recovers what its
+predecessor left owed, and the listings this source already reads resolve it. See the
+[recovering after a crash](recovering-after-a-crash.md) vignette — including why `not_placed` and
+`undecided` are the pair to get right, and why an `ambiguous` verdict is a stop rather than a retry.
 
 ## Trying it without a broker
 
