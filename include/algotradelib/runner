@@ -22,14 +22,25 @@
  * `LiveRunner` is in `<algotradelib/live>` precisely because it does need them, and separating the
  * two is what keeps the compile-time half of that checkable.
  *
+ * `PollingLoop` is here rather than there for the same reason. Deciding *when* to poll, noticing that
+ * a stop was requested, refusing to send before the first reconciliation, and judging a holdings
+ * snapshot too stale to size against are not broker concerns -- only the fetching is -- so the loop,
+ * its clock seam and the stop control all sit on this side of the line, and a test drives every one
+ * of them with no session, no credentials and no signals raised. `SessionSource`, which does the
+ * fetching, is in `<algotradelib/live>`.
+ *
  * It does reach `<algotradelib/analytics>` when the library was built with a linear-algebra
  * backend, because a cached bar series is an analytics type. Without one the context simply offers
  * no series accessors, and a strategy trading on prices and positions alone is unaffected.
  */
 
+#include "src/runner/clock.hpp"
 #include "src/runner/context.hpp"
 #include "src/runner/dispatch.hpp"
 #include "src/runner/runner.hpp"
 #include "src/runner/execution.hpp"
+#include "src/runner/loop.hpp"
+#include "src/runner/signal_stop.hpp"
+#include "src/runner/stop.hpp"
 
 #include <algotradelib/strategy>
