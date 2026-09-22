@@ -573,6 +573,10 @@ struct RecoveryReport {
 /**
  * Marks the ledger for everything a journal left unaccounted for.
  *
+ * **Prefer `recover_runner`.** This form takes a bare ledger, and one of the outcomes -- damage that
+ * names no instrument -- cannot be expressed as a ledger mark at all, so a caller using this one has
+ * to notice `unattributable_` and halt trading itself. `recover_runner` does that for you.
+ *
  * The restart half of the design, and it is independent of the loop's startup gate rather than a
  * duplicate of it. The gate is about *this process never having looked*; recovery is about *a
  * previous process having left something owed*. A runner needs both: the gate catches an order in
