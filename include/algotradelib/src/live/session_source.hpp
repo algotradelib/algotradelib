@@ -287,9 +287,38 @@ private:
     if (journal_ == nullptr) {
       return;
     }
+    const auto open = runner::unresolved_instructions(journal_->replay());
+    if (open.empty()) {
+      reconcile_ = runner::ReconcileReport{};
+      return;
+    }
+
+    auto candidates = rows;
+    if (runner::any_placement(open)) {
+      // **An open-orders listing cannot answer the placement question.** Both brokers' working-order
+      // inquiry returns only what is still resting -- Toss maps it to its `OPEN` scope, KIS to the
+      // modifiable set -- and a market or aggressive limit order can fill and leave that listing
+      // before the first sweep. Matching against it alone would then find nothing, and after the
+      // window closed would report `NOT_PLACED` and clear the ledger for an order that existed and
+      // executed. So a sweep with any placement owed reads the history as well.
+      //
+      // Paid for only when something is actually owed, which is rare: the normal sweep still costs
+      // no request of its own.
+      std::vector<OrderSnapshot> history;
+      if (!read_history(open, history)) {
+        // Seeing part of the picture is worse than seeing none. `NOT_PLACED` is a conclusion drawn
+        // from absence, and absence from a listing that failed to arrive is not evidence.
+        reconcile_ = runner::decide_nothing(
+          open, "the order history could not be read, so nothing could be concluded from absence"
+        );
+        return;
+      }
+      runner::merge_rows(candidates, history);
+    }
+
     reconcile_ = runner::reconcile_against(
-      runner::unresolved_instructions(journal_->replay()),
-      rows,
+      open,
+      candidates,
       runner_instance.context().now(),
       runner_instance.ledger(),
       *journal_,
@@ -305,9 +334,50 @@ private:
     }
   }
 
+  /**
+   * Fills `into` with the order history covering everything `open` could have reached the broker in.
+   *
+   * Returns whether the whole range was read. A partial read is a failure, not a smaller success,
+   * because every row this misses is one the matcher will count as absent.
+   *
+   * Both broker differences are handled here rather than pushed onto the caller: a calendar range
+   * where the broker requires one, and cursor paging where the broker offers one. The page cap is a
+   * guard against a cursor that never terminates, and exhausting it is reported as a failure for the
+   * same reason -- a truncated listing is a listing with holes in it.
+   */
+  bool read_history(const std::vector<runner::OpenInstruction>& open,
+    std::vector<OrderSnapshot>& into) {
+    OrderHistoryQuery query;
+    query.limit_ = history_limit_;
+    if constexpr (Caps::history_requires_range) {
+      const auto range = runner::history_range_for(open, window_);
+      query.from_ = range.first;
+      query.to_ = range.second;
+    }
+
+    for (int page = 0; page < maximum_history_pages_; ++page) {
+      auto result = session_->order_history(query);
+      if (!result) {
+        last_error_ = result.error();
+        return false;
+      }
+      runner::merge_rows(into, result.value().orders_);
+      if constexpr (Caps::has_history_cursor) {
+        if (!result.value().next_cursor_ || result.value().next_cursor_->empty()) {
+          return true;
+        }
+        query.cursor_ = result.value().next_cursor_;
+      } else {
+        return true;
+      }
+    }
+    return false;
+  }
+
   Session* session_;
   std::vector<InstrumentId> universe_;
   Journal* journal_{nullptr};
+  int maximum_history_pages_{20};
   runner::MatchWindow window_;
   runner::ReconcileReport reconcile_;
   BarInterval interval_{BarInterval::ONE_DAY};

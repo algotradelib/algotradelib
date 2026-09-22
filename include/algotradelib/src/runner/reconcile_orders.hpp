@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <ctime>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -430,6 +431,115 @@ ReconcileReport reconcile_against(
     report.resolved_.push_back(instrument);
   }
   return report;
+}
+
+/**
+ * Returns a report that decides nothing, leaving every instruction owed.
+ *
+ * What a sweep must produce when it could not see everything it needed to. The alternative -- run
+ * the matcher over a partial listing -- is worse than doing nothing at all: after the window
+ * closes, a missing row reads as `NOT_PLACED`, so an incomplete view resolves in the one direction
+ * that clears the ledger for an order that may exist.
+ */
+inline ReconcileReport decide_nothing(
+  const std::vector<OpenInstruction>& open, std::string detail
+) {
+  ReconcileReport report;
+  report.matches_.reserve(open.size());
+  for (const auto& instruction : open) {
+    OrderMatch match;
+    match.verdict_ = MatchVerdict::UNDECIDED;
+    match.instrument_ = instruction.entry_.instrument_;
+    match.entry_id_ = instruction.entry_.id_;
+    match.detail_ = detail;
+    report.matches_.push_back(std::move(match));
+
+    bool known = false;
+    for (const auto& id : report.withheld_) {
+      if (id == instruction.entry_.instrument_) {
+        known = true;
+        break;
+      }
+    }
+    if (!known) {
+      report.withheld_.push_back(instruction.entry_.instrument_);
+    }
+  }
+  return report;
+}
+
+/** Returns whether any of `open` is a placement, which is what needs a lifecycle-wide listing. */
+inline bool any_placement(const std::vector<OpenInstruction>& open) {
+  for (const auto& instruction : open) {
+    if (instruction.entry_.action_ == JournalAction::PLACE) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Adds rows to `into`, skipping any order id already there. */
+inline void merge_rows(std::vector<OrderSnapshot>& into, const std::vector<OrderSnapshot>& rows) {
+  for (const auto& row : rows) {
+    bool known = false;
+    for (const auto& held : into) {
+      // Deduplicated by the broker's own id, because an order that is still open appears in *both*
+      // listings. Two copies of one row would read as two candidates, and the matcher would report
+      // `AMBIGUOUS` for an instruction that is not ambiguous at all.
+      if (!row.order_id_.empty() && held.order_id_ == row.order_id_) {
+        known = true;
+        break;
+      }
+    }
+    if (!known) {
+      into.push_back(row);
+    }
+  }
+}
+
+/** Returns the UTC calendar date `at` falls on. */
+inline Date date_of(std::chrono::system_clock::time_point at) {
+  const auto seconds = std::chrono::time_point_cast<std::chrono::seconds>(at);
+  const std::time_t raw = std::chrono::system_clock::to_time_t(seconds);
+  std::tm utc{};
+#ifdef _WIN32
+  gmtime_s(&utc, &raw);
+#else
+  gmtime_r(&raw, &utc);
+#endif
+  Date date;
+  date.year_ = utc.tm_year + 1900;
+  date.month_ = static_cast<unsigned>(utc.tm_mon + 1);
+  date.day_ = static_cast<unsigned>(utc.tm_mday);
+  return date;
+}
+
+/**
+ * Returns the calendar range an order-history inquiry must cover for `open`.
+ *
+ * Widened by a day at each end, and the reason is not caution for its own sake: these instants are
+ * UTC, a broker's trading day is its own market's, and KIS reports order times in Korean local
+ * time. A range that is a day too wide returns rows that do not match and costs nothing; a range
+ * that is an hour too narrow misses the order and reports `NOT_PLACED` for one that exists.
+ */
+inline std::pair<Date, Date> history_range_for(
+  const std::vector<OpenInstruction>& open, const MatchWindow& window
+) {
+  auto earliest = open.front().opened_at_;
+  auto latest = instruction_sent_by(open.front(), window);
+  for (const auto& instruction : open) {
+    if (instruction.opened_at_ < earliest) {
+      earliest = instruction.opened_at_;
+    }
+    const auto sent_by = instruction_sent_by(instruction, window);
+    if (sent_by > latest) {
+      latest = sent_by;
+    }
+  }
+  return {
+    date_of(earliest - std::chrono::hours(24)),
+    date_of(latest + std::chrono::hours(24)),
+  };
 }
 
 /** What a journal left owed by the process that wrote it. */

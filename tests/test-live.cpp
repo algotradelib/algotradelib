@@ -136,13 +136,29 @@ public:
     return Result<WorkingOrders<FakeBroker>>(working_orders_);
   }
 
-  /** Returns the scripted history page, counting the call. */
+  /**
+   * Returns the scripted history page, counting the call.
+   *
+   * Carries its own failure switch, separate from the session-wide one, so a test can make the
+   * *history* fail while working orders still succeed. That combination is the one the sweep has to
+   * survive: it has a listing, it just does not have the one that covers closed orders.
+   */
   Result<OrderPage> order_history(const OrderHistoryQuery&) {
     ++history_calls_;
+    if (history_error_) {
+      return Result<OrderPage>(*history_error_);
+    }
     if (error_) {
       return Result<OrderPage>(*error_);
     }
     return Result<OrderPage>(history_);
+  }
+
+  void fail_history_with(ErrorCategory category, int http_status = 0) {
+    BrokerError error;
+    error.category_ = category;
+    error.http_status_ = http_status;
+    history_error_ = error;
   }
 
   void set_bars(BarSeries series) { bars_ = std::move(series); }
@@ -165,6 +181,7 @@ private:
   HoldingsSnapshot holdings_;
   WorkingOrders<FakeBroker> working_orders_;
   OrderPage history_;
+  std::optional<BrokerError> history_error_;
   std::size_t bar_calls_{0};
   std::size_t quote_calls_{0};
   std::size_t holdings_calls_{0};
@@ -815,7 +832,10 @@ TEST_CASE("the history fallback sweeps against the page it read") {
   source.set_journal(journal);
 
   CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
-  CHECK(session.history_calls() == 1);
+  // Twice: once to satisfy the gate, once by the sweep with the calendar range the matching window
+  // actually needs. The second read happens only when something is owed, so a clean start still
+  // costs one.
+  CHECK(session.history_calls() == 2);
   CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
 }
 
@@ -869,4 +889,120 @@ TEST_CASE("an empty listing settles nothing until the window has closed") {
   source.poll(runner::PollKind::WORKING_ORDERS, live_runner);
   CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::NOT_PLACED);
   CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
+}
+
+TEST_CASE("an open-orders listing alone cannot conclude a placement was not placed") {
+  // The failure this guards against: a market or aggressive limit order fills and leaves the open
+  // listing before the first sweep. Matching against open orders alone finds nothing, and after the
+  // window closes that absence reads as `not_placed` -- clearing the ledger for an order that
+  // existed and executed, so the runner places it again.
+  WorkingSession session;
+  session.set_working_orders(WorkingOrders<FakeBroker>{});
+
+  auto filled = listed_order("KRX-1");
+  filled.status_ = OrderStatus::FILLED;
+  OrderPage page;
+  page.orders_.push_back(filled);
+  session.set_history(page);
+
+  runner::MemoryJournal journal;
+  journal.append(journaled_placement());
+
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live_runner.context().set_now(swept_at());
+  live_runner.ledger().mark(samsung(), "an order request failed in transit");
+
+  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
+  source.set_journal(journal);
+
+  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+  // The history was consulted even though this broker has the working-order inquiry, because only
+  // history covers every lifecycle state.
+  CHECK(session.history_calls() == 1);
+  CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::MATCHED);
+  CHECK(source.last_reconcile().matches_.front().order_id_ == "KRX-1");
+}
+
+TEST_CASE("a failed history read concludes nothing from absence") {
+  // Seeing part of the picture is worse than seeing none: `not_placed` is a conclusion drawn from
+  // absence, and absence from a listing that never arrived is not evidence.
+  WorkingSession session;
+  session.set_working_orders(WorkingOrders<FakeBroker>{});
+
+  runner::MemoryJournal journal;
+  journal.append(journaled_placement());
+
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live_runner.context().set_now(swept_at());
+  live_runner.ledger().mark(samsung(), "an order request failed in transit");
+
+  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
+  source.set_journal(journal);
+  session.fail_history_with(ErrorCategory::HTTP, 503);
+
+  source.poll(runner::PollKind::WORKING_ORDERS, live_runner);
+  // Without the history the sweep decides nothing, rather than concluding the order never existed.
+  REQUIRE(source.last_reconcile().matches_.size() == 1);
+  CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::UNDECIDED);
+  CHECK(source.last_reconcile().recorded_ == 0);
+  CHECK(live_runner.ledger().requires_reconcile(samsung()));
+}
+
+TEST_CASE("an order in both listings is one candidate, not two") {
+  // A still-open order appears in the working-order inquiry *and* in history. Two copies of one row
+  // would read as two candidates and the matcher would report `ambiguous` for an instruction that
+  // is not ambiguous at all.
+  WorkingSession session;
+  WorkingOrders<FakeBroker> orders;
+  auto listed = working();
+  listed.order_ = listed_order("KRX-1");
+  orders.orders_.push_back(listed);
+  session.set_working_orders(orders);
+
+  OrderPage page;
+  page.orders_.push_back(listed_order("KRX-1"));
+  session.set_history(page);
+
+  runner::MemoryJournal journal;
+  journal.append(journaled_placement());
+
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live_runner.context().set_now(swept_at());
+  live_runner.ledger().mark(samsung(), "an order request failed in transit");
+
+  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
+  source.set_journal(journal);
+
+  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+  CHECK_FALSE(source.last_reconcile().ambiguous_);
+  CHECK(source.last_reconcile().matches_.front().candidates_ == 1);
+  CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
+}
+
+TEST_CASE("a cancellation needs no history, because working orders answer it") {
+  // The asymmetry worth stating: working orders are sufficient for the cancellation question --
+  // is it still resting? -- and insufficient for the placement question.
+  WorkingSession session;
+  WorkingOrders<FakeBroker> orders;
+  auto listed = working();
+  listed.order_ = listed_order("KRX-1");
+  orders.orders_.push_back(listed);
+  session.set_working_orders(orders);
+
+  auto entry = journaled_placement();
+  entry.action_ = runner::JournalAction::CANCEL;
+  entry.order_id_ = "KRX-1";
+  runner::MemoryJournal journal;
+  journal.append(entry);
+
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live_runner.context().set_now(swept_at());
+  live_runner.ledger().mark(samsung(), "a cancellation request failed in transit");
+
+  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
+  source.set_journal(journal);
+
+  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+  CHECK(session.history_calls() == 0);
+  CHECK(source.last_reconcile().settled());
 }
