@@ -170,7 +170,9 @@ A poll that fails sent nothing, so nothing needs reconciling and no ledger entry
 did not arrive is an absence of information, and the loop carries on without it.
 
 What it does bound is repetition: `FailurePolicy::consecutive_limit_` consecutive failures of one kind
-and the loop quiesces rather than spinning against a broker that is refusing it. Counted per kind, so a
+and the loop quiesces rather than spinning against a broker that is refusing it, reporting
+`final_gate_ == poll_failing` with `stopped_by_` empty — so you can tell the loop's own decision from an
+operator's stop. Counted per kind, so a
 broken working-order inquiry does not mask a healthy bar feed, and **consecutive** rather than
 cumulative, so one failure in three is degraded rather than down.
 

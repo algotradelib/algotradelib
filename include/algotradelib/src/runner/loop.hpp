@@ -148,6 +148,15 @@ enum class GateReason {
   PORTFOLIO_STALE,
   /** An operator asked the loop to stop sending. */
   STOPPING,
+  /**
+   * A poll kept failing, so the loop gave up rather than spinning.
+   *
+   * Distinct from `STOPPING` because nobody asked for it: the loop decided, and an operator reading
+   * the report needs to know which of the two happened. Named as a gate reason rather than left as
+   * `NONE` because trading really is blocked -- the guard is halted -- and a report saying otherwise
+   * would be the one lie in it that matters.
+   */
+  POLL_FAILING,
 };
 
 /** Returns a stable lowercase name for `reason`. */
@@ -161,6 +170,8 @@ inline constexpr std::string_view gate_reason_name(GateReason reason) noexcept {
       return "portfolio_stale";
     case GateReason::STOPPING:
       return "stopping";
+    case GateReason::POLL_FAILING:
+      return "poll_failing";
   }
   return "unknown";
 }
@@ -456,6 +467,9 @@ private:
         iteration.fed_ = true;
       }
       if (report.abandoned_) {
+        // Recorded before returning, so the report does not claim sending was permitted while the
+        // guard this function just halted says otherwise.
+        iteration.gate_ = GateReason::POLL_FAILING;
         return iteration;
       }
     }

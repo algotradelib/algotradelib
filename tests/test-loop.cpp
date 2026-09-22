@@ -494,6 +494,10 @@ TEST_CASE("repeated poll failures give up rather than spinning", "[loop][failure
   CHECK(report.failed(runner::PollKind::BARS) == 3);
   CHECK(runner_instance.guard().halted());
   CHECK_FALSE(report.notes_.empty());
+  // The report must not say sending was permitted while the guard says it was not, and it must be
+  // distinguishable from an operator's stop -- nobody asked for this one.
+  CHECK(report.final_gate_ == runner::GateReason::POLL_FAILING);
+  CHECK_FALSE(report.stopped_by_.has_value());
 }
 
 TEST_CASE("a rate-limit refusal is not a failure", "[loop][failure]") {
