@@ -2,7 +2,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <optional>
 #include <string>
 #include <vector>
@@ -398,4 +400,279 @@ TEST_CASE("an executor with nothing to report is still wrappable", "[journal]") 
   REQUIRE(journal.records()[1].outcome_ == JournalOutcome::ACCEPTED);
   REQUIRE(journal.records()[1].order_id_.empty());
   REQUIRE(executor.inner().placed().size() == 1);
+}
+
+// ---------------------------------------------------------------------------
+// The file: append, flush, read back
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/**
+ * Writes `text` to `path` exactly, trailing newline included or omitted.
+ *
+ * The truncation tests write real files rather than faking a journal, because what is being tested
+ * is what a partially completed write actually looks like on disk. A mock would assert the reader
+ * against my own idea of a torn line instead of against one.
+ */
+void write_file(const std::string& path, const std::string& text) {
+  std::FILE* handle = std::fopen(path.c_str(), "wb");
+  REQUIRE(handle != nullptr);
+  if (!text.empty()) {
+    REQUIRE(std::fwrite(text.data(), 1, text.size(), handle) == text.size());
+  }
+  std::fclose(handle);
+}
+
+/** Returns the whole file as text. */
+std::string read_file(const std::string& path) {
+  std::FILE* handle = std::fopen(path.c_str(), "rb");
+  REQUIRE(handle != nullptr);
+  std::string text;
+  char buffer[1024];
+  while (const auto read = std::fread(buffer, 1, sizeof(buffer), handle)) {
+    text.append(buffer, read);
+  }
+  std::fclose(handle);
+  return text;
+}
+
+/** Returns a path inside the build directory, unique per test. */
+std::string journal_path(const char* name) {
+  return std::string("atl-test-journal-") + name + ".jsonl";
+}
+
+/** Removes a journal left by an earlier run, so a test starts from nothing. */
+void reset_journal(const std::string& path) { std::remove(path.c_str()); }
+
+JournalEntry sample_entry() {
+  JournalEntry entry;
+  entry.id_ = "run-1";
+  entry.action_ = JournalAction::PLACE;
+  entry.outcome_ = JournalOutcome::PENDING;
+  entry.recorded_at_ = utc(2026, 3, 30, 1, 15);
+  entry.instrument_ = samsung();
+  entry.side_ = OrderSide::SELL;
+  entry.type_ = OrderType::LIMIT;
+  entry.quantity_ = Decimal64::parse("10");
+  entry.price_ = Decimal64::parse("70000");
+  return entry;
+}
+
+} // namespace
+
+TEST_CASE("a journal entry survives a round trip through a line", "[journal][file]") {
+  const auto original = sample_entry();
+  const auto parsed = runner::journal_entry_from_line(runner::journal_entry_to_line(original));
+  REQUIRE(parsed.has_value());
+  REQUIRE(parsed->id_ == original.id_);
+  REQUIRE(parsed->action_ == original.action_);
+  REQUIRE(parsed->outcome_ == original.outcome_);
+  REQUIRE(parsed->instrument_ == original.instrument_);
+  REQUIRE(parsed->side_ == original.side_);
+  REQUIRE(parsed->type_ == original.type_);
+  REQUIRE(parsed->quantity_ == original.quantity_);
+  REQUIRE(parsed->price_ == original.price_);
+  // Exactly, not approximately: the matching window is measured against this.
+  REQUIRE(parsed->recorded_at_ == original.recorded_at_);
+}
+
+TEST_CASE("an absent price round-trips as absent, not as zero", "[journal][file]") {
+  auto entry = sample_entry();
+  entry.price_.reset();
+  entry.type_ = OrderType::MARKET;
+  const auto parsed = runner::journal_entry_from_line(runner::journal_entry_to_line(entry));
+  REQUIRE(parsed.has_value());
+  REQUIRE_FALSE(parsed->price_.has_value());
+  REQUIRE(parsed->type_ == OrderType::MARKET);
+}
+
+TEST_CASE("a line this library did not write is not an entry", "[journal][file]") {
+  REQUIRE_FALSE(runner::journal_entry_from_line("").has_value());
+  REQUIRE_FALSE(runner::journal_entry_from_line("not json at all").has_value());
+  // Well-formed JSON, but not a journal line. Accepting it would manufacture an entry with a
+  // default instrument, which is a claim about an order that was never made.
+  REQUIRE_FALSE(runner::journal_entry_from_line(R"({"hello":"world"})").has_value());
+}
+
+TEST_CASE("appends accumulate, one whole line each", "[journal][file]") {
+  const auto path = journal_path("append");
+  reset_journal(path);
+  {
+    runner::FileJournal journal(path);
+    REQUIRE(journal.open());
+    auto entry = sample_entry();
+    REQUIRE(journal.append(entry));
+    entry.outcome_ = JournalOutcome::ACCEPTED;
+    entry.order_id_ = "KRX-99";
+    REQUIRE(journal.append(entry));
+  }
+
+  const auto text = read_file(path);
+  REQUIRE(text.back() == '\n');
+  REQUIRE(std::count(text.begin(), text.end(), '\n') == 2);
+
+  const auto replay = runner::read_journal_file(path);
+  REQUIRE(replay.intact());
+  REQUIRE(replay.entries_.size() == 2);
+  REQUIRE(replay.entries_[1].order_id_ == "KRX-99");
+  REQUIRE(runner::unresolved_entries(replay).empty());
+}
+
+TEST_CASE("a restarted process appends to its predecessor's file", "[journal][file]") {
+  const auto path = journal_path("restart");
+  reset_journal(path);
+  {
+    runner::FileJournal first(path);
+    REQUIRE(first.append(sample_entry()));
+  }
+  {
+    runner::FileJournal second(path);
+    auto entry = sample_entry();
+    entry.id_ = "run-2";
+    REQUIRE(second.append(entry));
+    REQUIRE(second.replay().entries_.size() == 2);
+  }
+}
+
+TEST_CASE("an absent journal is intact and empty, not an error", "[journal][file]") {
+  const auto path = journal_path("absent");
+  reset_journal(path);
+  const auto replay = runner::read_journal_file(path);
+  REQUIRE(replay.intact());
+  REQUIRE(replay.entries_.empty());
+  REQUIRE(replay.detail_.empty());
+}
+
+// ---------------------------------------------------------------------------
+// Truncation: the case the format exists for
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a truncated final line is reported and treated as unresolved", "[journal][file]") {
+  const auto path = journal_path("truncated");
+  reset_journal(path);
+
+  auto complete = sample_entry();
+  complete.id_ = "run-1";
+  auto resolved = complete;
+  resolved.outcome_ = JournalOutcome::ACCEPTED;
+
+  auto torn = sample_entry();
+  torn.id_ = "run-2";
+  torn.instrument_ = hynix();
+  const auto torn_line = runner::journal_entry_to_line(torn);
+
+  // A process killed mid-append leaves the prefix of its last line and no newline. Cut at two
+  // thirds so the instrument is still legible, which is the case worth salvaging.
+  write_file(
+    path,
+    runner::journal_entry_to_line(complete) + "\n" +
+      runner::journal_entry_to_line(resolved) + "\n" +
+      torn_line.substr(0, torn_line.size() * 2 / 3)
+  );
+
+  const auto replay = runner::read_journal_file(path);
+  REQUIRE(replay.truncated_tail_);
+  REQUIRE_FALSE(replay.intact());
+  REQUIRE(replay.detail_.find("000660") != std::string::npos);
+
+  const auto open = runner::unresolved_entries(replay);
+  REQUIRE(open.size() == 1);
+  REQUIRE(open.front().instrument_ == hynix());
+  // Its id is rewritten so that nothing can ever close it: the `outcome` field of a torn line may
+  // itself be the part that was cut off.
+  REQUIRE(open.front().id_ != "run-2");
+  REQUIRE(open.front().outcome_ == JournalOutcome::PENDING);
+}
+
+TEST_CASE("a truncated line is never allowed to resolve a pending one", "[journal][file]") {
+  const auto path = journal_path("truncated-terminal");
+  reset_journal(path);
+
+  auto pending = sample_entry();
+  pending.id_ = "run-1";
+  auto terminal = pending;
+  terminal.outcome_ = JournalOutcome::ACCEPTED;
+  terminal.order_id_ = "KRX-1";
+  const auto terminal_line = runner::journal_entry_to_line(terminal);
+
+  // The line that was cut off is the one that *answers* the pending line. A reader that trusted
+  // its legible prefix would mark the order resolved on the strength of a write that never
+  // finished.
+  write_file(
+    path,
+    runner::journal_entry_to_line(pending) + "\n" +
+      terminal_line.substr(0, terminal_line.size() * 2 / 3)
+  );
+
+  const auto replay = runner::read_journal_file(path);
+  REQUIRE(replay.truncated_tail_);
+  const auto open = runner::unresolved_entries(replay);
+  REQUIRE(open.size() == 2);
+  REQUIRE(open[0].id_ == "run-1");
+  REQUIRE(open[1].instrument_ == samsung());
+}
+
+TEST_CASE("a truncated line naming no instrument is still reported", "[journal][file]") {
+  const auto path = journal_path("truncated-early");
+  reset_journal(path);
+  write_file(path, runner::journal_entry_to_line(sample_entry()) + "\n" + R"({"id":"run-2","ac)");
+
+  const auto replay = runner::read_journal_file(path);
+  REQUIRE(replay.truncated_tail_);
+  REQUIRE(replay.entries_.size() == 1);
+  REQUIRE(replay.detail_.find("something was in flight") != std::string::npos);
+}
+
+TEST_CASE("a complete line that is not a journal entry is counted", "[journal][file]") {
+  const auto path = journal_path("foreign");
+  reset_journal(path);
+  write_file(
+    path, runner::journal_entry_to_line(sample_entry()) + "\n" + R"({"hello":"world"})" + "\n"
+  );
+
+  const auto replay = runner::read_journal_file(path);
+  REQUIRE_FALSE(replay.truncated_tail_);
+  REQUIRE(replay.unreadable_lines_ == 1);
+  REQUIRE(replay.entries_.size() == 1);
+  REQUIRE_FALSE(replay.intact());
+}
+
+// ---------------------------------------------------------------------------
+// A journal that cannot be written stops the send
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** A journal that refuses to record, standing in for a full disk. */
+class FailingJournal {
+public:
+  bool append(const JournalEntry&) { return false; }
+  runner::JournalReplay replay() const { return {}; }
+};
+
+} // namespace
+
+TEST_CASE("an instruction that cannot be journaled is not sent", "[journal]") {
+  FailingJournal journal;
+  runner::JournalingExecutor<runner::RecordingExecutor<runner::DryTag>, FailingJournal,
+    runner::ManualClock>
+    executor{runner::RecordingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}};
+
+  // Rejected rather than indeterminate, and the distinction is the safety property: nothing was
+  // sent, so the order does not exist and no instrument needs withholding.
+  REQUIRE(executor.place(buy_ten()) == SendOutcome::REJECTED);
+  REQUIRE(executor.inner().placed().empty());
+  REQUIRE(executor.unjournaled_refusals() == 1);
+  REQUIRE_FALSE(executor.last_journal_error().empty());
+
+  REQUIRE(executor.cancel(resting("BROKER-1")) == SendOutcome::REJECTED);
+  REQUIRE(executor.inner().canceled().empty());
+  REQUIRE(executor.unjournaled_refusals() == 2);
+}
+
+TEST_CASE("a journal that could not be opened reports it", "[journal][file]") {
+  runner::FileJournal journal("atl-test-journal-missing-directory/nowhere.jsonl");
+  REQUIRE_FALSE(journal.open());
+  REQUIRE_FALSE(journal.append(sample_entry()));
 }

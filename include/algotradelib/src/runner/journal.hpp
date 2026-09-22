@@ -253,8 +253,11 @@ inline std::vector<JournalEntry> unresolved_entries(const JournalReplay& replay)
  */
 class MemoryJournal {
 public:
-  /** Records one line. */
-  void append(const JournalEntry& entry) { entries_.push_back(entry); }
+  /** Records one line. Always succeeds: memory does not run out of disk. */
+  bool append(const JournalEntry& entry) {
+    entries_.push_back(entry);
+    return true;
+  }
 
   /** Returns everything recorded. Never reports damage: memory does not tear. */
   JournalReplay replay() const {
@@ -291,6 +294,14 @@ private:
  * The inner executor's own return value is passed through unchanged. Journaling observes; it never
  * decides. A journal that could change an outcome would be a second place where order safety is
  * implemented, and there is exactly one.
+ *
+ * **Except in one case, and it is the case that proves the rule.** If the `PENDING` line cannot be
+ * made durable — a full disk, a revoked permission, a path that stopped existing — the send does
+ * not happen. Sending anyway would produce the exact situation the journal exists to prevent, with
+ * the added insult that the runner would believe itself protected. The instruction is reported as
+ * `REJECTED`, which is the truthful classification: nothing was sent, so the order does not exist
+ * and nothing needs reconciling. `last_journal_error()` says why, because a `REJECTED` with no
+ * broker behind it is otherwise indistinguishable from a broker's refusal.
  */
 template <typename Inner, typename Journal, typename Clock = SteadyClock>
 class JournalingExecutor {
@@ -329,7 +340,9 @@ public:
     entry.type_ = order.type_;
     entry.quantity_ = order.quantity_;
     entry.price_ = order.price_;
-    journal_->append(entry);
+    if (!journal_->append(entry)) {
+      return refuse_unjournaled();
+    }
 
     const auto outcome = inner_.place(order);
 
@@ -362,7 +375,9 @@ public:
     // Recorded from the start, unlike a placement's: a cancellation names an order that already
     // exists, and that name is what turns its recovery into an identity match rather than a guess.
     entry.order_id_ = working.ref_.primary_;
-    journal_->append(entry);
+    if (!journal_->append(entry)) {
+      return refuse_unjournaled();
+    }
 
     const auto outcome = inner_.cancel(working);
 
@@ -380,6 +395,18 @@ public:
   /** Returns the journal being written to. */
   const Journal& journal() const noexcept { return *journal_; }
 
+  /**
+   * Returns why the last instruction was refused without being sent, or empty when none was.
+   *
+   * Cleared by the next instruction that is journaled successfully, so it describes the most recent
+   * attempt rather than accumulating. A caller that sees repeated refusals here is looking at a
+   * storage problem, not a trading one, and should stop the runner rather than retry.
+   */
+  const std::string& last_journal_error() const noexcept { return journal_error_; }
+
+  /** Returns how many instructions were refused because they could not be journaled. */
+  std::size_t unjournaled_refusals() const noexcept { return refusals_; }
+
   /** Forwards the reference the broker issued for the last accepted order, where the inner has one. */
   template <typename Executor = Inner>
   auto last_ref() const noexcept -> decltype(std::declval<const Executor&>().last_ref()) {
@@ -393,6 +420,13 @@ public:
   }
 
 private:
+  /** Refuses an instruction that could not be recorded, without attempting it. */
+  SendOutcome refuse_unjournaled() {
+    ++refusals_;
+    journal_error_ = "the order journal could not be written, so nothing was sent";
+    return SendOutcome::REJECTED;
+  }
+
   /** Returns a line id unique within this process and, by its prefix, across restarts. */
   std::string next_id() { return prefix_ + '-' + std::to_string(++sequence_); }
 
@@ -446,6 +480,8 @@ private:
   Journal* journal_;
   Clock clock_;
   std::string prefix_;
+  std::string journal_error_;
+  std::size_t refusals_{0};
   std::uint64_t sequence_{0};
 };
 
