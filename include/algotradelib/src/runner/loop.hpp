@@ -157,6 +157,15 @@ enum class GateReason {
    * would be the one lie in it that matters.
    */
   POLL_FAILING,
+  /**
+   * Local machinery can no longer send, so the loop stopped trying.
+   *
+   * The order journal could not be written, and no broker was ever asked. Every subsequent order
+   * would fail the same way, so continuing would produce a refusal per bar that looks like the
+   * broker declining -- when in fact nothing left the process. Sticky until a program clears it
+   * with `Runner::resume_after_local_failure`.
+   */
+  LOCAL_FAILURE,
 };
 
 /** Returns a stable lowercase name for `reason`. */
@@ -172,6 +181,8 @@ inline constexpr std::string_view gate_reason_name(GateReason reason) noexcept {
       return "stopping";
     case GateReason::POLL_FAILING:
       return "poll_failing";
+    case GateReason::LOCAL_FAILURE:
+      return "local_failure";
   }
   return "unknown";
 }
@@ -489,6 +500,11 @@ private:
   ) {
     if (stop.requested()) {
       return GateReason::STOPPING;
+    }
+    // Checked before the order-list read, because a runner whose journal is broken must not be sent
+    // looking for more work to fail at. It is also the one gate nothing in the loop can lift.
+    if (runner_->local_failure()) {
+      return GateReason::LOCAL_FAILURE;
     }
     if (!order_list_read_) {
       const auto outcome = source_->read_order_list(*runner_);

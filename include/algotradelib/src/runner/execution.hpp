@@ -39,6 +39,21 @@ enum class SendOutcome {
    * Nothing further may be sent for that instrument until the broker's order list has been read.
    */
   INDETERMINATE,
+  /**
+   * A local precondition failed, so nothing was sent and the broker was never asked.
+   *
+   * Distinct from `REJECTED` even though both mean the order does not exist, because they oblige
+   * opposite responses. A rejection is the broker's *answer*: the instruction was wrong, the rest of
+   * the session is fine, and the loop should carry on. This is the local machinery failing -- the
+   * order journal could not be written, say -- which says nothing about the instruction and
+   * everything about whether the runner should still be trading. Every subsequent order would fail
+   * the same way, and each one would look like a broker refusal.
+   *
+   * So it is **sticky and fatal to sending**: the runner records it and the loop gates on it, rather
+   * than reporting one refusal per bar until somebody reads the logs closely enough to notice that
+   * no broker was involved.
+   */
+  UNAVAILABLE,
 };
 
 /** Returns a stable lowercase name for `outcome`, for logs and structured reporting. */
@@ -50,6 +65,8 @@ inline constexpr std::string_view send_outcome_name(SendOutcome outcome) noexcep
       return "rejected";
     case SendOutcome::INDETERMINATE:
       return "indeterminate";
+    case SendOutcome::UNAVAILABLE:
+      return "unavailable";
   }
   return "unknown";
 }
@@ -98,6 +115,11 @@ inline SendOutcome outcome_of(const BrokerError& error) {
   return SendOutcome::INDETERMINATE;
 }
 
+/** Returns whether `outcome` means the broker was asked at all. */
+inline constexpr bool send_outcome_reached_broker(SendOutcome outcome) noexcept {
+  return outcome != SendOutcome::UNAVAILABLE;
+}
+
 /** Why a planned order was held back rather than sent or refused. */
 enum class WithheldReason {
   /**
@@ -107,6 +129,13 @@ enum class WithheldReason {
    * position. It withholds until the broker's order list resolves the question.
    */
   RECONCILE_REQUIRED,
+  /**
+   * Local machinery could not send, so the broker was never asked.
+   *
+   * Nothing is in doubt about the position -- nothing was attempted -- but nothing further will
+   * succeed either until whatever broke is fixed.
+   */
+  LOCAL_FAILURE,
 };
 
 /** Returns a stable lowercase name for `reason`. */
@@ -114,6 +143,8 @@ inline constexpr std::string_view withheld_reason_name(WithheldReason reason) no
   switch (reason) {
     case WithheldReason::RECONCILE_REQUIRED:
       return "reconcile_required";
+    case WithheldReason::LOCAL_FAILURE:
+      return "local_failure";
   }
   return "unknown";
 }

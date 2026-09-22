@@ -128,6 +128,13 @@ inline constexpr JournalOutcome journal_outcome_of(SendOutcome outcome) noexcept
       return JournalOutcome::REJECTED;
     case SendOutcome::INDETERMINATE:
       return JournalOutcome::INDETERMINATE;
+    case SendOutcome::UNAVAILABLE:
+      // Recorded as a refusal, because that is what it is from the order's point of view: nothing
+      // was sent, so the order does not exist and nothing needs reconciling. This decorator never
+      // reaches here for its own refusals -- those return before a terminal line is written -- but
+      // an inner executor with local machinery of its own can produce one, and recording it as
+      // `INDETERMINATE` would withhold an instrument for an order that was never attempted.
+      return JournalOutcome::REJECTED;
   }
   return JournalOutcome::INDETERMINATE;
 }
@@ -412,7 +419,12 @@ public:
     entry.recorded_at_ = clock_.now();
     entry.order_id_ = accepted_order_id(outcome);
     entry.detail_ = failure_detail(outcome);
-    journal_->append(entry);
+    if (!journal_->append(entry)) {
+      // The send already happened, so refusing it now would be a lie. What is lost is the *answer*,
+      // which leaves the instruction looking unresolved to the next recovery -- the safe direction,
+      // costing one reconciliation. The failure is still recorded so the runner stops.
+      note_failure("the order journal could not record an instruction's outcome");
+    }
     return outcome;
   }
 
@@ -446,7 +458,9 @@ public:
     entry.outcome_ = journal_outcome_of(outcome);
     entry.recorded_at_ = clock_.now();
     entry.detail_ = failure_detail(outcome);
-    journal_->append(entry);
+    if (!journal_->append(entry)) {
+      note_failure("the order journal could not record an instruction's outcome");
+    }
     return outcome;
   }
 
@@ -460,9 +474,10 @@ public:
   /**
    * Returns why the last instruction was refused without being sent, or empty when none was.
    *
-   * Cleared by the next instruction that is journaled successfully, so it describes the most recent
-   * attempt rather than accumulating. A caller that sees repeated refusals here is looking at a
-   * storage problem, not a trading one, and should stop the runner rather than retry.
+   * **Kept rather than cleared**, and the first reason rather than the latest. A journal that failed
+   * once will fail again, and a caller that sees this is looking at a storage problem rather than a
+   * trading one: the runner should stop, not retry. `Runner` treats it exactly that way, turning the
+   * first `UNAVAILABLE` into a sticky condition the loop gates on.
    */
   const std::string& last_journal_error() const noexcept { return journal_error_; }
 
@@ -485,8 +500,15 @@ private:
   /** Refuses an instruction that could not be recorded, without attempting it. */
   SendOutcome refuse_unjournaled() {
     ++refusals_;
-    journal_error_ = "the order journal could not be written, so nothing was sent";
-    return SendOutcome::REJECTED;
+    note_failure("the order journal could not be written, so nothing was sent");
+    return SendOutcome::UNAVAILABLE;
+  }
+
+  /** Records why the journal failed, keeping the first reason rather than the latest. */
+  void note_failure(std::string detail) {
+    if (journal_error_.empty()) {
+      journal_error_ = std::move(detail);
+    }
   }
 
   /** Returns a line id unique within this process and, by its prefix, across restarts. */

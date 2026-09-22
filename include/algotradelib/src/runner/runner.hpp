@@ -74,6 +74,14 @@ struct DryRunReport {
    * cancellation the runner cannot describe is one it should not invent.
    */
   std::vector<OrderRef<BrokerTag>> unresolved_cancel_;
+  /**
+   * Instructions local machinery refused to send, with the reason.
+   *
+   * Never a broker's answer. The order journal could not be written, and so nothing was attempted.
+   * Reported separately from `rejected_` because the two ask for opposite responses: a rejection is
+   * about one instruction, this is about whether the runner should still be trading at all.
+   */
+  std::vector<WithheldOrder> unavailable_;
   /** Lines the strategy logged. */
   std::vector<std::string> log_;
 
@@ -81,7 +89,7 @@ struct DryRunReport {
   bool quiet() const noexcept {
     return would_place_.empty() && would_cancel_.empty() && rejected_.empty() &&
       refused_.empty() && withheld_.empty() && indeterminate_.empty() &&
-      unresolved_cancel_.empty();
+      unresolved_cancel_.empty() && unavailable_.empty();
   }
 };
 
@@ -161,6 +169,31 @@ public:
    */
   const IndeterminacyLedger& ledger() const noexcept { return ledger_; }
   IndeterminacyLedger& ledger() noexcept { return ledger_; }
+
+  /**
+   * Returns why local machinery can no longer send, or nothing while it can.
+   *
+   * **Sticky on purpose.** A journal that cannot be written will fail on the next order too, and
+   * the one after that. Clearing it on the next quiet bar would turn a storage outage into a
+   * trickle of unexplained refusals; leaving it set lets `PollingLoop` gate on it and stop, which
+   * is what "a runner that cannot journal should not trade" actually requires.
+   *
+   * Cleared only by `resume_after_local_failure`, which a program calls when it has fixed whatever
+   * was broken.
+   */
+  const std::optional<std::string>& local_failure() const noexcept { return local_failure_; }
+
+  /** Clears the local failure, after an operator has fixed what caused it. */
+  void resume_after_local_failure() noexcept { local_failure_.reset(); }
+
+  /**
+   * Sets the local failure directly, for tests that drive the gate without a broken journal.
+   *
+   * Named for what it is rather than hidden behind a friend declaration: the condition is otherwise
+   * only reachable by making storage fail, and a loop test should not have to own a filesystem to
+   * assert what the loop does about it.
+   */
+  void note_local_failure_for_test(std::string detail) { note_local_failure(std::move(detail)); }
 
   /** Returns the strategy, so a test can read the state it kept. */
   const Strategy& strategy() const noexcept { return strategy_; }
@@ -354,6 +387,16 @@ private:
           ledger_.mark(order.instrument_, "an order request failed in transit");
           report.indeterminate_.push_back(std::move(order));
           break;
+        case SendOutcome::UNAVAILABLE:
+          // No `note_sent`: nothing went out, so the broker counted nothing and no rate-limit
+          // budget was spent. The ledger is not marked either -- an instruction that was never
+          // attempted leaves no doubt about the position, and withholding the instrument would be
+          // withholding it for the wrong reason.
+          note_local_failure(local_failure_detail());
+          report.unavailable_.push_back(
+            WithheldOrder{WithheldReason::LOCAL_FAILURE, order, *local_failure_}
+          );
+          break;
       }
     }
 
@@ -382,6 +425,13 @@ private:
     const auto outcome = executor_.cancel(*working);
     if (outcome == SendOutcome::INDETERMINATE) {
       ledger_.mark(working->order_.instrument_, "a cancellation request failed in transit");
+    }
+    if (outcome == SendOutcome::UNAVAILABLE) {
+      note_local_failure(local_failure_detail());
+      // Not reported as a withdrawal that happened, because it did not. A cancellation nobody sent
+      // must not read as one the broker has.
+      report.unresolved_cancel_.push_back(ref);
+      return;
     }
     report.would_cancel_.push_back(ref);
   }
@@ -437,8 +487,28 @@ private:
   Strategy strategy_;
   strategy::RiskGuard guard_;
   Context context_;
+  /** Records the first local failure, keeping it rather than overwriting with a later one. */
+  void note_local_failure(std::string detail) {
+    if (!local_failure_) {
+      local_failure_ = std::move(detail);
+    }
+  }
+
+  /** Returns what the executor says went wrong, where it says anything. */
+  std::string local_failure_detail() const { return local_failure_detail_impl(0); }
+
+  template <typename E = Executor>
+  auto local_failure_detail_impl(int) const
+    -> decltype(std::declval<const E&>().last_journal_error(), std::string()) {
+    const auto& detail = executor_.last_journal_error();
+    return detail.empty() ? std::string("local machinery refused to send") : detail;
+  }
+
+  std::string local_failure_detail_impl(...) const { return "local machinery refused to send"; }
+
   Executor executor_;
   IndeterminacyLedger ledger_;
+  std::optional<std::string> local_failure_;
   std::map<std::string, PriceLimits> price_limits_;
   std::optional<Decimal64> portfolio_value_;
   strategy::TradeTolerance tolerance_;

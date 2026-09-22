@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <optional>
 #include <string>
@@ -708,20 +709,157 @@ TEST_CASE("an instruction that cannot be journaled is not sent", "[journal]") {
     runner::ManualClock>
     executor{runner::RecordingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}};
 
-  // Rejected rather than indeterminate, and the distinction is the safety property: nothing was
-  // sent, so the order does not exist and no instrument needs withholding.
-  REQUIRE(executor.place(buy_ten()) == SendOutcome::REJECTED);
+  // `UNAVAILABLE` rather than `REJECTED`, and the distinction is the whole point: both mean the
+  // order does not exist, but a rejection is the broker's answer about one instruction while this
+  // is the local machinery failing, which says nothing about the instruction and everything about
+  // whether the runner should still be trading.
+  REQUIRE(executor.place(buy_ten()) == SendOutcome::UNAVAILABLE);
+  REQUIRE_FALSE(runner::send_outcome_reached_broker(SendOutcome::UNAVAILABLE));
   REQUIRE(executor.inner().placed().empty());
   REQUIRE(executor.unjournaled_refusals() == 1);
   REQUIRE_FALSE(executor.last_journal_error().empty());
 
-  REQUIRE(executor.cancel(resting("BROKER-1")) == SendOutcome::REJECTED);
+  REQUIRE(executor.cancel(resting("BROKER-1")) == SendOutcome::UNAVAILABLE);
   REQUIRE(executor.inner().canceled().empty());
   REQUIRE(executor.unjournaled_refusals() == 2);
+}
+
+TEST_CASE("the first journal failure is the one reported", "[journal]") {
+  // A journal that failed once will fail again. Overwriting with the latest reason would make an
+  // operator chase the last symptom rather than the first cause.
+  FailingJournal journal;
+  runner::JournalingExecutor<runner::RecordingExecutor<runner::DryTag>, FailingJournal,
+    runner::ManualClock>
+    executor{runner::RecordingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}};
+
+  executor.place(buy_ten());
+  const auto first = executor.last_journal_error();
+  executor.place(buy_ten(hynix()));
+  REQUIRE(executor.last_journal_error() == first);
+}
+
+namespace {
+
+/** A journal that records the first line and then refuses, losing only the answer. */
+class HalfFailingJournal {
+public:
+  bool append(const JournalEntry& entry) {
+    if (accepted_ >= limit_) {
+      return false;
+    }
+    ++accepted_;
+    entries_.push_back(entry);
+    return true;
+  }
+
+  runner::JournalReplay replay() const {
+    runner::JournalReplay replay;
+    replay.entries_ = entries_;
+    return replay;
+  }
+
+  std::size_t limit_{1};
+
+private:
+  std::size_t accepted_{0};
+  std::vector<JournalEntry> entries_;
+};
+
+} // namespace
+
+TEST_CASE("a terminal line that cannot be written is reported, not swallowed", "[journal]") {
+  // The send already happened, so refusing it now would be a lie. What is lost is the *answer*,
+  // which leaves the instruction looking unresolved to the next recovery -- one wasted
+  // reconciliation, which is the safe direction. The failure is still recorded so the runner stops.
+  HalfFailingJournal journal;
+  runner::JournalingExecutor<runner::RecordingExecutor<runner::DryTag>, HalfFailingJournal,
+    runner::ManualClock>
+    executor{runner::RecordingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}};
+
+  REQUIRE(executor.place(buy_ten()) == SendOutcome::ACCEPTED);
+  REQUIRE(executor.inner().placed().size() == 1);
+  REQUIRE_FALSE(executor.last_journal_error().empty());
+  // The pending line stands alone, so recovery treats the instruction as owed.
+  REQUIRE(runner::unresolved_instructions(journal.replay()).size() == 1);
 }
 
 TEST_CASE("a journal that could not be opened reports it", "[journal][file]") {
   runner::FileJournal journal("atl-test-journal-missing-directory/nowhere.jsonl");
   REQUIRE_FALSE(journal.open());
   REQUIRE_FALSE(journal.append(sample_entry()));
+}
+
+// ---------------------------------------------------------------------------
+// A broken journal stops the runner, rather than producing a refusal per bar
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** A strategy that asks for a fixed position every bar, so every bar produces an instruction. */
+struct HoldTen {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = Decimal64::parse("10");
+    ctx.submit(target);
+  }
+};
+
+Instrument samsung_reference() {
+  Instrument reference;
+  reference.id_ = samsung();
+  reference.type_ = SecurityType::STOCK;
+  reference.currency_ = Currency{"KRW"};
+  reference.lot_size_ = Decimal64::parse("1");
+  reference.price_rule_ = PriceRule::krx_equity();
+  return reference;
+}
+
+strategy::BarEvent bar_at(int day) {
+  Bar bar;
+  bar.timestamp_ = utc(2026, 3, day, 6, 30);
+  bar.high_ = Decimal64::parse("70000");
+  bar.low_ = bar.high_;
+  bar.close_ = bar.high_;
+  bar.volume_ = Decimal64::parse("1000000");
+  return strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, bar);
+}
+
+using BrokenExecutor = runner::JournalingExecutor<
+  runner::RecordingExecutor<runner::DryTag>, FailingJournal, runner::ManualClock>;
+
+} // namespace
+
+TEST_CASE("a broken journal stops the runner rather than refusing per bar", "[journal]") {
+  FailingJournal journal;
+  runner::Runner<HoldTen, strategy::NoCaps, runner::DryTag, BrokenExecutor> dry{
+    HoldTen{},
+    {},
+    512,
+    BrokenExecutor{runner::RecordingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}}
+  };
+  dry.context().set_instrument(samsung_reference());
+  dry.context().set_phase(strategy::MarketPhase::OPEN);
+  dry.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+  const auto report = dry.feed(bar_at(30));
+
+  // Reported as what it is, in its own bucket. Not `rejected_`, which would read as the broker
+  // declining an instruction it never saw.
+  REQUIRE(report.unavailable_.size() == 1);
+  REQUIRE(report.rejected_.empty());
+  REQUIRE(report.would_place_.empty());
+  REQUIRE(report.unavailable_.front().reason_ == runner::WithheldReason::LOCAL_FAILURE);
+  REQUIRE_FALSE(report.unavailable_.front().detail_.empty());
+
+  // Sticky: the next bar does not get to try again and produce a second mystery refusal.
+  REQUIRE(dry.local_failure().has_value());
+
+  // And the instrument is *not* withheld. Nothing was attempted, so nothing is in doubt about the
+  // position -- marking it would withhold it for the wrong reason.
+  REQUIRE(dry.ledger().empty());
+
+  dry.resume_after_local_failure();
+  REQUIRE_FALSE(dry.local_failure().has_value());
 }

@@ -760,3 +760,45 @@ TEST_CASE("a flatten outside market hours is refused and says so", "[loop][stop]
   }
   CHECK(warned);
 }
+
+TEST_CASE("a local failure halts the loop and nothing lifts it", "[loop][gate]") {
+  // A journal that cannot be written will fail on the next order too. Without this gate the loop
+  // would produce one refusal per bar, each looking like the broker declining an instruction it
+  // never saw.
+  InertRunner runner_instance;
+  InertSource source;
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  runner_instance.ledger();  // the ledger is untouched: nothing was ever attempted.
+  CHECK(runner_instance.ledger().empty());
+
+  const auto before = loop.run(stop, 1);
+  CHECK(before.final_gate_ == runner::GateReason::NONE);
+
+  // What `SendOutcome::UNAVAILABLE` leaves behind on the runner.
+  runner_instance.note_local_failure_for_test("the order journal could not be written");
+
+  const auto report = loop.run(stop, 3);
+  CHECK(report.final_gate_ == runner::GateReason::LOCAL_FAILURE);
+  CHECK(report.blocked_ == 3);
+  CHECK(runner_instance.guard().halted());
+  // Checked before the order-list read, so a runner whose journal is broken is not sent looking for
+  // more work to fail at.
+  CHECK(source.order_list_reads() == 1);
+
+  // Only an operator clears it.
+  runner_instance.resume_after_local_failure();
+  const auto after = loop.run(stop, 1);
+  CHECK(after.final_gate_ == runner::GateReason::NONE);
+  CHECK_FALSE(runner_instance.guard().halted());
+}
+
+TEST_CASE("gate reason names are stable", "[loop][gate]") {
+  CHECK(runner::gate_reason_name(runner::GateReason::NONE) == "none");
+  CHECK(runner::gate_reason_name(runner::GateReason::ORDER_LIST_UNREAD) == "order_list_unread");
+  CHECK(runner::gate_reason_name(runner::GateReason::PORTFOLIO_STALE) == "portfolio_stale");
+  CHECK(runner::gate_reason_name(runner::GateReason::STOPPING) == "stopping");
+  CHECK(runner::gate_reason_name(runner::GateReason::POLL_FAILING) == "poll_failing");
+  CHECK(runner::gate_reason_name(runner::GateReason::LOCAL_FAILURE) == "local_failure");
+}
