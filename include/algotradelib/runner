@@ -39,6 +39,7 @@
 #include "src/runner/dispatch.hpp"
 #include "src/runner/runner.hpp"
 #include "src/runner/execution.hpp"
+#include "src/runner/journal.hpp"
 #include "src/runner/loop.hpp"
 #include "src/runner/signal_stop.hpp"
 #include "src/runner/stop.hpp"
