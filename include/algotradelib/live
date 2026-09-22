@@ -16,5 +16,6 @@
 
 #include "src/live/bind.hpp"
 #include "src/live/session_executor.hpp"
+#include "src/live/session_source.hpp"
 
 #include <algotradelib/runner>

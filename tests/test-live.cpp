@@ -2,6 +2,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <type_traits>
@@ -26,6 +27,20 @@ struct WithKey : strategy::NoCaps {
 };
 struct WithoutKey : strategy::NoCaps {
   static constexpr bool has_client_order_id = false;
+};
+
+/**
+ * Capability variants for the working-order inquiry.
+ *
+ * `SessionSource::read_order_list` branches on `has_working_orders` at compile time -- working orders
+ * where the broker offers them, order history where it does not -- so both branches need a broker to
+ * be instantiated against, or only one of them is ever compiled.
+ */
+struct WithWorkingOrders : strategy::NoCaps {
+  static constexpr bool has_working_orders = true;
+};
+struct WithoutWorkingOrders : strategy::NoCaps {
+  static constexpr bool has_working_orders = false;
 };
 
 /**
@@ -79,7 +94,81 @@ public:
   const std::vector<AmendInstruction>& canceled() const noexcept { return canceled_; }
   const std::vector<Ref>& canceled_refs() const noexcept { return canceled_refs_; }
 
+  // ---- the read side, which `SessionSource` polls ----
+
+  /** Returns the scripted bar series, counting the call. */
+  Result<BarSeries> bars(const BarQuery& query) {
+    ++bar_calls_;
+    if (error_) {
+      return Result<BarSeries>(*error_);
+    }
+    BarSeries series = bars_;
+    series.instrument_ = query.instrument_;
+    return Result<BarSeries>(std::move(series));
+  }
+
+  /** Returns the scripted quote, counting the call. */
+  Result<QuoteSnapshot> quote(const InstrumentId& instrument) {
+    ++quote_calls_;
+    if (error_) {
+      return Result<QuoteSnapshot>(*error_);
+    }
+    QuoteSnapshot snapshot = quote_;
+    snapshot.instrument_ = instrument;
+    return Result<QuoteSnapshot>(std::move(snapshot));
+  }
+
+  /** Returns the scripted holdings, counting the call. */
+  Result<HoldingsSnapshot> holdings() {
+    ++holdings_calls_;
+    if (error_) {
+      return Result<HoldingsSnapshot>(*error_);
+    }
+    return Result<HoldingsSnapshot>(holdings_);
+  }
+
+  /** Returns the scripted working orders, counting the call. */
+  Result<WorkingOrders<FakeBroker>> working_orders() {
+    ++working_calls_;
+    if (error_) {
+      return Result<WorkingOrders<FakeBroker>>(*error_);
+    }
+    return Result<WorkingOrders<FakeBroker>>(working_orders_);
+  }
+
+  /** Returns an empty page, counting the call. */
+  Result<OrderPage> order_history(const OrderHistoryQuery&) {
+    ++history_calls_;
+    if (error_) {
+      return Result<OrderPage>(*error_);
+    }
+    return Result<OrderPage>(OrderPage{});
+  }
+
+  void set_bars(BarSeries series) { bars_ = std::move(series); }
+  void set_quote(QuoteSnapshot snapshot) { quote_ = std::move(snapshot); }
+  void set_holdings(HoldingsSnapshot snapshot) { holdings_ = std::move(snapshot); }
+  void set_working_orders(WorkingOrders<FakeBroker> orders) {
+    working_orders_ = std::move(orders);
+  }
+
+  std::size_t bar_calls() const noexcept { return bar_calls_; }
+  std::size_t quote_calls() const noexcept { return quote_calls_; }
+  std::size_t holdings_calls() const noexcept { return holdings_calls_; }
+  std::size_t working_calls() const noexcept { return working_calls_; }
+  std::size_t history_calls() const noexcept { return history_calls_; }
+
 private:
+  BarSeries bars_;
+  QuoteSnapshot quote_;
+  HoldingsSnapshot holdings_;
+  WorkingOrders<FakeBroker> working_orders_;
+  std::size_t bar_calls_{0};
+  std::size_t quote_calls_{0};
+  std::size_t holdings_calls_{0};
+  std::size_t working_calls_{0};
+  std::size_t history_calls_{0};
+
   std::vector<OrderRequest> placed_;
   std::vector<AmendInstruction> canceled_;
   std::vector<Ref> canceled_refs_;
@@ -376,4 +465,222 @@ TEST_CASE("an observing binding records nothing in the ledger, because nothing w
   // The session would have failed, and it is never asked, so no doubt is created.
   observing.feed(bar_at(0, "70000"));
   REQUIRE(observing.ledger().empty());
+}
+
+// ---------------------------------------------------------------------------
+// SessionSource: the read half of a live loop.
+//
+// Duck-typed on the session exactly as SessionExecutor is, so these run with no adapter and nothing
+// on the wire. What they assert is the part a real broker could not be asked to demonstrate on
+// demand: a rate-limit refusal, a failure mid-poll, and the same closed bar arriving twice.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** A strategy that counts what it was fed, so a test can prove the source actually fed it. */
+struct CountEvents {
+  std::size_t bars_{0};
+  std::size_t quotes_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {
+    ++bars_;
+  }
+
+  template <class Ctx>
+  void on_quote(Ctx&, const strategy::QuoteEvent&) {
+    ++quotes_;
+  }
+};
+
+using WorkingSession = FakeSession<WithWorkingOrders>;
+using HistorySession = FakeSession<WithoutWorkingOrders>;
+
+/** A two-bar series ending at `last_close`. */
+BarSeries two_bars(const char* first_close, const char* last_close) {
+  BarSeries series;
+  series.interval_ = BarInterval::ONE_DAY;
+  series.stamp_ = BarStamp::CLOSE;
+  Bar first;
+  first.timestamp_ = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 100);
+  first.close_ = Decimal64::parse(first_close);
+  first.high_ = first.close_;
+  first.low_ = first.close_;
+  Bar second = first;
+  second.timestamp_ = first.timestamp_ + std::chrono::hours(24);
+  second.close_ = Decimal64::parse(last_close);
+  second.high_ = second.close_;
+  second.low_ = second.close_;
+  series.bars_ = {first, second};
+  return series;
+}
+
+} // namespace
+
+TEST_CASE("a rate-limit refusal is not counted as a poll failure") {
+  // The limiter working as designed. Counting it as an outage would make a loop polling slightly too
+  // fast shut itself down instead of simply slowing down.
+  BrokerError limited;
+  limited.category_ = ErrorCategory::RATE_LIMIT;
+  CHECK(live::poll_outcome_of(limited) == runner::PollOutcome::RATE_LIMITED);
+
+  for (const auto category : {
+         ErrorCategory::TRANSPORT,
+         ErrorCategory::PROTOCOL,
+         ErrorCategory::HTTP,
+         ErrorCategory::AUTHENTICATION,
+         ErrorCategory::CANCELLED,
+         ErrorCategory::INVALID_ARGUMENT,
+       }) {
+    BrokerError error;
+    error.category_ = category;
+    CHECK(live::poll_outcome_of(error) == runner::PollOutcome::FAILED);
+  }
+}
+
+TEST_CASE("polling bars feeds each new bar exactly once") {
+  // The property that matters: a poll returning the same closed bar again is the normal case between
+  // closes, and feeding it twice would double every signal derived from it.
+  WorkingSession session;
+  session.set_bars(two_bars("70000", "71000"));
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  const auto first = source.poll(runner::PollKind::BARS, live_runner);
+  CHECK(first == runner::PollOutcome::UPDATED);
+  CHECK(live_runner.strategy().bars_ == 2);
+
+  // Same series again: nothing new.
+  const auto second = source.poll(runner::PollKind::BARS, live_runner);
+  CHECK(second == runner::PollOutcome::UNCHANGED);
+  CHECK(live_runner.strategy().bars_ == 2);
+
+  // One more bar appears, and only it is fed.
+  auto extended = two_bars("70000", "71000");
+  Bar third = extended.bars_.back();
+  third.timestamp_ += std::chrono::hours(24);
+  third.close_ = Decimal64::parse("72000");
+  extended.bars_.push_back(third);
+  session.set_bars(extended);
+
+  const auto after = source.poll(runner::PollKind::BARS, live_runner);
+  CHECK(after == runner::PollOutcome::UPDATED);
+  CHECK(live_runner.strategy().bars_ == 3);
+}
+
+TEST_CASE("a failing poll reports the failure and its reason") {
+  WorkingSession session;
+  session.set_bars(two_bars("70000", "71000"));
+  session.fail_with(ErrorCategory::TRANSPORT);
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  CHECK(source.poll(runner::PollKind::BARS, live_runner) == runner::PollOutcome::FAILED);
+  REQUIRE(source.last_error().has_value());
+  CHECK(source.last_error()->category_ == ErrorCategory::TRANSPORT);
+  // Nothing was fed, and nothing is owed: a poll that failed sent nothing, so unlike an order write
+  // it leaves no question about what exists.
+  CHECK(live_runner.strategy().bars_ == 0);
+  CHECK(live_runner.ledger().empty());
+}
+
+TEST_CASE("polling holdings stamps the portfolio with the broker's own time") {
+  // The loop's staleness gate measures against as_of_, so it must be when the broker says the
+  // positions were true rather than when the reply happened to arrive.
+  WorkingSession session;
+  HoldingsSnapshot snapshot;
+  HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = Decimal64::parse("10");
+  snapshot.positions_.push_back(position);
+  snapshot.received_at_ = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 200);
+  session.set_holdings(snapshot);
+
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  CHECK(source.poll(runner::PollKind::HOLDINGS, live_runner) == runner::PollOutcome::UPDATED);
+  const auto& portfolio = live_runner.context().portfolio();
+  REQUIRE(portfolio.positions_.size() == 1);
+  CHECK(portfolio.positions_[0].quantity_ == Decimal64::parse("10"));
+  CHECK(portfolio.as_of_ == snapshot.received_at_);
+}
+
+TEST_CASE("holdings and working orders merge rather than replace each other") {
+  // They are separate inquiries on separate cadences. Rebuilding the portfolio from either alone
+  // would drop the other, and a dropped working order is one reconciliation places again.
+  WorkingSession session;
+  HoldingsSnapshot snapshot;
+  HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = Decimal64::parse("10");
+  snapshot.positions_.push_back(position);
+  session.set_holdings(snapshot);
+  WorkingOrders<FakeBroker> orders;
+  orders.orders_.push_back(working());
+  session.set_working_orders(orders);
+
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  source.poll(runner::PollKind::HOLDINGS, live_runner);
+  source.poll(runner::PollKind::WORKING_ORDERS, live_runner);
+  CHECK(live_runner.context().portfolio().positions_.size() == 1);
+  CHECK(live_runner.context().portfolio().working_.size() == 1);
+
+  // And in the other order, because neither cadence is guaranteed to fire first.
+  auto other = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> other_source(session, {samsung()});
+  other_source.poll(runner::PollKind::WORKING_ORDERS, other);
+  other_source.poll(runner::PollKind::HOLDINGS, other);
+  CHECK(other.context().portfolio().positions_.size() == 1);
+  CHECK(other.context().portfolio().working_.size() == 1);
+}
+
+TEST_CASE("the order-list read follows the broker's capability") {
+  // A compile-time choice, so both branches need a broker to instantiate against or only one is ever
+  // compiled. The gate needs *an* order list, not a particular one.
+  SECTION("a broker with working orders uses that inquiry") {
+    WorkingSession session;
+    auto live_runner = live::bind_observer(session, CountEvents{});
+    live::SessionSource<WorkingSession> source(session, {samsung()});
+
+    CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+    CHECK(session.working_calls() == 1);
+    CHECK(session.history_calls() == 0);
+  }
+
+  SECTION("a broker without it falls back to order history") {
+    HistorySession session;
+    auto live_runner = live::bind_observer(session, CountEvents{});
+    live::SessionSource<HistorySession> source(session, {samsung()});
+
+    CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+    CHECK(session.history_calls() == 1);
+    CHECK(session.working_calls() == 0);
+  }
+}
+
+TEST_CASE("a failing order-list read leaves the gate closed") {
+  // The gate exists because an empty ledger does not mean nothing is owed -- it means nothing is
+  // remembered. A read that failed has established nothing, so it must not satisfy the gate.
+  HistorySession session;
+  session.fail_with(ErrorCategory::HTTP, 503);
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<HistorySession> source(session, {samsung()});
+
+  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::FAILED);
+  REQUIRE(source.last_error().has_value());
+  CHECK(source.last_error()->http_status_ == 503);
+}
+
+TEST_CASE("a broker without the working-order inquiry never polls for one") {
+  // A cadence is data, not a capability claim: a caller who sets one for an inquiry this broker lacks
+  // gets a poll that does nothing rather than a build failure.
+  HistorySession session;
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<HistorySession> source(session, {samsung()});
+
+  CHECK(source.poll(runner::PollKind::WORKING_ORDERS, live_runner) == runner::PollOutcome::UNCHANGED);
+  CHECK(session.working_calls() == 0);
 }

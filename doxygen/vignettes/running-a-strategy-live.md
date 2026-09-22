@@ -1,0 +1,197 @@
+# Running a strategy live
+
+This is the operational half of `runner::PollingLoop`: how to start one, how to stop one on purpose,
+and which of the ways to stop it will cost you money. The programming half is in the header. Read this
+before the first time you leave a strategy running unattended, because two of the things below cannot
+be discovered from the API and one of them is a supervisor setting on a machine you may not have
+configured yourself.
+
+## What the loop adds over `feed`
+
+`Runner::feed(event)` runs the pipeline once. Everything in this library is built so that call is the
+same in a backtest and in production, and it is genuinely all you need for one decision.
+
+What you must not do is write the obvious wrapper:
+
+```cpp
+while (true) { runner.feed(next_bar()); }   // don't
+```
+
+At that moment you own four things you probably did not mean to: a cadence, a rate-limit interaction, a
+reconciliation obligation, and a stop control. The loop exists to own them for you.
+
+```cpp
+auto live_runner = live::bind(session, MyStrategy{}, limits);
+live::SessionSource<Session> source(session, {samsung()});
+
+runner::PollSchedule schedule;
+schedule.bars_ = std::chrono::minutes(1);
+schedule.holdings_ = std::chrono::seconds(30);
+schedule.working_orders_ = std::chrono::seconds(30);
+schedule.tick_ = std::chrono::seconds(1);
+
+runner::PollingLoop loop(live_runner, source, schedule);
+loop.set_maximum_portfolio_age(std::chrono::minutes(2));
+
+runner::StopSource stop;
+runner::SignalStop::install(stop);
+
+const auto report = loop.run(stop);
+```
+
+`tick_` is not a poll. It is how often the loop wakes to check whether anything is due and whether a
+stop has been requested, so it is also the floor on how quickly an operator gets a response. A loop
+trading daily bars with a one-second tick wakes 86,400 times a day and polls once — which is the point.
+
+## The three stops, and what each leaves you holding
+
+| Intent | Stops sending | Cancels resting orders | Closes positions |
+| --- | --- | --- | --- |
+| `QUIESCE` | yes | no | no |
+| `WITHDRAW` | yes | yes | no |
+| `FLATTEN` | yes | yes | yes |
+
+`QUIESCE` is the default and is what both signals mean. That is deliberate: `SIGTERM` arrives for
+entirely routine reasons — a deploy, a host reboot, `docker stop` — and flattening on a reboot would
+turn routine maintenance into a liquidation.
+
+`SIGHUP` is ignored, so a dropped SSH connection cannot stop a process holding positions.
+
+## How to stop one, from outside
+
+**Signals**, which already reach a detached process every way you would want:
+
+```sh
+kill -TERM <pid>                              # anywhere
+tmux send-keys -t trading:0.0 C-c             # into a tmux pane, from outside it
+```
+
+Both quiesce. Note the tmux form: a `Ctrl+C` typed in some *other* terminal does not reach the pane,
+which is the property you wanted when you ran it in tmux in the first place.
+
+**A control file**, which is the only channel that can name an intent other than quiesce:
+
+```sh
+echo quiesce  > /var/run/atl/stop
+echo withdraw > /var/run/atl/stop
+echo flatten  > /var/run/atl/stop
+```
+
+The loop reads it once per tick, so the response time is one tick. A word it does not recognize is
+**reported, not guessed at** — `report.notes_` will say so — because picking the nearest intent would
+mean choosing how much of your position to close on your behalf. Check the notes if a stop seems not to
+have taken.
+
+The file is never deleted by the loop, so "did my stop get read?" stays answerable afterwards.
+
+## The hierarchy that actually matters
+
+The fastest stop is the worst one. In increasing order of damage:
+
+1. **Quiesce, finish the iteration, exit.** The request in flight completes and is classified, so
+   nothing is left unknown. Costs one iteration plus one request timeout.
+2. **Quiesce and withdraw.** Adds a cancellation per resting order, each of which can itself fail
+   indeterminately.
+3. **Quiesce and flatten.** Adds market orders — a trading decision taken under duress.
+4. **Killing the process mid-flight.** *Manufactures* an unknown outcome: an order may have reached the
+   broker with the reply lost, and nothing recorded that it might exist.
+5. **`SIGKILL`.** Everything in 4, and the indeterminacy ledger dies with the process.
+
+Levels 4 and 5 are the emergency doors. They are not faster in any way that helps you, because what
+they save in seconds they cost in having to read the broker's order list by hand before trading can
+resume.
+
+## The trap: your supervisor's grace period
+
+**This is the one thing here you cannot find out from the code, and it silently converts level 1 into
+level 5.**
+
+`systemd` sends `SIGTERM`, waits `TimeoutStopSec`, then sends `SIGKILL`. `docker stop` does the same
+with a ten-second default. If that grace period is shorter than *one loop iteration plus one request
+timeout*, then every clean shutdown you ever perform ends with a process killed mid-request — and you
+will believe you shut down cleanly, because you asked nicely and it exited.
+
+So make the grace period generous:
+
+```ini
+[Service]
+TimeoutStopSec=120
+```
+
+```sh
+docker stop --time 120 trading
+```
+
+And size it against your actual HTTP timeout, not against how long a shutdown usually takes.
+
+## The two gates that stop you trading, on purpose
+
+**The order list must be read before anything is sent.** A process that has just started cannot know
+whether a *previous* process died mid-POST. An empty indeterminacy ledger does not mean nothing is
+owed — it means nothing is remembered. So the loop reads the broker's own order list once before it
+will send anything, and retries until it succeeds. While that is pending, `report.final_gate_` is
+`order_list_unread`.
+
+This is the cheapest half of reconciliation and it needs no persistence at all, which is why it is
+built while the durable ledger is not.
+
+**A stale holdings snapshot blocks sizing.** Set `set_maximum_portfolio_age` and the loop refuses to
+send while the snapshot is older than that, reporting `portfolio_stale`. Reconciling a target against
+stale positions is how a position gets double-sized by a route that `working_quantity` does not close.
+Staleness is measured against the broker's own `as_of_` — when the positions were *true* — not against
+when the reply arrived.
+
+Both gates work by halting the guard, which is the library's one primitive for "stop sending without
+withdrawing or flattening". The loop only resumes a halt it set itself, so a `halt()` you called by hand
+survives. The one case a single flag cannot express is recorded in `plan/todo/halt-provenance.md`.
+
+## Did my stop actually happen?
+
+Ask, because it is not always yes:
+
+```cpp
+if (!report.closing_complete()) {
+  for (const auto& note : report.notes_) { std::cerr << note << '\n'; }
+}
+```
+
+`withdrawn_` and `flattened_` count what the loop **asked for**. `closing_placed_` counts what actually
+**went out**. They differ, and the most common reason is the one below.
+
+**`RiskLimits::permitted_phases_` defaults to `{MarketPhase::OPEN}`, so a flatten outside market hours
+is refused.** That is correct — there is no session to trade in — but it means an operator who asks to
+be flat at 22:00 and hears nothing would believe they are flat while still holding the position. The
+report says `closing_refused_` and carries a note ending "the position is still held". This is why the
+counts are separate rather than one number.
+
+## Poll failures are not send failures
+
+A poll that fails sent nothing, so nothing needs reconciling and no ledger entry is owed. A quote that
+did not arrive is an absence of information, and the loop carries on without it.
+
+What it does bound is repetition: `FailurePolicy::consecutive_limit_` consecutive failures of one kind
+and the loop quiesces rather than spinning against a broker that is refusing it. Counted per kind, so a
+broken working-order inquiry does not mask a healthy bar feed, and **consecutive** rather than
+cumulative, so one failure in three is degraded rather than down.
+
+A rate-limit refusal is specifically **not** a failure. It is the limiter working, and the controller
+already holds capacity back from polling so that an order is never the request that waits.
+
+## What this does not do yet
+
+- **Survive a restart.** The indeterminacy ledger is in memory. The startup gate above is what makes
+  that safe rather than merely documented, but after any abnormal exit you should still read the
+  broker's order list yourself before resuming. See `plan/todo/durable-indeterminacy.md`.
+- **Match broker rows to ledger entries automatically.** Matching on attributes is a heuristic, not an
+  identity: two identical orders seconds apart are indistinguishable in a listing. See
+  `plan/todo/order-journal-reconciliation.md`.
+- **Stream.** It polls. `plan/todo/realtime-streaming.md` drops into the same source seam.
+- **Run more than one loop.** One loop, one thread. See `plan/todo/parallel-execution.md`.
+
+## Trying it without a broker
+
+`examples/example-live-loop.cpp` runs the real loop against a source that invents its data — no
+credentials, no network, and it finishes instantly because it uses `ManualClock`. It is also the
+shortest worked example of writing a source for a broker this library does not support: implement
+`poll` and `read_order_list`, and the cadence, the stop intents, the gates and the failure policy all
+come along unchanged.

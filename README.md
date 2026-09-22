@@ -785,6 +785,63 @@ fetches real history, then replays it with the session finished with first.
 See the [reading a backtest honestly](doxygen/vignettes/reading-a-backtest.md) vignette for what the
 fill model assumes, what it does not model, and which figures to distrust first.
 
+## Running live
+
+`Runner::feed` is one pass, which is right for a backtest and for a single decision. `runner::PollingLoop`
+is what a program that outlives one pass needs around it, so nobody has to write
+`while (true) { runner.feed(next()); }` and inherit a cadence, a rate-limit interaction, a reconciliation
+obligation and a stop control by accident.
+
+```cpp
+auto live_runner = live::bind(session, MyStrategy{}, limits);
+live::SessionSource<Session> source(session, {samsung()});
+
+runner::PollSchedule schedule;
+schedule.bars_ = std::chrono::minutes(1);
+schedule.holdings_ = std::chrono::seconds(30);
+
+runner::PollingLoop loop(live_runner, source, schedule);
+loop.set_maximum_portfolio_age(std::chrono::minutes(2));
+
+runner::StopSource stop;
+runner::SignalStop::install(stop);
+const auto report = loop.run(stop);
+```
+
+The loop takes a **source** the way the runner takes an executor, and for the same reason: deciding when
+to poll, noticing a stop, refusing to send before the first reconciliation and judging a snapshot too
+stale to size against are not broker concerns — only the fetching is. So `SessionSource` does the
+fetching and everything else is tested with no network, no credentials and no signal raised. Writing a
+source for a broker this library does not support means implementing two functions; the cadence, the stop
+intents, the gates and the failure policy come along unchanged.
+
+**Stopping is three different things**, named separately so an operator under pressure never has to
+guess which one they are getting:
+
+| Intent | Stops sending | Cancels resting orders | Closes positions |
+| --- | --- | --- | --- |
+| `QUIESCE` | yes | no | no |
+| `WITHDRAW` | yes | yes | no |
+| `FLATTEN` | yes | yes | yes |
+
+`SIGINT` and `SIGTERM` both quiesce — flattening on a host reboot would turn maintenance into a
+liquidation — and `SIGHUP` is ignored so a dropped SSH session cannot stop a process holding positions.
+Signals are installed only when asked, never on inclusion. A control file (`echo withdraw > path`) is the
+channel that can name the other two intents.
+
+**Two gates deliberately stop you trading.** Nothing is sent until the broker's own order list has been
+read once, because a process that has just started cannot know whether its predecessor died mid-POST —
+an empty indeterminacy ledger means nothing is *remembered*, not that nothing is owed. And a holdings
+snapshot older than `set_maximum_portfolio_age` blocks sizing, measured against the broker's own `as_of_`
+rather than when the reply arrived.
+
+`example-live-loop` runs the real loop with no broker, no credentials and no network, and finishes
+instantly.
+
+See the [running a strategy live](doxygen/vignettes/running-a-strategy-live.md) vignette for the
+operational half — including the supervisor grace period that silently turns the cleanest shutdown into
+the worst one, and why a flatten outside market hours is refused rather than performed.
+
 ## Transport behavior
 
 - HTTPS connections are persistent per client and requests are serialized on a
