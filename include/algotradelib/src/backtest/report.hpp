@@ -45,12 +45,20 @@ struct ReportCaveats {
   int slippage_ticks_{0};
 
   /**
-   * Whether more than one instrument was replayed.
+   * Whether more than one instrument traded, which is a **caution rather than a finding**.
    *
-   * When true the result may carry survivorship bias: broker reference data lists instruments that
-   * exist *now*, so a universe assembled from it silently excludes everything delisted during the
-   * period, which flatters a cross-sectional result. The engine cannot fix that — it is a property of
-   * the data — so it says so instead.
+   * Survivorship bias comes from how a universe was *assembled*, not from how many instruments are in
+   * it. Broker reference data lists what exists **now**, so a universe built by asking a broker what it
+   * trades silently excludes everything delisted during the period — and what gets delisted is
+   * disproportionately what did badly, which flatters the result by an amount nothing here can measure.
+   *
+   * The engine cannot observe how the universe was chosen, so this flag is a proxy, and it has false
+   * positives by design: a hand-picked pair you know was listed throughout the period carries no
+   * survivorship problem at all and still sets it.
+   *
+   * That asymmetry is why the report **flags and still computes** rather than refusing. Refusing would
+   * block a legitimate replay in order to prevent a mistake the engine cannot actually detect, and a
+   * library that declines to answer a well-formed question teaches its users to work around it.
    */
   bool multiple_instruments_{false};
 

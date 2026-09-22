@@ -151,6 +151,15 @@ cross-sectional result built that way is flattered by an amount nothing in the e
 This is a property of the data, not of the replay, so the engine states it rather than correcting it.
 Single-instrument backtests are unaffected.
 
+Read the flag as a **caution, not a finding**. The bias comes from how you *assembled* the universe, and
+the engine cannot see that — it only sees how many instruments arrived, so the flag is a proxy and it has
+false positives: a hand-picked pair you know was listed for the whole period sets it and carries no
+survivorship problem at all.
+
+That is also why the report still computes every metric instead of refusing. Refusing would block a
+replay that is perfectly sound in order to prevent a mistake the engine has no way to detect. You know how
+you picked the universe; the engine does not, so it tells you what it saw and leaves the judgement with you.
+
 ## Intraday
 
 The engine is interval-agnostic by construction, and that is under test: the same strategy replayed at

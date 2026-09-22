@@ -56,6 +56,20 @@ if(ATL_USE_EIGEN)
             "Configure with -DATL_USE_EIGEN=OFF to build without the analytics layer.")
     endif()
     target_link_libraries(algotradelib INTERFACE Eigen3::Eigen)
+
+    # Two names, and they are not redundant: ATL_USE_EIGEN is a CMake option and ATL_HAS_EIGEN is a
+    # C++ preprocessor macro. Only the second can cross into a compile.
+    #
+    # ATL_USE_EIGEN exists at configure time, in *this* build, and is what a person sets. A consumer
+    # of the installed package has no such variable -- it was never their option -- so a header that
+    # tested it would force every consumer to restate, correctly, how the library had been built.
+    # That is exactly the manual duplication that goes wrong. ATL_HAS_EIGEN travels on the exported
+    # interface target instead, so a consumer gets the fact automatically and cannot get it wrong.
+    #
+    # The distinction is also visible in the #error text in <algotradelib/analytics>: it *names*
+    # ATL_USE_EIGEN, because that is the action a person takes, while the #if tests ATL_HAS_EIGEN,
+    # because that is the state the compiler is in. A request and a fact, which is the same shape as
+    # _OPENMP (what the flags set) versus EIGEN_HAS_OPENMP (what Eigen derives and tests internally).
     target_compile_definitions(algotradelib INTERFACE ATL_HAS_EIGEN=1)
     message(STATUS "algotradelib analytics: Eigen ${Eigen3_VERSION}")
 
