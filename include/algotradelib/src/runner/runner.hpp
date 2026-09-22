@@ -82,6 +82,8 @@ struct DryRunReport {
    * about one instruction, this is about whether the runner should still be trading at all.
    */
   std::vector<WithheldOrder> unavailable_;
+  /** Cancellations local machinery refused to send. Distinct from one the snapshot cannot describe. */
+  std::vector<OrderRef<BrokerTag>> unavailable_cancel_;
   /** Lines the strategy logged. */
   std::vector<std::string> log_;
 
@@ -89,7 +91,7 @@ struct DryRunReport {
   bool quiet() const noexcept {
     return would_place_.empty() && would_cancel_.empty() && rejected_.empty() &&
       refused_.empty() && withheld_.empty() && indeterminate_.empty() &&
-      unresolved_cancel_.empty() && unavailable_.empty();
+      unresolved_cancel_.empty() && unavailable_.empty() && unavailable_cancel_.empty();
   }
 };
 
@@ -348,6 +350,17 @@ private:
       // Checked before the guards, because an unresolved instrument is a safety hold rather than a
       // limit breach: reporting a notional ceiling for an order that was never going to be sent
       // would point an operator at the wrong problem.
+      // Checked before the ledger and before the guards, and checked *per order* rather than once
+      // at the top. A journal that failed on the first order of a batch will fail on the second, so
+      // a batch that carried on would produce one unexplained refusal per instrument. This is also
+      // what makes the condition hold for a direct `feed()`, which never reaches `PollingLoop`'s
+      // gate at all.
+      if (local_failure_) {
+        report.unavailable_.push_back(
+          WithheldOrder{WithheldReason::LOCAL_FAILURE, order, *local_failure_}
+        );
+        continue;
+      }
       if (ledger_.requires_reconcile(order.instrument_)) {
         report.withheld_.push_back(
           WithheldOrder{
@@ -366,6 +379,10 @@ private:
       }
 
       const auto outcome = executor_.place(order);
+      // After every send, not only after a refusal. A terminal journal write that fails leaves the
+      // broker's own outcome intact -- the send happened, and saying otherwise would be a lie -- but
+      // it still means the journal is broken, and the runner must stop.
+      note_executor_failure(outcome == SendOutcome::UNAVAILABLE);
       switch (outcome) {
         case SendOutcome::ACCEPTED:
           // Counted against the rate limit only once the instruction actually went, so an order a
@@ -393,9 +410,12 @@ private:
           // budget was spent. The ledger is not marked either -- an instruction that was never
           // attempted leaves no doubt about the position, and withholding the instrument would be
           // withholding it for the wrong reason.
-          note_local_failure(local_failure_detail());
           report.unavailable_.push_back(
-            WithheldOrder{WithheldReason::LOCAL_FAILURE, order, *local_failure_}
+            WithheldOrder{
+              WithheldReason::LOCAL_FAILURE,
+              order,
+              local_failure_ ? *local_failure_ : std::string("local machinery refused to send"),
+            }
           );
           break;
       }
@@ -414,6 +434,13 @@ private:
    * cannot make an unresolved position worse.
    */
   void send_cancel(const OrderRef<Tag>& ref, Report& report) {
+    // Gated like a placement. A cancellation is the one instruction that cannot make an unresolved
+    // position worse, but it still goes through the journal, and a journal that cannot record it
+    // must not let it be sent unrecorded.
+    if (local_failure_) {
+      report.unavailable_cancel_.push_back(ref);
+      return;
+    }
     // Resolved against the portfolio first, because building a cancellation needs the order's own
     // quantity on a broker that requires one. A reference not in the snapshot means the snapshot is
     // stale, and sending a cancellation for an order the runner cannot describe is exactly the kind
@@ -424,14 +451,14 @@ private:
       return;
     }
     const auto outcome = executor_.cancel(*working);
+    note_executor_failure(outcome == SendOutcome::UNAVAILABLE);
     if (outcome == SendOutcome::INDETERMINATE) {
       ledger_.mark(working->order_.instrument_, "a cancellation request failed in transit");
     }
     if (outcome == SendOutcome::UNAVAILABLE) {
-      note_local_failure(local_failure_detail());
       // Not reported as a withdrawal that happened, because it did not. A cancellation nobody sent
       // must not read as one the broker has.
-      report.unresolved_cancel_.push_back(ref);
+      report.unavailable_cancel_.push_back(ref);
       return;
     }
     report.would_cancel_.push_back(ref);
@@ -495,17 +522,35 @@ private:
     }
   }
 
-  /** Returns what the executor says went wrong, where it says anything. */
-  std::string local_failure_detail() const { return local_failure_detail_impl(0); }
-
-  template <typename E = Executor>
-  auto local_failure_detail_impl(int) const
-    -> decltype(std::declval<const E&>().last_journal_error(), std::string()) {
-    const auto& detail = executor_.last_journal_error();
-    return detail.empty() ? std::string("local machinery refused to send") : detail;
+  /**
+   * Makes the executor's own local failure sticky on the runner, if it reported one.
+   *
+   * Called after every send rather than only after a refusal, because the two are not the same
+   * event. A *pre-send* journal write that fails produces `UNAVAILABLE` and nothing was sent. A
+   * *terminal* journal write that fails happens after the broker has already answered: the send
+   * really did happen, so the outcome passed back stays the broker's, and only this call records
+   * that the journal is no longer trustworthy.
+   */
+  void note_executor_failure(bool refused) {
+    auto detail = executor_journal_error();
+    if (detail.empty() && refused) {
+      detail = "local machinery refused to send";
+    }
+    if (!detail.empty()) {
+      note_local_failure(std::move(detail));
+    }
   }
 
-  std::string local_failure_detail_impl(...) const { return "local machinery refused to send"; }
+  /** Returns what the executor says went wrong, or empty when it reports nothing or cannot. */
+  std::string executor_journal_error() const { return executor_journal_error_impl(0); }
+
+  template <typename E = Executor>
+  auto executor_journal_error_impl(int) const
+    -> decltype(std::declval<const E&>().last_journal_error(), std::string()) {
+    return executor_.last_journal_error();
+  }
+
+  std::string executor_journal_error_impl(...) const { return {}; }
 
   Executor executor_;
   IndeterminacyLedger ledger_;

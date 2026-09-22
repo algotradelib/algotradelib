@@ -51,6 +51,15 @@ struct BrokerCaps {
   /** Whether an order-history inquiry exposes a caller-visible cursor. */
   static constexpr bool has_history_cursor = Traits::has_history_cursor;
 
+  /**
+   * Whether an order-history inquiry honours a caller-supplied row limit.
+   *
+   * False at KIS, which returns every page and *rejects* a limit rather than ignoring it. Code that
+   * builds a history query for any broker must gate on this, or every KIS inquiry it makes fails
+   * with `INVALID_ARGUMENT` before reaching the network.
+   */
+  static constexpr bool has_history_limit = Traits::has_history_limit;
+
   /** Whether an order-history inquiry can filter by instrument. */
   static constexpr bool has_history_symbol_filter = Traits::has_history_symbol_filter;
 

@@ -701,8 +701,17 @@ namespace {
 /** A journal that refuses to record, standing in for a full disk. */
 class FailingJournal {
 public:
-  bool append(const JournalEntry&) { return false; }
+  bool append(const JournalEntry&) {
+    ++appends_;
+    return false;
+  }
   runner::JournalReplay replay() const { return {}; }
+
+  /** How many records were offered, so a test can prove a send was gated rather than attempted. */
+  std::size_t appends() const noexcept { return appends_; }
+
+private:
+  std::size_t appends_{0};
 };
 
 } // namespace
@@ -810,6 +819,40 @@ struct HoldTen {
   }
 };
 
+/** A second instrument, so a batch can carry more than one instruction. */
+Instrument hynix_reference() {
+  Instrument reference;
+  reference.id_ = hynix();
+  reference.type_ = SecurityType::STOCK;
+  reference.currency_ = Currency{"KRW"};
+  reference.lot_size_ = Decimal64::parse("1");
+  reference.price_rule_ = PriceRule::krx_equity();
+  return reference;
+}
+
+/** Withdraws every resting order it can see, so a cancellation reaches the executor. */
+struct WithdrawAll {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent&) {
+    for (const auto& working : ctx.portfolio().working_) {
+      ctx.cancel(working.ref_, "withdraw-all");
+    }
+  }
+};
+
+/** Asks for a position in two instruments on every bar. */
+struct HoldTwo {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent&) {
+    for (const auto& id : {samsung(), hynix()}) {
+      strategy::TargetPosition target;
+      target.instrument_ = id;
+      target.target_quantity_ = Decimal64::parse("10");
+      ctx.submit(target);
+    }
+  }
+};
+
 Instrument samsung_reference() {
   Instrument reference;
   reference.id_ = samsung();
@@ -848,6 +891,7 @@ TEST_CASE("a broken journal stops the runner rather than refusing per bar", "[jo
   dry.context().set_last_price(samsung(), Decimal64::parse("70000"));
 
   const auto report = dry.feed(bar_at(30));
+  const auto before_appends = journal.appends();
 
   // Reported as what it is, in its own bucket. Not `rejected_`, which would read as the broker
   // declining an instruction it never saw.
@@ -864,8 +908,102 @@ TEST_CASE("a broken journal stops the runner rather than refusing per bar", "[jo
   // position -- marking it would withhold it for the wrong reason.
   REQUIRE(dry.ledger().empty());
 
+  // The next bar is refused without reaching the executor at all. The earlier version of this test
+  // asserted only that the flag existed and never fed a second bar, so it passed while `settle()`
+  // went on calling `place` for every instruction after the first failure.
+  const auto second = dry.feed(bar_at(31));
+  REQUIRE(second.unavailable_.size() == 1);
+  REQUIRE(second.would_place_.empty());
+  REQUIRE(journal.appends() == before_appends);
+
   dry.resume_after_local_failure();
   REQUIRE_FALSE(dry.local_failure().has_value());
+}
+
+TEST_CASE("a batch stops at its first journal failure", "[journal]") {
+  // One instruction per instrument in a single `settle()`. A journal that failed on the first will
+  // fail on the rest, so carrying on produces one unexplained refusal per instrument.
+  FailingJournal journal;
+  runner::Runner<HoldTwo, strategy::NoCaps, runner::DryTag, BrokenExecutor> dry{
+    HoldTwo{},
+    {},
+    512,
+    BrokenExecutor{runner::RecordingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}}
+  };
+  dry.context().set_instrument(samsung_reference());
+  dry.context().set_instrument(hynix_reference());
+  dry.context().set_phase(strategy::MarketPhase::OPEN);
+  dry.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  dry.context().set_last_price(hynix(), Decimal64::parse("70000"));
+
+  const auto report = dry.feed(bar_at(30));
+  REQUIRE(report.unavailable_.size() == 2);
+  REQUIRE(report.would_place_.empty());
+  // Only the first instruction reached the journal; the second was gated before the send.
+  REQUIRE(journal.appends() == 1);
+}
+
+TEST_CASE("a terminal journal failure stops the runner too", "[journal]") {
+  // The broker already answered, so the outcome passed back stays the broker's -- saying otherwise
+  // would be a lie about an order that exists. But the journal is broken, and the earlier code
+  // recorded that only on the executor, where nothing read it. The comment claimed the runner
+  // stopped; it did not.
+  HalfFailingJournal journal;
+  using HalfExecutor = runner::JournalingExecutor<
+    runner::RecordingExecutor<runner::DryTag>, HalfFailingJournal, runner::ManualClock>;
+  runner::Runner<HoldTen, strategy::NoCaps, runner::DryTag, HalfExecutor> dry{
+    HoldTen{},
+    {},
+    512,
+    HalfExecutor{runner::RecordingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}}
+  };
+  dry.context().set_instrument(samsung_reference());
+  dry.context().set_phase(strategy::MarketPhase::OPEN);
+  dry.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+  const auto first = dry.feed(bar_at(30));
+  // The order really was sent and really was accepted.
+  REQUIRE(first.would_place_.size() == 1);
+  REQUIRE(first.unavailable_.empty());
+  // And the runner is now halted, so nothing further goes out.
+  REQUIRE(dry.local_failure().has_value());
+
+  const auto second = dry.feed(bar_at(31));
+  REQUIRE(second.unavailable_.size() == 1);
+  REQUIRE(second.would_place_.empty());
+}
+
+TEST_CASE("a halted runner sends no cancellation either", "[journal]") {
+  FailingJournal journal;
+  runner::Runner<WithdrawAll, strategy::NoCaps, runner::DryTag, BrokenExecutor> dry{
+    WithdrawAll{},
+    {},
+    512,
+    BrokenExecutor{runner::RecordingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}}
+  };
+  dry.context().set_instrument(samsung_reference());
+  dry.context().set_phase(strategy::MarketPhase::OPEN);
+  dry.halt_locally("the order journal could not be written");
+
+  strategy::Portfolio<runner::DryTag> portfolio;
+  WorkingOrder<runner::DryTag> resting_order;
+  resting_order.order_.instrument_ = samsung();
+  resting_order.order_.side_ = OrderSide::BUY;
+  resting_order.order_.type_ = OrderType::LIMIT;
+  resting_order.order_.quantity_ = Decimal64::parse("10");
+  resting_order.order_.price_ = Decimal64::parse("70000");
+  resting_order.ref_.primary_ = "KRX-1";
+  portfolio.working_.push_back(resting_order);
+  dry.context().set_portfolio(portfolio);
+
+  const auto report = dry.feed(bar_at(30));
+
+  // Reported in its own bucket, not as a withdrawal that happened and not as one the snapshot
+  // could not describe.
+  REQUIRE(report.unavailable_cancel_.size() == 1);
+  REQUIRE(report.would_cancel_.empty());
+  REQUIRE(report.unresolved_cancel_.empty());
+  REQUIRE(journal.appends() == 0);
 }
 
 // ---------------------------------------------------------------------------

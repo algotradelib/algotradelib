@@ -1,4 +1,6 @@
+#include <algotradelib/kis>
 #include <algotradelib/live>
+#include <algotradelib/tossinvest>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -1064,4 +1066,113 @@ TEST_CASE("a journaled binding keeps the session's capabilities and tag") {
   auto live_runner = live::bind_journaled(session, journal, HoldTen{}, {});
   STATIC_REQUIRE(std::is_same_v<decltype(live_runner)::Tag, FakeBroker>);
   STATIC_REQUIRE(decltype(live_runner)::Context::caps::has_client_order_id);
+}
+
+// ---------------------------------------------------------------------------
+// The history query has to satisfy the production adapter, not just the fake
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** KIS's real answers about what an order-history inquiry accepts. */
+struct KisLikeCaps : strategy::NoCaps {
+  static constexpr bool has_working_orders = true;
+  static constexpr bool history_requires_range = true;
+  static constexpr bool has_history_cursor = false;
+  static constexpr bool has_history_limit = false;
+};
+
+/**
+ * A session that validates every history query through KIS's own conversion.
+ *
+ * The gap the round-2 review found: a fake that accepts any query shape proves nothing about a
+ * query the production adapter refuses. `KisTraits::to_history_query` is the function the real
+ * client calls before any network I/O, so routing the fake through it makes the test assert the
+ * contract rather than my idea of it.
+ */
+class KisContractSession {
+public:
+  using Caps = KisLikeCaps;
+  using BrokerTag = FakeBroker;
+  using Ref = OrderRef<FakeBroker>;
+  using KisTraits = BrokerTraits<kis::KisClient>;
+
+  Result<WorkingOrders<FakeBroker>> working_orders() {
+    return Result<WorkingOrders<FakeBroker>>(WorkingOrders<FakeBroker>{});
+  }
+
+  Result<OrderPage> order_history(const OrderHistoryQuery& query) {
+    ++history_calls_;
+    last_query_ = query;
+    auto converted = KisTraits::to_history_query(kis::KisAccount{}, query);
+    if (!converted) {
+      rejection_ = converted.error();
+      return Result<OrderPage>(converted.error());
+    }
+    rejection_.reset();
+    return Result<OrderPage>(history_);
+  }
+
+  Result<BarSeries> bars(const BarQuery&) { return Result<BarSeries>(BarSeries{}); }
+  Result<QuoteSnapshot> quote(const InstrumentId&) {
+    return Result<QuoteSnapshot>(QuoteSnapshot{});
+  }
+  Result<HoldingsSnapshot> holdings() { return Result<HoldingsSnapshot>(HoldingsSnapshot{}); }
+
+  void set_history(OrderPage page) { history_ = std::move(page); }
+  std::size_t history_calls() const noexcept { return history_calls_; }
+  const std::optional<BrokerError>& rejection() const noexcept { return rejection_; }
+  const std::optional<OrderHistoryQuery>& last_query() const noexcept { return last_query_; }
+
+private:
+  OrderPage history_;
+  std::size_t history_calls_{0};
+  std::optional<BrokerError> rejection_;
+  std::optional<OrderHistoryQuery> last_query_;
+};
+
+} // namespace
+
+TEST_CASE("a placement sweep builds a history query KIS actually accepts") {
+  // Before the capability existed, `read_history` always set `limit_`, and KIS rejects that outright
+  // with `limit_unsupported` rather than ignoring it. Every KIS placement sweep therefore took the
+  // history-failure branch and the instrument stayed withheld forever -- safe, and completely
+  // nonfunctional.
+  KisContractSession session;
+  OrderPage page;
+  page.orders_.push_back(listed_order("KRX-1"));
+  session.set_history(page);
+
+  runner::MemoryJournal journal("kis:test");
+  journal.append(journaled_placement());
+
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live_runner.context().set_now(swept_at());
+  live_runner.ledger().mark(samsung(), "an order request failed in transit");
+
+  live::SessionSource<KisContractSession, runner::MemoryJournal> source(session, {samsung()});
+  source.set_journal(journal);
+
+  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+  REQUIRE(session.history_calls() == 1);
+  // The production conversion accepted it.
+  CHECK_FALSE(session.rejection().has_value());
+  // No limit, because KIS refuses one; a range, because KIS requires one.
+  REQUIRE(session.last_query().has_value());
+  CHECK_FALSE(session.last_query()->limit_.has_value());
+  CHECK(session.last_query()->from_.has_value());
+  CHECK(session.last_query()->to_.has_value());
+  CHECK_FALSE(session.last_query()->cursor_.has_value());
+
+  // And the sweep actually resolved, which is the point of all of it.
+  CHECK(source.last_reconcile().settled());
+  CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
+}
+
+TEST_CASE("the history-limit capability says what each broker does") {
+  STATIC_REQUIRE_FALSE(BrokerCaps<kis::KisClient>::has_history_limit);
+  STATIC_REQUIRE(BrokerCaps<tossinvest::TossClient>::has_history_limit);
+  // The range requirement is the mirror image, and the two are independent answers.
+  STATIC_REQUIRE(BrokerCaps<kis::KisClient>::history_requires_range);
+  STATIC_REQUIRE_FALSE(BrokerCaps<tossinvest::TossClient>::history_requires_range);
 }

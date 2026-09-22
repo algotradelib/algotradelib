@@ -802,3 +802,23 @@ TEST_CASE("gate reason names are stable", "[loop][gate]") {
   CHECK(runner::gate_reason_name(runner::GateReason::POLL_FAILING) == "poll_failing");
   CHECK(runner::gate_reason_name(runner::GateReason::LOCAL_FAILURE) == "local_failure");
 }
+
+TEST_CASE("a runner halted before the loop starts sends nothing on the first iteration",
+  "[loop][gate]") {
+  // The loop polls and feeds *before* it calls `gate_for`, so a failure installed by recovery
+  // before the first iteration can reach a scheduled event while the guard is still unhalted. The
+  // enforcement therefore has to live in `Runner::settle()` as well, not only in the gate.
+  InertRunner runner_instance;
+  InertSource source;
+  runner_instance.halt_locally("recovery found damage that names no instrument");
+
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 1);
+  CHECK(report.final_gate_ == runner::GateReason::LOCAL_FAILURE);
+  CHECK(report.blocked_ == 1);
+  // The order list is never read either: a runner that cannot journal is not sent looking for more
+  // work to fail at.
+  CHECK(source.order_list_reads() == 0);
+}

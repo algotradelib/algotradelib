@@ -109,6 +109,7 @@ struct NoCaps {
   static constexpr bool has_partial_cancel = false;
   static constexpr bool history_requires_range = false;
   static constexpr bool has_history_cursor = false;
+  static constexpr bool has_history_limit = false;
   static constexpr bool has_history_symbol_filter = false;
   static constexpr bool has_depth = false;
   static constexpr bool has_price_limits = false;
@@ -132,6 +133,7 @@ struct AllCaps {
   static constexpr bool has_partial_cancel = true;
   static constexpr bool history_requires_range = true;
   static constexpr bool has_history_cursor = true;
+  static constexpr bool has_history_limit = true;
   static constexpr bool has_history_symbol_filter = true;
   static constexpr bool has_depth = true;
   static constexpr bool has_price_limits = true;

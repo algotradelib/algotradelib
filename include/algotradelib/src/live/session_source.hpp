@@ -348,7 +348,12 @@ private:
   bool read_history(const std::vector<runner::OpenInstruction>& open,
     std::vector<OrderSnapshot>& into) {
     OrderHistoryQuery query;
-    query.limit_ = history_limit_;
+    if constexpr (Caps::has_history_limit) {
+      // Gated, because KIS does not ignore a limit it cannot honour -- it refuses the whole inquiry
+      // with `limit_unsupported`. An ungated assignment here made every KIS placement sweep take the
+      // history-failure branch, so a KIS runner recovered nothing and withheld forever.
+      query.limit_ = history_limit_;
+    }
     if constexpr (Caps::history_requires_range) {
       const auto range = runner::history_range_for(open, window_);
       query.from_ = range.first;

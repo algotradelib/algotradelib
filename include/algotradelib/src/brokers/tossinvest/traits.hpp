@@ -268,6 +268,9 @@ struct Capabilities {
   /** Toss pages a `CLOSED` listing with a caller-visible cursor. */
   static constexpr bool has_history_cursor = true;
 
+  /** Toss honours a per-page row limit on an order-history inquiry. */
+  static constexpr bool has_history_limit = true;
+
   /** Toss filters a listing by instrument. */
   static constexpr bool has_history_symbol_filter = true;
 };

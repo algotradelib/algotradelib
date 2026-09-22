@@ -295,6 +295,15 @@ struct Capabilities {
   /** KIS follows its own continuation cursors and exposes none. */
   static constexpr bool has_history_cursor = false;
 
+  /**
+   * KIS returns every page of an order history and refuses a row limit.
+   *
+   * `to_history_query` rejects `OrderHistoryQuery::limit_` outright with `limit_unsupported`, so a
+   * caller that sets one gets an `INVALID_ARGUMENT` before any network I/O rather than a silently
+   * ignored ceiling. Anything building a history query generically has to ask this first.
+   */
+  static constexpr bool has_history_limit = false;
+
   /** This adapter sends an empty `PDNO` and exposes no instrument filter. */
   static constexpr bool has_history_symbol_filter = false;
 };
