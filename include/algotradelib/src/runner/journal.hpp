@@ -213,27 +213,89 @@ struct JournalReplay {
 };
 
 /**
- * Returns the entries whose question was never answered, in the order they were opened.
+ * One instruction the journal cannot account for, and the span in which it may have reached the
+ * broker.
  *
- * A `PENDING` line with no terminal line carrying the same id. That is the definition of "an
- * instruction whose outcome nobody recorded", and it is the whole input to recovery.
+ * Two different situations, and collapsing them would lose the one piece of information matching
+ * depends on:
  *
- * Linear in lines times unresolved entries rather than hash-based, because this runs once at
- * startup over a file that holds one session's instructions, and a `std::map` here would trade a
+ * - **Unanswered.** A `PENDING` line with no terminal companion. The process stopped between the
+ *   write and the answer, so the span's end is unknown and has to be bounded by how long a request
+ *   could have been outstanding.
+ * - **Answered `INDETERMINATE`.** Both lines are present, and together they bracket the send
+ *   exactly: the request began at one and failed at the other. A narrower, exact span.
+ *
+ * The second is easy to overlook, and overlooking it is a live bug rather than a missed
+ * optimization. A runner that marks its ledger on a transport failure and is then restarted begins
+ * with an empty ledger; unless recovery reads that pair back out of the journal, the restart
+ * silently forgets an order whose existence is unknown -- which is the exact failure the journal was
+ * written to prevent, arriving by a different door.
+ */
+struct OpenInstruction {
+  /** The instruction, as its `PENDING` line recorded it. */
+  JournalEntry entry_;
+  /** When the send began, from the `PENDING` line. */
+  std::chrono::system_clock::time_point opened_at_{};
+  /** When the send is known to have failed, where a terminal line says so. */
+  std::optional<std::chrono::system_clock::time_point> closed_at_;
+  /** Whether a terminal line answered, and answered "unknown". */
+  bool answered_{false};
+  /** What the journal says went wrong, for a report an operator reads. */
+  std::string detail_;
+};
+
+/**
+ * Returns every instruction whose outcome nobody knows, in the order it was opened.
+ *
+ * Two kinds qualify, and the second is the one worth stating: a `PENDING` line with no answer, and
+ * a `PENDING` line answered `INDETERMINATE`. An `ACCEPTED` or `REJECTED` answer resolves an entry
+ * and it disappears from this list, because both are knowledge -- the order exists, or it does not.
+ *
+ * A terminal line with no `PENDING` predecessor can occur when a journal is read from a file whose
+ * beginning was rotated or hand-edited away. An orphaned `INDETERMINATE` is still owed and is
+ * reported; an orphaned `ACCEPTED` or `REJECTED` carries its own answer and is not.
+ *
+ * Linear in lines times open instructions rather than hash-based, because this runs once per order
+ * list read over a file holding one session's instructions, and a `std::map` here would trade a
  * measurable allocation for an immeasurable saving.
  */
-inline std::vector<JournalEntry> unresolved_entries(const JournalReplay& replay) {
-  std::vector<JournalEntry> open;
+inline std::vector<OpenInstruction> unresolved_instructions(const JournalReplay& replay) {
+  std::vector<OpenInstruction> open;
   for (const auto& entry : replay.entries_) {
     if (!journal_outcome_is_terminal(entry.outcome_)) {
-      open.push_back(entry);
+      OpenInstruction instruction;
+      instruction.entry_ = entry;
+      instruction.opened_at_ = entry.recorded_at_;
+      instruction.detail_ = entry.detail_;
+      open.push_back(std::move(instruction));
       continue;
     }
+
+    bool paired = false;
     for (auto at = open.begin(); at != open.end(); ++at) {
-      if (at->id_ == entry.id_) {
-        open.erase(at);
-        break;
+      if (at->entry_.id_ != entry.id_) {
+        continue;
       }
+      paired = true;
+      if (entry.outcome_ == JournalOutcome::INDETERMINATE) {
+        at->answered_ = true;
+        at->closed_at_ = entry.recorded_at_;
+        at->detail_ = entry.detail_;
+        // The broker issued no reference, so the placement keeps the one its pending line had.
+        at->entry_.order_id_ = entry.order_id_.empty() ? at->entry_.order_id_ : entry.order_id_;
+      } else {
+        open.erase(at);
+      }
+      break;
+    }
+    if (!paired && entry.outcome_ == JournalOutcome::INDETERMINATE) {
+      OpenInstruction instruction;
+      instruction.entry_ = entry;
+      instruction.opened_at_ = entry.recorded_at_;
+      instruction.closed_at_ = entry.recorded_at_;
+      instruction.answered_ = true;
+      instruction.detail_ = entry.detail_;
+      open.push_back(std::move(instruction));
     }
   }
   return open;

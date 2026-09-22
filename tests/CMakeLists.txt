@@ -59,6 +59,12 @@ target_link_libraries(algotradelib-live-tests PRIVATE
     Catch2::Catch2WithMain
 )
 
+add_executable(algotradelib-reconcile-orders-tests test-reconcile-orders.cpp)
+target_link_libraries(algotradelib-reconcile-orders-tests PRIVATE
+    algotradelib::algotradelib
+    Catch2::Catch2WithMain
+)
+
 add_executable(algotradelib-journal-tests test-journal.cpp)
 target_link_libraries(algotradelib-journal-tests PRIVATE
     algotradelib::algotradelib
@@ -93,6 +99,7 @@ catch_discover_tests(algotradelib-market-data-tests)
 catch_discover_tests(algotradelib-strategy-tests)
 catch_discover_tests(algotradelib-runner-tests)
 catch_discover_tests(algotradelib-journal-tests)
+catch_discover_tests(algotradelib-reconcile-orders-tests)
 catch_discover_tests(algotradelib-live-tests)
 catch_discover_tests(algotradelib-vanilla-tests)
 catch_discover_tests(algotradelib-backtest-tests)

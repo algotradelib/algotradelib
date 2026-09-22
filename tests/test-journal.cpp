@@ -209,7 +209,7 @@ TEST_CASE("a pending line answered by a terminal line is resolved", "[journal]")
     line("a-1", JournalOutcome::PENDING),
     line("a-1", JournalOutcome::ACCEPTED),
   };
-  REQUIRE(runner::unresolved_entries(replay).empty());
+  REQUIRE(runner::unresolved_instructions(replay).empty());
 }
 
 TEST_CASE("a pending line with no answer stays unresolved", "[journal]") {
@@ -219,10 +219,10 @@ TEST_CASE("a pending line with no answer stays unresolved", "[journal]") {
     line("a-1", JournalOutcome::ACCEPTED),
     line("a-2", JournalOutcome::PENDING, hynix()),
   };
-  const auto open = runner::unresolved_entries(replay);
+  const auto open = runner::unresolved_instructions(replay);
   REQUIRE(open.size() == 1);
-  REQUIRE(open.front().id_ == "a-2");
-  REQUIRE(open.front().instrument_ == hynix());
+  REQUIRE(open.front().entry_.id_ == "a-2");
+  REQUIRE(open.front().entry_.instrument_ == hynix());
 }
 
 TEST_CASE("a terminal line closes only the entry carrying its own id", "[journal]") {
@@ -230,11 +230,42 @@ TEST_CASE("a terminal line closes only the entry carrying its own id", "[journal
   replay.entries_ = {
     line("a-1", JournalOutcome::PENDING),
     line("a-2", JournalOutcome::PENDING, hynix()),
+    line("a-2", JournalOutcome::ACCEPTED, hynix()),
+  };
+  const auto open = runner::unresolved_instructions(replay);
+  REQUIRE(open.size() == 1);
+  REQUIRE(open.front().entry_.id_ == "a-1");
+}
+
+TEST_CASE("an answer of indeterminate resolves nothing", "[journal]") {
+  // The case a restart most easily loses. `Runner` marks its ledger when a send fails in transit,
+  // but that mark dies with the process; unless recovery reads the pair back out of the journal, a
+  // restarted runner silently forgets an order whose existence is unknown.
+  runner::JournalReplay replay;
+  replay.entries_ = {
+    line("a-1", JournalOutcome::PENDING),
+    line("a-1", JournalOutcome::INDETERMINATE),
+  };
+  const auto open = runner::unresolved_instructions(replay);
+  REQUIRE(open.size() == 1);
+  REQUIRE(open.front().answered_);
+  // Both lines are present, so the span in which the order may have reached the broker is exact
+  // rather than bounded by a guess about how long a request can take.
+  REQUIRE(open.front().opened_at_ == utc(2026, 3, 30, 0, 30));
+  REQUIRE(open.front().closed_at_ == utc(2026, 3, 30, 0, 30));
+}
+
+TEST_CASE("an orphaned indeterminate line is still owed", "[journal]") {
+  // A journal whose beginning was rotated or edited away. An orphaned `ACCEPTED` carries its own
+  // answer; an orphaned `INDETERMINATE` carries the absence of one.
+  runner::JournalReplay replay;
+  replay.entries_ = {
+    line("a-1", JournalOutcome::ACCEPTED),
     line("a-2", JournalOutcome::INDETERMINATE, hynix()),
   };
-  const auto open = runner::unresolved_entries(replay);
+  const auto open = runner::unresolved_instructions(replay);
   REQUIRE(open.size() == 1);
-  REQUIRE(open.front().id_ == "a-1");
+  REQUIRE(open.front().entry_.instrument_ == hynix());
 }
 
 TEST_CASE("unresolved entries keep the order they were opened in", "[journal]") {
@@ -243,10 +274,10 @@ TEST_CASE("unresolved entries keep the order they were opened in", "[journal]") 
     line("a-1", JournalOutcome::PENDING),
     line("a-2", JournalOutcome::PENDING, hynix()),
   };
-  const auto open = runner::unresolved_entries(replay);
+  const auto open = runner::unresolved_instructions(replay);
   REQUIRE(open.size() == 2);
-  REQUIRE(open[0].id_ == "a-1");
-  REQUIRE(open[1].id_ == "a-2");
+  REQUIRE(open[0].entry_.id_ == "a-1");
+  REQUIRE(open[1].entry_.id_ == "a-2");
 }
 
 // ---------------------------------------------------------------------------
@@ -297,7 +328,12 @@ TEST_CASE("a failing send still leaves a terminal line", "[journal]") {
 
   REQUIRE(journal.records().size() == 2);
   REQUIRE(journal.records()[1].outcome_ == JournalOutcome::INDETERMINATE);
-  REQUIRE(runner::unresolved_entries(journal.replay()).empty());
+  // An answer of "unknown" is not an answer. Both lines are present, so the send's span is exact,
+  // but the instruction is still owed -- and a restarted process must read that back out.
+  const auto open = runner::unresolved_instructions(journal.replay());
+  REQUIRE(open.size() == 1);
+  REQUIRE(open.front().answered_);
+  REQUIRE(open.front().closed_at_.has_value());
 }
 
 TEST_CASE("the decorator returns the inner outcome unchanged", "[journal]") {
@@ -346,7 +382,7 @@ TEST_CASE("line ids are unique within a run and distinguished across runs", "[jo
   // A restarted process appends to its predecessor's file, so a repeated id would let a stale
   // terminal line close a fresh pending one.
   REQUIRE(records[4].id_ == "run-b-1");
-  REQUIRE(runner::unresolved_entries(journal.replay()).empty());
+  REQUIRE(runner::unresolved_instructions(journal.replay()).empty());
 }
 
 TEST_CASE("a journal entry stamps the clock the runner reads", "[journal]") {
@@ -516,7 +552,7 @@ TEST_CASE("appends accumulate, one whole line each", "[journal][file]") {
   REQUIRE(replay.intact());
   REQUIRE(replay.entries_.size() == 2);
   REQUIRE(replay.entries_[1].order_id_ == "KRX-99");
-  REQUIRE(runner::unresolved_entries(replay).empty());
+  REQUIRE(runner::unresolved_instructions(replay).empty());
 }
 
 TEST_CASE("a restarted process appends to its predecessor's file", "[journal][file]") {
@@ -576,13 +612,13 @@ TEST_CASE("a truncated final line is reported and treated as unresolved", "[jour
   REQUIRE_FALSE(replay.intact());
   REQUIRE(replay.detail_.find("000660") != std::string::npos);
 
-  const auto open = runner::unresolved_entries(replay);
+  const auto open = runner::unresolved_instructions(replay);
   REQUIRE(open.size() == 1);
-  REQUIRE(open.front().instrument_ == hynix());
+  REQUIRE(open.front().entry_.instrument_ == hynix());
   // Its id is rewritten so that nothing can ever close it: the `outcome` field of a torn line may
   // itself be the part that was cut off.
-  REQUIRE(open.front().id_ != "run-2");
-  REQUIRE(open.front().outcome_ == JournalOutcome::PENDING);
+  REQUIRE(open.front().entry_.id_ != "run-2");
+  REQUIRE(open.front().entry_.outcome_ == JournalOutcome::PENDING);
 }
 
 TEST_CASE("a truncated line is never allowed to resolve a pending one", "[journal][file]") {
@@ -607,10 +643,10 @@ TEST_CASE("a truncated line is never allowed to resolve a pending one", "[journa
 
   const auto replay = runner::read_journal_file(path);
   REQUIRE(replay.truncated_tail_);
-  const auto open = runner::unresolved_entries(replay);
+  const auto open = runner::unresolved_instructions(replay);
   REQUIRE(open.size() == 2);
-  REQUIRE(open[0].id_ == "run-1");
-  REQUIRE(open[1].instrument_ == samsung());
+  REQUIRE(open[0].entry_.id_ == "run-1");
+  REQUIRE(open[1].entry_.instrument_ == samsung());
 }
 
 TEST_CASE("a truncated line naming no instrument is still reported", "[journal][file]") {

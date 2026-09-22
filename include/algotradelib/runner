@@ -42,6 +42,7 @@
 #include "src/runner/file_journal.hpp"
 #include "src/runner/journal.hpp"
 #include "src/runner/loop.hpp"
+#include "src/runner/reconcile_orders.hpp"
 #include "src/runner/signal_stop.hpp"
 #include "src/runner/stop.hpp"
 
