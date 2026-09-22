@@ -219,6 +219,9 @@ inline std::string journal_entry_to_line(const JournalEntry& entry) {
   if (entry.requires_operator_) {
     row["requires_operator"] = true;
   }
+  if (!entry.scope_.empty()) {
+    row["scope"] = entry.scope_;
+  }
   return json::serialize(row);
 }
 
@@ -265,6 +268,7 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
   const auto operator_only = row.if_contains("requires_operator");
   entry.requires_operator_ = operator_only != nullptr && operator_only->is_bool() &&
     operator_only->as_bool();
+  entry.scope_ = journal_detail::string_field(row, "scope");
   return entry;
 }
 
@@ -425,7 +429,11 @@ public:
    * cannot journal should refuse to trade, and that decision belongs to the program, not to a
    * constructor.
    */
-  explicit FileJournal(std::string path) : path_(std::move(path)), handle_(nullptr, &closer) {
+  FileJournal(std::string path, std::string scope)
+  : path_(std::move(path)), scope_(std::move(scope)), handle_(nullptr, &closer) {
+    if (!scope_matches()) {
+      return;
+    }
     repair_torn_tail();
     handle_.reset(std::fopen(path_.c_str(), "ab"));
     if (open() && !pending_repair_.empty()) {
@@ -450,6 +458,21 @@ public:
   /** Returns the path being written. */
   const std::string& path() const noexcept { return path_; }
 
+  /** Returns the broker and account this journal belongs to. */
+  const std::string& scope() const noexcept { return scope_; }
+
+  /**
+   * Returns why the journal refused to open, or an empty view when it did not refuse.
+   *
+   * There is one reason: the file already holds records for a different account. Reusing a path
+   * across accounts is an easy mistake -- a copied config, a renamed environment -- and it is not a
+   * harmless one. The symbol, side, quantity and price of an order can all agree across two
+   * accounts trading the same instrument, so a sweep would reconcile one account's unresolved
+   * instruction against the other's rows and clear a hold for an order that is still resting.
+   * Refusing to open is the only response that cannot be ignored.
+   */
+  const std::string& rejection() const noexcept { return rejection_; }
+
   /**
    * Appends one line and returns whether it reached the disk.
    *
@@ -461,7 +484,13 @@ public:
     if (!open()) {
       return false;
     }
-    auto line = journal_entry_to_line(entry);
+    auto stamped = entry;
+    if (stamped.scope_.empty()) {
+      // Stamped here rather than by the caller, so a record cannot reach the file without one and
+      // the validation on the next open has something to check.
+      stamped.scope_ = scope_;
+    }
+    auto line = journal_entry_to_line(stamped);
     line += '\n';
     const auto written = std::fwrite(line.data(), 1, line.size(), handle_.get());
     if (written != line.size()) {
@@ -480,6 +509,25 @@ public:
   JournalReplay replay() const { return read_journal_file(path_); }
 
 private:
+  /**
+   * Returns whether the file on disk belongs to this journal's account.
+   *
+   * Checked before anything else -- before the torn-tail repair, and long before any append --
+   * because every one of those writes to a file that may not be ours.
+   */
+  bool scope_matches() {
+    const auto replay = read_journal_file(path_);
+    for (const auto& entry : replay.entries_) {
+      if (entry.scope_.empty() || entry.scope_ == scope_) {
+        continue;
+      }
+      rejection_ = "the journal at " + path_ + " holds records for " + entry.scope_ +
+        ", not for " + scope_;
+      return false;
+    }
+    return true;
+  }
+
   /** Closes a stream, tolerating the null a failed open leaves behind. */
   static void closer(std::FILE* handle) noexcept {
     if (handle != nullptr) {
@@ -546,9 +594,11 @@ private:
   }
 
   std::string path_;
+  std::string scope_;
   std::unique_ptr<std::FILE, void (*)(std::FILE*)> handle_;
   std::string pending_repair_;
   std::string repaired_;
+  std::string rejection_;
 };
 
 } // namespace runner

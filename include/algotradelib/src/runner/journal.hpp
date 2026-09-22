@@ -203,6 +203,19 @@ struct JournalEntry {
    * complete record on the next open, and the flag has to survive that.
    */
   bool requires_operator_{false};
+  /**
+   * Which broker and account this instruction belongs to.
+   *
+   * Opaque to this library and meaningful to the operator who chose it -- `"kis:live:12345678-01"`,
+   * say. It exists because every other field in this record is about an *order*, and matching an
+   * order without knowing whose account it is on is how one account's unresolved instruction gets
+   * reconciled against another account's rows: the symbol, side, quantity and price can all agree
+   * across two accounts trading the same instrument, and the sweep would then clear a hold for an
+   * order the first account still has resting.
+   *
+   * Stamped by the journal rather than by the caller, so a record cannot be written without one.
+   */
+  std::string scope_;
 };
 
 /**
@@ -336,9 +349,17 @@ inline std::vector<OpenInstruction> unresolved_instructions(const JournalReplay&
  */
 class MemoryJournal {
 public:
+  MemoryJournal() = default;
+
+  /** Constructs a journal that stamps `scope` on everything it records. */
+  explicit MemoryJournal(std::string scope) : scope_(std::move(scope)) {}
+
   /** Records one line. Always succeeds: memory does not run out of disk. */
   bool append(const JournalEntry& entry) {
     entries_.push_back(entry);
+    if (entries_.back().scope_.empty()) {
+      entries_.back().scope_ = scope_;
+    }
     return true;
   }
 
@@ -355,8 +376,12 @@ public:
   /** Forgets everything, as a fresh process would. */
   void clear() noexcept { entries_.clear(); }
 
+  /** Returns the broker and account this journal belongs to. */
+  const std::string& scope() const noexcept { return scope_; }
+
 private:
   std::vector<JournalEntry> entries_;
+  std::string scope_;
 };
 
 /**

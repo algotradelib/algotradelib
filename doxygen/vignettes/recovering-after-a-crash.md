@@ -2,7 +2,7 @@
 
 This is the operational half of the order journal: what to turn on before you leave a runner
 unattended, what the file looks like at four in the afternoon when something has gone wrong, and how
-to read the four verdicts without talking yourself into the wrong one.
+to read the five verdicts without talking yourself into the wrong one.
 
 Read it before the first unattended session, not after the first incident.
 
@@ -20,30 +20,40 @@ The journal exists to make that difference visible on disk.
 
 ## Turning it on
 
-Three bindings, and the third is the one people forget:
+Four steps, and two of them are easy to get subtly and silently wrong:
 
 ```cpp
-runner::FileJournal journal("/var/lib/mybot/orders.jsonl");
+// 1. Name the account. A journal whose file holds another account's records refuses to open.
+runner::FileJournal journal("/var/lib/mybot/orders.jsonl", "kis:live:12345678-01");
 if (!journal.open()) {
+  std::cerr << journal.rejection() << '\n';
   return 1;   // a runner that cannot journal should not trade
 }
 
-// 1. Recover first, before any runner exists.
-auto live_runner = live::bind(session, MyStrategy{}, limits);
-const auto recovery = runner::recover_into(journal, live_runner.ledger());
+// 2. Bind through the journal. `bind_journaled`, never `bind`.
+auto live_runner = live::bind_journaled(session, journal, MyStrategy{}, limits);
 
-// 2. Journal every send, by wrapping the executor.
-auto executor = runner::JournalingExecutor<live::SessionExecutor<Session>, runner::FileJournal>(
-  live::SessionExecutor<Session>(session), journal
-);
+// 3. Recover before the loop starts.
+const auto recovery = runner::recover_runner(live_runner, journal);
 
-// 3. Let the source sweep the ledger from the listings it already reads.
+// 4. Let the source sweep the ledger from the listings it reads.
 live::SessionSource<Session, runner::FileJournal> source(session, {samsung()});
 source.set_journal(journal);
 ```
 
-Miss the third and the journal records faithfully and resolves nothing: every recovered instrument
-stays withheld forever, and you will conclude the feature is broken when it is merely deaf.
+**Step 2 is the one that fails silently.** `live::bind` constructs its own `SessionExecutor`
+internally, so wrapping one yourself and leaving it in a variable beside the runner does nothing at
+all — the runner keeps sending through the plain executor, the journal stays empty, and nothing
+anywhere reports a problem. `bind_journaled` exists so that mistake is unexpressible.
+
+**Step 4 is the one people forget.** Miss it and the journal records faithfully and resolves nothing:
+every recovered instrument stays withheld forever, and you will conclude the feature is broken when it
+is merely deaf.
+
+**Step 3 does more than mark the ledger.** If the journal's damage named no instrument, there is
+nothing to withhold, so `recover_runner` halts the runner outright — `local_failure()` is set and the
+loop gates on it. Clear it with `resume_after_local_failure()` once you have read the broker's list
+yourself.
 
 A **backtest journals nothing**, because it wraps nothing. There is no flag to remember to turn off.
 
@@ -78,14 +88,23 @@ The last two are the reason the format is line-oriented. A line and its newline 
 call, so the newline is a commit marker: a torn write loses the tail of the buffer, and the missing
 newline says so. A file that was rewritten in place could instead be corrupt as a whole.
 
-A torn line is **not** discarded. Where the symbol is still legible it is salvaged into an entry that
-nothing can ever resolve — its id is rewritten so it pairs with no terminal line, and its outcome is
-forced to `pending` whatever the text said, because `outcome` may itself be the field that was cut
-off. Where the symbol is gone, recovery reports `unattributable_` and nothing specific is withheld;
-the loop's own startup gate covers that case, since a runner sends nothing at all until it has read
-the broker's order list once.
+A torn line is **not** discarded. Where the symbol is still legible it is salvaged into an entry
+carrying `requires_operator`, which no sweep may decide — its id is rewritten so it pairs with no
+terminal line, its outcome is forced to `pending` whatever the text said, because `outcome` may
+itself be the field that was cut off, and the flag stops the matcher running window arithmetic on a
+timestamp that was never recorded. (Without the flag that arithmetic resolves it instantly: the
+missing timestamp reads as the epoch, so the window is long closed and no real row can fall inside
+it, and the first sweep would report `not_placed`.) Where the symbol is gone, `recover_runner` halts
+the runner outright, because there is no instrument to withhold and the startup gate is not enough —
+that gate lifts after one order-list read, and a read cannot answer a question nobody can pose.
 
-## The four verdicts
+**Opening the journal repairs a torn tail before writing anything.** Appending straight onto a line
+with no newline would glue the next record to the fragment; the combined text would then carry a
+newline, so the next replay would see one unreadable complete line and lose both. So opening
+terminates the fragment and writes the salvaged record beside it — and if that repair itself fails,
+`open()` is false.
+
+## The five verdicts
 
 After recovery, each owed instruction is matched against the broker's own order list on every listing
 the source reads. `runner::match_verdict_name` prints these:
@@ -96,6 +115,12 @@ the source reads. `runner::match_verdict_name` prints these:
 | `not_placed` | no row, and the window has closed | resolved; the order does not exist |
 | `ambiguous` | more than one row could be it | **nothing is resolved**; you decide |
 | `undecided` | no row yet, window still open | wait for the next sweep |
+| `needs_operator` | the entry came from a damaged line | **only you can resolve it** |
+
+A resolution is written back to the journal **before** the ledger is cleared — the same discipline as
+writing before a send, applied to the other end. Without it the instruction would stay open on disk
+and every restart would withhold the instrument again for a question already answered. If that
+write-back fails, the hold deliberately stands and the runner halts.
 
 **`not_placed` and `undecided` are the pair to get right.** The absence of a row is evidence of
 absence only *after* enough time has passed for the broker's listing to reflect a write it accepted.
@@ -128,6 +153,23 @@ offers that on a recovery path:
 So placements are matched on attributes — instrument, side, type, quantity, price, and a timestamp
 inside the window — on both brokers. That is a heuristic, and `ambiguous` is how it tells you so.
 
+**A placement is matched against order history, not against the open-orders listing.** This is the
+subtlest thing in the whole design. Both brokers' working-order inquiry returns only what is still
+*resting*: Toss maps it to its `OPEN` scope, KIS to the modifiable set. A market or aggressive limit
+order can fill and leave that listing within seconds — well before the first sweep — so matching
+against open orders alone would find nothing, and once the window closed that absence would read as
+`not_placed`. The hold would clear for an order that existed and executed, and the runner would place
+it again. So any sweep with a placement owed reads the history too, with the calendar range KIS
+requires and the cursor paging Toss offers, and deduplicates by order id because a still-open order
+appears in both listings.
+
+History is read **only when something is owed**, so an ordinary sweep costs no request of its own.
+And a history read that fails concludes nothing at all: absence from a listing that never arrived is
+not evidence, so every instruction stays owed.
+
+**A cancellation needs no history.** It names an order id, and whether that order is still resting is
+exactly what the open listing answers.
+
 **Cancellations are matched by identity**, because a cancellation names an order that already exists,
 so its journal line carries the broker's own `order_id` from the moment it is written. `ambiguous` is
 unreachable there.
@@ -143,7 +185,10 @@ the first is unresolved.
   not. Rotate it yourself between sessions, and note that recovery reads what it is given — a journal
   rotated away is a journal that remembers nothing.
 - **More than one writer.** One journal, one process. Two runners on one account is a larger problem
-  than a journal.
+  than a journal. The journal does check the *account*: it is opened with a scope such as
+  `"kis:live:12345678-01"`, and a file already holding another account's records refuses to open,
+  because symbol, side, quantity and price can all agree across two accounts trading the same
+  instrument.
 - **Survive a power cut on macOS.** `fsync` there returns once the data reaches the drive, not once
   the drive has committed it. A killed *process* — which is the threat this exists for — is covered on
   every platform.

@@ -853,14 +853,18 @@ classification at all: no error path runs, so nothing is marked.
 **before** the send is attempted, so the record exists during the exact window the process may vanish in.
 
 ```cpp
-runner::FileJournal journal("/var/lib/mybot/orders.jsonl");
+// The scope names the account. A journal opened for a different one refuses to open.
+runner::FileJournal journal("/var/lib/mybot/orders.jsonl", "kis:live:12345678-01");
+if (!journal.open()) {
+  return 1;   // a runner that cannot journal should not trade
+}
 
-auto live_runner = live::bind(session, MyStrategy{}, limits);
-const auto recovery = runner::recover_into(journal, live_runner.ledger());
+// bind_journaled, not bind: bind builds its own executor, so a JournalingExecutor
+// constructed beside the runner would be an unused variable and nothing would be recorded.
+auto live_runner = live::bind_journaled(session, journal, MyStrategy{}, limits);
 
-auto executor = runner::JournalingExecutor<live::SessionExecutor<Session>, runner::FileJournal>(
-  live::SessionExecutor<Session>(session), journal
-);
+// Recover before the loop starts, so the ledger is marked for whatever a predecessor left owed.
+const auto recovery = runner::recover_runner(live_runner, journal);
 
 live::SessionSource<Session, runner::FileJournal> source(session, {samsung()});
 source.set_journal(journal);
@@ -868,12 +872,25 @@ source.set_journal(journal);
 
 It is a **decorator**, so `Runner` is unchanged, it composes with the recording executor every test
 uses, and a backtest journals nothing because it wraps nothing — there is no flag to turn off. The
-source then matches owed instructions against the listings it already polls, so reconciliation costs no
-request of its own, and reports one of four verdicts: `matched`, `not_placed`, `ambiguous`, `undecided`.
+source then matches owed instructions against the broker's listings and reports one of five verdicts:
+`matched`, `not_placed`, `ambiguous`, `undecided`, `needs_operator`. A resolution is written back to the
+journal **before** the ledger is cleared, so a restart does not re-ask a question that was settled.
+
+**A placement is matched against order history, not against open orders.** A market or aggressive limit
+order can fill and leave the open listing before the first sweep, and treating that absence as "never
+placed" would clear the hold for an order that executed. History is read only when something is owed, so
+an ordinary sweep still costs no request of its own — and a history read that fails concludes nothing,
+because absence from a listing that never arrived is not evidence. A cancellation needs no history: it
+names an order id, and whether that order is still resting is exactly what the open listing answers.
 
 `ambiguous` is a stop, not a retry. A journal narrows the window and makes ambiguity machine-visible; it
 cannot manufacture idempotency, and neither broker offers a recovery handle — Toss echoes a
 `clientOrderId` on the acknowledgement but not on a listing row, and KIS's `gt_uid` is corporate-only.
+
+**A journal that cannot be written stops the runner.** The instruction is reported as
+`SendOutcome::UNAVAILABLE` — a local refusal, not a broker rejection — and the condition is sticky, so
+`PollingLoop` gates on `GateReason::LOCAL_FAILURE` rather than producing one unexplained refusal per bar
+until somebody notices no broker was involved.
 
 `example-order-journal` runs the whole story — a send that never returns, a restarted process that would
 happily trade until recovery stops it, and the sweep that resolves it — with no broker and no network.

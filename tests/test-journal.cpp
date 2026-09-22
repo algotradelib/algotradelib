@@ -555,7 +555,7 @@ TEST_CASE("a line this library did not write is not an entry", "[journal][file]"
 TEST_CASE("appends accumulate, one whole line each", "[journal][file]") {
   const TempJournal path("append");
   {
-    runner::FileJournal journal(path.str());
+    runner::FileJournal journal(path.str(), "test:account");
     REQUIRE(journal.open());
     auto entry = sample_entry();
     REQUIRE(journal.append(entry));
@@ -578,11 +578,11 @@ TEST_CASE("appends accumulate, one whole line each", "[journal][file]") {
 TEST_CASE("a restarted process appends to its predecessor's file", "[journal][file]") {
   const TempJournal path("restart");
   {
-    runner::FileJournal first(path.str());
+    runner::FileJournal first(path.str(), "test:account");
     REQUIRE(first.append(sample_entry()));
   }
   {
-    runner::FileJournal second(path.str());
+    runner::FileJournal second(path.str(), "test:account");
     auto entry = sample_entry();
     entry.id_ = "run-2";
     REQUIRE(second.append(entry));
@@ -788,7 +788,7 @@ TEST_CASE("a terminal line that cannot be written is reported, not swallowed", "
 }
 
 TEST_CASE("a journal that could not be opened reports it", "[journal][file]") {
-  runner::FileJournal journal("atl-test-journal-missing-directory/nowhere.jsonl");
+  runner::FileJournal journal("atl-test-journal-missing-directory/nowhere.jsonl", "test:account");
   REQUIRE_FALSE(journal.open());
   REQUIRE_FALSE(journal.append(sample_entry()));
 }
@@ -916,7 +916,7 @@ TEST_CASE("opening a torn journal terminates the fragment before appending", "[j
   fresh.id_ = "run-2";
   fresh.instrument_ = hynix();
   {
-    runner::FileJournal journal(path.str());
+    runner::FileJournal journal(path.str(), "test:account");
     REQUIRE(journal.open());
     REQUIRE_FALSE(journal.repaired().empty());
     REQUIRE(journal.append(fresh));
@@ -945,12 +945,12 @@ TEST_CASE("a repair survives a second restart", "[journal][file]") {
   write_file(path.str(), torn_line.substr(0, torn_line.size() * 2 / 3));
 
   {
-    runner::FileJournal first(path.str());
+    runner::FileJournal first(path.str(), "test:account");
     REQUIRE(first.open());
   }
   {
     // Nothing left to repair: the file is well formed now.
-    runner::FileJournal second(path.str());
+    runner::FileJournal second(path.str(), "test:account");
     REQUIRE(second.open());
     REQUIRE(second.repaired().empty());
   }
@@ -970,13 +970,76 @@ TEST_CASE("a torn line naming nothing halts the runner outright", "[journal][fil
   write_file(path.str(), R"({"id":"run-2","ac)");
 
   {
-    runner::FileJournal journal(path.str());
+    runner::FileJournal journal(path.str(), "test:account");
     REQUIRE(journal.open());
   }
 
   runner::DryRunner<HoldTen> dry;
-  const auto recovery = runner::recover_runner(dry, runner::FileJournal(path.str()));
+  const auto recovery = runner::recover_runner(dry, runner::FileJournal(path.str(), "test:account"));
   REQUIRE(recovery.unattributable_);
   REQUIRE(dry.local_failure().has_value());
   REQUIRE(dry.ledger().empty());
+}
+
+// ---------------------------------------------------------------------------
+// One journal, one account
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a journal records which account it belongs to", "[journal][file]") {
+  const TempJournal path("scope");
+  {
+    runner::FileJournal journal(path.str(), "kis:live:12345678-01");
+    REQUIRE(journal.open());
+    // Stamped by the journal rather than the caller, so a record cannot reach the file without one.
+    REQUIRE(journal.append(sample_entry()));
+  }
+  const auto replay = runner::read_journal_file(path.str());
+  REQUIRE(replay.entries_.front().scope_ == "kis:live:12345678-01");
+}
+
+TEST_CASE("a journal refuses to open for a different account", "[journal][file]") {
+  // Reusing a path across accounts is an easy mistake and not a harmless one: symbol, side,
+  // quantity and price can all agree across two accounts trading the same instrument, so a sweep
+  // would reconcile one account's unresolved instruction against the other's rows and clear a hold
+  // for an order that is still resting.
+  const TempJournal path("scope-clash");
+  {
+    runner::FileJournal journal(path.str(), "kis:live:12345678-01");
+    REQUIRE(journal.append(sample_entry()));
+  }
+
+  runner::FileJournal other(path.str(), "toss:live:99");
+  REQUIRE_FALSE(other.open());
+  REQUIRE_FALSE(other.rejection().empty());
+  REQUIRE(other.rejection().find("kis:live:12345678-01") != std::string::npos);
+  // And it writes nothing, so the first account's journal is left exactly as it was.
+  REQUIRE_FALSE(other.append(sample_entry()));
+  REQUIRE(runner::read_journal_file(path.str()).entries_.size() == 1);
+}
+
+TEST_CASE("a journal reopens for the account that wrote it", "[journal][file]") {
+  const TempJournal path("scope-same");
+  {
+    runner::FileJournal journal(path.str(), "kis:live:12345678-01");
+    REQUIRE(journal.append(sample_entry()));
+  }
+  runner::FileJournal again(path.str(), "kis:live:12345678-01");
+  REQUIRE(again.open());
+  REQUIRE(again.rejection().empty());
+}
+
+TEST_CASE("the account check runs before the torn-tail repair", "[journal][file]") {
+  // The repair writes to the file. Doing it before the account is checked would modify a journal
+  // that turns out not to be ours.
+  const TempJournal path("scope-torn");
+  auto entry = sample_entry();
+  entry.scope_ = "kis:live:12345678-01";
+  const auto line = runner::journal_entry_to_line(entry);
+  const auto torn = runner::journal_entry_to_line(entry);
+  write_file(path.str(), line + "\n" + torn.substr(0, torn.size() * 2 / 3));
+  const auto before = read_file(path.str());
+
+  runner::FileJournal other(path.str(), "toss:live:99");
+  REQUIRE_FALSE(other.open());
+  REQUIRE(read_file(path.str()) == before);
 }

@@ -60,6 +60,9 @@ public:
 
   Result<Placed> place(OrderRequest order) {
     placed_.push_back(order);
+    if (observed_ != nullptr) {
+      journal_at_send_ = observed_->records();
+    }
     if (error_) {
       return Result<Placed>(*error_);
     }
@@ -169,6 +172,14 @@ public:
   }
   void set_history(OrderPage page) { history_ = std::move(page); }
 
+  /** Watches `journal`, capturing what it held at the moment a placement was attempted. */
+  void observe_journal(const runner::MemoryJournal& journal) { observed_ = &journal; }
+
+  /** Returns the journal's contents as of the last placement this session was asked for. */
+  const std::vector<runner::JournalEntry>& journal_at_send() const noexcept {
+    return journal_at_send_;
+  }
+
   std::size_t bar_calls() const noexcept { return bar_calls_; }
   std::size_t quote_calls() const noexcept { return quote_calls_; }
   std::size_t holdings_calls() const noexcept { return holdings_calls_; }
@@ -182,6 +193,8 @@ private:
   WorkingOrders<FakeBroker> working_orders_;
   OrderPage history_;
   std::optional<BrokerError> history_error_;
+  const runner::MemoryJournal* observed_{nullptr};
+  std::vector<runner::JournalEntry> journal_at_send_;
   std::size_t bar_calls_{0};
   std::size_t quote_calls_{0};
   std::size_t holdings_calls_{0};
@@ -1005,4 +1018,50 @@ TEST_CASE("a cancellation needs no history, because working orders answer it") {
   CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
   CHECK(session.history_calls() == 0);
   CHECK(source.last_reconcile().settled());
+}
+
+// ---------------------------------------------------------------------------
+// The journal has to be in the runner's own send path, not beside it
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a journaled binding records before the session is asked") {
+  // The assertion that would have caught the documented setup being wrong. Observing the pending
+  // entry *after* `feed` returns would pass even for a runner that journals nothing and sends
+  // through a plain executor, so the journal is read from inside the session's own `place`.
+  runner::MemoryJournal journal("test:account");
+  FakeSession<WithKey> session;
+  session.observe_journal(journal);
+
+  auto live_runner = live::bind_journaled(session, journal, HoldTen{}, {});
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+  const auto report = live_runner.feed(bar_at(0, "70000"));
+  REQUIRE(report.would_place_.size() == 1);
+  REQUIRE(session.placed().size() == 1);
+
+  // What the journal held at the moment the session was asked: the pending line, already written.
+  REQUIRE(session.journal_at_send().size() == 1);
+  CHECK(session.journal_at_send().front().outcome_ == runner::JournalOutcome::PENDING);
+  CHECK(session.journal_at_send().front().instrument_ == samsung());
+  CHECK(session.journal_at_send().front().scope_ == "test:account");
+
+  // And the terminal line afterwards, carrying the reference the session issued.
+  REQUIRE(journal.records().size() == 2);
+  CHECK(journal.records().back().outcome_ == runner::JournalOutcome::ACCEPTED);
+  CHECK_FALSE(journal.records().back().order_id_.empty());
+
+  // Nothing is owed, because the instruction was answered.
+  CHECK(runner::unresolved_instructions(journal.replay()).empty());
+}
+
+TEST_CASE("a journaled binding keeps the session's capabilities and tag") {
+  // Same `Caps` and `BrokerTag` as a plain binding, so a capability-gated strategy compiles the
+  // same branch whether or not a journal is attached.
+  runner::MemoryJournal journal("test:account");
+  FakeSession<WithKey> session;
+  auto live_runner = live::bind_journaled(session, journal, HoldTen{}, {});
+  STATIC_REQUIRE(std::is_same_v<decltype(live_runner)::Tag, FakeBroker>);
+  STATIC_REQUIRE(decltype(live_runner)::Context::caps::has_client_order_id);
 }

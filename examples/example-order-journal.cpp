@@ -120,7 +120,7 @@ int main() {
 
   std::cout << "1. A runner sends one order, and is killed before it learns the outcome.\n\n";
   {
-    runner::FileJournal journal(path);
+    runner::FileJournal journal(path, "example:demo-account");
     if (!journal.open()) {
       std::cout << "could not open " << path << " for appending\n";
       return 1;
@@ -158,7 +158,7 @@ int main() {
 
   // Too soon. An accepted write does not appear in a listing instantly, so an absent row this early
   // is not evidence that the order does not exist.
-  runner::FileJournal journal(path);
+  runner::FileJournal journal(path, "example:demo-account");
   const auto early = runner::reconcile_against(
     recovery.open_, {}, sent_at() + std::chrono::seconds(5), ledger, journal
   );
