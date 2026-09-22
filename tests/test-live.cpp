@@ -136,13 +136,13 @@ public:
     return Result<WorkingOrders<FakeBroker>>(working_orders_);
   }
 
-  /** Returns an empty page, counting the call. */
+  /** Returns the scripted history page, counting the call. */
   Result<OrderPage> order_history(const OrderHistoryQuery&) {
     ++history_calls_;
     if (error_) {
       return Result<OrderPage>(*error_);
     }
-    return Result<OrderPage>(OrderPage{});
+    return Result<OrderPage>(history_);
   }
 
   void set_bars(BarSeries series) { bars_ = std::move(series); }
@@ -151,6 +151,7 @@ public:
   void set_working_orders(WorkingOrders<FakeBroker> orders) {
     working_orders_ = std::move(orders);
   }
+  void set_history(OrderPage page) { history_ = std::move(page); }
 
   std::size_t bar_calls() const noexcept { return bar_calls_; }
   std::size_t quote_calls() const noexcept { return quote_calls_; }
@@ -163,6 +164,7 @@ private:
   QuoteSnapshot quote_;
   HoldingsSnapshot holdings_;
   WorkingOrders<FakeBroker> working_orders_;
+  OrderPage history_;
   std::size_t bar_calls_{0};
   std::size_t quote_calls_{0};
   std::size_t holdings_calls_{0};
@@ -683,4 +685,188 @@ TEST_CASE("a broker without the working-order inquiry never polls for one") {
 
   CHECK(source.poll(runner::PollKind::WORKING_ORDERS, live_runner) == runner::PollOutcome::UNCHANGED);
   CHECK(session.working_calls() == 0);
+}
+
+// ---------------------------------------------------------------------------
+// Sweeping the ledger from a listing the source already fetched.
+//
+// The half of the order journal that needs a session. Everything about *what* a match means is
+// decided in `runner::match_against` and tested without one; what these assert is that the rows a
+// real inquiry returns reach it, that the ledger is cleared by what they settle, and that a source
+// with no journal behaves exactly as it did before.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** The instant the journal entries below were recorded at. */
+std::chrono::system_clock::time_point journaled_at() {
+  return std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 100);
+}
+
+/** An unanswered placement in a journal, which is what a killed process leaves behind. */
+runner::JournalEntry journaled_placement(const char* id = "run-1") {
+  runner::JournalEntry entry;
+  entry.id_ = id;
+  entry.action_ = runner::JournalAction::PLACE;
+  entry.outcome_ = runner::JournalOutcome::PENDING;
+  entry.recorded_at_ = journaled_at();
+  entry.instrument_ = samsung();
+  entry.side_ = OrderSide::BUY;
+  entry.type_ = OrderType::LIMIT;
+  entry.quantity_ = Decimal64::parse("10");
+  entry.price_ = Decimal64::parse("70000");
+  return entry;
+}
+
+/** A listing row matching `journaled_placement`, as the broker would report it. */
+OrderSnapshot listed_order(const char* order_id) {
+  auto snapshot = working().order_;
+  snapshot.order_id_ = order_id;
+  snapshot.ordered_at_ = journaled_at();
+  return snapshot;
+}
+
+/** Long enough after the send that an absent row means the order never existed. */
+std::chrono::system_clock::time_point swept_at() {
+  return journaled_at() + std::chrono::minutes(10);
+}
+
+} // namespace
+
+TEST_CASE("a source with no journal reads the list and matches nothing") {
+  // The pre-existing behaviour, unchanged: the gate lifts because this process has looked at the
+  // broker's own record, and a mark nothing accounts for stays exactly where it is.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live_runner.ledger().mark(samsung(), "an order request failed in transit");
+
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+  CHECK(live_runner.ledger().requires_reconcile(samsung()));
+  CHECK(source.last_reconcile().matches_.empty());
+}
+
+TEST_CASE("the order-list read resolves what the broker's rows settle") {
+  WorkingSession session;
+  WorkingOrders<FakeBroker> orders;
+  auto listed = working();
+  listed.order_ = listed_order("KRX-1");
+  orders.orders_.push_back(listed);
+  session.set_working_orders(orders);
+
+  runner::MemoryJournal journal;
+  journal.append(journaled_placement());
+
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live_runner.context().set_now(swept_at());
+  live_runner.ledger().mark(samsung(), "an order request failed in transit");
+
+  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
+  source.set_journal(journal);
+
+  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+  REQUIRE(source.last_reconcile().matches_.size() == 1);
+  CHECK(source.last_reconcile().matches_.front().order_id_ == "KRX-1");
+  CHECK(source.last_reconcile().settled());
+  // The instrument may trade again, and only reading the broker's own list got it there.
+  CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
+}
+
+TEST_CASE("a working-order poll sweeps the ledger without a request of its own") {
+  // The rows a working-order poll already fetches are exactly what the matcher needs, so
+  // reconciliation rides along rather than asking the broker again.
+  WorkingSession session;
+  WorkingOrders<FakeBroker> orders;
+  auto listed = working();
+  listed.order_ = listed_order("KRX-1");
+  orders.orders_.push_back(listed);
+  session.set_working_orders(orders);
+
+  runner::MemoryJournal journal;
+  journal.append(journaled_placement());
+
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live_runner.context().set_now(swept_at());
+  live_runner.ledger().mark(samsung(), "an order request failed in transit");
+
+  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
+  source.set_journal(journal);
+
+  CHECK(source.poll(runner::PollKind::WORKING_ORDERS, live_runner) == runner::PollOutcome::UPDATED);
+  CHECK(session.working_calls() == 1);
+  CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
+}
+
+TEST_CASE("the history fallback sweeps against the page it read") {
+  // A broker with no working-order inquiry still reconciles, from the wider listing it does offer.
+  HistorySession session;
+  OrderPage page;
+  page.orders_.push_back(listed_order("KRX-1"));
+  session.set_history(page);
+
+  runner::MemoryJournal journal;
+  journal.append(journaled_placement());
+
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live_runner.context().set_now(swept_at());
+  live_runner.ledger().mark(samsung(), "an order request failed in transit");
+
+  live::SessionSource<HistorySession, runner::MemoryJournal> source(session, {samsung()});
+  source.set_journal(journal);
+
+  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+  CHECK(session.history_calls() == 1);
+  CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
+}
+
+TEST_CASE("an ambiguous listing leaves the instrument withheld") {
+  // Two rows that could both be the journaled order. Guessing would either leave a live order
+  // unwatched or double a position, so the hold stays and the report says why.
+  WorkingSession session;
+  WorkingOrders<FakeBroker> orders;
+  for (const auto* id : {"KRX-1", "KRX-2"}) {
+    auto listed = working();
+    listed.order_ = listed_order(id);
+    orders.orders_.push_back(listed);
+  }
+  session.set_working_orders(orders);
+
+  runner::MemoryJournal journal;
+  journal.append(journaled_placement());
+
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live_runner.context().set_now(swept_at());
+  live_runner.ledger().mark(samsung(), "an order request failed in transit");
+
+  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
+  source.set_journal(journal);
+
+  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+  CHECK(source.last_reconcile().ambiguous_);
+  CHECK_FALSE(source.last_reconcile().settled());
+  CHECK(live_runner.ledger().requires_reconcile(samsung()));
+}
+
+TEST_CASE("an empty listing settles nothing until the window has closed") {
+  WorkingSession session;
+  runner::MemoryJournal journal;
+  journal.append(journaled_placement());
+
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live_runner.ledger().mark(samsung(), "an order request failed in transit");
+
+  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
+  source.set_journal(journal);
+
+  // Five seconds after the send, an absent row is not evidence of anything.
+  live_runner.context().set_now(journaled_at() + std::chrono::seconds(5));
+  source.read_order_list(live_runner);
+  CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::UNDECIDED);
+  CHECK(live_runner.ledger().requires_reconcile(samsung()));
+
+  // Ten minutes after it, the order was never placed.
+  live_runner.context().set_now(swept_at());
+  source.poll(runner::PollKind::WORKING_ORDERS, live_runner);
+  CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::NOT_PLACED);
+  CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
 }

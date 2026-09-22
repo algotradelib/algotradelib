@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../runner/loop.hpp"
+#include "../runner/reconcile_orders.hpp"
 
 #include <algotradelib/broker>
 
@@ -52,8 +53,14 @@ inline runner::PollOutcome poll_outcome_of(const BrokerError& error) noexcept {
  *
  * **Capabilities are compile-time.** A broker with no working-order inquiry compiles no call to one,
  * and the loop simply never polls that kind. Nothing is checked at run time and nothing throws.
+ *
+ * **Reconciliation is opt-in and costs no extra request.** Bind an order journal with
+ * `set_journal` and every listing this source reads is also swept against what the journal says is
+ * owed, resolving the runner's ledger where the broker's own rows settle the question. Without a
+ * journal the class behaves exactly as it did before: the gate still lifts on a clean start, and
+ * nothing is matched.
  */
-template <typename Session>
+template <typename Session, typename Journal = runner::MemoryJournal>
 class SessionSource {
 public:
   using Caps = typename Session::Caps;
@@ -67,6 +74,25 @@ public:
    */
   SessionSource(Session& session, std::vector<InstrumentId> universe)
   : session_(&session), universe_(std::move(universe)) {}
+
+  /**
+   * Binds the journal whose unresolved instructions each listing is swept against.
+   *
+   * Borrowed rather than owned, and deliberately the *same* journal the executor writes to: one
+   * file, one writer, and one reader that knows what the writer recorded.
+   *
+   * **A sweep happens wherever rows arrive**, which is the startup read and every working-order
+   * poll, because both already fetch exactly what the matcher needs. A broker with no working-order
+   * inquiry has only the startup read, and that asymmetry is a consequence of what the broker
+   * offers rather than a choice made here.
+   */
+  void set_journal(Journal& journal) { journal_ = &journal; }
+
+  /** Sets how much slack attribute matching allows. */
+  void set_match_window(runner::MatchWindow window) { window_ = window; }
+
+  /** Returns what the last sweep settled and what it left owed. */
+  const runner::ReconcileReport& last_reconcile() const noexcept { return reconcile_; }
 
   /** Sets the bar interval and depth each poll requests. */
   void set_bar_query(BarInterval interval, int count) {
@@ -119,11 +145,9 @@ public:
         return poll_outcome_of(*last_error_);
       }
       last_error_.reset();
-      // The rows are not matched against ledger entries here. Attribute matching is a heuristic
-      // rather than an identity -- two identical orders seconds apart are indistinguishable in a
-      // listing -- so automating it is deliberately left to
-      // `plan/todo/order-journal-reconciliation.md`. What this call establishes is the thing the gate
-      // actually needs: that this process has looked at the broker's own record before sending.
+      // What this call establishes, with or without a journal, is the thing the gate actually needs:
+      // that this process has looked at the broker's own record before sending.
+      reconcile(runner_instance, result.value().orders_);
       return runner::PollOutcome::UPDATED;
     }
   }
@@ -227,6 +251,16 @@ private:
       auto portfolio = runner_instance.context().portfolio();
       portfolio.working_ = result.value().orders_;
       runner_instance.context().set_portfolio(std::move(portfolio));
+
+      // Swept from the rows just fetched, so reconciliation costs no request of its own. A
+      // `WorkingOrder` carries the normalized snapshot the matcher reads; nothing broker-specific
+      // reaches it.
+      std::vector<OrderSnapshot> rows;
+      rows.reserve(result.value().orders_.size());
+      for (const auto& working : result.value().orders_) {
+        rows.push_back(working.order_);
+      }
+      reconcile(runner_instance, rows);
       return runner::PollOutcome::UPDATED;
     } else {
       // Unreachable through the loop, which never schedules a kind the caller left unset, and a
@@ -237,8 +271,36 @@ private:
     }
   }
 
+  /**
+   * Resolves what `rows` settle, leaving withheld whatever they do not.
+   *
+   * Does nothing at all without a journal, which is what keeps the pre-existing behaviour exactly
+   * as it was: a source with no journal reads the list, lifts the gate, and matches nothing.
+   *
+   * `now` comes from the runner's own context rather than from the page's `received_at_`. The two
+   * are different clocks -- the context's is local, like the journal's stamps, and the page's is the
+   * broker's -- and the matcher already widens for that difference in one place. Measuring the
+   * window against the broker's clock as well would apply the allowance twice.
+   */
+  template <typename Runner>
+  void reconcile(Runner& runner_instance, const std::vector<OrderSnapshot>& rows) {
+    if (journal_ == nullptr) {
+      return;
+    }
+    reconcile_ = runner::reconcile_against(
+      runner::unresolved_instructions(journal_->replay()),
+      rows,
+      runner_instance.context().now(),
+      runner_instance.ledger(),
+      window_
+    );
+  }
+
   Session* session_;
   std::vector<InstrumentId> universe_;
+  Journal* journal_{nullptr};
+  runner::MatchWindow window_;
+  runner::ReconcileReport reconcile_;
   BarInterval interval_{BarInterval::ONE_DAY};
   int count_{100};
   int history_limit_{100};
