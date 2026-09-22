@@ -23,7 +23,8 @@ The journal exists to make that difference visible on disk.
 Four steps, and two of them are easy to get subtly and silently wrong:
 
 ```cpp
-// 1. Name the account. A journal whose file holds another account's records refuses to open.
+// 1. Name the account. It goes in a header written before any order, so a journal whose
+//    file belongs to another account refuses to open even if its first record tore.
 runner::FileJournal journal("/var/lib/mybot/orders.jsonl", "kis:live:12345678-01");
 if (!journal.open()) {
   std::cerr << journal.rejection() << '\n';
@@ -81,6 +82,7 @@ matching reads, the text is for you.
 | `pending` then `accepted` | the order exists, and `order_id` names it |
 | `pending` then `rejected` | the broker refused. The order does not exist. Nothing owed |
 | `pending` then `indeterminate` | the request failed in transit. **Unknown.** Still owed |
+| `pending` then `resolved` | a sweep read the broker's list and closed it. `order_id` says what it saw |
 | `pending` alone, at the end of the file | the process died between the write and the answer |
 | a last line with no newline | the process died *during* the write |
 
@@ -121,6 +123,12 @@ A resolution is written back to the journal **before** the ledger is cleared —
 writing before a send, applied to the other end. Without it the instruction would stay open on disk
 and every restart would withhold the instrument again for a question already answered. If that
 write-back fails, the hold deliberately stands and the runner halts.
+
+The record's outcome is `resolved`, not `accepted` or `rejected`. Those are answers the *broker*
+gave to the instruction; a sweep learns something different — what the listing shows now. On a
+cancellation they can be opposites: a matched row means the target order is **still resting**, so
+`accepted` would claim a withdrawal that plainly has not happened. What was observed is in
+`order_id` (set when a row was found, empty when none was) and spelled out in `detail`.
 
 **`not_placed` and `undecided` are the pair to get right.** The absence of a row is evidence of
 absence only *after* enough time has passed for the broker's listing to reflect a write it accepted.
@@ -186,9 +194,15 @@ the first is unresolved.
   rotated away is a journal that remembers nothing.
 - **More than one writer.** One journal, one process. Two runners on one account is a larger problem
   than a journal. The journal does check the *account*: it is opened with a scope such as
-  `"kis:live:12345678-01"`, and a file already holding another account's records refuses to open,
-  because symbol, side, quantity and price can all agree across two accounts trading the same
-  instrument.
+  `"kis:live:12345678-01"`, written into a header before the first order, and a file whose header
+  names a different account refuses to open — because symbol, side, quantity and price can all agree
+  across two accounts trading the same instrument. A non-empty file with no header is refused too:
+  its ownership cannot be established, and that is not a question to guess at while holding a file
+  that may name another account's live orders.
+- **Repairing a repair.** Terminating a torn fragment and recording its stand-in are two writes, so
+  a process killed between them leaves the fragment as a complete unreadable line. That is detected
+  — any unreadable line halts recovery outright — but it is detected rather than repaired. A sidecar
+  or a two-phase protocol would give stronger guarantees.
 - **Survive a power cut on macOS.** `fsync` there returns once the data reaches the drive, not once
   the drive has committed it. A killed *process* — which is the threat this exists for — is covered on
   every platform.

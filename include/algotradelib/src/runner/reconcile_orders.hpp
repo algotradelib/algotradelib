@@ -338,18 +338,14 @@ inline JournalEntry resolution_entry(
   std::chrono::system_clock::time_point now
 ) {
   auto entry = instruction.entry_;
-  // The broker's own vocabulary, because that is genuinely what was learned: `MATCHED` means the
-  // order is in the broker's listing, and `NOT_PLACED` means it is not. Reusing the outcomes rather
-  // than inventing a "reconciled" one is what lets `unresolved_instructions` close the instruction
-  // with no special case.
-  entry.outcome_ = match.verdict_ == MatchVerdict::MATCHED ?
-    JournalOutcome::ACCEPTED :
-    JournalOutcome::REJECTED;
+  // `RESOLVED`, not `ACCEPTED` or `REJECTED`. Those are answers the broker gave to the instruction;
+  // this is what its listing showed afterwards, and for a cancellation the two can be opposites -- a
+  // matched row means the target order is still resting, which is the withdrawal *not* having
+  // happened. What was observed lives in `order_id_` and `detail_`.
+  entry.outcome_ = JournalOutcome::RESOLVED;
   entry.recorded_at_ = now;
   entry.requires_operator_ = false;
-  if (!match.order_id_.empty()) {
-    entry.order_id_ = match.order_id_;
-  }
+  entry.order_id_ = match.order_id_;
   entry.detail_ = "resolved by reading the broker's order list: " + match.detail_;
   return entry;
 }
@@ -471,7 +467,11 @@ inline ReconcileReport decide_nothing(
 /** Returns whether any of `open` is a placement, which is what needs a lifecycle-wide listing. */
 inline bool any_placement(const std::vector<OpenInstruction>& open) {
   for (const auto& instruction : open) {
-    if (instruction.entry_.action_ == JournalAction::PLACE) {
+    // Operator-only entries are excluded, because no listing can decide them: `match_against`
+    // returns `NEEDS_OPERATOR` before it looks at a single row. Including them bought pointless
+    // pagination on Toss and a guaranteed rejected inquiry on KIS, on every sweep, forever.
+    if (instruction.entry_.action_ == JournalAction::PLACE &&
+        !instruction.entry_.requires_operator_) {
       return true;
     }
   }
@@ -632,6 +632,14 @@ RecoveryReport recover_into(const Journal& journal, IndeterminacyLedger& ledger)
  * question nobody can pose -- there is no instrument to look for. So this halts the runner, and an
  * operator clears it with `resume_after_local_failure` once they have read the broker's list
  * themselves.
+ *
+ * **A complete line that does not parse halts it too**, for the same reason and one more. A journal
+ * this library wrote contains no such line, so its presence means either that something else edited
+ * the file or that a repair was itself interrupted -- `finish_repair` terminates a torn fragment and
+ * then records a stand-in for it, and a process killed between those leaves the fragment as a
+ * complete, unreadable line with no torn tail for the next open to notice. Either way the file
+ * cannot account for what was in flight, and an unreadable line that only made `clean()` false had
+ * no safety effect at all.
  */
 template <typename Runner, typename Journal>
 RecoveryReport recover_runner(Runner& runner_instance, const Journal& journal) {
@@ -641,6 +649,12 @@ RecoveryReport recover_runner(Runner& runner_instance, const Journal& journal) {
       report.detail_.empty() ?
         "the order journal was damaged in a way that names no instrument" :
         report.detail_
+    );
+  }
+  if (report.unreadable_lines_ > 0) {
+    runner_instance.halt_locally(
+      "the order journal holds " + std::to_string(report.unreadable_lines_) +
+      " line(s) this library did not write, so it cannot account for what was in flight"
     );
   }
   return report;

@@ -461,6 +461,17 @@ void write_file(const std::string& path, const std::string& text) {
   std::fclose(handle);
 }
 
+/** The account every journal in these tests belongs to. */
+constexpr const char* kScope = "test:account";
+
+/**
+ * Writes a journal whose header is intact and whose body is whatever the test wants to break.
+ *
+ * The header is written before any instruction in a real journal, so a test that hand-builds a
+ * damaged file has to do the same or it is testing a file no process could produce.
+ */
+void write_journal(const std::string& path, const std::string& body, const char* scope = kScope);
+
 /** Returns the whole file as text. */
 std::string read_file(const std::string& path) {
   std::FILE* handle = std::fopen(path.c_str(), "rb");
@@ -501,6 +512,17 @@ public:
 private:
   std::string path_;
 };
+
+void write_journal(const std::string& path, const std::string& body, const char* scope) {
+  std::FILE* handle = std::fopen(path.c_str(), "wb");
+  REQUIRE(handle != nullptr);
+  const auto header = runner::journal_header_line(scope) + "\n";
+  REQUIRE(std::fwrite(header.data(), 1, header.size(), handle) == header.size());
+  if (!body.empty()) {
+    REQUIRE(std::fwrite(body.data(), 1, body.size(), handle) == body.size());
+  }
+  std::fclose(handle);
+}
 
 JournalEntry sample_entry() {
   JournalEntry entry;
@@ -566,7 +588,11 @@ TEST_CASE("appends accumulate, one whole line each", "[journal][file]") {
 
   const auto text = read_file(path.str());
   REQUIRE(text.back() == '\n');
-  REQUIRE(std::count(text.begin(), text.end(), '\n') == 2);
+  // The header, then one line per record. The header is written when the journal is first claimed,
+  // before any instruction can be contemplated, which is what makes ownership legible even if the
+  // very first order tears.
+  REQUIRE(std::count(text.begin(), text.end(), '\n') == 3);
+  REQUIRE(runner::journal_header_scope(text.substr(0, text.find('\n'))) == "test:account");
 
   const auto replay = runner::read_journal_file(path.str());
   REQUIRE(replay.intact());
@@ -617,7 +643,7 @@ TEST_CASE("a truncated final line is reported and treated as unresolved", "[jour
 
   // A process killed mid-append leaves the prefix of its last line and no newline. Cut at two
   // thirds so the instrument is still legible, which is the case worth salvaging.
-  write_file(
+  write_journal(
     path.str(),
     runner::journal_entry_to_line(complete) + "\n" +
       runner::journal_entry_to_line(resolved) + "\n" +
@@ -655,7 +681,7 @@ TEST_CASE("a truncated line is never allowed to resolve a pending one", "[journa
   // The line that was cut off is the one that *answers* the pending line. A reader that trusted
   // its legible prefix would mark the order resolved on the strength of a write that never
   // finished.
-  write_file(
+  write_journal(
     path.str(),
     runner::journal_entry_to_line(pending) + "\n" +
       terminal_line.substr(0, terminal_line.size() * 2 / 3)
@@ -671,7 +697,7 @@ TEST_CASE("a truncated line is never allowed to resolve a pending one", "[journa
 
 TEST_CASE("a truncated line naming no instrument is still reported", "[journal][file]") {
   const TempJournal path("truncated-early");
-  write_file(path.str(), runner::journal_entry_to_line(sample_entry()) + "\n" + R"({"id":"run-2","ac)");
+  write_journal(path.str(), runner::journal_entry_to_line(sample_entry()) + "\n" + R"({"id":"run-2","ac)");
 
   const auto replay = runner::read_journal_file(path.str());
   REQUIRE(replay.truncated_tail_);
@@ -681,7 +707,7 @@ TEST_CASE("a truncated line naming no instrument is still reported", "[journal][
 
 TEST_CASE("a complete line that is not a journal entry is counted", "[journal][file]") {
   const TempJournal path("foreign");
-  write_file(
+  write_journal(
     path.str(), runner::journal_entry_to_line(sample_entry()) + "\n" + R"({"hello":"world"})" + "\n"
   );
 
@@ -1015,7 +1041,7 @@ TEST_CASE("a salvaged entry is never resolved by a sweep", "[journal][file]") {
   auto torn = sample_entry();
   torn.id_ = "run-2";
   const auto torn_line = runner::journal_entry_to_line(torn);
-  write_file(path.str(), torn_line.substr(0, torn_line.size() * 2 / 3));
+  write_journal(path.str(), torn_line.substr(0, torn_line.size() * 2 / 3));
 
   const auto replay = runner::read_journal_file(path.str());
   const auto open = runner::unresolved_instructions(replay);
@@ -1048,7 +1074,7 @@ TEST_CASE("opening a torn journal terminates the fragment before appending", "[j
   auto torn = sample_entry();
   torn.id_ = "run-1";
   const auto torn_line = runner::journal_entry_to_line(torn);
-  write_file(path.str(), torn_line.substr(0, torn_line.size() * 2 / 3));
+  write_journal(path.str(), torn_line.substr(0, torn_line.size() * 2 / 3));
 
   auto fresh = sample_entry();
   fresh.id_ = "run-2";
@@ -1080,7 +1106,7 @@ TEST_CASE("a repair survives a second restart", "[journal][file]") {
   const TempJournal path("torn-twice");
   auto torn = sample_entry();
   const auto torn_line = runner::journal_entry_to_line(torn);
-  write_file(path.str(), torn_line.substr(0, torn_line.size() * 2 / 3));
+  write_journal(path.str(), torn_line.substr(0, torn_line.size() * 2 / 3));
 
   {
     runner::FileJournal first(path.str(), "test:account");
@@ -1105,7 +1131,7 @@ TEST_CASE("a torn line naming nothing halts the runner outright", "[journal][fil
   // everything is the only honest response. The loop's startup gate is not enough on its own: it
   // lifts after one order-list read, and a read cannot answer a question nobody can pose.
   const TempJournal path("torn-nameless");
-  write_file(path.str(), R"({"id":"run-2","ac)");
+  write_journal(path.str(), R"({"id":"run-2","ac)");
 
   {
     runner::FileJournal journal(path.str(), "test:account");
@@ -1174,10 +1200,105 @@ TEST_CASE("the account check runs before the torn-tail repair", "[journal][file]
   entry.scope_ = "kis:live:12345678-01";
   const auto line = runner::journal_entry_to_line(entry);
   const auto torn = runner::journal_entry_to_line(entry);
-  write_file(path.str(), line + "\n" + torn.substr(0, torn.size() * 2 / 3));
+  write_journal(path.str(), line + "\n" + torn.substr(0, torn.size() * 2 / 3));
   const auto before = read_file(path.str());
 
   runner::FileJournal other(path.str(), "toss:live:99");
   REQUIRE_FALSE(other.open());
   REQUIRE(read_file(path.str()) == before);
+}
+
+TEST_CASE("the first record tearing cannot hide the account", "[journal][file]") {
+  // The hole the header closes. Reading ownership from the records leaves it exactly where it
+  // matters most: `scope` is one field among many on a record, so a process killed partway through
+  // writing the *first* instruction leaves a file whose only line is torn and unscoped. Another
+  // account could then claim the path and reconcile the first account's instruction against its own
+  // rows.
+  const TempJournal path("scope-first-tear");
+  auto entry = sample_entry();
+  const auto line = runner::journal_entry_to_line(entry);
+  // Cut before the trailing `scope` field ever reaches the file.
+  const auto torn = line.substr(0, line.find("\"scope\""));
+  REQUIRE(torn.find("scope") == std::string::npos);
+  write_journal(path.str(), torn, "kis:live:12345678-01");
+
+  runner::FileJournal other(path.str(), "toss:live:99");
+  REQUIRE_FALSE(other.open());
+  REQUIRE(other.rejection().find("kis:live:12345678-01") != std::string::npos);
+
+  // The owner still opens it, and the torn record is repaired into its journal.
+  runner::FileJournal owner(path.str(), "kis:live:12345678-01");
+  REQUIRE(owner.open());
+  REQUIRE_FALSE(owner.repaired().empty());
+}
+
+TEST_CASE("a journal must name an account", "[journal][file]") {
+  const TempJournal path("scope-empty");
+  runner::FileJournal journal(path.str(), "");
+  REQUIRE_FALSE(journal.open());
+  REQUIRE_FALSE(journal.rejection().empty());
+}
+
+TEST_CASE("a file with no header is not ours to write to", "[journal][file]") {
+  // Ownership cannot be established, and that is not a question to guess at while holding a file
+  // that may name another account's live orders.
+  const TempJournal path("scope-headerless");
+  write_file(path.str(), runner::journal_entry_to_line(sample_entry()) + "\n");
+
+  runner::FileJournal journal(path.str(), "test:account");
+  REQUIRE_FALSE(journal.open());
+  REQUIRE(journal.rejection().find("no header") != std::string::npos);
+}
+
+TEST_CASE("the journal owns the scope field, and overwrites a caller's", "[journal][file]") {
+  // A caller-supplied scope that disagreed with the file's would put a record in this journal
+  // claiming to belong to another account.
+  const TempJournal path("scope-overwrite");
+  runner::FileJournal journal(path.str(), "test:account");
+  auto entry = sample_entry();
+  entry.scope_ = "somebody:else";
+  REQUIRE(journal.append(entry));
+
+  const auto replay = runner::read_journal_file(path.str());
+  REQUIRE(replay.entries_.front().scope_ == "test:account");
+}
+
+TEST_CASE("a repair interrupted before its stand-in halts the next process", "[journal][file]") {
+  // `finish_repair` terminates a torn fragment and then records a stand-in for it. A process killed
+  // between those two leaves the fragment as a *complete* unreadable line, so the next open sees no
+  // torn tail and performs no repair -- and before this, `unreadable_lines_` only made `clean()`
+  // false and had no safety effect, so the runner traded on.
+  const TempJournal path("repair-interrupted");
+  auto entry = sample_entry();
+  const auto line = runner::journal_entry_to_line(entry);
+  // The fragment, terminated, with no stand-in after it: exactly what the interruption leaves.
+  write_journal(path.str(), line.substr(0, line.size() * 2 / 3) + "\n");
+
+  const auto replay = runner::read_journal_file(path.str());
+  REQUIRE_FALSE(replay.truncated_tail_);
+  REQUIRE(replay.unreadable_lines_ == 1);
+  REQUIRE(replay.entries_.empty());
+
+  runner::DryRunner<HoldTen> dry;
+  const auto recovery = runner::recover_runner(dry, runner::FileJournal(path.str(), "test:account"));
+  REQUIRE(recovery.unreadable_lines_ == 1);
+  REQUIRE_FALSE(recovery.clean());
+  // Nothing can be withheld specifically, so everything is.
+  REQUIRE(dry.ledger().empty());
+  REQUIRE(dry.local_failure().has_value());
+}
+
+TEST_CASE("an intact journal does not halt recovery", "[journal][file]") {
+  const TempJournal path("recover-clean");
+  {
+    runner::FileJournal journal(path.str(), "test:account");
+    auto entry = sample_entry();
+    REQUIRE(journal.append(entry));
+    entry.outcome_ = JournalOutcome::ACCEPTED;
+    REQUIRE(journal.append(entry));
+  }
+  runner::DryRunner<HoldTen> dry;
+  const auto recovery = runner::recover_runner(dry, runner::FileJournal(path.str(), "test:account"));
+  REQUIRE(recovery.clean());
+  REQUIRE_FALSE(dry.local_failure().has_value());
 }

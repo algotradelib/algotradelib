@@ -548,11 +548,12 @@ TEST_CASE("a resolved instruction is closed in the journal", "[reconcile][recove
   REQUIRE(report.recorded_ == 1);
   REQUIRE_FALSE(report.unrecorded_);
 
-  // The terminal line closes the pending one by id, in the broker's own vocabulary: the order is in
-  // the listing, so it exists.
+  // The terminal line closes the pending one by id, and says what it is: a sweep read the listing.
+  // Not `ACCEPTED`, which is an answer the *broker* gave to the instruction -- what was observed is
+  // in `order_id_`.
   REQUIRE(journal.records().size() == 2);
   REQUIRE(journal.records().back().id_ == "run-1");
-  REQUIRE(journal.records().back().outcome_ == JournalOutcome::ACCEPTED);
+  REQUIRE(journal.records().back().outcome_ == JournalOutcome::RESOLVED);
   REQUIRE(journal.records().back().order_id_ == "KRX-1");
 
   // A second restart finds nothing owed. Before the write-back this recovered and withheld again,
@@ -563,7 +564,7 @@ TEST_CASE("a resolved instruction is closed in the journal", "[reconcile][recove
   REQUIRE(fresh.empty());
 }
 
-TEST_CASE("an order that never existed is closed as a refusal", "[reconcile][recover]") {
+TEST_CASE("an order that never existed is closed with no reference", "[reconcile][recover]") {
   runner::MemoryJournal journal;
   journal.append(entry_at("run-1", JournalOutcome::PENDING));
 
@@ -572,10 +573,41 @@ TEST_CASE("an order that never existed is closed as a refusal", "[reconcile][rec
   const auto report =
     runner::reconcile_against(recovery.open_, {}, after_the_window(), ledger, journal);
   REQUIRE(report.matches_.front().verdict_ == MatchVerdict::NOT_PLACED);
-  REQUIRE(journal.records().back().outcome_ == JournalOutcome::REJECTED);
+  REQUIRE(journal.records().back().outcome_ == JournalOutcome::RESOLVED);
+  // Empty, which is how the record says no row was found.
+  REQUIRE(journal.records().back().order_id_.empty());
 
   IndeterminacyLedger fresh;
   REQUIRE(runner::recover_into(journal, fresh).clean());
+}
+
+TEST_CASE("a reconciled cancellation does not claim the broker accepted it", "[reconcile]") {
+  // `MATCHED` on a cancellation means the target order is *still resting* -- the withdrawal has not
+  // happened. Recording that as `ACCEPTED` would read as the exact opposite of what was observed.
+  runner::MemoryJournal journal;
+  auto entry = entry_at("run-1", JournalOutcome::PENDING);
+  entry.action_ = JournalAction::CANCEL;
+  entry.order_id_ = "KRX-1";
+  journal.append(entry);
+
+  IndeterminacyLedger ledger;
+  const auto recovery = runner::recover_into(journal, ledger);
+  const auto report = runner::reconcile_against(
+    recovery.open_, {row("KRX-1")}, after_the_window(), ledger, journal
+  );
+  REQUIRE(report.matches_.front().verdict_ == MatchVerdict::MATCHED);
+  REQUIRE(journal.records().back().outcome_ == JournalOutcome::RESOLVED);
+  REQUIRE(journal.records().back().detail_.find("still in the broker's listing") !=
+    std::string::npos);
+}
+
+TEST_CASE("an operator-only entry needs no history inquiry", "[reconcile]") {
+  // No listing can decide it, so asking for one bought pointless pagination on Toss and a
+  // guaranteed rejected inquiry on KIS, on every sweep.
+  auto damaged = placement();
+  damaged.entry_.requires_operator_ = true;
+  REQUIRE_FALSE(runner::any_placement({damaged}));
+  REQUIRE(runner::any_placement({placement()}));
 }
 
 TEST_CASE("repeated sweeps do not contradict each other", "[reconcile][recover]") {

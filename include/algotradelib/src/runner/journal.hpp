@@ -85,6 +85,20 @@ enum class JournalOutcome {
   REJECTED,
   /** The request failed in transit. Whether the instruction exists is unknown. */
   INDETERMINATE,
+  /**
+   * A sweep read the broker's own order list and closed the question.
+   *
+   * Its own value rather than a reuse of `ACCEPTED` or `REJECTED`, because those are answers the
+   * *broker* gave to the instruction, and a sweep learns something different: what the listing
+   * shows now. For a placement the two nearly coincide -- the order is there or it is not. For a
+   * cancellation they can read as the exact opposite of the truth: a matched row means the target
+   * order is **still resting**, so recording that as `ACCEPTED` would say the withdrawal succeeded
+   * when the listing says it did not.
+   *
+   * What was actually observed is in `order_id_` -- set when a row was found, empty when none was
+   * -- and spelled out in `detail_`.
+   */
+  RESOLVED,
 };
 
 /** Returns a stable lowercase name for `outcome`, as written to the journal. */
@@ -98,6 +112,8 @@ inline constexpr std::string_view journal_outcome_name(JournalOutcome outcome) n
       return "rejected";
     case JournalOutcome::INDETERMINATE:
       return "indeterminate";
+    case JournalOutcome::RESOLVED:
+      return "resolved";
   }
   return "unknown";
 }
@@ -115,6 +131,9 @@ inline std::optional<JournalOutcome> journal_outcome_from(std::string_view text)
   }
   if (text == "indeterminate") {
     return JournalOutcome::INDETERMINATE;
+  }
+  if (text == "resolved") {
+    return JournalOutcome::RESOLVED;
   }
   return std::nullopt;
 }
@@ -241,6 +260,17 @@ struct JournalReplay {
   bool truncated_tail_{false};
   /** What was wrong, for a report an operator reads. */
   std::string detail_;
+  /**
+   * The broker and account the file's header declares, when it has one.
+   *
+   * A header rather than a field on the first record, because a record can tear. The scope is the
+   * one thing that must be legible even when the first instruction ever written was cut in half --
+   * otherwise another account can open the path, and a sweep can reconcile one account's
+   * instruction against the other's rows.
+   */
+  std::string scope_;
+  /** Whether a header was found at all. A non-empty file without one is not ours to write to. */
+  bool has_header_{false};
 
   /** Returns whether every line was read. */
   bool intact() const noexcept { return unreadable_lines_ == 0 && !truncated_tail_; }

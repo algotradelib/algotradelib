@@ -187,6 +187,41 @@ inline std::optional<std::string> salvage_string(std::string_view line, std::str
 
 } // namespace journal_detail
 
+/** The value of a journal header's `journal` field, identifying the format. */
+inline constexpr std::string_view journal_format_name() noexcept {
+  return "algotradelib-order-journal";
+}
+
+/**
+ * Renders the header line that opens a journal and names the account it belongs to.
+ *
+ * Written once, before any instruction, and never again. Everything else in the file can tear; this
+ * cannot, because it is complete before the first order is ever contemplated.
+ */
+inline std::string journal_header_line(std::string_view scope) {
+  json::object row;
+  row["journal"] = std::string(journal_format_name());
+  row["version"] = 1;
+  row["scope"] = std::string(scope);
+  return json::serialize(row);
+}
+
+/** Returns the scope a header line declares, or nothing when the line is not a header. */
+inline std::optional<std::string> journal_header_scope(std::string_view line) {
+  boost::system::error_code error;
+  const auto value = json::parse(line, error);
+  if (error || !value.is_object()) {
+    return std::nullopt;
+  }
+  const auto& row = value.as_object();
+  const auto marker = row.if_contains("journal");
+  if (marker == nullptr || !marker->is_string() ||
+      std::string_view(marker->as_string()) != journal_format_name()) {
+    return std::nullopt;
+  }
+  return journal_detail::string_field(row, "scope");
+}
+
 /** Renders one entry as the single JSON object that becomes one line of the journal. */
 inline std::string journal_entry_to_line(const JournalEntry& entry) {
   json::object row;
@@ -388,6 +423,13 @@ inline JournalReplay read_journal_file(const std::string& path) {
     if (line.empty()) {
       continue;
     }
+    if (auto scope = journal_header_scope(line)) {
+      // Not an instruction and not damage. Recorded so an opener can check ownership before it
+      // writes anything at all.
+      replay.has_header_ = true;
+      replay.scope_ = std::move(*scope);
+      continue;
+    }
     if (auto entry = journal_entry_from_line(line)) {
       replay.entries_.push_back(std::move(*entry));
     } else {
@@ -431,12 +473,24 @@ public:
    */
   FileJournal(std::string path, std::string scope)
   : path_(std::move(path)), scope_(std::move(scope)), handle_(nullptr, &closer) {
-    if (!scope_matches()) {
+    if (scope_.empty()) {
+      // An unnamed journal cannot be checked against anything, so it would silently accept another
+      // account's file -- which is the whole failure this exists to prevent.
+      rejection_ = "an order journal must name the broker and account it belongs to";
+      return;
+    }
+    if (!claim_file()) {
       return;
     }
     repair_torn_tail();
     handle_.reset(std::fopen(path_.c_str(), "ab"));
-    if (open() && !pending_repair_.empty()) {
+    if (!open()) {
+      return;
+    }
+    if (needs_header_ && !write_header()) {
+      return;
+    }
+    if (!pending_repair_.empty()) {
       finish_repair();
     }
   }
@@ -485,11 +539,10 @@ public:
       return false;
     }
     auto stamped = entry;
-    if (stamped.scope_.empty()) {
-      // Stamped here rather than by the caller, so a record cannot reach the file without one and
-      // the validation on the next open has something to check.
-      stamped.scope_ = scope_;
-    }
+    // Overwritten, not filled in. A caller-supplied scope that disagreed with the file's would put
+    // a record in this journal claiming to belong to another account, which is the confusion the
+    // header exists to rule out. The journal owns this field.
+    stamped.scope_ = scope_;
     auto line = journal_entry_to_line(stamped);
     line += '\n';
     const auto written = std::fwrite(line.data(), 1, line.size(), handle_.get());
@@ -510,21 +563,55 @@ public:
 
 private:
   /**
-   * Returns whether the file on disk belongs to this journal's account.
+   * Returns whether this journal may write to the file, deciding ownership from the header alone.
    *
-   * Checked before anything else -- before the torn-tail repair, and long before any append --
-   * because every one of those writes to a file that may not be ours.
+   * **The header, not the records, and that distinction is the fix.** Reading ownership from the
+   * records leaves a hole exactly where it matters most: the scope is one field among many on a
+   * record, so a process killed partway through writing the *first* instruction leaves a file whose
+   * only line is torn and unscoped. Another account could then open the path, repair that line into
+   * its own journal, and reconcile the first account's instruction against its own rows.
+   *
+   * A header is written before any instruction is contemplated, so it is complete or the file is
+   * empty. Three cases, and the third is the strict one:
+   *
+   * - **Empty or absent.** Ours to claim; the header is written before the first append.
+   * - **Header present.** The scopes must agree.
+   * - **Non-empty with no header.** Refused. Something else wrote this file, or it predates the
+   *   format, and either way its ownership cannot be established -- which is not a question to
+   *   guess at while holding a file that may name another account's live orders.
    */
-  bool scope_matches() {
+  bool claim_file() {
     const auto replay = read_journal_file(path_);
-    for (const auto& entry : replay.entries_) {
-      if (entry.scope_.empty() || entry.scope_ == scope_) {
-        continue;
-      }
-      rejection_ = "the journal at " + path_ + " holds records for " + entry.scope_ +
-        ", not for " + scope_;
+    const bool empty = !replay.has_header_ && replay.entries_.empty() &&
+      replay.unreadable_lines_ == 0 && !replay.truncated_tail_;
+    if (empty) {
+      needs_header_ = true;
+      return true;
+    }
+    if (!replay.has_header_) {
+      rejection_ = "the journal at " + path_ +
+        " has no header, so the account it belongs to cannot be established";
       return false;
     }
+    if (replay.scope_ != scope_) {
+      rejection_ = "the journal at " + path_ + " belongs to " + replay.scope_ + ", not to " +
+        scope_;
+      return false;
+    }
+    return true;
+  }
+
+  /** Writes and flushes the header, before any instruction can be recorded. */
+  bool write_header() {
+    auto line = journal_header_line(scope_);
+    line += '\n';
+    const auto written = std::fwrite(line.data(), 1, line.size(), handle_.get());
+    if (written != line.size() || !journal_detail::flush_to_disk(handle_.get())) {
+      handle_.reset();
+      rejection_ = "the journal header at " + path_ + " could not be written";
+      return false;
+    }
+    needs_header_ = false;
     return true;
   }
 
@@ -599,6 +686,7 @@ private:
   std::string pending_repair_;
   std::string repaired_;
   std::string rejection_;
+  bool needs_header_{false};
 };
 
 } // namespace runner
