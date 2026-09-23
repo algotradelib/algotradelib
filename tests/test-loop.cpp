@@ -865,8 +865,8 @@ TEST_CASE("a flatten cancels and then closes the position", "[loop][stop]") {
 
   CHECK(report.stopped_by_ == StopIntent::FLATTEN);
   CHECK_FALSE(report.closing_source_unverified_);
-  // Cancelled once, by reconciliation rather than by the loop: a flatten that also cancelled directly
-  // would send two withdrawals for the same order.
+  // Cancelled once and closed once. The pass states both itself rather than deriving the
+  // cancellation from a target, so there is exactly one withdrawal per resting order.
   CHECK(report.withdrawn_ == 1);
   CHECK(report.flattened_ == 1);
   CHECK(runner_instance.executor().canceled().size() == 1);
@@ -1448,13 +1448,15 @@ TEST_CASE("a working-order poll re-verifies the source an earlier send invalidat
   CHECK(report.closing_complete());
 }
 
-TEST_CASE("a flatten withdraws a same-side working order instead of counting on it",
-          "[loop][stop]") {
-  // Reconciliation treats a resting order as progress toward the target: ten held against a working
-  // sell for ten reconciles to nothing to do, because the market already expresses the intent. That
-  // is right for ordinary trading and wrong for a flatten -- a limit sell that may never fill is not
-  // being out of the market -- and before this the pass sent not one instruction and called itself
-  // complete.
+TEST_CASE("a flatten does not sell a position twice to get out of it", "[loop][stop]") {
+  // Ten held against a working sell for ten, and both ways of handling it are wrong. Letting
+  // reconciliation treat the resting sell as progress sends nothing, and a limit order that may
+  // never fill is not being out of the market. Selling the whole ten anyway ignores that a
+  // cancellation is a *request*: the resting sell can fill while its withdrawal is still pending,
+  // and ten long becomes ten short.
+  //
+  // So the order is withdrawn and nothing is sold, because everything held is already working on
+  // the closing side -- and the pass says it could not prove which way that resolves.
   InertRunner runner_instance;
   InertSource source;
   runner_instance.context().set_instrument(samsung_reference());
@@ -1485,20 +1487,22 @@ TEST_CASE("a flatten withdraws a same-side working order instead of counting on 
   const auto report = loop.run(stop, 1);
 
   CHECK(report.withdrawn_ == 1);
-  CHECK(report.flattened_ == 1);
   CHECK(runner_instance.executor().canceled().size() == 1);
-  // And the close is a market order for the whole holding, not the remainder after the resting one.
-  REQUIRE(runner_instance.executor().placed().size() == 1);
-  const auto& closing = runner_instance.executor().placed().front();
-  CHECK(closing.side_ == algotradelib::OrderSide::SELL);
-  CHECK(closing.quantity_ == algotradelib::Decimal64::parse("10"));
-  CHECK(closing.type_ == algotradelib::OrderType::MARKET);
-  CHECK(report.closing_complete());
+  // Nothing sold: every share held is already working on the closing side, so any size at all is
+  // the over-close.
+  CHECK(report.flattened_ == 0);
+  CHECK(runner_instance.executor().placed().empty());
+  CHECK(report.closing_contended_ == 1);
+  CHECK_FALSE(report.closing_complete());
+  REQUIRE_FALSE(report.notes_.empty());
+  CHECK(report.notes_.front().find("part of the position is still held") != std::string::npos);
 }
 
-TEST_CASE("a flatten sizes the close for the position, not the remainder", "[loop][stop]") {
-  // The partial case: a working sell for three against ten held. Reconciliation would have kept the
-  // three and sent seven, leaving a limit order resting after a flatten.
+TEST_CASE("a flatten closes only the part no working order is already selling", "[loop][stop]") {
+  // The partial case: a working sell for three against ten held. Withdraw the three and sell seven,
+  // which is the most that cannot overshoot. If the withdrawal completes, three are still held and
+  // the report says so; if it fails because the three filled, the account is flat. Selling ten
+  // would risk being three short.
   InertRunner runner_instance;
   InertSource source;
   runner_instance.context().set_instrument(samsung_reference());
@@ -1530,9 +1534,12 @@ TEST_CASE("a flatten sizes the close for the position, not the remainder", "[loo
 
   CHECK(report.withdrawn_ == 1);
   REQUIRE(runner_instance.executor().placed().size() == 1);
-  CHECK(runner_instance.executor().placed().front().quantity_ ==
-        algotradelib::Decimal64::parse("10"));
-  CHECK(report.closing_complete());
+  const auto& closing = runner_instance.executor().placed().front();
+  CHECK(closing.side_ == algotradelib::OrderSide::SELL);
+  CHECK(closing.quantity_ == algotradelib::Decimal64::parse("7"));
+  CHECK(closing.type_ == algotradelib::OrderType::MARKET);
+  CHECK(report.closing_contended_ == 1);
+  CHECK_FALSE(report.closing_complete());
 }
 
 namespace {
@@ -1587,4 +1594,87 @@ TEST_CASE("a source with no working-order listing cannot verify a stop", "[loop]
   REQUIRE_FALSE(report.notes_.empty());
   CHECK(report.notes_.front().find("does not publish the broker's outstanding orders") !=
         std::string::npos);
+}
+
+TEST_CASE("a flatten closes the whole position when the working order opposes it", "[loop][stop]") {
+  // The control case for the sizing rule: an order on the *other* side cannot reduce the position,
+  // so it cannot double up with the close and the full size is safe. Withdrawing it and selling
+  // everything is exactly right, and nothing is contended.
+  InertRunner runner_instance;
+  InertSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+
+  strategy::Portfolio<InertRunner::Tag> portfolio;
+  portfolio.as_of_ = base_time();
+  algotradelib::HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = algotradelib::Decimal64::parse("10");
+  position.average_purchase_price_ = algotradelib::Decimal64::parse("70000");
+  portfolio.positions_.push_back(position);
+  algotradelib::WorkingOrder<InertRunner::Tag> working;
+  working.order_.instrument_ = samsung();
+  working.order_.side_ = algotradelib::OrderSide::BUY;  // opposes the close
+  working.order_.status_ = algotradelib::OrderStatus::PENDING;
+  working.order_.quantity_ = algotradelib::Decimal64::parse("4");
+  working.order_.execution_.filled_quantity_ = algotradelib::Decimal64::parse("0");
+  working.ref_ = algotradelib::OrderRef<InertRunner::Tag>{"0003", ""};
+  portfolio.working_.push_back(working);
+  runner_instance.context().set_portfolio(portfolio);
+
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  loop.run(stop, 1);
+  stop.request(StopIntent::FLATTEN);
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.withdrawn_ == 1);
+  CHECK(report.flattened_ == 1);
+  REQUIRE(runner_instance.executor().placed().size() == 1);
+  CHECK(runner_instance.executor().placed().front().quantity_ ==
+        algotradelib::Decimal64::parse("10"));
+  CHECK(report.closing_contended_ == 0);
+  CHECK(report.closing_complete());
+}
+
+TEST_CASE("a flatten of a short position is sized the same way", "[loop][stop]") {
+  // The mirror, so the rule is not accidentally written for long positions only: a short of ten
+  // with a working buy for four closes four fewer than it holds.
+  InertRunner runner_instance;
+  InertSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+
+  strategy::Portfolio<InertRunner::Tag> portfolio;
+  portfolio.as_of_ = base_time();
+  algotradelib::HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = algotradelib::Decimal64::parse("-10");
+  position.average_purchase_price_ = algotradelib::Decimal64::parse("70000");
+  portfolio.positions_.push_back(position);
+  algotradelib::WorkingOrder<InertRunner::Tag> working;
+  working.order_.instrument_ = samsung();
+  working.order_.side_ = algotradelib::OrderSide::BUY;  // same side as closing a short
+  working.order_.status_ = algotradelib::OrderStatus::PENDING;
+  working.order_.quantity_ = algotradelib::Decimal64::parse("4");
+  working.order_.execution_.filled_quantity_ = algotradelib::Decimal64::parse("0");
+  working.ref_ = algotradelib::OrderRef<InertRunner::Tag>{"0004", ""};
+  portfolio.working_.push_back(working);
+  runner_instance.context().set_portfolio(portfolio);
+
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  loop.run(stop, 1);
+  stop.request(StopIntent::FLATTEN);
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.withdrawn_ == 1);
+  REQUIRE(runner_instance.executor().placed().size() == 1);
+  const auto& closing = runner_instance.executor().placed().front();
+  CHECK(closing.side_ == algotradelib::OrderSide::BUY);
+  CHECK(closing.quantity_ == algotradelib::Decimal64::parse("6"));
+  CHECK(report.closing_contended_ == 1);
+  CHECK_FALSE(report.closing_complete());
 }

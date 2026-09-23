@@ -150,10 +150,18 @@ loop's.
 
 **A `flatten` states its instructions directly** rather than expressing them as a target position.
 It withdraws every working order once — including one on the same side as the close, which ordinary
-reconciliation would keep as progress toward the target — and then sends a market order for the whole
-holding. Ten held against a resting sell for ten reconciles to *nothing to do*, which is correct for
-trading and wrong for an operator who asked to be out: a limit order that may never fill is not being
-out of the market.
+reconciliation would keep as progress toward the target — and then sends a market order for the
+position.
+
+**It closes only the part no working order was already trading**, and that subtlety is worth the
+paragraph. Ten held against a resting sell for ten: closing all ten alongside it could sell the
+position twice, because a cancellation is a request and the resting sell can fill while its
+withdrawal is still pending. Ten long would become ten short. So the close is sized to the holding
+minus whatever is still working on the closing side — nothing at all, in that example — and
+`closing_contended_` counts the positions where that happened. Whichever way it resolves is safe:
+if the withdrawal completes, part of the position is still held and the report says so; if it fails
+because the order filled, the account is flat. Neither is complete, so `closing_complete()` is
+false, and a later holdings snapshot is what tells you which one you got.
 
 **A hold refuses cancellations too, including a stop's own.** `halt()` means "this runner sends
 nothing", and a cancellation is a send — an order-writing request that can itself fail

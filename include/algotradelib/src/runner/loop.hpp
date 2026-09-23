@@ -244,6 +244,21 @@ struct LoopReport {
   std::size_t closing_unresolved_{0};
 
   /**
+   * Positions whose closing order was sized down because an order on the same side was still
+   * working.
+   *
+   * A flatten cancels every resting order and then closes the position -- but a cancellation is a
+   * request, not an outcome, so a same-side order can fill while its withdrawal is still pending.
+   * Closing the *whole* holding alongside it could sell the position twice and leave the account
+   * short, so the pass sends only what cannot double up and records the shortfall here.
+   *
+   * Which way it resolves is not knowable in this pass: if the cancellation completes, part of the
+   * position is still held; if it fails because the order filled, the account is flat. Either is
+   * acceptable and neither is complete, which is why this makes `closing_complete()` false.
+   */
+  std::size_t closing_contended_{0};
+
+  /**
    * Whether the closing pass could not establish what it needed to send.
    *
    * A stop builds its instructions from the holdings snapshot -- working orders for a `WITHDRAW`,
@@ -277,8 +292,11 @@ struct LoopReport {
    *   both brokers -- Toss publishes `PENDING_CANCEL` and `CANCEL_REJECTED`, which returns the order
    *   to its previous state -- so an accepted withdrawal can still be working.
    *
-   * And `closing_source_unverified_` covers the case before that: a pass that never established
-   * *which* instructions it owed cannot be complete no matter how many it sent.
+   * `closing_contended_` covers a third thing: a flatten that deliberately sent *less* than the
+   * position, because closing the whole of it beside a same-side order whose cancellation has not
+   * completed could sell it twice. And `closing_source_unverified_` covers the case before all of
+   * them: a pass that never established *which* instructions it owed cannot be complete no matter
+   * how many it sent.
    *
    * `true` therefore means "every instruction I asked for was taken, and I knew what to ask for",
    * never "I am flat" and never "nothing is resting". Read the broker's own order list and holdings
@@ -287,7 +305,7 @@ struct LoopReport {
   bool closing_complete() const noexcept {
     return closing_rejected_ == 0 && closing_refused_ == 0 && closing_withheld_ == 0 &&
       closing_indeterminate_ == 0 && closing_unavailable_ == 0 && closing_unresolved_ == 0 &&
-      !closing_source_unverified_;
+      closing_contended_ == 0 && !closing_source_unverified_;
   }
   /** Notes an operator should read, such as an unrecognized control-file token. */
   std::vector<std::string> notes_;
@@ -654,18 +672,15 @@ private:
       return;
     }
 
-    // The two intents reach the same end by different routes, and the difference is not cosmetic.
+    // **Both intents state their instructions outright rather than expressing them as a target.**
     //
-    // A **withdraw** cancels explicitly, because nothing else will: there is no target to reconcile
-    // against, so the working orders have to be named one by one. A cancellation is the one
-    // instruction that cannot make an unresolved position worse, which is why the runner does not
-    // gate it on the ledger.
+    // A withdraw always had to: there is no target to reconcile against, so the working orders are
+    // named one by one. A flatten used to state a zero `TargetPosition` and let reconciliation do
+    // the cancelling, which was wrong twice over -- reconciliation keeps a resting order that points
+    // the same way as the target, so the flatten could send nothing at all, and it skipped orders on
+    // instruments with no position to target. Stating both halves here means one withdrawal per
+    // resting order, no instruction derived from another, and no case where the two disagree.
     //
-    // A **flatten** states a target of zero and lets reconciliation do the cancelling. Issuing
-    // explicit cancels *and* a target would send two cancellations for the same order -- the loop's
-    // own, then reconciliation's, because the portfolio snapshot still lists an order the loop just
-    // cancelled. Reconciliation already knows how to withdraw what conflicts with a target and keep
-    // what helps reach it, and duplicating that here would be both wasteful and less correct.
     // Recorded before anything is queued, because it is a statement about the picture the pass is
     // built from rather than about any instruction in it.
     report.closing_source_unverified_ = !closing_source_verified(clock_.now());
@@ -677,20 +692,22 @@ private:
         ++report.withdrawn_;
       }
     } else {
-      // **A flatten withdraws everything and then sells the position outright.**
+      // **A flatten withdraws everything, then closes only what it cannot double-sell.**
       //
-      // It used to submit a zero `TargetPosition` per position and let reconciliation do both jobs.
-      // That is the right machinery for ordinary trading and the wrong one here, because
-      // reconciliation treats a resting order as progress toward the target: ten held against a
-      // working sell for ten reconciles to *nothing to do*, since the market already expresses the
-      // intent. For an operator who asked to be out, a limit sell that may never fill is not being
-      // out, and the pass reported itself complete having sent not one instruction.
+      // Two ways to get this wrong, and the library has now had both. Expressing the flatten as a
+      // zero `TargetPosition` lets reconciliation treat a resting same-side order as progress and
+      // send nothing at all -- a limit sell that may never fill is not being out of the market.
+      // Sending the *whole* holding instead ignores that order, and since a cancellation is a
+      // request rather than an outcome, the resting sell can fill while its cancellation is still
+      // pending: ten long becomes ten short. The second error is much worse than the first, because
+      // it manufactures a position in the opposite direction rather than leaving the one that was
+      // already there.
       //
-      // So a flatten states what it wants directly. Every working order is withdrawn once --
-      // including same-side ones, which reconciliation would have kept -- and each position is
-      // closed with a market order sized to the whole holding, through `OrderIntent`, which
-      // deliberately does not consult the portfolio. Nothing is counted twice because nothing
-      // derives instructions from anything else.
+      // So the close is sized to what cannot double up: the holding minus whatever is still working
+      // on the same side. Every working order is withdrawn either way, so a cancellation that
+      // completes leaves part of the position open rather than a resting order nobody is watching,
+      // and a cancellation that fails because the order filled leaves the account flat. Neither
+      // outcome can overshoot, and the pass says it could not prove which one happened.
       for (const auto& working : portfolio.working_) {
         runner_->context().cancel(working.ref_, "stop-flatten");
         ++report.withdrawn_;
@@ -708,11 +725,28 @@ private:
         if (!magnitude) {
           continue;
         }
+        const OrderSide closing_side = held_long ? OrderSide::SELL : OrderSide::BUY;
+        const auto contending = portfolio.working_quantity(position.instrument_, closing_side);
+        const auto sendable = decimal_subtract(*magnitude, contending);
+        if (!sendable) {
+          continue;
+        }
+        if (contending.coefficient() != 0) {
+          // Sized down, and the reduction is a fact about what this pass could not establish rather
+          // than about what the operator asked for. Counted so `closing_complete()` cannot claim a
+          // flatten that may have left part of the position open.
+          ++report.closing_contended_;
+        }
+        if (decimal_less(*sendable, Decimal64{}) || sendable->coefficient() == 0) {
+          // Everything held is already working on the closing side. Sending anything at all here is
+          // the over-close, so the withdrawal above is the whole of this instrument's flatten.
+          continue;
+        }
         runner_->context().submit(
           strategy::OrderIntent::market(
             position.instrument_,
-            held_long ? OrderSide::SELL : OrderSide::BUY,
-            strategy::SizeSpec::quantity(*magnitude)
+            closing_side,
+            strategy::SizeSpec::quantity(*sendable)
           ).with_tag("stop-flatten")
         );
         ++report.flattened_;
@@ -776,6 +810,12 @@ private:
       report.notes_.push_back(
         "local machinery could not send " + std::to_string(report.closing_unavailable_) +
         " closing instruction(s); no broker was asked and the position is still held");
+    }
+    if (report.closing_contended_ != 0) {
+      report.notes_.push_back(
+        std::to_string(report.closing_contended_) +
+        " position(s) were closed only for the part no working order was already selling or"
+        " buying; if those withdrawals succeed, part of the position is still held");
     }
     if (report.closing_source_unverified_) {
       report.notes_.push_back(
