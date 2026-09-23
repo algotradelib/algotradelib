@@ -476,6 +476,20 @@ private:
     strategy::GuardInputs inputs;
     inputs.now_ = context_.now();
     inputs.phase_ = context_.phase();
+
+    // **Every order in this pass is checked against a view that already contains the orders this
+    // pass has sent.** The portfolio on the context is a picture of what the *broker* last
+    // reported, and nothing puts a locally accepted order into it -- `portfolio.working_` is
+    // written in exactly one place, a working-order poll (`live/session_source.hpp`). So a limit
+    // read straight from the context is re-evaluated from the same starting point for every order,
+    // and two orders that each fit can breach it together: with a hundred sellable and no resting
+    // order, two sells of sixty both pass and twenty shares are sold that were not there.
+    //
+    // A copy per pass, mutated as orders are accepted, closes that within one `settle`. It does not
+    // close the same hazard *across* passes, where a locally accepted order stays invisible until a
+    // poll refreshes the listing; that needs a reservation that survives a pass and a way to know
+    // when the listing it is waiting for has arrived, which is planned rather than done here.
+    auto view = context_.portfolio();
     for (auto& order : pending) {
       // Checked before the guards, because an unresolved instrument is a safety hold rather than a
       // limit breach: reporting a notional ceiling for an order that was never going to be sent
@@ -507,7 +521,7 @@ private:
       }
 
       inputs.reference_price_ = context_.last_price(order.instrument_);
-      if (auto refusal = guard_.check(order, context_.portfolio(), inputs)) {
+      if (auto refusal = guard_.check(order, view, inputs)) {
         report.refused_.push_back(std::move(*refusal));
         continue;
       }
@@ -523,6 +537,10 @@ private:
           // guard refused or the ledger withheld does not spend budget.
           guard_.note_sent(inputs.now_);
           ++placements_at_broker_;
+          // And it is working now, as far as anything later in this pass is concerned. An
+          // `INDETERMINATE` send needs no entry here: it marks the ledger, and the next instruction
+          // for that instrument is withheld before it reaches a guard at all.
+          reserve(view, order);
           report.would_place_.push_back(std::move(order));
           break;
         case SendOutcome::REJECTED:
@@ -573,6 +591,24 @@ private:
    * cancellation is not gated by the ledger, because withdrawing an order is the one action that
    * cannot make an unresolved position worse.
    */
+  /**
+   * Records an accepted order in `view` so the rest of the pass sizes against it.
+   *
+   * Written as a working order because that is what it now is, and because the alternative --
+   * adjusting the position -- would be a lie: nothing has filled. The reference is empty, which is
+   * the one thing this synthetic row cannot supply; no guard reads it, and the row never leaves
+   * this function's pass, so it cannot be mistaken for something a broker reported.
+   */
+  static void reserve(strategy::Portfolio<Tag>& view, const strategy::PlannedOrder& order) {
+    WorkingOrder<Tag> working;
+    working.order_.instrument_ = order.instrument_;
+    working.order_.side_ = order.side_;
+    working.order_.status_ = OrderStatus::PENDING;
+    working.order_.quantity_ = order.quantity_;
+    working.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+    view.working_.push_back(std::move(working));
+  }
+
   void send_cancel(const OrderRef<Tag>& ref, Report& report) {
     // Gated like a placement, and in the same order. A cancellation is the one instruction that
     // cannot make an unresolved *position* worse, which is why the ledger does not gate it -- but it
