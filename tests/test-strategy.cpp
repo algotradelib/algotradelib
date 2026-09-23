@@ -1108,12 +1108,121 @@ TEST_CASE("the kill switch refuses everything, and reports the halt above any ot
   const auto refused = guard.check(planned("10", "70000"), portfolio, open_market());
   REQUIRE(refused);
   REQUIRE(refused->reason_ == GuardReason::TRADING_HALTED);
+  // And it says *who*: a bare halt is the operator's, which is the holder whose intent machinery
+  // holding the same switch must never clear.
+  REQUIRE(refused->halt_reason_);
+  REQUIRE(*refused->halt_reason_ == strategy::HaltReason::OPERATOR);
 
   guard.resume();
   // Now the notional ceiling is the reason, which it was all along.
   const auto after = guard.check(planned("10", "70000"), portfolio, open_market());
   REQUIRE(after);
   REQUIRE(after->reason_ == GuardReason::ORDER_NOTIONAL_TOO_LARGE);
+  REQUIRE_FALSE(after->halt_reason_);
+}
+
+TEST_CASE("a hold is a set, so taking it twice still takes one release") {
+  // Not a counter. The holders are distinct conditions rather than distinct callers, so a loop that
+  // recomputes the same condition every iteration must not build a hold that as many releases are
+  // needed to clear.
+  RiskGuard guard;
+
+  guard.halt(strategy::HaltReason::PORTFOLIO_STALE);
+  guard.halt(strategy::HaltReason::PORTFOLIO_STALE);
+  guard.halt(strategy::HaltReason::PORTFOLIO_STALE);
+  REQUIRE(guard.halted());
+
+  guard.resume(strategy::HaltReason::PORTFOLIO_STALE);
+  REQUIRE_FALSE(guard.halted());
+}
+
+TEST_CASE("releasing a hold nobody took does nothing") {
+  RiskGuard guard;
+  guard.resume(strategy::HaltReason::POLL_FAILING);
+  REQUIRE_FALSE(guard.halted());
+
+  guard.halt(strategy::HaltReason::STOPPING);
+  guard.resume(strategy::HaltReason::POLL_FAILING);
+  // Releasing the wrong one leaves the real one exactly where it was.
+  REQUIRE(guard.halted());
+  REQUIRE(guard.halted(strategy::HaltReason::STOPPING));
+}
+
+TEST_CASE("one holder cannot release another's hold") {
+  // The defect this whole design exists for, at the primitive: an operator halting into a hold the
+  // machinery already took must survive that machinery releasing its own.
+  RiskGuard guard;
+  ProbePortfolio portfolio;
+
+  guard.halt(strategy::HaltReason::PORTFOLIO_STALE);
+  guard.halt();  // the operator, deciding independently, into an already-halted guard
+
+  guard.resume(strategy::HaltReason::PORTFOLIO_STALE);
+  REQUIRE(guard.halted());
+  REQUIRE(guard.halted(strategy::HaltReason::OPERATOR));
+
+  const auto refused = guard.check(planned("10", "70000"), portfolio, open_market());
+  REQUIRE(refused);
+  REQUIRE(refused->halt_reason_);
+  REQUIRE(*refused->halt_reason_ == strategy::HaltReason::OPERATOR);
+
+  // And the mirror: an operator's resume does not lift the machinery's hold either.
+  guard.halt(strategy::HaltReason::PORTFOLIO_STALE);
+  guard.resume();
+  REQUIRE(guard.halted());
+  REQUIRE_FALSE(guard.halted(strategy::HaltReason::OPERATOR));
+}
+
+TEST_CASE("the most fundamental hold is the one reported") {
+  // Declaration order is the priority order, and it is part of the enum's contract.
+  RiskGuard guard;
+  ProbePortfolio portfolio;
+
+  guard.halt(strategy::HaltReason::POLL_FAILING);
+  guard.halt(strategy::HaltReason::LOCAL_FAILURE, "the order journal could not be written");
+  guard.halt(strategy::HaltReason::PORTFOLIO_STALE);
+
+  REQUIRE(guard.blocking_reason());
+  REQUIRE(*guard.blocking_reason() == strategy::HaltReason::LOCAL_FAILURE);
+  const auto refused = guard.check(planned("10", "70000"), portfolio, open_market());
+  REQUIRE(refused);
+  REQUIRE(*refused->halt_reason_ == strategy::HaltReason::LOCAL_FAILURE);
+
+  // An operator halting on top outranks even that, because it is the one a person is waiting on.
+  guard.halt();
+  REQUIRE(*guard.blocking_reason() == strategy::HaltReason::OPERATOR);
+
+  // Every hold is still visible, most fundamental first, which is what the bool could never answer.
+  const auto held = guard.holds();
+  REQUIRE(held.size() == 4);
+  REQUIRE(held[0] == strategy::HaltReason::OPERATOR);
+  REQUIRE(held[1] == strategy::HaltReason::LOCAL_FAILURE);
+  REQUIRE(held[2] == strategy::HaltReason::PORTFOLIO_STALE);
+  REQUIRE(held[3] == strategy::HaltReason::POLL_FAILING);
+}
+
+TEST_CASE("a hold carries the detail an operator needs to act on it") {
+  RiskGuard guard;
+
+  guard.halt(strategy::HaltReason::LOCAL_FAILURE, "the order journal could not be written");
+  REQUIRE(guard.hold_detail(strategy::HaltReason::LOCAL_FAILURE) ==
+          "the order journal could not be written");
+  // A hold taken with no detail reports none rather than a stale one.
+  REQUIRE(guard.hold_detail(strategy::HaltReason::OPERATOR).empty());
+
+  guard.resume(strategy::HaltReason::LOCAL_FAILURE);
+  REQUIRE(guard.hold_detail(strategy::HaltReason::LOCAL_FAILURE).empty());
+}
+
+TEST_CASE("every halt reason has a stable name") {
+  // The names reach logs and reports, so they are pinned rather than left to the enum's spelling.
+  REQUIRE(strategy::halt_reason_name(strategy::HaltReason::OPERATOR) == "operator");
+  REQUIRE(strategy::halt_reason_name(strategy::HaltReason::LOCAL_FAILURE) == "local_failure");
+  REQUIRE(strategy::halt_reason_name(strategy::HaltReason::STOPPING) == "stopping");
+  REQUIRE(strategy::halt_reason_name(strategy::HaltReason::ORDER_LIST_UNREAD) ==
+          "order_list_unread");
+  REQUIRE(strategy::halt_reason_name(strategy::HaltReason::PORTFOLIO_STALE) == "portfolio_stale");
+  REQUIRE(strategy::halt_reason_name(strategy::HaltReason::POLL_FAILING) == "poll_failing");
 }
 
 TEST_CASE("only the market phases the operator permits are traded in") {
