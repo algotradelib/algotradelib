@@ -1511,3 +1511,78 @@ TEST_CASE("resuming without fixing anything halts again on the next send", "[jou
   REQUIRE(again.unavailable_.size() == 1);
   REQUIRE(dry.local_failure().has_value());
 }
+
+TEST_CASE("a journal failure is a hold on the guard, not a flag beside it", "[journal]") {
+  // The structural half of the fix. Before this, `local_failure()` was enforced by two
+  // hand-written checks inside `settle()`; a send path that forgot to write one was ungated. It is
+  // now a hold on the guard, so the one function every order already passes through refuses.
+  RepairableJournal journal;
+  journal.failures_remaining_ = 1;
+  runner::Runner<HoldTen, strategy::NoCaps, runner::DryTag, RepairableExecutor> dry{
+    HoldTen{},
+    {},
+    512,
+    RepairableExecutor{runner::RecordingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}}
+  };
+  dry.context().set_instrument(samsung_reference());
+  dry.context().set_phase(strategy::MarketPhase::OPEN);
+  dry.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+  const auto failed = dry.feed(bar_at(30));
+  REQUIRE(failed.unavailable_.size() == 1);
+  // The report still says what it always said: not a guard rejection, but a withheld order naming
+  // the local failure and carrying the reason an operator has to act on.
+  REQUIRE(failed.refused_.empty());
+  REQUIRE(failed.unavailable_.front().reason_ == runner::WithheldReason::LOCAL_FAILURE);
+  REQUIRE_FALSE(failed.unavailable_.front().detail_.empty());
+
+  // And the guard itself knows, with no `PollingLoop` anywhere near this runner.
+  REQUIRE(dry.guard().halted());
+  REQUIRE(dry.guard().halted(strategy::HaltReason::LOCAL_FAILURE));
+  REQUIRE(dry.guard().blocking_reason());
+  REQUIRE(*dry.guard().blocking_reason() == strategy::HaltReason::LOCAL_FAILURE);
+  REQUIRE(dry.guard().hold_detail(strategy::HaltReason::LOCAL_FAILURE) == *dry.local_failure());
+
+  // `RepairableJournal` stops failing once its budget is spent, which is the repair here.
+  dry.resume_after_local_failure();
+  REQUIRE_FALSE(dry.guard().halted());
+}
+
+TEST_CASE("resuming a journal failure does not resume an operator's halt", "[journal]") {
+  // The interleaving, at the level it actually bites: an operator stops trading by hand while the
+  // journal is broken, the storage is fixed, and the documented resume runs. Their hold stands.
+  RepairableJournal journal;
+  journal.failures_remaining_ = 1;
+  runner::Runner<HoldTen, strategy::NoCaps, runner::DryTag, RepairableExecutor> dry{
+    HoldTen{},
+    {},
+    512,
+    RepairableExecutor{runner::RecordingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}}
+  };
+  dry.context().set_instrument(samsung_reference());
+  dry.context().set_phase(strategy::MarketPhase::OPEN);
+  dry.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+  dry.feed(bar_at(30));
+  REQUIRE(dry.local_failure().has_value());
+
+  dry.guard().halt();  // the operator, having seen the alert, stops trading themselves
+  dry.resume_after_local_failure();
+
+  REQUIRE_FALSE(dry.local_failure().has_value());
+  REQUIRE(dry.guard().halted());
+  REQUIRE(dry.guard().halted(strategy::HaltReason::OPERATOR));
+
+  // So the next bar is refused by the guard, and refused as the *operator's* halt rather than as a
+  // journal failure that no longer exists.
+  const auto next = dry.feed(bar_at(31));
+  REQUIRE(next.would_place_.empty());
+  REQUIRE(next.refused_.size() == 1);
+  REQUIRE(next.refused_.front().reason_ == strategy::GuardReason::TRADING_HALTED);
+  REQUIRE(next.refused_.front().halt_reason_);
+  REQUIRE(*next.refused_.front().halt_reason_ == strategy::HaltReason::OPERATOR);
+
+  dry.guard().resume();
+  const auto after = dry.feed(bar_at(32));
+  REQUIRE(after.would_place_.size() == 1);
+}

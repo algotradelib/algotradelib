@@ -177,26 +177,40 @@ public:
    *
    * **Sticky on purpose.** A journal that cannot be written will fail on the next order too, and
    * the one after that. Clearing it on the next quiet bar would turn a storage outage into a
-   * trickle of unexplained refusals; leaving it set lets `PollingLoop` gate on it and stop, which
-   * is what "a runner that cannot journal should not trade" actually requires.
+   * trickle of unexplained refusals; leaving it set is what "a runner that cannot journal should
+   * not trade" actually requires.
+   *
+   * **It is a hold on the guard**, `strategy::HaltReason::LOCAL_FAILURE`, not a flag beside it.
+   * That is the difference between a condition every send path has to remember to check and one
+   * checked by the single function every order already passes through. It also means an operator
+   * asking the guard why it will not trade is told about the journal, rather than being told only
+   * that trading is halted.
    *
    * Cleared only by `resume_after_local_failure`, which a program calls when it has fixed whatever
    * was broken.
    */
-  const std::optional<std::string>& local_failure() const noexcept { return local_failure_; }
+  std::optional<std::string> local_failure() const {
+    if (!guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
+      return std::nullopt;
+    }
+    return guard_.hold_detail(strategy::HaltReason::LOCAL_FAILURE);
+  }
 
   /**
    * Clears the local failure, after an operator has fixed what caused it.
    *
-   * **Acknowledges the executor's failure count as well as clearing the flag**, and without that
+   * **Acknowledges the executor's failure count as well as releasing the hold**, and without that
    * second half the call does nothing useful. `JournalingExecutor::last_journal_error()` keeps its
-   * first reason forever -- correct for diagnosis -- so a runner that only reset its own flag would
+   * first reason forever -- correct for diagnosis -- so a runner that only released the hold would
    * read that stale reason after the very next send and halt again immediately. Recording the count
    * already seen is what lets the runner tell a *new* failure from the one that has been dealt
    * with.
+   *
+   * Releases only `HaltReason::LOCAL_FAILURE`. An operator who also halted by hand stays halted,
+   * which is the whole point of a hold naming its holder.
    */
   void resume_after_local_failure() {
-    local_failure_.reset();
+    guard_.resume(strategy::HaltReason::LOCAL_FAILURE);
     acknowledged_journal_failures_ = executor_journal_failures();
   }
 
@@ -206,7 +220,9 @@ public:
    * Public because the conditions that warrant it are not all inside the runner. Recovery is the
    * motivating one: a journal whose damaged tail named no instrument says something was in flight
    * and cannot say what, so there is nothing to withhold and the only safe response is to withhold
-   * everything. Sticky, like a failure the executor raises, and cleared the same way.
+   * everything. Sticky, like a failure the executor raises, and cleared the same way -- it takes
+   * the same `HaltReason::LOCAL_FAILURE` hold, so it stops sending on its own rather than only
+   * when a `PollingLoop` notices.
    */
   void halt_locally(std::string detail) { note_local_failure(std::move(detail)); }
 
@@ -367,9 +383,13 @@ private:
       // a batch that carried on would produce one unexplained refusal per instrument. This is also
       // what makes the condition hold for a direct `feed()`, which never reaches `PollingLoop`'s
       // gate at all.
-      if (local_failure_) {
+      if (guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
         report.unavailable_.push_back(
-          WithheldOrder{WithheldReason::LOCAL_FAILURE, order, *local_failure_}
+          WithheldOrder{
+            WithheldReason::LOCAL_FAILURE,
+            order,
+            guard_.hold_detail(strategy::HaltReason::LOCAL_FAILURE),
+          }
         );
         continue;
       }
@@ -426,7 +446,9 @@ private:
             WithheldOrder{
               WithheldReason::LOCAL_FAILURE,
               order,
-              local_failure_ ? *local_failure_ : std::string("local machinery refused to send"),
+              guard_.halted(strategy::HaltReason::LOCAL_FAILURE) ?
+                guard_.hold_detail(strategy::HaltReason::LOCAL_FAILURE) :
+                std::string("local machinery refused to send"),
             }
           );
           break;
@@ -449,7 +471,7 @@ private:
     // Gated like a placement. A cancellation is the one instruction that cannot make an unresolved
     // position worse, but it still goes through the journal, and a journal that cannot record it
     // must not let it be sent unrecorded.
-    if (local_failure_) {
+    if (guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
       report.unavailable_cancel_.push_back(ref);
       return;
     }
@@ -529,8 +551,10 @@ private:
   Context context_;
   /** Records the first local failure, keeping it rather than overwriting with a later one. */
   void note_local_failure(std::string detail) {
-    if (!local_failure_) {
-      local_failure_ = std::move(detail);
+    // The *first* reason is kept, not the latest: a storage failure cascades, and the reason the
+    // cascade started is the one an operator needs. Taking the hold again would only replace it.
+    if (!guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
+      guard_.halt(strategy::HaltReason::LOCAL_FAILURE, std::move(detail));
     }
   }
 
@@ -584,7 +608,6 @@ private:
 
   Executor executor_;
   IndeterminacyLedger ledger_;
-  std::optional<std::string> local_failure_;
   std::size_t acknowledged_journal_failures_{0};
   std::map<std::string, PriceLimits> price_limits_;
   std::optional<Decimal64> portfolio_value_;
