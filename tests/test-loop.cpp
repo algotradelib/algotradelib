@@ -251,6 +251,34 @@ struct SellEverything {
 };
 
 using SellingRunner = runner::DryRunner<SellEverything>;
+
+/** A strategy whose shutdown handler tries to close the position itself. */
+struct ClosesOnStop {
+  template <class Ctx>
+  void on_stop(Ctx& ctx) {
+    strategy::TargetPosition target;
+    target.instrument_ = samsung();
+    target.target_quantity_ = algotradelib::Decimal64{};
+    target.tag_ = "strategy-stop";
+    ctx.submit(target);
+  }
+};
+
+using ClosingRunner = runner::DryRunner<ClosesOnStop>;
+using ClosingSource = runner::ManualSource<ClosingRunner>;
+using ClosingLoop = runner::PollingLoop<ClosingRunner, ClosingSource, runner::ManualClock>;
+
+/** A portfolio holding ten shares, stamped now, with nothing working. */
+strategy::Portfolio<runner::DryTag> ten_held() {
+  strategy::Portfolio<runner::DryTag> portfolio;
+  portfolio.as_of_ = base_time();
+  algotradelib::HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = algotradelib::Decimal64::parse("10");
+  position.average_purchase_price_ = algotradelib::Decimal64::parse("70000");
+  portfolio.positions_.push_back(position);
+  return portfolio;
+}
 using SellingSource = FeedingSourceFor<SellingRunner>;
 using SellingLoop = runner::PollingLoop<SellingRunner, SellingSource, runner::ManualClock>;
 
@@ -1768,4 +1796,108 @@ TEST_CASE("a flatten on a source that cannot list orders sends no close", "[loop
   CHECK(report.flattened_ == 0);
   CHECK(report.closing_contended_ == 1);
   CHECK_FALSE(report.closing_complete());
+}
+
+TEST_CASE("a strategy's on_stop cannot close a position the flatten is already closing",
+          "[loop][stop]") {
+  // Two producers of instructions in one pass. The loop sizes its close against what it can prove
+  // is outstanding; a strategy's `on_stop` target goes through none of that reasoning and would be
+  // planned against the same snapshot. Ten held would become ten short if both sells filled.
+  ClosingRunner runner_instance;
+  ClosingSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner_instance.context().set_portfolio(ten_held());
+
+  ClosingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  loop.run(stop, 1);  // the startup read, so the source is verified
+  stop.request(StopIntent::FLATTEN);
+  const auto report = loop.run(stop, 1);
+
+  // Exactly one sell, and it is the loop's: the strategy's was refused while the hold stood.
+  REQUIRE(runner_instance.executor().placed().size() == 1);
+  CHECK(runner_instance.executor().placed().front().quantity_ ==
+        algotradelib::Decimal64::parse("10"));
+  CHECK(report.flattened_ == 1);
+  CHECK(report.stop_handler_refused_ == 1);
+  CHECK(report.stop_handler_sent_ == 0);
+  REQUIRE_FALSE(report.notes_.empty());
+  bool told = false;
+  for (const auto& note : report.notes_) {
+    if (note.find("the strategy's on_stop asked for") != std::string::npos) {
+      told = true;
+    }
+  }
+  CHECK(told);
+}
+
+TEST_CASE("a strategy's on_stop cannot place while the closing source is unverified",
+          "[loop][stop]") {
+  // The loop withholds its own close when it cannot enumerate what is outstanding. A strategy's
+  // shutdown order must not walk through that constraint either -- it is the same exposure with a
+  // different author.
+  ClosingRunner runner_instance;
+  ClosingSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner_instance.context().set_portfolio(ten_held());
+
+  ClosingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  stop.request(StopIntent::FLATTEN);  // before any listing is read
+  const auto report = loop.run(stop, 1);
+
+  CHECK(runner_instance.executor().placed().empty());
+  CHECK(report.closing_source_unverified_);
+  CHECK(report.stop_handler_refused_ == 1);
+  CHECK(report.stop_handler_sent_ == 0);
+  CHECK_FALSE(report.closing_complete());
+}
+
+TEST_CASE("a withdraw places nothing, whatever the strategy asks on the way out", "[loop][stop]") {
+  // `WITHDRAW` promises no placements at all. A strategy's `on_stop` is the one route that could
+  // have produced one, since the loop itself queues only cancellations.
+  ClosingRunner runner_instance;
+  ClosingSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner_instance.context().set_portfolio(ten_held());
+
+  ClosingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  loop.run(stop, 1);
+  stop.request(StopIntent::WITHDRAW);
+  const auto report = loop.run(stop, 1);
+
+  CHECK(runner_instance.executor().placed().empty());
+  CHECK(report.closing_placed_ == 0);
+  CHECK(report.stop_handler_refused_ == 1);
+  CHECK(report.stop_handler_sent_ == 0);
+  // The position is untouched, which is what a withdraw means.
+  CHECK(report.flattened_ == 0);
+}
+
+TEST_CASE("a quiesce still tells the strategy it is stopping", "[loop][stop]") {
+  // The handler's purpose is to let a strategy know, and that should not depend on which stop the
+  // operator chose. Nothing can go out under any of them.
+  ClosingRunner runner_instance;
+  ClosingSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner_instance.context().set_portfolio(ten_held());
+
+  ClosingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  loop.run(stop, 1);
+  stop.request(StopIntent::QUIESCE);
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.stopped_by_ == StopIntent::QUIESCE);
+  CHECK(report.stop_handler_refused_ == 1);
+  CHECK(runner_instance.executor().placed().empty());
 }

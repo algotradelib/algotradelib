@@ -44,7 +44,20 @@ only `on_bar` and costs nothing for the rest.
 | `on_fill(Ctx&, const Fill&)` | one execution happened against an order of yours |
 | `on_order_update(Ctx&, const OrderSnapshot&)` | an order changed state |
 | `on_phase(Ctx&, MarketPhase)` | the session moved between phases |
-| `on_stop(Ctx&)` | after the last event |
+| `on_stop(Ctx&)` | after the last event — see below, it cannot trade |
+
+**`on_stop` is a notification, not a last trade.** Under `runner::PollingLoop` it is dispatched while
+the loop's stop hold is in force, so anything it submits is refused by the guard and counted in
+`stop_handler_refused_`. That is deliberate: a stop belongs to the operator, who has asked for a
+particular thing — quiesce, withdraw or flatten — and the loop sizes its closing orders against what
+it can prove is outstanding. An order added by the strategy at that moment goes through none of that
+reasoning and can close the same position twice. Use `on_stop` to write state, flush a log, or
+record where you were; use `on_bar` to decide what to trade, including on a session boundary, which
+is what `vanilla::TimedLiquidation` does.
+
+A runner driven directly, without the loop, still gets the old behaviour from `Runner::stop()`:
+`on_stop` runs and what it asks for is settled. The difference is the loop, because the loop is
+where an operator's stop exists.
 
 **Declare each as a template on the context.** A handler written against one concrete context type
 compiles for that runner and silently excludes every other, so the strategy could not be dry-run or

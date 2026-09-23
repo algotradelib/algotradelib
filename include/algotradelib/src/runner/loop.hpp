@@ -313,6 +313,24 @@ struct LoopReport {
       closing_indeterminate_ == 0 && closing_unavailable_ == 0 && closing_unresolved_ == 0 &&
       closing_contended_ == 0 && !closing_source_unverified_;
   }
+  /**
+   * Instructions the strategy's `on_stop` asked for and the guard refused.
+   *
+   * Refusing them is the intended outcome rather than a failure, so this does not affect
+   * `closing_complete()`: during a stop the operator's instructions are the ones that go, and a
+   * strategy's parting order would be sized against nothing the closing pass reasoned about. It is
+   * counted because a strategy quietly losing its shutdown behaviour should be visible rather than
+   * discovered.
+   */
+  std::size_t stop_handler_refused_{0};
+  /**
+   * Instructions the strategy's `on_stop` got out, which should always be zero.
+   *
+   * Kept as an assertion in the report rather than in a comment: the hold is applied before
+   * `on_stop` is dispatched, so a non-zero value here means that ordering has been broken.
+   */
+  std::size_t stop_handler_sent_{0};
+
   /** Notes an operator should read, such as an unrecognized control-file token. */
   std::vector<std::string> notes_;
 
@@ -674,6 +692,18 @@ private:
   /** Carries out `intent`, which is where the three stops actually differ. */
   void honour(StopIntent intent, LoopReport& report) {
     hold(strategy::HaltReason::STOPPING);
+
+    // **The strategy is told first, and cannot trade on the way out.** `on_stop` is dispatched here,
+    // while the hold stands, so every instruction it asks for is refused by the guard and counted.
+    // It must not be dispatched later: from the moment the loop queues its own closing orders, a
+    // strategy's order would be planned against the same snapshot and settled in the same window,
+    // going through none of the sizing the closing pass does -- a second full-size close beside the
+    // first, or a placement during a `WITHDRAW`, which promises none.
+    const auto parting = runner_->notify_stop();
+    report.stop_handler_refused_ = parting.refused_.size() + parting.refused_cancel_.size() +
+      parting.rejected_.size() + parting.withheld_.size() + parting.unavailable_.size();
+    report.stop_handler_sent_ = parting.would_place_.size() + parting.would_cancel_.size();
+
     if (intent == StopIntent::QUIESCE) {
       return;
     }
@@ -783,7 +813,7 @@ private:
     // arriving by signal or control file therefore cannot send anything through a halt somebody had
     // already set.
     hold(std::nullopt);
-    const auto closing = runner_->stop();
+    const auto closing = runner_->settle_closing();
     hold(strategy::HaltReason::STOPPING);
 
     report.closing_placed_ = closing.would_place_.size();
@@ -829,6 +859,12 @@ private:
       report.notes_.push_back(
         "local machinery could not send " + std::to_string(report.closing_unavailable_) +
         " closing instruction(s); no broker was asked and the position is still held");
+    }
+    if (report.stop_handler_refused_ != 0) {
+      report.notes_.push_back(
+        "the strategy's on_stop asked for " + std::to_string(report.stop_handler_refused_) +
+        " instruction(s) during the stop; none were sent, because an operator's stop is not a"
+        " moment for a strategy to trade");
     }
     if (report.closing_contended_ != 0) {
       report.notes_.push_back(

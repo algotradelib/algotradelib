@@ -148,6 +148,11 @@ runner takes `local_failure` when its journal cannot be written. Trading resumes
 released, so the loop opening its gate cannot lift your halt, and your `resume()` cannot lift the
 loop's.
 
+**Your strategy's `on_stop` cannot trade during a stop.** It is dispatched first, while the loop's
+hold stands, so anything it submits is refused and counted in `stop_handler_refused_`. A stop belongs
+to the operator; an order the strategy adds in that window would be planned against the same snapshot
+as the loop's own closing orders and could close the same position twice.
+
 **A `flatten` states its instructions directly** rather than expressing them as a target position.
 It withdraws every working order once — including one on the same side as the close, which ordinary
 reconciliation would keep as progress toward the target — and then sends a market order for the

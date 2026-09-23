@@ -352,11 +352,46 @@ public:
     return settle();
   }
 
-  /** Calls `on_stop` and drains whatever it asked for. */
+  /**
+   * Calls `on_stop` and drains whatever it asked for.
+   *
+   * For a caller driving a runner directly. `PollingLoop` deliberately does **not** use this during
+   * an operator's stop: it calls `notify_stop` while its hold is still in force, so a strategy's
+   * parting instructions are refused rather than settled beside the operator's own, and then
+   * `settle_closing` for those. See `notify_stop` for why.
+   */
   Report stop() {
     dispatch::stop(strategy_, context_);
     return settle();
   }
+
+  /**
+   * Calls `on_stop` and settles what it asked for **now**, before anything else is queued.
+   *
+   * Exists so that a strategy's shutdown handler cannot ride out alongside an operator's closing
+   * instructions. During a `WITHDRAW` or a `FLATTEN` the operator has taken over: the loop sizes
+   * its closing orders against what it can prove is outstanding, and an order the strategy adds
+   * afterwards goes through none of that reasoning -- it is planned against the same snapshot and
+   * can close the same position a second time.
+   *
+   * Called while the loop's `STOPPING` hold stands, so every instruction here is refused by the
+   * guard and reported. The strategy still learns the run is ending, which is what the handler is
+   * for; it simply cannot trade on the way out.
+   */
+  Report notify_stop() {
+    dispatch::stop(strategy_, context_);
+    return settle();
+  }
+
+  /**
+   * Settles instructions a caller has already queued, dispatching no handler.
+   *
+   * The other half of `notify_stop`: `PollingLoop` queues its own cancellations and closing orders
+   * and settles exactly those. Using `stop()` here would call `on_stop` inside the window where the
+   * loop has lifted its hold so its own instructions can go -- which is the one moment a strategy's
+   * order must not.
+   */
+  Report settle_closing() { return settle(); }
 
   /**
    * Feeds one bar: records it in the cached series, advances the clock, then calls the handler.
