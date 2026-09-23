@@ -234,8 +234,14 @@ private:
 
 using SendingLoop = runner::PollingLoop<SendingRunner, FeedingSource, runner::ManualClock>;
 
-/** An executor whose cancellations always fail in transit, leaving their outcome unknown. */
-class LosingExecutor {
+/**
+ * An executor whose cancellations always come back with `Outcome`.
+ *
+ * `RecordingExecutor` always accepts, so nothing built on it can show what a closing pass does with
+ * a cancellation the broker did not withdraw.
+ */
+template <runner::SendOutcome Outcome>
+class CancelFailingExecutor {
 public:
   runner::SendOutcome place(const strategy::PlannedOrder&) {
     return runner::SendOutcome::ACCEPTED;
@@ -243,7 +249,7 @@ public:
 
   runner::SendOutcome cancel(const algotradelib::WorkingOrder<runner::DryTag>&) {
     ++cancels_;
-    return runner::SendOutcome::INDETERMINATE;
+    return Outcome;
   }
 
   /** Returns how many cancellations reached it. */
@@ -253,9 +259,29 @@ private:
   std::size_t cancels_{0};
 };
 
+using LosingExecutor = CancelFailingExecutor<runner::SendOutcome::INDETERMINATE>;
 using LosingRunner = runner::Runner<Inert, strategy::NoCaps, runner::DryTag, LosingExecutor>;
 using LosingSource = runner::ManualSource<LosingRunner>;
 using LosingLoop = runner::PollingLoop<LosingRunner, LosingSource, runner::ManualClock>;
+
+using RejectingExecutor = CancelFailingExecutor<runner::SendOutcome::REJECTED>;
+using RejectingRunner = runner::Runner<Inert, strategy::NoCaps, runner::DryTag, RejectingExecutor>;
+using RejectingSource = runner::ManualSource<RejectingRunner>;
+using RejectingLoop = runner::PollingLoop<RejectingRunner, RejectingSource, runner::ManualClock>;
+
+/** A portfolio holding one resting order, for a closing pass to try to withdraw. */
+template <typename Portfolio>
+void give_one_resting_order(Portfolio& portfolio) {
+  portfolio.as_of_ = base_time();
+  algotradelib::WorkingOrder<runner::DryTag> working;
+  working.order_.instrument_ = samsung();
+  working.order_.side_ = algotradelib::OrderSide::BUY;
+  working.order_.status_ = algotradelib::OrderStatus::PENDING;
+  working.order_.quantity_ = algotradelib::Decimal64::parse("5");
+  working.order_.execution_.filled_quantity_ = algotradelib::Decimal64::parse("0");
+  working.ref_ = algotradelib::OrderRef<runner::DryTag>{"0001", ""};
+  portfolio.working_.push_back(working);
+}
 
 } // namespace
 
@@ -1150,15 +1176,7 @@ TEST_CASE("a cancellation lost in transit is not a completed withdrawal", "[loop
   runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
 
   strategy::Portfolio<runner::DryTag> portfolio;
-  portfolio.as_of_ = base_time();
-  algotradelib::WorkingOrder<runner::DryTag> working;
-  working.order_.instrument_ = samsung();
-  working.order_.side_ = algotradelib::OrderSide::BUY;
-  working.order_.status_ = algotradelib::OrderStatus::PENDING;
-  working.order_.quantity_ = algotradelib::Decimal64::parse("5");
-  working.order_.execution_.filled_quantity_ = algotradelib::Decimal64::parse("0");
-  working.ref_ = algotradelib::OrderRef<runner::DryTag>{"0001", ""};
-  portfolio.working_.push_back(working);
+  give_one_resting_order(portfolio);
   runner_instance.context().set_portfolio(portfolio);
 
   LosingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
@@ -1173,4 +1191,34 @@ TEST_CASE("a cancellation lost in transit is not a completed withdrawal", "[loop
   CHECK_FALSE(report.closing_complete());
   // And the instrument is owed a reconciliation, which is the actual obligation left behind.
   CHECK(runner_instance.ledger().requires_reconcile(samsung()));
+}
+
+TEST_CASE("a cancellation the broker rejected is not a completed withdrawal", "[loop][stop]") {
+  // The third outcome to fall through to `would_cancel_`, and the reason `send_cancel` now switches
+  // over the whole enumeration instead of testing one case at a time. A rejection is an answer --
+  // nothing needs reconciling -- but the order is still resting, so a stop that got one is not
+  // complete.
+  RejectingRunner runner_instance;
+  RejectingSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+
+  strategy::Portfolio<runner::DryTag> portfolio;
+  give_one_resting_order(portfolio);
+  runner_instance.context().set_portfolio(portfolio);
+
+  RejectingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  stop.request(StopIntent::WITHDRAW);
+
+  const auto report = loop.run(stop, 1);
+
+  CHECK(runner_instance.executor().cancels() == 1);
+  CHECK(report.withdrawn_ == 1);
+  CHECK(report.closing_rejected_ == 1);
+  CHECK_FALSE(report.closing_complete());
+  // A rejection is an answer, so unlike an indeterminate cancellation it owes no reconciliation.
+  CHECK_FALSE(runner_instance.ledger().requires_reconcile(samsung()));
+  REQUIRE_FALSE(report.notes_.empty());
+  CHECK(report.notes_.front().find("still resting") != std::string::npos);
 }

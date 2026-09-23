@@ -68,12 +68,23 @@ The report says everything that happened, and the distinctions matter:
 | Field | Meaning |
 | --- | --- |
 | `would_place_` | passed reconciliation and every guard |
-| `would_cancel_` | working orders that would be withdrawn, **before** any placement |
-| `rejected_` | reconciliation could not build an instruction (`RejectReason`) |
+| `would_cancel_` | working orders the broker **accepted** a withdrawal for, **before** any placement |
+| `rejected_` | reconciliation could not build an instruction (`RejectReason`), or the broker refused a placement |
 | `refused_` | a guard forbade it (`GuardReason`), with the limit and what was attempted |
 | `withheld_` | the instrument's order state is unresolved; reported, never retried |
 | `indeterminate_` | the send failed in transit and the outcome is unknown |
-| `unresolved_cancel_` | a cancellation naming an order the snapshot does not hold |
+| `unavailable_` | local machinery could not send it; no broker was asked |
+
+A cancellation has the same outcomes and its own bucket for each, because only `would_cancel_` means
+the order stopped resting:
+
+| Field | Meaning |
+| --- | --- |
+| `rejected_cancel_` | the broker refused it; the order is still resting |
+| `refused_cancel_` | a hold on the guard refused it, with the `HaltReason` |
+| `indeterminate_cancel_` | the send failed in transit; the order may or may not be withdrawn |
+| `unavailable_cancel_` | local machinery could not send it; no broker was asked |
+| `unresolved_cancel_` | it named an order the snapshot does not hold |
 
 `rejected_` and `refused_` are separate on purpose: the first means the library could not build an
 order, the second means the operator forbade one. Conflating them would make a configuration mistake

@@ -176,11 +176,17 @@ if (!report.closing_complete()) {
 **went out**. They differ, and the most common reason is the one below.
 
 `closing_complete()` is false if *any* closing instruction failed to go, and there are six ways that
-happens — `closing_rejected_`, `closing_refused_`, `closing_withheld_`, `closing_indeterminate_`,
-`closing_unavailable_` (the journal could not be written, so no broker was asked) and
-`closing_unresolved_` (a cancellation named an order the snapshot does not hold). Cancellations count
-in these as well as placements: a withdrawal that failed in transit may have withdrawn the order or
-may not, and that is not the same as one that went.
+happens — `closing_rejected_` (reconciliation could not build it, or the broker refused it),
+`closing_refused_`, `closing_withheld_`, `closing_indeterminate_`, `closing_unavailable_` (the
+journal could not be written, so no broker was asked) and `closing_unresolved_` (a cancellation named
+an order the snapshot does not hold). Cancellations count in these as well as placements: a
+withdrawal that failed in transit may have withdrawn the order or may not, and that is not the same
+as one that went.
+
+**It is not a position confirmation.** `true` means every instruction the loop asked for was accepted
+by the broker — not that a closing order filled, which only a later holdings snapshot can show, and a
+`withdraw` deliberately leaves positions held. Reconcile against the broker's own holdings before
+believing anything about a position.
 
 **`RiskLimits::permitted_phases_` defaults to `{MarketPhase::OPEN}`, so a flatten outside market hours
 is refused.** That is correct — there is no session to trade in — but it means an operator who asks to

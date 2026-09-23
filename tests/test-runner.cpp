@@ -615,6 +615,35 @@ TEST_CASE("the asymmetry is the point: an unknown classification errs toward rec
   REQUIRE(runner::outcome_of(error) == SendOutcome::INDETERMINATE);
 }
 
+TEST_CASE("a cancellation the broker rejected is not reported as a withdrawal") {
+  // A refusal is an answer -- the instruction was wrong, nothing needs reconciling -- but the order
+  // is still resting. `would_cancel_` says the broker withdrew it, which would be false.
+  using Tag = runner::DryTag;
+  runner::Runner<CancelThenTarget, strategy::NoCaps, Tag, ScriptedExecutor<Tag>> dry;
+  dry.context().set_instrument(samsung_reference());
+  dry.context().set_phase(strategy::MarketPhase::OPEN);
+  dry.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+  strategy::Portfolio<Tag> portfolio;
+  WorkingOrder<Tag> working;
+  working.order_.instrument_ = samsung();
+  working.order_.side_ = OrderSide::BUY;
+  working.order_.status_ = OrderStatus::PENDING;
+  working.order_.quantity_ = Decimal64::parse("3");
+  working.ref_ = OrderRef<Tag>{"0001", ""};
+  portfolio.working_.push_back(working);
+  dry.context().set_portfolio(portfolio);
+
+  dry.executor().cancel_outcome_ = SendOutcome::REJECTED;
+  const auto report = dry.feed(bar_at(10, "70000"));
+
+  REQUIRE(report.rejected_cancel_.size() == 1);
+  REQUIRE(report.rejected_cancel_.front().primary_ == "0001");
+  REQUIRE(report.would_cancel_.empty());
+  // Unlike an indeterminate one, a rejection leaves nothing in doubt.
+  REQUIRE_FALSE(dry.ledger().requires_reconcile(samsung()));
+}
+
 TEST_CASE("a cancellation naming an order the snapshot does not hold is reported, not sent blind") {
   // The snapshot is stale and the order may already be gone. Building a cancellation needs the
   // order's own quantity on a broker that requires one, so an order the runner cannot describe is

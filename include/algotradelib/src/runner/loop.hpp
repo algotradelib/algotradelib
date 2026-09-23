@@ -191,7 +191,13 @@ struct LoopReport {
    * would believe they were out of the market while still holding the position.
    */
   std::size_t closing_placed_{0};
-  /** Closing instructions reconciliation could not build. */
+  /**
+   * Closing instructions that were rejected: reconciliation could not build them, or the broker
+   * refused them.
+   *
+   * Both are answers rather than doubts -- nothing needs reconciling either way -- and both leave
+   * the position exactly where it was.
+   */
   std::size_t closing_rejected_{0};
   /** Closing instructions a guard refused. */
   std::size_t closing_refused_{0};
@@ -223,10 +229,16 @@ struct LoopReport {
    * Returns whether every closing instruction the loop asked for actually went out.
    *
    * **Every way a closing instruction can fail to go counts here**, which is the whole value of the
-   * call: an operator asking "am I actually flat" must not get `true` from a stop where the journal
-   * was broken, or where a cancellation named an order a stale snapshot did not list. Those failed
-   * silently before, because they were reported on the runner's report and never carried onto this
-   * one.
+   * call: an operator must not get `true` from a stop where the journal was broken, where the
+   * broker rejected a cancellation, or where a cancellation named an order a stale snapshot did not
+   * list. Those failed silently before, because they were reported on the runner's report and never
+   * carried onto this one.
+   *
+   * **It is not a position confirmation, and must not be read as one.** It says every instruction
+   * the loop asked for was accepted by the broker -- not that a closing order *filled*, which only a
+   * later holdings snapshot can show. A `WITHDRAW` deliberately leaves positions held, so `true`
+   * there means "nothing is resting any more", never "you are flat". Reconcile against the broker's
+   * own holdings before believing anything about a position.
    */
   bool closing_complete() const noexcept {
     return closing_rejected_ == 0 && closing_refused_ == 0 && closing_withheld_ == 0 &&
@@ -632,12 +644,12 @@ private:
       // are what happened to them.
       report.withdrawn_ = closing.would_cancel_.size() + closing.indeterminate_cancel_.size() +
         closing.unavailable_cancel_.size() + closing.refused_cancel_.size() +
-        closing.unresolved_cancel_.size();
+        closing.unresolved_cancel_.size() + closing.rejected_cancel_.size();
     }
     // **Both halves of every bucket.** A closing instruction is a placement or a cancellation, and
     // each can fail in the same five ways; counting only the placement half is how a stop that sent
     // nothing reported itself complete.
-    report.closing_rejected_ = closing.rejected_.size();
+    report.closing_rejected_ = closing.rejected_.size() + closing.rejected_cancel_.size();
     report.closing_refused_ = closing.refused_.size() + closing.refused_cancel_.size();
     report.closing_withheld_ = closing.withheld_.size();
     report.closing_indeterminate_ =
@@ -656,6 +668,11 @@ private:
       report.notes_.push_back(
         "reconciliation could not build " + std::to_string(closing.rejected_.size()) +
         " closing instruction(s); the position is still held");
+    }
+    if (!closing.rejected_cancel_.empty()) {
+      report.notes_.push_back(
+        "the broker rejected " + std::to_string(closing.rejected_cancel_.size()) +
+        " closing cancellation(s); those orders are still resting");
     }
     if (report.closing_withheld_ != 0) {
       report.notes_.push_back(
