@@ -403,6 +403,15 @@ private:
     // broker the loop is about to walk away from.
     check_control_file(stop, report);
 
+    // **Established before any poll runs, because a poll is what feeds the runner.** A source's
+    // `poll` calls `Runner::feed` itself -- `live::SessionSource::poll_bars` does, per instrument --
+    // and `feed` settles, so an order can leave the process from inside a poll. Computing the gate
+    // afterwards would mean the startup gate and the staleness gate were installed one poll too
+    // late, and on the very first iteration they would not be installed at all: a bar arriving
+    // before the first order-list read could place an order against a position a predecessor may
+    // have left, which is the exact hazard the startup gate exists for.
+    hold(gate_for(stop, iteration.at_, report, /*may_read=*/true));
+
     for (const auto kind : all_poll_kinds) {
       if (!is_due(kind, iteration.at_)) {
         continue;
@@ -423,7 +432,11 @@ private:
       }
     }
 
-    hold(gate_for(stop, iteration.at_, report));
+    // Re-evaluated after the polls so the report and the next iteration reflect what those polls
+    // changed -- a holdings refresh should lift the staleness hold now, not one iteration later.
+    // The order list is deliberately not attempted a second time: one attempt per iteration, and
+    // the gate simply stands until the next one.
+    hold(gate_for(stop, iteration.at_, report, /*may_read=*/false));
     // Reported from the guard rather than from what the loop just computed, so the report names the
     // most fundamental hold in force whoever owns it -- an operator's halt, or a journal that
     // failed, outranks anything the loop decided.
@@ -441,21 +454,28 @@ private:
    *
    * **Always evaluated, even while someone else's hold stands.** Short-circuiting on a foreign hold
    * would leave the loop's own hold un-maintained underneath it, so the moment an operator resumed,
-   * the guard would be wide open against a portfolio nobody had rechecked -- and a poll feeds the
-   * runner before the next gate is computed. The one thing a foreign hold does suppress is the
-   * order-list *read*, and only for `LOCAL_FAILURE`: a runner whose journal is broken must not be
-   * sent looking for more work to fail at.
+   * the guard would be wide open against a portfolio nobody had rechecked.
+   *
+   * Called twice per iteration -- before the polls, which is what actually protects anything, and
+   * after them so the report is current. `may_read` is false on the second call so the order-list
+   * read is attempted at most once per iteration.
    */
   std::optional<strategy::HaltReason> gate_for(
-    const StopSource& stop, std::chrono::system_clock::time_point at, LoopReport& report
+    const StopSource& stop,
+    std::chrono::system_clock::time_point at,
+    LoopReport& report,
+    bool may_read
   ) {
     if (stop.requested()) {
       return strategy::HaltReason::STOPPING;
     }
-    if (!order_list_read_ && runner_->guard().halted(strategy::HaltReason::LOCAL_FAILURE)) {
-      return strategy::HaltReason::ORDER_LIST_UNREAD;
-    }
     if (!order_list_read_) {
+      // Not attempted when the caller says not to, and not attempted at all while the runner's
+      // journal is broken: a runner that cannot record what it does must not be sent looking for
+      // more work to fail at. Either way the gate stands, which is the safe answer.
+      if (!may_read || runner_->guard().halted(strategy::HaltReason::LOCAL_FAILURE)) {
+        return strategy::HaltReason::ORDER_LIST_UNREAD;
+      }
       const auto outcome = source_->read_order_list(*runner_);
       if (outcome == PollOutcome::UPDATED || outcome == PollOutcome::UNCHANGED) {
         order_list_read_ = true;

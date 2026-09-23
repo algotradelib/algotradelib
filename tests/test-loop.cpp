@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <optional>
 #include <string>
 
 namespace runner = algotradelib::runner;
@@ -147,6 +148,91 @@ runner::PollSchedule bars_each_iteration() {
   schedule.tick_ = std::chrono::seconds(1);
   return schedule;
 }
+
+/** A daily bar at a plausible instant, one per index. */
+strategy::BarEvent bar_at(std::size_t index) {
+  algotradelib::Bar bar;
+  bar.timestamp_ = base_time() + std::chrono::hours(24 * static_cast<int>(index));
+  bar.high_ = algotradelib::Decimal64::parse("70000");
+  bar.low_ = bar.high_;
+  bar.close_ = bar.high_;
+  bar.volume_ = algotradelib::Decimal64::parse("1000000");
+  return strategy::make_bar_event(
+    samsung(), algotradelib::BarInterval::ONE_DAY, algotradelib::BarStamp::CLOSE, bar);
+}
+
+/**
+ * A strategy that wants ten shares of whatever bar it is shown.
+ *
+ * `Inert` cannot expose an ordering bug in the loop, because a strategy that never submits cannot
+ * send early. This one can, which is the whole point of it.
+ */
+struct HoldTen {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const algotradelib::strategy::BarEvent& bar) {
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = algotradelib::Decimal64::parse("10");
+    ctx.submit(target);
+  }
+};
+
+using SendingRunner = runner::DryRunner<HoldTen>;
+
+/**
+ * A source that feeds the runner from inside `poll`, the way a real one does.
+ *
+ * `live::SessionSource::poll_bars` calls `Runner::feed` per instrument, and `feed` settles, so an
+ * order can leave the process from inside a poll. `ManualSource` only reports an outcome, so no
+ * test built on it can observe what the loop had established *before* that call.
+ */
+class FeedingSource {
+public:
+  /** Sets what the order-list read returns. */
+  void set_order_list(runner::PollOutcome outcome) { order_list_ = outcome; }
+
+  /** Returns how many times the order list was read. */
+  std::size_t order_list_reads() const noexcept { return order_list_reads_; }
+
+  /** Feeds one bar per bars poll, and records what the runner decided while doing it. */
+  runner::PollOutcome poll(runner::PollKind kind, SendingRunner& runner_instance) {
+    if (kind != runner::PollKind::BARS) {
+      return runner::PollOutcome::UNCHANGED;
+    }
+    const auto report = runner_instance.feed(bar_at(++bars_));
+    placed_ += report.would_place_.size();
+    refused_ += report.refused_.size();
+    if (!report.refused_.empty()) {
+      last_refusal_ = report.refused_.front().halt_reason_;
+    }
+    return runner::PollOutcome::UPDATED;
+  }
+
+  /** Returns the configured order-list outcome. */
+  runner::PollOutcome read_order_list(SendingRunner&) {
+    ++order_list_reads_;
+    return order_list_;
+  }
+
+  /** Returns how many orders the runner would have sent from inside a poll. */
+  std::size_t placed() const noexcept { return placed_; }
+
+  /** Returns how many the guard refused there. */
+  std::size_t refused() const noexcept { return refused_; }
+
+  /** Returns which hold refused the last one. */
+  std::optional<strategy::HaltReason> last_refusal() const noexcept { return last_refusal_; }
+
+private:
+  runner::PollOutcome order_list_ = runner::PollOutcome::UPDATED;
+  std::size_t order_list_reads_{0};
+  std::size_t bars_{0};
+  std::size_t placed_{0};
+  std::size_t refused_{0};
+  std::optional<strategy::HaltReason> last_refusal_;
+};
+
+using SendingLoop = runner::PollingLoop<SendingRunner, FeedingSource, runner::ManualClock>;
 
 } // namespace
 
@@ -875,3 +961,88 @@ TEST_CASE("a runner halted before the loop starts sends nothing on the first ite
   // work to fail at.
   CHECK(source.order_list_reads() == 0);
 }
+
+TEST_CASE("nothing is sent before the first order-list read, from inside a poll", "[loop][gate]") {
+  // The gate has to be in force *before* a poll runs, because a poll is what feeds the runner: a
+  // real source calls `Runner::feed` per instrument and `feed` settles. With the gate computed
+  // after the polls, the very first bar of a run could place an order against a position a
+  // predecessor may have left resting -- the exact hazard the startup gate exists for -- and the
+  // report would then say `order_list_unread` about an order that had already gone out.
+  SendingRunner runner_instance;
+  FeedingSource source;
+  source.set_order_list(runner::PollOutcome::FAILED);
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  SendingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 3);
+
+  // The strategy submitted on every bar and the guard refused every one of them.
+  CHECK(source.placed() == 0);
+  CHECK(source.refused() == 3);
+  CHECK(source.last_refusal() == strategy::HaltReason::ORDER_LIST_UNREAD);
+  CHECK_FALSE(report.order_list_read_);
+  CHECK(report.final_gate_ == strategy::HaltReason::ORDER_LIST_UNREAD);
+}
+
+TEST_CASE("the gate opens for the same iteration once the order list is read", "[loop][gate]") {
+  // The other half, and the reason the gate is computed before the polls rather than simply being
+  // held for a whole extra iteration: a successful read lifts it in time for that iteration's bar.
+  SendingRunner runner_instance;
+  FeedingSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  SendingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.order_list_read_);
+  CHECK(source.order_list_reads() == 1);
+  CHECK(source.placed() == 1);
+  CHECK(source.refused() == 0);
+}
+
+TEST_CASE("a stale portfolio blocks a send made from inside a poll", "[loop][gate]") {
+  // Same ordering, the other gate. Sizing against a stale snapshot is how a position gets
+  // double-sized by a route `working_quantity` does not close, so the hold must precede the feed.
+  SendingRunner runner_instance;
+  FeedingSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  SendingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  loop.set_maximum_portfolio_age(std::chrono::minutes(5));
+  StopSource stop;
+
+  const auto report = loop.run(stop, 2);
+
+  CHECK(source.placed() == 0);
+  CHECK(source.refused() == 2);
+  CHECK(source.last_refusal() == strategy::HaltReason::PORTFOLIO_STALE);
+  CHECK(report.final_gate_ == strategy::HaltReason::PORTFOLIO_STALE);
+}
+
+TEST_CASE("an operator's halt stops a send made from inside a poll", "[loop][halt]") {
+  // A halt has to reach the one place an order actually leaves, which is inside a poll rather than
+  // anywhere the loop itself calls.
+  SendingRunner runner_instance;
+  FeedingSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner_instance.guard().halt();
+  SendingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 2);
+
+  CHECK(source.placed() == 0);
+  CHECK(source.refused() == 2);
+  CHECK(source.last_refusal() == strategy::HaltReason::OPERATOR);
+  CHECK(report.final_gate_ == strategy::HaltReason::OPERATOR);
+}
+
