@@ -124,7 +124,7 @@ docker stop --time 120 trading
 
 And size it against your actual HTTP timeout, not against how long a shutdown usually takes.
 
-## The two gates that stop you trading, on purpose
+## The three gates that stop you trading, on purpose
 
 **The order list must be read before anything is sent.** A process that has just started cannot know
 whether a *previous* process died mid-POST. An empty indeterminacy ledger does not mean nothing is
@@ -141,10 +141,22 @@ stale positions is how a position gets double-sized by a route that `working_qua
 Staleness is measured against the broker's own `as_of_` — when the positions were *true* — not against
 when the reply arrived.
 
-Both gates work by holding the guard, which is the library's one primitive for "stop sending without
-withdrawing or flattening". **A hold names who took it**, and is released only by them: the loop takes
-`portfolio_stale` and `order_list_unread`, you take `operator` when you call `halt()` by hand, and the
-runner takes `local_failure` when its journal cannot be written. Trading resumes when the last hold is
+**An unknown buying power blocks buying.** Only if you asked for the check: set
+`RiskLimits::enforce_buying_power_` and the loop refuses to send while it has no answer from the
+broker about what may be spent, reporting `buying_power_unread`. Set a cadence with
+`PollSchedule::buying_power_` and the currencies with `SessionSource::set_buying_power_currencies`,
+and optionally an age with `set_maximum_buying_power_age`. A loop that never asked for the check is
+never held by it.
+
+The reason it is a hold rather than a refusal per order: sizing a buy against a budget nobody has
+stated is the thing the check exists to stop, and a runner that has never been told cannot make a
+per-order decision about it. Once a reading exists, an order too large for it is an ordinary
+refusal — `insufficient_buying_power`, carrying the budget and the attempt.
+
+All three gates work by holding the guard, which is the library's one primitive for "stop sending
+without withdrawing or flattening". **A hold names who took it**, and is released only by them: the loop takes
+`portfolio_stale`, `order_list_unread` and `buying_power_unread`, you take `operator` when you call
+`halt()` by hand, and the runner takes `local_failure` when its journal cannot be written. Trading resumes when the last hold is
 released, so the loop opening its gate cannot lift your halt, and your `resume()` cannot lift the
 loop's.
 
@@ -269,10 +281,42 @@ cumulative, so one failure in three is degraded rather than down.
 A rate-limit refusal is specifically **not** a failure. It is the limiter working, and the controller
 already holds capacity back from polling so that an order is never the request that waits.
 
+## Asking the broker what the account can do
+
+Two checks, both off by default, because turning either on changes what an existing program does and
+because each is the broker's answer rather than a limit you chose.
+
+```cpp
+strategy::RiskLimits limits;
+limits.enforce_buying_power_ = true;        // refuse a buy the broker cannot fund
+limits.enforce_sellable_quantity_ = true;   // refuse a sell of shares it will not release
+```
+
+**What they cost differs by broker, and `BrokerCaps::sellable_source` says which you have.** At KIS
+the sellable figure arrives on every holdings row, so the check costs nothing at all. At Toss it
+takes a request per instrument you actually sell, spent at the moment the sell is planned and kept
+with the position until the next holdings poll replaces it.
+
+**Absent is not zero.** A figure the broker has not stated is unknown, and unknown refuses. Neither
+check falls back to what you hold or to `cash_in()` — a position is not evidence of a *sellable*
+position, and settlement, pledging and locking are exactly the gap being reported.
+
+**A pass sizes against what it has already sent.** Two sells of sixty against a hundred sellable do
+not both go out, and neither do two buys the budget can only fund once. The reservation outlives the
+pass and is discarded when a poll replaces the listing, so a second bar before the next poll cannot
+re-spend the same money.
+
+**Passing is not a promise.** These are readings, and a fill against a resting order moves them
+without telling anyone. The check is the difference between sizing against the broker's last answer
+and sizing against nothing.
+
 ## What this does not do yet
 
 - **Stream.** It polls. `plan/todo/realtime-streaming.md` drops into the same source seam.
 - **Run more than one loop.** One loop, one thread. See `plan/todo/parallel-execution.md`.
+- **Tell you whether the sellable figure already excludes your resting orders.** Neither broker
+  documents it, so the guard subtracts them — safe, and possibly twice. Turn on
+  `probe_sellable_convention()` and a run that observes one says so in `report.notes_`.
 
 Surviving a restart is no longer on this list. Bind a `runner::FileJournal` and the ledger becomes
 durable: every instruction is recorded before it is sent, a restarted runner recovers what its

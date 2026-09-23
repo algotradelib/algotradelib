@@ -85,8 +85,30 @@ make. Whichever you use, `report.caveats_.limit_fill_` says which.
 - **Queue position.** The largest hidden cost in real execution, and invisible to bar data.
 - **Market impact.** Your order is assumed not to move the price.
 - **Borrow availability.** A short is assumed possible.
+- **Settlement.** A sale's proceeds are credited on the fill and the whole holding is reported as
+  sellable, so a replay trades in a T+0 world. `ReportCaveats::sellable_is_whole_holding` and
+  `buying_power_is_ledger_cash` are both always true and present for the same reason as
+  `volume_ignored`.
 
 If a strategy's edge is small relative to these, the backtest cannot tell you whether the edge is real.
+
+## What a replay says an account can do
+
+The live path can ask the broker what may be spent and what may be sold. A replay has no broker, so
+it answers from its own ledger — and **the two answers are different quantities wearing the same
+field**:
+
+- `buying_power_` is the ledger's cash, which the ledger credits on the fill. A live account's
+  buying power is priced on the broker's terms, including or excluding amounts this ledger does not
+  model. Which way a particular account differs is not something a replay can know, so the report
+  states the model rather than a direction.
+- `sellable_quantity_` is the whole holding. Live, it is routinely smaller — settlement, pledging,
+  locking — so a sale a live account would have refused is not refused here.
+
+The consequence worth keeping in mind: **a strategy sized against these checks passes more easily in
+a replay than live.** If you enable `enforce_buying_power_` or `enforce_sellable_quantity_`, a clean
+backtest is not evidence the live account will accept the same orders. `plan/todo/replay-settlement-model.md`
+is what would close the gap.
 
 ## Costs, which are the most common way a backtest lies
 
@@ -106,6 +128,13 @@ A tick means a tick *at that price level*, through the instrument's `PriceRule`,
 
 **Charging nothing is itself a model**, and the report says so. A zero-cost run should be your informed
 choice, not an oversight you cannot detect.
+
+**Or let the broker state the rate.** Where a broker publishes its schedule — Toss does; KIS
+publishes none for domestic stock — `backtest::commission_model_from(schedule, country, date)` seeds
+the model from it, and `ReportCaveats::commission_from_broker_` says the figure came from the broker
+rather than from you. It sets no floor, because a floor the broker did not publish is unknown rather
+than zero, and it answers for one date: a replay spanning a rate change charges one rate throughout.
+A date the schedule does not cover is an error rather than a free trade.
 
 No tax model, deliberately: Korean securities transaction tax has changed repeatedly, and a hard-coded
 number that moves would silently misprice every run after it changed. State it in the rate for sells if

@@ -69,6 +69,47 @@ struct CommissionModel {
 };
 
 /**
+ * Builds a cost model from the rate a broker published for `country` on `date`.
+ *
+ * **This is the only place a backtest's commission comes from anywhere but the caller**, and it
+ * closes the gap that a replay charges a number someone guessed while the live account is charged
+ * the broker's own. Only one of the two brokers publishes a schedule, so the model is seeded where
+ * it can be and stated by the caller everywhere else.
+ *
+ * Three things it deliberately does not do:
+ *
+ * - **It sets no floor.** Toss publishes a rate and nothing else; a floor the broker did not state
+ *   is unknown, not zero. `CommissionModel` has no way to carry "unknown", so `minimum_` stays at
+ *   zero and this documentation is where a reader learns the difference. Widening the model to say
+ *   so is a `backtest` change rather than this one.
+ * - **It adds no tax.** `cost.hpp` refuses to hard-code Korean securities transaction tax for a
+ *   reason that has not changed: the rate has moved repeatedly, and a stale constant silently
+ *   misprices every run after it moved.
+ * - **It answers for one date.** A replay spanning a rate change charges one rate throughout, which
+ *   is honest and still wrong for the half of the period the other rate covered; charging per trade
+ *   date needs a signature that takes one, and that is
+ *   `plan/todo/commission-schedule-range.md`.
+ *
+ * A date no window covers is an error rather than a zero rate, because a rate of zero is a claim
+ * the broker did not make and a zero-cost replay is the most flattering wrong answer there is.
+ */
+inline Result<CommissionModel> commission_model_from(
+  const CommissionSchedule& schedule,
+  Country country,
+  const Date& date
+) {
+  const auto rate = schedule.rate_for(country, date);
+  if (!rate) {
+    BrokerError error;
+    error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.broker_code_ = "no_rate_for_date";
+    error.message_ = "the published schedule states no commission rate for that market and date";
+    return Result<CommissionModel>(std::move(error));
+  }
+  return Result<CommissionModel>(CommissionModel::of(rate->rate_));
+}
+
+/**
  * How far a fill lands from the price the model would otherwise give.
  *
  * Always **against** the order: a buy pays more and a sell receives less. Slippage that helped would

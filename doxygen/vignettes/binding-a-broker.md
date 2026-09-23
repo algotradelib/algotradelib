@@ -223,6 +223,36 @@ handler and buy nothing. Holding by value is also what lets a caller read the st
 What *is* held by pointer is the session, because `SessionExecutor` borrows a connection it does not
 own. The rule is ownership rather than size.
 
+## What each broker will tell you about the account
+
+Three questions, and the brokers do not answer them the same way. `BrokerCaps` says which you can
+ask before you write the call, so one strategy source compiles against both.
+
+| | Toss | KIS |
+| --- | --- | --- |
+| `has_buying_power` | yes | yes |
+| `has_buying_power_quantity` | no — an amount only | yes — also how many shares |
+| `sellable_source` | `INQUIRY` — one request per instrument | `HOLDINGS` — free, on every snapshot |
+| `has_commission_schedule` | yes | no |
+
+`sellable_source` names a **source** rather than asking `has_*`, and the distinction is deliberate:
+KIS does publish a dedicated 매도가능수량조회, and this library does not use it, because the same
+field arrives on the holdings snapshot for nothing and on a demo account too. The constant says where
+the figure comes from, not what the vendor offers.
+
+Calling a verb a broker cannot serve is a compile error naming the broker and what to do instead:
+
+```
+session.commissions();        // on KIS: "this broker publishes no commission schedule; gate the
+                              //  call with BrokerCaps<Client>::has_commission_schedule"
+session.sellable_quantity(i); // on KIS: "read HoldingPosition::sellable_quantity_ from the
+                              //  holdings snapshot"
+```
+
+Buying power is per currency and the broker prices it that way, so ask for the one you trade in. Toss
+answers KRW and USD; the KIS domestic inquiry answers won, and any other currency is refused before
+the request is built rather than answered in the wrong unit.
+
 ## The rule that matters most
 
 An order POST is not idempotent on either supported broker. A request that fails **in transit** has

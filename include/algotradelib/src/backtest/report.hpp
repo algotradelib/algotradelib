@@ -37,6 +37,15 @@ struct ReportCaveats {
   LimitFillPrice limit_fill_{LimitFillPrice::AT_LIMIT};
   /** The commission rate applied; zero means a zero-cost run, which is stated rather than implied. */
   Decimal64 commission_rate_;
+  /**
+   * Whether that rate came from the broker's published schedule or from the caller.
+   *
+   * A replay seeded through `commission_model_from` charged what the broker says it charges; every
+   * other replay charged what someone chose. The figures look identical and mean different things,
+   * which is exactly the kind of difference this struct exists to carry -- and only one of the two
+   * brokers publishes a schedule at all, so on the other this is always false and honestly so.
+   */
+  bool commission_from_broker_{false};
   /** The per-order commission floor applied. */
   Decimal64 commission_minimum_;
   /** Basis points of slippage applied. */

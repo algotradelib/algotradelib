@@ -1316,3 +1316,39 @@ TEST_CASE("a replay's buying power is its cash, stamped with the snapshot time")
   // The time the modelled figure was read, which is all a replay can honestly stamp it with.
   REQUIRE(portfolio.buying_power_[0].received_at_ == when);
 }
+
+TEST_CASE("a cost model seeded from a broker's schedule charges what the broker charges") {
+  CommissionSchedule schedule;
+  schedule.rates_.push_back(
+    CommissionRate{Country::KR, Decimal64::parse("0.00015"), Date{2026, 1, 1}, std::nullopt}
+  );
+  schedule.rates_.push_back(
+    CommissionRate{Country::US, Decimal64::parse("0.001"), std::nullopt, Date{2026, 6, 30}}
+  );
+
+  const auto domestic = backtest::commission_model_from(schedule, Country::KR, Date{2026, 9, 23});
+  REQUIRE(domestic);
+  REQUIRE(domestic.value().rate_ == Decimal64::parse("0.00015"));
+  // No floor is invented: Toss publishes a rate and nothing else, and an unstated floor is unknown
+  // rather than zero -- which this documents rather than pretends to model.
+  REQUIRE(domestic.value().minimum_ == Decimal64::parse("0"));
+
+  // Ten million won at 0.00015 is 1,500, rounded to whole currency units.
+  const auto charged =
+    domestic.value().on(Decimal64::parse("100"), Decimal64::parse("100000"));
+  REQUIRE(charged);
+  REQUIRE(*charged == Decimal64::parse("1500"));
+
+  // A date outside every window is an error, not a free trade: a zero-cost run is the most
+  // flattering wrong answer a backtest can give.
+  const auto before = backtest::commission_model_from(schedule, Country::KR, Date{2025, 12, 31});
+  REQUIRE_FALSE(before);
+  REQUIRE(before.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+
+  const auto expired = backtest::commission_model_from(schedule, Country::US, Date{2026, 9, 23});
+  REQUIRE_FALSE(expired);
+
+  // And a market the schedule never mentions is refused rather than defaulted to another's rate.
+  const CommissionSchedule empty;
+  REQUIRE_FALSE(backtest::commission_model_from(empty, Country::KR, Date{2026, 9, 23}));
+}

@@ -564,6 +564,7 @@ public:
     //
     // A healthy run that simply exhausted `max_iterations` never halted anything, so there is
     // nothing to leave behind in that case.
+    note_sellable_convention(report);
     return report;
   }
 
@@ -571,6 +572,29 @@ public:
   const IterationReport& last() const noexcept { return last_; }
 
 private:
+  /**
+   * Puts the sellable-convention probe's verdict in the report, when it reached one.
+   *
+   * The probe answers a question neither broker's documentation does -- whether the sellable figure
+   * already excludes resting sells -- and it answers it as a by-product of ordinary polling. An
+   * operator should not have to write code to read that, so a run that learned something says so,
+   * with the counts behind it because one observation is evidence rather than proof.
+   *
+   * Silent when nothing was observed, which is most runs: a note saying "undetermined" on every run
+   * that never sold anything is noise, and noise is how a report stops being read.
+   */
+  void note_sellable_convention(LoopReport& report) const {
+    const auto evidence = runner_->sellable_convention().overall();
+    if (evidence.total() == 0) {
+      return;
+    }
+    report.notes_.push_back(
+      "broker's sellable figure appears " +
+      std::string(strategy::sellable_convention_name(evidence.verdict())) + " (" +
+      std::to_string(evidence.net_) + " net, " + std::to_string(evidence.gross_) + " gross)"
+    );
+  }
+
   /** Runs one iteration: poll what is due, then let the runner act if the gate is open. */
   IterationReport step(StopSource& stop, LoopReport& report) {
     IterationReport iteration;
@@ -615,6 +639,12 @@ private:
         return iteration;
       }
     }
+
+    // Observed after the polls, not before: a poll can refresh the listing without a bar arriving,
+    // and that is precisely when an order of ours begins showing as resting. Observing first would
+    // read every iteration's portfolio one iteration late. A repeat observation of unchanged state
+    // concludes nothing, so a quiet iteration costs a scan and teaches the probe nothing.
+    runner_->observe_sellable_convention();
 
     // Re-evaluated after the polls so the report and the next iteration reflect what those polls
     // changed -- a holdings refresh should lift the staleness hold now, not one iteration later.

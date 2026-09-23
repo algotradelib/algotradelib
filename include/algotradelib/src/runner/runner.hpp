@@ -331,6 +331,22 @@ public:
    */
   void probe_sellable_convention(bool enabled = true) { probing_sellable_ = enabled; }
 
+  /**
+   * Records one observation of the current portfolio for the convention probe.
+   *
+   * Called by `settle` on every pass, and by a `PollingLoop` after it polls -- because a poll that
+   * refreshes the portfolio without feeding the runner is exactly the moment a sell of ours starts
+   * appearing in the listing, and a runner that only observed when fed would miss it.
+   *
+   * Observing the same state twice teaches nothing by construction: the probe concludes only from a
+   * change in the resting quantity, so a repeat is discarded rather than counted twice.
+   */
+  void observe_sellable_convention() {
+    if (probing_sellable_) {
+      sellable_probe_.observe(context_.portfolio());
+    }
+  }
+
   /** Returns what the probe has inferred, and the counts behind it. */
   const strategy::SellableConventionProbe<Tag>& sellable_convention() const noexcept {
     return sellable_probe_;
@@ -497,9 +513,7 @@ private:
     // Before anything is planned, because the portfolio here is the broker's own last word: a pass
     // adds its accepted orders to a copy, and the probe must not read this runner's intentions as
     // the broker's report.
-    if (probing_sellable_) {
-      sellable_probe_.observe(context_.portfolio());
-    }
+    observe_sellable_convention();
 
     Report report;
     const auto instructions = context_.drain();
@@ -830,12 +844,21 @@ private:
         // The broker took the request. Whether the order stops working is a later fact, which only
         // its own listing reports: cancellation is asynchronous, and a broker that answers here can
         // still reject the withdrawal afterwards.
+        //
+        // **Counted against the rate limit, like a placement.** A withdrawal is a request the
+        // broker counted, and a window that does not see it is not the window the operator
+        // configured -- a `WITHDRAW` over thirty resting orders is thirty requests the guard was
+        // blind to, and the next placement is then checked against a window it believes is empty.
+        // It is still never *refused* by that limit: `send_cancel` calls no `check`, because a rate
+        // limit must never be the reason an order cannot be withdrawn.
+        guard_.note_sent(context_.now());
         report.would_cancel_.push_back(ref);
         return;
       case SendOutcome::REJECTED:
         // The broker refused the request, which is an answer: nothing needs reconciling. It is not
         // a withdrawal that happened, and it is not proof the order is working either -- a fill is
-        // one of the ordinary reasons a withdrawal is refused.
+        // one of the ordinary reasons a withdrawal is refused. It still spent a request.
+        guard_.note_sent(context_.now());
         report.rejected_cancel_.push_back(ref);
         return;
       case SendOutcome::INDETERMINATE:
@@ -843,6 +866,9 @@ private:
         // as a withdrawal that happened was not right beside it, because the order may still be
         // resting and a caller reading `would_cancel_` would believe it is not.
         ledger_.mark(working->order_.instrument_, "a cancellation request failed in transit");
+        // Counted like an acceptance, for the same reason a placement is: the request may well have
+        // reached the broker, and a window that assumes it did not is the one that under-counts.
+        guard_.note_sent(context_.now());
         report.indeterminate_cancel_.push_back(ref);
         return;
       case SendOutcome::UNAVAILABLE:

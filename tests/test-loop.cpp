@@ -753,6 +753,46 @@ TEST_CASE("the buying-power poll has its own cadence", "[loop][cadence]") {
   CHECK(source.polls(runner::PollKind::HOLDINGS) == 0);
 }
 
+TEST_CASE("a run reports what it learned about the broker's sellable figure", "[loop][probe]") {
+  InertRunner runner_instance;
+  InertSource source;
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  runner_instance.probe_sellable_convention();
+
+  // A quiet run says nothing rather than reporting "undetermined" on every iteration that never
+  // sold anything: a note nobody needs is how a report stops being read.
+  const auto quiet = loop.run(stop, 1);
+  CHECK(quiet.notes_.empty());
+
+  // Now the observation the probe exists for: a sell starts resting and the figure drops with it.
+  strategy::Portfolio<InertRunner::Tag> before;
+  algotradelib::HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = algotradelib::Decimal64::parse("100");
+  position.sellable_quantity_ = algotradelib::Decimal64::parse("100");
+  before.positions_.push_back(position);
+  runner_instance.context().set_portfolio(before);
+  loop.run(stop, 1);
+
+  auto after = before;
+  after.positions_[0].sellable_quantity_ = algotradelib::Decimal64::parse("70");
+  algotradelib::WorkingOrder<InertRunner::Tag> resting;
+  resting.order_.instrument_ = samsung();
+  resting.order_.side_ = algotradelib::OrderSide::SELL;
+  resting.order_.status_ = algotradelib::OrderStatus::PENDING;
+  resting.order_.quantity_ = algotradelib::Decimal64::parse("30");
+  resting.order_.execution_.filled_quantity_ = algotradelib::Decimal64::parse("0");
+  after.working_.push_back(resting);
+  runner_instance.context().set_portfolio(after);
+
+  const auto learned = loop.run(stop, 1);
+  REQUIRE(learned.notes_.size() == 1);
+  CHECK(learned.notes_[0].find("net_of_resting") != std::string::npos);
+  // The counts travel with the verdict, because one observation is evidence rather than proof.
+  CHECK(learned.notes_[0].find("1 net") != std::string::npos);
+}
+
 TEST_CASE("repeated poll failures give up rather than spinning", "[loop][failure]") {
   InertRunner runner_instance;
   InertSource source;

@@ -477,6 +477,41 @@ TEST_CASE("a runner without the checks carries no reservation between passes") {
   REQUIRE(second.would_place_.size() == 1);
 }
 
+TEST_CASE("withdrawals spend the rate window a later placement is checked against") {
+  // The asymmetry this branch absorbed: a placement recorded a send on three of its four outcomes
+  // and a cancellation recorded none, so a withdrawal of many resting orders was many requests the
+  // broker counted and the guard did not. The next placement was then checked against a window it
+  // believed was empty.
+  using Tag = runner::DryRunner<CancelThenTarget>::Tag;
+  strategy::RiskLimits limits;
+  limits.max_orders_per_window_ = 1;
+  runner::DryRunner<CancelThenTarget> dry(CancelThenTarget{}, limits);
+  arrange(dry);
+
+  strategy::Portfolio<Tag> portfolio;
+  WorkingOrder<Tag> working;
+  working.order_.instrument_ = samsung();
+  working.order_.side_ = OrderSide::BUY;
+  working.order_.status_ = OrderStatus::PENDING;
+  working.order_.quantity_ = Decimal64::parse("3");
+  working.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+  working.ref_ = OrderRef<Tag>{"0001", ""};
+  portfolio.working_.push_back(working);
+  dry.context().set_portfolio(portfolio);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+
+  // The withdrawal went and was not refused: a rate limit must never be why an order cannot be
+  // withdrawn, and `send_cancel` consults no limit at all.
+  REQUIRE(report.would_cancel_.size() == 1);
+  REQUIRE(report.refused_cancel_.empty());
+
+  // And they spent the window, so the placement that follows them is refused by it.
+  REQUIRE(report.would_place_.empty());
+  REQUIRE(report.refused_.size() == 1);
+  REQUIRE(report.refused_[0].reason_ == strategy::GuardReason::ORDER_RATE_EXCEEDED);
+}
+
 TEST_CASE("a guard refusal is reported and no order survives it") {
   strategy::RiskLimits limits;
   limits.max_order_notional_ = Decimal64::parse("100000");

@@ -1377,6 +1377,32 @@ TEST_CASE("buying power is per currency and never borrows another currency's ans
   REQUIRE(guard.check(planned("10", "70000"), portfolio, unresolved));
 }
 
+TEST_CASE("a withdrawal spends rate budget but can never be refused by the limit") {
+  // The asymmetry the todo named. A rate limit must never be the reason a cancellation cannot go --
+  // that is the premise ai/rate-limit-control was built on -- but not *counting* one is a different
+  // claim, and it makes the window mean less than the field's own documentation says.
+  RiskLimits limits;
+  limits.max_orders_per_window_ = 2;
+  RiskGuard guard(limits);
+  const auto now = utc(2026, 3, 10, 3, 0);
+
+  // Two withdrawals' worth of budget spent, as the runner now records them.
+  guard.note_sent(now);
+  guard.note_sent(now);
+
+  // The next *placement* is refused, because the broker counted those two requests.
+  auto inputs = open_market();
+  inputs.now_ = now;
+  ProbePortfolio portfolio;
+  const auto refused = guard.check(planned("10", "70000"), portfolio, inputs);
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::ORDER_RATE_EXCEEDED);
+
+  // And nothing in the guard can refuse a withdrawal at all: `send_cancel` consults no limit, so
+  // the only way this could stop one is if a caller asked it to, which no caller does.
+  REQUIRE(guard.limits().max_orders_per_window_ == std::size_t{2});
+}
+
 TEST_CASE("the sellable check is off until an operator asks for it") {
   // Off by default, because a broker that does not publish the figure would otherwise stop every
   // sell an existing program makes.
