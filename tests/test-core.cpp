@@ -3144,3 +3144,78 @@ TEST_CASE("flooring onto a multiple goes toward negative infinity on both sides 
   REQUIRE_FALSE(decimal_floor_to_multiple(Decimal64::parse("47"), Decimal64::parse("0")));
   REQUIRE_FALSE(decimal_floor_to_multiple(Decimal64::parse("47"), Decimal64::parse("-10")));
 }
+
+TEST_CASE(
+  "buying power is a broker's answer and is never confused with cash",
+  "[core][capacity]"
+) {
+  // The type exists to keep two different quantities apart, so the test that matters is that a
+  // holder of one cannot read it as the other. `Money` carries the currency, which is what makes a
+  // per-currency answer a normal value rather than a special case.
+  const BuyingPower power{Money{Decimal64::parse("5000000"), Currency::krw()}, {}};
+  REQUIRE(power.cash_.amount_ == Decimal64::parse("5000000"));
+  REQUIRE(power.cash_.currency_ == Currency::krw());
+
+  // A fractional foreign answer survives, because Toss reports US buying power with a fraction.
+  const BuyingPower foreign{Money{Decimal64::parse("3500.5"), Currency::usd()}, {}};
+  REQUIRE(foreign.cash_.amount_ == Decimal64::parse("3500.5"));
+  REQUIRE_FALSE(foreign.cash_.currency_ == Currency::krw());
+}
+
+TEST_CASE(
+  "a commission rate applies only within the window the broker stated",
+  "[core][capacity]"
+) {
+  CommissionRate rate;
+  rate.country_ = Country::KR;
+  rate.rate_ = Decimal64::parse("0.00015");
+  rate.from_ = Date{2026, 1, 1};
+  rate.until_ = Date{2026, 12, 31};
+
+  REQUIRE(rate.applies_on(Date{2026, 1, 1}));
+  REQUIRE(rate.applies_on(Date{2026, 12, 31}));
+  REQUIRE(rate.applies_on(Date{2026, 6, 15}));
+  REQUIRE_FALSE(rate.applies_on(Date{2025, 12, 31}));
+  REQUIRE_FALSE(rate.applies_on(Date{2027, 1, 1}));
+
+  // An absent bound is open-ended in that direction, which is how a null date arrives.
+  CommissionRate open_ended = rate;
+  open_ended.until_ = std::nullopt;
+  REQUIRE(open_ended.applies_on(Date{2099, 1, 1}));
+  REQUIRE_FALSE(open_ended.applies_on(Date{2025, 12, 31}));
+
+  CommissionRate unbounded;
+  unbounded.rate_ = Decimal64::parse("0.001");
+  REQUIRE(unbounded.applies_on(Date{1999, 1, 1}));
+  REQUIRE(unbounded.applies_on(Date{2099, 1, 1}));
+}
+
+TEST_CASE(
+  "a schedule answers per country and date, and says nothing rather than guessing",
+  "[core][capacity]"
+) {
+  CommissionSchedule schedule;
+  schedule.rates_.push_back(
+    CommissionRate{Country::KR, Decimal64::parse("0.00015"), Date{2026, 1, 1}, std::nullopt}
+  );
+  schedule.rates_.push_back(
+    CommissionRate{Country::US, Decimal64::parse("0.001"), std::nullopt, Date{2026, 6, 30}}
+  );
+
+  const auto domestic = schedule.rate_for(Country::KR, Date{2026, 9, 23});
+  REQUIRE(domestic);
+  REQUIRE(domestic->rate_ == Decimal64::parse("0.00015"));
+
+  // The same date answers differently per country, which is the whole reason country is a key.
+  const auto foreign = schedule.rate_for(Country::US, Date{2026, 9, 23});
+  REQUIRE_FALSE(foreign);
+  REQUIRE(schedule.rate_for(Country::US, Date{2026, 6, 30}));
+
+  // A date before every window is unanswered rather than charged at zero, because a rate of zero
+  // is a claim the broker did not make.
+  REQUIRE_FALSE(schedule.rate_for(Country::KR, Date{2025, 12, 31}));
+
+  // An empty schedule is a real answer from a broker that publishes them, and still answers nothing.
+  const CommissionSchedule empty;
+  REQUIRE_FALSE(empty.rate_for(Country::KR, Date{2026, 9, 23}));
+}

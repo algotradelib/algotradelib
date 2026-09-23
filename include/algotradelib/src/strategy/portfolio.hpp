@@ -57,6 +57,15 @@ struct Portfolio {
   std::vector<HoldingPosition> positions_;
   /** Spendable cash per currency, unconverted — no implicit foreign exchange. */
   std::vector<Money> cash_;
+  /**
+   * What the broker said may be spent, per currency.
+   *
+   * Separate from `cash_`, which is this library's own accounting and is filled by the backtest
+   * ledger. This is the broker's answer, and the two are different quantities: see `BuyingPower`.
+   * Empty means nobody has asked, which is not the same as an answer of zero — a caller enforcing
+   * a buying-power limit must treat the empty case as unknown rather than as no money.
+   */
+  std::vector<BuyingPower> buying_power_;
   std::vector<WorkingOrder<Broker>> working_;
   std::chrono::system_clock::time_point as_of_{};
 
@@ -112,6 +121,43 @@ struct Portfolio {
     for (const auto& amount : cash_) {
       if (amount.currency_ == currency) {
         return amount.amount_;
+      }
+    }
+    return std::nullopt;
+  }
+
+  /**
+   * Returns the buying power the broker reported in `currency`, or nothing when it reported none.
+   *
+   * Nothing means *unknown*, and the distinction from zero is the reason this returns an optional
+   * rather than a default. Nobody has asked, the broker refused, or this is a backtest whose ledger
+   * did not fill it — none of which is a statement that the account cannot buy.
+   */
+  std::optional<Decimal64> buying_power_in(const Currency& currency) const {
+    for (const auto& amount : buying_power_) {
+      if (amount.cash_.currency_ == currency) {
+        return amount.cash_.amount_;
+      }
+    }
+    return std::nullopt;
+  }
+
+  /**
+   * Returns what the broker said is sellable of `instrument`, or nothing when it did not say.
+   *
+   * **Nothing is not zero and it is not the held quantity.** A broker that publishes the figure at
+   * all publishes it per position — KIS carries it on every holdings snapshot — and a broker that
+   * does not leaves it absent, as Toss does. A caller that substitutes `quantity_of` when this is
+   * absent has answered a different question: T+2 settlement, pledged and locked quantity all make
+   * a held position less than fully sellable, and that gap is exactly what this reports.
+   *
+   * Absent also covers "there is no such position", which `quantity_of` distinguishes for a caller
+   * that needs to tell the two apart.
+   */
+  std::optional<Decimal64> sellable_quantity_of(const InstrumentId& instrument) const {
+    for (const auto& position : positions_) {
+      if (position.instrument_ == instrument) {
+        return position.sellable_quantity_;
       }
     }
     return std::nullopt;

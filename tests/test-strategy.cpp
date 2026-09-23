@@ -492,6 +492,73 @@ WorkingOrder<strategy::ProbeBroker> working(
 
 } // namespace
 
+TEST_CASE("buying power is absent until a broker answers, and absent is not zero") {
+  ProbePortfolio portfolio;
+
+  // Nobody has asked. A caller enforcing a limit must read this as unknown, not as an empty wallet.
+  REQUIRE_FALSE(portfolio.buying_power_in(Currency::krw()));
+
+  portfolio.buying_power_.push_back(
+    BuyingPower{Money{Decimal64::parse("5000000"), Currency::krw()}, {}}
+  );
+  REQUIRE(portfolio.buying_power_in(Currency::krw()) == Decimal64::parse("5000000"));
+
+  // A currency the broker did not answer for stays unknown rather than borrowing another's number:
+  // holdings-core refuses implicit conversion and this is the same refusal.
+  REQUIRE_FALSE(portfolio.buying_power_in(Currency::usd()));
+
+  // An answer of zero is a different claim from no answer, and both are representable.
+  ProbePortfolio broke;
+  broke.buying_power_.push_back(BuyingPower{Money{Decimal64::parse("0"), Currency::krw()}, {}});
+  REQUIRE(broke.buying_power_in(Currency::krw()) == Decimal64::parse("0"));
+}
+
+TEST_CASE("cash and buying power are separate fields and do not answer for each other") {
+  // The backtest ledger fills cash_; a live poll fills buying_power_. Neither may stand in for the
+  // other, because one is this library's accounting and the other is the broker's.
+  ProbePortfolio portfolio;
+  portfolio.cash_.push_back(Money{Decimal64::parse("1000000"), Currency::krw()});
+
+  REQUIRE(portfolio.cash_in(Currency::krw()) == Decimal64::parse("1000000"));
+  REQUIRE_FALSE(portfolio.buying_power_in(Currency::krw()));
+
+  portfolio.buying_power_.push_back(
+    BuyingPower{Money{Decimal64::parse("1750000"), Currency::krw()}, {}}
+  );
+  // Unsettled sale proceeds are the ordinary reason these differ, and they must both survive.
+  REQUIRE(portfolio.cash_in(Currency::krw()) == Decimal64::parse("1000000"));
+  REQUIRE(portfolio.buying_power_in(Currency::krw()) == Decimal64::parse("1750000"));
+}
+
+TEST_CASE("sellable quantity is what the broker said, never the held quantity") {
+  ProbePortfolio portfolio;
+  HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = Decimal64::parse("100");
+
+  // KIS publishes this on every holdings snapshot; a position part-way through T+2 settlement is
+  // held in full and sellable in part.
+  position.sellable_quantity_ = Decimal64::parse("70");
+  portfolio.positions_.push_back(position);
+
+  REQUIRE(portfolio.quantity_of(samsung()) == Decimal64::parse("100"));
+  REQUIRE(portfolio.sellable_quantity_of(samsung()) == Decimal64::parse("70"));
+
+  // Toss leaves the field absent, and absent must not silently become the held quantity.
+  ProbePortfolio silent;
+  HoldingPosition unstated = position;
+  unstated.sellable_quantity_ = std::nullopt;
+  silent.positions_.push_back(unstated);
+
+  REQUIRE(silent.quantity_of(samsung()) == Decimal64::parse("100"));
+  REQUIRE_FALSE(silent.sellable_quantity_of(samsung()));
+
+  // No position at all is also absent; quantity_of is what tells the two apart.
+  ProbePortfolio empty;
+  REQUIRE_FALSE(empty.sellable_quantity_of(samsung()));
+  REQUIRE_FALSE(empty.quantity_of(samsung()));
+}
+
 TEST_CASE("working quantity counts what is still in the market, not what was ordered") {
   // The partial-fill case that causes double-sizing: 100 ordered, 40 filled, so 60 is still
   // working. A strategy sizing against the position alone would ask for 60 more on top.

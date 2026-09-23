@@ -665,6 +665,30 @@ struct HoldingsSnapshot {
 };
 
 /**
+ * What the broker says may be spent, in one currency.
+ *
+ * Deliberately not cash, and the distinction is why this type exists rather than a `Money` in the
+ * portfolio's cash list. Cash is what an accounting of settled money says; buying power is what the
+ * broker will let an order spend, which includes unsettled sale proceeds and excludes whatever it
+ * is already reserving against resting orders. In a T+2 market the two differ on most days, so
+ * carrying the broker's answer in the field meant for the library's own accounting would make one
+ * number mean two things depending on who last wrote it.
+ *
+ * `cash_` is the credit-free figure both brokers publish — Toss's `cashBuyingPower`, KIS's
+ * `nrcvb_buy_amt`. A credit-inclusive figure is that broker's own and stays reachable through its
+ * client: this library has no model of credit, and a number without the model is how a strategy
+ * discovers leverage by accident.
+ *
+ * `received_at_` is the local clock, not the broker's, because neither broker timestamps the
+ * answer. It is therefore when the figure *arrived* rather than when it was true, which is the
+ * weaker of the two claims and is the one this field makes.
+ */
+struct BuyingPower {
+  Money cash_;
+  std::chrono::system_clock::time_point received_at_{};
+};
+
+/**
  * Calendar date without a time of day or zone.
  *
  * Settlement and inquiry-range values are calendar dates in the broker's own
@@ -708,6 +732,66 @@ inline bool is_valid_date(const Date& date) {
   }
   return date.day_ >= 1 && date.day_ <= days;
 }
+
+/**
+ * One commission rate a broker charges, and the dates it applies on.
+ *
+ * A rate is a fraction of traded value rather than a percentage, matching
+ * `backtest::CommissionModel::rate_`: `0.00015` is the order of magnitude a Korean online
+ * brokerage charges.
+ *
+ * Both bounds are optional and absent means open-ended in that direction, which is how Toss
+ * publishes them — a `null` end date is a rate with no scheduled change. Absent is deliberately not
+ * "today": a schedule that started before the account did is a normal thing to be told, and
+ * inventing a start for it would make a date comparison say something the broker did not.
+ *
+ * There is no per-order floor and no transaction tax here, because neither broker publishes one.
+ */
+struct CommissionRate {
+  Country country_{Country::KR};
+  Decimal64 rate_;
+  std::optional<Date> from_;
+  std::optional<Date> until_;
+
+  /** Returns whether this rate is the one in force on `date`. */
+  bool applies_on(const Date& date) const {
+    if (from_ && date < *from_) {
+      return false;
+    }
+    if (until_ && *until_ < date) {
+      return false;
+    }
+    return true;
+  }
+};
+
+/**
+ * The commission rates a broker published for one account.
+ *
+ * Only one broker publishes any, so a caller reaches this through a capability gate rather than
+ * assuming it. An empty schedule from a broker that *does* publish them is a real answer — the
+ * account has no stated rates — and is not the same as the broker having no such inquiry.
+ */
+struct CommissionSchedule {
+  std::vector<CommissionRate> rates_;
+  std::chrono::system_clock::time_point received_at_{};
+
+  /**
+   * Returns the rate in force for `country` on `date`, or nothing when none is.
+   *
+   * The first matching row wins. A broker publishing two overlapping rows for one country and date
+   * is describing something this library cannot resolve, and picking the larger or the smaller
+   * would be inventing a policy the broker did not state.
+   */
+  std::optional<CommissionRate> rate_for(Country country, const Date& date) const {
+    for (const auto& rate : rates_) {
+      if (rate.country_ == country && rate.applies_on(date)) {
+        return rate;
+      }
+    }
+    return std::nullopt;
+  }
+};
 
 /** Direction of an order. */
 enum class OrderSide {
