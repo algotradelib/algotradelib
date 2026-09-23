@@ -387,7 +387,9 @@ TEST_CASE("an idempotency key a broker cannot honour is refused, never dropped")
 
   auto order = planned();
   order.client_order_id_ = "idem-1";
-  REQUIRE(executor.place(order) == runner::SendOutcome::REJECTED);
+  // `REFUSED_LOCALLY`, not `REJECTED`: no broker refused this, because no broker was asked. The
+  // distinction is what stops the runner charging a rate-limit request to a send nobody made.
+  REQUIRE(executor.place(order) == runner::SendOutcome::REFUSED_LOCALLY);
   // Refused before the session was touched, so nothing went out without the guarantee.
   REQUIRE(session.placed().empty());
   REQUIRE(executor.last_error());
@@ -555,6 +557,58 @@ TEST_CASE("a reserved order is withdrawn by the reference the broker actually is
   REQUIRE(second.unavailable_cancel_.empty());
 }
 
+/** Asks for an idempotency key on the first bar only, then buys plainly. */
+struct KeyedOnce {
+  int bars_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    auto intent = strategy::OrderIntent::market(
+      bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
+    );
+    if (bars_++ == 0) {
+      ctx.submit(intent.with_client_order_id("idem-1"));
+      return;
+    }
+    ctx.submit(intent);
+  }
+};
+
+TEST_CASE("a send the binding itself refused spends no rate-limit budget") {
+  // The point of the fourth outcome. `REJECTED` means the *broker* refused, which obliges the
+  // runner to count a request -- the broker counted one. Reporting a purely local refusal that way
+  // spent budget for a request nobody made, and with a tight window that refuses a later order
+  // which would have been allowed.
+  using Runner = runner::Runner<
+    KeyedOnce, WithoutKey, FakeBroker, live::SessionExecutor<FakeSession<WithoutKey>>
+  >;
+  FakeSession<WithoutKey> session;
+  strategy::RiskLimits limits;
+  limits.max_orders_per_window_ = 1;
+  // Wide enough that both bars fall inside it, or the window would have expired between them and
+  // the test would pass whatever the first send spent.
+  limits.rate_window_ = std::chrono::hours(24);
+
+  Runner live_runner(
+    KeyedOnce{}, limits, 512, live::SessionExecutor<FakeSession<WithoutKey>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+  // Bar one asks for a guarantee this broker cannot give, so nothing is sent.
+  const auto first = live_runner.feed(bar_at(1, "70000"));
+  CHECK(session.placed().empty());
+  CHECK(first.rejected_.size() == 1);
+  CHECK(first.would_place_.empty());
+
+  // Bar two asks for nothing unusual, and the window must still have room for it.
+  const auto second = live_runner.feed(bar_at(2, "70000"));
+  CHECK(second.refused_.empty());
+  CHECK(second.would_place_.size() == 1);
+  CHECK(session.placed().size() == 1);
+}
+
 TEST_CASE("a withdrawal is never addressed to a broker by an empty reference") {
   // The other half of the reference the reservation now carries. A row can still reach the executor
   // without one -- an executor that cannot report what the broker issued leaves it blank -- and
@@ -566,7 +620,7 @@ TEST_CASE("a withdrawal is never addressed to a broker by an empty reference") {
   WorkingOrder<FakeBroker> unaddressable = working();
   unaddressable.ref_ = OrderRef<FakeBroker>{};
 
-  CHECK(executor.cancel(unaddressable) == runner::SendOutcome::REJECTED);
+  CHECK(executor.cancel(unaddressable) == runner::SendOutcome::REFUSED_LOCALLY);
   CHECK(session.canceled().empty());
   REQUIRE(executor.last_error().has_value());
   CHECK(executor.last_error()->category_ == ErrorCategory::INVALID_ARGUMENT);

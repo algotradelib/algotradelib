@@ -54,6 +54,24 @@ enum class SendOutcome {
    * no broker was involved.
    */
   UNAVAILABLE,
+  /**
+   * The binding itself refused the instruction, so nothing was sent and no request was counted.
+   *
+   * The fourth state exists because the other three each carry a claim that is false here.
+   * `REJECTED` says the *broker* refused, which obliges the runner to count a request against the
+   * rate limit -- the broker counted one, after all -- and spending budget for a request nobody
+   * made can refuse a later order that would have been allowed. `UNAVAILABLE` says the local
+   * machinery is broken, which is sticky and fatal to sending; this is not, because the next
+   * instruction may be perfectly sendable. `INDETERMINATE` says the position is in doubt, and
+   * nothing is in doubt when nothing left the process.
+   *
+   * What it means for the order is exactly what `REJECTED` means -- it does not exist, nothing
+   * needs reconciling -- and what it means for the session is exactly what `ACCEPTED` means: carry
+   * on. It says only that the instruction asked the binding for something the binding cannot do:
+   * an idempotency key at a broker that accepts none, or a withdrawal for an order the broker has
+   * no reference for.
+   */
+  REFUSED_LOCALLY,
 };
 
 /** Returns a stable lowercase name for `outcome`, for logs and structured reporting. */
@@ -67,6 +85,8 @@ inline constexpr std::string_view send_outcome_name(SendOutcome outcome) noexcep
       return "indeterminate";
     case SendOutcome::UNAVAILABLE:
       return "unavailable";
+    case SendOutcome::REFUSED_LOCALLY:
+      return "refused_locally";
   }
   return "unknown";
 }

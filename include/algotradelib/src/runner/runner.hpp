@@ -655,6 +655,19 @@ private:
           ledger_.mark(order.instrument_, "an order request failed in transit");
           report.indeterminate_.push_back(std::move(order));
           break;
+        case SendOutcome::REFUSED_LOCALLY:
+          // **No `note_sent`**: the binding refused it, so no request went out and the broker
+          // counted nothing. Spending rate-limit budget here would refuse a later order that would
+          // have been allowed, for a request nobody made. Reported as a rejection because that is
+          // what it is from the order's point of view -- it does not exist, and nothing needs
+          // reconciling -- and the runner keeps trading, because the next instruction may be
+          // perfectly sendable.
+          report.rejected_.push_back(
+            strategy::Rejection{
+              strategy::RejectReason::NOT_REPRESENTABLE, order.instrument_, order.tag_
+            }
+          );
+          break;
         case SendOutcome::UNAVAILABLE:
           // No `note_sent`: nothing went out, so the broker counted nothing and no rate-limit
           // budget was spent. The ledger is not marked either -- an instruction that was never
@@ -946,6 +959,13 @@ private:
         // reached the broker, and a window that assumes it did not is the one that under-counts.
         guard_.note_sent(context_.now());
         report.indeterminate_cancel_.push_back(ref);
+        return;
+      case SendOutcome::REFUSED_LOCALLY:
+        // No `note_sent`, for the reason the placement path gives: nothing was sent, so the broker
+        // counted nothing, and a rate limit must never become the reason a later order cannot go.
+        // Reported beside the broker's own refusals because what it means for the order is the
+        // same -- it was not withdrawn -- while `last_error()` says which of the two it was.
+        report.rejected_cancel_.push_back(ref);
         return;
       case SendOutcome::UNAVAILABLE:
         // Not reported as a withdrawal that happened, because it did not. A cancellation nobody

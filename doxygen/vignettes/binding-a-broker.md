@@ -69,7 +69,7 @@ The report says everything that happened, and the distinctions matter:
 | --- | --- |
 | `would_place_` | passed reconciliation and every guard |
 | `would_cancel_` | working orders the broker **accepted** a withdrawal for, **before** any placement |
-| `rejected_` | reconciliation could not build an instruction (`RejectReason`), or the broker refused a placement |
+| `rejected_` | reconciliation could not build an instruction (`RejectReason`), the broker refused a placement, or the binding itself refused to send one |
 | `refused_` | a guard forbade it (`GuardReason`), with the limit and what was attempted |
 | `withheld_` | the instrument's order state is unresolved; reported, never retried |
 | `indeterminate_` | the send failed in transit and the outcome is unknown |
@@ -80,7 +80,7 @@ the broker accepted the request:
 
 | Field | Meaning |
 | --- | --- |
-| `rejected_cancel_` | the broker refused the request |
+| `rejected_cancel_` | the broker refused the request, or the binding refused to send it |
 | `refused_cancel_` | a hold on the guard refused it, with the `HaltReason` |
 | `indeterminate_cancel_` | the send failed in transit; whether the broker got it is unknown |
 | `unavailable_cancel_` | local machinery could not send it; no broker was asked |
@@ -92,6 +92,14 @@ flight and `CANCEL_REJECTED` when it fails, which returns the order to its previ
 accepted withdrawal can still be resting, and a refused one may have filled a moment earlier — a fill
 is an ordinary reason to refuse a withdrawal. These buckets say what happened to the *instruction*.
 For the order's state, read the broker's order list.
+
+A binding refuses rather than sends when the instruction asks for something it cannot do — an
+idempotency key at a broker that accepts none, a withdrawal for an order the broker has no
+reference for. That is `SendOutcome::REFUSED_LOCALLY`, and it is a fourth state rather than a
+rejection because **nothing was sent, so no request may be counted against the rate window**:
+spending budget for a request nobody made refuses a later order that would have been allowed. It is
+not `UNAVAILABLE` either, which is sticky and stops the runner trading — the next instruction may be
+perfectly sendable. `last_error()` says which of the two a `rejected_` entry was.
 
 `rejected_` and `refused_` are separate on purpose: the first means the library could not build an
 order, the second means the operator forbade one. Conflating them would make a configuration mistake

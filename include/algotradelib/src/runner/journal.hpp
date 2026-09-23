@@ -154,6 +154,10 @@ inline constexpr JournalOutcome journal_outcome_of(SendOutcome outcome) noexcept
       // an inner executor with local machinery of its own can produce one, and recording it as
       // `INDETERMINATE` would withhold an instrument for an order that was never attempted.
       return JournalOutcome::REJECTED;
+    case SendOutcome::REFUSED_LOCALLY:
+      // The same reasoning, and the same answer: nothing was sent, so the order does not exist.
+      // The journal records what happened to the order, not who decided it.
+      return JournalOutcome::REJECTED;
   }
   return JournalOutcome::INDETERMINATE;
 }

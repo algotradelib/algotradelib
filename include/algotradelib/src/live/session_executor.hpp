@@ -56,7 +56,9 @@ public:
         last_error_->category_ = ErrorCategory::INVALID_ARGUMENT;
         last_error_->message_ =
           "this broker accepts no idempotency key; the intent asked for one";
-        return runner::SendOutcome::REJECTED;
+        // Refused here, not by the broker: nothing was sent, so nothing may be counted against the
+        // rate limit. Reporting this as a broker rejection spent budget for a request nobody made.
+        return runner::SendOutcome::REFUSED_LOCALLY;
       }
     }
 
@@ -107,7 +109,7 @@ public:
       last_error_->category_ = ErrorCategory::INVALID_ARGUMENT;
       last_error_->message_ =
         "no broker reference for this order; it cannot be withdrawn until a listing supplies one";
-      return runner::SendOutcome::REJECTED;
+      return runner::SendOutcome::REFUSED_LOCALLY;
     }
     auto result = session_->cancel(working.ref_, cancel_all(working));
     if (result) {
