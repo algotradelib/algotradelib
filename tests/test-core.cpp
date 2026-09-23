@@ -3393,6 +3393,29 @@ TEST_CASE(
   REQUIRE(unstorable);
   REQUIRE(unstorable.value().rates_.size() == 1);
   REQUIRE(unstorable.value().rates_[0].country_ == Country::KR);
+  // And the loss is visible: a schedule that had quietly shortened itself would read as the whole
+  // answer to a caller comparing it against the broker's own statement.
+  REQUIRE(unstorable.value().dropped_ == 1);
+
+  // A row naming no market at all is the dangerous one, because an empty code *stores*: an empty
+  // `other_` is how a row says it names a normalized market, so this would have become a Korean
+  // rate -- winning `rate_for(KR, ...)` against a rate Toss never published.
+  const auto nameless = tossinvest::TossClientTestAccess::parse_commissions(
+    json_response(
+      R"({"result":[{"marketCountry":"","commissionRate":"0.9",)"
+      R"("startDate":null,"endDate":null},)"
+      R"({"marketCountry":"KR","commissionRate":"0.00015","startDate":null,"endDate":null}]})"
+    )
+  );
+  REQUIRE(nameless);
+  REQUIRE(nameless.value().rates_.size() == 1);
+  REQUIRE(nameless.value().dropped_ == 1);
+  const auto korean = nameless.value().rate_for(Country::KR, Date{2026, 9, 23});
+  REQUIRE(korean);
+  REQUIRE(korean->rate_ == Decimal64::parse("0.00015"));
+
+  // A complete schedule says so, which is what makes the count worth reading.
+  REQUIRE(schedule.value().dropped_ == 0);
 
   // An account with no stated rates is a real answer, and not the same as having no inquiry.
   const auto empty = tossinvest::TossClientTestAccess::parse_commissions(

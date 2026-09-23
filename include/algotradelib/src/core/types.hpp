@@ -2,6 +2,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <functional>
 #include <cstdint>
 #include <cstdio>
@@ -805,7 +806,14 @@ struct CommissionRate {
   std::optional<Date> from_;
   std::optional<Date> until_;
 
-  /** Returns whether this row names a market this library normalizes. */
+  /**
+   * Returns whether this row names a market this library normalizes.
+   *
+   * An unnormalized row carries its market in `other_`, so an empty `other_` means `country_` is
+   * the answer. A row naming no market at all must therefore never be built: it would read as a
+   * normalized row for `country_`'s default, which is to say a rate for Korea the broker never
+   * published. Parsers skip such a row and count it in `dropped_`.
+   */
   bool normalized() const noexcept { return other_.empty(); }
 
   /** Returns whether this rate is the one in force on `date`. */
@@ -830,6 +838,20 @@ struct CommissionRate {
 struct CommissionSchedule {
   std::vector<CommissionRate> rates_;
   std::chrono::system_clock::time_point received_at_{};
+
+  /**
+   * How many rows the broker sent that could not be represented at all.
+   *
+   * Nonzero means this schedule is **incomplete**: the broker named a market in a form nothing here
+   * can store -- a code too long for `Code<16>`, or no code at all -- and the row was skipped
+   * rather than reported under a market it does not belong to. A caller comparing a broker's own
+   * statement against this one needs to know the difference exists; a successful-looking schedule
+   * that had quietly lost rows is the failure this counter exists to prevent.
+   *
+   * It is a count rather than the rows themselves because what was lost is precisely the part that
+   * could not be held.
+   */
+  std::size_t dropped_{0};
 
   /**
    * Returns the rate in force for `country` on `date`, or nothing when none is.

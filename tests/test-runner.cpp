@@ -160,6 +160,18 @@ struct BuyTwice {
   }
 };
 
+/** Buys ten every bar, so two bars are two orders unless something remembers the first. */
+struct BuyTen {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ctx.submit(
+      strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
+      )
+    );
+  }
+};
+
 /** Sells sixty every bar, which one pass can afford and two cannot. */
 struct SellSixty {
   template <class Ctx>
@@ -375,6 +387,26 @@ TEST_CASE("an order resting from a previous pass counts against the position cei
   REQUIRE(report.refused_.size() == 2);
   REQUIRE(report.refused_[0].reason_ == strategy::GuardReason::POSITION_LIMIT_EXCEEDED);
   REQUIRE(report.refused_[0].attempted_ == Decimal64::parse("20"));
+}
+
+TEST_CASE("an order accepted in an earlier pass still counts against the ceiling") {
+  // The cross-pass half, for a caller who enabled *only* the ceiling. Nothing polls between the two
+  // bars, so the broker's listing never mentions the first order; if the reservation is not
+  // persisted for this limit, the second bar sees zero held and zero working and places again.
+  strategy::RiskLimits limits;
+  limits.max_position_quantity_ = Decimal64::parse("15");
+  runner::DryRunner<BuyTen> dry(BuyTen{}, limits);
+  arrange(dry);
+
+  const auto first = dry.feed(bar_at(10, "70000"));
+  REQUIRE(first.would_place_.size() == 1);
+  REQUIRE(first.refused_.empty());
+
+  const auto second = dry.feed(bar_at(11, "70000"));
+  REQUIRE(second.would_place_.empty());
+  REQUIRE(second.refused_.size() == 1);
+  REQUIRE(second.refused_[0].reason_ == strategy::GuardReason::POSITION_LIMIT_EXCEEDED);
+  REQUIRE(second.refused_[0].attempted_ == Decimal64::parse("20"));
 }
 
 TEST_CASE("a sell resting on the other side is not relief for a buy") {

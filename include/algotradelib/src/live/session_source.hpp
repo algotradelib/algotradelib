@@ -296,7 +296,15 @@ private:
         auto result = session_->buying_power(currency);
         if (!result) {
           last_error_ = result.error();
-          failure = poll_outcome_of(*last_error_);
+          // **A real failure outranks a rate-limit refusal.** They are not the same news: the
+          // limiter refusing is the limiter working, and the loop deliberately does not count it
+          // against a kind, while an outage must count. Taking whichever came last would let a
+          // currency that fails every sweep be reported as merely throttled the moment another
+          // currency was throttled behind it, and the failing budget would age on unnoticed.
+          const auto outcome = poll_outcome_of(*last_error_);
+          if (!failure || outcome == runner::PollOutcome::FAILED) {
+            failure = outcome;
+          }
           continue;
         }
         bool replaced = false;

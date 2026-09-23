@@ -2153,15 +2153,24 @@ private:
           rate.country_ = Country::KR;
         } else if (market == "US") {
           rate.country_ = Country::US;
-        } else if (const auto preserved = Code<16>::try_make(market)) {
+        } else if (const auto preserved = market.empty() ? std::nullopt : Code<16>::try_make(market)) {
           // Toss's own specification requires a client to accept unknown values of this enum, so a
           // new market is a normal thing to be sent. Preserved rather than dropped: a caller can
           // see what the broker charges there even though nothing here can price it, and a
           // schedule that quietly omitted the row would be a successful, incomplete answer.
+          //
+          // The empty string is excluded before `try_make` sees it, and that exclusion is load
+          // bearing: an empty code stores successfully, and an empty `other_` is how a row says it
+          // names a *normalized* market -- so a row with no market at all would become a rate for
+          // whatever `country_` defaults to, which is a Korean commission the broker never
+          // published. Review found exactly that path.
           rate.other_ = *preserved;
         } else {
           // Not storable, so it cannot be reported under any market honestly. One such row must not
-          // fail the whole schedule, which is the rule every other listing here follows.
+          // fail the whole schedule, which is the rule every other listing here follows -- but it
+          // is counted, so a caller can see the schedule is incomplete rather than reading a
+          // silently shortened list as the whole answer.
+          ++schedule.dropped_;
           continue;
         }
         rate.rate_ = Decimal64::parse(broker_detail::json_string(row, "commissionRate"));

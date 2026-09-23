@@ -179,6 +179,13 @@ public:
         return Result<BuyingPower>(error);
       }
     }
+    for (const auto& throttled : throttled_currencies_) {
+      if (throttled == currency) {
+        BrokerError error;
+        error.category_ = ErrorCategory::RATE_LIMIT;
+        return Result<BuyingPower>(error);
+      }
+    }
     if (error_) {
       return Result<BuyingPower>(*error_);
     }
@@ -191,6 +198,11 @@ public:
   /** Makes the buying-power inquiry fail for `currency` alone. */
   void fail_buying_power_in(const Currency& currency) {
     failing_currencies_.push_back(currency);
+  }
+
+  /** Makes the buying-power inquiry answer `currency` with a rate-limit refusal alone. */
+  void throttle_buying_power_in(const Currency& currency) {
+    throttled_currencies_.push_back(currency);
   }
 
   /** Sets what a successful buying-power inquiry answers, in whatever currency was asked. */
@@ -263,6 +275,7 @@ private:
   OrderPage history_;
   std::optional<BrokerError> history_error_;
   std::vector<Currency> failing_currencies_;
+  std::vector<Currency> throttled_currencies_;
   std::vector<Currency> buying_power_asked_;
   Decimal64 buying_power_amount_{Decimal64::parse("5000000")};
   const runner::MemoryJournal* observed_{nullptr};
@@ -820,6 +833,36 @@ TEST_CASE("a buying-power poll that answers for one currency and fails for anoth
   const auto& readings = live_runner.context().portfolio().buying_power_;
   REQUIRE(readings.size() == 1);
   CHECK(readings[0].cash_.currency_ == Currency::krw());
+}
+
+TEST_CASE("a throttled currency does not downgrade another currency's outright failure") {
+  // The two are not the same news: the limiter refusing is the limiter working, and the loop
+  // deliberately does not count a rate-limit refusal against a poll kind. Taking whichever answer
+  // came last would let a currency failing every sweep be reported as merely throttled the moment
+  // another currency was throttled behind it, and the failing budget would age on unnoticed.
+  BudgetSession session;
+  session.set_buying_power("5000000");
+  session.fail_buying_power_in(Currency::krw());
+  session.throttle_buying_power_in(Currency::usd());
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<BudgetSession> source(session, {samsung()});
+  // KRW fails outright first, USD is throttled second, so the last answer is the throttle.
+  source.set_buying_power_currencies({Currency::krw(), Currency::usd()});
+
+  CHECK(source.poll(runner::PollKind::BUYING_POWER, live_runner) == runner::PollOutcome::FAILED);
+}
+
+TEST_CASE("a throttled currency alone is a throttled poll, not an outage") {
+  BudgetSession session;
+  session.set_buying_power("5000000");
+  session.throttle_buying_power_in(Currency::usd());
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<BudgetSession> source(session, {samsung()});
+  source.set_buying_power_currencies({Currency::krw(), Currency::usd()});
+
+  CHECK(
+    source.poll(runner::PollKind::BUYING_POWER, live_runner) == runner::PollOutcome::RATE_LIMITED
+  );
 }
 
 TEST_CASE("a buying-power poll that answers for every configured currency has succeeded") {

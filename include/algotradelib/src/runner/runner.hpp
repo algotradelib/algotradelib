@@ -717,10 +717,17 @@ private:
    * to recognise its own order in a listing -- which is the half of reserve-and-match that carries a
    * matcher's failure modes.
    *
-   * **Scoped to the checks being enabled**, deliberately. The reservation is also visible to
+   * **Scoped to the limits that read it**, deliberately. The reservation is also visible to
    * reconciliation, which reads the same portfolio, and an order this runner just sent counting as
    * working is the right answer there too -- but it is a behaviour change, and it should reach only
-   * callers who asked for this class of check rather than every existing program on upgrade.
+   * callers whose limits actually size against what is outstanding rather than every existing
+   * program on upgrade.
+   *
+   * `max_position_quantity_` is one of those limits, and it is the one that predates this branch:
+   * its ceiling counts same-side working orders, so an accepted order that stopped being visible
+   * at the end of a pass would let the next bar place another of the same size, for as long as no
+   * working-order poll intervened. Review found that omission after the within-pass fix, which had
+   * left the cross-pass half of the same defect open for a caller enabling only the ceiling.
    *
    * The residual window is the one nothing local can close: a listing fetched before the broker
    * registered the order replaces the reservation with a picture that does not contain it yet.
@@ -733,7 +740,8 @@ private:
   ) {
     const bool sells = guard_.limits().enforce_sellable_quantity_ && order.side_ == OrderSide::SELL;
     const bool buys = guard_.limits().enforce_buying_power_ && order.side_ == OrderSide::BUY;
-    if (!sells && !buys) {
+    const bool capped = guard_.limits().max_position_quantity_.has_value();
+    if (!sells && !buys && !capped) {
       return;
     }
     auto persisted = context_.portfolio();
