@@ -1256,6 +1256,63 @@ TEST_CASE("a replay reports every held share as sellable, and says so") {
   REQUIRE(portfolio.positions_[0].quantity_ == Decimal64::parse("10"));
   REQUIRE(portfolio.sellable_quantity_of(samsung()) == Decimal64::parse("10"));
 
+#if defined(ATL_HAS_EIGEN)
   // And the report carries the assumption, so a reader who never opens the ledger still learns it.
+  // The report needs the analytics backend, so a build without one states the model nowhere -- the
+  // ledger still models it, which is why the assumption is pinned above as well as here.
   REQUIRE(backtest::ReportCaveats::sellable_is_whole_holding);
+#endif
+}
+
+TEST_CASE("a replay buys within its modelled buying power and is refused above it") {
+  // The check reads `buying_power_`, which live comes from the broker and in a replay comes from
+  // this ledger's own cash. Without the ledger answering, every buy a replay plans is refused.
+  auto config = replay_config();
+  config.limits_.enforce_buying_power_ = true;
+
+  // Ten at 70,000 is 700,000, so a million funds the first buy and nothing after it.
+  config.cash_ = Decimal64::parse("1000000");
+
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, config);
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.finish();
+
+  REQUIRE(engine.result().refused_.empty());
+  REQUIRE(engine.ledger().quantity_of(samsung()) == std::optional<Decimal64>(Decimal64::parse("10")));
+
+  // The same strategy against a budget that cannot afford it is refused, by the broker's answer
+  // rather than by a ceiling the caller configured.
+  auto poor = replay_config();
+  poor.limits_.enforce_buying_power_ = true;
+  poor.cash_ = Decimal64::parse("100000");
+
+  backtest::Backtester<HoldsTen> broke(HoldsTen{}, poor);
+  broke.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  broke.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  broke.finish();
+
+  REQUIRE_FALSE(broke.result().refused_.empty());
+  REQUIRE(
+    broke.result().refused_[0].reason_ == strategy::GuardReason::INSUFFICIENT_BUYING_POWER
+  );
+  REQUIRE(broke.result().executions_.empty());
+
+#if defined(ATL_HAS_EIGEN)
+  // And the report says the figure was modelled, so nobody reads a replay's pass as a broker's.
+  REQUIRE(backtest::ReportCaveats::buying_power_is_ledger_cash);
+#endif
+}
+
+TEST_CASE("a replay's buying power is its cash, stamped with the snapshot time") {
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.finish();
+
+  const auto when = utc(2026, 3, 10, 6, 30);
+  const auto portfolio = engine.ledger().template snapshot<backtest::BacktestTag>(when);
+  REQUIRE(portfolio.buying_power_.size() == 1);
+  REQUIRE(portfolio.buying_power_in(Currency{"KRW"}) == portfolio.cash_in(Currency{"KRW"}));
+  // The time the modelled figure was read, which is all a replay can honestly stamp it with.
+  REQUIRE(portfolio.buying_power_[0].received_at_ == when);
 }

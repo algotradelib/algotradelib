@@ -91,6 +91,20 @@ struct ReportCaveats {
    * rather than a disclosure.
    */
   static constexpr bool sellable_is_whole_holding = true;
+
+  /**
+   * Always true: a replay's buying power is this ledger's own cash, not a broker's answer.
+   *
+   * The two are different quantities. The ledger credits a sale on the fill and models no
+   * settlement schedule; a broker prices buying power on its own terms, including or excluding
+   * amounts this ledger does not model at all. **Which way a particular account differs is not
+   * something a replay can know**, so this states the model rather than claiming the replay is the
+   * more permissive of the two.
+   *
+   * A strategy sized against a buying-power limit therefore passes or fails here on modelled money,
+   * and the live account is the only place the broker's own answer applies.
+   */
+  static constexpr bool buying_power_is_ledger_cash = true;
 };
 
 /** What a replay produced, with every figure's absence meaning what `analytics` says it means. */

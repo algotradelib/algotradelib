@@ -247,6 +247,20 @@ public:
       position.sellable_quantity_ = position.quantity_;
     }
     portfolio.cash_ = cash_;
+    // **The broker's answer, modelled, because a replay has no broker to ask.** A buying-power check
+    // reads this field and refuses when it is absent, so leaving it empty would refuse every buy a
+    // replay plans -- the same trap the sellable field was in.
+    //
+    // The figure is this ledger's own cash, which is not what a broker would have said: the ledger
+    // credits a sale on the fill and models no settlement, while a broker prices buying power on its
+    // own terms, including or excluding amounts nothing here models. Which way a given account
+    // differs is not something this can know, so the report states *the model used* rather than a
+    // direction. Stamped with the snapshot time, which is when the modelled figure was read and is
+    // not a broker's response time.
+    portfolio.buying_power_.reserve(cash_.size());
+    for (const auto& amount : cash_) {
+      portfolio.buying_power_.push_back(BuyingPower{amount, as_of});
+    }
     portfolio.as_of_ = as_of;
     return portfolio;
   }

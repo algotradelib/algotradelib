@@ -1188,6 +1188,81 @@ TEST_CASE("the kill switch refuses everything, and reports the halt above any ot
   REQUIRE_FALSE(after->halt_reason_);
 }
 
+TEST_CASE("the buying-power check refuses an unknown reading rather than assuming one") {
+  RiskLimits limits;
+  limits.enforce_buying_power_ = true;
+  const RiskGuard guard(limits);
+
+  ProbePortfolio portfolio;  // nobody has asked the broker anything
+  auto inputs = open_market();
+  inputs.order_currency_ = Currency::krw();
+
+  const auto refused = guard.check(planned("10", "70000"), portfolio, inputs);
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::INSUFFICIENT_BUYING_POWER);
+  // Unknown carries no numbers: there is no ceiling to report, which is the point.
+  REQUIRE_FALSE(refused->limit_);
+
+  // Cash is not an answer to this question, and must not be read as one.
+  ProbePortfolio with_cash;
+  with_cash.cash_.push_back(Money{Decimal64::parse("100000000"), Currency::krw()});
+  REQUIRE(guard.check(planned("10", "70000"), with_cash, inputs));
+}
+
+TEST_CASE("a buy beyond the reported buying power is refused with both numbers") {
+  RiskLimits limits;
+  limits.enforce_buying_power_ = true;
+  const RiskGuard guard(limits);
+
+  ProbePortfolio portfolio;
+  portfolio.buying_power_.push_back(
+    BuyingPower{Money{Decimal64::parse("500000"), Currency::krw()}, {}}
+  );
+  auto inputs = open_market();
+  inputs.order_currency_ = Currency::krw();
+
+  // Ten at seventy thousand is seven hundred thousand, against five.
+  const auto refused = guard.check(planned("10", "70000"), portfolio, inputs);
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::INSUFFICIENT_BUYING_POWER);
+  REQUIRE(refused->limit_ == Decimal64::parse("500000"));
+  REQUIRE(refused->attempted_ == Decimal64::parse("700000"));
+
+  // Seven fits exactly at 490,000.
+  REQUIRE_FALSE(guard.check(planned("7", "70000"), portfolio, inputs));
+
+  // A market order is valued at the reference price, and a sell is not checked at all.
+  REQUIRE(guard.check(planned("10", nullptr), portfolio, inputs));
+  REQUIRE_FALSE(guard.check(planned("10", "70000", OrderSide::SELL), portfolio, inputs));
+}
+
+TEST_CASE("buying power is per currency and never borrows another currency's answer") {
+  RiskLimits limits;
+  limits.enforce_buying_power_ = true;
+  const RiskGuard guard(limits);
+
+  ProbePortfolio portfolio;
+  portfolio.buying_power_.push_back(
+    BuyingPower{Money{Decimal64::parse("100000000"), Currency::krw()}, {}}
+  );
+
+  auto won = open_market();
+  won.order_currency_ = Currency::krw();
+  REQUIRE_FALSE(guard.check(planned("10", "70000"), portfolio, won));
+
+  // The same order priced in dollars has no answer, and holdings-core's refusal to convert is why
+  // this is unknown rather than generously funded.
+  auto dollars = open_market();
+  dollars.order_currency_ = Currency::usd();
+  const auto refused = guard.check(planned("10", "70000"), portfolio, dollars);
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::INSUFFICIENT_BUYING_POWER);
+
+  // An instrument the runner could not resolve has no currency, and refuses for the same reason.
+  auto unresolved = open_market();
+  REQUIRE(guard.check(planned("10", "70000"), portfolio, unresolved));
+}
+
 TEST_CASE("the sellable check is off until an operator asks for it") {
   // Off by default, because a broker that does not publish the figure would otherwise stop every
   // sell an existing program makes.

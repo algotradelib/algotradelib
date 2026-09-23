@@ -521,6 +521,12 @@ private:
       }
 
       inputs.reference_price_ = context_.last_price(order.instrument_);
+      // The currency the order is priced in, which only the reference data knows. A buying-power
+      // limit is per currency, and an unresolved instrument leaves it absent rather than defaulting
+      // to one: guessing here would spend one currency's budget on another's order.
+      const auto reference = context_.instrument(order.instrument_);
+      inputs.order_currency_ =
+        reference ? std::optional<Currency>(reference->currency_) : std::nullopt;
       if (auto refusal = guard_.check(order, view, inputs)) {
         report.refused_.push_back(std::move(*refusal));
         continue;
@@ -537,10 +543,10 @@ private:
           // guard refused or the ledger withheld does not spend budget.
           guard_.note_sent(inputs.now_);
           ++placements_at_broker_;
-          // And it is working now, as far as anything later in this pass is concerned. An
-          // `INDETERMINATE` send needs no entry here: it marks the ledger, and the next instruction
-          // for that instrument is withheld before it reaches a guard at all.
-          reserve(view, order);
+          // And it is working now, as far as anything later in this pass is concerned, and its
+          // money is spent. An `INDETERMINATE` send needs no entry here: it marks the ledger, and
+          // the next instruction for that instrument is withheld before it reaches a guard at all.
+          reserve(view, order, inputs.reference_price_, inputs.order_currency_);
           report.would_place_.push_back(std::move(order));
           break;
         case SendOutcome::REJECTED:
@@ -599,7 +605,12 @@ private:
    * the one thing this synthetic row cannot supply; no guard reads it, and the row never leaves
    * this function's pass, so it cannot be mistaken for something a broker reported.
    */
-  static void reserve(strategy::Portfolio<Tag>& view, const strategy::PlannedOrder& order) {
+  static void reserve(
+    strategy::Portfolio<Tag>& view,
+    const strategy::PlannedOrder& order,
+    const std::optional<Decimal64>& reference_price,
+    const std::optional<Currency>& currency
+  ) {
     WorkingOrder<Tag> working;
     working.order_.instrument_ = order.instrument_;
     working.order_.side_ = order.side_;
@@ -607,6 +618,32 @@ private:
     working.order_.quantity_ = order.quantity_;
     working.order_.execution_.filled_quantity_ = Decimal64::parse("0");
     view.working_.push_back(std::move(working));
+
+    // A buy also spends money that the rest of the pass may not spend again. The estimate is the
+    // same one the guard checked the order against -- its own price, or the last quote for a market
+    // order -- and it is an *estimate*: a market order fills where it fills, and commission is not
+    // in it. Under-reserving would be the dangerous direction, and neither of those makes the
+    // reservation smaller than the order's stated cost.
+    if (order.side_ != OrderSide::BUY || !currency) {
+      return;
+    }
+    const auto price = order.price_ ? order.price_ : reference_price;
+    if (!price) {
+      return;
+    }
+    const auto spent = decimal_multiply(order.quantity_, *price);
+    if (!spent) {
+      return;
+    }
+    for (auto& reading : view.buying_power_) {
+      if (!(reading.cash_.currency_ == *currency)) {
+        continue;
+      }
+      if (const auto left = decimal_subtract(reading.cash_.amount_, *spent)) {
+        reading.cash_.amount_ = *left;
+      }
+      return;
+    }
   }
 
   void send_cancel(const OrderRef<Tag>& ref, Report& report) {

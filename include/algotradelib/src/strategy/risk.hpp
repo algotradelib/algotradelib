@@ -130,6 +130,8 @@ enum class GuardReason {
   VALUE_NOT_KNOWN,
   /** The sell exceeds what the broker says is sellable, or the broker did not say. */
   QUANTITY_NOT_SELLABLE,
+  /** The buy costs more than the broker says may be spent, or the broker did not say. */
+  INSUFFICIENT_BUYING_POWER,
 };
 
 /** Returns a stable lowercase name for `reason`, for logs and structured reporting. */
@@ -153,6 +155,8 @@ inline constexpr std::string_view guard_reason_name(GuardReason reason) noexcept
       return "value_not_known";
     case GuardReason::QUANTITY_NOT_SELLABLE:
       return "quantity_not_sellable";
+    case GuardReason::INSUFFICIENT_BUYING_POWER:
+      return "insufficient_buying_power";
   }
   return "unknown";
 }
@@ -218,6 +222,19 @@ struct RiskLimits {
    * of asking the broker.
    */
   bool enforce_sellable_quantity_{false};
+  /**
+   * Whether a buy is checked against what the broker says may be spent.
+   *
+   * Off by default, and a switch rather than a number for the same reason as the sellable check: the
+   * ceiling is the broker's answer, not the operator's policy.
+   *
+   * **It is a reading, with a reading's freshness.** The figure was true when the broker answered,
+   * and a fill against a resting order moves it without telling anyone. Passing this check is
+   * therefore not a guarantee the broker will accept the order; it is the difference between sizing
+   * against the broker's last answer and sizing against nothing, which is what the live path did
+   * before.
+   */
+  bool enforce_buying_power_{false};
   /** Instruments that may be traded; absent means any. */
   std::optional<std::vector<InstrumentId>> permitted_universe_;
   /** Phases trading is allowed in; absent means any. */
@@ -234,6 +251,15 @@ struct GuardInputs {
   std::optional<Decimal64> reference_price_;
   /** Current gross exposure, for the portfolio ceiling. */
   std::optional<Decimal64> gross_exposure_;
+  /**
+   * The currency the order is priced in, which a `PlannedOrder` does not carry.
+   *
+   * Needed only by the buying-power check, because that limit is per currency and the portfolio may
+   * hold several. It comes from the instrument's reference data, which the runner already reads to
+   * plan the order. Absent means the runner could not resolve the instrument, and an unresolvable
+   * currency refuses rather than picking whichever reading happens to be first.
+   */
+  std::optional<Currency> order_currency_;
 };
 
 /**
@@ -470,7 +496,8 @@ public:
     // evaluated must refuse rather than wave the order through.
     const auto price = order.price_ ? order.price_ : inputs.reference_price_;
     const bool needs_value =
-      limits_.max_order_notional_.has_value() || limits_.max_gross_exposure_.has_value();
+      limits_.max_order_notional_.has_value() || limits_.max_gross_exposure_.has_value() ||
+      (limits_.enforce_buying_power_ && order.side_ == OrderSide::BUY);
     if (needs_value && !price) {
       return refuse(GuardReason::VALUE_NOT_KNOWN);
     }
@@ -511,6 +538,28 @@ public:
       }
       if (decimal_less(*sellable, *committed)) {
         return refuse_with(GuardReason::QUANTITY_NOT_SELLABLE, *sellable, *committed);
+      }
+    }
+
+    if (limits_.enforce_buying_power_ && order.side_ == OrderSide::BUY) {
+      if (!value) {
+        // A buy whose cost cannot be computed cannot be checked against a budget. `needs_value`
+        // already forces a price when this limit is on, so reaching here means the multiplication
+        // itself failed.
+        return refuse(GuardReason::VALUE_NOT_KNOWN);
+      }
+      if (!inputs.order_currency_) {
+        return refuse(GuardReason::INSUFFICIENT_BUYING_POWER);
+      }
+      const auto available = portfolio.buying_power_in(*inputs.order_currency_);
+      if (!available) {
+        // Absent is unknown, and unknown refuses -- the same rule as the sellable check. Falling
+        // back to `cash_in` would be worse than useless here: live it is empty, so the fallback
+        // would refuse anyway while looking like an answer.
+        return refuse(GuardReason::INSUFFICIENT_BUYING_POWER);
+      }
+      if (decimal_less(*available, *value)) {
+        return refuse_with(GuardReason::INSUFFICIENT_BUYING_POWER, *available, *value);
       }
     }
 

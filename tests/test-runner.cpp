@@ -146,6 +146,20 @@ struct SellTwice {
   }
 };
 
+/** Buys the same instrument twice in one pass, each order affordable on its own. */
+struct BuyTwice {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    for (int i = 0; i < 2; ++i) {
+      ctx.submit(
+        strategy::OrderIntent::market(
+          bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
+        )
+      );
+    }
+  }
+};
+
 /** Arranges a runner with reference data, an open market, and a last price. */
 template <typename R>
 void arrange(R& dry) {
@@ -278,6 +292,31 @@ TEST_CASE("a pass without the sellable check is unaffected by the view it now bu
   const auto report = dry.feed(bar_at(10, "70000"));
   REQUIRE(report.would_place_.size() == 2);
   REQUIRE(report.refused_.empty());
+}
+
+TEST_CASE("a second buy in one pass spends what the first already committed") {
+  // The money half of the same stale-view defect: one reading of a million, two buys of ten at
+  // seventy thousand. Each is affordable against the reading alone; together they are not, and
+  // nothing reduces the reading between them unless the pass does it.
+  strategy::RiskLimits limits;
+  limits.enforce_buying_power_ = true;
+  runner::DryRunner<BuyTwice> dry(BuyTwice{}, limits);
+  arrange(dry);
+
+  strategy::Portfolio<runner::DryRunner<BuyTwice>::Tag> portfolio;
+  portfolio.buying_power_.push_back(
+    BuyingPower{Money{Decimal64::parse("1000000"), Currency::krw()}, {}}
+  );
+  dry.context().set_portfolio(portfolio);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+
+  REQUIRE(report.would_place_.size() == 1);
+  REQUIRE(report.refused_.size() == 1);
+  REQUIRE(report.refused_[0].reason_ == strategy::GuardReason::INSUFFICIENT_BUYING_POWER);
+  // 1,000,000 less the 700,000 already committed leaves 300,000 against another 700,000.
+  REQUIRE(report.refused_[0].limit_ == Decimal64::parse("300000"));
+  REQUIRE(report.refused_[0].attempted_ == Decimal64::parse("700000"));
 }
 
 TEST_CASE("a guard refusal is reported and no order survives it") {
