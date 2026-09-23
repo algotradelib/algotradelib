@@ -127,7 +127,11 @@ void describe(const runner::LoopReport& report) {
                   runner::stop_intent_name(*report.stopped_by_) :
                   std::string_view("nothing"))
             << '\n'
-            << "final gate      : " << runner::gate_reason_name(report.final_gate_) << '\n';
+            << "final gate      : "
+            << (report.final_gate_ ?
+                 strategy::halt_reason_name(*report.final_gate_) :
+                 std::string_view("none"))
+            << '\n';
   for (const auto& note : report.notes_) {
     std::cout << "note            : " << note << '\n';
   }

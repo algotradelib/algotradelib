@@ -124,69 +124,6 @@ struct PollSchedule {
   }
 };
 
-/** Why the loop is not currently allowed to send. */
-enum class GateReason {
-  /** Nothing is blocking. */
-  NONE,
-  /**
-   * The broker's order list has not been read since this process started.
-   *
-   * The cheapest and most valuable half of order-journal reconciliation, and it needs no
-   * persistence at all. A runner that has just started cannot know whether a *previous* process
-   * died mid-POST, and an empty `IndeterminacyLedger` does not mean nothing is owed -- it means
-   * nothing is remembered. Until the list has been read once, sending could double a position left
-   * by a predecessor.
-   */
-  ORDER_LIST_UNREAD,
-  /**
-   * The holdings snapshot is older than the configured maximum.
-   *
-   * Reconciling a target against a stale portfolio is how a position gets double-sized by a route
-   * that `working_quantity` does not close: the runner subtracts a position it no longer holds, or
-   * fails to subtract one it acquired since.
-   */
-  PORTFOLIO_STALE,
-  /** An operator asked the loop to stop sending. */
-  STOPPING,
-  /**
-   * A poll kept failing, so the loop gave up rather than spinning.
-   *
-   * Distinct from `STOPPING` because nobody asked for it: the loop decided, and an operator reading
-   * the report needs to know which of the two happened. Named as a gate reason rather than left as
-   * `NONE` because trading really is blocked -- the guard is halted -- and a report saying otherwise
-   * would be the one lie in it that matters.
-   */
-  POLL_FAILING,
-  /**
-   * Local machinery can no longer send, so the loop stopped trying.
-   *
-   * The order journal could not be written, and no broker was ever asked. Every subsequent order
-   * would fail the same way, so continuing would produce a refusal per bar that looks like the
-   * broker declining -- when in fact nothing left the process. Sticky until a program clears it
-   * with `Runner::resume_after_local_failure`.
-   */
-  LOCAL_FAILURE,
-};
-
-/** Returns a stable lowercase name for `reason`. */
-inline constexpr std::string_view gate_reason_name(GateReason reason) noexcept {
-  switch (reason) {
-    case GateReason::NONE:
-      return "none";
-    case GateReason::ORDER_LIST_UNREAD:
-      return "order_list_unread";
-    case GateReason::PORTFOLIO_STALE:
-      return "portfolio_stale";
-    case GateReason::STOPPING:
-      return "stopping";
-    case GateReason::POLL_FAILING:
-      return "poll_failing";
-    case GateReason::LOCAL_FAILURE:
-      return "local_failure";
-  }
-  return "unknown";
-}
-
 /** How the loop behaves when polls keep failing. */
 struct FailurePolicy {
   /**
@@ -205,8 +142,8 @@ struct IterationReport {
   std::chrono::system_clock::time_point at_{};
   /** What each poll returned, in the order they were attempted. */
   std::vector<std::pair<PollKind, PollOutcome>> polls_;
-  /** Why sending was blocked, or `NONE`. */
-  GateReason gate_{GateReason::NONE};
+  /** Which hold blocked sending, or nothing when nothing did. */
+  std::optional<strategy::HaltReason> gate_;
   /** Whether anything was fed to the runner. */
   bool fed_{false};
 
@@ -233,8 +170,8 @@ struct LoopReport {
   std::size_t blocked_{0};
   /** The intent that ended the run, or nothing when it ended for another reason. */
   std::optional<StopIntent> stopped_by_;
-  /** Why the loop stopped sending when it did, for an operator reading the tail of a log. */
-  GateReason final_gate_{GateReason::NONE};
+  /** Which hold stopped the loop sending when it did, for an operator reading the tail of a log. */
+  std::optional<strategy::HaltReason> final_gate_;
   /** Whether the loop gave up because a poll kept failing. */
   bool abandoned_{false};
   /** Which kind exhausted its failure budget, when one did. */
@@ -425,7 +362,7 @@ public:
     while (max_iterations == 0 || report.iterations_ < max_iterations) {
       const auto iteration = step(stop, report);
       ++report.iterations_;
-      if (iteration.gate_ != GateReason::NONE) {
+      if (iteration.gate_) {
         ++report.blocked_;
       }
       report.final_gate_ = iteration.gate_;
@@ -479,32 +416,43 @@ private:
       }
       if (report.abandoned_) {
         // Recorded before returning, so the report does not claim sending was permitted while the
-        // guard this function just halted says otherwise.
-        iteration.gate_ = GateReason::POLL_FAILING;
+        // guard `note_outcome` just halted says otherwise.
+        iteration.gate_ = runner_->guard().blocking_reason();
         return iteration;
       }
     }
 
-    iteration.gate_ = gate_for(stop, iteration.at_, report);
-    if (iteration.gate_ == GateReason::NONE) {
-      release_halt();
-    } else {
-      apply_halt();
-    }
+    hold(gate_for(stop, iteration.at_, report));
+    // Reported from the guard rather than from what the loop just computed, so the report names the
+    // most fundamental hold in force whoever owns it -- an operator's halt, or a journal that
+    // failed, outranks anything the loop decided.
+    iteration.gate_ = runner_->guard().blocking_reason();
     return iteration;
   }
 
-  /** Returns why sending is blocked this iteration, reading the order list if that is what is due. */
-  GateReason gate_for(
+  /**
+   * Returns which of the loop's *own* conditions blocks sending, reading the order list if due.
+   *
+   * Only conditions the loop computes, because a hold is released by whoever took it. `OPERATOR`
+   * belongs to a person and `LOCAL_FAILURE` to the runner; a loop that took either would be a
+   * second holder of someone else's hold -- the defect `HaltReason` exists to prevent,
+   * reintroduced one layer up.
+   *
+   * **Always evaluated, even while someone else's hold stands.** Short-circuiting on a foreign hold
+   * would leave the loop's own hold un-maintained underneath it, so the moment an operator resumed,
+   * the guard would be wide open against a portfolio nobody had rechecked -- and a poll feeds the
+   * runner before the next gate is computed. The one thing a foreign hold does suppress is the
+   * order-list *read*, and only for `LOCAL_FAILURE`: a runner whose journal is broken must not be
+   * sent looking for more work to fail at.
+   */
+  std::optional<strategy::HaltReason> gate_for(
     const StopSource& stop, std::chrono::system_clock::time_point at, LoopReport& report
   ) {
     if (stop.requested()) {
-      return GateReason::STOPPING;
+      return strategy::HaltReason::STOPPING;
     }
-    // Checked before the order-list read, because a runner whose journal is broken must not be sent
-    // looking for more work to fail at. It is also the one gate nothing in the loop can lift.
-    if (runner_->local_failure()) {
-      return GateReason::LOCAL_FAILURE;
+    if (!order_list_read_ && runner_->guard().halted(strategy::HaltReason::LOCAL_FAILURE)) {
+      return strategy::HaltReason::ORDER_LIST_UNREAD;
     }
     if (!order_list_read_) {
       const auto outcome = source_->read_order_list(*runner_);
@@ -512,7 +460,7 @@ private:
         order_list_read_ = true;
         report.order_list_read_ = true;
       } else {
-        return GateReason::ORDER_LIST_UNREAD;
+        return strategy::HaltReason::ORDER_LIST_UNREAD;
       }
     }
     if (maximum_portfolio_age_) {
@@ -526,13 +474,13 @@ private:
         // taken in 1970, so the epoch means "never populated". Treated as stale rather than as
         // fresh-but-empty, which is the safe direction: an empty portfolio read as current would let
         // a strategy size as though it held nothing.
-        return GateReason::PORTFOLIO_STALE;
+        return strategy::HaltReason::PORTFOLIO_STALE;
       }
       if (at - as_of > *maximum_portfolio_age_) {
-        return GateReason::PORTFOLIO_STALE;
+        return strategy::HaltReason::PORTFOLIO_STALE;
       }
     }
-    return GateReason::NONE;
+    return std::nullopt;
   }
 
   /** Reads the control file, escalating `stop` when it names an intent. */
@@ -563,7 +511,7 @@ private:
         report.abandoned_kind_ = kind;
         report.notes_.push_back(
           std::string("gave up after repeated failures polling ") + std::string(poll_kind_name(kind)));
-        apply_halt();
+        hold(strategy::HaltReason::POLL_FAILING);
       }
       return;
     }
@@ -576,7 +524,7 @@ private:
 
   /** Carries out `intent`, which is where the three stops actually differ. */
   void honour(StopIntent intent, LoopReport& report) {
-    apply_halt();
+    hold(strategy::HaltReason::STOPPING);
     if (intent == StopIntent::QUIESCE) {
       return;
     }
@@ -617,10 +565,12 @@ private:
 
     // Lifted so the closing instructions can actually go out -- a withdraw that cannot send is not a
     // withdraw -- and closed again immediately afterwards. The window is exactly one `stop()` call
-    // wide, and it is the only point at which a stop in progress can send anything.
-    release_halt();
+    // wide, and it is the only point at which a stop in progress can send anything. Only the loop's
+    // own hold lifts: an operator who halted by hand, or a runner whose journal failed, still
+    // refuses every closing instruction, which is the right answer for both.
+    hold(std::nullopt);
     const auto closing = runner_->stop();
-    apply_halt();
+    hold(strategy::HaltReason::STOPPING);
 
     report.closing_placed_ = closing.would_place_.size();
     if (intent == StopIntent::FLATTEN) {
@@ -656,20 +606,32 @@ private:
     }
   }
 
-  /** Halts the guard, remembering that this loop is what halted it. */
-  void apply_halt() {
-    if (!runner_->guard().halted()) {
-      runner_->guard().halt();
-      halted_by_loop_ = true;
+  /**
+   * Takes `gate`'s hold on the guard and releases the one this loop took before it.
+   *
+   * There is no "did I halt it" flag any more, and that is the point: the loop names the hold it
+   * takes and releases only that one, so an operator halting by hand into a loop's closed gate is
+   * no longer invisible, and the loop reopening its gate no longer lifts their halt with it. The
+   * hold is released and retaken rather than diffed, because taking a hold is idempotent.
+   *
+   * Only the loop's *own* conditions are held. `OPERATOR` belongs to a person and `LOCAL_FAILURE`
+   * to the runner; both outlive any gate the loop computes, so they are reported and never taken or
+   * released here.
+   */
+  void hold(std::optional<strategy::HaltReason> gate) {
+    if (gate && !owns(*gate)) {
+      gate.reset();
     }
-  }
-
-  /** Resumes the guard only if this loop halted it. */
-  void release_halt() {
-    if (halted_by_loop_) {
-      runner_->guard().resume();
-      halted_by_loop_ = false;
+    if (held_ == gate) {
+      return;
     }
+    if (held_) {
+      runner_->guard().resume(*held_);
+    }
+    if (gate) {
+      runner_->guard().halt(*gate);
+    }
+    held_ = gate;
   }
 
   /** Returns whether `kind` is due at `at`. */
@@ -725,7 +687,14 @@ private:
   std::optional<std::chrono::system_clock::time_point> next_due_[4];
   std::size_t consecutive_failures_[4] = {0, 0, 0, 0};
   bool order_list_read_{false};
-  bool halted_by_loop_{false};
+  /** Returns whether `reason` is a condition this loop computes, and may therefore hold. */
+  static constexpr bool owns(strategy::HaltReason reason) noexcept {
+    return reason != strategy::HaltReason::OPERATOR &&
+      reason != strategy::HaltReason::LOCAL_FAILURE;
+  }
+
+  /** The hold this loop currently owns, and the only one it will ever release. */
+  std::optional<strategy::HaltReason> held_;
   IterationReport last_;
 };
 

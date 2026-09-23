@@ -39,16 +39,37 @@ enum class HaltReason {
    * Local machinery cannot be trusted, so nothing may be sent through it.
    *
    * The order journal is the motivating case: a runner that cannot record what it is about to do
-   * must not do it. Sticky, and carries the reason as its detail.
+   * must not do it, because every later order would fail the same way and produce a refusal per bar
+   * that reads like the broker declining -- when in fact nothing left the process. Sticky, carries
+   * the reason as its detail, and released only by `runner::Runner::resume_after_local_failure`.
    */
   LOCAL_FAILURE,
   /** A stop intent is being honoured and the run is on its way out. */
   STOPPING,
-  /** Nothing may be sent before the broker's order list has been read once. */
+  /**
+   * The broker's order list has not been read since this process started.
+   *
+   * The cheapest and most valuable half of order-journal reconciliation, and it needs no
+   * persistence at all. A runner that has just started cannot know whether a *previous* process
+   * died mid-POST, and an empty `runner::IndeterminacyLedger` does not mean nothing is owed -- it
+   * means nothing is remembered. Until the list has been read once, sending could double a position
+   * left by a predecessor.
+   */
   ORDER_LIST_UNREAD,
-  /** The holdings snapshot is too old to size an order against. */
+  /**
+   * The holdings snapshot is older than the configured maximum.
+   *
+   * Reconciling a target against a stale portfolio is how a position gets double-sized by a route
+   * that `working_quantity` does not close: the runner subtracts a position it no longer holds, or
+   * fails to subtract one it acquired since.
+   */
   PORTFOLIO_STALE,
-  /** Polling has failed consecutively past its budget, so the world is not being observed. */
+  /**
+   * A poll kept failing, so the loop gave up rather than spinning.
+   *
+   * Distinct from `STOPPING` because nobody asked for it: the loop decided, and an operator reading
+   * the report needs to know which of the two happened.
+   */
   POLL_FAILING,
 };
 

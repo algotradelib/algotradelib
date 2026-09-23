@@ -414,7 +414,7 @@ TEST_CASE("nothing is sent before the order list has been read", "[loop][gate]")
 
   CHECK_FALSE(report.order_list_read_);
   CHECK(report.blocked_ == 3);
-  CHECK(report.final_gate_ == runner::GateReason::ORDER_LIST_UNREAD);
+  CHECK(report.final_gate_ == strategy::HaltReason::ORDER_LIST_UNREAD);
   // Blocked means halted, which is what actually stops a send.
   CHECK(runner_instance.guard().halted());
   // Retried each iteration rather than given up on, because the read is what lifts the gate.
@@ -431,7 +431,7 @@ TEST_CASE("a successful order-list read opens the gate once and stays open", "[l
 
   CHECK(report.order_list_read_);
   CHECK(report.blocked_ == 0);
-  CHECK(report.final_gate_ == runner::GateReason::NONE);
+  CHECK(!report.final_gate_.has_value());
   // Read once, not once per iteration: the gate is about this process having looked, not about
   // continuous polling.
   CHECK(source.order_list_reads() == 1);
@@ -449,7 +449,7 @@ TEST_CASE("a stale portfolio blocks sending", "[loop][gate]") {
 
   SECTION("a portfolio that was never populated is stale") {
     const auto report = loop.run(stop, 2);
-    CHECK(report.final_gate_ == runner::GateReason::PORTFOLIO_STALE);
+    CHECK(report.final_gate_ == strategy::HaltReason::PORTFOLIO_STALE);
     CHECK(report.blocked_ == 2);
     CHECK(runner_instance.guard().halted());
   }
@@ -460,7 +460,7 @@ TEST_CASE("a stale portfolio blocks sending", "[loop][gate]") {
     runner_instance.context().set_portfolio(portfolio);
 
     const auto report = loop.run(stop, 1);
-    CHECK(report.final_gate_ == runner::GateReason::NONE);
+    CHECK(!report.final_gate_.has_value());
     CHECK_FALSE(runner_instance.guard().halted());
   }
 
@@ -471,7 +471,7 @@ TEST_CASE("a stale portfolio blocks sending", "[loop][gate]") {
     runner_instance.context().set_portfolio(portfolio);
 
     const auto report = loop.run(stop, 1);
-    CHECK(report.final_gate_ == runner::GateReason::PORTFOLIO_STALE);
+    CHECK(report.final_gate_ == strategy::HaltReason::PORTFOLIO_STALE);
     CHECK(runner_instance.guard().halted());
   }
 }
@@ -496,7 +496,7 @@ TEST_CASE("repeated poll failures give up rather than spinning", "[loop][failure
   CHECK_FALSE(report.notes_.empty());
   // The report must not say sending was permitted while the guard says it was not, and it must be
   // distinguishable from an operator's stop -- nobody asked for this one.
-  CHECK(report.final_gate_ == runner::GateReason::POLL_FAILING);
+  CHECK(report.final_gate_ == strategy::HaltReason::POLL_FAILING);
   CHECK_FALSE(report.stopped_by_.has_value());
 }
 
@@ -569,7 +569,7 @@ TEST_CASE("a stop request ends the run and is reported", "[loop][stop]") {
   // than abandoning it, which is what keeps nothing indeterminate.
   CHECK(report.iterations_ == 1);
   CHECK(report.stopped_by_ == StopIntent::QUIESCE);
-  CHECK(report.final_gate_ == runner::GateReason::STOPPING);
+  CHECK(report.final_gate_ == strategy::HaltReason::STOPPING);
   // A quiesce withdraws nothing and flattens nothing.
   CHECK(report.withdrawn_ == 0);
   CHECK(report.flattened_ == 0);
@@ -613,8 +613,9 @@ TEST_CASE("an unrecognized control-file token is reported, not guessed at", "[lo
 }
 
 TEST_CASE("the loop does not clear a halt an operator set by hand", "[loop][halt]") {
-  // The stated limitation of reusing a single-bool halt, pinned down so the behaviour cannot drift
-  // without a test noticing. The loop only resumes what it halted itself.
+  // The loop takes named holds and releases only its own, so a person's halt is not something it
+  // can touch. It does report it: an operator reading the tail of a log is told that they are the
+  // reason nothing is being sent, rather than shown an open gate while nothing goes out.
   InertRunner runner_instance;
   InertSource source;
   runner_instance.guard().halt();
@@ -623,9 +624,62 @@ TEST_CASE("the loop does not clear a halt an operator set by hand", "[loop][halt
 
   const auto report = loop.run(stop, 2);
 
-  CHECK(report.final_gate_ == runner::GateReason::NONE);
-  // Still halted: the loop never halted it, so the loop never resumed it.
+  CHECK(report.final_gate_ == strategy::HaltReason::OPERATOR);
+  CHECK(report.blocked_ == 2);
   CHECK(runner_instance.guard().halted());
+  CHECK(runner_instance.guard().halted(strategy::HaltReason::OPERATOR));
+}
+
+TEST_CASE("an operator halting into a closed gate survives the gate opening", "[loop][halt]") {
+  // The defect this branch exists for, end to end. Before named holds, step 2 was a no-op because
+  // the guard was already halted, and step 4 cleared the operator's intent along with the loop's.
+  InertRunner runner_instance;
+  InertSource source;
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  loop.set_maximum_portfolio_age(std::chrono::minutes(5));
+  StopSource stop;
+
+  // 1. The gate closes, because the holdings snapshot was never populated.
+  const auto stale = loop.run(stop, 1);
+  CHECK(stale.final_gate_ == strategy::HaltReason::PORTFOLIO_STALE);
+  CHECK(runner_instance.guard().halted(strategy::HaltReason::PORTFOLIO_STALE));
+
+  // 2. An operator, watching, decides independently to stop trading.
+  runner_instance.guard().halt();
+
+  // 3. Fresh holdings arrive, so the loop's own condition clears.
+  strategy::Portfolio<InertRunner::Tag> portfolio;
+  portfolio.as_of_ = base_time();
+  runner_instance.context().set_portfolio(portfolio);
+
+  // 4. The loop releases its hold -- and only its hold.
+  const auto after = loop.run(stop, 1);
+  CHECK_FALSE(runner_instance.guard().halted(strategy::HaltReason::PORTFOLIO_STALE));
+  CHECK(runner_instance.guard().halted());
+  CHECK(runner_instance.guard().halted(strategy::HaltReason::OPERATOR));
+  CHECK(after.final_gate_ == strategy::HaltReason::OPERATOR);
+}
+
+TEST_CASE("an operator resuming does not open a gate the loop holds closed", "[loop][halt]") {
+  // The mirror, and a fix that only worked in one direction would be worse than the bool: an
+  // operator clearing their own halt must not be able to lift a hold the loop took for stale data.
+  InertRunner runner_instance;
+  InertSource source;
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  loop.set_maximum_portfolio_age(std::chrono::minutes(5));
+  StopSource stop;
+
+  runner_instance.guard().halt();
+  const auto report = loop.run(stop, 1);
+  CHECK(runner_instance.guard().halted(strategy::HaltReason::OPERATOR));
+
+  // The loop reported the operator's hold, which outranks its own, but it took its own as well.
+  CHECK(report.final_gate_ == strategy::HaltReason::OPERATOR);
+  CHECK(runner_instance.guard().halted(strategy::HaltReason::PORTFOLIO_STALE));
+
+  runner_instance.guard().resume();
+  CHECK(runner_instance.guard().halted());
+  CHECK(runner_instance.guard().halted(strategy::HaltReason::PORTFOLIO_STALE));
 }
 
 TEST_CASE("a withdraw cancels what is resting and leaves the position", "[loop][stop]") {
@@ -774,13 +828,13 @@ TEST_CASE("a local failure halts the loop and nothing lifts it", "[loop][gate]")
   CHECK(runner_instance.ledger().empty());
 
   const auto before = loop.run(stop, 1);
-  CHECK(before.final_gate_ == runner::GateReason::NONE);
+  CHECK(!before.final_gate_.has_value());
 
   // What `SendOutcome::UNAVAILABLE` leaves behind on the runner.
   runner_instance.halt_locally("the order journal could not be written");
 
   const auto report = loop.run(stop, 3);
-  CHECK(report.final_gate_ == runner::GateReason::LOCAL_FAILURE);
+  CHECK(report.final_gate_ == strategy::HaltReason::LOCAL_FAILURE);
   CHECK(report.blocked_ == 3);
   CHECK(runner_instance.guard().halted());
   // Checked before the order-list read, so a runner whose journal is broken is not sent looking for
@@ -790,17 +844,16 @@ TEST_CASE("a local failure halts the loop and nothing lifts it", "[loop][gate]")
   // Only an operator clears it.
   runner_instance.resume_after_local_failure();
   const auto after = loop.run(stop, 1);
-  CHECK(after.final_gate_ == runner::GateReason::NONE);
+  CHECK(!after.final_gate_.has_value());
   CHECK_FALSE(runner_instance.guard().halted());
 }
 
 TEST_CASE("gate reason names are stable", "[loop][gate]") {
-  CHECK(runner::gate_reason_name(runner::GateReason::NONE) == "none");
-  CHECK(runner::gate_reason_name(runner::GateReason::ORDER_LIST_UNREAD) == "order_list_unread");
-  CHECK(runner::gate_reason_name(runner::GateReason::PORTFOLIO_STALE) == "portfolio_stale");
-  CHECK(runner::gate_reason_name(runner::GateReason::STOPPING) == "stopping");
-  CHECK(runner::gate_reason_name(runner::GateReason::POLL_FAILING) == "poll_failing");
-  CHECK(runner::gate_reason_name(runner::GateReason::LOCAL_FAILURE) == "local_failure");
+  CHECK(strategy::halt_reason_name(strategy::HaltReason::ORDER_LIST_UNREAD) == "order_list_unread");
+  CHECK(strategy::halt_reason_name(strategy::HaltReason::PORTFOLIO_STALE) == "portfolio_stale");
+  CHECK(strategy::halt_reason_name(strategy::HaltReason::STOPPING) == "stopping");
+  CHECK(strategy::halt_reason_name(strategy::HaltReason::POLL_FAILING) == "poll_failing");
+  CHECK(strategy::halt_reason_name(strategy::HaltReason::LOCAL_FAILURE) == "local_failure");
 }
 
 TEST_CASE("a runner halted before the loop starts sends nothing on the first iteration",
@@ -816,7 +869,7 @@ TEST_CASE("a runner halted before the loop starts sends nothing on the first ite
   StopSource stop;
 
   const auto report = loop.run(stop, 1);
-  CHECK(report.final_gate_ == runner::GateReason::LOCAL_FAILURE);
+  CHECK(report.final_gate_ == strategy::HaltReason::LOCAL_FAILURE);
   CHECK(report.blocked_ == 1);
   // The order list is never read either: a runner that cannot journal is not sent looking for more
   // work to fail at.
