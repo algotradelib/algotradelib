@@ -1143,6 +1143,11 @@ struct WorkingOrder {
    *
    * A poll replaces the listing wholesale, so a reservation never outlives the picture it was added
    * to.
+   *
+   * **It is not a "do not touch" marker.** A reserved row carries the reference the broker issued
+   * and the order's own shape, so it can be cancelled like any other -- an order this runner sent a
+   * moment ago is as real as one a listing reported, and refusing to withdraw it would be the
+   * defect, not the safeguard. The flag says only where the row came from.
    */
   bool reserved_{false};
 };
