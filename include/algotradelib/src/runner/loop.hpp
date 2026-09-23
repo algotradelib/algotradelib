@@ -29,7 +29,27 @@ enum class PollKind {
   HOLDINGS,
   /** Resting orders, which reconciliation and withdrawal both need. */
   WORKING_ORDERS,
+  /**
+   * What the broker says may be spent, which sizing a buy is checked against.
+   *
+   * On the holdings cadence rather than per order, deliberately. The figure changes on every fill,
+   * so reading it immediately before each order would cost a round trip on the latency-sensitive
+   * path and still race a resting order filling a moment later. Polled beside holdings it is
+   * exactly as fresh as the positions it is reconciled against, which is the staleness the loop
+   * already reasons about.
+   */
+  BUYING_POWER,
 };
+
+/**
+ * How many `PollKind` enumerators there are, for the fixed-size counters keyed by one.
+ *
+ * Several arrays are indexed by `static_cast<int>(kind)`. Sized by a literal, adding an enumerator
+ * writes one past the end of every one of them -- silently, since the index is in range for the
+ * enum and out of range for the array. Naming the count is what makes the next enumerator a
+ * one-line change rather than a hunt.
+ */
+inline constexpr std::size_t poll_kind_count = 5;
 
 /** Returns a stable lowercase name for `kind`. */
 inline constexpr std::string_view poll_kind_name(PollKind kind) noexcept {
@@ -42,6 +62,8 @@ inline constexpr std::string_view poll_kind_name(PollKind kind) noexcept {
       return "holdings";
     case PollKind::WORKING_ORDERS:
       return "working_orders";
+    case PollKind::BUYING_POWER:
+      return "buying_power";
   }
   return "unknown";
 }
@@ -51,8 +73,17 @@ inline constexpr PollKind all_poll_kinds[] = {
   PollKind::BARS,
   PollKind::QUOTES,
   PollKind::HOLDINGS,
+  // After holdings, so an iteration that refreshes both leaves the money and the positions equally
+  // fresh, and the buy sized against them is sized against one moment rather than two.
+  PollKind::BUYING_POWER,
   PollKind::WORKING_ORDERS,
 };
+
+static_assert(
+  sizeof(all_poll_kinds) / sizeof(all_poll_kinds[0]) == poll_kind_count,
+  "every PollKind must appear in all_poll_kinds: a kind left out is never polled, and the loop "
+  "would silently answer with whatever the previous poll left behind"
+);
 
 /**
  * What became of one poll.
@@ -108,6 +139,14 @@ struct PollSchedule {
   std::optional<std::chrono::nanoseconds> quotes_;
   std::optional<std::chrono::nanoseconds> holdings_;
   std::optional<std::chrono::nanoseconds> working_orders_;
+  /**
+   * How often to ask what may be spent; absent disables the poll.
+   *
+   * Absent by default, like every other cadence here, and a caller enforcing
+   * `RiskLimits::enforce_buying_power_` without setting it gets a runner that holds rather than one
+   * that guesses -- which is the safe direction and is visible in the report.
+   */
+  std::optional<std::chrono::nanoseconds> buying_power_;
   std::chrono::nanoseconds tick_{std::chrono::seconds(1)};
 
   /** Returns the interval configured for `kind`, or nothing when it is disabled. */
@@ -121,6 +160,8 @@ struct PollSchedule {
         return holdings_;
       case PollKind::WORKING_ORDERS:
         return working_orders_;
+      case PollKind::BUYING_POWER:
+        return buying_power_;
     }
     return std::nullopt;
   }
@@ -181,9 +222,9 @@ struct LoopReport {
   /** How many iterations ran. */
   std::size_t iterations_{0};
   /** How many polls of each kind were attempted, indexed by `PollKind`. */
-  std::size_t attempted_[4] = {0, 0, 0, 0};
+  std::size_t attempted_[poll_kind_count] = {};
   /** How many polls of each kind failed. */
-  std::size_t failed_[4] = {0, 0, 0, 0};
+  std::size_t failed_[poll_kind_count] = {};
   /** How many iterations were blocked from sending, by reason. */
   std::size_t blocked_{0};
   /** The intent that ended the run, or nothing when it ended for another reason. */
@@ -398,15 +439,16 @@ public:
   }
 
 private:
-  std::vector<PollOutcome> queued_[4];
-  PollOutcome defaults_[4] = {
+  std::vector<PollOutcome> queued_[poll_kind_count];
+  PollOutcome defaults_[poll_kind_count] = {
+    PollOutcome::UNCHANGED,
     PollOutcome::UNCHANGED,
     PollOutcome::UNCHANGED,
     PollOutcome::UNCHANGED,
     PollOutcome::UNCHANGED,
   };
   PollOutcome order_list_{PollOutcome::UPDATED};
-  std::size_t polls_[4] = {0, 0, 0, 0};
+  std::size_t polls_[poll_kind_count] = {};
   std::size_t order_list_reads_{0};
 };
 
@@ -647,9 +689,33 @@ private:
         return strategy::HaltReason::PORTFOLIO_STALE;
       }
     }
+    if (runner_->guard().limits().enforce_buying_power_) {
+      // Checked only when the caller asked for the limit. A loop with no buying-power cadence and
+      // no check configured is an ordinary loop, and must not be held for a reading nobody wants.
+      const auto& readings = runner_->context().portfolio().buying_power_;
+      if (readings.empty()) {
+        return strategy::HaltReason::BUYING_POWER_UNREAD;
+      }
+      if (maximum_buying_power_age_) {
+        // Aged against the reading's own stamp, for the same reason the portfolio is: a figure that
+        // arrived an hour ago is an hour old however recently the poll succeeded.
+        for (const auto& reading : readings) {
+          if (at - reading.received_at_ > *maximum_buying_power_age_) {
+            return strategy::HaltReason::BUYING_POWER_UNREAD;
+          }
+        }
+      }
+    }
     return std::nullopt;
   }
 
+  /** Sets how old a buying-power reading may be before the gate closes on it. */
+public:
+  void set_maximum_buying_power_age(std::chrono::nanoseconds age) {
+    maximum_buying_power_age_ = age;
+  }
+
+private:
   /** Reads the control file, escalating `stop` when it names an intent. */
   void check_control_file(StopSource& stop, LoopReport& report) {
     if (!control_.enabled()) {
@@ -1039,8 +1105,9 @@ private:
   FileStopChannel control_;
   FailurePolicy failure_policy_;
   std::optional<std::chrono::nanoseconds> maximum_portfolio_age_;
-  std::optional<std::chrono::system_clock::time_point> next_due_[4];
-  std::size_t consecutive_failures_[4] = {0, 0, 0, 0};
+  std::optional<std::chrono::nanoseconds> maximum_buying_power_age_;
+  std::optional<std::chrono::system_clock::time_point> next_due_[poll_kind_count];
+  std::size_t consecutive_failures_[poll_kind_count] = {};
   bool order_list_read_{false};
   /** Returns whether `reason` is a condition this loop computes, and may therefore hold. */
   static constexpr bool owns(strategy::HaltReason reason) noexcept {

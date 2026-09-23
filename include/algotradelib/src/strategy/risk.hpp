@@ -65,6 +65,15 @@ enum class HaltReason {
    */
   PORTFOLIO_STALE,
   /**
+   * The broker has not said what may be spent, and a check needs it.
+   *
+   * Held only by a loop that was asked to enforce a buying-power limit and has no reading to
+   * enforce it against -- because the poll is not configured, or has not returned yet, or its
+   * answer has aged out. Sizing a buy against an unknown budget is the thing that check exists to
+   * stop, so the hold stands rather than the order going out on an estimate.
+   */
+  BUYING_POWER_UNREAD,
+  /**
    * A poll kept failing, so the loop gave up rather than spinning.
    *
    * Distinct from `STOPPING` because nobody asked for it: the loop decided, and an operator reading
@@ -74,7 +83,7 @@ enum class HaltReason {
 };
 
 /** How many `HaltReason` enumerators there are, for the guard's fixed-capacity storage. */
-inline constexpr std::size_t halt_reason_count = 6;
+inline constexpr std::size_t halt_reason_count = 7;
 
 /** Returns a stable lowercase name for `reason`, for logs and structured reporting. */
 inline constexpr std::string_view halt_reason_name(HaltReason reason) noexcept {
@@ -89,6 +98,8 @@ inline constexpr std::string_view halt_reason_name(HaltReason reason) noexcept {
       return "order_list_unread";
     case HaltReason::PORTFOLIO_STALE:
       return "portfolio_stale";
+    case HaltReason::BUYING_POWER_UNREAD:
+      return "buying_power_unread";
     case HaltReason::POLL_FAILING:
       return "poll_failing";
   }

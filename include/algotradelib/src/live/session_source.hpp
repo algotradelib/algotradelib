@@ -106,6 +106,17 @@ public:
   /** Returns what the last sweep settled and what it left owed. */
   const runner::ReconcileReport& last_reconcile() const noexcept { return reconcile_; }
 
+  /**
+   * Sets which currencies to ask about what may be spent.
+   *
+   * Empty by default, and a buying-power poll with none configured does nothing rather than
+   * guessing one: a broker prices the answer per currency, and picking a default here would size a
+   * won order against a dollar budget on an account holding both.
+   */
+  void set_buying_power_currencies(std::vector<Currency> currencies) {
+    currencies_ = std::move(currencies);
+  }
+
   /** Sets the bar interval and depth each poll requests. */
   void set_bar_query(BarInterval interval, int count) {
     interval_ = interval;
@@ -127,6 +138,8 @@ public:
         return poll_holdings(runner_instance);
       case runner::PollKind::WORKING_ORDERS:
         return poll_working_orders(runner_instance);
+      case runner::PollKind::BUYING_POWER:
+        return poll_buying_power(runner_instance);
     }
     return runner::PollOutcome::UNCHANGED;
   }
@@ -247,6 +260,57 @@ private:
     portfolio.as_of_ = result.value().received_at_;
     runner_instance.context().set_portfolio(std::move(portfolio));
     return runner::PollOutcome::UPDATED;
+  }
+
+  /**
+   * Refreshes what may be spent, per configured currency, keeping everything else.
+   *
+   * One request per currency, on the holdings cadence. A currency whose answer fails leaves the
+   * previous reading in place and reports the failure, rather than dropping a figure the guard is
+   * about to size against -- the loop's own staleness gate is what decides when an old reading
+   * stops being good enough, and it can only do that if the reading is still there.
+   */
+  template <typename Runner>
+  runner::PollOutcome poll_buying_power(Runner& runner_instance) {
+    if constexpr (!Caps::has_buying_power) {
+      static_cast<void>(runner_instance);
+      return runner::PollOutcome::UNCHANGED;
+    } else {
+      if (currencies_.empty()) {
+        return runner::PollOutcome::UNCHANGED;
+      }
+      auto portfolio = runner_instance.context().portfolio();
+      bool updated = false;
+      std::optional<runner::PollOutcome> failure;
+      for (const auto& currency : currencies_) {
+        auto result = session_->buying_power(currency);
+        if (!result) {
+          last_error_ = result.error();
+          failure = poll_outcome_of(*last_error_);
+          continue;
+        }
+        bool replaced = false;
+        for (auto& reading : portfolio.buying_power_) {
+          if (reading.cash_.currency_ == currency) {
+            reading = result.value();
+            replaced = true;
+            break;
+          }
+        }
+        if (!replaced) {
+          portfolio.buying_power_.push_back(result.value());
+        }
+        updated = true;
+      }
+      if (updated) {
+        runner_instance.context().set_portfolio(std::move(portfolio));
+        last_error_.reset();
+      }
+      if (failure && !updated) {
+        return *failure;
+      }
+      return updated ? runner::PollOutcome::UPDATED : runner::PollOutcome::UNCHANGED;
+    }
   }
 
   /** Refreshes working orders, keeping positions. Compiles to nothing without the capability. */
@@ -393,6 +457,7 @@ private:
 
   Session* session_;
   std::vector<InstrumentId> universe_;
+  std::vector<Currency> currencies_;
   Journal* journal_{nullptr};
   int maximum_history_pages_{20};
   runner::MatchWindow window_;

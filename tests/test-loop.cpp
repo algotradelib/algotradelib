@@ -659,6 +659,100 @@ TEST_CASE("a stale portfolio blocks sending", "[loop][gate]") {
   }
 }
 
+TEST_CASE("an unread buying power blocks sending, and only when asked for", "[loop][gate]") {
+  // The hold exists because sizing a buy against an unknown budget is exactly what the check was
+  // added to stop. It is taken only when the caller asked for the check: a loop with no
+  // buying-power limit configured is an ordinary loop and must not be held for a reading nobody
+  // wants.
+  strategy::RiskLimits limits;
+  limits.enforce_buying_power_ = true;
+
+  SECTION("a loop with no reading holds") {
+    InertRunner runner_instance(Inert{}, limits);
+    InertSource source;
+    InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+    StopSource stop;
+
+    const auto report = loop.run(stop, 2);
+    CHECK(report.final_gate_ == strategy::HaltReason::BUYING_POWER_UNREAD);
+    CHECK(report.blocked_ == 2);
+    CHECK(runner_instance.guard().halted(strategy::HaltReason::BUYING_POWER_UNREAD));
+  }
+
+  SECTION("a reading opens the gate") {
+    InertRunner runner_instance(Inert{}, limits);
+    InertSource source;
+    InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+    StopSource stop;
+
+    strategy::Portfolio<InertRunner::Tag> portfolio;
+    portfolio.buying_power_.push_back(
+      algotradelib::BuyingPower{
+        algotradelib::Money{
+          algotradelib::Decimal64::parse("5000000"), algotradelib::Currency::krw()
+        },
+        base_time(),
+      }
+    );
+    runner_instance.context().set_portfolio(portfolio);
+
+    const auto report = loop.run(stop, 1);
+    CHECK(!report.final_gate_.has_value());
+    CHECK_FALSE(runner_instance.guard().halted());
+  }
+
+  SECTION("a reading older than the maximum closes it again") {
+    InertRunner runner_instance(Inert{}, limits);
+    InertSource source;
+    InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+    loop.set_maximum_buying_power_age(std::chrono::minutes(5));
+    StopSource stop;
+
+    strategy::Portfolio<InertRunner::Tag> portfolio;
+    // The figure is aged against its own stamp, not against when a poll last succeeded.
+    portfolio.buying_power_.push_back(
+      algotradelib::BuyingPower{
+        algotradelib::Money{
+          algotradelib::Decimal64::parse("5000000"), algotradelib::Currency::krw()
+        },
+        base_time() - std::chrono::minutes(10),
+      }
+    );
+    runner_instance.context().set_portfolio(portfolio);
+
+    const auto report = loop.run(stop, 1);
+    CHECK(report.final_gate_ == strategy::HaltReason::BUYING_POWER_UNREAD);
+    CHECK(runner_instance.guard().halted(strategy::HaltReason::BUYING_POWER_UNREAD));
+  }
+
+  SECTION("a loop that never asked for the check is not held") {
+    InertRunner runner_instance;  // default limits: no buying-power check
+    InertSource source;
+    InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+    StopSource stop;
+
+    const auto report = loop.run(stop, 2);
+    CHECK(!report.final_gate_.has_value());
+    CHECK_FALSE(runner_instance.guard().halted());
+  }
+}
+
+TEST_CASE("the buying-power poll has its own cadence", "[loop][cadence]") {
+  InertRunner runner_instance;
+  InertSource source;
+  runner::PollSchedule schedule;
+  schedule.buying_power_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  InertLoop loop(runner_instance, source, schedule, test_clock());
+  StopSource stop;
+
+  loop.run(stop, 3);
+  CHECK(source.polls(runner::PollKind::BUYING_POWER) == 3);
+  // And a kind with no interval configured is never polled, which is what keeps an existing
+  // program's request count unchanged on upgrade.
+  CHECK(source.polls(runner::PollKind::HOLDINGS) == 0);
+}
+
 TEST_CASE("repeated poll failures give up rather than spinning", "[loop][failure]") {
   InertRunner runner_instance;
   InertSource source;

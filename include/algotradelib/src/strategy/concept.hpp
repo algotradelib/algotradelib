@@ -120,6 +120,16 @@ struct NoCaps {
   static constexpr bool has_calendar = false;
   static constexpr bool has_calendar_range = false;
   static constexpr bool has_calendar_sessions = false;
+  static constexpr bool has_buying_power = false;
+  static constexpr bool has_buying_power_quantity = false;
+  static constexpr bool has_commission_schedule = false;
+  /**
+   * Nowhere, which is the honest answer for a broker this type stands in for.
+   *
+   * `NONE` rather than `HOLDINGS`: a stand-in that claimed the figure arrives with the positions
+   * would have a runner skip the inquiry and then find nothing there.
+   */
+  static constexpr SellableSource sellable_source = SellableSource::NONE;
   static constexpr bool supports_interval(BarInterval) { return false; }
 };
 
