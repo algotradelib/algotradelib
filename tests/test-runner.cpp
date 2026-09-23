@@ -451,12 +451,10 @@ TEST_CASE("a ceiling alone does not move the published buying power") {
   );
 }
 
-TEST_CASE("a reservation nobody can address is reported rather than sent to nobody") {
-  // An executor with no broker behind it reports no reference, so the reservation carries none.
-  // `find_working` matches an empty reference to that very row, so without a check the runner would
-  // ask a broker to withdraw an order identified by an empty string -- a request that can only
-  // fail, while looking like an attempt. It belongs in the bucket that says the runner cannot
-  // describe the order, which is the visible answer.
+TEST_CASE("a replay withdraws a reservation it never had a reference for") {
+  // A reference is only meaningful to a broker. A replay's engine matches a cancellation on
+  // instrument and side, so a reservation carrying none is still withdrawable there -- and must be,
+  // or a queued order the caller asked to withdraw would fill anyway.
   strategy::RiskLimits limits;
   limits.max_position_quantity_ = Decimal64::parse("100");
   runner::DryRunner<FlipTarget> dry(FlipTarget{}, limits);
@@ -472,9 +470,11 @@ TEST_CASE("a reservation nobody can address is reported rather than sent to nobo
   const auto first = dry.feed(bar_at(10, "70000"));
   REQUIRE(first.would_place_.size() == 1);
 
+  // Flat, then long: the resting sell opposes the buy and has to go first.
   const auto second = dry.feed(bar_at(11, "70000"));
-  REQUIRE(second.would_cancel_.empty());
-  REQUIRE(second.unresolved_cancel_.size() == 1);
+  REQUIRE(second.would_cancel_.size() == 1);
+  REQUIRE(second.unresolved_cancel_.empty());
+  REQUIRE(second.rejected_cancel_.empty());
 }
 
 TEST_CASE("a sell resting on the other side is not relief for a buy") {

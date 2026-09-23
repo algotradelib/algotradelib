@@ -86,8 +86,29 @@ public:
    *
    * `cancel_all` carries the order's own shape and amendable quantity, so a broker that requires
    * either receives it without this code restating what the order already said.
+   *
+   * An order with no broker reference is refused here rather than sent, because a withdrawal
+   * addressed to an empty string can only fail.
    */
   runner::SendOutcome cancel(const WorkingOrder<BrokerTag>& working) {
+    if (working.ref_.primary_.empty()) {
+      // **A reference naming nothing addresses nothing at a broker.** A row can reach here with an
+      // empty one: a runner reserves an order it has just sent so that later limits count it, and
+      // an executor that could not report what the broker issued leaves the reference blank.
+      // Sending that is a request which can only fail while looking like an attempt, and a
+      // cancellation failure is the one this library must not manufacture noise around. Refused as
+      // an answer rather than as an outage, because nothing is in doubt: the order was never
+      // addressed, so there is nothing to reconcile.
+      //
+      // The check is here and not in the runner because a reference is only meaningful to a
+      // broker. A replay's engine matches a cancellation on instrument and side, and refusing one
+      // there would leave a queued order to fill that the caller asked to withdraw.
+      last_error_ = BrokerError{};
+      last_error_->category_ = ErrorCategory::INVALID_ARGUMENT;
+      last_error_->message_ =
+        "no broker reference for this order; it cannot be withdrawn until a listing supplies one";
+      return runner::SendOutcome::REJECTED;
+    }
     auto result = session_->cancel(working.ref_, cancel_all(working));
     if (result) {
       last_error_.reset();

@@ -555,6 +555,27 @@ TEST_CASE("a reserved order is withdrawn by the reference the broker actually is
   REQUIRE(second.unavailable_cancel_.empty());
 }
 
+TEST_CASE("a withdrawal is never addressed to a broker by an empty reference") {
+  // The other half of the reference the reservation now carries. A row can still reach the executor
+  // without one -- an executor that cannot report what the broker issued leaves it blank -- and
+  // sending that is a request which can only fail while looking like an attempt. Refused as an
+  // answer rather than as an outage: the order was never addressed, so nothing is in doubt.
+  FakeSession<SellableInHoldings> session;
+  live::SessionExecutor<FakeSession<SellableInHoldings>> executor(session);
+
+  WorkingOrder<FakeBroker> unaddressable = working();
+  unaddressable.ref_ = OrderRef<FakeBroker>{};
+
+  CHECK(executor.cancel(unaddressable) == runner::SendOutcome::REJECTED);
+  CHECK(session.canceled().empty());
+  REQUIRE(executor.last_error().has_value());
+  CHECK(executor.last_error()->category_ == ErrorCategory::INVALID_ARGUMENT);
+
+  // And an ordinary one still goes.
+  CHECK(executor.cancel(working()) == runner::SendOutcome::ACCEPTED);
+  CHECK(session.canceled().size() == 1);
+}
+
 TEST_CASE("a broker carrying the figure in its holdings is never asked for it") {
   // The whole point of `sellable_source`: at KIS the answer is already on every position the
   // runner polls, so the check costs nothing. A test counts the requests, because "it should not

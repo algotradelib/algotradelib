@@ -816,9 +816,9 @@ private:
    *
    * Where the executor could not supply a reference -- a dry run, a replay, or a custom executor
    * that does not report one -- the row is still written, because a limit that ignored the order
-   * would be the worse failure. `send_cancel` refuses to address such a row rather than sending a
-   * withdrawal to nobody, and reports it; the order becomes cancellable when a listing supplies a
-   * reference for it.
+   * would be the worse failure. Whether such a row can still be withdrawn is the executor's
+   * question, not this one's: a replay's engine matches a cancellation on instrument and side and
+   * needs no reference at all, while `live::SessionExecutor` refuses to send one to a broker.
    *
    * `spends` decides whether a buy also draws down the published buying-power reading, and it is
    * the caller's buying-power check rather than anything this function can see. Review found the
@@ -905,16 +905,6 @@ private:
     // of blind instruction that should be visible instead.
     const auto* working = context_.portfolio().find_working(ref);
     if (working == nullptr) {
-      report.unresolved_cancel_.push_back(ref);
-      return;
-    }
-    // A reference naming nothing addresses nothing. It reaches here from a reservation whose
-    // executor could not report what the broker issued, and `find_working` matches it to that row
-    // because both references are empty -- so without this the runner would ask a broker to
-    // withdraw an order identified by an empty string, a request that can only fail while looking
-    // like an attempt. Reported rather than dropped, in the bucket that already means "the runner
-    // cannot describe this order to the broker".
-    if (working->ref_.primary_.empty()) {
       report.unresolved_cancel_.push_back(ref);
       return;
     }
