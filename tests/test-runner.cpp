@@ -548,6 +548,11 @@ TEST_CASE("a cancellation that fails in transit also obliges reconciliation") {
   // The order that would have followed the cancellation is withheld, not sent into the doubt.
   REQUIRE(report.would_place_.empty());
   REQUIRE(report.withheld_.size() == 1);
+  // And the cancellation itself does not read as one that happened. The order may be withdrawn or
+  // may still be resting; `would_cancel_` claims the first, so an unknown outcome must not go there.
+  REQUIRE(report.would_cancel_.empty());
+  REQUIRE(report.indeterminate_cancel_.size() == 1);
+  REQUIRE(report.indeterminate_cancel_.front().primary_ == "0001");
 }
 
 TEST_CASE("a withheld order is never handed to the executor at all") {

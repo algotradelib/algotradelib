@@ -234,6 +234,29 @@ private:
 
 using SendingLoop = runner::PollingLoop<SendingRunner, FeedingSource, runner::ManualClock>;
 
+/** An executor whose cancellations always fail in transit, leaving their outcome unknown. */
+class LosingExecutor {
+public:
+  runner::SendOutcome place(const strategy::PlannedOrder&) {
+    return runner::SendOutcome::ACCEPTED;
+  }
+
+  runner::SendOutcome cancel(const algotradelib::WorkingOrder<runner::DryTag>&) {
+    ++cancels_;
+    return runner::SendOutcome::INDETERMINATE;
+  }
+
+  /** Returns how many cancellations reached it. */
+  std::size_t cancels() const noexcept { return cancels_; }
+
+private:
+  std::size_t cancels_{0};
+};
+
+using LosingRunner = runner::Runner<Inert, strategy::NoCaps, runner::DryTag, LosingExecutor>;
+using LosingSource = runner::ManualSource<LosingRunner>;
+using LosingLoop = runner::PollingLoop<LosingRunner, LosingSource, runner::ManualClock>;
+
 } // namespace
 
 TEST_CASE("a manual clock advances only when asked", "[loop][clock]") {
@@ -1090,4 +1113,64 @@ TEST_CASE("a withdraw with no halt standing still cancels", "[loop][stop]") {
   CHECK(report.withdrawn_ == 1);
   CHECK(report.closing_refused_ == 0);
   CHECK(report.closing_complete());
+}
+
+TEST_CASE("a withdraw that could not be journaled is not a complete stop", "[loop][stop]") {
+  // `closing_complete()` is the one call an operator should not have to second-guess, and a local
+  // failure used to leave every closing count at zero: the cancellation was correctly withheld on
+  // the runner's report, and nothing carried it onto the loop's. `withdrawn_` said one, every
+  // failure count said zero, and the stop reported itself complete having sent nothing.
+  InertRunner runner_instance;
+  InertSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_portfolio(portfolio_with("10", "5"));
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.halt_locally("the order journal could not be written");
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  stop.request(StopIntent::WITHDRAW);
+
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.withdrawn_ == 1);
+  CHECK(report.closing_unavailable_ == 1);
+  // Not a guard refusal: no broker was asked, and the two ask for opposite responses.
+  CHECK(report.closing_refused_ == 0);
+  CHECK_FALSE(report.closing_complete());
+  REQUIRE_FALSE(report.notes_.empty());
+  CHECK(report.notes_.front().find("local machinery could not send") != std::string::npos);
+}
+
+TEST_CASE("a cancellation lost in transit is not a completed withdrawal", "[loop][stop]") {
+  // The other way a stop can look finished without being finished. The order may now be withdrawn
+  // or may still be resting, so the count that says "this went out" must not include it.
+  LosingRunner runner_instance;
+  LosingSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+
+  strategy::Portfolio<runner::DryTag> portfolio;
+  portfolio.as_of_ = base_time();
+  algotradelib::WorkingOrder<runner::DryTag> working;
+  working.order_.instrument_ = samsung();
+  working.order_.side_ = algotradelib::OrderSide::BUY;
+  working.order_.status_ = algotradelib::OrderStatus::PENDING;
+  working.order_.quantity_ = algotradelib::Decimal64::parse("5");
+  working.order_.execution_.filled_quantity_ = algotradelib::Decimal64::parse("0");
+  working.ref_ = algotradelib::OrderRef<runner::DryTag>{"0001", ""};
+  portfolio.working_.push_back(working);
+  runner_instance.context().set_portfolio(portfolio);
+
+  LosingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  stop.request(StopIntent::WITHDRAW);
+
+  const auto report = loop.run(stop, 1);
+
+  CHECK(runner_instance.executor().cancels() == 1);
+  CHECK(report.withdrawn_ == 1);
+  CHECK(report.closing_indeterminate_ == 1);
+  CHECK_FALSE(report.closing_complete());
+  // And the instrument is owed a reconciliation, which is the actual obligation left behind.
+  CHECK(runner_instance.ledger().requires_reconcile(samsung()));
 }

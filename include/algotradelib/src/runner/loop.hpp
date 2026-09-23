@@ -197,13 +197,40 @@ struct LoopReport {
   std::size_t closing_refused_{0};
   /** Closing instructions withheld because the instrument's state is unresolved. */
   std::size_t closing_withheld_{0};
-  /** Closing instructions whose send failed in transit, leaving their outcome unknown. */
+  /**
+   * Closing instructions whose send failed in transit, leaving their outcome unknown.
+   *
+   * Cancellations included. A cancellation that failed in transit may have withdrawn the order or
+   * may not, which is not the same as one that went.
+   */
   std::size_t closing_indeterminate_{0};
+  /**
+   * Closing instructions local machinery refused to send, so no broker was asked.
+   *
+   * The journal could not be written. Different from every count above in what an operator does
+   * about it: fix the storage, `resume_after_local_failure`, and stop again.
+   */
+  std::size_t closing_unavailable_{0};
+  /**
+   * Closing cancellations naming an order the portfolio snapshot does not hold.
+   *
+   * The snapshot is stale rather than the instruction wrong, and the answer is to read the broker's
+   * own list rather than to retry blind.
+   */
+  std::size_t closing_unresolved_{0};
 
-  /** Returns whether every closing instruction the loop asked for actually went out. */
+  /**
+   * Returns whether every closing instruction the loop asked for actually went out.
+   *
+   * **Every way a closing instruction can fail to go counts here**, which is the whole value of the
+   * call: an operator asking "am I actually flat" must not get `true` from a stop where the journal
+   * was broken, or where a cancellation named an order a stale snapshot did not list. Those failed
+   * silently before, because they were reported on the runner's report and never carried onto this
+   * one.
+   */
   bool closing_complete() const noexcept {
     return closing_rejected_ == 0 && closing_refused_ == 0 && closing_withheld_ == 0 &&
-      closing_indeterminate_ == 0;
+      closing_indeterminate_ == 0 && closing_unavailable_ == 0 && closing_unresolved_ == 0;
   }
   /** Notes an operator should read, such as an unrecognized control-file token. */
   std::vector<std::string> notes_;
@@ -600,15 +627,23 @@ private:
 
     report.closing_placed_ = closing.would_place_.size();
     if (intent == StopIntent::FLATTEN) {
-      // Counted from what reconciliation actually withdrew, since a flatten does not cancel directly.
-      report.withdrawn_ = closing.would_cancel_.size();
+      // Counted from every cancellation reconciliation produced, not only the ones that went: a
+      // flatten does not cancel directly, and `withdrawn_` is what was *asked for*. The counts below
+      // are what happened to them.
+      report.withdrawn_ = closing.would_cancel_.size() + closing.indeterminate_cancel_.size() +
+        closing.unavailable_cancel_.size() + closing.refused_cancel_.size() +
+        closing.unresolved_cancel_.size();
     }
+    // **Both halves of every bucket.** A closing instruction is a placement or a cancellation, and
+    // each can fail in the same five ways; counting only the placement half is how a stop that sent
+    // nothing reported itself complete.
     report.closing_rejected_ = closing.rejected_.size();
-    // Cancellations a hold refused count here too: a withdraw that withdrew nothing is not complete,
-    // and `closing_complete()` is the one call an operator should not have to second-guess.
     report.closing_refused_ = closing.refused_.size() + closing.refused_cancel_.size();
     report.closing_withheld_ = closing.withheld_.size();
-    report.closing_indeterminate_ = closing.indeterminate_.size();
+    report.closing_indeterminate_ =
+      closing.indeterminate_.size() + closing.indeterminate_cancel_.size();
+    report.closing_unavailable_ = closing.unavailable_.size() + closing.unavailable_cancel_.size();
+    report.closing_unresolved_ = closing.unresolved_cancel_.size();
 
     // Named individually rather than summarized, because "your flatten did not go out" is the one
     // note in this whole report an operator must not have to infer.
@@ -622,15 +657,26 @@ private:
         "reconciliation could not build " + std::to_string(closing.rejected_.size()) +
         " closing instruction(s); the position is still held");
     }
-    if (!closing.withheld_.empty()) {
+    if (report.closing_withheld_ != 0) {
       report.notes_.push_back(
-        "withheld " + std::to_string(closing.withheld_.size()) +
+        "withheld " + std::to_string(report.closing_withheld_) +
         " closing instruction(s) pending reconciliation; read the broker's order list");
     }
-    if (!closing.indeterminate_.empty()) {
+    if (report.closing_indeterminate_ != 0) {
       report.notes_.push_back(
-        std::to_string(closing.indeterminate_.size()) +
+        std::to_string(report.closing_indeterminate_) +
         " closing instruction(s) failed in transit; their outcome is unknown");
+    }
+    if (report.closing_unavailable_ != 0) {
+      report.notes_.push_back(
+        "local machinery could not send " + std::to_string(report.closing_unavailable_) +
+        " closing instruction(s); no broker was asked and the position is still held");
+    }
+    if (report.closing_unresolved_ != 0) {
+      report.notes_.push_back(
+        std::to_string(report.closing_unresolved_) +
+        " closing cancellation(s) named an order the portfolio does not hold; read the broker's"
+        " order list");
     }
   }
 

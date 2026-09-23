@@ -65,7 +65,12 @@ template <typename BrokerTag>
 struct DryRunReport {
   /** Orders that passed reconciliation and every guard, and would have been sent. */
   std::vector<strategy::PlannedOrder> would_place_;
-  /** Working orders that would have been withdrawn, before anything was placed. */
+  /**
+   * Working orders that were withdrawn, before anything was placed.
+   *
+   * Only the ones the broker answered for. A cancellation that was refused, withheld, unavailable
+   * or indeterminate is in its own bucket, so the size of this one is what actually went.
+   */
   std::vector<OrderRef<BrokerTag>> would_cancel_;
   /** Instructions reconciliation could not build, with the reason. */
   std::vector<strategy::Rejection> rejected_;
@@ -80,6 +85,15 @@ struct DryRunReport {
   std::vector<WithheldOrder> withheld_;
   /** Instructions whose send failed in transit, leaving their outcome unknown. */
   std::vector<strategy::PlannedOrder> indeterminate_;
+  /**
+   * Cancellations whose send failed in transit, leaving their outcome unknown.
+   *
+   * Separate from `would_cancel_`, and the separation is the point: the order may now be withdrawn
+   * or may still be resting, and reporting it as a withdrawal that happened would tell an operator
+   * the one thing this library will not say about an unknown outcome. The instrument is marked in
+   * the ledger for the same reason.
+   */
+  std::vector<OrderRef<BrokerTag>> indeterminate_cancel_;
   /**
    * Cancellations naming an order the portfolio snapshot does not hold.
    *
@@ -114,7 +128,7 @@ struct DryRunReport {
     return would_place_.empty() && would_cancel_.empty() && rejected_.empty() &&
       refused_.empty() && withheld_.empty() && indeterminate_.empty() &&
       unresolved_cancel_.empty() && unavailable_.empty() && unavailable_cancel_.empty() &&
-      refused_cancel_.empty();
+      refused_cancel_.empty() && indeterminate_cancel_.empty();
   }
 };
 
@@ -521,7 +535,12 @@ private:
     const auto outcome = executor_.cancel(*working);
     note_executor_failure(outcome == SendOutcome::UNAVAILABLE);
     if (outcome == SendOutcome::INDETERMINATE) {
+      // Marked *and* reported apart from `would_cancel_`. The mark was always here; reporting it as
+      // a withdrawal that happened was not right beside it, because the order may still be resting
+      // and a caller reading `would_cancel_` would believe it is not.
       ledger_.mark(working->order_.instrument_, "a cancellation request failed in transit");
+      report.indeterminate_cancel_.push_back(ref);
+      return;
     }
     if (outcome == SendOutcome::UNAVAILABLE) {
       // Not reported as a withdrawal that happened, because it did not. A cancellation nobody sent
