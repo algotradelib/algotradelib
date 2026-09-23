@@ -232,6 +232,18 @@ struct TossClientTestAccess {
   ) {
     return TossClient::parse_holdings(std::move(response));
   }
+
+  static Result<BuyingPower> parse_buying_power(Result<network::HttpResponse> response) {
+    return TossClient::parse_buying_power(std::move(response));
+  }
+
+  static Result<Decimal64> parse_sellable_quantity(Result<network::HttpResponse> response) {
+    return TossClient::parse_sellable_quantity(std::move(response));
+  }
+
+  static Result<CommissionSchedule> parse_commissions(Result<network::HttpResponse> response) {
+    return TossClient::parse_commissions(std::move(response));
+  }
   static network::HttpRequest place_order_request(
     std::int64_t account_sequence,
     const OrderRequest& order
@@ -3218,4 +3230,124 @@ TEST_CASE(
   // An empty schedule is a real answer from a broker that publishes them, and still answers nothing.
   const CommissionSchedule empty;
   REQUIRE_FALSE(empty.rate_for(Country::KR, Date{2026, 9, 23}));
+}
+
+TEST_CASE(
+  "Toss buying power normalizes to money carrying the broker's own currency",
+  "[core][capacity][toss]"
+) {
+  // The spec's own KRW example.
+  const auto won = tossinvest::TossClientTestAccess::parse_buying_power(
+    json_response(R"({"result":{"currency":"KRW","cashBuyingPower":"5000000"}})")
+  );
+  REQUIRE(won);
+  REQUIRE(won.value().cash_.amount_ == Decimal64::parse("5000000"));
+  REQUIRE(won.value().cash_.currency_ == Currency::krw());
+
+  // And its USD example, which is fractional -- a figure a whole-won assumption would truncate.
+  const auto dollars = tossinvest::TossClientTestAccess::parse_buying_power(
+    json_response(R"({"result":{"currency":"USD","cashBuyingPower":"3500.5"}})")
+  );
+  REQUIRE(dollars);
+  REQUIRE(dollars.value().cash_.amount_ == Decimal64::parse("3500.5"));
+  REQUIRE(dollars.value().cash_.currency_ == Currency::usd());
+
+  // A broker error is the error, not an empty reading that would read as "no money".
+  const auto refused = tossinvest::TossClientTestAccess::parse_buying_power(
+    json_response(
+      R"({"error":{"code":"invalid-request","message":"지원하지 않는 통화입니다."}})", 400
+    )
+  );
+  REQUIRE_FALSE(refused);
+
+  const auto malformed = tossinvest::TossClientTestAccess::parse_buying_power(
+    json_response(R"({"result":{"currency":"KRW"}})")
+  );
+  REQUIRE_FALSE(malformed);
+  REQUIRE(malformed.error().category_ == ErrorCategory::PROTOCOL);
+}
+
+TEST_CASE(
+  "Toss sellable quantity keeps a fractional share",
+  "[core][capacity][toss]"
+) {
+  const auto domestic = tossinvest::TossClientTestAccess::parse_sellable_quantity(
+    json_response(R"({"result":{"sellableQuantity":"100"}})")
+  );
+  REQUIRE(domestic);
+  REQUIRE(domestic.value() == Decimal64::parse("100"));
+
+  // The spec's US example: fractional shares are real, and rounding one would overstate what may
+  // be sold.
+  const auto foreign = tossinvest::TossClientTestAccess::parse_sellable_quantity(
+    json_response(R"({"result":{"sellableQuantity":"5.5"}})")
+  );
+  REQUIRE(foreign);
+  REQUIRE(foreign.value() == Decimal64::parse("5.5"));
+
+  // Nothing sellable is a number, and must survive as one rather than becoming an absence.
+  const auto none = tossinvest::TossClientTestAccess::parse_sellable_quantity(
+    json_response(R"({"result":{"sellableQuantity":"0"}})")
+  );
+  REQUIRE(none);
+  REQUIRE(none.value() == Decimal64::parse("0"));
+}
+
+TEST_CASE(
+  "Toss commission rows carry their windows, including open-ended ones",
+  "[core][capacity][toss]"
+) {
+  // The spec's "standard" example: a bounded domestic window and a US row with a null start.
+  const auto schedule = tossinvest::TossClientTestAccess::parse_commissions(
+    json_response(
+      R"({"result":[)"
+      R"({"marketCountry":"KR","commissionRate":"0.00015",)"
+      R"("startDate":"2026-01-01","endDate":"2026-12-31"},)"
+      R"({"marketCountry":"US","commissionRate":"0.001",)"
+      R"("startDate":null,"endDate":"2026-06-30"}]})"
+    )
+  );
+  REQUIRE(schedule);
+  REQUIRE(schedule.value().rates_.size() == 2);
+  REQUIRE(schedule.value().rates_[0].country_ == Country::KR);
+  REQUIRE(schedule.value().rates_[0].rate_ == Decimal64::parse("0.00015"));
+  REQUIRE(schedule.value().rates_[0].from_ == Date{2026, 1, 1});
+  REQUIRE(schedule.value().rates_[0].until_ == Date{2026, 12, 31});
+  // A null start is open-ended, not today: the rate applied before this account existed.
+  REQUIRE_FALSE(schedule.value().rates_[1].from_);
+  REQUIRE(schedule.value().rates_[1].until_ == Date{2026, 6, 30});
+
+  // Answering per country and date is the whole point of keeping the windows.
+  REQUIRE(schedule.value().rate_for(Country::KR, Date{2026, 9, 23}));
+  REQUIRE_FALSE(schedule.value().rate_for(Country::US, Date{2026, 9, 23}));
+
+  // The spec's "unlimited" example: a null end is a rate with no scheduled change.
+  const auto unlimited = tossinvest::TossClientTestAccess::parse_commissions(
+    json_response(
+      R"({"result":[{"marketCountry":"KR","commissionRate":"0.00015",)"
+      R"("startDate":"2026-01-01","endDate":null}]})"
+    )
+  );
+  REQUIRE(unlimited);
+  REQUIRE_FALSE(unlimited.value().rates_[0].until_);
+  REQUIRE(unlimited.value().rate_for(Country::KR, Date{2099, 1, 1}));
+
+  // A market this library does not normalize is skipped, not refused: one unfamiliar row must not
+  // deny a caller the rate for the market they actually trade.
+  const auto mixed = tossinvest::TossClientTestAccess::parse_commissions(
+    json_response(
+      R"({"result":[{"marketCountry":"JP","commissionRate":"0.002","startDate":null,"endDate":null},)"
+      R"({"marketCountry":"KR","commissionRate":"0.00015","startDate":null,"endDate":null}]})"
+    )
+  );
+  REQUIRE(mixed);
+  REQUIRE(mixed.value().rates_.size() == 1);
+  REQUIRE(mixed.value().rates_[0].country_ == Country::KR);
+
+  // An account with no stated rates is a real answer, and not the same as having no inquiry.
+  const auto empty = tossinvest::TossClientTestAccess::parse_commissions(
+    json_response(R"({"result":[]})")
+  );
+  REQUIRE(empty);
+  REQUIRE(empty.value().rates_.empty());
 }

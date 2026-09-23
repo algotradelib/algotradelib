@@ -161,6 +161,12 @@ public:
 
   /** Completion handler for one normalized holdings snapshot. */
   using HoldingsHandler = net::any_completion_handler<void(Result<HoldingsSnapshot>)>;
+  /** Completion handler for one normalized buying-power reading. */
+  using BuyingPowerHandler = net::any_completion_handler<void(Result<BuyingPower>)>;
+  /** Completion handler for one instrument's sellable quantity. */
+  using SellableQuantityHandler = net::any_completion_handler<void(Result<Decimal64>)>;
+  /** Completion handler for the account's commission schedule. */
+  using CommissionScheduleHandler = net::any_completion_handler<void(Result<CommissionSchedule>)>;
 
   /** Completion handler for one accepted Toss order instruction. */
   using OrderAckHandler = net::any_completion_handler<void(Result<OrderAck>)>;
@@ -377,6 +383,71 @@ public:
           self->strand_,
           [self, completion = std::move(completion)]() mutable {
             self->start_accounts(std::move(completion));
+          }
+        );
+      },
+      token
+    );
+  }
+
+  /**
+   * Requests what the account may spend in `currency`.
+   *
+   * The currency is required by the endpoint rather than defaulted, and a currency Toss does not
+   * price is refused before the socket write instead of being sent and rejected.
+   */
+  template <typename CompletionToken>
+  auto async_buying_power(Currency currency, std::int64_t account_sequence, CompletionToken&& token) {
+    return net::async_initiate<CompletionToken, void(Result<BuyingPower>)>(
+      [self = shared_from_this(), currency, account_sequence](auto&& handler) mutable {
+        auto completion = BuyingPowerHandler(std::forward<decltype(handler)>(handler));
+        net::post(
+          self->strand_,
+          [self, currency, account_sequence, completion = std::move(completion)]() mutable {
+            self->start_buying_power(currency, account_sequence, std::move(completion));
+          }
+        );
+      },
+      token
+    );
+  }
+
+  /** Requests how much of one instrument the account may sell. */
+  template <typename CompletionToken>
+  auto async_sellable_quantity(
+    InstrumentId instrument,
+    std::int64_t account_sequence,
+    CompletionToken&& token
+  ) {
+    return net::async_initiate<CompletionToken, void(Result<Decimal64>)>(
+      [self = shared_from_this(), instrument = std::move(instrument), account_sequence](
+        auto&& handler
+      ) mutable {
+        auto completion = SellableQuantityHandler(std::forward<decltype(handler)>(handler));
+        net::post(
+          self->strand_,
+          [self, instrument = std::move(instrument), account_sequence,
+           completion = std::move(completion)]() mutable {
+            self->start_sellable_quantity(
+              std::move(instrument), account_sequence, std::move(completion)
+            );
+          }
+        );
+      },
+      token
+    );
+  }
+
+  /** Requests the commission rates in force for the account. */
+  template <typename CompletionToken>
+  auto async_commissions(std::int64_t account_sequence, CompletionToken&& token) {
+    return net::async_initiate<CompletionToken, void(Result<CommissionSchedule>)>(
+      [self = shared_from_this(), account_sequence](auto&& handler) mutable {
+        auto completion = CommissionScheduleHandler(std::forward<decltype(handler)>(handler));
+        net::post(
+          self->strand_,
+          [self, account_sequence, completion = std::move(completion)]() mutable {
+            self->start_commissions(account_sequence, std::move(completion));
           }
         );
       },
@@ -1561,6 +1632,180 @@ private:
     );
   }
 
+  void start_buying_power(
+    Currency currency,
+    std::int64_t account_sequence,
+    BuyingPowerHandler completion
+  ) {
+    auto invalid = validate_account_sequence(account_sequence);
+    if (!invalid && !priced_currency(currency)) {
+      // Refused here rather than sent: the endpoint answers for the currencies Toss prices, and a
+      // request for any other is a condition the caller stated that cannot be honored.
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.broker_code_ = "unsupported_currency";
+      error.message_ = "Toss prices buying power in KRW and USD only, not " + currency.str();
+      invalid = std::move(error);
+    }
+    if (invalid) {
+      complete_buying_power(std::move(completion), Result<BuyingPower>(std::move(*invalid)));
+      return;
+    }
+    ensure_token(
+      TokenHandler(
+        [self = shared_from_this(), currency, account_sequence, completion = std::move(completion)](
+          std::optional<BrokerError> token_error
+        ) mutable {
+          if (token_error) {
+            self->complete_buying_power(
+              std::move(completion), Result<BuyingPower>(std::move(*token_error))
+            );
+            return;
+          }
+          self->request_buying_power(currency, account_sequence, std::move(completion));
+        }
+      )
+    );
+  }
+
+  void request_buying_power(
+    Currency currency,
+    std::int64_t account_sequence,
+    BuyingPowerHandler completion
+  ) {
+    network::HttpRequest request;
+    // The same class as holdings: an account read, above polling and below trading.
+    request.group_ = network::RateLimitGroup::ACCOUNT;
+    request.method_ = http::verb::get;
+    request.target_ = "/api/v1/buying-power?currency=" + currency.str();
+    request.headers_ = {
+      {"Authorization", "Bearer " + token_.access_token_},
+      {"X-Tossinvest-Account", std::to_string(account_sequence)},
+    };
+    http_->async_request(
+      std::move(request),
+      [self = shared_from_this(), completion = std::move(completion)](
+        Result<network::HttpResponse> result
+      ) mutable {
+        net::post(
+          self->strand_,
+          [self, completion = std::move(completion), result = std::move(result)]() mutable {
+            self->complete_buying_power(
+              std::move(completion), parse_buying_power(std::move(result))
+            );
+          }
+        );
+      }
+    );
+  }
+
+  void start_sellable_quantity(
+    InstrumentId instrument,
+    std::int64_t account_sequence,
+    SellableQuantityHandler completion
+  ) {
+    if (auto invalid = validate_account_sequence(account_sequence)) {
+      complete_sellable_quantity(std::move(completion), Result<Decimal64>(std::move(*invalid)));
+      return;
+    }
+    ensure_token(
+      TokenHandler(
+        [self = shared_from_this(), instrument = std::move(instrument), account_sequence,
+         completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+          if (token_error) {
+            self->complete_sellable_quantity(
+              std::move(completion), Result<Decimal64>(std::move(*token_error))
+            );
+            return;
+          }
+          self->request_sellable_quantity(
+            std::move(instrument), account_sequence, std::move(completion)
+          );
+        }
+      )
+    );
+  }
+
+  void request_sellable_quantity(
+    InstrumentId instrument,
+    std::int64_t account_sequence,
+    SellableQuantityHandler completion
+  ) {
+    network::HttpRequest request;
+    request.group_ = network::RateLimitGroup::ACCOUNT;
+    request.method_ = http::verb::get;
+    request.target_ = "/api/v1/sellable-quantity?symbol=" + instrument.symbol_;
+    request.headers_ = {
+      {"Authorization", "Bearer " + token_.access_token_},
+      {"X-Tossinvest-Account", std::to_string(account_sequence)},
+    };
+    http_->async_request(
+      std::move(request),
+      [self = shared_from_this(), completion = std::move(completion)](
+        Result<network::HttpResponse> result
+      ) mutable {
+        net::post(
+          self->strand_,
+          [self, completion = std::move(completion), result = std::move(result)]() mutable {
+            self->complete_sellable_quantity(
+              std::move(completion), parse_sellable_quantity(std::move(result))
+            );
+          }
+        );
+      }
+    );
+  }
+
+  void start_commissions(std::int64_t account_sequence, CommissionScheduleHandler completion) {
+    if (auto invalid = validate_account_sequence(account_sequence)) {
+      complete_commissions(
+        std::move(completion), Result<CommissionSchedule>(std::move(*invalid))
+      );
+      return;
+    }
+    ensure_token(
+      TokenHandler(
+        [self = shared_from_this(), account_sequence, completion = std::move(completion)](
+          std::optional<BrokerError> token_error
+        ) mutable {
+          if (token_error) {
+            self->complete_commissions(
+              std::move(completion), Result<CommissionSchedule>(std::move(*token_error))
+            );
+            return;
+          }
+          self->request_commissions(account_sequence, std::move(completion));
+        }
+      )
+    );
+  }
+
+  void request_commissions(std::int64_t account_sequence, CommissionScheduleHandler completion) {
+    network::HttpRequest request;
+    request.group_ = network::RateLimitGroup::ACCOUNT;
+    request.method_ = http::verb::get;
+    request.target_ = "/api/v1/commissions";
+    request.headers_ = {
+      {"Authorization", "Bearer " + token_.access_token_},
+      {"X-Tossinvest-Account", std::to_string(account_sequence)},
+    };
+    http_->async_request(
+      std::move(request),
+      [self = shared_from_this(), completion = std::move(completion)](
+        Result<network::HttpResponse> result
+      ) mutable {
+        net::post(
+          self->strand_,
+          [self, completion = std::move(completion), result = std::move(result)]() mutable {
+            self->complete_commissions(
+              std::move(completion), parse_commissions(std::move(result))
+            );
+          }
+        );
+      }
+    );
+  }
+
   void start_holdings(std::int64_t account_sequence, HoldingsHandler completion) {
     if (auto invalid = validate_account_sequence(account_sequence)) {
       complete_holdings(
@@ -1823,6 +2068,145 @@ private:
       error.message_ = exception.what();
       return Result<std::vector<TossAccount>>(std::move(error));
     }
+  }
+
+  /** Returns whether Toss prices buying power in `currency`. */
+  static bool priced_currency(const Currency& currency) {
+    return currency == Currency::krw() || currency == Currency::usd();
+  }
+
+  /**
+   * Normalizes one buying-power reading.
+   *
+   * The currency comes from the response rather than from the request, so a broker answering in a
+   * currency other than the one asked for is carried as it answered rather than relabelled.
+   */
+  static Result<BuyingPower> parse_buying_power(Result<network::HttpResponse> result) {
+    auto payload = account_payload(result);
+    if (!payload) {
+      return Result<BuyingPower>(std::move(payload.error()));
+    }
+    try {
+      if (!payload.value().is_object()) {
+        throw std::runtime_error("buying power result is not an object");
+      }
+      const auto& output = payload.value().as_object();
+      BuyingPower power;
+      power.cash_ = Money{
+        Decimal64::parse(broker_detail::json_string(output, "cashBuyingPower")),
+        Currency(broker_detail::json_string(output, "currency")),
+      };
+      // Toss states no timestamp for this figure, so the honest stamp is when it arrived.
+      power.received_at_ = std::chrono::system_clock::now();
+      return Result<BuyingPower>(std::move(power));
+    } catch (const std::exception& exception) {
+      return Result<BuyingPower>(account_error("invalid_buying_power_response", exception));
+    }
+  }
+
+  /** Normalizes one instrument's sellable quantity, which Toss may report fractionally. */
+  static Result<Decimal64> parse_sellable_quantity(Result<network::HttpResponse> result) {
+    auto payload = account_payload(result);
+    if (!payload) {
+      return Result<Decimal64>(std::move(payload.error()));
+    }
+    try {
+      if (!payload.value().is_object()) {
+        throw std::runtime_error("sellable quantity result is not an object");
+      }
+      const auto& output = payload.value().as_object();
+      return Result<Decimal64>(
+        Decimal64::parse(broker_detail::json_string(output, "sellableQuantity"))
+      );
+    } catch (const std::exception& exception) {
+      return Result<Decimal64>(account_error("invalid_sellable_quantity_response", exception));
+    }
+  }
+
+  /**
+   * Normalizes the account's commission schedule.
+   *
+   * A row for a market this library does not normalize is **skipped rather than refused**: the
+   * schedule is a list of what the broker charges where, and one unfamiliar market must not deny a
+   * caller the rate for the market they trade. That is the same rule the holdings and order paths
+   * follow for an unrecognized row.
+   */
+  static Result<CommissionSchedule> parse_commissions(Result<network::HttpResponse> result) {
+    auto payload = account_payload(result);
+    if (!payload) {
+      return Result<CommissionSchedule>(std::move(payload.error()));
+    }
+    try {
+      if (!payload.value().is_array()) {
+        throw std::runtime_error("commission result is not an array");
+      }
+      CommissionSchedule schedule;
+      schedule.rates_.reserve(payload.value().as_array().size());
+      for (const auto& value : payload.value().as_array()) {
+        if (!value.is_object()) {
+          throw std::runtime_error("commission item is not an object");
+        }
+        const auto& row = value.as_object();
+        const auto market = broker_detail::json_string(row, "marketCountry");
+        CommissionRate rate;
+        if (market == "KR") {
+          rate.country_ = Country::KR;
+        } else if (market == "US") {
+          rate.country_ = Country::US;
+        } else {
+          continue;
+        }
+        rate.rate_ = Decimal64::parse(broker_detail::json_string(row, "commissionRate"));
+        // Null means open-ended in that direction, which is how Toss publishes a rate with no
+        // scheduled change. It is deliberately not read as "today".
+        rate.from_ = optional_calendar_date(row, "startDate");
+        rate.until_ = optional_calendar_date(row, "endDate");
+        schedule.rates_.push_back(std::move(rate));
+      }
+      schedule.received_at_ = std::chrono::system_clock::now();
+      return Result<CommissionSchedule>(std::move(schedule));
+    } catch (const std::exception& exception) {
+      return Result<CommissionSchedule>(account_error("invalid_commission_response", exception));
+    }
+  }
+
+  /**
+   * Returns the `result` field of an account response, or the error that stopped it.
+   *
+   * The three account-capacity reads share one envelope, so they share one unwrapping: transport
+   * failure, unparseable body, and a non-2xx status all become the error they are, and only a
+   * successful response yields a payload.
+   */
+  static Result<json::value> account_payload(Result<network::HttpResponse>& result) {
+    if (!result) {
+      return Result<json::value>(std::move(result.error()));
+    }
+    BrokerError parse_error;
+    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    if (!document) {
+      return Result<json::value>(std::move(parse_error));
+    }
+    if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
+      return Result<json::value>(toss_error(result.value(), *document));
+    }
+    const auto payload = document->if_contains("result");
+    if (!payload) {
+      BrokerError error;
+      error.category_ = ErrorCategory::PROTOCOL;
+      error.broker_code_ = "missing_result";
+      error.message_ = "response carries no result field";
+      return Result<json::value>(std::move(error));
+    }
+    return Result<json::value>(*payload);
+  }
+
+  /** Builds the protocol error an account-capacity parse failure reports. */
+  static BrokerError account_error(std::string code, const std::exception& exception) {
+    BrokerError error;
+    error.category_ = ErrorCategory::PROTOCOL;
+    error.broker_code_ = std::move(code);
+    error.message_ = exception.what();
+    return error;
   }
 
   static Result<HoldingsSnapshot> parse_holdings(Result<network::HttpResponse> result) {
@@ -2975,6 +3359,18 @@ private:
   void complete_holdings(HoldingsHandler handler, Result<HoldingsSnapshot> result) {
     deliver(std::move(handler), std::move(result));
   }
+
+  void complete_buying_power(BuyingPowerHandler handler, Result<BuyingPower> result) {
+    deliver(std::move(handler), std::move(result));
+  }
+
+  void complete_sellable_quantity(SellableQuantityHandler handler, Result<Decimal64> result) {
+    deliver(std::move(handler), std::move(result));
+  }
+
+  void complete_commissions(CommissionScheduleHandler handler, Result<CommissionSchedule> result) {
+    deliver(std::move(handler), std::move(result));
+  }
 };
 
 /** Blocking facade that drives `TossClient` on a private event loop. */
@@ -3069,6 +3465,34 @@ public:
     return run<HoldingsSnapshot>(
       [&](auto&& sink) { client_->async_holdings(account_sequence, std::move(sink)); },
       "holdings"
+    );
+  }
+
+  /** Returns what the account may spend in `currency`. */
+  Result<BuyingPower> buying_power(Currency currency, std::int64_t account_sequence) {
+    return run<BuyingPower>(
+      [&](auto&& sink) {
+        client_->async_buying_power(currency, account_sequence, std::move(sink));
+      },
+      "buying_power"
+    );
+  }
+
+  /** Returns how much of `instrument` the account may sell. */
+  Result<Decimal64> sellable_quantity(InstrumentId instrument, std::int64_t account_sequence) {
+    return run<Decimal64>(
+      [&](auto&& sink) {
+        client_->async_sellable_quantity(std::move(instrument), account_sequence, std::move(sink));
+      },
+      "sellable_quantity"
+    );
+  }
+
+  /** Returns the commission rates in force for the account. */
+  Result<CommissionSchedule> commissions(std::int64_t account_sequence) {
+    return run<CommissionSchedule>(
+      [&](auto&& sink) { client_->async_commissions(account_sequence, std::move(sink)); },
+      "commissions"
     );
   }
 
