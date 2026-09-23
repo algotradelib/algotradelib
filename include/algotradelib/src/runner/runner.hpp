@@ -42,6 +42,22 @@ struct fills_sellable<
   >
 > : std::true_type {};
 
+/**
+ * Whether `Executor` can say which reference the broker issued for the order it just accepted.
+ *
+ * Detected rather than required, for the same reason as above: a dry runner and a replay's
+ * queueing executor have no broker to have been answered by. A reservation written without one is
+ * still worth writing -- a limit that ignored the order would be the worse failure -- but it cannot
+ * be cancelled by reference until a listing supplies one.
+ */
+template <typename Executor, typename = void>
+struct reports_last_ref : std::false_type {};
+
+template <typename Executor>
+struct reports_last_ref<
+  Executor, std::void_t<decltype(std::declval<const Executor&>().last_ref())>
+> : std::true_type {};
+
 } // namespace runner_detail
 
 /**
@@ -542,17 +558,18 @@ private:
     inputs.phase_ = context_.phase();
 
     // **Every order in this pass is checked against a view that already contains the orders this
-    // pass has sent.** The portfolio on the context is a picture of what the *broker* last
-    // reported, and nothing puts a locally accepted order into it -- `portfolio.working_` is
-    // written in exactly one place, a working-order poll (`live/session_source.hpp`). So a limit
-    // read straight from the context is re-evaluated from the same starting point for every order,
-    // and two orders that each fit can breach it together: with a hundred sellable and no resting
-    // order, two sells of sixty both pass and twenty shares are sold that were not there.
+    // pass has sent.** Without that, a limit is re-evaluated from the same starting point for every
+    // order, and two orders that each fit can breach it together: with a hundred sellable and no
+    // resting order, two sells of sixty both pass and twenty shares are sold that were not there.
     //
-    // A copy per pass, mutated as orders are accepted, closes that within one `settle`. It does not
-    // close the same hazard *across* passes, where a locally accepted order stays invisible until a
-    // poll refreshes the listing; that needs a reservation that survives a pass and a way to know
-    // when the listing it is waiting for has arrived, which is planned rather than done here.
+    // A copy per pass, mutated as orders are accepted, closes that within one `settle`.
+    // `persist_reservation` closes the same hazard *across* passes, for the limits that read what
+    // is outstanding. Nothing has to recognise its own order in a later listing: a poll assigns
+    // `working_` and `positions_` wholesale, so the broker's own answer replaces the reservation
+    // when it arrives. Between a placement and that poll, the context portfolio is therefore the
+    // broker's last report **plus** what this runner has sent since -- which is what a limit has to
+    // size against, and why the rows are marked so that anything inferring the broker's behaviour
+    // from the listing can tell them apart.
     auto view = context_.portfolio();
     for (auto& order : pending) {
       // Checked before the guards, because an unresolved instrument is a safety hold rather than a
@@ -612,7 +629,10 @@ private:
           // And it is working now, as far as anything later in this pass is concerned, and its
           // money is spent. An `INDETERMINATE` send needs no entry here: it marks the ledger, and
           // the next instruction for that instrument is withheld before it reaches a guard at all.
-          reserve(view, order, inputs.reference_price_, inputs.order_currency_);
+          reserve(
+            view, order, inputs.reference_price_, inputs.order_currency_, last_ref(),
+            guard_.limits().enforce_buying_power_
+          );
           persist_reservation(order, inputs.reference_price_, inputs.order_currency_);
           report.would_place_.push_back(std::move(order));
           break;
@@ -733,6 +753,20 @@ private:
    * registered the order replaces the reservation with a picture that does not contain it yet.
    * That is what `closing-state-confirmation.md` is about, and it is not made worse here.
    */
+  /**
+   * Returns the reference the broker issued for the order just accepted, where there is one.
+   *
+   * Nothing where the executor has no broker to have been answered by, which is every dry run and
+   * every replay.
+   */
+  std::optional<OrderRef<Tag>> last_ref() const {
+    if constexpr (runner_detail::reports_last_ref<Executor>::value) {
+      return executor_.last_ref();
+    } else {
+      return std::nullopt;
+    }
+  }
+
   void persist_reservation(
     const strategy::PlannedOrder& order,
     const std::optional<Decimal64>& reference_price,
@@ -745,7 +779,10 @@ private:
       return;
     }
     auto persisted = context_.portfolio();
-    reserve(persisted, order, reference_price, currency);
+    reserve(
+      persisted, order, reference_price, currency, last_ref(),
+      guard_.limits().enforce_buying_power_
+    );
     context_.set_portfolio(std::move(persisted));
   }
 
@@ -767,22 +804,46 @@ private:
    * Records an accepted order in `view` so the rest of the pass sizes against it.
    *
    * Written as a working order because that is what it now is, and because the alternative --
-   * adjusting the position -- would be a lie: nothing has filled. The reference is empty, which is
-   * the one thing this synthetic row cannot supply; no guard reads it, and the row never leaves
-   * this function's pass, so it cannot be mistaken for something a broker reported.
+   * adjusting the position -- would be a lie: nothing has filled.
+   *
+   * **It carries the reference the broker just issued**, and that is not cosmetic. No guard reads a
+   * reference, but reconciliation does: a row opposing the next target is put on the cancel list by
+   * its `ref_`, and a synthetic row with an empty one would have the runner ask a broker to
+   * withdraw an order identified by nothing. The shape and the amendable quantity are filled for
+   * the same reason -- `cancel_all` builds the instruction from them, and a broker that requires a
+   * quantity would be sent zero. An order just accepted and unfilled is amendable in full.
+   *
+   * Where the executor could not supply a reference the row is still written, because a limit that
+   * ignored the order would be the worse failure; such a row can only be cancelled by whatever the
+   * next listing says about it.
+   *
+   * `spends` decides whether a buy also draws down the published buying-power reading, and it is
+   * the caller's buying-power check rather than anything this function can see. Review found the
+   * two entangled: a caller who had enabled only the position ceiling watched
+   * `portfolio().buying_power_in()` fall after a buy, which is a public figure a strategy is free
+   * to size its next order from -- a behaviour change well past enforcing a ceiling.
    */
   static void reserve(
     strategy::Portfolio<Tag>& view,
     const strategy::PlannedOrder& order,
     const std::optional<Decimal64>& reference_price,
-    const std::optional<Currency>& currency
+    const std::optional<Currency>& currency,
+    const std::optional<OrderRef<Tag>>& ref,
+    bool spends
   ) {
     WorkingOrder<Tag> working;
     working.order_.instrument_ = order.instrument_;
     working.order_.side_ = order.side_;
     working.order_.status_ = OrderStatus::PENDING;
+    working.order_.type_ = order.type_;
+    working.order_.price_ = order.price_;
+    working.order_.time_in_force_ = order.time_in_force_;
     working.order_.quantity_ = order.quantity_;
     working.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+    working.amendable_quantity_ = order.quantity_;
+    if (ref) {
+      working.ref_ = *ref;
+    }
     // Marked as ours. A limit sizing against what is outstanding must count it; anything inferring
     // the broker's own behaviour from the listing must not, because this row is arithmetic rather
     // than something the broker said.
@@ -794,7 +855,7 @@ private:
     // order -- and it is an *estimate*: a market order fills where it fills, and commission is not
     // in it. Under-reserving would be the dangerous direction, and neither of those makes the
     // reservation smaller than the order's stated cost.
-    if (order.side_ != OrderSide::BUY || !currency) {
+    if (!spends || order.side_ != OrderSide::BUY || !currency) {
       return;
     }
     const auto price = order.price_ ? order.price_ : reference_price;

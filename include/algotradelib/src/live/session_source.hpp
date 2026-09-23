@@ -291,19 +291,28 @@ private:
       }
       auto portfolio = runner_instance.context().portfolio();
       bool updated = false;
-      std::optional<runner::PollOutcome> failure;
+      // Kept apart so the winning outcome and the reason reported for it stay the same currency's.
+      std::optional<BrokerError> outright;
+      std::optional<BrokerError> throttled;
       for (const auto& currency : currencies_) {
         auto result = session_->buying_power(currency);
         if (!result) {
-          last_error_ = result.error();
-          // **A real failure outranks a rate-limit refusal.** They are not the same news: the
-          // limiter refusing is the limiter working, and the loop deliberately does not count it
-          // against a kind, while an outage must count. Taking whichever came last would let a
-          // currency that fails every sweep be reported as merely throttled the moment another
-          // currency was throttled behind it, and the failing budget would age on unnoticed.
-          const auto outcome = poll_outcome_of(*last_error_);
-          if (!failure || outcome == runner::PollOutcome::FAILED) {
-            failure = outcome;
+          // **A real failure outranks a rate-limit refusal**, wherever in the sweep each landed.
+          // They are not the same news: the limiter refusing is the limiter working, and the loop
+          // deliberately does not count it against a poll kind, while an outage must count. Taking
+          // whichever came last would let a currency that fails every sweep be reported as merely
+          // throttled the moment another currency was throttled behind it, and the failing budget
+          // would age on unnoticed.
+          //
+          // The reason is kept beside its outcome rather than overwritten, because `last_error()`
+          // promises why the last failing poll failed: reporting `FAILED` next to a rate-limit
+          // reason would send a reader after the wrong currency.
+          if (poll_outcome_of(result.error()) == runner::PollOutcome::FAILED) {
+            if (!outright) {
+              outright = result.error();
+            }
+          } else if (!throttled) {
+            throttled = result.error();
           }
           continue;
         }
@@ -323,7 +332,10 @@ private:
       if (updated) {
         runner_instance.context().set_portfolio(std::move(portfolio));
       }
-      if (!failure) {
+      const auto& reason = outright ? outright : throttled;
+      if (reason) {
+        last_error_ = *reason;
+      } else {
         last_error_.reset();
       }
       // **A partial answer is a failed poll**, even though the currencies that answered were still
@@ -333,8 +345,11 @@ private:
       // figure from hours ago. The readings are kept because the alternative -- dropping a budget
       // the guard is about to size against -- is worse, and the staleness gate is what decides when
       // an old reading stops being good enough. `last_error_` survives for the same reason.
-      if (failure) {
-        return *failure;
+      if (outright) {
+        return runner::PollOutcome::FAILED;
+      }
+      if (throttled) {
+        return poll_outcome_of(*throttled);
       }
       return updated ? runner::PollOutcome::UPDATED : runner::PollOutcome::UNCHANGED;
     }

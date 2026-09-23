@@ -487,6 +487,24 @@ using SellRunner = runner::Runner<
   SellsAll, CapsType, FakeBroker, live::SessionExecutor<FakeSession<CapsType>>
 >;
 
+/** Targets flat on the first bar and long on the second, so the second opposes the first. */
+struct FlipTarget {
+  int bars_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = bars_++ == 0 ? Decimal64::parse("0") : Decimal64::parse("20");
+    ctx.submit(target);
+  }
+};
+
+template <typename CapsType>
+using FlipRunner = runner::Runner<
+  FlipTarget, CapsType, FakeBroker, live::SessionExecutor<FakeSession<CapsType>>
+>;
+
 /** A portfolio holding `held`, with `sellable` stated only when the broker publishes it. */
 template <typename CapsType>
 strategy::Portfolio<FakeBroker> held_position(const char* held, const char* sellable) {
@@ -502,6 +520,40 @@ strategy::Portfolio<FakeBroker> held_position(const char* held, const char* sell
 }
 
 } // namespace
+
+TEST_CASE("a reserved order is withdrawn by the reference the broker actually issued") {
+  // The reservation is a working row this library wrote, and reconciliation reads working rows: a
+  // row opposing the next target goes on the cancel list **by its reference**. A synthetic row with
+  // an empty one would have the runner ask a broker to withdraw an order identified by nothing --
+  // the one thing a cancellation cannot be vague about.
+  FakeSession<SellableInHoldings> session;
+  strategy::RiskLimits limits;
+  limits.enforce_sellable_quantity_ = true;
+
+  FlipRunner<SellableInHoldings> live_runner(
+    FlipTarget{}, limits, 512, live::SessionExecutor<FakeSession<SellableInHoldings>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  live_runner.context().set_portfolio(held_position<SellableInHoldings>("10", "10"));
+
+  // Flat from ten held: one sell, accepted, and reserved for the next pass.
+  const auto first = live_runner.feed(bar_at(1, "70000"));
+  REQUIRE(first.would_place_.size() == 1);
+  REQUIRE(session.placed().size() == 1);
+
+  // Long from the same ten held, with nothing polled in between: the resting sell opposes the buy
+  // and has to be withdrawn first.
+  const auto second = live_runner.feed(bar_at(2, "70000"));
+  REQUIRE(session.canceled_refs().size() == 1);
+  REQUIRE(session.canceled_refs()[0].primary_ == "0001569139");
+  // And the instruction carries the order's own quantity, not the zero a default row would give a
+  // broker that requires one.
+  REQUIRE(session.canceled().size() == 1);
+  REQUIRE(session.canceled()[0].quantity_ == Decimal64::parse("10"));
+  REQUIRE(second.unavailable_cancel_.empty());
+}
 
 TEST_CASE("a broker carrying the figure in its holdings is never asked for it") {
   // The whole point of `sellable_source`: at KIS the answer is already on every position the
@@ -850,6 +902,26 @@ TEST_CASE("a throttled currency does not downgrade another currency's outright f
   source.set_buying_power_currencies({Currency::krw(), Currency::usd()});
 
   CHECK(source.poll(runner::PollKind::BUYING_POWER, live_runner) == runner::PollOutcome::FAILED);
+  // And the reason names the currency that actually failed, not the one behind it: `last_error()`
+  // promises why the last failing poll failed, and a reader chases that reason.
+  REQUIRE(source.last_error().has_value());
+  CHECK(source.last_error()->category_ == ErrorCategory::TRANSPORT);
+}
+
+TEST_CASE("an outright failure wins however late in the sweep it lands") {
+  // The same rule from the other side, so the answer does not depend on the order the currencies
+  // happen to be configured in.
+  BudgetSession session;
+  session.set_buying_power("5000000");
+  session.throttle_buying_power_in(Currency::krw());
+  session.fail_buying_power_in(Currency::usd());
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<BudgetSession> source(session, {samsung()});
+  source.set_buying_power_currencies({Currency::krw(), Currency::usd()});
+
+  CHECK(source.poll(runner::PollKind::BUYING_POWER, live_runner) == runner::PollOutcome::FAILED);
+  REQUIRE(source.last_error().has_value());
+  CHECK(source.last_error()->category_ == ErrorCategory::TRANSPORT);
 }
 
 TEST_CASE("a throttled currency alone is a throttled poll, not an outage") {
@@ -863,6 +935,8 @@ TEST_CASE("a throttled currency alone is a throttled poll, not an outage") {
   CHECK(
     source.poll(runner::PollKind::BUYING_POWER, live_runner) == runner::PollOutcome::RATE_LIMITED
   );
+  REQUIRE(source.last_error().has_value());
+  CHECK(source.last_error()->category_ == ErrorCategory::RATE_LIMIT);
 }
 
 TEST_CASE("a buying-power poll that answers for every configured currency has succeeded") {

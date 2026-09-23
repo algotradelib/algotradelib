@@ -409,6 +409,35 @@ TEST_CASE("an order accepted in an earlier pass still counts against the ceiling
   REQUIRE(second.refused_[0].attempted_ == Decimal64::parse("20"));
 }
 
+TEST_CASE("a ceiling alone does not move the published buying power") {
+  // The reservation exists to keep a limit honest, and it must not do anything a caller did not ask
+  // for. `buying_power_` is a public figure a strategy may size its next order from, so a caller who
+  // enabled the ceiling and nothing else must see it exactly where the broker left it.
+  strategy::RiskLimits limits;
+  limits.max_position_quantity_ = Decimal64::parse("100");
+  runner::DryRunner<BuyTen> dry(BuyTen{}, limits);
+  arrange(dry);
+
+  strategy::Portfolio<runner::DryRunner<BuyTen>::Tag> portfolio;
+  portfolio.buying_power_.push_back(
+    BuyingPower{Money{Decimal64::parse("1000000"), Currency::krw()}, {}}
+  );
+  dry.context().set_portfolio(portfolio);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.would_place_.size() == 1);
+
+  const auto after = dry.context().portfolio().buying_power_in(Currency::krw());
+  REQUIRE(after);
+  REQUIRE(*after == Decimal64::parse("1000000"));
+
+  // The working quantity is reserved either way, because that is what the ceiling reads.
+  REQUIRE(
+    dry.context().portfolio().working_quantity(samsung(), OrderSide::BUY) ==
+    Decimal64::parse("10")
+  );
+}
+
 TEST_CASE("a sell resting on the other side is not relief for a buy") {
   // Same-side only, deliberately. Counting a resting sell as relief for a buy assumes a fill that
   // may never come, and a ceiling exists for what happens when everything outstanding *does* fill.
