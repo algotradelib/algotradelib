@@ -93,6 +93,11 @@ runner::DryRunner<MyStrategy> dry(MyStrategy{}, limits);
 dry.guard().halt();     // the kill switch, checked before anything else
 ```
 
+`halt()` with no argument is **your** hold, `HaltReason::OPERATOR`. Machinery holds the same guard
+for its own reasons — a polling loop whose holdings snapshot is stale, a runner whose journal cannot
+be written — and each releases only what it took, so nothing else can clear your halt and your
+`resume()` cannot clear theirs. `guard().holds()` says what is in force when more than one thing is.
+
 **A guard rejects; it never resizes.** Halving an order that exceeded a ceiling would place a
 position the strategy never sized against a signal it never gave — and the strategy would then
 reconcile against that position and compound it.
@@ -260,28 +265,33 @@ exchange's sense, and `halt()` is not a flatten. Flattening is a decision — `v
 makes it on a session boundary, or an operator makes it through the broker's own tools.
 
 **And the reconciliation obligation is lost with it.** `IndeterminacyLedger` lives in memory. Two
-distinct problems follow:
+things follow:
 
 - A mark made a moment before termination is gone.
 - An order *in flight* at the moment of a `Ctrl+C` never reaches the classification at all. A default
   `SIGINT` handler terminates immediately, so no error path runs, `outcome_of` is never called, and
   nothing records that the outcome is unknown.
 
-So **after any abnormal termination, read the broker's order list before trading again.** A restarted
-runner starts with an empty ledger, and an empty ledger does not mean nothing is owed — it means
-nothing is *remembered*. Until that is automatic, it is the operator's obligation; see
-`plan/todo/durable-indeterminacy.md`.
+So **after any abnormal termination, the broker's order list must be read before trading again.** A
+restarted runner starts with an empty ledger, and an empty ledger does not mean nothing is owed — it
+means nothing is *remembered*.
 
-The exposure is bounded in practice by how long a runner runs: this branch ships no polling loop, so a
-program does one pass and exits, and at most the orders of that pass can be in doubt.
+**That is now automatic, and it is worth knowing which part does what.** `runner::PollingLoop` will
+not send anything until it has read the broker's order list once, so even with no journal at all a
+restarted process cannot trade blind. With a journal bound through `live::bind_journaled`, the
+instructions themselves survive the process: recovery reads them back, withholds every instrument
+whose outcome is unknown, and resolves them against the broker's own listings. See the
+[recovering after a crash](recovering-after-a-crash.md) vignette for what that looks like during an
+incident.
 
-One counter-intuitive point for whenever a long-running session does arrive: **the fastest stop is the
-worst one.** Closing the session out from under an in-flight request surfaces as
-`ErrorCategory::CANCELLED`, which is classified `INDETERMINATE` — so aborting the connection
-*manufactures* the very state that requires reading the broker's order list. A graceful stop that
-quiesces and lets the request in flight complete leaves nothing in doubt, at the cost of one loop
-iteration. `plan/todo/operator-stop-control.md` sets out the hierarchy and the out-of-band control it
-needs.
+**The stop you choose still matters, and the fastest one is the worst.** Closing the session out from
+under an in-flight request surfaces as `ErrorCategory::CANCELLED`, which is classified
+`INDETERMINATE` — so aborting the connection *manufactures* the very state that has to be reconciled.
+A graceful stop that quiesces and lets the request in flight complete leaves nothing in doubt, at the
+cost of one loop iteration. `runner::StopIntent` names the three stops, `runner::SignalStop` and
+`runner::FileStopChannel` deliver them from outside the process, and the
+[running a strategy live](running-a-strategy-live.md) vignette covers the grace period a supervisor
+has to allow so its `SIGKILL` does not convert the cleanest stop into the worst one.
 
 ## Order of operations
 

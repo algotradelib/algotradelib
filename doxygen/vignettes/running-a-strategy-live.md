@@ -141,9 +141,17 @@ stale positions is how a position gets double-sized by a route that `working_qua
 Staleness is measured against the broker's own `as_of_` — when the positions were *true* — not against
 when the reply arrived.
 
-Both gates work by halting the guard, which is the library's one primitive for "stop sending without
-withdrawing or flattening". The loop only resumes a halt it set itself, so a `halt()` you called by hand
-survives. The one case a single flag cannot express is recorded in `plan/todo/halt-provenance.md`.
+Both gates work by holding the guard, which is the library's one primitive for "stop sending without
+withdrawing or flattening". **A hold names who took it**, and is released only by them: the loop takes
+`portfolio_stale` and `order_list_unread`, you take `operator` when you call `halt()` by hand, and the
+runner takes `local_failure` when its journal cannot be written. Trading resumes when the last hold is
+released, so the loop opening its gate cannot lift your halt, and your `resume()` cannot lift the
+loop's.
+
+`report.final_gate_` is an optional, and names the most fundamental hold in force rather than only the
+loop's own — so a run that sent nothing because *you* halted it says `operator`, instead of showing you
+an open gate while nothing goes out. `guard().holds()` lists every hold when more than one stands, and
+`guard().hold_detail(HaltReason::LOCAL_FAILURE)` carries the reason the journal gave up.
 
 ## Did my stop actually happen?
 

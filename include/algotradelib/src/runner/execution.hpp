@@ -181,8 +181,10 @@ struct WithheldOrder {
  *    called, and nothing records that the outcome is unknown.
  *
  * So after any abnormal termination, the broker's order list has to be read before trading resumes,
- * and a restarted runner cannot infer from an empty ledger that nothing is owed. Until that is
- * automatic, it is an operator's obligation. See `plan/todo/durable-indeterminacy.md`.
+ * and a restarted runner cannot infer from an empty ledger that nothing is owed. That is automatic
+ * now: `PollingLoop` sends nothing until it has read the order list once, and a `FileJournal` bound
+ * through `live::bind_journaled` carries the instructions themselves across the process boundary so
+ * `recover_runner` can withhold what is owed and resolve it against the broker's own listings.
  */
 class IndeterminacyLedger {
 public:

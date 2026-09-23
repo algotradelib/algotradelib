@@ -888,9 +888,11 @@ cannot manufacture idempotency, and neither broker offers a recovery handle — 
 `clientOrderId` on the acknowledgement but not on a listing row, and KIS's `gt_uid` is corporate-only.
 
 **A journal that cannot be written stops the runner.** The instruction is reported as
-`SendOutcome::UNAVAILABLE` — a local refusal, not a broker rejection — and the condition is sticky, so
-`PollingLoop` gates on `GateReason::LOCAL_FAILURE` rather than producing one unexplained refusal per bar
-until somebody notices no broker was involved.
+`SendOutcome::UNAVAILABLE` — a local refusal, not a broker rejection — and the condition is sticky: it
+takes `HaltReason::LOCAL_FAILURE` on the risk guard, so the runner refuses on its own rather than
+producing one unexplained refusal per bar until somebody notices no broker was involved. A hold names
+its holder, so releasing it with `resume_after_local_failure()` cannot also clear a halt an operator
+set by hand.
 
 `example-order-journal` runs the whole story — a send that never returns, a restarted process that would
 happily trade until recovery stops it, and the sweep that resolves it — with no broker and no network.

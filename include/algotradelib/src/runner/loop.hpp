@@ -313,12 +313,13 @@ private:
  * and why a refusal produces a note saying the position is still held. `closing_complete()` is the
  * one call that answers "did my stop actually happen".
  *
- * **One real limitation, stated rather than hidden.** `halted_` is a single bool with no notion of
- * who set it, so the loop tracks whether *it* was the one that halted and only resumes in that case.
- * That handles the ordinary sequence. It does not handle an operator calling `halt()` by hand while
- * the loop's own gate is closed: when the loop's condition clears, it will resume, and the
- * operator's halt goes with it. Fixing that needs a halt that carries a reason or a count, which is
- * a change to `RiskGuard` rather than to this loop; see `plan/todo/halt-provenance.md`.
+ * **The loop holds the guard, and it names what it holds.** Its gates are
+ * `strategy::HaltReason` values it takes and releases itself -- `ORDER_LIST_UNREAD`,
+ * `PORTFOLIO_STALE`, `STOPPING`, `POLL_FAILING`. It never takes `OPERATOR` or `LOCAL_FAILURE`,
+ * which belong to a person and to the runner, so an operator halting by hand while the loop's gate
+ * is closed is not lost when that gate opens. The loop still *reports* those holds: `final_gate_`
+ * names the most fundamental hold in force, whoever owns it, so a run that sent nothing because
+ * somebody halted it says so instead of showing an open gate.
  */
 template <typename Runner, typename Source, typename Clock = SteadyClock>
 class PollingLoop {
