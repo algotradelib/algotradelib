@@ -244,17 +244,23 @@ struct LoopReport {
   std::size_t closing_unresolved_{0};
 
   /**
-   * Positions whose closing order was sized down because an order on the same side was still
-   * working.
+   * Positions whose closing order was sized down, or not sent at all, because another order could
+   * close them too.
    *
    * A flatten cancels every resting order and then closes the position -- but a cancellation is a
    * request, not an outcome, so a same-side order can fill while its withdrawal is still pending.
    * Closing the *whole* holding alongside it could sell the position twice and leave the account
-   * short, so the pass sends only what cannot double up and records the shortfall here.
+   * short. Two causes, one consequence:
    *
-   * Which way it resolves is not knowable in this pass: if the cancellation completes, part of the
-   * position is still held; if it fails because the order filled, the account is flat. Either is
-   * acceptable and neither is complete, which is why this makes `closing_complete()` false.
+   * - **A same-side order in the listing.** The close is sized to the holding minus what is working
+   *   on that side, which is the most that cannot overshoot.
+   * - **A listing that cannot be trusted** -- `closing_source_unverified_`. Then no closing order is
+   *   sent for that position at all, because the deduction above can only subtract what it can see.
+   *
+   * Which way it resolves is not knowable in this pass: if the cancellations complete, part or all
+   * of the position is still held; if one fails because the order filled, that much is closed.
+   * Either is acceptable and neither is complete, which is why this makes `closing_complete()`
+   * false. The cancellations are sent in both cases, because withdrawing only reduces exposure.
    */
   std::size_t closing_contended_{0};
 
@@ -293,10 +299,10 @@ struct LoopReport {
    *   to its previous state -- so an accepted withdrawal can still be working.
    *
    * `closing_contended_` covers a third thing: a flatten that deliberately sent *less* than the
-   * position, because closing the whole of it beside a same-side order whose cancellation has not
-   * completed could sell it twice. And `closing_source_unverified_` covers the case before all of
-   * them: a pass that never established *which* instructions it owed cannot be complete no matter
-   * how many it sent.
+   * position -- or nothing for it -- because closing the whole of it beside an order that could
+   * also close it risks selling it twice. And `closing_source_unverified_` covers the case before
+   * all of them: a pass that never established *which* instructions it owed cannot be complete no
+   * matter how many it sent.
    *
    * `true` therefore means "every instruction I asked for was taken, and I knew what to ask for",
    * never "I am flat" and never "nothing is resting". Read the broker's own order list and holdings
@@ -718,6 +724,19 @@ private:
           // broker would reject, for nothing.
           continue;
         }
+        if (report.closing_source_unverified_) {
+          // **Nothing is placed against a listing that cannot be trusted.** The deduction below
+          // subtracts what is *known* to be working on the closing side, and an unverified picture
+          // is precisely one where that is not all of it: an order this runner sent after the last
+          // listing, or a source that cannot enumerate orders at all. Sending a full-size close
+          // beside an order nobody can see is the same double sell, reached by a different door --
+          // and reporting it afterwards does not recall the instruction.
+          //
+          // The withdrawals above still went, because cancelling only ever reduces exposure. What
+          // is left is the position, held and reported, which is the safe end of every branch here.
+          ++report.closing_contended_;
+          continue;
+        }
         const bool held_long = decimal_less(Decimal64{}, position.quantity_);
         const auto magnitude = held_long ?
           std::optional<Decimal64>(position.quantity_) :
@@ -813,9 +832,13 @@ private:
     }
     if (report.closing_contended_ != 0) {
       report.notes_.push_back(
-        std::to_string(report.closing_contended_) +
-        " position(s) were closed only for the part no working order was already selling or"
-        " buying; if those withdrawals succeed, part of the position is still held");
+        report.closing_source_unverified_ ?
+          "no closing order was sent for " + std::to_string(report.closing_contended_) +
+            " position(s), because an order this loop cannot see could close them too; they are"
+            " still held and the withdrawals above are all that went" :
+          std::to_string(report.closing_contended_) +
+            " position(s) were closed only for the part no working order was already selling or"
+            " buying; if those withdrawals succeed, part of the position is still held");
     }
     if (report.closing_source_unverified_) {
       report.notes_.push_back(

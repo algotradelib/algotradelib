@@ -186,7 +186,8 @@ using SendingRunner = runner::DryRunner<HoldTen>;
  * order can leave the process from inside a poll. `ManualSource` only reports an outcome, so no
  * test built on it can observe what the loop had established *before* that call.
  */
-class FeedingSource {
+template <typename RunnerT>
+class FeedingSourceFor {
 public:
   /** It stands for a real working-order listing, as both supported brokers publish one. */
   static constexpr bool provides_working_orders = true;
@@ -198,7 +199,7 @@ public:
   std::size_t order_list_reads() const noexcept { return order_list_reads_; }
 
   /** Feeds one bar per bars poll, and records what the runner decided while doing it. */
-  runner::PollOutcome poll(runner::PollKind kind, SendingRunner& runner_instance) {
+  runner::PollOutcome poll(runner::PollKind kind, RunnerT& runner_instance) {
     if (kind != runner::PollKind::BARS) {
       return runner::PollOutcome::UNCHANGED;
     }
@@ -212,7 +213,7 @@ public:
   }
 
   /** Returns the configured order-list outcome. */
-  runner::PollOutcome read_order_list(SendingRunner&) {
+  runner::PollOutcome read_order_list(RunnerT&) {
     ++order_list_reads_;
     return order_list_;
   }
@@ -235,7 +236,23 @@ private:
   std::optional<strategy::HaltReason> last_refusal_;
 };
 
+using FeedingSource = FeedingSourceFor<SendingRunner>;
 using SendingLoop = runner::PollingLoop<SendingRunner, FeedingSource, runner::ManualClock>;
+
+/** A strategy that wants out of whatever it is shown, so a bar produces a sell. */
+struct SellEverything {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const algotradelib::strategy::BarEvent& bar) {
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = algotradelib::Decimal64{};
+    ctx.submit(target);
+  }
+};
+
+using SellingRunner = runner::DryRunner<SellEverything>;
+using SellingSource = FeedingSourceFor<SellingRunner>;
+using SellingLoop = runner::PollingLoop<SellingRunner, SellingSource, runner::ManualClock>;
 
 /**
  * An executor whose cancellations always come back with `Outcome`.
@@ -937,6 +954,11 @@ TEST_CASE("a flatten outside market hours is refused and says so", "[loop][stop]
   InertSource source;
   InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
   StopSource stop;
+
+  // One ordinary iteration first, so the closing source is verified and the pass actually builds a
+  // closing order -- otherwise it withholds the close for its own reasons and the guard, which is
+  // what this test is about, never sees one.
+  loop.run(stop, 1);
   stop.request(StopIntent::FLATTEN);
 
   const auto report = loop.run(stop, 10);
@@ -1675,6 +1697,75 @@ TEST_CASE("a flatten of a short position is sized the same way", "[loop][stop]")
   const auto& closing = runner_instance.executor().placed().front();
   CHECK(closing.side_ == algotradelib::OrderSide::BUY);
   CHECK(closing.quantity_ == algotradelib::Decimal64::parse("6"));
+  CHECK(report.closing_contended_ == 1);
+  CHECK_FALSE(report.closing_complete());
+}
+
+TEST_CASE("a flatten sends no close when a sell it cannot see may already be working",
+          "[loop][stop]") {
+  // The same double sell as round 8, reached through a listing that is *known* to be out of date.
+  // Ten held, an empty working-order list read at startup, a bar that sells all ten, and a stop
+  // before the next working-order poll. The snapshot still shows nothing working, so the
+  // same-side deduction subtracts nothing and the pass would send a second full-size sell. Marking
+  // the report unverified does not recall an instruction that has already gone out.
+  SellingRunner runner_instance;
+  SellingSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+
+  strategy::Portfolio<runner::DryTag> portfolio;
+  portfolio.as_of_ = base_time();
+  algotradelib::HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = algotradelib::Decimal64::parse("10");
+  position.average_purchase_price_ = algotradelib::Decimal64::parse("70000");
+  portfolio.positions_.push_back(position);
+  runner_instance.context().set_portfolio(portfolio);
+
+  SellingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  // One iteration: the startup read sees an empty list, then the bar sells the position.
+  loop.run(stop, 1);
+  REQUIRE(runner_instance.executor().placed().size() == 1);
+  REQUIRE(runner_instance.placements_at_broker() == 1);
+
+  stop.request(StopIntent::FLATTEN);
+  const auto report = loop.run(stop, 1);
+
+  // No second sell. That is the whole assertion: the report can say what it likes afterwards, but
+  // the order would already be at the broker.
+  CHECK(runner_instance.executor().placed().size() == 1);
+  CHECK(report.flattened_ == 0);
+  CHECK(report.closing_contended_ == 1);
+  CHECK(report.closing_source_unverified_);
+  CHECK_FALSE(report.closing_complete());
+  REQUIRE_FALSE(report.notes_.empty());
+  CHECK(report.notes_.front().find("an order this loop cannot see could close them too") !=
+        std::string::npos);
+}
+
+TEST_CASE("a flatten on a source that cannot list orders sends no close", "[loop][stop]") {
+  // The other route to the same exposure: a broker whose order-list read is order *history*, which
+  // never populates `working_`. A resting sell is simply invisible, so the deduction has nothing to
+  // subtract and a full-size close could double up with it.
+  InertRunner runner_instance;
+  HistoryOnlySource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner_instance.context().set_portfolio(portfolio_with("10", nullptr));
+
+  HistoryOnlyLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  loop.run(stop, 1);
+  stop.request(StopIntent::FLATTEN);
+  const auto report = loop.run(stop, 1);
+
+  CHECK(runner_instance.executor().placed().empty());
+  CHECK(report.flattened_ == 0);
   CHECK(report.closing_contended_ == 1);
   CHECK_FALSE(report.closing_complete());
 }

@@ -163,6 +163,13 @@ if the withdrawal completes, part of the position is still held and the report s
 because the order filled, the account is flat. Neither is complete, so `closing_complete()` is
 false, and a later holdings snapshot is what tells you which one you got.
 
+**And when the picture itself is unverified, no close is sent at all.** That deduction can only
+subtract orders the loop can see, so an order sent after the last listing — or a source that cannot
+enumerate orders, like the history fallback — would slip past it and the full-size close would be
+the same double sell by a different route. The withdrawals still go, because cancelling only reduces
+exposure; the position stays, held and reported. If you need a flatten to actually place, give the
+loop a working-order cadence and let one poll complete before stopping it.
+
 **A hold refuses cancellations too, including a stop's own.** `halt()` means "this runner sends
 nothing", and a cancellation is a send — an order-writing request that can itself fail
 indeterminately. So a `withdraw` or `flatten` arriving while you are halted cancels nothing, reports
@@ -199,9 +206,13 @@ an order the snapshot does not hold). Cancellations count in these as well as pl
 withdrawal that failed in transit may have withdrawn the order or may not, and that is not the same
 as one that went.
 
+A seventh, `closing_contended_`, counts something different: a close the pass deliberately made
+smaller, or did not send at all, because another order might close the same position. See the
+flatten note above.
+
 **And one flag covers the case before any of those**, `closing_source_unverified_`. A stop builds its
 instructions from the portfolio snapshot — working orders for a `withdraw`, positions for a `flatten`
-— so it can only be complete if that picture is current. Three ways it is not:
+— so it can only be complete if that picture is current. Four ways it is not:
 
 - **The startup read never happened.** A stop requested before the loop's first iteration reports
   `STOPPING` and never reaches it, so the picture cannot contain an order a *previous process* left
