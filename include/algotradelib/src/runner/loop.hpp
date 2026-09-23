@@ -586,9 +586,14 @@ private:
 
     // Lifted so the closing instructions can actually go out -- a withdraw that cannot send is not a
     // withdraw -- and closed again immediately afterwards. The window is exactly one `stop()` call
-    // wide, and it is the only point at which a stop in progress can send anything. Only the loop's
-    // own hold lifts: an operator who halted by hand, or a runner whose journal failed, still
-    // refuses every closing instruction, which is the right answer for both.
+    // wide, and it is the only point at which a stop in progress can send anything.
+    //
+    // Only the loop's *own* hold lifts. An operator who halted by hand, or a runner whose journal
+    // failed, still refuses every closing instruction -- placements through `RiskGuard::check` and
+    // cancellations through the same holds in `Runner::send_cancel` -- and the closing counts say
+    // so, so `closing_complete()` is false and the notes say the position is still held. A stop
+    // arriving by signal or control file therefore cannot send anything through a halt somebody had
+    // already set.
     hold(std::nullopt);
     const auto closing = runner_->stop();
     hold(strategy::HaltReason::STOPPING);
@@ -599,15 +604,17 @@ private:
       report.withdrawn_ = closing.would_cancel_.size();
     }
     report.closing_rejected_ = closing.rejected_.size();
-    report.closing_refused_ = closing.refused_.size();
+    // Cancellations a hold refused count here too: a withdraw that withdrew nothing is not complete,
+    // and `closing_complete()` is the one call an operator should not have to second-guess.
+    report.closing_refused_ = closing.refused_.size() + closing.refused_cancel_.size();
     report.closing_withheld_ = closing.withheld_.size();
     report.closing_indeterminate_ = closing.indeterminate_.size();
 
     // Named individually rather than summarized, because "your flatten did not go out" is the one
     // note in this whole report an operator must not have to infer.
-    if (!closing.refused_.empty()) {
+    if (!closing.refused_.empty() || !closing.refused_cancel_.empty()) {
       report.notes_.push_back(
-        "a guard refused " + std::to_string(closing.refused_.size()) +
+        "a guard refused " + std::to_string(report.closing_refused_) +
         " closing instruction(s); the position is still held");
     }
     if (!closing.rejected_.empty()) {

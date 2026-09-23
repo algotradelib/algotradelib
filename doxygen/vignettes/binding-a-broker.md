@@ -98,6 +98,10 @@ for its own reasons — a polling loop whose holdings snapshot is stale, a runne
 be written — and each releases only what it took, so nothing else can clear your halt and your
 `resume()` cannot clear theirs. `guard().holds()` says what is in force when more than one thing is.
 
+While any hold stands the runner sends **nothing**, cancellations included: a withdrawal is still an
+order-writing request that can fail indeterminately. Refused cancellations appear in
+`refused_cancel_` with the hold that refused them, the way refused placements appear in `refused_`.
+
 **A guard rejects; it never resizes.** Halving an order that exceeded a ceiling would place a
 position the strategy never sized against a signal it never gave — and the strategy would then
 reconcile against that position and compound it.

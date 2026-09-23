@@ -148,6 +148,15 @@ runner takes `local_failure` when its journal cannot be written. Trading resumes
 released, so the loop opening its gate cannot lift your halt, and your `resume()` cannot lift the
 loop's.
 
+**A hold refuses cancellations too, including a stop's own.** `halt()` means "this runner sends
+nothing", and a cancellation is a send — an order-writing request that can itself fail
+indeterminately. So a `withdraw` or `flatten` arriving while you are halted cancels nothing, reports
+`closing_refused_`, and says "the position is still held" in the notes. That is deliberate: a stop
+reaches the process from a signal and from a control file, so a cancellation exempt from the halt
+would let `echo withdraw > /var/run/atl/stop` send an instruction your own halt forbade. To get out
+after halting, `resume()` first — one deliberate act, and `closing_complete()` tells you whether it
+worked.
+
 `report.final_gate_` is an optional, and names the most fundamental hold in force rather than only the
 loop's own — so a run that sent nothing because *you* halted it says `operator`, instead of showing you
 an open gate while nothing goes out. `guard().holds()` lists every hold when more than one stands, and

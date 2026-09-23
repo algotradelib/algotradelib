@@ -1046,3 +1046,48 @@ TEST_CASE("an operator's halt stops a send made from inside a poll", "[loop][hal
   CHECK(report.final_gate_ == strategy::HaltReason::OPERATOR);
 }
 
+TEST_CASE("a halt an operator set refuses a withdraw's cancellations", "[loop][stop][halt]") {
+  // A withdraw reaches this runner from a signal and from a control file, so a cancellation exempt
+  // from the halt would mean `echo withdraw > /var/run/atl/stop` could send an instruction the
+  // operator's own halt forbade. It is refused, and the report says so rather than reporting a
+  // withdraw that withdrew nothing.
+  InertRunner runner_instance;
+  InertSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_portfolio(portfolio_with("10", "5"));
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.guard().halt();
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  stop.request(StopIntent::WITHDRAW);
+
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.stopped_by_ == StopIntent::WITHDRAW);
+  // Asked for, and refused: nothing was sent.
+  CHECK(report.withdrawn_ == 1);
+  CHECK(report.closing_refused_ == 1);
+  CHECK_FALSE(report.closing_complete());
+  REQUIRE_FALSE(report.notes_.empty());
+  CHECK(report.notes_.front().find("the position is still held") != std::string::npos);
+  CHECK(runner_instance.guard().halted(strategy::HaltReason::OPERATOR));
+}
+
+TEST_CASE("a withdraw with no halt standing still cancels", "[loop][stop]") {
+  // The control case for the one above: the refusal must come from the halt, not from the closing
+  // pass being broken.
+  InertRunner runner_instance;
+  InertSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_portfolio(portfolio_with("10", "5"));
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  stop.request(StopIntent::WITHDRAW);
+
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.withdrawn_ == 1);
+  CHECK(report.closing_refused_ == 0);
+  CHECK(report.closing_complete());
+}

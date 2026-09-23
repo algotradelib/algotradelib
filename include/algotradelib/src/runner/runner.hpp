@@ -47,6 +47,19 @@ namespace runner {
  * polls and calls the same `on_*` methods.
  */
 
+/**
+ * One cancellation a hold on the guard refused, and which hold refused it.
+ *
+ * The cancellation counterpart of `strategy::GuardRejection`, and separate from it because a
+ * cancellation is not a `PlannedOrder`: there is no quantity or notional to report, only the order
+ * being withdrawn and the reason nothing was sent.
+ */
+template <typename BrokerTag>
+struct RefusedCancel {
+  OrderRef<BrokerTag> ref_;
+  strategy::HaltReason reason_{strategy::HaltReason::OPERATOR};
+};
+
 /** What a dry run decided, in the order it decided. */
 template <typename BrokerTag>
 struct DryRunReport {
@@ -84,6 +97,15 @@ struct DryRunReport {
   std::vector<WithheldOrder> unavailable_;
   /** Cancellations local machinery refused to send. Distinct from one the snapshot cannot describe. */
   std::vector<OrderRef<BrokerTag>> unavailable_cancel_;
+  /**
+   * Cancellations a hold on the guard refused, with the hold that refused them.
+   *
+   * The counterpart of `refused_` on the cancellation path. A halt stops this runner *sending*, and
+   * a cancellation is a send: it is an order-writing request that can itself fail indeterminately
+   * and wedge the instrument. So a halted runner withdraws nothing, and says so rather than letting
+   * a `WITHDRAW` through a kill switch somebody had already pulled.
+   */
+  std::vector<RefusedCancel<BrokerTag>> refused_cancel_;
   /** Lines the strategy logged. */
   std::vector<std::string> log_;
 
@@ -91,7 +113,8 @@ struct DryRunReport {
   bool quiet() const noexcept {
     return would_place_.empty() && would_cancel_.empty() && rejected_.empty() &&
       refused_.empty() && withheld_.empty() && indeterminate_.empty() &&
-      unresolved_cancel_.empty() && unavailable_.empty() && unavailable_cancel_.empty();
+      unresolved_cancel_.empty() && unavailable_.empty() && unavailable_cancel_.empty() &&
+      refused_cancel_.empty();
   }
 };
 
@@ -468,11 +491,22 @@ private:
    * cannot make an unresolved position worse.
    */
   void send_cancel(const OrderRef<Tag>& ref, Report& report) {
-    // Gated like a placement. A cancellation is the one instruction that cannot make an unresolved
-    // position worse, but it still goes through the journal, and a journal that cannot record it
-    // must not let it be sent unrecorded.
+    // Gated like a placement, and in the same order. A cancellation is the one instruction that
+    // cannot make an unresolved *position* worse, which is why the ledger does not gate it -- but it
+    // still goes through the journal, and a journal that cannot record it must not let it be sent
+    // unrecorded.
     if (guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
       report.unavailable_cancel_.push_back(ref);
+      return;
+    }
+    // And a halt stops this runner *sending*, which a cancellation is. Withdrawing reduces exposure
+    // and it is tempting to let it through anyway; the argument against is that `StopIntent` reaches
+    // this runner from a signal and from a file, so exempting cancellations would let
+    // `echo withdraw > /var/run/atl/stop` send an instruction that an operator's own halt forbade.
+    // A kill switch a control file can partly bypass is not one. An operator who wants out resumes
+    // first, which is one deliberate act and is visible in the report either way.
+    if (const auto holding = guard_.blocking_reason()) {
+      report.refused_cancel_.push_back(RefusedCancel<Tag>{ref, *holding});
       return;
     }
     // Resolved against the portfolio first, because building a cancellation needs the order's own
