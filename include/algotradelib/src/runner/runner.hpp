@@ -21,6 +21,29 @@
 namespace algotradelib {
 namespace runner {
 
+namespace runner_detail {
+
+/**
+ * Whether an executor can ask the broker what may be sold of one instrument.
+ *
+ * Detected rather than required, for the same reason the strategy's handlers are: a dry runner, a
+ * replay's queueing executor and a test double have no broker to ask, and none of them should have
+ * to grow a method that returns nothing. An executor bound to a broker whose holdings already carry
+ * the figure declares it too and answers nothing, so the runner's own condition stays one test.
+ */
+template <typename Executor, typename = void>
+struct fills_sellable : std::false_type {};
+
+template <typename Executor>
+struct fills_sellable<
+  Executor,
+  std::void_t<
+    decltype(std::declval<Executor&>().sellable_quantity(std::declval<const InstrumentId&>()))
+  >
+> : std::true_type {};
+
+} // namespace runner_detail
+
 /**
  * Runs a strategy against events it is fed, and sends nothing.
  *
@@ -547,6 +570,8 @@ private:
         continue;
       }
 
+      fill_sellable_if_needed(view, order);
+
       inputs.reference_price_ = context_.last_price(order.instrument_);
       // The currency the order is priced in, which only the reference data knows. A buying-power
       // limit is per currency, and an unresolved instrument leaves it absent rather than defaulting
@@ -624,6 +649,62 @@ private:
    * cancellation is not gated by the ledger, because withdrawing an order is the one action that
    * cannot make an unresolved position worse.
    */
+  /**
+   * Asks the broker what may be sold, but only when nothing else can answer.
+   *
+   * Four conditions, and every one of them is there to avoid a request:
+   *
+   * - the executor can ask at all -- a dry run and a replay cannot, and compile to nothing here;
+   * - the caller enforces the limit, so nobody pays for a figure no check reads;
+   * - the order is a sell, since the figure says nothing about buying;
+   * - and the snapshot has not already answered, which at a `HOLDINGS` broker it always has.
+   *
+   * The answer is written to the context's portfolio as well as to this pass's view, so a later
+   * pass in the same holdings cycle reuses it rather than asking again. The next holdings poll
+   * replaces the positions wholesale and the figure goes with them, which is the right lifetime: it
+   * is exactly as fresh as the position it describes.
+   */
+  void fill_sellable_if_needed(
+    strategy::Portfolio<Tag>& view,
+    const strategy::PlannedOrder& order
+  ) {
+    if constexpr (runner_detail::fills_sellable<Executor>::value) {
+      if (!guard_.limits().enforce_sellable_quantity_ || order.side_ != OrderSide::SELL) {
+        return;
+      }
+      if (view.sellable_quantity_of(order.instrument_)) {
+        return;
+      }
+      const auto answered = executor_.sellable_quantity(order.instrument_);
+      if (!answered) {
+        // Left absent, so the guard refuses for the reason it already has. Reporting a failure to
+        // establish the figure as a sellable quantity of zero would be a different claim.
+        return;
+      }
+      write_sellable(view, order.instrument_, *answered);
+      auto persisted = context_.portfolio();
+      write_sellable(persisted, order.instrument_, *answered);
+      context_.set_portfolio(std::move(persisted));
+    } else {
+      static_cast<void>(view);
+      static_cast<void>(order);
+    }
+  }
+
+  /** Writes a sellable quantity onto the position for `instrument`, when there is one. */
+  static void write_sellable(
+    strategy::Portfolio<Tag>& portfolio,
+    const InstrumentId& instrument,
+    const Decimal64& quantity
+  ) {
+    for (auto& position : portfolio.positions_) {
+      if (position.instrument_ == instrument) {
+        position.sellable_quantity_ = quantity;
+        return;
+      }
+    }
+  }
+
   /**
    * Records an accepted order in `view` so the rest of the pass sizes against it.
    *

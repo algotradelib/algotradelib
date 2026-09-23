@@ -97,6 +97,36 @@ public:
     return runner::outcome_of(*last_error_);
   }
 
+  /**
+   * Returns what the broker says may be sold of `instrument`, when it takes asking.
+   *
+   * **Only exists where the holdings snapshot does not already carry the figure.** At a broker
+   * whose `sellable_source` is `HOLDINGS` the answer arrives with every position the runner already
+   * polls, so this compiles to nothing there and the runner never calls it -- one `if constexpr`
+   * decides between free and one request per instrument sold.
+   *
+   * Nothing on failure rather than an error, because the caller's next move is the same either way:
+   * a sellable quantity nobody could establish is unknown, and unknown refuses. The reason is in
+   * `last_error()` for the report.
+   */
+  std::optional<Decimal64> sellable_quantity(const InstrumentId& instrument) {
+    if constexpr (Caps::sellable_source == SellableSource::INQUIRY) {
+      auto result = session_->sellable_quantity(instrument);
+      if (!result) {
+        last_error_ = result.error();
+        return std::nullopt;
+      }
+      last_error_.reset();
+      return result.value();
+    } else {
+      static_cast<void>(instrument);
+      return std::nullopt;
+    }
+  }
+
+  /** Whether asking this broker for a sellable quantity costs a request. */
+  static constexpr bool inquires_sellable = Caps::sellable_source == SellableSource::INQUIRY;
+
   /** Returns the reference the broker issued for the last accepted order. */
   const std::optional<OrderRef<BrokerTag>>& last_ref() const noexcept { return last_ref_; }
 

@@ -44,6 +44,14 @@ struct WithWorkingOrders : strategy::NoCaps {
 struct WithoutWorkingOrders : strategy::NoCaps {
   static constexpr bool has_working_orders = false;
 };
+/** A broker whose holdings already carry the sellable figure, as KIS's do. */
+struct SellableInHoldings : strategy::NoCaps {
+  static constexpr SellableSource sellable_source = SellableSource::HOLDINGS;
+};
+/** A broker that answers a per-instrument inquiry, as Toss does. */
+struct SellableByInquiry : strategy::NoCaps {
+  static constexpr SellableSource sellable_source = SellableSource::INQUIRY;
+};
 
 /**
  * A session that records what it was asked and answers however a test says.
@@ -85,6 +93,21 @@ public:
     return Result<Placed>(std::move(ack));
   }
 
+  /** Answers the sellable inquiry, counting how often it was asked. */
+  Result<Decimal64> sellable_quantity(const InstrumentId& instrument) {
+    sellable_asked_.push_back(instrument);
+    if (error_) {
+      return Result<Decimal64>(*error_);
+    }
+    return Result<Decimal64>(sellable_);
+  }
+
+  /** Sets what the sellable inquiry answers. */
+  void set_sellable(const char* quantity) { sellable_ = Decimal64::parse(quantity); }
+
+  /** Returns every instrument the sellable inquiry was asked about. */
+  const std::vector<InstrumentId>& sellable_asked() const noexcept { return sellable_asked_; }
+
   /** Makes every later call fail with `category` and `status`. */
   void fail_with(ErrorCategory category, int status = 0) {
     BrokerError error;
@@ -94,6 +117,9 @@ public:
   }
 
   void succeed() { error_.reset(); }
+
+  std::vector<InstrumentId> sellable_asked_;
+  Decimal64 sellable_{Decimal64::parse("0")};
 
   const std::vector<OrderRequest>& placed() const noexcept { return placed_; }
   const std::vector<AmendInstruction>& canceled() const noexcept { return canceled_; }
@@ -388,7 +414,132 @@ strategy::BarEvent bar_at(int hour, const char* close) {
   return strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, bar);
 }
 
+/** Sells everything it holds, so a sellable check has something to refuse. */
+struct SellsAll {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = Decimal64::parse("0");
+    ctx.submit(target);
+  }
+};
+
+template <typename CapsType>
+using SellRunner = runner::Runner<
+  SellsAll, CapsType, FakeBroker, live::SessionExecutor<FakeSession<CapsType>>
+>;
+
+/** A portfolio holding `held`, with `sellable` stated only when the broker publishes it. */
+template <typename CapsType>
+strategy::Portfolio<FakeBroker> held_position(const char* held, const char* sellable) {
+  strategy::Portfolio<FakeBroker> portfolio;
+  HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = Decimal64::parse(held);
+  if (sellable != nullptr) {
+    position.sellable_quantity_ = Decimal64::parse(sellable);
+  }
+  portfolio.positions_.push_back(position);
+  return portfolio;
+}
+
 } // namespace
+
+TEST_CASE("a broker carrying the figure in its holdings is never asked for it") {
+  // The whole point of `sellable_source`: at KIS the answer is already on every position the
+  // runner polls, so the check costs nothing. A test counts the requests, because "it should not
+  // ask" is the kind of claim that quietly stops being true.
+  FakeSession<SellableInHoldings> session;
+  strategy::RiskLimits limits;
+  limits.enforce_sellable_quantity_ = true;
+
+  SellRunner<SellableInHoldings> live_runner(
+    SellsAll{}, limits, 512, live::SessionExecutor<FakeSession<SellableInHoldings>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  live_runner.context().set_portfolio(held_position<SellableInHoldings>("10", "10"));
+
+  const auto report = live_runner.feed(bar_at(1, "70000"));
+
+  REQUIRE(session.sellable_asked().empty());
+  REQUIRE(session.placed().size() == 1);
+  REQUIRE(report.refused_.empty());
+
+  // And when such a broker's position somehow carries no figure -- a field that stopped arriving,
+  // a row that failed to yield one -- the capability is what stops a pointless request, not the
+  // presence of the value. Without that gate this asks a broker whose answer the runner has
+  // already decided comes from the snapshot.
+  FakeSession<SellableInHoldings> silent;
+  SellRunner<SellableInHoldings> strict(
+    SellsAll{}, limits, 512, live::SessionExecutor<FakeSession<SellableInHoldings>>(silent)
+  );
+  strict.context().set_instrument(samsung_reference());
+  strict.context().set_phase(strategy::MarketPhase::OPEN);
+  strict.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  strict.context().set_portfolio(held_position<SellableInHoldings>("10", nullptr));
+
+  const auto refused = strict.feed(bar_at(1, "70000"));
+  REQUIRE(silent.sellable_asked().empty());
+  REQUIRE(silent.placed().empty());
+  REQUIRE(refused.refused_.size() == 1);
+  REQUIRE(refused.refused_[0].reason_ == strategy::GuardReason::QUANTITY_NOT_SELLABLE);
+}
+
+TEST_CASE("a broker that must be asked is asked once, for the instrument being sold") {
+  FakeSession<SellableByInquiry> session;
+  session.set_sellable("10");
+  strategy::RiskLimits limits;
+  limits.enforce_sellable_quantity_ = true;
+
+  SellRunner<SellableByInquiry> live_runner(
+    SellsAll{}, limits, 512, live::SessionExecutor<FakeSession<SellableByInquiry>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  // Toss leaves the field absent, which is why this broker has to be asked at all.
+  live_runner.context().set_portfolio(held_position<SellableByInquiry>("10", nullptr));
+
+  const auto report = live_runner.feed(bar_at(1, "70000"));
+
+  REQUIRE(session.sellable_asked().size() == 1);
+  REQUIRE(session.sellable_asked()[0] == samsung());
+  REQUIRE(session.placed().size() == 1);
+  REQUIRE(report.refused_.empty());
+
+  // The answer is kept with the position, so the next pass in the same holdings cycle reuses it
+  // rather than spending another request on a figure that has not been repolled.
+  REQUIRE(live_runner.context().portfolio().sellable_quantity_of(samsung()) ==
+          Decimal64::parse("10"));
+  live_runner.feed(bar_at(2, "70000"));
+  REQUIRE(session.sellable_asked().size() == 1);
+}
+
+TEST_CASE("an inquiry that fails leaves the quantity unknown, and unknown refuses") {
+  FakeSession<SellableByInquiry> session;
+  session.fail_with(ErrorCategory::TRANSPORT);
+  strategy::RiskLimits limits;
+  limits.enforce_sellable_quantity_ = true;
+
+  SellRunner<SellableByInquiry> live_runner(
+    SellsAll{}, limits, 512, live::SessionExecutor<FakeSession<SellableByInquiry>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  live_runner.context().set_portfolio(held_position<SellableByInquiry>("10", nullptr));
+
+  const auto report = live_runner.feed(bar_at(1, "70000"));
+
+  // Nothing was sent on a figure nobody could establish, and the refusal names the reason rather
+  // than reporting a sellable quantity of zero the broker never stated.
+  REQUIRE(session.placed().empty());
+  REQUIRE(report.refused_.size() == 1);
+  REQUIRE(report.refused_[0].reason_ == strategy::GuardReason::QUANTITY_NOT_SELLABLE);
+}
 
 TEST_CASE("a strategy drives a session through the same pipeline a dry run uses") {
   FakeSession<WithoutKey> session;
