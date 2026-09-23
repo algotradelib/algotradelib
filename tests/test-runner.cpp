@@ -319,6 +319,69 @@ TEST_CASE("a second buy in one pass spends what the first already committed") {
   REQUIRE(report.refused_[0].attempted_ == Decimal64::parse("700000"));
 }
 
+TEST_CASE("the probe learns the broker's sellable convention from ordinary polls") {
+  // The point of the probe: no experiment, no extra request, no order placed for the sake of
+  // measuring. It reads the portfolios the runner is fed anyway.
+  runner::DryRunner<HoldTen> dry;
+  arrange(dry);
+  dry.probe_sellable_convention();
+
+  using Tag = runner::DryRunner<HoldTen>::Tag;
+  strategy::Portfolio<Tag> portfolio;
+  HoldingPosition held;
+  held.instrument_ = samsung();
+  held.quantity_ = Decimal64::parse("100");
+  held.sellable_quantity_ = Decimal64::parse("100");
+  portfolio.positions_.push_back(held);
+  dry.context().set_portfolio(portfolio);
+  dry.feed(bar_at(10, "70000"));
+  REQUIRE(dry.sellable_convention().verdict() == strategy::SellableConvention::UNDETERMINED);
+
+  // A sell of thirty is now resting, as a later poll reports it, and the figure came back lower by
+  // exactly thirty.
+  WorkingOrder<Tag> resting;
+  resting.order_.instrument_ = samsung();
+  resting.order_.side_ = OrderSide::SELL;
+  resting.order_.status_ = OrderStatus::PENDING;
+  resting.order_.quantity_ = Decimal64::parse("30");
+  resting.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+  portfolio.working_.push_back(resting);
+  portfolio.positions_[0].sellable_quantity_ = Decimal64::parse("70");
+  dry.context().set_portfolio(portfolio);
+  dry.feed(bar_at(11, "70000"));
+
+  REQUIRE(dry.sellable_convention().verdict() == strategy::SellableConvention::NET_OF_RESTING);
+  REQUIRE(dry.sellable_convention().overall().net_ == 1);
+}
+
+TEST_CASE("the probe is off by default and changes nothing when on") {
+  using Tag = runner::DryRunner<HoldTen>::Tag;
+  strategy::Portfolio<Tag> portfolio;
+  HoldingPosition held;
+  held.instrument_ = samsung();
+  held.quantity_ = Decimal64::parse("100");
+  held.sellable_quantity_ = Decimal64::parse("100");
+  portfolio.positions_.push_back(held);
+
+  runner::DryRunner<HoldTen> quiet;
+  arrange(quiet);
+  quiet.context().set_portfolio(portfolio);
+  const auto without = quiet.feed(bar_at(10, "70000"));
+  // Off by default: it never looked, so it knows nothing.
+  REQUIRE(quiet.sellable_convention().overall().total() == 0);
+
+  runner::DryRunner<HoldTen> probing;
+  arrange(probing);
+  probing.probe_sellable_convention();
+  probing.context().set_portfolio(portfolio);
+  const auto with = probing.feed(bar_at(10, "70000"));
+
+  // A run that observes places exactly what a run that does not would have placed.
+  REQUIRE(with.would_place_.size() == without.would_place_.size());
+  REQUIRE(with.refused_.size() == without.refused_.size());
+  REQUIRE(with.would_place_.size() == 1);
+}
+
 TEST_CASE("a guard refusal is reported and no order survives it") {
   strategy::RiskLimits limits;
   limits.max_order_notional_ = Decimal64::parse("100000");

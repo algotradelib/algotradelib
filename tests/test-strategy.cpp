@@ -559,6 +559,120 @@ TEST_CASE("sellable quantity is what the broker said, never the held quantity") 
   REQUIRE_FALSE(empty.quantity_of(samsung()));
 }
 
+namespace {
+
+using Probe = strategy::SellableConventionProbe<strategy::ProbeBroker>;
+
+/** A portfolio holding `held` with `sellable` reported, and `resting` on the sell side. */
+ProbePortfolio observed(const char* held, const char* sellable, const char* resting) {
+  ProbePortfolio portfolio;
+  HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = Decimal64::parse(held);
+  position.sellable_quantity_ = Decimal64::parse(sellable);
+  portfolio.positions_.push_back(position);
+  if (Decimal64::parse(resting).coefficient() != 0) {
+    portfolio.working_.push_back(working(resting, "0", OrderStatus::PENDING, OrderSide::SELL));
+  }
+  return portfolio;
+}
+
+} // namespace
+
+TEST_CASE("the probe says nothing until a sell starts resting") {
+  Probe probe;
+  REQUIRE(probe.verdict() == strategy::SellableConvention::UNDETERMINED);
+
+  // Any number of polls with nothing resting teach it nothing, which is the common case and must
+  // not drift toward an answer.
+  probe.observe(observed("100", "70", "0"));
+  probe.observe(observed("100", "70", "0"));
+  probe.observe(observed("100", "70", "0"));
+  REQUIRE(probe.verdict() == strategy::SellableConvention::UNDETERMINED);
+  REQUIRE(probe.overall().total() == 0);
+}
+
+TEST_CASE("a figure that falls by the resting quantity is net of it") {
+  Probe probe;
+  probe.observe(observed("100", "100", "0"));
+  // Thirty starts resting and the figure drops by thirty: the broker had already subtracted it.
+  probe.observe(observed("100", "70", "30"));
+
+  REQUIRE(probe.verdict() == strategy::SellableConvention::NET_OF_RESTING);
+  REQUIRE(probe.evidence(samsung()).net_ == 1);
+  REQUIRE(probe.evidence(samsung()).gross_ == 0);
+}
+
+TEST_CASE("a figure that does not move is gross of the resting quantity") {
+  Probe probe;
+  probe.observe(observed("100", "100", "0"));
+  // Thirty rests and the figure is unchanged, so the deduction the guard makes is doing real work.
+  probe.observe(observed("100", "100", "30"));
+
+  REQUIRE(probe.verdict() == strategy::SellableConvention::GROSS_OF_RESTING);
+  REQUIRE(probe.evidence(samsung()).gross_ == 1);
+}
+
+TEST_CASE("a fill in the same window is not evidence of anything") {
+  Probe probe;
+  probe.observe(observed("100", "100", "0"));
+  // The holding moved, so the sell filled somewhere in here and both numbers moved with it.
+  probe.observe(observed("70", "70", "30"));
+
+  REQUIRE(probe.verdict() == strategy::SellableConvention::UNDETERMINED);
+  REQUIRE(probe.overall().total() == 0);
+}
+
+TEST_CASE("a move by the wrong amount is discarded rather than forced into an answer") {
+  Probe probe;
+  probe.observe(observed("100", "100", "0"));
+  // Thirty rests and the figure falls by fifty: a settlement or a pledge landed in the same window,
+  // and neither rule describes it.
+  probe.observe(observed("100", "50", "30"));
+
+  REQUIRE(probe.verdict() == strategy::SellableConvention::UNDETERMINED);
+  REQUIRE(probe.overall().total() == 0);
+}
+
+TEST_CASE("the probe reports disagreement rather than resolving it") {
+  Probe probe;
+  probe.observe(observed("100", "100", "0"));
+  probe.observe(observed("100", "70", "30"));   // net
+  probe.observe(observed("100", "70", "50"));   // gross: twenty more rests, the figure holds
+
+  REQUIRE(probe.verdict() == strategy::SellableConvention::INCONSISTENT);
+  REQUIRE(probe.evidence(samsung()).net_ == 1);
+  REQUIRE(probe.evidence(samsung()).gross_ == 1);
+  REQUIRE(std::string(strategy::sellable_convention_name(probe.verdict())) == "inconsistent");
+}
+
+TEST_CASE("a broker that publishes no sellable figure teaches the probe nothing") {
+  // Toss leaves the field absent, so there is nothing to compare and the probe stays silent rather
+  // than treating absence as a number.
+  Probe probe;
+  ProbePortfolio portfolio;
+  HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = Decimal64::parse("100");
+  portfolio.positions_.push_back(position);
+  probe.observe(portfolio);
+  portfolio.working_.push_back(working("30", "0", OrderStatus::PENDING, OrderSide::SELL));
+  probe.observe(portfolio);
+
+  REQUIRE(probe.verdict() == strategy::SellableConvention::UNDETERMINED);
+}
+
+TEST_CASE("a scale change between polls is not read as a change in value") {
+  // Decimal64 equality compares the scale as well as the coefficient, so "100" and "100.0" are
+  // different values to it. A broker free to change the scale it reports must not make the probe
+  // conclude from formatting.
+  Probe probe;
+  probe.observe(observed("100", "100", "0"));
+  probe.observe(observed("100.0", "100.00", "30"));
+
+  REQUIRE(probe.verdict() == strategy::SellableConvention::GROSS_OF_RESTING);
+}
+
 TEST_CASE("working quantity counts what is still in the market, not what was ordered") {
   // The partial-fill case that causes double-sizing: 100 ordered, 40 filled, so 60 is still
   // working. A strategy sizing against the position alone would ask for 60 more on top.

@@ -6,6 +6,7 @@
 
 #include "../strategy/reconcile.hpp"
 #include "../strategy/risk.hpp"
+#include "../strategy/sellable_convention.hpp"
 
 #include <algotradelib/core>
 
@@ -293,6 +294,25 @@ public:
    */
   std::size_t placements_at_broker() const noexcept { return placements_at_broker_; }
 
+  /**
+   * Starts inferring whether the broker's sellable figure already excludes resting sells.
+   *
+   * Off by default, because it costs a scan of the positions on every pass and answers a question
+   * most callers do not have. Neither broker documents the convention, and `RiskGuard` subtracts
+   * resting sells because the safe direction is to over-count; a caller who wants to know whether
+   * that deduction is charging twice turns this on and reads `sellable_convention()` after a few
+   * sessions of ordinary trading.
+   *
+   * It observes rather than experiments: nothing extra is sent, nothing extra is requested, and a
+   * run with the probe on places exactly the orders it would have placed with it off.
+   */
+  void probe_sellable_convention(bool enabled = true) { probing_sellable_ = enabled; }
+
+  /** Returns what the probe has inferred, and the counts behind it. */
+  const strategy::SellableConventionProbe<Tag>& sellable_convention() const noexcept {
+    return sellable_probe_;
+  }
+
   /** Returns the strategy, so a test can read the state it kept. */
   const Strategy& strategy() const noexcept { return strategy_; }
   Strategy& strategy() noexcept { return strategy_; }
@@ -451,6 +471,13 @@ private:
    * ceiling must not silence the rest of a cross-sectional rebalance.
    */
   Report settle() {
+    // Before anything is planned, because the portfolio here is the broker's own last word: a pass
+    // adds its accepted orders to a copy, and the probe must not read this runner's intentions as
+    // the broker's report.
+    if (probing_sellable_) {
+      sellable_probe_.observe(context_.portfolio());
+    }
+
     Report report;
     const auto instructions = context_.drain();
     std::vector<strategy::PlannedOrder> pending;
@@ -761,6 +788,8 @@ private:
   strategy::RiskGuard guard_;
   /** Placements sent that may have left an order resting; see `placements_at_broker`. */
   std::size_t placements_at_broker_{0};
+  bool probing_sellable_{false};
+  strategy::SellableConventionProbe<Tag> sellable_probe_;
   Context context_;
   /** Records the first local failure, keeping it rather than overwriting with a later one. */
   void note_local_failure(std::string detail) {
