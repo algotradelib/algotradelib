@@ -255,6 +255,8 @@ public:
 
   /** Completion handler for one normalized holdings snapshot. */
   using HoldingsHandler = net::any_completion_handler<void(Result<HoldingsSnapshot>)>;
+  /** Completion handler for one normalized buying-power reading. */
+  using BuyingPowerHandler = net::any_completion_handler<void(Result<BuyingPower>)>;
 
   /** Completion handler for one KIS order acknowledgement. */
   using OrderAckHandler = net::any_completion_handler<void(Result<KisOrderAck>)>;
@@ -454,6 +456,31 @@ public:
           self->strand_,
           [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
             self->start_quote(std::move(instrument), std::move(completion));
+          }
+        );
+      },
+      token
+    );
+  }
+
+  /**
+   * Requests what the account may spend, in won.
+   *
+   * KIS answers this per instrument and per order division when asked to, and the same endpoint
+   * answers the **account-level amount alone** when the symbol and the unit price are left blank --
+   * which is the question the port asks, and the only one both brokers answer the same way. The
+   * per-instrument quantities stay reachable through this client for a caller that wants them.
+   */
+  template <typename CompletionToken>
+  auto async_buying_power(Currency currency, KisAccount account, CompletionToken&& token) {
+    return net::async_initiate<CompletionToken, void(Result<BuyingPower>)>(
+      [self = shared_from_this(), currency, account = std::move(account)](auto&& handler) mutable {
+        auto completion = BuyingPowerHandler(std::forward<decltype(handler)>(handler));
+        net::post(
+          self->strand_,
+          [self, currency, account = std::move(account), completion = std::move(completion)]()
+            mutable {
+            self->start_buying_power(currency, std::move(account), std::move(completion));
           }
         );
       },
@@ -1866,6 +1893,139 @@ private:
         }
       )
     );
+  }
+
+  void start_buying_power(Currency currency, KisAccount account, BuyingPowerHandler completion) {
+    auto invalid = validate_account(account);
+    if (!invalid && !(currency == Currency::krw())) {
+      // The domestic inquiry answers in won. Answering a dollar request with a won figure under a
+      // dollar label is the silent downgrade Decision 6 forbids, and KIS's foreign-currency
+      // buying power is a different endpoint answering a different question.
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.broker_code_ = "unsupported_currency";
+      error.message_ =
+        "the KIS domestic buying-power inquiry answers in KRW only, not " + currency.str();
+      invalid = std::move(error);
+    }
+    if (invalid) {
+      complete_buying_power(std::move(completion), Result<BuyingPower>(std::move(*invalid)));
+      return;
+    }
+    ensure_token(
+      TokenHandler(
+        [self = shared_from_this(), account = std::move(account),
+         completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+          if (token_error) {
+            self->complete_buying_power(
+              std::move(completion), Result<BuyingPower>(std::move(*token_error))
+            );
+            return;
+          }
+          self->request_buying_power(std::move(account), std::move(completion));
+        }
+      )
+    );
+  }
+
+  void request_buying_power(KisAccount account, BuyingPowerHandler completion) {
+    http_->async_request(
+      buying_power_request(config_, token_.access_token_, account),
+      [self = shared_from_this(), completion = std::move(completion)](
+        Result<network::HttpResponse> result
+      ) mutable {
+        net::post(
+          self->strand_,
+          [self, completion = std::move(completion), result = std::move(result)]() mutable {
+            self->complete_buying_power(
+              std::move(completion), parse_buying_power(std::move(result))
+            );
+          }
+        );
+      }
+    );
+  }
+
+  /**
+   * Builds the account-level buying-power request.
+   *
+   * **`PDNO` and `ORD_UNPR` are deliberately empty**, which is how KIS is asked for the amount
+   * without a quantity: "PDNO, ORD_UNPR 공란 입력 시, 매수수량 없이 매수금액만 조회됨". Both are
+   * marked required, so they are sent as empty values rather than omitted.
+   *
+   * `ORD_DVSN` is `01`, market. The division only shapes the *quantity* answer, through the
+   * instrument's margin rate, and no quantity is being asked for here -- but the field is required,
+   * and `01` is the one KIS's own documentation tells a caller to use when the answer must reflect
+   * margin rather than ignore it.
+   *
+   * `CMA_EVLU_AMT_ICLD_YN` and `OVRS_ICLD_YN` are both `N`, and that is a decision rather than a
+   * default. Including a CMA valuation or overseas balances would make the figure larger than the
+   * won an order can actually spend, and a buying-power check exists to be conservative. A caller
+   * wanting the wider figure asks this client directly.
+   */
+  static network::HttpRequest buying_power_request(
+    const KisConfig& config,
+    std::string_view access_token,
+    const KisAccount& account
+  ) {
+    network::HttpRequest request;
+    request.group_ = network::RateLimitGroup::ACCOUNT;
+    request.method_ = http::verb::get;
+    request.target_ =
+      "/uapi/domestic-stock/v1/trading/inquire-psbl-order"
+      "?CANO=" +
+      account.account_number_ + "&ACNT_PRDT_CD=" + account.product_code_ +
+      "&PDNO=&ORD_UNPR=&ORD_DVSN=01&CMA_EVLU_AMT_ICLD_YN=N&OVRS_ICLD_YN=N";
+    request.headers_ = {
+      {"authorization", "Bearer " + std::string(access_token)},
+      {"appkey", config.key()},
+      {"appsecret", config.secret()},
+      {"tr_id", config.is_demo_ ? "VTTC8908R" : "TTTC8908R"},
+      {"custtype", "P"},
+      {"content-type", "application/json; charset=utf-8"},
+    };
+    return request;
+  }
+
+  /**
+   * Normalizes KIS's buying power.
+   *
+   * **`nrcvb_buy_amt` is the field, not `max_buy_amt`.** The 미수-free amount is what Toss's
+   * `cashBuyingPower` means -- both answer "what can be bought without credit" -- while the maximum
+   * includes 미수 and means something the other broker never reports. Normalizing the larger number
+   * would make one library type mean cash at one broker and cash-plus-credit at the other, which is
+   * exactly what Decision 2b exists to prevent, and it would do it in the direction that permits
+   * more.
+   */
+  static Result<BuyingPower> parse_buying_power(Result<network::HttpResponse> response) {
+    auto document = market_document(std::move(response));
+    if (!document) {
+      return Result<BuyingPower>(std::move(document.error()));
+    }
+    try {
+      const auto output = document.value().if_contains("output");
+      if (!output || !output->is_object()) {
+        throw std::runtime_error("missing object field: output");
+      }
+      BuyingPower power;
+      power.cash_ = Money{
+        Decimal64::parse(broker_detail::json_string(output->as_object(), "nrcvb_buy_amt")),
+        Currency::krw(),
+      };
+      // KIS states no timestamp for the figure, so the honest stamp is when it arrived.
+      power.received_at_ = std::chrono::system_clock::now();
+      return Result<BuyingPower>(std::move(power));
+    } catch (const std::exception& exception) {
+      BrokerError error;
+      error.category_ = ErrorCategory::PROTOCOL;
+      error.broker_code_ = "invalid_buying_power_response";
+      error.message_ = exception.what();
+      return Result<BuyingPower>(std::move(error));
+    }
+  }
+
+  void complete_buying_power(BuyingPowerHandler handler, Result<BuyingPower> result) {
+    deliver(std::move(handler), std::move(result));
   }
 
   void start_holdings(KisAccount account, HoldingsHandler completion) {
@@ -3535,6 +3695,16 @@ public:
     return run<HoldingsSnapshot>(
       [&](auto&& sink) { client_->async_holdings(std::move(account), std::move(sink)); },
       "holdings"
+    );
+  }
+
+  /** Returns what the account may spend, in won. */
+  Result<BuyingPower> buying_power(Currency currency, KisAccount account) {
+    return run<BuyingPower>(
+      [&](auto&& sink) {
+        client_->async_buying_power(currency, std::move(account), std::move(sink));
+      },
+      "buying_power"
     );
   }
 

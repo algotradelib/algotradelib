@@ -32,6 +32,18 @@ struct KisClientTestAccess {
     return KisClient::parse_holdings(std::move(response));
   }
 
+  static Result<BuyingPower> parse_buying_power(Result<network::HttpResponse> response) {
+    return KisClient::parse_buying_power(std::move(response));
+  }
+
+  static network::HttpRequest buying_power_request(
+    const KisConfig& config,
+    std::string_view access_token,
+    const KisAccount& account
+  ) {
+    return KisClient::buying_power_request(config, access_token, account);
+  }
+
   static Result<HoldingsSnapshot> parse_holdings_page(
     Result<network::HttpResponse> response,
     std::string& foreign_cursor,
@@ -3350,4 +3362,72 @@ TEST_CASE(
   );
   REQUIRE(empty);
   REQUIRE(empty.value().rates_.empty());
+}
+
+TEST_CASE(
+  "KIS buying power asks for the amount alone, with the symbol and price blank",
+  "[core][capacity][kis]"
+) {
+  const kis::KisAccount account{"12345678", "01"};
+  kis::KisConfig live;
+  kis::KisConfig demo;
+  demo.is_demo_ = true;
+
+  const auto request = kis::KisClientTestAccess::buying_power_request(live, "token", account);
+  REQUIRE(request.method_ == http::verb::get);
+  REQUIRE(
+    request.target_.rfind("/uapi/domestic-stock/v1/trading/inquire-psbl-order", 0) == 0
+  );
+  REQUIRE(header_of(request, "tr_id") == "TTTC8908R");
+
+  // The blanks are the whole request: they are how KIS is asked for the account-level amount
+  // rather than a per-instrument quantity, and both fields are required so they are sent empty
+  // rather than omitted.
+  REQUIRE(request.target_.find("PDNO=&") != std::string::npos);
+  REQUIRE(request.target_.find("ORD_UNPR=&") != std::string::npos);
+  REQUIRE(request.target_.find("CANO=12345678") != std::string::npos);
+  REQUIRE(request.target_.find("ACNT_PRDT_CD=01") != std::string::npos);
+
+  // Both inclusions are off deliberately: either would report won an order cannot spend.
+  REQUIRE(request.target_.find("CMA_EVLU_AMT_ICLD_YN=N") != std::string::npos);
+  REQUIRE(request.target_.find("OVRS_ICLD_YN=N") != std::string::npos);
+
+  // The demo environment has its own transaction id, so a demo key is not silently sent a live one.
+  const auto demo_request = kis::KisClientTestAccess::buying_power_request(demo, "token", account);
+  REQUIRE(header_of(demo_request, "tr_id") == "VTTC8908R");
+}
+
+TEST_CASE(
+  "KIS buying power normalizes the credit-free amount, not the maximum",
+  "[core][capacity][kis]"
+) {
+  // The response shape from the published sheet. `max_buy_amt` is deliberately larger here: it
+  // includes 미수, which Toss never reports, and normalizing it would make one library type mean
+  // cash at one broker and cash-plus-credit at the other -- in the direction that permits more.
+  const auto reading = kis::KisClientTestAccess::parse_buying_power(
+    json_response(
+      R"({"rt_cd":"0","msg_cd":"APBK0013","msg1":"조회되었습니다","output":{)"
+      R"("ord_psbl_cash":"741191178","ord_psbl_sbst":"0","ruse_psbl_amt":"0",)"
+      R"("fund_rpch_chgs":"0","psbl_qty_calc_unpr":"0",)"
+      R"("nrcvb_buy_amt":"741191178","nrcvb_buy_qty":"0",)"
+      R"("max_buy_amt":"2223573534","max_buy_qty":"0","cma_evlu_amt":"0",)"
+      R"("ovrs_re_use_amt_wcrc":"0","ord_psbl_frcr_amt_wcrc":"0"}})"
+    )
+  );
+  REQUIRE(reading);
+  REQUIRE(reading.value().cash_.amount_ == Decimal64::parse("741191178"));
+  REQUIRE(reading.value().cash_.currency_ == Currency::krw());
+
+  // A declared failure is an error, never an empty reading that would read as "no money".
+  const auto refused = kis::KisClientTestAccess::parse_buying_power(
+    json_response(R"({"rt_cd":"1","msg_cd":"APBK0919","msg1":"조회할 수 없습니다"})")
+  );
+  REQUIRE_FALSE(refused);
+  REQUIRE(refused.error().broker_code_ == "APBK0919");
+
+  const auto malformed = kis::KisClientTestAccess::parse_buying_power(
+    json_response(R"({"rt_cd":"0","output":{"ord_psbl_cash":"1"}})")
+  );
+  REQUIRE_FALSE(malformed);
+  REQUIRE(malformed.error().category_ == ErrorCategory::PROTOCOL);
 }

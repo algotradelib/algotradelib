@@ -665,6 +665,40 @@ struct HoldingsSnapshot {
 };
 
 /**
+ * Where this library learns what may be sold of a position.
+ *
+ * Named for the **source** rather than for a capability, deliberately. A `has_*` constant on
+ * `BrokerCaps` answers whether the *broker* implements an operation, and by that question KIS's
+ * answer is "yes, and this library does not use it": 매도가능수량조회 exists and is documented, and
+ * the figure it returns is already on every holdings snapshot, so spending a request per instrument
+ * to fetch it again -- on an endpoint a demo account cannot call -- would buy nothing.
+ *
+ * Saying where the figure comes from states what is true without implying a gap in anyone's API,
+ * and it gates the runner with one `if constexpr`.
+ */
+enum class SellableSource {
+  /** It arrives on the holdings snapshot; filling it costs no request at all. */
+  HOLDINGS,
+  /** The port has a per-instrument inquiry, spent only where the snapshot is silent. */
+  INQUIRY,
+  /** This library has no way to learn it for this broker. */
+  NONE,
+};
+
+/** Returns a stable lowercase name for `source`, for logs and structured reporting. */
+inline constexpr std::string_view sellable_source_name(SellableSource source) noexcept {
+  switch (source) {
+    case SellableSource::HOLDINGS:
+      return "holdings";
+    case SellableSource::INQUIRY:
+      return "inquiry";
+    case SellableSource::NONE:
+      return "none";
+  }
+  return "none";
+}
+
+/**
  * What the broker says may be spent, in one currency.
  *
  * Deliberately not cash, and the distinction is why this type exists rather than a `Money` in the
