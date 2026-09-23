@@ -851,11 +851,17 @@ TEST_CASE("a flatten cancels and then closes the position", "[loop][stop]") {
   InertSource source;
   InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
   StopSource stop;
+
+  // One ordinary iteration first, so the startup read happens and the closing pass knows what is
+  // outstanding. A stop requested before that runs against an unverified picture, which is its own
+  // test below.
+  loop.run(stop, 1);
   stop.request(StopIntent::FLATTEN);
 
   const auto report = loop.run(stop, 10);
 
   CHECK(report.stopped_by_ == StopIntent::FLATTEN);
+  CHECK_FALSE(report.closing_source_unverified_);
   // Cancelled once, by reconciliation rather than by the loop: a flatten that also cancelled directly
   // would send two withdrawals for the same order.
   CHECK(report.withdrawn_ == 1);
@@ -1132,12 +1138,15 @@ TEST_CASE("a withdraw with no halt standing still cancels", "[loop][stop]") {
   runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
   InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
   StopSource stop;
+
+  loop.run(stop, 1);  // the startup read, so the closing pass has a verified source
   stop.request(StopIntent::WITHDRAW);
 
   const auto report = loop.run(stop, 1);
 
   CHECK(report.withdrawn_ == 1);
   CHECK(report.closing_refused_ == 0);
+  CHECK_FALSE(report.closing_source_unverified_);
   CHECK(report.closing_complete());
 }
 
@@ -1221,4 +1230,97 @@ TEST_CASE("a cancellation the broker rejected is not a completed withdrawal", "[
   CHECK_FALSE(runner_instance.ledger().requires_reconcile(samsung()));
   REQUIRE_FALSE(report.notes_.empty());
   CHECK(report.notes_.front().find("read its order list") != std::string::npos);
+}
+
+TEST_CASE("a stop before the first order-list read is not a complete stop", "[loop][stop]") {
+  // The sequence that matters: a stop requested before the loop's first iteration. `gate_for`
+  // reports `STOPPING` and never reaches the startup read, so the closing pass is built from
+  // whatever the holdings snapshot happens to hold -- and a predecessor's resting orders are not in
+  // it. With nothing in the snapshot at all, the pass queues nothing, every failure count stays
+  // zero, and before this the stop reported itself complete having established nothing.
+  InertRunner runner_instance;
+  InertSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  stop.request(StopIntent::WITHDRAW);
+
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.stopped_by_ == StopIntent::WITHDRAW);
+  CHECK(report.withdrawn_ == 0);
+  CHECK_FALSE(report.order_list_read_);
+  CHECK(report.closing_source_unverified_);
+  CHECK_FALSE(report.closing_complete());
+  REQUIRE_FALSE(report.notes_.empty());
+  CHECK(report.notes_.front().find("could not verify what was outstanding") != std::string::npos);
+  CHECK(report.notes_.front().find("order list has not been read") != std::string::npos);
+}
+
+TEST_CASE("a stop still withdraws what it can see, and says the picture was partial",
+          "[loop][stop]") {
+  // Sending nothing would be worse: withdrawing the orders the snapshot does hold beats withdrawing
+  // none of them. The pass does both -- it sends, and it refuses to call the result complete.
+  InertRunner runner_instance;
+  InertSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.context().set_portfolio(portfolio_with("10", "5"));
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  stop.request(StopIntent::WITHDRAW);
+
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.withdrawn_ == 1);
+  CHECK(runner_instance.executor().canceled().size() == 1);
+  CHECK(report.closing_source_unverified_);
+  CHECK_FALSE(report.closing_complete());
+}
+
+TEST_CASE("a stop with a read list but no holdings snapshot is not complete either", "[loop][stop]") {
+  // The other half of the source. A `WITHDRAW` takes its references from the holdings snapshot and a
+  // `FLATTEN` takes its positions from it, so an epoch-stamped default means the pass does not know
+  // what it owes even though the order list was read.
+  InertRunner runner_instance;
+  InertSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  loop.run(stop, 1);  // the startup read succeeds
+  stop.request(StopIntent::FLATTEN);
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.order_list_read_);
+  CHECK(report.closing_source_unverified_);
+  CHECK_FALSE(report.closing_complete());
+  REQUIRE_FALSE(report.notes_.empty());
+  CHECK(report.notes_.front().find("no holdings snapshot has arrived") != std::string::npos);
+}
+
+TEST_CASE("a stop against a stale holdings snapshot is not complete", "[loop][stop]") {
+  // A snapshot older than the configured maximum is the same problem with a timestamp: the working
+  // orders it lists may already be gone and the ones it omits may be resting.
+  InertRunner runner_instance;
+  InertSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  auto portfolio = portfolio_with("10", "5");
+  portfolio.as_of_ = base_time() - std::chrono::minutes(10);
+  runner_instance.context().set_portfolio(portfolio);
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  loop.set_maximum_portfolio_age(std::chrono::minutes(5));
+  StopSource stop;
+
+  loop.run(stop, 1);
+  stop.request(StopIntent::WITHDRAW);
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.closing_source_unverified_);
+  CHECK_FALSE(report.closing_complete());
+  REQUIRE_FALSE(report.notes_.empty());
+  CHECK(report.notes_.front().find("older than the configured maximum") != std::string::npos);
 }

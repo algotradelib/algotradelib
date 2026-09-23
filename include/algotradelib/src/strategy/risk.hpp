@@ -248,11 +248,19 @@ public:
    * be holding the same switch. Every other holder names itself.
    *
    * **This is *quiesce*, and only that**: it stops this runner from *sending*. Three things an
-   * operator might mean by "stop" are worth keeping apart, because each leaves a different position:
+   * operator might mean by "stop" are worth keeping apart, because each asks the broker for
+   * something different:
    *
-   * - *quiesce* -- no new orders; positions held, working orders still resting. This.
-   * - *withdraw* -- quiesce, then cancel the working orders. Nothing resting.
-   * - *flatten* -- withdraw, then close the positions. Out of the market.
+   * - *quiesce* -- send nothing further. Positions and working orders are left exactly as they are,
+   *   and this is the only one of the three whose effect is entirely local and therefore certain.
+   *   This.
+   * - *withdraw* -- quiesce, then *ask* the broker to cancel the working orders.
+   * - *flatten* -- withdraw, then *ask* it to close the positions with market orders.
+   *
+   * The second and third are requests, not outcomes. A cancellation the broker accepts can still be
+   * rejected afterwards and leave the order working, and a closing order that is accepted has not
+   * necessarily filled. Only the broker's own order list and holdings say what is true;
+   * `runner::LoopReport::closing_complete()` says only whether every request was accepted.
    *
    * Flattening is a strategy's decision, which is what `vanilla::TimedLiquidation` exists for, or an
    * operator's through the broker's own tools. It is deliberately not something a risk limit does.

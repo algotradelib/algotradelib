@@ -154,17 +154,18 @@ indeterminately. So a `withdraw` or `flatten` arriving while you are halted canc
 `closing_refused_`, and says "the position is still held" in the notes. That is deliberate: a stop
 reaches the process from a signal and from a control file, so a cancellation exempt from the halt
 would let `echo withdraw > /var/run/atl/stop` send an instruction your own halt forbade. To get out
-after halting, `resume()` first — one deliberate act, and `closing_complete()` tells you whether it
-worked.
+after halting, `resume()` first — one deliberate act, and `closing_complete()` then tells you whether
+every instruction was accepted.
 
 `report.final_gate_` is an optional, and names the most fundamental hold in force rather than only the
 loop's own — so a run that sent nothing because *you* halted it says `operator`, instead of showing you
 an open gate while nothing goes out. `guard().holds()` lists every hold when more than one stands, and
 `guard().hold_detail(HaltReason::LOCAL_FAILURE)` carries the reason the journal gave up.
 
-## Did my stop actually happen?
+## Did everything I asked for go out?
 
-Ask, because it is not always yes:
+Ask, because it is not always yes — and note that this is a narrower question than "am I flat", for
+the reasons below:
 
 ```cpp
 if (!report.closing_complete()) {
@@ -182,6 +183,14 @@ journal could not be written, so no broker was asked) and `closing_unresolved_` 
 an order the snapshot does not hold). Cancellations count in these as well as placements: a
 withdrawal that failed in transit may have withdrawn the order or may not, and that is not the same
 as one that went.
+
+**And one flag covers the case before any of those**, `closing_source_unverified_`. A stop builds its
+instructions from the holdings snapshot — working orders for a `withdraw`, positions for a `flatten` —
+so a stop requested before the loop's first iteration never reaches the startup order-list read and
+works from whatever picture it happens to have. That picture will not contain an order a *previous
+process* left resting. The pass still sends what it can see, because withdrawing some beats
+withdrawing none, but it will not call the result complete. If you can, let the loop run one iteration
+before stopping it.
 
 **It is not a confirmation of anything at the exchange.** `true` means every instruction the loop
 asked for was *accepted by the broker*, and that is where the library's knowledge stops. An accepted

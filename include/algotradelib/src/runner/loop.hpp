@@ -226,6 +226,21 @@ struct LoopReport {
   std::size_t closing_unresolved_{0};
 
   /**
+   * Whether the closing pass could not establish what it needed to send.
+   *
+   * A stop builds its instructions from the holdings snapshot -- working orders for a `WITHDRAW`,
+   * positions for a `FLATTEN` -- so a pass that runs before that snapshot exists, or before the
+   * broker's own order list has been read once, is working from a picture that may be missing an
+   * order a *predecessor* left resting. A stop requested before the loop's first iteration does
+   * exactly that: `gate_for` reports `STOPPING` and never reaches the startup read.
+   *
+   * The pass still sends what it does know about, because withdrawing the orders it can see beats
+   * withdrawing none. But it cannot claim to have closed everything, which is why this makes
+   * `closing_complete()` false on its own.
+   */
+  bool closing_source_unverified_{false};
+
+  /**
    * Returns whether every closing instruction the loop asked for actually went out.
    *
    * **Every way a closing instruction can fail to go counts here**, which is the whole value of the
@@ -244,13 +259,17 @@ struct LoopReport {
    *   both brokers -- Toss publishes `PENDING_CANCEL` and `CANCEL_REJECTED`, which returns the order
    *   to its previous state -- so an accepted withdrawal can still be working.
    *
-   * `true` therefore means "every instruction I asked for was taken", never "I am flat" and never
-   * "nothing is resting". Read the broker's own order list and holdings to learn the state; this
-   * call tells you only whether anything failed to go.
+   * And `closing_source_unverified_` covers the case before that: a pass that never established
+   * *which* instructions it owed cannot be complete no matter how many it sent.
+   *
+   * `true` therefore means "every instruction I asked for was taken, and I knew what to ask for",
+   * never "I am flat" and never "nothing is resting". Read the broker's own order list and holdings
+   * to learn the state; this call tells you only whether anything failed to go.
    */
   bool closing_complete() const noexcept {
     return closing_rejected_ == 0 && closing_refused_ == 0 && closing_withheld_ == 0 &&
-      closing_indeterminate_ == 0 && closing_unavailable_ == 0 && closing_unresolved_ == 0;
+      closing_indeterminate_ == 0 && closing_unavailable_ == 0 && closing_unresolved_ == 0 &&
+      !closing_source_unverified_;
   }
   /** Notes an operator should read, such as an unrecognized control-file token. */
   std::vector<std::string> notes_;
@@ -356,9 +375,11 @@ private:
  * `RiskLimits::permitted_phases_` defaults to `{MarketPhase::OPEN}`, so **a withdraw or a flatten
  * issued outside market hours is refused by the guard** -- correctly, because there is no session to
  * trade in, but an operator who asked to be flat and was told nothing would believe they were. That
- * is why `LoopReport` counts what the closing pass *sent* separately from what the loop *asked for*,
+ * is why `LoopReport` counts what the broker *accepted* separately from what the loop *asked for*,
  * and why a refusal produces a note saying the position is still held. `closing_complete()` is the
- * one call that answers "did my stop actually happen".
+ * one call that answers "did everything I asked for go out" -- which is not the same question as
+ * "am I flat", and deliberately so: acceptance is the last thing this library observes, and the
+ * broker's own order list and holdings are the authority on what is actually left.
  *
  * **The loop holds the guard, and it names what it holds.** Its gates are
  * `strategy::HaltReason` values it takes and releases itself -- `ORDER_LIST_UNREAD`,
@@ -400,6 +421,10 @@ public:
    */
   LoopReport run(StopSource& stop, std::size_t max_iterations = 0) {
     LoopReport report;
+    // Carried in rather than left false: the field says whether the order list has been read at
+    // least once, and the loop remembers that across runs. A second `run` on the same loop had been
+    // reporting it as unread, which reads as a startup gate that never opened.
+    report.order_list_read_ = order_list_read_;
     for (auto& due : next_due_) {
       due.reset();
     }
@@ -609,6 +634,10 @@ private:
     // own, then reconciliation's, because the portfolio snapshot still lists an order the loop just
     // cancelled. Reconciliation already knows how to withdraw what conflicts with a target and keep
     // what helps reach it, and duplicating that here would be both wasteful and less correct.
+    // Recorded before anything is queued, because it is a statement about the picture the pass is
+    // built from rather than about any instruction in it.
+    report.closing_source_unverified_ = !closing_source_verified(clock_.now());
+
     const auto& portfolio = runner_->context().portfolio();
     if (intent == StopIntent::WITHDRAW) {
       for (const auto& working : portfolio.working_) {
@@ -697,6 +726,11 @@ private:
         "local machinery could not send " + std::to_string(report.closing_unavailable_) +
         " closing instruction(s); no broker was asked and the position is still held");
     }
+    if (report.closing_source_unverified_) {
+      report.notes_.push_back(
+        std::string("the stop could not verify what was outstanding: ") + unverified_source_reason() +
+        "; orders or positions a previous process left may remain");
+    }
     if (report.closing_unresolved_ != 0) {
       report.notes_.push_back(
         std::to_string(report.closing_unresolved_) +
@@ -731,6 +765,36 @@ private:
       runner_->guard().halt(*gate);
     }
     held_ = gate;
+  }
+
+  /**
+   * Returns whether the loop knows what a closing pass at `at` would have to send.
+   *
+   * Two sources, both required. The broker's own order list must have been read once, which is what
+   * the startup gate exists for and what a stop requested before the first iteration skips. And the
+   * holdings snapshot -- which is where a `WITHDRAW`'s working orders and a `FLATTEN`'s positions
+   * actually come from -- must exist and be within the configured age.
+   */
+  bool closing_source_verified(std::chrono::system_clock::time_point at) const {
+    if (!order_list_read_) {
+      return false;
+    }
+    const auto as_of = runner_->context().portfolio().as_of_;
+    if (as_of == std::chrono::system_clock::time_point{}) {
+      return false;
+    }
+    return !maximum_portfolio_age_ || at - as_of <= *maximum_portfolio_age_;
+  }
+
+  /** Returns which half of the closing source is missing, for the operator's note. */
+  std::string unverified_source_reason() const {
+    if (!order_list_read_) {
+      return "the broker's order list has not been read";
+    }
+    if (runner_->context().portfolio().as_of_ == std::chrono::system_clock::time_point{}) {
+      return "no holdings snapshot has arrived";
+    }
+    return "the holdings snapshot is older than the configured maximum";
   }
 
   /** Returns whether `kind` is due at `at`. */
