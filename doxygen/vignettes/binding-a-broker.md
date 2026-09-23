@@ -76,15 +76,22 @@ The report says everything that happened, and the distinctions matter:
 | `unavailable_` | local machinery could not send it; no broker was asked |
 
 A cancellation has the same outcomes and its own bucket for each, because only `would_cancel_` means
-the order stopped resting:
+the broker accepted the request:
 
 | Field | Meaning |
 | --- | --- |
-| `rejected_cancel_` | the broker refused it; the order is still resting |
+| `rejected_cancel_` | the broker refused the request |
 | `refused_cancel_` | a hold on the guard refused it, with the `HaltReason` |
-| `indeterminate_cancel_` | the send failed in transit; the order may or may not be withdrawn |
+| `indeterminate_cancel_` | the send failed in transit; whether the broker got it is unknown |
 | `unavailable_cancel_` | local machinery could not send it; no broker was asked |
 | `unresolved_cancel_` | it named an order the snapshot does not hold |
+
+**None of these — `would_cancel_` included — tells you whether the order is still working.**
+Cancellation is asynchronous at both brokers: Toss publishes `PENDING_CANCEL` while the request is in
+flight and `CANCEL_REJECTED` when it fails, which returns the order to its previous state. So an
+accepted withdrawal can still be resting, and a refused one may have filled a moment earlier — a fill
+is an ordinary reason to refuse a withdrawal. These buckets say what happened to the *instruction*.
+For the order's state, read the broker's order list.
 
 `rejected_` and `refused_` are separate on purpose: the first means the library could not build an
 order, the second means the operator forbade one. Conflating them would make a configuration mistake

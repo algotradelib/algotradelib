@@ -616,8 +616,9 @@ TEST_CASE("the asymmetry is the point: an unknown classification errs toward rec
 }
 
 TEST_CASE("a cancellation the broker rejected is not reported as a withdrawal") {
-  // A refusal is an answer -- the instruction was wrong, nothing needs reconciling -- but the order
-  // is still resting. `would_cancel_` says the broker withdrew it, which would be false.
+  // A refusal is an answer about the request: it was not accepted, so nothing needs reconciling.
+  // `would_cancel_` says the broker took the withdrawal, which would be false. It is not evidence
+  // the order is working either -- a fill is an ordinary reason a withdrawal is refused.
   using Tag = runner::DryTag;
   runner::Runner<CancelThenTarget, strategy::NoCaps, Tag, ScriptedExecutor<Tag>> dry;
   dry.context().set_instrument(samsung_reference());

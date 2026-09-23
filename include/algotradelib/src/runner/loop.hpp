@@ -234,11 +234,19 @@ struct LoopReport {
    * list. Those failed silently before, because they were reported on the runner's report and never
    * carried onto this one.
    *
-   * **It is not a position confirmation, and must not be read as one.** It says every instruction
-   * the loop asked for was accepted by the broker -- not that a closing order *filled*, which only a
-   * later holdings snapshot can show. A `WITHDRAW` deliberately leaves positions held, so `true`
-   * there means "nothing is resting any more", never "you are flat". Reconcile against the broker's
-   * own holdings before believing anything about a position.
+   * **It is not a confirmation of anything at the exchange, and must not be read as one.** It says
+   * every instruction the loop asked for was *accepted by the broker*, and acceptance is where this
+   * library's knowledge stops:
+   *
+   * - A closing placement that was accepted may not have **filled**. Only a later holdings snapshot
+   *   shows that, and a `WITHDRAW` deliberately leaves positions held anyway.
+   * - A cancellation that was accepted may not have **completed**. Cancellation is asynchronous at
+   *   both brokers -- Toss publishes `PENDING_CANCEL` and `CANCEL_REJECTED`, which returns the order
+   *   to its previous state -- so an accepted withdrawal can still be working.
+   *
+   * `true` therefore means "every instruction I asked for was taken", never "I am flat" and never
+   * "nothing is resting". Read the broker's own order list and holdings to learn the state; this
+   * call tells you only whether anything failed to go.
    */
   bool closing_complete() const noexcept {
     return closing_rejected_ == 0 && closing_refused_ == 0 && closing_withheld_ == 0 &&
@@ -672,7 +680,7 @@ private:
     if (!closing.rejected_cancel_.empty()) {
       report.notes_.push_back(
         "the broker rejected " + std::to_string(closing.rejected_cancel_.size()) +
-        " closing cancellation(s); those orders are still resting");
+        " closing cancellation(s); read its order list for their state");
     }
     if (report.closing_withheld_ != 0) {
       report.notes_.push_back(

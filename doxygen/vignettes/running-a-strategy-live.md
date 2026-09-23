@@ -183,10 +183,15 @@ an order the snapshot does not hold). Cancellations count in these as well as pl
 withdrawal that failed in transit may have withdrawn the order or may not, and that is not the same
 as one that went.
 
-**It is not a position confirmation.** `true` means every instruction the loop asked for was accepted
-by the broker — not that a closing order filled, which only a later holdings snapshot can show, and a
-`withdraw` deliberately leaves positions held. Reconcile against the broker's own holdings before
-believing anything about a position.
+**It is not a confirmation of anything at the exchange.** `true` means every instruction the loop
+asked for was *accepted by the broker*, and that is where the library's knowledge stops. An accepted
+closing order may not have filled, which only a later holdings snapshot shows. An accepted
+cancellation may not have completed: cancellation is asynchronous at both brokers — Toss publishes
+`PENDING_CANCEL` while it is in flight and `CANCEL_REJECTED` when it fails, returning the order to its
+previous state — so a withdraw that reports complete can still have orders working.
+
+So after any stop, read the broker's own order list and holdings before believing anything about the
+state. `closing_complete()` answers one question only: did anything fail to go out.
 
 **`RiskLimits::permitted_phases_` defaults to `{MarketPhase::OPEN}`, so a flatten outside market hours
 is refused.** That is correct — there is no session to trade in — but it means an operator who asks to

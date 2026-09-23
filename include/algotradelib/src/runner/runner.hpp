@@ -66,12 +66,17 @@ struct DryRunReport {
   /** Orders that passed reconciliation and every guard, and would have been sent. */
   std::vector<strategy::PlannedOrder> would_place_;
   /**
-   * Working orders the broker accepted a withdrawal for, before anything was placed.
+   * Working orders the broker **accepted a withdrawal request** for, before anything was placed.
    *
    * **`ACCEPTED` and nothing else.** A cancellation that a hold refused, that the broker rejected,
    * that failed in transit, that local machinery could not send, or that named an order the
-   * snapshot does not hold is in its own bucket. So the size of this one is what actually went, and
-   * every other bucket is a reason an order is still resting.
+   * snapshot does not hold is in its own bucket, so the size of this one is what the broker took.
+   *
+   * **Taking a request is not the same as the order stopping.** Cancellation is asynchronous at
+   * both brokers: Toss publishes `PENDING_CANCEL` -- request received, broker not finished -- and
+   * `CANCEL_REJECTED`, which returns the order to its previous state. So an entry here can still be
+   * working, and only a fresh order list says otherwise. This bucket answers "did the instruction
+   * go", never "is the order gone".
    */
   std::vector<OrderRef<BrokerTag>> would_cancel_;
   /** Instructions reconciliation could not build, with the reason. */
@@ -90,9 +95,11 @@ struct DryRunReport {
   /**
    * Cancellations the broker refused.
    *
-   * A refusal is an answer, so nothing needs reconciling -- but the order is still resting, which is
-   * why this is not `would_cancel_`. The placement path maps a broker refusal into `rejected_` the
-   * same way.
+   * A refusal is an answer about the *request*: it was not accepted, so nothing needs reconciling.
+   * It says nothing about the order, which may still be working or may have filled a moment
+   * earlier -- a fill is one of the ordinary reasons a broker refuses a withdrawal. Either way the
+   * request did not go, which is why this is not `would_cancel_`. The placement path maps a broker
+   * refusal into `rejected_` the same way.
    */
   std::vector<OrderRef<BrokerTag>> rejected_cancel_;
   /**
@@ -551,11 +558,15 @@ private:
     // `-Werror`, which is the only version of this that stays fixed.
     switch (outcome) {
       case SendOutcome::ACCEPTED:
+        // The broker took the request. Whether the order stops working is a later fact, which only
+        // its own listing reports: cancellation is asynchronous, and a broker that answers here can
+        // still reject the withdrawal afterwards.
         report.would_cancel_.push_back(ref);
         return;
       case SendOutcome::REJECTED:
-        // The broker refused it, which is an answer: nothing needs reconciling. But the order is
-        // still resting, so this is not a withdrawal that happened.
+        // The broker refused the request, which is an answer: nothing needs reconciling. It is not
+        // a withdrawal that happened, and it is not proof the order is working either -- a fill is
+        // one of the ordinary reasons a withdrawal is refused.
         report.rejected_cancel_.push_back(ref);
         return;
       case SendOutcome::INDETERMINATE:

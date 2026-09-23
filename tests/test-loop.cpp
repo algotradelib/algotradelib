@@ -1195,9 +1195,9 @@ TEST_CASE("a cancellation lost in transit is not a completed withdrawal", "[loop
 
 TEST_CASE("a cancellation the broker rejected is not a completed withdrawal", "[loop][stop]") {
   // The third outcome to fall through to `would_cancel_`, and the reason `send_cancel` now switches
-  // over the whole enumeration instead of testing one case at a time. A rejection is an answer --
-  // nothing needs reconciling -- but the order is still resting, so a stop that got one is not
-  // complete.
+  // over the whole enumeration instead of testing one case at a time. A rejection is an answer about
+  // the request -- it did not go -- so a stop that got one has not done what it was asked, whatever
+  // the order's own state turns out to be.
   RejectingRunner runner_instance;
   RejectingSource source;
   runner_instance.context().set_instrument(samsung_reference());
@@ -1220,5 +1220,5 @@ TEST_CASE("a cancellation the broker rejected is not a completed withdrawal", "[
   // A rejection is an answer, so unlike an indeterminate cancellation it owes no reconciliation.
   CHECK_FALSE(runner_instance.ledger().requires_reconcile(samsung()));
   REQUIRE_FALSE(report.notes_.empty());
-  CHECK(report.notes_.front().find("still resting") != std::string::npos);
+  CHECK(report.notes_.front().find("read its order list") != std::string::npos);
 }
