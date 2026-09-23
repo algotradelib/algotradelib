@@ -526,9 +526,10 @@ private:
    * ceiling must not silence the rest of a cross-sectional rebalance.
    */
   Report settle() {
-    // Before anything is planned, because the portfolio here is the broker's own last word: a pass
-    // adds its accepted orders to a copy, and the probe must not read this runner's intentions as
-    // the broker's report.
+    // Before anything is planned, because this pass has not yet added anything of its own: the
+    // probe must not read this runner's intentions as the broker's report. The portfolio can still
+    // carry a reservation an *earlier* pass persisted, which is why those rows are marked and why
+    // the probe skips them rather than relying on when it is called.
     observe_sellable_convention();
 
     Report report;
@@ -813,9 +814,11 @@ private:
    * the same reason -- `cancel_all` builds the instruction from them, and a broker that requires a
    * quantity would be sent zero. An order just accepted and unfilled is amendable in full.
    *
-   * Where the executor could not supply a reference the row is still written, because a limit that
-   * ignored the order would be the worse failure; such a row can only be cancelled by whatever the
-   * next listing says about it.
+   * Where the executor could not supply a reference -- a dry run, a replay, or a custom executor
+   * that does not report one -- the row is still written, because a limit that ignored the order
+   * would be the worse failure. `send_cancel` refuses to address such a row rather than sending a
+   * withdrawal to nobody, and reports it; the order becomes cancellable when a listing supplies a
+   * reference for it.
    *
    * `spends` decides whether a buy also draws down the published buying-power reading, and it is
    * the caller's buying-power check rather than anything this function can see. Review found the
@@ -902,6 +905,16 @@ private:
     // of blind instruction that should be visible instead.
     const auto* working = context_.portfolio().find_working(ref);
     if (working == nullptr) {
+      report.unresolved_cancel_.push_back(ref);
+      return;
+    }
+    // A reference naming nothing addresses nothing. It reaches here from a reservation whose
+    // executor could not report what the broker issued, and `find_working` matches it to that row
+    // because both references are empty -- so without this the runner would ask a broker to
+    // withdraw an order identified by an empty string, a request that can only fail while looking
+    // like an attempt. Reported rather than dropped, in the bucket that already means "the runner
+    // cannot describe this order to the broker".
+    if (working->ref_.primary_.empty()) {
       report.unresolved_cancel_.push_back(ref);
       return;
     }

@@ -160,6 +160,19 @@ struct BuyTwice {
   }
 };
 
+/** Targets flat on the first bar and long on the second, so the second opposes the first. */
+struct FlipTarget {
+  int bars_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = bars_++ == 0 ? Decimal64::parse("0") : Decimal64::parse("20");
+    ctx.submit(target);
+  }
+};
+
 /** Buys ten every bar, so two bars are two orders unless something remembers the first. */
 struct BuyTen {
   template <class Ctx>
@@ -436,6 +449,32 @@ TEST_CASE("a ceiling alone does not move the published buying power") {
     dry.context().portfolio().working_quantity(samsung(), OrderSide::BUY) ==
     Decimal64::parse("10")
   );
+}
+
+TEST_CASE("a reservation nobody can address is reported rather than sent to nobody") {
+  // An executor with no broker behind it reports no reference, so the reservation carries none.
+  // `find_working` matches an empty reference to that very row, so without a check the runner would
+  // ask a broker to withdraw an order identified by an empty string -- a request that can only
+  // fail, while looking like an attempt. It belongs in the bucket that says the runner cannot
+  // describe the order, which is the visible answer.
+  strategy::RiskLimits limits;
+  limits.max_position_quantity_ = Decimal64::parse("100");
+  runner::DryRunner<FlipTarget> dry(FlipTarget{}, limits);
+  arrange(dry);
+
+  strategy::Portfolio<runner::DryRunner<FlipTarget>::Tag> portfolio;
+  HoldingPosition held;
+  held.instrument_ = samsung();
+  held.quantity_ = Decimal64::parse("10");
+  portfolio.positions_.push_back(held);
+  dry.context().set_portfolio(portfolio);
+
+  const auto first = dry.feed(bar_at(10, "70000"));
+  REQUIRE(first.would_place_.size() == 1);
+
+  const auto second = dry.feed(bar_at(11, "70000"));
+  REQUIRE(second.would_cancel_.empty());
+  REQUIRE(second.unresolved_cancel_.size() == 1);
 }
 
 TEST_CASE("a sell resting on the other side is not relief for a buy") {
