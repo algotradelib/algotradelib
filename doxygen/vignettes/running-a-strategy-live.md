@@ -148,6 +148,13 @@ runner takes `local_failure` when its journal cannot be written. Trading resumes
 released, so the loop opening its gate cannot lift your halt, and your `resume()` cannot lift the
 loop's.
 
+**A `flatten` states its instructions directly** rather than expressing them as a target position.
+It withdraws every working order once — including one on the same side as the close, which ordinary
+reconciliation would keep as progress toward the target — and then sends a market order for the whole
+holding. Ten held against a resting sell for ten reconciles to *nothing to do*, which is correct for
+trading and wrong for an operator who asked to be out: a limit order that may never fill is not being
+out of the market.
+
 **A hold refuses cancellations too, including a stop's own.** `halt()` means "this runner sends
 nothing", and a cancellation is a send — an order-writing request that can itself fail
 indeterminately. So a `withdraw` or `flatten` arriving while you are halted cancels nothing, reports
@@ -196,6 +203,12 @@ instructions from the portfolio snapshot — working orders for a `withdraw`, po
   snapshot stamped a second ago can carry working orders read an hour ago, missing an order this
   runner placed in between.
 - **A listing is older than `set_maximum_portfolio_age`,** when you have set one.
+- **The source does not publish working orders at all.** A broker without the working-order inquiry
+  falls back to reading order *history*, which satisfies the startup gate but never fills
+  `working_`, so a withdrawal cannot be built from it. A source declares
+  `static constexpr bool provides_working_orders = true` to say it does; anything that does not
+  declare it is treated as one that does not, because the cost of guessing wrong is a stop that
+  reports complete with an order still resting.
 
 The pass still sends what it can see, because withdrawing some beats withdrawing none, but it will
 not call the result complete, and the note says which of the three it was. If you can, let the loop

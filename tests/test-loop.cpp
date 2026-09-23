@@ -188,6 +188,9 @@ using SendingRunner = runner::DryRunner<HoldTen>;
  */
 class FeedingSource {
 public:
+  /** It stands for a real working-order listing, as both supported brokers publish one. */
+  static constexpr bool provides_working_orders = true;
+
   /** Sets what the order-list read returns. */
   void set_order_list(runner::PollOutcome outcome) { order_list_ = outcome; }
 
@@ -1443,4 +1446,145 @@ TEST_CASE("a working-order poll re-verifies the source an earlier send invalidat
 
   CHECK_FALSE(report.closing_source_unverified_);
   CHECK(report.closing_complete());
+}
+
+TEST_CASE("a flatten withdraws a same-side working order instead of counting on it",
+          "[loop][stop]") {
+  // Reconciliation treats a resting order as progress toward the target: ten held against a working
+  // sell for ten reconciles to nothing to do, because the market already expresses the intent. That
+  // is right for ordinary trading and wrong for a flatten -- a limit sell that may never fill is not
+  // being out of the market -- and before this the pass sent not one instruction and called itself
+  // complete.
+  InertRunner runner_instance;
+  InertSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+
+  strategy::Portfolio<InertRunner::Tag> portfolio;
+  portfolio.as_of_ = base_time();
+  algotradelib::HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = algotradelib::Decimal64::parse("10");
+  position.average_purchase_price_ = algotradelib::Decimal64::parse("70000");
+  portfolio.positions_.push_back(position);
+  algotradelib::WorkingOrder<InertRunner::Tag> working;
+  working.order_.instrument_ = samsung();
+  working.order_.side_ = algotradelib::OrderSide::SELL;  // same side as the close
+  working.order_.status_ = algotradelib::OrderStatus::PENDING;
+  working.order_.quantity_ = algotradelib::Decimal64::parse("10");
+  working.order_.execution_.filled_quantity_ = algotradelib::Decimal64::parse("0");
+  working.ref_ = algotradelib::OrderRef<InertRunner::Tag>{"0001", ""};
+  portfolio.working_.push_back(working);
+  runner_instance.context().set_portfolio(portfolio);
+
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  loop.run(stop, 1);
+  stop.request(StopIntent::FLATTEN);
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.withdrawn_ == 1);
+  CHECK(report.flattened_ == 1);
+  CHECK(runner_instance.executor().canceled().size() == 1);
+  // And the close is a market order for the whole holding, not the remainder after the resting one.
+  REQUIRE(runner_instance.executor().placed().size() == 1);
+  const auto& closing = runner_instance.executor().placed().front();
+  CHECK(closing.side_ == algotradelib::OrderSide::SELL);
+  CHECK(closing.quantity_ == algotradelib::Decimal64::parse("10"));
+  CHECK(closing.type_ == algotradelib::OrderType::MARKET);
+  CHECK(report.closing_complete());
+}
+
+TEST_CASE("a flatten sizes the close for the position, not the remainder", "[loop][stop]") {
+  // The partial case: a working sell for three against ten held. Reconciliation would have kept the
+  // three and sent seven, leaving a limit order resting after a flatten.
+  InertRunner runner_instance;
+  InertSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+
+  strategy::Portfolio<InertRunner::Tag> portfolio;
+  portfolio.as_of_ = base_time();
+  algotradelib::HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = algotradelib::Decimal64::parse("10");
+  position.average_purchase_price_ = algotradelib::Decimal64::parse("70000");
+  portfolio.positions_.push_back(position);
+  algotradelib::WorkingOrder<InertRunner::Tag> working;
+  working.order_.instrument_ = samsung();
+  working.order_.side_ = algotradelib::OrderSide::SELL;
+  working.order_.status_ = algotradelib::OrderStatus::PENDING;
+  working.order_.quantity_ = algotradelib::Decimal64::parse("3");
+  working.order_.execution_.filled_quantity_ = algotradelib::Decimal64::parse("0");
+  working.ref_ = algotradelib::OrderRef<InertRunner::Tag>{"0002", ""};
+  portfolio.working_.push_back(working);
+  runner_instance.context().set_portfolio(portfolio);
+
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  loop.run(stop, 1);
+  stop.request(StopIntent::FLATTEN);
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.withdrawn_ == 1);
+  REQUIRE(runner_instance.executor().placed().size() == 1);
+  CHECK(runner_instance.executor().placed().front().quantity_ ==
+        algotradelib::Decimal64::parse("10"));
+  CHECK(report.closing_complete());
+}
+
+namespace {
+
+/**
+ * A source with no working-order inquiry, like a broker that has only order history.
+ *
+ * `SessionSource::read_order_list` falls back to reading history on such a broker and hands the rows
+ * to journal reconciliation. That satisfies the startup gate -- this process has looked at the
+ * broker's own record -- and never populates `portfolio.working_`, so a withdrawal cannot be built
+ * from it.
+ */
+class HistoryOnlySource {
+public:
+  static constexpr bool provides_working_orders = false;
+
+  runner::PollOutcome poll(runner::PollKind, InertRunner&) {
+    return runner::PollOutcome::UNCHANGED;
+  }
+
+  runner::PollOutcome read_order_list(InertRunner&) { return runner::PollOutcome::UPDATED; }
+};
+
+using HistoryOnlyLoop =
+  runner::PollingLoop<InertRunner, HistoryOnlySource, runner::ManualClock>;
+
+} // namespace
+
+TEST_CASE("a source with no working-order listing cannot verify a stop", "[loop][stop]") {
+  // The history fallback reads the broker's own record, which is what the startup gate needs, and
+  // leaves `working_` empty -- so a `WITHDRAW` queues nothing. Before this the loop stamped that
+  // read as a working-order refresh and the stop reported complete with an order still resting at
+  // the broker.
+  InertRunner runner_instance;
+  HistoryOnlySource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  strategy::Portfolio<InertRunner::Tag> fresh;
+  fresh.as_of_ = base_time();
+  runner_instance.context().set_portfolio(fresh);
+  HistoryOnlyLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  loop.run(stop, 1);  // the startup read succeeds, through history
+  stop.request(StopIntent::WITHDRAW);
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.order_list_read_);
+  CHECK(report.withdrawn_ == 0);
+  CHECK(report.closing_source_unverified_);
+  CHECK_FALSE(report.closing_complete());
+  REQUIRE_FALSE(report.notes_.empty());
+  CHECK(report.notes_.front().find("does not publish the broker's outstanding orders") !=
+        std::string::npos);
 }

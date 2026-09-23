@@ -67,6 +67,18 @@ public:
   using BrokerTag = typename Session::BrokerTag;
 
   /**
+   * Whether a successful order-list read leaves the broker's outstanding orders in the portfolio.
+   *
+   * False on a broker without the working-order inquiry, and that is not a technicality. The
+   * fallback path reads *history* and hands its rows to journal reconciliation, which is enough for
+   * the startup gate -- this process has looked at the broker's own record before sending -- and is
+   * not enough to build a withdrawal from, because `portfolio.working_` is never populated. A
+   * `PollingLoop` reads this to decide whether a closing pass knows what is outstanding; telling it
+   * yes here would make a `WITHDRAW` report a complete stop with an order still resting.
+   */
+  static constexpr bool provides_working_orders = Caps::has_working_orders;
+
+  /**
    * Binds a session and the universe to poll.
    *
    * The session is borrowed, matching `SessionExecutor`: it owns a client with executor affinity, and

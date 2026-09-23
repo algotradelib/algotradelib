@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -124,6 +125,22 @@ struct PollSchedule {
     return std::nullopt;
   }
 };
+
+/**
+ * Whether `Source` leaves the broker's outstanding orders in the portfolio after an order-list read.
+ *
+ * **Defaults to false**, which is the safe direction and a deliberate one: a source that does not
+ * say it publishes working orders cannot be assumed to, and the cost of being wrong is a `WITHDRAW`
+ * that reports a complete stop while an order is still resting. A source declares
+ * `static constexpr bool provides_working_orders = true;` to say otherwise.
+ */
+template <typename Source, typename = void>
+struct source_provides_working_orders : std::false_type {};
+
+template <typename Source>
+struct source_provides_working_orders<
+  Source, std::void_t<decltype(Source::provides_working_orders)>
+> : std::bool_constant<Source::provides_working_orders> {};
 
 /** How the loop behaves when polls keep failing. */
 struct FailurePolicy {
@@ -298,6 +315,9 @@ struct LoopReport {
 template <typename Runner>
 class ManualSource {
 public:
+  /** Its queued outcomes stand for a real listing, so a closing pass may rely on them. */
+  static constexpr bool provides_working_orders = true;
+
   /** Queues what the next poll of `kind` returns. */
   void queue(PollKind kind, PollOutcome outcome) {
     queued_[static_cast<int>(kind)].push_back(outcome);
@@ -490,6 +510,9 @@ private:
         continue;
       }
       const auto outcome = source_->poll(kind, *runner_);
+      // `UNCHANGED` counts, because a listing that is identical to the last one is still a listing
+      // -- but only on a source that publishes them at all, which `note_working_orders_read`
+      // enforces: a broker without the inquiry answers `UNCHANGED` without asking anybody.
       if (kind == PollKind::WORKING_ORDERS &&
           (outcome == PollOutcome::UPDATED || outcome == PollOutcome::UNCHANGED)) {
         note_working_orders_read(iteration.at_);
@@ -557,8 +580,9 @@ private:
       if (outcome == PollOutcome::UPDATED || outcome == PollOutcome::UNCHANGED) {
         order_list_read_ = true;
         report.order_list_read_ = true;
-        // The startup read *is* a working-order read on every broker that has the inquiry, which is
-        // both of them, so it starts the clock this loop measures that picture by.
+        // The startup read is a working-order read *on a source that has the inquiry*. On one that
+        // does not, it reads order history for the journal and never populates `working_`, so
+        // `note_working_orders_read` deliberately does nothing and a closing pass stays unverified.
         note_working_orders_read(at);
       } else {
         return strategy::HaltReason::ORDER_LIST_UNREAD;
@@ -653,35 +677,45 @@ private:
         ++report.withdrawn_;
       }
     } else {
-      std::vector<InstrumentId> targeted;
+      // **A flatten withdraws everything and then sells the position outright.**
+      //
+      // It used to submit a zero `TargetPosition` per position and let reconciliation do both jobs.
+      // That is the right machinery for ordinary trading and the wrong one here, because
+      // reconciliation treats a resting order as progress toward the target: ten held against a
+      // working sell for ten reconciles to *nothing to do*, since the market already expresses the
+      // intent. For an operator who asked to be out, a limit sell that may never fill is not being
+      // out, and the pass reported itself complete having sent not one instruction.
+      //
+      // So a flatten states what it wants directly. Every working order is withdrawn once --
+      // including same-side ones, which reconciliation would have kept -- and each position is
+      // closed with a market order sized to the whole holding, through `OrderIntent`, which
+      // deliberately does not consult the portfolio. Nothing is counted twice because nothing
+      // derives instructions from anything else.
+      for (const auto& working : portfolio.working_) {
+        runner_->context().cancel(working.ref_, "stop-flatten");
+        ++report.withdrawn_;
+      }
       for (const auto& position : portfolio.positions_) {
         if (position.quantity_ == Decimal64{}) {
           // A closed position can sit in a snapshot at zero. A sell for none of it is an order the
           // broker would reject, for nothing.
           continue;
         }
-        strategy::TargetPosition target;
-        target.instrument_ = position.instrument_;
-        target.target_quantity_ = Decimal64{};
-        target.tag_ = "stop-flatten";
-        targeted.push_back(position.instrument_);
-        runner_->context().submit(std::move(target));
-        ++report.flattened_;
-      }
-      // **Then every working order reconciliation will not reach.** A flatten cancels through the
-      // targets it queues, so an instrument with no position to close receives no target and its
-      // resting order would survive the stop -- a working buy against a flat book is exactly that
-      // case, and it can fill after the loop exits. Instruments that *did* get a target are skipped,
-      // because reconciliation withdraws those itself and two withdrawals for one order is worse
-      // than none.
-      for (const auto& working : portfolio.working_) {
-        const bool covered =
-          std::find(targeted.begin(), targeted.end(), working.order_.instrument_) != targeted.end();
-        if (covered) {
+        const bool held_long = decimal_less(Decimal64{}, position.quantity_);
+        const auto magnitude = held_long ?
+          std::optional<Decimal64>(position.quantity_) :
+          decimal_subtract(Decimal64{}, position.quantity_);
+        if (!magnitude) {
           continue;
         }
-        runner_->context().cancel(working.ref_, "stop-flatten-orphan");
-        ++report.withdrawn_;
+        runner_->context().submit(
+          strategy::OrderIntent::market(
+            position.instrument_,
+            held_long ? OrderSide::SELL : OrderSide::BUY,
+            strategy::SizeSpec::quantity(*magnitude)
+          ).with_tag("stop-flatten")
+        );
+        ++report.flattened_;
       }
     }
 
@@ -700,15 +734,6 @@ private:
     hold(strategy::HaltReason::STOPPING);
 
     report.closing_placed_ = closing.would_place_.size();
-    if (intent == StopIntent::FLATTEN) {
-      // Counted from every cancellation the pass produced, not only the ones that went: `withdrawn_`
-      // is what was *asked for* and the counts below are what happened to them. This covers both
-      // sources -- the ones reconciliation derived from a zero target, and the orphaned working
-      // orders queued above -- so it replaces rather than adds to the running count.
-      report.withdrawn_ = closing.would_cancel_.size() + closing.indeterminate_cancel_.size() +
-        closing.unavailable_cancel_.size() + closing.refused_cancel_.size() +
-        closing.unresolved_cancel_.size() + closing.rejected_cancel_.size();
-    }
     // **Both halves of every bucket.** A closing instruction is a placement or a cancellation, and
     // each can fail in the same five ways; counting only the placement half is how a stop that sent
     // nothing reported itself complete.
@@ -828,14 +853,27 @@ private:
     return !maximum_portfolio_age_ || at - as_of <= *maximum_portfolio_age_;
   }
 
-  /** Records that the working-order picture was just refreshed, with what it could not contain. */
+  /**
+   * Records that the working-order picture was just refreshed, with what it could not contain.
+   *
+   * Does nothing when the source does not publish working orders, so a stop on such a broker stays
+   * unverified rather than being told a history read or a no-op poll refreshed a listing it never
+   * built.
+   */
   void note_working_orders_read(std::chrono::system_clock::time_point at) {
-    working_orders_at_ = at;
-    placements_at_working_read_ = runner_->placements_at_broker();
+    if constexpr (source_provides_working_orders<Source>::value) {
+      working_orders_at_ = at;
+      placements_at_working_read_ = runner_->placements_at_broker();
+    } else {
+      (void)at;
+    }
   }
 
   /** Returns which half of the closing source is missing, for the operator's note. */
   std::string unverified_source_reason() const {
+    if constexpr (!source_provides_working_orders<Source>::value) {
+      return "this source does not publish the broker's outstanding orders";
+    }
     if (!order_list_read_ || !working_orders_at_) {
       return "the broker's order list has not been read";
     }
