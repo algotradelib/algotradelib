@@ -6,16 +6,73 @@
 
 #include <algotradelib/core>
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <deque>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 namespace algotradelib {
 namespace strategy {
+
+/**
+ * Who or what is holding trading stopped.
+ *
+ * A halt used to be one `bool`, which was exactly right when the only caller was a person deciding
+ * to stop trading: one holder, one bool. It stopped being right once machinery held it too — a
+ * polling loop's gate, a journal that cannot be written — because two holders of one bool cannot
+ * tell each other apart, and the one that clears it clears the other's intent with it.
+ *
+ * So a hold names itself, and trading resumes only when every hold is released. The enumerators are
+ * ordered **most fundamental first**, and `RiskGuard::blocking_reason` relies on that order: an
+ * operator reading a refusal sees the reason that most needs their attention rather than whichever
+ * condition happens to be checked first. A new reason goes where its gravity puts it, not at the end.
+ */
+enum class HaltReason {
+  /** A person stopped trading, through `halt()` with no argument. Cleared only by a person. */
+  OPERATOR,
+  /**
+   * Local machinery cannot be trusted, so nothing may be sent through it.
+   *
+   * The order journal is the motivating case: a runner that cannot record what it is about to do
+   * must not do it. Sticky, and carries the reason as its detail.
+   */
+  LOCAL_FAILURE,
+  /** A stop intent is being honoured and the run is on its way out. */
+  STOPPING,
+  /** Nothing may be sent before the broker's order list has been read once. */
+  ORDER_LIST_UNREAD,
+  /** The holdings snapshot is too old to size an order against. */
+  PORTFOLIO_STALE,
+  /** Polling has failed consecutively past its budget, so the world is not being observed. */
+  POLL_FAILING,
+};
+
+/** How many `HaltReason` enumerators there are, for the guard's fixed-capacity storage. */
+inline constexpr std::size_t halt_reason_count = 6;
+
+/** Returns a stable lowercase name for `reason`, for logs and structured reporting. */
+inline constexpr std::string_view halt_reason_name(HaltReason reason) noexcept {
+  switch (reason) {
+    case HaltReason::OPERATOR:
+      return "operator";
+    case HaltReason::LOCAL_FAILURE:
+      return "local_failure";
+    case HaltReason::STOPPING:
+      return "stopping";
+    case HaltReason::ORDER_LIST_UNREAD:
+      return "order_list_unread";
+    case HaltReason::PORTFOLIO_STALE:
+      return "portfolio_stale";
+    case HaltReason::POLL_FAILING:
+      return "poll_failing";
+  }
+  return "unknown";
+}
 
 /**
  * The limits an operator imposes, checked before anything is sent.
@@ -85,6 +142,14 @@ struct GuardRejection {
   GuardReason reason_{GuardReason::TRADING_HALTED};
   InstrumentId instrument_;
   std::string tag_;
+  /**
+   * Which hold stopped the order, when `reason_` is `TRADING_HALTED`.
+   *
+   * Present for that reason and absent for every other, because a halt is the one refusal whose
+   * *cause* lives outside the limits — an operator, a loop's gate, a journal that failed — and
+   * "trading is halted" without saying by what is the diagnostic this type exists to avoid.
+   */
+  std::optional<HaltReason> halt_reason_;
   /** The ceiling that was exceeded, where the reason has one. */
   std::optional<Decimal64> limit_;
   /** What the order would have reached, where the reason has one. */
@@ -101,7 +166,9 @@ struct GuardRejection {
  *   explicitly means any phase, which an operator has to ask for. `MarketPhase::UNKNOWN` is
  *   therefore refused by default, which is the point: an uncovered calendar date must not become
  *   an order placed into a holiday.
- * - `halted_` starts false, but `halt()` is one call and takes effect before every other check.
+ * - Nothing is halted to begin with, but `halt()` is one call and takes effect before every other
+ *   check. A halt is not a limit and does not live here: it is held on the guard itself, by
+ *   `HaltReason`, so that the operator's hold and the machinery's cannot clear one another.
  */
 struct RiskLimits {
   /** Largest value a single order may have, in the currency it is priced in. */
@@ -151,7 +218,13 @@ public:
   const RiskLimits& limits() const noexcept { return limits_; }
 
   /**
-   * Stops every order until `resume()`. Takes effect before any other check.
+   * Stops every order until `resume()`, on the operator's behalf. Takes effect before any other
+   * check.
+   *
+   * **The no-argument call is the operator's hold**, `HaltReason::OPERATOR`, and that is not merely
+   * source compatibility: a bare `halt()` in a program or at a prompt is a person deciding to stop,
+   * and a person's intent is exactly the one that must not be cleared by machinery that happens to
+   * be holding the same switch. Every other holder names itself.
    *
    * **This is *quiesce*, and only that**: it stops this runner from *sending*. Three things an
    * operator might mean by "stop" are worth keeping apart, because each leaves a different position:
@@ -162,18 +235,91 @@ public:
    *
    * Flattening is a strategy's decision, which is what `vanilla::TimedLiquidation` exists for, or an
    * operator's through the broker's own tools. It is deliberately not something a risk limit does.
+   * `runner::StopIntent` names all three for a long-running session, and `runner::PollingLoop`
+   * honours them; this switch is the primitive underneath the first of them.
    *
    * In-process and in-memory: nothing reaches this from outside the program, and it does not survive
-   * the process. See `plan/todo/operator-stop-control.md` for the out-of-band control a long-running
-   * session will need, and why the *safest* stop is not the fastest one.
+   * the process. `runner::FileStopChannel` and `runner::SignalStop` are the out-of-band channels.
    */
-  void halt() noexcept { halted_ = true; }
+  void halt() noexcept { held_[index_of(HaltReason::OPERATOR)] = true; }
 
-  /** Allows orders again. */
-  void resume() noexcept { halted_ = false; }
+  /**
+   * Takes the hold named by `reason`, with an operator-readable `detail`.
+   *
+   * **Idempotent, and a set rather than a count.** Taking a hold that is already held replaces its
+   * detail and nothing else, and one `resume(reason)` releases it however many times it was taken.
+   * That is deliberate: the holders are distinct *conditions*, not distinct callers, so a loop that
+   * recomputes `PORTFOLIO_STALE` on every iteration must not build a hold that as many refreshes are
+   * needed to clear. A counter would get exactly that wrong, in the opposite direction from the
+   * single bool this replaces.
+   */
+  void halt(HaltReason reason, std::string detail) {
+    held_[index_of(reason)] = true;
+    details_[index_of(reason)] = std::move(detail);
+  }
 
-  /** Returns whether the kill switch is on. */
-  bool halted() const noexcept { return halted_; }
+  /** Takes the hold named by `reason`, with no detail. */
+  void halt(HaltReason reason) { halt(reason, std::string()); }
+
+  /** Releases the operator's hold. Other holds, if any, still stop trading. */
+  void resume() noexcept { resume(HaltReason::OPERATOR); }
+
+  /** Releases the hold named by `reason`. Releasing one that is not held does nothing. */
+  void resume(HaltReason reason) noexcept {
+    held_[index_of(reason)] = false;
+    details_[index_of(reason)].clear();
+  }
+
+  /** Returns whether anything at all is stopping trading. */
+  bool halted() const noexcept {
+    for (const auto held : held_) {
+      if (held) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Returns whether `reason` in particular is holding. */
+  bool halted(HaltReason reason) const noexcept { return held_[index_of(reason)]; }
+
+  /**
+   * Returns the most fundamental hold in force, or nothing when trading is permitted.
+   *
+   * "Most fundamental" is the declaration order of `HaltReason`, which is why that order is part of
+   * the enum's contract. This is what a refusal reports, and it follows the rule `check` already
+   * applies to limits: say the reason that most needs attention, not an incidental one.
+   */
+  std::optional<HaltReason> blocking_reason() const noexcept {
+    for (std::size_t index = 0; index < halt_reason_count; ++index) {
+      if (held_[index]) {
+        return static_cast<HaltReason>(index);
+      }
+    }
+    return std::nullopt;
+  }
+
+  /** Returns the detail recorded with `reason`'s hold, or an empty string when there is none. */
+  const std::string& hold_detail(HaltReason reason) const noexcept {
+    return details_[index_of(reason)];
+  }
+
+  /**
+   * Returns every hold in force, most fundamental first.
+   *
+   * For diagnosis — an operator asking why trading is stopped when more than one thing is stopping
+   * it, which is precisely the case the single bool could not answer. `blocking_reason` is what the
+   * send path uses.
+   */
+  std::vector<HaltReason> holds() const {
+    std::vector<HaltReason> held;
+    for (std::size_t index = 0; index < halt_reason_count; ++index) {
+      if (held_[index]) {
+        held.push_back(static_cast<HaltReason>(index));
+      }
+    }
+    return held;
+  }
 
   /**
    * Records that an order was sent at `when`, for the rate limit.
@@ -232,8 +378,10 @@ public:
         return std::optional<GuardRejection>(rejection);
       };
 
-    if (halted_) {
-      return refuse(GuardReason::TRADING_HALTED);
+    if (const auto holding = blocking_reason()) {
+      auto rejection = refuse(GuardReason::TRADING_HALTED);
+      rejection->halt_reason_ = *holding;
+      return rejection;
     }
 
     if (limits_.permitted_universe_) {
@@ -340,8 +488,22 @@ public:
   }
 
 private:
+  /** Returns `reason`'s slot in the fixed-capacity hold arrays. */
+  static constexpr std::size_t index_of(HaltReason reason) noexcept {
+    return static_cast<std::size_t>(reason);
+  }
+
   RiskLimits limits_;
-  bool halted_{false};
+  /**
+   * Which holds are in force, indexed by `HaltReason`.
+   *
+   * A fixed array rather than a set or a vector because the reasons are a closed enum and there are
+   * six of them: no allocation, no ordering to maintain, and declaration order is the priority order
+   * `blocking_reason` needs for free.
+   */
+  std::array<bool, halt_reason_count> held_{};
+  /** Each hold's operator-readable detail, empty where a hold carries none or is not held. */
+  std::array<std::string, halt_reason_count> details_;
   /**
    * Timestamps of orders actually sent, oldest first.
    *
