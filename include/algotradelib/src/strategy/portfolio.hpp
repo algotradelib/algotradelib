@@ -61,9 +61,11 @@ struct Portfolio {
    * What the broker said may be spent, per currency.
    *
    * Separate from `cash_`, which is this library's own accounting and is filled by the backtest
-   * ledger. This is the broker's answer, and the two are different quantities: see `BuyingPower`.
-   * Empty means nobody has asked, which is not the same as an answer of zero — a caller enforcing
-   * a buying-power limit must treat the empty case as unknown rather than as no money.
+   * ledger. Live this is the broker's answer; in a replay it is the ledger's modelled cash, which
+   * the report states as modelled. The two fields are different quantities either way: see
+   * `BuyingPower`. Empty means nobody has asked, which is not the same as an answer of zero — a
+   * caller enforcing a buying-power limit must treat the empty case as unknown rather than as no
+   * money.
    */
   std::vector<BuyingPower> buying_power_;
   std::vector<WorkingOrder<Broker>> working_;
@@ -130,8 +132,12 @@ struct Portfolio {
    * Returns the buying power the broker reported in `currency`, or nothing when it reported none.
    *
    * Nothing means *unknown*, and the distinction from zero is the reason this returns an optional
-   * rather than a default. Nobody has asked, the broker refused, or this is a backtest whose ledger
-   * did not fill it — none of which is a statement that the account cannot buy.
+   * rather than a default. Nobody has asked, or the broker refused — neither of which is a
+   * statement that the account cannot buy.
+   *
+   * Live the figure is the broker's; in a replay it is the ledger's modelled cash. A caller cannot
+   * tell them apart from here, which is deliberate — the guard should read one field in both
+   * environments — and it is why the backtest report is where the modelling is disclosed.
    */
   std::optional<Decimal64> buying_power_in(const Currency& currency) const {
     for (const auto& amount : buying_power_) {

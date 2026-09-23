@@ -668,10 +668,12 @@ struct HoldingsSnapshot {
  * What the broker says may be spent, in one currency.
  *
  * Deliberately not cash, and the distinction is why this type exists rather than a `Money` in the
- * portfolio's cash list. Cash is what an accounting of settled money says; buying power is what the
- * broker will let an order spend, which includes unsettled sale proceeds and excludes whatever it
- * is already reserving against resting orders. In a T+2 market the two differ on most days, so
- * carrying the broker's answer in the field meant for the library's own accounting would make one
+ * portfolio's cash list. The distinction is **ledger-modelled cash versus broker-reported buying
+ * power**: `Portfolio::cash_` is what this library's own accounting says, and in a replay that
+ * accounting credits a sale on the fill (`backtest::ReplayLedger::apply`) because it models no
+ * settlement schedule at all. A broker's buying power is the broker's own answer, which prices in
+ * unsettled proceeds on its own terms and excludes whatever it is already reserving against resting
+ * orders. Carrying that answer in the field meant for the library's accounting would make one
  * number mean two things depending on who last wrote it.
  *
  * `cash_` is the credit-free figure both brokers publish — Toss's `cashBuyingPower`, KIS's
@@ -681,7 +683,9 @@ struct HoldingsSnapshot {
  *
  * `received_at_` is the local clock, not the broker's, because neither broker timestamps the
  * answer. It is therefore when the figure *arrived* rather than when it was true, which is the
- * weaker of the two claims and is the one this field makes.
+ * weaker of the two claims and is the one this field makes. A replay fills it with the snapshot
+ * time for the same reason — that is when the modelled figure was read — and a caller must not read
+ * it as evidence that a broker answered at that moment.
  */
 struct BuyingPower {
   Money cash_;
