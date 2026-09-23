@@ -1188,6 +1188,96 @@ TEST_CASE("the kill switch refuses everything, and reports the halt above any ot
   REQUIRE_FALSE(after->halt_reason_);
 }
 
+TEST_CASE("the sellable check is off until an operator asks for it") {
+  // Off by default, because a broker that does not publish the figure would otherwise stop every
+  // sell an existing program makes.
+  ProbePortfolio portfolio;
+  HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = Decimal64::parse("100");
+  portfolio.positions_.push_back(position);  // no sellable figure at all
+
+  const RiskGuard permissive;
+  REQUIRE_FALSE(
+    permissive.check(planned("100", "70000", OrderSide::SELL), portfolio, open_market())
+  );
+
+  RiskLimits limits;
+  limits.enforce_sellable_quantity_ = true;
+  const RiskGuard strict(limits);
+  const auto refused = strict.check(planned("100", "70000", OrderSide::SELL), portfolio, open_market());
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::QUANTITY_NOT_SELLABLE);
+}
+
+TEST_CASE("a sell beyond what the broker says is sellable is refused with both numbers") {
+  // The T+2 case: a hundred held, seventy sellable today. Sizing from the position alone sends a
+  // sell the broker will reject, one round trip later.
+  RiskLimits limits;
+  limits.enforce_sellable_quantity_ = true;
+  const RiskGuard guard(limits);
+
+  ProbePortfolio portfolio;
+  HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = Decimal64::parse("100");
+  position.sellable_quantity_ = Decimal64::parse("70");
+  portfolio.positions_.push_back(position);
+
+  const auto refused = guard.check(planned("100", "70000", OrderSide::SELL), portfolio, open_market());
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::QUANTITY_NOT_SELLABLE);
+  // Both numbers, so a strategy can resize rather than retry the same order.
+  REQUIRE(refused->limit_ == Decimal64::parse("70"));
+  REQUIRE(refused->attempted_ == Decimal64::parse("100"));
+
+  // Exactly the sellable quantity is permitted; the check is a ceiling, not a margin.
+  REQUIRE_FALSE(guard.check(planned("70", "70000", OrderSide::SELL), portfolio, open_market()));
+}
+
+TEST_CASE("a resting sell spends the same sellable quantity as a new one") {
+  // Neither broker states whether its figure is already net of resting sells, so this subtracts
+  // them: refusing an order that would have been accepted is recoverable, selling a position twice
+  // is not.
+  RiskLimits limits;
+  limits.enforce_sellable_quantity_ = true;
+  const RiskGuard guard(limits);
+
+  ProbePortfolio portfolio;
+  HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = Decimal64::parse("100");
+  position.sellable_quantity_ = Decimal64::parse("70");
+  portfolio.positions_.push_back(position);
+  portfolio.working_.push_back(working("50", "0", OrderStatus::PENDING, OrderSide::SELL));
+
+  // Fifty already working plus forty more is ninety against seventy sellable.
+  const auto refused = guard.check(planned("40", "70000", OrderSide::SELL), portfolio, open_market());
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::QUANTITY_NOT_SELLABLE);
+  REQUIRE(refused->limit_ == Decimal64::parse("70"));
+  REQUIRE(refused->attempted_ == Decimal64::parse("90"));
+
+  // Twenty more fits exactly.
+  REQUIRE_FALSE(guard.check(planned("20", "70000", OrderSide::SELL), portfolio, open_market()));
+
+  // A resting *buy* spends none of it, because it is not a sale.
+  ProbePortfolio with_buy;
+  with_buy.positions_.push_back(position);
+  with_buy.working_.push_back(working("50", "0", OrderStatus::PENDING, OrderSide::BUY));
+  REQUIRE_FALSE(guard.check(planned("70", "70000", OrderSide::SELL), with_buy, open_market()));
+}
+
+TEST_CASE("the sellable check never refuses a buy, whatever the position says") {
+  // It is a statement about disposing of a holding, so it has nothing to say about acquiring one.
+  RiskLimits limits;
+  limits.enforce_sellable_quantity_ = true;
+  const RiskGuard guard(limits);
+
+  ProbePortfolio portfolio;  // no position at all, so the sellable figure is absent
+  REQUIRE_FALSE(guard.check(planned("100", "70000", OrderSide::BUY), portfolio, open_market()));
+}
+
 TEST_CASE("a hold is a set, so taking it twice still takes one release") {
   // Not a counter. The holders are distinct conditions rather than distinct callers, so a loop that
   // recomputes the same condition every iteration must not build a hold that as many releases are

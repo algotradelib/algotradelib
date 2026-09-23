@@ -128,6 +128,8 @@ enum class GuardReason {
   ORDER_RATE_EXCEEDED,
   /** A limit needed the order's value and no price was available to compute it. */
   VALUE_NOT_KNOWN,
+  /** The sell exceeds what the broker says is sellable, or the broker did not say. */
+  QUANTITY_NOT_SELLABLE,
 };
 
 /** Returns a stable lowercase name for `reason`, for logs and structured reporting. */
@@ -149,6 +151,8 @@ inline constexpr std::string_view guard_reason_name(GuardReason reason) noexcept
       return "order_rate_exceeded";
     case GuardReason::VALUE_NOT_KNOWN:
       return "value_not_known";
+    case GuardReason::QUANTITY_NOT_SELLABLE:
+      return "quantity_not_sellable";
   }
   return "unknown";
 }
@@ -201,6 +205,19 @@ struct RiskLimits {
   /** Most orders that may be sent within `rate_window_`. */
   std::optional<std::size_t> max_orders_per_window_;
   std::chrono::seconds rate_window_{60};
+  /**
+   * Whether a sell is checked against what the broker says is sellable.
+   *
+   * Off by default, because it changes what an existing program does: a broker that does not
+   * publish the figure leaves it absent, and this check refuses rather than assuming the held
+   * quantity is sellable. A caller that has always sized from positions keeps doing so until it
+   * asks for this.
+   *
+   * Unlike every other member here it is not a number the operator chose. It is a switch, because
+   * the *limit* is the broker's answer rather than the operator's policy — which is the whole point
+   * of asking the broker.
+   */
+  bool enforce_sellable_quantity_{false};
   /** Instruments that may be traded; absent means any. */
   std::optional<std::vector<InstrumentId>> permitted_universe_;
   /** Phases trading is allowed in; absent means any. */
@@ -471,6 +488,30 @@ public:
       return refuse_with(
         GuardReason::ORDER_NOTIONAL_TOO_LARGE, *limits_.max_order_notional_, *value
       );
+    }
+
+    if (limits_.enforce_sellable_quantity_ && order.side_ == OrderSide::SELL) {
+      const auto sellable = portfolio.sellable_quantity_of(order.instrument_);
+      if (!sellable) {
+        // Absent is unknown, and unknown refuses. The broker did not publish the figure, or there
+        // is no such position; neither is permission to sell, and substituting the held quantity
+        // here would answer a question nobody asked. Decision 6: a condition the caller stated is
+        // honored or refused, never quietly approximated.
+        return refuse(GuardReason::QUANTITY_NOT_SELLABLE);
+      }
+      // Resting sells count against the same figure. Whether a broker's number is already net of
+      // them is not stated by either specification, so this subtracts them: over-counting can only
+      // refuse an order that would have been accepted, while under-counting sells a position
+      // twice. `ai/halt-provenance` spent two review rounds on exactly that asymmetry, and
+      // reconciliation's same-side offset exists for the same reason.
+      const auto resting = portfolio.working_quantity(order.instrument_, OrderSide::SELL);
+      const auto committed = decimal_add(resting, order.quantity_);
+      if (!committed) {
+        return refuse(GuardReason::QUANTITY_NOT_SELLABLE);
+      }
+      if (decimal_less(*sellable, *committed)) {
+        return refuse_with(GuardReason::QUANTITY_NOT_SELLABLE, *sellable, *committed);
+      }
     }
 
     if (limits_.max_position_quantity_) {
