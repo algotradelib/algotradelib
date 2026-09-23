@@ -221,7 +221,8 @@ if (!report.closing_complete()) {
 **went out**. They differ, and the most common reason is the one below.
 
 `closing_complete()` is false if *any* closing instruction failed to go, and there are six ways that
-happens — `closing_rejected_` (reconciliation could not build it, or the broker refused it),
+happens — `closing_rejected_` (reconciliation could not build it, the broker refused it, or the
+binding refused to send it),
 `closing_refused_`, `closing_withheld_`, `closing_indeterminate_`, `closing_unavailable_` (the
 journal could not be written, so no broker was asked) and `closing_unresolved_` (a cancellation named
 an order the snapshot does not hold). Cancellations count in these as well as placements: a

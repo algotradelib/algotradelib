@@ -754,6 +754,12 @@ TEST_CASE("an instruction that cannot be journaled is not sent", "[journal]") {
   // whether the runner should still be trading.
   REQUIRE(executor.place(buy_ten()) == SendOutcome::UNAVAILABLE);
   REQUIRE_FALSE(runner::send_outcome_reached_broker(SendOutcome::UNAVAILABLE));
+  // Two outcomes leave the broker unasked, and both must answer the same here -- the question is
+  // whether a request went out, which is what a rate-limit window and a request count depend on.
+  REQUIRE_FALSE(runner::send_outcome_reached_broker(SendOutcome::REFUSED_LOCALLY));
+  REQUIRE(runner::send_outcome_reached_broker(SendOutcome::ACCEPTED));
+  REQUIRE(runner::send_outcome_reached_broker(SendOutcome::REJECTED));
+  REQUIRE(runner::send_outcome_reached_broker(SendOutcome::INDETERMINATE));
   REQUIRE(executor.inner().placed().empty());
   REQUIRE(executor.unjournaled_refusals() == 1);
   REQUIRE_FALSE(executor.last_journal_error().empty());

@@ -997,14 +997,18 @@ private:
         " closing instruction(s); the position is still held");
     }
     if (!closing.rejected_.empty()) {
+      // Deliberately does not name who decided. The bucket holds three things -- reconciliation
+      // could not build the instruction, the broker refused it, or the binding refused to send it
+      // -- and an operator reading a stop report needs the consequence, which is the same for all
+      // three. `Report::rejected_` and `last_error()` carry which it was.
       report.notes_.push_back(
-        "reconciliation could not build " + std::to_string(closing.rejected_.size()) +
-        " closing instruction(s); the position is still held");
+        std::to_string(closing.rejected_.size()) +
+        " closing instruction(s) were not placed; the position is still held");
     }
     if (!closing.rejected_cancel_.empty()) {
       report.notes_.push_back(
-        "the broker rejected " + std::to_string(closing.rejected_cancel_.size()) +
-        " closing cancellation(s); read its order list for their state");
+        std::to_string(closing.rejected_cancel_.size()) +
+        " closing cancellation(s) were refused; read the broker's order list for their state");
     }
     if (report.closing_withheld_ != 0) {
       report.notes_.push_back(

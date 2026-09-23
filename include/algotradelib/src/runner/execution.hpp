@@ -20,8 +20,10 @@ namespace runner {
  * may have recorded the order and lost the reply, or never received it at all. Retrying is how a
  * position gets doubled; assuming failure is how a live order goes unwatched.
  *
- * So the outcome has three values, not two, and the third obliges the runner to stop and read the
- * broker's own order list before it may act on that instrument again.
+ * So the outcome has four values, not two. The third -- `INDETERMINATE` -- obliges the runner to
+ * stop and read the broker's own order list before it may act on that instrument again. The fourth
+ * separates the binding's own refusal from the broker's, because only one of them is a request the
+ * broker counted.
  */
 enum class SendOutcome {
   /** The broker recorded the instruction. The order exists. */
@@ -135,9 +137,16 @@ inline SendOutcome outcome_of(const BrokerError& error) {
   return SendOutcome::INDETERMINATE;
 }
 
-/** Returns whether `outcome` means the broker was asked at all. */
+/**
+ * Returns whether `outcome` means the broker was asked at all.
+ *
+ * Two outcomes mean it was not, and they differ in everything except that: `UNAVAILABLE` is the
+ * local machinery failing and stops the runner sending, while `REFUSED_LOCALLY` is the binding
+ * declining one instruction it cannot express. Both leave the broker unasked, which is the only
+ * question this answers -- and the one a rate-limit window and a request count depend on.
+ */
 inline constexpr bool send_outcome_reached_broker(SendOutcome outcome) noexcept {
-  return outcome != SendOutcome::UNAVAILABLE;
+  return outcome != SendOutcome::UNAVAILABLE && outcome != SendOutcome::REFUSED_LOCALLY;
 }
 
 /** Why a planned order was held back rather than sent or refused. */

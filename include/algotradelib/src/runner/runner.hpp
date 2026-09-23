@@ -119,7 +119,16 @@ struct DryRunReport {
    * go", never "is the order gone".
    */
   std::vector<OrderRef<BrokerTag>> would_cancel_;
-  /** Instructions reconciliation could not build, with the reason. */
+  /**
+   * Instructions that were not placed, with the reason.
+   *
+   * Three things land here and they share a consequence rather than a cause: reconciliation could
+   * not build the instruction, the broker refused it, or the binding refused to send it (an
+   * idempotency key at a broker that accepts none, say). In every case the order does not exist and
+   * nothing needs reconciling. Only the middle one was a request the broker counted, which is why
+   * `SendOutcome` keeps them apart even though this bucket does not; `last_error()` on the executor
+   * says which of the two refusals it was.
+   */
   std::vector<strategy::Rejection> rejected_;
   /** Instructions a guard refused, with the limit and what was attempted. */
   std::vector<strategy::GuardRejection> refused_;
@@ -133,13 +142,13 @@ struct DryRunReport {
   /** Instructions whose send failed in transit, leaving their outcome unknown. */
   std::vector<strategy::PlannedOrder> indeterminate_;
   /**
-   * Cancellations the broker refused.
+   * Cancellations that were refused, by the broker or by the binding.
    *
    * A refusal is an answer about the *request*: it was not accepted, so nothing needs reconciling.
    * It says nothing about the order, which may still be working or may have filled a moment
    * earlier -- a fill is one of the ordinary reasons a broker refuses a withdrawal. Either way the
-   * request did not go, which is why this is not `would_cancel_`. The placement path maps a broker
-   * refusal into `rejected_` the same way.
+   * request did not go, which is why this is not `would_cancel_`. The placement path maps both
+   * kinds of refusal into `rejected_` the same way, and `last_error()` says which this was.
    */
   std::vector<OrderRef<BrokerTag>> rejected_cancel_;
   /**

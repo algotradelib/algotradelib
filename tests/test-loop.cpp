@@ -1514,7 +1514,9 @@ TEST_CASE("a cancellation the broker rejected is not a completed withdrawal", "[
   // A rejection is an answer, so unlike an indeterminate cancellation it owes no reconciliation.
   CHECK_FALSE(runner_instance.ledger().requires_reconcile(samsung()));
   REQUIRE_FALSE(report.notes_.empty());
-  CHECK(report.notes_.front().find("read its order list") != std::string::npos);
+  // The note points at the broker's listing rather than naming who decided, because the bucket
+  // also holds a withdrawal the binding itself refused and the consequence is the same.
+  CHECK(report.notes_.front().find("read the broker's order list") != std::string::npos);
 }
 
 TEST_CASE("a stop before the first order-list read is not a complete stop", "[loop][stop]") {
