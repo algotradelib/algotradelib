@@ -52,6 +52,11 @@ struct SellableInHoldings : strategy::NoCaps {
 struct SellableByInquiry : strategy::NoCaps {
   static constexpr SellableSource sellable_source = SellableSource::INQUIRY;
 };
+/** A broker that publishes what may be spent, per currency, as both of them do. */
+struct WithBuyingPower : strategy::NoCaps {
+  static constexpr bool has_buying_power = true;
+  static constexpr bool has_working_orders = true;
+};
 
 /**
  * A session that records what it was asked and answers however a test says.
@@ -158,6 +163,42 @@ public:
     return Result<HoldingsSnapshot>(holdings_);
   }
 
+  /**
+   * Returns what may be spent in `currency`, or the failure a test asked for in that one currency.
+   *
+   * Per currency rather than session-wide, because the case worth testing is the mixed one: a
+   * broker answering for the account's home currency and failing for the other is not an outage a
+   * caller would notice, and it is exactly when a stale budget goes on being sized against.
+   */
+  Result<BuyingPower> buying_power(const Currency& currency) {
+    buying_power_asked_.push_back(currency);
+    for (const auto& failing : failing_currencies_) {
+      if (failing == currency) {
+        BrokerError error;
+        error.category_ = ErrorCategory::TRANSPORT;
+        return Result<BuyingPower>(error);
+      }
+    }
+    if (error_) {
+      return Result<BuyingPower>(*error_);
+    }
+    BuyingPower reading;
+    reading.cash_ = Money{buying_power_amount_, currency};
+    reading.received_at_ = std::chrono::system_clock::now();
+    return Result<BuyingPower>(std::move(reading));
+  }
+
+  /** Makes the buying-power inquiry fail for `currency` alone. */
+  void fail_buying_power_in(const Currency& currency) {
+    failing_currencies_.push_back(currency);
+  }
+
+  /** Sets what a successful buying-power inquiry answers, in whatever currency was asked. */
+  void set_buying_power(const char* amount) { buying_power_amount_ = Decimal64::parse(amount); }
+
+  /** Returns every currency the buying-power inquiry was asked about. */
+  const std::vector<Currency>& buying_power_asked() const noexcept { return buying_power_asked_; }
+
   /** Returns the scripted working orders, counting the call. */
   Result<WorkingOrders<FakeBroker>> working_orders() {
     ++working_calls_;
@@ -221,6 +262,9 @@ private:
   WorkingOrders<FakeBroker> working_orders_;
   OrderPage history_;
   std::optional<BrokerError> history_error_;
+  std::vector<Currency> failing_currencies_;
+  std::vector<Currency> buying_power_asked_;
+  Decimal64 buying_power_amount_{Decimal64::parse("5000000")};
   const runner::MemoryJournal* observed_{nullptr};
   std::vector<runner::JournalEntry> journal_at_send_;
   std::size_t bar_calls_{0};
@@ -679,6 +723,7 @@ struct CountEvents {
 };
 
 using WorkingSession = FakeSession<WithWorkingOrders>;
+using BudgetSession = FakeSession<WithBuyingPower>;
 using HistorySession = FakeSession<WithoutWorkingOrders>;
 
 /** A two-bar series ending at `last_close`. */
@@ -751,6 +796,45 @@ TEST_CASE("polling bars feeds each new bar exactly once") {
   const auto after = source.poll(runner::PollKind::BARS, live_runner);
   CHECK(after == runner::PollOutcome::UPDATED);
   CHECK(live_runner.strategy().bars_ == 3);
+}
+
+TEST_CASE("a buying-power poll that answers for one currency and fails for another has failed") {
+  // The partial answer is the dangerous one, because it looks like success. Reporting `UPDATED`
+  // because *something* arrived resets the loop's consecutive-failure count, and a currency that
+  // fails every time would then never abandon a run: the loop would report healthy polls forever
+  // while orders in that currency were sized against a figure from hours ago.
+  BudgetSession session;
+  session.set_buying_power("5000000");
+  session.fail_buying_power_in(Currency::usd());
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<BudgetSession> source(session, {samsung()});
+  source.set_buying_power_currencies({Currency::krw(), Currency::usd()});
+
+  const auto outcome = source.poll(runner::PollKind::BUYING_POWER, live_runner);
+  CHECK(outcome == runner::PollOutcome::FAILED);
+  CHECK(source.last_error().has_value());
+  // Both were asked: one currency failing must not abandon the rest of the round.
+  CHECK(session.buying_power_asked().size() == 2);
+  // And the currency that answered was still applied, because dropping a budget the guard is about
+  // to size against is the worse direction; the staleness gate is what retires an old reading.
+  const auto& readings = live_runner.context().portfolio().buying_power_;
+  REQUIRE(readings.size() == 1);
+  CHECK(readings[0].cash_.currency_ == Currency::krw());
+}
+
+TEST_CASE("a buying-power poll that answers for every configured currency has succeeded") {
+  BudgetSession session;
+  session.set_buying_power("5000000");
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<BudgetSession> source(session, {samsung()});
+  source.set_buying_power_currencies({Currency::krw(), Currency::usd()});
+
+  const auto outcome = source.poll(runner::PollKind::BUYING_POWER, live_runner);
+  CHECK(outcome == runner::PollOutcome::UPDATED);
+  CHECK_FALSE(source.last_error().has_value());
+  CHECK(live_runner.context().portfolio().buying_power_.size() == 2);
+  // Published so the loop's gate can hold for a budget that never arrived at all.
+  CHECK(source.buying_power_currencies().size() == 2);
 }
 
 TEST_CASE("a failing poll reports the failure and its reason") {

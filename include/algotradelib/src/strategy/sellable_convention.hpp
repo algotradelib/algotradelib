@@ -116,7 +116,7 @@ public:
         // The broker did not publish it, so there is nothing to learn from this position.
         continue;
       }
-      const auto resting = portfolio.working_quantity(position.instrument_, OrderSide::SELL);
+      const auto resting = reported_resting(portfolio, position.instrument_);
       const Reading now{position.quantity_, *position.sellable_quantity_, resting};
       if (auto* previous = find(last_, position.instrument_)) {
         judge(position.instrument_, *previous, now);
@@ -154,6 +154,41 @@ public:
   }
 
 private:
+  /**
+   * Returns the sell quantity **the broker reported** resting, ignoring the runner's reservations.
+   *
+   * A runner adds a row of its own for an order it has just sent, so that the next order in the
+   * pass cannot re-sell the same shares. Those rows are this library's arithmetic, and counting
+   * them here would be circular: the resting quantity would rise with no change in the broker's
+   * sellable figure, and the probe would record `GROSS_OF_RESTING` on evidence it manufactured
+   * itself -- every time, for any broker, whenever the sellable check happened to be enabled.
+   */
+  static Decimal64 reported_resting(
+    const Portfolio<Broker>& portfolio,
+    const InstrumentId& instrument
+  ) {
+    Decimal64 total = Decimal64::parse("0");
+    for (const auto& order : portfolio.working_) {
+      if (order.reserved_ || !(order.order_.instrument_ == instrument) ||
+          order.order_.side_ != OrderSide::SELL) {
+        continue;
+      }
+      if (!order_is_open(order.order_.status_)) {
+        continue;
+      }
+      const auto remaining = decimal_subtract(
+        order.order_.quantity_, order.order_.execution_.filled_quantity_
+      );
+      if (!remaining || decimal_less(*remaining, Decimal64::parse("0"))) {
+        continue;
+      }
+      if (const auto sum = decimal_add(total, *remaining)) {
+        total = *sum;
+      }
+    }
+    return total;
+  }
+
   /** One position as a poll reported it. */
   struct Reading {
     Decimal64 held_;

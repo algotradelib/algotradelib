@@ -183,6 +183,22 @@ struct source_provides_working_orders<
   Source, std::void_t<decltype(Source::provides_working_orders)>
 > : std::bool_constant<Source::provides_working_orders> {};
 
+/**
+ * Whether `Source` can say which currencies it was configured to ask about.
+ *
+ * **Defaults to false**, so a source that stays silent gets the weaker gate it had before rather
+ * than a compile error. A source declares `const std::vector<Currency>& buying_power_currencies()
+ * const` to let the gate hold for a configured budget that never arrived, instead of settling for
+ * "some currency has a reading".
+ */
+template <typename Source, typename = void>
+struct source_names_buying_power_currencies : std::false_type {};
+
+template <typename Source>
+struct source_names_buying_power_currencies<
+  Source, std::void_t<decltype(std::declval<const Source&>().buying_power_currencies())>
+> : std::true_type {};
+
 /** How the loop behaves when polls keep failing. */
 struct FailurePolicy {
   /**
@@ -414,6 +430,14 @@ public:
   /** Sets what the order-list read returns. */
   void set_order_list(PollOutcome outcome) { order_list_ = outcome; }
 
+  /** Sets which currencies this source stands for having been configured to ask about. */
+  void set_buying_power_currencies(std::vector<Currency> currencies) {
+    currencies_ = std::move(currencies);
+  }
+
+  /** Returns those currencies, which is what lets the gate hold for one that never answered. */
+  const std::vector<Currency>& buying_power_currencies() const noexcept { return currencies_; }
+
   /** Returns how many times the order list was read. */
   std::size_t order_list_reads() const noexcept { return order_list_reads_; }
 
@@ -448,6 +472,7 @@ private:
     PollOutcome::UNCHANGED,
   };
   PollOutcome order_list_{PollOutcome::UPDATED};
+  std::vector<Currency> currencies_;
   std::size_t polls_[poll_kind_count] = {};
   std::size_t order_list_reads_{0};
 };
@@ -722,18 +747,58 @@ private:
     if (runner_->guard().limits().enforce_buying_power_) {
       // Checked only when the caller asked for the limit. A loop with no buying-power cadence and
       // no check configured is an ordinary loop, and must not be held for a reading nobody wants.
-      const auto& readings = runner_->context().portfolio().buying_power_;
-      if (readings.empty()) {
-        return strategy::HaltReason::BUYING_POWER_UNREAD;
+      if (const auto unread = buying_power_unread(at)) {
+        return *unread;
       }
-      if (maximum_buying_power_age_) {
-        // Aged against the reading's own stamp, for the same reason the portfolio is: a figure that
-        // arrived an hour ago is an hour old however recently the poll succeeded.
-        for (const auto& reading : readings) {
-          if (at - reading.received_at_ > *maximum_buying_power_age_) {
+    }
+    return std::nullopt;
+  }
+
+  /**
+   * Returns whether some budget the run needs is missing or too old to size against.
+   *
+   * **Every configured currency must have its own fresh reading**, not merely one of them. A source
+   * that names its currencies is asked, because an account trading two and answering for one is a
+   * partial answer: the per-order guard would still refuse the unread currency, but the loop would
+   * go on reporting an open gate while a budget it was told to watch never arrived at all.
+   *
+   * A source that names none falls back to "any reading at all", which is the most the loop can
+   * check without knowing what was asked for.
+   */
+  std::optional<strategy::HaltReason> buying_power_unread(
+    std::chrono::system_clock::time_point at
+  ) const {
+    const auto& readings = runner_->context().portfolio().buying_power_;
+    // Aged against the reading's own stamp, for the same reason the portfolio is: a figure that
+    // arrived an hour ago is an hour old however recently the poll succeeded.
+    const auto usable = [&](const BuyingPower& reading) {
+      return !maximum_buying_power_age_ ||
+        at - reading.received_at_ <= *maximum_buying_power_age_;
+    };
+    if constexpr (source_names_buying_power_currencies<Source>::value) {
+      const auto& wanted = source_->buying_power_currencies();
+      if (!wanted.empty()) {
+        for (const auto& currency : wanted) {
+          bool found = false;
+          for (const auto& reading : readings) {
+            if (reading.cash_.currency_ == currency && usable(reading)) {
+              found = true;
+              break;
+            }
+          }
+          if (!found) {
             return strategy::HaltReason::BUYING_POWER_UNREAD;
           }
         }
+        return std::nullopt;
+      }
+    }
+    if (readings.empty()) {
+      return strategy::HaltReason::BUYING_POWER_UNREAD;
+    }
+    for (const auto& reading : readings) {
+      if (!usable(reading)) {
+        return strategy::HaltReason::BUYING_POWER_UNREAD;
       }
     }
     return std::nullopt;

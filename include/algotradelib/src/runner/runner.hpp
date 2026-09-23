@@ -775,6 +775,10 @@ private:
     working.order_.status_ = OrderStatus::PENDING;
     working.order_.quantity_ = order.quantity_;
     working.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+    // Marked as ours. A limit sizing against what is outstanding must count it; anything inferring
+    // the broker's own behaviour from the listing must not, because this row is arithmetic rather
+    // than something the broker said.
+    working.reserved_ = true;
     view.working_.push_back(std::move(working));
 
     // A buy also spends money that the rest of the pass may not spend again. The estimate is the

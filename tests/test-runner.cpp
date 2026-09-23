@@ -331,6 +331,83 @@ TEST_CASE("a second buy in one pass spends what the first already committed") {
   REQUIRE(report.refused_[0].attempted_ == Decimal64::parse("700000"));
 }
 
+TEST_CASE("a second buy in one pass counts against the position ceiling") {
+  // The position half of the same stale-view defect, and the one a ceiling is most obviously for:
+  // two buys of ten against a ceiling of fifteen. Each fits the *held* quantity of zero, so a
+  // ceiling read from holdings alone passes both and builds twenty.
+  strategy::RiskLimits limits;
+  limits.max_position_quantity_ = Decimal64::parse("15");
+  runner::DryRunner<BuyTwice> dry(BuyTwice{}, limits);
+  arrange(dry);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+
+  REQUIRE(report.would_place_.size() == 1);
+  REQUIRE(report.refused_.size() == 1);
+  REQUIRE(report.refused_[0].reason_ == strategy::GuardReason::POSITION_LIMIT_EXCEEDED);
+  REQUIRE(report.refused_[0].limit_ == Decimal64::parse("15"));
+  // Ten already working plus ten more, against a holding of nothing.
+  REQUIRE(report.refused_[0].attempted_ == Decimal64::parse("20"));
+}
+
+TEST_CASE("an order resting from a previous pass counts against the position ceiling") {
+  // Not only within one pass: a broker's own listing of what is outstanding is the same evidence,
+  // and a ceiling that ignored it would let each bar add another order to the pile.
+  strategy::RiskLimits limits;
+  limits.max_position_quantity_ = Decimal64::parse("15");
+  runner::DryRunner<BuyTwice> dry(BuyTwice{}, limits);
+  arrange(dry);
+
+  strategy::Portfolio<runner::DryRunner<BuyTwice>::Tag> portfolio;
+  WorkingOrder<runner::DryRunner<BuyTwice>::Tag> resting;
+  resting.order_.instrument_ = samsung();
+  resting.order_.side_ = OrderSide::BUY;
+  resting.order_.status_ = OrderStatus::PENDING;
+  resting.order_.quantity_ = Decimal64::parse("10");
+  resting.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+  portfolio.working_.push_back(resting);
+  dry.context().set_portfolio(portfolio);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+
+  // Ten are already in the market, so the first of the two new buys already breaches fifteen.
+  REQUIRE(report.would_place_.empty());
+  REQUIRE(report.refused_.size() == 2);
+  REQUIRE(report.refused_[0].reason_ == strategy::GuardReason::POSITION_LIMIT_EXCEEDED);
+  REQUIRE(report.refused_[0].attempted_ == Decimal64::parse("20"));
+}
+
+TEST_CASE("a sell resting on the other side is not relief for a buy") {
+  // Same-side only, deliberately. Counting a resting sell as relief for a buy assumes a fill that
+  // may never come, and a ceiling exists for what happens when everything outstanding *does* fill.
+  strategy::RiskLimits limits;
+  limits.max_position_quantity_ = Decimal64::parse("15");
+  runner::DryRunner<BuyTwice> dry(BuyTwice{}, limits);
+  arrange(dry);
+
+  strategy::Portfolio<runner::DryRunner<BuyTwice>::Tag> portfolio;
+  HoldingPosition held;
+  held.instrument_ = samsung();
+  held.quantity_ = Decimal64::parse("10");
+  portfolio.positions_.push_back(held);
+  WorkingOrder<runner::DryRunner<BuyTwice>::Tag> resting;
+  resting.order_.instrument_ = samsung();
+  resting.order_.side_ = OrderSide::SELL;
+  resting.order_.status_ = OrderStatus::PENDING;
+  resting.order_.quantity_ = Decimal64::parse("10");
+  resting.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+  portfolio.working_.push_back(resting);
+  dry.context().set_portfolio(portfolio);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+
+  // Ten held plus ten bought is twenty, whatever the resting sell may later do about it.
+  REQUIRE(report.would_place_.empty());
+  REQUIRE(report.refused_.size() == 2);
+  REQUIRE(report.refused_[0].reason_ == strategy::GuardReason::POSITION_LIMIT_EXCEEDED);
+  REQUIRE(report.refused_[0].attempted_ == Decimal64::parse("20"));
+}
+
 TEST_CASE("the probe learns the broker's sellable convention from ordinary polls") {
   // The point of the probe: no experiment, no extra request, no order placed for the sake of
   // measuring. It reads the portfolios the runner is fed anyway.
@@ -510,6 +587,56 @@ TEST_CASE("withdrawals spend the rate window a later placement is checked agains
   REQUIRE(report.would_place_.empty());
   REQUIRE(report.refused_.size() == 1);
   REQUIRE(report.refused_[0].reason_ == strategy::GuardReason::ORDER_RATE_EXCEEDED);
+}
+
+TEST_CASE("the probe does not learn the broker's convention from this runner's own reservation") {
+  // Found in review, and it would have made the probe worse than useless: with the sellable check
+  // on, an accepted sell is kept as a row of ours so the next order cannot re-sell the same shares.
+  // If the probe counted that row, the resting quantity would rise with no change in the broker's
+  // sellable figure -- and it would record GROSS_OF_RESTING on evidence it manufactured itself,
+  // every time, for any broker, confidently.
+  strategy::RiskLimits limits;
+  limits.enforce_sellable_quantity_ = true;
+  runner::DryRunner<SellSixty> dry(SellSixty{}, limits);
+  arrange(dry);
+  dry.probe_sellable_convention();
+
+  strategy::Portfolio<runner::DryRunner<SellSixty>::Tag> portfolio;
+  HoldingPosition held;
+  held.instrument_ = samsung();
+  held.quantity_ = Decimal64::parse("100");
+  held.sellable_quantity_ = Decimal64::parse("100");
+  portfolio.positions_.push_back(held);
+  dry.context().set_portfolio(portfolio);
+
+  dry.feed(bar_at(10, "70000"));   // sells sixty, and reserves it
+  dry.feed(bar_at(11, "70000"));   // observes a portfolio carrying that reservation
+
+  // Nothing was learned, because nothing the broker said changed.
+  REQUIRE(dry.sellable_convention().overall().total() == 0);
+  REQUIRE(dry.sellable_convention().verdict() == strategy::SellableConvention::UNDETERMINED);
+
+  // And the broker's own answer still teaches it: sixty rests, and the broker's figure drops by
+  // sixty, which is the real observation the probe exists for.
+  strategy::Portfolio<runner::DryRunner<SellSixty>::Tag> polled;
+  polled.positions_.push_back(held);
+  dry.context().set_portfolio(polled);
+  dry.feed(bar_at(12, "70000"));
+
+  auto reported = polled;
+  reported.positions_[0].sellable_quantity_ = Decimal64::parse("40");
+  WorkingOrder<runner::DryRunner<SellSixty>::Tag> broker_row;
+  broker_row.order_.instrument_ = samsung();
+  broker_row.order_.side_ = OrderSide::SELL;
+  broker_row.order_.status_ = OrderStatus::PENDING;
+  broker_row.order_.quantity_ = Decimal64::parse("60");
+  broker_row.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+  broker_row.ref_ = OrderRef<runner::DryRunner<SellSixty>::Tag>{"0001", ""};
+  reported.working_.push_back(broker_row);
+  dry.context().set_portfolio(reported);
+  dry.observe_sellable_convention();
+
+  REQUIRE(dry.sellable_convention().overall().net_ == 1);
 }
 
 TEST_CASE("a guard refusal is reported and no order survives it") {

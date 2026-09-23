@@ -787,9 +787,26 @@ inline bool is_valid_date(const Date& date) {
  */
 struct CommissionRate {
   Country country_{Country::KR};
+  /**
+   * The market the broker named, when this library does not normalize it.
+   *
+   * Empty on every row whose market is one of the normalized countries, and `country_` means
+   * nothing when this is set. Toss's specification requires a client to accept unknown values of
+   * its market enum, and this library's answer to an unrecognized wire value is to preserve it
+   * rather than drop it — the same shape `InstrumentId::other_` uses, for the same reason: a
+   * schedule that silently omitted a market would be a successful, incomplete answer with no way
+   * for a caller to see what was missing.
+   *
+   * A code too long or too odd for `Code<16>` cannot be preserved, and such a row is skipped rather
+   * than reported under a market it does not belong to.
+   */
+  Code<16> other_;
   Decimal64 rate_;
   std::optional<Date> from_;
   std::optional<Date> until_;
+
+  /** Returns whether this row names a market this library normalizes. */
+  bool normalized() const noexcept { return other_.empty(); }
 
   /** Returns whether this rate is the one in force on `date`. */
   bool applies_on(const Date& date) const {
@@ -823,7 +840,9 @@ struct CommissionSchedule {
    */
   std::optional<CommissionRate> rate_for(Country country, const Date& date) const {
     for (const auto& rate : rates_) {
-      if (rate.country_ == country && rate.applies_on(date)) {
+      // A row for a market this library does not normalize can never be the answer to a question
+      // asked in terms of `Country`, and it is kept so a caller can see that the broker sent it.
+      if (rate.normalized() && rate.country_ == country && rate.applies_on(date)) {
         return rate;
       }
     }
@@ -1091,6 +1110,19 @@ struct WorkingOrder {
   OrderSnapshot order_;
   OrderRef<Broker> ref_;
   std::optional<Decimal64> amendable_quantity_;
+  /**
+   * Whether this row is a runner's own reservation rather than something the broker reported.
+   *
+   * False on everything a listing produced, which is every row an adapter builds. A runner sets it
+   * on the rows it adds for orders it has just sent, so that a limit sizing against "what is
+   * outstanding" counts them while anything **inferring what the broker does** ignores them --
+   * `strategy::SellableConventionProbe` reads a broker's behaviour from these rows, and a
+   * reservation is this library's own arithmetic, not evidence about the broker.
+   *
+   * A poll replaces the listing wholesale, so a reservation never outlives the picture it was added
+   * to.
+   */
+  bool reserved_{false};
 };
 
 /** Point-in-time set of orders open to modification or cancellation. */

@@ -39,6 +39,14 @@ struct CommissionModel {
   Decimal64 rate_{Decimal64::parse("0")};
   /** Smallest commission charged on an execution that happens at all. */
   Decimal64 minimum_{Decimal64::parse("0")};
+  /**
+   * Whether the rate came from a broker's published schedule rather than from the caller.
+   *
+   * Carried on the model rather than passed alongside it, because the model is what reaches the
+   * report: a flag the caller had to remember to set separately would be false on exactly the runs
+   * where it mattered. Set only by `commission_model_from`.
+   */
+  bool from_broker_{false};
 
   /** Returns the commission on `quantity` at `price`, or nothing when it does not fit. */
   std::optional<Decimal64> on(const Decimal64& quantity, const Decimal64& price) const {
@@ -106,7 +114,9 @@ inline Result<CommissionModel> commission_model_from(
     error.message_ = "the published schedule states no commission rate for that market and date";
     return Result<CommissionModel>(std::move(error));
   }
-  return Result<CommissionModel>(CommissionModel::of(rate->rate_));
+  auto model = CommissionModel::of(rate->rate_);
+  model.from_broker_ = true;
+  return Result<CommissionModel>(std::move(model));
 }
 
 /**

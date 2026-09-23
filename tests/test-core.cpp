@@ -1156,6 +1156,21 @@ Result<network::HttpResponse> json_response(std::string body, int status = 200) 
   return Result<network::HttpResponse>(std::move(response));
 }
 
+/** Builds one commission row without depending on the order of the struct's fields. */
+CommissionRate rate_row(
+  Country country,
+  Decimal64 rate,
+  std::optional<Date> from,
+  std::optional<Date> until
+) {
+  CommissionRate row;
+  row.country_ = country;
+  row.rate_ = std::move(rate);
+  row.from_ = std::move(from);
+  row.until_ = std::move(until);
+  return row;
+}
+
 /** Builds a limit buy order for ten shares of one Korean equity. */
 OrderRequest korean_limit_buy() {
   OrderRequest order;
@@ -3220,10 +3235,10 @@ TEST_CASE(
 ) {
   CommissionSchedule schedule;
   schedule.rates_.push_back(
-    CommissionRate{Country::KR, Decimal64::parse("0.00015"), Date{2026, 1, 1}, std::nullopt}
+    rate_row(Country::KR, Decimal64::parse("0.00015"), Date{2026, 1, 1}, std::nullopt)
   );
   schedule.rates_.push_back(
-    CommissionRate{Country::US, Decimal64::parse("0.001"), std::nullopt, Date{2026, 6, 30}}
+    rate_row(Country::US, Decimal64::parse("0.001"), std::nullopt, Date{2026, 6, 30})
   );
 
   const auto domestic = schedule.rate_for(Country::KR, Date{2026, 9, 23});
@@ -3344,8 +3359,9 @@ TEST_CASE(
   REQUIRE_FALSE(unlimited.value().rates_[0].until_);
   REQUIRE(unlimited.value().rate_for(Country::KR, Date{2099, 1, 1}));
 
-  // A market this library does not normalize is skipped, not refused: one unfamiliar row must not
-  // deny a caller the rate for the market they actually trade.
+  // A market this library does not normalize is preserved, not dropped: Toss's own specification
+  // requires accepting unknown values of this enum, so a schedule that quietly omitted the row
+  // would be a successful, incomplete answer with no way for a caller to see what was missing.
   const auto mixed = tossinvest::TossClientTestAccess::parse_commissions(
     json_response(
       R"({"result":[{"marketCountry":"JP","commissionRate":"0.002","startDate":null,"endDate":null},)"
@@ -3353,8 +3369,30 @@ TEST_CASE(
     )
   );
   REQUIRE(mixed);
-  REQUIRE(mixed.value().rates_.size() == 1);
-  REQUIRE(mixed.value().rates_[0].country_ == Country::KR);
+  REQUIRE(mixed.value().rates_.size() == 2);
+  REQUIRE_FALSE(mixed.value().rates_[0].normalized());
+  REQUIRE(mixed.value().rates_[0].other_.view() == "JP");
+  REQUIRE(mixed.value().rates_[0].rate_ == Decimal64::parse("0.002"));
+  REQUIRE(mixed.value().rates_[1].normalized());
+  REQUIRE(mixed.value().rates_[1].country_ == Country::KR);
+
+  // The preserved row is visible but never answers a question asked in terms of `Country`: an
+  // unnormalized market is not a country, and reporting it as one would be worse than dropping it.
+  REQUIRE(mixed.value().rate_for(Country::KR, Date{2026, 9, 23}));
+  REQUIRE_FALSE(mixed.value().rate_for(Country::US, Date{2026, 9, 23}));
+
+  // A code too long for `Code<16>` cannot be preserved, and that row alone is skipped rather than
+  // reported under a market it does not belong to or failing the whole schedule.
+  const auto unstorable = tossinvest::TossClientTestAccess::parse_commissions(
+    json_response(
+      R"({"result":[{"marketCountry":"A_MARKET_NAME_FAR_TOO_LONG_TO_STORE",)"
+      R"("commissionRate":"0.002","startDate":null,"endDate":null},)"
+      R"({"marketCountry":"KR","commissionRate":"0.00015","startDate":null,"endDate":null}]})"
+    )
+  );
+  REQUIRE(unstorable);
+  REQUIRE(unstorable.value().rates_.size() == 1);
+  REQUIRE(unstorable.value().rates_[0].country_ == Country::KR);
 
   // An account with no stated rates is a real answer, and not the same as having no inquiry.
   const auto empty = tossinvest::TossClientTestAccess::parse_commissions(

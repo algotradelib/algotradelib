@@ -117,6 +117,16 @@ public:
     currencies_ = std::move(currencies);
   }
 
+  /**
+   * Returns the currencies configured above, which is what a complete poll has to cover.
+   *
+   * Published so the loop's gate can hold for a budget that never arrived. Without it the gate can
+   * only ask whether *any* reading exists, and one currency answering would open the gate for an
+   * account trading two -- the order guard would still refuse the unread one, but the run would
+   * report healthy polls while a configured budget was missing.
+   */
+  const std::vector<Currency>& buying_power_currencies() const noexcept { return currencies_; }
+
   /** Sets the bar interval and depth each poll requests. */
   void set_bar_query(BarInterval interval, int count) {
     interval_ = interval;
@@ -304,9 +314,18 @@ private:
       }
       if (updated) {
         runner_instance.context().set_portfolio(std::move(portfolio));
+      }
+      if (!failure) {
         last_error_.reset();
       }
-      if (failure && !updated) {
+      // **A partial answer is a failed poll**, even though the currencies that answered were still
+      // applied. Reporting `UPDATED` because *something* arrived would reset the loop's consecutive
+      // failure count, and a currency failing every time would then never abandon the run: the loop
+      // would report healthy polls indefinitely while orders in that currency were sized against a
+      // figure from hours ago. The readings are kept because the alternative -- dropping a budget
+      // the guard is about to size against -- is worse, and the staleness gate is what decides when
+      // an old reading stops being good enough. `last_error_` survives for the same reason.
+      if (failure) {
         return *failure;
       }
       return updated ? runner::PollOutcome::UPDATED : runner::PollOutcome::UNCHANGED;

@@ -213,7 +213,13 @@ struct GuardRejection {
 struct RiskLimits {
   /** Largest value a single order may have, in the currency it is priced in. */
   std::optional<Decimal64> max_order_notional_;
-  /** Largest absolute position, in shares, any one instrument may reach. */
+  /**
+   * Largest absolute position, in shares, any one instrument may reach.
+   *
+   * Measured against the position that would exist if the order **and everything already working
+   * on its side** filled, not against the last poll's holding: a ceiling that only looked at what
+   * was held would pass two orders that each fit and together do not.
+   */
   std::optional<Decimal64> max_position_quantity_;
   /** Largest total exposure the portfolio may reach. */
   std::optional<Decimal64> max_gross_exposure_;
@@ -577,9 +583,21 @@ public:
     if (limits_.max_position_quantity_) {
       const auto zero = Decimal64::parse("0");
       const auto held = portfolio.quantity_of(order.instrument_).value_or(zero);
+      // **Orders already working on this side count, because the ceiling is on the position this
+      // order could produce, not on the one the last poll reported.** Without this, two buys of 60
+      // against a ceiling of 100 both pass -- each is checked against an unchanged holding -- and
+      // the pair builds 120. Same-side only: a resting sell is not counted as relief for a buy,
+      // because treating it as relief assumes a fill that may never come, and the whole point of a
+      // ceiling is what happens when everything outstanding does fill. This is the same asymmetry
+      // the sellable check above resolves the same way.
+      const auto pending = portfolio.working_quantity(order.instrument_, order.side_);
+      const auto committed = decimal_add(pending, order.quantity_);
+      if (!committed) {
+        return refuse(GuardReason::POSITION_LIMIT_EXCEEDED);
+      }
       const auto signed_quantity = order.side_ == OrderSide::BUY ?
-        std::optional<Decimal64>(order.quantity_) :
-        decimal_subtract(zero, order.quantity_);
+        std::optional<Decimal64>(*committed) :
+        decimal_subtract(zero, *committed);
       if (!signed_quantity) {
         return refuse(GuardReason::POSITION_LIMIT_EXCEEDED);
       }

@@ -579,6 +579,21 @@ Instrument samsung_reference() {
   return reference;
 }
 
+/** Builds one commission row without depending on the order of the struct's fields. */
+CommissionRate rate_row(
+  Country country,
+  Decimal64 rate,
+  std::optional<Date> from,
+  std::optional<Date> until
+) {
+  CommissionRate row;
+  row.country_ = country;
+  row.rate_ = std::move(rate);
+  row.from_ = std::move(from);
+  row.until_ = std::move(until);
+  return row;
+}
+
 backtest::ReplayConfig replay_config() {
   backtest::ReplayConfig config;
   config.cash_ = Decimal64::parse("100000000");
@@ -852,6 +867,45 @@ TEST_CASE("costs reach the replay's executions, so a report can separate them ou
 // ---------------------------------------------------------------------------
 
 #if defined(ATL_HAS_EIGEN)
+
+TEST_CASE("a replay says whether its commission came from the broker or from the caller") {
+  // Found in review: the caveat existed and nothing ever set it, so a replay seeded from a broker's
+  // published schedule still reported the rate as the caller's. The provenance now travels on the
+  // model, because the model is what reaches the report -- a flag the caller had to set separately
+  // would be false on exactly the runs where it mattered.
+  CommissionSchedule schedule;
+  schedule.rates_.push_back(
+    rate_row(Country::KR, Decimal64::parse("0.00015"), std::nullopt, std::nullopt)
+  );
+  const auto seeded = backtest::commission_model_from(schedule, Country::KR, Date{2026, 9, 23});
+  REQUIRE(seeded);
+
+  backtest::Backtester<HoldsTen> published(
+    HoldsTen{}, replay_config(), backtest::NextBarFillModel(seeded.value())
+  );
+  published.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  published.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  published.finish();
+
+  const auto from_broker = backtest::summarize(published.result(), published.fills());
+  REQUIRE(from_broker.caveats_.commission_from_broker_);
+  REQUIRE(from_broker.caveats_.commission_rate_ == Decimal64::parse("0.00015"));
+
+  // The same rate chosen by the caller reads as the caller's, which is the distinction: the figures
+  // are identical and they mean different things.
+  backtest::Backtester<HoldsTen> chosen(
+    HoldsTen{},
+    replay_config(),
+    backtest::NextBarFillModel(backtest::CommissionModel::of(Decimal64::parse("0.00015")))
+  );
+  chosen.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  chosen.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  chosen.finish();
+
+  const auto from_caller = backtest::summarize(chosen.result(), chosen.fills());
+  REQUIRE_FALSE(from_caller.caveats_.commission_from_broker_);
+  REQUIRE(from_caller.caveats_.commission_rate_ == from_broker.caveats_.commission_rate_);
+}
 
 TEST_CASE("a report summarizes a replay and states what the model assumed") {
   backtest::Backtester<HoldsTen> engine(
@@ -1320,10 +1374,10 @@ TEST_CASE("a replay's buying power is its cash, stamped with the snapshot time")
 TEST_CASE("a cost model seeded from a broker's schedule charges what the broker charges") {
   CommissionSchedule schedule;
   schedule.rates_.push_back(
-    CommissionRate{Country::KR, Decimal64::parse("0.00015"), Date{2026, 1, 1}, std::nullopt}
+    rate_row(Country::KR, Decimal64::parse("0.00015"), Date{2026, 1, 1}, std::nullopt)
   );
   schedule.rates_.push_back(
-    CommissionRate{Country::US, Decimal64::parse("0.001"), std::nullopt, Date{2026, 6, 30}}
+    rate_row(Country::US, Decimal64::parse("0.001"), std::nullopt, Date{2026, 6, 30})
   );
 
   const auto domestic = backtest::commission_model_from(schedule, Country::KR, Date{2026, 9, 23});

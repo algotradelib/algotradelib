@@ -725,6 +725,104 @@ TEST_CASE("an unread buying power blocks sending, and only when asked for", "[lo
     CHECK(runner_instance.guard().halted(strategy::HaltReason::BUYING_POWER_UNREAD));
   }
 
+  SECTION("one currency answering does not stand in for another the source was told to ask") {
+    // The gate cannot settle for "some reading exists" when the source knows it was configured for
+    // two: an account trading both would report healthy polls while a budget it was told to watch
+    // had never arrived, and the run would look fine from the outside.
+    InertRunner runner_instance(Inert{}, limits);
+    InertSource source;
+    source.set_buying_power_currencies(
+      {algotradelib::Currency::krw(), algotradelib::Currency::usd()}
+    );
+    InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+    StopSource stop;
+
+    strategy::Portfolio<InertRunner::Tag> portfolio;
+    portfolio.buying_power_.push_back(
+      algotradelib::BuyingPower{
+        algotradelib::Money{
+          algotradelib::Decimal64::parse("5000000"), algotradelib::Currency::krw()
+        },
+        base_time(),
+      }
+    );
+    runner_instance.context().set_portfolio(portfolio);
+
+    const auto report = loop.run(stop, 1);
+    CHECK(report.final_gate_ == strategy::HaltReason::BUYING_POWER_UNREAD);
+    CHECK(runner_instance.guard().halted(strategy::HaltReason::BUYING_POWER_UNREAD));
+  }
+
+  SECTION("every configured currency answering opens it") {
+    InertRunner runner_instance(Inert{}, limits);
+    InertSource source;
+    source.set_buying_power_currencies(
+      {algotradelib::Currency::krw(), algotradelib::Currency::usd()}
+    );
+    InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+    StopSource stop;
+
+    strategy::Portfolio<InertRunner::Tag> portfolio;
+    portfolio.buying_power_.push_back(
+      algotradelib::BuyingPower{
+        algotradelib::Money{
+          algotradelib::Decimal64::parse("5000000"), algotradelib::Currency::krw()
+        },
+        base_time(),
+      }
+    );
+    portfolio.buying_power_.push_back(
+      algotradelib::BuyingPower{
+        algotradelib::Money{
+          algotradelib::Decimal64::parse("4000"), algotradelib::Currency::usd()
+        },
+        base_time(),
+      }
+    );
+    runner_instance.context().set_portfolio(portfolio);
+
+    const auto report = loop.run(stop, 1);
+    CHECK(!report.final_gate_.has_value());
+    CHECK_FALSE(runner_instance.guard().halted());
+  }
+
+  SECTION("a configured currency whose reading went stale closes it, though another is fresh") {
+    // The case the failed poll leaves behind: USD keeps failing, KRW keeps answering, and the old
+    // USD figure is deliberately kept so the guard has something to refuse against. What must not
+    // happen is the gate staying open on the strength of the currency that did answer.
+    InertRunner runner_instance(Inert{}, limits);
+    InertSource source;
+    source.set_buying_power_currencies(
+      {algotradelib::Currency::krw(), algotradelib::Currency::usd()}
+    );
+    InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+    loop.set_maximum_buying_power_age(std::chrono::minutes(5));
+    StopSource stop;
+
+    strategy::Portfolio<InertRunner::Tag> portfolio;
+    portfolio.buying_power_.push_back(
+      algotradelib::BuyingPower{
+        algotradelib::Money{
+          algotradelib::Decimal64::parse("5000000"), algotradelib::Currency::krw()
+        },
+        base_time(),
+      }
+    );
+    portfolio.buying_power_.push_back(
+      algotradelib::BuyingPower{
+        algotradelib::Money{
+          algotradelib::Decimal64::parse("4000"), algotradelib::Currency::usd()
+        },
+        base_time() - std::chrono::minutes(10),
+      }
+    );
+    runner_instance.context().set_portfolio(portfolio);
+
+    const auto report = loop.run(stop, 1);
+    CHECK(report.final_gate_ == strategy::HaltReason::BUYING_POWER_UNREAD);
+    CHECK(runner_instance.guard().halted(strategy::HaltReason::BUYING_POWER_UNREAD));
+  }
+
   SECTION("a loop that never asked for the check is not held") {
     InertRunner runner_instance;  // default limits: no buying-power check
     InertSource source;

@@ -190,6 +190,7 @@ inline Report summarize(
   report.caveats_.limit_fill_ = fills.limit_price();
   report.caveats_.commission_rate_ = fills.commission().rate_;
   report.caveats_.commission_minimum_ = fills.commission().minimum_;
+  report.caveats_.commission_from_broker_ = fills.commission().from_broker_;
   report.caveats_.slippage_basis_points_ = fills.slippage().basis_points_;
   report.caveats_.slippage_ticks_ = fills.slippage().ticks_;
   report.caveats_.gaps_ = result.gaps_;
