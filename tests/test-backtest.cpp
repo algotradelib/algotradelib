@@ -627,6 +627,21 @@ struct HoldsTen {
   }
 };
 
+/** Buys ten, holds it, then asks to be flat, so a replay has a real sale to check. */
+struct BuysThenSells {
+  std::size_t bars_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ++bars_;
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = bars_ >= 3 ? Decimal64::parse("0") : Decimal64::parse("10");
+    target.tag_ = "buys-then-sells";
+    ctx.submit(target);
+  }
+};
+
 /** Records every phase transition it is told about. */
 struct RecordsPhases {
   std::vector<strategy::MarketPhase> seen_;
@@ -1205,4 +1220,42 @@ TEST_CASE("TimedLiquidation flattens a position when a replay leaves the session
   REQUIRE(engine.result().executions_.size() == 2);
   REQUIRE(engine.result().executions_[1].fill_.side_ == OrderSide::SELL);
   REQUIRE(engine.ledger().quantity_of(samsung())->coefficient() == 0);
+}
+
+TEST_CASE("a replay sells what it holds with the sellable check enabled") {
+  // The check refuses a sale the broker has not said is sellable, and a replay has no broker. Until
+  // the ledger answered, every sale a replay planned was refused -- so the check could not be run
+  // over a replay at all, and the acceptance criterion that claimed it could was not reachable.
+  auto config = replay_config();
+  config.limits_.enforce_sellable_quantity_ = true;
+
+  backtest::Backtester<BuysThenSells> engine(BuysThenSells{}, config);
+  for (int day = 10; day < 16; ++day) {
+    engine.feed(moving_bar(utc(2026, 3, day, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  }
+  engine.finish();
+
+  // Bought ten, then sold ten, and nothing was refused on the way.
+  REQUIRE(engine.result().refused_.empty());
+  REQUIRE(engine.ledger().quantity_of(samsung()) == std::optional<Decimal64>(Decimal64::parse("0")));
+  REQUIRE(engine.result().executions_.size() == 2);
+  REQUIRE(engine.result().executions_[1].fill_.side_ == OrderSide::SELL);
+}
+
+TEST_CASE("a replay reports every held share as sellable, and says so") {
+  // The modelling assumption itself, pinned where a reader of the ledger would look for it: the
+  // snapshot answers the question the guard asks, and answers it with the whole holding.
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.finish();
+
+  const auto portfolio =
+    engine.ledger().template snapshot<backtest::BacktestTag>(utc(2026, 3, 11, 6, 30));
+  REQUIRE(portfolio.positions_.size() == 1);
+  REQUIRE(portfolio.positions_[0].quantity_ == Decimal64::parse("10"));
+  REQUIRE(portfolio.sellable_quantity_of(samsung()) == Decimal64::parse("10"));
+
+  // And the report carries the assumption, so a reader who never opens the ledger still learns it.
+  REQUIRE(backtest::ReportCaveats::sellable_is_whole_holding);
 }

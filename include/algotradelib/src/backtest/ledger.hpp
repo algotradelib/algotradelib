@@ -233,6 +233,19 @@ public:
   ) const {
     strategy::Portfolio<BrokerTag> portfolio;
     portfolio.positions_ = positions_;
+    // **Every held share is reported as sellable, and that is a model rather than a fact.** The
+    // field means "what the broker says may be sold", and a replay has no broker; leaving it absent
+    // instead would be read as "the broker did not say", which makes a guard checking it refuse
+    // every sale a replay ever plans.
+    //
+    // The whole holding is the answer consistent with the rest of this ledger. `apply` credits a
+    // sale to cash on the fill, so a replay already models a world with no settlement schedule, and
+    // claiming T+0 cash beside T+2 shares would be two different worlds in one snapshot. The
+    // assumption is disclosed on the report rather than only here -- `ReportCaveats` --
+    // because a reader who never opens this file still has to know.
+    for (auto& position : portfolio.positions_) {
+      position.sellable_quantity_ = position.quantity_;
+    }
     portfolio.cash_ = cash_;
     portfolio.as_of_ = as_of;
     return portfolio;

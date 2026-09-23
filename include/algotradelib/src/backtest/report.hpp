@@ -76,6 +76,21 @@ struct ReportCaveats {
    * likewise unmodelled.
    */
   static constexpr bool volume_ignored = true;
+
+  /**
+   * Always true, and present for the same reason: a replay reports every held share as sellable.
+   *
+   * Live, that figure comes from the broker and is routinely smaller than the holding — settlement,
+   * pledging and locking all reduce it, which is what `RiskLimits::enforce_sellable_quantity_`
+   * exists to respect. A replay has no broker to ask and models no settlement schedule, so it
+   * reports the whole position, and a strategy that would have been refused a sale live is not
+   * refused one here.
+   *
+   * This is a constant rather than a field because there is nothing yet to vary it: a ledger that
+   * models settlement would make it one, and that is the point at which this becomes a number
+   * rather than a disclosure.
+   */
+  static constexpr bool sellable_is_whole_holding = true;
 };
 
 /** What a replay produced, with every figure's absence meaning what `analytics` says it means. */
