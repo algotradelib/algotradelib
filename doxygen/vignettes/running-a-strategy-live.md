@@ -185,12 +185,21 @@ withdrawal that failed in transit may have withdrawn the order or may not, and t
 as one that went.
 
 **And one flag covers the case before any of those**, `closing_source_unverified_`. A stop builds its
-instructions from the holdings snapshot — working orders for a `withdraw`, positions for a `flatten` —
-so a stop requested before the loop's first iteration never reaches the startup order-list read and
-works from whatever picture it happens to have. That picture will not contain an order a *previous
-process* left resting. The pass still sends what it can see, because withdrawing some beats
-withdrawing none, but it will not call the result complete. If you can, let the loop run one iteration
-before stopping it.
+instructions from the portfolio snapshot — working orders for a `withdraw`, positions for a `flatten`
+— so it can only be complete if that picture is current. Three ways it is not:
+
+- **The startup read never happened.** A stop requested before the loop's first iteration reports
+  `STOPPING` and never reaches it, so the picture cannot contain an order a *previous process* left
+  resting.
+- **An order was sent after the working orders were last read.** The holdings and working-order
+  inquiries are separate polls on separate cadences, and `as_of_` is the *holdings* timestamp — so a
+  snapshot stamped a second ago can carry working orders read an hour ago, missing an order this
+  runner placed in between.
+- **A listing is older than `set_maximum_portfolio_age`,** when you have set one.
+
+The pass still sends what it can see, because withdrawing some beats withdrawing none, but it will
+not call the result complete, and the note says which of the three it was. If you can, let the loop
+complete a working-order poll before stopping it.
 
 **It is not a confirmation of anything at the exchange.** `true` means every instruction the loop
 asked for was *accepted by the broker*, and that is where the library's knowledge stops. An accepted

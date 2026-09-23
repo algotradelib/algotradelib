@@ -6,6 +6,7 @@
 #include <algotradelib/core>
 #include <algotradelib/strategy>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <optional>
@@ -489,6 +490,10 @@ private:
         continue;
       }
       const auto outcome = source_->poll(kind, *runner_);
+      if (kind == PollKind::WORKING_ORDERS &&
+          (outcome == PollOutcome::UPDATED || outcome == PollOutcome::UNCHANGED)) {
+        note_working_orders_read(iteration.at_);
+      }
       ++report.attempted_[static_cast<int>(kind)];
       iteration.polls_.emplace_back(kind, outcome);
       schedule_next(kind, iteration.at_);
@@ -552,6 +557,9 @@ private:
       if (outcome == PollOutcome::UPDATED || outcome == PollOutcome::UNCHANGED) {
         order_list_read_ = true;
         report.order_list_read_ = true;
+        // The startup read *is* a working-order read on every broker that has the inquiry, which is
+        // both of them, so it starts the clock this loop measures that picture by.
+        note_working_orders_read(at);
       } else {
         return strategy::HaltReason::ORDER_LIST_UNREAD;
       }
@@ -645,6 +653,7 @@ private:
         ++report.withdrawn_;
       }
     } else {
+      std::vector<InstrumentId> targeted;
       for (const auto& position : portfolio.positions_) {
         if (position.quantity_ == Decimal64{}) {
           // A closed position can sit in a snapshot at zero. A sell for none of it is an order the
@@ -655,8 +664,24 @@ private:
         target.instrument_ = position.instrument_;
         target.target_quantity_ = Decimal64{};
         target.tag_ = "stop-flatten";
+        targeted.push_back(position.instrument_);
         runner_->context().submit(std::move(target));
         ++report.flattened_;
+      }
+      // **Then every working order reconciliation will not reach.** A flatten cancels through the
+      // targets it queues, so an instrument with no position to close receives no target and its
+      // resting order would survive the stop -- a working buy against a flat book is exactly that
+      // case, and it can fill after the loop exits. Instruments that *did* get a target are skipped,
+      // because reconciliation withdraws those itself and two withdrawals for one order is worse
+      // than none.
+      for (const auto& working : portfolio.working_) {
+        const bool covered =
+          std::find(targeted.begin(), targeted.end(), working.order_.instrument_) != targeted.end();
+        if (covered) {
+          continue;
+        }
+        runner_->context().cancel(working.ref_, "stop-flatten-orphan");
+        ++report.withdrawn_;
       }
     }
 
@@ -676,9 +701,10 @@ private:
 
     report.closing_placed_ = closing.would_place_.size();
     if (intent == StopIntent::FLATTEN) {
-      // Counted from every cancellation reconciliation produced, not only the ones that went: a
-      // flatten does not cancel directly, and `withdrawn_` is what was *asked for*. The counts below
-      // are what happened to them.
+      // Counted from every cancellation the pass produced, not only the ones that went: `withdrawn_`
+      // is what was *asked for* and the counts below are what happened to them. This covers both
+      // sources -- the ones reconciliation derived from a zero target, and the orphaned working
+      // orders queued above -- so it replaces rather than adds to the running count.
       report.withdrawn_ = closing.would_cancel_.size() + closing.indeterminate_cancel_.size() +
         closing.unavailable_cancel_.size() + closing.refused_cancel_.size() +
         closing.unresolved_cancel_.size() + closing.rejected_cancel_.size();
@@ -779,6 +805,22 @@ private:
     if (!order_list_read_) {
       return false;
     }
+    // The working-order picture is its own source with its own freshness, and `as_of_` is not its
+    // timestamp: `SessionSource::poll_holdings` refreshes positions and `as_of_` while *keeping* the
+    // working orders it already had, and only a working-order poll replaces those. So a stop can
+    // have a snapshot stamped a second ago whose resting orders were last read an hour ago.
+    if (!working_orders_at_) {
+      return false;
+    }
+    // And the decisive one, which no timestamp catches: an order this runner sent after that read
+    // cannot be in it. A listing is out of date the moment the next placement is accepted, and an
+    // indeterminate send counts too, because the order may exist.
+    if (runner_->placements_at_broker() != placements_at_working_read_) {
+      return false;
+    }
+    if (maximum_portfolio_age_ && at - *working_orders_at_ > *maximum_portfolio_age_) {
+      return false;
+    }
     const auto as_of = runner_->context().portfolio().as_of_;
     if (as_of == std::chrono::system_clock::time_point{}) {
       return false;
@@ -786,13 +828,26 @@ private:
     return !maximum_portfolio_age_ || at - as_of <= *maximum_portfolio_age_;
   }
 
+  /** Records that the working-order picture was just refreshed, with what it could not contain. */
+  void note_working_orders_read(std::chrono::system_clock::time_point at) {
+    working_orders_at_ = at;
+    placements_at_working_read_ = runner_->placements_at_broker();
+  }
+
   /** Returns which half of the closing source is missing, for the operator's note. */
   std::string unverified_source_reason() const {
-    if (!order_list_read_) {
+    if (!order_list_read_ || !working_orders_at_) {
       return "the broker's order list has not been read";
+    }
+    if (runner_->placements_at_broker() != placements_at_working_read_) {
+      return "an order was sent after the working orders were last read";
     }
     if (runner_->context().portfolio().as_of_ == std::chrono::system_clock::time_point{}) {
       return "no holdings snapshot has arrived";
+    }
+    if (maximum_portfolio_age_ &&
+        clock_.now() - *working_orders_at_ > *maximum_portfolio_age_) {
+      return "the working orders were read longer ago than the configured maximum";
     }
     return "the holdings snapshot is older than the configured maximum";
   }
@@ -855,6 +910,11 @@ private:
     return reason != strategy::HaltReason::OPERATOR &&
       reason != strategy::HaltReason::LOCAL_FAILURE;
   }
+
+  /** When the working-order picture was last refreshed, or nothing while it never has been. */
+  std::optional<std::chrono::system_clock::time_point> working_orders_at_;
+  /** `Runner::placements_at_broker()` as of that read, so a later send invalidates it. */
+  std::size_t placements_at_working_read_{0};
 
   /** The hold this loop currently owns, and the only one it will ever release. */
   std::optional<strategy::HaltReason> held_;

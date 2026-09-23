@@ -1324,3 +1324,123 @@ TEST_CASE("a stop against a stale holdings snapshot is not complete", "[loop][st
   REQUIRE_FALSE(report.notes_.empty());
   CHECK(report.notes_.front().find("older than the configured maximum") != std::string::npos);
 }
+
+TEST_CASE("a flatten withdraws a working order with no position behind it", "[loop][stop]") {
+  // A flatten cancels through the zero targets it queues, so an instrument with nothing held gets
+  // no target -- and before this its resting order survived the stop entirely. A working *buy*
+  // against a flat book is the case that matters: it can fill after the loop exits, leaving a
+  // position an operator believes they closed.
+  InertRunner runner_instance;
+  InertSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner_instance.context().set_portfolio(portfolio_with(nullptr, "5"));
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  loop.run(stop, 1);  // the startup read, so the source is verified
+  stop.request(StopIntent::FLATTEN);
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.flattened_ == 0);  // nothing held, so nothing to close
+  CHECK(report.withdrawn_ == 1);  // but the order is still withdrawn
+  CHECK(runner_instance.executor().canceled().size() == 1);
+  CHECK_FALSE(report.closing_source_unverified_);
+  CHECK(report.closing_complete());
+}
+
+TEST_CASE("a flatten does not withdraw the same order twice", "[loop][stop]") {
+  // The control case for the one above. An instrument that *does* have a position gets a zero
+  // target, and reconciliation withdraws its working order itself -- so the orphan sweep must skip
+  // it. Two withdrawals for one order is worse than none: the second is an order-writing request
+  // against an order that may already be gone.
+  InertRunner runner_instance;
+  InertSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner_instance.context().set_portfolio(portfolio_with("10", "3"));
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  loop.run(stop, 1);
+  stop.request(StopIntent::FLATTEN);
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.flattened_ == 1);
+  CHECK(report.withdrawn_ == 1);
+  CHECK(runner_instance.executor().canceled().size() == 1);
+  CHECK(report.closing_complete());
+}
+
+TEST_CASE("an order sent after the last working-order read leaves the stop unverified",
+          "[loop][stop]") {
+  // The sequence the holdings timestamp cannot catch, and it needs no stale data at all: read an
+  // empty working-order list at startup, accept a buy from a bar, refresh holdings so `as_of_` is
+  // fresh, then stop before the next working-order poll. `working_` still omits that buy, so a
+  // `WITHDRAW` queues nothing -- and before this the fresh `as_of_` made the source look verified
+  // and the stop reported complete without ever requesting the cancellation.
+  SendingRunner runner_instance;
+  FeedingSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+
+  strategy::Portfolio<runner::DryTag> portfolio;
+  portfolio.as_of_ = base_time();
+  runner_instance.context().set_portfolio(portfolio);
+
+  SendingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  // One iteration: the startup read, then a bar that places an order from inside the poll.
+  loop.run(stop, 1);
+  REQUIRE(source.placed() == 1);
+  REQUIRE(runner_instance.placements_at_broker() == 1);
+
+  // Holdings refresh: `as_of_` moves, `working_` does not. This is what `poll_holdings` does.
+  auto refreshed = runner_instance.context().portfolio();
+  refreshed.as_of_ = base_time() + std::chrono::seconds(1);
+  runner_instance.context().set_portfolio(refreshed);
+
+  stop.request(StopIntent::WITHDRAW);
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.withdrawn_ == 0);
+  CHECK(report.closing_source_unverified_);
+  CHECK_FALSE(report.closing_complete());
+  REQUIRE_FALSE(report.notes_.empty());
+  CHECK(report.notes_.front().find("an order was sent after the working orders were last read") !=
+        std::string::npos);
+}
+
+TEST_CASE("a working-order poll re-verifies the source an earlier send invalidated",
+          "[loop][stop]") {
+  // The control case: the flag is about the picture being out of date, not about having ever sent.
+  // Once the working orders are read again, a stop can report complete.
+  SendingRunner runner_instance;
+  FeedingSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+
+  strategy::Portfolio<runner::DryTag> portfolio;
+  portfolio.as_of_ = base_time();
+  runner_instance.context().set_portfolio(portfolio);
+
+  runner::PollSchedule schedule;
+  schedule.bars_ = std::chrono::seconds(1);
+  schedule.working_orders_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  SendingLoop loop(runner_instance, source, schedule, test_clock());
+  StopSource stop;
+
+  loop.run(stop, 2);  // startup read, a send, then a working-order poll on the next iteration
+
+  stop.request(StopIntent::WITHDRAW);
+  const auto report = loop.run(stop, 1);
+
+  CHECK_FALSE(report.closing_source_unverified_);
+  CHECK(report.closing_complete());
+}

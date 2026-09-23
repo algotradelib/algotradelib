@@ -13,38 +13,49 @@ namespace runner {
  * What an operator means by "stop", which is three different things.
  *
  * Naming them separately matters more than whatever channel delivers them. An operator reaching for
- * a stop under pressure must not have to guess which one they are getting, because each leaves a
- * materially different position at the exchange:
+ * a stop under pressure must not have to guess which one they are getting, because each *asks the
+ * broker for* something materially different:
  *
- * | Intent | Stops sending | Cancels resting orders | Closes positions |
+ * | Intent | Stops sending | Requests cancellation of resting orders | Requests closing orders |
  * | --- | --- | --- | --- |
  * | `QUIESCE` | yes | no | no |
  * | `WITHDRAW` | yes | yes | no |
  * | `FLATTEN` | yes | yes | yes |
+ *
+ * **Only the first column is a fact about the exchange.** Not sending is entirely local and
+ * therefore certain; the other two are requests, and a request that is accepted is not an outcome.
+ * A cancellation the broker accepts can still be rejected afterwards and leave the order working,
+ * and a closing order that is accepted has not necessarily filled. `runner::LoopReport` counts what
+ * was accepted, `closing_complete()` says whether everything asked for was accepted, and the
+ * broker's own order list and holdings are the only authority on what is actually left.
  *
  * The enumerators are ordered by escalation, and `stop_intent_covers` relies on that order, so a
  * new intent must be inserted at the position matching how much it does rather than appended.
  */
 enum class StopIntent {
   /**
-   * Stop sending new orders. Positions stay, working orders keep resting.
+   * Stop sending new orders. Nothing is withdrawn and nothing is closed.
    *
    * The default everywhere, and what both stop signals mean. It is the only intent that leaves
-   * nothing indeterminate: the request in flight completes and gets classified.
+   * nothing indeterminate -- the request in flight completes and gets classified -- and the only one
+   * whose effect is entirely this process's to guarantee.
    */
   QUIESCE,
   /**
-   * Quiesce, then cancel working orders. Positions stay, nothing rests.
+   * Quiesce, then ask the broker to cancel the working orders. No closing orders are placed.
    *
    * Each cancellation is itself an order-writing request that can fail indeterminately, so this
-   * costs more than it looks like it does.
+   * costs more than it looks like it does -- and an accepted one is a request the broker took, not
+   * an order that has stopped resting. Read its order list afterwards.
    */
   WITHDRAW,
   /**
-   * Withdraw, then close positions with market orders.
+   * Withdraw, then ask the broker to close the positions with market orders.
    *
    * A trading decision taken under duress, and never what a signal means. Available because an
    * operator sometimes genuinely wants it, and explicit because nobody should reach it by accident.
+   * An accepted closing order has not necessarily filled, so being flat is something a later
+   * holdings snapshot shows rather than something this intent returns.
    */
   FLATTEN,
 };

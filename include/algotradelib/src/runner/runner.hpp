@@ -280,6 +280,19 @@ public:
    */
   void halt_locally(std::string detail) { note_local_failure(std::move(detail)); }
 
+  /**
+   * Returns how many placements this runner has sent that may have left an order at the broker.
+   *
+   * Monotonic, and counting acceptances *and* indeterminate sends, because both can leave something
+   * resting. Its only purpose is comparison: a caller that read a working-order listing, recorded
+   * this number, and then sees it grow knows its listing is out of date without having to ask the
+   * broker. `PollingLoop` uses exactly that to decide whether a stop knows what it owes.
+   *
+   * A rejection does not count -- the broker said the order does not exist -- and neither does a
+   * local failure, which never reached a broker at all.
+   */
+  std::size_t placements_at_broker() const noexcept { return placements_at_broker_; }
+
   /** Returns the strategy, so a test can read the state it kept. */
   const Strategy& strategy() const noexcept { return strategy_; }
   Strategy& strategy() noexcept { return strategy_; }
@@ -474,6 +487,7 @@ private:
           // Counted against the rate limit only once the instruction actually went, so an order a
           // guard refused or the ledger withheld does not spend budget.
           guard_.note_sent(inputs.now_);
+          ++placements_at_broker_;
           report.would_place_.push_back(std::move(order));
           break;
         case SendOutcome::REJECTED:
@@ -488,6 +502,9 @@ private:
           break;
         case SendOutcome::INDETERMINATE:
           guard_.note_sent(inputs.now_);
+          // Counted like an acceptance for the purpose below: the order may exist, and a listing
+          // read before this moment cannot show it either way.
+          ++placements_at_broker_;
           ledger_.mark(order.instrument_, "an order request failed in transit");
           report.indeterminate_.push_back(std::move(order));
           break;
@@ -634,6 +651,8 @@ private:
 
   Strategy strategy_;
   strategy::RiskGuard guard_;
+  /** Placements sent that may have left an order resting; see `placements_at_broker`. */
+  std::size_t placements_at_broker_{0};
   Context context_;
   /** Records the first local failure, keeping it rather than overwriting with a later one. */
   void note_local_failure(std::string detail) {
