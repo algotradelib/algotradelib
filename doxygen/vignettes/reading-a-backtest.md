@@ -105,10 +105,13 @@ field**:
 - `sellable_quantity_` is the whole holding. Live, it is routinely smaller — settlement, pledging,
   locking — so a sale a live account would have refused is not refused here.
 
-The consequence worth keeping in mind: **a strategy sized against these checks passes more easily in
-a replay than live.** If you enable `enforce_buying_power_` or `enforce_sellable_quantity_`, a clean
-backtest is not evidence the live account will accept the same orders. `plan/todo/replay-settlement-model.md`
-is what would close the gap.
+The consequence worth keeping in mind: **a strategy sized against the sellable check passes more
+easily in a replay than live**, because the whole holding is an upper bound on what a broker will
+let you sell. For buying power there is no such direction — ledger cash may be above or below what a
+broker would answer — so the difference is real but not one you can lean on either way. Either way,
+if you enable `enforce_buying_power_` or `enforce_sellable_quantity_`, a clean backtest is not
+evidence the live account will accept the same orders. `plan/todo/replay-settlement-model.md` is
+what would close the sellable half.
 
 ## Costs, which are the most common way a backtest lies
 

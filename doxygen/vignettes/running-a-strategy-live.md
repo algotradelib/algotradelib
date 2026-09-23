@@ -148,6 +148,11 @@ broker about what may be spent, reporting `buying_power_unread`. Set a cadence w
 and optionally an age with `set_maximum_buying_power_age`. A loop that never asked for the check is
 never held by it.
 
+**Every currency you configure has to answer.** The gate holds until each one the source was told to
+poll has a reading the age rule accepts — not merely until one of them does. An account trading two
+currencies where only one answers is a budget that never arrived, and one currency's figure is not
+permission to spend another's.
+
 The reason it is a hold rather than a refusal per order: sizing a buy against a budget nobody has
 stated is the thing the check exists to stop, and a runner that has never been told cannot make a
 per-order decision about it. Once a reading exists, an order too large for it is an ordinary

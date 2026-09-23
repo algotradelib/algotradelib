@@ -111,6 +111,12 @@ runner::DryRunner<MyStrategy> dry(MyStrategy{}, limits);
 dry.guard().halt();     // the kill switch, checked before anything else
 ```
 
+`max_position_quantity_` is measured against the position that would exist if the order **and
+everything already working on its side** filled, not against the last snapshot's holding. Two buys
+of sixty against a ceiling of a hundred are refused on the second, whether the first is still in the
+same pass or already resting at the broker. A resting order on the *other* side is not counted as
+relief, because relief assumes a fill that may never come.
+
 `halt()` with no argument is **your** hold, `HaltReason::OPERATOR`. Machinery holds the same guard
 for its own reasons — a polling loop whose holdings snapshot is stale, a runner whose journal cannot
 be written — and each releases only what it took, so nothing else can clear your halt and your
