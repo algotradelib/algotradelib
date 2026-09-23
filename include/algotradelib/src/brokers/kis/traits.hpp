@@ -57,6 +57,35 @@ struct Normalizers {
   /** Only Toss quotes several instruments in one request. */
   static constexpr bool has_batch_prices = false;
 
+  /** KIS answers what may be spent, in won, from its 매수가능조회 inquiry. */
+  static constexpr bool has_buying_power = true;
+
+  /**
+   * KIS answers how many shares are affordable as well as how much money there is.
+   *
+   * The port asks only for the amount, because Toss reports no quantity; a caller wanting KIS's
+   * per-instrument quantity gates on this and reaches it through `session.client()`.
+   */
+  static constexpr bool has_buying_power_quantity = true;
+
+  /**
+   * The sellable quantity arrives on every holdings row as `ord_psbl_qty`, so it costs no request.
+   *
+   * KIS also publishes a dedicated 매도가능수량조회 (`TTTC8408R`), which this library deliberately
+   * does not implement: it returns the same field for one instrument, on an endpoint a demo account
+   * cannot call. That is a statement about this library's surface, not about KIS's catalogue.
+   */
+  static constexpr SellableSource sellable_source = SellableSource::HOLDINGS;
+
+  /**
+   * KIS publishes no commission schedule for domestic stock.
+   *
+   * Not "shaped differently" -- absent. The one commission sheet in its API workbook is
+   * 선물옵션기간약정수수료일별, which is futures and options. A backtest against a KIS account keeps
+   * the commission the caller stated, and the report says so.
+   */
+  static constexpr bool has_commission_schedule = false;
+
   /** Both brokers publish static reference data for an instrument. */
   static constexpr bool has_reference_data = true;
 
@@ -393,6 +422,12 @@ struct BrokerTraits<kis::KisClient>
     return client.async_quote(std::move(instrument), std::forward<Token>(token));
   }
 
+  /** Forwards a buying-power request for the bound account. */
+  template <typename Token>
+  static auto buying_power(Client& client, const Account& account, Currency currency, Token&& token) {
+    return client.async_buying_power(currency, account, std::forward<Token>(token));
+  }
+
   /** Forwards a holdings request for the bound account. */
   template <typename Token>
   static auto holdings(Client& client, const Account& account, Token&& token) {
@@ -526,6 +561,15 @@ struct BrokerTraits<kis::KisBlockingClient>
   /** Returns holdings for the bound account. */
   static Result<HoldingsSnapshot> holdings(Client& client, const Account& account) {
     return client.holdings(account);
+  }
+
+  /** Returns what the bound account may spend in `currency`. */
+  static Result<BuyingPower> buying_power(
+    Client& client,
+    const Account& account,
+    Currency currency
+  ) {
+    return client.buying_power(currency, account);
   }
 
   /** Submits an order for the bound account. */

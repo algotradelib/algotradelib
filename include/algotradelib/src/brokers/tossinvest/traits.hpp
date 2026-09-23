@@ -58,6 +58,29 @@ struct Normalizers {
   /** Only Toss quotes several instruments in one request. */
   static constexpr bool has_batch_prices = true;
 
+  /** Toss answers what may be spent, per currency, on a cash basis. */
+  static constexpr bool has_buying_power = true;
+
+  /**
+   * Toss reports an amount and no quantity.
+   *
+   * KIS's inquiry answers both; asking Toss how many shares are affordable is arithmetic a caller
+   * does for itself, and a port verb answering it on one broker only would be a field permanently
+   * empty on the other.
+   */
+  static constexpr bool has_buying_power_quantity = false;
+
+  /**
+   * Toss leaves the sellable quantity off its holdings rows, and answers a per-instrument inquiry.
+   *
+   * So the runner fills the field only for the instruments a sell touches, and spends one request
+   * each time it does.
+   */
+  static constexpr SellableSource sellable_source = SellableSource::INQUIRY;
+
+  /** Toss publishes the account's commission rates; KIS publishes none for domestic stock. */
+  static constexpr bool has_commission_schedule = true;
+
   /** Both brokers publish static reference data for an instrument. */
   static constexpr bool has_reference_data = true;
 
@@ -374,6 +397,29 @@ struct BrokerTraits<tossinvest::TossClient>
     return client.async_accounts(std::forward<Token>(token));
   }
 
+  /** Forwards a buying-power request for the bound account. */
+  template <typename Token>
+  static auto buying_power(Client& client, const Account& account, Currency currency, Token&& token) {
+    return client.async_buying_power(currency, account, std::forward<Token>(token));
+  }
+
+  /** Forwards a sellable-quantity request for one instrument. */
+  template <typename Token>
+  static auto sellable_quantity(
+    Client& client,
+    const Account& account,
+    InstrumentId instrument,
+    Token&& token
+  ) {
+    return client.async_sellable_quantity(std::move(instrument), account, std::forward<Token>(token));
+  }
+
+  /** Forwards a commission-schedule request for the bound account. */
+  template <typename Token>
+  static auto commissions(Client& client, const Account& account, Token&& token) {
+    return client.async_commissions(account, std::forward<Token>(token));
+  }
+
   /** Forwards a holdings request for the bound account. */
   template <typename Token>
   static auto holdings(Client& client, const Account& account, Token&& token) {
@@ -537,6 +583,29 @@ struct BrokerTraits<tossinvest::TossBlockingClient>
   /** Returns holdings for the bound account. */
   static Result<HoldingsSnapshot> holdings(Client& client, const Account& account) {
     return client.holdings(account);
+  }
+
+  /** Returns what the bound account may spend in `currency`. */
+  static Result<BuyingPower> buying_power(
+    Client& client,
+    const Account& account,
+    Currency currency
+  ) {
+    return client.buying_power(currency, account);
+  }
+
+  /** Returns how much of `instrument` the bound account may sell. */
+  static Result<Decimal64> sellable_quantity(
+    Client& client,
+    const Account& account,
+    InstrumentId instrument
+  ) {
+    return client.sellable_quantity(std::move(instrument), account);
+  }
+
+  /** Returns the commission rates in force for the bound account. */
+  static Result<CommissionSchedule> commissions(Client& client, const Account& account) {
+    return client.commissions(account);
   }
 
   /** Submits an order for the bound account. */

@@ -126,7 +126,60 @@ TEST_CASE("capabilities record each broker's real differences") {
     BrokerCaps<tossinvest::TossClient>::has_order_by_id ==
     BrokerCaps<tossinvest::TossBlockingClient>::has_order_by_id
   );
+  // Both answer what may be spent; only KIS prices a quantity as well.
+  static_assert(BrokerCaps<kis::KisClient>::has_buying_power);
+  static_assert(BrokerCaps<tossinvest::TossClient>::has_buying_power);
+  static_assert(BrokerCaps<kis::KisClient>::has_buying_power_quantity);
+  static_assert(!BrokerCaps<tossinvest::TossClient>::has_buying_power_quantity);
+
+  // Only one publishes a commission schedule, and the absent one is absent rather than empty.
+  static_assert(BrokerCaps<tossinvest::TossClient>::has_commission_schedule);
+  static_assert(!BrokerCaps<kis::KisClient>::has_commission_schedule);
+
+  // Where the sellable figure comes from, which is what a runner branches on: free at KIS, one
+  // request per sold instrument at Toss. This deliberately says nothing about which endpoints the
+  // brokers publish -- KIS publishes a dedicated inquiry this library does not use.
+  static_assert(BrokerCaps<kis::KisClient>::sellable_source == SellableSource::HOLDINGS);
+  static_assert(BrokerCaps<tossinvest::TossClient>::sellable_source == SellableSource::INQUIRY);
+
+  static_assert(
+    BrokerCaps<kis::KisClient>::sellable_source ==
+    BrokerCaps<kis::KisBlockingClient>::sellable_source
+  );
+  static_assert(
+    BrokerCaps<tossinvest::TossClient>::has_commission_schedule ==
+    BrokerCaps<tossinvest::TossBlockingClient>::has_commission_schedule
+  );
   SUCCEED("capabilities are compile-time constants");
+}
+
+TEST_CASE("a strategy gates account-capacity calls on the capability rather than on a try") {
+  // What the gates are for: one source compiles against both brokers, and the branch the broker
+  // cannot serve is never instantiated. Removing an `if constexpr` here is a compile error naming
+  // the broker and the verb, not a run-time surprise at four in the afternoon.
+  const auto commission_rate = [](auto& session) -> std::optional<Decimal64> {
+    using Client = typename std::remove_reference_t<decltype(session)>::Client;
+    if constexpr (BrokerCaps<Client>::has_commission_schedule) {
+      auto schedule = session.commissions();
+      if (!schedule) {
+        return std::nullopt;
+      }
+      const auto rate = schedule.value().rate_for(Country::KR, Date{2026, 9, 23});
+      return rate ? std::optional<Decimal64>(rate->rate_) : std::nullopt;
+    } else {
+      // Nothing to ask, and nothing invented: a caller here states its own cost model.
+      static_cast<void>(session);
+      return std::nullopt;
+    }
+  };
+  static_cast<void>(commission_rate);
+
+  const auto sellable_costs_a_request = [](auto tag) {
+    using Client = typename decltype(tag)::type;
+    return BrokerCaps<Client>::sellable_source == SellableSource::INQUIRY;
+  };
+  REQUIRE_FALSE(sellable_costs_a_request(std::common_type<kis::KisBlockingClient>{}));
+  REQUIRE(sellable_costs_a_request(std::common_type<tossinvest::TossBlockingClient>{}));
 }
 
 TEST_CASE("a broker's two clients share one order-reference type") {

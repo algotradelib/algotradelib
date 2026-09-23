@@ -181,6 +181,93 @@ public:
   }
 
   /**
+   * Requests what the bound account may spend in `currency`.
+   *
+   * **A reading, with a reading's freshness.** It was true when the broker answered, and a fill
+   * against a resting order moves it without telling anyone. Sizing against it is the difference
+   * between the broker's last answer and nothing at all, which is what the live path had before.
+   *
+   * A currency the broker does not price is refused with `INVALID_ARGUMENT` before any socket
+   * write, rather than sent and rejected.
+   */
+  template <typename CompletionToken>
+  auto async_buying_power(Currency currency, CompletionToken&& token) {
+    if constexpr (Caps::has_buying_power) {
+      return translate<BuyingPower>(
+        std::forward<CompletionToken>(token),
+        [client = client_, account = account_, currency](auto&& sink) mutable {
+          Traits::buying_power(*client, account, currency, std::forward<decltype(sink)>(sink));
+        },
+        [](Result<BuyingPower> raw) { return raw; }
+      );
+    } else {
+      static_assert(
+        port_detail::dependent_false<Client>,
+        "this broker does not answer what the account may spend; gate the call with "
+        "BrokerCaps<Client>::has_buying_power"
+      );
+    }
+  }
+
+  /**
+   * Requests how much of `instrument` the bound account may sell.
+   *
+   * Only for a broker whose holdings snapshot does not already carry it. Where
+   * `BrokerCaps::sellable_source` is `HOLDINGS` the figure is on every position the runner already
+   * polls, and spending a request to fetch it again buys nothing -- so this verb does not exist
+   * there, and the `static_assert` says where to read it instead.
+   */
+  template <typename CompletionToken>
+  auto async_sellable_quantity(InstrumentId instrument, CompletionToken&& token) {
+    if constexpr (Caps::sellable_source == SellableSource::INQUIRY) {
+      return translate<Decimal64>(
+        std::forward<CompletionToken>(token),
+        [client = client_, account = account_, instrument = std::move(instrument)](
+          auto&& sink
+        ) mutable {
+          Traits::sellable_quantity(
+            *client, account, std::move(instrument), std::forward<decltype(sink)>(sink)
+          );
+        },
+        [](Result<Decimal64> raw) { return raw; }
+      );
+    } else {
+      static_assert(
+        port_detail::dependent_false<Client>,
+        "this broker has no separate sellable-quantity inquiry; read "
+        "HoldingPosition::sellable_quantity_ from the holdings snapshot, and gate on "
+        "BrokerCaps<Client>::sellable_source"
+      );
+    }
+  }
+
+  /**
+   * Requests the commission rates in force for the bound account.
+   *
+   * Only one broker publishes any, which is why this is gated rather than returning an empty
+   * schedule: an empty schedule from a broker that publishes them means the account has no stated
+   * rates, and that is a different claim from the broker having no such inquiry.
+   */
+  template <typename CompletionToken>
+  auto async_commissions(CompletionToken&& token) {
+    if constexpr (Caps::has_commission_schedule) {
+      return translate<CommissionSchedule>(
+        std::forward<CompletionToken>(token),
+        [client = client_, account = account_](auto&& sink) mutable {
+          Traits::commissions(*client, account, std::forward<decltype(sink)>(sink));
+        },
+        [](Result<CommissionSchedule> raw) { return raw; }
+      );
+    } else {
+      static_assert(
+        port_detail::dependent_false<Client>,
+        "this broker publishes no commission schedule; gate the call with "
+        "BrokerCaps<Client>::has_commission_schedule"
+      );
+    }
+  }
+
+  /**
    * Submits a new order and returns its acknowledgement and reference.
    *
    * The order POST is never replayed automatically, by the client or by the
@@ -690,6 +777,46 @@ public:
 
   /** Returns all normalized holdings for the bound account. */
   Result<HoldingsSnapshot> holdings() { return Traits::holdings(*client_, account_); }
+
+  /** Returns what the bound account may spend in `currency`. */
+  Result<BuyingPower> buying_power(Currency currency) {
+    if constexpr (Caps::has_buying_power) {
+      return Traits::buying_power(*client_, account_, currency);
+    } else {
+      static_assert(
+        port_detail::dependent_false<Client>,
+        "this broker does not answer what the account may spend; gate the call with "
+        "BrokerCaps<Client>::has_buying_power"
+      );
+    }
+  }
+
+  /** Returns how much of `instrument` the bound account may sell. */
+  Result<Decimal64> sellable_quantity(InstrumentId instrument) {
+    if constexpr (Caps::sellable_source == SellableSource::INQUIRY) {
+      return Traits::sellable_quantity(*client_, account_, std::move(instrument));
+    } else {
+      static_assert(
+        port_detail::dependent_false<Client>,
+        "this broker has no separate sellable-quantity inquiry; read "
+        "HoldingPosition::sellable_quantity_ from the holdings snapshot, and gate on "
+        "BrokerCaps<Client>::sellable_source"
+      );
+    }
+  }
+
+  /** Returns the commission rates in force for the bound account. */
+  Result<CommissionSchedule> commissions() {
+    if constexpr (Caps::has_commission_schedule) {
+      return Traits::commissions(*client_, account_);
+    } else {
+      static_assert(
+        port_detail::dependent_false<Client>,
+        "this broker publishes no commission schedule; gate the call with "
+        "BrokerCaps<Client>::has_commission_schedule"
+      );
+    }
+  }
 
   /** Returns static reference data for one instrument. */
   Result<Instrument> instrument(InstrumentId subject) {

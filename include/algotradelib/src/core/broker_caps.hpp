@@ -75,6 +75,34 @@ struct BrokerCaps {
   /** Whether the broker quotes several instruments in one request. */
   static constexpr bool has_batch_prices = Traits::has_batch_prices;
 
+  /** Whether the broker answers what the account may spend. */
+  static constexpr bool has_buying_power = Traits::has_buying_power;
+
+  /**
+   * Whether that answer includes how many shares are affordable, not only how much money there is.
+   *
+   * True at KIS, which prices a quantity against a specific instrument and order division, and
+   * false at Toss, which reports one account-level amount. The port asks only for the amount,
+   * because that is the question both answer; this is what points a caller at `session.client()`
+   * for the rest.
+   */
+  static constexpr bool has_buying_power_quantity = Traits::has_buying_power_quantity;
+
+  /**
+   * Where this library learns what may be sold of a position.
+   *
+   * Deliberately a source rather than a `has_sellable_quantity` boolean. Every other constant here
+   * answers whether the *broker* implements an operation, and by that question KIS's answer would
+   * be "yes, and this library does not use it" -- it publishes 매도가능수량조회 and this library
+   * reads the same figure from the holdings snapshot instead, for free and on demo accounts too.
+   * Naming the source says what is true without implying a gap in the vendor's API, and it is what
+   * a runner branches on: `HOLDINGS` costs nothing, `INQUIRY` costs one request per instrument sold.
+   */
+  static constexpr SellableSource sellable_source = Traits::sellable_source;
+
+  /** Whether the broker publishes the commission rates it charges the account. */
+  static constexpr bool has_commission_schedule = Traits::has_commission_schedule;
+
   /** Whether the broker publishes static reference data for an instrument. */
   static constexpr bool has_reference_data = Traits::has_reference_data;
 
