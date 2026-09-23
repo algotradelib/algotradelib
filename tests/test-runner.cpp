@@ -160,6 +160,18 @@ struct BuyTwice {
   }
 };
 
+/** Sells sixty every bar, which one pass can afford and two cannot. */
+struct SellSixty {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ctx.submit(
+      strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("60"))
+      )
+    );
+  }
+};
+
 /** Arranges a runner with reference data, an open market, and a last price. */
 template <typename R>
 void arrange(R& dry) {
@@ -380,6 +392,89 @@ TEST_CASE("the probe is off by default and changes nothing when on") {
   REQUIRE(with.would_place_.size() == without.would_place_.size());
   REQUIRE(with.refused_.size() == without.refused_.size());
   REQUIRE(with.would_place_.size() == 1);
+}
+
+TEST_CASE("a second pass cannot re-sell what the first pass already committed") {
+  // The in-pass view dies with the pass. Without carrying the reservation forward, a second bar
+  // before the next poll starts from the broker's last word again -- a hundred sellable, nothing
+  // resting -- and sells the same shares twice.
+  strategy::RiskLimits limits;
+  limits.enforce_sellable_quantity_ = true;
+  runner::DryRunner<SellSixty> dry(SellSixty{}, limits);
+  arrange(dry);
+
+  strategy::Portfolio<runner::DryRunner<SellSixty>::Tag> portfolio;
+  HoldingPosition held;
+  held.instrument_ = samsung();
+  held.quantity_ = Decimal64::parse("100");
+  held.sellable_quantity_ = Decimal64::parse("100");
+  portfolio.positions_.push_back(held);
+  dry.context().set_portfolio(portfolio);
+
+  const auto first = dry.feed(bar_at(10, "70000"));
+  REQUIRE(first.would_place_.size() == 1);
+
+  const auto second = dry.feed(bar_at(11, "70000"));
+  REQUIRE(second.would_place_.empty());
+  REQUIRE(second.refused_.size() == 1);
+  REQUIRE(second.refused_[0].reason_ == strategy::GuardReason::QUANTITY_NOT_SELLABLE);
+  REQUIRE(second.refused_[0].attempted_ == Decimal64::parse("120"));
+}
+
+TEST_CASE("a poll replaces a reservation rather than adding to it") {
+  // Why this needs no matcher: a working-order poll assigns `working_` wholesale, so the broker's
+  // own listing discards the reservation instead of being counted beside it. A runner that added
+  // them would refuse a legitimate sell for as long as the order rested.
+  strategy::RiskLimits limits;
+  limits.enforce_sellable_quantity_ = true;
+  runner::DryRunner<SellSixty> dry(SellSixty{}, limits);
+  arrange(dry);
+
+  strategy::Portfolio<runner::DryRunner<SellSixty>::Tag> portfolio;
+  HoldingPosition held;
+  held.instrument_ = samsung();
+  held.quantity_ = Decimal64::parse("100");
+  held.sellable_quantity_ = Decimal64::parse("100");
+  portfolio.positions_.push_back(held);
+  dry.context().set_portfolio(portfolio);
+
+  dry.feed(bar_at(10, "70000"));
+  REQUIRE(dry.context().portfolio().working_.size() == 1);
+
+  // The broker's own answer arrives: sixty sold and settled, forty left, nothing resting.
+  strategy::Portfolio<runner::DryRunner<SellSixty>::Tag> polled;
+  HoldingPosition after;
+  after.instrument_ = samsung();
+  after.quantity_ = Decimal64::parse("40");
+  after.sellable_quantity_ = Decimal64::parse("40");
+  polled.positions_.push_back(after);
+  dry.context().set_portfolio(polled);
+
+  // Forty sellable against a sixty-share order, and the reservation is gone rather than doubled.
+  const auto next = dry.feed(bar_at(11, "70000"));
+  REQUIRE(next.refused_.size() == 1);
+  REQUIRE(next.refused_[0].attempted_ == Decimal64::parse("60"));
+  REQUIRE(next.refused_[0].limit_ == Decimal64::parse("40"));
+}
+
+TEST_CASE("a runner without the checks carries no reservation between passes") {
+  // The write-through reaches reconciliation as well, so it is scoped to callers who asked for this
+  // class of check rather than changing what every existing program does on upgrade.
+  runner::DryRunner<SellSixty> dry;
+  arrange(dry);
+
+  strategy::Portfolio<runner::DryRunner<SellSixty>::Tag> portfolio;
+  HoldingPosition held;
+  held.instrument_ = samsung();
+  held.quantity_ = Decimal64::parse("100");
+  portfolio.positions_.push_back(held);
+  dry.context().set_portfolio(portfolio);
+
+  dry.feed(bar_at(10, "70000"));
+  const auto second = dry.feed(bar_at(11, "70000"));
+
+  REQUIRE(dry.context().portfolio().working_.empty());
+  REQUIRE(second.would_place_.size() == 1);
 }
 
 TEST_CASE("a guard refusal is reported and no order survives it") {

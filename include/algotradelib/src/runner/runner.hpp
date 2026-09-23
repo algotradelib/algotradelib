@@ -599,6 +599,7 @@ private:
           // money is spent. An `INDETERMINATE` send needs no entry here: it marks the ledger, and
           // the next instruction for that instrument is withheld before it reaches a guard at all.
           reserve(view, order, inputs.reference_price_, inputs.order_currency_);
+          persist_reservation(order, inputs.reference_price_, inputs.order_currency_);
           report.would_place_.push_back(std::move(order));
           break;
         case SendOutcome::REJECTED:
@@ -689,6 +690,41 @@ private:
       static_cast<void>(view);
       static_cast<void>(order);
     }
+  }
+
+  /**
+   * Carries this pass's reservation into the next one, for a caller that asked for the checks.
+   *
+   * **The in-pass view dies with the pass**, so without this a second pass before the next poll
+   * starts from the broker's last word again and can re-spend what the first pass already
+   * committed. The fix needs no matcher, because a poll *replaces* what it refreshes:
+   * `poll_working_orders` assigns `working_` wholesale and `poll_holdings` assigns `positions_`, so
+   * a reservation written here is discarded the moment the broker's own answer arrives. Nothing has
+   * to recognise its own order in a listing -- which is the half of reserve-and-match that carries a
+   * matcher's failure modes.
+   *
+   * **Scoped to the checks being enabled**, deliberately. The reservation is also visible to
+   * reconciliation, which reads the same portfolio, and an order this runner just sent counting as
+   * working is the right answer there too -- but it is a behaviour change, and it should reach only
+   * callers who asked for this class of check rather than every existing program on upgrade.
+   *
+   * The residual window is the one nothing local can close: a listing fetched before the broker
+   * registered the order replaces the reservation with a picture that does not contain it yet.
+   * That is what `closing-state-confirmation.md` is about, and it is not made worse here.
+   */
+  void persist_reservation(
+    const strategy::PlannedOrder& order,
+    const std::optional<Decimal64>& reference_price,
+    const std::optional<Currency>& currency
+  ) {
+    const bool sells = guard_.limits().enforce_sellable_quantity_ && order.side_ == OrderSide::SELL;
+    const bool buys = guard_.limits().enforce_buying_power_ && order.side_ == OrderSide::BUY;
+    if (!sells && !buys) {
+      return;
+    }
+    auto persisted = context_.portfolio();
+    reserve(persisted, order, reference_price, currency);
+    context_.set_portfolio(std::move(persisted));
   }
 
   /** Writes a sellable quantity onto the position for `instrument`, when there is one. */
