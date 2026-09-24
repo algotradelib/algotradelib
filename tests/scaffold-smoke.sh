@@ -88,9 +88,11 @@ printf '%s\n' "$OUTPUT"
 # printer emits spaces, and a harmless change to that should not be a test failure about onboarding.
 table_rows() {
     awk '
+        { sub(/\r$/, "") }
         /^[ \t]*strategy[ \t]+return/ { table = 1; next }
         table && /^[ \t]*-+[ \t]*$/   { next }
         table && /^[ \t]*[A-Za-z]/ {
+            gsub(/\r/, "")
             gsub(/^[ \t]+|[ \t]+$/, "")
             gsub(/[ \t]+/, " ")
             print
