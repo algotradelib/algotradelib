@@ -192,26 +192,19 @@ if [ "$BACKEND" = ON ]; then
         exit 1
     fi
 
-    # Evidence that the table is *computed* rather than printed.
+    # Regression evidence that the table responds to the strategy, rather than being printed at it.
     #
-    # Everything above compares output to expected output, and review's standing objection is right:
-    # an executable that printed those four rows and did nothing else would satisfy all of it. Reading
-    # stdout cannot rule that out -- but perturbing the program and requiring the output to respond
-    # can. `MyStrategy`'s lookback is changed from 5 to 6, the project is rebuilt, and the table must
-    # come out different. A printer of literals prints the same table and fails here.
+    # Everything above compares output to expected output, and an executable that printed those four
+    # rows and did nothing else would satisfy all of it. This perturbs the program -- `MyStrategy`'s
+    # lookback from 5 to 6 -- rebuilds, and requires the table to respond in the one way that change
+    # can justify: the `MyStrategy` row differs, and the other three are untouched, because nothing
+    # about that edit may reach `BuyAndHold` or either indicator vanilla.
     #
-    # This does not prove the replay is *correct*; that is what the library's own 715 tests are for. It
-    # proves the number on the page came from the strategy, which is the one thing a scaffold has to
-    # get right and the one thing the earlier versions of this test never checked.
-    # Built in a *separate copy* of the project with its own build directory, rather than by editing
-    # this one in place.
-    #
-    # In place was the obvious way and it was silently vacuous: the generated project builds in about
-    # two seconds, so the rewritten `main.cpp` landed in the same wall-clock second as the object file
-    # already built from it, make saw nothing newer, printed `Built target scaffold_smoke`, and the
-    # unchanged binary produced the unchanged table. The check reported the perturbation had no effect
-    # -- the correct answer to a question it had not actually asked. A fresh build tree has no stale
-    # object to compare against and no dependence on timestamp granularity.
+    # **Still not proof that a replay ran**, and the comment here said it was for two versions. A
+    # printer whose literals vary with its own source would satisfy this too. What it rules out is the
+    # forgery that actually turned up in review -- fixed literals -- and it does so by requiring a
+    # specific, asymmetric response rather than merely a different one.
+    PERTURBED_STRATEGY='MyStrategy(5)'
     PERTURBED_PROJECT=$WORK_DIR/perturbed
     rm -rf "$PERTURBED_PROJECT"
     cp -R "$PROJECT" "$PERTURBED_PROJECT"
@@ -232,14 +225,53 @@ if [ "$BACKEND" = ON ]; then
     PERTURBED_BINARY=$(find "$PERTURBED_PROJECT/build" -name scaffold_smoke -type f -perm -u+x 2>/dev/null | head -n 1)
     [ -n "$PERTURBED_BINARY" ] || { printf 'perturbed build produced no binary\n' >&2; exit 1; }
 
+    # Run to a file, and check the status, before anything parses it. Piping the executable straight
+    # into `table_rows | sort` made the pipeline report *sort's* status: review supplied a perturbed
+    # binary that printed one row and exited 42, and the script passed, because a truncated table is
+    # trivially "different from the README's" -- which was the only thing being asked.
+    PERTURBED_OUTPUT=$WORK_DIR/perturbed-output.txt
+    if ! "$PERTURBED_BINARY" > "$PERTURBED_OUTPUT"; then
+        printf 'the perturbed program exited non-zero; its output proves nothing\n' >&2
+        cat "$PERTURBED_OUTPUT" >&2
+        exit 1
+    fi
+
     PERTURBED_ROWS=$WORK_DIR/perturbed-table.txt
-    "$PERTURBED_BINARY" | table_rows | sort > "$PERTURBED_ROWS"
+    table_rows < "$PERTURBED_OUTPUT" | sort > "$PERTURBED_ROWS"
     if [ ! -s "$PERTURBED_ROWS" ]; then
         printf 'perturbed program printed no table at all\n' >&2
         exit 1
     fi
-    if cmp -s "$README_ROWS" "$PERTURBED_ROWS"; then
-        printf 'changing MyStrategy lookback from 5 to 6 did not change the table: the figures are printed, not computed\n' >&2
+
+    # The same four strategies must still be there. Without this, a perturbed run that dropped three
+    # of them would read as a successful change.
+    awk '{ print $1 }' "$README_ROWS"    | sort -u > "$WORK_DIR/names-expected.txt"
+    awk '{ print $1 }' "$PERTURBED_ROWS" | sort -u > "$WORK_DIR/names-perturbed.txt"
+    if ! cmp -s "$WORK_DIR/names-expected.txt" "$WORK_DIR/names-perturbed.txt"; then
+        printf 'the perturbed program did not compare the same four strategies\n' >&2
+        printf -- '--- expected ---\n' >&2; cat "$WORK_DIR/names-expected.txt" >&2
+        printf -- '--- got ---\n' >&2;      cat "$WORK_DIR/names-perturbed.txt" >&2
+        exit 1
+    fi
+
+    # The response has to be asymmetric: only the perturbed strategy may move.
+    grep -v "^$PERTURBED_STRATEGY " "$README_ROWS"    > "$WORK_DIR/others-expected.txt" || true
+    grep -v "^$PERTURBED_STRATEGY " "$PERTURBED_ROWS" > "$WORK_DIR/others-perturbed.txt" || true
+    if ! cmp -s "$WORK_DIR/others-expected.txt" "$WORK_DIR/others-perturbed.txt"; then
+        printf 'perturbing %s changed another strategy'"'"'s row, which nothing about that edit can justify\n' \
+            "$PERTURBED_STRATEGY" >&2
+        exit 1
+    fi
+
+    grep "^$PERTURBED_STRATEGY " "$README_ROWS"    > "$WORK_DIR/mine-expected.txt" || true
+    grep "^$PERTURBED_STRATEGY " "$PERTURBED_ROWS" > "$WORK_DIR/mine-perturbed.txt" || true
+    if [ ! -s "$WORK_DIR/mine-perturbed.txt" ]; then
+        printf 'the perturbed program printed no %s row\n' "$PERTURBED_STRATEGY" >&2
+        exit 1
+    fi
+    if cmp -s "$WORK_DIR/mine-expected.txt" "$WORK_DIR/mine-perturbed.txt"; then
+        printf 'changing %s lookback from 5 to 6 left its row identical: the figures do not come from the strategy\n' \
+            "$PERTURBED_STRATEGY" >&2
         exit 1
     fi
 else
