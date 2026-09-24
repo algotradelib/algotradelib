@@ -322,31 +322,21 @@ public:
       self->resolver_.cancel();
       self->resolve_timer_.cancel();
       self->admission_timer_.cancel();
-      // **Read before `disconnect()`, which is not a detail.** Disconnecting sets the state to
-      // `DISCONNECTED`, so asking afterwards would answer "not in flight" for a request that was
-      // genuinely on the wire -- reporting an order that may exist as one that provably does not,
-      // owing no reconciliation for it. That is the single direction in this file that loses money.
-      const bool front_was_sent = self->front_in_flight();
       self->disconnect();
       BrokerError error;
       error.category_ = ErrorCategory::CANCELLED;
       error.broker_code_ = "close";
       error.message_ = "HTTP client closed";
-      // Only the front request may be on the wire now. Every other entry is still queued and
-      // reached nobody, which a caller has to be able to tell: an order that provably does not
-      // exist needs no reconciliation and spent no request, while one that may be on the wire needs
-      // both.
-      //
-      // `retried_` is the second way an entry can have reached the broker, and it is not the front:
-      // a GET that failed mid-flight is put back to be replayed, and while it waits to resolve or
-      // connect again it is an ordinary queued entry that has nevertheless already been sent once.
-      bool first = true;
+      // Each entry answers for itself, which is why `sent_` lives on the request rather than being
+      // inferred from the connection: a caller has to be able to tell an order that provably does
+      // not exist -- no reconciliation owed, no request spent -- from one that may be on the wire.
+      // Reading the client's state here would answer for none of them, since `disconnect()` has
+      // just cleared it.
       while (!self->queue_.empty()) {
         auto pending = std::move(self->queue_.front());
         self->queue_.pop_front();
         BrokerError reported = error;
-        reported.reached_broker_ = (first && front_was_sent) || pending.retried_;
-        first = false;
+        reported.reached_broker_ = pending.sent_;
         self->complete(std::move(pending.handler_), Result<HttpResponse>(std::move(reported)));
       }
     });
@@ -367,6 +357,16 @@ private:
     HttpRequest request_;
     CompletionHandler handler_;
     bool retried_{false};
+    /**
+     * Whether any attempt at this request has begun writing it to the socket.
+     *
+     * The honest record of what a caller may be told about the broker having seen it, and
+     * deliberately not `retried_`, which counts a replay rather than a send: a GET that fails to
+     * *connect* is retried without a byte having left, and reading the retry as evidence would
+     * report an unsent request as one the broker may hold. Sticky once set, because a second
+     * attempt cannot unsend the first.
+     */
+    bool sent_{false};
 
     Pending(HttpRequest request_value, CompletionHandler completion)
     : request_(std::move(request_value)), handler_(std::move(completion)) {}
@@ -481,9 +481,10 @@ private:
         waiting_since_.reset();
         BrokerError error;
         error.category_ = ErrorCategory::CANCELLED;
-        // Dropped before it was sent, as the comment above says: admission is only evaluated while
-        // the connection is `READY`, which is never while the front request is in flight.
-        error.reached_broker_ = false;
+        // Ordinarily nothing was sent -- admission is evaluated only while the connection is
+        // `READY`, never while the front request is in flight. A GET being replayed is the
+        // exception: it is admitted again, and its first attempt did reach the wire.
+        error.reached_broker_ = pending.sent_;
         error.broker_code_ = "admission_deadline";
         error.message_ = "request would wait for rate-limit admission beyond its deadline";
         complete(std::move(pending.handler_), Result<HttpResponse>(std::move(error)));
@@ -592,6 +593,9 @@ private:
   }
 
   void start_write() {
+    // Marked here, which is the only moment this can be said truthfully: everything before is
+    // resolving, connecting and handshaking, none of which puts the request anywhere.
+    queue_.front().sent_ = true;
     const auto& request_value = queue_.front().request_;
     active_request_.emplace(request_value.method_, request_value.target_, request_value.version_);
     active_request_->set(http::field::host, host_header());
@@ -659,7 +663,6 @@ private:
     // side: a resolve, connect, or handshake failure happens *before* `start_write()`, so an order
     // has certainly not been sent, and reporting it as indeterminate spends a rate-limit slot and
     // withholds the instrument to reconcile an order that does not exist.
-    const bool was_in_flight = front_in_flight();
     disconnect();
     if (queue_.empty()) {
       return;
@@ -676,8 +679,7 @@ private:
     auto completed = std::move(pending);
     queue_.pop_front();
     auto error = transport_error(stage, ec);
-    // A replayed request reached the wire on its first attempt, whatever this one did.
-    error.reached_broker_ = was_in_flight || completed.retried_;
+    error.reached_broker_ = completed.sent_;
     complete(std::move(completed.handler_), Result<HttpResponse>(std::move(error)));
     pump();
   }

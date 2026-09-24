@@ -616,6 +616,38 @@ TEST_CASE("a connection that never opened never sent the order", "[http][tls][pr
   REQUIRE(runner::outcome_of(*failure) == runner::SendOutcome::REFUSED_LOCALLY);
 }
 
+TEST_CASE("a GET retried after failing to connect still never reached anybody", "[http][tls]") {
+  // A GET is replayed once after a transport failure, and the replay is what makes this worth
+  // pinning: the retry flag counts an attempt, not a send. Both attempts here fail to *connect*,
+  // so no byte ever left, and reading the retry as evidence would report an untouched broker as
+  // one that may hold the request.
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+  auto client = std::make_shared<network::AsyncHttpClient>(
+    ioc.get_executor(), context, "localhost", "1", network::HttpClientOptions{}
+  );
+
+  std::optional<BrokerError> failure;
+  network::HttpRequest request;
+  request.method_ = http::verb::get;
+  request.target_ = "/quotes";
+  client->async_request(
+    std::move(request),
+    [&failure](Result<network::HttpResponse> result) {
+      if (!result) {
+        failure = result.error();
+      }
+    }
+  );
+
+  ioc.run();
+  client->close();
+
+  REQUIRE(failure);
+  REQUIRE_FALSE(failure->reached_broker_);
+}
+
 TEST_CASE(
   "closing a client while it is still connecting cancels rather than crashes",
   "[http][tls][close]"
