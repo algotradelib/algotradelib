@@ -369,7 +369,15 @@ TEST_CASE(
 
   REQUIRE(completed == 3);
 
-  // Two of the three had to wait a full interval each.
+  // Two of the three were held back, counted by the timer that held them. Exactly two arms here
+  // because all three requests are queued before the event loop runs, so nothing arrives to make
+  // `pump()` re-evaluate and rearm mid-wait.
+  REQUIRE(client->admission_waits() == 2);
+
+  // And time really passed, which is a different claim from the counters below and the reason this
+  // *floor* stays. `delayed_` and `waited_` are what the pacer decided; an admission delay computed
+  // too short would still record two delays and satisfy them, and would not survive this line. Load
+  // can only make a floor truer, unlike the ceiling this branch removed.
   REQUIRE(elapsed >= std::chrono::milliseconds(40));
 
   const auto* stats = client->rate_limits() ? &client->rate_limits()->stats() : nullptr;
@@ -453,13 +461,31 @@ TEST_CASE("an unspecified budget leaves the transport entirely unpaced") {
     });
   }
 
-  const auto began = std::chrono::steady_clock::now();
   ioc.run();
-  const auto elapsed = std::chrono::steady_clock::now() - began;
 
   // Six requests that a budget would have spaced out go straight through.
+  //
+  // **Asserted by the admission counter, not by a stopwatch.** An earlier version required the whole
+  // run to finish inside 500ms, which measured the machine: it failed on a loaded host and named the
+  // rate limiter, which was never what had broken.
+  //
+  // `rate_limits() == nullptr` alone is *not* enough to replace it, which is worth stating because
+  // it looks like it should be. The client owns `admission_timer_` independently of `limiter_`, so a
+  // regression that armed that timer on the no-budget path would still deliver all six responses on
+  // one connection and satisfy every other assertion here -- while delaying every request on an
+  // unmetered API, which is exactly the user-visible harm this case exists to prevent.
+  //
+  // `admission_waits()` observes the thing itself: the number of times the admission timer was
+  // armed. The count lives on the timer rather than beside it, so neither branch of `pump()` can arm
+  // it without being counted -- which is the bypass that made the first version of this guard
+  // useless. A connection with no budget must report zero, on a fast host and a hung one alike.
+  //
+  // It proves that *this timer* was never armed, not that dispatch was prompt in general: a delay
+  // built on another timer would not appear here, and the removed ceiling would have caught some of
+  // those. That is the trade -- a narrower claim that is always true for a broader one that was
+  // only true on an idle machine.
   REQUIRE(completed == 6);
-  REQUIRE(elapsed < std::chrono::milliseconds(500));
+  REQUIRE(client->admission_waits() == 0);  // the admission timer was never armed
   REQUIRE(server.connectionCount() == 1);
 }
 

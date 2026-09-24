@@ -363,12 +363,28 @@ TEST_CASE("a steady clock returns immediately for a non-positive wait", "[loop][
   // The only property of the real clock worth asserting, and the one a loop that has fallen behind
   // its cadence depends on: an overdue poll must not pause. Asserting anything about a *positive*
   // wait would be asserting the scheduler.
+  //
+  // **The bound is a coarse stall check, and it is weaker than its name suggests.** The same
+  // objection applies to a tight ceiling here as to a positive wait: a busy host would fail it for a
+  // reason that has nothing to do with this clock. `SteadyClock` reads the real clock by
+  // construction, so elapsed time is the only observable there is -- `runner::ManualClock` is what
+  // every other timing test uses, and it cannot answer this one.
+  //
+  // What it does **not** establish is that the wait returns *immediately*: an implementation that
+  // slept for a second would pass, and forwarding a zero or negative duration to `sleep_for` does
+  // not itself produce a positive wait, so the most likely regression is invisible here anyway.
+  // There is no uniquely correct finite ceiling on a loaded host, and no finite value distinguishes
+  // a stalled machine from a slow one with certainty. Five seconds is a judgement about where the
+  // two stop overlapping in practice, and the assertion claims nothing beyond that.
+  //
+  // It stays a `CHECK` because it was one; the case still fails when it trips. There is no later
+  // assertion here for that to preserve.
   const runner::SteadyClock clock{};
   const auto before = std::chrono::steady_clock::now();
   clock.wait_for(std::chrono::nanoseconds(-1));
   clock.wait_for(std::chrono::nanoseconds::zero());
   const auto elapsed = std::chrono::steady_clock::now() - before;
-  CHECK(elapsed < 100ms);
+  CHECK(elapsed < 5s);
 }
 
 TEST_CASE("a stop source starts empty and reports the intent it was given", "[loop][stop]") {

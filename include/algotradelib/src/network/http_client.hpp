@@ -30,6 +30,7 @@
 #include <boost/beast/ssl.hpp>
 
 #include <chrono>
+#include <cstdint>
 #include <deque>
 #include <map>
 #include <memory>
@@ -298,6 +299,36 @@ public:
     return limiter_ ? &*limiter_ : nullptr;
   }
 
+  /**
+   * Returns how many times this connection armed its admission wait.
+   *
+   * **Arms, not requests.** `pump()` re-evaluates admission for whichever request is at the front
+   * *now*, so a request that waits while a higher-priority one arrives can arm the timer more than
+   * once, and one arm can cover a request that never waited on its own account. The number is exact
+   * and it counts arms; a caller wanting "requests the pacer decided to delay" wants
+   * `RateLimitStats::delayed_`, which is a different question with a different answer.
+   *
+   * **Counted on the client rather than on the pacer, because the timer is the client's.** A pacer
+   * exists only when a budget was configured, so nothing on `RateLimitStats` could ever say whether
+   * an *unpaced* connection waited. That gap is what made "this transport is unpaced" untestable
+   * except by timing it, and timing it asserts the machine rather than the library.
+   *
+   * A connection with no budget must report zero here, on a fast host and a hung one alike.
+   *
+   * **What it covers, exactly: this admission timer.** It is not a general statement that a request
+   * was dispatched promptly. The other waits this client owns are deadlines rather than gates --
+   * `resolve_timer_` and the beast stream timeouts abort a request rather than hold one -- but a
+   * future delay built on another timer, or on a callback simply not posted, would slow a request
+   * while this still read zero. The removed wall-clock ceiling would have noticed some of those.
+   * That is the coverage this observable trades for determinism, and it is stated rather than
+   * implied.
+   *
+   * Like `rate_limits()`, callers must read this from this client's strand -- which is where every
+   * response handler already runs -- or after the event loop has stopped. `arms_` is a plain
+   * counter, so reading it concurrently with an arm races.
+   */
+  std::uint64_t admission_waits() const noexcept { return admission_timer_.arms(); }
+
   /** Initiates a queued request and completes with a response or error. */
   template <typename CompletionToken>
   auto async_request(HttpRequest request_value, CompletionToken&& token) {
@@ -375,7 +406,56 @@ private:
   net::strand<net::any_io_executor> strand_;
   tcp::resolver resolver_;
   net::steady_timer resolve_timer_;
-  net::steady_timer admission_timer_;
+  /**
+   * The admission timer, wrapped so that arming it is counted by construction.
+   *
+   * **A counter beside the timer is not enough, and that is not hypothetical.** The first version of
+   * this observable incremented a member at the one call site that armed the timer, on the paced
+   * branch. `pump()` returns before that site when there is no budget, so a regression arming this
+   * timer on the *unpaced* branch would have delayed every request on an unmetered API while the
+   * counter still read zero -- and the test asserting zero would have passed.
+   *
+   * Making the count a property of the timer removes the bypass rather than documenting it: there
+   * is no way to arm *this* timer without `expires_after`, so there is no way to wait on it without
+   * saying so. What that does not cover is a delay built on some other timer; see
+   * `admission_waits()`.
+   *
+   * **A narrow wrapper for two call sites, not a general Asio timer substitute.** It discards the
+   * completion-token return values its callers do not use, and it counts an expiry reset even when
+   * no wait follows -- which is exact for the one place that arms this timer and immediately waits,
+   * and would need revisiting for any other use. Changing an expiry cancels a pending wait, whose
+   * handler then receives `operation_aborted`; this client's handler already returns on any error.
+   */
+  class CountedTimer {
+  public:
+    explicit CountedTimer(net::strand<net::any_io_executor>& strand) : timer_(strand) {}
+
+    /** Arms the timer for `delay`, and counts the arm. */
+    template <typename Rep, typename Period>
+    void expires_after(const std::chrono::duration<Rep, Period>& delay) {
+      timer_.expires_after(delay);
+      // Counted after the call, so this records an arm that happened rather than one attempted.
+      ++arms_;
+    }
+
+    /** Waits, forwarding to the underlying timer. */
+    template <typename Handler>
+    void async_wait(Handler&& handler) {
+      timer_.async_wait(std::forward<Handler>(handler));
+    }
+
+    /** Cancels any outstanding wait. Not counted: a cancellation is not an admission wait. */
+    std::size_t cancel() { return timer_.cancel(); }
+
+    /** Returns how many times this timer has been armed. */
+    std::uint64_t arms() const noexcept { return arms_; }
+
+  private:
+    net::steady_timer timer_;
+    std::uint64_t arms_{0};
+  };
+
+  CountedTimer admission_timer_;
   ssl::context& context_;
   std::unique_ptr<beast::ssl_stream<beast::tcp_stream>> stream_;
   beast::flat_buffer buffer_;
