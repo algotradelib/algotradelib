@@ -322,22 +322,30 @@ public:
       self->resolver_.cancel();
       self->resolve_timer_.cancel();
       self->admission_timer_.cancel();
+      // **Read before `disconnect()`, which is not a detail.** Disconnecting sets the state to
+      // `DISCONNECTED`, so asking afterwards would answer "not in flight" for a request that was
+      // genuinely on the wire -- reporting an order that may exist as one that provably does not,
+      // owing no reconciliation for it. That is the single direction in this file that loses money.
+      const bool front_was_sent = self->front_in_flight();
       self->disconnect();
       BrokerError error;
       error.category_ = ErrorCategory::CANCELLED;
       error.broker_code_ = "close";
       error.message_ = "HTTP client closed";
-      // **Only the front request may have been sent**, and only while it is in flight. Every other
-      // entry is still queued and reached nobody, which a caller has to be able to tell: an order
-      // that provably does not exist needs no reconciliation and spent no request, while one that
-      // may be on the wire needs both. `front_in_flight()` is the difference, and it is checked
-      // once here because closing pops the front first.
-      bool first = self->front_in_flight();
+      // Only the front request may be on the wire now. Every other entry is still queued and
+      // reached nobody, which a caller has to be able to tell: an order that provably does not
+      // exist needs no reconciliation and spent no request, while one that may be on the wire needs
+      // both.
+      //
+      // `retried_` is the second way an entry can have reached the broker, and it is not the front:
+      // a GET that failed mid-flight is put back to be replayed, and while it waits to resolve or
+      // connect again it is an ordinary queued entry that has nevertheless already been sent once.
+      bool first = true;
       while (!self->queue_.empty()) {
         auto pending = std::move(self->queue_.front());
         self->queue_.pop_front();
         BrokerError reported = error;
-        reported.reached_broker_ = first;
+        reported.reached_broker_ = (first && front_was_sent) || pending.retried_;
         first = false;
         self->complete(std::move(pending.handler_), Result<HttpResponse>(std::move(reported)));
       }

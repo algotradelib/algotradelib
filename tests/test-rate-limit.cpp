@@ -619,6 +619,13 @@ TEST_CASE(
   REQUIRE(errors.size() == 2);
   for (const auto& error : errors) {
     REQUIRE(error.category_ == ErrorCategory::CANCELLED);
+    // Closed before the loop ever ran, so neither request was on the wire, and a caller must be
+    // able to tell: `CANCELLED` alone reads as `INDETERMINATE`, withholding an instrument and
+    // owing a reconciliation for an order that was never sent. The one entry that *may* have been
+    // in flight is the front, and `close()` reads that before disconnecting rather than after --
+    // afterwards the state always reads "not in flight", which would claim an order on the wire
+    // provably does not exist.
+    REQUIRE_FALSE(error.reached_broker_);
   }
   REQUIRE(server.requestCount("/one") == 0);
 }
