@@ -476,11 +476,16 @@ TEST_CASE("an unspecified budget leaves the transport entirely unpaced") {
   // unmetered API, which is exactly the user-visible harm this case exists to prevent.
   //
   // `admission_waits()` observes the thing itself: the number of times the admission timer was
-  // armed. The count lives on the timer rather than beside it, so there is no path -- paced or not,
-  // present or future -- that can wait for admission without being counted. A connection with no
-  // budget must report zero, and that is true on a fast host and a hung one alike.
+  // armed. The count lives on the timer rather than beside it, so neither branch of `pump()` can arm
+  // it without being counted -- which is the bypass that made the first version of this guard
+  // useless. A connection with no budget must report zero, on a fast host and a hung one alike.
+  //
+  // It proves that *this timer* was never armed, not that dispatch was prompt in general: a delay
+  // built on another timer would not appear here, and the removed ceiling would have caught some of
+  // those. That is the trade -- a narrower claim that is always true for a broader one that was
+  // only true on an idle machine.
   REQUIRE(completed == 6);
-  REQUIRE(client->admission_waits() == 0);
+  REQUIRE(client->admission_waits() == 0);  // the admission timer was never armed
   REQUIRE(server.connectionCount() == 1);
 }
 

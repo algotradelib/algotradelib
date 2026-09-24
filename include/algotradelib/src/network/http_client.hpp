@@ -314,6 +314,18 @@ public:
    * except by timing it, and timing it asserts the machine rather than the library.
    *
    * A connection with no budget must report zero here, on a fast host and a hung one alike.
+   *
+   * **What it covers, exactly: this admission timer.** It is not a general statement that a request
+   * was dispatched promptly. The other waits this client owns are deadlines rather than gates --
+   * `resolve_timer_` and the beast stream timeouts abort a request rather than hold one -- but a
+   * future delay built on another timer, or on a callback simply not posted, would slow a request
+   * while this still read zero. The removed wall-clock ceiling would have noticed some of those.
+   * That is the coverage this observable trades for determinism, and it is stated rather than
+   * implied.
+   *
+   * Like `rate_limits()`, callers must read this from this client's strand -- which is where every
+   * response handler already runs -- or after the event loop has stopped. `arms_` is a plain
+   * counter, so reading it concurrently with an arm races.
    */
   std::uint64_t admission_waits() const noexcept { return admission_timer_.arms(); }
 
@@ -404,8 +416,15 @@ private:
    * counter still read zero -- and the test asserting zero would have passed.
    *
    * Making the count a property of the timer removes the bypass rather than documenting it: there
-   * is no way to arm this timer without `expires_after`, so there is no way to wait for admission
-   * without saying so.
+   * is no way to arm *this* timer without `expires_after`, so there is no way to wait on it without
+   * saying so. What that does not cover is a delay built on some other timer; see
+   * `admission_waits()`.
+   *
+   * **A narrow wrapper for two call sites, not a general Asio timer substitute.** It discards the
+   * completion-token return values its callers do not use, and it counts an expiry reset even when
+   * no wait follows -- which is exact for the one place that arms this timer and immediately waits,
+   * and would need revisiting for any other use. Changing an expiry cancels a pending wait, whose
+   * handler then receives `operation_aborted`; this client's handler already returns on any error.
    */
   class CountedTimer {
   public:
