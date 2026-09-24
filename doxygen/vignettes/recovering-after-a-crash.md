@@ -91,7 +91,7 @@ matching reads, the text is for you.
 | What you see | What it means |
 | --- | --- |
 | `pending` then `accepted` | the order exists, and `order_id` names it |
-| `pending` then `rejected` | the instruction was refused — by the broker, or by the binding that never asked. The order does not exist. Nothing owed |
+| `pending` then `rejected` | the instruction was refused — by the broker, by the binding or client before it sent, or by local machinery that failed. The order does not exist. Nothing owed |
 | `pending` then `indeterminate` | the request failed in transit. **Unknown.** Still owed |
 | `pending` then `resolved` | a sweep read the broker's list and closed it. `order_id` says what it saw |
 | `pending` alone, at the end of the file | the process died between the write and the answer |

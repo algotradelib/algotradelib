@@ -32,7 +32,15 @@ namespace strategy {
  * change nothing. None of them is silent — every adjustment is recorded on the planned order.
  */
 
-/** Why an instruction could not be produced. */
+/**
+ * Why an instruction was not placed.
+ *
+ * Most values are reconciliation's own: it could not produce a valid instruction from what it was
+ * given. The last two are not -- the instruction was built correctly and refused afterwards, by the
+ * broker or by the binding that would have sent it -- and they live here because a report's
+ * rejection bucket holds all of them, and a caller reading one entry needs its own answer rather
+ * than a guess from executor state that a later instruction may already have overwritten.
+ */
 enum class RejectReason {
   /** No reference data, so neither the tick grid nor the lot size is known. */
   NO_REFERENCE_DATA,

@@ -59,7 +59,7 @@ enum class SendOutcome {
   /**
    * The binding itself refused the instruction, so nothing was sent and no request was counted.
    *
-   * The fourth state exists because the other three each carry a claim that is false here.
+   * It is a state of its own because every other one carries a claim that is false here.
    * `REJECTED` says the *broker* refused, which obliges the runner to count a request against the
    * rate limit -- the broker counted one, after all -- and spending budget for a request nobody
    * made can refuse a later order that would have been allowed. `UNAVAILABLE` says the local
@@ -129,8 +129,15 @@ inline SendOutcome outcome_of(const BrokerError& error) {
       return error.http_status_ >= 500 ? SendOutcome::INDETERMINATE : SendOutcome::REJECTED;
     case ErrorCategory::AUTHENTICATION:
     case ErrorCategory::RATE_LIMIT:
-    case ErrorCategory::INVALID_ARGUMENT:
       return SendOutcome::REJECTED;
+    case ErrorCategory::INVALID_ARGUMENT:
+      // **The one category a client raises about its own caller.** A broker refusing an instruction
+      // and a client refusing to send one are both `INVALID_ARGUMENT`, and they are not the same
+      // event: the second never reached anybody, so the broker counted no request and no rate-limit
+      // budget may be spent on it -- nor may a report say the broker refused an order it never
+      // received. `reached_broker_` is what tells them apart, and it defaults to true, so a client
+      // that says nothing is read as having sent.
+      return error.reached_broker_ ? SendOutcome::REJECTED : SendOutcome::REFUSED_LOCALLY;
   }
   // A category this library does not recognize is treated as unknown rather than as a refusal,
   // for the same asymmetry: the cost of being wrong is not the same in both directions.

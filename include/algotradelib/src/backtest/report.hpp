@@ -144,7 +144,7 @@ struct Report {
   Decimal64 commission_paid_;
   Decimal64 slippage_paid_;
 
-  /** Instructions reconciliation could not build. */
+  /** Instructions reconciliation could not build; a replay's executor refuses nothing. */
   std::size_t rejected_{0};
   /** Instructions a guard refused. */
   std::size_t refused_{0};

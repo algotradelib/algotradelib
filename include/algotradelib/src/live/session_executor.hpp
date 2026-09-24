@@ -54,6 +54,7 @@ public:
       if constexpr (!Caps::has_client_order_id) {
         last_error_ = BrokerError{};
         last_error_->category_ = ErrorCategory::INVALID_ARGUMENT;
+        last_error_->reached_broker_ = false;
         last_error_->message_ =
           "this broker accepts no idempotency key; the intent asked for one";
         // Refused here, not by the broker: nothing was sent, so nothing may be counted against the
@@ -107,6 +108,7 @@ public:
       // there would leave a queued order to fill that the caller asked to withdraw.
       last_error_ = BrokerError{};
       last_error_->category_ = ErrorCategory::INVALID_ARGUMENT;
+      last_error_->reached_broker_ = false;
       last_error_->message_ =
         "no broker reference for this order; it cannot be withdrawn until a listing supplies one";
       return runner::SendOutcome::REFUSED_LOCALLY;

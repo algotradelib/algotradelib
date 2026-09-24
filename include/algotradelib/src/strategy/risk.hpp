@@ -111,9 +111,9 @@ inline constexpr std::string_view halt_reason_name(HaltReason reason) noexcept {
  *
  * Separate from reconciliation, and the separation is the point. Reconciliation answers "what
  * instruction expresses this decision"; a guard answers "is this instruction permitted". The
- * failures read differently in a log — `RejectReason` means the library could not build an order,
- * `GuardReason` means the operator forbade one — and conflating them would make a configuration
- * mistake look like a data problem.
+ * failures read differently in a log — `RejectReason` means the order was not placed, most often
+ * because the library could not build one, `GuardReason` means the operator forbade one — and
+ * conflating them would make a configuration mistake look like a data problem.
  *
  * **A guard rejects; it never resizes.** Halving an order that exceeded a notional limit would
  * place a position the strategy never sized, against a signal it never gave, and the strategy

@@ -110,6 +110,7 @@ struct Normalizers {
   static std::optional<BrokerError> validate_calendar(Country country, std::optional<Date> from) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = false;
     if (country != Country::KR) {
       error.broker_code_ = "unsupported_market";
       error.message_ = "KIS publishes the domestic trading calendar only";
@@ -226,6 +227,7 @@ struct Normalizers {
     if (!instruction.quantity_) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "quantity_required";
       error.message_ =
         "KIS requires an explicit quantity on a modification or cancellation, including a full "
@@ -272,6 +274,7 @@ struct Normalizers {
   ) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = false;
     if (!query.from_ || !query.to_) {
       error.broker_code_ = "range_required";
       error.message_ = "KIS order history requires an inclusive from and to calendar date";

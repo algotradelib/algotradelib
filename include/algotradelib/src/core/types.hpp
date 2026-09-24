@@ -555,6 +555,22 @@ enum class ErrorCategory {
  */
 struct BrokerError {
   ErrorCategory category_{ErrorCategory::PROTOCOL};
+  /**
+   * Whether a request actually went out before this error was produced.
+   *
+   * **False only when a client refused before any I/O**, which is a normal thing for a client to do
+   * -- an order id too long for the broker's format, a time in force it does not support -- and is
+   * indistinguishable from a broker's own refusal by `category_` alone: both are
+   * `INVALID_ARGUMENT`. The difference matters twice over. A request that never went was not
+   * counted by the broker, so counting it against a rate window refuses a later order that would
+   * have been allowed; and a report saying the *broker* refused an instruction it never received
+   * sends a reader to the wrong place.
+   *
+   * Defaults to true, which is the safe direction on both counts: a client that forgets to say it
+   * refused locally over-counts its budget and over-attributes the refusal, and neither loses an
+   * order or hides a failure.
+   */
+  bool reached_broker_{true};
   int http_status_{0};
   std::string broker_code_;
   std::string request_id_;

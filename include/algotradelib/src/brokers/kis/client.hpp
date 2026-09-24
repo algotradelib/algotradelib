@@ -213,6 +213,7 @@ inline std::optional<BrokerError> unsupported_client_order_id(const OrderRequest
   }
   BrokerError error;
   error.category_ = ErrorCategory::INVALID_ARGUMENT;
+  error.reached_broker_ = false;
   error.broker_code_ = "idempotency_key_unsupported";
   error.message_ =
     "KIS offers no client-supplied idempotency key for individual customers; clear "
@@ -754,6 +755,7 @@ private:
   static std::optional<BrokerError> validate_bar_query(const BarQuery& query) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = false;
     if (query.instrument_.country_ != Country::KR) {
       error.broker_code_ = "invalid_instrument";
       error.message_ = "KIS bars currently cover Korean equities only";
@@ -1112,6 +1114,7 @@ private:
     if (instrument.country_ != Country::KR || !valid_domestic_symbol(instrument.symbol_)) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "invalid_instrument";
       error.message_ = "KIS reference data covers Korean equities addressed by product number";
       deliver(std::move(completion), Result<Instrument>(std::move(error)));
@@ -1342,6 +1345,7 @@ private:
     if (!is_valid_date(from)) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "invalid_date";
       error.message_ = "calendar request requires a valid Gregorian date";
       deliver(std::move(completion), Result<TradingCalendar>(std::move(error)));
@@ -1521,6 +1525,7 @@ private:
     if (instrument.country_ != Country::KR || !valid_domestic_symbol(instrument.symbol_)) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "invalid_instrument";
       error.message_ = "KIS market data covers Korean equities addressed by product number";
       deliver(std::move(completion), ResultType(std::move(error)));
@@ -1724,6 +1729,7 @@ private:
     if (instrument.country_ != Country::KR || !valid_domestic_symbol(instrument.symbol_)) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "invalid_instrument";
       error.message_ = "KIS order book covers Korean equities addressed by product number";
       deliver(std::move(completion), Result<DepthSnapshot>(std::move(error)));
@@ -1870,6 +1876,7 @@ private:
     if (instrument.country_ != Country::KR || !broker_detail::valid_symbol(instrument.symbol_)) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "invalid_instrument";
       error.message_ = "KIS quote currently supports Korean equity symbols only";
       complete(std::move(completion), Result<QuoteSnapshot>(std::move(error)));
@@ -1903,6 +1910,7 @@ private:
       // buying power is a different endpoint answering a different question.
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "unsupported_currency";
       error.message_ =
         "the KIS domestic buying-power inquiry answers in KRW only, not " + currency.str();
@@ -2517,6 +2525,7 @@ private:
     }
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = false;
     error.broker_code_ = "invalid_account";
     error.message_ = "KIS account number must contain eight digits and product code two digits";
     return error;
@@ -2529,6 +2538,7 @@ private:
     }
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = false;
     error.broker_code_ = "invalid_quantity";
     error.message_ = "KIS order quantity must be a positive whole number of shares";
     return error;
@@ -2547,6 +2557,7 @@ private:
   ) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = false;
     error.broker_code_ = "invalid_price";
     if (type == OrderType::LIMIT) {
       if (!price) {
@@ -2584,6 +2595,7 @@ private:
   ) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = false;
     error.broker_code_ = "unsupported_order";
     if (time_in_force != TimeInForce::DAY) {
       error.message_ = "KIS cash orders currently support the DAY validity condition only";
@@ -2647,6 +2659,7 @@ private:
     if (order.instrument_.country_ != Country::KR) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "invalid_instrument";
       error.message_ = "KIS cash orders currently support Korean equities only";
       return error;
@@ -2654,6 +2667,7 @@ private:
     if (!valid_domestic_symbol(order.instrument_.symbol_)) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "invalid_instrument";
       error.message_ =
         "KIS domestic order symbol must contain six letters or digits, or seven for an ETN";
@@ -2868,6 +2882,7 @@ private:
     if (!invalid && !valid_order_reference(amendment.order_)) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "invalid_order_reference";
       error.message_ =
         "KIS amendment requires a ten-digit order number and an empty or "
@@ -2936,6 +2951,7 @@ private:
     if (!invalid && config_.is_demo_) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "demo_unsupported";
       error.message_ = "KIS does not offer the modifiable-order inquiry on demo accounts";
       invalid = std::move(error);
@@ -3167,6 +3183,7 @@ private:
     ) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "invalid_date_range";
       error.message_ = "KIS order history requires a valid inclusive calendar range";
       invalid = std::move(error);

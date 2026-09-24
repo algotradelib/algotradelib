@@ -103,6 +103,7 @@ struct Normalizers {
     }
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = false;
     error.broker_code_ = "invalid_date";
     error.message_ = "calendar request requires a valid Gregorian date";
     return error;
@@ -208,6 +209,7 @@ struct Normalizers {
     if (!instruction.all_remaining_) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "partial_cancel_unsupported";
       error.message_ =
         "Toss cancels an order in full; use cancel_all() or modify the order to a smaller "

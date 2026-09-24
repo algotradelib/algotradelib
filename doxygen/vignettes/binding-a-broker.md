@@ -95,8 +95,10 @@ For the order's state, read the broker's order list.
 
 A binding refuses rather than sends when the instruction asks for something it cannot do — an
 idempotency key at a broker that accepts none, a withdrawal for an order the broker has no
-reference for. That is `SendOutcome::REFUSED_LOCALLY`, and it is a fourth state rather than a
-rejection because **nothing was sent, so no request may be counted against the rate window**:
+reference for — and so does a **client**, for an instruction whose shape it validates before any
+I/O: an order id too long for the broker's format, a time in force it does not express. Both are
+`SendOutcome::REFUSED_LOCALLY`, which is a state of its own rather than a rejection because
+**nothing was sent, so no request may be counted against the rate window**:
 spending budget for a request nobody made refuses a later order that would have been allowed. It is
 not `UNAVAILABLE` either, which is sticky and stops the runner trading — the next instruction may be
 perfectly sendable.

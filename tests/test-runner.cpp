@@ -1027,7 +1027,7 @@ TEST_CASE("a hold on one instrument does not stop trading in another") {
 }
 
 TEST_CASE("a broker refusal needs no reconciliation, because it is an answer") {
-  // The distinction that makes three outcomes necessary rather than two: a rejection says the order
+  // The distinction that makes a send's outcome more than a boolean: a rejection says the order
   // does not exist, so nothing is in doubt.
   ScriptedRunner dry;
   arrange(dry);

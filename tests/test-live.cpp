@@ -74,6 +74,12 @@ public:
   using Placed = PlacedOrder<FakeBroker>;
 
   Result<Placed> place(OrderRequest order) {
+    if (local_refusal_) {
+      // Refused before the request is recorded, because a client refusing locally sends nothing.
+      auto refusal = *local_refusal_;
+      local_refusal_.reset();
+      return Result<Placed>(refusal);
+    }
     placed_.push_back(order);
     if (observed_ != nullptr) {
       journal_at_send_ = observed_->records();
@@ -119,6 +125,22 @@ public:
     error.category_ = category;
     error.http_status_ = status;
     error_ = error;
+  }
+
+  /**
+   * Makes the next call fail the way a client's own validation does: before any I/O.
+   *
+   * The real brokers do this for an order id too long for their format, a time in force they do
+   * not support, and a dozen other shapes -- all `INVALID_ARGUMENT`, none of them a broker's
+   * answer. `once` because the case worth testing is a bad instruction followed by a good one.
+   */
+  void refuse_next_locally() {
+    BrokerError error;
+    error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = false;
+    error.broker_code_ = "invalid_client_order_id";
+    error.message_ = "this client refused the instruction before sending it";
+    local_refusal_ = error;
   }
 
   void succeed() { error_.reset(); }
@@ -290,6 +312,7 @@ private:
   std::vector<AmendInstruction> canceled_;
   std::vector<Ref> canceled_refs_;
   std::optional<BrokerError> error_;
+  std::optional<BrokerError> local_refusal_;
 };
 
 InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
@@ -596,6 +619,18 @@ TEST_CASE("a reserved order is withdrawn by the reference the broker actually is
   REQUIRE(second.unavailable_cancel_.empty());
 }
 
+/** Buys one share every bar, plainly. */
+struct BuysOne {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ctx.submit(
+      strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
+      )
+    );
+  }
+};
+
 /** Asks for an idempotency key on the first bar only, then buys plainly. */
 struct KeyedOnce {
   int bars_{0};
@@ -646,6 +681,40 @@ TEST_CASE("a send the binding itself refused spends no rate-limit budget") {
   CHECK(first.rejected_[0].reason_ == strategy::RejectReason::BINDING_REFUSED);
 
   // Bar two asks for nothing unusual, and the window must still have room for it.
+  const auto second = live_runner.feed(bar_at(2, "70000"));
+  CHECK(second.refused_.empty());
+  CHECK(second.would_place_.size() == 1);
+  CHECK(session.placed().size() == 1);
+}
+
+TEST_CASE("a client refusing before it sends is not the broker refusing") {
+  // The path a capability check cannot catch: the binding is willing, the broker supports the
+  // feature, and the *client* refuses the instruction's shape before any I/O -- a Toss order id
+  // that is empty or too long, a time in force it does not express. That is `INVALID_ARGUMENT`,
+  // exactly like a broker's own refusal, and the two differ in whether a request went out at all.
+  using Runner = runner::Runner<
+    BuysOne, WithKey, FakeBroker, live::SessionExecutor<FakeSession<WithKey>>
+  >;
+  FakeSession<WithKey> session;
+  session.refuse_next_locally();
+  strategy::RiskLimits limits;
+  limits.max_orders_per_window_ = 1;
+  limits.rate_window_ = std::chrono::hours(24);
+
+  Runner live_runner(
+    BuysOne{}, limits, 512, live::SessionExecutor<FakeSession<WithKey>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+  const auto first = live_runner.feed(bar_at(1, "70000"));
+  REQUIRE(first.rejected_.size() == 1);
+  // Not `BROKER_REFUSED`: the broker never saw it.
+  CHECK(first.rejected_[0].reason_ == strategy::RejectReason::BINDING_REFUSED);
+  CHECK(session.placed().empty());
+
+  // And the window still has room, because nothing was counted against it.
   const auto second = live_runner.feed(bar_at(2, "70000"));
   CHECK(second.refused_.empty());
   CHECK(second.would_place_.size() == 1);

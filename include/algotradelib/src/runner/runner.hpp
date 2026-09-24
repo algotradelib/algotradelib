@@ -994,7 +994,8 @@ private:
         // No `note_sent`, for the reason the placement path gives: nothing was sent, so the broker
         // counted nothing, and a rate limit must never become the reason a later order cannot go.
         // Reported beside the broker's own refusals because what it means for the order is the
-        // same -- it was not withdrawn -- while `last_error()` says which of the two it was.
+        // same -- it was not withdrawn -- while `by_broker_` on the entry says which of the two
+        // it was. Not `last_error()`: a later instruction in the same pass clears that.
         report.rejected_cancel_.push_back(RejectedCancel<Tag>{ref, /*by_broker=*/false});
         return;
       case SendOutcome::UNAVAILABLE:

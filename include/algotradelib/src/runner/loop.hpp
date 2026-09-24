@@ -1001,7 +1001,8 @@ private:
       // Deliberately does not name who decided. The bucket holds three things -- reconciliation
       // could not build the instruction, the broker refused it, or the binding refused to send it
       // -- and an operator reading a stop report needs the consequence, which is the same for all
-      // three. `Report::rejected_` and `last_error()` carry which it was.
+      // three. The report's own entries carry which it was, on `RejectReason` for a placement and
+      // on `by_broker_` for a cancellation.
       report.notes_.push_back(
         std::to_string(closing.rejected_.size()) +
         " closing instruction(s) were not placed; the position is still held");

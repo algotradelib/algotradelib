@@ -92,7 +92,9 @@ enum class JournalOutcome {
    * express -- an idempotency key at a broker that accepts none -- writes this line too, having
    * asked nobody, and so does an inner executor whose own machinery refused. What every one of them
    * shares is the only thing a recovery sweep needs: the order does not exist, and nothing needs
-   * reconciling. The report's rejection buckets say who decided.
+   * reconciling. A report says who decided for the first two -- `RejectReason` on a placement,
+   * `by_broker_` on a cancellation -- and puts the third in `unavailable_` instead, so a journal
+   * line alone never attributes a refusal.
    */
   REJECTED,
   /** The request failed in transit. Whether the instruction exists is unknown. */
@@ -100,9 +102,9 @@ enum class JournalOutcome {
   /**
    * A sweep read the broker's own order list and closed the question.
    *
-   * Its own value rather than a reuse of `ACCEPTED` or `REJECTED`, because those are answers the
-   * *broker* gave to the instruction, and a sweep learns something different: what the listing
-   * shows now. For a placement the two nearly coincide -- the order is there or it is not. For a
+   * Its own value rather than a reuse of `ACCEPTED` or `REJECTED`, because those record the
+   * instruction's own fate at the moment it was attempted, and a sweep learns something different:
+   * what the listing shows now. For a placement the two nearly coincide -- the order is there or it is not. For a
    * cancellation they can read as the exact opposite of the truth: a matched row means the target
    * order is **still resting**, so recording that as `ACCEPTED` would say the withdrawal succeeded
    * when the listing says it did not.

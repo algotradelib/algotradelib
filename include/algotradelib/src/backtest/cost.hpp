@@ -110,6 +110,8 @@ inline Result<CommissionModel> commission_model_from(
   if (!rate) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    // Nothing was asked of anybody: this reads a schedule already in hand.
+    error.reached_broker_ = false;
     error.broker_code_ = "no_rate_for_date";
     error.message_ = "the published schedule states no commission rate for that market and date";
     return Result<CommissionModel>(std::move(error));

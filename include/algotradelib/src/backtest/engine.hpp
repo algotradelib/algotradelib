@@ -99,7 +99,12 @@ struct EquityPoint {
 struct ReplayResult {
   std::vector<EquityPoint> equity_;
   std::vector<Execution> executions_;
-  /** Instructions reconciliation could not build. */
+  /**
+   * Instructions reconciliation could not build.
+   *
+   * Only reconciliation's own reasons reach here, unlike a live run: `QueueingExecutor` accepts
+   * everything it is handed, so no replay entry can be a broker's refusal or a binding's.
+   */
   std::vector<strategy::Rejection> rejected_;
   /** Instructions a guard refused. */
   std::vector<strategy::GuardRejection> refused_;

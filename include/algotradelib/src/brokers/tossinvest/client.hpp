@@ -123,6 +123,7 @@ inline std::optional<BrokerError> unsupported_bar_interval(BarInterval interval)
   }
   BrokerError error;
   error.category_ = ErrorCategory::INVALID_ARGUMENT;
+  error.reached_broker_ = false;
   error.broker_code_ = "unsupported_interval";
   error.message_ =
     "Toss publishes one-minute and one-day bars only; gate on "
@@ -714,6 +715,7 @@ private:
   static std::optional<BrokerError> validate_bar_query(const BarQuery& query) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = false;
     if (!broker_detail::valid_symbol(query.instrument_.symbol_)) {
       error.broker_code_ = "invalid_instrument";
       error.message_ = "bar request requires a symbol";
@@ -1068,6 +1070,7 @@ private:
     if (from && !is_valid_date(*from)) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "invalid_date";
       error.message_ = "calendar request requires a valid Gregorian date";
       deliver(std::move(completion), Result<TradingCalendar>(std::move(error)));
@@ -1218,6 +1221,7 @@ private:
     if (!broker_detail::valid_symbol(instrument.symbol_)) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "invalid_instrument";
       error.message_ = "market data request requires a symbol";
       deliver(std::move(completion), ResultType(std::move(error)));
@@ -1337,6 +1341,7 @@ private:
   void start_prices(std::vector<InstrumentId> instruments, PricesHandler completion) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = false;
     if (instruments.empty()) {
       error.broker_code_ = "empty_batch";
       error.message_ = "a batch price request needs at least one instrument";
@@ -1471,6 +1476,7 @@ private:
     if (!broker_detail::valid_symbol(instrument.symbol_)) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "invalid_instrument";
       error.message_ = "order book request requires a symbol";
       deliver(std::move(completion), Result<DepthSnapshot>(std::move(error)));
@@ -1591,6 +1597,7 @@ private:
     if (instrument.country_ != Country::KR || !broker_detail::valid_symbol(instrument.symbol_)) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "invalid_instrument";
       error.message_ = "Toss quote currently supports Korean equity symbols only";
       complete(std::move(completion), Result<QuoteSnapshot>(std::move(error)));
@@ -1643,6 +1650,7 @@ private:
       // request for any other is a condition the caller stated that cannot be honored.
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "unsupported_currency";
       error.message_ = "Toss prices buying power in KRW and USD only, not " + currency.str();
       invalid = std::move(error);
@@ -2403,6 +2411,7 @@ private:
     }
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = false;
     error.broker_code_ = "invalid_account";
     error.message_ = "Toss account sequence must be positive";
     return error;
@@ -2415,6 +2424,7 @@ private:
     }
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = false;
     error.broker_code_ = "invalid_order_reference";
     error.message_ = "Toss order identifier must not be empty";
     return error;
@@ -2440,6 +2450,7 @@ private:
     }
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = false;
     error.broker_code_ = "invalid_client_order_id";
     error.message_ =
       "Toss client order id must be 1-36 characters of letters, digits, hyphen, or underscore";
@@ -2453,6 +2464,7 @@ private:
     }
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = false;
     error.broker_code_ = "invalid_quantity";
     error.message_ =
       "Toss order quantity must be a positive whole number of shares; "
@@ -2467,6 +2479,7 @@ private:
   ) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = false;
     error.broker_code_ = "invalid_price";
     if (type == OrderType::LIMIT) {
       if (!price) {
@@ -2506,6 +2519,7 @@ private:
   ) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = false;
     error.broker_code_ = "unsupported_time_in_force";
     switch (time_in_force) {
       case TimeInForce::DAY:
@@ -2533,6 +2547,7 @@ private:
     if (!broker_detail::valid_symbol(order.instrument_.symbol_)) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "invalid_instrument";
       error.message_ = "Toss order symbol contains unsupported characters";
       return error;
@@ -2553,6 +2568,7 @@ private:
     ) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "invalid_price";
       error.message_ = "Toss Korean limit order price must be a whole number of won";
       return error;
@@ -2871,6 +2887,7 @@ private:
     if (query.symbol_ && !broker_detail::valid_symbol(*query.symbol_)) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "invalid_instrument";
       error.message_ = "Toss order filter symbol contains unsupported characters";
       complete_order_page(std::move(completion), Result<OrderPage>(std::move(error)));
@@ -2879,6 +2896,7 @@ private:
     if (query.limit_ && (*query.limit_ < 1 || *query.limit_ > 100)) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "invalid_limit";
       error.message_ = "Toss order listing accepts a page size between 1 and 100";
       complete_order_page(std::move(completion), Result<OrderPage>(std::move(error)));
@@ -2891,6 +2909,7 @@ private:
     ) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
       error.broker_code_ = "invalid_date_range";
       error.message_ = "Toss order listing requires valid inclusive calendar bounds";
       complete_order_page(std::move(completion), Result<OrderPage>(std::move(error)));
