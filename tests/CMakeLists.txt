@@ -171,3 +171,37 @@ if(ATL_STANDALONE_SOURCES)
     add_library(algotradelib-header-standalone OBJECT ${ATL_STANDALONE_SOURCES})
     target_link_libraries(algotradelib-header-standalone PRIVATE algotradelib::algotradelib)
 endif()
+
+# The onboarding scaffold, exercised end to end: generate a project, configure it against this
+# checkout, build it, run it.
+#
+# Built rather than inspected, because what a new consumer depends on is that it compiles and runs.
+# This is the same standard `ai/wall-clock-test-assertions` settled on -- observe the mechanism that
+# does the work, not a seam that exists for the test -- and here the mechanism is a real build.
+#
+# Not run on Windows: the script is POSIX sh and the generated project is checked with `cmp`. The
+# scaffold itself is portable CMake; only this driver assumes a shell.
+if(NOT WIN32)
+    # The sub-build must match this one, or a no-backend build would be tested against a backend and
+    # the guard in the example would never be exercised.
+    set(ATL_SCAFFOLD_ARGS "-DATL_USE_EIGEN=${ATL_USE_EIGEN}")
+    if(CMAKE_GENERATOR)
+        list(APPEND ATL_SCAFFOLD_ARGS "-G${CMAKE_GENERATOR}")
+    endif()
+    if(CMAKE_BUILD_TYPE)
+        list(APPEND ATL_SCAFFOLD_ARGS "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}")
+    endif()
+
+    add_test(
+        NAME scaffold-generates-a-project-that-builds-and-runs
+        COMMAND /bin/sh "${CMAKE_CURRENT_SOURCE_DIR}/scaffold-smoke.sh"
+                "${CMAKE_CURRENT_SOURCE_DIR}/.."
+                "${CMAKE_CURRENT_BINARY_DIR}/scaffold"
+                "${CMAKE_COMMAND}"
+                "$<IF:$<BOOL:${ATL_USE_EIGEN}>,ON,OFF>"
+                ${ATL_SCAFFOLD_ARGS}
+    )
+    # A full configure and build of a generated project, so it needs more than a unit test's budget.
+    set_tests_properties(scaffold-generates-a-project-that-builds-and-runs
+        PROPERTIES TIMEOUT 600)
+endif()
