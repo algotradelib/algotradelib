@@ -16,8 +16,18 @@ namespace vanilla {
 /**
  * Flattens every position when the session leaves the phase it is allowed to hold through.
  *
- * Composable with any signal strategy: run both, and this one overrides at the boundary because a
- * target of zero is a target like any other and reconciliation takes the last one stated.
+ * **Composable with a signal strategy only if that strategy stops stating its target once this one
+ * has fired.** A target of zero is a target like any other and reconciliation takes the last one
+ * stated -- which is the whole mechanism, and also the trap. `on_bar` runs after `on_phase` within
+ * a single pass, so a signal that restates its target unconditionally restates it on the very bar
+ * that liquidated, and reconciliation correctly withdraws the flatten as an order opposing the new
+ * target. `BuyAndHold` is exactly such a strategy.
+ *
+ * The composing type therefore has to gate its signal, which is what
+ * `tests/test-backtest.cpp`'s `BuyThenLiquidate` does and why it holds a flag. An earlier version
+ * of this comment claimed composability with *any* signal strategy and it was wrong; the replay
+ * appeared to confirm it only because `backtest::ReplayLedger::snapshot` reported no working
+ * orders, so reconciliation could not see the flatten it would have withdrawn.
  *
  * Written against `on_phase` rather than a clock reading, which is the point of the phase existing.
  * A strategy comparing `ctx.now()` to a hard-coded 15:20 would be wrong on a half-day, wrong in a

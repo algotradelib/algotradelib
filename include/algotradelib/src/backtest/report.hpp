@@ -102,13 +102,23 @@ struct ReportCaveats {
   static constexpr bool sellable_is_whole_holding = true;
 
   /**
-   * Always true: a replay's buying power is this ledger's own cash, not a broker's answer.
+   * Always true: a replay's buying power is modelled from this ledger's own cash, never a broker's
+   * answer.
    *
    * The two are different quantities. The ledger credits a sale on the fill and models no
    * settlement schedule; a broker prices buying power on its own terms, including or excluding
    * amounts this ledger does not model at all. **Which way a particular account differs is not
    * something a replay can know**, so this states the model rather than claiming the replay is the
    * more permissive of the two.
+   *
+   * **With `RiskLimits::enforce_buying_power_` enabled, the figure is that cash less what this
+   * replay's own outstanding buys have committed**, valued at each order's limit price or the last
+   * close. Ledger cash alone has not paid for anything still resting, so two resting buys of a
+   * hundred would each pass against a hundred of cash and both could still fill. The commitment is
+   * this library's arithmetic rather than a broker's reservation, which is why it is disclosed here
+   * and why it applies only when the check is on: `buying_power_in()` is a figure a strategy may
+   * size from, and lowering it for a caller who never asked for the check would change how their
+   * strategy behaves.
    *
    * A strategy sized against a buying-power limit therefore passes or fails here on modelled money,
    * and the live account is the only place the broker's own answer applies.

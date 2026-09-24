@@ -1826,6 +1826,66 @@ struct BuysThenRestsSells {
   }
 };
 
+/** A flat bar for `instrument` at `close`, for interleaving two instruments in one replay. */
+strategy::BarEvent bar_for(InstrumentId instrument, Clock::time_point at, const char* close) {
+  Bar bar;
+  bar.timestamp_ = at;
+  bar.open_ = Decimal64::parse(close);
+  bar.high_ = Decimal64::parse(close);
+  bar.low_ = Decimal64::parse(close);
+  bar.close_ = Decimal64::parse(close);
+  bar.volume_ = Decimal64::parse("1000");
+  return strategy::make_bar_event(
+    std::move(instrument), BarInterval::ONE_DAY, BarStamp::CLOSE, bar
+  );
+}
+
+/** A second KRX instrument, so a replay can interleave two of them. */
+InstrumentId hynix() { return InstrumentId{Country::KR, Venue::COMBINED, "000660"}; }
+
+Instrument hynix_reference() {
+  auto reference = samsung_reference();
+  reference.id_ = hynix();
+  return reference;
+}
+
+/** Rests one limit buy in each of two instruments, on the bar it first sees each. */
+struct RestsABuyInEachInstrument {
+  std::vector<InstrumentId> placed_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    for (const auto& already : placed_) {
+      if (already == bar.instrument_) {
+        return;
+      }
+    }
+    placed_.push_back(bar.instrument_);
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")),
+        far_below()
+      ).with_tag("one-each")
+    );
+  }
+};
+
+/** Rests a limit buy every bar, recording the buying power it was shown before placing it. */
+struct RecordsBuyingPower {
+  std::vector<std::optional<Decimal64>> seen_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    seen_.push_back(ctx.portfolio().buying_power_in(Currency{"KRW"}));
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")),
+        far_below()
+      ).with_tag("records")
+    );
+  }
+};
+
 /** Counts how many times a guard refused for `reason`. */
 std::size_t refusals_for(const backtest::ReplayResult& result, strategy::GuardReason reason) {
   std::size_t count = 0;
@@ -1925,18 +1985,70 @@ TEST_CASE("the exposure ceiling counts a resting buy") {
 TEST_CASE("buying power is spent by an order that is still resting") {
   // **Rows alone do not close this one.** `enforce_buying_power_` reads the scalar, and
   // `ReplayLedger::snapshot` builds it from ledger cash that has not paid for anything outstanding.
-  // Two resting buys of 700,000 each against cash of a million: the second has to be refused, and
-  // was not, because the first had spent nothing the snapshot knew about.
+  // Each resting buy is ten at its limit of 50,000, so 500,000 of cash. Against 900,000 the first
+  // fits and the second cannot, and the second passed anyway because the first had spent nothing
+  // the snapshot knew about.
+  //
+  // **Two different instruments**, which is the case a per-instrument check cannot catch: nothing
+  // here is a position ceiling or a same-instrument projection, only shared money.
   auto config = replay_config();
-  config.cash_ = Decimal64::parse("1000000");
+  config.cash_ = Decimal64::parse("900000");
+  config.instruments_ = {samsung_reference(), hynix_reference()};
   config.limits_.enforce_buying_power_ = true;
 
-  backtest::Backtester<AddsARestingOrderEveryBar> engine(
-    AddsARestingOrderEveryBar{}, std::move(config)
+  backtest::Backtester<RestsABuyInEachInstrument> engine(
+    RestsABuyInEachInstrument{}, std::move(config)
   );
-  replay_flat_bars(engine, 3);
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(bar_for(hynix(), utc(2026, 3, 10, 6, 31), "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(bar_for(hynix(), utc(2026, 3, 11, 6, 31), "70000"));
+  engine.finish();
 
   REQUIRE(refusals_for(engine.result(), strategy::GuardReason::INSUFFICIENT_BUYING_POWER) > 0);
+  // The samsung buy is the one that got the money; the hynix one is outstanding only if it passed.
+  REQUIRE(engine.result().unfilled_ == 1);
+}
+
+TEST_CASE("an outstanding buy moves buying power only when the check is on") {
+  // `buying_power_in()` is a figure a strategy may size its next order from, so the commitment is
+  // scoped to the limit exactly as `Runner::reserve` scopes its own (`runner/runner.hpp:700-705`).
+  // Debiting it for a caller who never enabled the check would change how their strategy sizes, and
+  // would make `ReportCaveats::buying_power_is_ledger_cash` untrue for every replay that has an
+  // order resting.
+  const auto million = std::optional<Decimal64>(Decimal64::parse("1000000"));
+
+  SECTION("off: the figure stays the ledger's cash") {
+    auto config = replay_config();
+    config.cash_ = Decimal64::parse("1000000");
+    REQUIRE_FALSE(config.limits_.enforce_buying_power_);
+
+    backtest::Backtester<RecordsBuyingPower> engine(RecordsBuyingPower{}, std::move(config));
+    replay_flat_bars(engine, 3);
+
+    // Three bars, and a resting buy of 500,000 outstanding for the last two of them.
+    REQUIRE(engine.strategy().seen_.size() == 3);
+    REQUIRE(engine.strategy().seen_[0] == million);
+    REQUIRE(engine.strategy().seen_[1] == million);
+    REQUIRE(engine.strategy().seen_[2] == million);
+    REQUIRE(engine.result().unfilled_ == 3);
+  }
+
+  SECTION("on: the figure is cash less what is committed") {
+    auto config = replay_config();
+    config.cash_ = Decimal64::parse("1000000");
+    config.limits_.enforce_buying_power_ = true;
+
+    backtest::Backtester<RecordsBuyingPower> engine(RecordsBuyingPower{}, std::move(config));
+    replay_flat_bars(engine, 3);
+
+    REQUIRE(engine.strategy().seen_.size() == 3);
+    REQUIRE(engine.strategy().seen_[0] == million);
+    // Ten at the limit of 50,000 is 500,000, committed by the order resting from the first bar.
+    REQUIRE(engine.strategy().seen_[1] == std::optional<Decimal64>(Decimal64::parse("500000")));
+    REQUIRE(engine.strategy().seen_[2] == std::optional<Decimal64>(Decimal64::parse("0")));
+  }
+
 }
 
 namespace {
@@ -1979,4 +2091,171 @@ TEST_CASE("a shutdown handler sees the orders placed on the final bar") {
   // Both bars placed an order and neither could fill, so both are outstanding when the run ends.
   REQUIRE(engine.strategy().outstanding_at_stop_ == 2);
   REQUIRE(engine.result().unfilled_ == 0);
+}
+
+namespace {
+
+/**
+ * Rests two orders in one instrument, then from the first one's fill withdraws the second.
+ *
+ * The reentrancy case: `settle_queued_against` collects the eligible references before it fills
+ * anything, so the second order's reference is already in that list when `on_fill` removes it.
+ */
+struct WithdrawsTheOtherOnFill {
+  bool placed_{false};
+  bool withdrew_{false};
+  std::size_t working_at_fill_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (placed_) {
+      return;
+    }
+    placed_ = true;
+    // The first fills against the next bar's open; the second rests, far from the market.
+    ctx.submit(
+      strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
+      ).with_tag("fills")
+    );
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")),
+        far_below()
+      ).with_tag("rests")
+    );
+  }
+
+  template <class Ctx>
+  void on_fill(Ctx& ctx, const strategy::Fill&) {
+    if (withdrew_) {
+      return;
+    }
+    withdrew_ = true;
+    working_at_fill_ = ctx.portfolio().working_.size();
+    for (const auto& working : ctx.portfolio().working_) {
+      ctx.cancel(working.ref_, "one is enough");
+    }
+  }
+};
+
+/** Buys ten at market the first time the phase changes, so the order is priced by `on_phase`. */
+struct BuysOnPhaseChange {
+  bool submitted_{false};
+
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {}
+
+  template <class Ctx>
+  void on_phase(Ctx& ctx, strategy::MarketPhase phase) {
+    // Only the close, not the open: the first bar also fires a transition, and buying there would
+    // price the order from the bar this test wants to leave behind.
+    if (submitted_ || phase != strategy::MarketPhase::POST_CLOSE) {
+      return;
+    }
+    submitted_ = true;
+    ctx.submit(
+      strategy::OrderIntent::market(
+        samsung(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
+      ).with_tag("on-phase")
+    );
+  }
+};
+
+/** Places an order for the *other* instrument from a fill callback. */
+struct PlacesTheOtherOnFill {
+  bool seeded_{false};
+  bool placed_on_fill_{false};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (seeded_ || !(bar.instrument_ == samsung())) {
+      return;
+    }
+    seeded_ = true;
+    ctx.submit(
+      strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
+      ).with_tag("seed")
+    );
+  }
+
+  template <class Ctx>
+  void on_fill(Ctx& ctx, const strategy::Fill&) {
+    if (placed_on_fill_) {
+      return;
+    }
+    placed_on_fill_ = true;
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        hynix(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")), far_below()
+      ).with_tag("from-a-fill")
+    );
+  }
+};
+
+} // namespace
+
+TEST_CASE("a fill callback can withdraw an order the same pass had not reached") {
+  // The order the loop has not filled yet is outstanding, so it is in the portfolio `on_fill` reads
+  // and its reference resolves. Before this branch the queue was empty for the length of the loop,
+  // so `on_fill` saw nothing to withdraw and could not have reached it if it had.
+  backtest::Backtester<WithdrawsTheOtherOnFill> engine(
+    WithdrawsTheOtherOnFill{}, replay_config()
+  );
+  replay_flat_bars(engine, 3);
+
+  // The market order filled and the resting limit was still outstanding when `on_fill` ran.
+  REQUIRE(engine.result().executions_.size() == 1);
+  REQUIRE(engine.strategy().working_at_fill_ == 1);
+  // And the withdrawal reached it, so nothing is left over at the end.
+  REQUIRE(engine.result().unfilled_ == 0);
+}
+
+TEST_CASE("an order placed from a fill waits for its own instrument's next bar") {
+  // Two things at once: an order accepted during a bar is not eligible against that bar, and an
+  // order for another instrument waits for that instrument's bar rather than the next bar of any
+  // kind. Both are what makes an interleaved replay behave.
+  auto config = replay_config();
+  config.instruments_ = {samsung_reference(), hynix_reference()};
+
+  backtest::Backtester<PlacesTheOtherOnFill> engine(PlacesTheOtherOnFill{}, std::move(config));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  // The seed fills here, and `on_fill` places a hynix limit far below the market.
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  // A samsung bar does not touch a hynix order.
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  // And hynix's own bar never reaches 50,000, so it rests rather than filling.
+  engine.feed(bar_for(hynix(), utc(2026, 3, 12, 6, 31), "70000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().placed_on_fill_);
+  // Exactly the seed filled: the hynix order never traded.
+  REQUIRE(engine.result().executions_.size() == 1);
+  REQUIRE(engine.result().executions_[0].fill_.instrument_ == samsung());
+  REQUIRE(engine.result().unfilled_ == 1);
+}
+
+TEST_CASE("a phase decision is priced from the bar that caused it") {
+  // `Runner::settle` values a market order at `context_.last_price`. Installing a portfolio marked
+  // to this bar while leaving the price at the previous bar's makes the view incoherent rather than
+  // fresh -- and worse than uniformly stale, because it looks current. With a ceiling of one
+  // million, ten shares are 700,000 at the old close of 70,000 and 1,000,000 at the new one, so the
+  // stale price admits an order the ceiling exists to refuse.
+  auto config = replay_config();
+  config.limits_.max_gross_exposure_ = Decimal64::parse("900000");
+  config.limits_.permitted_phases_ =
+    std::vector<strategy::MarketPhase>{strategy::MarketPhase::OPEN,
+                                       strategy::MarketPhase::POST_CLOSE};
+
+  backtest::Backtester<BuysOnPhaseChange> engine(BuysOnPhaseChange{}, std::move(config));
+  // Inside the session at 70,000, then a bar closing at 100,000 that crosses the close.
+  engine.feed(moving_bar(utc(2026, 3, 10, 3, 0), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_MINUTE, "70000", "100000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().submitted_);
+  // Ten at the bar's own close is 1,000,000, over the 900,000 ceiling. Priced at the previous
+  // close it is 700,000 and passes.
+  REQUIRE(refusals_for(engine.result(), strategy::GuardReason::GROSS_EXPOSURE_EXCEEDED) > 0);
 }

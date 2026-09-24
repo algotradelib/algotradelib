@@ -281,6 +281,14 @@ public:
       record_equity(event);
     }
 
+    // **The price moves with the portfolio, not after it.** `Runner::settle` values a market order
+    // at `context_.last_price`, so a view whose positions are marked to this bar while the price is
+    // still the previous bar's is not a fresher picture -- it is an incoherent one, and it is worse
+    // than a uniformly stale picture because it looks current. After a close moves from 10 to 100, a
+    // market buy from `on_phase` would be checked against buying power and exposure at 10 while the
+    // positions beside it say 100, which can admit an order those limits exist to refuse.
+    runner_.context().set_last_price(event.instrument_, event.bar_.close_);
+
     if (clock_.advance(event, trading_day)) {
       runner_.context().set_phase(clock_.phase());
       // **Installed before the phase change is acted on, not after.** A strategy placing an order
@@ -293,7 +301,6 @@ public:
     }
 
     install_portfolio();
-    runner_.context().set_last_price(event.instrument_, event.bar_.close_);
     drain_reports(runner_.feed(event));
     previous_ = event;
   }
@@ -491,9 +498,16 @@ private:
    * commission is not in it, and neither valuation is smaller than the order's stated cost, so the
    * error is not in the permissive direction. An order that can be valued at neither is left
    * uncommitted rather than guessed at.
+   *
+   * **Scoped to the limit, exactly as `Runner::reserve` is** (`runner/runner.hpp:700-705`).
+   * `buying_power_in()` is a public figure a strategy is free to size its next order from, so
+   * lowering it for a caller who never enabled the check would change how their strategy sizes --
+   * a behaviour change well past enforcing a ceiling, and the reason the runner passes `spends`
+   * rather than always debiting. It also keeps `ReportCaveats::buying_power_is_ledger_cash` true
+   * for every replay that does not ask for the check.
    */
   void commit_open_buy(strategy::Portfolio<Tag>& portfolio, const QueuedOrder<Tag>& entry) const {
-    if (entry.order_.side_ != OrderSide::BUY) {
+    if (!config_.limits_.enforce_buying_power_ || entry.order_.side_ != OrderSide::BUY) {
       return;
     }
     const auto price = entry.order_.price_ ?
