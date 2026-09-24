@@ -403,6 +403,24 @@ TEST_CASE("a mark that will not fit reports itself and leaves the lot coherent")
   REQUIRE(ledger.equity_in(krw()) == std::optional<Decimal64>(Decimal64::parse("10020000")));
 }
 
+TEST_CASE("an instrument does not change currency underneath an open position") {
+  // Backtester resolves the currency from fixed reference data, so it cannot reach this; the ledger
+  // is public and a direct caller can. The second fill used to relabel the whole lot, so a position
+  // bought in won reported as dollars while the cash stayed split across both.
+  auto ledger = opening();
+  REQUIRE(ledger.apply(filled(OrderSide::BUY, "1", "70000"), krw()));
+  REQUIRE_FALSE(ledger.apply(filled(OrderSide::BUY, "1", "70000"), Currency{"USD"}));
+
+  REQUIRE(ledger.quantity_of(samsung()) == std::optional<Decimal64>(Decimal64::parse("1")));
+  REQUIRE(ledger.positions().front().market_value_.currency_ == krw());
+  REQUIRE_FALSE(ledger.cash_in(Currency{"USD"}));
+
+  // Once flat there is no position to mislabel, so the lot may be re-denominated.
+  REQUIRE(ledger.apply(filled(OrderSide::SELL, "1", "70000"), krw()));
+  REQUIRE(ledger.apply(filled(OrderSide::BUY, "1", "200"), Currency{"USD"}));
+  REQUIRE(ledger.positions().front().market_value_.currency_ == Currency{"USD"});
+}
+
 TEST_CASE("a position in another currency is not counted either") {
   // **The case the test above could not catch.** `opening()` holds no positions, so it asked only
   // whether cash was filtered, and passed however the position loop behaved. With a holding, the

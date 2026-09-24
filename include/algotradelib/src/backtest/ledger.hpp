@@ -134,12 +134,18 @@ public:
    * Returns false when the arithmetic will not fit an exact decimal, which leaves the ledger
    * unchanged rather than partly applied.
    *
-   * **That last sentence is now true.** It was not: every fallible step used to run against the
-   * ledger itself, so a failure halfway left a lot `find_or_open` had pushed, an average
-   * `weighted_average` had blended, or realized profit `add_realized` had banked -- and
+   * **That last sentence is now true for the `false` return.** It was not: every fallible step used
+   * to run against the ledger itself, so a failure halfway left a lot `find_or_open` had pushed, an
+   * average `weighted_average` had blended, or realized profit `add_realized` had banked -- and
    * `backtest::Backtester` reads false as "the order did not fill", so a replay carried on with the
-   * effects of a fill it had counted as never happening. Every figure is computed first and nothing
-   * is written until all of them fit; the commit below cannot fail.
+   * effects of a fill it had counted as never happening. Every figure is computed first, and nothing
+   * is written until all of them fit.
+   *
+   * It is **not** strong exception safety, and the distinction is worth stating rather than implying:
+   * the commit section performs no arithmetic that can fail, but it grows three vectors and copies
+   * an execution, so an allocation that throws can still unwind with some fields already written.
+   * Nothing in this library catches that, and a replay that has run out of memory has worse problems
+   * than a half-applied lot -- but a caller should not read the sentence above as more than it says.
    */
   bool apply(const Execution& execution, const Currency& currency) {
     const auto& fill = execution.fill_;
@@ -173,6 +179,18 @@ public:
     const auto* existing = find(fill.instrument_);
     const auto held = existing != nullptr ? existing->quantity_ : zero;
     const auto average = existing != nullptr ? existing->average_purchase_price_ : zero;
+
+    // **An instrument does not change currency underneath a position.** `Backtester` resolves the
+    // currency from fixed reference data so it cannot reach this, but `ReplayLedger` is public and a
+    // direct caller can pass a different one: the second fill would relabel the whole lot, so a
+    // two-share position bought in won would report as dollars while the cash stayed split across
+    // both. Refused rather than documented as a precondition, because the failure is a
+    // silently-wrong total of exactly the kind this branch exists to remove. A lot that has gone
+    // flat carries no position to mislabel and may be re-denominated.
+    if (existing != nullptr && held.coefficient() != 0 &&
+        !(existing->market_value_.currency_ == currency)) {
+      return false;
+    }
 
     const auto closing = closed_quantity(held, *signed_quantity);
     if (!closing) {
@@ -237,7 +255,7 @@ public:
       return false;
     }
 
-    // --- Nothing below can fail -------------------------------------------------------------
+    // --- No arithmetic below can fail, and nothing below returns false -----------------------
     auto* lot = find_or_open(fill.instrument_);
     lot->average_purchase_price_ = new_average;
     lot->quantity_ = *resulting;
