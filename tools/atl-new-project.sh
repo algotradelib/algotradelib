@@ -35,6 +35,16 @@ die() {
     exit 1
 }
 
+# Single-quotes a path so the printed commands can be pasted into a shell.
+#
+# Wrapping in quotes is not enough on its own: a directory named `it's a project` is perfectly legal,
+# and `cd 'it's a project'` is a syntax error. The only character that needs handling inside single
+# quotes is the single quote itself, which is closed, escaped and reopened -- the standard `'\''`
+# dance. Review caught the unescaped version, after the unquoted version before it.
+shell_quote() {
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
         -m|--mode)  [ $# -ge 2 ] || die "--mode needs a value"; MODE=$2; shift 2 ;;
@@ -185,8 +195,10 @@ MDEOF
 
 # Printed single-quoted, because a project directory containing a space generates and builds perfectly
 # well and then hands back a `cd` line that cannot be pasted into a shell.
+QUOTED_TARGET=$(shell_quote "$TARGET")
+
 cat <<DONEEOF
-Created '$TARGET'
+Created $QUOTED_TARGET
 
   $TARGET/CMakeLists.txt
   $TARGET/src/main.cpp      <- MyStrategy is yours; the rest is the harness
@@ -198,14 +210,14 @@ DONEEOF
 
 if [ "$MODE" = submodule ]; then
     cat <<DONEEOF
-  cd '$TARGET'
+  cd $QUOTED_TARGET
   git init .
   git submodule add <repository-url> external/algotradelib
   cmake -S . -B build && cmake --build build && ./build/$NAME
 DONEEOF
 else
     cat <<DONEEOF
-  cd '$TARGET'
+  cd $QUOTED_TARGET
   cmake -S . -B build && cmake --build build && ./build/$NAME
 DONEEOF
 fi

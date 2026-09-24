@@ -121,13 +121,52 @@ check_row() {
 }
 
 if [ "$BACKEND" = ON ]; then
-    # Every strategy the README shows must have produced a real row. `MyStrategy` and `BuyAndHold`
-    # must additionally have traded: both enter unconditionally on this fixed path, so a zero there
-    # means the comparison did not happen however convincing the table looks.
+    # Every strategy must have produced a structurally valid row. This is the first check only because
+    # it gives a precise diagnostic; on its own it is not sufficient, and believing it was is the
+    # mistake this file has now made three times.
     check_row 'MyStrategy(5)' 1
     check_row 'BuyAndHold' 1
     check_row 'SmaCrossover(3,8)' 0
     check_row 'DonchianBreakout(5)' 0
+
+    # The sufficient check: the program must reproduce, exactly, the table the README publishes.
+    #
+    # Nothing read from stdout can distinguish "replayed and printed" from "printed", so no assertion
+    # about a row's *shape* can ever be enough -- review defeated the last one with a `compare()` that
+    # printed `name 0 % 0 0 % 1` and replayed nothing, and it would defeat any successor. What cannot
+    # be forged without doing the work is the figures themselves: -10.22, -0.375, 13.11, 2, and nine
+    # more. A mutation that reproduces those has run the replay.
+    #
+    # The expected values are read from README.md rather than written here, so there is one copy and
+    # not two. That makes the coupling deliberate: if the fill model changes, this fails, and it
+    # *should* fail, because the README publishes this exact table as what a consumer will see. The
+    # test failing is the mechanism that stops the documentation going stale -- the same reason the
+    # scaffold copies the example instead of carrying its own template. My earlier note in this file
+    # argued the opposite, that pinning figures would make a legitimate fill-model change fail a test
+    # about onboarding. That was wrong, and it is what let a forged table survive two review rounds.
+    EXPECTED=$(awk '
+        /^  strategy  *return/ { table = 1; next }
+        table && /^  -+$/      { next }
+        table && /^  [A-Za-z]/ { gsub(/^ +| +$/, ""); gsub(/  +/, " "); print; next }
+        table                  { table = 0 }
+    ' "$SOURCE_DIR/README.md")
+
+    EXPECTED_COUNT=$(printf '%s\n' "$EXPECTED" | grep -c '[A-Za-z]' || true)
+    if [ "$EXPECTED_COUNT" -lt 4 ]; then
+        printf 'found %s strategy rows in README.md, wanted at least 4 -- has the published table been removed?\n' \
+            "$EXPECTED_COUNT" >&2
+        exit 1
+    fi
+
+    NORMALIZED=$(printf '%s\n' "$OUTPUT" | sed 's/^ *//; s/ *$//; s/  */ /g')
+    printf '%s\n' "$EXPECTED" | while IFS= read -r want; do
+        [ -n "$want" ] || continue
+        if ! printf '%s\n' "$NORMALIZED" | grep -Fqx "$want"; then
+            printf 'the generated program did not reproduce the row README.md publishes:\n  %s\n' \
+                "$want" >&2
+            exit 1
+        fi
+    done || exit 1
 else
     # Without a backend there is no report and no indicator vanilla to compare against, so the program
     # states what it replayed instead. Read with a pattern rather than a field offset, so rewording the

@@ -121,12 +121,19 @@ second backend rather than refuse is `plan/todo/ublas-fallback-backend.md`.
 This library reads no files, on purpose. Bars reach a replay one of two ways:
 
 - **From a broker.** `example-backtest-broker` fetches real history through KIS or Toss and then
-  replays it with the session closed out of the picture. One `bars` call returns as many bars as you
-  asked for; satisfying that is the port's job, not yours. Budget your API calls from the *page*
-  sizes rather than from the total, because they are different numbers: KIS answers 100 rows per page
-  for daily bars and 30 or 120 for minute bars, Toss 200, and the KIS adapter will walk up to 50
-  pages — so roughly 5,000 daily bars, about twenty years of KRX trading days, costs up to fifty
-  requests rather than one. KIS serves minute bars one trading day at a time.
+  replays it with the session closed out of the picture. One `bars` call pages *toward* the count you
+  asked for — you do not write the paging — but it is bounded, and it can return fewer bars than you
+  asked for: it stops when the count is satisfied, when a page comes back empty because history ran
+  out, or when the page budget is spent. A short series carries `next_cursor_` so you can continue
+  from where it stopped, and `BarSeries::bars_` is what you actually got, so read its size rather than
+  assuming your `count_`.
+
+  Budget your API calls from the *page* sizes, which are different numbers from the total: KIS answers
+  100 rows per page for daily bars and 30 or 120 for minute bars, Toss 200, and the KIS adapter walks
+  at most 50 pages. So a KIS daily request reaches about 5,000 bars — roughly twenty years of KRX
+  trading days — at a cost of up to fifty HTTP requests, and asking for more than that in one call
+  returns a partial series with a cursor rather than an error. KIS serves minute bars one trading day
+  at a time.
 - **From your own code.** Construct `Bar` values and call `Runner::feed`, which is what the offline
   examples do. Keep prices in `Decimal64` so nothing rounds on the way in.
 
