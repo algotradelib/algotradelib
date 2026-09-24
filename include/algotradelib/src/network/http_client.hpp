@@ -327,10 +327,19 @@ public:
       error.category_ = ErrorCategory::CANCELLED;
       error.broker_code_ = "close";
       error.message_ = "HTTP client closed";
+      // **Only the front request may have been sent**, and only while it is in flight. Every other
+      // entry is still queued and reached nobody, which a caller has to be able to tell: an order
+      // that provably does not exist needs no reconciliation and spent no request, while one that
+      // may be on the wire needs both. `front_in_flight()` is the difference, and it is checked
+      // once here because closing pops the front first.
+      bool first = self->front_in_flight();
       while (!self->queue_.empty()) {
         auto pending = std::move(self->queue_.front());
         self->queue_.pop_front();
-        self->complete(std::move(pending.handler_), Result<HttpResponse>(error));
+        BrokerError reported = error;
+        reported.reached_broker_ = first;
+        first = false;
+        self->complete(std::move(pending.handler_), Result<HttpResponse>(std::move(reported)));
       }
     });
   }
@@ -378,6 +387,8 @@ private:
     if (stopped_) {
       BrokerError error;
       error.category_ = ErrorCategory::CANCELLED;
+      // Never queued, let alone sent: the instruction reached nobody.
+      error.reached_broker_ = false;
       error.broker_code_ = "enqueue";
       error.message_ = "HTTP client is closed";
       complete(std::move(pending.handler_), Result<HttpResponse>(std::move(error)));
@@ -389,6 +400,10 @@ private:
       }
       BrokerError error;
       error.category_ = ErrorCategory::TRANSPORT;
+      // Refused at admission, so nothing was sent. `TRANSPORT` would otherwise read as a request
+      // that may be on the wire, and a runner would withhold the instrument to reconcile an order
+      // that was never built.
+      error.reached_broker_ = false;
       error.broker_code_ = "queue_full";
       error.message_ = "HTTP request queue limit exceeded";
       complete(std::move(pending.handler_), Result<HttpResponse>(std::move(error)));
@@ -458,6 +473,9 @@ private:
         waiting_since_.reset();
         BrokerError error;
         error.category_ = ErrorCategory::CANCELLED;
+        // Dropped before it was sent, as the comment above says: admission is only evaluated while
+        // the connection is `READY`, which is never while the front request is in flight.
+        error.reached_broker_ = false;
         error.broker_code_ = "admission_deadline";
         error.message_ = "request would wait for rate-limit admission beyond its deadline";
         complete(std::move(pending.handler_), Result<HttpResponse>(std::move(error)));

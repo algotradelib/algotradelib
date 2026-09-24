@@ -534,6 +534,10 @@ TEST_CASE(
   for (const auto& error : errors) {
     REQUIRE(error.category_ == ErrorCategory::CANCELLED);
     REQUIRE(error.broker_code_ == "admission_deadline");
+    // And the error says the request never went, which is what stops a runner withholding the
+    // instrument to reconcile an order that was dropped before it was sent. `CANCELLED` alone maps
+    // to `INDETERMINATE`, which would be the wrong answer here in both directions.
+    REQUIRE_FALSE(error.reached_broker_);
   }
   REQUIRE(server.requestCount("/first") == 0);
   REQUIRE(client->rate_limits()->stats().group(RateLimitGroup::MARKET_DATA).shed_ == 2);
@@ -559,6 +563,9 @@ TEST_CASE("a full queue sheds with a structured error rather than growing") {
     request.group_ = RateLimitGroup::REFERENCE;
     client->async_request(std::move(request), [&shed](Result<network::HttpResponse> result) {
       if (!result && result.error().broker_code_ == "queue_full") {
+        // Refused at admission, so nothing was sent: `TRANSPORT` would otherwise read as a request
+        // that may be on the wire.
+        REQUIRE_FALSE(result.error().reached_broker_);
         ++shed;
       }
     });
