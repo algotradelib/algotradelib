@@ -2435,3 +2435,80 @@ TEST_CASE("an order rate window counts a phase order against the bar that caused
   // Both were decided at this bar's period end, so the second has to meet the one-order window.
   REQUIRE(refusals_for(engine.result(), strategy::GuardReason::ORDER_RATE_EXCEEDED) == 1);
 }
+
+namespace {
+
+/** Buys ten, then adds five from the fill callback, then one more from the bar. */
+struct AddsFromFillThenFromBar {
+  bool seeded_{false};
+  bool added_on_fill_{false};
+  bool added_on_bar_{false};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (!seeded_) {
+      seeded_ = true;
+      ctx.submit(
+        strategy::OrderIntent::market(
+          bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
+        ).with_tag("seed")
+      );
+      return;
+    }
+    if (!added_on_fill_ || added_on_bar_) {
+      return;
+    }
+    added_on_bar_ = true;
+    ctx.submit(
+      strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
+      ).with_tag("one-more")
+    );
+  }
+
+  template <class Ctx>
+  void on_fill(Ctx& ctx, const strategy::Fill& fill) {
+    if (added_on_fill_) {
+      return;
+    }
+    added_on_fill_ = true;
+    ctx.submit(
+      strategy::OrderIntent::market(
+        fill.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("5"))
+      ).with_tag("from-a-fill")
+    );
+  }
+};
+
+} // namespace
+
+TEST_CASE("an order placed from a fill reaches the next guard check") {
+  // Slice 3 promised this and the earlier tests did not establish it: they showed the order was
+  // *visible*, not that an enabled guard counts it.
+  //
+  // Ten are held when `on_fill` runs, so its buy of five projects to the ceiling of fifteen exactly
+  // and is allowed. The buy of one that follows on the same bar projects to sixteen and must be
+  // refused -- and would project eleven, and pass, if the `on_fill` order were not counted.
+  //
+  // **It does not test that the order is counted only once, and cannot.** Duplicating every row in
+  // `install_portfolio` leaves this case green, because once-ness here is not arithmetic that could
+  // double: `install_portfolio` builds each view from a fresh ledger snapshot and *replaces* the
+  // context portfolio, so a reservation and an engine row for the same order never accumulate.
+  // That is Decision C's argument, and it is structural rather than asserted.
+  auto config = replay_config();
+  config.limits_.max_position_quantity_ = Decimal64::parse("15");
+
+  backtest::Backtester<AddsFromFillThenFromBar> engine(
+    AddsFromFillThenFromBar{}, std::move(config)
+  );
+  replay_flat_bars(engine, 4);
+
+  REQUIRE(engine.strategy().added_on_fill_);
+  REQUIRE(engine.strategy().added_on_bar_);
+
+  // Counted once: the buy of five was permitted and filled, alongside the seed of ten.
+  REQUIRE(engine.result().executions_.size() == 2);
+  REQUIRE(engine.ledger().quantity_of(samsung()) == std::optional<Decimal64>(Decimal64::parse("15")));
+  // Counted at all: the buy of one on the same bar was refused against the same ceiling.
+  REQUIRE(refusals_for(engine.result(), strategy::GuardReason::POSITION_LIMIT_EXCEEDED) == 1);
+}
