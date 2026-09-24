@@ -369,7 +369,9 @@ TEST_CASE(
 
   REQUIRE(completed == 3);
 
-  // Two of the three were held back, counted by the client that held them.
+  // Two of the three were held back, counted by the timer that held them. Exactly two arms here
+  // because all three requests are queued before the event loop runs, so nothing arrives to make
+  // `pump()` re-evaluate and rearm mid-wait.
   REQUIRE(client->admission_waits() == 2);
 
   // And time really passed, which is a different claim from the counters below and the reason this
@@ -473,9 +475,10 @@ TEST_CASE("an unspecified budget leaves the transport entirely unpaced") {
   // one connection and satisfy every other assertion here -- while delaying every request on an
   // unmetered API, which is exactly the user-visible harm this case exists to prevent.
   //
-  // `admission_waits()` observes the thing itself: the number of times a request was held back. A
-  // connection with no budget must report zero, and that is true on a fast host and a hung one
-  // alike.
+  // `admission_waits()` observes the thing itself: the number of times the admission timer was
+  // armed. The count lives on the timer rather than beside it, so there is no path -- paced or not,
+  // present or future -- that can wait for admission without being counted. A connection with no
+  // budget must report zero, and that is true on a fast host and a hung one alike.
   REQUIRE(completed == 6);
   REQUIRE(client->admission_waits() == 0);
   REQUIRE(server.connectionCount() == 1);

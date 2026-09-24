@@ -375,6 +375,9 @@ TEST_CASE("a steady clock returns immediately for a non-positive wait", "[loop][
   // not itself produce a positive wait, so the most likely regression is invisible here anyway.
   // There is no uniquely correct finite ceiling on a loaded host; five seconds is where a stalled
   // machine is distinguishable from a slow one, and the assertion claims nothing beyond that.
+  //
+  // It is a `CHECK` so that the rest of this case still runs when it trips -- the case does fail,
+  // which is the point; what it avoids is hiding any later assertion behind this one.
   const runner::SteadyClock clock{};
   const auto before = std::chrono::steady_clock::now();
   clock.wait_for(std::chrono::nanoseconds(-1));

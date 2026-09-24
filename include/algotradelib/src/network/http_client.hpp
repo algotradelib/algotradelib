@@ -300,15 +300,22 @@ public:
   }
 
   /**
-   * Returns how many times a request was held back to wait for admission.
+   * Returns how many times this connection armed its admission wait.
    *
-   * **Counted on the client rather than on the pacer, because the timer is the client's.**
-   * `RateLimitStats::delayed_` records what the *pacer* decided, and a pacer only exists when a
-   * budget was configured -- so nothing recorded whether an unpaced connection dispatched promptly.
-   * That gap is what made "this transport is unpaced" untestable except by timing it, and timing it
-   * asserts the machine. A connection with no budget must report zero here, always.
+   * **Arms, not requests.** `pump()` re-evaluates admission for whichever request is at the front
+   * *now*, so a request that waits while a higher-priority one arrives can arm the timer more than
+   * once, and one arm can cover a request that never waited on its own account. The number is exact
+   * and it counts arms; a caller wanting "requests the pacer decided to delay" wants
+   * `RateLimitStats::delayed_`, which is a different question with a different answer.
+   *
+   * **Counted on the client rather than on the pacer, because the timer is the client's.** A pacer
+   * exists only when a budget was configured, so nothing on `RateLimitStats` could ever say whether
+   * an *unpaced* connection waited. That gap is what made "this transport is unpaced" untestable
+   * except by timing it, and timing it asserts the machine rather than the library.
+   *
+   * A connection with no budget must report zero here, on a fast host and a hung one alike.
    */
-  std::uint64_t admission_waits() const noexcept { return admission_waits_; }
+  std::uint64_t admission_waits() const noexcept { return admission_timer_.arms(); }
 
   /** Initiates a queued request and completes with a response or error. */
   template <typename CompletionToken>
@@ -387,7 +394,49 @@ private:
   net::strand<net::any_io_executor> strand_;
   tcp::resolver resolver_;
   net::steady_timer resolve_timer_;
-  net::steady_timer admission_timer_;
+  /**
+   * The admission timer, wrapped so that arming it is counted by construction.
+   *
+   * **A counter beside the timer is not enough, and that is not hypothetical.** The first version of
+   * this observable incremented a member at the one call site that armed the timer, on the paced
+   * branch. `pump()` returns before that site when there is no budget, so a regression arming this
+   * timer on the *unpaced* branch would have delayed every request on an unmetered API while the
+   * counter still read zero -- and the test asserting zero would have passed.
+   *
+   * Making the count a property of the timer removes the bypass rather than documenting it: there
+   * is no way to arm this timer without `expires_after`, so there is no way to wait for admission
+   * without saying so.
+   */
+  class CountedTimer {
+  public:
+    explicit CountedTimer(net::strand<net::any_io_executor>& strand) : timer_(strand) {}
+
+    /** Arms the timer for `delay`, and counts the arm. */
+    template <typename Rep, typename Period>
+    void expires_after(const std::chrono::duration<Rep, Period>& delay) {
+      timer_.expires_after(delay);
+      // Counted after the call, so this records an arm that happened rather than one attempted.
+      ++arms_;
+    }
+
+    /** Waits, forwarding to the underlying timer. */
+    template <typename Handler>
+    void async_wait(Handler&& handler) {
+      timer_.async_wait(std::forward<Handler>(handler));
+    }
+
+    /** Cancels any outstanding wait. Not counted: a cancellation is not an admission wait. */
+    std::size_t cancel() { return timer_.cancel(); }
+
+    /** Returns how many times this timer has been armed. */
+    std::uint64_t arms() const noexcept { return arms_; }
+
+  private:
+    net::steady_timer timer_;
+    std::uint64_t arms_{0};
+  };
+
+  CountedTimer admission_timer_;
   ssl::context& context_;
   std::unique_ptr<beast::ssl_stream<beast::tcp_stream>> stream_;
   beast::flat_buffer buffer_;
@@ -399,7 +448,6 @@ private:
   bool resolve_timed_out_{false};
   std::deque<Pending> queue_;
   std::optional<RateLimitController> limiter_;
-  std::uint64_t admission_waits_{0};
   std::optional<std::chrono::steady_clock::time_point> waiting_since_;
   std::optional<http::request<http::string_body>> active_request_;
   std::optional<http::response_parser<http::string_body>> parser_;
@@ -507,7 +555,6 @@ private:
       if (!waiting_since_) {
         waiting_since_ = std::chrono::steady_clock::now();
       }
-      ++admission_waits_;
       admission_timer_.expires_after(delay);
       admission_timer_.async_wait([self = shared_from_this()](beast::error_code ec) {
         if (ec) {
