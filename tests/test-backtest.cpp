@@ -1712,16 +1712,49 @@ TEST_CASE("an order resting from an earlier bar is in the portfolio the strategy
   REQUIRE(engine.result().executions_.empty());
 }
 
+namespace {
+
+/** Buys ten once, and records how much was outstanding when its own fill arrived. */
+struct WatchesItsOwnFill {
+  bool submitted_{false};
+  std::size_t working_at_fill_{99};
+  std::size_t fills_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (submitted_) {
+      return;
+    }
+    submitted_ = true;
+    ctx.submit(
+      strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
+      ).with_tag("watches")
+    );
+  }
+
+  template <class Ctx>
+  void on_fill(Ctx& ctx, const strategy::Fill&) {
+    ++fills_;
+    working_at_fill_ = ctx.portfolio().working_.size();
+  }
+};
+
+} // namespace
+
 TEST_CASE("an order the bar fills is gone from the portfolio that bar installs") {
   // A filled order is removed before the ledger moves and before anything is shown a portfolio, so
   // no view ever carries it as still working. Without that a strategy would see its own filled order
-  // resting and size the next one against it.
-  backtest::Backtester<BuysOnce> engine(BuysOnce{}, replay_config());
+  // resting in the very callback announcing the fill, and size the next one against it.
+  backtest::Backtester<WatchesItsOwnFill> engine(WatchesItsOwnFill{}, replay_config());
   engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
   engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "71000"));
   engine.finish();
 
   REQUIRE(engine.result().executions_.size() == 1);
+  REQUIRE(engine.strategy().fills_ == 1);
+  // The order that just filled is not in the portfolio its own fill callback reads.
+  REQUIRE(engine.strategy().working_at_fill_ == 0);
   REQUIRE(engine.result().unfilled_ == 0);
 }
 
@@ -1763,10 +1796,17 @@ struct RestatesLimitTarget {
 /** Rests a sell above the market, then restates a long target that opposes it. */
 struct SellsHighThenBuysBack {
   std::size_t bars_{0};
+  /** The sides outstanding at the start of each bar, so a test can say which order survived. */
+  std::vector<std::vector<OrderSide>> sides_seen_;
 
   template <class Ctx>
   void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
     ++bars_;
+    std::vector<OrderSide> sides;
+    for (const auto& working : ctx.portfolio().working_) {
+      sides.push_back(working.order_.side_);
+    }
+    sides_seen_.push_back(std::move(sides));
     strategy::TargetPosition target;
     target.instrument_ = bar.instrument_;
     // A resting sell first, then a target that wants the position back.
@@ -1928,7 +1968,15 @@ TEST_CASE("reconciliation withdraws a resting order that opposes the new target"
   backtest::Backtester<SellsHighThenBuysBack> engine(SellsHighThenBuysBack{}, replay_config());
   replay_flat_bars(engine, 3);
 
-  // The resting sell is gone and only the buy side is left outstanding.
+  const auto& seen = engine.strategy().sides_seen_;
+  REQUIRE(seen.size() == 3);
+  // Bar 1 starts with nothing; bar 2 starts with the sell that bar 1 rested.
+  REQUIRE(seen[0].empty());
+  REQUIRE(seen[1] == std::vector<OrderSide>{OrderSide::SELL});
+  // Bar 3 starts with the buy alone: the opposing sell was withdrawn on bar 2, rather than left
+  // resting while the replay bought against it.
+  REQUIRE(seen[2] == std::vector<OrderSide>{OrderSide::BUY});
+
   REQUIRE(engine.result().unfilled_ == 1);
   REQUIRE(engine.result().executions_.empty());
 }
@@ -2258,4 +2306,60 @@ TEST_CASE("a phase decision is priced from the bar that caused it") {
   // Ten at the bar's own close is 1,000,000, over the 900,000 ceiling. Priced at the previous
   // close it is 700,000 and passes.
   REQUIRE(refusals_for(engine.result(), strategy::GuardReason::GROSS_EXPOSURE_EXCEEDED) > 0);
+}
+
+namespace {
+
+/** Rests a limit from `on_phase`, then records what `on_bar` of the same pass is shown. */
+struct RestsFromPhaseThenLooks {
+  bool placed_{false};
+  std::vector<std::size_t> working_at_bar_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent&) {
+    working_at_bar_.push_back(ctx.portfolio().working_.size());
+  }
+
+  template <class Ctx>
+  void on_phase(Ctx& ctx, strategy::MarketPhase phase) {
+    if (placed_ || phase != strategy::MarketPhase::POST_CLOSE) {
+      return;
+    }
+    placed_ = true;
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        samsung(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")), far_below()
+      ).with_tag("from-a-phase")
+    );
+  }
+};
+
+} // namespace
+
+TEST_CASE("an order placed from a phase change survives the install before the bar") {
+  // `feed` installs a portfolio twice: once before `on_phase` and once before `on_bar`. The second
+  // install replaces whatever the first left, including `Runner::persist_reservation`'s row for the
+  // order `on_phase` just placed -- so it has to carry that order itself, or the strategy sees an
+  // empty book one line after asking for something.
+  //
+  // No limit is enabled, which is the case that matters: `persist_reservation` writes nothing when
+  // none needs it, so nothing else could have carried the order.
+  auto config = replay_config();
+  config.limits_.permitted_phases_ =
+    std::vector<strategy::MarketPhase>{strategy::MarketPhase::OPEN,
+                                       strategy::MarketPhase::POST_CLOSE};
+
+  backtest::Backtester<RestsFromPhaseThenLooks> engine(
+    RestsFromPhaseThenLooks{}, std::move(config)
+  );
+  engine.feed(moving_bar(utc(2026, 3, 10, 3, 0), BarInterval::ONE_MINUTE, "70000", "70000"));
+  // Crosses the close, so `on_phase` fires and places before this bar's `on_bar`.
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().placed_);
+  REQUIRE(engine.strategy().working_at_bar_.size() == 2);
+  REQUIRE(engine.strategy().working_at_bar_[0] == 0);
+  // Placed by `on_phase` moments earlier, and still there for `on_bar` to reconcile against.
+  REQUIRE(engine.strategy().working_at_bar_[1] == 1);
 }
