@@ -91,6 +91,23 @@ for reserved in $RESERVED; do
     fi
 done
 
+# A path ending in a newline is legal on every filesystem this runs on, and it cannot survive being
+# printed back. Command substitution strips trailing newlines, so `shell_quote` would silently return a
+# quoted path one byte short, and the printed `cd` would be valid shell that moves somewhere else --
+# the worst of the three failure modes in this area, because it looks like it worked. Refused rather
+# than preserved: preserving it would need contortions throughout for a path nobody means to create,
+# and the message here is more use than a correct `cd` into such a directory would be.
+#
+# The newline is built by appending a sentinel and stripping it, because `$(printf '\n')` is the empty
+# string -- command substitution strips the trailing newline it just produced -- and a `case` pattern
+# of `**` matches every path. The first version of this guard did exactly that and rejected everything,
+# which the smoke test caught immediately.
+ATL_NEWLINE=$(printf '\nx')
+ATL_NEWLINE=${ATL_NEWLINE%x}
+case "$TARGET" in
+    *"$ATL_NEWLINE"*) die "the project path contains a newline; choose one without" ;;
+esac
+
 if [ -e "$TARGET" ] && [ "$FORCE" -eq 0 ]; then
     die "'$TARGET' already exists (use --force to write into it)"
 fi

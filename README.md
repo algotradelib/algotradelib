@@ -124,9 +124,10 @@ This library reads no files, on purpose. Bars reach a replay one of two ways:
   replays it with the session closed out of the picture. One `bars` call pages *toward* the count you
   asked for — you do not write the paging — but it is bounded, and it can return fewer bars than you
   asked for: it stops when the count is satisfied, when a page comes back empty because history ran
-  out, or when the page budget is spent. A short series carries `next_cursor_` so you can continue
-  from where it stopped, and `BarSeries::bars_` is what you actually got, so read its size rather than
-  assuming your `count_`.
+  out, or when the page budget is spent. `BarSeries::bars_` is what you actually got, so read its size
+  rather than assuming your `count_`. A short series **may** carry `next_cursor_` to continue from, and
+  you have to check: an empty result carries none, and neither does a Toss series whose broker cursor
+  is exhausted, because in those cases there is nothing further to continue to.
 
   Budget your API calls from the *page* sizes, which are different numbers from the total: KIS answers
   100 rows per page for daily bars and 30 or 120 for minute bars, Toss 200, and the KIS adapter walks

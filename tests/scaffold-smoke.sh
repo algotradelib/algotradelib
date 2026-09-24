@@ -81,6 +81,25 @@ printf '%s\n' "$OUTPUT"
 # only things `percent()` and `plain()` can emit. A word like `skipped` fails, a short line fails, and
 # a bare name fails. Written to accept `undefined` and `--` on purpose: a strategy that never trades
 # has an undefined Sharpe, and this test should not be what makes that confusing to discover.
+# Reads a comparison table from stdin and prints its strategy rows, whitespace-normalized.
+#
+# Used on README.md and on the generated program's output, so the two are parsed by the same code and
+# cannot disagree about what counts as a row. Tabs are normalized alongside spaces: the committed
+# printer emits spaces, and a harmless change to that should not be a test failure about onboarding.
+table_rows() {
+    awk '
+        /^[ \t]*strategy[ \t]+return/ { table = 1; next }
+        table && /^[ \t]*-+[ \t]*$/   { next }
+        table && /^[ \t]*[A-Za-z]/ {
+            gsub(/^[ \t]+|[ \t]+$/, "")
+            gsub(/[ \t]+/, " ")
+            print
+            next
+        }
+        table { table = 0 }
+    '
+}
+
 report_row_fills() {
     awk -v want="$1" '
         $1 == want {
@@ -129,44 +148,98 @@ if [ "$BACKEND" = ON ]; then
     check_row 'SmaCrossover(3,8)' 0
     check_row 'DonchianBreakout(5)' 0
 
-    # The sufficient check: the program must reproduce, exactly, the table the README publishes.
+    # The program's table must equal the table README.md publishes, as a set: same rows, same count,
+    # nothing missing and nothing extra.
     #
-    # Nothing read from stdout can distinguish "replayed and printed" from "printed", so no assertion
-    # about a row's *shape* can ever be enough -- review defeated the last one with a `compare()` that
-    # printed `name 0 % 0 0 % 1` and replayed nothing, and it would defeat any successor. What cannot
-    # be forged without doing the work is the figures themselves: -10.22, -0.375, 13.11, 2, and nine
-    # more. A mutation that reproduces those has run the replay.
+    # **What this does and does not establish.** It is an output regression check, not proof that a
+    # replay ran -- a program can print any literal, and review demonstrated exactly that. No assertion
+    # made by reading stdout can distinguish computing a number from printing one, so this test does
+    # not claim to. What it does is make a forgery reproduce every published figure, which is a great
+    # deal harder than printing a plausible shape, and it is the strongest thing available from out
+    # here. The claim was overstated in two earlier versions of this comment; it is stated accurately
+    # now because a test that misdescribes itself is how the next person gets talked out of a real one.
     #
-    # The expected values are read from README.md rather than written here, so there is one copy and
-    # not two. That makes the coupling deliberate: if the fill model changes, this fails, and it
-    # *should* fail, because the README publishes this exact table as what a consumer will see. The
-    # test failing is the mechanism that stops the documentation going stale -- the same reason the
-    # scaffold copies the example instead of carrying its own template. My earlier note in this file
-    # argued the opposite, that pinning figures would make a legitimate fill-model change fail a test
-    # about onboarding. That was wrong, and it is what let a forged table survive two review rounds.
-    EXPECTED=$(awk '
-        /^  strategy  *return/ { table = 1; next }
-        table && /^  -+$/      { next }
-        table && /^  [A-Za-z]/ { gsub(/^ +| +$/, ""); gsub(/  +/, " "); print; next }
-        table                  { table = 0 }
-    ' "$SOURCE_DIR/README.md")
+    # Compared as a set rather than row by row, because the row-by-row version accepted an output that
+    # printed the four rows twice, and one that added a fifth strategy the README never published.
+    # The expected side is checked for distinct names too: four copies of one README row would
+    # otherwise satisfy a count of four and leave three published comparisons untested.
+    README_ROWS=$WORK_DIR/expected-table.txt
+    OUTPUT_ROWS=$WORK_DIR/actual-table.txt
+    table_rows < "$SOURCE_DIR/README.md" | sort > "$README_ROWS"
+    printf '%s\n' "$OUTPUT" | table_rows | sort > "$OUTPUT_ROWS"
 
-    EXPECTED_COUNT=$(printf '%s\n' "$EXPECTED" | grep -c '[A-Za-z]' || true)
+    EXPECTED_COUNT=$(grep -c '[A-Za-z]' "$README_ROWS" || true)
+    DISTINCT_NAMES=$(awk '{ print $1 }' "$README_ROWS" | sort -u | grep -c '[A-Za-z]' || true)
     if [ "$EXPECTED_COUNT" -lt 4 ]; then
         printf 'found %s strategy rows in README.md, wanted at least 4 -- has the published table been removed?\n' \
             "$EXPECTED_COUNT" >&2
         exit 1
     fi
+    if [ "$DISTINCT_NAMES" -ne "$EXPECTED_COUNT" ]; then
+        printf 'README.md publishes %s rows but only %s distinct strategies -- a duplicated row would leave the others unchecked\n' \
+            "$EXPECTED_COUNT" "$DISTINCT_NAMES" >&2
+        exit 1
+    fi
 
-    NORMALIZED=$(printf '%s\n' "$OUTPUT" | sed 's/^ *//; s/ *$//; s/  */ /g')
-    printf '%s\n' "$EXPECTED" | while IFS= read -r want; do
-        [ -n "$want" ] || continue
-        if ! printf '%s\n' "$NORMALIZED" | grep -Fqx "$want"; then
-            printf 'the generated program did not reproduce the row README.md publishes:\n  %s\n' \
-                "$want" >&2
-            exit 1
-        fi
-    done || exit 1
+    if ! cmp -s "$README_ROWS" "$OUTPUT_ROWS"; then
+        printf 'the generated program did not print the table README.md publishes\n' >&2
+        printf -- '--- README.md ---\n' >&2
+        cat "$README_ROWS" >&2
+        printf -- '--- generated program ---\n' >&2
+        cat "$OUTPUT_ROWS" >&2
+        exit 1
+    fi
+
+    # Evidence that the table is *computed* rather than printed.
+    #
+    # Everything above compares output to expected output, and review's standing objection is right:
+    # an executable that printed those four rows and did nothing else would satisfy all of it. Reading
+    # stdout cannot rule that out -- but perturbing the program and requiring the output to respond
+    # can. `MyStrategy`'s lookback is changed from 5 to 6, the project is rebuilt, and the table must
+    # come out different. A printer of literals prints the same table and fails here.
+    #
+    # This does not prove the replay is *correct*; that is what the library's own 715 tests are for. It
+    # proves the number on the page came from the strategy, which is the one thing a scaffold has to
+    # get right and the one thing the earlier versions of this test never checked.
+    # Built in a *separate copy* of the project with its own build directory, rather than by editing
+    # this one in place.
+    #
+    # In place was the obvious way and it was silently vacuous: the generated project builds in about
+    # two seconds, so the rewritten `main.cpp` landed in the same wall-clock second as the object file
+    # already built from it, make saw nothing newer, printed `Built target scaffold_smoke`, and the
+    # unchanged binary produced the unchanged table. The check reported the perturbation had no effect
+    # -- the correct answer to a question it had not actually asked. A fresh build tree has no stale
+    # object to compare against and no dependence on timestamp granularity.
+    PERTURBED_PROJECT=$WORK_DIR/perturbed
+    rm -rf "$PERTURBED_PROJECT"
+    cp -R "$PROJECT" "$PERTURBED_PROJECT"
+    rm -rf "$PERTURBED_PROJECT/build"
+
+    PERTURBED_SOURCE=$PERTURBED_PROJECT/src/main.cpp
+    sed 's/lookback_{5}/lookback_{6}/' "$PERTURBED_SOURCE" > "$PERTURBED_SOURCE.new"
+    if cmp -s "$PERTURBED_SOURCE" "$PERTURBED_SOURCE.new"; then
+        printf 'could not perturb the example: no lookback_{5} in %s, so this check would prove nothing\n' \
+            "$PERTURBED_SOURCE" >&2
+        exit 1
+    fi
+    mv "$PERTURBED_SOURCE.new" "$PERTURBED_SOURCE"
+
+    printf 'rebuilding with a perturbed strategy\n'
+    "$CMAKE" -S "$PERTURBED_PROJECT" -B "$PERTURBED_PROJECT/build" -DALGOTRADELIB_DIR="$SOURCE_DIR" "$@"
+    "$CMAKE" --build "$PERTURBED_PROJECT/build"
+    PERTURBED_BINARY=$(find "$PERTURBED_PROJECT/build" -name scaffold_smoke -type f -perm -u+x 2>/dev/null | head -n 1)
+    [ -n "$PERTURBED_BINARY" ] || { printf 'perturbed build produced no binary\n' >&2; exit 1; }
+
+    PERTURBED_ROWS=$WORK_DIR/perturbed-table.txt
+    "$PERTURBED_BINARY" | table_rows | sort > "$PERTURBED_ROWS"
+    if [ ! -s "$PERTURBED_ROWS" ]; then
+        printf 'perturbed program printed no table at all\n' >&2
+        exit 1
+    fi
+    if cmp -s "$README_ROWS" "$PERTURBED_ROWS"; then
+        printf 'changing MyStrategy lookback from 5 to 6 did not change the table: the figures are printed, not computed\n' >&2
+        exit 1
+    fi
 else
     # Without a backend there is no report and no indicator vanilla to compare against, so the program
     # states what it replayed instead. Read with a pattern rather than a field offset, so rewording the
