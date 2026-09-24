@@ -11,12 +11,17 @@ Header-only, consumed through CMake. Two routes, and a script that writes the fi
 | Dependency | Floor | Needed for |
 | --- | --- | --- |
 | A C++17 compiler | — | everything |
-| CMake | 3.10 | everything |
+| CMake | 3.10 for the library, **3.16** for the project templates below | everything |
 | Boost | 1.87, component `json` | everything |
 | OpenSSL | **3.6.2** | everything (see below) |
 | Eigen | 3.4 | the analytics layer, on by default |
 
-Two of those floors are worth a sentence each, because both have surprised someone.
+Three of those floors are worth a sentence each.
+
+**The two CMake numbers are not a typo.** The library itself configures under 3.10, so an existing
+project on an old CMake can consume it. The consumer `CMakeLists.txt` shown below — and the one the
+scaffold generates — ask for 3.16, which is simply a saner floor to start a new project on. Lower it
+to 3.10 in your own project if you need to; nothing here requires the newer version.
 
 **OpenSSL's is a patch-level minimum.** A machine carrying 3.5.x fails at configure time, and the
 message names a version rather than a decision, so it reads like a mystery. If you hit it, that is
@@ -116,8 +121,12 @@ second backend rather than refuse is `plan/todo/ublas-fallback-backend.md`.
 This library reads no files, on purpose. Bars reach a replay one of two ways:
 
 - **From a broker.** `example-backtest-broker` fetches real history through KIS or Toss and then
-  replays it with the session closed out of the picture. KIS serves roughly 5,000 daily bars per
-  request — about twenty years of KRX trading days — and minute bars one trading day at a time.
+  replays it with the session closed out of the picture. One `bars` call returns as many bars as you
+  asked for; satisfying that is the port's job, not yours. Budget your API calls from the *page*
+  sizes rather than from the total, because they are different numbers: KIS answers 100 rows per page
+  for daily bars and 30 or 120 for minute bars, Toss 200, and the KIS adapter will walk up to 50
+  pages — so roughly 5,000 daily bars, about twenty years of KRX trading days, costs up to fifty
+  requests rather than one. KIS serves minute bars one trading day at a time.
 - **From your own code.** Construct `Bar` values and call `Runner::feed`, which is what the offline
   examples do. Keep prices in `Decimal64` so nothing rounds on the way in.
 

@@ -68,13 +68,39 @@ case "$NAME" in
     [0-9]*) NAME=p$NAME ;;
 esac
 
+# Some names normalize cleanly and are still unusable, because CMake and its generators reserve them.
+# `--name all` produced a project that configured no further than "add_executable cannot create target
+# 'all' because another target with the same name already exists" -- a valid-looking name, a generated
+# project that cannot build, and an error in a file the person did not write. Refused here, where the
+# message can say why.
+RESERVED='all clean help install test package package_source edit_cache rebuild_cache list_install_components ALL_BUILD ZERO_CHECK RUN_TESTS INSTALL PACKAGE'
+LOWER_NAME=$(printf '%s' "$NAME" | tr 'A-Z' 'a-z')
+for reserved in $RESERVED; do
+    if [ "$LOWER_NAME" = "$(printf '%s' "$reserved" | tr 'A-Z' 'a-z')" ]; then
+        die "'$NAME' is a target name CMake reserves; pass a different --name"
+    fi
+done
+
 if [ -e "$TARGET" ] && [ "$FORCE" -eq 0 ]; then
     die "'$TARGET' already exists (use --force to write into it)"
 fi
 
-# Resolve this script's own directory, so the example can be found whether the script was invoked
-# by a relative path, an absolute one, or through a symlink on PATH.
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# Resolve this script's own directory, so the example can be found whether the script was invoked by a
+# relative path, an absolute one, or through a symlink on PATH.
+#
+# The symlink case needs the loop. `dirname "$0"` gives the directory of the *link*, not of the script,
+# so a link dropped in ~/bin resolved to ~/examples and the scaffolder failed with a confusing "cannot
+# find" naming a path that never existed. `readlink -f` would do it in one call and is not POSIX --
+# it is absent on some systems and behaves differently on others -- so the chain is walked by hand.
+SCRIPT_PATH=$0
+while [ -L "$SCRIPT_PATH" ]; do
+    SCRIPT_LINK=$(readlink "$SCRIPT_PATH")
+    case "$SCRIPT_LINK" in
+        /*) SCRIPT_PATH=$SCRIPT_LINK ;;
+        *)  SCRIPT_PATH=$(dirname -- "$SCRIPT_PATH")/$SCRIPT_LINK ;;
+    esac
+done
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)
 TEMPLATE=$SCRIPT_DIR/../examples/example-backtest-compare.cpp
 
 [ -f "$TEMPLATE" ] || die "cannot find $TEMPLATE -- run this script from inside an algotradelib checkout"
@@ -157,8 +183,10 @@ Replace \`closes()\` with your history, keeping prices in \`Decimal64\` so nothi
 See the library's README for the two routes and what each one costs you.
 MDEOF
 
+# Printed single-quoted, because a project directory containing a space generates and builds perfectly
+# well and then hands back a `cd` line that cannot be pasted into a shell.
 cat <<DONEEOF
-Created $TARGET
+Created '$TARGET'
 
   $TARGET/CMakeLists.txt
   $TARGET/src/main.cpp      <- MyStrategy is yours; the rest is the harness
@@ -170,14 +198,14 @@ DONEEOF
 
 if [ "$MODE" = submodule ]; then
     cat <<DONEEOF
-  cd $TARGET
+  cd '$TARGET'
   git init .
   git submodule add <repository-url> external/algotradelib
   cmake -S . -B build && cmake --build build && ./build/$NAME
 DONEEOF
 else
     cat <<DONEEOF
-  cd $TARGET
+  cd '$TARGET'
   cmake -S . -B build && cmake --build build && ./build/$NAME
 DONEEOF
 fi

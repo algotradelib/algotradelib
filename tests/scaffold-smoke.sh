@@ -51,9 +51,11 @@ printf 'configuring\n'
 printf 'building\n'
 "$CMAKE" --build "$PROJECT/build"
 
-BINARY=$PROJECT/build/scaffold_smoke
-[ -x "$BINARY" ] || BINARY=$PROJECT/build/bin/scaffold_smoke
-if [ ! -x "$BINARY" ]; then
+# Searched rather than assumed. A multi-configuration generator (Xcode, Visual Studio, Ninja
+# Multi-Config) puts the executable under a per-configuration directory -- `build/Debug/`, or
+# `build/bin/Release/` -- and this script forwards the parent generator, so it can be handed one.
+BINARY=$(find "$PROJECT/build" -name scaffold_smoke -type f -perm -u+x 2>/dev/null | head -n 1)
+if [ -z "$BINARY" ]; then
     printf 'built no runnable scaffold_smoke under %s/build\n' "$PROJECT" >&2
     exit 1
 fi
@@ -66,49 +68,84 @@ printf '%s\n' "$OUTPUT"
 # one being skipped -- a consumer building without Eigen relies on the scaffold working too, and the
 # example's no-backend branch is otherwise never executed anywhere.
 #
-# Checked on the strategies and the fill count rather than on the figures. The numbers are
-# reproducible, but pinning them here would make every legitimate change to the fill model fail a test
-# about onboarding, in a file nobody would think to look in.
+# **A strategy's name appearing is not evidence that it ran**, and two earlier versions of this check
+# believed it was. The first matched `MyStrategy` followed by a digit, and passed when the strategy was
+# mutated to return before reading anything, because the row still printed `0.00 %` and `0` fills. The
+# second matched the row loosely with `$NF`, and review found it passed for a line reading
+# `MyStrategy(5) skipped 40` -- which contains no report at all -- and for vanillas printed as bare
+# names with no figures. Both are the cooperating guard `ai/wall-clock-test-assertions` set a rule
+# about, found twice in the same file.
+#
+# So a row is validated structurally: the strategy name as the first field, a numeric fill count as
+# the last, and every field between them one of a number, a `%`, `undefined` or `--`, which are the
+# only things `percent()` and `plain()` can emit. A word like `skipped` fails, a short line fails, and
+# a bare name fails. Written to accept `undefined` and `--` on purpose: a strategy that never trades
+# has an undefined Sharpe, and this test should not be what makes that confusing to discover.
+report_row_fills() {
+    awk -v want="$1" '
+        $1 == want {
+            found = 1
+            if (NF < 5) { exit 3 }
+            if ($NF !~ /^[0-9]+$/) { exit 4 }
+            for (field = 2; field < NF; ++field) {
+                if ($field !~ /^-?[0-9]+(\.[0-9]+)?$/ &&
+                    $field != "%" && $field != "undefined" && $field != "--") {
+                    exit 5
+                }
+            }
+            print $NF
+            exit 0
+        }
+        END { if (!found) exit 2 }
+    '
+}
+
+check_row() {
+    name=$1
+    minimum=$2
+    fills=$(printf '%s\n' "$OUTPUT" | report_row_fills "$name") || status=$?
+    case "${status:-0}" in
+        0) ;;
+        2) printf 'generated program printed no row for %s\n' "$name" >&2; exit 1 ;;
+        3) printf '%s printed a line with too few fields to be a report row\n' "$name" >&2; exit 1 ;;
+        4) printf '%s row did not end in a numeric fill count\n' "$name" >&2; exit 1 ;;
+        5) printf '%s row carried a field that is not a figure\n' "$name" >&2; exit 1 ;;
+        *) printf 'could not read the %s row\n' "$name" >&2; exit 1 ;;
+    esac
+    unset status
+    if [ "$fills" -lt "$minimum" ]; then
+        printf '%s filled %s orders, wanted at least %s: the scaffold ships a comparison that did not happen\n' \
+            "$name" "$fills" "$minimum" >&2
+        exit 1
+    fi
+}
+
 if [ "$BACKEND" = ON ]; then
-    for strategy in MyStrategy BuyAndHold SmaCrossover DonchianBreakout; do
-        if ! printf '%s\n' "$OUTPUT" | grep -q "$strategy"; then
-            printf 'generated program printed no %s row\n' "$strategy" >&2
-            exit 1
-        fi
-    done
-    FILLS=$(printf '%s\n' "$OUTPUT" | awk '/^ *MyStrategy/ { print $NF; exit }')
+    # Every strategy the README shows must have produced a real row. `MyStrategy` and `BuyAndHold`
+    # must additionally have traded: both enter unconditionally on this fixed path, so a zero there
+    # means the comparison did not happen however convincing the table looks.
+    check_row 'MyStrategy(5)' 1
+    check_row 'BuyAndHold' 1
+    check_row 'SmaCrossover(3,8)' 0
+    check_row 'DonchianBreakout(5)' 0
 else
-    # Without a backend there is no report and no vanilla to compare against, so the program states
-    # what it replayed instead. That line is the only evidence the engine ran, so it is what is read.
+    # Without a backend there is no report and no indicator vanilla to compare against, so the program
+    # states what it replayed instead. Read with a pattern rather than a field offset, so rewording the
+    # sentence around the number cannot silently stop this from checking anything.
     if printf '%s\n' "$OUTPUT" | grep -q 'SmaCrossover'; then
         printf 'no backend, yet the program printed an indicator strategy\n' >&2
         exit 1
     fi
-    FILLS=$(printf '%s\n' "$OUTPUT" | awk '/MyStrategy replayed/ { print $(NF-1); exit }')
-fi
-
-# MyStrategy must actually *trade*, which is asserted on its fill count and not on the presence of its
-# row.
-#
-# The first version of this check matched `MyStrategy` followed by a digit, and it was worthless:
-# mutating the strategy to return before it reads anything still printed a row reading `0.00 %` with
-# `0` fills, and the test passed. A scaffold whose example does nothing is worse than no scaffold,
-# because it looks like it works -- so the guard was falsified by that mutation before being trusted,
-# which is the standard `ai/wall-clock-test-assertions` settled on.
-#
-# The fill count is the last field of the row. Zero fills means the example emitted no intent, or
-# emitted intents that never became orders, and either one makes the starting point a lie.
-if [ -z "$FILLS" ]; then
-    printf 'generated program reported no MyStrategy fill count\n' >&2
-    exit 1
-fi
-case "$FILLS" in
-    ''|*[!0-9]*) printf 'MyStrategy fill count was not a number: %s\n' "$FILLS" >&2; exit 1 ;;
-esac
-if [ "$FILLS" -lt 1 ]; then
-    printf 'MyStrategy filled %s orders: the scaffold ships a strategy that does not trade\n' \
-        "$FILLS" >&2
-    exit 1
+    FILLS=$(printf '%s\n' "$OUTPUT" | sed -n 's/.*MyStrategy replayed [0-9][0-9]* bars and filled \([0-9][0-9]*\) orders.*/\1/p' | head -n 1)
+    if [ -z "$FILLS" ]; then
+        printf 'generated program reported no MyStrategy fill count\n' >&2
+        exit 1
+    fi
+    if [ "$FILLS" -lt 1 ]; then
+        printf 'MyStrategy filled %s orders: the scaffold ships a strategy that does not trade\n' \
+            "$FILLS" >&2
+        exit 1
+    fi
 fi
 
 printf 'scaffold smoke test passed\n'
