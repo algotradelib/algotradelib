@@ -1268,6 +1268,20 @@ GuardInputs open_market() {
   return inputs;
 }
 
+/**
+ * Adds the resolution the exposure ceiling needs: Samsung, in won, marked at 70,000.
+ *
+ * Separate from `open_market` so that every other limit's tests keep proving they do not need it,
+ * and so a test can add a second instrument or leave one out deliberately.
+ */
+GuardInputs with_basis(GuardInputs inputs) {
+  inputs.order_currency_ = Currency{"KRW"};
+  inputs.exposure_basis_.push_back(
+    strategy::InstrumentBasis{samsung(), Currency{"KRW"}, Decimal64::parse("70000")}
+  );
+  return inputs;
+}
+
 } // namespace
 
 TEST_CASE("an unconfigured guard permits an ordinary order while the market is open") {
@@ -1747,22 +1761,165 @@ TEST_CASE("the position ceiling limits a short as firmly as a long") {
   REQUIRE(refused->attempted_ == std::optional<Decimal64>(Decimal64::parse("105")));
 }
 
-TEST_CASE("the gross exposure ceiling adds the order to what is already exposed") {
+TEST_CASE("the gross exposure ceiling measures the portfolio, not the order in front of it") {
+  // **The defect this replaces.** `GuardInputs::gross_exposure_` was never assigned anywhere in the
+  // library -- the only assignment in the tree was in this file -- so the current exposure defaulted
+  // to zero and the ceiling was compared against one order's notional. A ten-million ceiling did not
+  // stop a strategy reaching twenty million two million at a time.
   RiskLimits limits;
   limits.max_gross_exposure_ = Decimal64::parse("10000000");
   const RiskGuard guard(limits);
   ProbePortfolio portfolio;
-  auto inputs = open_market();
-  inputs.gross_exposure_ = Decimal64::parse("9500000");
+  portfolio.positions_.push_back(holding("135"));
+  const auto inputs = with_basis(open_market());
 
-  // 10 at 70,000 is 700,000 more, reaching 10.2 million.
+  // 135 held at 70,000 is 9,450,000. Ten more reaches 145 shares, which is 10,150,000.
   const auto refused = guard.check(planned("10", "70000"), portfolio, inputs);
   REQUIRE(refused);
   REQUIRE(refused->reason_ == GuardReason::GROSS_EXPOSURE_EXCEEDED);
-  REQUIRE(refused->attempted_ == std::optional<Decimal64>(Decimal64::parse("10200000")));
+  REQUIRE(refused->attempted_ == std::optional<Decimal64>(Decimal64::parse("10150000")));
 
-  // Seven at 70,000 reaches exactly the ceiling.
+  // Seven more reaches 142 shares, which is 9,940,000 and under the ceiling.
   REQUIRE_FALSE(guard.check(planned("7", "70000"), portfolio, inputs));
+}
+
+TEST_CASE("the exposure ceiling counts what is already working, not only what is held") {
+  // Without this, two orders in one pass are each checked from the same starting point and together
+  // breach the ceiling -- the two-sells-of-sixty defect one level up. The runner writes an accepted
+  // order into its view as a working row, so counting working rows is what makes that fix reach
+  // this limit.
+  RiskLimits limits;
+  limits.max_gross_exposure_ = Decimal64::parse("10000000");
+  const RiskGuard guard(limits);
+  ProbePortfolio portfolio;
+  portfolio.working_.push_back(working("100", "0", OrderStatus::PENDING, OrderSide::BUY));
+  const auto inputs = with_basis(open_market());
+
+  // Nothing held, 100 working at 70,000, and 50 more reaches 150 shares: 10,500,000.
+  const auto refused = guard.check(planned("50", "70000"), portfolio, inputs);
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::GROSS_EXPOSURE_EXCEEDED);
+  REQUIRE(refused->attempted_ == std::optional<Decimal64>(Decimal64::parse("10500000")));
+  // The order alone is 3,500,000, which is what the previous code compared against the ceiling.
+}
+
+TEST_CASE("an order that adds no exposure is permitted, even over the ceiling") {
+  // A ceiling that cannot be de-risked past is worse than one that does nothing. The projection is
+  // the largest position still reachable, so a resting sell does not lower it -- which on its own
+  // would refuse every order from an account already over the ceiling, including the ones selling
+  // out of it. The ceiling therefore governs what an order *adds*.
+  RiskLimits limits;
+  limits.max_gross_exposure_ = Decimal64::parse("7500000");
+  const RiskGuard guard(limits);
+  const auto inputs = with_basis(open_market());
+
+  ProbePortfolio under;
+  under.positions_.push_back(holding("100"));
+  // 7,000,000 held, under the ceiling. A sell leaves the projection at 100 shares and is allowed;
+  // the previous code added the order's 700,000 and refused it.
+  REQUIRE_FALSE(guard.check(planned("10", "70000", OrderSide::SELL), under, inputs));
+  // A buy of the same size takes it to 7,700,000 and is refused.
+  REQUIRE(guard.check(planned("10", "70000"), under, inputs));
+
+  ProbePortfolio over;
+  over.positions_.push_back(holding("200"));
+  // 14,000,000 held against a 7,500,000 ceiling. Every sell out of it is still permitted, including
+  // one that flattens the position outright.
+  REQUIRE_FALSE(guard.check(planned("10", "70000", OrderSide::SELL), over, inputs));
+  REQUIRE_FALSE(guard.check(planned("200", "70000", OrderSide::SELL), over, inputs));
+  // And a buy of one share is not, because it takes the figure further up.
+  REQUIRE(guard.check(planned("1", "70000"), over, inputs));
+
+  ProbePortfolio shorted;
+  shorted.positions_.push_back(holding("-200"));
+  // The same for a short: covering it is permitted, adding to it is not.
+  REQUIRE_FALSE(guard.check(planned("200", "70000"), shorted, inputs));
+  REQUIRE(guard.check(planned("1", "70000", OrderSide::SELL), shorted, inputs));
+}
+
+TEST_CASE("a limit order is valued at its limit, not at a cheaper quote") {
+  // A basis carrying only the last quote under-reports a limit order that can fill above it, which
+  // is the one direction a ceiling must not err in.
+  RiskLimits limits;
+  limits.max_gross_exposure_ = Decimal64::parse("8000000");
+  const RiskGuard guard(limits);
+  ProbePortfolio portfolio;
+  const auto inputs = with_basis(open_market());
+
+  // 100 at a limit of 100,000 is 10,000,000, though the mark in the basis is 70,000. Valued at the
+  // mark it would have been 7,000,000 and passed.
+  const auto refused = guard.check(planned("100", "100000"), portfolio, inputs);
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::GROSS_EXPOSURE_EXCEEDED);
+  REQUIRE(refused->attempted_ == std::optional<Decimal64>(Decimal64::parse("10000000")));
+}
+
+TEST_CASE("an exposure basis that does not describe the portfolio refuses") {
+  // Decision 6, and the reason the basis replaced an optional total. An instrument left out of the
+  // sum could have belonged to the currency being checked, so omitting it under-reports.
+  RiskLimits limits;
+  limits.max_gross_exposure_ = Decimal64::parse("10000000");
+  const RiskGuard guard(limits);
+
+  SECTION("a held instrument with no entry") {
+    ProbePortfolio portfolio;
+    portfolio.positions_.push_back(holding("10"));
+    auto other = holding("10");
+    other.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "000660"};
+    portfolio.positions_.push_back(other);
+    // The basis describes Samsung only, and the second position is unresolved.
+    const auto refused = guard.check(planned("1", "70000"), portfolio, with_basis(open_market()));
+    REQUIRE(refused);
+    REQUIRE(refused->reason_ == GuardReason::VALUE_NOT_KNOWN);
+  }
+
+  SECTION("two entries for one instrument") {
+    ProbePortfolio portfolio;
+    auto inputs = with_basis(open_market());
+    inputs.exposure_basis_.push_back(
+      strategy::InstrumentBasis{samsung(), Currency{"KRW"}, Decimal64::parse("80000")}
+    );
+    const auto refused = guard.check(planned("1", "70000"), portfolio, inputs);
+    REQUIRE(refused);
+    REQUIRE(refused->reason_ == GuardReason::VALUE_NOT_KNOWN);
+  }
+
+  SECTION("no resolved currency for the order") {
+    ProbePortfolio portfolio;
+    auto inputs = with_basis(open_market());
+    inputs.order_currency_ = std::nullopt;
+    const auto refused = guard.check(planned("1", "70000"), portfolio, inputs);
+    REQUIRE(refused);
+    REQUIRE(refused->reason_ == GuardReason::VALUE_NOT_KNOWN);
+  }
+}
+
+TEST_CASE("the exposure ceiling is per currency and neither currency leaks into the other") {
+  // The same number applied independently to each currency, which is `max_order_notional_`'s reading
+  // and `holdings-core`'s refusal to add currencies without a rate the caller can see.
+  RiskLimits limits;
+  limits.max_gross_exposure_ = Decimal64::parse("10000000");
+  const RiskGuard guard(limits);
+
+  const auto apple = InstrumentId{Country::US, Venue::COMBINED, "AAPL"};
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("135"));
+  auto foreign = holding("1000");
+  foreign.instrument_ = apple;
+  portfolio.positions_.push_back(foreign);
+
+  auto inputs = with_basis(open_market());
+  inputs.exposure_basis_.push_back(
+    strategy::InstrumentBasis{apple, Currency{"USD"}, Decimal64::parse("200")}
+  );
+
+  // The KRW answer is 9,450,000 and the dollar position contributes nothing to it, so a buy of seven
+  // Samsung passes exactly as it does with no foreign holding at all.
+  REQUIRE_FALSE(guard.check(planned("7", "70000"), portfolio, inputs));
+  // And ten does not, on the KRW figure alone.
+  const auto refused = guard.check(planned("10", "70000"), portfolio, inputs);
+  REQUIRE(refused);
+  REQUIRE(refused->attempted_ == std::optional<Decimal64>(Decimal64::parse("10150000")));
 }
 
 TEST_CASE("the order rate is counted over a sliding window, not reset on a boundary") {

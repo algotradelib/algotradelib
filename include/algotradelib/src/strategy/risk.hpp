@@ -137,7 +137,14 @@ enum class GuardReason {
   GROSS_EXPOSURE_EXCEEDED,
   /** Too many orders have been sent in the current window. */
   ORDER_RATE_EXCEEDED,
-  /** A limit needed the order's value and no price was available to compute it. */
+  /**
+   * A limit needed a value and could not be given one.
+   *
+   * Three ways: no price to value the order with, no resolved currency for a limit that is
+   * per-currency, or a `GuardInputs::exposure_basis_` that does not describe every instrument the
+   * portfolio holds or has working. All three are Decision 6 -- a limit the caller stated is
+   * honored or refused, never evaluated against a figure the library made up.
+   */
   VALUE_NOT_KNOWN,
   /** The sell exceeds what the broker says is sellable, or the broker did not say. */
   QUANTITY_NOT_SELLABLE,
@@ -221,7 +228,33 @@ struct RiskLimits {
    * was held would pass two orders that each fit and together do not.
    */
   std::optional<Decimal64> max_position_quantity_;
-  /** Largest total exposure the portfolio may reach. */
+  /**
+   * Largest total exposure the portfolio may reach, **in the currency the order is priced in**.
+   *
+   * Measured as the exposure that would exist if this order and everything already outstanding
+   * filled, valued at the most expensive price that could apply -- see `projected_gross_exposure`,
+   * which does the arithmetic and is testable on its own.
+   *
+   * **A ceiling per currency, not an account-wide one.** The same number is applied independently to
+   * each currency, which is `max_order_notional_`'s reading and `holdings-core`'s refusal to add
+   * currencies without a rate the caller can see. So an account holding ten million of exposure in
+   * each of two currencies passes a fifteen-million ceiling. `plan/todo/exchange-rates.md` is where
+   * that changes; until then a converted account-wide cap is not something this expresses.
+   *
+   * **This limit did nothing before `ai/guard-inputs`.** Nothing in the library ever supplied the
+   * current exposure, so it was compared against the value of the single order in front of it -- a
+   * second `max_order_notional_` under another name, silently permitting the accumulation it exists
+   * to stop. Two consequences of fixing it, both worth reading before turning it on:
+   *
+   * - It now **refuses** orders it used to pass, which is the point.
+   * - It now **permits** one shape it used to refuse. An order opposing a held position -- a sell
+   *   against a long, a buy covering a short -- reduces projected exposure rather than adding to it,
+   *   so one larger than the ceiling is allowed when the resulting exposure is under it. A caller
+   *   who was relying on this to cap a single order wants `max_order_notional_`, which is unchanged.
+   *
+   * An order that cannot be valued, or a portfolio `GuardInputs::exposure_basis_` does not fully
+   * describe, is refused with `GuardReason::VALUE_NOT_KNOWN`.
+   */
   std::optional<Decimal64> max_gross_exposure_;
   /** Most orders that may be sent within `rate_window_`. */
   std::optional<std::size_t> max_orders_per_window_;
@@ -260,14 +293,53 @@ struct RiskLimits {
   };
 };
 
+/**
+ * What one instrument is denominated in, and the price to value it at.
+ *
+ * The two facts a portfolio does not carry for itself. `HoldingPosition` carries both, but a working
+ * order on an instrument with no position carries neither, and an exposure ceiling has to value
+ * exactly those -- an opening buy is the ordinary case.
+ */
+struct InstrumentBasis {
+  InstrumentId instrument_;
+  Currency currency_;
+  /**
+   * The mark to value the position at.
+   *
+   * A starting point rather than the final say: `projected_gross_exposure` raises it to any limit
+   * price that could apply to the same instrument, because a limit order can fill above the last
+   * quote and a ceiling valued at the quote would under-report.
+   */
+  Decimal64 price_;
+};
+
 /** What a guard needs about the world that is not the order or the portfolio. */
 struct GuardInputs {
   std::chrono::system_clock::time_point now_{};
   MarketPhase phase_{MarketPhase::UNKNOWN};
   /** A price to value a market order with, since it carries none of its own. */
   std::optional<Decimal64> reference_price_;
-  /** Current gross exposure, for the portfolio ceiling. */
-  std::optional<Decimal64> gross_exposure_;
+  /**
+   * What every instrument in the portfolio is denominated in and marked at.
+   *
+   * **Replaces a `gross_exposure_` total that nothing ever supplied.** That field was an
+   * `std::optional<Decimal64>` the caller was expected to fill, and no path in the library filled
+   * it, so `max_gross_exposure_` defaulted its current exposure to zero and compared the ceiling
+   * against the single order in front of it. Accepting a total from outside would leave that silent
+   * zero reachable; the guard computes the exposure itself now, and this is the only thing it cannot
+   * work out on its own.
+   *
+   * A position states its own currency and mark, but a working order on an instrument with no
+   * position states neither, which is why resolution is the caller's job -- the runner reads it from
+   * the reference data it already consults for `order_currency_`.
+   *
+   * **Incomplete is refused, never skipped.** One entry per instrument the portfolio holds or has
+   * working, plus the order being checked; a missing entry, or two entries for one instrument,
+   * refuses with `GuardReason::VALUE_NOT_KNOWN`. An instrument omitted from the sum could have
+   * belonged to the currency being checked, and under-reporting is the one direction a ceiling must
+   * not err in.
+   */
+  std::vector<InstrumentBasis> exposure_basis_;
   /**
    * The currency the order is priced in, which a `PlannedOrder` does not carry.
    *
@@ -278,6 +350,205 @@ struct GuardInputs {
    */
   std::optional<Currency> order_currency_;
 };
+
+namespace risk_detail {
+
+/** Returns the larger of two decimals, since `Decimal64` orders through `decimal_less`. */
+inline Decimal64 decimal_max(const Decimal64& lhs, const Decimal64& rhs) {
+  return decimal_less(lhs, rhs) ? rhs : lhs;
+}
+
+/** Returns `value`'s distance from zero. */
+inline std::optional<Decimal64> decimal_magnitude(const Decimal64& value) {
+  const auto zero = Decimal64::parse("0");
+  if (!decimal_less(value, zero)) {
+    return value;
+  }
+  return decimal_subtract(zero, value);
+}
+
+} // namespace risk_detail
+
+/**
+ * Returns the gross exposure in `currency` that would exist if `candidate` and everything already
+ * outstanding filled, or nothing when it cannot be computed honestly.
+ *
+ * **Pure, so it is testable without a runner**, which is why the resolution it needs arrives as
+ * `basis` rather than being looked up here. Nothing about a broker, a session or a clock enters.
+ *
+ * ## What it measures
+ *
+ * Per instrument, the largest absolute position reachable from here:
+ *
+ * ```
+ * projected = max( |held + working_buys| , |held - working_sells| )
+ * ```
+ *
+ * No relief is assumed from the opposing side. A resting sell does not offset a resting buy, because
+ * treating it as relief assumes a fill that may never come, and a ceiling exists for what happens
+ * when everything outstanding *does* fill. This is `max_position_quantity_`'s rule
+ * (`RiskLimits::max_position_quantity_`), valued and summed instead of compared per instrument, and
+ * it reduces to `|held|` when nothing is working.
+ *
+ * **`candidate` joins its own instrument's projection on its own side; it is not added to the
+ * total.** Adding it would report a sell against a long position as *increasing* exposure, so the
+ * ceiling would refuse the order that reduces it -- a limit that blocks de-risking is worse than one
+ * that does nothing.
+ *
+ * Folding it in does **not** make a sell reduce the figure, and that is not an oversight. Hold 100
+ * with a sell of 100 resting and `max(|100|, |0|)` is 100: the position is 100 until that sell fills,
+ * and a ceiling that assumed the fill would be assuming exactly what a ceiling exists to survive
+ * being wrong about. What folding buys is that a sell does not *raise* the figure, which is what
+ * makes an exit expressible at all. `RiskGuard::check` is where the remaining half lives -- it
+ * compares the projection with and without the candidate, so an order that adds nothing is permitted
+ * however far over the ceiling the account already is.
+ *
+ * ## The price is the conservative one
+ *
+ * An instrument is valued at the highest price that could apply to it: its mark, and the limit price
+ * of every open order on it, `candidate` included. A basis carrying only the last quote values a
+ * limit buy of 100 at 100 against a cached mark of 70 as 7,000, so it passes an 8,000 ceiling and
+ * may fill at 10,000. Taking the maximum over-states exposure for a limit order that fills better
+ * than its limit -- refusing an order that would have been allowed -- and never the reverse. A market
+ * order contributes the mark, which is an estimate and is one whatever this does.
+ *
+ * ## Nothing is silently omitted
+ *
+ * Nothing is returned when the basis does not describe the portfolio, rather than a total computed
+ * over the part of it that could be resolved: a missing entry for an instrument held or working, two
+ * entries for one instrument, or any decimal arithmetic that will not fit. `Portfolio::working_quantity`
+ * is deliberately not used -- it skips a row whose arithmetic fails, which is right for a figure a
+ * strategy reads and wrong for a limit, since a skipped row under-reports.
+ *
+ * Instruments in another currency contribute nothing and are not an error. `max_gross_exposure_` is
+ * a ceiling *per currency*; see its documentation.
+ */
+template <typename Broker>
+std::optional<Decimal64> projected_gross_exposure(
+  const Portfolio<Broker>& portfolio,
+  const std::vector<InstrumentBasis>& basis,
+  const Currency& currency,
+  const PlannedOrder* candidate,
+  const std::optional<Decimal64>& candidate_price
+) {
+  const auto zero = Decimal64::parse("0");
+
+  // Every instrument the answer depends on: held, working, or about to be ordered. Collected first
+  // so each one is valued exactly once however many rows mention it.
+  std::vector<InstrumentId> instruments;
+  const auto note = [&instruments](const InstrumentId& id) {
+    for (const auto& seen : instruments) {
+      if (seen == id) {
+        return;
+      }
+    }
+    instruments.push_back(id);
+  };
+  for (const auto& position : portfolio.positions_) {
+    note(position.instrument_);
+  }
+  for (const auto& working : portfolio.working_) {
+    if (order_is_open(working.order_.status_)) {
+      note(working.order_.instrument_);
+    }
+  }
+  if (candidate != nullptr) {
+    note(candidate->instrument_);
+  }
+
+  auto total = zero;
+  for (const auto& id : instruments) {
+    const InstrumentBasis* resolved = nullptr;
+    for (const auto& entry : basis) {
+      if (!(entry.instrument_ == id)) {
+        continue;
+      }
+      if (resolved != nullptr) {
+        // Two answers for one instrument. Picking either would be picking one of two currencies or
+        // two marks, and the caller resolved it twice for a reason this cannot see.
+        return std::nullopt;
+      }
+      resolved = &entry;
+    }
+    if (resolved == nullptr) {
+      return std::nullopt;
+    }
+    if (!(resolved->currency_ == currency)) {
+      continue;
+    }
+
+    auto held = zero;
+    if (const auto quantity = portfolio.quantity_of(id)) {
+      held = *quantity;
+    }
+    auto buys = zero;
+    auto sells = zero;
+    auto price = resolved->price_;
+    for (const auto& working : portfolio.working_) {
+      if (!(working.order_.instrument_ == id) || !order_is_open(working.order_.status_)) {
+        continue;
+      }
+      const auto remaining = decimal_subtract(
+        working.order_.quantity_, working.order_.execution_.filled_quantity_
+      );
+      if (!remaining) {
+        return std::nullopt;
+      }
+      // A broker reporting more filled than ordered is describing something this must not amplify,
+      // and it is not an arithmetic failure either. Contributes nothing, as `working_quantity` has it.
+      if (decimal_less(*remaining, zero)) {
+        continue;
+      }
+      const auto sum = decimal_add(
+        working.order_.side_ == OrderSide::BUY ? buys : sells, *remaining
+      );
+      if (!sum) {
+        return std::nullopt;
+      }
+      (working.order_.side_ == OrderSide::BUY ? buys : sells) = *sum;
+      if (working.order_.price_) {
+        price = risk_detail::decimal_max(price, *working.order_.price_);
+      }
+    }
+
+    if (candidate != nullptr && candidate->instrument_ == id) {
+      const auto sum = decimal_add(
+        candidate->side_ == OrderSide::BUY ? buys : sells, candidate->quantity_
+      );
+      if (!sum) {
+        return std::nullopt;
+      }
+      (candidate->side_ == OrderSide::BUY ? buys : sells) = *sum;
+      const auto stated = candidate->price_ ? candidate->price_ : candidate_price;
+      if (stated) {
+        price = risk_detail::decimal_max(price, *stated);
+      }
+    }
+
+    const auto if_bought = decimal_add(held, buys);
+    const auto if_sold = decimal_subtract(held, sells);
+    if (!if_bought || !if_sold) {
+      return std::nullopt;
+    }
+    const auto long_side = risk_detail::decimal_magnitude(*if_bought);
+    const auto short_side = risk_detail::decimal_magnitude(*if_sold);
+    if (!long_side || !short_side) {
+      return std::nullopt;
+    }
+    const auto projected = risk_detail::decimal_max(*long_side, *short_side);
+
+    const auto value = decimal_multiply(projected, price);
+    if (!value) {
+      return std::nullopt;
+    }
+    const auto running = decimal_add(total, *value);
+    if (!running) {
+      return std::nullopt;
+    }
+    total = *running;
+  }
+  return total;
+}
 
 /**
  * Checks planned orders against the operator's limits, and remembers what was sent.
@@ -619,16 +890,48 @@ public:
       }
     }
 
-    if (limits_.max_gross_exposure_ && value) {
-      const auto current = inputs.gross_exposure_.value_or(Decimal64::parse("0"));
-      const auto resulting = decimal_add(current, *value);
+    if (limits_.max_gross_exposure_) {
+      // Per currency, so which one the order is priced in decides what this compares. An
+      // unresolved instrument leaves it absent, and a ceiling that cannot tell which budget it is
+      // spending must refuse rather than pick the first.
+      if (!inputs.order_currency_) {
+        return refuse(GuardReason::VALUE_NOT_KNOWN);
+      }
+      const auto resulting = projected_gross_exposure(
+        portfolio, inputs.exposure_basis_, *inputs.order_currency_, &order, price
+      );
       if (!resulting) {
-        return refuse(GuardReason::GROSS_EXPOSURE_EXCEEDED);
+        // The basis does not describe the portfolio, or the arithmetic did not fit. Refusing is the
+        // point: the previous code defaulted the current exposure to zero and compared the ceiling
+        // against this order alone, which is how a portfolio limit came to permit everything it
+        // exists to refuse.
+        return refuse(GuardReason::VALUE_NOT_KNOWN);
       }
       if (decimal_less(*limits_.max_gross_exposure_, *resulting)) {
-        return refuse_with(
-          GuardReason::GROSS_EXPOSURE_EXCEEDED, *limits_.max_gross_exposure_, *resulting
+        // **Over the ceiling is not on its own a reason to refuse: taking it further is.**
+        //
+        // The projection is the largest position still reachable, so a resting sell does not lower
+        // it -- hold 100 with a sell of 100 resting and the exposure is 100 until that sell fills.
+        // Correct, and on its own it would trap an account that is *already* over the ceiling: a
+        // ceiling lowered by its operator, or exposure carried up by a mark, would refuse every
+        // order including the ones selling out of it. A limit that cannot be de-risked past is the
+        // failure this branch's own issue document set out to avoid, one step further along than
+        // the version it argued against.
+        //
+        // So the ceiling governs what an order *adds*. An order that leaves the projection where it
+        // was -- any sell against a long, any buy covering a short -- is permitted however far over
+        // the account already is, and an order that moves it up while over is refused.
+        const auto without = projected_gross_exposure(
+          portfolio, inputs.exposure_basis_, *inputs.order_currency_, nullptr, std::nullopt
         );
+        if (!without) {
+          return refuse(GuardReason::VALUE_NOT_KNOWN);
+        }
+        if (decimal_less(*without, *resulting)) {
+          return refuse_with(
+            GuardReason::GROSS_EXPOSURE_EXCEEDED, *limits_.max_gross_exposure_, *resulting
+          );
+        }
       }
     }
 
