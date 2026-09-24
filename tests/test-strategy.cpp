@@ -233,6 +233,42 @@ TEST_CASE("the KRX session boundaries fall where the exchange publishes them") {
   REQUIRE(session.phase(utc(2026, 3, 10, 14, 0), true) == strategy::MarketPhase::POST_CLOSE);
 }
 
+TEST_CASE("the local date is the market's, not the process's") {
+  const auto session = strategy::SessionWindow::krx();
+  // 23:30 UTC is already 08:30 the next morning in Seoul. A loop that asked its own calendar
+  // whether *today* trades would consult Monday's answer for a Tuesday session -- and, on the
+  // Sunday evening either side of this, would ask about a closed day for an open one.
+  REQUIRE(session.local_date(utc(2026, 3, 9, 23, 30)) == Date{2026, 3, 10});
+  REQUIRE(session.local_date(utc(2026, 3, 10, 0, 0)) == Date{2026, 3, 10});
+  REQUIRE(session.local_date(utc(2026, 3, 10, 14, 59)) == Date{2026, 3, 10});
+  // 15:00 UTC is midnight in Seoul, so the date rolls there and not at UTC midnight.
+  REQUIRE(session.local_date(utc(2026, 3, 10, 15, 0)) == Date{2026, 3, 11});
+
+  // A market west of UTC rolls the other way, which is the case a fixed offset gets wrong if the
+  // floor rounds toward zero instead of toward negative infinity.
+  strategy::SessionWindow new_york;
+  new_york.utc_offset_ = -std::chrono::hours(5);
+  REQUIRE(new_york.local_date(utc(2026, 3, 10, 4, 0)) == Date{2026, 3, 9});
+  REQUIRE(new_york.local_date(utc(2026, 3, 10, 5, 0)) == Date{2026, 3, 10});
+}
+
+TEST_CASE("the local date and the phase never disagree about which day it is") {
+  // They are two answers about one instant and a loop uses them together: the date asks the
+  // calendar whether the market trades, the phase says where in the session it is. A rounding
+  // difference between them would compute the boundaries for one day and the holiday answer for
+  // another, which is the incoherence that is worst precisely at an open.
+  const auto session = strategy::SessionWindow::krx();
+  // Midnight in Seoul on a covered trading day: the date must already be the new one, and the
+  // phase must be PRE_OPEN rather than the previous day's POST_CLOSE.
+  const auto at_local_midnight = utc(2026, 3, 10, 15, 0);
+  REQUIRE(session.local_date(at_local_midnight) == Date{2026, 3, 11});
+  REQUIRE(session.phase(at_local_midnight, true) == strategy::MarketPhase::PRE_OPEN);
+  // One minute earlier is still the old day, after its close.
+  const auto a_minute_before = utc(2026, 3, 10, 14, 59);
+  REQUIRE(session.local_date(a_minute_before) == Date{2026, 3, 10});
+  REQUIRE(session.phase(a_minute_before, true) == strategy::MarketPhase::POST_CLOSE);
+}
+
 TEST_CASE("a phase name is stable for every enumerator") {
   REQUIRE(strategy::market_phase_name(strategy::MarketPhase::UNKNOWN) == "unknown");
   REQUIRE(strategy::market_phase_name(strategy::MarketPhase::CLOSED) == "closed");

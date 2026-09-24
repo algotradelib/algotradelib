@@ -102,14 +102,9 @@ struct SessionWindow {
     if (!*trading_day) {
       return MarketPhase::CLOSED;
     }
-    // `std::chrono::days` is C++20; this is the same duration, spelled for C++17. `floor`
-    // rounds toward negative infinity, so the arithmetic is right for instants before the
-    // epoch as well as after it.
-    using Days = std::chrono::duration<std::int64_t, std::ratio<86400>>;
     const auto local = now + utc_offset_;
-    const auto midnight = std::chrono::floor<Days>(local);
     const auto since_midnight =
-      std::chrono::duration_cast<std::chrono::minutes>(local - midnight);
+      std::chrono::duration_cast<std::chrono::minutes>(local - local_midnight(now));
     if (since_midnight < open_) {
       return MarketPhase::PRE_OPEN;
     }
@@ -117,6 +112,47 @@ struct SessionWindow {
       return MarketPhase::POST_CLOSE;
     }
     return MarketPhase::OPEN;
+  }
+
+  /**
+   * Returns the market's local calendar date at `now`.
+   *
+   * The date to ask a `TradingCalendar` about, and it is the market's date rather than the
+   * process's: a loop running in Frankfurt at 23:30 UTC has to ask about tomorrow in Seoul, and
+   * asking about its own date would consult the wrong day for the six hours either side of local
+   * midnight — including, on a Sunday evening in Europe, a Monday session in Korea.
+   *
+   * Here rather than on `TradingCalendar` because the offset lives here, and it is the same offset
+   * `phase` derives the intraday boundaries from. Two types holding a market's offset is how they
+   * come to disagree.
+   */
+  Date local_date(std::chrono::system_clock::time_point now) const {
+    using Days = std::chrono::duration<std::int64_t, std::ratio<86400>>;
+    return date_from_epoch_days(
+      std::chrono::duration_cast<Days>(local_midnight(now).time_since_epoch()).count()
+    );
+  }
+
+private:
+  /**
+   * Returns the instant of the market's local midnight preceding `now`, as a UTC-shifted value.
+   *
+   * `std::chrono::days` is C++20; `Days` is the same duration, spelled for C++17. `floor` rounds
+   * toward negative infinity, so the arithmetic is right for instants before the epoch as well as
+   * after it — which `ReplayClock` needs, since a replay's instants come from whatever bars it was
+   * handed.
+   *
+   * Shared by `phase` and `local_date` so that the two cannot disagree about which day it is. They
+   * are asked about the same instant in the same iteration, and a rounding difference between them
+   * would consult the calendar for one date and compute the session boundaries for another.
+   */
+  std::chrono::time_point<std::chrono::system_clock, std::chrono::seconds> local_midnight(
+    std::chrono::system_clock::time_point now
+  ) const {
+    using Days = std::chrono::duration<std::int64_t, std::ratio<86400>>;
+    return std::chrono::time_point_cast<std::chrono::seconds>(
+      std::chrono::floor<Days>(now + utc_offset_)
+    );
   }
 };
 

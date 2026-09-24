@@ -772,6 +772,40 @@ struct Date {
   }
 };
 
+/**
+ * Returns the Gregorian date `days` after 1970-01-01, counting negative days backwards.
+ *
+ * Pure arithmetic on a day count, deliberately: `std::chrono`'s calendar types are C++20 and this
+ * library promises C++17, and the alternatives are worse than the eleven lines below. `gmtime_r` is
+ * not portable to Windows without a second spelling and both take a `time_t`, which is not
+ * guaranteed to be wide enough; `localtime` would attach the *process's* zone to a date that belongs
+ * to a market. This is Howard Hinnant's `civil_from_days`, whose derivation and proof are published
+ * with it, and it is exact for every representable day rather than for a range somebody tested.
+ *
+ * The result is not range-checked against `is_valid_date`: every day count maps to a real date, and
+ * a caller handing this a day count outside year 1..9999 has a bug this function cannot diagnose.
+ */
+inline Date date_from_epoch_days(std::int64_t days) {
+  // Shifts the era so that the year starts in March, which is what removes the leap-day special
+  // case from everything below: 1970-01-01 is 719468 days after 0000-03-01.
+  const std::int64_t shifted = days + 719468;
+  const std::int64_t era = (shifted >= 0 ? shifted : shifted - 146096) / 146097;
+  const std::int64_t day_of_era = shifted - era * 146097;
+  const std::int64_t year_of_era =
+    (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365;
+  const std::int64_t year = year_of_era + era * 400;
+  const std::int64_t day_of_year =
+    day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+  const std::int64_t shifted_month = (5 * day_of_year + 2) / 153;
+  const std::int64_t day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+  const std::int64_t month = shifted_month + (shifted_month < 10 ? 3 : -9);
+  return Date{
+    static_cast<int>(year + (month <= 2 ? 1 : 0)),
+    static_cast<unsigned>(month),
+    static_cast<unsigned>(day),
+  };
+}
+
 /** Returns whether `date` is a valid Gregorian calendar date. */
 inline bool is_valid_date(const Date& date) {
   if (date.year_ < 1 || date.year_ > 9999 || date.month_ < 1 || date.month_ > 12) {

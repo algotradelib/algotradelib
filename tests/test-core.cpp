@@ -7,6 +7,8 @@
 #include "local_https_server.hpp"
 
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <limits>
 #include <memory>
@@ -1222,6 +1224,48 @@ TEST_CASE("Calendar dates validate Gregorian boundaries", "[core][order][date]")
   REQUIRE_FALSE(is_valid_date(Date{2025, 2, 29}));
   REQUIRE_FALSE(is_valid_date(Date{2026, 4, 31}));
   REQUIRE(Date{2026, 3, 1} < Date{2026, 3, 31});
+}
+
+TEST_CASE("A day count converts to the Gregorian date it names", "[core][date]") {
+  REQUIRE(date_from_epoch_days(0) == Date{1970, 1, 1});
+  REQUIRE(date_from_epoch_days(1) == Date{1970, 1, 2});
+  // Negative counts run backwards, which is what a replay handed pre-epoch bars needs.
+  REQUIRE(date_from_epoch_days(-1) == Date{1969, 12, 31});
+
+  // The cases a hand-rolled conversion gets wrong: a leap day, the day after it, and the two
+  // centuries that disagree about whether they have one.
+  REQUIRE(date_from_epoch_days(19782) == Date{2024, 2, 29});
+  REQUIRE(date_from_epoch_days(19783) == Date{2024, 3, 1});
+  REQUIRE(date_from_epoch_days(11016) == Date{2000, 2, 29});
+  REQUIRE(date_from_epoch_days(-25508) == Date{1900, 3, 1});
+  REQUIRE(date_from_epoch_days(-25509) == Date{1900, 2, 28});
+}
+
+TEST_CASE("Every date in a leap-year span round-trips through its day count", "[core][date]") {
+  // A spot check proves the cases somebody thought of. Walking a span proves the ones they did
+  // not: the day count is incremented independently of the date, so a conversion that drifts by a
+  // day anywhere in four years -- which is exactly how these are usually wrong -- fails here.
+  const auto days_in = [](int year, unsigned month) -> unsigned {
+    static constexpr unsigned table[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    const bool leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    return table[month - 1] + ((month == 2 && leap) ? 1 : 0);
+  };
+
+  // 2024-01-01 is 19723 days after the epoch.
+  std::int64_t count = 19723;
+  std::size_t checked = 0;
+  for (int year = 2024; year <= 2027; ++year) {
+    for (unsigned month = 1; month <= 12; ++month) {
+      for (unsigned day = 1; day <= days_in(year, month); ++day) {
+        REQUIRE(date_from_epoch_days(count) == Date{year, month, day});
+        REQUIRE(is_valid_date(date_from_epoch_days(count)));
+        ++count;
+        ++checked;
+      }
+    }
+  }
+  // 2024 is a leap year, so four years is 366 + 365 * 3 days.
+  REQUIRE(checked == 1461);
 }
 
 TEST_CASE(
