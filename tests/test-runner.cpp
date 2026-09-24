@@ -366,7 +366,6 @@ TEST_CASE("an order the strategy already withdrew is not withdrawn again by reco
 TEST_CASE("two unaddressed withdrawals are both reported, not collapsed into one") {
   // The dedupe keys on the reference, and two empty references compare equal. Exempting them keeps
   // one report entry per instruction a caller issued, which is what an operator counts.
-  using Tag = runner::DryRunner<CancelTwiceUnaddressed>::Tag;
   runner::DryRunner<CancelTwiceUnaddressed> dry;
   arrange(dry);
 

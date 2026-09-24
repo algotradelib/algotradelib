@@ -316,6 +316,43 @@ re-spend the same money.
 without telling anyone. The check is the difference between sizing against the broker's last answer
 and sizing against nothing.
 
+## The portfolio exposure ceiling, and what it means by "portfolio"
+
+`RiskLimits::max_gross_exposure_` caps the exposure the account may reach. Until `ai/guard-inputs` it
+did not do that: nothing in the library ever supplied the current exposure, so the ceiling was
+compared against the value of the single order in front of it, and a ten-million ceiling did not stop
+a strategy reaching twenty million two million at a time.
+
+```cpp
+strategy::RiskLimits limits;
+limits.max_gross_exposure_ = Decimal64::parse("10000000");
+```
+
+Three things to know before turning it on.
+
+**It is a ceiling per currency.** The same number is applied independently to each currency, in the
+currency the order is priced in — `max_order_notional_`'s reading, and `holdings-core`'s refusal to
+add currencies without a rate you can see. So an account holding ten million of exposure in won and
+ten million in dollars passes a fifteen-million ceiling. If you need a converted account-wide cap,
+this is not it; `plan/todo/exchange-rates.md` is where that becomes expressible.
+
+**It measures what would happen if everything outstanding filled**, not what the last poll reported —
+the same standard `max_position_quantity_` uses. Working orders count, so two orders in one pass
+cannot each fit and together breach it, and the reservation carries across a bar so a second bar
+before the next poll cannot either. An instrument is valued at the most expensive price that could
+apply to it, so a limit buy above the current quote is not under-counted.
+
+**It governs what an order adds, so it never blocks the way out.** A sell against a long position, or
+a buy covering a short, does not raise the projection and is permitted however far over the ceiling
+the account already sits. The corollary is a real loosening: such an order is allowed even when it is
+larger than the ceiling. If you wanted a cap on a single order, that is `max_order_notional_`, which
+is unchanged.
+
+**An account it cannot value refuses everything.** Every instrument the account holds or has working
+needs registered reference data, and a mark. One that has neither is not quietly left out of the sum —
+it would under-count, which is the direction a risk limit must not err in — so the order is refused
+with `GuardReason::VALUE_NOT_KNOWN` until you register it.
+
 ## What this does not do yet
 
 - **Stream.** It polls. `plan/todo/realtime-streaming.md` drops into the same source seam.

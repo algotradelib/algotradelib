@@ -113,6 +113,27 @@ if you enable `enforce_buying_power_` or `enforce_sellable_quantity_`, a clean b
 evidence the live account will accept the same orders. `plan/todo/replay-settlement-model.md` is
 what would close the sellable half.
 
+## The equity curve is one currency's, and now genuinely so
+
+`ReplayConfig::currency_` names the currency the report is in, and the equity curve is
+`ledger.equity_in()` of it at every bar.
+
+That figure used to count **every** position whatever it was denominated in, so a won-quoted holding
+was added into a dollar equity curve at a rate of one — the implicit conversion `holdings-core` exists
+to refuse, in the number every derived metric is computed from. It now counts only positions in the
+currency being asked about, and the ledger records each position's currency from the fill that opened
+it.
+
+The engine had the matching problem one step earlier: it booked every fill in `ReplayConfig::currency_`
+regardless of the instrument, which is documented as the currency the *starting cash* is in. A
+dollar-quoted instrument therefore banked dollars as won before the ledger saw a currency at all. It
+now books a fill in the instrument's own currency, from the reference data the replay already needs.
+
+**What that means for a multi-currency replay.** Each currency is tracked apart and correctly, and a
+replay that opens with won and trades a dollar instrument runs its dollar cash negative from zero,
+because funding it would need a conversion this library does not do. The report still curves one
+currency, so read it as one currency's result rather than the account's.
+
 ## Costs, which are the most common way a backtest lies
 
 A strategy evaluated at zero cost can look excellent and lose money at any real one. So costs are models
