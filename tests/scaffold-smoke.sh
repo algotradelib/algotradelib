@@ -292,9 +292,11 @@ if [ "$BACKEND" = ON ]; then
         exit 1
     fi
 
-    # The perturbed table is held to every rule the baseline is: the right number of rows, one per
-    # distinct strategy, each a complete report row. A perturbed run that printed `MyStrategy(5)
-    # incomplete`, or an extra copy of a row, passed everything here before this was added.
+    # The perturbed table is held to the same *structural* rules as the baseline: the right number of
+    # rows, one per distinct strategy, each a complete report row. It is not held to the baseline's
+    # minimum-fill checks, which belong to the published figures rather than to a perturbed run. A
+    # perturbed run printing `MyStrategy(5) incomplete`, or an extra copy of a row, passed everything
+    # here before this was added.
     assert_valid_table "$PERTURBED_ROWS" 'the perturbed program' "$EXPECTED_COUNT"
 
     # ...and it must still be comparing the same strategies, not four different ones.
