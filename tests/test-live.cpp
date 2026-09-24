@@ -143,6 +143,23 @@ public:
     local_refusal_ = error;
   }
 
+  /**
+   * Makes the next call fail the way a token refresh does: the *prerequisite* request failed, and
+   * the caller's own never went.
+   *
+   * `AUTHENTICATION`, which a category test alone reads as a broker's refusal of the order --
+   * though the order was never built. Both clients mark such a failure before handing it to the
+   * callers waiting behind the refresh.
+   */
+  void fail_next_token(ErrorCategory category = ErrorCategory::AUTHENTICATION) {
+    BrokerError error;
+    error.category_ = category;
+    error.reached_broker_ = false;
+    error.broker_code_ = "token_refresh_failed";
+    error.message_ = "the token request failed, so this instruction was never sent";
+    local_refusal_ = error;
+  }
+
   void succeed() { error_.reset(); }
 
   std::vector<InstrumentId> sellable_asked_;
@@ -719,6 +736,54 @@ TEST_CASE("a client refusing before it sends is not the broker refusing") {
   CHECK(second.refused_.empty());
   CHECK(second.would_place_.size() == 1);
   CHECK(session.placed().size() == 1);
+}
+
+TEST_CASE("a token refresh that failed is not the broker refusing an order it never saw") {
+  // The prerequisite-request boundary. Both clients validate, then refresh a token, then build the
+  // order; a refresh that fails is handed to every caller waiting behind it. By category alone that
+  // is `AUTHENTICATION`, which reads as the broker refusing -- so the runner would count a request
+  // the broker never received, and a later valid order would be refused once credentials recover.
+  using Runner = runner::Runner<
+    BuysOne, WithKey, FakeBroker, live::SessionExecutor<FakeSession<WithKey>>
+  >;
+  FakeSession<WithKey> session;
+  session.fail_next_token();
+  strategy::RiskLimits limits;
+  limits.max_orders_per_window_ = 1;
+  limits.rate_window_ = std::chrono::hours(24);
+
+  Runner live_runner(
+    BuysOne{}, limits, 512, live::SessionExecutor<FakeSession<WithKey>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+  const auto first = live_runner.feed(bar_at(1, "70000"));
+  REQUIRE(first.rejected_.size() == 1);
+  CHECK(first.rejected_[0].reason_ == strategy::RejectReason::BINDING_REFUSED);
+  CHECK(session.placed().empty());
+  // Nor is it indeterminate: an order that was never built leaves nothing to reconcile.
+  CHECK(first.indeterminate_.empty());
+
+  // Credentials recover, and the window has room because nothing was ever sent.
+  const auto second = live_runner.feed(bar_at(2, "70000"));
+  CHECK(second.refused_.empty());
+  CHECK(second.would_place_.size() == 1);
+  CHECK(session.placed().size() == 1);
+}
+
+TEST_CASE("a token request that failed in transit leaves no doubt about an unsent order") {
+  // `TRANSPORT` maps to `INDETERMINATE` -- correctly, for the order's own request, where the bytes
+  // may have arrived. On the *token* request it is the wrong answer twice over: the order was never
+  // built, so nothing is in doubt, and withholding the instrument costs a reconciliation for an
+  // order that does not exist.
+  FakeSession<WithKey> session;
+  session.fail_next_token(ErrorCategory::TRANSPORT);
+  live::SessionExecutor<FakeSession<WithKey>> executor(session);
+
+  CHECK(executor.place(planned()) == runner::SendOutcome::REFUSED_LOCALLY);
+  CHECK(session.placed().empty());
 }
 
 TEST_CASE("a withdrawal is never addressed to a broker by an empty reference") {

@@ -120,6 +120,15 @@ inline constexpr std::string_view send_outcome_name(SendOutcome outcome) noexcep
  * one of those can lose money.
  */
 inline SendOutcome outcome_of(const BrokerError& error) {
+  if (!error.reached_broker_) {
+    // **Checked before the category, because it outranks every one of them.** An error saying the
+    // request never went out settles both questions this function exists to answer: the instruction
+    // does not exist, and no request was counted. No category settles either on its own --
+    // `INVALID_ARGUMENT` is both a broker's refusal and a client's own validation, `AUTHENTICATION`
+    // is also a token refresh that failed before the order was ever built, and `TRANSPORT` on that
+    // token request leaves nothing in doubt about an order nobody sent.
+    return SendOutcome::REFUSED_LOCALLY;
+  }
   switch (error.category_) {
     case ErrorCategory::TRANSPORT:
     case ErrorCategory::CANCELLED:
@@ -131,13 +140,11 @@ inline SendOutcome outcome_of(const BrokerError& error) {
     case ErrorCategory::RATE_LIMIT:
       return SendOutcome::REJECTED;
     case ErrorCategory::INVALID_ARGUMENT:
-      // **The one category a client raises about its own caller.** A broker refusing an instruction
-      // and a client refusing to send one are both `INVALID_ARGUMENT`, and they are not the same
-      // event: the second never reached anybody, so the broker counted no request and no rate-limit
-      // budget may be spent on it -- nor may a report say the broker refused an order it never
-      // received. `reached_broker_` is what tells them apart, and it defaults to true, so a client
-      // that says nothing is read as having sent.
-      return error.reached_broker_ ? SendOutcome::REJECTED : SendOutcome::REFUSED_LOCALLY;
+      // Reaching here means the broker was asked and refused. A client's own validation carries the
+      // same category and is separated above by `reached_broker_`, which defaults to true -- so a
+      // client that says nothing is read as having sent, over-counting its own budget rather than
+      // exceeding the broker's.
+      return SendOutcome::REJECTED;
   }
   // A category this library does not recognize is treated as unknown rather than as a refusal,
   // for the same asymmetry: the cost of being wrong is not the same in both directions.

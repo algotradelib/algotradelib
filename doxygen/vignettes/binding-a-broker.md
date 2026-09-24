@@ -108,9 +108,10 @@ perfectly sendable.
 `last_error()`: a pass sends several instructions and a later accepted one clears it, so a report
 would outlive the only record of why an earlier entry is there.
 
-`rejected_` and `refused_` are separate on purpose: the first means the library could not build an
-order, the second means the operator forbade one. Conflating them would make a configuration mistake
-look like a data problem.
+`rejected_` and `refused_` are separate on purpose: the first means the order was not placed —
+usually because the library could not build one, sometimes because the broker or the binding refused
+it — while the second means the operator forbade one. Conflating them would make a configuration
+mistake look like a data problem.
 
 ## Setting the limits
 

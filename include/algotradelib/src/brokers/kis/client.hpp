@@ -2114,6 +2114,12 @@ private:
       }
     }
 
+    if (failure) {
+      // The waiters asked for something else, and none of their requests was sent. See the same
+      // marking in the Toss client: an unmarked authentication failure reads to a runner as the
+      // broker refusing an order it never received, spending rate-limit budget on nothing.
+      failure->reached_broker_ = false;
+    }
     auto waiters = std::move(token_waiters_);
     token_waiters_.clear();
     for (auto& waiter : waiters) {

@@ -1890,6 +1890,15 @@ private:
         }
       }
     }
+    if (failure) {
+      // **The waiters asked for something else.** A token refresh that fails is handed to every
+      // caller waiting behind it -- an order, a cancellation, an inquiry -- and none of those
+      // requests was sent. Left unmarked, an authentication failure reads to a runner as the broker
+      // refusing an order it never received: a request counted against the rate window, and a later
+      // valid order refused once credentials recover. What failed was the token request, and that
+      // is not the instruction this error is about to describe.
+      failure->reached_broker_ = false;
+    }
     auto waiters = std::move(token_waiters_);
     token_waiters_.clear();
     for (auto& waiter : waiters) {
