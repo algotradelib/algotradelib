@@ -257,25 +257,35 @@ public:
     return true;
   }
 
-  /** Marks every position to `price` for `instrument`, so market value reflects the latest bar. */
-  void mark(const InstrumentId& instrument, const Decimal64& price) {
+  /**
+   * Marks every position in `instrument` to `price`, so market value reflects the latest bar.
+   *
+   * Returns false when a lot's value at that price will not fit an exact decimal, in which case
+   * **that lot is left entirely alone** -- old price, old value, still agreeing with each other.
+   * A caller that ignores the result gets a ledger that is still self-consistent and one bar behind
+   * on that instrument, which is the failure that can be reasoned about; `Backtester` records no
+   * equity point for such a bar rather than curving a figure at a mark that was never applied.
+   */
+  bool mark(const InstrumentId& instrument, const Decimal64& price) {
+    bool marked = true;
     for (auto& lot : positions_) {
       if (lot.instrument_ == instrument) {
-        // **The mark always lands.** An earlier version skipped the whole row when the valuation
-        // overflowed, which silently declined to apply a price the caller asked for -- and left
-        // `equity_in` reporting a stale total as though it were current, where `main` had reported
-        // that it could not compute one.
-        lot.last_price_ = price;
-        // `market_value_` is kept in step where the arithmetic allows. It is a convenience for a
-        // reader, and its **currency** is the authoritative part -- the one `apply` recorded, since a
-        // lot exists only because a fill opened it. No total is derived from the amount: `equity_in`
-        // computes from the quantity and this mark, so a value too large to fit surfaces there as a
-        // refusal rather than as a number that is quietly out of date.
-        if (const auto valued = decimal_multiply(lot.quantity_, price)) {
-          lot.market_value_ = Money{*valued, lot.market_value_.currency_};
+        // **Both fields move or neither does, and the caller is told which.** Two earlier versions
+        // each lost one half of that. Advancing the price and leaving the old `market_value_`
+        // handed a strategy reading `positions()` or `snapshot()` a stale number presented as
+        // current, with no error anywhere; skipping the row silently declined to apply a price the
+        // caller asked for. The currency is the one `apply` recorded -- a lot exists only because a
+        // fill opened it -- and it is the half nothing can invalidate.
+        const auto valued = decimal_multiply(lot.quantity_, price);
+        if (!valued) {
+          marked = false;
+          continue;
         }
+        lot.last_price_ = price;
+        lot.market_value_ = Money{*valued, lot.market_value_.currency_};
       }
     }
+    return marked;
   }
 
   /**

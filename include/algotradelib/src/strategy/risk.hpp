@@ -471,6 +471,14 @@ std::optional<Decimal64> projected_gross_exposure(
     instruments.push_back(id);
   };
   for (const auto& position : portfolio.positions_) {
+    // **A flat row is not exposure and must not be a reason to refuse.** `ReplayLedger` keeps a lot
+    // after it returns to flat, and a broker may list a closed position, so requiring a basis for
+    // one would have an instrument nobody holds any more refuse orders in an unrelated instrument.
+    // Zero quantity valued at any price is zero. An instrument that is flat *and* has a working
+    // order is still collected, by the loop below.
+    if (position.quantity_.coefficient() == 0) {
+      continue;
+    }
     note(position.instrument_);
   }
   for (const auto& working : portfolio.working_) {
@@ -539,10 +547,13 @@ std::optional<Decimal64> projected_gross_exposure(
       if (!remaining) {
         return std::nullopt;
       }
-      // A broker reporting more filled than ordered is describing something this must not amplify,
-      // and it is not an arithmetic failure either. Contributes nothing, as `working_quantity` has it.
+      // **A row filled beyond what it ordered refuses, where `working_quantity` skips it.** That
+      // skip is right for a figure a strategy reads -- it declines to amplify a broker's
+      // contradiction -- and wrong for a limit, because dropping the row takes its limit price out
+      // of the valuation envelope with it while the row is still `PENDING`. The snapshot is
+      // inconsistent, and a ceiling cannot infer from it that nothing is outstanding.
       if (decimal_less(*remaining, zero)) {
-        continue;
+        return std::nullopt;
       }
       const auto sum = decimal_add(
         working.order_.side_ == OrderSide::BUY ? buys : sells, *remaining
@@ -552,6 +563,12 @@ std::optional<Decimal64> projected_gross_exposure(
       }
       (working.order_.side_ == OrderSide::BUY ? buys : sells) = *sum;
       if (working.order_.price_) {
+        // A present price that is not a price. `max` would simply not pick it, which is the quiet
+        // outcome: the row's own valuation would vanish into the mark and nothing would say the
+        // listing was malformed.
+        if (!decimal_less(zero, *working.order_.price_)) {
+          return std::nullopt;
+        }
         price = risk_detail::decimal_max(price, *working.order_.price_);
       }
     }
@@ -563,6 +580,15 @@ std::optional<Decimal64> projected_gross_exposure(
       // caused it.
       const auto stated = candidate->price_ ? candidate->price_ : candidate_price;
       if (stated) {
+        // **The candidate's own price is validated, not merely offered to `max`.** A negative one
+        // loses the maximum to the positive basis and disappears, so the ceiling would value the
+        // order at a mark nobody quoted while `max_order_notional_` valued it at a negative number
+        // that no ceiling exceeds. `Price::checked` will build a negative limit under an
+        // unconstrained rule, and `Context::set_last_price` stores whatever a bar carried, so
+        // neither source rules this out upstream.
+        if (!decimal_less(zero, *stated)) {
+          return std::nullopt;
+        }
         price = risk_detail::decimal_max(price, *stated);
       }
       if (contribution == CandidateContribution::QUANTITY_AND_PRICE) {

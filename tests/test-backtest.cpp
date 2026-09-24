@@ -380,18 +380,26 @@ TEST_CASE("realized profit is not banked by a fill that then fails") {
   REQUIRE(ledger.quantity_of(samsung()) == quantity_before);
 }
 
-TEST_CASE("a mark lands even when its own valuation will not fit, and equity says so") {
-  // Skipping the row would decline to apply a price the caller asked for, and leave equity_in
-  // reporting the previous total as though it were current. The mark applies; the total a valuation
-  // cannot express is reported absent, which is what a replay's equity curve reads to skip a point.
+TEST_CASE("a mark that will not fit reports itself and leaves the lot coherent") {
+  // **Both halves of this were got wrong once each.** Advancing the price and keeping the old
+  // market value handed a strategy reading positions() a stale number presented as current, with no
+  // error anywhere. Skipping the row and saying nothing silently declined to apply a price the
+  // caller asked for. The lot now moves as a whole or not at all, and the caller is told which.
   auto ledger = opening();
   REQUIRE(ledger.apply(filled(OrderSide::BUY, "2", "70000"), krw()));
+  const auto& lot = ledger.positions().front();
+  REQUIRE(lot.market_value_.amount_ == Decimal64::parse("140000"));
 
-  ledger.mark(samsung(), Decimal64::parse("9223372036854775807"));
-  REQUIRE_FALSE(ledger.equity_in(krw()));
+  REQUIRE_FALSE(ledger.mark(samsung(), Decimal64::parse("9223372036854775807")));
 
-  // And an ordinary mark afterwards still works, so nothing was left wedged.
-  ledger.mark(samsung(), Decimal64::parse("80000"));
+  // Price and value still agree, and still describe the mark actually in force.
+  REQUIRE(ledger.positions().front().last_price_ == Decimal64::parse("70000"));
+  REQUIRE(ledger.positions().front().market_value_.amount_ == Decimal64::parse("140000"));
+  REQUIRE(ledger.equity_in(krw()) == std::optional<Decimal64>(Decimal64::parse("10000000")));
+
+  // And an ordinary mark afterwards still lands, so nothing was left wedged.
+  REQUIRE(ledger.mark(samsung(), Decimal64::parse("80000")));
+  REQUIRE(ledger.positions().front().market_value_.amount_ == Decimal64::parse("160000"));
   REQUIRE(ledger.equity_in(krw()) == std::optional<Decimal64>(Decimal64::parse("10020000")));
 }
 

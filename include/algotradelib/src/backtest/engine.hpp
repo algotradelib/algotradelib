@@ -197,8 +197,12 @@ public:
     }
 
     settle_queued_against(event);
-    ledger_.mark(event.instrument_, event.bar_.close_);
-    record_equity(event);
+    // A mark that will not fit leaves its lot at the previous price, so an equity point recorded
+    // here would be stamped with this bar and computed at the last one. Skipped instead, which is
+    // what `record_equity` already does when the total itself cannot be computed.
+    if (ledger_.mark(event.instrument_, event.bar_.close_)) {
+      record_equity(event);
+    }
 
     if (clock_.advance(event, trading_day)) {
       runner_.context().set_phase(clock_.phase());

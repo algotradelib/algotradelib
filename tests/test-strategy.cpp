@@ -1914,6 +1914,84 @@ TEST_CASE("a mark that is not positive refuses rather than valuing anything") {
   }
 }
 
+TEST_CASE("a candidate or working price that is not a price refuses") {
+  // A negative candidate price loses the maximum to a positive basis and disappears, so the ceiling
+  // would value the order at a mark nobody quoted -- while `max_order_notional_` valued it at a
+  // negative number no ceiling exceeds. `Price::checked` builds a negative limit under an
+  // unconstrained rule and `Context::set_last_price` stores whatever a bar carried, so neither
+  // source rules it out upstream.
+  RiskLimits limits;
+  limits.max_gross_exposure_ = Decimal64::parse("1000000");
+  const RiskGuard guard(limits);
+
+  SECTION("the candidate's own limit") {
+    ProbePortfolio portfolio;
+    const auto refused = guard.check(planned("1", "-100"), portfolio, with_basis(open_market()));
+    REQUIRE(refused);
+    REQUIRE(refused->reason_ == GuardReason::VALUE_NOT_KNOWN);
+  }
+
+  SECTION("the reference price a market order is valued at") {
+    ProbePortfolio portfolio;
+    auto inputs = with_basis(open_market());
+    inputs.reference_price_ = Decimal64::parse("-70000");
+    const auto refused = guard.check(planned("1"), portfolio, inputs);
+    REQUIRE(refused);
+    REQUIRE(refused->reason_ == GuardReason::VALUE_NOT_KNOWN);
+  }
+
+  SECTION("a resting order's limit") {
+    ProbePortfolio portfolio;
+    auto resting = working("10", "0", OrderStatus::PENDING, OrderSide::BUY);
+    resting.order_.price_ = Decimal64::parse("-100");
+    portfolio.working_.push_back(resting);
+    const auto refused = guard.check(planned("1", "70000"), portfolio, with_basis(open_market()));
+    REQUIRE(refused);
+    REQUIRE(refused->reason_ == GuardReason::VALUE_NOT_KNOWN);
+  }
+}
+
+TEST_CASE("an order filled beyond what it ordered refuses rather than being dropped") {
+  // `working_quantity` skips such a row, which is right for a figure a strategy reads -- it declines
+  // to amplify a broker's contradiction. It is wrong for a limit: dropping the row takes its limit
+  // price out of the valuation envelope while the row is still PENDING, and a ceiling cannot infer
+  // from an inconsistent snapshot that nothing is outstanding.
+  RiskLimits limits;
+  limits.max_gross_exposure_ = Decimal64::parse("10000000");
+  const RiskGuard guard(limits);
+  ProbePortfolio portfolio;
+  portfolio.working_.push_back(working("10", "20", OrderStatus::PENDING, OrderSide::BUY));
+
+  const auto refused = guard.check(planned("1", "70000"), portfolio, with_basis(open_market()));
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::VALUE_NOT_KNOWN);
+}
+
+TEST_CASE("a position that has gone flat does not refuse orders in another instrument") {
+  // `ReplayLedger` keeps a lot after it returns to flat and a broker may list a closed position.
+  // Requiring a mark for one would let an instrument nobody holds any more refuse everything.
+  RiskLimits limits;
+  limits.max_gross_exposure_ = Decimal64::parse("10000000");
+  const RiskGuard guard(limits);
+
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("100"));
+  auto closed = holding("0");
+  closed.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "000660"};
+  portfolio.positions_.push_back(closed);
+
+  // The basis describes Samsung only, and the flat row is not a reason to refuse.
+  REQUIRE_FALSE(guard.check(planned("1", "70000"), portfolio, with_basis(open_market())));
+
+  // But a flat row with an order still working on it does need valuing, because that order can fill.
+  auto resting = working("10", "0", OrderStatus::PENDING, OrderSide::BUY);
+  resting.order_.instrument_ = closed.instrument_;
+  portfolio.working_.push_back(resting);
+  const auto refused = guard.check(planned("1", "70000"), portfolio, with_basis(open_market()));
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::VALUE_NOT_KNOWN);
+}
+
 TEST_CASE("a limit order is valued at its limit, not at a cheaper quote") {
   // A basis carrying only the last quote under-reports a limit order that can fill above it, which
   // is the one direction a ceiling must not err in.

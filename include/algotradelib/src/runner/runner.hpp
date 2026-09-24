@@ -920,6 +920,12 @@ private:
       instruments.push_back(id);
     };
     for (const auto& position : view.positions_) {
+      // Flat rows carry no exposure and are skipped for the reason `projected_gross_exposure` gives:
+      // a replay keeps a lot after it returns to flat, and requiring a mark for one would let a
+      // closed position refuse orders in an instrument it has nothing to do with.
+      if (position.quantity_.coefficient() == 0) {
+        continue;
+      }
       note(position.instrument_);
     }
     for (const auto& working : view.working_) {
@@ -954,10 +960,16 @@ private:
       // position at nothing, which is the silent omission this resolution exists to refuse. Either
       // leaves the instrument unresolved, and the guard turns that into `VALUE_NOT_KNOWN`.
       const auto zero = Decimal64::parse("0");
-      auto price = context_.last_price(id);
-      if (price && !decimal_less(zero, *price)) {
-        price = std::nullopt;
+      const auto quoted = context_.last_price(id);
+      // **A quote that is present and not a price leaves the instrument unresolved**, rather than
+      // falling through to the position's older mark. Falling back would be the quiet outcome: the
+      // ceiling would answer from a stale figure while the current quote said something impossible,
+      // and nothing would report that the data was wrong. Absent is a different thing from invalid,
+      // and only absent gets the fallback.
+      if (quoted && !decimal_less(zero, *quoted)) {
+        continue;
       }
+      auto price = quoted;
       if (!price && position != nullptr && decimal_less(zero, position->last_price_)) {
         price = position->last_price_;
       }
