@@ -369,7 +369,13 @@ TEST_CASE(
 
   REQUIRE(completed == 3);
 
-  // Two of the three had to wait a full interval each.
+  // Two of the three were held back, counted by the client that held them.
+  REQUIRE(client->admission_waits() == 2);
+
+  // And time really passed, which is a different claim from the counters below and the reason this
+  // *floor* stays. `delayed_` and `waited_` are what the pacer decided; an admission delay computed
+  // too short would still record two delays and satisfy them, and would not survive this line. Load
+  // can only make a floor truer, unlike the ceiling this branch removed.
   REQUIRE(elapsed >= std::chrono::milliseconds(40));
 
   const auto* stats = client->rate_limits() ? &client->rate_limits()->stats() : nullptr;
@@ -457,16 +463,21 @@ TEST_CASE("an unspecified budget leaves the transport entirely unpaced") {
 
   // Six requests that a budget would have spaced out go straight through.
   //
-  // **Asserted by the absent controller above, not by a stopwatch.** An earlier version of this test
-  // also required the whole run to finish inside 500ms, which measured the machine rather than the
-  // library: `rate_limits() == nullptr` already means there is no code path that could pace, so the
-  // timing line added no claim about this transport and one large claim about how busy the host is.
-  // It failed on loaded machines and pointed the reader at the rate limiter, which was never what
-  // had broken.
+  // **Asserted by the admission counter, not by a stopwatch.** An earlier version required the whole
+  // run to finish inside 500ms, which measured the machine: it failed on a loaded host and named the
+  // rate limiter, which was never what had broken.
   //
-  // The opposite direction is safe and is used in the paced test above: a *floor* on elapsed time
-  // says the pacer really waited, and load can only make it truer.
+  // `rate_limits() == nullptr` alone is *not* enough to replace it, which is worth stating because
+  // it looks like it should be. The client owns `admission_timer_` independently of `limiter_`, so a
+  // regression that armed that timer on the no-budget path would still deliver all six responses on
+  // one connection and satisfy every other assertion here -- while delaying every request on an
+  // unmetered API, which is exactly the user-visible harm this case exists to prevent.
+  //
+  // `admission_waits()` observes the thing itself: the number of times a request was held back. A
+  // connection with no budget must report zero, and that is true on a fast host and a hung one
+  // alike.
   REQUIRE(completed == 6);
+  REQUIRE(client->admission_waits() == 0);
   REQUIRE(server.connectionCount() == 1);
 }
 

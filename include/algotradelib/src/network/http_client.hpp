@@ -30,6 +30,7 @@
 #include <boost/beast/ssl.hpp>
 
 #include <chrono>
+#include <cstdint>
 #include <deque>
 #include <map>
 #include <memory>
@@ -298,6 +299,17 @@ public:
     return limiter_ ? &*limiter_ : nullptr;
   }
 
+  /**
+   * Returns how many times a request was held back to wait for admission.
+   *
+   * **Counted on the client rather than on the pacer, because the timer is the client's.**
+   * `RateLimitStats::delayed_` records what the *pacer* decided, and a pacer only exists when a
+   * budget was configured -- so nothing recorded whether an unpaced connection dispatched promptly.
+   * That gap is what made "this transport is unpaced" untestable except by timing it, and timing it
+   * asserts the machine. A connection with no budget must report zero here, always.
+   */
+  std::uint64_t admission_waits() const noexcept { return admission_waits_; }
+
   /** Initiates a queued request and completes with a response or error. */
   template <typename CompletionToken>
   auto async_request(HttpRequest request_value, CompletionToken&& token) {
@@ -387,6 +399,7 @@ private:
   bool resolve_timed_out_{false};
   std::deque<Pending> queue_;
   std::optional<RateLimitController> limiter_;
+  std::uint64_t admission_waits_{0};
   std::optional<std::chrono::steady_clock::time_point> waiting_since_;
   std::optional<http::request<http::string_body>> active_request_;
   std::optional<http::response_parser<http::string_body>> parser_;
@@ -494,6 +507,7 @@ private:
       if (!waiting_since_) {
         waiting_since_ = std::chrono::steady_clock::now();
       }
+      ++admission_waits_;
       admission_timer_.expires_after(delay);
       admission_timer_.async_wait([self = shared_from_this()](beast::error_code ec) {
         if (ec) {
