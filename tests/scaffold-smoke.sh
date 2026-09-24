@@ -102,6 +102,59 @@ table_rows() {
     '
 }
 
+# Prints any row of a normalized table that is not a complete report row. Empty output means all are.
+#
+# The same field rules `report_row_fills` applies to one row, applied to a file: name first, integer
+# fill count last, and only figures, `%`, `undefined` or `--` between.
+invalid_rows() {
+    awk '
+        {
+            if (NF < 5) { print; next }
+            if ($NF !~ /^[0-9]+$/) { print; next }
+            for (field = 2; field < NF; ++field) {
+                if ($field !~ /^-?[0-9]+(\.[0-9]+)?$/ &&
+                    $field != "%" && $field != "undefined" && $field != "--") {
+                    print
+                    next
+                }
+            }
+        }
+    ' "$1"
+}
+
+# Asserts that a parsed table has exactly `want` rows, one per distinct strategy, each a complete
+# report row.
+#
+# Applied to all three tables -- README.md's, the program's, and the perturbed program's -- because
+# checking only some of them is how this file kept shipping holes. Review defeated the perturbed side
+# with `MyStrategy(5) incomplete` and with a duplicated row, both of which the baseline side had been
+# rejecting since round 2; the rule existed and had not reached every place it applied.
+assert_valid_table() {
+    table=$1
+    label=$2
+    want=$3
+
+    rows=$(grep -c '[A-Za-z]' "$table" || true)
+    distinct=$(awk '{ print $1 }' "$table" | sort -u | grep -c '[A-Za-z]' || true)
+
+    if [ "$rows" -ne "$want" ]; then
+        printf '%s produced %s strategy rows, wanted %s\n' "$label" "$rows" "$want" >&2
+        cat "$table" >&2
+        exit 1
+    fi
+    if [ "$distinct" -ne "$rows" ]; then
+        printf '%s produced %s rows but only %s distinct strategies\n' "$label" "$rows" "$distinct" >&2
+        cat "$table" >&2
+        exit 1
+    fi
+
+    malformed=$(invalid_rows "$table")
+    if [ -n "$malformed" ]; then
+        printf '%s produced a line that is not a complete report row:\n%s\n' "$label" "$malformed" >&2
+        exit 1
+    fi
+}
+
 report_row_fills() {
     awk -v want="$1" '
         $1 == want {
@@ -171,17 +224,13 @@ if [ "$BACKEND" = ON ]; then
     printf '%s\n' "$OUTPUT" | table_rows | sort > "$OUTPUT_ROWS"
 
     EXPECTED_COUNT=$(grep -c '[A-Za-z]' "$README_ROWS" || true)
-    DISTINCT_NAMES=$(awk '{ print $1 }' "$README_ROWS" | sort -u | grep -c '[A-Za-z]' || true)
     if [ "$EXPECTED_COUNT" -lt 4 ]; then
         printf 'found %s strategy rows in README.md, wanted at least 4 -- has the published table been removed?\n' \
             "$EXPECTED_COUNT" >&2
         exit 1
     fi
-    if [ "$DISTINCT_NAMES" -ne "$EXPECTED_COUNT" ]; then
-        printf 'README.md publishes %s rows but only %s distinct strategies -- a duplicated row would leave the others unchecked\n' \
-            "$EXPECTED_COUNT" "$DISTINCT_NAMES" >&2
-        exit 1
-    fi
+    assert_valid_table "$README_ROWS" 'README.md' "$EXPECTED_COUNT"
+    assert_valid_table "$OUTPUT_ROWS" 'the generated program' "$EXPECTED_COUNT"
 
     if ! cmp -s "$README_ROWS" "$OUTPUT_ROWS"; then
         printf 'the generated program did not print the table README.md publishes\n' >&2
@@ -243,12 +292,16 @@ if [ "$BACKEND" = ON ]; then
         exit 1
     fi
 
-    # The same four strategies must still be there. Without this, a perturbed run that dropped three
-    # of them would read as a successful change.
+    # The perturbed table is held to every rule the baseline is: the right number of rows, one per
+    # distinct strategy, each a complete report row. A perturbed run that printed `MyStrategy(5)
+    # incomplete`, or an extra copy of a row, passed everything here before this was added.
+    assert_valid_table "$PERTURBED_ROWS" 'the perturbed program' "$EXPECTED_COUNT"
+
+    # ...and it must still be comparing the same strategies, not four different ones.
     awk '{ print $1 }' "$README_ROWS"    | sort -u > "$WORK_DIR/names-expected.txt"
     awk '{ print $1 }' "$PERTURBED_ROWS" | sort -u > "$WORK_DIR/names-perturbed.txt"
     if ! cmp -s "$WORK_DIR/names-expected.txt" "$WORK_DIR/names-perturbed.txt"; then
-        printf 'the perturbed program did not compare the same four strategies\n' >&2
+        printf 'the perturbed program did not compare the same strategies\n' >&2
         printf -- '--- expected ---\n' >&2; cat "$WORK_DIR/names-expected.txt" >&2
         printf -- '--- got ---\n' >&2;      cat "$WORK_DIR/names-perturbed.txt" >&2
         exit 1
