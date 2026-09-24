@@ -298,8 +298,17 @@ public:
     previous_ = event;
   }
 
-  /** Ends the replay, counting whatever never filled. */
+  /**
+   * Ends the replay, counting whatever never filled.
+   *
+   * The portfolio is installed first because `Runner::stop` calls `on_stop` and settles what it
+   * asks for, and a shutdown handler withdrawing or flattening has to see the orders placed during
+   * the final bar. Without this it sees them only when a limit happened to be enabled -- a
+   * reservation covering the gap by accident, since `persist_reservation` writes nothing when no
+   * limit needs it.
+   */
   void finish() {
+    install_portfolio();
     drain_reports(runner_.stop());
     result_.unfilled_ = runner_.executor().queued().size();
   }

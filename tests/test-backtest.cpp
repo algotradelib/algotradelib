@@ -1938,3 +1938,45 @@ TEST_CASE("buying power is spent by an order that is still resting") {
 
   REQUIRE(refusals_for(engine.result(), strategy::GuardReason::INSUFFICIENT_BUYING_POWER) > 0);
 }
+
+namespace {
+
+/** Rests a limit buy on every bar, and withdraws everything outstanding when the run ends. */
+struct WithdrawsOnStop {
+  std::size_t outstanding_at_stop_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")),
+        far_below()
+      ).with_tag("rests-until-stop")
+    );
+  }
+
+  template <class Ctx>
+  void on_stop(Ctx& ctx) {
+    outstanding_at_stop_ = ctx.portfolio().working_.size();
+    for (const auto& working : ctx.portfolio().working_) {
+      ctx.cancel(working.ref_, "shutting down");
+    }
+  }
+};
+
+} // namespace
+
+TEST_CASE("a shutdown handler sees the orders placed on the final bar") {
+  // `Runner::stop` calls `on_stop` and settles what it asks for, so a handler withdrawing what is
+  // outstanding decides on whatever portfolio was installed last. The order placed during the final
+  // `on_bar` is the one most likely to be missed, and it is also the one still resting.
+  //
+  // No limit is enabled here on purpose: `persist_reservation` writes nothing when none needs it, so
+  // a replay that relied on a reservation to carry that order would show `on_stop` an empty book.
+  backtest::Backtester<WithdrawsOnStop> engine(WithdrawsOnStop{}, replay_config());
+  replay_flat_bars(engine, 2);
+
+  // Both bars placed an order and neither could fill, so both are outstanding when the run ends.
+  REQUIRE(engine.strategy().outstanding_at_stop_ == 2);
+  REQUIRE(engine.result().unfilled_ == 0);
+}
