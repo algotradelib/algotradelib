@@ -100,6 +100,22 @@ struct RefusedCancel {
   strategy::HaltReason reason_{strategy::HaltReason::OPERATOR};
 };
 
+/**
+ * One cancellation that was refused, and by whom.
+ *
+ * Carried on the entry rather than left to the executor's `last_error()`, for the reason the
+ * placement path gives: a pass sends several instructions, and a later accepted one clears that
+ * error, so a report would outlive the only record of why this entry is here. The two refusals
+ * differ in whether a request went out and was counted, which is the whole reason to tell them
+ * apart.
+ */
+template <typename BrokerTag>
+struct RejectedCancel {
+  OrderRef<BrokerTag> ref_;
+  /** False when the binding refused to send it, so no broker was asked. */
+  bool by_broker_{true};
+};
+
 /** What a dry run decided, in the order it decided. */
 template <typename BrokerTag>
 struct DryRunReport {
@@ -120,14 +136,17 @@ struct DryRunReport {
    */
   std::vector<OrderRef<BrokerTag>> would_cancel_;
   /**
-   * Instructions that were not placed, with the reason.
+   * Instructions that were not placed, each with its own reason.
    *
    * Three things land here and they share a consequence rather than a cause: reconciliation could
-   * not build the instruction, the broker refused it, or the binding refused to send it (an
-   * idempotency key at a broker that accepts none, say). In every case the order does not exist and
-   * nothing needs reconciling. Only the middle one was a request the broker counted, which is why
-   * `SendOutcome` keeps them apart even though this bucket does not; `last_error()` on the executor
-   * says which of the two refusals it was.
+   * not build the instruction, the broker refused it (`BROKER_REFUSED`), or the binding refused to
+   * send it (`BINDING_REFUSED` -- an idempotency key at a broker that accepts none, say). In every
+   * case the order does not exist and nothing needs reconciling; only the broker's refusal was a
+   * request the broker counted.
+   *
+   * **The reason is on the entry, not in `last_error()`.** A pass places several orders, and a
+   * later accepted one clears the executor's last error, so a report would outlive the only record
+   * of why an earlier entry is here.
    */
   std::vector<strategy::Rejection> rejected_;
   /** Instructions a guard refused, with the limit and what was attempted. */
@@ -142,15 +161,15 @@ struct DryRunReport {
   /** Instructions whose send failed in transit, leaving their outcome unknown. */
   std::vector<strategy::PlannedOrder> indeterminate_;
   /**
-   * Cancellations that were refused, by the broker or by the binding.
+   * Cancellations that were refused, each saying whether the broker or the binding refused it.
    *
    * A refusal is an answer about the *request*: it was not accepted, so nothing needs reconciling.
    * It says nothing about the order, which may still be working or may have filled a moment
    * earlier -- a fill is one of the ordinary reasons a broker refuses a withdrawal. Either way the
-   * request did not go, which is why this is not `would_cancel_`. The placement path maps both
-   * kinds of refusal into `rejected_` the same way, and `last_error()` says which this was.
+   * request did not go, which is why this is not `would_cancel_`. The placement path carries the
+   * same distinction on `rejected_`.
    */
-  std::vector<OrderRef<BrokerTag>> rejected_cancel_;
+  std::vector<RejectedCancel<BrokerTag>> rejected_cancel_;
   /**
    * Cancellations whose send failed in transit, leaving their outcome unknown.
    *
@@ -652,7 +671,7 @@ private:
           guard_.note_sent(inputs.now_);
           report.rejected_.push_back(
             strategy::Rejection{
-              strategy::RejectReason::NOT_REPRESENTABLE, order.instrument_, order.tag_
+              strategy::RejectReason::BROKER_REFUSED, order.instrument_, order.tag_
             }
           );
           break;
@@ -670,10 +689,12 @@ private:
           // have been allowed, for a request nobody made. Reported as a rejection because that is
           // what it is from the order's point of view -- it does not exist, and nothing needs
           // reconciling -- and the runner keeps trading, because the next instruction may be
-          // perfectly sendable.
+          // perfectly sendable. The reason is carried on the entry itself rather than left to
+          // `last_error()`: a later accepted order in the same pass clears that, so a report can
+          // outlive the only record of which refusal this was.
           report.rejected_.push_back(
             strategy::Rejection{
-              strategy::RejectReason::NOT_REPRESENTABLE, order.instrument_, order.tag_
+              strategy::RejectReason::BINDING_REFUSED, order.instrument_, order.tag_
             }
           );
           break;
@@ -957,7 +978,7 @@ private:
         // a withdrawal that happened, and it is not proof the order is working either -- a fill is
         // one of the ordinary reasons a withdrawal is refused. It still spent a request.
         guard_.note_sent(context_.now());
-        report.rejected_cancel_.push_back(ref);
+        report.rejected_cancel_.push_back(RejectedCancel<Tag>{ref, /*by_broker=*/true});
         return;
       case SendOutcome::INDETERMINATE:
         // Marked *and* reported apart from `would_cancel_`. The mark was always here; reporting it
@@ -974,7 +995,7 @@ private:
         // counted nothing, and a rate limit must never become the reason a later order cannot go.
         // Reported beside the broker's own refusals because what it means for the order is the
         // same -- it was not withdrawn -- while `last_error()` says which of the two it was.
-        report.rejected_cancel_.push_back(ref);
+        report.rejected_cancel_.push_back(RejectedCancel<Tag>{ref, /*by_broker=*/false});
         return;
       case SendOutcome::UNAVAILABLE:
         // Not reported as a withdrawal that happened, because it did not. A cancellation nobody

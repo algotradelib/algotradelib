@@ -523,6 +523,45 @@ strategy::Portfolio<FakeBroker> held_position(const char* held, const char* sell
 
 } // namespace
 
+TEST_CASE("a withdrawal the binding refused says so on its own entry") {
+  // The cancellation half of the same rule. Both refusals land in `rejected_cancel_` because the
+  // order's fate is the same -- it was not withdrawn -- and the entry says which, because a later
+  // instruction in the same pass clears the executor's last error.
+  FakeSession<SellableInHoldings> session;
+  strategy::RiskLimits limits;
+  limits.enforce_sellable_quantity_ = true;
+
+  FlipRunner<SellableInHoldings> live_runner(
+    FlipTarget{}, limits, 512, live::SessionExecutor<FakeSession<SellableInHoldings>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+  strategy::Portfolio<FakeBroker> portfolio = held_position<SellableInHoldings>("10", "10");
+  // A row the broker listed with no reference of its own: nothing can address it, so the binding
+  // refuses rather than asking a broker to withdraw an order identified by an empty string.
+  WorkingOrder<FakeBroker> unaddressable;
+  unaddressable.order_.instrument_ = samsung();
+  unaddressable.order_.side_ = OrderSide::SELL;
+  unaddressable.order_.status_ = OrderStatus::PENDING;
+  unaddressable.order_.quantity_ = Decimal64::parse("10");
+  unaddressable.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+  unaddressable.amendable_quantity_ = Decimal64::parse("10");
+  portfolio.working_.push_back(unaddressable);
+  live_runner.context().set_portfolio(portfolio);
+
+  // Bar one targets flat, which the resting sell already achieves; bar two targets long, so the
+  // sell opposes it and must be withdrawn.
+  live_runner.feed(bar_at(1, "70000"));
+  const auto second = live_runner.feed(bar_at(2, "70000"));
+
+  REQUIRE(second.rejected_cancel_.size() == 1);
+  CHECK_FALSE(second.rejected_cancel_[0].by_broker_);
+  CHECK(second.would_cancel_.empty());
+  CHECK(session.canceled().empty());
+}
+
 TEST_CASE("a reserved order is withdrawn by the reference the broker actually issued") {
   // The reservation is a working row this library wrote, and reconciliation reads working rows: a
   // row opposing the next target goes on the cancel list **by its reference**. A synthetic row with
@@ -599,8 +638,12 @@ TEST_CASE("a send the binding itself refused spends no rate-limit budget") {
   // Bar one asks for a guarantee this broker cannot give, so nothing is sent.
   const auto first = live_runner.feed(bar_at(1, "70000"));
   CHECK(session.placed().empty());
-  CHECK(first.rejected_.size() == 1);
   CHECK(first.would_place_.empty());
+  REQUIRE(first.rejected_.size() == 1);
+  // **The reason is on the entry**, not in `last_error()`: a pass places several orders and a later
+  // accepted one clears that, so a report would outlive the only record of why this entry is here.
+  // It also must not read as `NOT_REPRESENTABLE`, which claims the arithmetic overflowed.
+  CHECK(first.rejected_[0].reason_ == strategy::RejectReason::BINDING_REFUSED);
 
   // Bar two asks for nothing unusual, and the window must still have room for it.
   const auto second = live_runner.feed(bar_at(2, "70000"));

@@ -267,11 +267,12 @@ struct LoopReport {
    */
   std::size_t closing_placed_{0};
   /**
-   * Closing instructions that were rejected: reconciliation could not build them, or the broker
-   * refused them.
+   * Closing instructions that were rejected: reconciliation could not build them, the broker
+   * refused them, or the binding refused to send them.
    *
-   * Both are answers rather than doubts -- nothing needs reconciling either way -- and both leave
-   * the position exactly where it was.
+   * All three are answers rather than doubts -- nothing needs reconciling any of them -- and all
+   * three leave the position exactly where it was, which is why they share a count. The report's
+   * `rejected_` and `rejected_cancel_` entries say which each one was.
    */
   std::size_t closing_rejected_{0};
   /** Closing instructions a guard refused. */

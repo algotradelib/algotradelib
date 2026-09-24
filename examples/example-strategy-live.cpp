@@ -139,8 +139,9 @@ int drive(const InstrumentId& instrument, const MarketState& state, R live_runne
     std::cout << "refused by a guard: " << strategy::guard_reason_name(refusal.reason_) << '\n';
   }
   for (const auto& rejection : report.rejected_) {
-    std::cout << "could not build an order: "
-              << strategy::reject_reason_name(rejection.reason_) << '\n';
+    // Not always "could not build": the bucket also holds a broker's refusal and one this binding
+    // made without asking a broker, and the reason on the entry is what says which.
+    std::cout << "not placed: " << strategy::reject_reason_name(rejection.reason_) << '\n';
   }
   for (const auto& held : report.withheld_) {
     std::cout << "withheld pending reconciliation: " << held.detail_ << '\n';

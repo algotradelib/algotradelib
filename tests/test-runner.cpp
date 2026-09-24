@@ -475,6 +475,8 @@ TEST_CASE("a replay withdraws a reservation it never had a reference for") {
   REQUIRE(second.would_cancel_.size() == 1);
   REQUIRE(second.unresolved_cancel_.empty());
   REQUIRE(second.rejected_cancel_.empty());
+  // And the reservation it withdrew is no longer counted against the ceiling on a third bar.
+  REQUIRE(second.rejected_.empty());
 }
 
 TEST_CASE("a sell resting on the other side is not relief for a buy") {
@@ -1158,7 +1160,10 @@ TEST_CASE("a cancellation the broker rejected is not reported as a withdrawal") 
   const auto report = dry.feed(bar_at(10, "70000"));
 
   REQUIRE(report.rejected_cancel_.size() == 1);
-  REQUIRE(report.rejected_cancel_.front().primary_ == "0001");
+  REQUIRE(report.rejected_cancel_.front().ref_.primary_ == "0001");
+  // The broker answered, so the entry says so: the other way into this bucket is a withdrawal the
+  // binding refused to send, and the two differ in whether a request went out at all.
+  REQUIRE(report.rejected_cancel_.front().by_broker_);
   REQUIRE(report.would_cancel_.empty());
   // Unlike an indeterminate one, a rejection leaves nothing in doubt.
   REQUIRE_FALSE(dry.ledger().requires_reconcile(samsung()));

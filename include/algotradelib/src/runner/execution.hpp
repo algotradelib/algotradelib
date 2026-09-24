@@ -20,8 +20,8 @@ namespace runner {
  * may have recorded the order and lost the reply, or never received it at all. Retrying is how a
  * position gets doubled; assuming failure is how a live order goes unwatched.
  *
- * So the outcome has four values, not two. The third -- `INDETERMINATE` -- obliges the runner to
- * stop and read the broker's own order list before it may act on that instrument again. The fourth
+ * So a send does not have two outcomes. `INDETERMINATE` obliges the runner to stop and read the
+ * broker's own order list before it may act on that instrument again, and `REFUSED_LOCALLY`
  * separates the binding's own refusal from the broker's, because only one of them is a request the
  * broker counted.
  */

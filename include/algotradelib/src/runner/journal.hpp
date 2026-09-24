@@ -67,10 +67,14 @@ inline std::optional<JournalAction> journal_action_from(std::string_view text) n
 /**
  * What a journal line says about an instruction's fate.
  *
- * `SendOutcome` with one extra value, and the extra value is the whole point. `PENDING` is written
+ * Deliberately coarser than `SendOutcome`, plus `PENDING`, which is the whole point: it is written
  * *before* the send is attempted, so it is the only record that exists during the window this
- * feature was built for: the interval in which the bytes may be on the wire and the process may
- * die. The three terminal values are what a second line later says happened.
+ * feature was built for -- the interval in which the bytes may be on the wire and the process may
+ * die. Every other value is terminal, and what a second line later says happened.
+ *
+ * Coarser because a journal answers one question: **does the order exist?** Who decided that it
+ * does not -- the broker, or the binding that never asked -- is a `SendOutcome` distinction, and
+ * the report carries it. Collapsing them here keeps a recovery sweep reading one thing.
  *
  * A `PENDING` line with no terminal companion is therefore not a bug in the journal. It is the
  * signal — it means a process stopped between the write and the answer, and the order's existence
@@ -81,7 +85,15 @@ enum class JournalOutcome {
   PENDING,
   /** The broker recorded the instruction. */
   ACCEPTED,
-  /** The broker refused the instruction. */
+  /**
+   * The instruction was refused, so it does not exist.
+   *
+   * **Not necessarily by the broker.** A binding that refuses to send an instruction it cannot
+   * express -- an idempotency key at a broker that accepts none -- writes this line too, having
+   * asked nobody, and so does an inner executor whose own machinery refused. What every one of them
+   * shares is the only thing a recovery sweep needs: the order does not exist, and nothing needs
+   * reconciling. The report's rejection buckets say who decided.
+   */
   REJECTED,
   /** The request failed in transit. Whether the instruction exists is unknown. */
   INDETERMINATE,

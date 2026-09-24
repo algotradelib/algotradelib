@@ -48,6 +48,25 @@ enum class RejectReason {
   NOT_REPRESENTABLE,
   /** A limit price fell outside today's band and the band leaves no valid price. */
   NO_PERMITTED_PRICE,
+  /**
+   * The broker refused the instruction, which reconciliation had built correctly.
+   *
+   * Unlike every reason above it, this is not a decision this library made. It is here because a
+   * report's rejection bucket holds both, and a caller reading one needs to know which -- a broker
+   * refusal spent a request and says something about the account or the instrument, while the
+   * reasons above say the library could not build a valid order at all. Before this existed, a
+   * broker refusal was recorded as `NOT_REPRESENTABLE`, which claims the arithmetic overflowed.
+   */
+  BROKER_REFUSED,
+  /**
+   * The binding refused to send it, so no broker was asked.
+   *
+   * An idempotency key at a broker that accepts none, or a withdrawal for an order the broker has
+   * no reference for. Distinct from `BROKER_REFUSED` because no request went out and none was
+   * counted, and distinct from the reasons above because reconciliation built the instruction
+   * correctly -- what it asked for is something this binding cannot express.
+   */
+  BINDING_REFUSED,
 };
 
 /** Returns a stable lowercase name for `reason`, for logs and structured reporting. */
@@ -67,6 +86,10 @@ inline constexpr std::string_view reject_reason_name(RejectReason reason) noexce
       return "not_representable";
     case RejectReason::NO_PERMITTED_PRICE:
       return "no_permitted_price";
+    case RejectReason::BROKER_REFUSED:
+      return "broker_refused";
+    case RejectReason::BINDING_REFUSED:
+      return "binding_refused";
   }
   return "unknown";
 }
