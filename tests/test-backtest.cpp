@@ -1724,3 +1724,217 @@ TEST_CASE("an order the bar fills is gone from the portfolio that bar installs")
   REQUIRE(engine.result().executions_.size() == 1);
   REQUIRE(engine.result().unfilled_ == 0);
 }
+
+// ---------------------------------------------------------------------------
+// The acceptance slice: the guards that read `working_` now fire in a replay
+//
+// Every case here is a rule the library already enforces live. Each one fails
+// against the build before `Backtester` filled the field in.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** A limit that the market in these tests never reaches, so an order at it rests. */
+strategy::Price far_below() {
+  return *strategy::Price::checked(Decimal64::parse("50000"), krx_grid());
+}
+
+/** A limit above the market, so a buy at it fills and a sell at it rests. */
+strategy::Price far_above() {
+  return *strategy::Price::checked(Decimal64::parse("90000"), krx_grid());
+}
+
+/** Restates one limit target every bar, which is the ordinary shape reconciliation exists for. */
+struct RestatesLimitTarget {
+  Decimal64 quantity_{Decimal64::parse("10")};
+  strategy::Price limit_{far_below()};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = quantity_;
+    target.limit_ = limit_;
+    target.tag_ = "restates";
+    ctx.submit(target);
+  }
+};
+
+/** Rests a sell above the market, then restates a long target that opposes it. */
+struct SellsHighThenBuysBack {
+  std::size_t bars_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ++bars_;
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    // A resting sell first, then a target that wants the position back.
+    target.target_quantity_ = bars_ == 1 ? Decimal64::parse("-10") : Decimal64::parse("10");
+    target.limit_ = bars_ == 1 ? far_above() : far_below();
+    target.tag_ = "opposes";
+    ctx.submit(target);
+  }
+};
+
+/** Places one resting limit order per bar, never restating a target. */
+struct AddsARestingOrderEveryBar {
+  OrderSide side_{OrderSide::BUY};
+  Decimal64 quantity_{Decimal64::parse("10")};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        bar.instrument_, side_, strategy::SizeSpec::quantity(quantity_),
+        side_ == OrderSide::BUY ? far_below() : far_above()
+      ).with_tag("adds")
+    );
+  }
+};
+
+/**
+ * Buys ten at market, then rests a sell of ten above the market on every later bar.
+ *
+ * The holding makes the sellable figure ten, so the first resting sell uses it up and every later
+ * one has to be refused for the quantity already committed rather than for an empty position.
+ */
+struct BuysThenRestsSells {
+  std::size_t bars_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ++bars_;
+    if (bars_ == 1) {
+      ctx.submit(
+        strategy::OrderIntent::market(
+          bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
+        ).with_tag("stock-up")
+      );
+      return;
+    }
+    if (bars_ == 2) {
+      // The buy fills against this bar; leave the position alone for one bar before selling.
+      return;
+    }
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")),
+        far_above()
+      ).with_tag("rests-a-sell")
+    );
+  }
+};
+
+/** Counts how many times a guard refused for `reason`. */
+std::size_t refusals_for(const backtest::ReplayResult& result, strategy::GuardReason reason) {
+  std::size_t count = 0;
+  for (const auto& refusal : result.refused_) {
+    if (refusal.reason_ == reason) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+/** Replays `bars` flat bars at 70,000 through `engine`. */
+template <typename Engine>
+void replay_flat_bars(Engine& engine, int bars) {
+  for (int day = 0; day < bars; ++day) {
+    engine.feed(
+      moving_bar(utc(2026, 3, 10 + day, 6, 30), BarInterval::ONE_DAY, "70000", "70000")
+    );
+  }
+  engine.finish();
+}
+
+} // namespace
+
+TEST_CASE("reconciliation nets a restated target against the order already resting") {
+  // The ordinary shape: a strategy states the same target every bar. Live it nets against its own
+  // resting order and sends nothing more. In a replay it saw no resting order, so it re-sent the
+  // whole target every bar -- three bars, three orders, thirty shares working for a target of ten.
+  backtest::Backtester<RestatesLimitTarget> engine(RestatesLimitTarget{}, replay_config());
+  replay_flat_bars(engine, 3);
+
+  REQUIRE(engine.result().executions_.empty());
+  REQUIRE(engine.result().unfilled_ == 1);
+}
+
+TEST_CASE("reconciliation withdraws a resting order that opposes the new target") {
+  // Step 2 of `reconcile`: an order working the *wrong way* is withdrawn however small the drift,
+  // because leaving it resting works against the target rather than merely failing to reach it.
+  // With no rows there was nothing to oppose, so a replay left the sell resting while it bought.
+  backtest::Backtester<SellsHighThenBuysBack> engine(SellsHighThenBuysBack{}, replay_config());
+  replay_flat_bars(engine, 3);
+
+  // The resting sell is gone and only the buy side is left outstanding.
+  REQUIRE(engine.result().unfilled_ == 1);
+  REQUIRE(engine.result().executions_.empty());
+}
+
+TEST_CASE("the sellable check counts the sell already resting") {
+  // `ai/pre-trade-checks` refuses a sell whose quantity plus what is already resting on that side
+  // exceeds what the broker says is sellable. Ten are held and a replay reports all ten sellable,
+  // so the first resting sell of ten is allowed and the second must be refused -- and was not,
+  // because `working_quantity` summed an empty list.
+  //
+  // The position is real, which is the point: a strategy with nothing held is refused by this check
+  // whatever the resting quantity is, so it would pass this test without the fix and prove nothing.
+  auto config = replay_config();
+  config.limits_.enforce_sellable_quantity_ = true;
+
+  backtest::Backtester<BuysThenRestsSells> engine(BuysThenRestsSells{}, std::move(config));
+  replay_flat_bars(engine, 5);
+
+  REQUIRE(engine.ledger().quantity_of(samsung()) == std::optional<Decimal64>(Decimal64::parse("10")));
+  REQUIRE(refusals_for(engine.result(), strategy::GuardReason::QUANTITY_NOT_SELLABLE) > 0);
+}
+
+TEST_CASE("the position ceiling counts what is resting, not only what is held") {
+  // `max_position_quantity_` measures the position that would exist if the order and everything
+  // outstanding filled. Ten a bar against a ceiling of fifteen breaches on the second bar; with no
+  // rows the projection reduced to the held quantity, which is zero until something fills.
+  auto config = replay_config();
+  config.limits_.max_position_quantity_ = Decimal64::parse("15");
+
+  backtest::Backtester<AddsARestingOrderEveryBar> engine(
+    AddsARestingOrderEveryBar{}, std::move(config)
+  );
+  replay_flat_bars(engine, 3);
+
+  REQUIRE(refusals_for(engine.result(), strategy::GuardReason::POSITION_LIMIT_EXCEEDED) > 0);
+}
+
+TEST_CASE("the exposure ceiling counts a resting buy") {
+  // `ai/guard-inputs` merged the projection max(|held + working_buys|, |held - working_sells|). In a
+  // replay both working sums were empty on every bar, so the ceiling it exists to make real reduced
+  // to |held| -- the defect that branch closed live, still open here.
+  auto config = replay_config();
+  // Ten at 70,000 is 700,000 a bar, so a ceiling of one million is breached by the second.
+  config.limits_.max_gross_exposure_ = Decimal64::parse("1000000");
+
+  backtest::Backtester<AddsARestingOrderEveryBar> engine(
+    AddsARestingOrderEveryBar{}, std::move(config)
+  );
+  replay_flat_bars(engine, 3);
+
+  REQUIRE(refusals_for(engine.result(), strategy::GuardReason::GROSS_EXPOSURE_EXCEEDED) > 0);
+}
+
+TEST_CASE("buying power is spent by an order that is still resting") {
+  // **Rows alone do not close this one.** `enforce_buying_power_` reads the scalar, and
+  // `ReplayLedger::snapshot` builds it from ledger cash that has not paid for anything outstanding.
+  // Two resting buys of 700,000 each against cash of a million: the second has to be refused, and
+  // was not, because the first had spent nothing the snapshot knew about.
+  auto config = replay_config();
+  config.cash_ = Decimal64::parse("1000000");
+  config.limits_.enforce_buying_power_ = true;
+
+  backtest::Backtester<AddsARestingOrderEveryBar> engine(
+    AddsARestingOrderEveryBar{}, std::move(config)
+  );
+  replay_flat_bars(engine, 3);
+
+  REQUIRE(refusals_for(engine.result(), strategy::GuardReason::INSUFFICIENT_BUYING_POWER) > 0);
+}
