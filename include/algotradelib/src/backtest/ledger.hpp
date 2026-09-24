@@ -204,6 +204,15 @@ public:
 
     lot->quantity_ = *resulting;
     lot->last_price_ = fill.price_;
+    // **The currency is recorded here because this is the only place it is known.** `mark` is not
+    // told one and neither is `equity_in`'s caller beyond the currency it is asking about, so a
+    // position that never wrote its own currency down cannot be told apart from one denominated in
+    // whatever the caller happened to ask for. `Currency` default-constructs to KRW
+    // (`core/types.hpp:154`), which makes the untold case silently *answer* rather than be absent --
+    // a USD position would read as Korean won to anything summing per currency.
+    if (!revalue(*lot, currency)) {
+      return false;
+    }
     if (!adjust_cash(currency, *after_commission)) {
       return false;
     }
@@ -216,6 +225,10 @@ public:
     for (auto& lot : positions_) {
       if (lot.instrument_ == instrument) {
         lot.last_price_ = price;
+        // The currency is the one `apply` recorded; a lot only exists because a fill opened it, so
+        // there is always one. Re-valuing here is what makes `market_value_` mean "at the latest
+        // mark" rather than "at the last fill".
+        revalue(lot, lot.market_value_.currency_);
       }
     }
   }
@@ -278,11 +291,19 @@ public:
       if (lot.quantity_.coefficient() == 0) {
         continue;
       }
-      const auto value = decimal_multiply(lot.quantity_, lot.last_price_);
-      if (!value) {
-        return std::nullopt;
+      // **The filter the documentation above always claimed and the code never did.** Every
+      // position used to contribute whatever it was denominated in, so a KRW holding was counted
+      // into `equity_in(USD)` -- an implicit conversion at a rate of one, which is the single thing
+      // `holdings-core` refuses to do. `Backtester` feeds this into the equity curve
+      // (`backtest/engine.hpp`), so every derived metric of a multi-currency replay inherited it.
+      //
+      // The currency comes from `market_value_`, written by `apply`. It is a value this ledger
+      // recorded rather than a default: `Currency()` is KRW, so trusting an unwritten field would
+      // reinstate the same silent inclusion under a different name.
+      if (!(lot.market_value_.currency_ == currency)) {
+        continue;
       }
-      const auto sum = decimal_add(total, *value);
+      const auto sum = decimal_add(total, lot.market_value_.amount_);
       if (!sum) {
         return std::nullopt;
       }
@@ -292,6 +313,29 @@ public:
   }
 
 private:
+  /**
+   * Writes `lot`'s market value from its quantity and latest mark, in `currency`.
+   *
+   * **Only `market_value_` is filled**, and the narrowness is deliberate. It is the one field
+   * per-currency arithmetic needs -- it is the only place a `HoldingPosition` states which currency
+   * it is denominated in -- and it is exact: quantity times the latest mark, which this ledger
+   * already computes. `purchase_value_`, `unrealized_profit_loss_` and `unrealized_return_` stay as
+   * they are; the first two are derivable but nothing reads them, and the third is a ratio whose
+   * scale nobody has chosen. Filling a field this ledger has no answer for would be the
+   * `ReportCaveats` problem one layer down.
+   *
+   * Returns false when the multiplication will not fit an exact decimal, which `apply` turns into a
+   * refusal rather than a position valued at a number it could not compute.
+   */
+  static bool revalue(HoldingPosition& lot, const Currency& currency) {
+    const auto value = decimal_multiply(lot.quantity_, lot.last_price_);
+    if (!value) {
+      return false;
+    }
+    lot.market_value_ = Money{*value, currency};
+    return true;
+  }
+
   HoldingPosition* find_or_open(const InstrumentId& instrument) {
     for (auto& lot : positions_) {
       if (lot.instrument_ == instrument) {

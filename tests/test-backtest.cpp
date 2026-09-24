@@ -199,6 +199,20 @@ backtest::ReplayLedger opening(const char* cash = "10000000") {
   return backtest::ReplayLedger(Decimal64::parse(cash), krw());
 }
 
+/** An execution in `instrument`, so a ledger can hold two currencies at once. */
+backtest::Execution filled_in(
+  const InstrumentId& instrument,
+  OrderSide side,
+  const char* quantity,
+  const char* price
+) {
+  auto execution = filled(side, quantity, price);
+  execution.fill_.instrument_ = instrument;
+  return execution;
+}
+
+InstrumentId apple() { return InstrumentId{Country::US, Venue::COMBINED, "AAPL"}; }
+
 } // namespace
 
 TEST_CASE("a buy moves the position and pays for it out of cash") {
@@ -324,6 +338,55 @@ TEST_CASE("cash in another currency is neither converted nor counted") {
   auto ledger = opening();
   REQUIRE_FALSE(ledger.cash_in(Currency{"USD"}));
   REQUIRE(ledger.equity_in(Currency{"USD"}) == std::optional<Decimal64>(Decimal64::parse("0")));
+}
+
+TEST_CASE("a position in another currency is not counted either") {
+  // **The case the test above could not catch.** `opening()` holds no positions, so it asked only
+  // whether cash was filtered, and passed however the position loop behaved. With a holding, the
+  // previous code returned the KRW position's value as USD equity -- an implicit conversion at a
+  // rate of one, in the figure `Backtester` turns into the equity curve.
+  auto ledger = opening();
+  REQUIRE(ledger.apply(filled(OrderSide::BUY, "10", "70000"), krw()));
+
+  REQUIRE(ledger.equity_in(Currency{"USD"}) == std::optional<Decimal64>(Decimal64::parse("0")));
+  // And the KRW answer is unchanged: 9,300,000 of cash plus 700,000 held.
+  REQUIRE(ledger.equity_in(krw()) == std::optional<Decimal64>(Decimal64::parse("10000000")));
+}
+
+TEST_CASE("two currencies are totalled apart, each seeing only its own positions") {
+  auto ledger = opening();
+  REQUIRE(ledger.apply(filled(OrderSide::BUY, "10", "70000"), krw()));
+  REQUIRE(ledger.apply(filled_in(apple(), OrderSide::BUY, "5", "200"), Currency{"USD"}));
+
+  // KRW: 9,300,000 cash plus 700,000 of Samsung. The Apple position contributes nothing.
+  REQUIRE(ledger.equity_in(krw()) == std::optional<Decimal64>(Decimal64::parse("10000000")));
+  // USD: no opening cash, so the account is 1,000 dollars short, plus 1,000 of Apple.
+  REQUIRE(ledger.cash_in(Currency{"USD"}) == std::optional<Decimal64>(Decimal64::parse("-1000")));
+  REQUIRE(ledger.equity_in(Currency{"USD"}) == std::optional<Decimal64>(Decimal64::parse("0")));
+
+  // **And a positive USD figure, because the line above is zero and a filter that dropped every
+  // position would also reach zero from the other side** -- it would report the -1,000 of cash
+  // alone. Marking Apple up moves USD equity and must leave KRW untouched.
+  ledger.mark(apple(), Decimal64::parse("300"));
+  REQUIRE(ledger.equity_in(Currency{"USD"}) == std::optional<Decimal64>(Decimal64::parse("500")));
+  REQUIRE(ledger.equity_in(krw()) == std::optional<Decimal64>(Decimal64::parse("10000000")));
+}
+
+TEST_CASE("a position states the currency it is denominated in, at its latest mark") {
+  // `Currency` default-constructs to KRW, so an unwritten `market_value_` does not read as absent --
+  // it reads as Korean won. Recording it on the fill is what lets anything sum per currency at all,
+  // and it is what the runner's exposure ceiling resolves a replay position's currency from.
+  auto ledger = opening();
+  REQUIRE(ledger.apply(filled_in(apple(), OrderSide::BUY, "5", "200"), Currency{"USD"}));
+
+  const auto& lot = ledger.positions().front();
+  REQUIRE(lot.market_value_.currency_ == Currency{"USD"});
+  REQUIRE(lot.market_value_.amount_ == Decimal64::parse("1000"));
+
+  // A mark re-values without a trade, and keeps the currency the fill recorded.
+  ledger.mark(apple(), Decimal64::parse("220"));
+  REQUIRE(ledger.positions().front().market_value_.amount_ == Decimal64::parse("1100"));
+  REQUIRE(ledger.positions().front().market_value_.currency_ == Currency{"USD"});
 }
 
 // ---------------------------------------------------------------------------

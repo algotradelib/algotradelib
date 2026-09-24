@@ -238,7 +238,7 @@ private:
         }
         continue;
       }
-      if (!ledger_.apply(*decision.execution_, config_.currency_)) {
+      if (!ledger_.apply(*decision.execution_, currency_for(order.instrument_))) {
         // Arithmetic that will not fit an exact decimal. Counted as unfilled rather than applied
         // partly, because a half-applied ledger is worse than an order that did not trade.
         continue;
@@ -290,6 +290,27 @@ private:
   }
 
   /** Returns the grid for `instrument`, unknown when no reference data was supplied. */
+  /**
+   * Returns the currency `instrument` trades in, from the reference data the replay was given.
+   *
+   * **Every fill used to be booked in `config_.currency_`**, which is documented as the currency the
+   * *starting cash* is in. A replay of a dollar-quoted instrument therefore banked dollars as won at
+   * a rate of one -- the implicit conversion Decision 6 forbids and `holdings-core` exists to refuse.
+   *
+   * The fallback is defensive rather than a policy: `reconcile` refuses an instrument with no
+   * reference data before a `PlannedOrder` exists (`strategy/reconcile.hpp`), so nothing can reach
+   * the fill model unregistered. It is written the conservative way round anyway -- an unregistered
+   * instrument books in the currency the ledger was opened in, which is the behaviour every existing
+   * replay already had.
+   */
+  Currency currency_for(const InstrumentId& instrument) const {
+    const auto reference = runner_.context().instrument(instrument);
+    if (!reference) {
+      return config_.currency_;
+    }
+    return reference->currency_;
+  }
+
   PriceRule rule_for(const InstrumentId& instrument) const {
     const auto reference = runner_.context().instrument(instrument);
     if (!reference) {
