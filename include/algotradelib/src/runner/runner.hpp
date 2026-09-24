@@ -573,9 +573,8 @@ private:
     //
     // **Only the duplicate send is suppressed; the picture planning reads is untouched.** Removing
     // the row from that view is the tempting fix and it is unsafe: `SendOutcome::ACCEPTED` on a
-    // withdrawal means the broker took the *request*, `PENDING_CANCEL` counts as open in
-    // `strategy::order_is_open`, and `backtest::QueueingExecutor::cancel` answers `ACCEPTED` even
-    // when it erased nothing. Sizing a replacement against an emptied book would place a fresh
+    // withdrawal means the broker took the *request*, and `PENDING_CANCEL` counts as open in
+    // `strategy::order_is_open`. Sizing a replacement against an emptied book would place a fresh
     // order of the full target while the original may still fill -- doubling a position to save a
     // request. Reconciliation keeps treating a possibly-working order as working, which is the
     // right answer until a listing says otherwise.

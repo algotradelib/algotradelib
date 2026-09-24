@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -37,53 +38,125 @@ namespace backtest {
  * assertions at both intervals.
  */
 
-/** An executor that accepts orders and holds them for the next bar. */
+/**
+ * One order the replay has accepted and not yet resolved.
+ *
+ * `accepted_on_` is the bar the order was placed during, and it is what keeps the no-lookahead rule
+ * a property of the data rather than of which list an order is sitting in: an order accepted during
+ * bar *n* is not eligible to fill against bar *n*, whoever asks and from wherever.
+ */
+template <typename BrokerTag>
+struct QueuedOrder {
+  strategy::PlannedOrder order_;
+  OrderRef<BrokerTag> ref_;
+  std::uint64_t accepted_on_{0};
+};
+
+/**
+ * An executor that accepts orders and holds them until they fill or are withdrawn.
+ *
+ * **It is never drained.** An earlier version handed its whole queue to the engine for the length of
+ * a fill loop, which left the executor empty at exactly the moments the engine showed a strategy a
+ * portfolio and called back into it: an order the loop had not reached yet was outstanding and
+ * invisible, and a cancellation from that callback had nothing to find. Holding everything in one
+ * place makes `queued()` the complete set of outstanding orders at every instant, which is what the
+ * engine projects into `strategy::Portfolio::working_`.
+ */
 template <typename BrokerTag>
 class QueueingExecutor {
 public:
   /**
-   * Accepts an order and queues it.
+   * Accepts an order, queues it, and issues it a reference.
    *
    * Always `ACCEPTED`: a replay has no transport that could fail, and inventing failures would be
    * inventing data. A caller wanting to study behaviour under transport failure has `Runner`'s executor
    * seam and the scripted executor the `strategy-core` tests use.
+   *
+   * The reference is this replay's own, monotonic, and stable for as long as the order is
+   * outstanding. It exists because a strategy that can *see* two resting orders must be able to
+   * withdraw the one it means.
    */
   runner::SendOutcome place(const strategy::PlannedOrder& order) {
-    queued_.push_back(order);
+    QueuedOrder<BrokerTag> entry;
+    entry.order_ = order;
+    entry.ref_.primary_ = std::to_string(++issued_);
+    entry.accepted_on_ = bar_;
+    last_ref_ = entry.ref_;
+    queued_.push_back(std::move(entry));
     return runner::SendOutcome::ACCEPTED;
   }
 
   /**
-   * Accepts a cancellation of an order still queued, and drops it.
+   * Withdraws the order the reference names, and refuses a reference that names nothing.
    *
-   * A replay's orders rest only between two bars, so a cancellation either finds one queued or refers
-   * to something already filled — which is not an error, merely a race the engine resolved first.
+   * **Matched on the reference, never on instrument and side.** Those identify a *kind* of order and
+   * not an order: with two resting buys of one instrument, withdrawing the second by attributes
+   * removes the first, and the strategy is told its request succeeded. The reference is the only
+   * thing that distinguishes them, which is why the executor issues one.
+   *
+   * A reference that matches nothing is `REJECTED` rather than `ACCEPTED`, because the order is not
+   * there to withdraw — it filled, or it was already withdrawn. `ACCEPTED` would claim a withdrawal
+   * that did not happen, and `Runner` routes this answer to `rejected_cancel_`, which is where a
+   * broker's refusal of a withdrawal belongs.
    */
   runner::SendOutcome cancel(const WorkingOrder<BrokerTag>& working) {
     for (auto at = queued_.begin(); at != queued_.end(); ++at) {
-      if (at->instrument_ == working.order_.instrument_ && at->side_ == working.order_.side_) {
+      if (at->ref_ == working.ref_) {
         queued_.erase(at);
-        break;
+        return runner::SendOutcome::ACCEPTED;
       }
     }
-    return runner::SendOutcome::ACCEPTED;
+    return runner::SendOutcome::REJECTED;
   }
 
-  /** Removes and returns everything queued, in the order it was submitted. */
-  std::vector<strategy::PlannedOrder> take() {
-    std::vector<strategy::PlannedOrder> taken;
-    taken.swap(queued_);
-    return taken;
+  /**
+   * Returns the reference issued to the order just accepted.
+   *
+   * Detected by `Runner`, which uses it to mark its own reservation rows. A replay is the one
+   * executor that can honestly answer this without a broker, because it *is* the broker.
+   */
+  std::optional<OrderRef<BrokerTag>> last_ref() const { return last_ref_; }
+
+  /** Returns every outstanding order, oldest first. */
+  const std::vector<QueuedOrder<BrokerTag>>& queued() const noexcept { return queued_; }
+
+  /** Returns the outstanding order `ref` names, or nothing. */
+  const QueuedOrder<BrokerTag>* find(const OrderRef<BrokerTag>& ref) const {
+    for (const auto& entry : queued_) {
+      if (entry.ref_ == ref) {
+        return &entry;
+      }
+    }
+    return nullptr;
   }
 
-  /** Returns what is queued without removing it. */
-  const std::vector<strategy::PlannedOrder>& queued() const noexcept { return queued_; }
+  /** Drops the order `ref` names, and reports whether there was one. */
+  bool withdraw(const OrderRef<BrokerTag>& ref) {
+    for (auto at = queued_.begin(); at != queued_.end(); ++at) {
+      if (at->ref_ == ref) {
+        queued_.erase(at);
+        return true;
+      }
+    }
+    return false;
+  }
 
-  /** Puts an order back, for a limit that has not yet been reached. */
-  void requeue(strategy::PlannedOrder order) { queued_.push_back(std::move(order)); }
+  /**
+   * Opens the next bar, after which everything already queued counts as resting from an earlier one.
+   *
+   * Called by the engine before anything is filled against the new bar, so that the orders a
+   * strategy places *during* it carry a later stamp and cannot fill against it.
+   */
+  void open_bar() noexcept { ++bar_; }
+
+  /** Returns the bar being replayed, counting from one. */
+  std::uint64_t bar() const noexcept { return bar_; }
 
 private:
-  std::vector<strategy::PlannedOrder> queued_;
+  std::vector<QueuedOrder<BrokerTag>> queued_;
+  std::optional<OrderRef<BrokerTag>> last_ref_;
+  std::uint64_t issued_{0};
+  std::uint64_t bar_{0};
 };
 
 /** One point on the equity curve, recorded per bar. */
@@ -196,6 +269,10 @@ public:
       ++result_.gaps_;
     }
 
+    // Opened before anything fills against this bar, so that an order placed during it carries a
+    // later stamp than the ones already resting and cannot fill against the bar it was decided on.
+    runner_.executor().open_bar();
+
     settle_queued_against(event);
     // A mark that will not fit leaves its lot at the previous price, so an equity point recorded
     // here would be stamped with this bar and computed at the last one. Skipped instead, which is
@@ -206,12 +283,16 @@ public:
 
     if (clock_.advance(event, trading_day)) {
       runner_.context().set_phase(clock_.phase());
+      // **Installed before the phase change is acted on, not after.** A strategy placing an order
+      // from `on_phase` used to decide on a portfolio predating this bar's fills and this bar's
+      // mark, while the engine already held a fresher answer and had simply not installed it yet.
+      install_portfolio();
       drain_reports(runner_.feed(clock_.phase()));
     } else {
       runner_.context().set_phase(clock_.phase());
     }
 
-    runner_.context().set_portfolio(ledger_.snapshot<Tag>(clock_.now()));
+    install_portfolio();
     runner_.context().set_last_price(event.instrument_, event.bar_.close_);
     drain_reports(runner_.feed(event));
     previous_ = event;
@@ -224,31 +305,59 @@ public:
   }
 
 private:
-  /** Fills orders queued by earlier bars against `event`, and tells the strategy. */
+  /**
+   * Fills orders resting from an earlier bar against `event`, and tells the strategy.
+   *
+   * **Walked by reference rather than by iterator or index.** Applying a fill calls `on_fill`, which
+   * may place or withdraw orders, so any position into the queue is invalid the moment the strategy
+   * is told anything. The eligible references are collected first and each is looked up again when
+   * its turn comes; one the callback withdrew is simply no longer there.
+   *
+   * The queue is never emptied, so an order this loop has not reached yet is outstanding, visible in
+   * every portfolio installed along the way, and addressable by a cancellation from any callback.
+   */
   void settle_queued_against(const strategy::BarEvent& event) {
-    auto pending = runner_.executor().take();
-    for (auto& order : pending) {
-      if (!(order.instrument_ == event.instrument_)) {
-        // A different instrument's order waits for that instrument's next bar, which is what makes an
-        // interleaved multi-instrument replay behave.
-        runner_.executor().requeue(std::move(order));
+    std::vector<OrderRef<Tag>> eligible;
+    for (const auto& entry : runner_.executor().queued()) {
+      // A different instrument's order waits for that instrument's next bar, which is what makes an
+      // interleaved multi-instrument replay behave. An order accepted during this bar waits for the
+      // next one, which is the no-lookahead rule.
+      if (!(entry.order_.instrument_ == event.instrument_)) {
         continue;
       }
+      if (entry.accepted_on_ >= runner_.executor().bar()) {
+        continue;
+      }
+      eligible.push_back(entry.ref_);
+    }
+
+    for (const auto& ref : eligible) {
+      const auto* entry = runner_.executor().find(ref);
+      if (entry == nullptr) {
+        // Withdrawn by a callback earlier in this loop. Nothing to fill.
+        continue;
+      }
+      const auto order = entry->order_;
       const auto rule = rule_for(order.instrument_);
       auto decision = fills_.decide(order, event, rule);
       if (!decision.execution_) {
-        if (decision.still_working_) {
-          runner_.executor().requeue(std::move(order));
+        if (!decision.still_working_) {
+          // A market order the bar could not price, or a limit whose arithmetic did not fit. It does
+          // not rest and it did not trade, so it stops being outstanding.
+          runner_.executor().withdraw(ref);
         }
         continue;
       }
+      // Removed before the ledger moves and before anything is shown a portfolio, so no view ever
+      // carries a filled order as still working.
+      runner_.executor().withdraw(ref);
       if (!ledger_.apply(*decision.execution_, currency_for(order.instrument_))) {
         // Arithmetic that will not fit an exact decimal. Counted as unfilled rather than applied
         // partly, because a half-applied ledger is worse than an order that did not trade.
         continue;
       }
       result_.executions_.push_back(*decision.execution_);
-      runner_.context().set_portfolio(ledger_.snapshot<Tag>(clock_.now()));
+      install_portfolio();
       drain_reports(runner_.feed(decision.execution_->fill_));
     }
   }
@@ -307,6 +416,18 @@ private:
    * instrument books in the currency the ledger was opened in, which is the behaviour every existing
    * replay already had.
    */
+  /**
+   * Installs the portfolio a strategy and its guards decide on.
+   *
+   * The single place the replay answers "what does this account look like", so that every callback
+   * boundary is answered the same way. `Runner::persist_reservation` relies on a wholesale
+   * replacement carrying everything the reservation was standing in for
+   * (`runner/runner.hpp:628-634`), and this is the replacement.
+   */
+  void install_portfolio() {
+    runner_.context().set_portfolio(ledger_.snapshot<Tag>(clock_.now()));
+  }
+
   Currency currency_for(const InstrumentId& instrument) const {
     const auto reference = runner_.context().instrument(instrument);
     if (!reference) {

@@ -1550,3 +1550,82 @@ TEST_CASE("a cost model seeded from a broker's schedule charges what the broker 
   const CommissionSchedule empty;
   REQUIRE_FALSE(backtest::commission_model_from(empty, Country::KR, Date{2026, 9, 23}));
 }
+
+// ---------------------------------------------------------------------------
+// Order identity in a replay: what rests, and which one a withdrawal names
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using ReplayExecutor = backtest::QueueingExecutor<backtest::BacktestTag>;
+
+/** A resting buy of `quantity` at `limit`, as the executor would be handed one. */
+strategy::PlannedOrder resting_buy(const char* quantity, const char* limit) {
+  strategy::PlannedOrder order;
+  order.instrument_ = samsung();
+  order.side_ = OrderSide::BUY;
+  order.type_ = OrderType::LIMIT;
+  order.quantity_ = Decimal64::parse(quantity);
+  order.price_ = Decimal64::parse(limit);
+  order.tag_ = "resting";
+  return order;
+}
+
+/** The withdrawal a runner sends for `ref`, which is all `cancel` reads. */
+WorkingOrder<backtest::BacktestTag> withdrawal_of(const OrderRef<backtest::BacktestTag>& ref) {
+  WorkingOrder<backtest::BacktestTag> working;
+  working.ref_ = ref;
+  working.order_.instrument_ = samsung();
+  working.order_.side_ = OrderSide::BUY;
+  return working;
+}
+
+} // namespace
+
+TEST_CASE("a withdrawal removes the order it names, not one that merely looks like it") {
+  // **Two resting buys of one instrument are two orders, and attributes cannot tell them apart.**
+  // Matching on instrument and side withdraws whichever is first and reports success, so a strategy
+  // cancelling the second silently loses the first and is told its request was honoured.
+  ReplayExecutor executor;
+  REQUIRE(executor.place(resting_buy("10", "60000")) == runner::SendOutcome::ACCEPTED);
+  const auto first = *executor.last_ref();
+  REQUIRE(executor.place(resting_buy("20", "61000")) == runner::SendOutcome::ACCEPTED);
+  const auto second = *executor.last_ref();
+
+  REQUIRE_FALSE(first == second);
+  REQUIRE(executor.queued().size() == 2);
+
+  REQUIRE(executor.cancel(withdrawal_of(second)) == runner::SendOutcome::ACCEPTED);
+  REQUIRE(executor.queued().size() == 1);
+  // The one that survived is the one that was not named.
+  REQUIRE(executor.queued()[0].ref_ == first);
+  REQUIRE(executor.queued()[0].order_.quantity_ == Decimal64::parse("10"));
+}
+
+TEST_CASE("a withdrawal for an order that is not there is refused, not accepted") {
+  // `ACCEPTED` means the broker took the request, and `Runner` reads it as a withdrawal that went
+  // out. An order that already filled is gone, so claiming to have withdrawn it would report a
+  // withdrawal that never happened -- which is what `rejected_cancel_` exists to distinguish.
+  ReplayExecutor executor;
+  executor.place(resting_buy("10", "60000"));
+  const auto ref = *executor.last_ref();
+
+  REQUIRE(executor.cancel(withdrawal_of(ref)) == runner::SendOutcome::ACCEPTED);
+  REQUIRE(executor.cancel(withdrawal_of(ref)) == runner::SendOutcome::REJECTED);
+  REQUIRE(executor.queued().empty());
+}
+
+TEST_CASE("an order accepted during a bar is not eligible to fill against that bar") {
+  // The no-lookahead rule, as a property of the order rather than of which list it is in. `open_bar`
+  // is what moves the boundary, so an order placed after it carries the new bar's stamp.
+  ReplayExecutor executor;
+  executor.open_bar();
+  executor.place(resting_buy("10", "60000"));
+  const auto during_first = executor.queued()[0].accepted_on_;
+  REQUIRE(during_first == executor.bar());
+
+  executor.open_bar();
+  REQUIRE(during_first < executor.bar());
+  executor.place(resting_buy("10", "60000"));
+  REQUIRE(executor.queued()[1].accepted_on_ == executor.bar());
+}
