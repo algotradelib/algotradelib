@@ -633,6 +633,13 @@ private:
     // size against, and why the rows are marked so that anything inferring the broker's behaviour
     // from the listing can tell them apart.
     auto view = context_.portfolio();
+    // Resolved once for the pass. The currencies and marks do not move as orders are accepted --
+    // only quantities do, and the guard reads those from the view -- and resolving per order would
+    // repeat a map lookup per instrument for every instrument. Built only when the ceiling is on, so
+    // a caller who has not asked for it pays nothing.
+    if (guard_.limits().max_gross_exposure_) {
+      inputs.exposure_basis_ = exposure_basis_for(view, pending);
+    }
     for (auto& order : pending) {
       // Checked before the guards, because an unresolved instrument is a safety hold rather than a
       // limit breach: reporting a notional ceiling for an order that was never going to be sent
@@ -852,7 +859,13 @@ private:
     const bool sells = guard_.limits().enforce_sellable_quantity_ && order.side_ == OrderSide::SELL;
     const bool buys = guard_.limits().enforce_buying_power_ && order.side_ == OrderSide::BUY;
     const bool capped = guard_.limits().max_position_quantity_.has_value();
-    if (!sells && !buys && !capped) {
+    // The exposure ceiling reads what is outstanding for the same reason the position ceiling does,
+    // so it needs the reservation for the same reason. Left out, a caller enabling only this limit
+    // would get the within-pass fix and not the across-pass one: ten bought on each of two bars,
+    // with no poll between, passes twice against a ceiling one of them should have reached. That is
+    // precisely the omission `ai/pre-trade-checks` round 2 found for `max_position_quantity_`.
+    const bool exposed = guard_.limits().max_gross_exposure_.has_value();
+    if (!sells && !buys && !capped && !exposed) {
       return;
     }
     auto persisted = context_.portfolio();
@@ -861,6 +874,89 @@ private:
       guard_.limits().enforce_buying_power_
     );
     context_.set_portfolio(std::move(persisted));
+  }
+
+  /**
+   * Resolves what every instrument the exposure ceiling must value is denominated in, and marked at.
+   *
+   * **This is the half `RiskGuard` cannot do**, which is why the guard takes it as an input rather
+   * than deriving it. A position states its own currency and last price; a working order on an
+   * instrument with no position states neither, and an opening buy is exactly that case. The runner
+   * is where reference data and the quote cache live, so it is where the lookup belongs -- the same
+   * reasoning that puts `order_currency_` here.
+   *
+   * **An instrument this cannot resolve is left out, and leaving it out is how the refusal
+   * happens.** `projected_gross_exposure` returns nothing when the basis does not cover something
+   * the portfolio holds or has working, and the guard turns that into `VALUE_NOT_KNOWN`. Inventing
+   * a currency or a price here would be the silent pass this whole branch is about.
+   *
+   * **Only fields somebody explicitly set are read**, which rules out the position's own
+   * `market_value_.currency_` as a fallback however tempting it is. `Currency` default-constructs to
+   * KRW and `HoldingPosition::last_price_` to zero, so an untouched position does not read as
+   * unresolved -- it reads as Korean won marked at nothing, resolves, and contributes zero to the
+   * sum. That is the silent omission this refusal exists to prevent, wearing the costume of an
+   * answer. It is the same trap `backtest::ReplayLedger` was in.
+   *
+   * So: the currency comes from registered reference data, which is also where `order_currency_`
+   * comes from, so the two cannot disagree about one instrument. The mark comes from the quote cache
+   * or from a position's `last_price_` **when that price is not zero** -- a mark of zero is not a
+   * valuation, and accepting one would value the position at nothing.
+   *
+   * The cost, and it is the intended direction: an account holding an instrument the caller never
+   * registered refuses every order while the ceiling is on. Visible and diagnosable, rather than a
+   * ceiling quietly measuring part of the portfolio.
+   */
+  std::vector<strategy::InstrumentBasis> exposure_basis_for(
+    const strategy::Portfolio<Tag>& view,
+    const std::vector<strategy::PlannedOrder>& pending
+  ) const {
+    std::vector<InstrumentId> instruments;
+    const auto note = [&instruments](const InstrumentId& id) {
+      for (const auto& seen : instruments) {
+        if (seen == id) {
+          return;
+        }
+      }
+      instruments.push_back(id);
+    };
+    for (const auto& position : view.positions_) {
+      note(position.instrument_);
+    }
+    for (const auto& working : view.working_) {
+      if (strategy::order_is_open(working.order_.status_)) {
+        note(working.order_.instrument_);
+      }
+    }
+    for (const auto& order : pending) {
+      note(order.instrument_);
+    }
+
+    std::vector<strategy::InstrumentBasis> basis;
+    basis.reserve(instruments.size());
+    for (const auto& id : instruments) {
+      const HoldingPosition* position = nullptr;
+      for (const auto& held : view.positions_) {
+        if (held.instrument_ == id) {
+          position = &held;
+          break;
+        }
+      }
+
+      const auto reference = context_.instrument(id);
+      if (!reference) {
+        continue;
+      }
+
+      auto price = context_.last_price(id);
+      if (!price && position != nullptr && position->last_price_.coefficient() != 0) {
+        price = position->last_price_;
+      }
+      if (!price || price->coefficient() == 0) {
+        continue;
+      }
+      basis.push_back(strategy::InstrumentBasis{id, reference->currency_, *price});
+    }
+    return basis;
   }
 
   /** Writes a sellable quantity onto the position for `instrument`, when there is one. */

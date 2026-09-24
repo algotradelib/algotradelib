@@ -183,6 +183,30 @@ struct BuyTwice {
   }
 };
 
+/** Buys ten once per bar, so two bars accumulate across two passes. */
+struct BuyEachBar {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ctx.submit(
+      strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
+      )
+    );
+  }
+};
+
+/** Sells ten once per bar, to prove an exit is not refused by an exposure ceiling. */
+struct SellEachBar {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ctx.submit(
+      strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10"))
+      )
+    );
+  }
+};
+
 /** Targets flat on the first bar and long on the second, so the second opposes the first. */
 struct FlipTarget {
   int bars_{0};
@@ -368,6 +392,93 @@ TEST_CASE("the same reference cancelled twice by the strategy is one request") {
 
   const auto report = dry.feed(bar_at(10, "70000"));
   REQUIRE(report.would_cancel_.size() == 1);
+}
+
+TEST_CASE("the exposure ceiling sees what this pass has already sent") {
+  // Two buys of ten at 70,000 in one pass, against a ceiling of a million. Each is 700,000 on its
+  // own, so before this branch both passed -- the ceiling was compared against one order's notional
+  // with the current exposure defaulting to zero. Together they are 1,400,000.
+  strategy::RiskLimits limits;
+  limits.max_gross_exposure_ = Decimal64::parse("1000000");
+  runner::DryRunner<BuyTwice> dry(BuyTwice{}, limits);
+  arrange(dry);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.would_place_.size() == 1);
+  REQUIRE(report.refused_.size() == 1);
+  REQUIRE(report.refused_[0].reason_ == strategy::GuardReason::GROSS_EXPOSURE_EXCEEDED);
+  REQUIRE(report.refused_[0].attempted_ == std::optional<Decimal64>(Decimal64::parse("1400000")));
+}
+
+TEST_CASE("the exposure ceiling carries into the next pass, with no poll between") {
+  // The half a within-pass view cannot close. The reservation is persisted for this limit for the
+  // same reason it is for the position ceiling: without it, ten bought on each of two bars passes
+  // twice against a ceiling one of them should have reached, because the second pass starts from
+  // the broker's last word again.
+  strategy::RiskLimits limits;
+  limits.max_gross_exposure_ = Decimal64::parse("1000000");
+  runner::DryRunner<BuyEachBar> dry(BuyEachBar{}, limits);
+  arrange(dry);
+
+  const auto first = dry.feed(bar_at(10, "70000"));
+  REQUIRE(first.would_place_.size() == 1);
+  REQUIRE(first.refused_.empty());
+
+  // No portfolio replacement between the two, which is the case a poll would have resolved.
+  const auto second = dry.feed(bar_at(11, "70000"));
+  REQUIRE(second.would_place_.empty());
+  REQUIRE(second.refused_.size() == 1);
+  REQUIRE(second.refused_[0].reason_ == strategy::GuardReason::GROSS_EXPOSURE_EXCEEDED);
+  REQUIRE(second.refused_[0].attempted_ == std::optional<Decimal64>(Decimal64::parse("1400000")));
+}
+
+TEST_CASE("an exposure ceiling never refuses the way out of a position over it") {
+  // A ceiling that cannot be de-risked past is the failure mode this arithmetic exists to avoid.
+  // 200 held at 70,000 is 14,000,000 against a ceiling of 5,000,000 -- already over, however it got
+  // there -- and every sell out of it must still go.
+  strategy::RiskLimits limits;
+  limits.max_gross_exposure_ = Decimal64::parse("5000000");
+  runner::DryRunner<SellEachBar> dry(SellEachBar{}, limits);
+  using Tag = runner::DryRunner<SellEachBar>::Tag;
+  arrange(dry);
+
+  strategy::Portfolio<Tag> portfolio;
+  HoldingPosition held;
+  held.instrument_ = samsung();
+  held.quantity_ = Decimal64::parse("200");
+  held.last_price_ = Decimal64::parse("70000");
+  portfolio.positions_.push_back(held);
+  dry.context().set_portfolio(portfolio);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.refused_.empty());
+  REQUIRE(report.would_place_.size() == 1);
+  REQUIRE(report.would_place_[0].side_ == OrderSide::SELL);
+}
+
+TEST_CASE("an unresolved position refuses the exposure ceiling rather than being left out") {
+  // **The reachable shape of an incomplete basis.** Reconciliation rejects an order whose *own*
+  // instrument has no reference data before a PlannedOrder exists, so the candidate is always
+  // resolvable here; what can be unresolved is something else the account holds. Left out of the
+  // sum it would under-report, so it refuses.
+  strategy::RiskLimits limits;
+  limits.max_gross_exposure_ = Decimal64::parse("10000000");
+  runner::DryRunner<BuyEachBar> dry(BuyEachBar{}, limits);
+  using Tag = runner::DryRunner<BuyEachBar>::Tag;
+  arrange(dry);
+
+  strategy::Portfolio<Tag> portfolio;
+  HoldingPosition unknown;
+  // Registered nowhere, and carrying no mark of its own either, so neither source resolves it.
+  unknown.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "000660"};
+  unknown.quantity_ = Decimal64::parse("10");
+  portfolio.positions_.push_back(unknown);
+  dry.context().set_portfolio(portfolio);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.would_place_.empty());
+  REQUIRE(report.refused_.size() == 1);
+  REQUIRE(report.refused_[0].reason_ == strategy::GuardReason::VALUE_NOT_KNOWN);
 }
 
 TEST_CASE("a strategy defining one handler is driven without the others existing") {
