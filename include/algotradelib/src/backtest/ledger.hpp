@@ -106,7 +106,17 @@ public:
     return Decimal64::parse("0");
   }
 
-  /** Returns every position, including any that have gone flat. */
+  /**
+   * Returns every position, including any that have gone flat.
+   *
+   * **Of `HoldingPosition`'s money fields this ledger fills `market_value_` and no other**, and the
+   * narrowness is deliberate. That one is what per-currency arithmetic needs -- it is the only place
+   * a position states which currency it is denominated in -- and it is exact: quantity times the
+   * latest mark. `purchase_value_` and `unrealized_profit_loss_` are derivable and nothing reads
+   * them, and `unrealized_return_` is a ratio whose scale nobody has chosen. They stay at their
+   * defaults, which for a `Money` means zero in won; read them from a broker's snapshot, not from
+   * here.
+   */
   const std::vector<HoldingPosition>& positions() const noexcept { return positions_; }
 
   /** Returns every execution applied, oldest first. */
@@ -186,6 +196,15 @@ public:
       return false;
     }
 
+    // Valued here, **before anything below is assigned**, so that recording the currency adds no new
+    // way for this function to fail after it has started mutating. `apply` already has such paths --
+    // `weighted_average` and `adjust_cash` both fail after `find_or_open` has pushed a lot -- and
+    // this is not the change to add another to them.
+    const auto valued = decimal_multiply(*resulting, fill.price_);
+    if (!valued) {
+      return false;
+    }
+
     // The average price follows only the part that opened or added. A position crossing flat takes the
     // fill price outright, because nothing of the old basis survives.
     if (resulting->coefficient() == 0) {
@@ -210,9 +229,7 @@ public:
     // whatever the caller happened to ask for. `Currency` default-constructs to KRW
     // (`core/types.hpp:154`), which makes the untold case silently *answer* rather than be absent --
     // a USD position would read as Korean won to anything summing per currency.
-    if (!revalue(*lot, currency)) {
-      return false;
-    }
+    lot->market_value_ = Money{*valued, currency};
     if (!adjust_cash(currency, *after_commission)) {
       return false;
     }
@@ -224,11 +241,18 @@ public:
   void mark(const InstrumentId& instrument, const Decimal64& price) {
     for (auto& lot : positions_) {
       if (lot.instrument_ == instrument) {
+        // Re-valued at the new mark, which is what makes `market_value_` mean "at the latest mark"
+        // rather than "at the last fill". The currency is the one `apply` recorded: a lot exists
+        // only because a fill opened it, so there is always one.
+        //
+        // A value that will not fit leaves **both** fields alone rather than moving the price and
+        // leaving a market value computed from the old one, which would be the two disagreeing.
+        const auto valued = decimal_multiply(lot.quantity_, price);
+        if (!valued) {
+          continue;
+        }
         lot.last_price_ = price;
-        // The currency is the one `apply` recorded; a lot only exists because a fill opened it, so
-        // there is always one. Re-valuing here is what makes `market_value_` mean "at the latest
-        // mark" rather than "at the last fill".
-        revalue(lot, lot.market_value_.currency_);
+        lot.market_value_ = Money{*valued, lot.market_value_.currency_};
       }
     }
   }
@@ -313,29 +337,6 @@ public:
   }
 
 private:
-  /**
-   * Writes `lot`'s market value from its quantity and latest mark, in `currency`.
-   *
-   * **Only `market_value_` is filled**, and the narrowness is deliberate. It is the one field
-   * per-currency arithmetic needs -- it is the only place a `HoldingPosition` states which currency
-   * it is denominated in -- and it is exact: quantity times the latest mark, which this ledger
-   * already computes. `purchase_value_`, `unrealized_profit_loss_` and `unrealized_return_` stay as
-   * they are; the first two are derivable but nothing reads them, and the third is a ratio whose
-   * scale nobody has chosen. Filling a field this ledger has no answer for would be the
-   * `ReportCaveats` problem one layer down.
-   *
-   * Returns false when the multiplication will not fit an exact decimal, which `apply` turns into a
-   * refusal rather than a position valued at a number it could not compute.
-   */
-  static bool revalue(HoldingPosition& lot, const Currency& currency) {
-    const auto value = decimal_multiply(lot.quantity_, lot.last_price_);
-    if (!value) {
-      return false;
-    }
-    lot.market_value_ = Money{*value, currency};
-    return true;
-  }
-
   HoldingPosition* find_or_open(const InstrumentId& instrument) {
     for (auto& lot : positions_) {
       if (lot.instrument_ == instrument) {
