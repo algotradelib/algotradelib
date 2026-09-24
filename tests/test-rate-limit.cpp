@@ -453,13 +453,20 @@ TEST_CASE("an unspecified budget leaves the transport entirely unpaced") {
     });
   }
 
-  const auto began = std::chrono::steady_clock::now();
   ioc.run();
-  const auto elapsed = std::chrono::steady_clock::now() - began;
 
   // Six requests that a budget would have spaced out go straight through.
+  //
+  // **Asserted by the absent controller above, not by a stopwatch.** An earlier version of this test
+  // also required the whole run to finish inside 500ms, which measured the machine rather than the
+  // library: `rate_limits() == nullptr` already means there is no code path that could pace, so the
+  // timing line added no claim about this transport and one large claim about how busy the host is.
+  // It failed on loaded machines and pointed the reader at the rate limiter, which was never what
+  // had broken.
+  //
+  // The opposite direction is safe and is used in the paced test above: a *floor* on elapsed time
+  // says the pacer really waited, and load can only make it truer.
   REQUIRE(completed == 6);
-  REQUIRE(elapsed < std::chrono::milliseconds(500));
   REQUIRE(server.connectionCount() == 1);
 }
 
