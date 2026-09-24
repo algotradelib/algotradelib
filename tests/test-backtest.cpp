@@ -2234,9 +2234,12 @@ struct PlacesTheOtherOnFill {
       return;
     }
     placed_on_fill_ = true;
+    // **A market order, so it fills as soon as it is eligible.** A limit the market never reaches
+    // stays unfilled whether the engine waits correctly or checks it on the wrong bar, which would
+    // make this test pass without establishing either timing claim.
     ctx.submit(
-      strategy::OrderIntent::limit(
-        hynix(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")), far_below()
+      strategy::OrderIntent::market(
+        hynix(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
       ).with_tag("from-a-fill")
     );
   }
@@ -2261,27 +2264,33 @@ TEST_CASE("a fill callback can withdraw an order the same pass had not reached")
 }
 
 TEST_CASE("an order placed from a fill waits for its own instrument's next bar") {
-  // Two things at once: an order accepted during a bar is not eligible against that bar, and an
-  // order for another instrument waits for that instrument's bar rather than the next bar of any
-  // kind. Both are what makes an interleaved replay behave.
+  // Two claims at once, and the order is a *market* order so that each is observable: an order
+  // accepted during a bar is not eligible against that bar, and an order for another instrument
+  // waits for that instrument's bar rather than the next bar of any kind.
   auto config = replay_config();
   config.instruments_ = {samsung_reference(), hynix_reference()};
 
   backtest::Backtester<PlacesTheOtherOnFill> engine(PlacesTheOtherOnFill{}, std::move(config));
   engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
-  // The seed fills here, and `on_fill` places a hynix limit far below the market.
+
+  // The seed fills against this bar, and `on_fill` places a hynix market buy during it.
   engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
-  // A samsung bar does not touch a hynix order.
+  REQUIRE(engine.strategy().placed_on_fill_);
+  REQUIRE(engine.result().executions_.size() == 1);
+
+  // A later samsung bar does not touch it: a market order fills against the next bar *of its own
+  // instrument*, and this is not one.
   engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
-  // And hynix's own bar never reaches 50,000, so it rests rather than filling.
+  REQUIRE(engine.result().executions_.size() == 1);
+
+  // Hynix's own bar fills it, at that bar's open.
   engine.feed(bar_for(hynix(), utc(2026, 3, 12, 6, 31), "70000"));
   engine.finish();
 
-  REQUIRE(engine.strategy().placed_on_fill_);
-  // Exactly the seed filled: the hynix order never traded.
-  REQUIRE(engine.result().executions_.size() == 1);
+  REQUIRE(engine.result().executions_.size() == 2);
   REQUIRE(engine.result().executions_[0].fill_.instrument_ == samsung());
-  REQUIRE(engine.result().unfilled_ == 1);
+  REQUIRE(engine.result().executions_[1].fill_.instrument_ == hynix());
+  REQUIRE(engine.result().unfilled_ == 0);
 }
 
 TEST_CASE("a phase decision is priced from the bar that caused it") {
@@ -2362,4 +2371,67 @@ TEST_CASE("an order placed from a phase change survives the install before the b
   REQUIRE(engine.strategy().working_at_bar_[0] == 0);
   // Placed by `on_phase` moments earlier, and still there for `on_bar` to reconcile against.
   REQUIRE(engine.strategy().working_at_bar_[1] == 1);
+}
+
+namespace {
+
+/** Places one market order from `on_phase` and another from `on_bar`, so both share an instant. */
+struct BuysOnPhaseAndOnBar {
+  bool on_phase_done_{false};
+  bool on_bar_done_{false};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (on_bar_done_ || !on_phase_done_) {
+      return;
+    }
+    on_bar_done_ = true;
+    ctx.submit(
+      strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
+      ).with_tag("from-bar")
+    );
+  }
+
+  template <class Ctx>
+  void on_phase(Ctx& ctx, strategy::MarketPhase phase) {
+    if (on_phase_done_ || phase != strategy::MarketPhase::POST_CLOSE) {
+      return;
+    }
+    on_phase_done_ = true;
+    ctx.submit(
+      strategy::OrderIntent::market(
+        samsung(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
+      ).with_tag("from-phase")
+    );
+  }
+};
+
+} // namespace
+
+TEST_CASE("an order rate window counts a phase order against the bar that caused it") {
+  // `Runner::feed(MarketPhase)` does not advance the context's time; only `feed(BarEvent)` does, and
+  // it runs later. So `on_phase` decided with this bar's marks and close beside the *previous* bar's
+  // instant, and `RiskGuard` files a send at that instant.
+  //
+  // `recent_orders` counts sends within `rate_window_` of now, so across a gap longer than the
+  // window the phase order is filed under the old instant and the bar order does not see it: two
+  // orders through a one-order window at what the replay calls the same moment.
+  auto config = replay_config();
+  config.limits_.max_orders_per_window_ = 1;
+  config.limits_.rate_window_ = std::chrono::seconds(60);
+  config.limits_.permitted_phases_ =
+    std::vector<strategy::MarketPhase>{strategy::MarketPhase::OPEN,
+                                       strategy::MarketPhase::POST_CLOSE};
+
+  backtest::Backtester<BuysOnPhaseAndOnBar> engine(BuysOnPhaseAndOnBar{}, std::move(config));
+  engine.feed(moving_bar(utc(2026, 3, 10, 3, 0), BarInterval::ONE_MINUTE, "70000", "70000"));
+  // Three and a half hours later, which is far outside the sixty-second window.
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().on_phase_done_);
+  REQUIRE(engine.strategy().on_bar_done_);
+  // Both were decided at this bar's period end, so the second has to meet the one-order window.
+  REQUIRE(refusals_for(engine.result(), strategy::GuardReason::ORDER_RATE_EXCEEDED) == 1);
 }

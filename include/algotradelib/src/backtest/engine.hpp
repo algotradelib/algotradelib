@@ -291,6 +291,14 @@ public:
 
     if (clock_.advance(event, trading_day)) {
       runner_.context().set_phase(clock_.phase());
+      // **The clock moves with the price and the portfolio, for the same reason.**
+      // `Runner::feed(MarketPhase)` does not advance the context's time -- only `feed(BarEvent)`
+      // does, and that runs later -- so `on_phase` would decide with this bar's marks and close
+      // beside the *previous* bar's instant. `RiskGuard` records a send at `GuardInputs::now_` and
+      // counts sends within `rate_window_` of it, so across a gap longer than that window a phase
+      // order is filed under the old instant and the bar order that follows does not see it: two
+      // orders through a one-order window at what the replay calls the same moment.
+      runner_.context().set_now(event.period_end_);
       // **Installed before the phase change is acted on, not after.** A strategy placing an order
       // from `on_phase` used to decide on a portfolio predating this bar's fills and this bar's
       // mark, while the engine already held a fresher answer and had simply not installed it yet.
@@ -494,10 +502,11 @@ private:
    * second buy costing a hundred in another instrument, the second passes and both can still fill.
    *
    * Valued at the order's own price, else the last close, which is the same estimate the guard
-   * checked the order against. It is an estimate: a market order fills where it fills and
-   * commission is not in it, and neither valuation is smaller than the order's stated cost, so the
-   * error is not in the permissive direction. An order that can be valued at neither is left
-   * uncommitted rather than guessed at.
+   * checked the order against — and it is an **estimate**, not a bound. A limit buy cannot fill
+   * above its limit, so for those the commitment is at least the eventual spend before costs. A
+   * market order has no stated price at all: it fills where the next bar opens, and slippage and
+   * commission are both outside this figure, so the real spend can exceed what was committed. An
+   * order that can be valued by neither route is left uncommitted rather than guessed at.
    *
    * **Scoped to the limit, exactly as `Runner::reserve` is** (`runner/runner.hpp:700-705`).
    * `buying_power_in()` is a public figure a strategy is free to size its next order from, so
