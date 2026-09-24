@@ -1,6 +1,7 @@
 #include <algotradelib/kis>
 #include <algotradelib/tossinvest>
 #include <algotradelib/src/network/rate_limit.hpp>
+#include <algotradelib/src/runner/execution.hpp>
 
 #include "local_https_server.hpp"
 
@@ -576,6 +577,43 @@ TEST_CASE("a full queue sheds with a structured error rather than growing") {
 
   REQUIRE(shed == 2);
   REQUIRE(client->rate_limits()->stats().group(RateLimitGroup::REFERENCE).shed_ == 2);
+}
+
+TEST_CASE("a connection that never opened never sent the order", "[http][tls][provenance]") {
+  // A resolve, connect, or handshake failure happens before `start_write()`, so an order has
+  // certainly not been sent. `TRANSPORT` alone maps to `INDETERMINATE`: the runner would spend the
+  // order's rate-limit slot and withhold the instrument to reconcile an order that does not exist.
+  //
+  // Deterministic without a server: a port nothing is listening on cannot complete a connection,
+  // and the failure therefore cannot happen after a write.
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+  auto client = std::make_shared<network::AsyncHttpClient>(
+    ioc.get_executor(), context, "localhost", "1", network::HttpClientOptions{}
+  );
+
+  std::optional<BrokerError> failure;
+  network::HttpRequest request;
+  request.method_ = http::verb::post;
+  request.target_ = "/orders";
+  request.group_ = RateLimitGroup::TRADING;
+  client->async_request(
+    std::move(request),
+    [&failure](Result<network::HttpResponse> result) {
+      if (!result) {
+        failure = result.error();
+      }
+    }
+  );
+
+  ioc.run();
+  client->close();
+
+  REQUIRE(failure);
+  // A POST is never replayed, so this is the first and only attempt, and it never left.
+  REQUIRE_FALSE(failure->reached_broker_);
+  REQUIRE(runner::outcome_of(*failure) == runner::SendOutcome::REFUSED_LOCALLY);
 }
 
 TEST_CASE(

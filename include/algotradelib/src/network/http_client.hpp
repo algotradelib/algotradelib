@@ -653,6 +653,13 @@ private:
   }
 
   void fail(const char* stage, beast::error_code ec) {
+    // **Read before disconnecting**, for the reason `close()` gives: `disconnect()` resets the
+    // state, and asking afterwards would answer "not in flight" for every failure -- including one
+    // that happened halfway through writing an order. This is the same question from the other
+    // side: a resolve, connect, or handshake failure happens *before* `start_write()`, so an order
+    // has certainly not been sent, and reporting it as indeterminate spends a rate-limit slot and
+    // withholds the instrument to reconcile an order that does not exist.
+    const bool was_in_flight = front_in_flight();
     disconnect();
     if (queue_.empty()) {
       return;
@@ -668,7 +675,10 @@ private:
     }
     auto completed = std::move(pending);
     queue_.pop_front();
-    complete(std::move(completed.handler_), Result<HttpResponse>(transport_error(stage, ec)));
+    auto error = transport_error(stage, ec);
+    // A replayed request reached the wire on its first attempt, whatever this one did.
+    error.reached_broker_ = was_in_flight || completed.retried_;
+    complete(std::move(completed.handler_), Result<HttpResponse>(std::move(error)));
     pump();
   }
 
