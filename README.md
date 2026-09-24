@@ -2,6 +2,129 @@
 
 C++17 building blocks for event-driven trading through Korean broker APIs.
 
+## Using this library in your project
+
+Header-only, consumed through CMake. Two routes, and a script that writes the first one for you.
+
+### Prerequisites
+
+| Dependency | Floor | Needed for |
+| --- | --- | --- |
+| A C++17 compiler | — | everything |
+| CMake | 3.10 | everything |
+| Boost | 1.87, component `json` | everything |
+| OpenSSL | **3.6.2** | everything (see below) |
+| Eigen | 3.4 | the analytics layer, on by default |
+
+Two of those floors are worth a sentence each, because both have surprised someone.
+
+**OpenSSL's is a patch-level minimum.** A machine carrying 3.5.x fails at configure time, and the
+message names a version rather than a decision, so it reads like a mystery. If you hit it, that is
+what happened.
+
+**Boost and OpenSSL are required even for a backtest that touches no network.** The library exports
+one interface target for every consumer, so an offline program still links `libssl`, `libcrypto` and
+`boost_json`. That is measured, not assumed — `otool -L` on a dry-run binary shows them. What is
+genuinely true is the narrower claim: a dry run or a replay instantiates no adapter and no transport
+code, asserted at compile time by `tests/test-runner-isolation.cpp`, so there is no code path from a
+backtest to a market. Splitting the target so the link line matches the guarantee is
+`plan/todo/offline-only-target.md`.
+
+On macOS with Homebrew:
+
+```sh
+brew install boost openssl@3 eigen cmake
+```
+
+### The fastest start
+
+```sh
+tools/atl-new-project.sh my-alpha
+```
+
+That writes a complete project — `CMakeLists.txt`, `src/main.cpp`, `README.md`, `.gitignore` — whose
+`main.cpp` is [`examples/example-backtest-compare.cpp`](examples/example-backtest-compare.cpp): your
+own strategy replayed beside `BuyAndHold`, `SmaCrossover` and `DonchianBreakout` on identical bars.
+
+```
+  strategy                return     Sharpe     max dd  fills
+  -----------------------------------------------------------
+  MyStrategy(5)         -10.22 %     -0.375    13.11 %      2
+  BuyAndHold             10.89 %      0.250    13.35 %      1
+  SmaCrossover(3,8)       9.67 %      0.308     4.93 %      3
+  DonchianBreakout(5)    12.17 %      0.383     4.82 %      3
+```
+
+It does not touch your git index — adding a submodule writes to your repository, and a script that
+does that is one you cannot run twice — so it prints the command instead. `--mode package` generates
+the installed-library variant, and `--help` lists the rest.
+
+The generated project is built and run by this library's own test suite
+(`tests/scaffold-smoke.sh`), which is the only reason to trust that the instructions below still
+work.
+
+### As a submodule
+
+```sh
+git submodule add <repository-url> external/algotradelib
+git submodule update --init --recursive
+```
+
+```cmake
+cmake_minimum_required(VERSION 3.16)
+project(my_alpha LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+
+add_subdirectory(external/algotradelib)
+
+add_executable(my_alpha src/main.cpp)
+target_link_libraries(my_alpha PRIVATE algotradelib::algotradelib)
+```
+
+That is the whole of it. `ATL_BUILD_EXAMPLES` and `ATL_BUILD_TESTS` default to `OFF`, so a submodule
+build compiles nothing but your own sources against the headers.
+
+### As an installed package
+
+```sh
+cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/your/prefix
+cmake --build build --target install
+```
+
+```cmake
+find_package(algotradelib REQUIRED)
+target_link_libraries(my_alpha PRIVATE algotradelib::algotradelib)
+```
+
+Configure your project with `-DCMAKE_PREFIX_PATH=/your/prefix` if that is not a location CMake
+already searches. The installed package config records whether the library was built with a backend,
+so a consumer is never asked to restate how it was configured and cannot get it wrong.
+
+### The analytics backend
+
+`ATL_USE_EIGEN` is **`ON` by default**, and leaving it on is the recommended configuration.
+
+Turning it off does not make analytics slower — it removes them. `<algotradelib/analytics>` becomes a
+deliberate `#error` naming the option to set, `backtest::summarize` and `backtest::Report` are gone,
+and `<algotradelib/vanilla>` ships only `BuyAndHold` and `TimedLiquidation`, since every other vanilla
+computes an indicator. The replay engine itself runs either way, so a build without a backend can
+still execute a strategy; it just cannot score one. Whether that configuration should fall back to a
+second backend rather than refuse is `plan/todo/ublas-fallback-backend.md`.
+
+### Where bars come from
+
+This library reads no files, on purpose. Bars reach a replay one of two ways:
+
+- **From a broker.** `example-backtest-broker` fetches real history through KIS or Toss and then
+  replays it with the session closed out of the picture. KIS serves roughly 5,000 daily bars per
+  request — about twenty years of KRX trading days — and minute bars one trading day at a time.
+- **From your own code.** Construct `Bar` values and call `Runner::feed`, which is what the offline
+  examples do. Keep prices in `Decimal64` so nothing rounds on the way in.
+
+A CSV reader is not shipped because parsing somebody's file format is not a thing this library can do
+honestly for everyone — see Decision 2b in `plan/README.md`. Writing one over `Decimal64::parse` is a
+short afternoon, and it belongs in your project where its assumptions are yours.
+
 ## Quote clients
 
 KIS and Toss expose the same broker-neutral quote result while retaining concrete
