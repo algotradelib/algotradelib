@@ -564,15 +564,48 @@ private:
     const auto instructions = context_.drain();
     std::vector<strategy::PlannedOrder> pending;
 
+    // **One withdrawal per order per pass.** A strategy that clears what is resting and then states
+    // a target asks twice for the same order: the explicit `CancelIntent` goes out, and then
+    // `plan_for` reconciles the target against `context_.portfolio()` -- which does not carry the
+    // cancellation just sent -- and plans a withdrawal for the same row. Two requests, and a broker
+    // answering the second with "already cancelled" then reads as a rejected withdrawal in the
+    // report.
+    //
+    // **Only the duplicate send is suppressed; the picture planning reads is untouched.** Removing
+    // the row from that view is the tempting fix and it is unsafe: `SendOutcome::ACCEPTED` on a
+    // withdrawal means the broker took the *request*, `PENDING_CANCEL` counts as open in
+    // `strategy::order_is_open`, and `backtest::QueueingExecutor::cancel` answers `ACCEPTED` even
+    // when it erased nothing. Sizing a replacement against an emptied book would place a fresh
+    // order of the full target while the original may still fill -- doubling a position to save a
+    // request. Reconciliation keeps treating a possibly-working order as working, which is the
+    // right answer until a listing says otherwise.
+    //
+    // Keyed on *attempted*, not on accepted: no outcome here means the order is gone, and a
+    // withdrawal that was refused locally will be refused the same way a second time.
+    std::vector<OrderRef<Tag>> attempted;
+    const auto attempt_cancel = [this, &attempted, &report](const OrderRef<Tag>& ref) {
+      // An unaddressed reference is exempt. Two of them compare equal, so deduping would collapse
+      // two distinct unsendable withdrawals into one report entry and hide the second.
+      if (!ref.primary_.empty() || !ref.secondary_.empty()) {
+        for (const auto& seen : attempted) {
+          if (seen == ref) {
+            return;
+          }
+        }
+        attempted.push_back(ref);
+      }
+      send_cancel(ref, report);
+    };
+
     for (const auto& instruction : instructions) {
       if (const auto* cancel = std::get_if<strategy::CancelIntent<Tag>>(&instruction)) {
-        send_cancel(cancel->ref_, report);
+        attempt_cancel(cancel->ref_);
         continue;
       }
 
       const auto planned = plan_for(instruction);
       for (const auto& ref : planned.cancel_) {
-        send_cancel(ref, report);
+        attempt_cancel(ref);
       }
       for (const auto& rejection : planned.rejected_) {
         report.rejected_.push_back(rejection);

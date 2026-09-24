@@ -78,6 +78,29 @@ struct CancelThenTarget {
   }
 };
 
+/** Cancels nothing in particular, twice, so two unaddressed withdrawals reach the runner. */
+struct CancelTwiceUnaddressed {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent&) {
+    // A default-constructed row carries a default-constructed reference, which is the unaddressed
+    // one, without the test naming the broker tag.
+    typename std::decay_t<decltype(ctx.portfolio().working_)>::value_type unaddressed;
+    ctx.cancel(unaddressed.ref_, "first");
+    ctx.cancel(unaddressed.ref_, "second");
+  }
+};
+
+/** Cancels the same resting order twice in one bar, which is one withdrawal. */
+struct CancelSameRefTwice {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent&) {
+    for (const auto& working : ctx.portfolio().working_) {
+      ctx.cancel(working.ref_, "first");
+      ctx.cancel(working.ref_, "second");
+    }
+  }
+};
+
 /** Defines only on_start, to prove the other handlers cost nothing. */
 struct StartOnly {
   bool started_{false};
@@ -272,6 +295,79 @@ TEST_CASE("cancellations are collected before anything would be placed") {
   REQUIRE(report.would_place_.size() == 1);
   // Target five with three working and none held, so two more after the cancellation.
   REQUIRE(report.would_place_[0].quantity_ == Decimal64::parse("2"));
+}
+
+TEST_CASE("an order the strategy already withdrew is not withdrawn again by reconciliation") {
+  // **The orders have to oppose the target, which the existing fixture's do not.** Reconciliation
+  // withdraws a working row only when it works *against* the target
+  // (`strategy/reconcile.hpp`), so the existing case -- one working buy of 3 under a buy target of
+  // 5 -- plans no withdrawal at all and the explicit one goes alone. Two working *sells* under a
+  // buy target both oppose it, so reconciliation plans a withdrawal for each, against a portfolio
+  // that does not carry the two the strategy just cancelled. Four requests for two orders.
+  using Tag = runner::DryRunner<CancelThenTarget>::Tag;
+  runner::DryRunner<CancelThenTarget> dry;
+  arrange(dry);
+
+  strategy::Portfolio<Tag> portfolio;
+  for (const char* id : {"0001", "0002"}) {
+    WorkingOrder<Tag> working;
+    working.order_.instrument_ = samsung();
+    working.order_.side_ = OrderSide::SELL;
+    working.order_.status_ = OrderStatus::PENDING;
+    working.order_.quantity_ = Decimal64::parse("4");
+    working.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+    working.ref_ = OrderRef<Tag>{id, ""};
+    portfolio.working_.push_back(working);
+  }
+  dry.context().set_portfolio(portfolio);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+
+  // One withdrawal per order. Before the dedupe this was four.
+  REQUIRE(report.would_cancel_.size() == 2);
+  REQUIRE(report.would_cancel_[0] == OrderRef<Tag>{"0001", ""});
+  REQUIRE(report.would_cancel_[1] == OrderRef<Tag>{"0002", ""});
+  // And nothing moved to the other buckets instead of being sent.
+  REQUIRE(report.rejected_cancel_.empty());
+  REQUIRE(report.unresolved_cancel_.empty());
+
+  // **The placement is unchanged, which is the point of not touching the planning view.** Nothing
+  // is held and nothing is working on the buy side, so the target of 5 is placed in full -- the
+  // same order the previous code placed after sending twice as many withdrawals.
+  REQUIRE(report.would_place_.size() == 1);
+  REQUIRE(report.would_place_[0].side_ == OrderSide::BUY);
+  REQUIRE(report.would_place_[0].quantity_ == Decimal64::parse("5"));
+}
+
+TEST_CASE("two unaddressed withdrawals are both reported, not collapsed into one") {
+  // The dedupe keys on the reference, and two empty references compare equal. Exempting them keeps
+  // one report entry per instruction a caller issued, which is what an operator counts.
+  using Tag = runner::DryRunner<CancelTwiceUnaddressed>::Tag;
+  runner::DryRunner<CancelTwiceUnaddressed> dry;
+  arrange(dry);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.unresolved_cancel_.size() == 2);
+}
+
+TEST_CASE("the same reference cancelled twice by the strategy is one request") {
+  using Tag = runner::DryRunner<CancelSameRefTwice>::Tag;
+  runner::DryRunner<CancelSameRefTwice> dry;
+  arrange(dry);
+
+  strategy::Portfolio<Tag> portfolio;
+  WorkingOrder<Tag> working;
+  working.order_.instrument_ = samsung();
+  working.order_.side_ = OrderSide::BUY;
+  working.order_.status_ = OrderStatus::PENDING;
+  working.order_.quantity_ = Decimal64::parse("4");
+  working.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+  working.ref_ = OrderRef<Tag>{"0001", ""};
+  portfolio.working_.push_back(working);
+  dry.context().set_portfolio(portfolio);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.would_cancel_.size() == 1);
 }
 
 TEST_CASE("a strategy defining one handler is driven without the others existing") {
