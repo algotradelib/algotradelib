@@ -133,6 +133,19 @@ public:
     count_ = count;
   }
 
+  /**
+   * Sets which market's trading calendar to ask for.
+   *
+   * `Country::KR` by default: it is the domestic market of both brokers this library ships, the only
+   * one KIS publishes at all, and the one `strategy::SessionWindow::krx()` states the hours for. A
+   * wrong value is refused by the port before a socket is written -- KIS's `validate_calendar` names
+   * the reason -- rather than answering about the wrong market.
+   */
+  void set_calendar_country(Country country) { calendar_country_ = country; }
+
+  /** Returns the market the calendar poll asks about. */
+  Country calendar_country() const noexcept { return calendar_country_; }
+
   /** Returns why the last failing poll failed, for a caller to log. */
   const std::optional<BrokerError>& last_error() const noexcept { return last_error_; }
 
@@ -140,6 +153,8 @@ public:
   template <typename Runner>
   runner::PollOutcome poll(runner::PollKind kind, Runner& runner_instance) {
     switch (kind) {
+      case runner::PollKind::CALENDAR:
+        return poll_calendar(runner_instance);
       case runner::PollKind::BARS:
         return poll_bars(runner_instance);
       case runner::PollKind::QUOTES:
@@ -355,6 +370,44 @@ private:
     }
   }
 
+  /**
+   * Refreshes which dates the market trades, and puts the answer where the loop and a strategy read it.
+   *
+   * The only poll whose result is not an event. It lands in `Context::set_calendar`, from which
+   * `runner::PollingLoop` derives the market phase and a strategy answers "does tomorrow trade" --
+   * one copy, one owner, and no way for the loop and the strategy to be looking at different
+   * calendars.
+   *
+   * `from` is left absent so each broker supplies its own "today", which is today *there*: KIS dates
+   * every request in Korean local time and its traits layer fills that in. Asking with a date derived
+   * from this process's clock would consult the wrong day for the hours either side of local midnight.
+   *
+   * **A failure leaves the previous calendar in place**, exactly as `poll_buying_power` leaves the
+   * previous budget. Erasing it would take a run that knew today was a trading day and make it
+   * `UNKNOWN` because a reference-data request timed out, which refuses every order; the loop's own
+   * reasoning about an uncovered date is what decides when an old answer has stopped being usable,
+   * and it can only do that if the answer is still there.
+   */
+  template <typename Runner>
+  runner::PollOutcome poll_calendar(Runner& runner_instance) {
+    if constexpr (!Caps::has_calendar) {
+      // A broker that publishes no calendar compiles no request. The loop then never establishes a
+      // phase, which it reports rather than guesses at -- Decision 2b: the capability is absent, and
+      // absent is not faked.
+      static_cast<void>(runner_instance);
+      return runner::PollOutcome::UNCHANGED;
+    } else {
+      auto result = session_->calendar(calendar_country_);
+      if (!result) {
+        last_error_ = result.error();
+        return poll_outcome_of(*last_error_);
+      }
+      last_error_.reset();
+      runner_instance.context().set_calendar(std::move(result.value()));
+      return runner::PollOutcome::UPDATED;
+    }
+  }
+
   /** Refreshes working orders, keeping positions. Compiles to nothing without the capability. */
   template <typename Runner>
   runner::PollOutcome poll_working_orders(Runner& runner_instance) {
@@ -500,6 +553,7 @@ private:
   Session* session_;
   std::vector<InstrumentId> universe_;
   std::vector<Currency> currencies_;
+  Country calendar_country_{Country::KR};
   Journal* journal_{nullptr};
   int maximum_history_pages_{20};
   runner::MatchWindow window_;

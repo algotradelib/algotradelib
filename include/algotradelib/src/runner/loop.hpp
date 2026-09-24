@@ -7,6 +7,7 @@
 #include <algotradelib/strategy>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <optional>
@@ -21,6 +22,17 @@ namespace runner {
 
 /** What a loop polls for, and the key its cadence is configured under. */
 enum class PollKind {
+  /**
+   * Which dates the market trades, which is half of what the market phase is derived from.
+   *
+   * **The only poll whose answer the loop itself reads.** Every other kind feeds the runner and is
+   * done; this one lands in `Context::set_calendar` and the loop then asks it whether today is a
+   * trading day, because `strategy::RiskLimits::permitted_phases_` decides whether anything may be
+   * sent at all. So it is first in `all_poll_kinds`, and it is the one cadence that is **on by
+   * default** -- see `PollSchedule::calendar_` for that argument, which is not the argument for the
+   * others.
+   */
+  CALENDAR,
   /** Completed bars, which is what most strategies trade on. */
   BARS,
   /** Current prices, for strategies that act between bars. */
@@ -49,11 +61,13 @@ enum class PollKind {
  * enum and out of range for the array. Naming the count is what makes the next enumerator a
  * one-line change rather than a hunt.
  */
-inline constexpr std::size_t poll_kind_count = 5;
+inline constexpr std::size_t poll_kind_count = 6;
 
 /** Returns a stable lowercase name for `kind`. */
 inline constexpr std::string_view poll_kind_name(PollKind kind) noexcept {
   switch (kind) {
+    case PollKind::CALENDAR:
+      return "calendar";
     case PollKind::BARS:
       return "bars";
     case PollKind::QUOTES:
@@ -70,6 +84,11 @@ inline constexpr std::string_view poll_kind_name(PollKind kind) noexcept {
 
 /** Every kind, for iterating without repeating the list. */
 inline constexpr PollKind all_poll_kinds[] = {
+  // First, because it is the cheapest and because the phase derived from it decides whether anything
+  // else in this iteration may be sent. A calendar arriving in this iteration is used by the *next*
+  // one -- the phase is installed before the polls run, so that a bar settled inside a poll cannot be
+  // checked against a phase the loop has not computed yet.
+  PollKind::CALENDAR,
   PollKind::BARS,
   PollKind::QUOTES,
   PollKind::HOLDINGS,
@@ -135,6 +154,26 @@ inline constexpr std::string_view poll_outcome_name(PollOutcome outcome) noexcep
  * why a loop polling bars once a day still responds to an operator within a second.
  */
 struct PollSchedule {
+  /**
+   * How often to ask which dates the market trades. **The one cadence that is on by default.**
+   *
+   * Every other member here is absent by default, because the library will not spend a request on
+   * data the caller never asked for. This one is different in kind: the loop derives the market phase
+   * from it, `RiskLimits::permitted_phases_` defaults to `{OPEN}`, and an uncovered date is `UNKNOWN`
+   * -- so a loop with no calendar refuses every order. A cadence absent by default would make the
+   * whole mechanism one nobody switches on, which is exactly the shape the phase decision closed.
+   *
+   * **Six hours, and the number has three constraints behind it.** KIS asks that its holiday endpoint
+   * be called at most once a day, and its client caches -- a covered date is answered without a
+   * request -- so four polls a day cost one request a day, on the first new date. Toss answers at
+   * reference-data priority, the lowest there is, and states no daily limit. And a calendar stops
+   * covering the local date at local midnight, so any cadence longer than the nine hours between
+   * midnight and a 09:00 open can leave the phase `UNKNOWN` through an open.
+   *
+   * Absent disables it, which is then a visible act rather than a default nobody noticed. A broker
+   * that publishes no calendar compiles no request whatever this says.
+   */
+  std::optional<std::chrono::nanoseconds> calendar_{std::chrono::hours(6)};
   std::optional<std::chrono::nanoseconds> bars_;
   std::optional<std::chrono::nanoseconds> quotes_;
   std::optional<std::chrono::nanoseconds> holdings_;
@@ -152,6 +191,8 @@ struct PollSchedule {
   /** Returns the interval configured for `kind`, or nothing when it is disabled. */
   std::optional<std::chrono::nanoseconds> interval_for(PollKind kind) const noexcept {
     switch (kind) {
+      case PollKind::CALENDAR:
+        return calendar_;
       case PollKind::BARS:
         return bars_;
       case PollKind::QUOTES:
@@ -221,6 +262,16 @@ struct IterationReport {
   std::optional<strategy::HaltReason> gate_;
   /** Whether anything was fed to the runner. */
   bool fed_{false};
+  /**
+   * The phase the loop computed for this iteration.
+   *
+   * Reported because it decides whether anything could be sent: `UNKNOWN` here and a default
+   * `RiskLimits::permitted_phases_` means every placement was refused, and a reader should not have
+   * to infer that from an empty placement count.
+   */
+  strategy::MarketPhase phase_{strategy::MarketPhase::UNKNOWN};
+  /** Whether this iteration announced a phase change to the strategy. */
+  bool phase_changed_{false};
 
   /** Returns whether any poll brought new data. */
   bool updated() const noexcept {
@@ -247,6 +298,15 @@ struct LoopReport {
   std::optional<StopIntent> stopped_by_;
   /** Which hold stopped the loop sending when it did, for an operator reading the tail of a log. */
   std::optional<strategy::HaltReason> final_gate_;
+  /** The phase the last iteration computed. */
+  strategy::MarketPhase final_phase_{strategy::MarketPhase::UNKNOWN};
+  /**
+   * How many phase changes were announced to the strategy.
+   *
+   * The counter that distinguishes a mechanism that ran from one that was merely configured. A run
+   * spanning an open and a close sees transitions; a run of ten seconds sees the first one only.
+   */
+  std::size_t phase_transitions_{0};
   /** Whether the loop gave up because a poll kept failing. */
   bool abandoned_{false};
   /** Which kind exhausted its failure budget, when one did. */
@@ -436,6 +496,20 @@ public:
     currencies_ = std::move(currencies);
   }
 
+  /**
+   * Sets the calendar a successful calendar poll installs, and makes that poll succeed.
+   *
+   * Supplying one is how a test says "the broker answers this", so it also sets the default outcome
+   * for `PollKind::CALENDAR` to `UPDATED` -- a test that supplies a calendar and then has to remember
+   * a second call to make it arrive would be a test that silently asserts nothing about the phase. A
+   * test that wants the poll to fail queues or defaults that outcome afterwards, and then nothing is
+   * installed, which is what `live::SessionSource` does too.
+   */
+  void set_calendar(TradingCalendar calendar) {
+    calendar_ = std::move(calendar);
+    defaults_[static_cast<int>(PollKind::CALENDAR)] = PollOutcome::UPDATED;
+  }
+
   /** Returns those currencies, which is what lets the gate hold for one that never answered. */
   const std::vector<Currency>& buying_power_currencies() const noexcept { return currencies_; }
 
@@ -445,16 +519,22 @@ public:
   /** Returns how many times `kind` was polled. */
   std::size_t polls(PollKind kind) const noexcept { return polls_[static_cast<int>(kind)]; }
 
-  /** Returns the queued outcome for `kind`, or its default. */
-  PollOutcome poll(PollKind kind, Runner&) {
+  /** Returns the queued outcome for `kind`, or its default, installing a calendar that arrived. */
+  PollOutcome poll(PollKind kind, Runner& runner_instance) {
     const int at = static_cast<int>(kind);
     ++polls_[at];
+    auto outcome = defaults_[at];
     if (!queued_[at].empty()) {
-      const auto outcome = queued_[at].front();
+      outcome = queued_[at].front();
       queued_[at].erase(queued_[at].begin());
-      return outcome;
     }
-    return defaults_[at];
+    // The one kind whose answer goes somewhere: the loop reads the calendar back out of the context,
+    // so a source that did not put it there would leave every phase assertion in this header testing
+    // an empty calendar.
+    if (kind == PollKind::CALENDAR && calendar_ && outcome == PollOutcome::UPDATED) {
+      runner_instance.context().set_calendar(*calendar_);
+    }
+    return outcome;
   }
 
   /** Returns the configured order-list outcome. */
@@ -464,16 +544,24 @@ public:
   }
 
 private:
+  /**
+   * Every kind's default outcome, filled rather than listed.
+   *
+   * It used to be a list with one entry per `PollKind`, and `PollOutcome::UPDATED` is the zero value
+   * -- so adding an enumerator silently defaulted the new kind to "new data arrived" in every test
+   * that had not set it. Filling cannot be one short.
+   */
+  static std::array<PollOutcome, poll_kind_count> unchanged_defaults() {
+    std::array<PollOutcome, poll_kind_count> filled{};
+    filled.fill(PollOutcome::UNCHANGED);
+    return filled;
+  }
+
   std::vector<PollOutcome> queued_[poll_kind_count];
-  PollOutcome defaults_[poll_kind_count] = {
-    PollOutcome::UNCHANGED,
-    PollOutcome::UNCHANGED,
-    PollOutcome::UNCHANGED,
-    PollOutcome::UNCHANGED,
-    PollOutcome::UNCHANGED,
-  };
+  std::array<PollOutcome, poll_kind_count> defaults_{unchanged_defaults()};
   PollOutcome order_list_{PollOutcome::UPDATED};
   std::vector<Currency> currencies_;
+  std::optional<TradingCalendar> calendar_;
   std::size_t polls_[poll_kind_count] = {};
   std::size_t order_list_reads_{0};
 };
@@ -537,6 +625,24 @@ public:
   /** Sets how stale a holdings snapshot may be before sending is blocked. */
   void set_maximum_portfolio_age(std::chrono::nanoseconds age) { maximum_portfolio_age_ = age; }
 
+  /**
+   * Sets the session the market phase is derived against.
+   *
+   * `strategy::SessionWindow::krx()` by default, which is the same default `backtest::ReplayConfig`
+   * carries -- so a strategy replayed and then run live derives its phases against the same window
+   * unless a caller changes one of them, and a divergence between the two worlds has to be asked for.
+   *
+   * Operator-stated rather than read from a broker, which `SessionWindow` itself argues: only Toss
+   * publishes intraday hours, so deriving them from a broker would give one answer for one broker and
+   * nothing for the other.
+   */
+  void set_session_window(strategy::SessionWindow window) {
+    session_window_ = std::move(window);
+  }
+
+  /** Returns that session window. */
+  const strategy::SessionWindow& session_window() const noexcept { return session_window_; }
+
   /** Sets the failure policy. */
   void set_failure_policy(FailurePolicy policy) { failure_policy_ = std::move(policy); }
 
@@ -570,6 +676,10 @@ public:
         ++report.blocked_;
       }
       report.final_gate_ = iteration.gate_;
+      report.final_phase_ = iteration.phase_;
+      if (iteration.phase_changed_) {
+        ++report.phase_transitions_;
+      }
       last_ = iteration;
 
       if (report.abandoned_) {
@@ -591,6 +701,7 @@ public:
     // A healthy run that simply exhausted `max_iterations` never halted anything, so there is
     // nothing to leave behind in that case.
     note_sellable_convention(report);
+    note_unestablished_phase(report);
     return report;
   }
 
@@ -629,6 +740,23 @@ private:
     // Read before polling, so an operator's stop is honoured without first spending requests on a
     // broker the loop is about to walk away from.
     check_control_file(stop, report);
+
+    // **Installed before anything can send, and announced only after the polls.** The two halves are
+    // separate on purpose and neither is optional.
+    //
+    // A source's `poll` calls `Runner::feed`, which settles, so an order can leave the process from
+    // inside a poll -- the same fact the gate below is computed early for. If the phase were installed
+    // after the polls, the first bar arriving after the close would be settled while the context still
+    // said `OPEN`, and an opening order would pass a phase limit that exists to refuse it. Once per
+    // session, on the close.
+    //
+    // Announcing the change is the opposite case: `on_phase` may place orders, and it should see this
+    // iteration's polls rather than the previous one's -- fresh prices, a fresh portfolio, and a gate
+    // re-evaluated against them. That is what `backtest/engine.hpp:283-306` does for the replay, with
+    // the same argument: a handler deciding on a mark from one moment beside a price from another is
+    // not looking at a fresher picture, it is looking at an incoherent one.
+    iteration.phase_ = phase_at(iteration.at_);
+    runner_->context().set_phase(iteration.phase_);
 
     // **Established before any poll runs, because a poll is what feeds the runner.** A source's
     // `poll` calls `Runner::feed` itself -- `live::SessionSource::poll_bars` does, per instrument --
@@ -677,11 +805,89 @@ private:
     // The order list is deliberately not attempted a second time: one attempt per iteration, and
     // the gate simply stands until the next one.
     hold(gate_for(stop, iteration.at_, report, /*may_read=*/false));
+
+    // Announced last, so the handler runs on everything this iteration established. A change is
+    // announced once, not every iteration it persists for.
+    if (announced_ != iteration.phase_) {
+      // **The clock moves with the phase, and only forwards.** `Runner::feed(MarketPhase)` does not
+      // advance `Context::now_`; only a bar or a quote does, from a broker's stamp. So a daily-bar run
+      // would hand `on_phase` an instant hours old, and `RiskGuard` files a send at
+      // `GuardInputs::now_` and counts sends within `rate_window_` of it -- the phase order and the
+      // next bar's order would be filed at what the guard thinks are two unrelated moments, and two
+      // orders would pass a one-order window. `backtest/engine.hpp:296-302` documents the same hazard
+      // for the replay.
+      //
+      // Forwards only: a broker stamp ahead of this machine's clock must not be walked backwards,
+      // because a handler deciding at an instant *earlier* than the bar it has already been shown is
+      // the same incoherence with the sign flipped. The skew is the broker's and is not this loop's
+      // to quietly correct.
+      if (runner_->context().now() < iteration.at_) {
+        runner_->context().set_now(iteration.at_);
+      }
+      announced_ = iteration.phase_;
+      iteration.phase_changed_ = true;
+      runner_->feed(iteration.phase_);
+    }
+
     // Reported from the guard rather than from what the loop just computed, so the report names the
     // most fundamental hold in force whoever owns it -- an operator's halt, or a journal that
     // failed, outranks anything the loop decided.
     iteration.gate_ = runner_->guard().blocking_reason();
     return iteration;
+  }
+
+  /**
+   * Returns the phase at `at`, from the configured window and whatever calendar has arrived.
+   *
+   * The composition `ReplayClock` already performs, with a polled calendar in place of a replay's
+   * per-bar answer. An uncovered date is `UNKNOWN` and never "closed": `TradingCalendar` draws that
+   * distinction because assuming closed stops a strategy on a day that is in fact open, and assuming
+   * open lets one order into a holiday.
+   *
+   * The date is the *market's*, not this process's. `SessionWindow` owns the offset and derives both
+   * answers from it, so the day the calendar is asked about and the day the session boundaries are
+   * computed for cannot disagree.
+   */
+  strategy::MarketPhase phase_at(std::chrono::system_clock::time_point at) const {
+    const auto& calendar = runner_->context().calendar();
+    return session_window_.phase(at, calendar.is_trading_day(session_window_.local_date(at)));
+  }
+
+  /**
+   * Says so when a run never established the phase, and names which of the three reasons applies.
+   *
+   * Silent otherwise, like `note_sellable_convention`: a line on every healthy run is how a report
+   * stops being read. But a run that placed nothing because the phase was never known must not look
+   * like a quiet market -- and this is **not** a hold on the guard, deliberately. A hold would also
+   * stop cancellations, which `Runner::send_cancel` refuses on any blocking reason while never
+   * consulting the phase at all; taking one because a reference-data poll failed would make an
+   * unknown phase more restrictive than a closed one, and a withdrawal only ever reduces exposure.
+   * `RiskGuard` already refuses every placement with `PHASE_NOT_PERMITTED`, so there is nothing left
+   * for a hold to protect.
+   */
+  void note_unestablished_phase(LoopReport& report) const {
+    if (report.iterations_ == 0 || report.final_phase_ != strategy::MarketPhase::UNKNOWN) {
+      return;
+    }
+    std::string reason;
+    if (!schedule_.calendar_) {
+      reason = "no calendar cadence is configured";
+    } else if (report.attempted(PollKind::CALENDAR) == 0) {
+      reason = "the calendar poll never came due";
+    } else if (report.failed(PollKind::CALENDAR) == report.attempted(PollKind::CALENDAR)) {
+      reason = "every calendar poll failed";
+    } else if (runner_->context().calendar().days_.empty()) {
+      reason = "the broker published no trading calendar";
+    } else {
+      // Named, not merely called uncovered. "The calendar does not cover today" sends a reader to
+      // check a span they cannot see; the date is the one thing that turns this note into an action.
+      const auto date = session_window_.local_date(last_.at_);
+      reason = "the calendar does not cover " + std::to_string(date.year_) + "-" +
+        std::to_string(date.month_) + "-" + std::to_string(date.day_);
+    }
+    report.notes_.push_back(
+      "the market phase was never established (" + reason +
+      "); a guard permitting only known phases refused every placement");
   }
 
   /**
@@ -1205,6 +1411,15 @@ private:
   Clock clock_;
   FileStopChannel control_;
   FailurePolicy failure_policy_;
+  strategy::SessionWindow session_window_{strategy::SessionWindow::krx()};
+  /**
+   * The phase most recently announced, which is not the same as the phase in force.
+   *
+   * `UNKNOWN` to begin with rather than "nothing announced yet", because that is genuinely what the
+   * loop knows before its first calendar arrives -- and it means a run that starts knowing nothing and
+   * then learns the market is open announces that as a change, which is exactly right.
+   */
+  strategy::MarketPhase announced_{strategy::MarketPhase::UNKNOWN};
   std::optional<std::chrono::nanoseconds> maximum_portfolio_age_;
   std::optional<std::chrono::nanoseconds> maximum_buying_power_age_;
   std::optional<std::chrono::system_clock::time_point> next_due_[poll_kind_count];

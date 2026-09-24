@@ -75,6 +75,41 @@ runner::ManualClock test_clock() {
   return runner::ManualClock{base_time()};
 }
 
+/**
+ * A calendar in which the day `test_clock()` starts on either trades or does not.
+ *
+ * The loop derives the market phase from a configured `SessionWindow` and this, so installing one is
+ * how a test says what the market is doing -- and it is why these tests no longer call
+ * `context().set_phase()`. That call used to freeze a phase the loop never looked at, so every
+ * assertion below about an order being sent or refused was an assertion about a hand-set field
+ * rather than about the mechanism. Now it is the mechanism.
+ *
+ * The date comes from `SessionWindow::local_date`, which `tests/test-strategy.cpp` pins independently
+ * against hand-computed dates -- so a bug in it fails there, loudly, rather than only making these
+ * fixtures quietly agree with it.
+ */
+algotradelib::TradingCalendar krx_calendar(bool trades = true) {
+  const auto session = strategy::SessionWindow::krx();
+  algotradelib::TradingCalendar calendar;
+  calendar.country_ = algotradelib::Country::KR;
+  calendar.received_at_ = base_time();
+  calendar.days_.push_back(algotradelib::TradingDay{session.local_date(base_time()), trades});
+  return calendar;
+}
+
+/**
+ * Installs that calendar where the loop reads it, which is the runner's context.
+ *
+ * Seeded directly rather than served through the source, because a source's calendar arrives
+ * *during* the first iteration's polls and the loop installs the phase *before* them -- so a
+ * single-iteration test served by a source would run its one iteration at `UNKNOWN`. That lag is real
+ * and has its own tests; it is not what most of these cases are about.
+ */
+template <typename R>
+void serve_calendar(R& runner_instance, bool trades = true) {
+  runner_instance.context().set_calendar(krx_calendar(trades));
+}
+
 algotradelib::InstrumentId samsung() {
   return algotradelib::InstrumentId{
     algotradelib::Country::KR, algotradelib::Venue::COMBINED, "005930"};
@@ -873,6 +908,9 @@ TEST_CASE("a run reports what it learned about the broker's sellable figure", "[
   InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
   StopSource stop;
   runner_instance.probe_sellable_convention();
+  // Served so the run has an established phase, because this test is about the probe's note and a
+  // run that never learns the phase adds a note of its own.
+  serve_calendar(runner_instance);
 
   // A quiet run says nothing rather than reporting "undetermined" on every iteration that never
   // sold anything: a note nobody needs is how a report stops being read.
@@ -1118,7 +1156,7 @@ TEST_CASE("a withdraw cancels what is resting and leaves the position", "[loop][
   // order-writing request that can fail indeterminately.
   InertRunner runner_instance;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_portfolio(portfolio_with("10", "3"));
   InertSource source;
   InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
@@ -1141,7 +1179,7 @@ TEST_CASE("a withdraw cancels what is resting and leaves the position", "[loop][
 TEST_CASE("a flatten cancels and then closes the position", "[loop][stop]") {
   InertRunner runner_instance;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
   runner_instance.context().set_portfolio(portfolio_with("10", "3"));
   InertSource source;
@@ -1185,7 +1223,7 @@ TEST_CASE("a flatten with nothing held sends nothing", "[loop][stop]") {
   // check first.
   InertRunner runner_instance;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_portfolio(portfolio_with(nullptr, nullptr));
   InertSource source;
   InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
@@ -1205,7 +1243,7 @@ TEST_CASE("a zero-quantity position is not flattened", "[loop][stop]") {
   // be an order the broker rejects, for no reason.
   InertRunner runner_instance;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_portfolio(portfolio_with("0", nullptr));
   InertSource source;
   InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
@@ -1224,7 +1262,7 @@ TEST_CASE("a flatten outside market hours is refused and says so", "[loop][stop]
   // loop says otherwise. An operator who asked to be flat and heard nothing would believe they were.
   InertRunner runner_instance;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::CLOSED);
+  serve_calendar(runner_instance, /*trades=*/false);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
   runner_instance.context().set_portfolio(portfolio_with("10", nullptr));
   InertSource source;
@@ -1328,7 +1366,7 @@ TEST_CASE("nothing is sent before the first order-list read, from inside a poll"
   FeedingSource source;
   source.set_order_list(runner::PollOutcome::FAILED);
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
   SendingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
   StopSource stop;
@@ -1349,7 +1387,7 @@ TEST_CASE("the gate opens for the same iteration once the order list is read", "
   SendingRunner runner_instance;
   FeedingSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
   SendingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
   StopSource stop;
@@ -1368,7 +1406,7 @@ TEST_CASE("a stale portfolio blocks a send made from inside a poll", "[loop][gat
   SendingRunner runner_instance;
   FeedingSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
   SendingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
   loop.set_maximum_portfolio_age(std::chrono::minutes(5));
@@ -1388,7 +1426,7 @@ TEST_CASE("an operator's halt stops a send made from inside a poll", "[loop][hal
   SendingRunner runner_instance;
   FeedingSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
   runner_instance.guard().halt();
   SendingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
@@ -1411,7 +1449,7 @@ TEST_CASE("a halt an operator set refuses a withdraw's cancellations", "[loop][s
   InertSource source;
   runner_instance.context().set_instrument(samsung_reference());
   runner_instance.context().set_portfolio(portfolio_with("10", "5"));
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.guard().halt();
   InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
   StopSource stop;
@@ -1436,7 +1474,7 @@ TEST_CASE("a withdraw with no halt standing still cancels", "[loop][stop]") {
   InertSource source;
   runner_instance.context().set_instrument(samsung_reference());
   runner_instance.context().set_portfolio(portfolio_with("10", "5"));
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
   StopSource stop;
 
@@ -1460,7 +1498,7 @@ TEST_CASE("a withdraw that could not be journaled is not a complete stop", "[loo
   InertSource source;
   runner_instance.context().set_instrument(samsung_reference());
   runner_instance.context().set_portfolio(portfolio_with("10", "5"));
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.halt_locally("the order journal could not be written");
   InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
   StopSource stop;
@@ -1483,7 +1521,7 @@ TEST_CASE("a cancellation lost in transit is not a completed withdrawal", "[loop
   LosingRunner runner_instance;
   LosingSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
 
   strategy::Portfolio<runner::DryTag> portfolio;
   give_one_resting_order(portfolio);
@@ -1511,7 +1549,7 @@ TEST_CASE("a cancellation the broker rejected is not a completed withdrawal", "[
   RejectingRunner runner_instance;
   RejectingSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
 
   strategy::Portfolio<runner::DryTag> portfolio;
   give_one_resting_order(portfolio);
@@ -1544,7 +1582,7 @@ TEST_CASE("a stop before the first order-list read is not a complete stop", "[lo
   InertRunner runner_instance;
   InertSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
   StopSource stop;
   stop.request(StopIntent::WITHDRAW);
@@ -1568,7 +1606,7 @@ TEST_CASE("a stop still withdraws what it can see, and says the picture was part
   InertRunner runner_instance;
   InertSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_portfolio(portfolio_with("10", "5"));
   InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
   StopSource stop;
@@ -1589,7 +1627,7 @@ TEST_CASE("a stop with a read list but no holdings snapshot is not complete eith
   InertRunner runner_instance;
   InertSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
   StopSource stop;
 
@@ -1610,7 +1648,7 @@ TEST_CASE("a stop against a stale holdings snapshot is not complete", "[loop][st
   InertRunner runner_instance;
   InertSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   auto portfolio = portfolio_with("10", "5");
   portfolio.as_of_ = base_time() - std::chrono::minutes(10);
   runner_instance.context().set_portfolio(portfolio);
@@ -1636,7 +1674,7 @@ TEST_CASE("a flatten withdraws a working order with no position behind it", "[lo
   InertRunner runner_instance;
   InertSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
   runner_instance.context().set_portfolio(portfolio_with(nullptr, "5"));
   InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
@@ -1661,7 +1699,7 @@ TEST_CASE("a flatten does not withdraw the same order twice", "[loop][stop]") {
   InertRunner runner_instance;
   InertSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
   runner_instance.context().set_portfolio(portfolio_with("10", "3"));
   InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
@@ -1687,7 +1725,7 @@ TEST_CASE("an order sent after the last working-order read leaves the stop unver
   SendingRunner runner_instance;
   FeedingSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
 
   strategy::Portfolio<runner::DryTag> portfolio;
@@ -1725,7 +1763,7 @@ TEST_CASE("a working-order poll re-verifies the source an earlier send invalidat
   SendingRunner runner_instance;
   FeedingSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
 
   strategy::Portfolio<runner::DryTag> portfolio;
@@ -1760,7 +1798,7 @@ TEST_CASE("a flatten does not sell a position twice to get out of it", "[loop][s
   InertRunner runner_instance;
   InertSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
 
   strategy::Portfolio<InertRunner::Tag> portfolio;
@@ -1806,7 +1844,7 @@ TEST_CASE("a flatten closes only the part no working order is already selling", 
   InertRunner runner_instance;
   InertSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
 
   strategy::Portfolio<InertRunner::Tag> portfolio;
@@ -1876,7 +1914,7 @@ TEST_CASE("a source with no working-order listing cannot verify a stop", "[loop]
   InertRunner runner_instance;
   HistoryOnlySource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   strategy::Portfolio<InertRunner::Tag> fresh;
   fresh.as_of_ = base_time();
   runner_instance.context().set_portfolio(fresh);
@@ -1903,7 +1941,7 @@ TEST_CASE("a flatten closes the whole position when the working order opposes it
   InertRunner runner_instance;
   InertSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
 
   strategy::Portfolio<InertRunner::Tag> portfolio;
@@ -1944,7 +1982,7 @@ TEST_CASE("a flatten of a short position is sized the same way", "[loop][stop]")
   InertRunner runner_instance;
   InertSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
 
   strategy::Portfolio<InertRunner::Tag> portfolio;
@@ -1989,7 +2027,7 @@ TEST_CASE("a flatten sends no close when a sell it cannot see may already be wor
   SellingRunner runner_instance;
   SellingSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
 
   strategy::Portfolio<runner::DryTag> portfolio;
@@ -2031,7 +2069,7 @@ TEST_CASE("a flatten on a source that cannot list orders sends no close", "[loop
   InertRunner runner_instance;
   HistoryOnlySource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
   runner_instance.context().set_portfolio(portfolio_with("10", nullptr));
 
@@ -2056,7 +2094,7 @@ TEST_CASE("a strategy's on_stop cannot close a position the flatten is already c
   ClosingRunner runner_instance;
   ClosingSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
   runner_instance.context().set_portfolio(ten_held());
 
@@ -2091,7 +2129,7 @@ TEST_CASE("a strategy's on_stop cannot place while the closing source is unverif
   ClosingRunner runner_instance;
   ClosingSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
   runner_instance.context().set_portfolio(ten_held());
 
@@ -2113,7 +2151,7 @@ TEST_CASE("a withdraw places nothing, whatever the strategy asks on the way out"
   ClosingRunner runner_instance;
   ClosingSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
   runner_instance.context().set_portfolio(ten_held());
 
@@ -2137,7 +2175,7 @@ TEST_CASE("a quiesce still tells the strategy it is stopping", "[loop][stop]") {
   ClosingRunner runner_instance;
   ClosingSource source;
   runner_instance.context().set_instrument(samsung_reference());
-  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
   runner_instance.context().set_portfolio(ten_held());
 
