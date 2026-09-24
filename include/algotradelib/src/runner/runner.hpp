@@ -947,11 +947,21 @@ private:
         continue;
       }
 
+      // **Positive, not merely non-zero.** `Context::set_last_price` stores whatever a bar or quote
+      // carried, with no validation, so a malformed price reaches here from market data rather than
+      // only from a caller mistake. A negative mark would make an instrument's exposure negative and
+      // let it offset real holdings until the ceiling passed anything at all; zero values the
+      // position at nothing, which is the silent omission this resolution exists to refuse. Either
+      // leaves the instrument unresolved, and the guard turns that into `VALUE_NOT_KNOWN`.
+      const auto zero = Decimal64::parse("0");
       auto price = context_.last_price(id);
-      if (!price && position != nullptr && position->last_price_.coefficient() != 0) {
+      if (price && !decimal_less(zero, *price)) {
+        price = std::nullopt;
+      }
+      if (!price && position != nullptr && decimal_less(zero, position->last_price_)) {
         price = position->last_price_;
       }
-      if (!price || price->coefficient() == 0) {
+      if (!price) {
         continue;
       }
       basis.push_back(strategy::InstrumentBasis{id, reference->currency_, *price});

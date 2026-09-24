@@ -340,6 +340,61 @@ TEST_CASE("cash in another currency is neither converted nor counted") {
   REQUIRE(ledger.equity_in(Currency{"USD"}) == std::optional<Decimal64>(Decimal64::parse("0")));
 }
 
+TEST_CASE("a fill whose arithmetic will not fit leaves the ledger untouched") {
+  // `Backtester` reads false as "the order did not fill", so a partly applied ledger means a replay
+  // carries on holding the effects of a fill it counted as never happening. Every fallible step used
+  // to run against the ledger itself: find_or_open pushed a lot, add_realized banked, and
+  // weighted_average blended, all before a later step could fail.
+  // **The failure has to come after the lot is opened**, which is the whole point: an execution whose
+  // very first multiplication overflows returns false before touching anything, in any version. Cash
+  // at the maximum an exact decimal holds, and a sale whose proceeds will not fit on top of it, fails
+  // in `adjust_cash` -- which the old code reached only after opening the lot, setting its average,
+  // its quantity and its mark.
+  auto ledger = opening("9223372036854775807");
+
+  const auto positions_before = ledger.positions().size();
+  const auto cash_before = ledger.cash_in(krw());
+  const auto executions_before = ledger.executions().size();
+
+  REQUIRE_FALSE(ledger.apply(filled(OrderSide::SELL, "10", "70000"), krw()));
+
+  REQUIRE(ledger.positions().size() == positions_before);
+  REQUIRE(ledger.cash_in(krw()) == cash_before);
+  REQUIRE(ledger.executions().size() == executions_before);
+  // No short position was opened by a fill the ledger reported as not having happened.
+  REQUIRE_FALSE(ledger.quantity_of(samsung()));
+}
+
+TEST_CASE("realized profit is not banked by a fill that then fails") {
+  // The other half of the same promise. `add_realized` ran before the steps that can still fail, so
+  // a closing trade could bank its profit and then report that it never happened.
+  auto ledger = opening("9223372036854775000");
+  REQUIRE(ledger.apply(filled(OrderSide::BUY, "10", "70000"), krw()));
+  const auto realized_before = ledger.realized_in(krw());
+  const auto quantity_before = ledger.quantity_of(samsung());
+
+  // Closing at a profit, with proceeds that will not fit on top of the cash already held.
+  REQUIRE_FALSE(ledger.apply(filled(OrderSide::SELL, "10", "80000"), krw()));
+
+  REQUIRE(ledger.realized_in(krw()) == realized_before);
+  REQUIRE(ledger.quantity_of(samsung()) == quantity_before);
+}
+
+TEST_CASE("a mark lands even when its own valuation will not fit, and equity says so") {
+  // Skipping the row would decline to apply a price the caller asked for, and leave equity_in
+  // reporting the previous total as though it were current. The mark applies; the total a valuation
+  // cannot express is reported absent, which is what a replay's equity curve reads to skip a point.
+  auto ledger = opening();
+  REQUIRE(ledger.apply(filled(OrderSide::BUY, "2", "70000"), krw()));
+
+  ledger.mark(samsung(), Decimal64::parse("9223372036854775807"));
+  REQUIRE_FALSE(ledger.equity_in(krw()));
+
+  // And an ordinary mark afterwards still works, so nothing was left wedged.
+  ledger.mark(samsung(), Decimal64::parse("80000"));
+  REQUIRE(ledger.equity_in(krw()) == std::optional<Decimal64>(Decimal64::parse("10020000")));
+}
+
 TEST_CASE("a position in another currency is not counted either") {
   // **The case the test above could not catch.** `opening()` holds no positions, so it asked only
   // whether cash was filtered, and passed however the position loop behaved. With a holding, the

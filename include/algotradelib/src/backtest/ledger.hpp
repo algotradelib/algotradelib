@@ -131,8 +131,15 @@ public:
    * one weighted average would carry the closed leg's cost basis into the new position and misstate
    * every later figure.
    *
-   * Returns false when the arithmetic will not fit an exact decimal, which leaves the ledger unchanged
-   * rather than partly applied.
+   * Returns false when the arithmetic will not fit an exact decimal, which leaves the ledger
+   * unchanged rather than partly applied.
+   *
+   * **That last sentence is now true.** It was not: every fallible step used to run against the
+   * ledger itself, so a failure halfway left a lot `find_or_open` had pushed, an average
+   * `weighted_average` had blended, or realized profit `add_realized` had banked -- and
+   * `backtest::Backtester` reads false as "the order did not fill", so a replay carried on with the
+   * effects of a fill it had counted as never happening. Every figure is computed first and nothing
+   * is written until all of them fit; the commit below cannot fail.
    */
   bool apply(const Execution& execution, const Currency& currency) {
     const auto& fill = execution.fill_;
@@ -162,16 +169,20 @@ public:
       return false;
     }
 
-    auto* lot = find_or_open(fill.instrument_);
-    const auto held = lot->quantity_;
+    // Read, never opened. Opening the lot here is what made an early return leave a trace.
+    const auto* existing = find(fill.instrument_);
+    const auto held = existing != nullptr ? existing->quantity_ : zero;
+    const auto average = existing != nullptr ? existing->average_purchase_price_ : zero;
+
     const auto closing = closed_quantity(held, *signed_quantity);
     if (!closing) {
       return false;
     }
 
     // Realized profit exists only on the part that closed, and only against the old average.
+    std::optional<Decimal64> realized_total;
     if (closing->coefficient() != 0) {
-      const auto moved = decimal_subtract(fill.price_, lot->average_purchase_price_);
+      const auto moved = decimal_subtract(fill.price_, average);
       if (!moved) {
         return false;
       }
@@ -186,7 +197,8 @@ public:
           return false;
         }
       }
-      if (!add_realized(currency, *banked)) {
+      realized_total = decimal_add(realized_in(currency), *banked);
+      if (!realized_total) {
         return false;
       }
     }
@@ -196,10 +208,6 @@ public:
       return false;
     }
 
-    // Valued here, **before anything below is assigned**, so that recording the currency adds no new
-    // way for this function to fail after it has started mutating. `apply` already has such paths --
-    // `weighted_average` and `adjust_cash` both fail after `find_or_open` has pushed a lot -- and
-    // this is not the change to add another to them.
     const auto valued = decimal_multiply(*resulting, fill.price_);
     if (!valued) {
       return false;
@@ -207,20 +215,31 @@ public:
 
     // The average price follows only the part that opened or added. A position crossing flat takes the
     // fill price outright, because nothing of the old basis survives.
+    auto new_average = average;
     if (resulting->coefficient() == 0) {
-      lot->average_purchase_price_ = zero;
+      new_average = zero;
     } else if (crossed_or_opened(held, *resulting)) {
-      lot->average_purchase_price_ = fill.price_;
+      new_average = fill.price_;
     } else if (adding(held, *signed_quantity)) {
-      const auto blended = weighted_average(held, lot->average_purchase_price_, *signed_quantity, fill.price_);
+      const auto blended = weighted_average(held, average, *signed_quantity, fill.price_);
       if (!blended) {
         return false;
       }
-      lot->average_purchase_price_ = *blended;
+      new_average = *blended;
     }
     // Reducing without crossing leaves the average alone: selling half a position does not change
     // what the remaining half cost.
 
+    const auto cash_total = decimal_add(
+      cash_in(currency).value_or(zero), *after_commission
+    );
+    if (!cash_total) {
+      return false;
+    }
+
+    // --- Nothing below can fail -------------------------------------------------------------
+    auto* lot = find_or_open(fill.instrument_);
+    lot->average_purchase_price_ = new_average;
     lot->quantity_ = *resulting;
     lot->last_price_ = fill.price_;
     // **The currency is recorded here because this is the only place it is known.** `mark` is not
@@ -230,8 +249,9 @@ public:
     // (`core/types.hpp:154`), which makes the untold case silently *answer* rather than be absent --
     // a USD position would read as Korean won to anything summing per currency.
     lot->market_value_ = Money{*valued, currency};
-    if (!adjust_cash(currency, *after_commission)) {
-      return false;
+    set_amount(cash_, currency, *cash_total);
+    if (realized_total) {
+      set_amount(realized_, currency, *realized_total);
     }
     executions_.push_back(execution);
     return true;
@@ -241,18 +261,19 @@ public:
   void mark(const InstrumentId& instrument, const Decimal64& price) {
     for (auto& lot : positions_) {
       if (lot.instrument_ == instrument) {
-        // Re-valued at the new mark, which is what makes `market_value_` mean "at the latest mark"
-        // rather than "at the last fill". The currency is the one `apply` recorded: a lot exists
-        // only because a fill opened it, so there is always one.
-        //
-        // A value that will not fit leaves **both** fields alone rather than moving the price and
-        // leaving a market value computed from the old one, which would be the two disagreeing.
-        const auto valued = decimal_multiply(lot.quantity_, price);
-        if (!valued) {
-          continue;
-        }
+        // **The mark always lands.** An earlier version skipped the whole row when the valuation
+        // overflowed, which silently declined to apply a price the caller asked for -- and left
+        // `equity_in` reporting a stale total as though it were current, where `main` had reported
+        // that it could not compute one.
         lot.last_price_ = price;
-        lot.market_value_ = Money{*valued, lot.market_value_.currency_};
+        // `market_value_` is kept in step where the arithmetic allows. It is a convenience for a
+        // reader, and its **currency** is the authoritative part -- the one `apply` recorded, since a
+        // lot exists only because a fill opened it. No total is derived from the amount: `equity_in`
+        // computes from the quantity and this mark, so a value too large to fit surfaces there as a
+        // refusal rather than as a number that is quietly out of date.
+        if (const auto valued = decimal_multiply(lot.quantity_, price)) {
+          lot.market_value_ = Money{*valued, lot.market_value_.currency_};
+        }
       }
     }
   }
@@ -327,7 +348,14 @@ public:
       if (!(lot.market_value_.currency_ == currency)) {
         continue;
       }
-      const auto sum = decimal_add(total, lot.market_value_.amount_);
+      // **Computed here rather than read from `market_value_.amount_`**, so this total is never one
+      // step behind a mark whose own valuation would not fit. A figure that cannot be computed is
+      // reported as absent, which is what `main` did and what `Backtester` reads to skip the point.
+      const auto value = decimal_multiply(lot.quantity_, lot.last_price_);
+      if (!value) {
+        return std::nullopt;
+      }
+      const auto sum = decimal_add(total, *value);
       if (!sum) {
         return std::nullopt;
       }
@@ -337,6 +365,16 @@ public:
   }
 
 private:
+  /** Returns the position in `instrument`, or nothing, **without creating one**. */
+  const HoldingPosition* find(const InstrumentId& instrument) const {
+    for (const auto& lot : positions_) {
+      if (lot.instrument_ == instrument) {
+        return &lot;
+      }
+    }
+    return nullptr;
+  }
+
   HoldingPosition* find_or_open(const InstrumentId& instrument) {
     for (auto& lot : positions_) {
       if (lot.instrument_ == instrument) {
@@ -415,34 +453,25 @@ private:
     return decimal_divide(*total_cost, *total_quantity, 4);
   }
 
-  bool adjust_cash(const Currency& currency, const Decimal64& change) {
-    for (auto& amount : cash_) {
+  /**
+   * Writes `total` as the whole amount held in `currency`, appending the entry when there is none.
+   *
+   * Takes the **total** rather than a change, because the addition is the fallible half and `apply`
+   * has already done it before committing anything. What is left cannot fail, which is what lets
+   * `apply` promise the ledger is either wholly updated or untouched.
+   */
+  static void set_amount(
+    std::vector<Money>& amounts,
+    const Currency& currency,
+    const Decimal64& total
+  ) {
+    for (auto& amount : amounts) {
       if (amount.currency_ == currency) {
-        const auto updated = decimal_add(amount.amount_, change);
-        if (!updated) {
-          return false;
-        }
-        amount.amount_ = *updated;
-        return true;
+        amount.amount_ = total;
+        return;
       }
     }
-    cash_.push_back(Money{change, currency});
-    return true;
-  }
-
-  bool add_realized(const Currency& currency, const Decimal64& amount) {
-    for (auto& entry : realized_) {
-      if (entry.currency_ == currency) {
-        const auto updated = decimal_add(entry.amount_, amount);
-        if (!updated) {
-          return false;
-        }
-        entry.amount_ = *updated;
-        return true;
-      }
-    }
-    realized_.push_back(Money{amount, currency});
-    return true;
+    amounts.push_back(Money{total, currency});
   }
 
   std::vector<HoldingPosition> positions_;

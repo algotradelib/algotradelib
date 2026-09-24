@@ -1835,6 +1835,83 @@ TEST_CASE("an order that adds no exposure is permitted, even over the ceiling") 
   // The same for a short: covering it is permitted, adding to it is not.
   REQUIRE_FALSE(guard.check(planned("200", "70000"), shorted, inputs));
   REQUIRE(guard.check(planned("1", "70000", OrderSide::SELL), shorted, inputs));
+
+  // **Opposing a position is not on its own a licence.** Selling 300 against a long of 100 reaches a
+  // short of 200 -- more reachable exposure than the 100 it started from -- so the same rule refuses
+  // it. The test is what the order does to the projection, not which way it points.
+  ProbePortfolio small;
+  small.positions_.push_back(holding("100"));
+  REQUIRE_FALSE(guard.check(planned("100", "70000", OrderSide::SELL), small, inputs));
+  const auto reversal = guard.check(planned("300", "70000", OrderSide::SELL), small, inputs);
+  REQUIRE(reversal);
+  REQUIRE(reversal->reason_ == GuardReason::GROSS_EXPOSURE_EXCEEDED);
+  REQUIRE(reversal->attempted_ == std::optional<Decimal64>(Decimal64::parse("14000000")));
+}
+
+TEST_CASE("an exit limited above the mark is not read as adding exposure") {
+  // **The two projections have to use the same price.** The candidate's limit joins the valuation
+  // envelope, so a version that computed the "without" case by dropping the candidate valued it at
+  // the mark instead -- and the two then differed by a price rather than by the order. A sell of ten
+  // limited at 80,000 against a 200-share position read as 16,000,000 versus 14,000,000, so the
+  // ceiling refused the one thing it must never refuse.
+  RiskLimits limits;
+  limits.max_gross_exposure_ = Decimal64::parse("5000000");
+  const RiskGuard guard(limits);
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("200"));
+  const auto inputs = with_basis(open_market());
+
+  // 14,000,000 held against a 5,000,000 ceiling, so the account is already well over.
+  REQUIRE_FALSE(guard.check(planned("10", "80000", OrderSide::SELL), portfolio, inputs));
+  // The same sell at the mark was always allowed; the point is that the limit above it also is.
+  REQUIRE_FALSE(guard.check(planned("10", "70000", OrderSide::SELL), portfolio, inputs));
+  // And a buy limited above the mark is still refused, so the envelope has not gone soft.
+  REQUIRE(guard.check(planned("10", "80000"), portfolio, inputs));
+}
+
+TEST_CASE("a position reported as two rows is counted once, at its whole size") {
+  // `Portfolio::quantity_of` returns the first matching row and nothing dedupes what an adapter
+  // appends, so a broker reporting one instrument as two lots would have had the ceiling measure
+  // only the first of them.
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("100"));
+  portfolio.positions_.push_back(holding("100"));
+  const auto inputs = with_basis(open_market());
+
+  const auto exposure = strategy::projected_gross_exposure(
+    portfolio, inputs.exposure_basis_, Currency{"KRW"}, nullptr, std::nullopt,
+    strategy::CandidateContribution::PRICE_ONLY
+  );
+  // 200 shares at 70,000, not the 100 the first row alone reports.
+  REQUIRE(exposure == std::optional<Decimal64>(Decimal64::parse("14000000")));
+
+  RiskLimits limits;
+  limits.max_gross_exposure_ = Decimal64::parse("10000000");
+  const RiskGuard guard(limits);
+  REQUIRE(guard.check(planned("1", "70000"), portfolio, inputs));
+}
+
+TEST_CASE("a mark that is not positive refuses rather than valuing anything") {
+  // `Context::set_last_price` stores whatever a bar or quote carried. A negative mark made an
+  // instrument's exposure negative, so a malformed quote could offset real holdings until the
+  // ceiling passed anything at all; zero values the position at nothing, which is the same silent
+  // omission by another route.
+  RiskLimits limits;
+  limits.max_gross_exposure_ = Decimal64::parse("1000000");
+  const RiskGuard guard(limits);
+  ProbePortfolio portfolio;
+
+  for (const char* mark : {"-70000", "0"}) {
+    auto inputs = open_market();
+    inputs.order_currency_ = Currency{"KRW"};
+    inputs.exposure_basis_.push_back(
+      strategy::InstrumentBasis{samsung(), Currency{"KRW"}, Decimal64::parse(mark)}
+    );
+    inputs.reference_price_ = Decimal64::parse(mark);
+    const auto refused = guard.check(planned("100"), portfolio, inputs);
+    REQUIRE(refused);
+    REQUIRE(refused->reason_ == GuardReason::VALUE_NOT_KNOWN);
+  }
 }
 
 TEST_CASE("a limit order is valued at its limit, not at a cheaper quote") {

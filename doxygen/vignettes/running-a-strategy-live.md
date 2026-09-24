@@ -342,11 +342,15 @@ cannot each fit and together breach it, and the reservation carries across a bar
 before the next poll cannot either. An instrument is valued at the most expensive price that could
 apply to it, so a limit buy above the current quote is not under-counted.
 
-**It governs what an order adds, so it never blocks the way out.** A sell against a long position, or
-a buy covering a short, does not raise the projection and is permitted however far over the ceiling
-the account already sits. The corollary is a real loosening: such an order is allowed even when it is
-larger than the ceiling. If you wanted a cap on a single order, that is `max_order_notional_`, which
-is unchanged.
+**It governs what an order adds, so it never blocks the way out.** An order that does not raise
+reachable exposure is permitted however far over the ceiling the account already sits — a sell
+against a long position up to flat, or a buy covering a short up to flat. The corollary is a real
+loosening: such an order is allowed even when it is larger than the ceiling itself.
+
+It is *not* true that any order opposing a position is exempt. Selling 300 against a long of 100
+reaches a short of 200, which is more reachable exposure than the 100 it started from, and the same
+rule refuses it. The test is what the order does to the projection, not which way it points. If you
+wanted a cap on a single order, that is `max_order_notional_`, which is unchanged.
 
 **An account it cannot value refuses everything.** Every instrument the account holds or has working
 needs registered reference data, and a mark. One that has neither is not quietly left out of the sum —

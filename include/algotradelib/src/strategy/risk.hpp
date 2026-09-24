@@ -247,10 +247,13 @@ struct RiskLimits {
    * to stop. Two consequences of fixing it, both worth reading before turning it on:
    *
    * - It now **refuses** orders it used to pass, which is the point.
-   * - It now **permits** one shape it used to refuse. An order opposing a held position -- a sell
-   *   against a long, a buy covering a short -- reduces projected exposure rather than adding to it,
-   *   so one larger than the ceiling is allowed when the resulting exposure is under it. A caller
-   *   who was relying on this to cap a single order wants `max_order_notional_`, which is unchanged.
+   * - It now **permits** one shape it used to refuse. An order that does not raise reachable
+   *   exposure is allowed at any size, however far over the ceiling the account already is -- which
+   *   is what makes an exit expressible. A sell against a long **up to flat** is the ordinary case.
+   *   It is not every order opposing a position: selling 300 against a long of 100 reaches a short
+   *   of 200, which is more reachable exposure than the 100 it started from, and is refused on the
+   *   same rule. A caller who was relying on this limit to cap a single order wants
+   *   `max_order_notional_`, which is unchanged.
    *
    * An order that cannot be valued, or a portfolio `GuardInputs::exposure_basis_` does not fully
    * describe, is refused with `GuardReason::VALUE_NOT_KNOWN`.
@@ -370,6 +373,28 @@ inline std::optional<Decimal64> decimal_magnitude(const Decimal64& value) {
 } // namespace risk_detail
 
 /**
+ * What a candidate order contributes to a projection.
+ *
+ * Exists so that "the exposure with this order" and "the exposure without it" can be compared
+ * **like for like**. The valuation takes the most expensive price that could apply to an instrument,
+ * and the candidate's own limit is one of those prices — so a version of this that simply omitted
+ * the candidate entirely would value the two cases at different prices and report a difference that
+ * is the *price*, not the order. A sell of 10 limited above the mark then looks like it adds
+ * exposure to a position it can only reduce, and the ceiling refuses the exit.
+ */
+enum class CandidateContribution {
+  /** The candidate's quantity and its price, which is the exposure if the order goes. */
+  QUANTITY_AND_PRICE,
+  /**
+   * The candidate's price only, which is the exposure if it does not.
+   *
+   * Not "the portfolio as it stands": it is the portfolio valued on the same envelope the other
+   * case uses, so that comparing the two isolates what the order's *quantity* does.
+   */
+  PRICE_ONLY,
+};
+
+/**
  * Returns the gross exposure in `currency` that would exist if `candidate` and everything already
  * outstanding filled, or nothing when it cannot be computed honestly.
  *
@@ -429,7 +454,8 @@ std::optional<Decimal64> projected_gross_exposure(
   const std::vector<InstrumentBasis>& basis,
   const Currency& currency,
   const PlannedOrder* candidate,
-  const std::optional<Decimal64>& candidate_price
+  const std::optional<Decimal64>& candidate_price,
+  CandidateContribution contribution
 ) {
   const auto zero = Decimal64::parse("0");
 
@@ -476,10 +502,29 @@ std::optional<Decimal64> projected_gross_exposure(
     if (!(resolved->currency_ == currency)) {
       continue;
     }
+    // **A mark has to be positive to value anything.** Zero values a position at nothing, which is
+    // the silent omission this function refuses elsewhere; a negative one is worse, because it makes
+    // an instrument's exposure *negative* and lets a malformed quote offset real holdings until the
+    // ceiling passes anything. `Context::set_last_price` stores whatever a bar or quote carried, so
+    // this is reachable from bad market data rather than only from a caller mistake.
+    if (!decimal_less(zero, resolved->price_)) {
+      return std::nullopt;
+    }
 
+    // **Summed over every row, not read from the first.** `Portfolio::quantity_of` returns the first
+    // matching position, and nothing dedupes what an adapter appends -- a broker reporting one
+    // instrument as two lots is ordinary. Reading the first would under-report the ceiling by
+    // whatever the other rows hold, which is the direction a risk limit must not err in.
     auto held = zero;
-    if (const auto quantity = portfolio.quantity_of(id)) {
-      held = *quantity;
+    for (const auto& position : portfolio.positions_) {
+      if (!(position.instrument_ == id)) {
+        continue;
+      }
+      const auto sum = decimal_add(held, position.quantity_);
+      if (!sum) {
+        return std::nullopt;
+      }
+      held = *sum;
     }
     auto buys = zero;
     auto sells = zero;
@@ -512,16 +557,22 @@ std::optional<Decimal64> projected_gross_exposure(
     }
 
     if (candidate != nullptr && candidate->instrument_ == id) {
-      const auto sum = decimal_add(
-        candidate->side_ == OrderSide::BUY ? buys : sells, candidate->quantity_
-      );
-      if (!sum) {
-        return std::nullopt;
-      }
-      (candidate->side_ == OrderSide::BUY ? buys : sells) = *sum;
+      // **The price applies under both contributions, the quantity only under one.** That asymmetry
+      // is the whole reason `CandidateContribution` exists: raising the envelope in one case and not
+      // the other would make the comparison report the price difference as though the order had
+      // caused it.
       const auto stated = candidate->price_ ? candidate->price_ : candidate_price;
       if (stated) {
         price = risk_detail::decimal_max(price, *stated);
+      }
+      if (contribution == CandidateContribution::QUANTITY_AND_PRICE) {
+        const auto sum = decimal_add(
+          candidate->side_ == OrderSide::BUY ? buys : sells, candidate->quantity_
+        );
+        if (!sum) {
+          return std::nullopt;
+        }
+        (candidate->side_ == OrderSide::BUY ? buys : sells) = *sum;
       }
     }
 
@@ -898,7 +949,8 @@ public:
         return refuse(GuardReason::VALUE_NOT_KNOWN);
       }
       const auto resulting = projected_gross_exposure(
-        portfolio, inputs.exposure_basis_, *inputs.order_currency_, &order, price
+        portfolio, inputs.exposure_basis_, *inputs.order_currency_, &order, price,
+        CandidateContribution::QUANTITY_AND_PRICE
       );
       if (!resulting) {
         // The basis does not describe the portfolio, or the arithmetic did not fit. Refusing is the
@@ -921,8 +973,14 @@ public:
         // So the ceiling governs what an order *adds*. An order that leaves the projection where it
         // was -- any sell against a long, any buy covering a short -- is permitted however far over
         // the account already is, and an order that moves it up while over is refused.
+        // **`PRICE_ONLY`, not `nullptr`.** Dropping the candidate entirely would value this case at
+        // the mark while the other used the candidate's limit, so the two would differ by a price
+        // rather than by the order: a sell of ten limited above the mark would read as *adding*
+        // exposure to a position it can only reduce, and the exit this branch exists to protect
+        // would be refused. Same envelope, different quantity, so the comparison isolates the order.
         const auto without = projected_gross_exposure(
-          portfolio, inputs.exposure_basis_, *inputs.order_currency_, nullptr, std::nullopt
+          portfolio, inputs.exposure_basis_, *inputs.order_currency_, &order, price,
+          CandidateContribution::PRICE_ONLY
         );
         if (!without) {
           return refuse(GuardReason::VALUE_NOT_KNOWN);
