@@ -420,12 +420,93 @@ private:
    * Installs the portfolio a strategy and its guards decide on.
    *
    * The single place the replay answers "what does this account look like", so that every callback
-   * boundary is answered the same way. `Runner::persist_reservation` relies on a wholesale
-   * replacement carrying everything the reservation was standing in for
-   * (`runner/runner.hpp:628-634`), and this is the replacement.
+   * boundary is answered the same way.
+   *
+   * **It has to be a complete answer, because it overwrites one.**
+   * `Runner::persist_reservation` writes an accepted order into the context portfolio and relies on
+   * a wholesale replacement carrying what the reservation was standing in for
+   * (`runner/runner.hpp:628-634`). Live that replacement is a broker's listing. Here it is this
+   * function, and a partial answer is therefore not a smaller improvement -- it is a *loss*, because
+   * the reservation it erased was carrying the part it left out.
+   *
+   * The reservation carried two things, so this carries both: the outstanding orders themselves,
+   * and the money an outstanding buy has committed.
    */
   void install_portfolio() {
-    runner_.context().set_portfolio(ledger_.snapshot<Tag>(clock_.now()));
+    auto portfolio = ledger_.snapshot<Tag>(clock_.now());
+    for (const auto& entry : runner_.executor().queued()) {
+      portfolio.working_.push_back(working_row(entry));
+      commit_open_buy(portfolio, entry);
+    }
+    runner_.context().set_portfolio(std::move(portfolio));
+  }
+
+  /**
+   * Returns the working-order row for an outstanding replay order.
+   *
+   * `reserved_` stays false, unlike a runner's own reservation. The flag distinguishes this
+   * library's arithmetic from what a broker reported, and in a replay the engine *is* the broker:
+   * this row is the listing. The one consequence worth stating is that
+   * `strategy::SellableConventionProbe`, which reads unreserved rows as evidence about a broker's
+   * convention, will read these -- and a replay's sellable figure is a model that never moves, so
+   * the probe reports what the simulator does rather than what a broker does.
+   */
+  WorkingOrder<Tag> working_row(const QueuedOrder<Tag>& entry) const {
+    WorkingOrder<Tag> row;
+    row.ref_ = entry.ref_;
+    row.order_.instrument_ = entry.order_.instrument_;
+    row.order_.side_ = entry.order_.side_;
+    row.order_.type_ = entry.order_.type_;
+    row.order_.time_in_force_ = entry.order_.time_in_force_;
+    row.order_.price_ = entry.order_.price_;
+    row.order_.quantity_ = entry.order_.quantity_;
+    row.order_.currency_ = currency_for(entry.order_.instrument_);
+    // Open, and nothing filled: a replay fills an order whole or not at all, so a row that exists
+    // has traded nothing.
+    row.order_.status_ = OrderStatus::PENDING;
+    row.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+    row.amendable_quantity_ = entry.order_.quantity_;
+    return row;
+  }
+
+  /**
+   * Takes what an outstanding buy has committed out of the buying power the replay models.
+   *
+   * **Rows alone do not fix `enforce_buying_power_`**, which reads the scalar and not the orders.
+   * `ReplayLedger::snapshot` builds buying power from ledger cash, and that cash has not paid for
+   * anything still resting -- so with a hundred of cash, a resting buy costing a hundred, and a
+   * second buy costing a hundred in another instrument, the second passes and both can still fill.
+   *
+   * Valued at the order's own price, else the last close, which is the same estimate the guard
+   * checked the order against. It is an estimate: a market order fills where it fills and
+   * commission is not in it, and neither valuation is smaller than the order's stated cost, so the
+   * error is not in the permissive direction. An order that can be valued at neither is left
+   * uncommitted rather than guessed at.
+   */
+  void commit_open_buy(strategy::Portfolio<Tag>& portfolio, const QueuedOrder<Tag>& entry) const {
+    if (entry.order_.side_ != OrderSide::BUY) {
+      return;
+    }
+    const auto price = entry.order_.price_ ?
+      entry.order_.price_ :
+      runner_.context().last_price(entry.order_.instrument_);
+    if (!price) {
+      return;
+    }
+    const auto spent = decimal_multiply(entry.order_.quantity_, *price);
+    if (!spent) {
+      return;
+    }
+    const auto currency = currency_for(entry.order_.instrument_);
+    for (auto& reading : portfolio.buying_power_) {
+      if (!(reading.cash_.currency_ == currency)) {
+        continue;
+      }
+      if (const auto left = decimal_subtract(reading.cash_.amount_, *spent)) {
+        reading.cash_.amount_ = *left;
+      }
+      return;
+    }
   }
 
   Currency currency_for(const InstrumentId& instrument) const {

@@ -1266,14 +1266,34 @@ backtest::Backtester<Strategy> replay(Strategy strategy, BarInterval interval) {
 struct BuyThenLiquidate {
   vanilla::BuyAndHold buying_;
   vanilla::TimedLiquidation flattening_;
+  bool flattened_{false};
 
   template <class Ctx>
   void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    // **`flattened_` is load-bearing, and composing these two without it does not work.**
+    // `BuyAndHold::on_bar` restates a target of 100 on every bar, and `on_bar` runs after
+    // `on_phase` within one `feed`. So the bar that liquidates is also a bar that restates the
+    // buy, and reconciliation withdraws the flatten as an order opposing the target -- correctly,
+    // because that is what the composed strategy asked for.
+    //
+    // This test passed without the flag only because `backtest::ReplayLedger::snapshot` reported no
+    // working orders, so reconciliation could not see the flatten to withdraw it. A live run of the
+    // same pair would never have gone flat. The replay was not modelling the strategy; it was
+    // hiding a conflict inside it.
+    if (flattened_) {
+      return;
+    }
     buying_.on_bar(ctx, bar);
   }
   template <class Ctx>
   void on_phase(Ctx& ctx, strategy::MarketPhase phase) {
     flattening_.on_phase(ctx, phase);
+    for (const auto allowed : flattening_.params_.hold_through_) {
+      if (allowed == phase) {
+        return;
+      }
+    }
+    flattened_ = true;
   }
 };
 
@@ -1629,4 +1649,78 @@ TEST_CASE("an order accepted during a bar is not eligible to fill against that b
   REQUIRE(during_first < executor.bar());
   executor.place(resting_buy("10", "60000"));
   REQUIRE(executor.queued()[1].accepted_on_ == executor.bar());
+}
+
+namespace {
+
+/** Rests one far-from-market limit buy on its first bar, and never touches it again. */
+struct RestsOneLimit {
+  bool placed_{false};
+  std::vector<std::size_t> working_seen_;
+  std::vector<std::string> refs_seen_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    working_seen_.push_back(ctx.portfolio().working_.size());
+    for (const auto& working : ctx.portfolio().working_) {
+      refs_seen_.push_back(working.ref_.primary_);
+    }
+    if (placed_) {
+      return;
+    }
+    placed_ = true;
+    const auto limit = strategy::Price::checked(Decimal64::parse("50000"), krx_grid());
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")),
+        *limit
+      ).with_tag("rests")
+    );
+  }
+};
+
+} // namespace
+
+TEST_CASE("an order resting from an earlier bar is in the portfolio the strategy decides on") {
+  // The defect this branch exists for. The order is placed on bar 1, rests through bars 2 and 3
+  // because the market never reaches 50,000, and was invisible on both -- so reconciliation, the
+  // position and exposure ceilings and the sellable deduction all read an empty field in a replay
+  // and a full one live.
+  backtest::Backtester<RestsOneLimit> engine(RestsOneLimit{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.finish();
+
+  const auto& seen = engine.strategy().working_seen_;
+  REQUIRE(seen.size() == 3);
+  // Nothing outstanding on the bar it was placed on -- the portfolio is installed before `on_bar`.
+  REQUIRE(seen[0] == 0);
+  // And outstanding on the next bar **and the one after**, not merely on the first miss.
+  REQUIRE(seen[1] == 1);
+  REQUIRE(seen[2] == 1);
+
+  // The same order throughout, which is what makes it one resting order rather than a new one each
+  // bar: reconciliation matches on the reference, and a reference that moved would make a single
+  // resting order look like a fresh order every bar.
+  REQUIRE(engine.strategy().refs_seen_.size() == 2);
+  REQUIRE(engine.strategy().refs_seen_[0] == engine.strategy().refs_seen_[1]);
+  REQUIRE_FALSE(engine.strategy().refs_seen_[0].empty());
+
+  // It never filled, so it is still outstanding at the end.
+  REQUIRE(engine.result().unfilled_ == 1);
+  REQUIRE(engine.result().executions_.empty());
+}
+
+TEST_CASE("an order the bar fills is gone from the portfolio that bar installs") {
+  // A filled order is removed before the ledger moves and before anything is shown a portfolio, so
+  // no view ever carries it as still working. Without that a strategy would see its own filled order
+  // resting and size the next one against it.
+  backtest::Backtester<BuysOnce> engine(BuysOnce{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "71000"));
+  engine.finish();
+
+  REQUIRE(engine.result().executions_.size() == 1);
+  REQUIRE(engine.result().unfilled_ == 0);
 }
