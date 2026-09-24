@@ -1992,6 +1992,65 @@ TEST_CASE("a position that has gone flat does not refuse orders in another instr
   REQUIRE(refused->reason_ == GuardReason::VALUE_NOT_KNOWN);
 }
 
+TEST_CASE("an ordinary portfolio is valued and permitted, not refused by the tightening") {
+  // **The property four rounds of review put at risk.** Each round added a refusal -- an incomplete
+  // basis, a non-positive price, an inconsistent order row -- and a limit that refuses ordinary
+  // trading is a worse outcome than the permissive defect it replaced. This is an ordinary
+  // afternoon: three positions, one partially filled working buy, one resting sell, and a lot left
+  // behind by a closed position that nothing registered.
+  const auto hynix = InstrumentId{Country::KR, Venue::COMBINED, "000660"};
+  const auto naver = InstrumentId{Country::KR, Venue::COMBINED, "035420"};
+  const auto closed = InstrumentId{Country::KR, Venue::COMBINED, "051910"};
+
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("100"));
+  auto second = holding("250");
+  second.instrument_ = hynix;
+  second.last_price_ = Decimal64::parse("180000");
+  portfolio.positions_.push_back(second);
+  auto third = holding("40");
+  third.instrument_ = naver;
+  third.last_price_ = Decimal64::parse("220000");
+  portfolio.positions_.push_back(third);
+  auto flat = holding("0");
+  flat.instrument_ = closed;
+  portfolio.positions_.push_back(flat);
+
+  auto partial = working("50", "20", OrderStatus::PARTIAL_FILLED, OrderSide::BUY);
+  partial.order_.instrument_ = hynix;
+  partial.order_.price_ = Decimal64::parse("181000");
+  portfolio.working_.push_back(partial);
+  auto resting = working("10", "0", OrderStatus::PENDING, OrderSide::SELL);
+  resting.order_.instrument_ = naver;
+  resting.order_.price_ = Decimal64::parse("225000");
+  portfolio.working_.push_back(resting);
+
+  auto inputs = with_basis(open_market());
+  inputs.exposure_basis_.push_back(
+    strategy::InstrumentBasis{hynix, Currency{"KRW"}, Decimal64::parse("180000")}
+  );
+  inputs.exposure_basis_.push_back(
+    strategy::InstrumentBasis{naver, Currency{"KRW"}, Decimal64::parse("220000")}
+  );
+  // Nothing describes the closed lot, and nothing needs to.
+
+  // 100 at 70,000, plus 250 held and 30 still working at the 181,000 limit, plus 40 at the resting
+  // sell's 225,000 limit: 7,000,000 + 50,680,000 + 9,000,000.
+  const auto exposure = strategy::projected_gross_exposure(
+    portfolio, inputs.exposure_basis_, Currency{"KRW"}, nullptr, std::nullopt,
+    strategy::CandidateContribution::PRICE_ONLY
+  );
+  REQUIRE(exposure == std::optional<Decimal64>(Decimal64::parse("66680000")));
+
+  RiskLimits limits;
+  limits.max_gross_exposure_ = Decimal64::parse("100000000");
+  const RiskGuard guard(limits);
+  REQUIRE_FALSE(guard.check(planned("10", "70500"), portfolio, inputs));
+  REQUIRE_FALSE(guard.check(planned("10", "69500", OrderSide::SELL), portfolio, inputs));
+  // And a market order, which carries no price of its own and is valued at the reference.
+  REQUIRE_FALSE(guard.check(planned("5"), portfolio, inputs));
+}
+
 TEST_CASE("a limit order is valued at its limit, not at a cheaper quote") {
   // A basis carrying only the last quote under-reports a limit order that can fill above it, which
   // is the one direction a ceiling must not err in.
