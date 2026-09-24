@@ -307,10 +307,11 @@ TEST_CASE("equity is cash plus positions at their last mark") {
   REQUIRE(ledger.equity_in(krw()) == std::optional<Decimal64>(Decimal64::parse("10100000")));
 }
 
-TEST_CASE("the snapshot a strategy sees carries positions and cash, and no resting orders") {
-  // A replay fills or discards an order within one bar, so nothing rests. An engine modelling orders
-  // that live across bars would fill working_ in, and reconcile would then do the same
-  // projected-position arithmetic it does live.
+TEST_CASE("the ledger supplies positions and cash; working orders are not its to know") {
+  // The empty field is correct *here*: the ledger has never seen an order, and the queue belongs to
+  // the executor. `Backtester` fills it in when it installs a portfolio, which is where the engine
+  // test below checks it. The claim this test used to make -- that nothing rests in a replay -- was
+  // false, and is what left the guards reading an empty field in a backtest and a full one live.
   auto ledger = opening();
   REQUIRE(ledger.apply(filled(OrderSide::BUY, "10", "70000"), krw()));
 

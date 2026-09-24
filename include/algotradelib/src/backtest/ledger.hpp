@@ -309,9 +309,17 @@ public:
   /**
    * Returns the portfolio to present to a strategy.
    *
-   * Working orders are deliberately empty: a replay fills or discards an order within one bar, so
-   * nothing rests. A future engine modelling orders that live across bars would fill this in, and
-   * `reconcile` would then do the same projected-position arithmetic it does live.
+   * **Working orders are left empty because this class is not who knows, not because none rest.**
+   * A replay does rest orders -- a limit the bar never reached stays queued rather than expiring --
+   * but the queue belongs to `backtest::QueueingExecutor`, and a ledger that held positions, cash
+   * and realized profit would need a second subject and a dependency on the executor to report it.
+   * `backtest::Backtester` owns both and fills the field in when it installs this portfolio, so the
+   * picture a strategy and its guards actually decide on carries what is outstanding.
+   *
+   * An earlier version of this comment said a replay fills or discards an order within one bar, so
+   * nothing rests. That was never true, and for three releases it left `reconcile`, the position and
+   * exposure ceilings and the sellable deduction reading an empty field in a replay and a full one
+   * live.
    */
   template <typename BrokerTag>
   strategy::Portfolio<BrokerTag> snapshot(
