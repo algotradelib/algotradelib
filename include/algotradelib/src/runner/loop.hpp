@@ -1373,10 +1373,39 @@ private:
         runner_->context().cancel(working.ref_, "stop-flatten");
         ++report.withdrawn_;
       }
+      // **One close per instrument, sized from the net of its rows.** This looped over rows, and a
+      // broker reporting one instrument as several lots is ordinary -- so it went wrong twice at
+      // once. Rows of +100 and -40 are a holding of +60, and it submitted SELL 100 *and* BUY 40:
+      // outside the session the phase rule refuses both, so the operator's flatten sent nothing
+      // although SELL 60 was permitted all along. And the deduction below subtracts what is working
+      // on the closing side, which is a figure for the whole instrument -- subtracted once per row,
+      // it was charged twice, so rows of +60 and +40 against a working SELL 20 sent 40 and 20 and
+      // left 20 of the position behind. Neither is reachable once the instrument is the unit.
+      std::vector<InstrumentId> closed;
       for (const auto& position : portfolio.positions_) {
-        if (position.quantity_ == Decimal64{}) {
-          // A closed position can sit in a snapshot at zero. A sell for none of it is an order the
-          // broker would reject, for nothing.
+        bool seen = false;
+        for (const auto& already : closed) {
+          if (already == position.instrument_) {
+            seen = true;
+            break;
+          }
+        }
+        if (seen) {
+          continue;
+        }
+        closed.push_back(position.instrument_);
+
+        // The net, not this row. A snapshot whose rows will not add up cannot say what flattening
+        // would take, and guessing is the one thing a closing pass must not do.
+        const auto net = portfolio.net_quantity_of(position.instrument_);
+        if (!net) {
+          ++report.closing_contended_;
+          continue;
+        }
+        if (net->coefficient() == 0) {
+          // Flat on the net, however many rows say so. A closed position can sit in a snapshot at
+          // zero, and two rows can cancel; an order for none of it is one the broker would reject,
+          // for nothing.
           continue;
         }
         if (report.closing_source_unverified_) {
@@ -1392,10 +1421,10 @@ private:
           ++report.closing_contended_;
           continue;
         }
-        const bool held_long = decimal_less(Decimal64{}, position.quantity_);
+        const bool held_long = decimal_less(Decimal64{}, *net);
         const auto magnitude = held_long ?
-          std::optional<Decimal64>(position.quantity_) :
-          decimal_subtract(Decimal64{}, position.quantity_);
+          std::optional<Decimal64>(*net) :
+          decimal_subtract(Decimal64{}, *net);
         if (!magnitude) {
           continue;
         }

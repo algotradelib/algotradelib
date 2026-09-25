@@ -73,7 +73,14 @@ struct ZScoreReversion {
     // strategy entered again on top of a position it already held. `holding` is a question about
     // the whole holding, and only the net answers it.
     const auto held = ctx.portfolio().net_quantity_of(params_.instrument_);
-    const bool holding = held && held->coefficient() != 0;
+    if (!held) {
+      // A snapshot whose own rows will not add up says nothing about what is held, and the two ways
+      // of being wrong here are not symmetric: reading it as flat *enters*, on top of whatever is
+      // actually there. Reconciliation would reject the target anyway, but a strategy should not be
+      // deciding to open a position on a portfolio the library has just failed to read.
+      return;
+    }
+    const bool holding = held->coefficient() != 0;
 
     TargetPosition target;
     target.instrument_ = params_.instrument_;
@@ -148,7 +155,14 @@ struct RsiThreshold {
     // strategy entered again on top of a position it already held. `holding` is a question about
     // the whole holding, and only the net answers it.
     const auto held = ctx.portfolio().net_quantity_of(params_.instrument_);
-    const bool holding = held && held->coefficient() != 0;
+    if (!held) {
+      // A snapshot whose own rows will not add up says nothing about what is held, and the two ways
+      // of being wrong here are not symmetric: reading it as flat *enters*, on top of whatever is
+      // actually there. Reconciliation would reject the target anyway, but a strategy should not be
+      // deciding to open a position on a portfolio the library has just failed to read.
+      return;
+    }
+    const bool holding = held->coefficient() != 0;
 
     TargetPosition target;
     target.instrument_ = params_.instrument_;

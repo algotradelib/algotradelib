@@ -1384,6 +1384,94 @@ TEST_CASE("a flatten outside market hours goes out, because it closes", "[loop][
   CHECK(runner_instance.executor().placed().front().quantity_ == algotradelib::Decimal64::parse("10"));
 }
 
+TEST_CASE("a stop flattens the net of an instrument's lots, not each lot", "[loop][stop]") {
+  // **Codex round 2's blocker, and it broke the one thing this branch promises.** The closing pass
+  // looped over position *rows*. Rows of +100 and -40 are a holding of +60, and it submitted SELL
+  // 100 *and* BUY 40 -- so outside the session the phase rule refused both, and an operator who
+  // asked to be flat got nothing sent although SELL 60 was permitted the whole time. The vanilla's
+  // target path was fixed earlier in this branch; this is the separate stop path.
+  InertRunner runner_instance;
+  runner_instance.context().set_instrument(samsung_reference());
+  serve_calendar(runner_instance, /*trades=*/false);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+
+  strategy::Portfolio<InertRunner::Tag> portfolio;
+  portfolio.as_of_ = base_time();
+  for (const char* lot : {"100", "-40"}) {
+    algotradelib::HoldingPosition position;
+    position.instrument_ = samsung();
+    position.quantity_ = algotradelib::Decimal64::parse(lot);
+    position.average_purchase_price_ = algotradelib::Decimal64::parse("70000");
+    portfolio.positions_.push_back(position);
+  }
+  runner_instance.context().set_portfolio(portfolio);
+
+  InertSource source;
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  loop.run(stop, 1);
+  stop.request(StopIntent::FLATTEN);
+
+  const auto report = loop.run(stop, 10);
+
+  REQUIRE(report.final_phase_ == strategy::MarketPhase::CLOSED);
+  // One instruction, for the net.
+  CHECK(report.flattened_ == 1);
+  CHECK(report.closing_placed_ == 1);
+  CHECK(report.closing_refused_ == 0);
+  REQUIRE(runner_instance.executor().placed().size() == 1);
+  CHECK(runner_instance.executor().placed().front().side_ == algotradelib::OrderSide::SELL);
+  CHECK(runner_instance.executor().placed().front().quantity_ ==
+        algotradelib::Decimal64::parse("60"));
+}
+
+TEST_CASE("a stop counts a working close once for the instrument, not once per lot",
+          "[loop][stop]") {
+  // The other half of the same defect, and it is an under-close rather than a refusal. The
+  // deduction subtracts what is already working on the closing side -- a figure for the whole
+  // instrument -- and subtracting it once per row charged it twice. Rows of +60 and +40 with a
+  // working SELL of 20 sent 40 and 20, so after every one of those filled, 20 of the position was
+  // still held by a pass that reported it had flattened.
+  InertRunner runner_instance;
+  runner_instance.context().set_instrument(samsung_reference());
+  serve_calendar(runner_instance, /*trades=*/false);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+
+  strategy::Portfolio<InertRunner::Tag> portfolio;
+  portfolio.as_of_ = base_time();
+  for (const char* lot : {"60", "40"}) {
+    algotradelib::HoldingPosition position;
+    position.instrument_ = samsung();
+    position.quantity_ = algotradelib::Decimal64::parse(lot);
+    position.average_purchase_price_ = algotradelib::Decimal64::parse("70000");
+    portfolio.positions_.push_back(position);
+  }
+  algotradelib::WorkingOrder<InertRunner::Tag> working;
+  working.order_.instrument_ = samsung();
+  working.order_.side_ = algotradelib::OrderSide::SELL;
+  working.order_.status_ = algotradelib::OrderStatus::PENDING;
+  working.order_.quantity_ = algotradelib::Decimal64::parse("20");
+  working.order_.execution_.filled_quantity_ = algotradelib::Decimal64::parse("0");
+  working.ref_ = algotradelib::OrderRef<InertRunner::Tag>{"0001", ""};
+  portfolio.working_.push_back(working);
+  runner_instance.context().set_portfolio(portfolio);
+
+  InertSource source;
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  loop.run(stop, 1);
+  stop.request(StopIntent::FLATTEN);
+
+  const auto report = loop.run(stop, 10);
+
+  CHECK(report.flattened_ == 1);
+  REQUIRE(runner_instance.executor().placed().size() == 1);
+  // 100 held, 20 already working on the closing side, so 80 is what is left to send. Sizing per row
+  // subtracted the 20 twice and sent 40 + 20 = 60.
+  CHECK(runner_instance.executor().placed().front().quantity_ ==
+        algotradelib::Decimal64::parse("80"));
+}
+
 TEST_CASE("a closing instruction a guard still refuses is reported, not dropped", "[loop][stop]") {
   // The trap this report exists for, kept after the phase limit stopped being the thing that springs
   // it. An operator who asked to be flat and heard nothing would believe they were, and the phase is
