@@ -1269,6 +1269,17 @@ struct OrderShape {
  */
 struct AmendInstruction {
   OrderShape shape_;
+  /**
+   * The venue the order lives at, where the broker's amendment endpoint takes
+   * one.
+   *
+   * KIS's `order-rvsecncl` publishes a different set of order codes per venue,
+   * exactly as its placement endpoint does, so an amendment needs the venue for
+   * the same reason a placement does. `UNSPECIFIED` omits the field and takes
+   * the broker's documented default; the helpers below fill it from the working
+   * order rather than leaving a caller to remember.
+   */
+  Venue venue_{Venue::UNSPECIFIED};
   std::optional<Decimal64> quantity_;
   bool all_remaining_{false};
   bool confirm_high_value_{false};
@@ -1344,8 +1355,15 @@ struct OrderHistoryQuery {
 template <typename Broker>
 inline AmendInstruction cancel_all(const WorkingOrder<Broker>& order) {
   AmendInstruction instruction;
+  // A cancellation states no shape of its own, so every part of the order's
+  // shape is copied. Copying the basis alone would have a broker re-read the
+  // order as a day order in the regular session, which is a different order
+  // from the one being withdrawn.
   instruction.shape_.type_ = order.order_.type_;
+  instruction.shape_.time_in_force_ = order.order_.time_in_force_;
+  instruction.shape_.session_ = order.order_.session_;
   instruction.shape_.price_ = order.order_.price_;
+  instruction.venue_ = order.order_.instrument_.venue_;
   instruction.quantity_ = order.amendable_quantity_;
   instruction.all_remaining_ = true;
   return instruction;
@@ -1356,7 +1374,10 @@ template <typename Broker>
 inline AmendInstruction cancel_quantity(const WorkingOrder<Broker>& order, Decimal64 quantity) {
   AmendInstruction instruction;
   instruction.shape_.type_ = order.order_.type_;
+  instruction.shape_.time_in_force_ = order.order_.time_in_force_;
+  instruction.shape_.session_ = order.order_.session_;
   instruction.shape_.price_ = order.order_.price_;
+  instruction.venue_ = order.order_.instrument_.venue_;
   instruction.quantity_ = quantity;
   instruction.all_remaining_ = false;
   return instruction;
@@ -1367,6 +1388,14 @@ inline AmendInstruction cancel_quantity(const WorkingOrder<Broker>& order, Decim
  *
  * Omitting `quantity` amends the whole remaining quantity; supplying one amends
  * exactly that quantity.
+ *
+ * `shape` is taken as written, including the parts of it the caller did not
+ * think about: an `OrderShape{OrderType::LIMIT, price}` states a *day* order in
+ * the *regular* session, because those are the defaults. Amending an
+ * immediate-or-cancel order with that shape therefore re-shapes it. This is
+ * deliberate -- a caller who names a shape has named one, and guessing which
+ * parts they meant would be worse -- but it is why `cancel_all` and
+ * `cancel_quantity`, which name no shape, copy all of it instead.
  */
 template <typename Broker>
 inline AmendInstruction replace_with(
@@ -1376,6 +1405,7 @@ inline AmendInstruction replace_with(
 ) {
   AmendInstruction instruction;
   instruction.shape_ = std::move(shape);
+  instruction.venue_ = order.order_.instrument_.venue_;
   instruction.all_remaining_ = !quantity.has_value();
   instruction.quantity_ = quantity ? quantity : order.amendable_quantity_;
   return instruction;

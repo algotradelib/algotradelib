@@ -201,7 +201,30 @@ inline bool row_corresponds(
   if (!(row.instrument_ == entry.instrument_)) {
     return false;
   }
+  // The whole shape, not just the basis. This compared `type_` alone, which was
+  // vacuous while KIS reported `DAY` for everything it could normalize: there
+  // was one condition and one session, so they could not disagree. Now they
+  // can, and a resting day order would otherwise be accepted as the
+  // immediate-or-cancel order this runner recorded sending -- which is recovery
+  // attributing one order to another, the failure the journal exists to
+  // prevent.
   if (row.side_ != entry.side_ || row.type_ != entry.type_) {
+    return false;
+  }
+  // A field the broker did not report cannot rule a row out. `UNKNOWN` on
+  // either side is absence of information, not disagreement, and this follows
+  // the rule already stated below for `ordered_at_`: a row admitted on the
+  // attributes that *are* known is the safe direction, because excluding it
+  // reports `NOT_PLACED` for an order sitting in the listing, and the runner's
+  // answer to `NOT_PLACED` is to send again.
+  const bool condition_known =
+    row.time_in_force_ != TimeInForce::UNKNOWN && entry.time_in_force_ != TimeInForce::UNKNOWN;
+  if (condition_known && row.time_in_force_ != entry.time_in_force_) {
+    return false;
+  }
+  const bool session_known =
+    row.session_ != OrderSession::UNKNOWN && entry.session_ != OrderSession::UNKNOWN;
+  if (session_known && row.session_ != entry.session_) {
     return false;
   }
   if (!reconcile_detail::same_value(row.quantity_, entry.quantity_)) {

@@ -123,6 +123,7 @@ struct PlannedOrder {
   OrderSide side_{OrderSide::BUY};
   OrderType type_{OrderType::LIMIT};
   TimeInForce time_in_force_{TimeInForce::DAY};
+  OrderSession session_{OrderSession::REGULAR};
   Decimal64 quantity_;
   std::optional<Decimal64> price_;
   std::string tag_;

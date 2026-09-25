@@ -68,15 +68,29 @@ public:
   /**
    * Accepts an order, queues it, and issues it a reference.
    *
-   * Always `ACCEPTED`: a replay has no transport that could fail, and inventing failures would be
-   * inventing data. A caller wanting to study behaviour under transport failure has `Runner`'s executor
-   * seam and the scripted executor the `strategy-core` tests use.
+   * `ACCEPTED` for every shape this model can price, and no transport failure is ever invented: a
+   * replay has none, and inventing one would be inventing data. A caller wanting to study behaviour
+   * under transport failure has `Runner`'s executor seam and the scripted executor the
+   * `strategy-core` tests use.
+   *
+   * **A shape the model cannot price is `REFUSED_LOCALLY`**, which is the same answer the live
+   * executor gives for an order a broker will not take, and it reaches the strategy by the same
+   * route. A bar carries an open, a high, a low and a close; it carries no book and no spread, so a
+   * best-limit, primary-limit or mid-price order has no price here, a stop-limit has no trigger, a
+   * conditional limit has no close transition, and a closing-price order has no session close.
+   * Filling those at the bar's open -- which is what this did, because `reference_price` returns the
+   * open for every non-limit basis -- reports a fill at a price the order would never have had, and
+   * a backtest that invents a fill price is worse than one that refuses to model the order.
+   * Likewise a session other than the regular one: a bar series is the regular session.
    *
    * The reference is this replay's own, monotonic, and stable for as long as the order is
    * outstanding. It exists because a strategy that can *see* two resting orders must be able to
    * withdraw the one it means.
    */
   runner::SendOutcome place(const strategy::PlannedOrder& order) {
+    if (!can_model(order)) {
+      return runner::SendOutcome::REFUSED_LOCALLY;
+    }
     QueuedOrder<BrokerTag> entry;
     entry.order_ = order;
     entry.ref_.primary_ = std::to_string(++issued_);
@@ -84,6 +98,18 @@ public:
     last_ref_ = entry.ref_;
     queued_.push_back(std::move(entry));
     return runner::SendOutcome::ACCEPTED;
+  }
+
+  /**
+   * Returns whether this replay can price `order` without inventing a number.
+   *
+   * See `place` for why each exclusion is an exclusion. Stated as an allow-list
+   * so a price basis added later is refused until somebody decides how a bar
+   * would fill it, rather than being silently filled at the open.
+   */
+  static bool can_model(const strategy::PlannedOrder& order) noexcept {
+    const bool priceable = order.type_ == OrderType::LIMIT || order.type_ == OrderType::MARKET;
+    return priceable && order.session_ == OrderSession::REGULAR;
   }
 
   /**
@@ -500,6 +526,7 @@ private:
     row.order_.side_ = entry.order_.side_;
     row.order_.type_ = entry.order_.type_;
     row.order_.time_in_force_ = entry.order_.time_in_force_;
+    row.order_.session_ = entry.order_.session_;
     row.order_.price_ = entry.order_.price_;
     row.order_.quantity_ = entry.order_.quantity_;
     row.order_.currency_ = currency_for(entry.order_.instrument_);

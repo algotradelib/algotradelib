@@ -68,6 +68,10 @@ public:
     request.side_ = order.side_;
     request.type_ = order.type_;
     request.time_in_force_ = order.time_in_force_;
+    // All three, every time. A fact not copied here never reaches the wire, so
+    // the order placed is not the order the caller planned -- and it fails
+    // silently, because a default is a valid value rather than an empty one.
+    request.session_ = order.session_;
     request.quantity_ = order.quantity_;
     request.price_ = order.price_;
     if constexpr (Caps::has_client_order_id) {

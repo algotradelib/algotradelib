@@ -18,6 +18,7 @@
 #include <deque>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -2608,9 +2609,47 @@ private:
     );
   }
 
-  /** Returns Toss's wire code for a normalized order type. */
+  /**
+   * Returns Toss's wire code for a normalized price basis.
+   *
+   * This used to read `type == MARKET ? "MARKET" : "LIMIT"`, which was
+   * harmless while those were the only two bases and is not now: it would send
+   * a mid-price or best-limit amendment to Toss as a plain limit order, which
+   * is the silent downgrade Decision 6 forbids and is invisible in the
+   * request. Every caller validates the basis first, so the remaining cases
+   * cannot be reached from outside this class; reaching one means a new body
+   * was built without a validation step, which is a defect here rather than a
+   * caller's bad input.
+   */
   static const char* order_type_code(OrderType type) {
-    return type == OrderType::MARKET ? "MARKET" : "LIMIT";
+    switch (type) {
+      case OrderType::MARKET:
+        return "MARKET";
+      case OrderType::LIMIT:
+        return "LIMIT";
+      default:
+        break;
+    }
+    throw std::logic_error("Toss order body built from an unvalidated price basis");
+  }
+
+  /**
+   * Returns an error when Toss cannot express an amendment's price basis.
+   *
+   * A modification states a basis and Toss accepts two of them. The placement
+   * path checks this inside `validate_order_shape`; the modification path had
+   * no check at all, so the basis reached `order_type_code` unexamined.
+   */
+  static std::optional<BrokerError> validate_amendment_shape(OrderType type) {
+    if (type == OrderType::LIMIT || type == OrderType::MARKET) {
+      return std::nullopt;
+    }
+    BrokerError error;
+    error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = false;
+    error.broker_code_ = "unsupported_order_type";
+    error.message_ = "Toss modifies an order to a limit or market basis only";
+    return error;
   }
 
   /**
@@ -2833,6 +2872,9 @@ private:
     }
     if (!invalid && amendment.quantity_) {
       invalid = validate_quantity(*amendment.quantity_);
+    }
+    if (!invalid) {
+      invalid = validate_amendment_shape(amendment.type_);
     }
     if (!invalid) {
       invalid = validate_price(amendment.type_, amendment.price_);

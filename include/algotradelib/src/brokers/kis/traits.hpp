@@ -238,6 +238,9 @@ struct Normalizers {
     KisAmendment amendment;
     amendment.order_ = from_ref(ref);
     amendment.type_ = instruction.shape_.type_;
+    amendment.time_in_force_ = instruction.shape_.time_in_force_;
+    amendment.session_ = instruction.shape_.session_;
+    amendment.venue_ = instruction.venue_;
     amendment.quantity_ = *instruction.quantity_;
     amendment.price_ = instruction.shape_.price_;
     amendment.all_remaining_ = instruction.all_remaining_;

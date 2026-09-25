@@ -2916,6 +2916,13 @@ private:
       {"ORD_UNPR", amendment.price_ ? amendment.price_->str() : std::string("0")},
       {"QTY_ALL_ORD_YN", amendment.all_remaining_ ? "Y" : "N"},
     };
+    // The 주식주문(정정취소) sheet publishes `EXCG_ID_DVSN_CD` and the same
+    // per-venue `ORD_DVSN` sets as the placement sheet, and this never sent it:
+    // an amendment to an order living at NXT was addressed to KRX, the sheet's
+    // documented default for an omitted field.
+    if (const auto* exchange = exchange_code(amendment.venue_); *exchange != '\0') {
+      body.emplace("EXCG_ID_DVSN_CD", exchange);
+    }
 
     network::HttpRequest request;
     // A modification and a cancellation share the order endpoint and its priority.
@@ -3308,7 +3315,9 @@ private:
         auto& order = open_order.order_;
         order.order_id_ = open_order.order_ref_.order_number_;
         order.instrument_ = InstrumentId{
-          Country::KR, Venue::COMBINED, broker_detail::json_string(row, "pdno")
+          Country::KR,
+          reported_venue(row),
+          broker_detail::json_string(row, "pdno"),
         };
         order.name_ = broker_detail::json_string(row, "prdt_name");
         order.side_ = normalized_order_side(
@@ -3530,7 +3539,9 @@ private:
         OrderSnapshot order;
         order.order_id_ = broker_detail::json_string(row, "odno");
         order.instrument_ = InstrumentId{
-          Country::KR, Venue::COMBINED, broker_detail::json_string(row, "pdno")
+          Country::KR,
+          reported_venue(row),
+          broker_detail::json_string(row, "pdno"),
         };
         order.name_ = broker_detail::json_string(row, "prdt_name");
         order.side_ = normalized_order_side(
@@ -3638,6 +3649,50 @@ private:
     order.type_ = OrderType::UNKNOWN;
     order.time_in_force_ = TimeInForce::UNKNOWN;
     order.session_ = OrderSession::UNKNOWN;
+  }
+
+  /**
+   * Maps KIS's `excg_id_dvsn_cd` onto a normalized venue.
+   *
+   * Both order inquiries publish this field as required, and this adapter used
+   * to ignore it and write `Venue::COMBINED` onto every parsed order. That was
+   * an assertion about where an order lived, made without reading the field
+   * that says so -- and it is not inert, because an amendment now composes its
+   * `ORD_DVSN` and its `EXCG_ID_DVSN_CD` from the order's venue.
+   *
+   * An unrecognized or absent value is `UNSPECIFIED`, which omits the field on
+   * a later amendment and so takes the broker's own default, rather than
+   * naming a venue nothing reported.
+   */
+  static Venue reported_venue(const json::object& row) {
+    // The workbook spells this field two ways across the sheets that publish
+    // it -- `excg_id_dvsn_cd` on 주식정정취소가능주문조회 and `excg_id_dvsn_Cd`
+    // on 주식일별주문체결조회 -- and one of them is presumably a typo in the
+    // document. Which one is not knowable from here, so both are read.
+    for (const auto* key : {"excg_id_dvsn_cd", "excg_id_dvsn_Cd"}) {
+      const auto* value = row.if_contains(key);
+      if (value != nullptr && value->is_string()) {
+        return normalized_venue(value->get_string());
+      }
+    }
+    // Absent rather than unrecognized. The sheets mark the field required, so
+    // this should not happen against a live account; it must not fail the
+    // listing if it does, because a venue is metadata about an order and not
+    // the order.
+    return Venue::UNSPECIFIED;
+  }
+
+  static Venue normalized_venue(std::string_view code) {
+    if (code == "KRX") {
+      return Venue::KRX;
+    }
+    if (code == "NXT") {
+      return Venue::NXT;
+    }
+    if (code == "SOR") {
+      return Venue::COMBINED;
+    }
+    return Venue::UNSPECIFIED;
   }
 
   /** Maps a KIS side code or rejects an invalid broker response. */

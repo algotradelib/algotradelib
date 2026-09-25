@@ -121,13 +121,35 @@ inline OrderSide side_from(std::string_view text) noexcept {
   return text == "SELL" ? OrderSide::SELL : OrderSide::BUY;
 }
 
-/** Returns a stable name for `type`, as written to the journal. */
+/**
+ * Returns a stable name for `type`, as written to the journal.
+ *
+ * **A new enumerator must be added here, and the compiler will not say so.**
+ * The `switch` has no `default:`, which is the shape that makes `-Wswitch`
+ * report a missing case -- but the `return` beneath it means the function still
+ * compiles, and an unnamed basis would be written to the journal as `UNKNOWN`
+ * and read back as `UNKNOWN`. A journal is what crash recovery reads, so that
+ * is silent loss of the fact recovery matches on. The round-trip test over
+ * every enumerator is the guard; the build is not.
+ */
 inline constexpr std::string_view order_type_name(OrderType type) noexcept {
   switch (type) {
     case OrderType::LIMIT:
       return "LIMIT";
     case OrderType::MARKET:
       return "MARKET";
+    case OrderType::CONDITIONAL_LIMIT:
+      return "CONDITIONAL_LIMIT";
+    case OrderType::BEST_LIMIT:
+      return "BEST_LIMIT";
+    case OrderType::PRIMARY_LIMIT:
+      return "PRIMARY_LIMIT";
+    case OrderType::MID_PRICE:
+      return "MID_PRICE";
+    case OrderType::STOP_LIMIT:
+      return "STOP_LIMIT";
+    case OrderType::CLOSING_PRICE:
+      return "CLOSING_PRICE";
     case OrderType::UNKNOWN:
       return "UNKNOWN";
   }
@@ -136,13 +158,102 @@ inline constexpr std::string_view order_type_name(OrderType type) noexcept {
 
 /** Returns the order type `text` names, defaulting to `UNKNOWN`. */
 inline OrderType order_type_from(std::string_view text) noexcept {
-  if (text == "LIMIT") {
-    return OrderType::LIMIT;
-  }
-  if (text == "MARKET") {
-    return OrderType::MARKET;
+  for (const auto type : {
+         OrderType::LIMIT,
+         OrderType::MARKET,
+         OrderType::CONDITIONAL_LIMIT,
+         OrderType::BEST_LIMIT,
+         OrderType::PRIMARY_LIMIT,
+         OrderType::MID_PRICE,
+         OrderType::STOP_LIMIT,
+         OrderType::CLOSING_PRICE,
+       }) {
+    if (text == order_type_name(type)) {
+      return type;
+    }
   }
   return OrderType::UNKNOWN;
+}
+
+/** Returns a stable name for `condition`, as written to the journal. */
+inline constexpr std::string_view time_in_force_name(TimeInForce condition) noexcept {
+  switch (condition) {
+    case TimeInForce::DAY:
+      return "DAY";
+    case TimeInForce::IMMEDIATE_OR_CANCEL:
+      return "IOC";
+    case TimeInForce::FILL_OR_KILL:
+      return "FOK";
+    case TimeInForce::UNKNOWN:
+      return "UNKNOWN";
+  }
+  return "UNKNOWN";
+}
+
+/**
+ * Returns the condition `text` names, defaulting to `DAY`.
+ *
+ * `DAY` rather than `UNKNOWN`, and only here: a journal written before this
+ * field existed has no `time_in_force` key at all, and every order it could
+ * have recorded was a day order, because that was the only condition either
+ * adapter would send. Reading those lines as `UNKNOWN` would make recovery
+ * refuse to match orders it can match.
+ */
+inline TimeInForce time_in_force_from(std::string_view text) noexcept {
+  if (text == "IOC") {
+    return TimeInForce::IMMEDIATE_OR_CANCEL;
+  }
+  if (text == "FOK") {
+    return TimeInForce::FILL_OR_KILL;
+  }
+  if (text == "UNKNOWN") {
+    return TimeInForce::UNKNOWN;
+  }
+  return TimeInForce::DAY;
+}
+
+/** Returns a stable name for `session`, as written to the journal. */
+inline constexpr std::string_view order_session_name(OrderSession session) noexcept {
+  switch (session) {
+    case OrderSession::REGULAR:
+      return "REGULAR";
+    case OrderSession::OPENING_AUCTION:
+      return "OPENING_AUCTION";
+    case OrderSession::CLOSING_AUCTION:
+      return "CLOSING_AUCTION";
+    case OrderSession::PRE_MARKET:
+      return "PRE_MARKET";
+    case OrderSession::AFTER_HOURS:
+      return "AFTER_HOURS";
+    case OrderSession::AFTER_HOURS_AUCTION:
+      return "AFTER_HOURS_AUCTION";
+    case OrderSession::AFTER_MARKET:
+      return "AFTER_MARKET";
+    case OrderSession::GTP:
+      return "GTP";
+    case OrderSession::UNKNOWN:
+      return "UNKNOWN";
+  }
+  return "UNKNOWN";
+}
+
+/** Returns the session `text` names, defaulting to `REGULAR` for the reason above. */
+inline OrderSession order_session_from(std::string_view text) noexcept {
+  for (const auto session : {
+         OrderSession::OPENING_AUCTION,
+         OrderSession::CLOSING_AUCTION,
+         OrderSession::PRE_MARKET,
+         OrderSession::AFTER_HOURS,
+         OrderSession::AFTER_HOURS_AUCTION,
+         OrderSession::AFTER_MARKET,
+         OrderSession::GTP,
+         OrderSession::UNKNOWN,
+       }) {
+    if (text == order_session_name(session)) {
+      return session;
+    }
+  }
+  return OrderSession::REGULAR;
 }
 
 /** Returns the instant `micros` names, as microseconds since the epoch. */
@@ -244,6 +355,8 @@ inline std::string journal_entry_to_line(const JournalEntry& entry) {
   row["symbol"] = entry.instrument_.symbol_;
   row["side"] = std::string(journal_detail::side_name(entry.side_));
   row["type"] = std::string(journal_detail::order_type_name(entry.type_));
+  row["time_in_force"] = std::string(journal_detail::time_in_force_name(entry.time_in_force_));
+  row["session"] = std::string(journal_detail::order_session_name(entry.session_));
   row["quantity"] = entry.quantity_.str();
   if (entry.price_) {
     row["price"] = entry.price_->str();
@@ -297,6 +410,10 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
   };
   entry.side_ = journal_detail::side_from(journal_detail::string_field(row, "side"));
   entry.type_ = journal_detail::order_type_from(journal_detail::string_field(row, "type"));
+  entry.time_in_force_ =
+    journal_detail::time_in_force_from(journal_detail::string_field(row, "time_in_force"));
+  entry.session_ =
+    journal_detail::order_session_from(journal_detail::string_field(row, "session"));
   const auto quantity = journal_detail::string_field(row, "quantity");
   if (!quantity.empty()) {
     entry.quantity_ = Decimal64::parse(quantity);
@@ -354,6 +471,12 @@ inline std::optional<JournalEntry> salvage_journal_line(std::string_view line) {
     journal_detail::side_from(journal_detail::salvage_string(line, "side").value_or("BUY"));
   entry.type_ = journal_detail::order_type_from(
     journal_detail::salvage_string(line, "type").value_or("UNKNOWN")
+  );
+  entry.time_in_force_ = journal_detail::time_in_force_from(
+    journal_detail::salvage_string(line, "time_in_force").value_or("DAY")
+  );
+  entry.session_ = journal_detail::order_session_from(
+    journal_detail::salvage_string(line, "session").value_or("REGULAR")
   );
   if (const auto quantity = journal_detail::salvage_string(line, "quantity")) {
     entry.quantity_ = Decimal64::parse(*quantity);

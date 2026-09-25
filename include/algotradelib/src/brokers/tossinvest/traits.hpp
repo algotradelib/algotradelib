@@ -187,6 +187,11 @@ struct Normalizers {
   ) {
     tossinvest::TossAmendment amendment;
     amendment.order_id_ = ref.primary_;
+    // Only the basis travels. Toss's `OrderModifyRequest` carries `orderType`,
+    // `quantity`, `price` and the high-value flag and nothing else -- there is
+    // no `timeInForce` on a modification -- so the order keeps the session it
+    // was placed in, and a shape naming a different one cannot be honoured or
+    // refused by Toss. Carrying the field here would imply otherwise.
     amendment.type_ = instruction.shape_.type_;
     amendment.quantity_ = instruction.quantity_;
     amendment.price_ = instruction.shape_.price_;

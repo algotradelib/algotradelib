@@ -213,7 +213,18 @@ struct JournalEntry {
   std::chrono::system_clock::time_point recorded_at_{};
   InstrumentId instrument_;
   OrderSide side_{OrderSide::BUY};
+  /**
+   * The order's shape, as all three normalized facts.
+   *
+   * All three, because recovery matches a recorded instruction against a
+   * broker's listing on these attributes: an immediate-or-cancel order and a
+   * day order of the same basis, quantity and price are different orders, and a
+   * journal that recorded only the basis could not tell recovery which one it
+   * had sent.
+   */
   OrderType type_{OrderType::LIMIT};
+  TimeInForce time_in_force_{TimeInForce::DAY};
+  OrderSession session_{OrderSession::REGULAR};
   Decimal64 quantity_;
   std::optional<Decimal64> price_;
   /**
@@ -537,6 +548,8 @@ public:
     entry.instrument_ = order.instrument_;
     entry.side_ = order.side_;
     entry.type_ = order.type_;
+    entry.time_in_force_ = order.time_in_force_;
+    entry.session_ = order.session_;
     entry.quantity_ = order.quantity_;
     entry.price_ = order.price_;
     if (!journal_->append(entry)) {

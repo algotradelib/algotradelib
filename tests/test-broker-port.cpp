@@ -289,7 +289,11 @@ TEST_CASE("KIS normalizes an acknowledgement into a reference that can amend it"
   auto amendment = Traits::to_replacement(
     placed.value().ref_,
     AmendInstruction{
-      OrderShape{OrderType::LIMIT, Decimal64::parse("70000")}, Decimal64::parse("1"), false, false
+      OrderShape{OrderType::LIMIT, Decimal64::parse("70000")},
+      Venue::KRX,
+      Decimal64::parse("1"),
+      false,
+      false,
     }
   );
   REQUIRE(amendment.has_value());

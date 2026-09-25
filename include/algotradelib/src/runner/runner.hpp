@@ -1076,6 +1076,7 @@ private:
     working.order_.side_ = order.side_;
     working.order_.status_ = OrderStatus::PENDING;
     working.order_.type_ = order.type_;
+    working.order_.session_ = order.session_;
     working.order_.price_ = order.price_;
     working.order_.time_in_force_ = order.time_in_force_;
     working.order_.quantity_ = order.quantity_;
