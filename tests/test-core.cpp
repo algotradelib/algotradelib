@@ -151,9 +151,12 @@ struct KisClientTestAccess {
     const KisAmendment& amendment,
     std::string& division
   ) {
-    return KisClient::order_division(
-      amendment.type_, amendment.time_in_force_, amendment.session_, amendment.venue_, division
-    );
+    // `validate_amendment`, not `order_division`: the submission path's own
+    // decision. Calling `order_division` here re-derived the answer from the
+    // same inputs, so the test agreed with a submission path that had stopped
+    // passing the amendment's condition and session -- verified by mutation,
+    // which this shim survived.
+    return KisClient::validate_amendment(amendment, division);
   }
 
   static bool valid_order_reference(const KisOrderRef& order) {

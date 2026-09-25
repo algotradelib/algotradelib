@@ -2826,6 +2826,39 @@ private:
   }
 
   /**
+   * Returns an error when an amendment cannot be represented as a KIS instruction.
+   *
+   * The counterpart of `validate_order`, and it exists as its own function for
+   * the same reason: the decision a test needs to exercise is the one the
+   * submission path takes, not one a test re-derives from the same inputs. A
+   * shim that called `order_division` directly would agree with a submission
+   * path that had stopped calling it -- which is not hypothetical, because the
+   * first version of the amendment test did exactly that and survived the
+   * mutation it had been written to catch.
+   */
+  static std::optional<BrokerError> validate_amendment(
+    const KisAmendment& amendment,
+    std::string& division
+  ) {
+    if (auto error = validate_quantity(amendment.quantity_)) {
+      return error;
+    }
+    if (auto error = validate_price(amendment.type_, amendment.price_)) {
+      return error;
+    }
+    // The amendment carries its own condition and session. Sending `DAY` here,
+    // as this did, re-shaped the order: an immediate-or-cancel order amended to
+    // a new price arrived as a plain day order at that price.
+    return order_division(
+      amendment.type_,
+      amendment.time_in_force_,
+      amendment.session_,
+      amendment.venue_,
+      division
+    );
+  }
+
+  /**
    * Returns KIS's `EXCG_ID_DVSN_CD` value for a normalized venue, or `""` to
    * omit the field.
    *
@@ -3059,22 +3092,7 @@ private:
       invalid = std::move(error);
     }
     if (!invalid) {
-      invalid = validate_quantity(amendment.quantity_);
-    }
-    if (!invalid) {
-      invalid = validate_price(amendment.type_, amendment.price_);
-    }
-    if (!invalid) {
-      // The amendment carries its own condition and session. Sending `DAY`
-      // here, as this did, re-shaped the order: an immediate-or-cancel order
-      // amended to a new price arrived as a plain day order at that price.
-      invalid = order_division(
-        amendment.type_,
-        amendment.time_in_force_,
-        amendment.session_,
-        amendment.venue_,
-        division
-      );
+      invalid = validate_amendment(amendment, division);
     }
     if (invalid) {
       complete_order_ack(std::move(completion), Result<KisOrderAck>(std::move(*invalid)));
