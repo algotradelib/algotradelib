@@ -188,12 +188,29 @@ struct Normalizers {
     // Toss's `OrderModifyRequest` carries `orderType`, `quantity`, `price` and
     // the high-value flag, and **no validity field at all**: a modification
     // cannot change the condition or the session, and Toss cannot refuse a
-    // request to. So the question is not whether the requested value is one
-    // Toss supports -- it can place a closing-auction order -- but whether it
-    // *differs* from what the order already is. Checking the value alone
-    // accepted "move this resting CLS order into the regular session", sent an
-    // ordinary modification, and reported success while the order stayed CLS.
-    if (instruction.shape_.time_in_force_ != instruction.resting_.time_in_force_) {
+    // request to. So this refuses on Toss's behalf, and the question is not
+    // whether the requested value is one Toss supports -- it can place a
+    // closing-auction order -- but whether it *differs* from what the order
+    // already is.
+    //
+    // Which means the original has to be known. An unset `resting_` is refused
+    // rather than assumed to match: a hand-built instruction naming DAY/REGULAR
+    // against a resting CLS order compared equal to a defaulted original and was
+    // sent, and the order stayed CLS while the caller was told it had moved.
+    if (!instruction.resting_) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
+      error.broker_code_ = "unknown_resting_shape";
+      error.message_ =
+        "Toss cannot change an order's validity condition or session by amending it, and this "
+        "instruction does not say what the order's are, so neither can be verified; build the "
+        "instruction with reprice() or replace_with() from the working order";
+      return Result<tossinvest::TossAmendment>(std::move(error));
+    }
+    // An unset field on the shape asks for no change, which is always safe here.
+    if (instruction.shape_.time_in_force_ &&
+        *instruction.shape_.time_in_force_ != instruction.resting_->time_in_force_) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
       error.reached_broker_ = false;
@@ -203,7 +220,8 @@ struct Normalizers {
         "place a new one instead";
       return Result<tossinvest::TossAmendment>(std::move(error));
     }
-    if (instruction.shape_.session_ != instruction.resting_.session_) {
+    if (instruction.shape_.session_ &&
+        *instruction.shape_.session_ != instruction.resting_->session_) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
       error.reached_broker_ = false;
@@ -211,29 +229,6 @@ struct Normalizers {
       error.message_ =
         "Toss cannot move an order to another trading session by amending it; cancel the order "
         "and place a new one instead";
-      return Result<tossinvest::TossAmendment>(std::move(error));
-    }
-    // A hand-built instruction states no resting shape, so the comparisons
-    // above are vacuous for one. The condition and session it names must then
-    // be ones Toss could have placed, which is the most this can check.
-    if (instruction.shape_.time_in_force_ != TimeInForce::DAY) {
-      BrokerError error;
-      error.category_ = ErrorCategory::INVALID_ARGUMENT;
-      error.reached_broker_ = false;
-      error.broker_code_ = "unsupported_time_in_force";
-      error.message_ = "Toss orders are day-valid; it publishes no other validity condition";
-      return Result<tossinvest::TossAmendment>(std::move(error));
-    }
-    if (instruction.shape_.session_ != OrderSession::REGULAR &&
-        instruction.shape_.session_ != OrderSession::OPENING_AUCTION &&
-        instruction.shape_.session_ != OrderSession::CLOSING_AUCTION) {
-      BrokerError error;
-      error.category_ = ErrorCategory::INVALID_ARGUMENT;
-      error.reached_broker_ = false;
-      error.broker_code_ = "unsupported_session";
-      error.message_ =
-        "Toss publishes no order code for this trading session, so no order of it can be "
-        "resting to amend";
       return Result<tossinvest::TossAmendment>(std::move(error));
     }
 

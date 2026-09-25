@@ -186,6 +186,51 @@ inline constexpr bool both_known(Enum left, Enum right) noexcept {
 
 } // namespace shape_detail
 
+/** What a broker row's venue says about the instruction's requested route. */
+enum class RouteEvidence {
+  /** The row was routed where the instruction asked, or the instruction asked for nothing. */
+  CONFIRMS,
+  /** The row went somewhere else. It is not this order. */
+  CONTRADICTS,
+  /** Nobody recorded enough to say. Not a match, and not an absence either. */
+  ABSENT,
+};
+
+/**
+ * Classifies what `row`'s venue says about `instruction`'s requested route.
+ *
+ * **Silence is not confirmation, and that distinction is the whole function.**
+ * Treating an unrecorded route as agreement let a legacy journal line -- written
+ * before the route was recorded, for an order that had explicitly gone to NXT --
+ * be resolved by the only row in the listing, a KRX order that was somebody
+ * else's. The hold cleared and the NXT order was still out there. The same
+ * followed for a *new* NXT instruction whenever KIS reported a venue this
+ * library does not recognize, because that reads as `UNSPECIFIED` too.
+ *
+ * An instruction that asked for **no** venue is the case that still confirms.
+ * That is not silence: it is a recorded fact, and it is every Toss order, whose
+ * listings carry no venue at all and never could. There is nothing to verify, so
+ * the other attributes decide.
+ */
+inline RouteEvidence route_evidence(
+  const OpenInstruction& instruction, const OrderSnapshot& row
+) {
+  const auto& asked = instruction.entry_.venue_;
+  if (!asked) {
+    // The line predates the field, so what it asked for is unknowable.
+    return RouteEvidence::ABSENT;
+  }
+  if (*asked == Venue::UNSPECIFIED) {
+    // It asked for nothing, so nothing about the row's venue can contradict it.
+    return RouteEvidence::CONFIRMS;
+  }
+  if (row.venue_ == Venue::UNSPECIFIED) {
+    // It asked for a venue and the broker did not say where the order went.
+    return RouteEvidence::ABSENT;
+  }
+  return row.venue_ == *asked ? RouteEvidence::CONFIRMS : RouteEvidence::CONTRADICTS;
+}
+
 /**
  * Returns whether `row` could be the order `instruction` describes.
  *
@@ -246,15 +291,14 @@ inline bool row_corresponds(
     return false;
   }
   // Where the order went. Two orders in one symbol, side, quantity, price and
-  // second differ only by this, so without it an unresolved NXT placement and
-  // an unrelated KRX order are the same row to recovery -- it attributes one to
-  // the other and clears the hold on an order that never appeared.
-  //
-  // `UNSPECIFIED` is absence on both sides for the same reason the shape fields
-  // are: a journal line written before the field existed, and a broker that
-  // reported no venue, are both silence rather than disagreement.
-  if (row.venue_ != Venue::UNSPECIFIED && entry.venue_ != Venue::UNSPECIFIED &&
-      row.venue_ != entry.venue_) {
+  // second differ only by this. `route_evidence` below says whether this row's
+  // venue confirms the instruction, contradicts it, or says nothing; only the
+  // first two are decided here, and the third is what `row_might_correspond`
+  // picks up.
+  if (route_evidence(instruction, row) == RouteEvidence::CONTRADICTS) {
+    return false;
+  }
+  if (route_evidence(instruction, row) == RouteEvidence::ABSENT) {
     return false;
   }
   if (!reconcile_detail::same_value(row.quantity_, entry.quantity_)) {
@@ -298,9 +342,18 @@ inline bool row_might_correspond(
   const OpenInstruction& instruction, const OrderSnapshot& row, const MatchWindow& window
 ) {
   const auto& entry = instruction.entry_;
-  if (row.type_ != OrderType::UNKNOWN && entry.type_ != OrderType::UNKNOWN) {
-    // Both sides are readable, so `row_corresponds` has already given the
-    // definitive answer and this predicate has nothing to add.
+  // A route the instruction asked for and the row denies rules it out however
+  // unreadable its shape is -- an unknown-code KRX row is not an NXT order, and
+  // letting it force an ambiguity would stall recovery for no reason.
+  if (route_evidence(instruction, row) == RouteEvidence::CONTRADICTS) {
+    return false;
+  }
+  const bool shape_unreadable =
+    row.type_ == OrderType::UNKNOWN || entry.type_ == OrderType::UNKNOWN;
+  const bool route_unknown = route_evidence(instruction, row) == RouteEvidence::ABSENT;
+  if (!shape_unreadable && !route_unknown) {
+    // Everything that could be compared was, so `row_corresponds` has already
+    // given the definitive answer and this predicate has nothing to add.
     return false;
   }
   if (!(row.instrument_ == entry.instrument_) || row.side_ != entry.side_) {

@@ -1337,8 +1337,26 @@ struct PlacedOrder {
 struct OrderShape {
   OrderType type_{OrderType::LIMIT};
   std::optional<Decimal64> price_;
-  TimeInForce time_in_force_{TimeInForce::DAY};
-  OrderSession session_{OrderSession::REGULAR};
+  /**
+   * The execution condition and the session, **unset when the caller did not
+   * state one**.
+   *
+   * Optional rather than defaulted, and that is the whole point. These were
+   * plain values with `DAY` and `REGULAR` defaults, so `OrderShape{LIMIT,
+   * price}` -- the form every caller writes to reprice an order -- silently
+   * *stated* a day order in the regular session. Against a resting
+   * closing-auction order that is a request to move it, and at Toss it is a
+   * request the modify endpoint cannot carry, so success was reported for a move
+   * that did not happen. Defaulting them the other way instead, from the resting
+   * order, only swapped that for silently discarding a deliberate change.
+   *
+   * Unset means "leave it as it is", and an adapter resolves it from
+   * `AmendInstruction::resting_`. A set value is a deliberate change, honoured
+   * where the broker can make one and refused where it cannot. Neither is a
+   * guess.
+   */
+  std::optional<TimeInForce> time_in_force_;
+  std::optional<OrderSession> session_;
 };
 
 /**
@@ -1372,23 +1390,27 @@ struct AmendInstruction {
   bool all_remaining_{false};
   bool confirm_high_value_{false};
   /**
-   * The shape the order currently has, where the caller could supply it.
+   * The shape the order currently has, or nothing when the caller could not say.
    *
    * An adapter needs it to tell a *change* from a supported *value*. Toss can
-   * place an order in the closing auction and cannot move one into or out of it
-   * -- its `OrderModifyRequest` has no validity field at all -- so checking that
-   * a requested session is one Toss supports proves nothing: the question is
-   * whether it differs from what the order already is. Without this, an
-   * amendment asking to move a resting `CLS` order into the regular session was
-   * accepted locally, sent as an ordinary modification, and reported as success
-   * while the order stayed `CLS`.
+   * place an order in the closing auction and cannot move one -- its
+   * `OrderModifyRequest` has no validity field at all -- so checking that a
+   * requested session is one Toss supports proves nothing: the question is
+   * whether it differs from what the order already is.
    *
-   * `replace_with`, `cancel_all` and `cancel_quantity` fill it from the working
-   * order. A hand-built instruction that leaves it default states no original,
-   * and an adapter that cannot verify a change then refuses the ones it cannot
-   * transmit rather than assuming they are no-ops.
+   * **Optional, so "unknown" is representable.** It was a plain `OrderShape`,
+   * whose defaults are `DAY`/`REGULAR`, so a hand-built instruction naming
+   * `DAY`/`REGULAR` and leaving this alone compared equal and passed -- and if
+   * the referenced order was really `CLS`, the POST carried no session field and
+   * success again reported a move that did not occur. A comment saying a
+   * hand-built instruction "states no original" was not represented in the
+   * type; now it is.
+   *
+   * `replace_with`, `reprice`, `cancel_all` and `cancel_quantity` fill it from
+   * the working order. An adapter that cannot verify a change it cannot
+   * transmit refuses before I/O rather than assuming it is a no-op.
    */
-  OrderShape resting_;
+  std::optional<OrderShape> resting_;
 };
 
 /**
@@ -1508,25 +1530,22 @@ inline AmendInstruction cancel_quantity(const WorkingOrder<Broker>& order, Decim
  * Omitting `quantity` amends the whole remaining quantity; supplying one amends
  * exactly that quantity.
  *
- * **`shape` states the price basis and the price. The execution condition and
- * the session come from `order`, and are not the caller's to change here.**
+ * **`shape` states what to change. What it leaves unset stays as it is.**
  *
- * An earlier version of this took the shape entirely as written, which made
- * `OrderShape{OrderType::LIMIT, price}` -- the form every caller writes --
- * silently state a *day* order in the *regular* session, because those are the
- * struct's defaults. Amending a closing-auction order with it therefore
- * promised to move the order into the regular session. Toss cannot do that: its
- * `OrderModifyRequest` carries `orderType`, `quantity`, `price` and the
- * high-value flag and no validity field at all, so the order would have kept
- * its session while the caller had been told otherwise. That is the silent
- * approximation Decision 6 forbids, and it is worse than a refusal because
- * nothing reports it.
+ * `OrderShape`'s condition and session are `std::optional`, so
+ * `OrderShape{OrderType::LIMIT, price}` states a new price and says nothing
+ * about either -- which is what a caller writing that form means. An adapter
+ * resolves the unset parts from `resting_`, recorded here from `order`.
  *
- * Taking them from the resting order makes the common form mean what it says.
- * A caller who genuinely wants to re-shape an order -- where a broker permits
- * it -- sets the fields on the returned instruction, which is visible in their
- * source rather than implied by a default. A caller who wants a different
- * condition at a broker that will not amend one cancels and places again.
+ * Setting one is a deliberate change. KIS re-sends `ORD_DVSN` on an amendment
+ * and can make one; Toss's modify request has no validity field, so it refuses
+ * one rather than reporting a success that did not happen. Both are decided by
+ * the adapter, because which of them is possible is a fact about the broker.
+ *
+ * This has been wrong twice in opposite directions. Taking the shape entirely as
+ * written made the common form silently request a move; copying the condition and
+ * session from the resting order silently discarded a deliberate change. Neither
+ * was a guess the caller could see. An unset optional is.
  */
 template <typename Broker>
 inline AmendInstruction replace_with(
@@ -1551,16 +1570,15 @@ inline AmendInstruction replace_with(
 /**
  * Returns an instruction moving `order` to a new price and changing nothing else.
  *
- * **The common amendment, and the one that cannot misstate anything.**
- * `replace_with` takes the shape as written, which is right for a caller who
- * means to change the basis — and a trap for the much more common caller who
- * only wants a new price, because `OrderShape{OrderType::LIMIT, price}` also
- * states a day order in the regular session by default. At Toss that is a
- * change the modification endpoint cannot transmit, so it is refused; before it
- * was refused it was reported as a success that did not happen.
+ * A name for the common amendment. `replace_with(order, OrderShape{basis, price})`
+ * says the same thing -- `OrderShape`'s condition and session are optional, so
+ * that form already leaves both alone -- and this states the intent outright
+ * rather than by omission.
  *
- * This states the resting shape and replaces the price alone, so there is
- * nothing for a default to say by accident.
+ * It was once the only safe way to reprice, because the condition and session
+ * were defaulted values rather than optionals and the plain form silently
+ * requested a move to the regular session. Making them optional fixed that at
+ * the type; this stayed because "reprice" is what the caller is doing.
  */
 template <typename Broker>
 inline AmendInstruction reprice(

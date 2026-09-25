@@ -235,11 +235,20 @@ struct JournalEntry {
    * and an unrelated KRX order are indistinguishable, and recovery attributes
    * one to the other and clears the hold.
    *
-   * `UNSPECIFIED` means no route was asked for -- which is also what a journal
-   * line written before this field existed reads as, so an old line cannot
-   * accidentally disagree with a row.
+   * **Optional, so an old line is distinguishable from one that asked for
+   * nothing.** `Venue::UNSPECIFIED` -- the default -- means this runner asked
+   * for no particular venue, which is a recorded fact rather than an absence: a
+   * Toss order can never ask for one, so recovery has nothing to verify and the
+   * other attributes decide.
+   *
+   * Empty means the line **predates this field**, so what the order asked for is
+   * unknowable. Only the file journal's reader produces that, and only when the
+   * line carries no `route` key at all. A row is then not attributed to the
+   * instruction on the strength of a venue nobody recorded -- it is reported as
+   * ambiguous instead, because the order may have gone somewhere this row did
+   * not.
    */
-  Venue venue_{Venue::UNSPECIFIED};
+  std::optional<Venue> venue_{Venue::UNSPECIFIED};
   Decimal64 quantity_;
   std::optional<Decimal64> price_;
   /**

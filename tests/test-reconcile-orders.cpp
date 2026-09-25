@@ -144,15 +144,59 @@ TEST_CASE("recovery tells two orders apart by the venue each was routed to") {
     REQUIRE(match.order_id_ == "NXT-1");
   }
 
-  SECTION("a journal line written before the route existed still matches") {
-    // `venue_` reads as UNSPECIFIED from a line with no `route` key, which is
-    // silence rather than disagreement -- so an old line must not stop matching
-    // a row that now reports a venue.
-    auto old_line = placement();
-    REQUIRE(old_line.entry_.venue_ == Venue::UNSPECIFIED);
-    const auto match = runner::match_against(old_line, {nxt}, after_the_window());
+  SECTION("a journal line written before the route existed resolves nothing") {
+    // **Silence is not confirmation.** A line with no `route` key was written
+    // before the field existed, so what its order asked for is unknowable -- and
+    // the order may well have been the NXT one. Attributing it to the only row
+    // in the listing is how a KRX order belonging to somebody else cleared the
+    // hold on an NXT order that was still outstanding.
+    auto legacy = placement();
+    legacy.entry_.venue_.reset();
+    const auto match = runner::match_against(legacy, {krx}, after_the_window());
+    REQUIRE(match.verdict_ == MatchVerdict::AMBIGUOUS);
+    REQUIRE(match.order_id_.empty());
+    // And not NOT_PLACED either: the row may be the order, so re-sending would
+    // be the other half of the same mistake.
+    REQUIRE(match.verdict_ != MatchVerdict::NOT_PLACED);
+  }
+
+  SECTION("an instruction that asked for no venue is not silence") {
+    // The default, and every Toss order: the runner recorded that it asked for
+    // nothing, so there is nothing to verify and the other attributes decide.
+    // Toss listings carry no venue at all and never could.
+    auto routeless = placement();
+    REQUIRE(routeless.entry_.venue_ == std::optional<Venue>(Venue::UNSPECIFIED));
+    auto row_without_venue = row("TOSS-1");
+    const auto match =
+      runner::match_against(routeless, {row_without_venue}, after_the_window());
     REQUIRE(match.verdict_ == MatchVerdict::MATCHED);
-    REQUIRE(match.order_id_ == "NXT-1");
+    REQUIRE(match.order_id_ == "TOSS-1");
+  }
+
+  SECTION("a route the broker did not report cannot confirm one that was asked for") {
+    // KIS reports a venue this library does not recognize, or none at all, and
+    // `reported_venue` yields UNSPECIFIED for both. That is silence about a
+    // route the instruction *did* ask for, so the row is plausible and
+    // unconfirmable rather than a match.
+    auto silent = row("KRX-9");
+    REQUIRE(silent.venue_ == Venue::UNSPECIFIED);
+    const auto match = runner::match_against(instruction, {silent}, after_the_window());
+    REQUIRE(match.verdict_ == MatchVerdict::AMBIGUOUS);
+    REQUIRE(match.order_id_.empty());
+  }
+
+  SECTION("both KIS directions resolve when the broker does report the route") {
+    REQUIRE(runner::match_against(instruction, {nxt}, after_the_window()).order_id_ == "NXT-1");
+
+    auto to_krx = placement();
+    to_krx.entry_.venue_ = Venue::KRX;
+    REQUIRE(runner::match_against(to_krx, {krx}, after_the_window()).order_id_ == "KRX-1");
+    // And each refuses the other's row outright rather than reporting ambiguity,
+    // because a stated route that differs is evidence, not silence.
+    REQUIRE(
+      runner::match_against(to_krx, {nxt}, after_the_window()).verdict_ ==
+        MatchVerdict::NOT_PLACED
+    );
   }
 }
 
@@ -185,6 +229,36 @@ TEST_CASE("a readable row does not win over a competing unreadable one") {
   const auto alone = runner::match_against(instruction, {readable}, after_the_window());
   REQUIRE(alone.verdict_ == MatchVerdict::MATCHED);
   REQUIRE(alone.order_id_ == "KRX-1");
+}
+
+TEST_CASE("an unreadable row the route rules out does not force an ambiguity") {
+  // Withholding is right when an unknown-code row really could be the order. A
+  // row the instruction's own route excludes could not be, however unreadable
+  // its shape is -- and letting it stall recovery would make an ordinary
+  // account's unrelated orders a reason to stop trading.
+  auto instruction = placement();
+  instruction.entry_.venue_ = Venue::NXT;
+
+  auto elsewhere = row("KRX-2");
+  elsewhere.venue_ = Venue::KRX;
+  elsewhere.type_ = OrderType::UNKNOWN;
+  elsewhere.time_in_force_ = TimeInForce::UNKNOWN;
+  elsewhere.session_ = OrderSession::UNKNOWN;
+  elsewhere.price_.reset();
+
+  auto ours = row("NXT-1");
+  ours.venue_ = Venue::NXT;
+
+  const auto match = runner::match_against(instruction, {elsewhere, ours}, after_the_window());
+  REQUIRE(match.verdict_ == MatchVerdict::MATCHED);
+  REQUIRE(match.order_id_ == "NXT-1");
+
+  // The same unreadable row, routed where we asked, does force the ambiguity --
+  // so the exclusion is the route and not the readability.
+  elsewhere.venue_ = Venue::NXT;
+  const auto ambiguous =
+    runner::match_against(instruction, {elsewhere, ours}, after_the_window());
+  REQUIRE(ambiguous.verdict_ == MatchVerdict::AMBIGUOUS);
 }
 
 TEST_CASE("an order code this release cannot read is not read as an absent order") {

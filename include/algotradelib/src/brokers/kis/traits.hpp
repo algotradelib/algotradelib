@@ -237,9 +237,31 @@ struct Normalizers {
 
     KisAmendment amendment;
     amendment.order_ = from_ref(ref);
+    // What the shape leaves unset stays as it is, which the resting shape says.
+    // KIS composes one `ORD_DVSN` from all three, so it cannot send an
+    // amendment with a condition or session it does not know -- an unset field
+    // with no resting shape to resolve it from is refused rather than defaulted,
+    // because defaulting it here is how `00` got sent for an IOC order.
+    const auto condition = instruction.shape_.time_in_force_
+      ? instruction.shape_.time_in_force_
+      : (instruction.resting_ ? instruction.resting_->time_in_force_ : std::nullopt);
+    const auto session = instruction.shape_.session_
+      ? instruction.shape_.session_
+      : (instruction.resting_ ? instruction.resting_->session_ : std::nullopt);
+    if (!condition || !session) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
+      error.broker_code_ = "incomplete_shape";
+      error.message_ =
+        "KIS re-sends the order code on an amendment and cannot compose one without the order's "
+        "validity condition and session; state them on the shape or build the instruction with "
+        "reprice() or replace_with(), which take them from the resting order";
+      return Result<KisAmendment>(std::move(error));
+    }
     amendment.type_ = instruction.shape_.type_;
-    amendment.time_in_force_ = instruction.shape_.time_in_force_;
-    amendment.session_ = instruction.shape_.session_;
+    amendment.time_in_force_ = *condition;
+    amendment.session_ = *session;
     amendment.venue_ = instruction.venue_;
     amendment.quantity_ = *instruction.quantity_;
     amendment.price_ = instruction.shape_.price_;
