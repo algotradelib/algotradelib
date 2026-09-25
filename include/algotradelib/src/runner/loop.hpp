@@ -966,6 +966,11 @@ private:
    */
   void install_phase(IterationReport& iteration) {
     iteration.phase_ = phase_at(iteration.at_);
+    // Recorded here rather than derived later, and it outlives a `run` for the same reason `announced_`
+    // does: "this loop has never known the phase" is a claim about the loop, not about one call.
+    if (iteration.phase_ != strategy::MarketPhase::UNKNOWN) {
+      phase_ever_known_ = true;
+    }
     runner_->context().set_phase(iteration.phase_);
   }
 
@@ -1002,13 +1007,17 @@ private:
     if (report.iterations_ == 0 || report.final_phase_ != strategy::MarketPhase::UNKNOWN) {
       return;
     }
-    // **"Never" is a claim, so it is checked rather than assumed.** A run can establish the phase and
+    // **"Never" is a claim, so it is tracked rather than derived.** A loop can establish the phase and
     // then lose it -- the local date rolls past what the calendar covers, or the broker revises it --
     // and telling an operator it was never established would send them looking for a configuration
-    // fault that is not there. `phase_transitions_` answers it exactly: the loop starts at `UNKNOWN`
-    // and only announces a value that differs from the last announced one, so the *first* transition is
-    // necessarily to a known phase. Any transition at all therefore means it was known once.
-    const bool ever_known = report.phase_transitions_ > 0;
+    // fault that is not there.
+    //
+    // This used to read `report.phase_transitions_ > 0`, which Codex round 2 falsified: `announced_`
+    // outlives a `run` while the report's counter restarts at zero, so a run with nothing left to
+    // announce reports no transitions and would claim the phase had never been known -- of a loop that
+    // spent its first run open. The verdict was right in the case that was tested and the reasoning was
+    // wrong, which is the worse of the two.
+    const bool ever_known = phase_ever_known_;
     // Three reasons, not four. "The poll never came due" was here and is unreachable: `run` resets
     // `next_due_`, so a configured cadence makes the calendar due on the first iteration of every
     // run. A branch describing a state that cannot happen is worse than no branch, because a reader
@@ -1568,6 +1577,8 @@ private:
    * then learns the market is open announces that as a change, which is exactly right.
    */
   strategy::MarketPhase announced_{strategy::MarketPhase::UNKNOWN};
+  /** Whether this loop has ever derived a phase that was not `UNKNOWN`, across every `run`. */
+  bool phase_ever_known_{false};
   std::optional<std::chrono::nanoseconds> maximum_portfolio_age_;
   std::optional<std::chrono::nanoseconds> maximum_buying_power_age_;
   std::optional<std::chrono::system_clock::time_point> next_due_[poll_kind_count];

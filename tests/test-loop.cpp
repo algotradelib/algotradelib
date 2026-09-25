@@ -2869,3 +2869,40 @@ TEST_CASE("the calendar poll replacing the calendar is not reported as a violati
   CHECK(report.calendar_written_outside_its_poll_ == 0);
   CHECK(report.notes_.empty());
 }
+
+TEST_CASE("knowing the phase once outlives the run that knew it", "[loop][phase]") {
+  // Codex round 2's counterexample to deriving "was it ever known" from the report's transition count:
+  // `announced_` lives as long as the loop while the counter restarts each `run`, so a second run whose
+  // calendar had been cleared showed one transition whose first announced value was `UNKNOWN`. The
+  // verdict was right by accident. It is now tracked on the loop, where the claim lives.
+  PhaseRunner runner_instance;
+  PhaseSource source;
+  serve_calendar(runner_instance);
+  PhaseLoop loop(runner_instance, source, ticking(std::chrono::seconds(1)), test_clock());
+  StopSource stop;
+
+  const auto known = loop.run(stop, 1);
+  REQUIRE(known.final_phase_ == strategy::MarketPhase::OPEN);
+  REQUIRE(known.phase_transitions_ == 1);
+
+  // The calendar goes away between runs, as it would when the local date rolls past its coverage.
+  runner_instance.context().set_calendar(algotradelib::TradingCalendar{});
+  const auto lost = loop.run(stop, 1);
+
+  REQUIRE(lost.final_phase_ == strategy::MarketPhase::UNKNOWN);
+  // One transition in this run, and its first announced value is UNKNOWN -- which is already enough to
+  // show the derivation was unsound, though here it still lands on the right answer.
+  CHECK(lost.phase_transitions_ == 1);
+  REQUIRE(lost.notes_.size() == 1);
+  CHECK(lost.notes_[0].find("stopped being established") != std::string::npos);
+
+  // **A third run is where the two actually disagree.** The phase is still unknown and there is nothing
+  // left to announce, so the counter is zero and would now claim the phase had never been known -- of a
+  // loop that spent its first run open. This is the assertion the counter fails.
+  const auto still_lost = loop.run(stop, 1);
+
+  CHECK(still_lost.phase_transitions_ == 0);
+  REQUIRE(still_lost.notes_.size() == 1);
+  CHECK(still_lost.notes_[0].find("stopped being established") != std::string::npos);
+  CHECK(still_lost.notes_[0].find("never established") == std::string::npos);
+}
