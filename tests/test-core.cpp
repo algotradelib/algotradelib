@@ -367,6 +367,26 @@ struct TossClientTestAccess {
 
 namespace {
 
+/**
+ * The venue an `InstrumentId` carries for a Korean instrument, at both brokers.
+ *
+ * Named once and asserted from four places -- each broker's holdings parse and
+ * each broker's order parse -- because those four must agree and two of them
+ * did not. `InstrumentId` compares its venue, and
+ * `Portfolio::working_quantity` (`strategy/portfolio.hpp:136`) matches a
+ * working order's `instrument_` against the instrument a caller names. Every
+ * consumer of that answer is a limit: the sellable deduction, the
+ * working-order component of the position ceiling, `closes_toward_flat`, and
+ * the reconciliation that decides whether to amend the order already out or
+ * send a second one beside it.
+ *
+ * A disagreement makes all of them read zero. Nothing errors and no test fails
+ * on its own; a number is simply smaller than it should be, and the last
+ * consumer in that list sends an order it should not have sent. So the
+ * convention is a constant rather than a repeated literal.
+ */
+constexpr Venue kKoreanInstrumentVenue = Venue::COMBINED;
+
 class ScopedEnvironmentVariable {
 public:
   explicit ScopedEnvironmentVariable(std::string name) : name_(std::move(name)) {
@@ -864,7 +884,7 @@ TEST_CASE(
   REQUIRE(domestic_cursor == "domestic-next");
   REQUIRE(result.value().positions_.size() == 1);
   const auto& position = result.value().positions_.front();
-  const InstrumentId expected_instrument{Country::KR, Venue::COMBINED, "005930"};
+  const InstrumentId expected_instrument{Country::KR, kKoreanInstrumentVenue, "005930"};
   REQUIRE(position.instrument_ == expected_instrument);
   REQUIRE(position.quantity_ == Decimal64::parse("10"));
   REQUIRE(position.sellable_quantity_ == Decimal64::parse("7"));
@@ -1054,6 +1074,8 @@ TEST_CASE(
   REQUIRE(result);
   REQUIRE(result.value().positions_.size() == 2);
   REQUIRE(result.value().positions_[0].instrument_.country_ == Country::KR);
+  // The fourth of the four places that must agree; see kKoreanInstrumentVenue.
+  REQUIRE(result.value().positions_[0].instrument_.venue_ == kKoreanInstrumentVenue);
   REQUIRE(result.value().positions_[0].sellable_quantity_ == std::nullopt);
   REQUIRE(result.value().positions_[1].instrument_.country_ == Country::US);
   REQUIRE(result.value().positions_[1].market_value_.amount_ == Decimal64::parse("1785"));
@@ -1562,6 +1584,20 @@ TEST_CASE("KIS reads back every order code the workbook publishes", "[broker][ki
     }
   }
 
+  SECTION("a code outside the preservation alphabet leaves the field empty, not wrong") {
+    OrderSnapshot order;
+    // `Code` takes A-Z, 0-9 and `_`. Every code either broker sends today fits,
+    // so this is about a future one. Empty is the same answer as "the broker
+    // reported no code", which is the honest one: the alternative is an
+    // allocation on every row, or throwing out of a response parse over a
+    // single odd value.
+    kis::KisClientTestAccess::apply_order_shape("00-a", order);
+    REQUIRE(order.shape_code_.view().empty());
+    REQUIRE(order.type_ == OrderType::UNKNOWN);
+    REQUIRE(order.time_in_force_ == TimeInForce::UNKNOWN);
+    REQUIRE(order.session_ == OrderSession::UNKNOWN);
+  }
+
   SECTION("a code outside the table is unknown in all three and still reported") {
     for (const auto* code : {"08", "31", "99", ""}) {
       OrderSnapshot order;
@@ -1572,6 +1608,74 @@ TEST_CASE("KIS reads back every order code the workbook publishes", "[broker][ki
       REQUIRE(order.session_ == OrderSession::UNKNOWN);
       REQUIRE(order.shape_code_.view() == code);
     }
+  }
+}
+
+TEST_CASE(
+  "an order and the holding it belongs to agree on the instrument",
+  "[broker][order][identity]"
+) {
+  SECTION("KIS keeps the routed venue off the instrument and beside it") {
+    auto orders = kis::KisClientTestAccess::parse_open_orders(
+      json_response(
+        R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"0001569139",)"
+        R"("orgn_odno":"","ord_dvsn_name":"limit","pdno":"005930",)"
+        R"("prdt_name":"Samsung","rvse_cncl_dvsn_name":"modify","ord_qty":"10",)"
+        R"("ord_unpr":"70000","ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0",)"
+        R"("psbl_qty":"10","sll_buy_dvsn_cd":"01","ord_dvsn_cd":"00",)"
+        R"("excg_id_dvsn_cd":"NXT"}]})"
+      )
+    );
+    REQUIRE(orders);
+    const auto& open_order = orders.value().orders_.front();
+    // The row says NXT and the instrument still says what a holding says, so
+    // the two remain the same `InstrumentId`.
+    REQUIRE(open_order.order_.instrument_.venue_ == kKoreanInstrumentVenue);
+    // And the routing fact is kept rather than dropped, because an amendment
+    // has to address it -- KIS publishes a different `ORD_DVSN` set per venue.
+    // `cancel_all` reads exactly this field; the amendment test below builds a
+    // `WorkingOrder` and pins that it carries through.
+    REQUIRE(open_order.order_.venue_ == Venue::NXT);
+  }
+
+  SECTION("KIS reports no venue and the amendment then takes the broker default") {
+    auto orders = kis::KisClientTestAccess::parse_open_orders(
+      json_response(
+        R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"0001569139",)"
+        R"("orgn_odno":"","ord_dvsn_name":"limit","pdno":"005930",)"
+        R"("prdt_name":"Samsung","rvse_cncl_dvsn_name":"modify","ord_qty":"10",)"
+        R"("ord_unpr":"70000","ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0",)"
+        R"("psbl_qty":"10","sll_buy_dvsn_cd":"01","ord_dvsn_cd":"00"}]})"
+      )
+    );
+    REQUIRE(orders);
+    const auto& open_order = orders.value().orders_.front();
+    REQUIRE(open_order.order_.instrument_.venue_ == kKoreanInstrumentVenue);
+    // Absent, not unrecognized: an amendment omits the field and takes KRX,
+    // which is what the sheet documents and what this did before the field was
+    // read at all.
+    REQUIRE(open_order.order_.venue_ == Venue::UNSPECIFIED);
+  }
+
+  SECTION("Toss agrees with itself about a Korean instrument") {
+    auto orders = tossinvest::TossClientTestAccess::parse_orders(
+      json_response(
+        R"({"result":{"orders":[)"
+        R"({"orderId":"a","symbol":"005930","side":"BUY","orderType":"LIMIT",)"
+        R"("timeInForce":"DAY","status":"PENDING","price":"70000","quantity":"10",)"
+        R"("orderAmount":null,"currency":"KRW","orderedAt":"2026-03-29T09:30:00+09:00",)"
+        R"("canceledAt":null,"execution":{"filledQuantity":"0","averageFilledPrice":null,)"
+        R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
+        R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
+      )
+    );
+    REQUIRE(orders);
+    // This assertion fails on `main`. The holdings parse wrote `COMBINED` for a
+    // Korean instrument and the order parse wrote `UNSPECIFIED`, so a Korean
+    // Toss working order was never found by `working_quantity`. A defect that
+    // predates this branch, fixed here because the KIS half of the same
+    // mismatch is one this branch would otherwise have introduced.
+    REQUIRE(orders.value().orders_.front().instrument_.venue_ == kKoreanInstrumentVenue);
   }
 }
 
@@ -1618,7 +1722,9 @@ TEST_CASE("a KIS amendment restates the shape it is amending", "[broker][kis][or
     working.order_.type_ = OrderType::BEST_LIMIT;
     working.order_.time_in_force_ = TimeInForce::FILL_OR_KILL;
     working.order_.session_ = OrderSession::AFTER_MARKET;
-    working.order_.instrument_ = InstrumentId{Country::KR, Venue::KRX, "005930"};
+    working.order_.instrument_ = InstrumentId{Country::KR, kKoreanInstrumentVenue, "005930"};
+    // The venue the broker routed it to, which is not the instrument's.
+    working.order_.venue_ = Venue::KRX;
     working.amendable_quantity_ = Decimal64::parse("5");
 
     const auto instruction = cancel_all(working);

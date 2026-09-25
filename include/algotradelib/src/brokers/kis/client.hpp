@@ -3332,11 +3332,15 @@ private:
 
         auto& order = open_order.order_;
         order.order_id_ = open_order.order_ref_.order_number_;
+        // `Venue::COMBINED`, exactly as the holdings path writes it, so an order
+        // and the holding it belongs to remain the same instrument. Where the
+        // order was actually routed is a different fact and goes in `venue_`.
         order.instrument_ = InstrumentId{
           Country::KR,
-          reported_venue(row),
+          Venue::COMBINED,
           broker_detail::json_string(row, "pdno"),
         };
+        order.venue_ = reported_venue(row);
         order.name_ = broker_detail::json_string(row, "prdt_name");
         order.side_ = normalized_order_side(
           broker_detail::json_string(row, "sll_buy_dvsn_cd")
@@ -3556,11 +3560,15 @@ private:
 
         OrderSnapshot order;
         order.order_id_ = broker_detail::json_string(row, "odno");
+        // `Venue::COMBINED`, exactly as the holdings path writes it, so an order
+        // and the holding it belongs to remain the same instrument. Where the
+        // order was actually routed is a different fact and goes in `venue_`.
         order.instrument_ = InstrumentId{
           Country::KR,
-          reported_venue(row),
+          Venue::COMBINED,
           broker_detail::json_string(row, "pdno"),
         };
+        order.venue_ = reported_venue(row);
         order.name_ = broker_detail::json_string(row, "prdt_name");
         order.side_ = normalized_order_side(
           broker_detail::json_string(row, "sll_buy_dvsn_cd")

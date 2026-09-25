@@ -2288,6 +2288,17 @@ private:
     }
   }
 
+  /**
+   * Returns the venue that identifies an instrument at Toss.
+   *
+   * One function with two callers — the holdings parse and the order parse —
+   * because those two disagreed, and an `InstrumentId` compares its venue. Toss
+   * publishes no per-order venue, so this is about identity only.
+   */
+  static Venue instrument_venue(Country country) {
+    return country == Country::KR ? Venue::COMBINED : Venue::UNSPECIFIED;
+  }
+
   static HoldingPosition parse_position(const json::object& output) {
     const auto market_country = broker_detail::json_string(output, "marketCountry");
     const auto currency = Currency(broker_detail::json_string(output, "currency"));
@@ -2295,7 +2306,7 @@ private:
     Venue venue = Venue::UNSPECIFIED;
     if (market_country == "KR") {
       country = Country::KR;
-      venue = Venue::COMBINED;
+      venue = instrument_venue(Country::KR);
       if (!(currency == Currency::krw())) {
         throw std::runtime_error("KR holding currency is not KRW");
       }
@@ -2595,8 +2606,8 @@ private:
     // The shape is judged before the price, because whether a price is required
     // at all is a fact about the basis. Judged after, a mid-price order was
     // refused by `validate_price` as "limit and market orders only" -- the right
-    // outcome under a code that names the wrong field, and it made the shape
-    // check below unreachable from this path.
+    // outcome under a code that names the wrong field, and it made
+    // `validate_order_shape`'s own basis check unreachable from this path.
     if (auto error = validate_order_shape(
           order.type_, order.time_in_force_, order.session_, order.instrument_.country_
         )) {
@@ -3228,9 +3239,16 @@ private:
 
     OrderSnapshot order;
     order.order_id_ = broker_detail::json_string(row, "orderId");
+    // `instrument_venue`, not `UNSPECIFIED`. This wrote `UNSPECIFIED` while
+    // `parse_position` wrote `COMBINED` for the same Korean instrument, so an
+    // order and its holding were never the same `InstrumentId` and
+    // `Portfolio::working_quantity` found nothing for a Korean Toss order. That
+    // is a defect on `main`, not one this branch introduced; it is fixed here
+    // because the KIS half of it would otherwise have been introduced by the
+    // venue this branch began reading.
     order.instrument_ = InstrumentId{
       country,
-      Venue::UNSPECIFIED,
+      instrument_venue(country),
       broker_detail::json_string(row, "symbol"),
     };
     order.side_ = normalized_order_side(broker_detail::json_string(row, "side"));

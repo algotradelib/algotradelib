@@ -1103,12 +1103,46 @@ struct OrderSnapshot {
   TimeInForce time_in_force_{TimeInForce::UNKNOWN};
   OrderSession session_{OrderSession::UNKNOWN};
   /**
+   * The venue the broker reported this order was routed to, where it reports one.
+   *
+   * **Not `instrument_.venue_`, and the difference is load-bearing.** An
+   * `InstrumentId` names an instrument, and two `InstrumentId`s are equal only
+   * when their venues match — which is what `Portfolio::working_quantity`,
+   * `strategy::reconcile` and every ceiling in `RiskGuard` key on when they ask
+   * "what do I already have resting in this". A holding is reported without a
+   * venue by both brokers, so an order row that carried a *different* venue in
+   * its `instrument_` would stop matching the holding it belongs to, and the
+   * resting quantity would silently read as zero: no sellable deduction, no
+   * working-order component in the position ceiling, and a reconciliation that
+   * plans a second order beside the one already out.
+   *
+   * So the routing fact lives here instead. It is what a later amendment must
+   * address, and it is `UNSPECIFIED` where the broker reports none.
+   */
+  Venue venue_{Venue::UNSPECIFIED};
+  /**
    * The broker's own order-shape code, preserved verbatim.
    *
    * The three normalized fields above say what this library understood. This
    * says what the broker sent, whether or not the table recognized it, so a
    * code added after this release reaches a caller instead of being discarded
-   * behind an `UNKNOWN`. Empty when the broker reported none.
+   * behind an `UNKNOWN`.
+   *
+   * **It preserves the codes a broker can currently send, not every string.**
+   * `Code` accepts `A`-`Z`, `0`-`9` and `_` and at most eight of them; KIS's
+   * codes are two digits and Toss's are three uppercase letters, so both fit
+   * with room to spare. A future code carrying a lowercase letter, a hyphen or
+   * a dot would not be stored, and this would be empty rather than wrong --
+   * which is the same outcome as the broker reporting no code at all. The
+   * alternative was a `std::string`, and an allocation on every row of every
+   * listing to carry a value that has never needed one is the wrong trade; the
+   * alternative of throwing is worse still, because both specifications require
+   * a client to tolerate an unknown code and one odd row must not fail a whole
+   * listing.
+   *
+   * Empty therefore means one of two things -- the broker reported no code, or
+   * it reported one outside that alphabet -- and the normalized fields say
+   * `UNKNOWN` in both cases.
    */
   Code<8> shape_code_;
   OrderStatus status_{OrderStatus::UNKNOWN};
@@ -1363,7 +1397,7 @@ inline AmendInstruction cancel_all(const WorkingOrder<Broker>& order) {
   instruction.shape_.time_in_force_ = order.order_.time_in_force_;
   instruction.shape_.session_ = order.order_.session_;
   instruction.shape_.price_ = order.order_.price_;
-  instruction.venue_ = order.order_.instrument_.venue_;
+  instruction.venue_ = order.order_.venue_;
   instruction.quantity_ = order.amendable_quantity_;
   instruction.all_remaining_ = true;
   return instruction;
@@ -1377,7 +1411,7 @@ inline AmendInstruction cancel_quantity(const WorkingOrder<Broker>& order, Decim
   instruction.shape_.time_in_force_ = order.order_.time_in_force_;
   instruction.shape_.session_ = order.order_.session_;
   instruction.shape_.price_ = order.order_.price_;
-  instruction.venue_ = order.order_.instrument_.venue_;
+  instruction.venue_ = order.order_.venue_;
   instruction.quantity_ = quantity;
   instruction.all_remaining_ = false;
   return instruction;
@@ -1405,7 +1439,7 @@ inline AmendInstruction replace_with(
 ) {
   AmendInstruction instruction;
   instruction.shape_ = std::move(shape);
-  instruction.venue_ = order.order_.instrument_.venue_;
+  instruction.venue_ = order.order_.venue_;
   instruction.all_remaining_ = !quantity.has_value();
   instruction.quantity_ = quantity ? quantity : order.amendable_quantity_;
   return instruction;
