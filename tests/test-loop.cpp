@@ -1,4 +1,5 @@
 #include <algotradelib/runner>
+#include <algotradelib/vanilla>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -6,6 +7,7 @@
 #include <cstdio>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace runner = algotradelib::runner;
 namespace strategy = algotradelib::strategy;
@@ -2535,4 +2537,47 @@ TEST_CASE("the context clock moves with an announced phase, and only forwards", 
   loop.run(stop, 8);
   CHECK(runner_instance.context().now() == ahead);
   CHECK(runner_instance.strategy().seen_.back() == strategy::MarketPhase::POST_CLOSE);
+}
+
+TEST_CASE("TimedLiquidation flattens live, which it could not do before", "[loop][phase][vanilla]") {
+  // **The headline, and the reason this branch exists.** `vanilla::TimedLiquidation` is built
+  // entirely on `on_phase`, so before the loop computed a phase it flattened in a backtest and did
+  // nothing whatsoever in a live session -- a strategy this library ships, diverging between the two
+  // worlds, which is the one defect the whole backtesting module exists to prevent.
+  //
+  // Nothing here calls `feed(MarketPhase)` or `set_phase`. The clock crosses 15:30 and the position
+  // is closed.
+  strategy::RiskLimits limits;
+  // `POST_CLOSE` is permitted because the vanilla liquidates in it and the default `{OPEN}` would
+  // refuse the very order it exists to place. Whether that default should change is the operator's
+  // call -- `issues/live-market-phase-permitted-phases.md` -- and this test does not depend on it.
+  limits.permitted_phases_ = std::vector<strategy::MarketPhase>{
+    strategy::MarketPhase::OPEN,
+    strategy::MarketPhase::POST_CLOSE,
+  };
+  runner::DryRunner<algotradelib::strategy::vanilla::TimedLiquidation> runner_instance(
+    algotradelib::strategy::vanilla::TimedLiquidation{}, limits);
+  runner::ManualSource<decltype(runner_instance)> source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner_instance.context().set_portfolio(portfolio_with("10", nullptr));
+  serve_calendar(runner_instance);
+
+  runner::PollingLoop<decltype(runner_instance), decltype(source), runner::ManualClock> loop(
+    runner_instance, source, ticking(std::chrono::hours(1)), clock_at_local_hour(14));
+  StopSource stop;
+
+  // 14:00 and 15:00: the session is open and the vanilla holds.
+  loop.run(stop, 2);
+  REQUIRE(runner_instance.executor().placed().empty());
+
+  // 16:00: the session has ended, and this is where nothing used to happen.
+  const auto after = loop.run(stop, 1);
+
+  CHECK(after.final_phase_ == strategy::MarketPhase::POST_CLOSE);
+  REQUIRE(runner_instance.executor().placed().size() == 1);
+  CHECK(runner_instance.executor().placed()[0].side_ == algotradelib::OrderSide::SELL);
+  CHECK(runner_instance.executor().placed()[0].quantity_ ==
+        algotradelib::Decimal64::parse("10"));
+  CHECK(runner_instance.executor().placed()[0].tag_ == "timed-liquidation");
 }

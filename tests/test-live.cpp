@@ -59,6 +59,23 @@ struct WithBuyingPower : strategy::NoCaps {
 };
 
 /**
+ * Capability variants for the trading calendar, for the same reason as the pair above.
+ *
+ * `SessionSource::poll_calendar` branches on `has_calendar` at compile time, and a branch nothing
+ * instantiates is a branch the compiler has never checked -- so both need a session to be built
+ * against. Both shipped brokers publish a calendar, so the `false` side is the one that would
+ * otherwise go uncompiled.
+ */
+struct WithCalendar : strategy::NoCaps {
+  static constexpr bool has_calendar = true;
+  static constexpr bool has_working_orders = true;
+};
+struct WithoutCalendar : strategy::NoCaps {
+  static constexpr bool has_calendar = false;
+  static constexpr bool has_working_orders = true;
+};
+
+/**
  * A session that records what it was asked and answers however a test says.
  *
  * `SessionExecutor` is duck-typed on the session, so this needs no broker adapter and no transport:
@@ -203,6 +220,45 @@ public:
   }
 
   /**
+   * Returns the scripted trading calendar, recording which market was asked about.
+   *
+   * The market is recorded because only one of the two shipped brokers serves more than one, and a
+   * source asking about the wrong country would answer confidently about the wrong holidays.
+   */
+  Result<TradingCalendar> calendar(Country country, std::optional<Date> from = std::nullopt) {
+    ++calendar_calls_;
+    calendar_asked_ = country;
+    calendar_from_ = from;
+    if (calendar_error_) {
+      return Result<TradingCalendar>(*calendar_error_);
+    }
+    return Result<TradingCalendar>(calendar_);
+  }
+
+  /** Scripts the calendar every request answers with. */
+  void set_calendar(TradingCalendar calendar) { calendar_ = std::move(calendar); }
+
+  /** Scripts a calendar request failing with `category`. */
+  void fail_calendar(ErrorCategory category) {
+    BrokerError error;
+    error.category_ = category;
+    error.broker_code_ = "calendar_unavailable";
+    calendar_error_ = error;
+  }
+
+  /** Lets the calendar answer again. */
+  void heal_calendar() { calendar_error_.reset(); }
+
+  /** Returns how many calendar requests were made. */
+  int calendar_calls() const noexcept { return calendar_calls_; }
+
+  /** Returns which market the last one named. */
+  std::optional<Country> calendar_asked() const noexcept { return calendar_asked_; }
+
+  /** Returns the date the last one named, which the source deliberately leaves to the broker. */
+  const std::optional<Date>& calendar_from() const noexcept { return calendar_from_; }
+
+  /**
    * Returns what may be spent in `currency`, or the failure a test asked for in that one currency.
    *
    * Per currency rather than session-wide, because the case worth testing is the mixed one: a
@@ -324,6 +380,11 @@ private:
   std::size_t holdings_calls_{0};
   std::size_t working_calls_{0};
   std::size_t history_calls_{0};
+  int calendar_calls_{0};
+  TradingCalendar calendar_;
+  std::optional<Country> calendar_asked_;
+  std::optional<Date> calendar_from_;
+  std::optional<BrokerError> calendar_error_;
 
   std::vector<OrderRequest> placed_;
   std::vector<AmendInstruction> canceled_;
@@ -1042,6 +1103,17 @@ struct CountEvents {
 using WorkingSession = FakeSession<WithWorkingOrders>;
 using BudgetSession = FakeSession<WithBuyingPower>;
 using HistorySession = FakeSession<WithoutWorkingOrders>;
+using CalendarSession = FakeSession<WithCalendar>;
+using NoCalendarSession = FakeSession<WithoutCalendar>;
+
+/** A calendar saying `date` trades, as a broker would answer. */
+TradingCalendar one_day_calendar(const Date& date, bool trades = true) {
+  TradingCalendar calendar;
+  calendar.country_ = Country::KR;
+  calendar.received_at_ = std::chrono::system_clock::now();
+  calendar.days_.push_back(algotradelib::TradingDay{date, trades});
+  return calendar;
+}
 
 /** A two-bar series ending at `last_close`. */
 BarSeries two_bars(const char* first_close, const char* last_close) {
@@ -1779,4 +1851,84 @@ TEST_CASE("the history-limit capability says what each broker does") {
   // The range requirement is the mirror image, and the two are independent answers.
   STATIC_REQUIRE(BrokerCaps<kis::KisClient>::history_requires_range);
   STATIC_REQUIRE_FALSE(BrokerCaps<tossinvest::TossClient>::history_requires_range);
+}
+
+TEST_CASE("polling the calendar puts it where the loop and the strategy both read it") {
+  // The one poll whose answer is not an event. `runner::PollingLoop` derives the market phase from
+  // it and a strategy answers "does tomorrow trade" from the same copy, so it lands on the context
+  // rather than being fed -- and before this branch `Context::set_calendar` had no caller at all,
+  // which made `Context::calendar()` permanently empty in every world.
+  CalendarSession session;
+  const Date today{2026, 3, 10};
+  session.set_calendar(one_day_calendar(today));
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<CalendarSession> source(session, {samsung()});
+
+  const auto outcome = source.poll(runner::PollKind::CALENDAR, live_runner);
+
+  CHECK(outcome == runner::PollOutcome::UPDATED);
+  REQUIRE(live_runner.context().calendar().is_trading_day(today).has_value());
+  CHECK(*live_runner.context().calendar().is_trading_day(today));
+  // The domestic market by default, which is the only one KIS publishes and the one the KRX session
+  // window states the hours for.
+  CHECK(session.calendar_asked() == Country::KR);
+  CHECK(source.calendar_country() == Country::KR);
+  // And no date is named, so each broker supplies its own "today" -- today *there*, not here.
+  CHECK_FALSE(session.calendar_from().has_value());
+}
+
+TEST_CASE("a calendar poll asks about the market it was configured for") {
+  CalendarSession session;
+  session.set_calendar(one_day_calendar(Date{2026, 3, 10}));
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<CalendarSession> source(session, {samsung()});
+  source.set_calendar_country(Country::US);
+
+  source.poll(runner::PollKind::CALENDAR, live_runner);
+
+  CHECK(session.calendar_asked() == Country::US);
+}
+
+TEST_CASE("a failed calendar poll leaves the last answer standing") {
+  // The `poll_buying_power` rule, one field over. Erasing the calendar because a reference-data
+  // request timed out would take a run that knew the market was open and, with the default
+  // `permitted_phases_`, refuse every order in it -- an uncovered date is `UNKNOWN`.
+  CalendarSession session;
+  const Date today{2026, 3, 10};
+  session.set_calendar(one_day_calendar(today));
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<CalendarSession> source(session, {samsung()});
+
+  REQUIRE(source.poll(runner::PollKind::CALENDAR, live_runner) == runner::PollOutcome::UPDATED);
+
+  session.fail_calendar(ErrorCategory::TRANSPORT);
+  CHECK(source.poll(runner::PollKind::CALENDAR, live_runner) == runner::PollOutcome::FAILED);
+  REQUIRE(source.last_error().has_value());
+  CHECK(source.last_error()->category_ == ErrorCategory::TRANSPORT);
+  // Still there, which is the point.
+  REQUIRE(live_runner.context().calendar().is_trading_day(today).has_value());
+
+  // A rate-limit refusal is the limiter working, not an outage, and it keeps the answer too.
+  session.fail_calendar(ErrorCategory::RATE_LIMIT);
+  CHECK(source.poll(runner::PollKind::CALENDAR, live_runner) == runner::PollOutcome::RATE_LIMITED);
+  CHECK(live_runner.context().calendar().is_trading_day(today).has_value());
+
+  session.heal_calendar();
+  CHECK(source.poll(runner::PollKind::CALENDAR, live_runner) == runner::PollOutcome::UPDATED);
+  CHECK_FALSE(source.last_error().has_value());
+}
+
+TEST_CASE("a broker that publishes no calendar is asked for none") {
+  // Decision 2b: the capability is absent and absent is not faked. The loop then never establishes a
+  // phase, which it reports rather than guesses at.
+  NoCalendarSession session;
+  session.set_calendar(one_day_calendar(Date{2026, 3, 10}));
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<NoCalendarSession> source(session, {samsung()});
+
+  const auto outcome = source.poll(runner::PollKind::CALENDAR, live_runner);
+
+  CHECK(outcome == runner::PollOutcome::UNCHANGED);
+  CHECK(session.calendar_calls() == 0);
+  CHECK(live_runner.context().calendar().days_.empty());
 }
