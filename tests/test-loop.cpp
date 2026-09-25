@@ -913,8 +913,12 @@ TEST_CASE("the buying-power poll has its own cadence", "[loop][cadence]") {
   loop.run(stop, 3);
   CHECK(source.polls(runner::PollKind::BUYING_POWER) == 3);
   // And a kind with no interval configured is never polled, which is what keeps an existing
-  // program's request count unchanged on upgrade.
+  // program's request count unchanged on upgrade -- **with one exception, since `PollKind::CALENDAR`
+  // exists.** That cadence is on by default, because the phase the loop derives from it decides
+  // whether anything may be sent at all, so an upgrade does add calendar traffic. It is asserted here
+  // rather than left implied, because the sentence above used to be true of every kind.
   CHECK(source.polls(runner::PollKind::HOLDINGS) == 0);
+  CHECK(source.polls(runner::PollKind::CALENDAR) == 1);
 }
 
 TEST_CASE("a run reports what it learned about the broker's sellable figure", "[loop][probe]") {
