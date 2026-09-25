@@ -1335,6 +1335,28 @@ struct PlacedOrder {
  * nothing more; it is not a claim that the change is invisible.
  */
 struct OrderShape {
+  /**
+   * Constructs a shape, stating only as much as the caller means.
+   *
+   * **A constructor rather than plain aggregate initialization**, so that
+   * `OrderShape{OrderType::LIMIT, price}` -- the form this design depends on
+   * being the natural one -- is a call and not a brace with two members left
+   * out. Left as an aggregate it tripped `-Wmissing-field-initializers`, which
+   * this library's own warnings configuration promotes to an error, so the safe
+   * form would have been the one a careful consumer could not write.
+   */
+  OrderShape() = default;
+  OrderShape(
+    OrderType type,
+    std::optional<Decimal64> price,
+    std::optional<TimeInForce> time_in_force = std::nullopt,
+    std::optional<OrderSession> session = std::nullopt
+  )
+  : type_(type),
+    price_(std::move(price)),
+    time_in_force_(time_in_force),
+    session_(session) {}
+
   OrderType type_{OrderType::LIMIT};
   std::optional<Decimal64> price_;
   /**

@@ -672,6 +672,36 @@ TEST_CASE("a journal entry survives a round trip through a line", "[journal][fil
   REQUIRE(parsed->recorded_at_ == original.recorded_at_);
 }
 
+TEST_CASE("a line with no route key is unknown, not unrouted", "[journal]") {
+  // The distinction the whole route comparison rests on. A line written before
+  // the field existed says nothing about where its order went; a line written
+  // since says `UNSPECIFIED` when the runner asked for nowhere in particular.
+  // Reading the first as the second lets recovery attribute somebody else's row
+  // to an order that may have gone to a venue that row is not on.
+  //
+  // The field defaults to a recorded `UNSPECIFIED`, so the reader has to clear
+  // it -- and a mutation that skipped the clearing failed nothing until this
+  // test existed.
+  const auto with_route = runner::journal_entry_to_line(sample_entry());
+  REQUIRE(with_route.find("\"route\"") != std::string::npos);
+
+  auto legacy = with_route;
+  const auto at = legacy.find(",\"route\":");
+  REQUIRE(at != std::string::npos);
+  const auto end = legacy.find(',', at + 1);
+  REQUIRE(end != std::string::npos);
+  legacy.erase(at, end - at);
+  REQUIRE(legacy.find("\"route\"") == std::string::npos);
+
+  const auto parsed = runner::journal_entry_from_line(legacy);
+  REQUIRE(parsed.has_value());
+  REQUIRE_FALSE(parsed->venue_.has_value());
+
+  // And the same line with the key present reads as the value it carries, so
+  // the assertion above is about the key's absence rather than about parsing.
+  REQUIRE(runner::journal_entry_from_line(with_route)->venue_ == sample_entry().venue_);
+}
+
 TEST_CASE("an absent price round-trips as absent, not as zero", "[journal][file]") {
   auto entry = sample_entry();
   entry.price_.reset();
