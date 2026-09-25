@@ -138,13 +138,13 @@ cp "$TEMPLATE" "$TARGET/src/main.cpp"
 if [ "$MODE" = submodule ]; then
     FIND_LIBRARY='# Where the library is. The default is the submodule path suggested by the README;
 # point it somewhere else with -DALGOTRADELIB_DIR=... if you vendor it elsewhere.
-set(ALGOTRADELIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/algotradelib"
+set(ALGOTRADELIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libs/algotradelib"
     CACHE PATH "Path to an algotradelib checkout")
 
 if(NOT EXISTS "${ALGOTRADELIB_DIR}/CMakeLists.txt")
     message(FATAL_ERROR
         "No algotradelib checkout at ${ALGOTRADELIB_DIR}. Add it as a submodule:\n"
-        "    git submodule add <repository-url> external/algotradelib\n"
+        "    git submodule add https://github.com/ygeunkim/algotradelib.git libs/algotradelib\n"
         "    git submodule update --init --recursive\n"
         "or configure with -DALGOTRADELIB_DIR=/path/to/algotradelib.")
 endif()
@@ -229,7 +229,7 @@ if [ "$MODE" = submodule ]; then
     cat <<DONEEOF
   cd $QUOTED_TARGET
   git init .
-  git submodule add <repository-url> external/algotradelib
+  git submodule add https://github.com/ygeunkim/algotradelib.git libs/algotradelib
   cmake -S . -B build && cmake --build build && ./build/$NAME
 DONEEOF
 else

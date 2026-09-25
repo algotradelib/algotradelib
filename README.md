@@ -71,7 +71,7 @@ work.
 ### As a submodule
 
 ```sh
-git submodule add <repository-url> external/algotradelib
+git submodule add https://github.com/ygeunkim/algotradelib.git libs/algotradelib
 git submodule update --init --recursive
 ```
 
@@ -80,7 +80,7 @@ cmake_minimum_required(VERSION 3.16)
 project(my_alpha LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 
-add_subdirectory(external/algotradelib)
+add_subdirectory(libs/algotradelib)
 
 add_executable(my_alpha src/main.cpp)
 target_link_libraries(my_alpha PRIVATE algotradelib::algotradelib)
