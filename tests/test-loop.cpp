@@ -243,6 +243,7 @@ public:
     refused_ += report.refused_.size();
     if (!report.refused_.empty()) {
       last_refusal_ = report.refused_.front().halt_reason_;
+      last_guard_reason_ = report.refused_.front().reason_;
     }
     return runner::PollOutcome::UPDATED;
   }
@@ -262,6 +263,17 @@ public:
   /** Returns which hold refused the last one. */
   std::optional<strategy::HaltReason> last_refusal() const noexcept { return last_refusal_; }
 
+  /**
+   * Returns which limit refused the last one.
+   *
+   * Distinct from the hold above, and the distinction is the point: `TRADING_HALTED` says a gate was
+   * shut, `PHASE_NOT_PERMITTED` says the market was. A test that only looked at the hold could not
+   * tell an order refused for being out of hours from one refused by a stale portfolio.
+   */
+  std::optional<strategy::GuardReason> last_guard_reason() const noexcept {
+    return last_guard_reason_;
+  }
+
 private:
   runner::PollOutcome order_list_ = runner::PollOutcome::UPDATED;
   std::size_t order_list_reads_{0};
@@ -269,6 +281,7 @@ private:
   std::size_t placed_{0};
   std::size_t refused_{0};
   std::optional<strategy::HaltReason> last_refusal_;
+  std::optional<strategy::GuardReason> last_guard_reason_;
 };
 
 using FeedingSource = FeedingSourceFor<SendingRunner>;
@@ -2188,4 +2201,338 @@ TEST_CASE("a quiesce still tells the strategy it is stopping", "[loop][stop]") {
   CHECK(report.stopped_by_ == StopIntent::QUIESCE);
   CHECK(report.stop_handler_refused_ == 1);
   CHECK(runner_instance.executor().placed().empty());
+}
+
+// --- The market phase, live ---------------------------------------------------------------
+//
+// Everything below this line is about one defect: until `ai/live-market-phase`, nothing outside
+// `backtest/` ever called `Context::set_phase`, so a live run held whatever the caller set at
+// startup. `on_phase` never fired, `vanilla::TimedLiquidation` was inert live, and a caller who set
+// nothing was refused every order. The tests above used to *conceal* that by setting `OPEN` by hand;
+// they now install a calendar, so they exercise the mechanism instead.
+
+/** Records every phase it is told about, in order. */
+struct RecordsPhases {
+  std::vector<strategy::MarketPhase> seen_;
+
+  template <class Ctx>
+  void on_phase(Ctx&, strategy::MarketPhase phase) {
+    seen_.push_back(phase);
+  }
+};
+
+/** Withdraws whatever is resting, so an ordinary iteration produces a cancellation. */
+struct CancelsWorking {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const algotradelib::strategy::BarEvent&) {
+    for (const auto& working : ctx.portfolio().working_) {
+      ctx.cancel(working.ref_, "strategy-cancel");
+    }
+  }
+};
+
+using CancelRunner = runner::DryRunner<CancelsWorking>;
+using CancelSource = FeedingSourceFor<CancelRunner>;
+using CancelLoop = runner::PollingLoop<CancelRunner, CancelSource, runner::ManualClock>;
+
+using PhaseRunner = runner::DryRunner<RecordsPhases>;
+using PhaseSource = runner::ManualSource<PhaseRunner>;
+using PhaseLoop = runner::PollingLoop<PhaseRunner, PhaseSource, runner::ManualClock>;
+
+/** A schedule whose only cadence is the loop's own tick, `step` long. */
+runner::PollSchedule ticking(std::chrono::nanoseconds step) {
+  runner::PollSchedule schedule;
+  schedule.tick_ = step;
+  return schedule;
+}
+
+/**
+ * A clock starting at `hour`:00 local time on the day `base_time()`'s date falls on.
+ *
+ * `base_time()` is 09:00 in Seoul, so the offsets here are relative to that.
+ */
+runner::ManualClock clock_at_local_hour(int hour) {
+  return runner::ManualClock{base_time() + std::chrono::hours(hour - 9)};
+}
+
+TEST_CASE("on_phase fires live, in the order the session actually moves", "[loop][phase]") {
+  // The headline. No `set_phase` anywhere: the loop derives PRE_OPEN, OPEN and POST_CLOSE from a
+  // configured window and a calendar, so a strategy written against `on_phase` behaves the same live
+  // as it does in a replay -- which is the divergence `Decision 3` and the whole backtesting module
+  // exist to prevent.
+  PhaseRunner runner_instance;
+  PhaseSource source;
+  serve_calendar(runner_instance);
+  PhaseLoop loop(runner_instance, source, ticking(std::chrono::hours(1)), clock_at_local_hour(8));
+  StopSource stop;
+
+  const auto report = loop.run(stop, 10);
+
+  const std::vector<strategy::MarketPhase> expected{
+    strategy::MarketPhase::PRE_OPEN,
+    strategy::MarketPhase::OPEN,
+    strategy::MarketPhase::POST_CLOSE,
+  };
+  CHECK(runner_instance.strategy().seen_ == expected);
+  // Once per change, not once per iteration: ten iterations, three transitions.
+  CHECK(report.phase_transitions_ == 3);
+  CHECK(report.final_phase_ == strategy::MarketPhase::POST_CLOSE);
+}
+
+TEST_CASE("a phase that does not change is not announced again", "[loop][phase]") {
+  // Guarding the same thing from the other side. An `on_phase` per iteration would make every
+  // strategy written on it fire continuously -- `TimedLiquidation` would restate a flatten every
+  // second for the whole session.
+  PhaseRunner runner_instance;
+  PhaseSource source;
+  serve_calendar(runner_instance);
+  PhaseLoop loop(runner_instance, source, ticking(std::chrono::seconds(1)), test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 20);
+
+  REQUIRE(runner_instance.strategy().seen_.size() == 1);
+  CHECK(runner_instance.strategy().seen_.front() == strategy::MarketPhase::OPEN);
+  CHECK(report.phase_transitions_ == 1);
+}
+
+TEST_CASE("a non-trading day is CLOSED, and the loop keeps running", "[loop][phase]") {
+  // `CLOSED` is the ordinary overnight and weekend state of a live run, not a fault. The guard
+  // refuses placements, the loop goes on polling, and nothing reports itself broken.
+  PhaseRunner runner_instance;
+  PhaseSource source;
+  serve_calendar(runner_instance, /*trades=*/false);
+  PhaseLoop loop(runner_instance, source, ticking(std::chrono::hours(1)), test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 5);
+
+  CHECK(report.final_phase_ == strategy::MarketPhase::CLOSED);
+  CHECK(report.iterations_ == 5);
+  CHECK_FALSE(report.abandoned_);
+  // A known phase is not an unestablished one, so the report says nothing about it.
+  CHECK(report.notes_.empty());
+}
+
+TEST_CASE("an uncovered date is UNKNOWN and the report says why", "[loop][phase]") {
+  // The failing-in-the-refusing-direction case, and the one an operator most needs told: with the
+  // default `permitted_phases_`, every placement was refused and no gate was shut, so the report
+  // would otherwise show a healthy run that did nothing.
+  PhaseRunner runner_instance;
+  PhaseSource source;
+  // A calendar that covers a different day entirely, which is what a Toss-shaped three-day answer
+  // looks like over a weekend.
+  algotradelib::TradingCalendar elsewhere;
+  elsewhere.received_at_ = base_time();
+  elsewhere.days_.push_back(algotradelib::TradingDay{algotradelib::Date{1999, 1, 4}, true});
+  runner_instance.context().set_calendar(elsewhere);
+
+  PhaseLoop loop(runner_instance, source, ticking(std::chrono::hours(1)), test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 3);
+
+  CHECK(report.final_phase_ == strategy::MarketPhase::UNKNOWN);
+  // Deliberately **not** a hold: a hold would also stop cancellations, which only ever reduce
+  // exposure and which `Runner::send_cancel` exempts from the phase limit.
+  CHECK_FALSE(report.final_gate_);
+  REQUIRE(report.notes_.size() == 1);
+  CHECK(report.notes_[0].find("never established") != std::string::npos);
+  // And it names the date, because "uncovered" alone sends a reader after a span they cannot see.
+  const auto expected =
+    strategy::SessionWindow::krx().local_date(base_time());
+  CHECK(report.notes_[0].find(std::to_string(expected.year_)) != std::string::npos);
+}
+
+TEST_CASE("an unestablished phase does not stop a cancellation", "[loop][phase]") {
+  // The reason the phase is **reported** rather than held on the guard. `Runner::send_cancel` refuses
+  // on any blocking reason and never consults the phase at all, so a hold taken because a
+  // reference-data poll failed would forbid a withdrawal -- making an unknown phase stricter than a
+  // closed one, for the one instruction that can only ever reduce exposure.
+  //
+  // A *strategy's* cancellation is the case that would regress, and it is deliberately not a stop's:
+  // `PollingLoop::honour` lifts the loop's own hold for exactly the one `settle_closing` call, so a
+  // closing pass would send through a hold anyway and could not show this.
+  CancelRunner runner_instance;
+  CancelSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner_instance.context().set_portfolio(portfolio_with("10", "4"));
+  // No calendar at all, so the phase is UNKNOWN for the whole run.
+
+  CancelLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.final_phase_ == strategy::MarketPhase::UNKNOWN);
+  CHECK_FALSE(report.final_gate_);
+  // The withdrawal reached the executor, which it could not have done through a hold.
+  CHECK(runner_instance.executor().canceled().size() == 1);
+}
+
+TEST_CASE("an order settled inside a poll is checked against this iteration's phase",
+          "[loop][phase]") {
+  // The ordering blocker, and the case is deliberately the *crossing* rather than a run that begins
+  // after the close. A source's `poll` calls `Runner::feed`, which settles, so an order can leave the
+  // process from inside a poll. A phase installed *after* the polls would let the first bar arriving
+  // after 15:30 send under the `OPEN` the previous iteration established -- once per session, on the
+  // close, which is precisely what the phase limit exists to refuse.
+  //
+  // Beginning the run after the close would not test that: the context's phase starts at `UNKNOWN`,
+  // so an order would be refused either way and the assertion would pass against the defect.
+  SendingRunner runner_instance;
+  FeedingSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  serve_calendar(runner_instance);
+  SendingLoop loop(runner_instance, source, bars_each_iteration(), clock_at_local_hour(14));
+  StopSource stop;
+
+  // 14:00: the session is open and bars settled inside the polls go out. Without this half the
+  // refusal below could be caused by any part of the fixture.
+  const auto open_run = loop.run(stop, 2);
+  REQUIRE(open_run.final_phase_ == strategy::MarketPhase::OPEN);
+  REQUIRE(source.placed() > 0);
+
+  // **Measured as a delta across the crossing**, deliberately. Totals would let this test be failed
+  // by anything that refuses a bar earlier in the run, and it would then pass or fail for a reason
+  // other than the one it is named for. The delta is the crossing itself.
+  const auto placed_while_open = source.placed();
+  const auto refused_while_open = source.refused();
+
+  // 16:00, half an hour after the close, on a day the market did trade.
+  loop.clock().advance(std::chrono::hours(2));
+  const auto crossing = loop.run(stop, 1);
+
+  CHECK(crossing.final_phase_ == strategy::MarketPhase::POST_CLOSE);
+  // Nothing more went out, and the bar that arrived was refused by the market being shut rather than
+  // by a gate -- which is what distinguishes this from every other reason an order does not send.
+  CHECK(source.placed() == placed_while_open);
+  CHECK(source.refused() == refused_while_open + 1);
+  CHECK(source.last_guard_reason() == strategy::GuardReason::PHASE_NOT_PERMITTED);
+  CHECK_FALSE(crossing.final_gate_);
+}
+
+TEST_CASE("a phase a caller set by hand cannot survive an uncovered date", "[loop][phase]") {
+  // The migration contract, pinned. Every live example used to set `OPEN` once at startup and trade
+  // as though the market were permanently open. A loop that left a caller's value alone would
+  // preserve exactly that, so the overwrite is the fix and not a side effect.
+  PhaseRunner runner_instance;
+  PhaseSource source;
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  PhaseLoop loop(runner_instance, source, ticking(std::chrono::hours(1)), test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.final_phase_ == strategy::MarketPhase::UNKNOWN);
+  CHECK(runner_instance.context().phase() == strategy::MarketPhase::UNKNOWN);
+}
+
+TEST_CASE("the calendar poll keeps its own cadence and fills the context", "[loop][phase]") {
+  // The calendar is a poll like the others -- a cadence, a counter, a failure budget -- and it is the
+  // only one whose answer the loop reads back out of the context rather than feeding to a strategy.
+  PhaseRunner runner_instance;
+  PhaseSource source;
+  source.set_calendar(krx_calendar());
+  runner::PollSchedule schedule;
+  schedule.calendar_ = std::chrono::hours(6);
+  schedule.tick_ = std::chrono::hours(1);
+  PhaseLoop loop(runner_instance, source, schedule, test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 7);
+
+  // Seven hourly iterations across a six-hour cadence: the first poll and one more.
+  CHECK(report.attempted(runner::PollKind::CALENDAR) == 2);
+  CHECK(source.polls(runner::PollKind::CALENDAR) == 2);
+  CHECK_FALSE(runner_instance.context().calendar().days_.empty());
+  // Arriving during iteration one's polls, it is first used by iteration two -- the phase is
+  // installed before the polls run, and that lag is the price of it.
+  CHECK(report.final_phase_ == strategy::MarketPhase::OPEN);
+  REQUIRE(runner_instance.strategy().seen_.size() == 1);
+  // And no `UNKNOWN` was ever announced: the loop starts there, so it is not a change.
+  CHECK(runner_instance.strategy().seen_.front() == strategy::MarketPhase::OPEN);
+}
+
+TEST_CASE("a failed calendar poll counts and leaves the last answer standing", "[loop][phase]") {
+  // The `poll_buying_power` rule, re-checked one field over: erasing the calendar because a
+  // reference-data request timed out would take a run that knew the market was open and refuse every
+  // order in it.
+  PhaseRunner runner_instance;
+  PhaseSource source;
+  serve_calendar(runner_instance);
+  source.set_default(runner::PollKind::CALENDAR, runner::PollOutcome::FAILED);
+  runner::PollSchedule schedule;
+  schedule.calendar_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  PhaseLoop loop(runner_instance, source, schedule, test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 3);
+
+  CHECK(report.failed(runner::PollKind::CALENDAR) == 3);
+  CHECK(report.final_phase_ == strategy::MarketPhase::OPEN);
+  CHECK_FALSE(runner_instance.context().calendar().days_.empty());
+}
+
+TEST_CASE("a calendar that keeps failing gives up like any other poll", "[loop][phase]") {
+  PhaseRunner runner_instance;
+  PhaseSource source;
+  source.set_default(runner::PollKind::CALENDAR, runner::PollOutcome::FAILED);
+  runner::PollSchedule schedule;
+  schedule.calendar_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  PhaseLoop loop(runner_instance, source, schedule, test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 20);
+
+  CHECK(report.abandoned_);
+  CHECK(report.abandoned_kind_ == runner::PollKind::CALENDAR);
+  CHECK(report.final_gate_ == strategy::HaltReason::POLL_FAILING);
+}
+
+TEST_CASE("a disabled calendar cadence is a visible choice, not a silent one", "[loop][phase]") {
+  PhaseRunner runner_instance;
+  PhaseSource source;
+  source.set_calendar(krx_calendar());
+  runner::PollSchedule schedule;
+  schedule.calendar_.reset();
+  schedule.tick_ = std::chrono::seconds(1);
+  PhaseLoop loop(runner_instance, source, schedule, test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 3);
+
+  CHECK(source.polls(runner::PollKind::CALENDAR) == 0);
+  CHECK(report.final_phase_ == strategy::MarketPhase::UNKNOWN);
+  REQUIRE(report.notes_.size() == 1);
+  CHECK(report.notes_[0].find("no calendar cadence is configured") != std::string::npos);
+}
+
+TEST_CASE("the context clock moves with an announced phase, and only forwards", "[loop][phase]") {
+  // `Runner::feed(MarketPhase)` does not advance `Context::now_`; only a bar or a quote does, from a
+  // broker's stamp. So a phase handler on a daily-bar run would decide at an instant hours old, and
+  // `RiskGuard` counts sends within `rate_window_` of it -- two orders would pass a one-order window
+  // at what the guard thinks are two unrelated moments.
+  PhaseRunner runner_instance;
+  PhaseSource source;
+  serve_calendar(runner_instance);
+  PhaseLoop loop(runner_instance, source, ticking(std::chrono::hours(1)), clock_at_local_hour(8));
+  StopSource stop;
+
+  loop.run(stop, 2);
+  // Two hourly iterations from 08:00: the second is 09:00, when OPEN is announced.
+  CHECK(runner_instance.context().now() == base_time());
+
+  // A broker stamp ahead of this machine's clock is not walked backwards: a handler deciding at an
+  // instant earlier than the bar it has already been shown is the same incoherence, with the sign
+  // flipped, and the skew is the broker's rather than this loop's to correct.
+  const auto ahead = base_time() + std::chrono::hours(48);
+  runner_instance.context().set_now(ahead);
+  loop.run(stop, 8);
+  CHECK(runner_instance.context().now() == ahead);
+  CHECK(runner_instance.strategy().seen_.back() == strategy::MarketPhase::POST_CLOSE);
 }
