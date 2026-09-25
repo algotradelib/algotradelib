@@ -2667,10 +2667,24 @@ TEST_CASE("a calendar arriving mid-iteration reaches the order polled after it",
 }
 
 TEST_CASE("a poll schedule written positionally still means what it meant", "[loop][cadence]") {
-  // `PollSchedule` is an aggregate, so a member added at the front silently reassigns every
-  // positional brace initializer: `PollSchedule{5s}` would have started configuring the calendar and
-  // stopped polling bars, in a caller that compiles cleanly. Codex round 1 found this by compiling it.
+  // `PollSchedule` is an aggregate, so a member added at the front reassigns every positional brace
+  // initializer: `PollSchedule{5s}` would have started configuring the calendar and stopped polling
+  // bars. Codex round 1 found this by compiling it.
+  //
+  // **Partly silent, and the warning is worth knowing about.** Writing it here failed this
+  // repository's own `-Wall -Wextra -Werror` build on `-Wmissing-field-initializers`, so a caller
+  // building that way would have been told *something* -- though not that the meaning had changed.
+  // The pragma is local to the one line that has to be written this way to test it at all.
+  // `backtest::ReplayConfig` had the same defect and it was the loud kind: the member went in the
+  // middle, so a positional initializer stopped compiling outright.
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#endif
   const runner::PollSchedule schedule{std::chrono::seconds(5)};
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
   REQUIRE(schedule.bars_.has_value());
   CHECK(*schedule.bars_ == std::chrono::seconds(5));
