@@ -799,18 +799,20 @@ private:
       if (!is_due(kind, iteration.at_)) {
         continue;
       }
-      const auto outcome = source_->poll(kind, *runner_);
-      // **Re-established after every poll, not only before the first one.** The calendar poll can
-      // replace the answer the phase was derived from, and it is polled first -- so without this, a
-      // calendar arriving in this iteration saying the market is shut would be followed, in the same
-      // iteration, by a bar poll settling an order under the `OPEN` computed from the calendar it
-      // replaced. Found by Codex round 1, reproduced, and it is the shape every blocker in
-      // `ai/replay-working-orders` had: one coherence rule not reaching one more input.
+      // **Re-established immediately before every poll**, because a poll is a point at which an order
+      // can leave the process and anything that ran before it may have replaced the calendar the phase
+      // was derived from. Three things can have: a previous poll in this same loop, the calendar poll
+      // in particular since it is polled first, and `gate_for`'s out-of-band `read_order_list` above.
       //
-      // After *every* poll rather than after the calendar one, because "which poll can change the
-      // calendar" is a fact about the source rather than about this loop -- a source that installs one
-      // from somewhere else must not reintroduce the hole. The cost is a date comparison per poll.
+      // Before rather than after, which is the correction: "after every poll" closed the first two and
+      // left the third, because the pre-loop install runs *before* `gate_for` and nothing re-derived
+      // the phase between that call and the first poll. Placing it here makes the rule positional
+      // instead of enumerated -- every send site is preceded by an install, and no list of which polls
+      // can change what has to stay correct.
+      //
+      // The cost is a date comparison per due poll.
       install_phase(iteration);
+      const auto outcome = source_->poll(kind, *runner_);
       // `UNCHANGED` counts, because a listing that is identical to the last one is still a listing
       // -- but only on a source that publishes them at all, which `note_working_orders_read`
       // enforces: a broker without the inquiry answers `UNCHANGED` without asking anybody.
@@ -843,6 +845,9 @@ private:
     // changed -- a holdings refresh should lift the staleness hold now, not one iteration later.
     // The order list is deliberately not attempted a second time: one attempt per iteration, and
     // the gate simply stands until the next one.
+    // The last send site: the announcement below settles what `on_phase` asks for, and the final poll
+    // may have replaced the calendar after its own pre-poll install.
+    install_phase(iteration);
     hold(gate_for(stop, iteration.at_, report, /*may_read=*/false));
 
     // Announced last, so the handler runs on everything this iteration established. A change is
@@ -885,10 +890,13 @@ private:
   /**
    * Computes the phase for this iteration and installs it, so nothing can send under a stale one.
    *
-   * Called before the polls and again after each of them. The invariant is worth stating exactly,
-   * because a different failure lives either side of it: **at every point where an order can leave the
-   * process, `Context::phase_` is derived from the calendar as it stands at that point.** A poll can
-   * both replace the calendar and settle an order, so nothing weaker holds.
+   * **Called immediately before every point at which an order can leave the process**: once before
+   * `gate_for`, which performs an out-of-band order-list read; once before each due poll; and once
+   * before the phase announcement. The invariant is worth stating exactly, because a different failure
+   * lives either side of it: **at every send site, `Context::phase_` is derived from the calendar as it
+   * stands at that site.** A poll can both replace the calendar and settle an order, so nothing weaker
+   * holds -- and an enumeration of which calls can change the calendar is not weaker, it is a list
+   * that has to stay correct as sources are written elsewhere.
    *
    * The instant is the iteration's own `at_` throughout, never re-read from the clock, so a poll that
    * took a second does not move the session boundary mid-iteration.

@@ -266,10 +266,25 @@ public:
     return runner::PollOutcome::UPDATED;
   }
 
-  /** Returns the configured order-list outcome. */
-  runner::PollOutcome read_order_list(RunnerT&) {
+  /**
+   * Returns the configured order-list outcome, installing a calendar first when asked to.
+   *
+   * `gate_for` performs this read out of band, before any poll, so a source that learns the calendar
+   * here is the one path the per-poll install would miss if the install ran *after* each poll instead
+   * of before it. Both real sources read orders here and nothing else, but the loop cannot depend on
+   * that: the source is a template parameter.
+   */
+  runner::PollOutcome read_order_list(RunnerT& runner_instance) {
     ++order_list_reads_;
+    if (calendar_on_order_list_) {
+      runner_instance.context().set_calendar(*calendar_on_order_list_);
+    }
     return order_list_;
+  }
+
+  /** Scripts a calendar that arrives with the order-list read rather than with a calendar poll. */
+  void set_calendar_on_order_list(algotradelib::TradingCalendar calendar) {
+    calendar_on_order_list_ = std::move(calendar);
   }
 
   /** Returns how many orders the runner would have sent from inside a poll. */
@@ -301,6 +316,7 @@ private:
   std::optional<strategy::HaltReason> last_refusal_;
   std::optional<strategy::GuardReason> last_guard_reason_;
   std::optional<algotradelib::TradingCalendar> calendar_;
+  std::optional<algotradelib::TradingCalendar> calendar_on_order_list_;
 };
 
 using FeedingSource = FeedingSourceFor<SendingRunner>;
@@ -2750,4 +2766,29 @@ TEST_CASE("a run whose every calendar poll failed says exactly that", "[loop][ph
   REQUIRE(report.notes_.size() == 1);
   CHECK(report.notes_[0].find("every calendar poll failed") != std::string::npos);
   CHECK(report.notes_[0].find("never established") != std::string::npos);
+}
+
+TEST_CASE("a calendar learned during the order-list read reaches the first poll", "[loop][phase]") {
+  // The path "re-establish after every poll" left open, and the reason the install is now positional:
+  // `gate_for` reads the broker's order list **out of band**, after the pre-loop install and before
+  // any poll. A source that learns the calendar there -- and the source is a template parameter, so the
+  // loop cannot assume it does not -- would have had the first bar of the iteration checked against the
+  // phase derived from the calendar as it stood before that read.
+  SendingRunner runner_instance;
+  FeedingSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  // Seeded open, so the pre-loop install computes OPEN and only the order-list read changes it.
+  serve_calendar(runner_instance, /*trades=*/true);
+  source.set_calendar_on_order_list(krx_calendar(/*trades=*/false));
+  SendingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 1);
+
+  REQUIRE(source.order_list_reads() == 1);
+  CHECK(report.final_phase_ == strategy::MarketPhase::CLOSED);
+  CHECK(source.placed() == 0);
+  REQUIRE(source.refused() == 1);
+  CHECK(source.last_guard_reason() == strategy::GuardReason::PHASE_NOT_PERMITTED);
 }
