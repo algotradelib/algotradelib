@@ -185,13 +185,38 @@ struct Normalizers {
     const Ref& ref,
     const AmendInstruction& instruction
   ) {
+    // Toss's `OrderModifyRequest` carries `orderType`, `quantity`, `price` and
+    // the high-value flag, and no validity field at all: an amendment cannot
+    // change the condition or the session, and Toss cannot refuse a request to.
+    // `replace_with` takes both from the resting order for that reason, so a
+    // shape arriving here with a condition Toss does not publish was assembled
+    // by hand. Refused rather than sent as an ordinary amendment, because
+    // sending it would report success for a change that did not happen.
+    if (instruction.shape_.time_in_force_ != TimeInForce::DAY) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
+      error.broker_code_ = "unsupported_time_in_force";
+      error.message_ =
+        "Toss orders are day-valid and an amendment cannot change the condition; cancel the "
+        "order and place a new one instead";
+      return Result<tossinvest::TossAmendment>(std::move(error));
+    }
+    if (instruction.shape_.session_ != OrderSession::REGULAR &&
+        instruction.shape_.session_ != OrderSession::OPENING_AUCTION &&
+        instruction.shape_.session_ != OrderSession::CLOSING_AUCTION) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
+      error.broker_code_ = "unsupported_session";
+      error.message_ =
+        "Toss publishes no order code for this trading session, so no order of it can be "
+        "resting to amend";
+      return Result<tossinvest::TossAmendment>(std::move(error));
+    }
+
     tossinvest::TossAmendment amendment;
     amendment.order_id_ = ref.primary_;
-    // Only the basis travels. Toss's `OrderModifyRequest` carries `orderType`,
-    // `quantity`, `price` and the high-value flag and nothing else -- there is
-    // no `timeInForce` on a modification -- so the order keeps the session it
-    // was placed in, and a shape naming a different one cannot be honoured or
-    // refused by Toss. Carrying the field here would imply otherwise.
     amendment.type_ = instruction.shape_.type_;
     amendment.quantity_ = instruction.quantity_;
     amendment.price_ = instruction.shape_.price_;

@@ -276,6 +276,89 @@ TEST_CASE("amendment factories carry the broker's own requirements") {
   REQUIRE_FALSE(cancel_all(without_quantity).quantity_.has_value());
 }
 
+TEST_CASE("an amendment cannot silently re-shape the order it amends") {
+  SECTION("replace_with keeps the resting order's condition and session") {
+    WorkingOrder<tossinvest::Broker> resting;
+    resting.order_.instrument_ = InstrumentId{Country::US, Venue::UNSPECIFIED, "AAPL"};
+    resting.order_.type_ = OrderType::LIMIT;
+    resting.order_.time_in_force_ = TimeInForce::DAY;
+    resting.order_.session_ = OrderSession::CLOSING_AUCTION;
+    resting.order_.price_ = Decimal64::parse("185.5");
+    resting.amendable_quantity_ = Decimal64::parse("10");
+
+    // The form every caller writes. Its defaults are DAY and REGULAR, so taken
+    // as written it promised to move this order out of the closing auction --
+    // which Toss cannot do and cannot refuse, because its modify request has no
+    // validity field at all.
+    const auto instruction =
+      replace_with(resting, OrderShape{OrderType::LIMIT, Decimal64::parse("186.0")});
+    REQUIRE(instruction.shape_.type_ == OrderType::LIMIT);
+    REQUIRE(instruction.shape_.price_ == std::optional<Decimal64>(Decimal64::parse("186.0")));
+    REQUIRE(instruction.shape_.session_ == OrderSession::CLOSING_AUCTION);
+    REQUIRE(instruction.shape_.time_in_force_ == TimeInForce::DAY);
+  }
+
+  SECTION("and the port refuses a hand-built instruction Toss cannot honour") {
+    using Traits = BrokerTraits<tossinvest::TossClient>;
+    OrderRef<tossinvest::Broker> ref;
+    ref.primary_ = "order-1";
+
+    AmendInstruction immediate;
+    immediate.shape_.type_ = OrderType::LIMIT;
+    immediate.shape_.price_ = Decimal64::parse("186.0");
+    immediate.shape_.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
+    immediate.quantity_ = Decimal64::parse("10");
+    const auto refused = Traits::to_replacement(ref, immediate);
+    REQUIRE_FALSE(refused);
+    REQUIRE(refused.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+    REQUIRE(refused.error().broker_code_ == "unsupported_time_in_force");
+    // Nothing was sent: the refusal is in the traits, before any client call.
+    REQUIRE_FALSE(refused.error().reached_broker_);
+
+    AmendInstruction after_market;
+    after_market.shape_.type_ = OrderType::LIMIT;
+    after_market.shape_.price_ = Decimal64::parse("186.0");
+    after_market.shape_.session_ = OrderSession::AFTER_MARKET;
+    after_market.quantity_ = Decimal64::parse("10");
+    const auto session_refused = Traits::to_replacement(ref, after_market);
+    REQUIRE_FALSE(session_refused);
+    REQUIRE(session_refused.error().broker_code_ == "unsupported_session");
+
+    // A shape Toss can express still goes through, so the refusals above are
+    // about the fields they name rather than about the path.
+    AmendInstruction ordinary;
+    ordinary.shape_.type_ = OrderType::LIMIT;
+    ordinary.shape_.price_ = Decimal64::parse("186.0");
+    ordinary.shape_.session_ = OrderSession::CLOSING_AUCTION;
+    ordinary.quantity_ = Decimal64::parse("10");
+    REQUIRE(Traits::to_replacement(ref, ordinary).has_value());
+  }
+
+  SECTION("KIS recomposes the code from the preserved shape") {
+    using Traits = BrokerTraits<kis::KisClient>;
+    WorkingOrder<kis::Broker> resting;
+    resting.order_.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+    resting.order_.type_ = OrderType::LIMIT;
+    resting.order_.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
+    resting.order_.session_ = OrderSession::REGULAR;
+    resting.order_.venue_ = Venue::KRX;
+    resting.order_.price_ = Decimal64::parse("70000");
+    resting.amendable_quantity_ = Decimal64::parse("10");
+
+    OrderRef<kis::Broker> ref;
+    ref.primary_ = "0000117057";
+    ref.secondary_ = "00950";
+    const auto amendment = Traits::to_replacement(
+      ref, replace_with(resting, OrderShape{OrderType::LIMIT, Decimal64::parse("71000")})
+    );
+    REQUIRE(amendment.has_value());
+    // The condition survived the round trip through `OrderShape`, so KIS will
+    // compose 11 rather than 00.
+    REQUIRE(amendment.value().time_in_force_ == TimeInForce::IMMEDIATE_OR_CANCEL);
+    REQUIRE(amendment.value().venue_ == Venue::KRX);
+  }
+}
+
 TEST_CASE("KIS normalizes an acknowledgement into a reference that can amend it") {
   using Traits = BrokerTraits<kis::KisClient>;
 

@@ -1448,13 +1448,25 @@ inline AmendInstruction cancel_quantity(const WorkingOrder<Broker>& order, Decim
  * Omitting `quantity` amends the whole remaining quantity; supplying one amends
  * exactly that quantity.
  *
- * `shape` is taken as written, including the parts of it the caller did not
- * think about: an `OrderShape{OrderType::LIMIT, price}` states a *day* order in
- * the *regular* session, because those are the defaults. Amending an
- * immediate-or-cancel order with that shape therefore re-shapes it. This is
- * deliberate -- a caller who names a shape has named one, and guessing which
- * parts they meant would be worse -- but it is why `cancel_all` and
- * `cancel_quantity`, which name no shape, copy all of it instead.
+ * **`shape` states the price basis and the price. The execution condition and
+ * the session come from `order`, and are not the caller's to change here.**
+ *
+ * An earlier version of this took the shape entirely as written, which made
+ * `OrderShape{OrderType::LIMIT, price}` -- the form every caller writes --
+ * silently state a *day* order in the *regular* session, because those are the
+ * struct's defaults. Amending a closing-auction order with it therefore
+ * promised to move the order into the regular session. Toss cannot do that: its
+ * `OrderModifyRequest` carries `orderType`, `quantity`, `price` and the
+ * high-value flag and no validity field at all, so the order would have kept
+ * its session while the caller had been told otherwise. That is the silent
+ * approximation Decision 6 forbids, and it is worse than a refusal because
+ * nothing reports it.
+ *
+ * Taking them from the resting order makes the common form mean what it says.
+ * A caller who genuinely wants to re-shape an order -- where a broker permits
+ * it -- sets the fields on the returned instruction, which is visible in their
+ * source rather than implied by a default. A caller who wants a different
+ * condition at a broker that will not amend one cancels and places again.
  */
 template <typename Broker>
 inline AmendInstruction replace_with(
@@ -1464,6 +1476,9 @@ inline AmendInstruction replace_with(
 ) {
   AmendInstruction instruction;
   instruction.shape_ = std::move(shape);
+  // Not the caller's to change; see above.
+  instruction.shape_.time_in_force_ = order.order_.time_in_force_;
+  instruction.shape_.session_ = order.order_.session_;
   instruction.venue_ = order.order_.venue_;
   instruction.all_remaining_ = !quantity.has_value();
   instruction.quantity_ = quantity ? quantity : order.amendable_quantity_;
