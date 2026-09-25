@@ -200,6 +200,23 @@ struct ReplayConfig {
   strategy::RiskLimits limits_;
   /** Session the phases are derived against. */
   strategy::SessionWindow session_{strategy::SessionWindow::krx()};
+  /**
+   * The trading calendar a replayed strategy reads, installed on the context.
+   *
+   * Empty by default, and empty is the honest answer: a replay's trading-day question is answered
+   * per bar by `feed`'s own argument, because a bar exists and therefore its date traded. This is for
+   * the *other* question -- `Context::calendar()`, which a strategy can ask about a date it has no bar
+   * for, such as whether tomorrow trades.
+   *
+   * Here because the live loop now fills that field from a polled calendar. Leaving the replay side
+   * empty would mean a strategy reading `ctx.calendar()` behaved differently in the two worlds, which
+   * is the divergence this whole slice is about.
+   *
+   * It deliberately does **not** change what `feed` derives the phase from. Doing so would turn every
+   * date a supplied calendar does not cover into `UNKNOWN` and refuse every order in replays that work
+   * today, which is a decision for whoever wants it, with its own report caveat.
+   */
+  TradingCalendar calendar_;
   /** Trailing bars the context caches, for the indicators a strategy reads. */
   std::size_t series_capacity_{512};
 };
@@ -232,6 +249,7 @@ public:
     for (const auto& reference : config_.instruments_) {
       runner_.context().set_instrument(reference);
     }
+    runner_.context().set_calendar(config_.calendar_);
   }
 
   /** Returns the strategy, so a caller can read the state it kept. */

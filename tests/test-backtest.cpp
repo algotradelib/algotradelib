@@ -2512,3 +2512,43 @@ TEST_CASE("an order placed from a fill reaches the next guard check") {
   // Counted at all: the buy of one on the same bar was refused against the same ceiling.
   REQUIRE(refusals_for(engine.result(), strategy::GuardReason::POSITION_LIMIT_EXCEEDED) == 1);
 }
+
+/** Records what the context could tell it about a date it has no bar for. */
+struct AsksTheCalendar {
+  std::optional<bool> tomorrow_trades_;
+  bool asked_{false};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent&) {
+    asked_ = true;
+    tomorrow_trades_ = ctx.calendar().is_trading_day(algotradelib::Date{2026, 3, 11});
+  }
+};
+
+TEST_CASE("a replayed strategy can read the calendar it was configured with") {
+  // `Context::set_calendar` had no caller anywhere in the library, so `ctx.calendar()` -- published to
+  // every strategy -- was permanently empty in both worlds. The live loop now fills it from a polled
+  // calendar; leaving the replay empty would make a strategy that reads it behave differently in a
+  // backtest from live, which is the divergence this slice exists to remove.
+  auto config = replay_config();
+  config.calendar_.country_ = algotradelib::Country::KR;
+  config.calendar_.days_.push_back(algotradelib::TradingDay{algotradelib::Date{2026, 3, 11}, false});
+
+  backtest::Backtester<AsksTheCalendar> engine(AsksTheCalendar{}, config);
+  engine.feed(bar_at(utc(2026, 3, 10, 3, 0), BarInterval::ONE_DAY, "70000"));
+
+  REQUIRE(engine.strategy().asked_);
+  REQUIRE(engine.strategy().tomorrow_trades_.has_value());
+  CHECK_FALSE(*engine.strategy().tomorrow_trades_);
+}
+
+TEST_CASE("a replay with no configured calendar answers nothing, rather than guessing") {
+  // Empty is the honest answer, and it is distinct from "closed": a replay's trading-day question is
+  // answered per bar by `feed`'s own argument, because a bar exists and so its date traded. A
+  // strategy asking about a date it has no bar for gets `std::nullopt`.
+  backtest::Backtester<AsksTheCalendar> engine(AsksTheCalendar{}, replay_config());
+  engine.feed(bar_at(utc(2026, 3, 10, 3, 0), BarInterval::ONE_DAY, "70000"));
+
+  REQUIRE(engine.strategy().asked_);
+  CHECK_FALSE(engine.strategy().tomorrow_trades_.has_value());
+}
