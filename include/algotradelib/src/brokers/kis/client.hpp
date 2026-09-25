@@ -2664,7 +2664,11 @@ private:
     {"04", OrderType::PRIMARY_LIMIT,     TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
     {"05", OrderType::CLOSING_PRICE,     TimeInForce::DAY,                 OrderSession::PRE_MARKET,          kKrx,               true},
     {"06", OrderType::CLOSING_PRICE,     TimeInForce::DAY,                 OrderSession::AFTER_HOURS,         kKrx,               true},
-    // Response-only: the order sheet does not publish 07.
+    // Response-only: the order sheet does not publish 07. Reading 시간외 단일가
+    // as a *limit* in an auction session is an inference, not something either
+    // sheet states -- they name the auction without giving its price rule. It is
+    // the reading that makes the code factor, and the field it would be wrong
+    // about is one this library cannot send anyway.
     {"07", OrderType::LIMIT,             TimeInForce::DAY,                 OrderSession::AFTER_HOURS_AUCTION, kKrx,               false},
     {"11", OrderType::LIMIT,             TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
     {"12", OrderType::LIMIT,             TimeInForce::FILL_OR_KILL,        OrderSession::REGULAR,             kKrx | kNxt | kSor, true},

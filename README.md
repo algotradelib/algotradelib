@@ -269,17 +269,32 @@ Read these before using the order clients.
   holds the workbook's table and refuses a combination the requested venue does
   not list, so the refusal arrives before the POST rather than after it — which
   matters because an order POST is never replayed.
-- **`Venue::COMBINED` routes, and says so.** It is sent as
-  `EXCG_ID_DVSN_CD=SOR`. It previously omitted the field, and KIS documents an
-  omitted field as proceeding at KRX, so asking for the combined book quietly
-  got one venue. `Venue::UNSPECIFIED` still omits the field: expressing no venue
-  and receiving the broker's default is not the same as asking for one thing and
-  receiving another.
-- **A code the library does not recognize is reported, not discarded.**
+- **Routing is `OrderRequest::venue_`, and it is not the instrument's venue.**
+  An `InstrumentId` names an instrument and compares its venue, and every limit
+  that asks "what have I already got resting in this" compares `InstrumentId`s —
+  while a broker reports a holding with no venue at all. An order whose
+  *identity* carried the venue it was routed to would stop matching its own
+  holding, and the resting quantity would read zero. So routing has its own
+  field, an adapter refuses an instrument naming a venue it does not report, and
+  `OrderSnapshot::venue_` reports the routing back. Leaving `venue_` unspecified
+  sends no venue and takes the broker's documented default; `Venue::COMBINED`
+  asks KIS to route the order, which it calls SOR.
+- **A demo account trades on KRX.** Both KIS order sheets say so, and a route it
+  cannot reach is refused before any request rather than after the POST.
+- **A code the library does not recognize is reported rather than discarded.**
   `OrderSnapshot::shape_code_` carries the broker's own code verbatim beside the
   three normalized facts, so an order placed through the broker's own
   application — or under a code added after this release — arrives with
-  `UNKNOWN` in the enums and the real code beside them.
+  `UNKNOWN` in the enums and the real code beside them. The field stores up to
+  eight characters from `A`-`Z`, `0`-`9` and `_`, which covers every code either
+  broker publishes today; a future code outside that alphabet leaves it empty,
+  so empty means either "no code" or "a code this field cannot hold".
+- **An unreadable code is not read as an absent order.** Crash recovery cannot
+  claim such a row *is* the order it recorded sending, because the shape and the
+  price are both missing from it — but it does not conclude the order is gone
+  either. It reports the instrument as ambiguous and withholds it, because
+  concluding absence would send the order a second time beside the one already
+  resting.
 - KIS's modifiable-order inquiry is unavailable on demo accounts and fails
   immediately there.
 - KIS's daily inquiry reports no status column, so an order's status is derived
