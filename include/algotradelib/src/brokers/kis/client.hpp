@@ -10,6 +10,7 @@
 #include <boost/asio/post.hpp>
 #include <boost/asio/strand.hpp>
 
+#include <array>
 #include <cstdlib>
 #include <deque>
 #include <iterator>
@@ -63,10 +64,22 @@ struct KisOrderRef {
  *
  * KIS documents that the amendable quantity must first be read from
  * `async_open_orders`, which reports it as `amendable_quantity_`.
+ *
+ * The shape is all three normalized facts, not just the price basis, and the
+ * venue with them. KIS re-sends `ORD_DVSN` on an amendment, and it composes
+ * that one code from the three; naming only the basis made an amendment
+ * re-shape the order it was amending -- an immediate-or-cancel order amended to
+ * a new price was sent as a plain day order. `venue_` is needed for the same
+ * reason the placement path needs it: the three venues publish different code
+ * sets, so the same shape is a different code, or no code at all, depending on
+ * where the order lives.
  */
 struct KisAmendment {
   KisOrderRef order_;
   OrderType type_{OrderType::LIMIT};
+  TimeInForce time_in_force_{TimeInForce::DAY};
+  OrderSession session_{OrderSession::REGULAR};
+  Venue venue_{Venue::UNSPECIFIED};
   Decimal64 quantity_;
   std::optional<Decimal64> price_;
   bool all_remaining_{false};
@@ -2588,35 +2601,157 @@ private:
   }
 
   /**
-   * Maps a normalized order type to KIS's `ORD_DVSN` code.
+   * One row of KIS's `ORD_DVSN` table: a wire code and the three facts it means.
    *
-   * Only day-valid limit and market orders are mapped. An at-the-close or
-   * at-the-open condition is rejected rather than downgraded to `DAY`, because
-   * downgrading a validity condition changes when an order executes.
+   * `ORD_DVSN` is a product, not a name. `16` is a best-limit order that is
+   * filled-or-killed in the regular session; `45` is a best-limit order that is
+   * immediate-or-cancel in the after-market. Holding the table as rows of the
+   * product is what lets an adapter answer "which code is this combination" and
+   * "which combination is this code" from one transcription, in both
+   * directions, without either being derived from the other.
+   *
+   * `venues_` is a bitmask because the three venues publish *different* code
+   * sets for the same combination set: the sheet lists `01` (시장가) under
+   * `[KRX]` and `[SOR]` and not under `[NXT]`, and lists `27`-`29` (GTP) under
+   * `[NXT]` alone. A combination is not "supported by KIS"; it is supported at a
+   * venue.
+   */
+  struct OrderShapeRow {
+    const char* code_;
+    OrderType type_;
+    TimeInForce time_in_force_;
+    OrderSession session_;
+    unsigned venues_;
+    bool requestable_;
+  };
+
+  static constexpr unsigned kKrx = 1u << 0;
+  static constexpr unsigned kNxt = 1u << 1;
+  static constexpr unsigned kSor = 1u << 2;
+
+  /**
+   * KIS's `ORD_DVSN` table, transcribed from the API workbook dated `20260916`.
+   *
+   * Two sheets contribute and they do not agree, which is why both are named
+   * here rather than one being trusted for both directions:
+   *
+   * - `주식주문(현금)` is the **request** table. It carries `41`-`47` (KRX
+   *   애프터마켓) and `27`-`29` (NXT GTP), and does *not* carry `07`.
+   * - `주식정정취소가능주문조회` is a **response** table. It carries `07`
+   *   (시간외 단일가) and carries neither `41`-`47` nor `27`-`29`.
+   *
+   * So the set this adapter must *read* is the union and the set it may *send*
+   * is the request sheet's alone. `requestable_` is that distinction: a row with
+   * `false` is normalized on a response and refused on a request, because
+   * sending a code the order sheet does not publish is guessing.
+   *
+   * A combination absent from this table is refused before any network I/O, and
+   * a code absent from it reads as `UNKNOWN` with the raw code preserved. Neither
+   * is approximated by a neighbouring value (Decision 6).
+   */
+  static constexpr std::array<OrderShapeRow, 28> kOrderShapes{{
+    // code  type                       condition                         session
+    {"00", OrderType::LIMIT,             TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
+    {"01", OrderType::MARKET,            TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx |        kSor, true},
+    {"02", OrderType::CONDITIONAL_LIMIT, TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx,               true},
+    {"03", OrderType::BEST_LIMIT,        TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
+    {"04", OrderType::PRIMARY_LIMIT,     TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
+    {"05", OrderType::CLOSING_PRICE,     TimeInForce::DAY,                 OrderSession::PRE_MARKET,          kKrx,               true},
+    {"06", OrderType::CLOSING_PRICE,     TimeInForce::DAY,                 OrderSession::AFTER_HOURS,         kKrx,               true},
+    // Response-only: the order sheet does not publish 07.
+    {"07", OrderType::LIMIT,             TimeInForce::DAY,                 OrderSession::AFTER_HOURS_AUCTION, kKrx,               false},
+    {"11", OrderType::LIMIT,             TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
+    {"12", OrderType::LIMIT,             TimeInForce::FILL_OR_KILL,        OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
+    {"13", OrderType::MARKET,            TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
+    {"14", OrderType::MARKET,            TimeInForce::FILL_OR_KILL,        OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
+    {"15", OrderType::BEST_LIMIT,        TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
+    {"16", OrderType::BEST_LIMIT,        TimeInForce::FILL_OR_KILL,        OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
+    {"21", OrderType::MID_PRICE,         TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx | kNxt,        true},
+    {"22", OrderType::STOP_LIMIT,        TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx | kNxt,        false},
+    {"23", OrderType::MID_PRICE,         TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,             kKrx | kNxt,        true},
+    {"24", OrderType::MID_PRICE,         TimeInForce::FILL_OR_KILL,        OrderSession::REGULAR,             kKrx | kNxt,        true},
+    {"27", OrderType::LIMIT,             TimeInForce::DAY,                 OrderSession::GTP,                 kNxt,               true},
+    {"28", OrderType::BEST_LIMIT,        TimeInForce::DAY,                 OrderSession::GTP,                 kNxt,               true},
+    {"29", OrderType::PRIMARY_LIMIT,     TimeInForce::DAY,                 OrderSession::GTP,                 kNxt,               true},
+    {"41", OrderType::LIMIT,             TimeInForce::DAY,                 OrderSession::AFTER_MARKET,        kKrx,               true},
+    {"42", OrderType::LIMIT,             TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::AFTER_MARKET,        kKrx,               true},
+    {"43", OrderType::LIMIT,             TimeInForce::FILL_OR_KILL,        OrderSession::AFTER_MARKET,        kKrx,               true},
+    {"44", OrderType::BEST_LIMIT,        TimeInForce::DAY,                 OrderSession::AFTER_MARKET,        kKrx,               true},
+    {"45", OrderType::BEST_LIMIT,        TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::AFTER_MARKET,        kKrx,               true},
+    {"46", OrderType::BEST_LIMIT,        TimeInForce::FILL_OR_KILL,        OrderSession::AFTER_MARKET,        kKrx,               true},
+    {"47", OrderType::PRIMARY_LIMIT,     TimeInForce::DAY,                 OrderSession::AFTER_MARKET,        kKrx,               true},
+  }};
+
+  /** Returns the venue bit an `EXCG_ID_DVSN_CD` value stands for. */
+  static constexpr unsigned venue_bit(Venue venue) {
+    switch (venue) {
+      case Venue::KRX:
+        return kKrx;
+      case Venue::NXT:
+        return kNxt;
+      // The combined book is routed across both venues, which is what KIS calls
+      // SOR. See `exchange_code` for why this is an explicit value rather than
+      // an omitted field.
+      case Venue::COMBINED:
+        return kSor;
+      // Nothing was asked for, so nothing is sent, and the sheet says an
+      // omitted `EXCG_ID_DVSN_CD` proceeds as KRX. The code set checked is
+      // therefore KRX's -- the one the order will actually meet.
+      case Venue::UNSPECIFIED:
+        return kKrx;
+    }
+    return kKrx;
+  }
+
+  /**
+   * Maps a normalized order shape to KIS's `ORD_DVSN` code for a venue.
+   *
+   * A combination this library has no code for, or has a code for at another
+   * venue, is rejected with `INVALID_ARGUMENT` before any token fetch or socket
+   * write. It is never sent under a neighbouring code: `ai/order-core` settled
+   * that a condition the caller stated is honoured or refused, and the failure
+   * this replaces was silent — a market order bound for NXT was sent as `01`,
+   * which the sheet lists under `[KRX]` and `[SOR]` and not under `[NXT]`.
    */
   static std::optional<BrokerError> order_division(
     OrderType type,
     TimeInForce time_in_force,
+    OrderSession session,
+    Venue venue,
     std::string& division
   ) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
     error.reached_broker_ = false;
     error.broker_code_ = "unsupported_order";
-    if (time_in_force != TimeInForce::DAY) {
-      error.message_ = "KIS cash orders currently support the DAY validity condition only";
+
+    const auto* matched = static_cast<const OrderShapeRow*>(nullptr);
+    for (const auto& row : kOrderShapes) {
+      if (row.type_ == type && row.time_in_force_ == time_in_force && row.session_ == session) {
+        matched = &row;
+        break;
+      }
+    }
+    if (matched == nullptr) {
+      error.message_ =
+        std::string("KIS publishes no order code for this combination of price basis, ") +
+        "validity condition and session";
       return error;
     }
-    if (type == OrderType::LIMIT) {
-      division = "00";
-      return std::nullopt;
+    if (!matched->requestable_) {
+      error.message_ =
+        std::string("KIS reports order code ") + matched->code_ +
+        " on an inquiry but does not publish it as a placeable order";
+      return error;
     }
-    if (type == OrderType::MARKET) {
-      division = "01";
-      return std::nullopt;
+    if ((matched->venues_ & venue_bit(venue)) == 0) {
+      error.message_ =
+        std::string("KIS order code ") + matched->code_ + " is not offered at " +
+        exchange_code(venue) + "; the venue publishes its own set of order codes";
+      return error;
     }
-    error.message_ = "KIS cash orders currently support limit and market orders only";
-    return error;
+    division = matched->code_;
+    return std::nullopt;
   }
 
   /**
@@ -2685,19 +2820,40 @@ private:
     if (auto error = validate_price(order.type_, order.price_)) {
       return error;
     }
-    return order_division(order.type_, order.time_in_force_, division);
+    return order_division(
+      order.type_, order.time_in_force_, order.session_, order.instrument_.venue_, division
+    );
   }
 
-  /** Returns KIS's venue code for the requested normalized venue. */
+  /**
+   * Returns KIS's `EXCG_ID_DVSN_CD` value for a normalized venue, or `""` to
+   * omit the field.
+   *
+   * `Venue::COMBINED` maps to `SOR`. It used to map to `""`, and the workbook
+   * says an omitted `EXCG_ID_DVSN_CD` "미입력시 KRX로 진행" -- so a caller who
+   * asked for the combined book was given KRX and not told, which is the silent
+   * downgrade Decision 6 forbids. `COMBINED` is the *default* `venue_` of an
+   * `InstrumentId`, so this was the common path rather than an unusual one.
+   *
+   * `Venue::UNSPECIFIED` still omits the field, and that is not the same thing:
+   * it means the caller expressed no venue, so the broker's documented default
+   * is the honest outcome rather than a substitution for something asked for.
+   *
+   * Note the sheet's restriction, which this adapter does not enforce because
+   * the broker does: 모의투자는 KRX만 가능 -- a demo account accepts KRX alone.
+   */
   static const char* exchange_code(Venue venue) {
     switch (venue) {
       case Venue::KRX:
         return "KRX";
       case Venue::NXT:
         return "NXT";
-      default:
+      case Venue::COMBINED:
+        return "SOR";
+      case Venue::UNSPECIFIED:
         return "";
     }
+    return "";
   }
 
   /** Builds the authenticated KIS cash-order POST request. */
@@ -2902,7 +3058,16 @@ private:
       invalid = validate_price(amendment.type_, amendment.price_);
     }
     if (!invalid) {
-      invalid = order_division(amendment.type_, TimeInForce::DAY, division);
+      // The amendment carries its own condition and session. Sending `DAY`
+      // here, as this did, re-shaped the order: an immediate-or-cancel order
+      // amended to a new price arrived as a plain day order at that price.
+      invalid = order_division(
+        amendment.type_,
+        amendment.time_in_force_,
+        amendment.session_,
+        amendment.venue_,
+        division
+      );
     }
     if (invalid) {
       complete_order_ack(std::move(completion), Result<KisOrderAck>(std::move(*invalid)));
@@ -3149,10 +3314,7 @@ private:
         order.side_ = normalized_order_side(
           broker_detail::json_string(row, "sll_buy_dvsn_cd")
         );
-        order.type_ = normalized_order_type(broker_detail::json_string(row, "ord_dvsn_cd"));
-        order.time_in_force_ = order.type_ == OrderType::UNKNOWN ?
-          TimeInForce::UNKNOWN :
-          TimeInForce::DAY;
+        apply_order_shape(broker_detail::json_string(row, "ord_dvsn_cd"), order);
         order.quantity_ = Decimal64::parse(broker_detail::json_string(row, "ord_qty"));
         if (order.type_ == OrderType::LIMIT) {
           order.price_ = Decimal64::parse(broker_detail::json_string(row, "ord_unpr"));
@@ -3374,10 +3536,7 @@ private:
         order.side_ = normalized_order_side(
           broker_detail::json_string(row, "sll_buy_dvsn_cd")
         );
-        order.type_ = normalized_order_type(broker_detail::json_string(row, "ord_dvsn_cd"));
-        order.time_in_force_ = order.type_ == OrderType::UNKNOWN ?
-          TimeInForce::UNKNOWN :
-          TimeInForce::DAY;
+        apply_order_shape(broker_detail::json_string(row, "ord_dvsn_cd"), order);
         order.quantity_ = Decimal64::parse(broker_detail::json_string(row, "ord_qty"));
         if (order.type_ == OrderType::LIMIT) {
           order.price_ = Decimal64::parse(broker_detail::json_string(row, "ord_unpr"));
@@ -3448,15 +3607,37 @@ private:
     return filled == ordered ? OrderStatus::FILLED : OrderStatus::PARTIAL_FILLED;
   }
 
-  /** Maps a KIS `ORD_DVSN` code onto a normalized order type. */
-  static OrderType normalized_order_type(std::string_view division) {
-    if (division == "00") {
-      return OrderType::LIMIT;
+  /**
+   * Writes the three normalized order facts a KIS `ORD_DVSN` code carries, and
+   * preserves the code itself.
+   *
+   * The code set read here is the **union** of the order sheet's and the
+   * inquiry sheets', because they differ: the inquiry publishes `07`
+   * (시간외 단일가), which cannot be placed, and the order sheet publishes
+   * `41`-`47`, which an inquiry has not been observed to return. A reader that
+   * knew only the request table would report `UNKNOWN` for a code KIS itself
+   * had sent.
+   *
+   * An unrecognized code leaves all three fields `UNKNOWN` and still reaches
+   * the caller through `shape_code_`. It does not throw: both specifications
+   * require a client to tolerate unknown codes, and one odd row must not fail a
+   * whole listing.
+   */
+  static void apply_order_shape(std::string_view division, OrderSnapshot& order) {
+    if (const auto code = Code<8>::try_make(division)) {
+      order.shape_code_ = *code;
     }
-    if (division == "01") {
-      return OrderType::MARKET;
+    for (const auto& row : kOrderShapes) {
+      if (division == row.code_) {
+        order.type_ = row.type_;
+        order.time_in_force_ = row.time_in_force_;
+        order.session_ = row.session_;
+        return;
+      }
     }
-    return OrderType::UNKNOWN;
+    order.type_ = OrderType::UNKNOWN;
+    order.time_in_force_ = TimeInForce::UNKNOWN;
+    order.session_ = OrderSession::UNKNOWN;
   }
 
   /** Maps a KIS side code or rejects an invalid broker response. */

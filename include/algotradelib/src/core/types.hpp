@@ -929,31 +929,100 @@ enum class OrderSide {
 };
 
 /**
- * Normalized price instruction for an order.
+ * How an order's execution price is decided: its price *basis*.
  *
- * Conditional, immediate-or-cancel, fill-or-kill, stop, mid-price, and
- * after-market variants exist at KIS but are not normalized by this library
- * yet. On a request path adapters reject them rather than approximating them
- * with a nearby value. On a read path they surface as `UNKNOWN`, because an
- * order placed through another channel must still be reportable.
+ * This is one of three independent facts about an order, and it is worth
+ * saying why they are three fields rather than one. A broker names an order
+ * with a single code -- KIS's `ORD_DVSN` has twenty-seven of them -- but that
+ * code is a product: `16` is a best-limit order, filled-or-killed, in the
+ * regular session, and `45` is a best-limit order, immediate-or-cancel, in the
+ * after-market. Flattening the product would mean six spellings of "best
+ * limit", and every consumer that wanted to ask "is this a best-limit order"
+ * would have to enumerate all six. So the basis lives here, the execution
+ * condition lives in `TimeInForce`, and the session lives in `OrderSession`.
+ *
+ * Only combinations a broker actually publishes are accepted on a request; the
+ * adapter holds the table and rejects anything else before any network I/O,
+ * rather than approximating it with a nearby value. On a read path an
+ * unrecognized combination surfaces as `UNKNOWN` with the broker's own code
+ * preserved beside it, because an order placed through another channel must
+ * still be reportable.
  */
 enum class OrderType {
   UNKNOWN,
+  /** 지정가 -- fills at the stated price or better. */
   LIMIT,
+  /** 시장가 -- fills at whatever the book offers. */
   MARKET,
+  /** 조건부지정가 -- a limit that becomes a market order at the close. */
+  CONDITIONAL_LIMIT,
+  /** 최유리지정가 -- priced at the best quote on the opposite side. */
+  BEST_LIMIT,
+  /** 최우선지정가 -- priced at the best quote on the order's own side. */
+  PRIMARY_LIMIT,
+  /** 중간가 -- priced at the midpoint of the spread. */
+  MID_PRICE,
+  /** 스톱지정가 -- a limit released when a trigger price is reached. */
+  STOP_LIMIT,
+  /** 시간외종가 -- priced at a session's closing price rather than quoted. */
+  CLOSING_PRICE,
 };
 
 /**
- * Validity condition attached to an order.
+ * How long an order lives and what it does with an unfilled remainder.
  *
- * `UNKNOWN` appears only on a read path, for a validity condition this
- * library does not normalize. It is never accepted on a request.
+ * This is the execution condition and nothing else, which is what FIX means by
+ * the name. A trading session is a different fact and lives in `OrderSession`:
+ * an at-the-close order is a `DAY` order in the `CLOSING_AUCTION` session, not
+ * a validity condition of its own. That separation is load-bearing -- Toss
+ * spells both on one wire field (`timeInForce` carries `DAY`, `CLS` and `OPG`)
+ * while KIS spells both inside `ORD_DVSN`, and a library that mirrored either
+ * wire shape would put the same fact in different fields depending on which
+ * broker reported it.
+ *
+ * `UNKNOWN` appears only on a read path, for a condition this library does not
+ * normalize. It is never accepted on a request.
  */
 enum class TimeInForce {
   UNKNOWN,
+  /** Rests until the session ends; an unfilled remainder is cancelled then. */
   DAY,
-  AT_THE_CLOSE,
-  AT_THE_OPEN,
+  /** Fills what it can immediately and cancels the remainder. */
+  IMMEDIATE_OR_CANCEL,
+  /** Fills entirely and immediately, or not at all. */
+  FILL_OR_KILL,
+};
+
+/**
+ * The trading session an order is submitted into.
+ *
+ * Both brokers have these and neither puts them where the other does, which is
+ * the whole reason this is its own field: Toss reports the opening and closing
+ * auctions through `timeInForce` (`OPG`, `CLS`) and KIS reports its pre-market,
+ * after-hours and after-market sessions inside `ORD_DVSN`. Normalizing them
+ * into one field is Decision 2b applied to two spellings of one fact.
+ *
+ * A value a broker does not offer is rejected on a request, naming the broker
+ * and the session, before any network I/O.
+ */
+enum class OrderSession {
+  UNKNOWN,
+  /** The continuous regular session. */
+  REGULAR,
+  /** The opening single-price auction (시가단일가; Toss `OPG`). */
+  OPENING_AUCTION,
+  /** The closing auction (Toss `CLS`, a US limit-on-close). */
+  CLOSING_AUCTION,
+  /** Before the open, at the previous session's close (장전 시간외). */
+  PRE_MARKET,
+  /** After the close, at that session's close (장후 시간외). */
+  AFTER_HOURS,
+  /** The after-hours single-price auction (시간외 단일가). */
+  AFTER_HOURS_AUCTION,
+  /** KRX's after-market session (애프터마켓). */
+  AFTER_MARKET,
+  /** NXT's GTP session. */
+  GTP,
 };
 
 /**
@@ -997,7 +1066,10 @@ struct OrderRequest {
   OrderSide side_{OrderSide::BUY};
   OrderType type_{OrderType::LIMIT};
   TimeInForce time_in_force_{TimeInForce::DAY};
-  // `UNKNOWN` in `type_` or `time_in_force_` is rejected before network I/O.
+  OrderSession session_{OrderSession::REGULAR};
+  // `UNKNOWN` in `type_`, `time_in_force_` or `session_` is rejected before
+  // network I/O, and so is any combination of the three the broker's own code
+  // table does not contain for the requested venue.
   Decimal64 quantity_;
   std::optional<Decimal64> price_;
   std::optional<std::string> client_order_id_;
@@ -1029,9 +1101,32 @@ struct OrderSnapshot {
   OrderSide side_{OrderSide::BUY};
   OrderType type_{OrderType::UNKNOWN};
   TimeInForce time_in_force_{TimeInForce::UNKNOWN};
+  OrderSession session_{OrderSession::UNKNOWN};
+  /**
+   * The broker's own order-shape code, preserved verbatim.
+   *
+   * The three normalized fields above say what this library understood. This
+   * says what the broker sent, whether or not the table recognized it, so a
+   * code added after this release reaches a caller instead of being discarded
+   * behind an `UNKNOWN`. Empty when the broker reported none.
+   */
+  Code<8> shape_code_;
   OrderStatus status_{OrderStatus::UNKNOWN};
   std::optional<Decimal64> price_;
   Decimal64 quantity_;
+  /**
+   * The cash amount an amount-based order committed, where the broker reports
+   * one.
+   *
+   * An amount-based order states money and lets the fill decide the quantity,
+   * which is the reverse of every other order here. Present only where a broker
+   * offers one -- Toss, for a US market order -- and `std::nullopt` otherwise.
+   * This library does not place one yet
+   * (`plan/todo/us-and-conditional-orders.md`); it reports one placed through
+   * another channel, because a snapshot that dropped the amount would state a
+   * quantity and be unable to say what the order actually committed.
+   */
+  std::optional<Decimal64> order_amount_;
   Currency currency_;
   std::optional<std::chrono::system_clock::time_point> ordered_at_;
   std::optional<std::chrono::system_clock::time_point> canceled_at_;
@@ -1137,10 +1232,25 @@ struct PlacedOrder {
  * `ORD_DVSN` and `ORD_UNPR` for both, and rejects a limit shape with no price.
  * Toss requires a shape for a modification and not for a cancellation. Stating
  * the shape keeps the port from inventing a value the broker will act on.
+ *
+ * All three normalized facts are carried, not just the basis. KIS composes one
+ * `ORD_DVSN` from the three, so a shape that named only the basis would make an
+ * amendment re-send a *different* order: an immediate-or-cancel order amended
+ * to a new price would arrive as a plain day order at that price, which is a
+ * silent downgrade of a condition the caller stated (Decision 6).
+ *
+ * The price basis and the price come first, and the condition and session
+ * after them, because C++17 has no designated initializers and
+ * `OrderShape{OrderType::LIMIT, price}` is both the common case and what every
+ * existing caller writes. Putting the new members in front would have made each
+ * of those a compile error whose obvious repair -- insert two defaults -- is
+ * exactly what the old code already meant, which is churn that teaches nothing.
  */
 struct OrderShape {
   OrderType type_{OrderType::LIMIT};
   std::optional<Decimal64> price_;
+  TimeInForce time_in_force_{TimeInForce::DAY};
+  OrderSession session_{OrderSession::REGULAR};
 };
 
 /**

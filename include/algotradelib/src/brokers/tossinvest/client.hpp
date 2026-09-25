@@ -2514,39 +2514,60 @@ private:
   }
 
   /**
-   * Returns an error when a validity condition is unusable for the instrument.
+   * Returns an error when Toss cannot express this order shape.
    *
-   * Toss restricts the at-the-close condition to United States limit orders and
-   * the at-the-open condition to Korean orders. Both are rejected here rather
-   * than downgraded to `DAY`, because a downgrade changes when the order
-   * executes.
+   * Toss publishes two price bases (`LIMIT`, `MARKET`), one execution condition
+   * (day-valid), and three sessions, of which two are restricted. Everything
+   * else this library can name is KIS's, and is rejected here rather than
+   * approximated: a fill-or-kill order downgraded to a day order is a different
+   * order, and a mid-price order has no Toss spelling at all.
+   *
+   * The restrictions are the spec's own, checked before I/O so a caller learns
+   * the rule without spending an order on it: the closing auction is US limit
+   * orders only, and the opening auction is Korean orders only.
    */
-  static std::optional<BrokerError> validate_time_in_force(
-    TimeInForce time_in_force,
+  static std::optional<BrokerError> validate_order_shape(
     OrderType type,
+    TimeInForce time_in_force,
+    OrderSession session,
     Country country
   ) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
     error.reached_broker_ = false;
-    error.broker_code_ = "unsupported_time_in_force";
-    switch (time_in_force) {
-      case TimeInForce::DAY:
+
+    if (type != OrderType::LIMIT && type != OrderType::MARKET) {
+      error.broker_code_ = "unsupported_order_type";
+      error.message_ = "Toss accepts a limit or market order only";
+      return error;
+    }
+    if (time_in_force != TimeInForce::DAY) {
+      error.broker_code_ = "unsupported_time_in_force";
+      error.message_ =
+        "Toss orders are day-valid; it publishes no immediate-or-cancel or "
+        "fill-or-kill condition";
+      return error;
+    }
+
+    error.broker_code_ = "unsupported_session";
+    switch (session) {
+      case OrderSession::REGULAR:
         return std::nullopt;
-      case TimeInForce::AT_THE_CLOSE:
+      case OrderSession::CLOSING_AUCTION:
         if (country == Country::US && type == OrderType::LIMIT) {
           return std::nullopt;
         }
-        error.message_ = "Toss accepts an at-the-close order only for a US limit order";
+        error.message_ =
+          "Toss accepts a closing-auction order only for a US limit order";
         return error;
-      case TimeInForce::AT_THE_OPEN:
+      case OrderSession::OPENING_AUCTION:
         if (country == Country::KR) {
           return std::nullopt;
         }
-        error.message_ = "Toss accepts an at-the-open order only for a Korean order";
+        error.message_ = "Toss accepts an opening-auction order only for a Korean order";
         return error;
       default:
-        error.message_ = "Toss orders require a recognized validity condition";
+        error.message_ = "Toss publishes no order code for this trading session";
         return error;
     }
   }
@@ -2582,7 +2603,9 @@ private:
       error.message_ = "Toss Korean limit order price must be a whole number of won";
       return error;
     }
-    return validate_time_in_force(order.time_in_force_, order.type_, order.instrument_.country_);
+    return validate_order_shape(
+      order.type_, order.time_in_force_, order.session_, order.instrument_.country_
+    );
   }
 
   /** Returns Toss's wire code for a normalized order type. */
@@ -2590,12 +2613,22 @@ private:
     return type == OrderType::MARKET ? "MARKET" : "LIMIT";
   }
 
-  /** Returns Toss's wire code for a normalized validity condition. */
-  static const char* time_in_force_code(TimeInForce time_in_force) {
-    switch (time_in_force) {
-      case TimeInForce::AT_THE_CLOSE:
+  /**
+   * Returns Toss's `timeInForce` wire value for a normalized session.
+   *
+   * Toss spells the session on the field it calls `timeInForce`: its own spec
+   * defines `OPG` as 국내 시가단일가 and `CLS` as the closing auction, which are
+   * sessions rather than validity conditions. This library keeps the two facts
+   * apart -- KIS spells both inside one `ORD_DVSN` and would otherwise have to
+   * put the same fact in a different field -- so the mapping to Toss's wire
+   * shape happens here, at the adapter boundary, which is where Decision 2b
+   * says a vendor spelling belongs.
+   */
+  static const char* session_code(OrderSession session) {
+    switch (session) {
+      case OrderSession::CLOSING_AUCTION:
         return "CLS";
-      case TimeInForce::AT_THE_OPEN:
+      case OrderSession::OPENING_AUCTION:
         return "OPG";
       default:
         return "DAY";
@@ -2612,7 +2645,7 @@ private:
       {"symbol", order.instrument_.symbol_},
       {"side", order.side_ == OrderSide::SELL ? "SELL" : "BUY"},
       {"orderType", order_type_code(order.type_)},
-      {"timeInForce", time_in_force_code(order.time_in_force_)},
+      {"timeInForce", session_code(order.session_)},
       {"quantity", order.quantity_.str()},
     };
     if (order.client_order_id_) {
@@ -3148,11 +3181,26 @@ private:
     };
     order.side_ = normalized_order_side(broker_detail::json_string(row, "side"));
     order.type_ = normalized_order_type(broker_detail::json_string(row, "orderType"));
+    const auto time_in_force = broker_detail::json_string(row, "timeInForce");
+    order.session_ = normalized_session(time_in_force);
+    // Toss publishes no execution condition of its own, so every order it
+    // recognizes is day-valid. A `timeInForce` it does not recognize leaves the
+    // condition unknown as well as the session, rather than asserting `DAY`
+    // about a value this library could not read.
     order.time_in_force_ =
-      normalized_time_in_force(broker_detail::json_string(row, "timeInForce"));
+      order.session_ == OrderSession::UNKNOWN ? TimeInForce::UNKNOWN : TimeInForce::DAY;
+    if (const auto code = Code<8>::try_make(time_in_force)) {
+      order.shape_code_ = *code;
+    }
     order.status_ = normalized_status(broker_detail::json_string(row, "status"));
     order.price_ = nullable_decimal(row, "price");
     order.quantity_ = Decimal64::parse(broker_detail::json_string(row, "quantity"));
+    // An amount-based order states dollars and lets the fill decide the
+    // quantity. The library does not place one yet, but it must not drop the
+    // field off one placed through another channel: without it the snapshot
+    // says an order of some quantity and cannot say what was actually
+    // committed. See `plan/todo/us-and-conditional-orders.md`.
+    order.order_amount_ = nullable_decimal(row, "orderAmount");
     order.currency_ = currency;
     order.ordered_at_ = optional_timestamp(row, "orderedAt");
     order.canceled_at_ = optional_timestamp(row, "canceledAt");
@@ -3185,17 +3233,17 @@ private:
   }
 
   /** Maps a Toss validity code onto a normalized validity condition. */
-  static TimeInForce normalized_time_in_force(std::string_view code) {
+  static OrderSession normalized_session(std::string_view code) {
     if (code == "DAY") {
-      return TimeInForce::DAY;
+      return OrderSession::REGULAR;
     }
     if (code == "CLS") {
-      return TimeInForce::AT_THE_CLOSE;
+      return OrderSession::CLOSING_AUCTION;
     }
     if (code == "OPG") {
-      return TimeInForce::AT_THE_OPEN;
+      return OrderSession::OPENING_AUCTION;
     }
-    return TimeInForce::UNKNOWN;
+    return OrderSession::UNKNOWN;
   }
 
   /** Maps a Toss status code onto a normalized lifecycle state. */

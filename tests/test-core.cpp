@@ -1315,7 +1315,22 @@ TEST_CASE(
     REQUIRE(body.at("ORD_DVSN").as_string() == "00");
     REQUIRE(body.at("ORD_QTY").as_string() == "10");
     REQUIRE(body.at("ORD_UNPR").as_string() == "70000");
-    REQUIRE_FALSE(body.contains("EXCG_ID_DVSN_CD"));
+    // `korean_limit_buy` leaves the default venue, which is `COMBINED`. That
+    // used to omit `EXCG_ID_DVSN_CD` entirely, and the workbook says an omitted
+    // field proceeds as KRX -- so asking for the combined book silently got one
+    // venue. The combined book is routed, which is what KIS calls SOR.
+    REQUIRE(body.at("EXCG_ID_DVSN_CD").as_string() == "SOR");
+  }
+
+  SECTION("an unspecified venue still omits the exchange field") {
+    auto order = korean_limit_buy();
+    order.instrument_.venue_ = Venue::UNSPECIFIED;
+    const auto request =
+      kis::KisClientTestAccess::place_order_request(account, live, order, "00");
+    // Expressing no venue is not the same as expressing the combined one: the
+    // broker's documented default is the honest outcome for a caller who asked
+    // for nothing, and a substitution for a caller who asked for something.
+    REQUIRE_FALSE(json::parse(request.body_).as_object().contains("EXCG_ID_DVSN_CD"));
   }
 
   SECTION("a market order sends a zero unit price rather than omitting it") {
@@ -1436,9 +1451,9 @@ TEST_CASE(
     REQUIRE(error->broker_code_ == "invalid_price");
   }
 
-  SECTION("an at-the-close condition is rejected rather than downgraded to DAY") {
+  SECTION("a closing-auction session is rejected rather than downgraded to the regular one") {
     auto order = korean_limit_buy();
-    order.time_in_force_ = TimeInForce::AT_THE_CLOSE;
+    order.session_ = OrderSession::CLOSING_AUCTION;
     const auto error = kis::KisClientTestAccess::validate_order(order, division);
     REQUIRE(error);
     REQUIRE(error->broker_code_ == "unsupported_order");
@@ -1837,7 +1852,34 @@ TEST_CASE(
     REQUIRE(open_order.order_.status_ == OrderStatus::PARTIAL_FILLED);
   }
 
-  SECTION("an unrecognized order division does not fail the listing") {
+  // This section used `23` as its unrecognized code, which this library now
+  // recognizes as a mid-price immediate-or-cancel order. The case it was
+  // written for is still real -- KIS may return a code added after this
+  // release -- so it keeps its shape with a code the workbook does not
+  // publish, and the combination it used to reach by accident is asserted
+  // deliberately in the section below it.
+  SECTION("an order division outside the published table does not fail the listing") {
+    auto result = kis::KisClientTestAccess::parse_open_orders(
+      json_response(
+        R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"1","orgn_odno":"",)"
+        R"("ord_dvsn_name":"x","pdno":"005930","prdt_name":"Samsung",)"
+        R"("rvse_cncl_dvsn_name":"x","ord_qty":"10","ord_unpr":"0","ord_tmd":"131438",)"
+        R"("tot_ccld_qty":"0","tot_ccld_amt":"0","psbl_qty":"10","sll_buy_dvsn_cd":"01",)"
+        R"("ord_dvsn_cd":"99"}]})"
+      )
+    );
+    REQUIRE(result);
+    const auto& open_order = result.value().orders_.front();
+    REQUIRE(open_order.order_.type_ == OrderType::UNKNOWN);
+    REQUIRE(open_order.order_.time_in_force_ == TimeInForce::UNKNOWN);
+    REQUIRE(open_order.order_.session_ == OrderSession::UNKNOWN);
+    // Unknown is not the same as discarded: the caller still gets the code.
+    REQUIRE(open_order.order_.shape_code_.view() == "99");
+    REQUIRE_FALSE(open_order.order_.price_);
+    REQUIRE(open_order.order_.side_ == OrderSide::SELL);
+  }
+
+  SECTION("a published order division is normalized into all three facts") {
     auto result = kis::KisClientTestAccess::parse_open_orders(
       json_response(
         R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"1","orgn_odno":"",)"
@@ -1849,10 +1891,10 @@ TEST_CASE(
     );
     REQUIRE(result);
     const auto& open_order = result.value().orders_.front();
-    REQUIRE(open_order.order_.type_ == OrderType::UNKNOWN);
-    REQUIRE(open_order.order_.time_in_force_ == TimeInForce::UNKNOWN);
-    REQUIRE_FALSE(open_order.order_.price_);
-    REQUIRE(open_order.order_.side_ == OrderSide::SELL);
+    REQUIRE(open_order.order_.type_ == OrderType::MID_PRICE);
+    REQUIRE(open_order.order_.time_in_force_ == TimeInForce::IMMEDIATE_OR_CANCEL);
+    REQUIRE(open_order.order_.session_ == OrderSession::REGULAR);
+    REQUIRE(open_order.order_.shape_code_.view() == "23");
   }
 
   SECTION("an empty result is an empty page rather than an error") {
@@ -2001,10 +2043,10 @@ TEST_CASE(
     REQUIRE(body.at("confirmHighValueOrder").as_bool());
   }
 
-  SECTION("a US at-the-close limit order uses the documented validity code") {
+  SECTION("a US closing-auction limit order uses the documented wire code") {
     auto order = korean_limit_buy();
     order.instrument_ = InstrumentId{Country::US, Venue::UNSPECIFIED, "AAPL"};
-    order.time_in_force_ = TimeInForce::AT_THE_CLOSE;
+    order.session_ = OrderSession::CLOSING_AUCTION;
     order.price_ = Decimal64::parse("185.5");
     const auto body =
       json::parse(tossinvest::TossClientTestAccess::place_order_request(7, order).body_)
@@ -2124,17 +2166,17 @@ TEST_CASE(
     expect_rejection(std::move(order), "invalid_price");
   }
 
-  SECTION("an at-the-close condition on a Korean order is rejected") {
+  SECTION("a closing-auction session on a Korean order is rejected") {
     auto order = korean_limit_buy();
-    order.time_in_force_ = TimeInForce::AT_THE_CLOSE;
-    expect_rejection(std::move(order), "unsupported_time_in_force");
+    order.session_ = OrderSession::CLOSING_AUCTION;
+    expect_rejection(std::move(order), "unsupported_session");
   }
 
-  SECTION("an at-the-open condition on a US order is rejected") {
+  SECTION("an opening-auction session on a US order is rejected") {
     auto order = korean_limit_buy();
     order.instrument_ = InstrumentId{Country::US, Venue::UNSPECIFIED, "AAPL"};
-    order.time_in_force_ = TimeInForce::AT_THE_OPEN;
-    expect_rejection(std::move(order), "unsupported_time_in_force");
+    order.session_ = OrderSession::OPENING_AUCTION;
+    expect_rejection(std::move(order), "unsupported_session");
   }
 
   SECTION("a non-positive account sequence is rejected") {
