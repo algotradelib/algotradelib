@@ -1082,7 +1082,7 @@ private:
     // what fills this field there; until one arrives, this row is what
     // `cancel_all` would read, and leaving it `UNSPECIFIED` would withdraw the
     // order at the broker's default venue rather than at the one it went to.
-    working.order_.venue_ = order.instrument_.venue_;
+    working.order_.venue_ = order.venue_;
     working.order_.price_ = order.price_;
     working.order_.time_in_force_ = order.time_in_force_;
     working.order_.quantity_ = order.quantity_;

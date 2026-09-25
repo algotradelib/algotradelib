@@ -72,6 +72,7 @@ public:
     // the order placed is not the order the caller planned -- and it fails
     // silently, because a default is a valid value rather than an empty one.
     request.session_ = order.session_;
+    request.venue_ = order.venue_;
     request.quantity_ = order.quantity_;
     request.price_ = order.price_;
     if constexpr (Caps::has_client_order_id) {

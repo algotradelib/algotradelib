@@ -124,6 +124,8 @@ struct PlannedOrder {
   OrderType type_{OrderType::LIMIT};
   TimeInForce time_in_force_{TimeInForce::DAY};
   OrderSession session_{OrderSession::REGULAR};
+  /** Where to route it; see `OrderRequest::venue_`. Not the instrument's venue. */
+  Venue venue_{Venue::UNSPECIFIED};
   Decimal64 quantity_;
   std::optional<Decimal64> price_;
   std::string tag_;

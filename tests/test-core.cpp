@@ -1,4 +1,5 @@
 #include <algotradelib/kis>
+#include <algotradelib/strategy>
 #include <algotradelib/tossinvest>
 
 #include <boost/asio/use_future.hpp>
@@ -1361,22 +1362,22 @@ TEST_CASE(
     REQUIRE(body.at("ORD_DVSN").as_string() == "00");
     REQUIRE(body.at("ORD_QTY").as_string() == "10");
     REQUIRE(body.at("ORD_UNPR").as_string() == "70000");
-    // `korean_limit_buy` leaves the default venue, which is `COMBINED`. That
-    // used to omit `EXCG_ID_DVSN_CD` entirely, and the workbook says an omitted
-    // field proceeds as KRX -- so asking for the combined book silently got one
-    // venue. The combined book is routed, which is what KIS calls SOR.
-    REQUIRE(body.at("EXCG_ID_DVSN_CD").as_string() == "SOR");
+    // `korean_limit_buy` states no routing venue, so the field is omitted and
+    // KIS applies its documented default. Routing is `OrderRequest::venue_`;
+    // the instrument's venue is identity and naming a venue there is refused.
+    REQUIRE_FALSE(body.contains("EXCG_ID_DVSN_CD"));
   }
 
-  SECTION("an unspecified venue still omits the exchange field") {
+  SECTION("a combined route is transmitted as SOR") {
     auto order = korean_limit_buy();
-    order.instrument_.venue_ = Venue::UNSPECIFIED;
+    order.venue_ = Venue::COMBINED;
     const auto request =
       kis::KisClientTestAccess::place_order_request(account, live, order, "00");
     // Expressing no venue is not the same as expressing the combined one: the
     // broker's documented default is the honest outcome for a caller who asked
     // for nothing, and a substitution for a caller who asked for something.
-    REQUIRE_FALSE(json::parse(request.body_).as_object().contains("EXCG_ID_DVSN_CD"));
+    // The combined book is routed, which is what KIS calls SOR.
+    REQUIRE(json::parse(request.body_).as_object().at("EXCG_ID_DVSN_CD").as_string() == "SOR");
   }
 
   SECTION("a market order sends a zero unit price rather than omitting it") {
@@ -1392,7 +1393,7 @@ TEST_CASE(
 
   SECTION("an explicit venue is transmitted as its exchange code") {
     auto order = korean_limit_buy();
-    order.instrument_.venue_ = Venue::NXT;
+    order.venue_ = Venue::NXT;
     const auto request =
       kis::KisClientTestAccess::place_order_request(account, live, order, "00");
     REQUIRE(json::parse(request.body_).as_object().at("EXCG_ID_DVSN_CD").as_string() == "NXT");
@@ -1480,7 +1481,7 @@ constexpr ShapeCase kWorkbookShapes[] = {
 /** Builds a request for `shape` at `venue`, priced so only the shape can refuse it. */
 OrderRequest shaped_order(const ShapeCase& shape, Venue venue) {
   auto order = korean_limit_buy();
-  order.instrument_.venue_ = venue;
+  order.venue_ = venue;
   order.type_ = shape.type_;
   order.time_in_force_ = shape.condition_;
   order.session_ = shape.session_;
@@ -1556,7 +1557,7 @@ TEST_CASE(
     auto order = korean_limit_buy();
     order.type_ = OrderType::MARKET;
     order.price_.reset();
-    order.instrument_.venue_ = Venue::NXT;
+    order.venue_ = Venue::NXT;
     std::string division;
     const auto error = kis::KisClientTestAccess::validate_order(order, division);
     // The sheet lists 01 under [KRX] and [SOR] and not under [NXT]. This used
@@ -1566,7 +1567,7 @@ TEST_CASE(
     REQUIRE_FALSE(error->reached_broker_);
     REQUIRE(division.empty());
 
-    order.instrument_.venue_ = Venue::KRX;
+    order.venue_ = Venue::KRX;
     REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division));
     REQUIRE(division == "01");
   }
@@ -1580,30 +1581,114 @@ TEST_CASE(
   }
 }
 
+TEST_CASE(
+  "an order routed to a named venue is still the instrument it was placed in",
+  "[broker][kis][order][identity]"
+) {
+  // The end-to-end shape of the defect the venue split exists to prevent, from
+  // the request a caller writes to the verdict recovery reaches. Routing an
+  // order to NXT must change nothing about *which instrument* it is, at any
+  // step, because every limit and every reconciliation asks that question by
+  // comparing `InstrumentId`s and a holding carries no venue at all.
+  const kis::KisAccount account{"12345678", "01"};
+  kis::KisConfig live;
+
+  auto order = korean_limit_buy();
+  order.venue_ = Venue::NXT;
+
+  // 1. The request routes to NXT and still names the identity instrument.
+  std::string division;
+  REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division, live));
+  const auto body = json::parse(
+    kis::KisClientTestAccess::place_order_request(account, live, order, division).body_
+  ).as_object();
+  REQUIRE(body.at("EXCG_ID_DVSN_CD").as_string() == "NXT");
+  REQUIRE(order.instrument_.venue_ == kKoreanInstrumentVenue);
+
+  // 2. The holding and the listing of that order agree on the instrument, and
+  //    the listing reports the routing venue beside it.
+  auto holdings = kis::KisClientTestAccess::parse_holdings(
+    json_response(
+      R"({"rt_cd":"0","ctx_area_fk100":"","ctx_area_nk100":"","output1":[{)"
+      R"("pdno":"005930","prdt_name":"Samsung","hldg_qty":"10","ord_psbl_qty":"10",)"
+      R"("pchs_avg_pric":"70000.0000","pchs_amt":"700000","prpr":"72000",)"
+      R"("evlu_amt":"720000","evlu_pfls_amt":"20000","evlu_pfls_rt":"2.857142"}],)"
+      R"("output2":[{"pchs_amt_smtl_amt":"700000","evlu_amt_smtl_amt":"720000",)"
+      R"("evlu_pfls_smtl_amt":"20000"}]})"
+    )
+  );
+  REQUIRE(holdings);
+  auto listing = kis::KisClientTestAccess::parse_open_orders(
+    json_response(
+      R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"0001569139",)"
+      R"("orgn_odno":"","ord_dvsn_name":"limit","pdno":"005930","prdt_name":"Samsung",)"
+      R"("rvse_cncl_dvsn_name":"modify","ord_qty":"10","ord_unpr":"70000",)"
+      R"("ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0","psbl_qty":"10",)"
+      R"("sll_buy_dvsn_cd":"02","ord_dvsn_cd":"00","excg_id_dvsn_cd":"NXT"}]})"
+    )
+  );
+  REQUIRE(listing);
+  const auto& resting = listing.value().orders_.front().order_;
+  const auto& position = holdings.value().positions_.front();
+  REQUIRE(resting.instrument_ == position.instrument_);
+  REQUIRE(resting.instrument_ == order.instrument_);
+  REQUIRE(resting.venue_ == Venue::NXT);
+
+  // 3. A portfolio built from both finds the resting order against the
+  //    instrument the caller named. This is the number that silently read zero.
+  strategy::Portfolio<kis::Broker> portfolio;
+  portfolio.positions_ = holdings.value().positions_;
+  WorkingOrder<kis::Broker> working;
+  working.order_ = resting;
+  portfolio.working_.push_back(working);
+  REQUIRE(
+    portfolio.working_quantity(order.instrument_, OrderSide::BUY) == Decimal64::parse("10")
+  );
+  REQUIRE(portfolio.net_quantity_of(order.instrument_) == Decimal64::parse("10"));
+
+  // 4. And a cancellation of it addresses the venue it was routed to.
+  working.amendable_quantity_ = Decimal64::parse("10");
+  REQUIRE(cancel_all(working).venue_ == Venue::NXT);
+}
+
 TEST_CASE("a KIS demo account trades on KRX and is told so before I/O", "[broker][kis][order]") {
   const kis::KisAccount account{"12345678", "01"};
   kis::KisConfig demo;
   demo.is_demo_ = true;
   kis::KisConfig live;
 
-  SECTION("the default order still works on a demo account") {
-    // `Venue::COMBINED` is the default `venue_` of every `InstrumentId`, and on
-    // a live account it now sends `SOR`. Both order sheets say
-    // `모의투자는 KRX만 가능`, so sending `SOR` here would refuse the most
-    // ordinary demo order there is -- and refuse it at the far end of a POST
-    // this library never replays. The field is omitted instead, which is what
-    // it did before `COMBINED` meant anything, and KIS routes it to KRX.
+  SECTION("the default order names no venue and works on either account") {
+    // Routing is opt-in. An order that states no `venue_` omits
+    // `EXCG_ID_DVSN_CD`, and KIS documents an omitted field as proceeding at
+    // KRX -- which a demo account can reach. This is the state an earlier
+    // version of this branch broke by routing on `instrument_.venue_`, whose
+    // default is `COMBINED` and which had started meaning `SOR`: every default
+    // demo order would have been refused, at the far end of a POST this library
+    // never replays.
     auto order = korean_limit_buy();
     std::string division;
-    REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division, demo));
-    REQUIRE(division == "00");
+    for (const auto& config : {demo, live}) {
+      REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division, config));
+      REQUIRE(division == "00");
+      REQUIRE_FALSE(json::parse(
+        kis::KisClientTestAccess::place_order_request(account, config, order, division).body_
+      ).as_object().contains("EXCG_ID_DVSN_CD"));
+    }
+  }
 
-    const auto body = json::parse(
-      kis::KisClientTestAccess::place_order_request(account, demo, order, division).body_
-    ).as_object();
-    REQUIRE_FALSE(body.contains("EXCG_ID_DVSN_CD"));
+  SECTION("an explicit combined route is refused on demo and sent live") {
+    auto order = korean_limit_buy();
+    order.venue_ = Venue::COMBINED;
+    std::string division;
+    // SOR is a venue the sheet says a demo account does not have, and asking
+    // for it explicitly is a request this adapter can answer before I/O rather
+    // than after a POST.
+    const auto error = kis::KisClientTestAccess::validate_order(order, division, demo);
+    REQUIRE(error);
+    REQUIRE(error->broker_code_ == "venue_unavailable");
+    REQUIRE_FALSE(error->reached_broker_);
 
-    // And the same order on a live account does name the venue.
+    REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division, live));
     REQUIRE(json::parse(
       kis::KisClientTestAccess::place_order_request(account, live, order, division).body_
     ).as_object().at("EXCG_ID_DVSN_CD").as_string() == "SOR");
@@ -1611,7 +1696,7 @@ TEST_CASE("a KIS demo account trades on KRX and is told so before I/O", "[broker
 
   SECTION("a venue the demo account cannot reach is refused before any request") {
     auto order = korean_limit_buy();
-    order.instrument_.venue_ = Venue::NXT;
+    order.venue_ = Venue::NXT;
     std::string division;
     const auto error = kis::KisClientTestAccess::validate_order(order, division, demo);
     REQUIRE(error);
@@ -1622,24 +1707,34 @@ TEST_CASE("a KIS demo account trades on KRX and is told so before I/O", "[broker
     REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division, live));
   }
 
-  SECTION("a demo order is checked against KRX's code set, not SOR's") {
+  SECTION("a demo order is checked against KRX's code set, not the route's") {
     // 중간가 (`21`) is published for KRX and NXT and not for SOR. A demo
-    // account reaches KRX, so checking it against SOR's smaller list would
-    // refuse an order the account can actually place.
+    // account reaches KRX whatever it asks for, so checking an explicit
+    // combined route against SOR's smaller list would refuse an order the
+    // account can actually place -- if the route were not already refused
+    // above, which it is. The case that matters is an explicit KRX route,
+    // which demo does allow.
     auto order = korean_limit_buy();
     order.type_ = OrderType::MID_PRICE;
     order.price_.reset();
+    order.venue_ = Venue::KRX;
     std::string division;
     REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division, demo));
     REQUIRE(division == "21");
-    // Live, the same default venue means SOR, which does not publish 21.
+
+    // And an explicit SOR route does not publish 21 on a live account, so the
+    // per-venue table is still what decides.
+    order.venue_ = Venue::COMBINED;
     REQUIRE(kis::KisClientTestAccess::validate_order(order, division, live));
   }
 
   SECTION("an amendment on a demo account omits the venue too") {
     kis::KisAmendment amendment;
     amendment.order_ = kis::KisOrderRef{"0000117057", "00950"};
-    amendment.venue_ = Venue::COMBINED;
+    // A demo listing reports no venue this adapter recognizes, so an amendment
+    // built from one carries `UNSPECIFIED` and omits the field, exactly as the
+    // placement does.
+    amendment.venue_ = Venue::UNSPECIFIED;
     amendment.quantity_ = Decimal64::parse("1");
     amendment.price_ = Decimal64::parse("70000");
     std::string division;
@@ -1657,7 +1752,7 @@ TEST_CASE("a KIS conditional-limit order carries its limit price", "[broker][kis
 
   SECTION("it is sent as 02 with the stated price, not with zero") {
     auto order = korean_limit_buy();
-    order.instrument_.venue_ = Venue::KRX;
+    order.venue_ = Venue::KRX;
     order.type_ = OrderType::CONDITIONAL_LIMIT;
     std::string division;
     REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division));
@@ -1688,7 +1783,7 @@ TEST_CASE("a KIS conditional-limit order carries its limit price", "[broker][kis
          {OrderType::BEST_LIMIT, OrderType::PRIMARY_LIMIT, OrderType::MID_PRICE,
           OrderType::CLOSING_PRICE}) {
       auto order = korean_limit_buy();
-      order.instrument_.venue_ = Venue::KRX;
+      order.venue_ = Venue::KRX;
       order.type_ = type;
       order.session_ = type == OrderType::CLOSING_PRICE ? OrderSession::AFTER_HOURS
                                                         : OrderSession::REGULAR;

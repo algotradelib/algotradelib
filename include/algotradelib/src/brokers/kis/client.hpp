@@ -2815,6 +2815,23 @@ private:
       error.message_ = "KIS cash orders currently support Korean equities only";
       return error;
     }
+    // KIS reports every Korean instrument at one identity venue, and a holding
+    // carries no venue at all -- so an order whose `instrument_.venue_` said
+    // anything else would not be the same `InstrumentId` as its own holding, and
+    // `Portfolio::working_quantity` would read zero resting quantity for it.
+    // A caller who set it there means *routing*, which is `OrderRequest::venue_`;
+    // refused rather than routed on, because routing on it silently is exactly
+    // how the resting quantity would go missing.
+    if (order.instrument_.venue_ != instrument_venue()) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
+      error.broker_code_ = "invalid_instrument";
+      error.message_ =
+        "KIS identifies a Korean instrument by its combined venue; set OrderRequest::venue_ to "
+        "route the order to a particular exchange instead of naming one on the instrument";
+      return error;
+    }
     if (!valid_domestic_symbol(order.instrument_.symbol_)) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
@@ -2830,14 +2847,14 @@ private:
     if (auto error = validate_price(order.type_, order.price_)) {
       return error;
     }
-    if (auto error = validate_venue(config, order.instrument_.venue_)) {
+    if (auto error = validate_venue(config, order.venue_)) {
       return error;
     }
     return order_division(
       order.type_,
       order.time_in_force_,
       order.session_,
-      effective_venue(config, order.instrument_.venue_),
+      effective_venue(config, order.venue_),
       division
     );
   }
@@ -2912,15 +2929,15 @@ private:
    * from the response would break every default demo placement, and would
    * break it *after* a POST this library may never replay.
    *
-   * `COMBINED` is therefore the one venue a demo account may still name: it
-   * means "route it", the demo environment has one venue to route to, and the
-   * field is omitted so KIS applies its own documented default rather than this
-   * adapter substituting a venue the caller did not ask for. An explicit `NXT`
-   * is refused, because that names a venue the account genuinely cannot reach.
+   * Routing is opt-in, so a demo account that names **no** venue is the ordinary
+   * case and is fine: the field is omitted and KIS applies its documented
+   * default of KRX. An explicit `KRX` is fine for the same reason. `NXT` and
+   * `COMBINED` are refused, because each names something the account cannot
+   * reach -- `COMBINED` is SOR, which routes across venues the demo
+   * environment does not have.
    */
   static std::optional<BrokerError> validate_venue(const KisConfig& config, Venue venue) {
-    if (!config.is_demo_ || venue == Venue::COMBINED || venue == Venue::UNSPECIFIED ||
-        venue == Venue::KRX) {
+    if (!config.is_demo_ || venue == Venue::UNSPECIFIED || venue == Venue::KRX) {
       return std::nullopt;
     }
     BrokerError error;
@@ -2986,7 +3003,7 @@ private:
       {"ORD_QTY", order.quantity_.str()},
       {"ORD_UNPR", order.price_ ? order.price_->str() : std::string("0")},
     };
-    if (const auto* exchange = transmitted_exchange(config, order.instrument_.venue_);
+    if (const auto* exchange = transmitted_exchange(config, order.venue_);
         *exchange != '\0') {
       body.emplace("EXCG_ID_DVSN_CD", exchange);
     }

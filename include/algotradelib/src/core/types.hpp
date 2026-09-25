@@ -1095,6 +1095,30 @@ struct OrderRequest {
   // `UNKNOWN` in `type_`, `time_in_force_` or `session_` is rejected before
   // network I/O, and so is any combination of the three the broker's own code
   // table does not contain for the requested venue.
+  /**
+   * The venue to route this order to, where the broker offers a choice.
+   *
+   * **Not `instrument_.venue_`, for the reason `OrderSnapshot::venue_` is not
+   * either.** An `InstrumentId` names an instrument and compares its venue, and
+   * every consumer that asks "what have I already got resting in this" matches
+   * a working order's `instrument_` against the instrument a caller names --
+   * `Portfolio::working_quantity`, `strategy::reconcile`, every ceiling in
+   * `RiskGuard`, and recovery's `row_corresponds`. A broker reports a holding
+   * without a venue, so an order whose identity carried the venue it was routed
+   * to would stop matching its own holding, and the resting quantity would read
+   * zero: no sellable deduction, no working-order component in the position
+   * ceiling, and a reconciliation that plans a second order beside the one
+   * already out.
+   *
+   * So routing lives here and identity stays in `instrument_`, and the request
+   * has the same shape as the snapshot it will be read back as. `UNSPECIFIED`
+   * sends no venue at all and takes the broker's documented default.
+   *
+   * An adapter refuses an `instrument_.venue_` that is not the identity venue
+   * it reports for that instrument, rather than routing on it, because a caller
+   * who sets it there means routing and would otherwise get it silently.
+   */
+  Venue venue_{Venue::UNSPECIFIED};
   Decimal64 quantity_;
   std::optional<Decimal64> price_;
   std::optional<std::string> client_order_id_;

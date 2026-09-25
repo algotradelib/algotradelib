@@ -2598,6 +2598,28 @@ private:
       error.message_ = "Toss order symbol contains unsupported characters";
       return error;
     }
+    // The identity venue Toss's own parses write, so an order is the same
+    // `InstrumentId` as its holding and `Portfolio::working_quantity` finds it.
+    // Anything else on the instrument means routing, and Toss routes nowhere.
+    if (order.instrument_.venue_ != instrument_venue(order.instrument_.country_)) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
+      error.broker_code_ = "invalid_instrument";
+      error.message_ =
+        "Toss identifies an instrument by the venue its own listings report; it offers no venue "
+        "choice, so an order may not name one";
+      return error;
+    }
+    if (order.venue_ != Venue::UNSPECIFIED) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
+      error.broker_code_ = "venue_unavailable";
+      error.message_ =
+        "Toss publishes no venue choice on an order; leave OrderRequest::venue_ unspecified";
+      return error;
+    }
     if (order.client_order_id_) {
       if (auto error = validate_client_order_id(*order.client_order_id_)) {
         return error;

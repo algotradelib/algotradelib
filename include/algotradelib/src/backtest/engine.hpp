@@ -527,7 +527,7 @@ private:
     row.order_.type_ = entry.order_.type_;
     row.order_.time_in_force_ = entry.order_.time_in_force_;
     row.order_.session_ = entry.order_.session_;
-    row.order_.venue_ = entry.order_.instrument_.venue_;
+    row.order_.venue_ = entry.order_.venue_;
     row.order_.price_ = entry.order_.price_;
     row.order_.quantity_ = entry.order_.quantity_;
     row.order_.currency_ = currency_for(entry.order_.instrument_);
