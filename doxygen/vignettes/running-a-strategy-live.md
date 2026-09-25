@@ -272,6 +272,34 @@ be flat at 22:00 and hears nothing would believe they are flat while still holdi
 report says `closing_refused_` and carries a note ending "the position is still held". This is why the
 counts are separate rather than one number.
 
+**And this now actually happens.** Until the loop computed the phase, a live run held whatever the
+caller set at startup — in practice `OPEN`, forever — so the refusal above was a property of replays
+only, and a 22:00 flatten went out. Read the counts.
+
+## The market phase, and what the loop needs to know it
+
+The loop derives the phase each iteration from two things:
+
+- **a session window you state**, `set_session_window(...)`, defaulting to `SessionWindow::krx()`. Only
+  Toss publishes intraday hours and they are not normalized, so this is configuration rather than
+  something the library discovers. For a market that is not KRX, state it.
+- **a trading calendar it polls**, `PollKind::CALENDAR`. This is the one cadence in `PollSchedule` that
+  is **on by default**, six hours, because a loop without a calendar has an uncovered date, an
+  uncovered date is `MarketPhase::UNKNOWN`, and `UNKNOWN` is not in the default
+  `permitted_phases_` — so every order would be refused. KIS's client caches and answers a covered
+  date without a request, so four polls a day cost one request a day.
+
+`on_phase` fires on a change, once, with this iteration's prices and portfolio already installed. A
+strategy written on it — `vanilla::TimedLiquidation` is the shipped one — behaves the same live as in a
+replay, which it did not before.
+
+When the phase cannot be established, the run says so: `final_phase_` is `unknown` and a note names
+the reason — no cadence configured, no calendar published by the broker, every poll failed, or the
+date is uncovered. It is deliberately **not** a halt: a halt would also stop cancellations, which
+`Runner::send_cancel` exempts from the phase limit because withdrawing only ever reduces exposure.
+`RiskGuard` already refuses every *placement* with `PHASE_NOT_PERMITTED`, so there is nothing a halt
+would add.
+
 ## Poll failures are not send failures
 
 A poll that fails sent nothing, so nothing needs reconciling and no ledger entry is owed. A quote that

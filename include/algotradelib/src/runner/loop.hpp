@@ -589,6 +589,18 @@ private:
  * `QUIESCE` means. Reusing it means no change to `Runner::settle()` and no second parallel
  * mechanism that could disagree with the first.
  *
+ * ## The market phase, which this loop owns
+ *
+ * Each iteration derives one from `set_session_window`'s window and whatever `PollKind::CALENDAR` has
+ * put on the context, installs it **before** the polls, and announces a change **after** them. Before
+ * this existed, nothing outside `backtest/` ever set a phase: `on_phase` never fired live, a shipped
+ * vanilla built on it did nothing, and a caller who set nothing was refused every order by the
+ * default `permitted_phases_`. The two halves of the ordering are separate because a poll can settle
+ * an order -- see `step`, which carries the argument.
+ *
+ * A phase the loop cannot establish is **reported and not held**: `final_phase_` names it and a note
+ * says why. See `note_unestablished_phase` for why a hold would be worse than nothing.
+ *
  * ## The trap a stop must not hide
  *
  * `RiskLimits::permitted_phases_` defaults to `{MarketPhase::OPEN}`, so **a withdraw or a flatten
@@ -599,6 +611,12 @@ private:
  * one call that answers "did everything I asked for go out" -- which is not the same question as
  * "am I flat", and deliberately so: acceptance is the last thing this library observes, and the
  * broker's own order list and holdings are the authority on what is actually left.
+ *
+ * **That paragraph used to describe replay behaviour and present it as the live hazard.** Live, the
+ * phase held whatever a caller set at startup, so the refusal it reasons about could not happen for
+ * the reason given -- an overnight `FLATTEN` went out because the phase still said `OPEN`. It happens
+ * now, which makes the counts above load-bearing rather than defensive. Whether the limit *should*
+ * refuse an order that reduces exposure is a policy question, deliberately not decided here.
  *
  * **The loop holds the guard, and it names what it holds.** Its gates are
  * `strategy::HaltReason` values it takes and releases itself -- `ORDER_LIST_UNREAD`,

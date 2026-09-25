@@ -131,10 +131,26 @@ void describe(const runner::LoopReport& report) {
             << (report.final_gate_ ?
                  strategy::halt_reason_name(*report.final_gate_) :
                  std::string_view("none"))
-            << '\n';
+            << '\n'
+            // The phase the loop derived for itself, and how many changes it announced. Reported
+            // because it decides whether anything could be sent at all: `unknown` beside a default
+            // `permitted_phases_` means every placement was refused, and an empty placement count on
+            // its own does not say that.
+            << "market phase    : " << strategy::market_phase_name(report.final_phase_)
+            << " (" << report.phase_transitions_ << " transition(s))\n";
   for (const auto& note : report.notes_) {
     std::cout << "note            : " << note << '\n';
   }
+}
+
+/**
+ * When this example's clock starts: 200 days after the epoch, at 09:00 in Seoul.
+ *
+ * Named rather than repeated, because three things now have to agree about it -- the clock, the
+ * calendar's covered date, and the session window the phase is derived against. They used to be one.
+ */
+Clock::time_point start_time() {
+  return Clock::time_point{} + std::chrono::hours(24 * 200);
 }
 
 } // namespace
@@ -144,20 +160,34 @@ int main() {
 
   LoopRunner live_runner;
   live_runner.context().set_instrument(samsung_reference());
-  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+
+  // **The phase is the loop's, not this program's.** This used to read
+  // `set_phase(MarketPhase::OPEN)`, which froze a value nothing ever updated -- so the run traded as
+  // though the market were permanently open and `on_phase` never fired at all. The loop now derives
+  // the phase from its session window and the trading calendar, and it overwrites anything set here.
+  //
+  // A real program gets that calendar from `PollKind::CALENDAR`, which is on by default. This example
+  // has no broker, so its source answers no calendar; the date is therefore uncovered, the phase is
+  // `UNKNOWN`, and the report says so in as many words. Seeding one here is what a run with a broker
+  // gets from its first calendar poll.
+  algotradelib::TradingCalendar calendar;
+  calendar.country_ = algotradelib::Country::KR;
+  calendar.received_at_ = start_time();
+  calendar.days_.push_back(algotradelib::TradingDay{
+    strategy::SessionWindow::krx().local_date(start_time()), true});
+  live_runner.context().set_calendar(calendar);
 
   ScriptedSource source(4);
 
   runner::PollSchedule schedule;
   schedule.bars_ = std::chrono::minutes(1);
   schedule.tick_ = std::chrono::minutes(1);
+  // No broker here, so nothing could answer a calendar request; a real program leaves this at its
+  // six-hour default.
+  schedule.calendar_.reset();
 
   runner::PollingLoop<LoopRunner, ScriptedSource, runner::ManualClock> loop(
-    live_runner,
-    source,
-    schedule,
-    runner::ManualClock{Clock::time_point{} + std::chrono::hours(24 * 200)}
-  );
+    live_runner, source, schedule, runner::ManualClock{start_time()});
 
   runner::StopSource stop;
   const auto report = loop.run(stop, 6);

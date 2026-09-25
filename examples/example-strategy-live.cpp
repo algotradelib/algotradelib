@@ -118,6 +118,9 @@ struct MarketState {
 template <typename Tag, typename R>
 int drive(const InstrumentId& instrument, const MarketState& state, R live_runner) {
   live_runner.context().set_instrument(state.reference_);
+  // A single pass driven by hand, so the phase is this program's to state: only
+  // `runner::PollingLoop` computes one, from a session window and a polled calendar. A program that
+  // runs continuously uses the loop and does not set this at all -- see `example-live-loop.cpp`.
   live_runner.context().set_phase(strategy::MarketPhase::OPEN);
 
   strategy::Portfolio<Tag> portfolio;

@@ -49,7 +49,7 @@ holding.params_.quantity_ = algotradelib::Decimal64::parse("10");
 
 runner::DryRunner<vanilla::BuyAndHold> dry(holding);
 dry.context().set_instrument(reference);      // reference data, with its PriceRule
-dry.context().set_phase(strategy::MarketPhase::OPEN);
+dry.context().set_phase(strategy::MarketPhase::OPEN);   // one pass, driven by hand: see below
 dry.context().set_last_price(instrument, last_close);
 
 const auto report = dry.feed(bar_event);
@@ -57,6 +57,13 @@ for (const auto& order : report.would_place_) {
   // what would have been sent
 }
 ```
+
+**That `set_phase` belongs to a hand-driven pass and nowhere else.** `runner::PollingLoop` derives the
+phase itself, each iteration, from a `strategy::SessionWindow` and the trading calendar it polls — and
+it overwrites anything set here. A `Runner` fed by hand has no clock of its own, so it is the caller's
+to state; a program that runs continuously uses the loop and does not state it at all.
+
+
 
 `DryRunner` runs the entire live pipeline minus the session: handlers fire, reconciliation builds
 instructions, and the guards accept or refuse them. It is one configuration of the same `Runner` a
