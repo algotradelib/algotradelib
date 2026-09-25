@@ -501,6 +501,10 @@ struct LoopReport {
  * Deliberately not a mock of a broker. It is a mock of *arrival*: the question the loop answers is
  * "what do I do when data shows up, or does not, or the list read fails", and none of that needs a
  * broker to be interesting.
+ *
+ * **It also demonstrates the source contract worth copying**: `set_calendar` makes this source install
+ * a calendar during `PollKind::CALENDAR` and during no other poll, which is the rule
+ * `PollKind::CALENDAR` states and the one the loop cannot enforce.
  */
 template <typename Runner>
 class ManualSource {
@@ -630,6 +634,13 @@ private:
  *
  * A phase the loop cannot establish is **reported and not held**: `final_phase_` names it and a note
  * says why. See `note_unestablished_phase` for why a hold would be worse than nothing.
+ *
+ * **If you are writing a source, this is the one rule the loop cannot enforce for you**: write the
+ * trading calendar during `PollKind::CALENDAR` and nowhere else. The loop re-derives the phase before
+ * every call it makes into a source, but nothing of its runs between your own `set_calendar` and your
+ * own `Runner::feed`, so doing both inside one poll settles an order against the phase as it stood
+ * when that poll began. `PollKind::CALENDAR` carries the full argument, and
+ * `LoopReport::calendar_written_outside_its_poll_` reports a source that breaks it.
  *
  * ## The trap a stop must not hide
  *
