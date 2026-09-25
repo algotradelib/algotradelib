@@ -227,6 +227,11 @@ struct RiskLimits {
    * Measured against the position that would exist if the order **and everything already working
    * on its side** filled, not against the last poll's holding: a ceiling that only looked at what
    * was held would pass two orders that each fit and together do not.
+   *
+   * **Held is the net of every position row**, via `Portfolio::net_quantity_of`. It used to be the
+   * first row, which understated a holding a broker reported as two lots -- so the ceiling passed
+   * orders that breached it, and, once reconciliation began sizing against the net, refused an exit
+   * that reached flat because it measured the order against one lot of the position it was closing.
    */
   std::optional<Decimal64> max_position_quantity_;
   /**
@@ -1181,7 +1186,23 @@ public:
 
     if (limits_.max_position_quantity_) {
       const auto zero = Decimal64::parse("0");
-      const auto held = portfolio.quantity_of(order.instrument_).value_or(zero);
+      // **Net across every position row, the same reading reconciliation sizes against.** This read
+      // `quantity_of` -- the first row -- and the two disagreeing is worse than either being wrong
+      // alone: reconciliation plans a sell of the whole net holding, and a ceiling measuring from
+      // one lot of it computes a resulting position that never existed. Rows of 60 and 40 with a
+      // ceiling of 30 refused the sell of 100 that reaches flat, because it read 60 - 100 = -40 and
+      // called that a short of 40. The exit was refused for breaching a ceiling it was on its way
+      // *under*, and the account kept the position.
+      //
+      // So this moves in both directions, deliberately. It refuses a buy that two lots together put
+      // over the ceiling, which is the limit doing its job and what it silently permitted before.
+      // And it permits an exit that reaches flat from a split holding, which no operator setting a
+      // ceiling meant to forbid.
+      const auto net = portfolio.net_quantity_of(order.instrument_);
+      if (!net) {
+        return refuse(GuardReason::POSITION_LIMIT_EXCEEDED);
+      }
+      const auto held = *net;
       // **Orders already working on this side count, because the ceiling is on the position this
       // order could produce, not on the one the last poll reported.** Without this, two buys of 60
       // against a ceiling of 100 both pass -- each is checked against an unchanged holding -- and

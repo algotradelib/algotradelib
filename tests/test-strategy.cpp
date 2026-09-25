@@ -1837,15 +1837,68 @@ TEST_CASE("a resting sell counts what is left of it, not what it ordered") {
 }
 
 TEST_CASE("a sell that has finished does not hold back the next one") {
-  // A terminal row is not outstanding, and counting it would refuse an exit because of an order
-  // that already completed. `order_is_open` is the existing rule; this pins that the new predicate
-  // uses it rather than counting every listed row.
+  // A terminal row is not outstanding, and counting it would refuse an exit because of an order that
+  // already ended. **The row is `CANCELED` with a non-zero remainder, and that is the whole point.**
+  // An earlier version used a `FILLED` row of 100 filled 100, whose remaining quantity is zero --
+  // so an implementation that dropped the `order_is_open` check entirely still passed it, and the
+  // test proved nothing. Codex round 1 caught that. A cancelled sell of 100 with nothing filled has
+  // 100 remaining, so counting it would take the whole holding and refuse the exit.
   const RiskGuard guard;
   ProbePortfolio portfolio;
   portfolio.positions_.push_back(holding("100"));
-  portfolio.working_.push_back(working("100", "100", OrderStatus::FILLED, OrderSide::SELL));
+  portfolio.working_.push_back(working("100", "0", OrderStatus::CANCELED, OrderSide::SELL));
 
   REQUIRE_FALSE(guard.check(planned("100", "70000", OrderSide::SELL), portfolio, shut_market()));
+}
+
+TEST_CASE("a working sell of unknown status still reserves what it might take") {
+  // `order_is_open` counts `UNKNOWN`, and it must: a row the library cannot classify may still be
+  // resting, and assuming it is not would let a second exit commit the same shares twice. The
+  // mirror of the test above -- one says a row that ended reserves nothing, this says a row that
+  // might not have reserves everything.
+  const RiskGuard guard;
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("100"));
+  portfolio.working_.push_back(working("100", "0", OrderStatus::UNKNOWN, OrderSide::SELL));
+
+  REQUIRE(refused_for_phase(guard, planned("10", "70000", OrderSide::SELL), portfolio));
+}
+
+TEST_CASE("a position ceiling measures the net holding, so an exit from split lots is not refused") {
+  // **Codex round 1's blocker.** Reconciliation sizes a target against the net of every position
+  // row, so a target of zero against lots of 60 and 40 plans a sell of 100. This ceiling read the
+  // *first* row, computed 60 - 100 = -40, and refused the order for reaching a short of 40 -- an
+  // exit refused for breaching a ceiling it was on its way under, leaving the position held. Before
+  // the netting the same target planned a sell of 60, which this ceiling allowed, so the two
+  // half-fixed together turned a partial reduction into no reduction at all.
+  RiskLimits limits;
+  limits.max_position_quantity_ = Decimal64::parse("30");
+  const RiskGuard guard(limits);
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("60"));
+  portfolio.positions_.push_back(holding("40"));
+
+  // Flat is not over a ceiling of 30, whatever the holding was on the way there.
+  REQUIRE_FALSE(guard.check(planned("100", "70000", OrderSide::SELL), portfolio, open_market()));
+  // And outside the session, where the phase exception admits it and this ceiling must not undo it.
+  REQUIRE_FALSE(guard.check(planned("100", "70000", OrderSide::SELL), portfolio, shut_market()));
+}
+
+TEST_CASE("a position ceiling measures the net holding, so split lots cannot hide a breach") {
+  // The direction that tightens, and the one the first-row read silently permitted: two lots of 60
+  // and 40 are a position of 100, and a buy of 60 reaches 160 rather than the 120 a first-row read
+  // computed. A ceiling of 120 must refuse it.
+  RiskLimits limits;
+  limits.max_position_quantity_ = Decimal64::parse("120");
+  const RiskGuard guard(limits);
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("60"));
+  portfolio.positions_.push_back(holding("40"));
+
+  const auto refused = guard.check(planned("60", "70000"), portfolio, open_market());
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::POSITION_LIMIT_EXCEEDED);
+  REQUIRE(refused->attempted_ == Decimal64::parse("160"));
 }
 
 TEST_CASE("a working sell reporting more filled than ordered refuses rather than counting zero") {
