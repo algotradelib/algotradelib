@@ -423,6 +423,25 @@ WorkingOrder<FakeBroker> working() {
 
 } // namespace
 
+TEST_CASE("a reservation row can be withdrawn at the venue the order went to") {
+  // The runner reserves a row for an order it has just sent, and that row is
+  // what `cancel_all` reads until the broker's own listing arrives. A broker
+  // listing fills `venue_` from what the broker routed the order to; this row
+  // has no listing behind it, so it takes the venue the order was sent with.
+  // Left `UNSPECIFIED`, a withdrawal would be addressed to the broker's default
+  // venue rather than the one the order is actually resting at.
+  strategy::PlannedOrder order;
+  order.instrument_ = InstrumentId{Country::KR, Venue::NXT, "005930"};
+  order.quantity_ = Decimal64::parse("10");
+  order.price_ = Decimal64::parse("70000");
+
+  WorkingOrder<FakeBroker> row;
+  row.order_.instrument_ = order.instrument_;
+  row.order_.venue_ = order.instrument_.venue_;
+  row.amendable_quantity_ = order.quantity_;
+  REQUIRE(cancel_all(row).venue_ == Venue::NXT);
+}
+
 TEST_CASE("a non-default order shape reaches the session rather than its default") {
   // The case above asserts the defaults, and a copy that was never written
   // agrees with a default. This one states three facts none of which is the
