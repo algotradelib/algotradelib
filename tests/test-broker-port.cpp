@@ -286,16 +286,46 @@ TEST_CASE("an amendment cannot silently re-shape the order it amends") {
     resting.order_.price_ = Decimal64::parse("185.5");
     resting.amendable_quantity_ = Decimal64::parse("10");
 
-    // The form every caller writes. Its defaults are DAY and REGULAR, so taken
-    // as written it promised to move this order out of the closing auction --
-    // which Toss cannot do and cannot refuse, because its modify request has no
-    // validity field at all.
-    const auto instruction =
-      replace_with(resting, OrderShape{OrderType::LIMIT, Decimal64::parse("186.0")});
+    // `reprice` states the resting shape and replaces the price alone, so no
+    // default says anything by accident.
+    const auto instruction = reprice(resting, Decimal64::parse("186.0"));
     REQUIRE(instruction.shape_.type_ == OrderType::LIMIT);
     REQUIRE(instruction.shape_.price_ == std::optional<Decimal64>(Decimal64::parse("186.0")));
     REQUIRE(instruction.shape_.session_ == OrderSession::CLOSING_AUCTION);
     REQUIRE(instruction.shape_.time_in_force_ == TimeInForce::DAY);
+    REQUIRE(instruction.resting_.session_ == OrderSession::CLOSING_AUCTION);
+    REQUIRE(BrokerTraits<tossinvest::TossClient>::to_replacement(
+      OrderRef<tossinvest::Broker>{"order-1", ""}, instruction
+    ).has_value());
+  }
+
+  SECTION("and replace_with's defaults are refused rather than silently preserved") {
+    WorkingOrder<tossinvest::Broker> resting;
+    resting.order_.instrument_ = InstrumentId{Country::US, Venue::UNSPECIFIED, "AAPL"};
+    resting.order_.type_ = OrderType::LIMIT;
+    resting.order_.time_in_force_ = TimeInForce::DAY;
+    resting.order_.session_ = OrderSession::CLOSING_AUCTION;
+    resting.order_.price_ = Decimal64::parse("185.5");
+    resting.amendable_quantity_ = Decimal64::parse("10");
+
+    // `OrderShape{LIMIT, price}` states a *regular session* order, because that
+    // is the struct's default. Against a resting closing-auction order that is
+    // a change, and Toss's modify request has no field that could carry it. An
+    // earlier version of this branch overwrote the caller's value from the
+    // resting order, which stopped the lie and silently discarded a KIS
+    // caller's deliberate change with it. Recording the original instead lets
+    // the adapter refuse exactly what it cannot send.
+    const auto instruction =
+      replace_with(resting, OrderShape{OrderType::LIMIT, Decimal64::parse("186.0")});
+    REQUIRE(instruction.shape_.session_ == OrderSession::REGULAR);
+    REQUIRE(instruction.resting_.session_ == OrderSession::CLOSING_AUCTION);
+
+    const auto refused = BrokerTraits<tossinvest::TossClient>::to_replacement(
+      OrderRef<tossinvest::Broker>{"order-1", ""}, instruction
+    );
+    REQUIRE_FALSE(refused);
+    REQUIRE(refused.error().broker_code_ == "unsupported_session");
+    REQUIRE_FALSE(refused.error().reached_broker_);
   }
 
   SECTION("and the port refuses a hand-built instruction Toss cannot honour") {
@@ -330,6 +360,9 @@ TEST_CASE("an amendment cannot silently re-shape the order it amends") {
     ordinary.shape_.type_ = OrderType::LIMIT;
     ordinary.shape_.price_ = Decimal64::parse("186.0");
     ordinary.shape_.session_ = OrderSession::CLOSING_AUCTION;
+    // Stating the original as the same session is what makes this a reprice
+    // rather than a move, and it is the only thing that distinguishes them.
+    ordinary.resting_ = ordinary.shape_;
     ordinary.quantity_ = Decimal64::parse("10");
     REQUIRE(Traits::to_replacement(ref, ordinary).has_value());
   }
@@ -348,14 +381,20 @@ TEST_CASE("an amendment cannot silently re-shape the order it amends") {
     OrderRef<kis::Broker> ref;
     ref.primary_ = "0000117057";
     ref.secondary_ = "00950";
-    const auto amendment = Traits::to_replacement(
-      ref, replace_with(resting, OrderShape{OrderType::LIMIT, Decimal64::parse("71000")})
-    );
+    const auto amendment =
+      Traits::to_replacement(ref, reprice(resting, Decimal64::parse("71000")));
     REQUIRE(amendment.has_value());
-    // The condition survived the round trip through `OrderShape`, so KIS will
-    // compose 11 rather than 00.
+    // The condition survived, so KIS composes 11 rather than 00.
     REQUIRE(amendment.value().time_in_force_ == TimeInForce::IMMEDIATE_OR_CANCEL);
     REQUIRE(amendment.value().venue_ == Venue::KRX);
+
+    // And KIS *can* change it, unlike Toss, because its amendment re-sends
+    // ORD_DVSN. A deliberate change is honoured rather than discarded, which is
+    // what stating the caller's shape as written buys.
+    auto to_day = replace_with(resting, OrderShape{OrderType::LIMIT, Decimal64::parse("71000")});
+    const auto changed = Traits::to_replacement(ref, to_day);
+    REQUIRE(changed.has_value());
+    REQUIRE(changed.value().time_in_force_ == TimeInForce::DAY);
   }
 }
 

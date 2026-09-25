@@ -2904,18 +2904,20 @@ private:
    * Returns KIS's `EXCG_ID_DVSN_CD` value for a normalized venue, or `""` to
    * omit the field.
    *
-   * `Venue::COMBINED` maps to `SOR`. It used to map to `""`, and the workbook
-   * says an omitted `EXCG_ID_DVSN_CD` "미입력시 KRX로 진행" -- so a caller who
-   * asked for the combined book was given KRX and not told, which is the silent
-   * downgrade Decision 6 forbids. `COMBINED` is the *default* `venue_` of an
-   * `InstrumentId`, so this was the common path rather than an unusual one.
+   * `Venue::COMBINED` maps to `SOR`, which is what KIS calls routing an order
+   * across both books. `Venue::UNSPECIFIED` omits the field and takes the
+   * broker's documented default of KRX, and those are not the same thing: one
+   * asks for something and the other asks for nothing.
    *
-   * `Venue::UNSPECIFIED` still omits the field, and that is not the same thing:
-   * it means the caller expressed no venue, so the broker's documented default
-   * is the honest outcome rather than a substitution for something asked for.
+   * This reads `OrderRequest::venue_`, never the instrument's. Routing is not
+   * part of an instrument's identity, and an order whose identity carried a
+   * route would stop matching its own holding.
    *
-   * Note the sheet's restriction, which this adapter does not enforce because
-   * the broker does: 모의투자는 KRX만 가능 -- a demo account accepts KRX alone.
+   * The sheet's demo restriction -- 모의투자는 KRX만 가능 -- **is** enforced,
+   * by `validate_venue` above, and `transmitted_exchange` omits the field
+   * entirely on a demo account. It was not enforced until a review pointed out
+   * that making `COMBINED` mean `SOR` had turned the most ordinary demo order
+   * into one the account would refuse, after its POST.
    */
   /**
    * Returns an error when a venue is unusable on this configuration.

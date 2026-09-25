@@ -357,6 +357,9 @@ inline std::string journal_entry_to_line(const JournalEntry& entry) {
   row["type"] = std::string(journal_detail::order_type_name(entry.type_));
   row["time_in_force"] = std::string(journal_detail::time_in_force_name(entry.time_in_force_));
   row["session"] = std::string(journal_detail::order_session_name(entry.session_));
+  // Distinct from `venue`, which is the instrument's identity venue. This is
+  // where the order was asked to go.
+  row["route"] = std::string(journal_detail::venue_name(entry.venue_));
   row["quantity"] = entry.quantity_.str();
   if (entry.price_) {
     row["price"] = entry.price_->str();
@@ -414,6 +417,10 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
     journal_detail::time_in_force_from(journal_detail::string_field(row, "time_in_force"));
   entry.session_ =
     journal_detail::order_session_from(journal_detail::string_field(row, "session"));
+  // A line written before this field existed has no `route` key, and
+  // `venue_from` answers `UNSPECIFIED` for an empty string -- which is what
+  // "no route was asked for" means, so an old line cannot disagree with a row.
+  entry.venue_ = journal_detail::venue_from(journal_detail::string_field(row, "route"));
   const auto quantity = journal_detail::string_field(row, "quantity");
   if (!quantity.empty()) {
     entry.quantity_ = Decimal64::parse(quantity);
@@ -477,6 +484,9 @@ inline std::optional<JournalEntry> salvage_journal_line(std::string_view line) {
   );
   entry.session_ = journal_detail::order_session_from(
     journal_detail::salvage_string(line, "session").value_or("REGULAR")
+  );
+  entry.venue_ = journal_detail::venue_from(
+    journal_detail::salvage_string(line, "route").value_or("")
   );
   if (const auto quantity = journal_detail::salvage_string(line, "quantity")) {
     entry.quantity_ = Decimal64::parse(*quantity);

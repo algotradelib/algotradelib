@@ -245,6 +245,18 @@ inline bool row_corresponds(
       row.session_ != entry.session_) {
     return false;
   }
+  // Where the order went. Two orders in one symbol, side, quantity, price and
+  // second differ only by this, so without it an unresolved NXT placement and
+  // an unrelated KRX order are the same row to recovery -- it attributes one to
+  // the other and clears the hold on an order that never appeared.
+  //
+  // `UNSPECIFIED` is absence on both sides for the same reason the shape fields
+  // are: a journal line written before the field existed, and a broker that
+  // reported no venue, are both silence rather than disagreement.
+  if (row.venue_ != Venue::UNSPECIFIED && entry.venue_ != Venue::UNSPECIFIED &&
+      row.venue_ != entry.venue_) {
+    return false;
+  }
   if (!reconcile_detail::same_value(row.quantity_, entry.quantity_)) {
     return false;
   }
@@ -381,16 +393,25 @@ inline OrderMatch match_against(
       " orders in the broker's listing could be this instruction; nothing was resolved";
     return match;
   }
-  if (match.candidates_ == 0 && unreadable > 0) {
-    // Report, never guess. A row whose order code this release does not publish
-    // is not evidence that the order is missing, and `NOT_PLACED` would clear
-    // the hold and send it again beside the one already resting.
+  if (unreadable > 0) {
+    // Report, never guess -- and **whether or not a readable row also matched**.
+    // A row whose order code this release does not publish is not evidence that
+    // the order is missing, so `NOT_PLACED` would clear the hold and send it
+    // again beside the one already resting. But it is equally not evidence that
+    // some *other* row is the order: with one readable row matching every
+    // attribute and one unreadable row matching every attribute that survives
+    // an unreadable shape, the unreadable one may be the instruction and the
+    // readable one another order on the same account. Resolving to the readable
+    // one would attribute the wrong order and clear the hold on it, which is
+    // the same harm by a different route.
     match.verdict_ = MatchVerdict::AMBIGUOUS;
-    match.candidates_ = unreadable;
+    match.candidates_ += unreadable;
+    match.order_id_.clear();
     match.detail_ = std::to_string(unreadable) +
       " order(s) in the broker's listing match this instruction on instrument, side, quantity "
-      "and time but carry an order code this library does not recognize; nothing was resolved. "
-      "The broker's own code is on each row as shape_code_";
+      "and time but carry an order code this library does not recognize" +
+      (found != nullptr ? ", and another row matches it fully" : "") +
+      "; nothing was resolved. The broker's own code is on each row as shape_code_";
     return match;
   }
   if (match.candidates_ == 1) {

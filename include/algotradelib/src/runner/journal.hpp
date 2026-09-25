@@ -225,6 +225,21 @@ struct JournalEntry {
   OrderType type_{OrderType::LIMIT};
   TimeInForce time_in_force_{TimeInForce::DAY};
   OrderSession session_{OrderSession::REGULAR};
+  /**
+   * The venue this runner asked the order to be routed to, where it asked.
+   *
+   * Recorded beside the shape and **not** on `instrument_`, which is identity.
+   * Recovery matches a recorded instruction against a broker's listing on
+   * attributes, and two orders in one symbol, side, quantity, price and second
+   * differ only by where they went: without this, an unresolved NXT placement
+   * and an unrelated KRX order are indistinguishable, and recovery attributes
+   * one to the other and clears the hold.
+   *
+   * `UNSPECIFIED` means no route was asked for -- which is also what a journal
+   * line written before this field existed reads as, so an old line cannot
+   * accidentally disagree with a row.
+   */
+  Venue venue_{Venue::UNSPECIFIED};
   Decimal64 quantity_;
   std::optional<Decimal64> price_;
   /**
@@ -550,6 +565,7 @@ public:
     entry.type_ = order.type_;
     entry.time_in_force_ = order.time_in_force_;
     entry.session_ = order.session_;
+    entry.venue_ = order.venue_;
     entry.quantity_ = order.quantity_;
     entry.price_ = order.price_;
     if (!journal_->append(entry)) {

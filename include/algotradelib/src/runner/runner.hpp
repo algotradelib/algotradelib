@@ -1077,11 +1077,13 @@ private:
     working.order_.status_ = OrderStatus::PENDING;
     working.order_.type_ = order.type_;
     working.order_.session_ = order.session_;
-    // The venue this runner sent the order to, which for an order it sent is the
-    // instrument's. A broker's own listing reports the routed venue and that is
-    // what fills this field there; until one arrives, this row is what
-    // `cancel_all` would read, and leaving it `UNSPECIFIED` would withdraw the
-    // order at the broker's default venue rather than at the one it went to.
+    // The venue this runner asked the order to be routed to, which is
+    // `PlannedOrder::venue_` and **not** the instrument's -- the instrument's is
+    // identity, and an order whose identity carried a route would stop matching
+    // its own holding. A broker's own listing fills this field from what it
+    // routed the order to; until one arrives, this row is what `cancel_all`
+    // reads, and leaving it `UNSPECIFIED` would withdraw the order at the
+    // broker's default venue rather than at the one it went to.
     working.order_.venue_ = order.venue_;
     working.order_.price_ = order.price_;
     working.order_.time_in_force_ = order.time_in_force_;

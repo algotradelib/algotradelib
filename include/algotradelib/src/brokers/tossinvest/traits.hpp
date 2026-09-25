@@ -186,20 +186,42 @@ struct Normalizers {
     const AmendInstruction& instruction
   ) {
     // Toss's `OrderModifyRequest` carries `orderType`, `quantity`, `price` and
-    // the high-value flag, and no validity field at all: an amendment cannot
-    // change the condition or the session, and Toss cannot refuse a request to.
-    // `replace_with` takes both from the resting order for that reason, so a
-    // shape arriving here with a condition Toss does not publish was assembled
-    // by hand. Refused rather than sent as an ordinary amendment, because
-    // sending it would report success for a change that did not happen.
-    if (instruction.shape_.time_in_force_ != TimeInForce::DAY) {
+    // the high-value flag, and **no validity field at all**: a modification
+    // cannot change the condition or the session, and Toss cannot refuse a
+    // request to. So the question is not whether the requested value is one
+    // Toss supports -- it can place a closing-auction order -- but whether it
+    // *differs* from what the order already is. Checking the value alone
+    // accepted "move this resting CLS order into the regular session", sent an
+    // ordinary modification, and reported success while the order stayed CLS.
+    if (instruction.shape_.time_in_force_ != instruction.resting_.time_in_force_) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
       error.reached_broker_ = false;
       error.broker_code_ = "unsupported_time_in_force";
       error.message_ =
-        "Toss orders are day-valid and an amendment cannot change the condition; cancel the "
-        "order and place a new one instead";
+        "Toss cannot change an order's validity condition by amending it; cancel the order and "
+        "place a new one instead";
+      return Result<tossinvest::TossAmendment>(std::move(error));
+    }
+    if (instruction.shape_.session_ != instruction.resting_.session_) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
+      error.broker_code_ = "unsupported_session";
+      error.message_ =
+        "Toss cannot move an order to another trading session by amending it; cancel the order "
+        "and place a new one instead";
+      return Result<tossinvest::TossAmendment>(std::move(error));
+    }
+    // A hand-built instruction states no resting shape, so the comparisons
+    // above are vacuous for one. The condition and session it names must then
+    // be ones Toss could have placed, which is the most this can check.
+    if (instruction.shape_.time_in_force_ != TimeInForce::DAY) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
+      error.broker_code_ = "unsupported_time_in_force";
+      error.message_ = "Toss orders are day-valid; it publishes no other validity condition";
       return Result<tossinvest::TossAmendment>(std::move(error));
     }
     if (instruction.shape_.session_ != OrderSession::REGULAR &&

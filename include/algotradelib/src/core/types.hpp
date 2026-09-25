@@ -1366,6 +1366,24 @@ struct AmendInstruction {
   std::optional<Decimal64> quantity_;
   bool all_remaining_{false};
   bool confirm_high_value_{false};
+  /**
+   * The shape the order currently has, where the caller could supply it.
+   *
+   * An adapter needs it to tell a *change* from a supported *value*. Toss can
+   * place an order in the closing auction and cannot move one into or out of it
+   * -- its `OrderModifyRequest` has no validity field at all -- so checking that
+   * a requested session is one Toss supports proves nothing: the question is
+   * whether it differs from what the order already is. Without this, an
+   * amendment asking to move a resting `CLS` order into the regular session was
+   * accepted locally, sent as an ordinary modification, and reported as success
+   * while the order stayed `CLS`.
+   *
+   * `replace_with`, `cancel_all` and `cancel_quantity` fill it from the working
+   * order. A hand-built instruction that leaves it default states no original,
+   * and an adapter that cannot verify a change then refuses the ones it cannot
+   * transmit rather than assuming they are no-ops.
+   */
+  OrderShape resting_;
 };
 
 /**
@@ -1429,6 +1447,17 @@ struct OrderHistoryQuery {
   std::optional<int> limit_;
 };
 
+/** Returns the shape a working order currently has. */
+template <typename Broker>
+inline OrderShape resting_shape(const WorkingOrder<Broker>& order) {
+  OrderShape shape;
+  shape.type_ = order.order_.type_;
+  shape.price_ = order.order_.price_;
+  shape.time_in_force_ = order.order_.time_in_force_;
+  shape.session_ = order.order_.session_;
+  return shape;
+}
+
 /**
  * Returns an instruction cancelling the whole remaining quantity of `order`.
  *
@@ -1446,6 +1475,7 @@ inline AmendInstruction cancel_all(const WorkingOrder<Broker>& order) {
   instruction.shape_.time_in_force_ = order.order_.time_in_force_;
   instruction.shape_.session_ = order.order_.session_;
   instruction.shape_.price_ = order.order_.price_;
+  instruction.resting_ = instruction.shape_;
   instruction.venue_ = order.order_.venue_;
   instruction.quantity_ = order.amendable_quantity_;
   instruction.all_remaining_ = true;
@@ -1460,6 +1490,7 @@ inline AmendInstruction cancel_quantity(const WorkingOrder<Broker>& order, Decim
   instruction.shape_.time_in_force_ = order.order_.time_in_force_;
   instruction.shape_.session_ = order.order_.session_;
   instruction.shape_.price_ = order.order_.price_;
+  instruction.resting_ = instruction.shape_;
   instruction.venue_ = order.order_.venue_;
   instruction.quantity_ = quantity;
   instruction.all_remaining_ = false;
@@ -1500,13 +1531,41 @@ inline AmendInstruction replace_with(
 ) {
   AmendInstruction instruction;
   instruction.shape_ = std::move(shape);
-  // Not the caller's to change; see above.
-  instruction.shape_.time_in_force_ = order.order_.time_in_force_;
-  instruction.shape_.session_ = order.order_.session_;
+  instruction.resting_ = resting_shape(order);
+  // The caller's shape is left as written. An earlier version overwrote the
+  // condition and session from the resting order, which stopped the *common*
+  // form lying but silently discarded an explicit change -- including a KIS
+  // caller's, whose old code still compiled. Recording the original instead
+  // lets each adapter honour a change it can make and refuse one it cannot.
   instruction.venue_ = order.order_.venue_;
   instruction.all_remaining_ = !quantity.has_value();
   instruction.quantity_ = quantity ? quantity : order.amendable_quantity_;
   return instruction;
+}
+
+/**
+ * Returns an instruction moving `order` to a new price and changing nothing else.
+ *
+ * **The common amendment, and the one that cannot misstate anything.**
+ * `replace_with` takes the shape as written, which is right for a caller who
+ * means to change the basis — and a trap for the much more common caller who
+ * only wants a new price, because `OrderShape{OrderType::LIMIT, price}` also
+ * states a day order in the regular session by default. At Toss that is a
+ * change the modification endpoint cannot transmit, so it is refused; before it
+ * was refused it was reported as a success that did not happen.
+ *
+ * This states the resting shape and replaces the price alone, so there is
+ * nothing for a default to say by accident.
+ */
+template <typename Broker>
+inline AmendInstruction reprice(
+  const WorkingOrder<Broker>& order,
+  Decimal64 price,
+  std::optional<Decimal64> quantity = std::nullopt
+) {
+  auto shape = resting_shape(order);
+  shape.price_ = std::move(price);
+  return replace_with(order, std::move(shape), std::move(quantity));
 }
 
 /**

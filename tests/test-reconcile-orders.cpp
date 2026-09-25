@@ -118,6 +118,75 @@ public:
 // A placement, matched on attributes
 // ---------------------------------------------------------------------------
 
+TEST_CASE("recovery tells two orders apart by the venue each was routed to") {
+  // Two orders in one symbol, side, quantity, price and second differ only by
+  // where they went. Without the route on the journal line and in the matcher,
+  // an unresolved NXT placement and an unrelated KRX order are the same row to
+  // recovery: it attributes one to the other and clears the hold on an order
+  // that has not appeared.
+  auto instruction = placement();
+  instruction.entry_.venue_ = Venue::NXT;
+
+  auto krx = row("KRX-1");
+  krx.venue_ = Venue::KRX;
+  auto nxt = row("NXT-1");
+  nxt.venue_ = Venue::NXT;
+
+  SECTION("a listing carrying only the other venue's order is not a match") {
+    const auto match = runner::match_against(instruction, {krx}, after_the_window());
+    REQUIRE(match.verdict_ != MatchVerdict::MATCHED);
+    REQUIRE(match.order_id_.empty());
+  }
+
+  SECTION("a listing carrying both resolves to the one that was routed there") {
+    const auto match = runner::match_against(instruction, {krx, nxt}, after_the_window());
+    REQUIRE(match.verdict_ == MatchVerdict::MATCHED);
+    REQUIRE(match.order_id_ == "NXT-1");
+  }
+
+  SECTION("a journal line written before the route existed still matches") {
+    // `venue_` reads as UNSPECIFIED from a line with no `route` key, which is
+    // silence rather than disagreement -- so an old line must not stop matching
+    // a row that now reports a venue.
+    auto old_line = placement();
+    REQUIRE(old_line.entry_.venue_ == Venue::UNSPECIFIED);
+    const auto match = runner::match_against(old_line, {nxt}, after_the_window());
+    REQUIRE(match.verdict_ == MatchVerdict::MATCHED);
+    REQUIRE(match.order_id_ == "NXT-1");
+  }
+}
+
+TEST_CASE("a readable row does not win over a competing unreadable one") {
+  // The mixed listing. One row matches every attribute; one carries a code this
+  // release cannot read and matches every attribute that survives an unreadable
+  // shape. The unreadable row may be the instruction, and the readable one
+  // another order on the same account -- so resolving to the readable one
+  // attributes the wrong order and clears the hold, which is the harm the
+  // single-row case was changed to avoid, by a different route.
+  auto instruction = placement();
+
+  auto readable = row("KRX-1");
+  auto unreadable = row("KRX-2");
+  unreadable.type_ = OrderType::UNKNOWN;
+  unreadable.time_in_force_ = TimeInForce::UNKNOWN;
+  unreadable.session_ = OrderSession::UNKNOWN;
+  unreadable.price_.reset();
+  unreadable.shape_code_ = Code<8>("99");
+
+  const auto match = runner::match_against(instruction, {readable, unreadable},
+                                           after_the_window());
+  REQUIRE(match.verdict_ == MatchVerdict::AMBIGUOUS);
+  REQUIRE(match.candidates_ == 2);
+  // No order id: claiming one would be the attribution this refuses to make.
+  REQUIRE(match.order_id_.empty());
+
+  // The readable row alone still resolves, so the ambiguity is caused by the
+  // unreadable row rather than by the fixture.
+  const auto alone = runner::match_against(instruction, {readable}, after_the_window());
+  REQUIRE(alone.verdict_ == MatchVerdict::MATCHED);
+  REQUIRE(alone.order_id_ == "KRX-1");
+}
+
 TEST_CASE("an order code this release cannot read is not read as an absent order") {
   // A broker may add an `ORD_DVSN` after this release. It parses to `UNKNOWN`
   // in all three shape fields and -- because an unknown basis is not one
