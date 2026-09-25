@@ -1425,6 +1425,60 @@ TEST_CASE("a stop flattens the net of an instrument's lots, not each lot", "[loo
         algotradelib::Decimal64::parse("60"));
 }
 
+TEST_CASE("a stop that cannot size a close says so instead of reporting completion",
+          "[loop][stop]") {
+  // **Codex round 3's blocker.** A net can be representable while the *magnitude* that would close
+  // it is not: two rows summing to the most negative `Decimal64` have no positive counterpart, so
+  // the size of the buy that would flatten them cannot be stated. That path used to `continue` in
+  // silence, moving no count -- so `closing_complete()` returned true over a position the pass had
+  // never sized, which is the one thing that call promises it will not do.
+  //
+  // It is counted as `closing_unsizable_` and **not** as `closing_contended_`, because contention
+  // means a competing order and its note sends an operator to the order list. Here the holdings
+  // quantities are what could not be established, and the order list has nothing to say about it.
+  InertRunner runner_instance;
+  runner_instance.context().set_instrument(samsung_reference());
+  serve_calendar(runner_instance, /*trades=*/false);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+
+  strategy::Portfolio<InertRunner::Tag> portfolio;
+  portfolio.as_of_ = base_time();
+  // Sums to the minimum coefficient, which `decimal_add` reaches and `decimal_subtract` cannot
+  // negate.
+  for (const char* lot : {"-9223372036854775807", "-1"}) {
+    algotradelib::HoldingPosition position;
+    position.instrument_ = samsung();
+    position.quantity_ = algotradelib::Decimal64::parse(lot);
+    position.average_purchase_price_ = algotradelib::Decimal64::parse("70000");
+    portfolio.positions_.push_back(position);
+  }
+  runner_instance.context().set_portfolio(portfolio);
+
+  InertSource source;
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  loop.run(stop, 1);
+  stop.request(StopIntent::FLATTEN);
+
+  const auto report = loop.run(stop, 10);
+
+  // Nothing was sent, and the report does not pretend otherwise.
+  CHECK(runner_instance.executor().placed().empty());
+  CHECK(report.flattened_ == 0);
+  CHECK(report.closing_unsizable_ == 1);
+  CHECK(report.closing_contended_ == 0);
+  CHECK_FALSE(report.closing_complete());
+  // And the note points at the holdings rather than at the order list.
+  bool explained = false;
+  for (const auto& note : report.notes_) {
+    if (note.find("could be sized") != std::string::npos &&
+        note.find("still held") != std::string::npos) {
+      explained = true;
+    }
+  }
+  CHECK(explained);
+}
+
 TEST_CASE("a stop counts a working close once for the instrument, not once per lot",
           "[loop][stop]") {
   // The other half of the same defect, and it is an under-close rather than a refusal. The

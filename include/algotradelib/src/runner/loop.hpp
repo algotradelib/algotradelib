@@ -449,6 +449,24 @@ struct LoopReport {
   std::size_t closing_contended_{0};
 
   /**
+   * Positions whose closing order could not be *sized*, because the snapshot's own arithmetic
+   * failed.
+   *
+   * Separate from `closing_contended_`, and the separation is the point. Contention is a statement
+   * about competing **orders** -- something is working on the closing side, or the listing cannot be
+   * trusted -- and its note sends an operator to the order list. This is a statement about the
+   * **holding**: rows that will not add up, or a net whose closing size is not representable. An
+   * operator told "contended" would go and read the order list, which is not where the problem is.
+   *
+   * Reachable at the boundary rather than in ordinary trading: two rows that sum to the most
+   * negative `Decimal64` have no representable positive magnitude, so the size of the buy that would
+   * close them cannot be stated. Rare, and the reason it is counted rather than skipped is that
+   * `closing_complete()` promises the pass knew what to ask for. A silent `continue` here let a stop
+   * report completion over a position it had never sized.
+   */
+  std::size_t closing_unsizable_{0};
+
+  /**
    * Whether the closing pass could not establish what it needed to send.
    *
    * A stop builds its instructions from the holdings snapshot -- working orders for a `WITHDRAW`,
@@ -484,9 +502,10 @@ struct LoopReport {
    *
    * `closing_contended_` covers a third thing: a flatten that deliberately sent *less* than the
    * position -- or nothing for it -- because closing the whole of it beside an order that could
-   * also close it risks selling it twice. And `closing_source_unverified_` covers the case before
-   * all of them: a pass that never established *which* instructions it owed cannot be complete no
-   * matter how many it sent.
+   * also close it risks selling it twice. `closing_unsizable_` covers a fourth: a holding whose own
+   * arithmetic failed, so no size could be stated at all. And `closing_source_unverified_` covers
+   * the case before all of them: a pass that never established *which* instructions it owed cannot
+   * be complete no matter how many it sent.
    *
    * `true` therefore means "every instruction I asked for was taken, and I knew what to ask for",
    * never "I am flat" and never "nothing is resting". Read the broker's own order list and holdings
@@ -495,7 +514,7 @@ struct LoopReport {
   bool closing_complete() const noexcept {
     return closing_rejected_ == 0 && closing_refused_ == 0 && closing_withheld_ == 0 &&
       closing_indeterminate_ == 0 && closing_unavailable_ == 0 && closing_unresolved_ == 0 &&
-      closing_contended_ == 0 && !closing_source_unverified_;
+      closing_contended_ == 0 && closing_unsizable_ == 0 && !closing_source_unverified_;
   }
   /**
    * Instructions the strategy's `on_stop` asked for and the guard refused.
@@ -1399,7 +1418,9 @@ private:
         // would take, and guessing is the one thing a closing pass must not do.
         const auto net = portfolio.net_quantity_of(position.instrument_);
         if (!net) {
-          ++report.closing_contended_;
+          // **Not `closing_contended_`.** That one means a competing order, and its note sends an
+          // operator to the order list. What failed here is the holding's own arithmetic.
+          ++report.closing_unsizable_;
           continue;
         }
         if (net->coefficient() == 0) {
@@ -1426,12 +1447,21 @@ private:
           std::optional<Decimal64>(*net) :
           decimal_subtract(Decimal64{}, *net);
         if (!magnitude) {
+          // **A representable net can have no representable magnitude**: two rows summing to the
+          // most negative `Decimal64` have no positive counterpart, so the size of the buy that
+          // would close them cannot be stated. This used to `continue` in silence, which moved no
+          // count -- so `closing_complete()` returned true over a position the pass had never
+          // sized, which is the one thing that call promises it will not do.
+          ++report.closing_unsizable_;
           continue;
         }
         const OrderSide closing_side = held_long ? OrderSide::SELL : OrderSide::BUY;
         const auto contending = portfolio.working_quantity(position.instrument_, closing_side);
         const auto sendable = decimal_subtract(*magnitude, contending);
         if (!sendable) {
+          // The same silence for the same reason: a size that cannot be computed is not a size of
+          // zero, and a pass that skipped it did not knowingly send nothing.
+          ++report.closing_unsizable_;
           continue;
         }
         if (contending.coefficient() != 0) {
@@ -1546,6 +1576,14 @@ private:
           std::to_string(report.closing_contended_) +
             " position(s) were closed only for the part no working order was already selling or"
             " buying; if those withdrawals succeed, part of the position is still held");
+    }
+    if (report.closing_unsizable_ != 0) {
+      // Deliberately does not mention working orders. This is the holdings snapshot failing to add
+      // up, and an operator sent to the order list would be looking in the wrong place.
+      report.notes_.push_back(
+        "no closing order could be sized for " + std::to_string(report.closing_unsizable_) +
+        " position(s): the holdings snapshot's own quantities would not add up or would not fit;"
+        " nothing was sent for them and they are still held");
     }
     if (report.closing_source_unverified_) {
       report.notes_.push_back(
