@@ -839,6 +839,13 @@ private:
       // because a handler deciding at an instant *earlier* than the bar it has already been shown is
       // the same incoherence with the sign flipped. The skew is the broker's and is not this loop's
       // to quietly correct.
+      //
+      // **What this does not fix**, stated because it is easy to read more into it: a bar fed earlier
+      // in this same iteration set `now_` to its own period end, which on a daily bar is yesterday's
+      // close. So that order is filed at the bar's instant and this one at the wall clock, and a rate
+      // window narrower than the gap sees them as unrelated. That is inherent to a bar's decision
+      // instant being its period end -- which the replay depends on -- and is not introduced here:
+      // before this, the phase order did not exist to be filed at all.
       if (runner_->context().now() < iteration.at_) {
         runner_->context().set_now(iteration.at_);
       }
@@ -887,15 +894,20 @@ private:
     if (report.iterations_ == 0 || report.final_phase_ != strategy::MarketPhase::UNKNOWN) {
       return;
     }
+    // Three reasons, not four. "The poll never came due" was here and is unreachable: `run` resets
+    // `next_due_`, so a configured cadence makes the calendar due on the first iteration of every
+    // run. A branch describing a state that cannot happen is worse than no branch, because a reader
+    // who sees it believes it can.
     std::string reason;
     if (!schedule_.calendar_) {
       reason = "no calendar cadence is configured";
-    } else if (report.attempted(PollKind::CALENDAR) == 0) {
-      reason = "the calendar poll never came due";
     } else if (report.failed(PollKind::CALENDAR) == report.attempted(PollKind::CALENDAR)) {
       reason = "every calendar poll failed";
     } else if (runner_->context().calendar().days_.empty()) {
-      reason = "the broker published no trading calendar";
+      // What the loop can actually tell: a poll reported success and no calendar arrived. It does
+      // **not** claim to know why, because it cannot distinguish a broker that publishes none -- where
+      // the request is not even compiled -- from a source that fetched one and installed nothing.
+      reason = "a calendar poll succeeded but no calendar arrived (this broker may publish none)";
     } else {
       // Named, not merely called uncovered. "The calendar does not cover today" sends a reader to
       // check a span they cannot see; the date is the one thing that turns this note into an action.

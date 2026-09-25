@@ -2581,3 +2581,26 @@ TEST_CASE("TimedLiquidation flattens live, which it could not do before", "[loop
         algotradelib::Decimal64::parse("10"));
   CHECK(runner_instance.executor().placed()[0].tag_ == "timed-liquidation");
 }
+
+TEST_CASE("a calendar cadence that answers nothing is named as such", "[loop][phase]") {
+  // The third reason `note_unestablished_phase` can give, and the one a third-party source falls into:
+  // a cadence is configured, the polls report success, and no calendar ever arrives -- because the
+  // broker publishes none, or because a source added before `PollKind::CALENDAR` existed answers its
+  // default for a kind it does not handle. The loop cannot tell those apart and does not claim to.
+  PhaseRunner runner_instance;
+  PhaseSource source;
+  // No `set_calendar`, so the poll answers UNCHANGED and installs nothing.
+  runner::PollSchedule schedule;
+  schedule.calendar_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  PhaseLoop loop(runner_instance, source, schedule, test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 3);
+
+  CHECK(report.attempted(runner::PollKind::CALENDAR) == 3);
+  CHECK(report.failed(runner::PollKind::CALENDAR) == 0);
+  CHECK(report.final_phase_ == strategy::MarketPhase::UNKNOWN);
+  REQUIRE(report.notes_.size() == 1);
+  CHECK(report.notes_[0].find("no calendar arrived") != std::string::npos);
+}
