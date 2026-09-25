@@ -2847,6 +2847,8 @@ TEST_CASE("a source that writes the calendar mid-poll is reported, since it cann
   CHECK(report.calendar_written_outside_its_poll_ == 1);
   REQUIRE_FALSE(report.notes_.empty());
   CHECK(report.notes_[0].find("bars poll replaced the trading calendar") != std::string::npos);
+  // Conditional wording: the loop cannot see whether that poll settled anything.
+  CHECK(report.notes_[0].find("any order that poll settled") != std::string::npos);
 }
 
 TEST_CASE("the calendar poll replacing the calendar is not reported as a violation",
@@ -2905,4 +2907,38 @@ TEST_CASE("knowing the phase once outlives the run that knew it", "[loop][phase]
   REQUIRE(still_lost.notes_.size() == 1);
   CHECK(still_lost.notes_[0].find("stopped being established") != std::string::npos);
   CHECK(still_lost.notes_[0].find("never established") == std::string::npos);
+}
+
+TEST_CASE("a calendar change that does not move today's answer is not reported", "[loop][phase]") {
+  // The detection measures the phase, not the calendar, and this is the case that justifies it: a
+  // source that revises a *different* date has changed the calendar and harmed nothing, because the
+  // order in that poll was still checked against the right answer for today. Reporting it would train
+  // an operator to ignore the note.
+  SendingRunner runner_instance;
+  FeedingSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  serve_calendar(runner_instance, /*trades=*/true);
+
+  // Today still trades; a date years away is added alongside it.
+  auto revised = krx_calendar(/*trades=*/true);
+  revised.days_.push_back(algotradelib::TradingDay{algotradelib::Date{1999, 1, 4}, false});
+  revised.received_at_ = base_time() + std::chrono::hours(1);
+  source.set_calendar_before_feeding(revised);
+
+  runner::PollSchedule schedule;
+  schedule.bars_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  schedule.calendar_.reset();
+  SendingLoop loop(runner_instance, source, schedule, test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.final_phase_ == strategy::MarketPhase::OPEN);
+  CHECK(source.placed() == 1);
+  CHECK(source.refused() == 0);
+  // The calendar changed, the answer did not, and the report stays quiet.
+  CHECK(report.calendar_written_outside_its_poll_ == 0);
+  CHECK(report.notes_.empty());
 }

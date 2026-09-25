@@ -933,7 +933,11 @@ private:
    * only the calendar can have moved it -- measures the harm rather than a proxy for it, and stays quiet
    * about a calendar change that does not alter today's answer, where there is no harm to report.
    *
-   * The calendar poll itself is excluded, because replacing the calendar is precisely its job.
+   * The calendar poll itself is excluded, because replacing the calendar is precisely its job. That
+   * exclusion is also the one case this cannot see: a source that fed an order *from inside* the
+   * calendar poll, having just replaced the calendar, would not be reported. Nothing shipped does
+   * that, and a check that fired on every ordinary calendar poll would be worth less than the case it
+   * would catch.
    */
   void note_calendar_written_mid_poll(
     PollKind kind,
@@ -948,10 +952,13 @@ private:
     if (report.calendar_written_outside_its_poll_ == 1) {
       // Once per run, not once per poll: a source that does this on every iteration would otherwise
       // bury every other note in the report under thousands of copies of this one.
+      // Worded as a conditional, because that is all the loop knows. It can see that the answer moved
+      // under a poll; it cannot see whether that poll settled anything, and claiming an order was
+      // mis-checked when the poll placed none would be a false report in the alarming direction.
       report.notes_.push_back(
         std::string("the ") + std::string(poll_kind_name(kind)) +
-        " poll replaced the trading calendar; only the calendar poll may, and an order settled in that "
-        "poll was checked against the phase as it stood before it");
+        " poll replaced the trading calendar and changed the market phase; only the calendar poll may, "
+        "so any order that poll settled was checked against the phase as it stood before it");
     }
   }
 
