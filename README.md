@@ -247,10 +247,39 @@ Read these before using the order clients.
   stays a visible caller decision.
 - **Acceptance is not execution.** An `OrderAck` means the broker recorded the
   instruction. Read the resulting state back through an order inquiry.
-- **Unsupported instructions are rejected, never downgraded.** An at-the-close
-  or at-the-open condition the broker cannot honour for that instrument fails
-  with `ErrorCategory::INVALID_ARGUMENT` rather than silently becoming a
-  day order, because a downgrade changes when the order executes.
+- **Unsupported instructions are rejected, never downgraded.** An order shape a
+  broker cannot honour fails with `ErrorCategory::INVALID_ARGUMENT` before
+  authentication and before any socket write, rather than silently becoming a
+  nearby shape, because a downgrade changes when and at what price the order
+  executes.
+- **An order's shape is three facts, not one.** `OrderType` is the price basis
+  (limit, market, best-limit, primary-limit, mid-price, conditional-limit,
+  stop-limit, closing-price), `TimeInForce` is the execution condition (day,
+  immediate-or-cancel, fill-or-kill), and `OrderSession` is the session
+  (regular, opening auction, closing auction, pre-market, after-hours,
+  after-hours auction, after-market, GTP). A broker names an order with a single
+  code and that code is a product of the three: KIS's `ORD_DVSN` `16` is a
+  best-limit order, filled-or-killed, in the regular session. Splitting them is
+  what lets a caller ask "is this a best-limit order" without enumerating six
+  spellings, and what lets the two brokers report a session in one field when
+  KIS spells it inside `ORD_DVSN` and Toss spells it on `timeInForce`.
+- **A shape is offered per venue, not per broker.** KRX, NXT and SOR each
+  publish their own set of `ORD_DVSN` codes, and they differ: a market order is
+  available at KRX and through SOR and is **not** available at NXT. The library
+  holds the workbook's table and refuses a combination the requested venue does
+  not list, so the refusal arrives before the POST rather than after it — which
+  matters because an order POST is never replayed.
+- **`Venue::COMBINED` routes, and says so.** It is sent as
+  `EXCG_ID_DVSN_CD=SOR`. It previously omitted the field, and KIS documents an
+  omitted field as proceeding at KRX, so asking for the combined book quietly
+  got one venue. `Venue::UNSPECIFIED` still omits the field: expressing no venue
+  and receiving the broker's default is not the same as asking for one thing and
+  receiving another.
+- **A code the library does not recognize is reported, not discarded.**
+  `OrderSnapshot::shape_code_` carries the broker's own code verbatim beside the
+  three normalized facts, so an order placed through the broker's own
+  application — or under a code added after this release — arrives with
+  `UNKNOWN` in the enums and the real code beside them.
 - KIS's modifiable-order inquiry is unavailable on demo accounts and fails
   immediately there.
 - KIS's daily inquiry reports no status column, so an order's status is derived
@@ -317,10 +346,15 @@ refuses an order that sets it.
 
 ### Not supported yet
 
-Toss amount-based and fractional orders, Toss conditional orders, KIS
-conditional/IOC/FOK/stop/after-market order divisions, KIS credit, reserved,
-and overseas orders, KIS history older than three months, and real-time
-execution notifications.
+Toss amount-based and fractional order *placement* — an amount-based order is
+read back with its amount, and placing one is outstanding. Toss conditional
+orders. KIS credit, reserved and overseas orders. KIS stop-limit *placement*:
+`ORD_DVSN` `22` is read and normalized, and requires a `CNDT_PRIC` that
+`OrderRequest` has nowhere to carry, so it is refused on a request; the trigger
+price it needs is the same field Toss's conditional orders need and belongs with
+them. KIS's 시간외 단일가 (`07`) likewise: the inquiry publishes it, the order
+sheet does not. KIS history older than three months, and real-time execution
+notifications.
 
 ## Broker port
 
