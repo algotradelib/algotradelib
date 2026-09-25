@@ -612,6 +612,7 @@ JournalEntry sample_entry() {
   entry.type_ = OrderType::BEST_LIMIT;
   entry.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
   entry.session_ = OrderSession::AFTER_MARKET;
+  entry.venue_ = Venue::NXT;
   entry.quantity_ = Decimal64::parse("10");
   entry.price_ = Decimal64::parse("70000");
   return entry;
@@ -631,6 +632,9 @@ TEST_CASE("a journal entry survives a round trip through a line", "[journal][fil
   REQUIRE(parsed->type_ == original.type_);
   REQUIRE(parsed->time_in_force_ == original.time_in_force_);
   REQUIRE(parsed->session_ == original.session_);
+  // The route, which is not `instrument_.venue_`: recovery compares both, and
+  // an entry that lost the route cannot tell two orders in one symbol apart.
+  REQUIRE(parsed->venue_ == original.venue_);
   REQUIRE(parsed->quantity_ == original.quantity_);
   REQUIRE(parsed->price_ == original.price_);
   // Exactly, not approximately: the matching window is measured against this.
