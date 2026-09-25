@@ -138,9 +138,10 @@ struct KisClientTestAccess {
 
   static std::optional<BrokerError> validate_order(
     const OrderRequest& order,
-    std::string& division
+    std::string& division,
+    const KisConfig& config = KisConfig{}
   ) {
-    return KisClient::validate_order(order, division);
+    return KisClient::validate_order(config, order, division);
   }
 
   static void apply_order_shape(std::string_view division, OrderSnapshot& order) {
@@ -149,14 +150,15 @@ struct KisClientTestAccess {
 
   static std::optional<BrokerError> amendment_division(
     const KisAmendment& amendment,
-    std::string& division
+    std::string& division,
+    const KisConfig& config = KisConfig{}
   ) {
     // `validate_amendment`, not `order_division`: the submission path's own
     // decision. Calling `order_division` here re-derived the answer from the
     // same inputs, so the test agreed with a submission path that had stopped
     // passing the amendment's condition and session -- verified by mutation,
     // which this shim survived.
-    return KisClient::validate_amendment(amendment, division);
+    return KisClient::validate_amendment(config, amendment, division);
   }
 
   static bool valid_order_reference(const KisOrderRef& order) {
@@ -1482,9 +1484,16 @@ OrderRequest shaped_order(const ShapeCase& shape, Venue venue) {
   order.type_ = shape.type_;
   order.time_in_force_ = shape.condition_;
   order.session_ = shape.session_;
-  // Only a limit basis takes a price; every other basis must not carry one, and
-  // `validate_price` would refuse first and mask the answer this test wants.
-  if (shape.type_ != OrderType::LIMIT) {
+  // A basis priced by the caller keeps the fixture's price; one priced by the
+  // book must carry none, because `validate_price` refuses a stray price and
+  // would mask the answer this test is asking for.
+  //
+  // This read `!= OrderType::LIMIT`, which cleared the price on
+  // `CONDITIONAL_LIMIT` too -- so every `02` case in this table was a
+  // priceless conditional-limit order, and the table agreed with a validator
+  // that refused the priced one. A fixture that arranges for the defect not to
+  // matter; `carries_caller_price` is the same predicate production uses.
+  if (!carries_caller_price(shape.type_)) {
     order.price_.reset();
   }
   return order;
@@ -1568,6 +1577,144 @@ TEST_CASE(
     std::string division;
     // 07 is on the inquiry sheet and not on the order sheet.
     REQUIRE(kis::KisClientTestAccess::validate_order(order, division));
+  }
+}
+
+TEST_CASE("a KIS demo account trades on KRX and is told so before I/O", "[broker][kis][order]") {
+  const kis::KisAccount account{"12345678", "01"};
+  kis::KisConfig demo;
+  demo.is_demo_ = true;
+  kis::KisConfig live;
+
+  SECTION("the default order still works on a demo account") {
+    // `Venue::COMBINED` is the default `venue_` of every `InstrumentId`, and on
+    // a live account it now sends `SOR`. Both order sheets say
+    // `모의투자는 KRX만 가능`, so sending `SOR` here would refuse the most
+    // ordinary demo order there is -- and refuse it at the far end of a POST
+    // this library never replays. The field is omitted instead, which is what
+    // it did before `COMBINED` meant anything, and KIS routes it to KRX.
+    auto order = korean_limit_buy();
+    std::string division;
+    REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division, demo));
+    REQUIRE(division == "00");
+
+    const auto body = json::parse(
+      kis::KisClientTestAccess::place_order_request(account, demo, order, division).body_
+    ).as_object();
+    REQUIRE_FALSE(body.contains("EXCG_ID_DVSN_CD"));
+
+    // And the same order on a live account does name the venue.
+    REQUIRE(json::parse(
+      kis::KisClientTestAccess::place_order_request(account, live, order, division).body_
+    ).as_object().at("EXCG_ID_DVSN_CD").as_string() == "SOR");
+  }
+
+  SECTION("a venue the demo account cannot reach is refused before any request") {
+    auto order = korean_limit_buy();
+    order.instrument_.venue_ = Venue::NXT;
+    std::string division;
+    const auto error = kis::KisClientTestAccess::validate_order(order, division, demo);
+    REQUIRE(error);
+    REQUIRE(error->broker_code_ == "venue_unavailable");
+    REQUIRE_FALSE(error->reached_broker_);
+    // The same request is fine on a live account, so the refusal is about the
+    // configuration rather than about the order.
+    REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division, live));
+  }
+
+  SECTION("a demo order is checked against KRX's code set, not SOR's") {
+    // 중간가 (`21`) is published for KRX and NXT and not for SOR. A demo
+    // account reaches KRX, so checking it against SOR's smaller list would
+    // refuse an order the account can actually place.
+    auto order = korean_limit_buy();
+    order.type_ = OrderType::MID_PRICE;
+    order.price_.reset();
+    std::string division;
+    REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division, demo));
+    REQUIRE(division == "21");
+    // Live, the same default venue means SOR, which does not publish 21.
+    REQUIRE(kis::KisClientTestAccess::validate_order(order, division, live));
+  }
+
+  SECTION("an amendment on a demo account omits the venue too") {
+    kis::KisAmendment amendment;
+    amendment.order_ = kis::KisOrderRef{"0000117057", "00950"};
+    amendment.venue_ = Venue::COMBINED;
+    amendment.quantity_ = Decimal64::parse("1");
+    amendment.price_ = Decimal64::parse("70000");
+    std::string division;
+    REQUIRE_FALSE(kis::KisClientTestAccess::amendment_division(amendment, division, demo));
+    const auto body = json::parse(
+      kis::KisClientTestAccess::amend_order_request(account, demo, amendment, false, division).body_
+    ).as_object();
+    REQUIRE_FALSE(body.contains("EXCG_ID_DVSN_CD"));
+  }
+}
+
+TEST_CASE("a KIS conditional-limit order carries its limit price", "[broker][kis][order]") {
+  const kis::KisAccount account{"12345678", "01"};
+  kis::KisConfig live;
+
+  SECTION("it is sent as 02 with the stated price, not with zero") {
+    auto order = korean_limit_buy();
+    order.instrument_.venue_ = Venue::KRX;
+    order.type_ = OrderType::CONDITIONAL_LIMIT;
+    std::string division;
+    REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division));
+    REQUIRE(division == "02");
+
+    const auto body = json::parse(
+      kis::KisClientTestAccess::place_order_request(account, live, order, division).body_
+    ).as_object();
+    REQUIRE(body.at("ORD_DVSN").as_string() == "02");
+    // 조건부지정가 is a limit instruction until the close. This was `"0"`,
+    // because the price was refused on the way in and never reached the body.
+    REQUIRE(body.at("ORD_UNPR").as_string() == "70000");
+  }
+
+  SECTION("it is refused without one") {
+    auto order = korean_limit_buy();
+    order.type_ = OrderType::CONDITIONAL_LIMIT;
+    order.price_.reset();
+    std::string division;
+    const auto error = kis::KisClientTestAccess::validate_order(order, division);
+    REQUIRE(error);
+    REQUIRE(error->broker_code_ == "invalid_price");
+    REQUIRE_FALSE(error->reached_broker_);
+  }
+
+  SECTION("a basis the book prices still refuses a stray price") {
+    for (const auto type :
+         {OrderType::BEST_LIMIT, OrderType::PRIMARY_LIMIT, OrderType::MID_PRICE,
+          OrderType::CLOSING_PRICE}) {
+      auto order = korean_limit_buy();
+      order.instrument_.venue_ = Venue::KRX;
+      order.type_ = type;
+      order.session_ = type == OrderType::CLOSING_PRICE ? OrderSession::AFTER_HOURS
+                                                        : OrderSession::REGULAR;
+      std::string division;
+      INFO("basis " << static_cast<int>(type));
+      REQUIRE(kis::KisClientTestAccess::validate_order(order, division));
+    }
+  }
+
+  SECTION("a resting conditional-limit order reads its price back") {
+    auto result = kis::KisClientTestAccess::parse_open_orders(
+      json_response(
+        R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"1","orgn_odno":"",)"
+        R"("ord_dvsn_name":"x","pdno":"005930","prdt_name":"Samsung",)"
+        R"("rvse_cncl_dvsn_name":"x","ord_qty":"10","ord_unpr":"70000","ord_tmd":"131438",)"
+        R"("tot_ccld_qty":"0","tot_ccld_amt":"0","psbl_qty":"10","sll_buy_dvsn_cd":"02",)"
+        R"("ord_dvsn_cd":"02"}]})"
+      )
+    );
+    REQUIRE(result);
+    const auto& open_order = result.value().orders_.front();
+    REQUIRE(open_order.order_.type_ == OrderType::CONDITIONAL_LIMIT);
+    // The read path kept `ord_unpr` only for `LIMIT`, so an existing
+    // conditional-limit order came back with no price at all -- and
+    // `row_corresponds` compares the price.
+    REQUIRE(open_order.order_.price_ == Decimal64::parse("70000"));
   }
 }
 

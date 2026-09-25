@@ -2578,23 +2578,29 @@ private:
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
     error.reached_broker_ = false;
     error.broker_code_ = "invalid_price";
-    if (type == OrderType::LIMIT) {
+    // `carries_caller_price`, not `== LIMIT`. 조건부지정가 (`02`) is a limit
+    // instruction until the close and this refused the price it needs while
+    // admitting one without, which `make_place_order_request` then sent as
+    // `ORD_UNPR="0"` -- an order at zero rather than at the stated limit.
+    if (carries_caller_price(type)) {
       if (!price) {
-        error.message_ = "KIS limit order requires a price";
+        error.message_ = "KIS order of this price basis requires a price";
         return error;
       }
       if (price->coefficient() <= 0) {
-        error.message_ = "KIS limit order price must be positive";
+        error.message_ = "KIS order price must be positive";
         return error;
       }
       if (price->scale() != 0) {
-        error.message_ = "KIS domestic limit order price must be a whole number of won";
+        error.message_ = "KIS domestic order price must be a whole number of won";
         return error;
       }
       return std::nullopt;
     }
     if (price) {
-      error.message_ = "KIS market order must not carry a price";
+      error.message_ =
+        "KIS takes no price for this basis; a market, best-limit, primary-limit, "
+        "mid-price or closing-price order is priced by the book";
       return error;
     }
     return std::nullopt;
@@ -2793,7 +2799,11 @@ private:
   }
 
   /** Returns an error when the order cannot be represented as a KIS cash order. */
-  static std::optional<BrokerError> validate_order(const OrderRequest& order, std::string& division) {
+  static std::optional<BrokerError> validate_order(
+    const KisConfig& config,
+    const OrderRequest& order,
+    std::string& division
+  ) {
     if (auto error = unsupported_client_order_id(order)) {
       return error;
     }
@@ -2820,8 +2830,15 @@ private:
     if (auto error = validate_price(order.type_, order.price_)) {
       return error;
     }
+    if (auto error = validate_venue(config, order.instrument_.venue_)) {
+      return error;
+    }
     return order_division(
-      order.type_, order.time_in_force_, order.session_, order.instrument_.venue_, division
+      order.type_,
+      order.time_in_force_,
+      order.session_,
+      effective_venue(config, order.instrument_.venue_),
+      division
     );
   }
 
@@ -2837,6 +2854,7 @@ private:
    * mutation it had been written to catch.
    */
   static std::optional<BrokerError> validate_amendment(
+    const KisConfig& config,
     const KisAmendment& amendment,
     std::string& division
   ) {
@@ -2849,11 +2867,14 @@ private:
     // The amendment carries its own condition and session. Sending `DAY` here,
     // as this did, re-shaped the order: an immediate-or-cancel order amended to
     // a new price arrived as a plain day order at that price.
+    if (auto error = validate_venue(config, amendment.venue_)) {
+      return error;
+    }
     return order_division(
       amendment.type_,
       amendment.time_in_force_,
       amendment.session_,
-      amendment.venue_,
+      effective_venue(config, amendment.venue_),
       division
     );
   }
@@ -2875,6 +2896,66 @@ private:
    * Note the sheet's restriction, which this adapter does not enforce because
    * the broker does: 모의투자는 KRX만 가능 -- a demo account accepts KRX alone.
    */
+  /**
+   * Returns an error when a venue is unusable on this configuration.
+   *
+   * Both KIS order sheets say `모의투자는 KRX만 가능`: a demo account routes to
+   * the Korea Exchange and nowhere else. That restriction is per credential
+   * rather than per broker, which Decision 2 settles as a **run-time** error
+   * rather than a compile-time capability -- one binary must not claim
+   * different things for a live key and a demo key.
+   *
+   * It is checked here because it became reachable. `Venue::COMBINED` is the
+   * default `venue_` of every `InstrumentId`, and it now sends `SOR`; before
+   * that it omitted the field and KIS routed the order to KRX, so an ordinary
+   * demo order worked by accident. Sending `SOR` and learning the restriction
+   * from the response would break every default demo placement, and would
+   * break it *after* a POST this library may never replay.
+   *
+   * `COMBINED` is therefore the one venue a demo account may still name: it
+   * means "route it", the demo environment has one venue to route to, and the
+   * field is omitted so KIS applies its own documented default rather than this
+   * adapter substituting a venue the caller did not ask for. An explicit `NXT`
+   * is refused, because that names a venue the account genuinely cannot reach.
+   */
+  static std::optional<BrokerError> validate_venue(const KisConfig& config, Venue venue) {
+    if (!config.is_demo_ || venue == Venue::COMBINED || venue == Venue::UNSPECIFIED ||
+        venue == Venue::KRX) {
+      return std::nullopt;
+    }
+    BrokerError error;
+    error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = false;
+    error.broker_code_ = "venue_unavailable";
+    error.message_ =
+      "KIS demo accounts trade on KRX only; the requested venue is unavailable on this "
+      "configuration";
+    return error;
+  }
+
+  /**
+   * Returns the venue whose code set a request must satisfy, for this
+   * configuration.
+   *
+   * A demo account reaches KRX whatever it asks for, so its order codes are
+   * KRX's. Checking a request against SOR's smaller list on demo would refuse
+   * orders the account can place and admit none it cannot.
+   */
+  static Venue effective_venue(const KisConfig& config, Venue venue) {
+    return config.is_demo_ ? Venue::KRX : venue;
+  }
+
+  /**
+   * Returns the `EXCG_ID_DVSN_CD` value to transmit, or `""` to omit the field.
+   *
+   * Omitted on a demo account: there is one venue, KIS documents an omitted
+   * field as proceeding at KRX, and naming a venue the sheet says demo does not
+   * support is how the default demo order broke.
+   */
+  static const char* transmitted_exchange(const KisConfig& config, Venue venue) {
+    return config.is_demo_ ? "" : exchange_code(venue);
+  }
+
   static const char* exchange_code(Venue venue) {
     switch (venue) {
       case Venue::KRX:
@@ -2905,7 +2986,8 @@ private:
       {"ORD_QTY", order.quantity_.str()},
       {"ORD_UNPR", order.price_ ? order.price_->str() : std::string("0")},
     };
-    if (const auto* exchange = exchange_code(order.instrument_.venue_); *exchange != '\0') {
+    if (const auto* exchange = transmitted_exchange(config, order.instrument_.venue_);
+        *exchange != '\0') {
       body.emplace("EXCG_ID_DVSN_CD", exchange);
     }
 
@@ -2953,7 +3035,8 @@ private:
     // per-venue `ORD_DVSN` sets as the placement sheet, and this never sent it:
     // an amendment to an order living at NXT was addressed to KRX, the sheet's
     // documented default for an omitted field.
-    if (const auto* exchange = exchange_code(amendment.venue_); *exchange != '\0') {
+    if (const auto* exchange = transmitted_exchange(config, amendment.venue_);
+        *exchange != '\0') {
       body.emplace("EXCG_ID_DVSN_CD", exchange);
     }
 
@@ -3041,7 +3124,7 @@ private:
     std::string division;
     auto invalid = validate_account(account);
     if (!invalid) {
-      invalid = validate_order(order, division);
+      invalid = validate_order(config_, order, division);
     }
     if (invalid) {
       complete_order_ack(std::move(completion), Result<KisOrderAck>(std::move(*invalid)));
@@ -3092,7 +3175,7 @@ private:
       invalid = std::move(error);
     }
     if (!invalid) {
-      invalid = validate_amendment(amendment, division);
+      invalid = validate_amendment(config_, amendment, division);
     }
     if (invalid) {
       complete_order_ack(std::move(completion), Result<KisOrderAck>(std::move(*invalid)));
@@ -3347,7 +3430,7 @@ private:
         );
         apply_order_shape(broker_detail::json_string(row, "ord_dvsn_cd"), order);
         order.quantity_ = Decimal64::parse(broker_detail::json_string(row, "ord_qty"));
-        if (order.type_ == OrderType::LIMIT) {
+        if (carries_caller_price(order.type_)) {
           order.price_ = Decimal64::parse(broker_detail::json_string(row, "ord_unpr"));
         }
         order.currency_ = Currency::krw();
@@ -3575,7 +3658,7 @@ private:
         );
         apply_order_shape(broker_detail::json_string(row, "ord_dvsn_cd"), order);
         order.quantity_ = Decimal64::parse(broker_detail::json_string(row, "ord_qty"));
-        if (order.type_ == OrderType::LIMIT) {
+        if (carries_caller_price(order.type_)) {
           order.price_ = Decimal64::parse(broker_detail::json_string(row, "ord_unpr"));
         }
         order.currency_ = Currency::krw();

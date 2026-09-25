@@ -933,7 +933,7 @@ enum class OrderSide {
  *
  * This is one of three independent facts about an order, and it is worth
  * saying why they are three fields rather than one. A broker names an order
- * with a single code -- KIS's `ORD_DVSN` has twenty-seven of them -- but that
+ * with a single code -- KIS's `ORD_DVSN` has twenty-eight of them -- but that
  * code is a product: `16` is a best-limit order, filled-or-killed, in the
  * regular session, and `45` is a best-limit order, immediate-or-cancel, in the
  * after-market. Flattening the product would mean six spellings of "best
@@ -947,6 +947,14 @@ enum class OrderSide {
  * unrecognized combination surfaces as `UNKNOWN` with the broker's own code
  * preserved beside it, because an order placed through another channel must
  * still be reportable.
+ *
+ * **Whether a basis carries a price is a property of the basis**, and callers
+ * and adapters both need it. `LIMIT`, `CONDITIONAL_LIMIT` and `STOP_LIMIT` are
+ * priced by the caller. `MARKET` is not, and neither are `BEST_LIMIT`,
+ * `PRIMARY_LIMIT`, `MID_PRICE` or `CLOSING_PRICE`: each of those names a rule
+ * for reading a price off the book or the session rather than a number, which
+ * is the whole point of asking for one. `carries_caller_price` states it once so
+ * no adapter has to re-derive it.
  */
 enum class OrderType {
   UNKNOWN,
@@ -967,6 +975,23 @@ enum class OrderType {
   /** 시간외종가 -- priced at a session's closing price rather than quoted. */
   CLOSING_PRICE,
 };
+
+/**
+ * Returns whether `type` is priced by the caller rather than by the market.
+ *
+ * A basis that is not priced by the caller must be sent with no price at all:
+ * KIS's `ORD_UNPR` is documented as "시장가 등 주문시 "0"으로 입력", and a
+ * best-limit or mid-price order takes its price from the book at the moment it
+ * is worked. A basis that *is* priced by the caller and is sent without one
+ * becomes an order at zero, which is why this is a function rather than a
+ * comparison against `LIMIT` repeated in each adapter -- that comparison was
+ * wrong for `CONDITIONAL_LIMIT`, and silently: 조건부지정가 is a limit
+ * instruction until the close, and it was being transmitted with `ORD_UNPR=0`.
+ */
+inline constexpr bool carries_caller_price(OrderType type) noexcept {
+  return type == OrderType::LIMIT || type == OrderType::CONDITIONAL_LIMIT ||
+    type == OrderType::STOP_LIMIT;
+}
 
 /**
  * How long an order lives and what it does with an unfilled remainder.
