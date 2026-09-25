@@ -200,6 +200,8 @@ struct ReplayConfig {
   strategy::RiskLimits limits_;
   /** Session the phases are derived against. */
   strategy::SessionWindow session_{strategy::SessionWindow::krx()};
+  /** Trailing bars the context caches, for the indicators a strategy reads. */
+  std::size_t series_capacity_{512};
   /**
    * The trading calendar a replayed strategy reads, installed on the context.
    *
@@ -217,8 +219,6 @@ struct ReplayConfig {
    * today, which is a decision for whoever wants it, with its own report caveat.
    */
   TradingCalendar calendar_;
-  /** Trailing bars the context caches, for the indicators a strategy reads. */
-  std::size_t series_capacity_{512};
 };
 
 /**

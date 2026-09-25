@@ -22,17 +22,6 @@ namespace runner {
 
 /** What a loop polls for, and the key its cadence is configured under. */
 enum class PollKind {
-  /**
-   * Which dates the market trades, which is half of what the market phase is derived from.
-   *
-   * **The only poll whose answer the loop itself reads.** Every other kind feeds the runner and is
-   * done; this one lands in `Context::set_calendar` and the loop then asks it whether today is a
-   * trading day, because `strategy::RiskLimits::permitted_phases_` decides whether anything may be
-   * sent at all. So it is first in `all_poll_kinds`, and it is the one cadence that is **on by
-   * default** -- see `PollSchedule::calendar_` for that argument, which is not the argument for the
-   * others.
-   */
-  CALENDAR,
   /** Completed bars, which is what most strategies trade on. */
   BARS,
   /** Current prices, for strategies that act between bars. */
@@ -51,6 +40,21 @@ enum class PollKind {
    * already reasons about.
    */
   BUYING_POWER,
+  /**
+   * Which dates the market trades, which is half of what the market phase is derived from.
+   *
+   * **The only poll whose answer the loop itself reads.** Every other kind feeds the runner and is
+   * done; this one lands in `Context::set_calendar` and the loop then asks it whether today is a
+   * trading day, because `strategy::RiskLimits::permitted_phases_` decides whether anything may be
+   * sent at all. It is therefore **first in `all_poll_kinds`**, and the one cadence that is **on by
+   * default** -- see `PollSchedule::calendar_` for that argument, which is not the argument for the
+   * others.
+   *
+   * Declared **last** even so, because these values are array indices and an enumerator inserted at
+   * the front renumbers every existing one. Where a kind is polled and where it is declared are two
+   * different questions with two different answers.
+   */
+  CALENDAR,
 };
 
 /**
@@ -154,6 +158,19 @@ inline constexpr std::string_view poll_outcome_name(PollOutcome outcome) noexcep
  * why a loop polling bars once a day still responds to an operator within a second.
  */
 struct PollSchedule {
+  std::optional<std::chrono::nanoseconds> bars_;
+  std::optional<std::chrono::nanoseconds> quotes_;
+  std::optional<std::chrono::nanoseconds> holdings_;
+  std::optional<std::chrono::nanoseconds> working_orders_;
+  /**
+   * How often to ask what may be spent; absent disables the poll.
+   *
+   * Absent by default, like every other cadence here, and a caller enforcing
+   * `RiskLimits::enforce_buying_power_` without setting it gets a runner that holds rather than one
+   * that guesses -- which is the safe direction and is visible in the report.
+   */
+  std::optional<std::chrono::nanoseconds> buying_power_;
+  std::chrono::nanoseconds tick_{std::chrono::seconds(1)};
   /**
    * How often to ask which dates the market trades. **The one cadence that is on by default.**
    *
@@ -172,22 +189,16 @@ struct PollSchedule {
    *
    * Absent disables it, which is then a visible act rather than a default nobody noticed. A broker
    * that publishes no calendar compiles no request whatever this says.
+   *
+   * **Declared last rather than beside the other cadences, and that is not tidiness.** This is an
+   * aggregate, so `PollSchedule{std::chrono::seconds(5)}` initializes whichever member comes first.
+   * Adding this one at the front silently turned that expression from "poll bars every five seconds"
+   * into "poll the calendar every five seconds, and never poll bars" -- a caller that compiles cleanly
+   * and stops receiving data. Appending preserves every existing positional mapping. The **poll**
+   * order is `all_poll_kinds`, where the calendar is deliberately first; declaration order here is
+   * only layout.
    */
   std::optional<std::chrono::nanoseconds> calendar_{std::chrono::hours(6)};
-  std::optional<std::chrono::nanoseconds> bars_;
-  std::optional<std::chrono::nanoseconds> quotes_;
-  std::optional<std::chrono::nanoseconds> holdings_;
-  std::optional<std::chrono::nanoseconds> working_orders_;
-  /**
-   * How often to ask what may be spent; absent disables the poll.
-   *
-   * Absent by default, like every other cadence here, and a caller enforcing
-   * `RiskLimits::enforce_buying_power_` without setting it gets a runner that holds rather than one
-   * that guesses -- which is the safe direction and is visible in the report.
-   */
-  std::optional<std::chrono::nanoseconds> buying_power_;
-  std::chrono::nanoseconds tick_{std::chrono::seconds(1)};
-
   /** Returns the interval configured for `kind`, or nothing when it is disabled. */
   std::optional<std::chrono::nanoseconds> interval_for(PollKind kind) const noexcept {
     switch (kind) {
@@ -773,8 +784,7 @@ private:
     // re-evaluated against them. That is what `backtest/engine.hpp:283-306` does for the replay, with
     // the same argument: a handler deciding on a mark from one moment beside a price from another is
     // not looking at a fresher picture, it is looking at an incoherent one.
-    iteration.phase_ = phase_at(iteration.at_);
-    runner_->context().set_phase(iteration.phase_);
+    install_phase(iteration);
 
     // **Established before any poll runs, because a poll is what feeds the runner.** A source's
     // `poll` calls `Runner::feed` itself -- `live::SessionSource::poll_bars` does, per instrument --
@@ -790,6 +800,17 @@ private:
         continue;
       }
       const auto outcome = source_->poll(kind, *runner_);
+      // **Re-established after every poll, not only before the first one.** The calendar poll can
+      // replace the answer the phase was derived from, and it is polled first -- so without this, a
+      // calendar arriving in this iteration saying the market is shut would be followed, in the same
+      // iteration, by a bar poll settling an order under the `OPEN` computed from the calendar it
+      // replaced. Found by Codex round 1, reproduced, and it is the shape every blocker in
+      // `ai/replay-working-orders` had: one coherence rule not reaching one more input.
+      //
+      // After *every* poll rather than after the calendar one, because "which poll can change the
+      // calendar" is a fact about the source rather than about this loop -- a source that installs one
+      // from somewhere else must not reintroduce the hole. The cost is a date comparison per poll.
+      install_phase(iteration);
       // `UNCHANGED` counts, because a listing that is identical to the last one is still a listing
       // -- but only on a source that publishes them at all, which `note_working_orders_read`
       // enforces: a broker without the inquiry answers `UNCHANGED` without asking anybody.
@@ -859,6 +880,22 @@ private:
     // failed, outranks anything the loop decided.
     iteration.gate_ = runner_->guard().blocking_reason();
     return iteration;
+  }
+
+  /**
+   * Computes the phase for this iteration and installs it, so nothing can send under a stale one.
+   *
+   * Called before the polls and again after each of them. The invariant is worth stating exactly,
+   * because a different failure lives either side of it: **at every point where an order can leave the
+   * process, `Context::phase_` is derived from the calendar as it stands at that point.** A poll can
+   * both replace the calendar and settle an order, so nothing weaker holds.
+   *
+   * The instant is the iteration's own `at_` throughout, never re-read from the clock, so a poll that
+   * took a second does not move the session boundary mid-iteration.
+   */
+  void install_phase(IterationReport& iteration) {
+    iteration.phase_ = phase_at(iteration.at_);
+    runner_->context().set_phase(iteration.phase_);
   }
 
   /**

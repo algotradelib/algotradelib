@@ -235,8 +235,24 @@ public:
   /** Returns how many times the order list was read. */
   std::size_t order_list_reads() const noexcept { return order_list_reads_; }
 
+  /**
+   * Serves the calendar a test scripted, so a calendar poll can *change* the answer mid-iteration.
+   *
+   * A source can both replace the calendar and settle an order in one iteration, which is the hole
+   * Codex round 1 found: the calendar is polled first, so a revision arriving now must reach the phase
+   * the bar poll after it is checked against.
+   */
+  void set_calendar(algotradelib::TradingCalendar calendar) { calendar_ = std::move(calendar); }
+
   /** Feeds one bar per bars poll, and records what the runner decided while doing it. */
   runner::PollOutcome poll(runner::PollKind kind, RunnerT& runner_instance) {
+    if (kind == runner::PollKind::CALENDAR) {
+      if (!calendar_) {
+        return runner::PollOutcome::UNCHANGED;
+      }
+      runner_instance.context().set_calendar(*calendar_);
+      return runner::PollOutcome::UPDATED;
+    }
     if (kind != runner::PollKind::BARS) {
       return runner::PollOutcome::UNCHANGED;
     }
@@ -284,6 +300,7 @@ private:
   std::size_t refused_{0};
   std::optional<strategy::HaltReason> last_refusal_;
   std::optional<strategy::GuardReason> last_guard_reason_;
+  std::optional<algotradelib::TradingCalendar> calendar_;
 };
 
 using FeedingSource = FeedingSourceFor<SendingRunner>;
@@ -2607,4 +2624,53 @@ TEST_CASE("a calendar cadence that answers nothing is named as such", "[loop][ph
   CHECK(report.final_phase_ == strategy::MarketPhase::UNKNOWN);
   REQUIRE(report.notes_.size() == 1);
   CHECK(report.notes_[0].find("no calendar arrived") != std::string::npos);
+}
+
+TEST_CASE("a calendar arriving mid-iteration reaches the order polled after it", "[loop][phase]") {
+  // **Codex round 1's blocker, reproduced and pinned.** The calendar is polled first and a bar poll
+  // settles orders, so a calendar arriving in this iteration saying the market is shut used to be
+  // followed, in the same iteration, by an order checked against the `OPEN` derived from the calendar
+  // it replaced. The clock never moved, so the crossing test above cannot see this: it is a revision
+  // of the *answer*, not a change of the hour.
+  //
+  // This is the shape every blocker in `ai/replay-working-orders` had -- one coherence rule not
+  // reaching one more input -- which is why the phase is now re-established after every poll rather
+  // than only before the first.
+  SendingRunner runner_instance;
+  FeedingSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  source.set_calendar(krx_calendar(/*trades=*/true));
+  SendingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  // The market trades, and the bar settled inside the poll goes out.
+  const auto trading = loop.run(stop, 1);
+  REQUIRE(trading.final_phase_ == strategy::MarketPhase::OPEN);
+  REQUIRE(source.placed() == 1);
+  REQUIRE(source.refused() == 0);
+
+  // Now the broker revises it: today is not a trading day after all. The clock has not moved.
+  source.set_calendar(krx_calendar(/*trades=*/false));
+  const auto revised = loop.run(stop, 1);
+
+  CHECK(revised.final_phase_ == strategy::MarketPhase::CLOSED);
+  // Nothing more went out, and the bar in that same iteration was refused by the revised answer.
+  CHECK(source.placed() == 1);
+  CHECK(source.refused() == 1);
+  CHECK(source.last_guard_reason() == strategy::GuardReason::PHASE_NOT_PERMITTED);
+}
+
+TEST_CASE("a poll schedule written positionally still means what it meant", "[loop][cadence]") {
+  // `PollSchedule` is an aggregate, so a member added at the front silently reassigns every
+  // positional brace initializer: `PollSchedule{5s}` would have started configuring the calendar and
+  // stopped polling bars, in a caller that compiles cleanly. Codex round 1 found this by compiling it.
+  const runner::PollSchedule schedule{std::chrono::seconds(5)};
+
+  REQUIRE(schedule.bars_.has_value());
+  CHECK(*schedule.bars_ == std::chrono::seconds(5));
+  CHECK_FALSE(schedule.quotes_.has_value());
+  // And the calendar keeps its own default, which no positional initializer states.
+  REQUIRE(schedule.calendar_.has_value());
+  CHECK(*schedule.calendar_ == std::chrono::hours(6));
 }
