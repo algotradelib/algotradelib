@@ -233,6 +233,30 @@ TEST_CASE("the KRX session boundaries fall where the exchange publishes them") {
   REQUIRE(session.phase(utc(2026, 3, 10, 14, 0), true) == strategy::MarketPhase::POST_CLOSE);
 }
 
+TEST_CASE("a session window stays brace-initializable by a caller stating their own market") {
+  // `local_date` brought a private member *function* with it, and a private member function keeps an
+  // aggregate an aggregate while a private data member would not. Pinned because the difference is
+  // invisible in review and the failure lands in a caller's code rather than here: an operator stating
+  // a market that is not KRX writes exactly this.
+  static_assert(
+    std::is_aggregate_v<strategy::SessionWindow>,
+    "SessionWindow must stay an aggregate: callers brace-initialize it member by member"
+  );
+
+  strategy::SessionWindow nyse{
+    std::chrono::minutes(9 * 60 + 30),
+    std::chrono::minutes(16 * 60),
+    -std::chrono::minutes(5 * 60),
+    "NYSE regular session (operator-stated)",
+  };
+  // 14:00 UTC is 09:00 in New York, half an hour before the open.
+  REQUIRE(nyse.phase(utc(2026, 3, 10, 14, 0), true) == strategy::MarketPhase::PRE_OPEN);
+  REQUIRE(nyse.phase(utc(2026, 3, 10, 15, 0), true) == strategy::MarketPhase::OPEN);
+  REQUIRE(nyse.phase(utc(2026, 3, 10, 21, 0), true) == strategy::MarketPhase::POST_CLOSE);
+  // And the date is still the market's: 03:00 UTC is the previous evening there.
+  REQUIRE(nyse.local_date(utc(2026, 3, 10, 3, 0)) == Date{2026, 3, 9});
+}
+
 TEST_CASE("the local date is the market's, not the process's") {
   const auto session = strategy::SessionWindow::krx();
   // 23:30 UTC is already 08:30 the next morning in Seoul. A loop that asked its own calendar
