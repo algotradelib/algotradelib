@@ -2509,6 +2509,10 @@ private:
       }
       return std::nullopt;
     }
+    // A backstop, not a branch describing a reachable state: both callers judge
+    // the basis first (`validate_order_shape`, `validate_amendment_shape`), so
+    // this fires only for a caller added without one. It stays because
+    // returning `nullopt` for an unjudged basis would let the order through.
     error.broker_code_ = "unsupported_order";
     error.message_ = "Toss orders currently support limit and market orders only";
     return error;
@@ -2588,6 +2592,16 @@ private:
         return error;
       }
     }
+    // The shape is judged before the price, because whether a price is required
+    // at all is a fact about the basis. Judged after, a mid-price order was
+    // refused by `validate_price` as "limit and market orders only" -- the right
+    // outcome under a code that names the wrong field, and it made the shape
+    // check below unreachable from this path.
+    if (auto error = validate_order_shape(
+          order.type_, order.time_in_force_, order.session_, order.instrument_.country_
+        )) {
+      return error;
+    }
     if (auto error = validate_quantity(order.quantity_)) {
       return error;
     }
@@ -2604,9 +2618,7 @@ private:
       error.message_ = "Toss Korean limit order price must be a whole number of won";
       return error;
     }
-    return validate_order_shape(
-      order.type_, order.time_in_force_, order.session_, order.instrument_.country_
-    );
+    return std::nullopt;
   }
 
   /**

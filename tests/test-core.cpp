@@ -6,6 +6,8 @@
 
 #include "local_https_server.hpp"
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -141,6 +143,19 @@ struct KisClientTestAccess {
     return KisClient::validate_order(order, division);
   }
 
+  static void apply_order_shape(std::string_view division, OrderSnapshot& order) {
+    KisClient::apply_order_shape(division, order);
+  }
+
+  static std::optional<BrokerError> amendment_division(
+    const KisAmendment& amendment,
+    std::string& division
+  ) {
+    return KisClient::order_division(
+      amendment.type_, amendment.time_in_force_, amendment.session_, amendment.venue_, division
+    );
+  }
+
   static bool valid_order_reference(const KisOrderRef& order) {
     return KisClient::valid_order_reference(order);
   }
@@ -270,6 +285,10 @@ struct TossClientTestAccess {
     const TossAmendment& amendment
   ) {
     return TossClient::make_replace_order_request(account_sequence, "access-token", amendment);
+  }
+
+  static std::optional<BrokerError> validate_amendment_shape(OrderType type) {
+    return TossClient::validate_amendment_shape(type);
   }
 
   static network::HttpRequest cancel_order_request(
@@ -1353,6 +1372,260 @@ TEST_CASE(
   }
 }
 
+
+namespace {
+
+/**
+ * KIS's `ORD_DVSN` table, transcribed a second time and by hand.
+ *
+ * Deliberately not read from `kOrderShapes`. A test that asked the mapping
+ * whether it agreed with itself would pass for any mapping; this is the
+ * workbook's own content, typed out from the sheets named below, so the
+ * assertions below compare the library against the document rather than
+ * against its own opinion.
+ *
+ * Sources, both from `한국투자증권_오픈API_전체문서_20260916_030000.xlsx`:
+ *   - `주식주문(현금)`, the request table: 00-06, 11-16, 21-24, 27-29, 41-47.
+ *   - `주식정정취소가능주문조회`, a response table: adds 07, omits 27-29 and 41-47.
+ */
+struct ShapeCase {
+  const char* code_;
+  OrderType type_;
+  TimeInForce condition_;
+  OrderSession session_;
+  bool krx_;
+  bool nxt_;
+  bool sor_;
+  bool requestable_;
+};
+
+constexpr ShapeCase kWorkbookShapes[] = {
+  {"00", OrderType::LIMIT, TimeInForce::DAY, OrderSession::REGULAR, true, true, true, true},
+  {"01", OrderType::MARKET, TimeInForce::DAY, OrderSession::REGULAR, true, false, true, true},
+  {"02", OrderType::CONDITIONAL_LIMIT, TimeInForce::DAY, OrderSession::REGULAR,
+   true, false, false, true},
+  {"03", OrderType::BEST_LIMIT, TimeInForce::DAY, OrderSession::REGULAR, true, true, true, true},
+  {"04", OrderType::PRIMARY_LIMIT, TimeInForce::DAY, OrderSession::REGULAR,
+   true, true, true, true},
+  {"05", OrderType::CLOSING_PRICE, TimeInForce::DAY, OrderSession::PRE_MARKET,
+   true, false, false, true},
+  {"06", OrderType::CLOSING_PRICE, TimeInForce::DAY, OrderSession::AFTER_HOURS,
+   true, false, false, true},
+  {"07", OrderType::LIMIT, TimeInForce::DAY, OrderSession::AFTER_HOURS_AUCTION,
+   true, false, false, false},
+  {"11", OrderType::LIMIT, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,
+   true, true, true, true},
+  {"12", OrderType::LIMIT, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR,
+   true, true, true, true},
+  {"13", OrderType::MARKET, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,
+   true, true, true, true},
+  {"14", OrderType::MARKET, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR,
+   true, true, true, true},
+  {"15", OrderType::BEST_LIMIT, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,
+   true, true, true, true},
+  {"16", OrderType::BEST_LIMIT, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR,
+   true, true, true, true},
+  {"21", OrderType::MID_PRICE, TimeInForce::DAY, OrderSession::REGULAR, true, true, false, true},
+  {"22", OrderType::STOP_LIMIT, TimeInForce::DAY, OrderSession::REGULAR, true, true, false, false},
+  {"23", OrderType::MID_PRICE, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,
+   true, true, false, true},
+  {"24", OrderType::MID_PRICE, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR,
+   true, true, false, true},
+  {"27", OrderType::LIMIT, TimeInForce::DAY, OrderSession::GTP, false, true, false, true},
+  {"28", OrderType::BEST_LIMIT, TimeInForce::DAY, OrderSession::GTP, false, true, false, true},
+  {"29", OrderType::PRIMARY_LIMIT, TimeInForce::DAY, OrderSession::GTP, false, true, false, true},
+  {"41", OrderType::LIMIT, TimeInForce::DAY, OrderSession::AFTER_MARKET,
+   true, false, false, true},
+  {"42", OrderType::LIMIT, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::AFTER_MARKET,
+   true, false, false, true},
+  {"43", OrderType::LIMIT, TimeInForce::FILL_OR_KILL, OrderSession::AFTER_MARKET,
+   true, false, false, true},
+  {"44", OrderType::BEST_LIMIT, TimeInForce::DAY, OrderSession::AFTER_MARKET,
+   true, false, false, true},
+  {"45", OrderType::BEST_LIMIT, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::AFTER_MARKET,
+   true, false, false, true},
+  {"46", OrderType::BEST_LIMIT, TimeInForce::FILL_OR_KILL, OrderSession::AFTER_MARKET,
+   true, false, false, true},
+  {"47", OrderType::PRIMARY_LIMIT, TimeInForce::DAY, OrderSession::AFTER_MARKET,
+   true, false, false, true},
+};
+
+/** Builds a request for `shape` at `venue`, priced so only the shape can refuse it. */
+OrderRequest shaped_order(const ShapeCase& shape, Venue venue) {
+  auto order = korean_limit_buy();
+  order.instrument_.venue_ = venue;
+  order.type_ = shape.type_;
+  order.time_in_force_ = shape.condition_;
+  order.session_ = shape.session_;
+  // Only a limit basis takes a price; every other basis must not carry one, and
+  // `validate_price` would refuse first and mask the answer this test wants.
+  if (shape.type_ != OrderType::LIMIT) {
+    order.price_.reset();
+  }
+  return order;
+}
+
+} // namespace
+
+TEST_CASE(
+  "KIS composes every order code the workbook publishes, and only where it publishes it",
+  "[broker][kis][order]"
+) {
+  SECTION("each venue accepts exactly the codes its own list carries") {
+    for (const auto& shape : kWorkbookShapes) {
+      const std::array<std::pair<Venue, bool>, 3> venues{{
+        {Venue::KRX, shape.krx_},
+        {Venue::NXT, shape.nxt_},
+        {Venue::COMBINED, shape.sor_},
+      }};
+      for (const auto& [venue, published] : venues) {
+        std::string division;
+        const auto error =
+          kis::KisClientTestAccess::validate_order(shaped_order(shape, venue), division);
+        const bool allowed = published && shape.requestable_;
+        INFO("code " << shape.code_ << " at venue " << static_cast<int>(venue));
+        if (allowed) {
+          REQUIRE_FALSE(error);
+          REQUIRE(division == shape.code_);
+        } else {
+          REQUIRE(error);
+          REQUIRE(error->category_ == ErrorCategory::INVALID_ARGUMENT);
+          // Nothing was sent, so nothing may be charged to the broker or the
+          // rate limiter. This is the property that makes the refusal a
+          // correction rather than a wasted order.
+          REQUIRE_FALSE(error->reached_broker_);
+        }
+      }
+    }
+  }
+
+  SECTION("no two published shapes compose the same code") {
+    std::vector<std::string> composed;
+    for (const auto& shape : kWorkbookShapes) {
+      if (!shape.requestable_) {
+        continue;
+      }
+      const auto venue = shape.krx_ ? Venue::KRX : Venue::NXT;
+      std::string division;
+      REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(shaped_order(shape, venue), division));
+      composed.push_back(division);
+    }
+    const auto before = composed.size();
+    std::sort(composed.begin(), composed.end());
+    composed.erase(std::unique(composed.begin(), composed.end()), composed.end());
+    // A collision would mean two different orders arriving at KIS as the same
+    // one, which no single-shape assertion above can detect.
+    REQUIRE(composed.size() == before);
+  }
+
+  SECTION("a market order bound for NXT is refused rather than sent as a KRX code") {
+    auto order = korean_limit_buy();
+    order.type_ = OrderType::MARKET;
+    order.price_.reset();
+    order.instrument_.venue_ = Venue::NXT;
+    std::string division;
+    const auto error = kis::KisClientTestAccess::validate_order(order, division);
+    // The sheet lists 01 under [KRX] and [SOR] and not under [NXT]. This used
+    // to compose 01 regardless and let the broker refuse it, at the far end of
+    // a POST that may never be replayed.
+    REQUIRE(error);
+    REQUIRE_FALSE(error->reached_broker_);
+    REQUIRE(division.empty());
+
+    order.instrument_.venue_ = Venue::KRX;
+    REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division));
+    REQUIRE(division == "01");
+  }
+
+  SECTION("a code KIS reports but does not accept is refused on a request") {
+    auto order = korean_limit_buy();
+    order.session_ = OrderSession::AFTER_HOURS_AUCTION;
+    std::string division;
+    // 07 is on the inquiry sheet and not on the order sheet.
+    REQUIRE(kis::KisClientTestAccess::validate_order(order, division));
+  }
+}
+
+TEST_CASE("KIS reads back every order code the workbook publishes", "[broker][kis][order]") {
+  SECTION("each code normalizes to its own three facts and keeps itself") {
+    for (const auto& shape : kWorkbookShapes) {
+      OrderSnapshot order;
+      kis::KisClientTestAccess::apply_order_shape(shape.code_, order);
+      INFO("code " << shape.code_);
+      REQUIRE(order.type_ == shape.type_);
+      REQUIRE(order.time_in_force_ == shape.condition_);
+      REQUIRE(order.session_ == shape.session_);
+      REQUIRE(order.shape_code_.view() == shape.code_);
+    }
+  }
+
+  SECTION("a code outside the table is unknown in all three and still reported") {
+    for (const auto* code : {"08", "31", "99", ""}) {
+      OrderSnapshot order;
+      kis::KisClientTestAccess::apply_order_shape(code, order);
+      INFO("code " << code);
+      REQUIRE(order.type_ == OrderType::UNKNOWN);
+      REQUIRE(order.time_in_force_ == TimeInForce::UNKNOWN);
+      REQUIRE(order.session_ == OrderSession::UNKNOWN);
+      REQUIRE(order.shape_code_.view() == code);
+    }
+  }
+}
+
+TEST_CASE("a KIS amendment restates the shape it is amending", "[broker][kis][order]") {
+  const kis::KisAccount account{"12345678", "01"};
+  kis::KisConfig live;
+
+  SECTION("an immediate-or-cancel order amended to a new price stays immediate-or-cancel") {
+    kis::KisAmendment amendment;
+    amendment.order_ = kis::KisOrderRef{"0000117057", "00950"};
+    amendment.type_ = OrderType::LIMIT;
+    amendment.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
+    amendment.session_ = OrderSession::REGULAR;
+    amendment.venue_ = Venue::KRX;
+    amendment.quantity_ = Decimal64::parse("1");
+    amendment.price_ = Decimal64::parse("71000");
+
+    std::string division;
+    REQUIRE_FALSE(kis::KisClientTestAccess::amendment_division(amendment, division));
+    // 11, not 00. The amendment path sent `DAY` unconditionally, so this order
+    // reached KIS as a plain day order at the new price -- a different order
+    // from the one being amended, and one nobody asked for.
+    REQUIRE(division == "11");
+
+    const auto body = json::parse(
+      kis::KisClientTestAccess::amend_order_request(account, live, amendment, false, division).body_
+    ).as_object();
+    REQUIRE(body.at("ORD_DVSN").as_string() == "11");
+    REQUIRE(body.at("EXCG_ID_DVSN_CD").as_string() == "KRX");
+  }
+
+  SECTION("an amendment to a venue that does not publish the code is refused") {
+    kis::KisAmendment amendment;
+    amendment.order_ = kis::KisOrderRef{"0000117057", "00950"};
+    amendment.type_ = OrderType::MARKET;
+    amendment.venue_ = Venue::NXT;
+    amendment.quantity_ = Decimal64::parse("1");
+    std::string division;
+    REQUIRE(kis::KisClientTestAccess::amendment_division(amendment, division));
+  }
+
+  SECTION("a cancellation copies the whole shape rather than the basis alone") {
+    WorkingOrder<kis::Broker> working;
+    working.order_.type_ = OrderType::BEST_LIMIT;
+    working.order_.time_in_force_ = TimeInForce::FILL_OR_KILL;
+    working.order_.session_ = OrderSession::AFTER_MARKET;
+    working.order_.instrument_ = InstrumentId{Country::KR, Venue::KRX, "005930"};
+    working.amendable_quantity_ = Decimal64::parse("5");
+
+    const auto instruction = cancel_all(working);
+    REQUIRE(instruction.shape_.type_ == OrderType::BEST_LIMIT);
+    REQUIRE(instruction.shape_.time_in_force_ == TimeInForce::FILL_OR_KILL);
+    REQUIRE(instruction.shape_.session_ == OrderSession::AFTER_MARKET);
+    REQUIRE(instruction.venue_ == Venue::KRX);
+  }
+}
+
 TEST_CASE(
   "KIS amendment distinguishes modification from cancellation",
   "[broker][kis][order]"
@@ -2152,6 +2425,47 @@ TEST_CASE(
     auto order = korean_limit_buy();
     order.quantity_ = Decimal64::parse("0.5");
     expect_rejection(std::move(order), "invalid_quantity");
+  }
+
+  SECTION("an execution condition Toss does not publish is refused before I/O") {
+    for (const auto condition :
+         {TimeInForce::IMMEDIATE_OR_CANCEL, TimeInForce::FILL_OR_KILL}) {
+      auto order = korean_limit_buy();
+      order.time_in_force_ = condition;
+      expect_rejection(std::move(order), "unsupported_time_in_force");
+    }
+  }
+
+  SECTION("a price basis Toss does not publish is refused before I/O") {
+    for (const auto type :
+         {OrderType::MID_PRICE, OrderType::BEST_LIMIT, OrderType::PRIMARY_LIMIT,
+          OrderType::CONDITIONAL_LIMIT, OrderType::STOP_LIMIT, OrderType::CLOSING_PRICE}) {
+      auto order = korean_limit_buy();
+      order.type_ = type;
+      order.price_.reset();
+      expect_rejection(std::move(order), "unsupported_order_type");
+    }
+  }
+
+  SECTION("a session Toss does not publish is refused before I/O") {
+    for (const auto session :
+         {OrderSession::PRE_MARKET, OrderSession::AFTER_HOURS, OrderSession::AFTER_MARKET,
+          OrderSession::GTP, OrderSession::AFTER_HOURS_AUCTION}) {
+      auto order = korean_limit_buy();
+      order.session_ = session;
+      expect_rejection(std::move(order), "unsupported_session");
+    }
+  }
+
+  SECTION("a modification to a basis Toss cannot express is refused, not coerced to LIMIT") {
+    tossinvest::TossAmendment amendment;
+    amendment.order_id_ = "abc";
+    amendment.type_ = OrderType::MID_PRICE;
+    amendment.quantity_ = Decimal64::parse("1");
+    // The modify path had no basis check at all, and `order_type_code` answered
+    // "LIMIT" for everything that was not MARKET, so this reached Toss as a
+    // limit order with no price.
+    REQUIRE(tossinvest::TossClientTestAccess::validate_amendment_shape(amendment.type_));
   }
 
   SECTION("a malformed idempotency key is rejected") {
