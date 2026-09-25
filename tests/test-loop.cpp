@@ -1347,10 +1347,12 @@ TEST_CASE("a zero-quantity position is not flattened", "[loop][stop]") {
   CHECK(runner_instance.executor().placed().empty());
 }
 
-TEST_CASE("a flatten outside market hours is refused and says so", "[loop][stop]") {
-  // The trap this report exists for. The guard permits only MarketPhase::OPEN by default, so a
-  // flatten issued when the market is shut cannot send -- which is correct, and silent unless the
-  // loop says otherwise. An operator who asked to be flat and heard nothing would believe they were.
+TEST_CASE("a flatten outside market hours goes out, because it closes", "[loop][stop]") {
+  // **This assertion is the inverse of the one it replaces, and the inversion is the branch.**
+  // `ai/phase-limit-exits` decided that `permitted_phases_` governs what an order opens rather than
+  // what it closes, so an operator who asks to be flat while the market is shut is no longer told
+  // "refused" by their own risk limits. The test below it keeps the refusal path pinned, because a
+  // branch that only inverts an assertion has removed a guard rather than changed one.
   InertRunner runner_instance;
   runner_instance.context().set_instrument(samsung_reference());
   serve_calendar(runner_instance, /*trades=*/false);
@@ -1368,9 +1370,45 @@ TEST_CASE("a flatten outside market hours is refused and says so", "[loop][stop]
 
   const auto report = loop.run(stop, 10);
 
+  // **The market really is shut.** Without this the test would pass against a fixture that left the
+  // phase at `OPEN`, and would then be asserting nothing about the exception at all -- the shape
+  // `ai/live-market-phase` found four times by mutating rather than by reading.
+  REQUIRE(report.final_phase_ == strategy::MarketPhase::CLOSED);
+  CHECK(report.flattened_ == 1);
+  CHECK(report.closing_placed_ == 1);
+  CHECK(report.closing_refused_ == 0);
+  CHECK(report.closing_complete());
+  REQUIRE(runner_instance.executor().placed().size() == 1);
+  // A sell of the whole holding: the order reaches flat exactly, which is the case the rule admits.
+  CHECK(runner_instance.executor().placed().front().side_ == algotradelib::OrderSide::SELL);
+  CHECK(runner_instance.executor().placed().front().quantity_ == algotradelib::Decimal64::parse("10"));
+}
+
+TEST_CASE("a closing instruction a guard still refuses is reported, not dropped", "[loop][stop]") {
+  // The trap this report exists for, kept after the phase limit stopped being the thing that springs
+  // it. An operator who asked to be flat and heard nothing would believe they were, and the phase is
+  // not the only limit that can refuse a close -- every other one still applies to an exit. A
+  // per-order ceiling is used here because it is the simplest limit that refuses this order for a
+  // reason that has nothing to do with the market being shut.
+  strategy::RiskLimits limits;
+  limits.max_order_notional_ = algotradelib::Decimal64::parse("1000");
+  InertRunner runner_instance(Inert{}, limits);
+  runner_instance.context().set_instrument(samsung_reference());
+  serve_calendar(runner_instance, /*trades=*/false);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner_instance.context().set_portfolio(portfolio_with("10", nullptr));
+  InertSource source;
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  loop.run(stop, 1);
+  stop.request(StopIntent::FLATTEN);
+
+  const auto report = loop.run(stop, 10);
+
   // It asked to close one position...
   CHECK(report.flattened_ == 1);
-  // ...and nothing went out.
+  // ...and nothing went out. 10 at 70,000 is 700,000 against a ceiling of 1,000.
   CHECK(report.closing_placed_ == 0);
   CHECK(report.closing_refused_ == 1);
   CHECK_FALSE(report.closing_complete());
@@ -3035,11 +3073,21 @@ TEST_CASE("a calendar revised by on_stop is in force for the closing pass", "[lo
   stop.request(StopIntent::FLATTEN);
   const auto report = loop.run(stop, 2);
 
-  // The flatten was asked for and refused, because by the time it was checked the market was shut --
-  // which is what the handler's own revision said.
+  // **The witness for this is no longer a refusal, and it had to change.** This test used to prove
+  // the re-derivation by watching the guard refuse the flatten under the revised phase. Since
+  // `ai/phase-limit-exits` a flatten is permitted whatever the phase -- it closes -- so a refusal
+  // can no longer distinguish "the phase was re-derived" from "it was not". The count of sends made
+  // under a phase the limits do not permit can: it is 1 only if the revision was in force when the
+  // closing pass was checked, and 0 if the pass still saw the `OPEN` the handler replaced. The
+  // order going out is therefore no longer evidence of anything on its own, and the counter is.
   CHECK(report.flattened_ == 1);
-  CHECK(report.closing_placed_ == 0);
-  CHECK(report.closing_refused_ == 1);
-  CHECK_FALSE(report.closing_complete());
-  CHECK(runner_instance.executor().placed().empty());
+  CHECK(report.closing_placed_ == 1);
+  CHECK(report.sends_outside_permitted_phase_ == 1);
+  // **The iteration itself ran under `OPEN`**, from the calendar as it stood before the handler
+  // replaced it -- `final_phase_` is the phase the last iteration installed, and `on_stop` runs
+  // after it. So the two assertions together are the whole mechanism: the run believed the market
+  // was open, and the closing pass was nonetheless checked against the revised `CLOSED`. A loop that
+  // did not re-derive before `settle_closing` would report the same `OPEN` here and a count of zero.
+  CHECK(report.final_phase_ == strategy::MarketPhase::OPEN);
+  CHECK(runner_instance.executor().placed().size() == 1);
 }

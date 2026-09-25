@@ -64,13 +64,35 @@ private:
    *
    * Positions only, not working orders: reconciliation withdraws anything working against a target
    * of zero by itself, so cancelling here as well would issue the same instruction twice.
+   *
+   * **One target per instrument, not per row.** A broker reporting one instrument as two lots is
+   * ordinary, and this loop once submitted a target for each of them. Two identical targets are not
+   * harmless: reconciliation plans each against the portfolio as it stood at the start of the pass,
+   * so one holding split across two rows produced two sells rather than one. With
+   * `reconcile(TargetPosition)` reading only the first row as well, the pair came to 120 against a
+   * holding of 100 -- an over-sell into a short, from a strategy whose entire purpose is to end the
+   * day flat. Both halves are fixed; this one is here because a duplicate target is wrong even with
+   * the netting in place, where it plans one correct sell and one that a guard must refuse.
    */
   template <class Ctx>
   void flatten(Ctx& ctx) {
+    std::vector<InstrumentId> targeted;
     for (const auto& position : ctx.portfolio().positions_) {
       if (position.quantity_.coefficient() == 0) {
         continue;
       }
+      bool seen = false;
+      for (const auto& already : targeted) {
+        if (already == position.instrument_) {
+          seen = true;
+          break;
+        }
+      }
+      if (seen) {
+        continue;
+      }
+      targeted.push_back(position.instrument_);
+
       TargetPosition target;
       target.instrument_ = position.instrument_;
       target.target_quantity_ = Decimal64::parse("0");

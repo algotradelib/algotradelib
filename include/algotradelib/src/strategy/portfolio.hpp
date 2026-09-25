@@ -87,6 +87,39 @@ struct Portfolio {
   }
 
   /**
+   * Returns the **net** quantity held of `instrument` across every row, or nothing when the
+   * arithmetic will not fit.
+   *
+   * **This is the one to size an order against; `quantity_of` is not.** That one returns the *first*
+   * matching row, and nothing dedupes what an adapter appends -- a broker reporting one instrument
+   * as two lots is ordinary, and `backtest::ReplayLedger` keeps a lot after it returns to flat. Two
+   * rows of 60 and 40 are a holding of 100, and reading 60 understates it. Anything computing "how
+   * much do I have" from the first row is wrong by however much the other rows hold.
+   *
+   * **Zero when nothing is reported, unlike `quantity_of`.** The distinction that one preserves --
+   * no row versus a row of zero -- is real and a caller wanting it should keep using it. It is not
+   * a distinction an *amount* can carry, and every caller of this one goes on to do arithmetic with
+   * the result, so folding both to zero here is what stops each of them inventing the same fold.
+   *
+   * `std::nullopt` means the sum overflowed or would not be representable, which is a broken
+   * snapshot rather than a quantity of zero, and is the one case a caller must not treat as flat.
+   */
+  std::optional<Decimal64> net_quantity_of(const InstrumentId& instrument) const {
+    auto total = Decimal64::parse("0");
+    for (const auto& position : positions_) {
+      if (!(position.instrument_ == instrument)) {
+        continue;
+      }
+      const auto sum = decimal_add(total, position.quantity_);
+      if (!sum) {
+        return std::nullopt;
+      }
+      total = *sum;
+    }
+    return total;
+  }
+
+  /**
    * Returns the quantity still working on `side` for `instrument`.
    *
    * The remaining quantity of each open order — ordered minus filled — summed. Orders in a

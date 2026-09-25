@@ -352,6 +352,23 @@ struct LoopReport {
    * spanning an open and a close sees transitions; a run of ten seconds sees the first one only.
    */
   std::size_t phase_transitions_{0};
+  /**
+   * Orders sent during this run under a phase `RiskLimits::permitted_phases_` did not permit.
+   *
+   * `permitted_phases_` governs what an order *opens*, not what it closes: an order reducing a held
+   * position toward flat is permitted whatever the phase, which is what lets an operator's flatten
+   * go out after the close instead of being refused by their own limits. This counts how often that
+   * happened, because it is the library sending into a session the operator said not to trade in and
+   * an empty report would not say so.
+   *
+   * **A send, not a decision.** An order the exception admitted and a later limit refused is not
+   * here; a broker's rejection is, because the request went out. Outside a session a rejection is
+   * the likeliest answer, so a counter that excluded it would read zero in the case it exists for.
+   *
+   * Non-zero is not a fault. A nightly flatten produces one; a strategy restating a close on every
+   * pass produces one per pass, and `RiskLimits::max_orders_per_window_` is the lever for that.
+   */
+  std::size_t sends_outside_permitted_phase_{0};
   /** Whether the loop gave up because a poll kept failing. */
   bool abandoned_{false};
   /** Which kind exhausted its failure budget, when one did. */
@@ -738,6 +755,13 @@ public:
     // least once, and the loop remembers that across runs. A second `run` on the same loop had been
     // reporting it as unread, which reads as a startup gate that never opened.
     report.order_list_read_ = order_list_read_;
+    // **Differenced around the run, not accumulated from the passes.** An order can leave the
+    // process from inside a source's `poll`, which calls `Runner::feed` itself and discards the
+    // report it gets back, so a per-pass figure would only ever see what a stop did. The runner's
+    // counter is monotonic for exactly this reason, and reading it at both ends is how
+    // `RiskGuard::total_sent` is already used around a callback. Taken per `run` so a second run on
+    // the same loop reports its own sends rather than the first one's as well.
+    const auto outside_phase_before = runner_->sends_outside_permitted_phase();
     for (auto& due : next_due_) {
       due.reset();
     }
@@ -776,6 +800,8 @@ public:
     //
     // A healthy run that simply exhausted `max_iterations` never halted anything, so there is
     // nothing to leave behind in that case.
+    report.sends_outside_permitted_phase_ =
+      runner_->sends_outside_permitted_phase() - outside_phase_before;
     note_sellable_convention(report);
     note_unestablished_phase(report);
     return report;

@@ -362,6 +362,31 @@ public:
   std::size_t placements_at_broker() const noexcept { return placements_at_broker_; }
 
   /**
+   * Returns how many orders this runner has sent under a phase the operator did not permit.
+   *
+   * Monotonic, so a caller differences it around whatever span it cares about, the way
+   * `PollingLoop` does with `RiskGuard::total_sent`. It is not a per-pass figure and deliberately
+   * not one: an order can leave the process from inside a source's poll, whose report nobody keeps,
+   * so a count that lived only on a `DryRunReport` would miss every ordinary send and report only
+   * what a stop did.
+   *
+   * **What it counts is a send, not a decision.** `RiskLimits::permitted_phases_` permits an order
+   * that closes a held position whatever the phase, which is what lets an operator's flatten go out
+   * after the close; this says how often that happened. An order the exception admitted and a later
+   * limit then refused is not counted, because nothing was sent. A broker's rejection *is* counted,
+   * because the request went out and the rejection is the broker's answer to it -- and outside a
+   * session that is the likeliest answer, so a counter excluding it would read zero in the case it
+   * exists for.
+   *
+   * A non-zero value is not by itself a fault. It is the library doing what the limit now says, and
+   * the number an operator needs to tell a nightly flatten from a strategy restating a close on
+   * every pass -- for which `RiskLimits::max_orders_per_window_` is the lever.
+   */
+  std::size_t sends_outside_permitted_phase() const noexcept {
+    return sends_outside_permitted_phase_;
+  }
+
+  /**
    * Starts inferring whether the broker's sellable figure already excludes resting sells.
    *
    * Off by default, because it costs a scan of the positions on every pass and answers a question
@@ -678,12 +703,31 @@ private:
       const auto reference = context_.instrument(order.instrument_);
       inputs.order_currency_ =
         reference ? std::optional<Currency>(reference->currency_) : std::nullopt;
-      if (auto refusal = guard_.check(order, view, inputs)) {
-        report.refused_.push_back(std::move(*refusal));
+      // `evaluate` rather than `check`, for one fact `check` drops: whether the phase limit admitted
+      // this order only because it closes a position. Nothing downstream can recover that -- the
+      // order, the portfolio and the report all look the same either way -- and it is the one thing
+      // an operator needs to see, because it is this library sending into a session the operator's
+      // own limits said not to trade in.
+      auto decision = guard_.evaluate(order, view, inputs);
+      if (decision.rejection_) {
+        report.refused_.push_back(std::move(*decision.rejection_));
         continue;
       }
 
       const auto outcome = executor_.place(order);
+      // **Counted where the outcome is known, not where the exception was granted.** An admitted
+      // order can still be refused by the sellable check, a buying-power limit or either ceiling and
+      // never leave the process, so counting at the guard would report a proxy for the harm rather
+      // than the harm. `REJECTED` counts: the request went out and the broker answered it, which is
+      // exactly the nightly-rejection case this exception was chosen knowing about, and a witness
+      // that stayed at zero through every one of them would be silent in the case it exists for.
+      // `REFUSED_LOCALLY` and `UNAVAILABLE` do not: nothing was sent. This is the same division
+      // `note_sent` already makes, for the same reason.
+      if (decision.admitted_outside_phase_ &&
+          (outcome == SendOutcome::ACCEPTED || outcome == SendOutcome::REJECTED ||
+           outcome == SendOutcome::INDETERMINATE)) {
+        ++sends_outside_permitted_phase_;
+      }
       // After every send, not only after a refusal. A terminal journal write that fails leaves the
       // broker's own outcome intact -- the send happened, and saying otherwise would be a lie -- but
       // it still means the journal is broken, and the runner must stop.
@@ -1208,6 +1252,8 @@ private:
   strategy::RiskGuard guard_;
   /** Placements sent that may have left an order resting; see `placements_at_broker`. */
   std::size_t placements_at_broker_{0};
+  /** Orders sent under a phase the limits did not permit; see `sends_outside_permitted_phase`. */
+  std::size_t sends_outside_permitted_phase_{0};
   bool probing_sellable_{false};
   strategy::SellableConventionProbe<Tag> sellable_probe_;
   Context context_;

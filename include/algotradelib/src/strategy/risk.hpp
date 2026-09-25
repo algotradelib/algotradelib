@@ -628,6 +628,161 @@ std::optional<Decimal64> projected_gross_exposure(
 }
 
 /**
+ * Returns whether `order` reduces a held position toward flat without carrying it past flat, or
+ * nothing when that cannot be established.
+ *
+ * **Pure, so it is testable without a runner or a guard**, for the reason `projected_gross_exposure`
+ * is: the rule is arithmetic over a portfolio snapshot and an order, and nothing about a broker, a
+ * session or a clock belongs in it.
+ *
+ * ## What it answers, exactly
+ *
+ * ```
+ * held      = the sum of every position row for the order's instrument
+ * closing   = SELL when held > 0, BUY when held < 0
+ * resting   = the remaining quantity of every open working order on `closing`
+ * committed = resting + order.quantity_
+ *
+ * true  ⟺  held ≠ 0  ∧  order.side_ == closing  ∧  committed ≤ |held|
+ * ```
+ *
+ * `std::nullopt` means the arithmetic could not be done honestly -- a sum that will not fit, a
+ * working row reporting more filled than it ordered. A caller must treat it as "no", because every
+ * caller of this is deciding whether to *relax* a restriction.
+ *
+ * ## Why it is not `max_gross_exposure_`'s rule
+ *
+ * `RiskGuard::check` permits an order that does not raise `projected_gross_exposure`, and it is
+ * tempting to reuse that here. It is **broader than this question and would admit an order that
+ * opens a position**: hold nothing with a buy of 100 resting, and the projection is
+ * `max(|0+100|, |0-0|) = 100`; add a candidate sell of 100 and it is `max(|0+100|, |0-100|) = 100`,
+ * unchanged. So that rule reads the sell as costless while it opens a short of 100 if it alone
+ * fills. The ceiling can afford this because it is a *ceiling*: the projection already counts the
+ * resting buy, so the account cannot exceed the limit either way. A phase restriction cannot,
+ * because it is asking a different question -- not "how big can this get" but "is this order
+ * closing something". `held != 0` is what separates them.
+ *
+ * ## Why the sums are written out rather than taken from `Portfolio`
+ *
+ * Both of the obvious accessors are wrong here, in opposite directions, and both would fail
+ * quietly:
+ *
+ * - `Portfolio::quantity_of` returns the **first** matching position row and nothing dedupes what an
+ *   adapter appends -- a broker reporting one instrument as two lots is ordinary. It under-reports
+ *   `held`, which refuses an exit the operator chose to allow, for a reason no report would show.
+ * - `Portfolio::working_quantity` **skips** a row whose remaining quantity will not compute or comes
+ *   out negative. That is right for a figure a strategy reads and wrong for a limit: it
+ *   under-reports `resting`, which *admits* an order that can carry the position through flat and
+ *   open the opposite one. This refuses such a snapshot instead, which is the rule
+ *   `projected_gross_exposure` already states for the same reason.
+ *
+ * A flat position row contributes zero and is not an error, matching the projection's treatment of
+ * one: a broker may list a closed position, and `ReplayLedger` keeps a lot after it returns to flat.
+ * Rows of opposing signs for one instrument net, because the question is about the net holding.
+ */
+template <typename Broker>
+std::optional<bool> closes_toward_flat(
+  const Portfolio<Broker>& portfolio, const PlannedOrder& order
+) {
+  const auto zero = Decimal64::parse("0");
+
+  // **Net across every row, which is what `net_quantity_of` exists for.** `quantity_of` returns the
+  // first, and reading it here would understate a split holding and refuse an exit the operator
+  // chose to allow -- silently, since no report carries a figure this rule never computed.
+  const auto net = portfolio.net_quantity_of(order.instrument_);
+  if (!net) {
+    return std::nullopt;
+  }
+  const auto held = *net;
+  // **No row at all and a row of zero are different claims, and this rule gives them the same
+  // answer.** `Portfolio::quantity_of` keeps them apart -- nothing versus zero -- because a broker
+  // omitting a closed position is saying something. Here neither is a holding to close, so both are
+  // `false`, and distinguishing them would produce two paths to one answer.
+  if (held.coefficient() == 0) {
+    return false;
+  }
+
+  // **A quantity that is not positive cannot close anything, and must not be arithmetic here.**
+  // `PlannedOrder::quantity_` is a public field, and a negative one is constructible through the
+  // ordinary path: `SizeSpec::quantity` accepts any decimal and `reconcile(OrderIntent)` rejects a
+  // size only once it *rounds to zero*. Without this, a sell of -1 against a long of 100 satisfies
+  // `committed <= |held|` and would be granted the exception -- an inconsistent order relaxing a
+  // restriction, which is the one direction this rule must never fail in. Zero is excluded with it:
+  // an order that closes nothing is not a close.
+  if (!decimal_less(zero, order.quantity_)) {
+    return false;
+  }
+
+  const auto closing = decimal_less(zero, held) ? OrderSide::SELL : OrderSide::BUY;
+  if (order.side_ != closing) {
+    return false;
+  }
+
+  auto resting = zero;
+  for (const auto& working : portfolio.working_) {
+    if (!(working.order_.instrument_ == order.instrument_) || working.order_.side_ != closing) {
+      continue;
+    }
+    if (!order_is_open(working.order_.status_)) {
+      continue;
+    }
+    const auto remaining = decimal_subtract(
+      working.order_.quantity_, working.order_.execution_.filled_quantity_
+    );
+    // A row filled beyond what it ordered refuses rather than counting zero. The snapshot is
+    // inconsistent about an order on the very side this rule is measuring, and a rule that relaxes a
+    // restriction must not infer "nothing outstanding" from a contradiction.
+    if (!remaining || decimal_less(*remaining, zero)) {
+      return std::nullopt;
+    }
+    const auto sum = decimal_add(resting, *remaining);
+    if (!sum) {
+      return std::nullopt;
+    }
+    resting = *sum;
+  }
+
+  const auto committed = decimal_add(resting, order.quantity_);
+  if (!committed) {
+    return std::nullopt;
+  }
+  const auto magnitude = risk_detail::decimal_magnitude(held);
+  if (!magnitude) {
+    return std::nullopt;
+  }
+  // `<=`, so an order that reaches flat exactly is a close. That is the ordinary case and the one
+  // `vanilla::TimedLiquidation` produces: reconciliation targets zero, so the order is the whole
+  // holding.
+  return !decimal_less(*magnitude, *committed);
+}
+
+/**
+ * What a guard decided about one order, and on what terms.
+ *
+ * `check` returns the first member and is what almost every caller wants. This exists for the one
+ * caller that has to *count* what it sent: `admitted_outside_phase_` is the only fact about a
+ * permitted order that cannot be recovered afterwards from the order, the portfolio or the report.
+ *
+ * **The flag survives a later refusal, and that asymmetry is deliberate.** It says the phase check
+ * used its closing exception, not that the order went anywhere; the sellable check, a buying-power
+ * limit, a position ceiling or the exposure ceiling can all still refuse it. A caller counting
+ * orders that actually left the process must therefore read this at the *send*, which is why
+ * `Runner` increments where it learns the outcome rather than here. Counting at the admission would
+ * report a proxy for the harm instead of the harm.
+ */
+struct GuardDecision {
+  /** The reason the order was refused, or nothing when it was permitted. */
+  std::optional<GuardRejection> rejection_;
+  /**
+   * Whether `permitted_phases_` did not admit this order's phase and only its closing exception did.
+   *
+   * False whenever the phase was permitted outright, whenever the limit is absent, and on every
+   * refusal.
+   */
+  bool admitted_outside_phase_{false};
+};
+
+/**
  * Checks planned orders against the operator's limits, and remembers what was sent.
  *
  * Stateful, unlike reconciliation, because a rate limit is a statement about history. The state is
@@ -804,13 +959,29 @@ public:
   /**
    * Returns the reason `order` is not permitted, or nothing when it is.
    *
+   * The narrow answer, and the one almost every caller wants. `evaluate` is the same check with the
+   * one extra fact a caller has to know if it is going to *count* what it sends; see
+   * `GuardDecision`.
+   */
+  template <typename Broker>
+  std::optional<GuardRejection> check(
+    const PlannedOrder& order,
+    const Portfolio<Broker>& portfolio,
+    const GuardInputs& inputs
+  ) const {
+    return evaluate(order, portfolio, inputs).rejection_;
+  }
+
+  /**
+   * Returns whether `order` is permitted, and on what terms.
+   *
    * Checked in order of cost and of bluntness: the kill switch, then what the operator has
    * forbidden outright, then the arithmetic ones. That order means an operator reading a log sees
    * the most fundamental reason rather than an incidental one — a halted system reports the halt,
    * not a notional ceiling it also happened to exceed.
    */
   template <typename Broker>
-  std::optional<GuardRejection> check(
+  GuardDecision evaluate(
     const PlannedOrder& order,
     const Portfolio<Broker>& portfolio,
     const GuardInputs& inputs
@@ -820,7 +991,7 @@ public:
       rejection.reason_ = reason;
       rejection.instrument_ = order.instrument_;
       rejection.tag_ = order.tag_;
-      return std::optional<GuardRejection>(rejection);
+      return GuardDecision{std::optional<GuardRejection>(rejection), false};
     };
     const auto refuse_with =
       [&order](GuardReason reason, Decimal64 limit, Decimal64 attempted) {
@@ -830,13 +1001,17 @@ public:
         rejection.tag_ = order.tag_;
         rejection.limit_ = std::move(limit);
         rejection.attempted_ = std::move(attempted);
-        return std::optional<GuardRejection>(rejection);
+        return GuardDecision{std::optional<GuardRejection>(rejection), false};
       };
+    // Set by the phase check alone, and carried all the way out even though every later limit can
+    // still refuse the order. That is the point: a caller counting what went out has to learn this
+    // from the decision that sent it, not from the moment it was admitted.
+    bool admitted_outside_phase = false;
 
     if (const auto holding = blocking_reason()) {
-      auto rejection = refuse(GuardReason::TRADING_HALTED);
-      rejection->halt_reason_ = *holding;
-      return rejection;
+      auto decision = refuse(GuardReason::TRADING_HALTED);
+      decision.rejection_->halt_reason_ = *holding;
+      return decision;
     }
 
     if (limits_.permitted_universe_) {
@@ -861,7 +1036,31 @@ public:
         }
       }
       if (!permitted) {
-        return refuse(GuardReason::PHASE_NOT_PERMITTED);
+        // **The phase governs what an order opens, not what it closes.** A restriction that cannot
+        // express an exit turns "the market is shut" into "you may not reduce risk", and this
+        // library already answered that question once: `max_gross_exposure_` permits an order that
+        // does not raise reachable exposure however far over the ceiling the account is, because a
+        // limit that cannot be de-risked past is worse than one that does nothing. The same
+        // argument applies here with more force, since the account did not choose to be holding
+        // when the session ended.
+        //
+        // **A different predicate, though, and deliberately so.** `closes_toward_flat` carries why:
+        // "does not raise the projection" admits a sell against a flat book with a buy resting,
+        // which opens a short. See its documentation before reusing either rule for the other.
+        //
+        // What this costs, and it was chosen with the cost known: the order goes to a broker that
+        // will very likely reject it outside its session, so a nightly flatten becomes a rejection
+        // rather than a refusal. That is the broker's own answer rather than this library's guess,
+        // it is journalled, and `max_orders_per_window_` is the lever for a strategy that restates
+        // a close on every pass.
+        const auto closing = closes_toward_flat(portfolio, order);
+        // Unknown refuses, because this branch only ever *relaxes* a restriction the operator
+        // stated. A snapshot whose arithmetic does not work cannot establish that an order closes
+        // anything, and Decision 6 does not permit approximating it.
+        if (!closing || !*closing) {
+          return refuse(GuardReason::PHASE_NOT_PERMITTED);
+        }
+        admitted_outside_phase = true;
       }
     }
 
@@ -1037,7 +1236,7 @@ public:
       }
     }
 
-    return std::nullopt;
+    return GuardDecision{std::nullopt, admitted_outside_phase};
   }
 
 private:

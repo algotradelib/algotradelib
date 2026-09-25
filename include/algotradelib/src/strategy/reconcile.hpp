@@ -417,7 +417,21 @@ Plan<Broker> reconcile(
   }
 
   const auto zero = Decimal64::parse("0");
-  const auto held = portfolio.quantity_of(target.instrument_).value_or(zero);
+  // **Net across every position row, not the first one.** This read `quantity_of`, which returns the
+  // first match, and a broker reporting one instrument as two lots is ordinary -- so a target of
+  // zero against rows of 60 and 40 planned a sell of 60 and left 40 held, while
+  // `vanilla::TimedLiquidation` submitted one such target *per row* and planned that same sell
+  // twice. Together those sold 120 of a holding of 100 wherever the phase permitted it. Sizing
+  // against the net holding is the same rule `projected_gross_exposure` and `closes_toward_flat`
+  // already apply, and having reconciliation disagree with the guards about how much is held is the
+  // partial-coherence failure this repository has paid for before.
+  const auto net = portfolio.net_quantity_of(target.instrument_);
+  if (!net) {
+    // A snapshot whose own rows will not add up cannot say what reaching a target would take, and
+    // `value_or(zero)` here would read a broken listing as flat and order the whole target.
+    return reject(RejectReason::NOT_REPRESENTABLE);
+  }
+  const auto held = *net;
   const auto needed = decimal_subtract(target.target_quantity_, held);
   if (!needed) {
     return reject(RejectReason::NOT_REPRESENTABLE);

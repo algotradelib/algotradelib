@@ -114,14 +114,24 @@ TEST_CASE("timed liquidation flattens when the session leaves the phases it hold
   // Inside the session it holds.
   REQUIRE(dry.feed(strategy::MarketPhase::OPEN).quiet());
 
-  // After the close it flattens -- but the guard's default only permits trading while open, so the
-  // order is refused rather than sent. The strategy did its job; the operator's limit had the last
-  // word, which is the correct division.
+  // After the close it flattens, **under the default limits**, which is what `ai/phase-limit-exits`
+  // changed and the whole reason this vanilla is usable. `permitted_phases_` still defaults to
+  // `{OPEN}` and still refuses everything that opens a position outside the session; a sell of the
+  // whole holding closes one, so the limit does not stand in front of it. Before that branch this
+  // strategy could not place the order it exists to place without the operator switching its own
+  // phase limit off.
   const auto after = dry.feed(strategy::MarketPhase::POST_CLOSE);
-  REQUIRE(after.refused_.size() == 1);
-  REQUIRE(after.refused_[0].reason_ == strategy::GuardReason::PHASE_NOT_PERMITTED);
+  REQUIRE(after.refused_.empty());
+  REQUIRE(after.would_place_.size() == 1);
+  REQUIRE(after.would_place_[0].side_ == OrderSide::SELL);
+  REQUIRE(after.would_place_[0].quantity_ == Decimal64::parse("10"));
+  // And the runner says it sent under a phase the operator did not permit, because it did.
+  REQUIRE(dry.sends_outside_permitted_phase() == 1);
 
-  // Permitting the post-close phase lets the flattening through.
+  // Widening the limit reaches the same place by the other road, and **does not** count as a send
+  // outside the permitted phases -- the phase was permitted outright, so no exception was used.
+  // Without this half the counter could be incremented for any order in a non-`OPEN` phase and the
+  // assertion above would still pass.
   strategy::RiskLimits limits;
   limits.permitted_phases_ =
     std::vector<strategy::MarketPhase>{strategy::MarketPhase::OPEN,
@@ -133,6 +143,37 @@ TEST_CASE("timed liquidation flattens when the session leaves the phases it hold
   REQUIRE(sent.would_place_.size() == 1);
   REQUIRE(sent.would_place_[0].side_ == OrderSide::SELL);
   REQUIRE(sent.would_place_[0].quantity_ == Decimal64::parse("10"));
+  REQUIRE(permitted.sends_outside_permitted_phase() == 0);
+}
+
+TEST_CASE("timed liquidation flattens a holding the broker reports as two lots") {
+  // **Codex round 0's blocker, and it was a real over-sell.** A broker reporting one instrument as
+  // two lots is ordinary. This strategy submitted one zero target per *row*, and
+  // `reconcile(TargetPosition)` sized each against `Portfolio::quantity_of`, which returns the
+  // *first* row -- so rows of 60 and 40 produced two sells of 60, and wherever the phase permitted
+  // them both went out: 120 sold against a holding of 100, leaving a short, from the one strategy
+  // whose entire purpose is to end the day flat. One target per instrument and a net-of-all-rows
+  // reconciliation are both needed; either alone still gets it wrong.
+  vanilla::TimedLiquidation flatten;
+  runner::DryRunner<vanilla::TimedLiquidation> dry(flatten);
+  arrange(dry);
+
+  strategy::Portfolio<runner::DryTag> portfolio;
+  for (const char* lot : {"60", "40"}) {
+    HoldingPosition position;
+    position.instrument_ = samsung();
+    position.quantity_ = Decimal64::parse(lot);
+    portfolio.positions_.push_back(position);
+  }
+  dry.context().set_portfolio(portfolio);
+
+  const auto after = dry.feed(strategy::MarketPhase::POST_CLOSE);
+
+  // Exactly one order, for the whole net holding.
+  REQUIRE(after.refused_.empty());
+  REQUIRE(after.would_place_.size() == 1);
+  REQUIRE(after.would_place_[0].side_ == OrderSide::SELL);
+  REQUIRE(after.would_place_[0].quantity_ == Decimal64::parse("100"));
 }
 
 TEST_CASE("timed liquidation flattens on an uncovered calendar date too") {
