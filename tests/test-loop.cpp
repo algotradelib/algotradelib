@@ -244,6 +244,17 @@ public:
    */
   void set_calendar(algotradelib::TradingCalendar calendar) { calendar_ = std::move(calendar); }
 
+  /**
+   * Scripts a calendar installed from inside the **bars** poll, before the bar is fed.
+   *
+   * The one sequence the loop cannot make safe, because nothing of its runs between a source's
+   * `set_calendar` and its own `Runner::feed`. `PollKind::CALENDAR` states the contract that forbids it
+   * and the loop reports a source that breaks it; this is how that report gets tested.
+   */
+  void set_calendar_before_feeding(algotradelib::TradingCalendar calendar) {
+    calendar_before_feeding_ = std::move(calendar);
+  }
+
   /** Feeds one bar per bars poll, and records what the runner decided while doing it. */
   runner::PollOutcome poll(runner::PollKind kind, RunnerT& runner_instance) {
     if (kind == runner::PollKind::CALENDAR) {
@@ -255,6 +266,9 @@ public:
     }
     if (kind != runner::PollKind::BARS) {
       return runner::PollOutcome::UNCHANGED;
+    }
+    if (calendar_before_feeding_) {
+      runner_instance.context().set_calendar(*calendar_before_feeding_);
     }
     const auto report = runner_instance.feed(bar_at(++bars_));
     placed_ += report.would_place_.size();
@@ -317,6 +331,7 @@ private:
   std::optional<strategy::GuardReason> last_guard_reason_;
   std::optional<algotradelib::TradingCalendar> calendar_;
   std::optional<algotradelib::TradingCalendar> calendar_on_order_list_;
+  std::optional<algotradelib::TradingCalendar> calendar_before_feeding_;
 };
 
 using FeedingSource = FeedingSourceFor<SendingRunner>;
@@ -2781,7 +2796,14 @@ TEST_CASE("a calendar learned during the order-list read reaches the first poll"
   // Seeded open, so the pre-loop install computes OPEN and only the order-list read changes it.
   serve_calendar(runner_instance, /*trades=*/true);
   source.set_calendar_on_order_list(krx_calendar(/*trades=*/false));
-  SendingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  // **The calendar cadence is off, and that is what makes this test discriminate.** With it on, the
+  // calendar poll runs before the bar poll and its own install refreshes the phase in passing -- so the
+  // defect is masked and the test passes against it, which is exactly what it did when first written.
+  runner::PollSchedule schedule;
+  schedule.bars_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  schedule.calendar_.reset();
+  SendingLoop loop(runner_instance, source, schedule, test_clock());
   StopSource stop;
 
   const auto report = loop.run(stop, 1);
@@ -2791,4 +2813,59 @@ TEST_CASE("a calendar learned during the order-list read reaches the first poll"
   CHECK(source.placed() == 0);
   REQUIRE(source.refused() == 1);
   CHECK(source.last_guard_reason() == strategy::GuardReason::PHASE_NOT_PERMITTED);
+}
+
+TEST_CASE("a source that writes the calendar mid-poll is reported, since it cannot be stopped",
+          "[loop][phase]") {
+  // **The limit of the mechanism, made visible.** Codex round 2 probed it: a source can replace the
+  // calendar and then feed the runner inside one `poll`, and no loop code runs in between, so that
+  // order is settled against the phase as it stood when the poll began. Re-deriving the phase before
+  // every poll cannot fix it and this test does not pretend otherwise -- the order goes out under the
+  // stale phase, which is asserted rather than hidden.
+  //
+  // What the loop owes is to notice. `PollKind::CALENDAR` states the contract, `SessionSource`
+  // satisfies it, and a source that does not gets a line in the report naming the poll.
+  SendingRunner runner_instance;
+  FeedingSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  serve_calendar(runner_instance, /*trades=*/true);
+  source.set_calendar_before_feeding(krx_calendar(/*trades=*/false));
+  runner::PollSchedule schedule;
+  schedule.bars_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  schedule.calendar_.reset();
+  SendingLoop loop(runner_instance, source, schedule, test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 1);
+
+  // The order went out under the phase as it stood before the poll. This is the documented limit.
+  CHECK(source.placed() == 1);
+  CHECK(source.refused() == 0);
+  // And the report says which poll did it, exactly once.
+  CHECK(report.calendar_written_outside_its_poll_ == 1);
+  REQUIRE_FALSE(report.notes_.empty());
+  CHECK(report.notes_[0].find("bars poll replaced the trading calendar") != std::string::npos);
+}
+
+TEST_CASE("the calendar poll replacing the calendar is not reported as a violation",
+          "[loop][phase]") {
+  // The other side of it: replacing the calendar is the calendar poll's whole job, and both shipped
+  // brokers stamp every answer, so a fingerprint that did not exclude it would report a violation on
+  // every single iteration.
+  PhaseRunner runner_instance;
+  PhaseSource source;
+  source.set_calendar(krx_calendar());
+  runner::PollSchedule schedule;
+  schedule.calendar_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  PhaseLoop loop(runner_instance, source, schedule, test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 5);
+
+  REQUIRE(report.attempted(runner::PollKind::CALENDAR) == 5);
+  CHECK(report.calendar_written_outside_its_poll_ == 0);
+  CHECK(report.notes_.empty());
 }
