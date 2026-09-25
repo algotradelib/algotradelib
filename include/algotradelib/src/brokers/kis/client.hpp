@@ -2858,7 +2858,7 @@ private:
       order.type_,
       order.time_in_force_,
       order.session_,
-      effective_venue(config, order.venue_),
+      order.venue_,
       division
     );
   }
@@ -2895,7 +2895,7 @@ private:
       amendment.type_,
       amendment.time_in_force_,
       amendment.session_,
-      effective_venue(config, amendment.venue_),
+      amendment.venue_,
       division
     );
   }
@@ -2939,6 +2939,13 @@ private:
    * `COMBINED` are refused, because each names something the account cannot
    * reach -- `COMBINED` is SOR, which routes across venues the demo
    * environment does not have.
+   *
+   * **This is why there is no separate "which code set does a demo request
+   * satisfy" step.** There was one, and a surviving mutation showed it could not
+   * change any outcome: once this refuses `NXT` and `COMBINED`, the only venues a
+   * demo request can carry are `UNSPECIFIED` and `KRX`, and both already select
+   * KRX's code set. A branch describing a state that cannot happen is worse than
+   * no branch, because a reader who sees it believes it can.
    */
   static std::optional<BrokerError> validate_venue(const KisConfig& config, Venue venue) {
     if (!config.is_demo_ || venue == Venue::UNSPECIFIED || venue == Venue::KRX) {
@@ -2952,18 +2959,6 @@ private:
       "KIS demo accounts trade on KRX only; the requested venue is unavailable on this "
       "configuration";
     return error;
-  }
-
-  /**
-   * Returns the venue whose code set a request must satisfy, for this
-   * configuration.
-   *
-   * A demo account reaches KRX whatever it asks for, so its order codes are
-   * KRX's. Checking a request against SOR's smaller list on demo would refuse
-   * orders the account can place and admit none it cannot.
-   */
-  static Venue effective_venue(const KisConfig& config, Venue venue) {
-    return config.is_demo_ ? Venue::KRX : venue;
   }
 
   /**

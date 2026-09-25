@@ -1,4 +1,5 @@
 #include <algotradelib/kis>
+#include <algotradelib/runner>
 #include <algotradelib/strategy>
 #include <algotradelib/tossinvest>
 
@@ -1646,9 +1647,38 @@ TEST_CASE(
   );
   REQUIRE(portfolio.net_quantity_of(order.instrument_) == Decimal64::parse("10"));
 
-  // 4. And a cancellation of it addresses the venue it was routed to.
+  // 4. A cancellation of it addresses the venue it was routed to.
   working.amendable_quantity_ = Decimal64::parse("10");
   REQUIRE(cancel_all(working).venue_ == Venue::NXT);
+
+  // 5. And recovery, after the window has closed, finds it. This is the leg the
+  //    whole split exists for: a journal entry recorded for an NXT-routed order
+  //    and the broker's listing of that same order must be the same
+  //    instrument, or the verdict is NOT_PLACED, the hold clears, and the
+  //    runner sends a second live order.
+  runner::JournalEntry entry;
+  entry.id_ = "run-1";
+  entry.action_ = runner::JournalAction::PLACE;
+  entry.outcome_ = runner::JournalOutcome::PENDING;
+  entry.recorded_at_ = *resting.ordered_at_;
+  entry.instrument_ = order.instrument_;
+  entry.side_ = order.side_;
+  entry.type_ = order.type_;
+  entry.time_in_force_ = order.time_in_force_;
+  entry.session_ = order.session_;
+  entry.quantity_ = order.quantity_;
+  entry.price_ = order.price_;
+
+  runner::OpenInstruction instruction;
+  instruction.entry_ = entry;
+  instruction.opened_at_ = entry.recorded_at_;
+
+  const auto closed = entry.recorded_at_ + std::chrono::minutes(10);
+  const auto match = runner::match_against(instruction, {resting}, closed);
+  REQUIRE(match.verdict_ == runner::MatchVerdict::MATCHED);
+  REQUIRE(match.order_id_ == "0001569139");
+  // Stated as its own assertion because it is the harm, not the mechanism.
+  REQUIRE(match.verdict_ != runner::MatchVerdict::NOT_PLACED);
 }
 
 TEST_CASE("a KIS demo account trades on KRX and is told so before I/O", "[broker][kis][order]") {
