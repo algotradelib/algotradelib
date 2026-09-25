@@ -931,6 +931,13 @@ private:
     if (report.iterations_ == 0 || report.final_phase_ != strategy::MarketPhase::UNKNOWN) {
       return;
     }
+    // **"Never" is a claim, so it is checked rather than assumed.** A run can establish the phase and
+    // then lose it -- the local date rolls past what the calendar covers, or the broker revises it --
+    // and telling an operator it was never established would send them looking for a configuration
+    // fault that is not there. `phase_transitions_` answers it exactly: the loop starts at `UNKNOWN`
+    // and only announces a value that differs from the last announced one, so the *first* transition is
+    // necessarily to a known phase. Any transition at all therefore means it was known once.
+    const bool ever_known = report.phase_transitions_ > 0;
     // Three reasons, not four. "The poll never came due" was here and is unreachable: `run` resets
     // `next_due_`, so a configured cadence makes the calendar due on the first iteration of every
     // run. A branch describing a state that cannot happen is worse than no branch, because a reader
@@ -953,8 +960,11 @@ private:
         std::to_string(date.month_) + "-" + std::to_string(date.day_);
     }
     report.notes_.push_back(
-      "the market phase was never established (" + reason +
-      "); a guard permitting only known phases refused every placement");
+      std::string(ever_known ?
+        "the market phase stopped being established (" :
+        "the market phase was never established (") +
+      reason + "); a guard permitting only known phases refused every placement" +
+      (ever_known ? " after that" : ""));
   }
 
   /**

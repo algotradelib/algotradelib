@@ -2640,6 +2640,11 @@ TEST_CASE("a calendar arriving mid-iteration reaches the order polled after it",
   FeedingSource source;
   runner_instance.context().set_instrument(samsung_reference());
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  // Seeded **and** served, deliberately. Seeded so the first run reaches `OPEN` however the loop
+  // orders its installs -- otherwise the setup assertion below fails under the defect and the test
+  // would be catching it for the wrong reason, one iteration too early. The revision is then the only
+  // difference between the two runs, which is what makes the second half discriminating.
+  serve_calendar(runner_instance, /*trades=*/true);
   source.set_calendar(krx_calendar(/*trades=*/true));
   SendingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
   StopSource stop;
@@ -2673,4 +2678,62 @@ TEST_CASE("a poll schedule written positionally still means what it meant", "[lo
   // And the calendar keeps its own default, which no positional initializer states.
   REQUIRE(schedule.calendar_.has_value());
   CHECK(*schedule.calendar_ == std::chrono::hours(6));
+}
+
+TEST_CASE("a phase that was known and is lost is not reported as never known", "[loop][phase]") {
+  // Raised by Codex round 1. A run can establish the phase and then lose it -- the local date rolls
+  // past what the calendar covers, which is exactly what a Toss-shaped three-day answer does over a
+  // weekend. Telling an operator it was "never established" would send them looking for a
+  // configuration fault that is not there.
+  PhaseRunner runner_instance;
+  PhaseSource source;
+  serve_calendar(runner_instance);
+  runner::PollSchedule schedule;
+  // No calendar cadence, so nothing refreshes the one day the fixture covers and the run walks off
+  // the end of it.
+  schedule.calendar_.reset();
+  schedule.tick_ = std::chrono::hours(6);
+  PhaseLoop loop(runner_instance, source, schedule, test_clock());
+  StopSource stop;
+
+  // Six-hour ticks from 09:00 local: open, post-close, and then past local midnight, where the
+  // fixture's single covered date runs out.
+  const auto report = loop.run(stop, 4);
+
+  REQUIRE(report.final_phase_ == strategy::MarketPhase::UNKNOWN);
+  REQUIRE(report.phase_transitions_ >= 2);
+  REQUIRE(report.notes_.size() == 1);
+  CHECK(report.notes_[0].find("stopped being established") != std::string::npos);
+  CHECK(report.notes_[0].find("never established") == std::string::npos);
+  // And the strategy was told, because losing the answer is a phase change like any other -- which is
+  // what lets `TimedLiquidation` flatten rather than carry a position on an assumption.
+  CHECK(runner_instance.strategy().seen_.back() == strategy::MarketPhase::UNKNOWN);
+}
+
+TEST_CASE("a run whose every calendar poll failed says exactly that", "[loop][phase]") {
+  // The reason text itself is asserted, because Codex round 1 changed it to something incorrect and
+  // all thirteen phase cases stayed green: a diagnostic nothing reads is a diagnostic nothing keeps
+  // honest.
+  PhaseRunner runner_instance;
+  PhaseSource source;
+  source.set_default(runner::PollKind::CALENDAR, runner::PollOutcome::FAILED);
+  runner::PollSchedule schedule;
+  schedule.calendar_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  runner::FailurePolicy lenient;
+  // Above the iteration count, so the run ends on its own rather than abandoning -- the note is about
+  // a run that finished, not one that gave up.
+  lenient.consecutive_limit_ = 10;
+  PhaseLoop loop(runner_instance, source, schedule, test_clock());
+  loop.set_failure_policy(lenient);
+  StopSource stop;
+
+  const auto report = loop.run(stop, 3);
+
+  REQUIRE(report.attempted(runner::PollKind::CALENDAR) == 3);
+  REQUIRE(report.failed(runner::PollKind::CALENDAR) == 3);
+  CHECK_FALSE(report.abandoned_);
+  REQUIRE(report.notes_.size() == 1);
+  CHECK(report.notes_[0].find("every calendar poll failed") != std::string::npos);
+  CHECK(report.notes_[0].find("never established") != std::string::npos);
 }

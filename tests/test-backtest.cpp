@@ -2552,3 +2552,43 @@ TEST_CASE("a replay with no configured calendar answers nothing, rather than gue
   REQUIRE(engine.strategy().asked_);
   CHECK_FALSE(engine.strategy().tomorrow_trades_.has_value());
 }
+
+/** Records the phase it was told and what the calendar said about the same date. */
+struct ComparesPhaseWithCalendar {
+  std::optional<strategy::MarketPhase> phase_;
+  std::optional<bool> calendar_says_;
+
+  template <class Ctx>
+  void on_phase(Ctx& ctx, strategy::MarketPhase phase) {
+    phase_ = phase;
+    calendar_says_ =
+      ctx.calendar().is_trading_day(strategy::SessionWindow::krx().local_date(ctx.now()));
+  }
+};
+
+TEST_CASE("a replay believes feed's own trading-day argument, not the configured calendar") {
+  // **Raised by Codex round 1, and pinned rather than fixed.** A configured calendar can say a bar's
+  // date is closed while `feed`'s argument says it traded, and the replay believes the argument -- so
+  // the same calendar would give `CLOSED` live and `OPEN` here.
+  //
+  // That is deliberate and it is the narrower of two evils. `ReplayConfig::calendar_` exists so a
+  // strategy can *read* a calendar, which it could not before; deriving the replay's phase from it
+  // instead would turn every date a supplied calendar does not cover into `UNKNOWN` and refuse every
+  // order in replays that work today. Making the replay validate the two against each other is a
+  // change with its own report caveat, and it is a decision for whoever wants it. This test exists so
+  // that decision is taken deliberately and not discovered.
+  auto config = replay_config();
+  config.limits_.permitted_phases_ = std::nullopt;
+  const auto bar = bar_at(utc(2026, 3, 10, 3, 0), BarInterval::ONE_DAY, "70000");
+  const auto date = strategy::SessionWindow::krx().local_date(bar.period_end_);
+  config.calendar_.days_.push_back(algotradelib::TradingDay{date, false});
+
+  backtest::Backtester<ComparesPhaseWithCalendar> engine(ComparesPhaseWithCalendar{}, config);
+  engine.feed(bar, /*trading_day=*/true);
+
+  REQUIRE(engine.strategy().phase_.has_value());
+  // The argument won: the replay says the session is open on a date its own calendar calls closed.
+  CHECK(*engine.strategy().phase_ == strategy::MarketPhase::OPEN);
+  REQUIRE(engine.strategy().calendar_says_.has_value());
+  CHECK_FALSE(*engine.strategy().calendar_says_);
+}
