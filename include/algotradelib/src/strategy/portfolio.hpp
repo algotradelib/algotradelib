@@ -97,9 +97,12 @@ struct Portfolio {
    * much do I have" from the first row is wrong by however much the other rows hold.
    *
    * **Zero when nothing is reported, unlike `quantity_of`.** The distinction that one preserves --
-   * no row versus a row of zero -- is real and a caller wanting it should keep using it. It is not
-   * a distinction an *amount* can carry, and every caller of this one goes on to do arithmetic with
-   * the result, so folding both to zero here is what stops each of them inventing the same fold.
+   * no row versus a row of zero -- is real, and a caller that genuinely wants it should keep using
+   * it. It is not a distinction an *amount* can carry, and every caller of this one goes on to do
+   * arithmetic with the result, so folding both to zero here is what stops each of them inventing
+   * the same fold. Note that "am I holding anything" is **not** such a caller: a spent lot of zero
+   * listed beside a live one makes `quantity_of` answer flat, which is how `vanilla::Reversion`
+   * came to re-enter a position it already held.
    *
    * `std::nullopt` means the sum overflowed or would not be representable, which is a broken
    * snapshot rather than a quantity of zero, and is the one case a caller must not treat as flat.

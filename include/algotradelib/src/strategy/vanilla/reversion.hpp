@@ -68,7 +68,11 @@ struct ZScoreReversion {
       return;
     }
 
-    const auto held = ctx.portfolio().quantity_of(params_.instrument_);
+    // **Net across every position row.** This asked `quantity_of`, which returns the first, so a
+    // broker listing this instrument as a spent lot of 0 beside a live one answered "flat" and the
+    // strategy entered again on top of a position it already held. `holding` is a question about
+    // the whole holding, and only the net answers it.
+    const auto held = ctx.portfolio().net_quantity_of(params_.instrument_);
     const bool holding = held && held->coefficient() != 0;
 
     TargetPosition target;
@@ -139,7 +143,11 @@ struct RsiThreshold {
       return;
     }
 
-    const auto held = ctx.portfolio().quantity_of(params_.instrument_);
+    // **Net across every position row.** This asked `quantity_of`, which returns the first, so a
+    // broker listing this instrument as a spent lot of 0 beside a live one answered "flat" and the
+    // strategy entered again on top of a position it already held. `holding` is a question about
+    // the whole holding, and only the net answers it.
+    const auto held = ctx.portfolio().net_quantity_of(params_.instrument_);
     const bool holding = held && held->coefficient() != 0;
 
     TargetPosition target;

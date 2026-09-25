@@ -296,6 +296,47 @@ TEST_CASE("a z-score reversion emits nothing until its window is full, then buys
   REQUIRE(dipped.would_place_[0].side_ == OrderSide::BUY);
 }
 
+TEST_CASE("a reversion asks whether it holds anything, not what its first lot says") {
+  // **A fourth first-row reader, found by grepping for them after Codex round 1 caught the third.**
+  // A broker listing a spent lot of 0 beside a live one is ordinary, and `quantity_of` returns the
+  // first row -- so this strategy read "flat" while holding 10, and on the next dip entered *again*
+  // on top of the position it already had. It is a doubling, in a shipped strategy, from a listing
+  // the broker is entitled to send.
+  vanilla::ZScoreReversion reverting;
+  reverting.params_.instrument_ = samsung();
+  reverting.params_.window_ = 6;
+  reverting.params_.entry_ = 1.0;
+  reverting.params_.exit_ = 0.2;
+  reverting.params_.quantity_ = Decimal64::parse("10");
+
+  runner::DryRunner<vanilla::ZScoreReversion> dry(reverting);
+  arrange(dry);
+
+  // **The live lot is 25 and the entry size is 10, deliberately different.** An earlier version held
+  // exactly the entry quantity, and reconciliation then cancelled the spurious entry down to no
+  // order at all -- so the test passed against the defect and proved nothing. That is the fixture
+  // arranging for the defect not to matter, which this repository has now hit three times.
+  strategy::Portfolio<runner::DryTag> portfolio;
+  for (const char* lot : {"0", "25"}) {
+    HoldingPosition position;
+    position.instrument_ = samsung();
+    position.quantity_ = Decimal64::parse(lot);
+    portfolio.positions_.push_back(position);
+  }
+  dry.context().set_portfolio(portfolio);
+
+  for (std::size_t at = 0; at < 7; ++at) {
+    REQUIRE(dry.feed(bar(at, "70000")).quiet());
+  }
+
+  // The dip that would have entered. It is already holding 25, and the exit band has not been
+  // reached, so the correct answer is to do nothing. Reading the first row instead says "flat",
+  // targets the entry size of 10, and reconciliation turns that into a SELL of 15 -- an order that
+  // reduces a position the strategy believes it does not have.
+  const auto dipped = dry.feed(bar(7, "50000"));
+  CHECK(dipped.would_place_.empty());
+}
+
 TEST_CASE("a reversion with its exit at or beyond its entry refuses to act") {
   // The band would have no room, so the position would open and close on the same bar forever.
   vanilla::ZScoreReversion reverting;
