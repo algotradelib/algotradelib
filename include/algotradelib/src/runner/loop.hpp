@@ -1271,6 +1271,17 @@ private:
     // strategy's order would be planned against the same snapshot and settled in the same window,
     // going through none of the sizing the closing pass does -- a second full-size close beside the
     // first, or a placement during a `WITHDRAW`, which promises none.
+    // **Not watched, and it does not need to be.** `on_stop` runs with a mutable context and can revise
+    // the calendar like any other handler, but `hold(STOPPING)` above is already in force, so every
+    // instruction it asks for is refused before anything is sent -- which `stop_handler_sent_` asserts as
+    // a report field precisely so that ordering cannot be broken silently. The revision it may have made
+    // *is* answered, one call later: the closing derive below picks it up.
+    //
+    // For the record, the complete list of calls this loop makes out of itself is: `source_->poll`,
+    // `source_->read_order_list`, `source_->buying_power_currencies` (a const accessor that is handed no
+    // runner and so can neither feed nor write a calendar), `runner_->observe_sellable_convention` (which
+    // reads the portfolio and dispatches nothing), this one, and `settle_closing`. The two that can send
+    // under a phase are watched.
     const auto parting = runner_->notify_stop();
     report.stop_handler_refused_ = parting.refused_.size() + parting.refused_cancel_.size() +
       parting.rejected_.size() + parting.withheld_.size() + parting.unavailable_.size();
