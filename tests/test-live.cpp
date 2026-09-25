@@ -455,6 +455,11 @@ TEST_CASE("a non-default order shape reaches the session rather than its default
   order.type_ = OrderType::BEST_LIMIT;
   order.time_in_force_ = TimeInForce::FILL_OR_KILL;
   order.session_ = OrderSession::AFTER_MARKET;
+  // The routing venue too. This was missing, and a surviving mutation said so:
+  // deleting the executor's copy of `venue_` failed nothing, because every test
+  // left it at its default and a copy that never runs agrees with a default.
+  // A venue that does not reach the wire is an order routed somewhere else.
+  order.venue_ = Venue::NXT;
   REQUIRE(executor.place(order) == runner::SendOutcome::ACCEPTED);
 
   REQUIRE(session.placed().size() == 1);
@@ -462,6 +467,7 @@ TEST_CASE("a non-default order shape reaches the session rather than its default
   REQUIRE(sent.type_ == OrderType::BEST_LIMIT);
   REQUIRE(sent.time_in_force_ == TimeInForce::FILL_OR_KILL);
   REQUIRE(sent.session_ == OrderSession::AFTER_MARKET);
+  REQUIRE(sent.venue_ == Venue::NXT);
 }
 
 TEST_CASE("an accepted order reaches the session with its fields intact") {

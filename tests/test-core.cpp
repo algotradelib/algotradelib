@@ -1583,6 +1583,61 @@ TEST_CASE(
 }
 
 TEST_CASE(
+  "naming a venue on the instrument is refused rather than routed on",
+  "[broker][order][identity]"
+) {
+  // The refusal that keeps an order's identity equal to its holding's. Written
+  // without a test, and a surviving mutation said so: deleting it failed
+  // nothing, because every other case in this file already uses the identity
+  // venue. The value it refuses is one callers wrote before this branch, so the
+  // path is reachable and the refusal is what makes the round trip hold.
+  SECTION("KIS") {
+    auto order = korean_limit_buy();
+    order.instrument_.venue_ = Venue::KRX;
+    std::string division;
+    const auto error = kis::KisClientTestAccess::validate_order(order, division);
+    REQUIRE(error);
+    REQUIRE(error->broker_code_ == "invalid_instrument");
+    REQUIRE_FALSE(error->reached_broker_);
+
+    // The same routing, expressed where routing belongs, is accepted.
+    order.instrument_.venue_ = kKoreanInstrumentVenue;
+    order.venue_ = Venue::KRX;
+    REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division));
+    REQUIRE(division == "00");
+  }
+
+  SECTION("Toss, which offers no venue choice at all") {
+    boost::asio::io_context ioc;
+    ssl::context context(ssl::context::tls_client);
+    auto client = std::make_shared<tossinvest::TossClient>(
+      ioc.get_executor(), context, tossinvest::TossConfig{}
+    );
+    const auto expect = [&](OrderRequest order, std::string_view code) {
+      bool completed = false;
+      client->async_place_order(7, std::move(order), [&](Result<OrderAck> result) {
+        REQUIRE_FALSE(result);
+        REQUIRE(result.error().broker_code_ == code);
+        REQUIRE_FALSE(result.error().reached_broker_);
+        completed = true;
+      });
+      ioc.restart();
+      ioc.run();
+      REQUIRE(completed);
+    };
+
+    auto on_instrument = korean_limit_buy();
+    on_instrument.instrument_.venue_ = Venue::KRX;
+    expect(std::move(on_instrument), "invalid_instrument");
+
+    // And Toss routes nowhere, so naming a route is refused as well.
+    auto routed = korean_limit_buy();
+    routed.venue_ = Venue::KRX;
+    expect(std::move(routed), "venue_unavailable");
+  }
+}
+
+TEST_CASE(
   "an order routed to a named venue is still the instrument it was placed in",
   "[broker][kis][order][identity]"
 ) {
