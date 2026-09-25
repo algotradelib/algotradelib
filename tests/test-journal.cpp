@@ -172,6 +172,83 @@ TEST_CASE("journal action names round-trip", "[journal]") {
   REQUIRE_FALSE(runner::journal_action_from("place-ish").has_value());
 }
 
+TEST_CASE("every order-shape name round-trips through the journal", "[journal]") {
+  // Written out rather than looped over a range, so adding an enumerator and
+  // not adding it to `order_type_name` fails here. The compiler will not catch
+  // that: the switch has no `default:`, which is what makes -Wswitch report a
+  // missing case, but the `return "UNKNOWN"` after it means the function still
+  // compiles and the new basis is silently journalled as UNKNOWN.
+  const OrderType types[] = {
+    OrderType::UNKNOWN,
+    OrderType::LIMIT,
+    OrderType::MARKET,
+    OrderType::CONDITIONAL_LIMIT,
+    OrderType::BEST_LIMIT,
+    OrderType::PRIMARY_LIMIT,
+    OrderType::MID_PRICE,
+    OrderType::STOP_LIMIT,
+    OrderType::CLOSING_PRICE,
+  };
+  std::vector<std::string> names;
+  for (const auto type : types) {
+    const auto name = runner::journal_detail::order_type_name(type);
+    REQUIRE(runner::journal_detail::order_type_from(name) == type);
+    names.emplace_back(name);
+  }
+  // Two bases sharing a name would round-trip one of them into the other.
+  const auto before = names.size();
+  std::sort(names.begin(), names.end());
+  names.erase(std::unique(names.begin(), names.end()), names.end());
+  REQUIRE(names.size() == before);
+
+  const TimeInForce conditions[] = {
+    TimeInForce::UNKNOWN,
+    TimeInForce::DAY,
+    TimeInForce::IMMEDIATE_OR_CANCEL,
+    TimeInForce::FILL_OR_KILL,
+  };
+  for (const auto condition : conditions) {
+    REQUIRE(
+      runner::journal_detail::time_in_force_from(
+        runner::journal_detail::time_in_force_name(condition)
+      ) == condition
+    );
+  }
+
+  const OrderSession sessions[] = {
+    OrderSession::UNKNOWN,
+    OrderSession::REGULAR,
+    OrderSession::OPENING_AUCTION,
+    OrderSession::CLOSING_AUCTION,
+    OrderSession::PRE_MARKET,
+    OrderSession::AFTER_HOURS,
+    OrderSession::AFTER_HOURS_AUCTION,
+    OrderSession::AFTER_MARKET,
+    OrderSession::GTP,
+  };
+  for (const auto session : sessions) {
+    REQUIRE(
+      runner::journal_detail::order_session_from(
+        runner::journal_detail::order_session_name(session)
+      ) == session
+    );
+  }
+}
+
+TEST_CASE("a journal written before the shape fields reads as what it recorded", "[journal]") {
+  // A line with no `time_in_force` and no `session` key is one this runner
+  // wrote before those existed. Every order it could have recorded was a
+  // regular-session day order, because that was the only shape either adapter
+  // would send -- so reading them as UNKNOWN would make recovery refuse to
+  // match orders it can match, and the answer to a failed match is to send
+  // again.
+  REQUIRE(runner::journal_detail::time_in_force_from("") == TimeInForce::DAY);
+  REQUIRE(runner::journal_detail::order_session_from("") == OrderSession::REGULAR);
+  // An unrecognized name is not an absent one, and must not be read as DAY.
+  REQUIRE(runner::journal_detail::time_in_force_from("UNKNOWN") == TimeInForce::UNKNOWN);
+  REQUIRE(runner::journal_detail::order_session_from("UNKNOWN") == OrderSession::UNKNOWN);
+}
+
 TEST_CASE("every send outcome has a journal outcome", "[journal]") {
   REQUIRE(runner::journal_outcome_of(SendOutcome::ACCEPTED) == JournalOutcome::ACCEPTED);
   REQUIRE(runner::journal_outcome_of(SendOutcome::REJECTED) == JournalOutcome::REJECTED);
@@ -532,7 +609,9 @@ JournalEntry sample_entry() {
   entry.recorded_at_ = utc(2026, 3, 30, 1, 15);
   entry.instrument_ = samsung();
   entry.side_ = OrderSide::SELL;
-  entry.type_ = OrderType::LIMIT;
+  entry.type_ = OrderType::BEST_LIMIT;
+  entry.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
+  entry.session_ = OrderSession::AFTER_MARKET;
   entry.quantity_ = Decimal64::parse("10");
   entry.price_ = Decimal64::parse("70000");
   return entry;
@@ -550,6 +629,8 @@ TEST_CASE("a journal entry survives a round trip through a line", "[journal][fil
   REQUIRE(parsed->instrument_ == original.instrument_);
   REQUIRE(parsed->side_ == original.side_);
   REQUIRE(parsed->type_ == original.type_);
+  REQUIRE(parsed->time_in_force_ == original.time_in_force_);
+  REQUIRE(parsed->session_ == original.session_);
   REQUIRE(parsed->quantity_ == original.quantity_);
   REQUIRE(parsed->price_ == original.price_);
   // Exactly, not approximately: the matching window is measured against this.

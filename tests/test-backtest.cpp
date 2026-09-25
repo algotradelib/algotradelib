@@ -617,6 +617,47 @@ TEST_CASE("a buy limit fills only when the bar's low reaches it") {
   REQUIRE(missed.still_working_);
 }
 
+TEST_CASE("an immediate-or-cancel order does not rest when the bar misses it") {
+  const backtest::NextBarFillModel model;
+  // The identical limit that rests as a day order above.
+  auto order = order_of(OrderSide::BUY, "10", OrderType::LIMIT, "68000");
+  order.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
+  const auto missed =
+    model.decide(order, ohlc("70000", "71000", "69000", "70500"), krx_grid());
+  REQUIRE_FALSE(missed.execution_);
+  // Resting is a property of the condition, not of the basis. This read
+  // `type_ == LIMIT`, which was the same answer while every order was a day
+  // order: an immediate-or-cancel order that this bar did not fill would have
+  // stayed queued and could fill on a later one, which is the condition the
+  // caller stated being ignored.
+  REQUIRE_FALSE(missed.still_working_);
+
+  order.time_in_force_ = TimeInForce::FILL_OR_KILL;
+  REQUIRE_FALSE(
+    model.decide(order, ohlc("70000", "71000", "69000", "70500"), krx_grid()).still_working_
+  );
+
+  // And the day order it was cloned from still rests, so the assertion above is
+  // about the condition rather than about the fixture.
+  order.time_in_force_ = TimeInForce::DAY;
+  REQUIRE(
+    model.decide(order, ohlc("70000", "71000", "69000", "70500"), krx_grid()).still_working_
+  );
+}
+
+TEST_CASE("a best-limit day order rests exactly as a plain limit does") {
+  const backtest::NextBarFillModel model;
+  auto order = order_of(OrderSide::BUY, "10", OrderType::BEST_LIMIT);
+  order.time_in_force_ = TimeInForce::DAY;
+  // Whether the engine will *accept* this order is a separate question, asked
+  // in the executor test below. This pins that the fill model's resting rule
+  // keys on the condition and not on the basis being exactly LIMIT.
+  const auto missed =
+    model.decide(order_of(OrderSide::BUY, "10", OrderType::LIMIT, "68000"),
+                 ohlc("70000", "71000", "69000", "70500"), krx_grid());
+  REQUIRE(missed.still_working_);
+}
+
 TEST_CASE("a sell limit fills only when the bar's high reaches it") {
   const backtest::NextBarFillModel model;
   const auto reached = model.decide(
@@ -1669,6 +1710,51 @@ WorkingOrder<backtest::BacktestTag> withdrawal_of(const OrderRef<backtest::Backt
 }
 
 } // namespace
+
+TEST_CASE("the replay refuses an order shape it cannot price instead of inventing one") {
+  ReplayExecutor executor;
+
+  SECTION("a basis a bar cannot price is refused, not filled at the open") {
+    for (const auto type :
+         {OrderType::BEST_LIMIT, OrderType::PRIMARY_LIMIT, OrderType::MID_PRICE,
+          OrderType::CONDITIONAL_LIMIT, OrderType::STOP_LIMIT, OrderType::CLOSING_PRICE}) {
+      auto order = resting_buy("10", "60000");
+      order.type_ = type;
+      INFO("basis " << static_cast<int>(type));
+      // `reference_price` returns the bar's open for every basis that is not
+      // LIMIT, so before this each of these filled at the open -- a price the
+      // order would never have had. A backtest that invents a fill price is
+      // worse than one that declines to model the order.
+      REQUIRE(executor.place(order) == runner::SendOutcome::REFUSED_LOCALLY);
+      REQUIRE(executor.queued().empty());
+    }
+  }
+
+  SECTION("a session a bar series does not represent is refused") {
+    for (const auto session :
+         {OrderSession::PRE_MARKET, OrderSession::AFTER_HOURS, OrderSession::AFTER_MARKET,
+          OrderSession::AFTER_HOURS_AUCTION, OrderSession::GTP, OrderSession::OPENING_AUCTION,
+          OrderSession::CLOSING_AUCTION}) {
+      auto order = resting_buy("10", "60000");
+      order.session_ = session;
+      REQUIRE(executor.place(order) == runner::SendOutcome::REFUSED_LOCALLY);
+    }
+    REQUIRE(executor.queued().empty());
+  }
+
+  SECTION("the shapes it can price are still accepted") {
+    REQUIRE(executor.place(resting_buy("10", "60000")) == runner::SendOutcome::ACCEPTED);
+    auto market = resting_buy("10", "60000");
+    market.type_ = OrderType::MARKET;
+    market.price_.reset();
+    REQUIRE(executor.place(market) == runner::SendOutcome::ACCEPTED);
+    // An immediate-or-cancel limit is priceable; only its resting differs.
+    auto immediate = resting_buy("10", "60000");
+    immediate.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
+    REQUIRE(executor.place(immediate) == runner::SendOutcome::ACCEPTED);
+    REQUIRE(executor.queued().size() == 3);
+  }
+}
 
 TEST_CASE("a withdrawal removes the order it names, not one that merely looks like it") {
   // **Two resting buys of one instrument are two orders, and attributes cannot tell them apart.**

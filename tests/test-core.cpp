@@ -2584,6 +2584,49 @@ TEST_CASE(
     REQUIRE(result.error().category_ == ErrorCategory::RATE_LIMIT);
   }
 
+  SECTION("an amount-based order keeps the amount it committed") {
+    auto result = tossinvest::TossClientTestAccess::parse_orders(
+      json_response(
+        R"({"result":{"orders":[)"
+        R"({"orderId":"c","symbol":"AAPL","side":"BUY","orderType":"MARKET",)"
+        R"("timeInForce":"CLS","status":"PENDING","price":null,"quantity":"0",)"
+        R"("orderAmount":"100.5","currency":"USD","orderedAt":"2026-03-29T10:00:00+09:00",)"
+        R"("canceledAt":null,"execution":{"filledQuantity":"0","averageFilledPrice":null,)"
+        R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
+        R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
+      )
+    );
+    REQUIRE(result);
+    const auto& order = result.value().orders_.front();
+    // An amount order states money and lets the fill decide the quantity. The
+    // snapshot dropped `orderAmount` entirely, so it reported a quantity of
+    // zero and could not say what the order had actually committed.
+    REQUIRE(order.order_amount_ == std::optional<Decimal64>(Decimal64::parse("100.5")));
+    REQUIRE(order.quantity_ == Decimal64::parse("0"));
+    REQUIRE(order.session_ == OrderSession::CLOSING_AUCTION);
+    REQUIRE(order.time_in_force_ == TimeInForce::DAY);
+    REQUIRE(order.shape_code_.view() == "CLS");
+  }
+
+  SECTION("a validity code Toss adds later is unknown in both facts, not assumed to be DAY") {
+    auto result = tossinvest::TossClientTestAccess::parse_orders(
+      json_response(
+        R"({"result":{"orders":[)"
+        R"({"orderId":"d","symbol":"005930","side":"BUY","orderType":"LIMIT",)"
+        R"("timeInForce":"XYZ","status":"PENDING","price":"70000","quantity":"1",)"
+        R"("orderAmount":null,"currency":"KRW","orderedAt":"2026-03-29T09:30:00+09:00",)"
+        R"("canceledAt":null,"execution":{"filledQuantity":"0","averageFilledPrice":null,)"
+        R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
+        R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
+      )
+    );
+    REQUIRE(result);
+    const auto& order = result.value().orders_.front();
+    REQUIRE(order.session_ == OrderSession::UNKNOWN);
+    REQUIRE(order.time_in_force_ == TimeInForce::UNKNOWN);
+    REQUIRE(order.shape_code_.view() == "XYZ");
+  }
+
   SECTION("a listing normalizes a Korean and a US order independently") {
     auto result = tossinvest::TossClientTestAccess::parse_orders(
       json_response(
@@ -2608,6 +2651,11 @@ TEST_CASE(
     REQUIRE_FALSE(result.value().next_cursor_);
 
     const auto& korean = result.value().orders_.front();
+    // A quantity order reports no amount, and a day order is the regular
+    // session -- Toss spells the session on its `timeInForce` field.
+    REQUIRE_FALSE(korean.order_amount_);
+    REQUIRE(korean.session_ == OrderSession::REGULAR);
+    REQUIRE(korean.time_in_force_ == TimeInForce::DAY);
     REQUIRE(korean.instrument_.country_ == Country::KR);
     REQUIRE(korean.currency_ == Currency::krw());
     REQUIRE(korean.status_ == OrderStatus::PENDING);

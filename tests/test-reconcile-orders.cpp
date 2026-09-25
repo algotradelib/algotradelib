@@ -118,6 +118,43 @@ public:
 // A placement, matched on attributes
 // ---------------------------------------------------------------------------
 
+TEST_CASE("recovery does not read a day order as the immediate-or-cancel order it sent") {
+  auto instruction = placement();
+  instruction.entry_.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
+
+  // Same instrument, side, basis, quantity, price and time. Only the condition
+  // differs, and it is the whole difference between an order that rests and one
+  // that does not.
+  auto resting = row("KRX-1");
+  resting.time_in_force_ = TimeInForce::DAY;
+  REQUIRE(
+    runner::match_against(instruction, {resting}, after_the_window()).verdict_ !=
+      MatchVerdict::MATCHED
+  );
+
+  auto immediate = row("KRX-2");
+  immediate.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
+  const auto match = runner::match_against(instruction, {immediate}, after_the_window());
+  REQUIRE(match.verdict_ == MatchVerdict::MATCHED);
+  // Attribution, not a count: the point is that it found *this* order.
+  REQUIRE(match.order_id_ == "KRX-2");
+}
+
+TEST_CASE("a row whose condition the broker did not report is still a candidate") {
+  auto instruction = placement();
+  instruction.entry_.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
+
+  // UNKNOWN is absence of information, not disagreement. Excluding it would
+  // report NOT_PLACED for an order that is sitting in the listing, and the
+  // runner's answer to NOT_PLACED is to send again.
+  auto silent = row("KRX-1");
+  silent.time_in_force_ = TimeInForce::UNKNOWN;
+  silent.session_ = OrderSession::UNKNOWN;
+  const auto match = runner::match_against(instruction, {silent}, after_the_window());
+  REQUIRE(match.verdict_ == MatchVerdict::MATCHED);
+  REQUIRE(match.order_id_ == "KRX-1");
+}
+
 TEST_CASE("one corresponding row matches a placement", "[reconcile]") {
   const auto match =
     runner::match_against(placement(), {row("KRX-1")}, after_the_window());

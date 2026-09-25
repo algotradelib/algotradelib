@@ -423,6 +423,28 @@ WorkingOrder<FakeBroker> working() {
 
 } // namespace
 
+TEST_CASE("a non-default order shape reaches the session rather than its default") {
+  // The case above asserts the defaults, and a copy that was never written
+  // agrees with a default. This one states three facts none of which is the
+  // default, so a field the executor drops shows up as the default rather than
+  // as the value asked for -- which is how a dropped field fails: silently, and
+  // with a plausible value.
+  FakeSession<WithoutKey> session;
+  live::SessionExecutor<FakeSession<WithoutKey>> executor(session);
+
+  auto order = planned();
+  order.type_ = OrderType::BEST_LIMIT;
+  order.time_in_force_ = TimeInForce::FILL_OR_KILL;
+  order.session_ = OrderSession::AFTER_MARKET;
+  REQUIRE(executor.place(order) == runner::SendOutcome::ACCEPTED);
+
+  REQUIRE(session.placed().size() == 1);
+  const auto& sent = session.placed()[0];
+  REQUIRE(sent.type_ == OrderType::BEST_LIMIT);
+  REQUIRE(sent.time_in_force_ == TimeInForce::FILL_OR_KILL);
+  REQUIRE(sent.session_ == OrderSession::AFTER_MARKET);
+}
+
 TEST_CASE("an accepted order reaches the session with its fields intact") {
   // Reconciliation already put the price on the tick grid and the quantity on the lot, so this
   // boundary adds nothing numeric; it moves fields, and a field lost here reaches an exchange.
@@ -436,6 +458,7 @@ TEST_CASE("an accepted order reaches the session with its fields intact") {
   REQUIRE(sent.side_ == OrderSide::BUY);
   REQUIRE(sent.type_ == OrderType::LIMIT);
   REQUIRE(sent.time_in_force_ == TimeInForce::DAY);
+  REQUIRE(sent.session_ == OrderSession::REGULAR);
   REQUIRE(sent.quantity_ == Decimal64::parse("10"));
   REQUIRE(sent.price_ == std::optional<Decimal64>(Decimal64::parse("70000")));
 
