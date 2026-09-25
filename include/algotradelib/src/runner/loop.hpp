@@ -1460,7 +1460,10 @@ private:
         const auto sendable = decimal_subtract(*magnitude, contending);
         if (!sendable) {
           // The same silence for the same reason: a size that cannot be computed is not a size of
-          // zero, and a pass that skipped it did not knowingly send nothing.
+          // zero, and a pass that skipped it did not knowingly send nothing. **Unlike the two cases
+          // above, this one can fail with both inputs representable** -- a held magnitude and a
+          // working quantity whose scales cannot be aligned -- which is why the note names the
+          // working orders as well as the holdings.
           ++report.closing_unsizable_;
           continue;
         }
@@ -1578,12 +1581,19 @@ private:
             " buying; if those withdrawals succeed, part of the position is still held");
     }
     if (report.closing_unsizable_ != 0) {
-      // Deliberately does not mention working orders. This is the holdings snapshot failing to add
-      // up, and an operator sent to the order list would be looking in the wrong place.
+      // **Names both inputs, because the three causes do not share one.** Two of them are the
+      // holdings rows alone -- they will not add up, or the net has no representable closing
+      // magnitude. The third subtracts what is already working on the closing side, and that
+      // subtraction can fail with both inputs perfectly representable: a held quantity of
+      // 1,000,000,000,000,000,000 and a working close of 0.1 cannot be aligned. An earlier note
+      // blamed the holdings snapshot alone and would have sent an operator to check one of two
+      // inputs. It still does not say "contended", which means a competing order reduced the close;
+      // here nothing could be sized at all.
       report.notes_.push_back(
         "no closing order could be sized for " + std::to_string(report.closing_unsizable_) +
-        " position(s): the holdings snapshot's own quantities would not add up or would not fit;"
-        " nothing was sent for them and they are still held");
+        " position(s): the holdings quantities would not add up or fit, or could not be combined"
+        " with what is already working on the closing side; nothing was sent for them and they are"
+        " still held");
     }
     if (report.closing_source_unverified_) {
       report.notes_.push_back(

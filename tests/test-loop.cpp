@@ -1472,7 +1472,8 @@ TEST_CASE("a stop that cannot size a close says so instead of reporting completi
   bool explained = false;
   for (const auto& note : report.notes_) {
     if (note.find("could be sized") != std::string::npos &&
-        note.find("still held") != std::string::npos) {
+        note.find("still held") != std::string::npos &&
+        note.find("contended") == std::string::npos) {
       explained = true;
     }
   }
