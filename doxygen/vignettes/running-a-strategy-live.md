@@ -293,12 +293,21 @@ The loop derives the phase each iteration from two things:
 strategy written on it — `vanilla::TimedLiquidation` is the shipped one — behaves the same live as in a
 replay, which it did not before.
 
-**If you write your own source**, one rule is yours to keep: write the trading calendar during
-`PollKind::CALENDAR` and nowhere else. The loop re-derives the phase before every call it makes into a
-source, but nothing of its runs between your `set_calendar` and your `Runner::feed`, so a poll that
-does both settles an order against the phase as it stood when that poll began. `SessionSource` keeps
-the rule; a source that breaks it is counted in `LoopReport::sends_under_a_revised_phase_` and
-named in a note, because the loop can notice afterwards and cannot prevent it.
+**If you write your own source**, one rule is yours to keep, in two halves: write the trading calendar
+during `PollKind::CALENDAR`, nowhere else, and **do not feed the runner from that poll**. The loop
+re-derives the phase before every call it makes that could send, but nothing of its runs between your
+`set_calendar` and your `Runner::feed`, so a poll that does both settles an order against the phase as
+it stood when that poll began. `SessionSource::poll_calendar` installs a calendar and feeds nothing,
+which is the shape with no edge.
+
+The same rule applies to a **strategy**: `on_phase` and `on_stop` receive a mutable context, and
+`Context::set_calendar` is not theirs to call — read `calendar()` instead, which is what it is published
+for. A calendar revised by `on_stop` is the one case the loop can still answer, because the closing pass
+is a separate call and the phase is re-derived before it.
+
+Where it cannot, it witnesses: `LoopReport::sends_under_a_revised_phase_` counts the calls where the
+phase moved *and* a request went out, with a note naming the call. It is a contract diagnostic rather
+than proof that a particular order was mis-checked, and it says so.
 
 When the phase cannot be established, the run says so: `final_phase_` is `unknown` and a note names
 the reason — no cadence configured, no calendar published by the broker, every poll failed, or the

@@ -2870,10 +2870,11 @@ TEST_CASE("a source that writes the calendar mid-poll is reported, since it cann
   // And the report says which poll did it, exactly once.
   CHECK(report.sends_under_a_revised_phase_ == 1);
   REQUIRE_FALSE(report.notes_.empty());
-  CHECK(report.notes_[0].find("bars poll changed the trading calendar and sent an order") !=
+  CHECK(report.notes_[0].find("bars poll changed the market phase and sent a request") !=
         std::string::npos);
-  // And it says what was actually wrong with it, rather than only that a rule was broken.
-  CHECK(report.notes_[0].find("as it stood before the call") != std::string::npos);
+  // And it names the check rather than the verdict: the loop observed co-occurrence, not causation.
+  CHECK(report.notes_[0].find("check whether that request used the earlier phase") !=
+        std::string::npos);
 }
 
 TEST_CASE("the calendar poll replacing the calendar is not reported as a violation",
@@ -2997,7 +2998,7 @@ TEST_CASE("a source obeying only half the calendar contract is still reported", 
   // And it is no longer invisible.
   CHECK(report.sends_under_a_revised_phase_ == 1);
   REQUIRE_FALSE(report.notes_.empty());
-  CHECK(report.notes_[0].find("calendar poll changed the trading calendar and sent an order") !=
+  CHECK(report.notes_[0].find("calendar poll changed the market phase and sent a request") !=
         std::string::npos);
 }
 

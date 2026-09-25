@@ -330,14 +330,17 @@ struct LoopReport {
    * How many calls into user code both sent an order and left the market phase changed behind them.
    *
    * **What it measures, exactly**, because an earlier name and note overstated it: around every call the
-   * loop makes into a source's `poll` or `read_order_list`, into a strategy handler, or into a closing
-   * pass, the loop records the phase and the guard's total sends, and compares both afterwards. This
-   * counts the calls where the phase moved **and** something went out -- so an order was checked against
-   * a phase that the same call then invalidated.
+   * loop makes **that could send** -- a source's `poll` or `read_order_list`, a strategy handler, a
+   * closing pass -- the loop records the phase and the guard's total sends and compares both afterwards.
+   * This counts the calls where the phase moved **and** something went out. A call that cannot send is
+   * not watched: `Source::buying_power_currencies` is a const accessor handed no runner, and
+   * `Runner::observe_sellable_convention` reads the portfolio and dispatches nothing.
    *
    * It deliberately does **not** count a calendar revision that sent nothing, because nothing was
    * harmed, nor one that leaves today's answer unchanged. It cannot see a revision that is undone before
-   * the call returns. Always zero against `live::SessionSource` and any strategy that does not write the
+   * the call returns. And it is **co-occurrence, not causation**: a call that sent before revising, or one
+   * that only cancelled -- cancellations never consult the phase -- is counted too, because both break
+   * the writer contract even though neither placed an order against a stale answer. Always zero against `live::SessionSource` and any strategy that does not write the
    * calendar; non-zero names a contract in `PollKind::CALENDAR` or `runner::Context::set_calendar` that
    * somebody's code is breaking.
    */
@@ -953,7 +956,7 @@ private:
    * Counts and names a call that sent an order and left the phase changed behind it.
    *
    * **The one hazard here the loop cannot prevent and can only witness.** It re-derives the phase before
-   * every call it makes into a source or a strategy, but nothing of its runs *inside* such a call: a
+   * every call it makes that could send, but nothing of its runs *inside* such a call: a
    * source that replaces the calendar and then feeds, or an `on_phase` handler that does the same before
    * submitting, settles an order against the phase as it stood when the call began. So the loop looks
    * afterwards, which turns an invisible violation into a line in the report -- the same choice
@@ -979,10 +982,15 @@ private:
     if (report.sends_under_a_revised_phase_ == 1) {
       // Once per run, not once per call: a strategy doing this on every bar would otherwise bury every
       // other note under thousands of copies of this one.
+      // **Worded to exactly what was observed**, which is co-occurrence and not causation. Two cases
+      // the stronger claim would have got wrong: a call that sent *first* and revised the calendar
+      // afterwards, where no order used the stale answer; and a call that only cancelled, since
+      // `Runner::send_cancel` never consults the phase at all. Both still break the writer contract and
+      // are worth reporting, so the note states the facts and names the check rather than the verdict.
       report.notes_.push_back(
-        "the " + what + " changed the trading calendar and sent an order in the same call, so that order "
-        "was checked against the market phase as it stood before the call; only the calendar poll may "
-        "write the calendar, and it must not send");
+        "the " + what + " changed the market phase and sent a request in the same call; check whether "
+        "that request used the earlier phase. Only the calendar poll may write the trading calendar, "
+        "and it must not send");
     }
   }
 
