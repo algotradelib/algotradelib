@@ -1712,6 +1712,250 @@ TEST_CASE("permitting any phase has to be asked for explicitly") {
   REQUIRE_FALSE(guard.check(planned("10", "70000"), portfolio, inputs));
 }
 
+namespace {
+
+/** Inputs with the market shut, which is what the closing exception below is about. */
+GuardInputs shut_market() {
+  auto inputs = open_market();
+  inputs.phase_ = strategy::MarketPhase::CLOSED;
+  return inputs;
+}
+
+/** Whether `guard` refused `order` because of the phase, specifically. */
+bool refused_for_phase(
+  const RiskGuard& guard, const PlannedOrder& order, const ProbePortfolio& portfolio
+) {
+  const auto refused = guard.check(order, portfolio, shut_market());
+  return refused && refused->reason_ == GuardReason::PHASE_NOT_PERMITTED;
+}
+
+} // namespace
+
+TEST_CASE("a sell that closes a long is permitted although the market is shut") {
+  // The branch, in one case. `permitted_phases_` governs what an order opens, not what it closes:
+  // an operator whose flatten is refused by their own risk limits has a limit that says "you may
+  // not reduce risk", which is what `ai/guard-inputs` already refused to let `max_gross_exposure_`
+  // mean.
+  const RiskGuard guard;  // defaults to OPEN alone
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("100"));
+
+  const auto decision = guard.evaluate(planned("100", "70000", OrderSide::SELL), portfolio, shut_market());
+  REQUIRE_FALSE(decision.rejection_);
+  // And it says the exception is what let it through, which is the fact nothing else records.
+  REQUIRE(decision.admitted_outside_phase_);
+
+  // The same order while the market is open needs no exception, so the flag must be false there.
+  // Without this the flag could be "the order was permitted" and every assertion above would hold.
+  const auto open = guard.evaluate(
+    planned("100", "70000", OrderSide::SELL), portfolio, open_market()
+  );
+  REQUIRE_FALSE(open.rejection_);
+  REQUIRE_FALSE(open.admitted_outside_phase_);
+}
+
+TEST_CASE("a sell that would carry a long past flat is still refused by the phase") {
+  // The exception is for closing, and 101 against 100 opens a short of 1. One share over is the
+  // whole test: a rule keyed on "the order opposes the position" rather than on where it lands
+  // would pass this.
+  const RiskGuard guard;
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("100"));
+
+  REQUIRE_FALSE(guard.check(planned("100", "70000", OrderSide::SELL), portfolio, shut_market()));
+  REQUIRE(refused_for_phase(guard, planned("101", "70000", OrderSide::SELL), portfolio));
+}
+
+TEST_CASE("sells already resting count against what is left to close") {
+  // Two slices of an exit must not add up to more than the holding. Checked together with the
+  // admitted case, because a rule that ignored working orders entirely would pass the first
+  // assertion and fail only this one.
+  const RiskGuard guard;
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("100"));
+  portfolio.working_.push_back(working("60", "0", OrderStatus::PENDING, OrderSide::SELL));
+
+  // 60 resting plus 40 reaches flat exactly.
+  REQUIRE_FALSE(guard.check(planned("40", "70000", OrderSide::SELL), portfolio, shut_market()));
+  // 60 resting plus 60 is 120 against a holding of 100.
+  REQUIRE(refused_for_phase(guard, planned("60", "70000", OrderSide::SELL), portfolio));
+}
+
+TEST_CASE("a resting sell counts what is left of it, not what it ordered") {
+  // `ordered - filled`, so a partly filled exit does not over-reserve the remaining holding. An
+  // implementation counting the ordered quantity refuses the 50 below; one counting nothing for a
+  // partial fill passes the 51.
+  const RiskGuard guard;
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("100"));
+  portfolio.working_.push_back(working("80", "30", OrderStatus::PARTIAL_FILLED, OrderSide::SELL));
+
+  // 50 still working, so 50 more reaches flat.
+  REQUIRE_FALSE(guard.check(planned("50", "70000", OrderSide::SELL), portfolio, shut_market()));
+  REQUIRE(refused_for_phase(guard, planned("51", "70000", OrderSide::SELL), portfolio));
+}
+
+TEST_CASE("a sell that has finished does not hold back the next one") {
+  // A terminal row is not outstanding, and counting it would refuse an exit because of an order
+  // that already completed. `order_is_open` is the existing rule; this pins that the new predicate
+  // uses it rather than counting every listed row.
+  const RiskGuard guard;
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("100"));
+  portfolio.working_.push_back(working("100", "100", OrderStatus::FILLED, OrderSide::SELL));
+
+  REQUIRE_FALSE(guard.check(planned("100", "70000", OrderSide::SELL), portfolio, shut_market()));
+}
+
+TEST_CASE("a working sell reporting more filled than ordered refuses rather than counting zero") {
+  // `Portfolio::working_quantity` *skips* such a row, which is right for a figure a strategy reads
+  // and wrong here: skipping it understates what is already committed to closing and would admit an
+  // order that carries the position through flat. A contradictory snapshot cannot establish that
+  // anything is an exit.
+  const RiskGuard guard;
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("100"));
+  portfolio.working_.push_back(working("60", "80", OrderStatus::PARTIAL_FILLED, OrderSide::SELL));
+
+  REQUIRE(refused_for_phase(guard, planned("10", "70000", OrderSide::SELL), portfolio));
+}
+
+TEST_CASE("a sell against a flat book with a buy resting is refused, though exposure is unchanged") {
+  // **The trap, and the reason this is not `max_gross_exposure_`'s predicate.** That limit permits
+  // an order which does not raise the projected exposure, and this order does not raise it -- the
+  // assertion below proves that from the same function the ceiling uses. It still opens a short of
+  // 100 if it alone fills. "Does not increase reachable exposure" and "closes a position" are
+  // different questions, and only the second one may relax a phase restriction.
+  const RiskGuard guard;
+  ProbePortfolio portfolio;
+  portfolio.working_.push_back(working("100", "0", OrderStatus::PENDING, OrderSide::BUY));
+
+  const auto order = planned("100", "70000", OrderSide::SELL);
+  const auto basis = with_basis(shut_market());
+  const auto with = strategy::projected_gross_exposure(
+    portfolio, basis.exposure_basis_, Currency{"KRW"}, &order, order.price_,
+    strategy::CandidateContribution::QUANTITY_AND_PRICE
+  );
+  const auto without = strategy::projected_gross_exposure(
+    portfolio, basis.exposure_basis_, Currency{"KRW"}, &order, order.price_,
+    strategy::CandidateContribution::PRICE_ONLY
+  );
+  REQUIRE(with);
+  REQUIRE(without);
+  REQUIRE(*with == *without);  // the exposure rule would admit it
+
+  REQUIRE(refused_for_phase(guard, order, portfolio));
+}
+
+TEST_CASE("a buy that covers a short is permitted, and one that overshoots is not") {
+  // The mirror. A rule written only for long positions would refuse both of these, and a shipped
+  // exit would work in one direction.
+  const RiskGuard guard;
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("-100"));
+
+  REQUIRE_FALSE(guard.check(planned("100", "70000", OrderSide::BUY), portfolio, shut_market()));
+  REQUIRE(refused_for_phase(guard, planned("101", "70000", OrderSide::BUY), portfolio));
+}
+
+TEST_CASE("a holding reported as two lots is closed as one position") {
+  // `Portfolio::quantity_of` returns the *first* matching row, and a broker reporting one instrument
+  // as two lots is ordinary. Reading it here would see 60, refuse the exit for the whole 100, and
+  // report nothing an operator could act on.
+  const RiskGuard guard;
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("60"));
+  portfolio.positions_.push_back(holding("40"));
+
+  REQUIRE_FALSE(guard.check(planned("100", "70000", OrderSide::SELL), portfolio, shut_market()));
+  REQUIRE(refused_for_phase(guard, planned("101", "70000", OrderSide::SELL), portfolio));
+}
+
+TEST_CASE("rows of opposing signs net before the rule is applied") {
+  // +100 and -40 is a holding of 60, not of 100 and not of 140.
+  const RiskGuard guard;
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("100"));
+  portfolio.positions_.push_back(holding("-40"));
+
+  REQUIRE_FALSE(guard.check(planned("60", "70000", OrderSide::SELL), portfolio, shut_market()));
+  REQUIRE(refused_for_phase(guard, planned("61", "70000", OrderSide::SELL), portfolio));
+}
+
+TEST_CASE("nothing held and nothing reported are both refused outside the permitted phases") {
+  // Unknown fails closed. A sell against a position nobody reported is not an exit, and neither is
+  // one against a row of zero -- the exception may only ever *relax* what the operator stated, so
+  // anything it cannot establish it must refuse.
+  const RiskGuard guard;
+
+  ProbePortfolio nothing_reported;
+  REQUIRE(refused_for_phase(guard, planned("100", "70000", OrderSide::SELL), nothing_reported));
+
+  ProbePortfolio flat_row;
+  flat_row.positions_.push_back(holding("0"));
+  REQUIRE(refused_for_phase(guard, planned("100", "70000", OrderSide::SELL), flat_row));
+}
+
+TEST_CASE("an order whose quantity is not positive is never treated as closing") {
+  // `PlannedOrder::quantity_` is a public field and `SizeSpec::quantity` accepts any decimal, so a
+  // negative size is constructible; `reconcile(OrderIntent)` rejects one only once it *rounds to
+  // zero*. Without this check a sell of -1 against a long of 100 satisfies `committed <= |held|`
+  // and an inconsistent order relaxes a restriction, which is the one direction this must not fail
+  // in.
+  const RiskGuard guard;
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("100"));
+
+  REQUIRE(refused_for_phase(guard, planned("-1", "70000", OrderSide::SELL), portfolio));
+  REQUIRE(refused_for_phase(guard, planned("0", "70000", OrderSide::SELL), portfolio));
+}
+
+TEST_CASE("a buy that opens a position outside the session is refused as before") {
+  // The limit still does its job. Nothing about this branch relaxes an opening order, which is what
+  // `permitted_phases_` is for.
+  const RiskGuard guard;
+  ProbePortfolio portfolio;
+
+  REQUIRE(refused_for_phase(guard, planned("10", "70000"), portfolio));
+}
+
+TEST_CASE("an exit the phase admits still answers to every other limit") {
+  // The phase check is third in the ordering, so admitting an order there is not permission to send
+  // it. A per-order ceiling is used because it is the simplest limit that has nothing to do with
+  // the phase; the reason reported must be that ceiling and not the phase.
+  RiskLimits limits;
+  limits.max_order_notional_ = Decimal64::parse("1000");
+  const RiskGuard guard(limits);
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("100"));
+
+  const auto decision =
+    guard.evaluate(planned("100", "70000", OrderSide::SELL), portfolio, shut_market());
+  REQUIRE(decision.rejection_);
+  // The reason is the ceiling. Reporting the phase here would point an operator at the limit that
+  // let the order through.
+  REQUIRE(decision.rejection_->reason_ == GuardReason::ORDER_NOTIONAL_TOO_LARGE);
+  // Nothing was admitted, so nothing is flagged. `tests/test-runner.cpp` carries the half that
+  // matters -- that the runner's counter does not move for an order it never sent.
+  REQUIRE_FALSE(decision.admitted_outside_phase_);
+}
+
+TEST_CASE("the sellable limit still applies to an exit the phase admits") {
+  // Named because it is the limit most likely to refuse a valid exit in practice: a broker that
+  // publishes no sellable figure leaves it absent, and absent refuses. An operator seeing a flatten
+  // refused after this branch is most likely seeing this, not the phase.
+  RiskLimits limits;
+  limits.enforce_sellable_quantity_ = true;
+  const RiskGuard guard(limits);
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("100"));
+
+  const auto refused =
+    guard.check(planned("100", "70000", OrderSide::SELL), portfolio, shut_market());
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::QUANTITY_NOT_SELLABLE);
+}
+
 TEST_CASE("an instrument outside the permitted universe is refused") {
   RiskLimits limits;
   limits.permitted_universe_ = std::vector<InstrumentId>{

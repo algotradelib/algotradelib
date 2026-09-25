@@ -1139,7 +1139,116 @@ using ScriptedRunner = runner::Runner<
   HoldTen, strategy::NoCaps, runner::DryTag, ScriptedExecutor<runner::DryTag>
 >;
 
+/** Targets zero in Samsung on every bar, so the closing path is reachable with a scripted outcome. */
+struct FlattenSamsung {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent&) {
+    strategy::TargetPosition target;
+    target.instrument_ = samsung();
+    target.target_quantity_ = Decimal64::parse("0");
+    target.tag_ = "flatten";
+    ctx.submit(target);
+  }
+};
+
+using FlattenRunner = runner::Runner<
+  FlattenSamsung, strategy::NoCaps, runner::DryTag, ScriptedExecutor<runner::DryTag>
+>;
+
+/** A hundred Samsung held, stamped now, which the close below reduces to flat. */
+strategy::Portfolio<runner::DryTag> holding_a_hundred() {
+  strategy::Portfolio<runner::DryTag> portfolio;
+  HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = Decimal64::parse("100");
+  portfolio.positions_.push_back(position);
+  return portfolio;
+}
+
 } // namespace
+
+TEST_CASE("an order sent under a phase the limits refuse is counted") {
+  // The witness for the closing exception. It is the library sending into a session the operator's
+  // own `permitted_phases_` said not to trade in, which is correct and must not be invisible.
+  FlattenRunner runner_instance;
+  arrange(runner_instance);
+  runner_instance.context().set_phase(strategy::MarketPhase::CLOSED);
+  runner_instance.context().set_portfolio(holding_a_hundred());
+  REQUIRE(runner_instance.sends_outside_permitted_phase() == 0);
+
+  const auto report = runner_instance.feed(bar_at(10, "70000"));
+
+  REQUIRE(report.would_place_.size() == 1);
+  REQUIRE(runner_instance.sends_outside_permitted_phase() == 1);
+}
+
+TEST_CASE("the same close inside the session is not counted") {
+  // The other half, and without it the counter could be "orders sent" and the test above would
+  // still pass. The phase is permitted here, so no exception was used and nothing is counted.
+  FlattenRunner runner_instance;
+  arrange(runner_instance);  // leaves the phase at OPEN
+  runner_instance.context().set_portfolio(holding_a_hundred());
+
+  const auto report = runner_instance.feed(bar_at(10, "70000"));
+
+  REQUIRE(report.would_place_.size() == 1);
+  REQUIRE(runner_instance.sends_outside_permitted_phase() == 0);
+}
+
+TEST_CASE("a broker rejecting an out-of-hours close still counts as a send") {
+  // **The case the counter exists for.** Outside a session a rejection is the likeliest answer to a
+  // request that did go out -- that is the cost option 2 was chosen with -- so a witness that
+  // counted only acceptances would read zero through every one of them and be silent in exactly the
+  // situation it was added to report. `Runner::settle` already treats a rejection as a request the
+  // broker counted, which is why it spends rate-limit budget.
+  FlattenRunner runner_instance;
+  arrange(runner_instance);
+  runner_instance.context().set_phase(strategy::MarketPhase::CLOSED);
+  runner_instance.context().set_portfolio(holding_a_hundred());
+  runner_instance.executor().place_outcome_ = SendOutcome::REJECTED;
+
+  const auto report = runner_instance.feed(bar_at(10, "70000"));
+
+  REQUIRE(report.would_place_.empty());
+  REQUIRE(report.rejected_.size() == 1);
+  REQUIRE(runner_instance.sends_outside_permitted_phase() == 1);
+}
+
+TEST_CASE("a close that never left the process is not counted") {
+  // `REFUSED_LOCALLY` means the binding declined it and no request went out, so there is nothing to
+  // witness. The same division `note_sent` makes, and for the same reason.
+  FlattenRunner runner_instance;
+  arrange(runner_instance);
+  runner_instance.context().set_phase(strategy::MarketPhase::CLOSED);
+  runner_instance.context().set_portfolio(holding_a_hundred());
+  runner_instance.executor().place_outcome_ = SendOutcome::REFUSED_LOCALLY;
+
+  runner_instance.feed(bar_at(10, "70000"));
+
+  REQUIRE(runner_instance.sends_outside_permitted_phase() == 0);
+}
+
+TEST_CASE("a close a later limit refuses is not counted, because it was never sent") {
+  // **This is what makes the counter a measure of the harm rather than a proxy for it.** The phase
+  // check is third in the guard's ordering, so an order it admits still faces every ceiling after
+  // it. Counting at the admission would report this order, which went nowhere. The test fails
+  // against a counter incremented inside `RiskGuard`, which is the implementation it exists to rule
+  // out.
+  strategy::RiskLimits limits;
+  limits.max_order_notional_ = Decimal64::parse("1000");
+  FlattenRunner runner_instance(FlattenSamsung{}, limits);
+  arrange(runner_instance);
+  runner_instance.context().set_phase(strategy::MarketPhase::CLOSED);
+  runner_instance.context().set_portfolio(holding_a_hundred());
+
+  const auto report = runner_instance.feed(bar_at(10, "70000"));
+
+  REQUIRE(report.refused_.size() == 1);
+  REQUIRE(report.refused_[0].reason_ == strategy::GuardReason::ORDER_NOTIONAL_TOO_LARGE);
+  REQUIRE(runner_instance.executor().placed().empty());
+  REQUIRE(runner_instance.sends_outside_permitted_phase() == 0);
+}
+
 
 TEST_CASE("the ledger only forgets after the broker's order list has been read") {
   // Not on a timeout, not on a later success, and not on a subsequent bar. A timeout would resume

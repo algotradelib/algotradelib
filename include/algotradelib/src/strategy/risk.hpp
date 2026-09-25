@@ -763,12 +763,16 @@ std::optional<bool> closes_toward_flat(
  * caller that has to *count* what it sent: `admitted_outside_phase_` is the only fact about a
  * permitted order that cannot be recovered afterwards from the order, the portfolio or the report.
  *
- * **The flag survives a later refusal, and that asymmetry is deliberate.** It says the phase check
- * used its closing exception, not that the order went anywhere; the sellable check, a buying-power
- * limit, a position ceiling or the exposure ceiling can all still refuse it. A caller counting
- * orders that actually left the process must therefore read this at the *send*, which is why
- * `Runner` increments where it learns the outcome rather than here. Counting at the admission would
- * report a proxy for the harm instead of the harm.
+ * **`admitted_outside_phase_` is never true beside a rejection**, so it means what its name says:
+ * this order got past every limit, and the phase limit is one it would not have got past without
+ * the closing exception. The phase check is third in the ordering and the sellable check, a
+ * buying-power limit and both ceilings come after it, so an order can use the exception and still
+ * be refused -- in which case nothing was admitted and nothing is flagged.
+ *
+ * **It still does not mean the order was sent.** A permitted order can be rejected by the broker,
+ * refused by the binding, or fail in transit. A caller counting what actually left the process must
+ * therefore read this at the *send*, which is why `Runner` increments where it learns the outcome
+ * rather than here. Counting at the admission would report a proxy for the harm instead of the harm.
  */
 struct GuardDecision {
   /** The reason the order was refused, or nothing when it was permitted. */
@@ -1003,9 +1007,9 @@ public:
         rejection.attempted_ = std::move(attempted);
         return GuardDecision{std::optional<GuardRejection>(rejection), false};
       };
-    // Set by the phase check alone, and carried all the way out even though every later limit can
-    // still refuse the order. That is the point: a caller counting what went out has to learn this
-    // from the decision that sent it, not from the moment it was admitted.
+    // Set by the phase check and reported only if the order survives every later limit, since
+    // `refuse` and `refuse_with` both build a decision with it false. An order the exception
+    // admitted and a ceiling then refused was not admitted.
     bool admitted_outside_phase = false;
 
     if (const auto holding = blocking_reason()) {
