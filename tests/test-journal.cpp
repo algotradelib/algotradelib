@@ -474,6 +474,37 @@ TEST_CASE("a journal entry stamps the clock the runner reads", "[journal]") {
   REQUIRE(journal.records().front().recorded_at_ == utc(2026, 3, 30, 1, 0));
 }
 
+TEST_CASE("a journal line records the venue the order was routed to", "[journal]") {
+  // **Through `JournalingExecutor::place`, not by building the entry.** The
+  // round-trip test above states a route on an entry it constructs itself, so
+  // it pins the serializer and says nothing about the production copy --
+  // verified, because deleting that copy left the whole suite green.
+  //
+  // The route is what lets recovery tell two orders in one symbol, side,
+  // quantity, price and second apart. A line that loses it makes an unresolved
+  // NXT placement and an unrelated KRX order the same row.
+  MemoryJournal journal;
+  runner::JournalingExecutor<ObservingExecutor<runner::DryTag>, MemoryJournal, runner::ManualClock>
+    executor{ObservingExecutor<runner::DryTag>{&journal}, journal, runner::ManualClock{}};
+
+  auto order = buy_ten();
+  order.venue_ = Venue::NXT;
+  order.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
+  order.session_ = OrderSession::AFTER_MARKET;
+  executor.place(order);
+
+  REQUIRE_FALSE(journal.records().empty());
+  const auto& line = journal.records().front();
+  REQUIRE(line.venue_ == Venue::NXT);
+  // And the identity venue is still the instrument's, which is a different
+  // field answering a different question.
+  REQUIRE(line.instrument_.venue_ == samsung().venue_);
+  // The rest of the shape travels by the same copy, so a regression in one is
+  // usually a regression in all of them.
+  REQUIRE(line.time_in_force_ == TimeInForce::IMMEDIATE_OR_CANCEL);
+  REQUIRE(line.session_ == OrderSession::AFTER_MARKET);
+}
+
 TEST_CASE("an accepted placement records the reference the broker issued", "[journal]") {
   MemoryJournal journal;
   runner::JournalingExecutor<ReportingExecutor<runner::DryTag>, MemoryJournal, runner::ManualClock>

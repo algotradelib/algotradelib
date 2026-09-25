@@ -416,6 +416,9 @@ TEST_CASE("KIS normalizes an acknowledgement into a reference that can amend it"
       Decimal64::parse("1"),
       false,
       false,
+      // The shape the order already has. Stating it is what lets an adapter tell
+      // a change from a value it merely supports.
+      OrderShape{OrderType::LIMIT, Decimal64::parse("70000")},
     }
   );
   REQUIRE(amendment.has_value());
