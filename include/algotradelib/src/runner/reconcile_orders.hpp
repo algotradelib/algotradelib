@@ -176,6 +176,16 @@ inline bool match_window_closed(
     window.listing_delay_;
 }
 
+namespace shape_detail {
+
+/** Returns whether neither side of a shape comparison is `UNKNOWN`. */
+template <typename Enum>
+inline constexpr bool both_known(Enum left, Enum right) noexcept {
+  return left != Enum::UNKNOWN && right != Enum::UNKNOWN;
+}
+
+} // namespace shape_detail
+
 /**
  * Returns whether `row` could be the order `instruction` describes.
  *
@@ -208,7 +218,17 @@ inline bool row_corresponds(
   // immediate-or-cancel order this runner recorded sending -- which is recovery
   // attributing one order to another, the failure the journal exists to
   // prevent.
-  if (row.side_ != entry.side_ || row.type_ != entry.type_) {
+  if (row.side_ != entry.side_) {
+    return false;
+  }
+  // A known basis on both sides must agree. An `UNKNOWN` on either side is not
+  // a disagreement and is not a correspondence either: it is a row this
+  // library could not classify, and `row_might_correspond` below is what stops
+  // it being read as absence.
+  if (!shape_detail::both_known(row.type_, entry.type_)) {
+    return false;
+  }
+  if (row.type_ != entry.type_) {
     return false;
   }
   // A field the broker did not report cannot rule a row out. `UNKNOWN` on
@@ -217,20 +237,64 @@ inline bool row_corresponds(
   // attributes that *are* known is the safe direction, because excluding it
   // reports `NOT_PLACED` for an order sitting in the listing, and the runner's
   // answer to `NOT_PLACED` is to send again.
-  const bool condition_known =
-    row.time_in_force_ != TimeInForce::UNKNOWN && entry.time_in_force_ != TimeInForce::UNKNOWN;
-  if (condition_known && row.time_in_force_ != entry.time_in_force_) {
+  if (shape_detail::both_known(row.time_in_force_, entry.time_in_force_) &&
+      row.time_in_force_ != entry.time_in_force_) {
     return false;
   }
-  const bool session_known =
-    row.session_ != OrderSession::UNKNOWN && entry.session_ != OrderSession::UNKNOWN;
-  if (session_known && row.session_ != entry.session_) {
+  if (shape_detail::both_known(row.session_, entry.session_) &&
+      row.session_ != entry.session_) {
     return false;
   }
   if (!reconcile_detail::same_value(row.quantity_, entry.quantity_)) {
     return false;
   }
   if (!reconcile_detail::same_value(row.price_, entry.price_)) {
+    return false;
+  }
+  if (!row.ordered_at_) {
+    return true;
+  }
+  const auto begin = instruction.opened_at_ - window.clock_skew_;
+  const auto end = instruction_sent_by(instruction, window) + window.clock_skew_;
+  return *row.ordered_at_ >= begin && *row.ordered_at_ <= end;
+}
+
+/**
+ * Returns whether `row` could be this instruction's order despite a shape this
+ * library could not read.
+ *
+ * **Why a second, weaker predicate rather than a looser first one.** An order
+ * whose `ORD_DVSN` is outside the published table normalizes to `UNKNOWN` in
+ * all three shape fields, and — because an unknown basis is not one
+ * `carries_caller_price` admits — with no price either. Three of the six
+ * attributes `row_corresponds` compares are therefore missing, so it cannot
+ * say yes. Letting it say *no* is the dangerous half: no row corresponds, the
+ * window closes, the verdict is `NOT_PLACED`, the hold clears, and the runner's
+ * answer to `NOT_PLACED` is to send the order again — beside the one already
+ * resting under a code this release had not seen.
+ *
+ * So a row like that is neither a match nor an absence. It is reported as
+ * `AMBIGUOUS`, which is the verdict this file already reserves for "report,
+ * never guess", and which withholds the instrument until an operator says
+ * which it was. `shape_code_` carries the broker's own code for them to read.
+ *
+ * This compares what survives an unreadable shape: the instrument, the side,
+ * the quantity and the time window. It deliberately does **not** compare the
+ * price, which such a row does not carry.
+ */
+inline bool row_might_correspond(
+  const OpenInstruction& instruction, const OrderSnapshot& row, const MatchWindow& window
+) {
+  const auto& entry = instruction.entry_;
+  if (row.type_ != OrderType::UNKNOWN && entry.type_ != OrderType::UNKNOWN) {
+    // Both sides are readable, so `row_corresponds` has already given the
+    // definitive answer and this predicate has nothing to add.
+    return false;
+  }
+  if (!(row.instrument_ == entry.instrument_) || row.side_ != entry.side_) {
+    return false;
+  }
+  if (!reconcile_detail::same_value(row.quantity_, entry.quantity_)) {
     return false;
   }
   if (!row.ordered_at_) {
@@ -286,6 +350,7 @@ inline OrderMatch match_against(
   }
 
   const OrderSnapshot* found = nullptr;
+  std::size_t unreadable = 0;
   if (instruction.entry_.action_ == JournalAction::CANCEL) {
     for (const auto& row : rows) {
       if (!instruction.entry_.order_id_.empty() && row.order_id_ == instruction.entry_.order_id_) {
@@ -300,12 +365,32 @@ inline OrderMatch match_against(
         found = &row;
       }
     }
+    // Counted separately, because these are not candidates for a *match* -- the
+    // library could not read their shape, so it cannot claim one is this order.
+    // They are candidates against concluding the order does not exist.
+    for (const auto& row : rows) {
+      if (row_might_correspond(instruction, row, window)) {
+        ++unreadable;
+      }
+    }
   }
 
   if (match.candidates_ > 1) {
     match.verdict_ = MatchVerdict::AMBIGUOUS;
     match.detail_ = std::to_string(match.candidates_) +
       " orders in the broker's listing could be this instruction; nothing was resolved";
+    return match;
+  }
+  if (match.candidates_ == 0 && unreadable > 0) {
+    // Report, never guess. A row whose order code this release does not publish
+    // is not evidence that the order is missing, and `NOT_PLACED` would clear
+    // the hold and send it again beside the one already resting.
+    match.verdict_ = MatchVerdict::AMBIGUOUS;
+    match.candidates_ = unreadable;
+    match.detail_ = std::to_string(unreadable) +
+      " order(s) in the broker's listing match this instruction on instrument, side, quantity "
+      "and time but carry an order code this library does not recognize; nothing was resolved. "
+      "The broker's own code is on each row as shape_code_";
     return match;
   }
   if (match.candidates_ == 1) {

@@ -118,6 +118,62 @@ public:
 // A placement, matched on attributes
 // ---------------------------------------------------------------------------
 
+TEST_CASE("an order code this release cannot read is not read as an absent order") {
+  // A broker may add an `ORD_DVSN` after this release. It parses to `UNKNOWN`
+  // in all three shape fields and -- because an unknown basis is not one
+  // `carries_caller_price` admits -- with no price either. Three of the six
+  // attributes the matcher compares are missing, so it cannot say this row is
+  // the order. Saying it is *absent* is the dangerous half: the window closes,
+  // the verdict is NOT_PLACED, the hold clears, and the runner sends the order
+  // again beside the one already resting.
+  auto instruction = placement();
+
+  auto unreadable = row("KRX-1");
+  unreadable.type_ = OrderType::UNKNOWN;
+  unreadable.time_in_force_ = TimeInForce::UNKNOWN;
+  unreadable.session_ = OrderSession::UNKNOWN;
+  unreadable.price_.reset();
+  unreadable.shape_code_ = Code<8>("99");
+
+  const auto match = runner::match_against(instruction, {unreadable}, after_the_window());
+  // After the window, and still not NOT_PLACED.
+  REQUIRE(match.verdict_ == MatchVerdict::AMBIGUOUS);
+  REQUIRE(match.candidates_ == 1);
+  REQUIRE(match.verdict_ != MatchVerdict::NOT_PLACED);
+
+  // With no such row at all, the same instruction and window does conclude the
+  // order is absent -- so the assertion above is about the row rather than
+  // about the window.
+  REQUIRE(
+    runner::match_against(instruction, {}, after_the_window()).verdict_ ==
+      MatchVerdict::NOT_PLACED
+  );
+
+  // And a readable row that genuinely differs still concludes absence, so the
+  // tolerance is for unreadable rows and not for every row.
+  auto different = row("KRX-2");
+  different.side_ = OrderSide::SELL;
+  REQUIRE(
+    runner::match_against(instruction, {different}, after_the_window()).verdict_ ==
+      MatchVerdict::NOT_PLACED
+  );
+}
+
+TEST_CASE("an unreadable row that is plainly a different order is still an absence") {
+  auto instruction = placement();
+  auto unreadable = row("KRX-1", samsung(), "999");
+  unreadable.type_ = OrderType::UNKNOWN;
+  unreadable.time_in_force_ = TimeInForce::UNKNOWN;
+  unreadable.session_ = OrderSession::UNKNOWN;
+  unreadable.price_.reset();
+  // Quantity still discriminates, and it survives an unreadable shape, so the
+  // weaker predicate is not "admit anything".
+  REQUIRE(
+    runner::match_against(instruction, {unreadable}, after_the_window()).verdict_ ==
+      MatchVerdict::NOT_PLACED
+  );
+}
+
 TEST_CASE("recovery does not read a day order as the immediate-or-cancel order it sent") {
   auto instruction = placement();
   instruction.entry_.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
