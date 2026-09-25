@@ -2440,7 +2440,7 @@ private:
         HoldingPosition position;
         position.instrument_ = InstrumentId{
           Country::KR,
-          Venue::COMBINED,
+          instrument_venue(),
           broker_detail::json_string(output, "pdno"),
         };
         position.name_ = broker_detail::json_string(output, "prdt_name");
@@ -3337,7 +3337,7 @@ private:
         // order was actually routed is a different fact and goes in `venue_`.
         order.instrument_ = InstrumentId{
           Country::KR,
-          Venue::COMBINED,
+          instrument_venue(),
           broker_detail::json_string(row, "pdno"),
         };
         order.venue_ = reported_venue(row);
@@ -3565,7 +3565,7 @@ private:
         // order was actually routed is a different fact and goes in `venue_`.
         order.instrument_ = InstrumentId{
           Country::KR,
-          Venue::COMBINED,
+          instrument_venue(),
           broker_detail::json_string(row, "pdno"),
         };
         order.venue_ = reported_venue(row);
@@ -3690,6 +3690,23 @@ private:
    * a later amendment and so takes the broker's own default, rather than
    * naming a venue nothing reported.
    */
+  /**
+   * Returns the venue that identifies a KIS instrument.
+   *
+   * One function with three callers -- the holdings parse and both order
+   * parses -- rather than the literal each of them used to hold. `InstrumentId`
+   * compares its venue, so a holding and an order of the same stock are the
+   * same instrument only while those three agree, and
+   * `Portfolio::working_quantity` reads zero resting quantity the moment they
+   * do not. Toss had exactly that drift between its two parses and nothing
+   * caught it, so the value is named once here rather than written three times.
+   *
+   * KIS reports no venue on a holding, so this is about identity only. Where an
+   * order *was* routed is `reported_venue` below, and it lives on
+   * `OrderSnapshot::venue_` rather than on the instrument.
+   */
+  static constexpr Venue instrument_venue() { return Venue::COMBINED; }
+
   static Venue reported_venue(const json::object& row) {
     // The workbook spells this field two ways across the sheets that publish
     // it -- `excg_id_dvsn_cd` on 주식정정취소가능주문조회 and `excg_id_dvsn_Cd`
