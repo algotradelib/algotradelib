@@ -155,9 +155,11 @@ reconcile against that position and compound it.
 
 Two defaults are deliberately not "unlimited". `permitted_phases_` defaults to trading only while the
 market is `OPEN`, and an absent value explicitly means any phase, so `MarketPhase::UNKNOWN` — an
-uncovered calendar date — is refused unless you ask for it. The rate limit counts over a sliding
-window rather than resetting on a boundary, and budget is consumed when an order is *sent*, not when
-it is checked.
+uncovered calendar date — is refused unless you ask for it. That limit is two-sided: it refuses an
+order that opens or increases a position, and permits one that reduces a held position toward flat,
+so an exit is expressible in any phase and `vanilla::TimedLiquidation` works under the default. The
+rate limit counts over a sliding window rather than resetting on a boundary, and budget is consumed
+when an order is *sent*, not when it is checked.
 
 ## How finely a target is chased
 

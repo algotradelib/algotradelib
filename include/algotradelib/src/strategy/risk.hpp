@@ -212,7 +212,8 @@ struct GuardRejection {
  * - `permitted_phases_` defaults to trading only while the market is `OPEN`. An absent value
  *   explicitly means any phase, which an operator has to ask for. `MarketPhase::UNKNOWN` is
  *   therefore refused by default, which is the point: an uncovered calendar date must not become
- *   an order placed into a holiday.
+ *   an order placed into a holiday. It refuses what an order *opens*, never what it closes; see the
+ *   member.
  * - Nothing is halted to begin with, but `halt()` is one call and takes effect before every other
  *   check. A halt is not a limit and does not live here: it is held on the guard itself, by
  *   `HaltReason`, so that the operator's hold and the machinery's cannot clear one another.
@@ -290,7 +291,36 @@ struct RiskLimits {
   bool enforce_buying_power_{false};
   /** Instruments that may be traded; absent means any. */
   std::optional<std::vector<InstrumentId>> permitted_universe_;
-  /** Phases trading is allowed in; absent means any. */
+  /**
+   * Phases in which a position may be **opened or increased**; absent means any.
+   *
+   * **It governs what an order opens, not what it closes.** An order reducing a held position toward
+   * flat is permitted whatever the phase. That is the answer `max_gross_exposure_` already gives one
+   * paragraph up -- an order that does not raise reachable exposure is allowed however far over the
+   * ceiling the account is -- and it applies here with more force, because a phase restriction that
+   * cannot express an exit turns "the market is shut" into "you may not reduce risk". Without it the
+   * default refuses an operator's flatten after the close, and `vanilla::TimedLiquidation` cannot
+   * place the order it exists to place without the limit being switched off in all but spelling.
+   *
+   * **The exception is `closes_toward_flat`, and not the exposure rule.** "Does not raise the
+   * projection" is broader: with nothing held and a buy resting, a sell of the same size leaves the
+   * projection unchanged while opening a short if it alone fills. This admits an order only when it
+   * opposes the instrument's *net* held quantity and cannot carry it through flat, counting what is
+   * already working on the closing side. Anything it cannot establish is refused.
+   *
+   * **Everything else still applies to that exit.** The phase is checked third; the sellable check,
+   * a buying-power limit, a position ceiling and the exposure ceiling all come after it and can each
+   * refuse an order this admitted. Permission here is not permission to send.
+   *
+   * **What it costs, decided rather than discovered.** The order goes to a broker that will very
+   * likely reject it outside its session, so a nightly flatten becomes a rejection rather than a
+   * refusal -- the venue's answer instead of this library's guess, and journalled. A strategy that
+   * restates a close on every pass will therefore send one per pass; `max_orders_per_window_` is the
+   * lever, and `runner::Runner::sends_outside_permitted_phase` is how an operator sees it happening.
+   *
+   * A cancellation is not checked against this at all. `Runner::send_cancel` consults no limit but a
+   * halt, because withdrawing only ever reduces exposure.
+   */
   std::optional<std::vector<MarketPhase>> permitted_phases_{
     std::vector<MarketPhase>{MarketPhase::OPEN}
   };

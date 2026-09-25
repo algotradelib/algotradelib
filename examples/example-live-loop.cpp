@@ -133,11 +133,16 @@ void describe(const runner::LoopReport& report) {
                  std::string_view("none"))
             << '\n'
             // The phase the loop derived for itself, and how many changes it announced. Reported
-            // because it decides whether anything could be sent at all: `unknown` beside a default
-            // `permitted_phases_` means every placement was refused, and an empty placement count on
-            // its own does not say that.
+            // because it decides most of what could be sent: `unknown` beside a default
+            // `permitted_phases_` means every placement that would open a position was refused, and
+            // an empty placement count on its own does not say that.
             << "market phase    : " << strategy::market_phase_name(report.final_phase_)
-            << " (" << report.phase_transitions_ << " transition(s))\n";
+            << " (" << report.phase_transitions_ << " transition(s))\n"
+            // And how many orders went out under a phase the limits do not permit. An order closing
+            // a held position is permitted in any phase -- which is what lets a flatten after the
+            // close reach the broker instead of being refused by the operator's own limit -- so this
+            // is the line that says it happened. Non-zero is not a fault; a nightly flatten is one.
+            << "sent off-phase  : " << report.sends_outside_permitted_phase_ << '\n';
   for (const auto& note : report.notes_) {
     std::cout << "note            : " << note << '\n';
   }

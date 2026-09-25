@@ -192,8 +192,10 @@ struct PollSchedule {
    * Every other member here is absent by default, because the library will not spend a request on
    * data the caller never asked for. This one is different in kind: the loop derives the market phase
    * from it, `RiskLimits::permitted_phases_` defaults to `{OPEN}`, and an uncovered date is `UNKNOWN`
-   * -- so a loop with no calendar refuses every order. A cadence absent by default would make the
-   * whole mechanism one nobody switches on, which is exactly the shape the phase decision closed.
+   * -- so a loop with no calendar refuses every order that opens or increases a position. It still
+   * permits one that closes a held position, which is the only thing a run in an unknown phase
+   * should be doing. A cadence absent by default would make the whole mechanism one nobody switches
+   * on, which is exactly the shape the phase decision closed.
    *
    * **Six hours, and the number has three constraints behind it.** KIS asks that its holiday endpoint
    * be called at most once a day, and its client caches -- a covered date is answered without a
@@ -291,9 +293,11 @@ struct IterationReport {
   /**
    * The phase the loop computed for this iteration.
    *
-   * Reported because it decides whether anything could be sent: `UNKNOWN` here and a default
-   * `RiskLimits::permitted_phases_` means every placement was refused, and a reader should not have
-   * to infer that from an empty placement count.
+   * Reported because it decides most of what could be sent: `UNKNOWN` here and a default
+   * `RiskLimits::permitted_phases_` means every placement that would open or increase a position was
+   * refused, and a reader should not have to infer that from an empty placement count. An order
+   * closing a held position is permitted in any phase, so this is not on its own a claim that
+   * nothing went out -- `LoopReport::sends_outside_permitted_phase_` is what says whether any did.
    */
   strategy::MarketPhase phase_{strategy::MarketPhase::UNKNOWN};
   /** Whether this iteration announced a phase change to the strategy. */
@@ -678,20 +682,23 @@ private:
  *
  * ## The trap a stop must not hide
  *
- * `RiskLimits::permitted_phases_` defaults to `{MarketPhase::OPEN}`, so **a withdraw or a flatten
- * issued outside market hours is refused by the guard** -- correctly, because there is no session to
- * trade in, but an operator who asked to be flat and was told nothing would believe they were. That
- * is why `LoopReport` counts what the broker *accepted* separately from what the loop *asked for*,
- * and why a refusal produces a note saying the position is still held. `closing_complete()` is the
- * one call that answers "did everything I asked for go out" -- which is not the same question as
- * "am I flat", and deliberately so: acceptance is the last thing this library observes, and the
- * broker's own order list and holdings are the authority on what is actually left.
+ * An operator who asked to be flat and was told nothing would believe they were. That is why
+ * `LoopReport` counts what the broker *accepted* separately from what the loop *asked for*, and why
+ * a refusal produces a note saying the position is still held. `closing_complete()` is the one call
+ * that answers "did everything I asked for go out" -- which is not the same question as "am I
+ * flat", and deliberately so: acceptance is the last thing this library observes, and the broker's
+ * own order list and holdings are the authority on what is actually left.
  *
- * **That paragraph used to describe replay behaviour and present it as the live hazard.** Live, the
- * phase held whatever a caller set at startup, so the refusal it reasons about could not happen for
- * the reason given -- an overnight `FLATTEN` went out because the phase still said `OPEN`. It happens
- * now, which makes the counts above load-bearing rather than defensive. Whether the limit *should*
- * refuse an order that reduces exposure is a policy question, deliberately not decided here.
+ * **The phase is no longer what springs this trap, and it was.** `RiskLimits::permitted_phases_`
+ * defaults to `{MarketPhase::OPEN}`, and a flatten issued outside market hours used to be refused by
+ * it -- so the one instruction an operator most needs to succeed failed because of their own risk
+ * limit. `ai/phase-limit-exits` settled that the phase governs what an order *opens* rather than
+ * what it closes, so a closing pass now goes out whatever the session is doing, and
+ * `LoopReport::sends_outside_permitted_phase_` says when that happened.
+ *
+ * **The counts stay load-bearing, because every other limit still applies to a close.** A sellable
+ * check with no broker reading, a per-order ceiling, a position ceiling, a halt: each of them
+ * refuses an exit and each produces the same silence. The trap was never really about the phase.
  *
  * **The loop holds the guard, and it names what it holds.** Its gates are
  * `strategy::HaltReason` values it takes and releases itself -- `ORDER_LIST_UNREAD`,
@@ -1076,8 +1083,9 @@ private:
    * stop cancellations, which `Runner::send_cancel` refuses on any blocking reason while never
    * consulting the phase at all; taking one because a reference-data poll failed would make an
    * unknown phase more restrictive than a closed one, and a withdrawal only ever reduces exposure.
-   * `RiskGuard` already refuses every placement with `PHASE_NOT_PERMITTED`, so there is nothing left
-   * for a hold to protect.
+   * `RiskGuard` already refuses every placement that opens or increases a position with
+   * `PHASE_NOT_PERMITTED`, and permits one that closes a held position -- which is exactly what a
+   * hold would wrongly stop, for the same reason it would wrongly stop a cancellation.
    */
   void note_unestablished_phase(LoopReport& report) const {
     if (report.iterations_ == 0 || report.final_phase_ != strategy::MarketPhase::UNKNOWN) {
@@ -1119,7 +1127,7 @@ private:
       std::string(ever_known ?
         "the market phase stopped being established (" :
         "the market phase was never established (") +
-      reason + "); a guard permitting only known phases refused every placement" +
+      reason + "); a guard permitting only known phases refused every placement opening a position" +
       (ever_known ? " after that" : ""));
   }
 

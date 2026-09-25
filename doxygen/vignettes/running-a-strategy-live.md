@@ -266,15 +266,22 @@ previous state — so a withdraw that reports complete can still have orders wor
 So after any stop, read the broker's own order list and holdings before believing anything about the
 state. `closing_complete()` answers one question only: did anything fail to go out.
 
-**`RiskLimits::permitted_phases_` defaults to `{MarketPhase::OPEN}`, so a flatten outside market hours
-is refused.** That is correct — there is no session to trade in — but it means an operator who asks to
-be flat at 22:00 and hears nothing would believe they are flat while still holding the position. The
-report says `closing_refused_` and carries a note ending "the position is still held". This is why the
-counts are separate rather than one number.
+**`RiskLimits::permitted_phases_` defaults to `{MarketPhase::OPEN}`, and a flatten outside market
+hours still goes out.** The phase limit governs what an order *opens*, not what it closes: an order
+reducing a held position toward flat is permitted in any phase, because a limit that cannot be
+de-risked past turns "the market is shut" into "you may not reduce risk". So an operator who asks to
+be flat at 22:00 gets a request sent, and very likely a *broker's* rejection rather than the
+library's — which is the better answer, since it is the venue's and it is journalled.
+`LoopReport::sends_outside_permitted_phase_` counts how often that happened.
 
-**And this now actually happens.** Until the loop computed the phase, a live run held whatever the
-caller set at startup — in practice `OPEN`, forever — so the refusal above was a property of replays
-only, and a 22:00 flatten went out. Read the counts.
+**Every other limit still applies to that flatten, and each of them is silent in the same way.** A
+sellable check with no broker reading, a per-order ceiling, a position ceiling, a halt: any of these
+refuses the exit, the report says `closing_refused_`, and a note ends "the position is still held".
+An operator who asks to be flat and hears nothing would believe they are. This is why the counts are
+separate rather than one number, and why `closing_complete()` exists.
+
+**An opening order after the close is refused exactly as before.** Nothing here relaxes that, and a
+strategy trying to enter a position at 22:00 gets `PHASE_NOT_PERMITTED`.
 
 ## The market phase, and what the loop needs to know it
 
@@ -286,8 +293,8 @@ The loop derives the phase each iteration from two things:
 - **a trading calendar it polls**, `PollKind::CALENDAR`. This is the one cadence in `PollSchedule` that
   is **on by default**, six hours, because a loop without a calendar has an uncovered date, an
   uncovered date is `MarketPhase::UNKNOWN`, and `UNKNOWN` is not in the default
-  `permitted_phases_` — so every order would be refused. KIS's client caches and answers a covered
-  date without a request, so four polls a day cost one request a day.
+  `permitted_phases_` — so every order opening a position would be refused. KIS's client caches and
+  answers a covered date without a request, so four polls a day cost one request a day.
 
 `on_phase` fires on a change, once, with this iteration's prices and portfolio already installed. A
 strategy written on it — `vanilla::TimedLiquidation` is the shipped one — behaves the same live as in a
@@ -313,8 +320,10 @@ When the phase cannot be established, the run says so: `final_phase_` is `unknow
 the reason — no cadence configured, no calendar published by the broker, every poll failed, or the
 date is uncovered. It is deliberately **not** a halt: a halt would also stop cancellations, which
 `Runner::send_cancel` exempts from the phase limit because withdrawing only ever reduces exposure.
-`RiskGuard` already refuses every *placement* with `PHASE_NOT_PERMITTED`, so there is nothing a halt
-would add.
+`RiskGuard` already refuses every *placement that opens a position* with `PHASE_NOT_PERMITTED`, and
+permits one that closes a held position — which is the case a halt would wrongly stop, for the same
+reason it would wrongly stop a cancellation. So there is nothing a halt would add and something it
+would take away.
 
 ## Poll failures are not send failures
 
