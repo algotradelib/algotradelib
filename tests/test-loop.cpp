@@ -2351,6 +2351,38 @@ using CancelRunner = runner::DryRunner<CancelsWorking>;
 using CancelSource = FeedingSourceFor<CancelRunner>;
 using CancelLoop = runner::PollingLoop<CancelRunner, CancelSource, runner::ManualClock>;
 
+/** Targets flat in Samsung on every bar, so an exit is settled from inside a poll. */
+struct FlattensSamsung {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const algotradelib::strategy::BarEvent&) {
+    strategy::TargetPosition target;
+    target.instrument_ = samsung();
+    target.target_quantity_ = algotradelib::Decimal64::parse("0");
+    target.tag_ = "flatten";
+    ctx.submit(target);
+  }
+};
+
+using FlattenRunner = runner::DryRunner<FlattensSamsung>;
+using FlattenSource = FeedingSourceFor<FlattenRunner>;
+using FlattenLoop = runner::PollingLoop<FlattenRunner, FlattenSource, runner::ManualClock>;
+
+/** Targets a short of 100 in Samsung, which from a long of 10 is an order that opens. */
+struct ShortsSamsung {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const algotradelib::strategy::BarEvent&) {
+    strategy::TargetPosition target;
+    target.instrument_ = samsung();
+    target.target_quantity_ = algotradelib::Decimal64::parse("-100");
+    target.tag_ = "short";
+    ctx.submit(target);
+  }
+};
+
+using ShortRunner = runner::DryRunner<ShortsSamsung>;
+using ShortSource = FeedingSourceFor<ShortRunner>;
+using ShortLoop = runner::PollingLoop<ShortRunner, ShortSource, runner::ManualClock>;
+
 using PhaseRunner = runner::DryRunner<RecordsPhases>;
 using PhaseSource = runner::ManualSource<PhaseRunner>;
 using PhaseLoop = runner::PollingLoop<PhaseRunner, PhaseSource, runner::ManualClock>;
@@ -2485,6 +2517,57 @@ TEST_CASE("an unestablished phase does not stop a cancellation", "[loop][phase]"
   CHECK_FALSE(report.final_gate_);
   // The withdrawal reached the executor, which it could not have done through a hold.
   CHECK(runner_instance.executor().canceled().size() == 1);
+  // And no placement happened, so the phase exception was not involved in any of it.
+  // `Runner::send_cancel` calls no guard check and applies no phase limit; a cancellation needs no
+  // exception because withdrawing only ever reduces exposure.
+  CHECK(report.sends_outside_permitted_phase_ == 0);
+}
+
+TEST_CASE("an exit settled inside a poll is counted in the run's report", "[loop][phase]") {
+  // **The seam that a per-pass count would miss.** A source's `poll` calls `Runner::feed` itself and
+  // discards the report it gets back, so an order can leave the process without any `DryRunReport`
+  // reaching the loop. Only a stop's closing pass hands one over. The runner's counter is monotonic
+  // and the loop differences it across the run, which is how an ordinary send gets counted at all.
+  FlattenRunner runner_instance;
+  FlattenSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner_instance.context().set_portfolio(portfolio_with("10", nullptr));
+  serve_calendar(runner_instance, /*trades=*/true);
+  // 16:00, half an hour after the close, on a day the market did trade.
+  FlattenLoop loop(runner_instance, source, bars_each_iteration(), clock_at_local_hour(16));
+  StopSource stop;
+
+  const auto report = loop.run(stop, 1);
+
+  REQUIRE(report.final_phase_ == strategy::MarketPhase::POST_CLOSE);
+  CHECK(source.placed() == 1);
+  CHECK(source.refused() == 0);
+  CHECK(report.sends_outside_permitted_phase_ == 1);
+}
+
+TEST_CASE("an order that opens a short is refused after the close, and not counted",
+          "[loop][phase]") {
+  // The same fixture, the same poll, the same hour -- and the opposite answer, because a target of
+  // -100 against a long of 10 is a sell of 110 that carries the position through flat into a short.
+  // Without this the test above would hold for an exception that permitted any sell outside the
+  // session, which is the limit switched off rather than made two-sided.
+  ShortRunner runner_instance;
+  ShortSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner_instance.context().set_portfolio(portfolio_with("10", nullptr));
+  serve_calendar(runner_instance, /*trades=*/true);
+  ShortLoop loop(runner_instance, source, bars_each_iteration(), clock_at_local_hour(16));
+  StopSource stop;
+
+  const auto report = loop.run(stop, 1);
+
+  REQUIRE(report.final_phase_ == strategy::MarketPhase::POST_CLOSE);
+  CHECK(source.placed() == 0);
+  REQUIRE(source.refused() == 1);
+  CHECK(source.last_guard_reason() == strategy::GuardReason::PHASE_NOT_PERMITTED);
+  CHECK(report.sends_outside_permitted_phase_ == 0);
 }
 
 TEST_CASE("an order settled inside a poll is checked against this iteration's phase",

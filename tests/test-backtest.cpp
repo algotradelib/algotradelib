@@ -749,6 +749,21 @@ backtest::ReplayConfig replay_config() {
   return config;
 }
 
+/**
+ * The same replay, with `permitted_phases_` left at its default.
+ *
+ * Separate from `replay_config` because that one switches the limit off and every other test here
+ * wants it off -- the point of those tests is fill timing, not the guard. The two tests using this
+ * one are about the default itself, which until `ai/phase-limit-exits` no replay could run: the
+ * flatten a shipped vanilla produces was refused by it.
+ */
+backtest::ReplayConfig replay_config_with_default_phases() {
+  backtest::ReplayConfig config;
+  config.cash_ = Decimal64::parse("100000000");
+  config.instruments_ = {samsung_reference()};
+  return config;
+}
+
 /** Buys ten on the first bar it sees, and records every fill it is told about. */
 struct BuysOnce {
   bool submitted_{false};
@@ -1439,6 +1454,58 @@ TEST_CASE("TimedLiquidation flattens a position when a replay leaves the session
   REQUIRE(engine.result().executions_.size() == 2);
   REQUIRE(engine.result().executions_[1].fill_.side_ == OrderSide::SELL);
   REQUIRE(engine.ledger().quantity_of(samsung())->coefficient() == 0);
+}
+
+TEST_CASE("TimedLiquidation flattens a replay under the default limits") {
+  // **The acceptance criterion of `ai/phase-limit-exits`, and the first place in this repository
+  // that runs the default `permitted_phases_` where the phase is real.** Every other replay either
+  // switches the limit off or widens it -- including the test above, which has to add `POST_CLOSE`
+  // for this same vanilla to place anything at all. That was the evidence the default was not
+  // usable: a shipped strategy could not do its job without the operator disabling a risk limit.
+  //
+  // Nothing here sets `permitted_phases_`. The flatten is a sell of the whole holding, so it closes
+  // a position and the phase limit does not stand in front of it; the buy inside the session is
+  // permitted because the session is open. Both halves of the default are doing their job.
+  auto config = replay_config_with_default_phases();
+  // The default, spelled out: trading only while the market is open.
+  REQUIRE(config.limits_.permitted_phases_);
+  REQUIRE(config.limits_.permitted_phases_->size() == 1);
+  REQUIRE(config.limits_.permitted_phases_->front() == strategy::MarketPhase::OPEN);
+
+  BuyThenLiquidate combined;
+  combined.buying_.params_.instrument_ = samsung();
+  combined.buying_.params_.quantity_ = Decimal64::parse("100");
+
+  backtest::Backtester<BuyThenLiquidate> engine(combined, std::move(config));
+  engine.feed(moving_bar(utc(2026, 3, 10, 3, 0), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 10, 3, 1), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 31), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.finish();
+
+  REQUIRE(engine.result().refused_.empty());
+  REQUIRE(engine.result().executions_.size() == 2);
+  REQUIRE(engine.result().executions_[1].fill_.side_ == OrderSide::SELL);
+  REQUIRE(engine.ledger().quantity_of(samsung())->coefficient() == 0);
+}
+
+TEST_CASE("a replay still refuses an opening order after the close") {
+  // The other half of the default, in the same engine. If the exception were wider than "closes a
+  // position" the test above would pass for the wrong reason, and a replay would quietly permit
+  // trading outside the session -- which is the whole thing `permitted_phases_` is for.
+  auto config = replay_config_with_default_phases();
+
+  backtest::Backtester<vanilla::BuyAndHold> engine(
+    vanilla::BuyAndHold{{samsung(), Decimal64::parse("100")}}, std::move(config)
+  );
+  // Past the close on its very first bar, so the only order it ever plans is an opening buy there.
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 31), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.finish();
+
+  REQUIRE(engine.result().executions_.empty());
+  REQUIRE_FALSE(engine.result().refused_.empty());
+  REQUIRE(engine.result().refused_[0].reason_ == strategy::GuardReason::PHASE_NOT_PERMITTED);
 }
 
 TEST_CASE("a replay sells what it holds with the sellable check enabled") {
