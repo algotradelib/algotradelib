@@ -858,6 +858,47 @@ TEST_CASE("a target already met produces no instruction at all") {
   REQUIRE(plan.empty());
 }
 
+TEST_CASE("a target is sized against every position row, not the first") {
+  // A broker reporting one instrument as two lots is ordinary, and this read `quantity_of` -- the
+  // first row. A target of zero against rows of 60 and 40 planned a sell of 60 and left 40 held;
+  // `vanilla::TimedLiquidation` then submitted one such target *per row* and planned that sell
+  // twice, which together sold 120 of a holding of 100. Sizing against the net is what the guards
+  // already do, and reconciliation disagreeing with them about how much is held is the
+  // partial-coherence failure this repository has paid for before.
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("60"));
+  portfolio.positions_.push_back(holding("40"));
+  const auto reference = samsung_reference();
+  ReconcileInputs inputs;
+  inputs.instrument_ = &reference;
+
+  const auto plan = strategy::reconcile(target("0"), portfolio, inputs);
+  REQUIRE(plan.place_.size() == 1);
+  REQUIRE(plan.place_[0].side_ == OrderSide::SELL);
+  REQUIRE(plan.place_[0].quantity_ == Decimal64::parse("100"));
+
+  // And the same rows are already met by a target of 100, which reading the first row would have
+  // planned another 40 for.
+  REQUIRE(strategy::reconcile(target("100"), portfolio, inputs).empty());
+}
+
+TEST_CASE("a position whose rows will not add up is rejected, not read as flat") {
+  // The behaviour change that came with the netting, pinned because it is one. `value_or(zero)` on
+  // a failed sum would read a broken listing as *flat* and order the entire target -- the largest
+  // order the strategy could ask for, sized from a snapshot the library just failed to understand.
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("9223372036854775807"));
+  portfolio.positions_.push_back(holding("9223372036854775807"));
+  const auto reference = samsung_reference();
+  ReconcileInputs inputs;
+  inputs.instrument_ = &reference;
+
+  const auto plan = strategy::reconcile(target("0"), portfolio, inputs);
+  REQUIRE(plan.place_.empty());
+  REQUIRE(plan.rejected_.size() == 1);
+  REQUIRE(plan.rejected_[0].reason_ == strategy::RejectReason::NOT_REPRESENTABLE);
+}
+
 TEST_CASE("a target from flat becomes one order for the whole amount") {
   ProbePortfolio portfolio;
   const auto reference = samsung_reference();
