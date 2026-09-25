@@ -56,13 +56,18 @@ enum class PollKind {
    *
    * ## The one obligation this puts on a source
    *
-   * **A source writes the calendar during this poll and nowhere else.** The loop derives the phase
-   * before every call it makes into the source, so a calendar that arrives in one call is in force for
-   * the next; but nothing runs between a source's own `set_calendar` and its own `Runner::feed`, so a
-   * source that does both inside one poll would settle an order against the phase as it stood when
-   * that poll began -- which is the whole hazard the phase exists to prevent. `live::SessionSource`
-   * satisfies this. A source that does not is reported, not silently tolerated: see
-   * `PollingLoop::note_calendar_written_mid_poll`.
+   * **A source writes the calendar during this poll, nowhere else, and does not feed the runner from
+   * it.** Two halves, and the second is not redundant: Codex round 3 found that a source obeying only
+   * the first -- writing the calendar in this poll and then calling `Runner::feed` before returning --
+   * sends an order against the phase as it stood when the poll began, which is the whole hazard the
+   * phase exists to prevent. The loop derives the phase before every call it makes into a source, so a
+   * calendar arriving in one call is in force for the next; but nothing of its runs between a source's
+   * own `set_calendar` and its own `Runner::feed`.
+   *
+   * Stated as "this poll installs a calendar and feeds nothing", which is the version with no edge:
+   * `live::SessionSource::poll_calendar` is exactly that. A source that breaks either half is
+   * reported rather than silently tolerated -- see `PollingLoop::note_revised_phase`, which counts a
+   * call that both sent an order and left the phase changed, whichever poll it was.
    */
   CALENDAR,
 };
@@ -322,14 +327,21 @@ struct LoopReport {
   /** The phase the last iteration computed. */
   strategy::MarketPhase final_phase_{strategy::MarketPhase::UNKNOWN};
   /**
-   * How many polls other than the calendar poll replaced the trading calendar.
+   * How many calls into user code both sent an order and left the market phase changed behind them.
    *
-   * Always zero against `live::SessionSource`. Non-zero means a source broke the one obligation
-   * `PollKind::CALENDAR` states, and that any order that poll settled was checked against the phase as
-   * it stood before the poll rather than after. The loop cannot prevent it -- nothing of its runs
-   * between a source's calendar write and its own `Runner::feed` -- so it says so instead.
+   * **What it measures, exactly**, because an earlier name and note overstated it: around every call the
+   * loop makes into a source's `poll` or `read_order_list`, into a strategy handler, or into a closing
+   * pass, the loop records the phase and the guard's total sends, and compares both afterwards. This
+   * counts the calls where the phase moved **and** something went out -- so an order was checked against
+   * a phase that the same call then invalidated.
+   *
+   * It deliberately does **not** count a calendar revision that sent nothing, because nothing was
+   * harmed, nor one that leaves today's answer unchanged. It cannot see a revision that is undone before
+   * the call returns. Always zero against `live::SessionSource` and any strategy that does not write the
+   * calendar; non-zero names a contract in `PollKind::CALENDAR` or `runner::Context::set_calendar` that
+   * somebody's code is breaking.
    */
-  std::size_t calendar_written_outside_its_poll_{0};
+  std::size_t sends_under_a_revised_phase_{0};
   /**
    * How many phase changes were announced to the strategy.
    *
@@ -636,11 +648,13 @@ private:
  * says why. See `note_unestablished_phase` for why a hold would be worse than nothing.
  *
  * **If you are writing a source, this is the one rule the loop cannot enforce for you**: write the
- * trading calendar during `PollKind::CALENDAR` and nowhere else. The loop re-derives the phase before
+ * trading calendar during `PollKind::CALENDAR`, nowhere else, and do not feed the runner from that
+ * poll. The loop re-derives the phase before
  * every call it makes into a source, but nothing of its runs between your own `set_calendar` and your
  * own `Runner::feed`, so doing both inside one poll settles an order against the phase as it stood
  * when that poll began. `PollKind::CALENDAR` carries the full argument, and
- * `LoopReport::calendar_written_outside_its_poll_` reports a source that breaks it.
+ * `LoopReport::sends_under_a_revised_phase_` reports a source that breaks it, and the rule has a
+ * second half: the calendar poll must not feed either, because a source may not do both in one call.
  *
  * ## The trap a stop must not hide
  *
@@ -842,8 +856,9 @@ private:
       //
       // The cost is a date comparison per due poll.
       install_phase(iteration);
+      const auto watch = watch_phase(iteration);
       const auto outcome = source_->poll(kind, *runner_);
-      note_calendar_written_mid_poll(kind, iteration.at_, iteration.phase_, report);
+      note_revised_phase(std::string(poll_kind_name(kind)) + " poll", watch, report);
       // `UNCHANGED` counts, because a listing that is identical to the last one is still a listing
       // -- but only on a source that publishes them at all, which `note_working_orders_read`
       // enforces: a broker without the inquiry answers `UNCHANGED` without asking anybody.
@@ -908,7 +923,11 @@ private:
       }
       announced_ = iteration.phase_;
       iteration.phase_changed_ = true;
+      // Watched for the same reason a poll is: `Context::set_calendar` is public, so an `on_phase`
+      // handler can revise the calendar and submit in one call, and `settle` runs before this returns.
+      const auto watch = watch_phase(iteration);
       runner_->feed(iteration.phase_);
+      note_revised_phase("on_phase handler", watch, report);
     }
 
     // Reported from the guard rather than from what the loop just computed, so the report names the
@@ -918,47 +937,52 @@ private:
     return iteration;
   }
 
+  /** What the phase and the send count were before the loop handed control to somebody else. */
+  struct PhaseWatch {
+    std::chrono::system_clock::time_point at_{};
+    strategy::MarketPhase phase_{strategy::MarketPhase::UNKNOWN};
+    std::size_t sends_{0};
+  };
+
+  /** Records the phase and the send count, for comparison after a call into user code. */
+  PhaseWatch watch_phase(const IterationReport& iteration) const {
+    return PhaseWatch{iteration.at_, iteration.phase_, runner_->guard().total_sent()};
+  }
+
   /**
-   * Counts a poll that changed the phase under itself, when it was not the calendar poll.
+   * Counts and names a call that sent an order and left the phase changed behind it.
    *
-   * The contract `PollKind::CALENDAR` states is one the loop cannot enforce, because nothing of its runs
-   * between a source's `set_calendar` and its own `Runner::feed`. What the loop *can* do is notice
+   * **The one hazard here the loop cannot prevent and can only witness.** It re-derives the phase before
+   * every call it makes into a source or a strategy, but nothing of its runs *inside* such a call: a
+   * source that replaces the calendar and then feeds, or an `on_phase` handler that does the same before
+   * submitting, settles an order against the phase as it stood when the call began. So the loop looks
    * afterwards, which turns an invisible violation into a line in the report -- the same choice
    * `closing_source_unverified_` makes about a listing it could not trust.
    *
-   * **Measured as a change in the phase, not in the calendar.** A first attempt compared the calendar's
-   * stamp, size and covered span, and missed the case that actually matters: a calendar for the *same*
-   * date whose answer flipped from trading to closed has an identical stamp and span, and is precisely
-   * the revision that makes an order wrong. Asking `phase_at` again -- at the same `iteration.at_`, so
-   * only the calendar can have moved it -- measures the harm rather than a proxy for it, and stays quiet
-   * about a calendar change that does not alter today's answer, where there is no harm to report.
+   * **Both halves are required, and each one removes a wrong answer.** The phase must have moved, or an
+   * ordinary send would be reported. Something must have been sent, or an ordinary calendar poll would be
+   * reported on every iteration -- which is why this no longer excludes the calendar poll by kind. That
+   * exclusion was a false-positive workaround and it hid the case Codex round 3 found: a source obeying
+   * the letter of the contract, writing the calendar in the calendar poll and *then* feeding.
    *
-   * The calendar poll itself is excluded, because replacing the calendar is precisely its job. That
-   * exclusion is also the one case this cannot see: a source that fed an order *from inside* the
-   * calendar poll, having just replaced the calendar, would not be reported. Nothing shipped does
-   * that, and a check that fired on every ordinary calendar poll would be worth less than the case it
-   * would catch.
+   * `total_sent()` rather than the guard's rate-window deque, because that one prunes and can fall, so
+   * it cannot be differenced across a call.
    */
-  void note_calendar_written_mid_poll(
-    PollKind kind,
-    std::chrono::system_clock::time_point at,
-    strategy::MarketPhase before,
-    LoopReport& report
-  ) {
-    if (kind == PollKind::CALENDAR || phase_at(at) == before) {
+  void note_revised_phase(const std::string& what, const PhaseWatch& before, LoopReport& report) {
+    if (runner_->guard().total_sent() == before.sends_) {
       return;
     }
-    ++report.calendar_written_outside_its_poll_;
-    if (report.calendar_written_outside_its_poll_ == 1) {
-      // Once per run, not once per poll: a source that does this on every iteration would otherwise
-      // bury every other note in the report under thousands of copies of this one.
-      // Worded as a conditional, because that is all the loop knows. It can see that the answer moved
-      // under a poll; it cannot see whether that poll settled anything, and claiming an order was
-      // mis-checked when the poll placed none would be a false report in the alarming direction.
+    if (phase_at(before.at_) == before.phase_) {
+      return;
+    }
+    ++report.sends_under_a_revised_phase_;
+    if (report.sends_under_a_revised_phase_ == 1) {
+      // Once per run, not once per call: a strategy doing this on every bar would otherwise bury every
+      // other note under thousands of copies of this one.
       report.notes_.push_back(
-        std::string("the ") + std::string(poll_kind_name(kind)) +
-        " poll replaced the trading calendar and changed the market phase; only the calendar poll may, "
-        "so any order that poll settled was checked against the phase as it stood before it");
+        "the " + what + " changed the trading calendar and sent an order in the same call, so that order "
+        "was checked against the market phase as it stood before the call; only the calendar poll may "
+        "write the calendar, and it must not send");
     }
   }
 
@@ -975,7 +999,7 @@ private:
    * calendar and then feed the runner inside a single `poll`, and no loop code runs in between, so
    * that order would settle against the phase as it stood when the poll began. `PollKind::CALENDAR`
    * documents the contract that rules it out, `SessionSource` satisfies it -- it writes the calendar in
-   * the calendar poll and nowhere else -- and `note_calendar_written_mid_poll` reports a source that
+   * the calendar poll and nowhere else -- and `note_revised_phase` reports a source that
    * breaks it, because a violation nobody is told about is one nobody fixes. An earlier version of this
    * comment claimed the stronger at-send-site invariant; Codex round 2 falsified it with a probe.
    *
@@ -1097,7 +1121,12 @@ private:
       if (!may_read || runner_->guard().halted(strategy::HaltReason::LOCAL_FAILURE)) {
         return strategy::HaltReason::ORDER_LIST_UNREAD;
       }
+      // Watched like a poll, because it is the same kind of thing: a call into the source, from which a
+      // source that revised the calendar and sent would reach the identical hazard through a different
+      // door. The phase in force here is the one `step` installed immediately before calling this.
+      const auto watch = PhaseWatch{at, phase_at(at), runner_->guard().total_sent()};
       const auto outcome = source_->read_order_list(*runner_);
+      note_revised_phase("order-list read", watch, report);
       if (outcome == PollOutcome::UPDATED || outcome == PollOutcome::UNCHANGED) {
         order_list_read_ = true;
         report.order_list_read_ = true;
@@ -1356,7 +1385,19 @@ private:
     // arriving by signal or control file therefore cannot send anything through a halt somebody had
     // already set.
     hold(std::nullopt);
+    // **Derived once more, immediately before the only call that can send during a stop.** `on_stop` ran
+    // a few lines above with a mutable context, so it may have revised the calendar -- and unlike a
+    // strategy's write inside `on_phase`, this one the loop *can* answer, because `settle_closing` is a
+    // separate call it makes itself. Codex round 3 reproduced the version without this: a handler
+    // revising the calendar to closed, and the flatten going out under the `OPEN` it replaced.
+    //
+    // At `clock_.now()` rather than the iteration's instant, because a stop is honoured after the
+    // iteration and a closing pass should be checked against the session as it is now.
+    const auto closing_at = clock_.now();
+    runner_->context().set_phase(phase_at(closing_at));
+    const auto watch = PhaseWatch{closing_at, phase_at(closing_at), runner_->guard().total_sent()};
     const auto closing = runner_->settle_closing();
+    note_revised_phase("closing pass", watch, report);
     hold(strategy::HaltReason::STOPPING);
 
     report.closing_placed_ = closing.would_place_.size();

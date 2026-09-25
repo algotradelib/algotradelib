@@ -258,6 +258,17 @@ public:
   /** Feeds one bar per bars poll, and records what the runner decided while doing it. */
   runner::PollOutcome poll(runner::PollKind kind, RunnerT& runner_instance) {
     if (kind == runner::PollKind::CALENDAR) {
+      if (calendar_in_calendar_poll_) {
+        runner_instance.context().set_calendar(*calendar_in_calendar_poll_);
+        // The forbidden second half: feeding from the calendar poll, after revising the calendar.
+        const auto report = runner_instance.feed(bar_at(++bars_));
+        placed_ += report.would_place_.size();
+        refused_ += report.refused_.size();
+        if (!report.refused_.empty()) {
+          last_guard_reason_ = report.refused_.front().reason_;
+        }
+        return runner::PollOutcome::UPDATED;
+      }
       if (!calendar_) {
         return runner::PollOutcome::UNCHANGED;
       }
@@ -301,6 +312,18 @@ public:
     calendar_on_order_list_ = std::move(calendar);
   }
 
+  /**
+   * Scripts a calendar installed during the **calendar** poll, which then feeds a bar.
+   *
+   * A source obeying the letter of the first half of `PollKind::CALENDAR`'s contract -- it writes the
+   * calendar in the calendar poll and nowhere else -- and breaking the second, by feeding from that
+   * poll. Codex round 3 found that this sends under the replaced phase and that excluding the calendar
+   * poll from the check hid it.
+   */
+  void set_calendar_and_feed_in_calendar_poll(algotradelib::TradingCalendar calendar) {
+    calendar_in_calendar_poll_ = std::move(calendar);
+  }
+
   /** Returns how many orders the runner would have sent from inside a poll. */
   std::size_t placed() const noexcept { return placed_; }
 
@@ -332,6 +355,7 @@ private:
   std::optional<algotradelib::TradingCalendar> calendar_;
   std::optional<algotradelib::TradingCalendar> calendar_on_order_list_;
   std::optional<algotradelib::TradingCalendar> calendar_before_feeding_;
+  std::optional<algotradelib::TradingCalendar> calendar_in_calendar_poll_;
 };
 
 using FeedingSource = FeedingSourceFor<SendingRunner>;
@@ -2844,11 +2868,12 @@ TEST_CASE("a source that writes the calendar mid-poll is reported, since it cann
   CHECK(source.placed() == 1);
   CHECK(source.refused() == 0);
   // And the report says which poll did it, exactly once.
-  CHECK(report.calendar_written_outside_its_poll_ == 1);
+  CHECK(report.sends_under_a_revised_phase_ == 1);
   REQUIRE_FALSE(report.notes_.empty());
-  CHECK(report.notes_[0].find("bars poll replaced the trading calendar") != std::string::npos);
-  // Conditional wording: the loop cannot see whether that poll settled anything.
-  CHECK(report.notes_[0].find("any order that poll settled") != std::string::npos);
+  CHECK(report.notes_[0].find("bars poll changed the trading calendar and sent an order") !=
+        std::string::npos);
+  // And it says what was actually wrong with it, rather than only that a rule was broken.
+  CHECK(report.notes_[0].find("as it stood before the call") != std::string::npos);
 }
 
 TEST_CASE("the calendar poll replacing the calendar is not reported as a violation",
@@ -2868,7 +2893,7 @@ TEST_CASE("the calendar poll replacing the calendar is not reported as a violati
   const auto report = loop.run(stop, 5);
 
   REQUIRE(report.attempted(runner::PollKind::CALENDAR) == 5);
-  CHECK(report.calendar_written_outside_its_poll_ == 0);
+  CHECK(report.sends_under_a_revised_phase_ == 0);
   CHECK(report.notes_.empty());
 }
 
@@ -2939,6 +2964,81 @@ TEST_CASE("a calendar change that does not move today's answer is not reported",
   CHECK(source.placed() == 1);
   CHECK(source.refused() == 0);
   // The calendar changed, the answer did not, and the report stays quiet.
-  CHECK(report.calendar_written_outside_its_poll_ == 0);
+  CHECK(report.sends_under_a_revised_phase_ == 0);
   CHECK(report.notes_.empty());
+}
+
+TEST_CASE("a source obeying only half the calendar contract is still reported", "[loop][phase]") {
+  // **Codex round 3's blocker.** The contract used to say only "write the calendar in the calendar poll
+  // and nowhere else", and a source can obey that exactly -- revise today's answer in its calendar poll,
+  // then feed before returning -- and still send under the phase it just replaced. Worse, the detector
+  // excluded the calendar poll by kind, so the count and the note were both zero.
+  //
+  // The check now requires that something was *sent*, which is what made the kind exclusion unnecessary:
+  // an ordinary calendar poll sends nothing and is silent, while this one is not.
+  SendingRunner runner_instance;
+  FeedingSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  serve_calendar(runner_instance, /*trades=*/true);
+  source.set_calendar_and_feed_in_calendar_poll(krx_calendar(/*trades=*/false));
+  runner::PollSchedule schedule;
+  schedule.calendar_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  SendingLoop loop(runner_instance, source, schedule, test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 1);
+
+  // The order went out under the replaced phase. That is the documented limit, asserted rather than
+  // hidden -- no amount of re-deriving outside the call can prevent it.
+  CHECK(source.placed() == 1);
+  CHECK(source.refused() == 0);
+  // And it is no longer invisible.
+  CHECK(report.sends_under_a_revised_phase_ == 1);
+  REQUIRE_FALSE(report.notes_.empty());
+  CHECK(report.notes_[0].find("calendar poll changed the trading calendar and sent an order") !=
+        std::string::npos);
+}
+
+/** Revises the calendar from inside `on_stop`, then asks to be flat. */
+struct RevisesCalendarOnStop {
+  algotradelib::TradingCalendar closed_;
+
+  template <class Ctx>
+  void on_stop(Ctx& ctx) {
+    ctx.set_calendar(closed_);
+  }
+};
+
+TEST_CASE("a calendar revised by on_stop is in force for the closing pass", "[loop][phase][stop]") {
+  // Codex round 3's second probe, and this half the loop **can** answer: `settle_closing` is a separate
+  // call the loop makes itself, so the phase is re-derived immediately before it. Without that, a stop
+  // handler revising the calendar left the flatten going out under the phase it had replaced.
+  using StopRunner = runner::DryRunner<RevisesCalendarOnStop>;
+  RevisesCalendarOnStop strategy_instance;
+  strategy_instance.closed_ = krx_calendar(/*trades=*/false);
+  StopRunner runner_instance(strategy_instance);
+  runner::ManualSource<StopRunner> source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner_instance.context().set_portfolio(portfolio_with("10", nullptr));
+  serve_calendar(runner_instance, /*trades=*/true);
+
+  runner::PollingLoop<StopRunner, runner::ManualSource<StopRunner>, runner::ManualClock> loop(
+    runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  // One ordinary iteration first, so the closing source is verified and a close is actually built.
+  loop.run(stop, 1);
+  stop.request(StopIntent::FLATTEN);
+  const auto report = loop.run(stop, 2);
+
+  // The flatten was asked for and refused, because by the time it was checked the market was shut --
+  // which is what the handler's own revision said.
+  CHECK(report.flattened_ == 1);
+  CHECK(report.closing_placed_ == 0);
+  CHECK(report.closing_refused_ == 1);
+  CHECK_FALSE(report.closing_complete());
+  CHECK(runner_instance.executor().placed().empty());
 }

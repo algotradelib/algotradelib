@@ -224,7 +224,21 @@ public:
   /** Sets the market phase. */
   void set_phase(MarketPhase phase) noexcept { phase_ = phase; }
 
-  /** Replaces the trading calendar. */
+  /**
+   * Replaces the trading calendar.
+   *
+   * **Whose call this is matters.** In a live run the calendar belongs to `runner::PollingLoop`, which
+   * derives the market phase from it and re-derives before every call it makes into a source or a
+   * strategy; a source writes it during `PollKind::CALENDAR` and a replay states it once through
+   * `backtest::ReplayConfig::calendar_`. A **strategy** must not write it: `on_phase` and `on_stop`
+   * receive a mutable context, and a handler that revised the calendar and then submitted an order in
+   * the same call would have that order checked against the phase as it stood before the call -- the
+   * loop cannot intervene inside its own call into a handler. It does notice afterwards and reports it
+   * as `runner::LoopReport::sends_under_a_revised_phase_`, which is the most that is available.
+   *
+   * A strategy that wants to know whether a date trades **reads** `calendar()`, which is what it is
+   * published for.
+   */
   void set_calendar(TradingCalendar calendar) { calendar_ = std::move(calendar); }
 
   /** Replaces the portfolio snapshot. */

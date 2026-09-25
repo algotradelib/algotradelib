@@ -297,7 +297,7 @@ replay, which it did not before.
 `PollKind::CALENDAR` and nowhere else. The loop re-derives the phase before every call it makes into a
 source, but nothing of its runs between your `set_calendar` and your `Runner::feed`, so a poll that
 does both settles an order against the phase as it stood when that poll began. `SessionSource` keeps
-the rule; a source that breaks it is counted in `LoopReport::calendar_written_outside_its_poll_` and
+the rule; a source that breaks it is counted in `LoopReport::sends_under_a_revised_phase_` and
 named in a note, because the loop can notice afterwards and cannot prevent it.
 
 When the phase cannot be established, the run says so: `final_phase_` is `unknown` and a note names

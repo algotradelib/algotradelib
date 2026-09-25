@@ -763,7 +763,25 @@ public:
    *
    * Called by the runner after the broker accepted the instruction, not when it was checked.
    */
-  void note_sent(std::chrono::system_clock::time_point when) { sent_.push_back(when); }
+  void note_sent(std::chrono::system_clock::time_point when) {
+    sent_.push_back(when);
+    ++total_sent_;
+  }
+
+  /**
+   * Returns how many orders this guard has ever seen sent.
+   *
+   * Distinct from `recent_orders`, which is the rate limit's question and prunes: `forget_before` drops
+   * timestamps that can no longer matter, so `sent_.size()` can fall and cannot be differenced across a
+   * call. This only ever rises, which is what a caller asking "did anything go out while I was not
+   * looking" needs -- `runner::PollingLoop` asks exactly that around every call it makes into a source
+   * or a strategy handler, to tell a poll that revised the trading calendar harmlessly from one that
+   * revised it and then sent an order against the answer it had just replaced.
+   *
+   * An observable on the component that performs the accounting rather than a seam added for a test,
+   * which is the rule `ai/wall-clock-test-assertions` settled.
+   */
+  std::size_t total_sent() const noexcept { return total_sent_; }
 
   /** Returns how many orders were sent within `rate_window_` of `now`. */
   std::size_t recent_orders(std::chrono::system_clock::time_point now) const {
@@ -1046,6 +1064,7 @@ private:
    * let twice the limit through across one, which is the classic way a rate limit is wrong.
    */
   std::deque<std::chrono::system_clock::time_point> sent_;
+  std::size_t total_sent_{0};
 };
 
 } // namespace strategy
