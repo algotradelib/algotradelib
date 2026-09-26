@@ -13,9 +13,11 @@ namespace algotradelib {
 /**
  * Listing venue of an instrument, at market-segment granularity.
  *
- * The segments here are the ones a supported broker names. `other_` carries any
- * value outside that set exactly as the broker sent it, because a market this
- * library has not normalized is still a market a caller may need to see.
+ * The segments here are the ones a supported broker names. `other_` carries a
+ * value outside that set exactly as the broker sent it, where it fits, because a
+ * market this library has not normalized is still a market a caller may need to
+ * see. Preservation is best-effort rather than total -- see the caveat below and
+ * on `other_` itself.
  *
  * A code that will not fit, or that is not an uppercase identifier, leaves both
  * members unset and reads as `UNKNOWN`. That loses the raw value, which is worse
@@ -76,7 +78,12 @@ struct MarketSegment {
   }
 };
 
-/** Returns the segment named by a broker's code, preserving an unknown one. */
+/**
+ * Returns the segment named by a broker's code, preserving an unknown one where it fits.
+ *
+ * A code `Code<12>::try_make` rejects -- too long, or not an uppercase identifier -- leaves both
+ * `known_` and `other_` empty, so it is not recoverable from the result.
+ */
 inline MarketSegment market_segment(std::string_view code) {
   MarketSegment segment;
   if (code == "KOSPI") {
@@ -348,7 +355,7 @@ struct Instrument {
   std::string english_name_;
   /** The ISIN, where the broker publishes one. Empty otherwise. */
   std::string isin_;
-  /** The market segment, normalized where recognized and preserved verbatim where not. */
+  /** The market segment: normalized where recognized, and otherwise preserved where `Code<12>` can hold it. */
   MarketSegment segment_;
   /** What kind of security it is, which is what selects the price grid. */
   SecurityType type_{SecurityType::UNKNOWN};
@@ -362,7 +369,12 @@ struct Instrument {
   std::optional<Date> listed_on_;
   /** The delisting date, where one exists and the broker publishes it. */
   std::optional<Date> delisted_on_;
-  /** Shares outstanding, where the broker publishes the figure. */
+  /**
+   * Shares outstanding, where the broker publishes the figure.
+   *
+   * The KIS adapter reads it through `positive_decimal`, so a blank *or a literal zero* both
+   * arrive as empty. Empty therefore means "not stated", never "zero shares".
+   */
   std::optional<Decimal64> shares_outstanding_;
   /** The order quantity increment, where the broker publishes one. */
   std::optional<Decimal64> lot_size_;

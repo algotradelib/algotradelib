@@ -101,7 +101,10 @@ settled design (`plan/todo/venue-is-korea-only.md`,
 `plan/todo/core-vocabulary-extensibility.md`).
 
 `Code<N>` is the fixed-capacity, allocation-free preservation type that exists for this: a code the
-library does not recognize is carried verbatim beside the normalized enums rather than discarded.
+library does not recognize is carried verbatim beside the normalized enums rather than discarded —
+**as far as it fits.** `Code<N>` holds at most `N` characters from `A`-`Z`, `0`-`9` and `_`, and a
+code outside that alphabet or over that length is not stored, which is why every field built on it
+documents an empty value as meaning either "nothing was sent" or "what was sent would not fit".
 
 ## One `Runner`, three configurations
 

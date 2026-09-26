@@ -310,12 +310,18 @@ public:
   }
 
   /**
-   * Compares the representation: both the coefficient **and** the scale.
+   * Compares the stored representation: the coefficient **and** the scale.
    *
-   * So `1.50` and `1.5` are **not** equal, because the scale is part of the value -- a broker that
-   * reported two decimal places said something different from one that reported one. Use this for
-   * reconciliation, where the question is whether the same figure came back; do not use it to ask
-   * whether two numbers are numerically equal, because it will say no.
+   * **On the parse path that is the same as comparing the number**, because `parse` normalizes:
+   * it strips trailing zeros, so `parse("1.50")` and `parse("1.5")` are both `15` at scale `1` and
+   * compare equal. Two broker strings for the same figure agree whatever their trailing zeros, which
+   * is what reconciliation needs.
+   *
+   * **It differs for a value built at an explicit scale**, which is not normalized: the
+   * two-argument constructor and `analytics::to_decimal(value, scale)`. `Decimal64(150, 2)` and
+   * `Decimal64(15, 1)` are not equal, and neither are `to_decimal(1.5, 3)` -- which is `1500` at
+   * scale `3` -- and `parse("1.5")`. Compare those with `decimal_subtract`, or on `str()` at a
+   * known scale, as `analytics/conversion.hpp` already says.
    */
   friend bool operator==(const Decimal64& lhs, const Decimal64& rhs) {
     return lhs.coefficient_ == rhs.coefficient_ && lhs.scale_ == rhs.scale_;
@@ -595,7 +601,13 @@ struct BrokerError {
   std::string request_id_;
   /** A human-readable description, for a log or an operator; never parsed. */
   std::string message_;
-  /** How long the broker asked the caller to wait, where it said. Empty means it did not. */
+  /**
+   * How long the broker asked the caller to wait, where it said.
+   *
+   * Empty means either that the broker sent no `Retry-After`, or that it sent one
+   * `broker_detail::integer_header` could not read -- malformed, or negative. A caller deciding
+   * when to retry cannot tell the two apart and should back off on its own rather than retry at once.
+   */
   std::optional<std::chrono::seconds> retry_after_;
   /** The allowance the broker states it is enforcing, in requests per second, where it published one. */
   std::optional<int> rate_limit_;
@@ -669,7 +681,16 @@ struct QuoteSnapshot {
   std::optional<std::chrono::system_clock::time_point> exchange_time_;
   /** When this process received the answer. A local clock, and the weaker of the two claims. */
   std::chrono::system_clock::time_point received_at_;
-  /** Best bid and offer, where the broker published them with the quote. */
+  /**
+   * Best bid and offer alongside the quote -- **and no adapter fills this today**.
+   *
+   * Neither the KIS nor the Toss quote parser writes it, so it is `std::nullopt` on every quote
+   * either broker returns; the only values that ever appear here are ones a caller or a test
+   * constructed. It is not a capability gate away, it is simply unwired.
+   *
+   * The book is available, through `session.depth()` -> `DepthSnapshot`, which both adapters do
+   * populate and both declare with `BrokerCaps::has_depth`. Use that for a spread or a midpoint.
+   */
   std::optional<TopOfBook> top_of_book_;
   /** Cumulative traded volume for the session, where the broker published it. */
   std::optional<Decimal64> volume_;
@@ -928,9 +949,16 @@ struct CommissionRate {
   Code<16> other_;
   /** The rate as a fraction of traded value, not a percentage: `0.00015`, not `0.015`. */
   Decimal64 rate_;
-  /** The first date the rate applies on. Empty is open-ended, and deliberately not "today". */
+  /**
+   * The first date the rate applies on. Empty is open-ended, and deliberately not "today".
+   *
+   * **Empty has a second source.** Toss's `optional_calendar_date` also yields empty for a date
+   * that is present but malformed -- wrong length, wrong separators, or not a real calendar day --
+   * and `parse_commissions` keeps the row. `applies_on` then treats the bound as unbounded, so a
+   * damaged `endDate` can make an expired rate read as current.
+   */
   std::optional<Date> from_;
-  /** The last date the rate applies on. Empty means no scheduled change. */
+  /** The last date the rate applies on. Empty means no scheduled change -- or, as above, a bound that could not be read. */
   std::optional<Date> until_;
 
   /**
@@ -1223,9 +1251,11 @@ struct OrderRequest {
  * Realized execution totals for one order.
  *
  * Monetary members are optional because a broker need not report them, **but a present one is not
- * evidence of a fill and the two adapters differ**. Toss omits each field the broker left out. KIS
- * sets `filled_amount_` on every row of its open-order and history listings, from `tot_ccld_amt`,
- * so an unfilled KIS order carries a present `Money{0, KRW}`.
+ * evidence of a fill and the two adapters differ**. Toss leaves one empty when the broker sent an
+ * explicit JSON `null`; a field missing from the response altogether is a protocol error there, not
+ * an empty optional. KIS sets `filled_amount_` on every row of its open-order and history listings,
+ * from `tot_ccld_amt`, so an unfilled KIS order carries a present `Money{0, KRW}`, and never sets
+ * `average_filled_price_` on an open-order row at all.
  *
  * Decide whether an order filled from `filled_quantity_`, which is always present and is zero
  * exactly when nothing has filled. Never from `filled_amount_.has_value()`.
@@ -1237,7 +1267,14 @@ struct OrderExecution {
    * **This is the field to test a fill against**, for the reason the struct comment gives.
    */
   Decimal64 filled_quantity_;
-  /** The volume-weighted fill price, once anything has filled. */
+  /**
+   * The volume-weighted fill price, **only where the broker supplies it** -- not whenever a fill
+   * exists.
+   *
+   * KIS's open-order listing never sets it, including on a row it marks `PARTIAL_FILLED`, and its
+   * history sets it only for a positive `avg_prvs`. So an empty value says nothing about whether
+   * the order filled; `filled_quantity_` does.
+   */
   std::optional<Decimal64> average_filled_price_;
   /**
    * The cash the fills came to, as the broker computed it.
@@ -1340,7 +1377,13 @@ struct OrderSnapshot {
   std::optional<std::chrono::system_clock::time_point> ordered_at_;
   /** When the order was cancelled, where the broker reports it. */
   std::optional<std::chrono::system_clock::time_point> canceled_at_;
-  /** What has filled, and what it cost. Present always; an unfilled order has zeroes and absences. */
+  /**
+   * What has filled, and what it cost. Always present as a value.
+   *
+   * An unfilled order has `filled_quantity_` of zero; its monetary members may be absent *or* a
+   * reported zero, depending on the broker. Read `OrderExecution`'s own comment before testing any
+   * of them, and test a fill with `filled_quantity_`.
+   */
   OrderExecution execution_;
 };
 
