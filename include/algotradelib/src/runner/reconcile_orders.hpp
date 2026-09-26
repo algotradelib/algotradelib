@@ -186,15 +186,29 @@ inline constexpr bool both_known(Enum left, Enum right) noexcept {
 
 } // namespace shape_detail
 
-/** What a broker row's venue says about the instruction's requested route. */
-enum class RouteEvidence {
-  /** The row was routed where the instruction asked, or the instruction asked for nothing. */
+/**
+ * What one attribute of a broker row says about an instruction.
+ *
+ * **Three answers, because two are not enough.** Every defect this file has been
+ * corrected for came from collapsing `ABSENT` into `CONFIRMS`: a fact nobody
+ * recorded was read as a fact that agreed. Collapsing it into `CONTRADICTS` is
+ * the opposite mistake and just as bad -- it reports `NOT_PLACED` for an order
+ * sitting in the listing, and the runner's answer to that is to send again.
+ *
+ * So an attribute that cannot be established makes the row **plausible but
+ * unconfirmable**: it blocks an absence verdict and it cannot carry a match.
+ */
+enum class Evidence {
+  /** The row agrees, or there was nothing to disagree with. */
   CONFIRMS,
-  /** The row went somewhere else. It is not this order. */
+  /** The row says something else. It is not this order. */
   CONTRADICTS,
-  /** Nobody recorded enough to say. Not a match, and not an absence either. */
+  /** Nobody recorded enough to say. Neither a match nor an absence. */
   ABSENT,
 };
+
+/** Kept as the previous name for the route, which reads better at its call site. */
+using RouteEvidence = Evidence;
 
 /**
  * Classifies what `row`'s venue says about `instruction`'s requested route.
@@ -221,6 +235,59 @@ enum class RouteEvidence {
  * which lands here. A row reporting NXT therefore contradicts a default KIS
  * order rather than confirming it.
  */
+/**
+ * Classifies an enumerated attribute a broker may or may not have reported.
+ *
+ * `UNKNOWN` on the **row** while the entry knows is silence, not agreement --
+ * the case that made an unreadable Toss `timeInForce` confirm a lookalike.
+ * `UNKNOWN` on the **entry** is the same: this runner recorded nothing to
+ * compare. Only two known values decide.
+ */
+template <typename Enum>
+inline Evidence attribute_evidence(Enum row_value, Enum entry_value) noexcept {
+  if (row_value == Enum::UNKNOWN || entry_value == Enum::UNKNOWN) {
+    return Evidence::ABSENT;
+  }
+  return row_value == entry_value ? Evidence::CONFIRMS : Evidence::CONTRADICTS;
+}
+
+/**
+ * Classifies the instant a broker reported against the instruction's window.
+ *
+ * **A row with no timestamp is judged on its other attributes, and that is a
+ * decision this file has now made twice.** `ai/order-journal` made it because
+ * excluding such a row reports `NOT_PLACED` for an order sitting in the
+ * listing. A later review argued the opposite -- an older otherwise-identical
+ * order outside the window, whose broker reported no timestamp, becomes a
+ * unique match and clears the hold on the newer one -- which is a real hazard
+ * and is why this is worth writing down rather than leaving as an `if`.
+ *
+ * It is not treated as silence because at KIS **every** working-order row is
+ * timestamp-less: `parse_open_orders` sets no `ordered_at_` at all, since the
+ * inquiry publishes `ord_tmd` as `HHMMSS` with no date and this library refuses
+ * to guess the calendar day. Making an absent instant unconfirmable would make
+ * every KIS recovery ambiguous and stall the primary path outright.
+ *
+ * What contains the hazard instead is the rule the ambiguity section below
+ * already relies on: once an instrument is marked,
+ * `IndeterminacyLedger::requires_reconcile` withholds *everything* for it, so a
+ * second indistinguishable order cannot be outstanding at the same time. The
+ * residual case is an order this runner did not send -- an operator's own, from
+ * another channel -- which is what the ambiguity count catches when it is also
+ * in the listing.
+ */
+inline Evidence time_evidence(
+  const OpenInstruction& instruction, const OrderSnapshot& row, const MatchWindow& window
+) {
+  if (!row.ordered_at_) {
+    return Evidence::CONFIRMS;
+  }
+  const auto begin = instruction.opened_at_ - window.clock_skew_;
+  const auto end = instruction_sent_by(instruction, window) + window.clock_skew_;
+  return (*row.ordered_at_ >= begin && *row.ordered_at_ <= end) ? Evidence::CONFIRMS
+                                                                : Evidence::CONTRADICTS;
+}
+
 inline RouteEvidence route_evidence(
   const OpenInstruction& instruction, const OrderSnapshot& row
 ) {
@@ -291,37 +358,32 @@ inline bool row_corresponds(
   // attributes that *are* known is the safe direction, because excluding it
   // reports `NOT_PLACED` for an order sitting in the listing, and the runner's
   // answer to `NOT_PLACED` is to send again.
-  if (shape_detail::both_known(row.time_in_force_, entry.time_in_force_) &&
-      row.time_in_force_ != entry.time_in_force_) {
-    return false;
-  }
-  if (shape_detail::both_known(row.session_, entry.session_) &&
-      row.session_ != entry.session_) {
-    return false;
-  }
-  // Where the order went. Two orders in one symbol, side, quantity, price and
-  // second differ only by this. `route_evidence` below says whether this row's
-  // venue confirms the instruction, contradicts it, or says nothing; only the
-  // first two are decided here, and the third is what `row_might_correspond`
-  // picks up.
-  if (route_evidence(instruction, row) == RouteEvidence::CONTRADICTS) {
-    return false;
-  }
-  if (route_evidence(instruction, row) == RouteEvidence::ABSENT) {
-    return false;
-  }
   if (!reconcile_detail::same_value(row.quantity_, entry.quantity_)) {
     return false;
   }
   if (!reconcile_detail::same_value(row.price_, entry.price_)) {
     return false;
   }
-  if (!row.ordered_at_) {
-    return true;
+  // **Every silent attribute costs the match, not just the ones that disagree.**
+  // A match names one row as this instruction's order and clears the hold on it,
+  // and that claim needs the attributes to have been *established* rather than
+  // merely not contradicted. Each of these has, at some point in this file's
+  // history, confirmed a lookalike by saying nothing: the condition and session
+  // when a broker reported a validity code this library could not read, the
+  // route when nobody recorded one, the timestamp when the broker omitted it.
+  // `row_might_correspond` picks the same rows up, so they still block an
+  // absence verdict -- which is the other half of the rule.
+  for (const auto evidence : {
+         attribute_evidence(row.time_in_force_, entry.time_in_force_),
+         attribute_evidence(row.session_, entry.session_),
+         route_evidence(instruction, row),
+         time_evidence(instruction, row, window),
+       }) {
+    if (evidence != Evidence::CONFIRMS) {
+      return false;
+    }
   }
-  const auto begin = instruction.opened_at_ - window.clock_skew_;
-  const auto end = instruction_sent_by(instruction, window) + window.clock_skew_;
-  return *row.ordered_at_ >= begin && *row.ordered_at_ <= end;
+  return true;
 }
 
 /**
@@ -351,46 +413,50 @@ inline bool row_might_correspond(
   const OpenInstruction& instruction, const OrderSnapshot& row, const MatchWindow& window
 ) {
   const auto& entry = instruction.entry_;
-  // A route the instruction asked for and the row denies rules it out however
-  // unreadable its shape is -- an unknown-code KRX row is not an NXT order, and
-  // letting it force an ambiguity would stall recovery for no reason.
-  if (route_evidence(instruction, row) == RouteEvidence::CONTRADICTS) {
-    return false;
+  // Anything that positively disagrees rules the row out however much else is
+  // silent -- an unknown-code row at a venue the instruction did not use is not
+  // this order, and letting it force an ambiguity would stall recovery for
+  // nothing.
+  for (const auto evidence : {
+         attribute_evidence(row.type_, entry.type_),
+         attribute_evidence(row.time_in_force_, entry.time_in_force_),
+         attribute_evidence(row.session_, entry.session_),
+         route_evidence(instruction, row),
+         time_evidence(instruction, row, window),
+       }) {
+    if (evidence == Evidence::CONTRADICTS) {
+      return false;
+    }
   }
-  const bool shape_unreadable =
-    row.type_ == OrderType::UNKNOWN || entry.type_ == OrderType::UNKNOWN;
-  const bool route_unknown = route_evidence(instruction, row) == RouteEvidence::ABSENT;
-  if (!shape_unreadable && !route_unknown) {
-    // Everything that could be compared was, so `row_corresponds` has already
+
+  const bool anything_silent =
+    attribute_evidence(row.type_, entry.type_) == Evidence::ABSENT ||
+    attribute_evidence(row.time_in_force_, entry.time_in_force_) == Evidence::ABSENT ||
+    attribute_evidence(row.session_, entry.session_) == Evidence::ABSENT ||
+    route_evidence(instruction, row) == Evidence::ABSENT ||
+    time_evidence(instruction, row, window) == Evidence::ABSENT;
+  if (!anything_silent) {
+    // Everything comparable was compared, so `row_corresponds` has already
     // given the definitive answer and this predicate has nothing to add.
     return false;
   }
+
   if (!(row.instrument_ == entry.instrument_) || row.side_ != entry.side_) {
     return false;
   }
   if (!reconcile_detail::same_value(row.quantity_, entry.quantity_)) {
     return false;
   }
-  // Compare whatever survived. When only the *route* is unknown the shape is
-  // perfectly readable, so a row with a different basis or a different price is
-  // plainly another order -- and admitting it would withhold the instrument
-  // until an operator looked at a row nothing about it resembled. Only an
-  // unreadable shape justifies skipping these, because then the parser has
-  // discarded them.
-  if (!shape_unreadable) {
-    if (row.type_ != entry.type_) {
-      return false;
-    }
+  // Compare what survived. A row whose *basis* is unreadable has no price
+  // either, because the parser discards it -- but one whose only silence is a
+  // route or a timestamp still has both, and a row differing there is plainly
+  // another order rather than an ambiguity worth withholding an instrument for.
+  if (attribute_evidence(row.type_, entry.type_) != Evidence::ABSENT) {
     if (!reconcile_detail::same_value(row.price_, entry.price_)) {
       return false;
     }
   }
-  if (!row.ordered_at_) {
-    return true;
-  }
-  const auto begin = instruction.opened_at_ - window.clock_skew_;
-  const auto end = instruction_sent_by(instruction, window) + window.clock_skew_;
-  return *row.ordered_at_ >= begin && *row.ordered_at_ <= end;
+  return true;
 }
 
 /**

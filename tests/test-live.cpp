@@ -414,6 +414,11 @@ WorkingOrder<FakeBroker> working() {
   order.order_.side_ = OrderSide::BUY;
   order.order_.status_ = OrderStatus::PENDING;
   order.order_.type_ = OrderType::LIMIT;
+  // As a real adapter reports them; leaving these `UNKNOWN` models a row no
+  // broker sends, and models it as the unreadable case recovery will not
+  // attribute.
+  order.order_.time_in_force_ = TimeInForce::DAY;
+  order.order_.session_ = OrderSession::REGULAR;
   order.order_.price_ = Decimal64::parse("70000");
   order.order_.quantity_ = Decimal64::parse("10");
   order.amendable_quantity_ = Decimal64::parse("10");

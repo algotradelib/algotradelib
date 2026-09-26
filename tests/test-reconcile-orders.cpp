@@ -83,6 +83,13 @@ OrderSnapshot row(
   snapshot.instrument_ = id;
   snapshot.side_ = OrderSide::BUY;
   snapshot.type_ = OrderType::LIMIT;
+  // What a real adapter produces. Both brokers set all three from their own
+  // tables for any code they recognize, and leave all three `UNKNOWN` only for
+  // one they do not -- so a fixture that left these at the struct's defaults was
+  // modelling a row no broker sends, and modelling it as the *unreadable* case
+  // the matcher now refuses to attribute.
+  snapshot.time_in_force_ = TimeInForce::DAY;
+  snapshot.session_ = OrderSession::REGULAR;
   snapshot.status_ = OrderStatus::PENDING;
   snapshot.quantity_ = Decimal64::parse(quantity);
   snapshot.price_ = Decimal64::parse(price);
@@ -375,19 +382,33 @@ TEST_CASE("recovery does not read a day order as the immediate-or-cancel order i
   REQUIRE(match.order_id_ == "KRX-2");
 }
 
-TEST_CASE("a row whose condition the broker did not report is still a candidate") {
+TEST_CASE("a row whose condition the broker did not report is a candidate, not a match") {
   auto instruction = placement();
   instruction.entry_.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
 
-  // UNKNOWN is absence of information, not disagreement. Excluding it would
-  // report NOT_PLACED for an order that is sitting in the listing, and the
-  // runner's answer to NOT_PLACED is to send again.
+  // **This test asserted MATCHED until round 5, and that was half right.**
+  // Excluding such a row reports `NOT_PLACED` for an order that may be in the
+  // listing, and the runner's answer to that is to send again -- so it stays a
+  // candidate. But *matching* it names this row as the order and clears the
+  // hold on it, and nothing here established that. Toss parses an unreadable
+  // `timeInForce` -- `"CL?"` -- to an unknown condition and session while
+  // keeping a readable `LIMIT` basis, so a lone lookalike with an agreeing
+  // route was being attributed on evidence that did not exist.
   auto silent = row("KRX-1");
   silent.time_in_force_ = TimeInForce::UNKNOWN;
   silent.session_ = OrderSession::UNKNOWN;
   const auto match = runner::match_against(instruction, {silent}, after_the_window());
-  REQUIRE(match.verdict_ == MatchVerdict::MATCHED);
-  REQUIRE(match.order_id_ == "KRX-1");
+  REQUIRE(match.verdict_ == MatchVerdict::AMBIGUOUS);
+  REQUIRE(match.order_id_.empty());
+  // And specifically not an absence, which is the half that was right.
+  REQUIRE(match.verdict_ != MatchVerdict::NOT_PLACED);
+
+  // A row that does report them still resolves, so this is about the silence.
+  auto reported = row("KRX-2");
+  reported.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
+  REQUIRE(
+    runner::match_against(instruction, {reported}, after_the_window()).order_id_ == "KRX-2"
+  );
 }
 
 TEST_CASE("one corresponding row matches a placement", "[reconcile]") {
@@ -529,6 +550,17 @@ TEST_CASE("clock skew is allowed in both directions", "[reconcile]") {
 
 TEST_CASE("a row with no timestamp is judged on attributes alone", "[reconcile]") {
   // Excluding it would report NOT_PLACED for an order sitting in the listing.
+  //
+  // **Round 5 argued this should be ambiguous instead**, on the grounds that an
+  // older otherwise-identical order outside the window, reported without a
+  // timestamp, becomes a unique match and clears the hold on the newer one.
+  // That hazard is real. The fix is not, because at KIS *every* working-order
+  // row is timestamp-less -- `parse_open_orders` sets no `ordered_at_`, since
+  // the inquiry gives `HHMMSS` with no date and this library will not guess the
+  // day -- so treating an absent instant as silence makes every KIS recovery
+  // ambiguous and stalls the primary path.
+  //
+  // See `time_evidence` for what contains the hazard instead.
   const auto undated = row("KRX-1", samsung(), "10", "70000", std::nullopt);
   REQUIRE(
     runner::match_against(placement(), {undated}, after_the_window()).verdict_ ==
