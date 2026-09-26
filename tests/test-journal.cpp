@@ -767,6 +767,47 @@ TEST_CASE("a damaged value makes a line unattributable, not a different order", 
   REQUIRE_FALSE(intact->requires_operator_);
 }
 
+TEST_CASE("a damaged number does not throw out of recovery", "[journal]") {
+  // **The seventh instance of this branch's pattern, and the only one that
+  // escaped rather than defaulted** -- which is why sweeping the `*_from`
+  // readers did not find it. `Decimal64::parse` throws, and
+  // `journal_entry_from_line` called it on any non-empty quantity or price. A
+  // corrupt byte in the most load-bearing field in the line raised
+  // `std::invalid_argument` out of the reader, out of `read_journal_file`, out
+  // of recovery and out of the runner's startup -- taking the process down
+  // instead of producing the operator halt everything else here is built for.
+  const auto damage_number = [](std::string_view field) {
+    auto line = runner::journal_entry_to_line(sample_entry());
+    const std::string needle = std::string("\"") + std::string(field) + "\":\"";
+    const auto at = line.find(needle);
+    REQUIRE(at != std::string::npos);
+    line.insert(at + needle.size() + 1, "?");
+    return line;
+  };
+
+  for (const auto* field : {"quantity", "price"}) {
+    INFO("damaged field: " << field);
+    const auto line = damage_number(field);
+    // No exception, and no guessed order either.
+    std::optional<runner::JournalEntry> parsed;
+    REQUIRE_NOTHROW(parsed = runner::journal_entry_from_line(line));
+    REQUIRE(parsed.has_value());
+    REQUIRE(parsed->instrument_.symbol_.empty());
+    REQUIRE(parsed->requires_operator_);
+  }
+
+  // A truncated line whose trailing number is half-written is the ordinary
+  // case, not damage, and it must not throw either.
+  auto truncated = runner::journal_entry_to_line(sample_entry());
+  const auto at = truncated.find("\"quantity\":\"");
+  REQUIRE(at != std::string::npos);
+  truncated = truncated.substr(0, at + std::string("\"quantity\":\"").size() + 1);
+  std::optional<runner::JournalEntry> salvaged;
+  REQUIRE_NOTHROW(salvaged = runner::salvage_journal_line(truncated));
+  REQUIRE(salvaged.has_value());
+  REQUIRE(salvaged->requires_operator_);
+}
+
 TEST_CASE("a truncated line with a damaged value is unattributable too", "[journal]") {
   // The salvage path had the same hole as the strict reader, and this branch
   // found it by looking for the rest of the pattern rather than waiting to be

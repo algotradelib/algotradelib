@@ -67,14 +67,12 @@ inline std::string string_field(const json::object& row, std::string_view key) {
 }
 
 /**
- * Returns the country `text` names, defaulting to `KR`.
+ * Returns a stable name for `country`, as written to the journal.
  *
  * The journal's own wire vocabulary, deliberately spelled out here rather than derived from the
  * enumerator order. An enum's numeric value is an implementation detail that a reordering may
  * change; a file written by yesterday's build has to be readable by today's.
  */
-
-/** Returns a stable name for `country`, as written to the journal. */
 inline constexpr std::string_view country_name(Country country) noexcept {
   return country == Country::US ? "US" : "KR";
 }
@@ -281,6 +279,28 @@ inline OrderSession order_session_from(std::string_view text) noexcept {
  * already treats as a global halt rather than withholding one instrument,
  * because a guessed instrument is not the key the runner is trading under.
  */
+/**
+ * Returns the decimal `text` holds, or nothing when it does not hold one.
+ *
+ * **`Decimal64::parse` throws**, and this reader's whole contract is to survive
+ * a damaged file and report it. A quantity damaged to `"1?0"` would otherwise
+ * raise `std::invalid_argument` out of `read_journal_file`, out of recovery, and
+ * out of the runner's startup -- so a corrupt byte in the most load-bearing
+ * field in the line takes the process down instead of producing the operator
+ * halt the rest of this file is built to produce.
+ *
+ * It is also the same failure as the unreadable enumerations beside it, wearing
+ * a different coat: a value that cannot be read must make the line
+ * unattributable, not decide what happens next by escaping.
+ */
+inline std::optional<Decimal64> known_decimal_from(std::string_view text) noexcept {
+  try {
+    return Decimal64::parse(text);
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
 inline std::optional<Country> known_country_from(std::string_view text) noexcept {
   if (text == "KR") {
     return Country::KR;
@@ -550,8 +570,14 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
   const auto condition = journal_detail::known_time_in_force_from(condition_text);
   const auto session = journal_detail::known_order_session_from(session_text);
 
+  const auto quantity_text = journal_detail::string_field(row, "quantity");
+  const auto price_text = journal_detail::string_field(row, "price");
+  const auto quantity = journal_detail::known_decimal_from(quantity_text);
+  const auto price = journal_detail::known_decimal_from(price_text);
+
   const bool damaged = !country || !venue || !side || !type || symbol.empty() ||
-    (!condition_text.empty() && !condition) || (!session_text.empty() && !session);
+    (!condition_text.empty() && !condition) || (!session_text.empty() && !session) ||
+    (!quantity_text.empty() && !quantity) || (!price_text.empty() && !price);
   if (damaged) {
     auto unattributable = unattributable_journal_entry(line);
     const auto id = journal_detail::string_field(row, "id");
@@ -585,13 +611,14 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
   // neither may become the `UNSPECIFIED` that recovery treats as a recorded
   // request for no venue.
   entry.venue_ = journal_detail::known_venue_from(journal_detail::string_field(row, "route"));
-  const auto quantity = journal_detail::string_field(row, "quantity");
-  if (!quantity.empty()) {
-    entry.quantity_ = Decimal64::parse(quantity);
+  // Damaged numbers land in the same place as damaged enumerations, for the
+  // same reason -- and they used to land somewhere far worse, throwing out of
+  // recovery entirely. See `known_decimal_from`.
+  if (!quantity_text.empty()) {
+    entry.quantity_ = *quantity;
   }
-  const auto price = journal_detail::string_field(row, "price");
-  if (!price.empty()) {
-    entry.price_ = Decimal64::parse(price);
+  if (!price_text.empty()) {
+    entry.price_ = *price;
   }
   entry.recorded_at_ = journal_detail::instant_from(at->as_int64());
   entry.order_id_ = journal_detail::string_field(row, "order_id");
@@ -676,10 +703,17 @@ inline std::optional<JournalEntry> salvage_journal_line(std::string_view line) {
     journal_detail::salvage_string(line, "route").value_or("")
   );
   if (const auto quantity = journal_detail::salvage_string(line, "quantity")) {
-    entry.quantity_ = Decimal64::parse(*quantity);
+    // A truncated line's last field is routinely half-written, so an unparseable
+    // number here is expected rather than exceptional -- and it must not throw
+    // out of a salvage path that exists to survive exactly this.
+    if (const auto value = journal_detail::known_decimal_from(*quantity)) {
+      entry.quantity_ = *value;
+    }
   }
   if (const auto price = journal_detail::salvage_string(line, "price")) {
-    entry.price_ = Decimal64::parse(*price);
+    if (const auto value = journal_detail::known_decimal_from(*price)) {
+      entry.price_ = *value;
+    }
   }
   entry.detail_ = "recovered from a truncated journal line; only an operator can resolve it";
   return entry;
