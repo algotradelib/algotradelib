@@ -268,13 +268,19 @@ inline Evidence attribute_evidence(Enum row_value, Enum entry_value) noexcept {
  * to guess the calendar day. Making an absent instant unconfirmable would make
  * every KIS recovery ambiguous and stall the primary path outright.
  *
- * What contains the hazard instead is the rule the ambiguity section below
- * already relies on: once an instrument is marked,
- * `IndeterminacyLedger::requires_reconcile` withholds *everything* for it, so a
- * second indistinguishable order cannot be outstanding at the same time. The
- * residual case is an order this runner did not send -- an operator's own, from
- * another channel -- which is what the ambiguity count catches when it is also
- * in the listing.
+ * **What contains the hazard, and what it does not.** Once an instrument is
+ * marked, `IndeterminacyLedger::requires_reconcile` withholds everything for
+ * it, so this *runner* cannot have two indistinguishable orders outstanding at
+ * once. That is the whole of the containment, and it is narrower than it
+ * sounds: it says nothing about an order the runner did not send.
+ *
+ * So the residual case is precise. An order placed through another channel --
+ * the broker's own application, a second process -- that matches on instrument,
+ * side, quantity and price, while *this* runner's order is absent from the
+ * listing, is a single row and is matched. The ambiguity count catches it only
+ * when both are listed. An absent instant is therefore not proof that the times
+ * agree; it is the acknowledgement that at this broker there is no time to
+ * compare, and the risk that remains is stated here rather than argued away.
  */
 inline Evidence time_evidence(
   const OpenInstruction& instruction, const OrderSnapshot& row, const MatchWindow& window
