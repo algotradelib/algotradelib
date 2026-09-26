@@ -194,7 +194,9 @@ inline constexpr std::string_view withheld_reason_name(WithheldReason reason) no
 
 /** One order the runner declined to send, and why. */
 struct WithheldOrder {
+  /** Why the runner declined to send it. A local refusal, never a broker's. */
   WithheldReason reason_{WithheldReason::RECONCILE_REQUIRED};
+  /** The order that was not sent. */
   strategy::PlannedOrder order_;
   /** What the runner knows about why the state is unresolved. */
   std::string detail_;

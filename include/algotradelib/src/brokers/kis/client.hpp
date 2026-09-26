@@ -26,7 +26,9 @@ namespace algotradelib::kis {
 
 /** Selects one KIS trading account for a holdings request. */
 struct KisAccount {
+  /** The eight-digit account number, KIS's `CANO`. */
   std::string account_number_;
+  /** The two-digit product code, KIS's `ACNT_PRDT_CD`. `"01"` for a cash equity account. */
   std::string product_code_;
 
   /** Loads account selection from `KIS_CANO` and optional `KIS_ACNT_PRDT_CD`. */
@@ -50,7 +52,9 @@ struct KisAccount {
  * a normalization, so both parts are preserved.
  */
 struct KisOrderRef {
+  /** KIS's `KRX_FWDG_ORD_ORGNO`, the branch that recorded the order. */
   std::string branch_number_;
+  /** KIS's `ODNO`, the order number within that branch. */
   std::string order_number_;
 };
 
@@ -75,13 +79,21 @@ struct KisOrderRef {
  * where the order lives.
  */
 struct KisAmendment {
+  /** The order to amend. */
   KisOrderRef order_;
+  /** The price basis the amended order should have. */
   OrderType type_{OrderType::LIMIT};
+  /** The execution condition it should have; KIS composes one code from all three. */
   TimeInForce time_in_force_{TimeInForce::DAY};
+  /** The session it should be in. */
   OrderSession session_{OrderSession::REGULAR};
+  /** Where the order lives, because the three venues publish different code sets. */
   Venue venue_{Venue::UNSPECIFIED};
+  /** The quantity affected. KIS validates a positive whole number even for a full cancellation. */
   Decimal64 quantity_;
+  /** The new price, for a basis that takes one. */
   std::optional<Decimal64> price_;
+  /** Whether the whole remaining quantity is affected rather than `quantity_`. */
   bool all_remaining_{false};
 };
 
@@ -96,28 +108,39 @@ struct KisAmendment {
  * calendar date; `ack_.accepted_at_` records local receipt instead.
  */
 struct KisOrderAck {
+  /** The normalized acknowledgement, whose `accepted_at_` is local receipt. */
   OrderAck ack_;
+  /** The reference a later amendment must address. */
   KisOrderRef order_;
+  /** KIS's `ORD_TMD`, an `HHMMSS` string with no date or zone, preserved verbatim. */
   std::string broker_order_time_;
 };
 
 /** One KIS order that is still open to modification or cancellation. */
 struct KisOpenOrder {
+  /** The order's normalized state. */
   OrderSnapshot order_;
+  /** The reference an amendment must address. */
   KisOrderRef order_ref_;
+  /** KIS's `orgn_odno`: which earlier order this one superseded. Lineage, not an address. */
   KisOrderRef original_order_;
+  /** How much KIS says may still be amended. */
   Decimal64 amendable_quantity_;
 };
 
 /** One page of KIS orders that remain modifiable or cancellable. */
 struct KisOpenOrderPage {
+  /** The rows on this page. */
   std::vector<KisOpenOrder> orders_;
+  /** When the page arrived, on this machine's clock. */
   std::chrono::system_clock::time_point received_at_;
 };
 
 /** Inclusive calendar range for a KIS order-history inquiry. */
 struct KisHistoryRange {
+  /** The first date to include, inclusive. */
   Date from_;
+  /** The last date to include, inclusive. */
   Date to_;
 };
 

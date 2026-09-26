@@ -86,12 +86,19 @@ enum class BarStamp {
  * whose bars disagreed with it.
  */
 struct Bar {
+  /** The instant marking this period. Which edge it marks is `BarSeries::stamp_`, not this field. */
   std::chrono::system_clock::time_point timestamp_;
+  /** The first trade of the period. Empty when the period produced no trade at all. */
   std::optional<Decimal64> open_;
+  /** The highest trade of the period. */
   Decimal64 high_;
+  /** The lowest trade of the period. */
   Decimal64 low_;
+  /** The last trade of the period. */
   Decimal64 close_;
+  /** Shares traded in the period. */
   Decimal64 volume_;
+  /** Cash traded in the period, where the broker publishes it. */
   std::optional<Decimal64> traded_value_;
 };
 
@@ -107,13 +114,37 @@ struct Bar {
  * bar, because they are properties of the series and not of its individual periods.
  */
 struct BarSeries {
+  /** What the bars are for. */
   InstrumentId instrument_;
+  /** The period each bar covers. Constant across the series. */
   BarInterval interval_{BarInterval::ONE_DAY};
+  /**
+   * Which edge of its period a bar's timestamp marks.
+   *
+   * The convention travels in the value because a timestamp alone cannot reveal it, and reading an
+   * open-stamped series as a close-stamped one is a lookahead.
+   */
   BarStamp stamp_{BarStamp::CLOSE};
+  /** The currency the prices are in. */
   Currency currency_;
+  /** Whether the prices account for corporate actions. */
   bool adjusted_{true};
+  /**
+   * The bars, oldest first.
+   *
+   * This is what you actually got, which can be fewer than `BarQuery::count_` asked for: paging
+   * stops when the count is satisfied, when a page comes back empty, or when the page budget is
+   * spent. Read its size rather than assuming the count.
+   */
   std::vector<Bar> bars_;
+  /**
+   * A cursor to continue from, where one exists.
+   *
+   * A short series **may** carry one and you have to check: an empty result carries none, and
+   * neither does a series whose broker cursor is exhausted, because there is nothing to continue to.
+   */
   std::optional<std::string> next_cursor_;
+  /** When the series arrived, on this machine's clock. */
   std::chrono::system_clock::time_point received_at_;
 
   /** Returns whether the bars are in ascending time order with no duplicates. */
@@ -129,7 +160,9 @@ struct BarSeries {
 
 /** One resting price level and the quantity available at it. */
 struct DepthLevel {
+  /** The price of this level. */
   Decimal64 price_;
+  /** The quantity resting at it. */
   Decimal64 quantity_;
 };
 
@@ -148,11 +181,17 @@ struct DepthLevel {
  * wrong about which price is best.
  */
 struct DepthSnapshot {
+  /** Whose book this is. */
   InstrumentId instrument_;
+  /** Resting bids, descending by price, so index zero is the best. May be empty. */
   std::vector<DepthLevel> bids_;
+  /** Resting offers, ascending by price, so index zero is the best. May be empty. */
   std::vector<DepthLevel> asks_;
+  /** The currency the prices are in. */
   Currency currency_;
+  /** When the exchange says the book was true, where the broker published a timestamp. */
   std::optional<std::chrono::system_clock::time_point> exchange_time_;
+  /** When the snapshot arrived, on this machine's clock. */
   std::chrono::system_clock::time_point received_at_;
 
   /** Returns the highest bid, or nothing when no bid rests. */
@@ -228,9 +267,13 @@ inline void order_depth(DepthSnapshot& book) {
  * information might arrive one day, which is worse than not offering it.
  */
 struct TradePrint {
+  /** The price the trade executed at. */
   Decimal64 price_;
+  /** The quantity that executed. */
   Decimal64 quantity_;
+  /** The currency `price_` is in. */
   Currency currency_;
+  /** When the exchange says it executed, where the broker published a timestamp. */
   std::optional<std::chrono::system_clock::time_point> exchange_time_;
 };
 
@@ -242,9 +285,13 @@ struct TradePrint {
  * of zero.
  */
 struct PriceLimits {
+  /** The highest price allowed today. Empty means the market imposes none, never zero. */
   std::optional<Decimal64> upper_;
+  /** The lowest price allowed today. Empty means the market imposes none, never zero. */
   std::optional<Decimal64> lower_;
+  /** The currency the bounds are in. */
   Currency currency_;
+  /** When the exchange says the bounds were set, where the broker published a timestamp. */
   std::optional<std::chrono::system_clock::time_point> exchange_time_;
 };
 
@@ -266,10 +313,15 @@ struct PriceLimits {
  * and KIS takes `FID_ORG_ADJ_PRC` where `0` means adjusted and `1` means raw.
  */
 struct BarQuery {
+  /** What to fetch bars for. */
   InstrumentId instrument_;
+  /** The period each bar should cover. An interval a broker does not publish is refused. */
   BarInterval interval_{BarInterval::ONE_DAY};
+  /** How many bars the caller wants, not how many one page holds. */
   int count_{100};
+  /** The newest bar to return, inclusive. Page backwards by passing the oldest timestamp seen. */
   std::optional<std::chrono::system_clock::time_point> before_;
+  /** Whether to ask for prices adjusted for corporate actions. */
   bool adjusted_{true};
 };
 

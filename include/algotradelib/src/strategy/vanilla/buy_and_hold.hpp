@@ -26,6 +26,7 @@ namespace vanilla {
  * order would have to remember whether it had already bought, and would buy twice after a restart.
  */
 struct BuyAndHold {
+  /** How this strategy is configured. */
   struct Params {
     /** Which instrument to hold. Bars for anything else are ignored. */
     InstrumentId instrument_;
@@ -35,11 +36,13 @@ struct BuyAndHold {
     std::string tag_{"buy-and-hold"};
   };
 
+  /** The configuration this instance runs under. */
   Params params_;
 
   /** No warm-up: one bar is enough to know the instrument trades. */
   static constexpr std::size_t warmup_bars = 1;
 
+  /** States the configured position on every bar for the configured instrument. */
   template <class Ctx>
   void on_bar(Ctx& ctx, const BarEvent& bar) {
     if (!(bar.instrument_ == params_.instrument_)) {

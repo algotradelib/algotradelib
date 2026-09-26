@@ -96,7 +96,9 @@ struct reports_last_ref<
  */
 template <typename BrokerTag>
 struct RefusedCancel {
+  /** The order that was to be withdrawn. */
   OrderRef<BrokerTag> ref_;
+  /** Which hold stopped it. Nothing was sent. */
   strategy::HaltReason reason_{strategy::HaltReason::OPERATOR};
 };
 
@@ -111,6 +113,7 @@ struct RefusedCancel {
  */
 template <typename BrokerTag>
 struct RejectedCancel {
+  /** The order that was to be withdrawn. */
   OrderRef<BrokerTag> ref_;
   /** False when the binding refused to send it, so no broker was asked. */
   bool by_broker_{true};
@@ -225,6 +228,7 @@ struct DryRunReport {
  */
 /** The broker tag a runner with no broker stands in for. References are never sent anywhere. */
 struct DryTag {
+  /** The tag's normalized name, which is what an order reference prints. */
   static constexpr std::string_view name = "dryrun";
 };
 
@@ -263,8 +267,11 @@ template <
 >
 class Runner {
 public:
+  /** The tag identifying the broker this runner sends to, or `DryTag` when it sends nowhere. */
   using Tag = BrokerTag;
+  /** The context handed to every strategy handler. */
   using Context = runner::Context<BrokerTag, CapsType>;
+  /** What one `feed` returns: everything the pass decided, in the order it decided it. */
   using Report = DryRunReport<BrokerTag>;
 
   ATL_ASSERT_STRATEGY(Strategy, Context);
@@ -283,6 +290,7 @@ public:
 
   /** Returns the executor, so a caller can read what it was handed. */
   const Executor& executor() const noexcept { return executor_; }
+  /** @copydoc Runner::executor() const */
   Executor& executor() noexcept { return executor_; }
 
   /**
@@ -292,6 +300,7 @@ public:
    * else clears one.
    */
   const IndeterminacyLedger& ledger() const noexcept { return ledger_; }
+  /** @copydoc Runner::ledger() const */
   IndeterminacyLedger& ledger() noexcept { return ledger_; }
 
   /**
@@ -423,14 +432,17 @@ public:
 
   /** Returns the strategy, so a test can read the state it kept. */
   const Strategy& strategy() const noexcept { return strategy_; }
+  /** @copydoc Runner::strategy() const */
   Strategy& strategy() noexcept { return strategy_; }
 
   /** Returns the context, so a caller can arrange the world before feeding an event. */
   const Context& context() const noexcept { return context_; }
+  /** @copydoc Runner::context() const */
   Context& context() noexcept { return context_; }
 
   /** Returns the guard, so a caller can halt trading or read the limits. */
   const strategy::RiskGuard& guard() const noexcept { return guard_; }
+  /** @copydoc Runner::guard() const */
   strategy::RiskGuard& guard() noexcept { return guard_; }
 
   /**

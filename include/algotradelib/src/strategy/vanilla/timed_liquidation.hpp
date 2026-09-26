@@ -37,17 +37,21 @@ namespace vanilla {
  * a position should not be carried on an assumption.
  */
 struct TimedLiquidation {
+  /** How this strategy is configured. */
   struct Params {
     /** Phases in which holding is acceptable. Anything else flattens. */
     std::vector<MarketPhase> hold_through_{MarketPhase::OPEN, MarketPhase::PRE_OPEN};
+    /** Label carried onto the orders, for attribution. */
     std::string tag_{"timed-liquidation"};
   };
 
+  /** The configuration this instance runs under. */
   Params params_;
 
   /** No warm-up: the decision needs no history. */
   static constexpr std::size_t warmup_bars = 0;
 
+  /** Targets flat as soon as the phase is not one of `hold_through_`, `UNKNOWN` included. */
   template <class Ctx>
   void on_phase(Ctx& ctx, MarketPhase phase) {
     for (const auto allowed : params_.hold_through_) {

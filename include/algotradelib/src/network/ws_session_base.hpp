@@ -42,11 +42,17 @@ namespace network {
 
 /** Runtime options shared by plain and TLS WebSocket sessions. */
 struct WebSocketSessionOptions {
+  /** The path the upgrade request targets. */
   std::string target_{"/"};
+  /** Extra headers to send with the handshake. */
   std::map<std::string, std::string> headers_;
+  /** The deadline applied to resolve, connect and handshake. */
   std::chrono::seconds operation_timeout_{30};
+  /** Whether to reconnect after an unrequested close, with bounded exponential backoff and jitter. */
   bool automatic_reconnect_{false};
+  /** The first backoff delay. */
   std::chrono::seconds reconnect_initial_{1};
+  /** The ceiling the backoff grows to. */
   std::chrono::seconds reconnect_max_{30};
 };
 
@@ -105,6 +111,7 @@ public:
   }
 
 protected:
+  /** Constructs the shared state. Derived classes own creating `ws_` and any transport setup. */
   WebSocketSessionBase(
     net::io_context& ioc,
     std::string host,
@@ -131,30 +138,52 @@ protected:
   /** Called after the session closes. */
   virtual void on_closed() {}
 
+  /** The strand every handler runs on, so the session needs no lock. */
   net::strand<net::io_context::executor_type> strand_;
+  /** Resolves `host_` and `port_`. */
   tcp::resolver resolver_;
+  /** Times the backoff between reconnect attempts. */
   net::steady_timer reconnect_timer_;
+  /** The stream, created by the derived class once its transport is ready. */
   std::unique_ptr<Stream> ws_;
+  /** Where an incoming message is read into. */
   beast::flat_buffer buffer_;
+  /** Messages waiting to go out; writes are serialized, so only the front is on the wire. */
   std::deque<std::string> write_queue_;
+  /** The host to connect to. */
   std::string host_;
+  /** The port to connect to. */
   std::string port_;
+  /** The value sent as the `Host` header, which SNI and certificate verification use. */
   std::string host_header_;
+  /** The options this session was constructed with. */
   WebSocketSessionOptions options_;
+  /** Whether the handshake has completed and the session is usable. */
   bool connected_{false};
+  /** Whether a connect attempt is in flight. */
   bool connecting_{false};
+  /** Whether a close was initiated and is not yet complete. */
   bool closing_{false};
+  /** Whether a write is on the wire, which is what serializes `write_queue_`. */
   bool writing_{false};
+  /** Whether a caller asked to stop, which suppresses reconnection. */
   bool stop_requested_{false};
+  /** How many reconnects have been attempted, which sets the backoff. */
   unsigned int reconnect_attempt_{0};
+  /** Jitter source for the backoff, so many sessions do not reconnect in lockstep. */
   std::minstd_rand reconnect_rng_;
 
+  /** Returns `this` as the derived type, for a handler that must keep the session alive. */
   std::shared_ptr<Derived> shared_derived() {
     return std::static_pointer_cast<Derived>(this->shared_from_this());
   }
 
-  // Called by Derived::do_connect() once `ws_` (and any transport-level
-  // setup such as SNI) is ready.
+  /**
+   * Begins resolving the host.
+   *
+   * Called by `Derived::do_connect()` once `ws_` — and any transport-level setup such as SNI — is
+   * ready.
+   */
   void start_resolve() {
     connecting_ = true;
     resolver_.async_resolve(
@@ -162,9 +191,12 @@ protected:
     );
   }
 
-  // Called by Derived::on_connect() (directly, or after a TLS handshake)
-  // once `host_header_` is set and the transport is ready for the
-  // websocket upgrade request.
+  /**
+   * Sends the WebSocket upgrade request.
+   *
+   * Called by `Derived::on_connect()`, directly or after a TLS handshake, once `host_header_` is set
+   * and the transport is ready.
+   */
   void start_ws_handshake() {
     beast::get_lowest_layer(*ws_).expires_never();
     auto timeout = websocket::stream_base::timeout::suggested(beast::role_type::client);
@@ -183,6 +215,7 @@ protected:
     );
   }
 
+  /** Records a failure at `stage`, tears the session down, and reconnects if that is configured. */
   void fail(std::string_view stage, beast::error_code error) {
     connected_ = false;
     connecting_ = false;

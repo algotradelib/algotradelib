@@ -109,6 +109,7 @@ struct MatchWindow {
 
 /** One instruction's verdict, and enough context for an operator to act on it. */
 struct OrderMatch {
+  /** What matching concluded. `AMBIGUOUS` and `NEEDS_OPERATOR` are stops, never retries. */
   MatchVerdict verdict_{MatchVerdict::UNDECIDED};
   /** The instruction this answers. */
   InstrumentId instrument_;

@@ -20,7 +20,9 @@ namespace algotradelib {
  * itself directs callers to use.
  */
 struct TradingDay {
+  /** The calendar date, in the broker's own locale. */
   Date date_{};
+  /** Whether the market opens on it. Not a banking or settlement day; see above. */
   bool open_{false};
 };
 
@@ -37,8 +39,11 @@ struct TradingDay {
  * that is permanently empty for the other.
  */
 struct TradingCalendar {
+  /** The market this calendar is for. */
   Country country_{Country::KR};
+  /** The days the broker reported, ascending. A date outside this span is uncovered, not closed. */
   std::vector<TradingDay> days_;
+  /** When the calendar arrived, on this machine's clock. */
   std::chrono::system_clock::time_point received_at_;
 
   /** Returns whether `date` is a trading day, or nothing when uncovered. */

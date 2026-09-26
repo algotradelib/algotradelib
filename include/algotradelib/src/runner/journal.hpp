@@ -208,10 +208,15 @@ struct JournalEntry {
    * be used as one: no broker has seen it, so it promises nothing about a duplicate.
    */
   std::string id_;
+  /** Which instruction this line is about: a placement, a replacement or a cancellation. */
   JournalAction action_{JournalAction::PLACE};
+  /** Where it stands. `PENDING` is written before the send; a terminal line answers it. */
   JournalOutcome outcome_{JournalOutcome::PENDING};
+  /** When the line was written, which for a `PENDING` line is before the request went out. */
   std::chrono::system_clock::time_point recorded_at_{};
+  /** The instrument the instruction is for. Identity, not routing; routing is `venue_`. */
   InstrumentId instrument_;
+  /** Which way. */
   OrderSide side_{OrderSide::BUY};
   /**
    * The order's shape, as all three normalized facts.
@@ -223,7 +228,9 @@ struct JournalEntry {
    * had sent.
    */
   OrderType type_{OrderType::LIMIT};
+  /** @copydoc JournalEntry::type_ */
   TimeInForce time_in_force_{TimeInForce::DAY};
+  /** @copydoc JournalEntry::type_ */
   OrderSession session_{OrderSession::REGULAR};
   /**
    * The venue this order actually reaches, where the binding can say.
@@ -249,7 +256,9 @@ struct JournalEntry {
    * not.
    */
   std::optional<Venue> venue_{Venue::UNSPECIFIED};
+  /** The quantity the instruction named, which recovery matches a listing row against. */
   Decimal64 quantity_;
+  /** The price the instruction named, where it had one. */
   std::optional<Decimal64> price_;
   /**
    * The broker's own order id, where one is known.
@@ -576,8 +585,10 @@ public:
     return inner_.effective_route(order.venue_);
   }
 
+  /** The fallback overload, for a binding that cannot resolve a route; reports what was asked for. */
   Venue route_of(const strategy::PlannedOrder& order, long) const { return order.venue_; }
 
+  /** Returns the venue to record for `order`, asking the binding first and falling back to the request. */
   Venue effective_route_of(const strategy::PlannedOrder& order) const {
     return route_of(order, 0);
   }
@@ -667,6 +678,7 @@ public:
 
   /** Returns the wrapped executor, so a caller can read what it was handed. */
   const Inner& inner() const noexcept { return inner_; }
+  /** @copydoc JournalingExecutor::inner() const */
   Inner& inner() noexcept { return inner_; }
 
   /** Returns the journal being written to. */

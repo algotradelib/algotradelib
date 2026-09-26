@@ -27,8 +27,11 @@ namespace algotradelib::tossinvest {
 
 /** Toss brokerage account returned by account discovery. */
 struct TossAccount {
+  /** The account number as Toss displays it, usually masked. */
   std::string account_number_;
+  /** Toss's own account sequence, which every subsequent request selects the account by. */
   std::int64_t sequence_{0};
+  /** The account type as Toss reported it. For display. */
   std::string account_type_;
 };
 
@@ -54,12 +57,19 @@ enum class TossOrderScope {
  * the broker states they have no effect.
  */
 struct TossOrderQuery {
+  /** Which account to list, by `TossAccount::sequence_`. */
   std::int64_t account_sequence_{0};
+  /** Open orders or closed ones. */
   TossOrderScope scope_{TossOrderScope::OPEN};
+  /** Restrict to one symbol. */
   std::optional<std::string> symbol_;
+  /** The first date to include. */
   std::optional<Date> from_;
+  /** The last date to include. */
   std::optional<Date> to_;
+  /** A cursor from a previous page. Ignored for `OPEN`, which returns everything at once. */
   std::optional<std::string> cursor_;
+  /** The maximum rows to return. Ignored for `OPEN`, as above. */
   std::optional<int> limit_;
 };
 
@@ -71,10 +81,15 @@ struct TossOrderQuery {
  * the adapter transmits it unchanged rather than inferring one.
  */
 struct TossAmendment {
+  /** The order to amend, by Toss's own identifier. */
   std::string order_id_;
+  /** The price basis the amended order should have. */
   OrderType type_{OrderType::LIMIT};
+  /** The new quantity. Required for a Korean order and forbidden for a United States one. */
   std::optional<Decimal64> quantity_;
+  /** The new price. */
   std::optional<Decimal64> price_;
+  /** Acknowledges Toss's high-value confirmation. */
   bool confirm_high_value_{false};
 };
 
@@ -3648,6 +3663,7 @@ public:
     );
   }
 
+  /** Returns normalized positions and per-currency totals for one account. */
   Result<HoldingsSnapshot> holdings(std::int64_t account_sequence) {
     return run<HoldingsSnapshot>(
       [&](auto&& sink) { client_->async_holdings(account_sequence, std::move(sink)); },

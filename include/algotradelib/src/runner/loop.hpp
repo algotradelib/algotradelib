@@ -173,9 +173,13 @@ inline constexpr std::string_view poll_outcome_name(PollOutcome outcome) noexcep
  * why a loop polling bars once a day still responds to an operator within a second.
  */
 struct PollSchedule {
+  /** How often to fetch bars; absent disables the poll. */
   std::optional<std::chrono::nanoseconds> bars_;
+  /** How often to fetch quotes; absent disables the poll. */
   std::optional<std::chrono::nanoseconds> quotes_;
+  /** How often to re-read holdings; absent disables the poll and leaves the portfolio stale. */
   std::optional<std::chrono::nanoseconds> holdings_;
+  /** How often to re-read the broker's working orders; absent disables the poll. */
   std::optional<std::chrono::nanoseconds> working_orders_;
   /**
    * How often to ask what may be spent; absent disables the poll.
@@ -185,6 +189,7 @@ struct PollSchedule {
    * that guesses -- which is the safe direction and is visible in the report.
    */
   std::optional<std::chrono::nanoseconds> buying_power_;
+  /** The loop's own granularity, and the floor on how quickly a stop is noticed. Not a poll. */
   std::chrono::nanoseconds tick_{std::chrono::seconds(1)};
   /**
    * How often to ask which dates the market trades. **The one cadence that is on by default.**
@@ -736,6 +741,7 @@ public:
 
   /** Returns the clock, so a test can read how long the loop believed it waited. */
   const Clock& clock() const noexcept { return clock_; }
+  /** @copydoc PollingLoop::clock() const */
   Clock& clock() noexcept { return clock_; }
 
   /** Returns the schedule. */

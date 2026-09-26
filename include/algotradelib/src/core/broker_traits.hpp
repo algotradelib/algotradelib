@@ -48,8 +48,11 @@ struct BrokerTraits;
  */
 template <typename Client>
 struct AccountInfo {
+  /** The account number as the broker displays it, usually masked. For display only. */
   std::string display_number_;
+  /** The account type as the broker reported it. For display only. */
   std::string type_;
+  /** The value a `BrokerSession` binds. Its type is broker-specific, because selection is. */
   typename BrokerTraits<Client>::Account selector_;
 };
 

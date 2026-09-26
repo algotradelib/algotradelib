@@ -62,18 +62,27 @@ using HttpResponse = http::response<http::string_body>;
  * can never displace an order.
  */
 struct HttpRequest {
+  /** The HTTP verb. A GET may be replayed once after a reconnect; a POST never is. */
   http::verb method_{http::verb::get};
+  /** The request target, path and query. */
   std::string target_{"/"};
+  /** The request body, empty for a GET. */
   std::string body_;
+  /** Additional headers, in the order they should be sent. */
   std::vector<std::pair<std::string, std::string>> headers_;
+  /** The HTTP version, `11` for HTTP/1.1. */
   int version_{11};
+  /** The traffic class, set by the adapter that builds the request and never by a caller. */
   RateLimitGroup group_{RateLimitGroup::REFERENCE};
 };
 
 /** Resource and deadline limits for HTTP transports. */
 struct HttpClientOptions {
+  /** The deadline applied to each of DNS, connect, TLS, write and read. */
   std::chrono::seconds timeout_{30};
+  /** The largest response body that will be accepted, in bytes. */
   std::size_t body_limit_{8 * 1024 * 1024};
+  /** How many requests may wait behind the one on the wire before further ones are shed. */
   std::size_t queue_limit_{1024};
 
   /**

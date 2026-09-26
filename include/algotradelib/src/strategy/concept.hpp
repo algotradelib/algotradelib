@@ -101,27 +101,49 @@ constexpr bool handlers_are_generic =
 
 /** Capability set in which the broker implements nothing optional. */
 struct NoCaps {
+  /** @copydoc BrokerCaps::has_account_discovery */
   static constexpr bool has_account_discovery = false;
+  /** @copydoc BrokerCaps::has_client_order_id */
   static constexpr bool has_client_order_id = false;
+  /** @copydoc BrokerCaps::has_working_orders */
   static constexpr bool has_working_orders = false;
+  /** @copydoc BrokerCaps::has_amendable_quantity */
   static constexpr bool has_amendable_quantity = false;
+  /** @copydoc BrokerCaps::has_order_by_id */
   static constexpr bool has_order_by_id = false;
+  /** @copydoc BrokerCaps::has_partial_cancel */
   static constexpr bool has_partial_cancel = false;
+  /** @copydoc BrokerCaps::history_requires_range */
   static constexpr bool history_requires_range = false;
+  /** @copydoc BrokerCaps::has_history_cursor */
   static constexpr bool has_history_cursor = false;
+  /** @copydoc BrokerCaps::has_history_limit */
   static constexpr bool has_history_limit = false;
+  /** @copydoc BrokerCaps::has_history_symbol_filter */
   static constexpr bool has_history_symbol_filter = false;
+  /** @copydoc BrokerCaps::has_depth */
   static constexpr bool has_depth = false;
+  /** @copydoc BrokerCaps::has_price_limits */
   static constexpr bool has_price_limits = false;
+  /** @copydoc BrokerCaps::has_trade_prints */
   static constexpr bool has_trade_prints = false;
+  /** @copydoc BrokerCaps::has_batch_prices */
   static constexpr bool has_batch_prices = false;
+  /** @copydoc BrokerCaps::has_reference_data */
   static constexpr bool has_reference_data = false;
+  /** @copydoc BrokerCaps::has_batch_reference_data */
   static constexpr bool has_batch_reference_data = false;
+  /** @copydoc BrokerCaps::has_calendar */
   static constexpr bool has_calendar = false;
+  /** @copydoc BrokerCaps::has_calendar_range */
   static constexpr bool has_calendar_range = false;
+  /** @copydoc BrokerCaps::has_calendar_sessions */
   static constexpr bool has_calendar_sessions = false;
+  /** @copydoc BrokerCaps::has_buying_power */
   static constexpr bool has_buying_power = false;
+  /** @copydoc BrokerCaps::has_buying_power_quantity */
   static constexpr bool has_buying_power_quantity = false;
+  /** @copydoc BrokerCaps::has_commission_schedule */
   static constexpr bool has_commission_schedule = false;
   /**
    * Nowhere, which is the honest answer for a broker this type stands in for.
@@ -130,35 +152,57 @@ struct NoCaps {
    * would have a runner skip the inquiry and then find nothing there.
    */
   static constexpr SellableSource sellable_source = SellableSource::NONE;
+  /** @copydoc BrokerCaps::supports_interval(BarInterval) */
   static constexpr bool supports_interval(BarInterval) { return false; }
 };
 
 /** Capability set in which the broker implements everything optional. */
 struct AllCaps {
+  /** @copydoc BrokerCaps::has_account_discovery */
   static constexpr bool has_account_discovery = true;
+  /** @copydoc BrokerCaps::has_client_order_id */
   static constexpr bool has_client_order_id = true;
+  /** @copydoc BrokerCaps::has_working_orders */
   static constexpr bool has_working_orders = true;
+  /** @copydoc BrokerCaps::has_amendable_quantity */
   static constexpr bool has_amendable_quantity = true;
+  /** @copydoc BrokerCaps::has_order_by_id */
   static constexpr bool has_order_by_id = true;
+  /** @copydoc BrokerCaps::has_partial_cancel */
   static constexpr bool has_partial_cancel = true;
+  /** @copydoc BrokerCaps::history_requires_range */
   static constexpr bool history_requires_range = true;
+  /** @copydoc BrokerCaps::has_history_cursor */
   static constexpr bool has_history_cursor = true;
+  /** @copydoc BrokerCaps::has_history_limit */
   static constexpr bool has_history_limit = true;
+  /** @copydoc BrokerCaps::has_history_symbol_filter */
   static constexpr bool has_history_symbol_filter = true;
+  /** @copydoc BrokerCaps::has_depth */
   static constexpr bool has_depth = true;
+  /** @copydoc BrokerCaps::has_price_limits */
   static constexpr bool has_price_limits = true;
+  /** @copydoc BrokerCaps::has_trade_prints */
   static constexpr bool has_trade_prints = true;
+  /** @copydoc BrokerCaps::has_batch_prices */
   static constexpr bool has_batch_prices = true;
+  /** @copydoc BrokerCaps::has_reference_data */
   static constexpr bool has_reference_data = true;
+  /** @copydoc BrokerCaps::has_batch_reference_data */
   static constexpr bool has_batch_reference_data = true;
+  /** @copydoc BrokerCaps::has_calendar */
   static constexpr bool has_calendar = true;
+  /** @copydoc BrokerCaps::has_calendar_range */
   static constexpr bool has_calendar_range = true;
+  /** @copydoc BrokerCaps::has_calendar_sessions */
   static constexpr bool has_calendar_sessions = true;
+  /** @copydoc BrokerCaps::supports_interval(BarInterval) */
   static constexpr bool supports_interval(BarInterval) { return true; }
 };
 
 /** Compile-time tag standing in for a broker in a probe context. */
 struct ProbeBroker {
+  /** The tag's normalized name, which is what an order reference prints. */
   static constexpr std::string_view name = "probe";
 };
 
@@ -183,13 +227,17 @@ struct ProbeBroker {
 template <typename CapsType>
 class ProbeContextT {
 public:
+  /** The stand-in broker tag; nothing a probe issues reaches a market. */
   using Broker = ProbeBroker;
+  /** The capability set being probed against. */
   using caps = CapsType;
 
   /** A log that records rather than writes, so a test can assert on what a strategy said. */
   class Log {
   public:
+    /** Records one line. */
     void note(std::string_view message) { lines_.emplace_back(message); }
+    /** Returns everything recorded, in order. */
     const std::vector<std::string>& lines() const noexcept { return lines_; }
 
   private:
@@ -240,14 +288,20 @@ public:
 
   /** What the strategy asked for, in order. */
   const std::vector<OrderIntent>& submitted() const noexcept { return submitted_; }
+  /** Returns the targets the strategy stated, in order. */
   const std::vector<TargetPosition>& targets() const noexcept { return targets_; }
+  /** Returns the cancellations the strategy asked for, in order. */
   const std::vector<CancelIntent<ProbeBroker>>& canceled() const noexcept { return canceled_; }
 
   /** Mutable state a test arranges before invoking a handler. */
   std::chrono::system_clock::time_point now_{};
+  /** The phase a handler will see. */
   MarketPhase phase_{MarketPhase::OPEN};
+  /** The calendar a handler will see. */
   TradingCalendar calendar_;
+  /** The portfolio a handler will see. */
   Portfolio<ProbeBroker> portfolio_;
+  /** Reference data a handler can look an instrument up in. */
   std::vector<Instrument> instruments_;
 
 private:
@@ -288,6 +342,7 @@ struct StrategyConformance {
     "`template <class Ctx> void on_bar(Ctx&, const BarEvent&)`"
   );
 
+  /** Always true; the assertion above is what this specialization exists to fire. */
   static constexpr bool value = true;
 };
 

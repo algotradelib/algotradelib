@@ -58,14 +58,17 @@ struct TossConfig : public network::ClientCredentials<TossConfig> {
     secret_ = doc.at("client_secret").as_string().c_str();
   }
 
+  /** The JSON field Toss expects the client id under. */
   static constexpr std::string_view key_field() noexcept { return "client_id"; }
 
+  /** The JSON field Toss expects the client secret under. */
   static constexpr std::string_view secret_field() noexcept { return "client_secret"; }
 };
 
 /** Parsed Toss Securities REST OAuth token. */
 struct TossRest : public network::AuthBody<TossRest> {
 
+  /** Nothing to read: Toss's token response carries no field beyond the shared base's. */
   void from_json_impl(const json::object&) {}
 
   // bool valid() const noexcept {

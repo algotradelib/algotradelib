@@ -33,7 +33,9 @@ struct MarketSegment {
     AMEX,
   };
 
+  /** The normalized segment, or `Known::UNKNOWN` when the broker's code was not recognized. */
   Known known_{Known::UNKNOWN};
+  /** The broker's own code, preserved verbatim when `known_` is `UNKNOWN`, so nothing is lost. */
   Code<12> other_;
 
   /** Returns a display form: the normalized name, or the preserved raw code. */
@@ -55,10 +57,12 @@ struct MarketSegment {
     return other_.empty() ? std::string("UNKNOWN") : other_.str();
   }
 
+  /** Compares the normalized segment and the preserved code together. */
   friend bool operator==(const MarketSegment& lhs, const MarketSegment& rhs) {
     return lhs.known_ == rhs.known_ && lhs.other_ == rhs.other_;
   }
 
+  /** The negation of `operator==`. */
   friend bool operator!=(const MarketSegment& lhs, const MarketSegment& rhs) {
     return !(lhs == rhs);
   }
@@ -118,7 +122,9 @@ enum class InstrumentStatus {
  * stated by their lower bound alone.
  */
 struct TickBand {
+  /** The lower bound this band applies from, inclusive. */
   Decimal64 from_;
+  /** The tick size within the band. */
   Decimal64 tick_;
 };
 
@@ -157,8 +163,11 @@ struct PriceRule {
     UNKNOWN,
   };
 
+  /** Which of the three states this rule is in. Defaults to `UNKNOWN`, so an unset rule rounds nothing. */
   Kind kind_{Kind::UNKNOWN};
+  /** The bands, ascending by `from_`. Empty unless `kind_` is `STATED`. */
   std::vector<TickBand> bands_;
+  /** Where the table came from and when, so a stale grid is visible rather than assumed. */
   std::string source_;
 
   /** Returns the tick that applies at `price`, or nothing when there is no grid. */
@@ -323,19 +332,33 @@ inline PriceRule price_rule_for(Country country, SecurityType type) {
  * than the equity one.
  */
 struct Instrument {
+  /** The instrument this row describes. */
   InstrumentId id_;
+  /** The local-language name as the broker spells it. */
   std::string name_;
+  /** The English name, where the broker publishes one. Empty otherwise. */
   std::string english_name_;
+  /** The ISIN, where the broker publishes one. Empty otherwise. */
   std::string isin_;
+  /** The market segment, normalized where recognized and preserved verbatim where not. */
   MarketSegment segment_;
+  /** What kind of security it is, which is what selects the price grid. */
   SecurityType type_{SecurityType::UNKNOWN};
+  /** Listed, awaiting listing, or delisted. */
   InstrumentStatus status_{InstrumentStatus::UNKNOWN};
+  /** The currency it trades in. */
   Currency currency_;
+  /** Whether this is the common share rather than a preferred or derived line. */
   bool common_share_{true};
+  /** The listing date, where the broker publishes one. */
   std::optional<Date> listed_on_;
+  /** The delisting date, where one exists and the broker publishes it. */
   std::optional<Date> delisted_on_;
+  /** Shares outstanding, where the broker publishes the figure. */
   std::optional<Decimal64> shares_outstanding_;
+  /** The order quantity increment, where the broker publishes one. */
   std::optional<Decimal64> lot_size_;
+  /** The library's own price grid for this instrument; `UNKNOWN` where it has no table. */
   PriceRule price_rule_;
 };
 

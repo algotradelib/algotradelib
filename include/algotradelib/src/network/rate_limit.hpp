@@ -109,8 +109,11 @@ inline constexpr std::size_t rate_limit_group_index(RateLimitGroup group) noexce
  * library cannot assert a number; it can only start low and let a caller raise it.
  */
 struct RateLimitBudget {
+  /** How many requests may be issued back to back from idle. */
   int burst_{8};
+  /** The sustained rate the bucket refills at. */
   int per_second_{8};
+  /** The part of `burst_` only `AUTH` and `TRADING` traffic may spend. */
   int trading_reserve_{2};
 };
 
@@ -299,9 +302,13 @@ using RateLimitBucket = BasicRateLimitBucket<>;
 
 /** Counters and current pacing state for one traffic group. */
 struct RateLimitGroupStats {
+  /** Requests the pacer let through. */
   std::uint64_t admitted_{0};
+  /** Requests it held before letting through. Rising here on a polling class is the reserve working. */
   std::uint64_t delayed_{0};
+  /** Requests it refused because the queue was full, which is not the same as being slow. */
   std::uint64_t shed_{0};
+  /** Total time spent waiting, accumulated on the timer so no path waits uncounted. */
   std::chrono::nanoseconds waited_{0};
 };
 
@@ -312,10 +319,15 @@ struct RateLimitGroupStats {
  * than it has, and it is how a human confirms the trading reserve is working.
  */
 struct RateLimitStats {
+  /** One counter set per traffic class; read them through `group()`. */
   RateLimitGroupStats groups_[rate_limit_group_count];
+  /** The burst allowance currently in force. */
   int burst_{0};
+  /** The sustained rate currently in force. */
   int per_second_{0};
+  /** How much of the burst is unspent right now. */
   int available_{0};
+  /** How many refusals the broker itself has sent. Rising here is the signal to lower the budget. */
   std::uint64_t broker_rejections_{0};
 
   /** Returns the counters for one group. */

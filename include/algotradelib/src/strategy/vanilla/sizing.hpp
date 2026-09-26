@@ -32,7 +32,9 @@ namespace vanilla {
  * worth stating rather than only doing.
  */
 struct VolatilityTargetSizing {
+  /** How this strategy is configured. */
   struct Params {
+    /** Which instrument to size. Bars for anything else are ignored. */
     InstrumentId instrument_;
     /** Window the return deviation is measured over. */
     std::size_t window_{20};
@@ -41,13 +43,17 @@ struct VolatilityTargetSizing {
     /** Largest position to hold whatever the arithmetic says, as a last guard against a tiny
      *  measured volatility producing an enormous size. */
     Decimal64 max_quantity_;
+    /** Label carried onto the orders, for attribution. */
     std::string tag_{"volatility-target"};
   };
 
+  /** The configuration this instance runs under. */
   Params params_;
 
+  /** The window plus two: one row is lost to the first return, and one to reading a previous value. */
   std::size_t warmup_bars() const { return params_.window_ + 2; }
 
+  /** Reads the latest bar and, when the signal says so, states a target position. */
   template <class Ctx>
   void on_bar(Ctx& ctx, const BarEvent& bar) {
     if (!(bar.instrument_ == params_.instrument_)) {
@@ -114,6 +120,7 @@ struct VolatilityTargetSizing {
  * would make one arbitrary name larger than the others.
  */
 struct EqualWeightRebalance {
+  /** How this strategy is configured. */
   struct Params {
     /** The instruments to hold. An empty universe holds nothing. */
     std::vector<InstrumentId> universe_;
@@ -121,14 +128,17 @@ struct EqualWeightRebalance {
     std::uint8_t weight_scale_{4};
     /** Phase that triggers a rebalance. */
     MarketPhase rebalance_at_{MarketPhase::OPEN};
+    /** Label carried onto the orders, for attribution. */
     std::string tag_{"equal-weight"};
   };
 
+  /** The configuration this instance runs under. */
   Params params_;
 
   /** No warm-up: a weight needs no history, only a price to size against. */
   static constexpr std::size_t warmup_bars = 0;
 
+  /** Restates an equal-weight target for the universe when `rebalance_at_` arrives. */
   template <class Ctx>
   void on_phase(Ctx& ctx, MarketPhase phase) {
     if (phase != params_.rebalance_at_ || params_.universe_.empty()) {

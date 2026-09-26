@@ -54,6 +54,12 @@ inline bool order_is_open(OrderStatus status) {
  */
 template <typename Broker>
 struct Portfolio {
+  /**
+   * Every position row the broker reported.
+   *
+   * One instrument may appear in more than one row, so size a holding with `net_quantity_of`
+   * rather than reading the first match.
+   */
   std::vector<HoldingPosition> positions_;
   /** Spendable cash per currency, unconverted — no implicit foreign exchange. */
   std::vector<Money> cash_;
@@ -68,7 +74,14 @@ struct Portfolio {
    * money.
    */
   std::vector<BuyingPower> buying_power_;
+  /**
+   * Orders still outstanding at the broker.
+   *
+   * The half most easily forgotten: sizing from `positions_` alone double-sizes after a partial
+   * fill. `working_quantity` does that arithmetic.
+   */
   std::vector<WorkingOrder<Broker>> working_;
+  /** The broker's own `as_of_`, not when the reply arrived, which is what a staleness gate measures. */
   std::chrono::system_clock::time_point as_of_{};
 
   /**

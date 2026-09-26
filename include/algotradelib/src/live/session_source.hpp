@@ -63,7 +63,9 @@ inline runner::PollOutcome poll_outcome_of(const BrokerError& error) noexcept {
 template <typename Session, typename Journal = runner::MemoryJournal>
 class SessionSource {
 public:
+  /** The bound broker's capability set, forwarded from the session. */
   using Caps = typename Session::Caps;
+  /** The bound broker's tag, forwarded from the session. */
   using BrokerTag = typename Session::BrokerTag;
 
   /**

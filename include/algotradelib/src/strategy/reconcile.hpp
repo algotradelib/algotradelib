@@ -104,7 +104,9 @@ inline constexpr std::string_view reject_reason_name(RejectReason reason) noexce
 
 /** One instruction that was refused, and why. */
 struct Rejection {
+  /** Why reconciliation refused the instruction. */
   RejectReason reason_{RejectReason::NO_REFERENCE_DATA};
+  /** The instrument the refused instruction was for. */
   InstrumentId instrument_;
   /** The strategy's own label on the refused instruction, for attribution. */
   std::string tag_;
@@ -119,16 +121,25 @@ struct Rejection {
  * is entitled to know.
  */
 struct PlannedOrder {
+  /** What to trade. Identity, not routing. */
   InstrumentId instrument_;
+  /** Which way. */
   OrderSide side_{OrderSide::BUY};
+  /** The price basis. */
   OrderType type_{OrderType::LIMIT};
+  /** The execution condition. */
   TimeInForce time_in_force_{TimeInForce::DAY};
+  /** The session to trade in. */
   OrderSession session_{OrderSession::REGULAR};
   /** Where to route it; see `OrderRequest::venue_`. Not the instrument's venue. */
   Venue venue_{Venue::UNSPECIFIED};
+  /** How much, after any rounding onto the lot that `quantity_rounded_` records. */
   Decimal64 quantity_;
+  /** The limit price, after any rounding or clamping the flags below record. */
   std::optional<Decimal64> price_;
+  /** The strategy's own label on the intent this order came from. */
   std::string tag_;
+  /** An idempotency key, only where the bound broker supports one. */
   std::optional<std::string> client_order_id_;
 
   /** Whether the price was moved onto the tick grid. */
@@ -149,8 +160,11 @@ struct PlannedOrder {
  */
 template <typename Broker>
 struct Plan {
+  /** Orders to withdraw. These go first; see the note above on why the order is not optional. */
   std::vector<OrderRef<Broker>> cancel_;
+  /** Orders to send, after every cancellation has gone. */
   std::vector<PlannedOrder> place_;
+  /** Instructions reconciliation refused, with the reason on each. */
   std::vector<Rejection> rejected_;
 
   /** Returns whether the plan asks for nothing at all. */

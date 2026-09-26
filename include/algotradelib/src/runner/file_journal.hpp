@@ -504,8 +504,11 @@ inline std::optional<std::string> journal_header_scope(std::string_view line) {
 
 /** A journal file's bytes, and whether they were obtained at all. */
 struct JournalBytes {
+  /** Whether the file was read, and if not, why not. */
   JournalReadStatus status_{JournalReadStatus::MISSING};
+  /** The file's contents, empty unless `status_` says they were obtained. */
   std::string text_;
+  /** What went wrong, for an operator. Empty on success. */
   std::string detail_;
 };
 

@@ -186,8 +186,11 @@ inline constexpr std::string_view guard_reason_name(GuardReason reason) noexcept
  * reconstructing the arithmetic, and so a strategy can adapt rather than retry the same size.
  */
 struct GuardRejection {
+  /** Which limit refused the order. */
   GuardReason reason_{GuardReason::TRADING_HALTED};
+  /** The instrument the refused order was for. */
   InstrumentId instrument_;
+  /** The strategy's own label on the intent it came from. */
   std::string tag_;
   /**
    * Which hold stopped the order, when `reason_` is `TRADING_HALTED`.
@@ -267,6 +270,7 @@ struct RiskLimits {
   std::optional<Decimal64> max_gross_exposure_;
   /** Most orders that may be sent within `rate_window_`. */
   std::optional<std::size_t> max_orders_per_window_;
+  /** The window `max_orders_per_window_` counts over. */
   std::chrono::seconds rate_window_{60};
   /**
    * Whether a sell is checked against what the broker says is sellable.
@@ -339,7 +343,9 @@ struct RiskLimits {
  * exactly those -- an opening buy is the ordinary case.
  */
 struct InstrumentBasis {
+  /** The instrument this basis is for. */
   InstrumentId instrument_;
+  /** What it is denominated in. A ceiling is per currency and never converts. */
   Currency currency_;
   /**
    * The mark to value the position at.
@@ -353,7 +359,9 @@ struct InstrumentBasis {
 
 /** What a guard needs about the world that is not the order or the portfolio. */
 struct GuardInputs {
+  /** The instant the guard should judge against, which is what `rate_window_` counts from. */
   std::chrono::system_clock::time_point now_{};
+  /** The market phase the order would go out in, which `permitted_phases_` is checked against. */
   MarketPhase phase_{MarketPhase::UNKNOWN};
   /** A price to value a market order with, since it carries none of its own. */
   std::optional<Decimal64> reference_price_;

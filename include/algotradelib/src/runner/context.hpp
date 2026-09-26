@@ -67,7 +67,9 @@ using Instruction = std::variant<OrderIntent, TargetPosition, CancelIntent<Broke
 
 /** Identifies one cached series: an instrument at one bar interval. */
 struct SeriesKey {
+  /** The instrument the series is for. */
   InstrumentId instrument_;
+  /** The bar interval, so the same instrument at two intervals is two series. */
   BarInterval interval_{BarInterval::ONE_DAY};
 
   /** Orders keys so they can live in a map; the ordering itself carries no meaning. */
@@ -89,7 +91,9 @@ struct SeriesKey {
 template <typename BrokerTag, typename CapsType>
 class Context {
 public:
+  /** The tag identifying the broker whose references this context hands out. */
   using Broker = BrokerTag;
+  /** The capability set a strategy gates on with `if constexpr`. */
   using caps = CapsType;
 
   /** A structured, non-blocking log. Lines are kept for the runner to emit or a test to read. */

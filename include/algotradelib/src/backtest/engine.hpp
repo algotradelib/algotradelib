@@ -47,8 +47,11 @@ namespace backtest {
  */
 template <typename BrokerTag>
 struct QueuedOrder {
+  /** The order as reconciliation planned it. */
   strategy::PlannedOrder order_;
+  /** The reference the replay issued for it; it reaches no broker but has the live type. */
   OrderRef<BrokerTag> ref_;
+  /** The bar it was accepted during. It cannot fill against that bar, which is the lookahead rule. */
   std::uint64_t accepted_on_{0};
 };
 
@@ -187,6 +190,7 @@ private:
 
 /** One point on the equity curve, recorded per bar. */
 struct EquityPoint {
+  /** The bar's close this point was taken at. */
   std::chrono::system_clock::time_point at_{};
   /** Cash plus positions at that bar's close. */
   Decimal64 equity_;
@@ -196,7 +200,9 @@ struct EquityPoint {
 
 /** What a replay did, for a report to summarize. */
 struct ReplayResult {
+  /** One point per bar that could be valued, in order. */
   std::vector<EquityPoint> equity_;
+  /** Every execution the fill model produced, in order. */
   std::vector<Execution> executions_;
   /**
    * Instructions reconciliation could not build.
@@ -219,6 +225,7 @@ struct ReplayResult {
 struct ReplayConfig {
   /** Starting cash, in `currency_`. */
   Decimal64 cash_{Decimal64::parse("10000000")};
+  /** The currency the replay accounts in. An equity curve is one currency's. */
   Currency currency_{Currency{"KRW"}};
   /** Reference data for every instrument replayed; without it nothing can be built. */
   std::vector<Instrument> instruments_;
@@ -257,8 +264,11 @@ struct ReplayConfig {
 template <typename Strategy, typename CapsType = strategy::NoCaps>
 class Backtester {
 public:
+  /** The broker tag a replay's order references carry. */
   using Tag = BacktestTag;
+  /** The executor this configuration of `Runner` sends through. */
   using Executor = QueueingExecutor<Tag>;
+  /** The `Runner` specialization a replay drives; the same engine a live session uses. */
   using Runner = runner::Runner<Strategy, CapsType, Tag, Executor>;
 
   /** Constructs a replay of `strategy` under `config`, filling through `fills`. */

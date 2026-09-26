@@ -333,10 +333,13 @@ private:
  * strategy asks to be taken out of an instrument entirely.
  */
 struct TargetPosition {
+  /** The instrument the target applies to. */
   InstrumentId instrument_;
+  /** The position to hold, signed: negative is short, and zero asks to be flat. */
   Decimal64 target_quantity_;
   /** Optional limit for the orders the runner derives; a market order without one. */
   std::optional<Price> limit_;
+  /** A label carried through to the orders and back on their fills, for attribution. */
   std::string tag_;
 };
 
@@ -362,7 +365,9 @@ struct TargetPosition {
  */
 template <typename Broker>
 struct CancelIntent {
+  /** The order to withdraw, taken from `ctx.portfolio()` with `auto`. */
   OrderRef<Broker> ref_;
+  /** A label for attribution, as on `TargetPosition`. */
   std::string tag_;
 };
 

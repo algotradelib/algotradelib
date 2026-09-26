@@ -25,7 +25,9 @@ namespace vanilla {
  * classic way to lose more than the account holds.
  */
 struct ZScoreReversion {
+  /** How this strategy is configured. */
   struct Params {
+    /** Which instrument to trade. Bars for anything else are ignored. */
     InstrumentId instrument_;
     /** Window the score is measured over. */
     std::size_t window_{20};
@@ -33,14 +35,19 @@ struct ZScoreReversion {
     math::Scalar entry_{2.0};
     /** How far below the mean to hold down to before flattening. Positive, below `entry_`. */
     math::Scalar exit_{0.5};
+    /** How many shares to hold while the signal is on. */
     Decimal64 quantity_;
+    /** Label carried onto the orders, for attribution. */
     std::string tag_{"zscore-reversion"};
   };
 
+  /** The configuration this instance runs under. */
   Params params_;
 
+  /** The window plus one, because a score is read against the previous bar's. */
   std::size_t warmup_bars() const { return params_.window_ + 1; }
 
+  /** Reads the latest bar and, when the signal says so, states a target position. */
   template <class Ctx>
   void on_bar(Ctx& ctx, const BarEvent& bar) {
     if (!(bar.instrument_ == params_.instrument_)) {
@@ -106,17 +113,23 @@ struct ZScoreReversion {
  * Long only, for the reason `ZScoreReversion` gives.
  */
 struct RsiThreshold {
+  /** How this strategy is configured. */
   struct Params {
+    /** Which instrument to trade. Bars for anything else are ignored. */
     InstrumentId instrument_;
+    /** The index period. Must be non-zero. */
     std::size_t period_{14};
     /** Buy at or below this level. */
     math::Scalar oversold_{30.0};
     /** Flatten at or above this level. */
     math::Scalar overbought_{70.0};
+    /** How many shares to hold while the signal is on. */
     Decimal64 quantity_;
+    /** Label carried onto the orders, for attribution. */
     std::string tag_{"rsi-threshold"};
   };
 
+  /** The configuration this instance runs under. */
   Params params_;
 
   /**
@@ -127,6 +140,7 @@ struct RsiThreshold {
    */
   std::size_t warmup_bars() const { return params_.period_ + 1; }
 
+  /** Reads the latest bar and, when the signal says so, states a target position. */
   template <class Ctx>
   void on_bar(Ctx& ctx, const BarEvent& bar) {
     if (!(bar.instrument_ == params_.instrument_)) {
@@ -188,17 +202,25 @@ struct RsiThreshold {
  * latest row.
  */
 struct DonchianBreakout {
+  /** How this strategy is configured. */
   struct Params {
+    /** Which instrument to trade. Bars for anything else are ignored. */
     InstrumentId instrument_;
+    /** How far back the channel is measured. Must be non-zero. */
     std::size_t lookback_{20};
+    /** How many shares to hold while the signal is on. */
     Decimal64 quantity_;
+    /** Label carried onto the orders, for attribution. */
     std::string tag_{"donchian-breakout"};
   };
 
+  /** The configuration this instance runs under. */
   Params params_;
 
+  /** The lookback plus one, because the channel excludes the bar being tested against it. */
   std::size_t warmup_bars() const { return params_.lookback_ + 1; }
 
+  /** Reads the latest bar and, when the signal says so, states a target position. */
   template <class Ctx>
   void on_bar(Ctx& ctx, const BarEvent& bar) {
     if (!(bar.instrument_ == params_.instrument_)) {

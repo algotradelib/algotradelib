@@ -63,7 +63,9 @@ public:
   }
 
 protected:
+  /** The application key or client id. Never logged. */
   std::string key_;
+  /** The application secret. Never logged. */
   std::string secret_;
 
 private:
@@ -95,7 +97,9 @@ private:
 /** CRTP storage and parsing for an OAuth access-token response. */
 template <typename BrokerType>
 struct AuthBody {
+  /** The bearer token itself. Never logged. */
   std::string access_token_;
+  /** When it stops being usable, absolute rather than relative. */
   std::chrono::system_clock::time_point expires_at_{};
 
   /** Parses common token fields before invoking broker-specific parsing. */

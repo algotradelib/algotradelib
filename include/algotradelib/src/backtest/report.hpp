@@ -135,6 +135,7 @@ struct Report {
 
   /** Equity at the first and last recorded points. */
   Decimal64 opening_equity_;
+  /** @copydoc Report::opening_equity_ */
   Decimal64 closing_equity_;
   /** Total return over the replay, as a fraction. */
   math::Scalar total_return_{0};
@@ -152,6 +153,7 @@ struct Report {
 
   /** Commission and slippage paid, so a reader can see what the model cost. */
   Decimal64 commission_paid_;
+  /** @copydoc Report::commission_paid_ */
   Decimal64 slippage_paid_;
 
   /** Instructions reconciliation could not build; a replay's executor refuses nothing. */
@@ -159,6 +161,7 @@ struct Report {
   /** Instructions a guard refused. */
   std::size_t refused_{0};
 
+  /** What this run assumed, carried with the figures so a reader need not remember. */
   ReportCaveats caveats_;
 };
 

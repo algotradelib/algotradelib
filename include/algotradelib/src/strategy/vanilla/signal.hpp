@@ -22,7 +22,9 @@ namespace vanilla {
 
 /** The last two values of an indicator, which is what a crossing test needs. */
 struct Crossing {
+  /** The value on the previous bar. */
   math::Scalar previous_{0};
+  /** The value on the latest bar. */
   math::Scalar current_{0};
 
   /** Returns whether the line rose through `other` on the latest bar. */

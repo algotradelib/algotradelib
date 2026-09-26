@@ -46,10 +46,14 @@ enum class Venue {
 
 /** Broker-neutral identity for a financial instrument. */
 struct InstrumentId {
+  /** The listing country, which selects the symbol convention and the price grid. */
   Country country_{Country::KR};
+  /** The identity venue, which participates in equality; routing is `OrderRequest::venue_`. */
   Venue venue_{Venue::COMBINED};
+  /** The broker's own symbol, unpadded and as the venue spells it (`"005930"`). */
   std::string symbol_;
 
+  /** Compares country, venue and symbol; two instruments differing in venue are different. */
   friend bool operator==(const InstrumentId& lhs, const InstrumentId& rhs) {
     return lhs.country_ == rhs.country_ && lhs.venue_ == rhs.venue_ && lhs.symbol_ == rhs.symbol_;
   }
@@ -138,8 +142,10 @@ public:
   /** Returns the greatest number of characters a code of this width can hold. */
   static constexpr std::size_t capacity() noexcept { return N; }
 
+  /** Compares the stored characters. */
   friend bool operator==(const Code& lhs, const Code& rhs) { return lhs.view() == rhs.view(); }
 
+  /** The negation of `operator==`. */
   friend bool operator!=(const Code& lhs, const Code& rhs) { return !(lhs == rhs); }
 
 private:
@@ -181,6 +187,7 @@ public:
   /** Returns the three-letter currency code. */
   std::string str() const { return std::string(code_.begin(), code_.end()); }
 
+  /** Compares two currencies by their ISO 4217 code. */
   friend bool operator==(const Currency& lhs, const Currency& rhs) {
     return lhs.code_ == rhs.code_;
   }
@@ -302,6 +309,7 @@ public:
     return digits;
   }
 
+  /** Compares two decimals by value, so `1.50` and `1.5` are equal despite differing scales. */
   friend bool operator==(const Decimal64& lhs, const Decimal64& rhs) {
     return lhs.coefficient_ == rhs.coefficient_ && lhs.scale_ == rhs.scale_;
   }
@@ -554,6 +562,7 @@ enum class ErrorCategory {
  * invented for it.
  */
 struct BrokerError {
+  /** What kind of failure this is, and the only field a caller should branch on. */
   ErrorCategory category_{ErrorCategory::PROTOCOL};
   /**
    * Whether a request actually went out before this error was produced.
@@ -571,11 +580,17 @@ struct BrokerError {
    * order or hides a failure.
    */
   bool reached_broker_{true};
+  /** The HTTP status, or `0` when the failure happened before a response existed. */
   int http_status_{0};
+  /** The broker's own error code, verbatim (KIS's `EGW00201`, Toss's error identifier). */
   std::string broker_code_;
+  /** The broker's correlation identifier for this request, where it published one. */
   std::string request_id_;
+  /** A human-readable description, for a log or an operator; never parsed. */
   std::string message_;
+  /** How long the broker asked the caller to wait, where it said. Empty means it did not. */
   std::optional<std::chrono::seconds> retry_after_;
+  /** The allowance the broker states it is enforcing, in requests per second, where it published one. */
   std::optional<int> rate_limit_;
 };
 
@@ -619,9 +634,13 @@ private:
  * absent value means the broker did not state one, never zero.
  */
 struct TopOfBook {
+  /** The best bid the broker published. Empty means it stated none, never zero. */
   std::optional<Decimal64> bid_price_;
+  /** The size resting at `bid_price_`, where the broker published one. */
   std::optional<Decimal64> bid_quantity_;
+  /** The best offer the broker published. Empty means it stated none, never zero. */
   std::optional<Decimal64> ask_price_;
+  /** The size resting at `ask_price_`, where the broker published one. */
   std::optional<Decimal64> ask_quantity_;
 };
 
@@ -633,20 +652,30 @@ struct TopOfBook {
  * unaffected.
  */
 struct QuoteSnapshot {
+  /** What was quoted. */
   InstrumentId instrument_;
+  /** The last traded price, exact as the broker reported it. */
   Decimal64 last_price_;
+  /** The currency `last_price_` is denominated in. */
   Currency currency_;
+  /** When the exchange says the quote was true, where the broker published a timestamp. */
   std::optional<std::chrono::system_clock::time_point> exchange_time_;
+  /** When this process received the answer. A local clock, and the weaker of the two claims. */
   std::chrono::system_clock::time_point received_at_;
+  /** Best bid and offer, where the broker published them with the quote. */
   std::optional<TopOfBook> top_of_book_;
+  /** Cumulative traded volume for the session, where the broker published it. */
   std::optional<Decimal64> volume_;
 };
 
 /** Exact monetary amount paired with its currency. */
 struct Money {
+  /** The exact amount. */
   Decimal64 amount_;
+  /** The currency it is denominated in; amounts in different currencies are never added. */
   Currency currency_;
 
+  /** Compares amount and currency. Equal amounts in different currencies are not equal. */
   friend bool operator==(const Money& lhs, const Money& rhs) {
     return lhs.amount_ == rhs.amount_ && lhs.currency_ == rhs.currency_;
   }
@@ -654,30 +683,57 @@ struct Money {
 
 /** One broker-neutral position in an account holdings snapshot. */
 struct HoldingPosition {
+  /** What is held. A broker reports a holding with no venue, so this carries the identity venue. */
   InstrumentId instrument_;
+  /** The instrument's display name as the broker spells it. */
   std::string name_;
+  /**
+   * The quantity in this row.
+   *
+   * A broker may report one instrument across several rows, so this is not necessarily the whole
+   * position. Size a holding with `Portfolio::net_quantity_of`, never from one row.
+   */
   Decimal64 quantity_;
+  /**
+   * How much of it the broker says may be sold now.
+   *
+   * Empty means the broker did not state one, which is not the same as zero. Whether the figure is
+   * already net of resting sell orders is not stated by either broker and is not assumed here.
+   */
   std::optional<Decimal64> sellable_quantity_;
+  /** The broker's own average cost for the position. */
   Decimal64 average_purchase_price_;
+  /** The mark the broker valued the position at. */
   Decimal64 last_price_;
+  /** Cost basis, as the broker computed it. */
   Money purchase_value_;
+  /** Current value, as the broker computed it. */
   Money market_value_;
+  /** `market_value_ - purchase_value_`, as the broker computed it. */
   Money unrealized_profit_loss_;
+  /** The broker's own return figure, as a fraction rather than a percentage. */
   Decimal64 unrealized_return_;
 };
 
 /** Gross holdings totals for one currency without implicit conversion. */
 struct HoldingsTotals {
+  /** The currency these totals are in. There is one row per currency and no conversion. */
   Currency currency_;
+  /** Total cost basis across every position in `currency_`. */
   Decimal64 purchase_value_;
+  /** Total current value across every position in `currency_`. */
   Decimal64 market_value_;
+  /** `market_value_ - purchase_value_` for `currency_`. */
   Decimal64 unrealized_profit_loss_;
 };
 
 /** Point-in-time normalized positions and per-currency totals. */
 struct HoldingsSnapshot {
+  /** Every position row the broker reported; one instrument may appear in more than one. */
   std::vector<HoldingPosition> positions_;
+  /** One totals row per currency held. */
   std::vector<HoldingsTotals> totals_;
+  /** When this process received the answer, which is what a staleness gate measures against. */
   std::chrono::system_clock::time_point received_at_;
 };
 
@@ -739,7 +795,9 @@ inline constexpr std::string_view sellable_source_name(SellableSource source) no
  * it as evidence that a broker answered at that moment.
  */
 struct BuyingPower {
+  /** The spendable amount the broker stated, with its currency. */
   Money cash_;
+  /** When the figure arrived, on this machine's clock; see the note above on what that claims. */
   std::chrono::system_clock::time_point received_at_{};
 };
 
@@ -751,8 +809,11 @@ struct BuyingPower {
  * stated, so they are kept as plain dates.
  */
 struct Date {
+  /** The four-digit year. */
   int year_{0};
+  /** The month, `1`-`12`. Zero means unset. */
   unsigned month_{0};
+  /** The day of the month, `1`-`31`. Zero means unset. */
   unsigned day_{0};
 
   /** Compares two calendar dates for component-wise equality. */
@@ -837,6 +898,7 @@ inline bool is_valid_date(const Date& date) {
  * There is no per-order floor and no transaction tax here, because neither broker publishes one.
  */
 struct CommissionRate {
+  /** The market this rate applies to, when the library normalizes it; see `other_` when it does not. */
   Country country_{Country::KR};
   /**
    * The market the broker named, when this library does not normalize it.
@@ -852,8 +914,11 @@ struct CommissionRate {
    * than reported under a market it does not belong to.
    */
   Code<16> other_;
+  /** The rate as a fraction of traded value, not a percentage: `0.00015`, not `0.015`. */
   Decimal64 rate_;
+  /** The first date the rate applies on. Empty is open-ended, and deliberately not "today". */
   std::optional<Date> from_;
+  /** The last date the rate applies on. Empty means no scheduled change. */
   std::optional<Date> until_;
 
   /**
@@ -886,7 +951,9 @@ struct CommissionRate {
  * account has no stated rates — and is not the same as the broker having no such inquiry.
  */
 struct CommissionSchedule {
+  /** Every rate row the broker published for the account. Empty is a real answer. */
   std::vector<CommissionRate> rates_;
+  /** When the schedule arrived, on this machine's clock. */
   std::chrono::system_clock::time_point received_at_{};
 
   /**
@@ -1087,10 +1154,15 @@ enum class OrderStatus {
  * look safe on brokers that provide no such guarantee.
  */
 struct OrderRequest {
+  /** What to trade. Its `venue_` is identity; routing is this struct's own `venue_`. */
   InstrumentId instrument_;
+  /** Buy or sell. */
   OrderSide side_{OrderSide::BUY};
+  /** The price basis: limit, market, best-limit, conditional-limit, and so on. */
   OrderType type_{OrderType::LIMIT};
+  /** The execution condition: day, immediate-or-cancel, fill-or-kill. */
   TimeInForce time_in_force_{TimeInForce::DAY};
+  /** The session to trade in: regular, an auction, pre-market, after-hours. */
   OrderSession session_{OrderSession::REGULAR};
   // `UNKNOWN` in `type_`, `time_in_force_` or `session_` is rejected before
   // network I/O, and so is any combination of the three the broker's own code
@@ -1119,9 +1191,19 @@ struct OrderRequest {
    * who sets it there means routing and would otherwise get it silently.
    */
   Venue venue_{Venue::UNSPECIFIED};
+  /** How much to trade, in the instrument's own units. */
   Decimal64 quantity_;
+  /** The limit price. Required for `OrderType::LIMIT`, and refused for `OrderType::MARKET`. */
   std::optional<Decimal64> price_;
+  /**
+   * An idempotency key, where the broker offers one.
+   *
+   * Never generated by this library, so its absence stays a visible caller decision. Toss honours
+   * one for ten minutes; KIS has none for individual customers and **refuses** a request carrying
+   * this field, before authentication and before any socket write.
+   */
   std::optional<std::string> client_order_id_;
+  /** Acknowledges the broker's high-value-order confirmation, where the broker requires one. */
   bool confirm_high_value_{false};
 };
 
@@ -1133,23 +1215,37 @@ struct OrderRequest {
  * and no amounts at all.
  */
 struct OrderExecution {
+  /** How much has filled so far. Zero on an unfilled order, and never absent. */
   Decimal64 filled_quantity_;
+  /** The volume-weighted fill price, once anything has filled. */
   std::optional<Decimal64> average_filled_price_;
+  /** The cash the fills came to, as the broker computed it. */
   std::optional<Money> filled_amount_;
+  /** Commission charged so far, where the broker reports it per order. */
   std::optional<Money> commission_;
+  /** Transaction tax charged so far, where the broker reports it per order. */
   std::optional<Money> tax_;
+  /** When the most recent fill happened, where the broker timestamps it. */
   std::optional<std::chrono::system_clock::time_point> filled_at_;
+  /** The settlement date the broker stated, kept as a plain date in the broker's own locale. */
   std::optional<Date> settlement_date_;
 };
 
 /** Point-in-time normalized state of one order. */
 struct OrderSnapshot {
+  /** The broker's own order number, as a listing spells it. */
   std::string order_id_;
+  /** What the order is for. Carries the identity venue, never the routing one. */
   InstrumentId instrument_;
+  /** The instrument's display name as the broker spells it. */
   std::string name_;
+  /** Buy or sell. */
   OrderSide side_{OrderSide::BUY};
+  /** The price basis this library read from the broker's code. `UNKNOWN` if it did not recognize it. */
   OrderType type_{OrderType::UNKNOWN};
+  /** The execution condition read from the broker's code. `UNKNOWN` if it did not recognize it. */
   TimeInForce time_in_force_{TimeInForce::UNKNOWN};
+  /** The session read from the broker's code. `UNKNOWN` if it did not recognize it. */
   OrderSession session_{OrderSession::UNKNOWN};
   /**
    * The venue the broker reported this order was routed to, where it reports one.
@@ -1194,8 +1290,11 @@ struct OrderSnapshot {
    * `UNKNOWN` in both cases.
    */
   Code<8> shape_code_;
+  /** Where the order stands. `UNKNOWN` where the broker publishes no status column. */
   OrderStatus status_{OrderStatus::UNKNOWN};
+  /** The limit price, where the order has one. */
   std::optional<Decimal64> price_;
+  /** The quantity ordered. What remains is this less `execution_.filled_quantity_`. */
   Decimal64 quantity_;
   /**
    * The cash amount an amount-based order committed, where the broker reports
@@ -1210,9 +1309,13 @@ struct OrderSnapshot {
    * quantity and be unable to say what the order actually committed.
    */
   std::optional<Decimal64> order_amount_;
+  /** The currency the prices and amounts on this row are in. */
   Currency currency_;
+  /** When the broker recorded the order, where it timestamps one. */
   std::optional<std::chrono::system_clock::time_point> ordered_at_;
+  /** When the order was cancelled, where the broker reports it. */
   std::optional<std::chrono::system_clock::time_point> canceled_at_;
+  /** What has filled, and what it cost. Present always; an unfilled order has zeroes and absences. */
   OrderExecution execution_;
 };
 
@@ -1223,8 +1326,11 @@ struct OrderSnapshot {
  * pass it back unchanged; its content is broker-specific and opaque.
  */
 struct OrderPage {
+  /** This page's rows, in the order the broker returned them. */
   std::vector<OrderSnapshot> orders_;
+  /** Pass back unchanged to continue. Empty means the broker reported no further page. */
   std::optional<std::string> next_cursor_;
+  /** When this page arrived, on this machine's clock. */
   std::chrono::system_clock::time_point received_at_;
 };
 
@@ -1236,8 +1342,11 @@ struct OrderPage {
  * inquiry.
  */
 struct OrderAck {
+  /** The order number the broker assigned. */
   std::string order_id_;
+  /** The idempotency key echoed back, where the broker supports and echoes one. */
   std::optional<std::string> client_order_id_;
+  /** When the acknowledgement arrived. Acceptance, not execution. */
   std::chrono::system_clock::time_point accepted_at_;
 };
 
@@ -1268,7 +1377,9 @@ struct OrderAck {
  */
 template <typename Broker>
 struct OrderRef {
+  /** The order number or identifier. Opaque: stored, compared and hashed, never parsed. */
   std::string primary_;
+  /** The additional part a broker needs, such as KIS's branch code. Empty where it needs none. */
   std::string secondary_;
 
   /** Returns the issuing broker's normalized name, known at compile time. */
@@ -1303,7 +1414,9 @@ struct OrderRef {
  */
 template <typename Broker>
 struct PlacedOrder {
+  /** What the broker said when it accepted the instruction. */
   OrderAck ack_;
+  /** The reference a later modification or cancellation must address. */
   OrderRef<Broker> ref_;
 };
 
@@ -1344,6 +1457,7 @@ struct OrderShape {
    * form would have been the one a careful consumer could not write.
    */
   OrderShape() = default;
+  /** @copydoc OrderShape::OrderShape() */
   OrderShape(
     OrderType type,
     std::optional<Decimal64> price,
@@ -1355,7 +1469,9 @@ struct OrderShape {
     time_in_force_(time_in_force),
     session_(session) {}
 
+  /** The price basis this shape states. */
   OrderType type_{OrderType::LIMIT};
+  /** The price, for a basis that takes one. */
   std::optional<Decimal64> price_;
   /**
    * The execution condition and the session, **unset when the caller did not
@@ -1376,6 +1492,7 @@ struct OrderShape {
    * guess.
    */
   std::optional<TimeInForce> time_in_force_;
+  /** @copydoc OrderShape::time_in_force_ */
   std::optional<OrderSession> session_;
 };
 
@@ -1394,6 +1511,7 @@ struct OrderShape {
  * `replace_with()` fills whatever the bound broker needs from a `WorkingOrder`.
  */
 struct AmendInstruction {
+  /** The shape the order should have after the amendment. */
   OrderShape shape_;
   /**
    * The venue the order lives at, where the broker's amendment endpoint takes
@@ -1406,8 +1524,11 @@ struct AmendInstruction {
    * order rather than leaving a caller to remember.
    */
   Venue venue_{Venue::UNSPECIFIED};
+  /** How much is affected. Required by a broker that validates one; never substituted. */
   std::optional<Decimal64> quantity_;
+  /** Whether the whole remaining quantity is affected rather than `quantity_`. Never inferred. */
   bool all_remaining_{false};
+  /** Acknowledges the broker's high-value confirmation, where the amendment endpoint requires one. */
   bool confirm_high_value_{false};
   /**
    * The shape the order currently has, or nothing when the caller could not say.
@@ -1448,8 +1569,11 @@ struct AmendInstruction {
  */
 template <typename Broker>
 struct WorkingOrder {
+  /** The order's current normalized state. */
   OrderSnapshot order_;
+  /** The reference a modification or cancellation must address. */
   OrderRef<Broker> ref_;
+  /** How much the broker says may still be amended. Empty means it stated none, not zero. */
   std::optional<Decimal64> amendable_quantity_;
   /**
    * Whether this row is a runner's own reservation rather than something the broker reported.
@@ -1474,7 +1598,9 @@ struct WorkingOrder {
 /** Point-in-time set of orders open to modification or cancellation. */
 template <typename Broker>
 struct WorkingOrders {
+  /** Every order open to amendment at the moment of the listing. */
   std::vector<WorkingOrder<Broker>> orders_;
+  /** When the listing arrived, on this machine's clock. */
   std::chrono::system_clock::time_point received_at_;
 };
 
@@ -1487,10 +1613,15 @@ struct WorkingOrders {
  * question from the one asked.
  */
 struct OrderHistoryQuery {
+  /** The first date to include. Required by a broker whose history inquiry takes a range. */
   std::optional<Date> from_;
+  /** The last date to include. */
   std::optional<Date> to_;
+  /** Restrict to one symbol, where the broker can express that filter. */
   std::optional<std::string> symbol_;
+  /** A cursor from a previous page's `next_cursor_`, passed back unchanged. */
   std::optional<std::string> cursor_;
+  /** The maximum number of rows to return, where the broker honours one. */
   std::optional<int> limit_;
 };
 

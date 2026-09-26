@@ -55,6 +55,7 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
   // std::string grant_type = "client_credentials"; // length = 18
   // std::string app_key_; // length = 36
   // std::string app_secret_; // length = 180
+  /** Whether to use KIS's 모의투자 endpoints. Set from `KIS_DEMO=1`. */
   bool is_demo_ = false;
 
   /** Reads KIS credentials and environment selection from process variables. */
@@ -101,20 +102,27 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
     is_demo_ = doc.contains("demo") && doc.at("demo").as_bool();
   }
 
+  /** The JSON field KIS expects the application key under. */
   static constexpr std::string_view key_field() noexcept { return "appkey"; }
 
+  /** The JSON field KIS expects the application secret under. */
   static constexpr std::string_view secret_field() noexcept { return "appsecret"; }
 
+  /** The REST host for the selected environment. */
   const char* rest_host() const noexcept {
     return is_demo_ ? "openapivts.koreainvestment.com" : "openapi.koreainvestment.com";
   }
 
+  /** The REST port for the selected environment. */
   const char* rest_port() const noexcept { return is_demo_ ? "29443" : "9443"; }
 
+  /** The WebSocket host, which is the same for both environments. */
   const char* ws_host() const noexcept { return "ops.koreainvestment.com"; }
 
+  /** The WebSocket port for the selected environment. */
   const char* ws_port() const noexcept { return is_demo_ ? "31000" : "21000"; }
 
+  /** Returns the approval-key request body, which spells the secret `secretkey` rather than `appsecret`. */
   std::string ws_to_jsonbody() const {
     return R"({"grant_type":"client_credentials","appkey":")" + key_ + R"(","secretkey":")" +
       secret_ + R"("})";
@@ -126,10 +134,12 @@ struct KisRest : public network::AuthBody<KisRest> {
   // std::string access_token_; // length = 350
   // // std::string token_type; // length = 20, Bearer
   // int64_t expires_in_; // 10-digits
+  /** KIS's own stated expiry, which overrides the relative `expires_in` when present. */
   std::chrono::system_clock::time_point access_token_expired_; // length = 50, format: "2022-08-30 08:10:10"
 
   KisRest() {}
 
+  /** Reads KIS's absolute expiry out of the token response. */
   void from_json_impl(
     const json::object& doc
   ) {
@@ -148,16 +158,20 @@ struct KisRest : public network::AuthBody<KisRest> {
     }
   }
 
+  /** Returns whether the token is present and not yet expired. */
   bool valid() const noexcept { return network::AuthBody<KisRest>::valid(); }
 };
 
 /** Parsed KIS WebSocket approval key and refresh timestamp. */
 struct KisWebsocket {
+  /** The approval key KIS issued for a WebSocket session. */
   std::string approval_key_; // length = 286
+  /** When it was issued, which is what the refresh window is measured from. */
   std::chrono::system_clock::time_point last_auth_time_;
 
   KisWebsocket() {}
 
+  /** Reads the approval key out of the response, throwing when it is absent. */
   void from_json(
     const json::object& doc
   ) {
@@ -168,6 +182,7 @@ struct KisWebsocket {
     last_auth_time_ = std::chrono::system_clock::now();
   }
 
+  /** Returns whether the key is present and still inside KIS's refresh window. */
   bool valid() const noexcept {
     // https://github.com/koreainvestment/open-trading-api/blob/33e0e1e65cd1c8c8b639531483ec0b327087bab1/examples_user/kis_auth.py#L507
     const auto now = std::chrono::system_clock::now();

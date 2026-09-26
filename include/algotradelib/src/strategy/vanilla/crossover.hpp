@@ -34,16 +34,23 @@ enum class AverageKind {
 
 /** Holds while a fast average leads a slow one. */
 struct MovingAverageCrossover {
+  /** How this strategy is configured. */
   struct Params {
+    /** Which instrument to trade. Bars for anything else are ignored. */
     InstrumentId instrument_;
+    /** The leading window. Must be non-zero and shorter than `slow_`, or the strategy does nothing. */
     std::size_t fast_{20};
+    /** The lagging window. */
     std::size_t slow_{50};
+    /** Which average to use. The two differ only in a decay convention. */
     AverageKind kind_{AverageKind::SIMPLE};
     /** How many shares to hold while the signal is on. */
     Decimal64 quantity_;
+    /** Label carried onto the orders, for attribution. */
     std::string tag_{"ma-crossover"};
   };
 
+  /** The configuration this instance runs under. */
   Params params_;
 
   /**
@@ -54,6 +61,7 @@ struct MovingAverageCrossover {
    */
   std::size_t warmup_bars() const { return params_.slow_ + 1; }
 
+  /** Reads the latest bar and, when the signal says so, states a target position. */
   template <class Ctx>
   void on_bar(Ctx& ctx, const BarEvent& bar) {
     if (!(bar.instrument_ == params_.instrument_)) {
@@ -103,15 +111,19 @@ private:
 
 /** A simple-average crossover, the conventional spelling. */
 struct SmaCrossover {
+  /** The general crossover, with `kind_` pinned to `SIMPLE`. */
   MovingAverageCrossover inner_;
 
+  /** Constructs one from `params`, overriding `kind_`. */
   explicit SmaCrossover(MovingAverageCrossover::Params params = {}) {
     params.kind_ = AverageKind::SIMPLE;
     inner_.params_ = std::move(params);
   }
 
+  /** @copydoc MovingAverageCrossover::warmup_bars() */
   std::size_t warmup_bars() const { return inner_.warmup_bars(); }
 
+  /** Forwards to the general crossover. */
   template <class Ctx>
   void on_bar(Ctx& ctx, const BarEvent& bar) {
     inner_.on_bar(ctx, bar);
@@ -120,15 +132,19 @@ struct SmaCrossover {
 
 /** An exponential-average crossover. */
 struct EmaCrossover {
+  /** The general crossover, with `kind_` pinned to `EXPONENTIAL`. */
   MovingAverageCrossover inner_;
 
+  /** Constructs one from `params`, overriding `kind_`. */
   explicit EmaCrossover(MovingAverageCrossover::Params params = {}) {
     params.kind_ = AverageKind::EXPONENTIAL;
     inner_.params_ = std::move(params);
   }
 
+  /** @copydoc MovingAverageCrossover::warmup_bars() */
   std::size_t warmup_bars() const { return inner_.warmup_bars(); }
 
+  /** Forwards to the general crossover. */
   template <class Ctx>
   void on_bar(Ctx& ctx, const BarEvent& bar) {
     inner_.on_bar(ctx, bar);

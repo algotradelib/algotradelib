@@ -29,7 +29,9 @@ namespace live {
 template <typename Session>
 class SessionExecutor {
 public:
+  /** The bound broker's capability set, forwarded from the session. */
   using Caps = typename Session::Caps;
+  /** The bound broker's tag, forwarded from the session. */
   using BrokerTag = typename Session::BrokerTag;
 
   /**

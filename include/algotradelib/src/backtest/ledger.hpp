@@ -35,11 +35,13 @@ namespace backtest {
  * a dry run read real reference data and a replay did not.
  */
 struct BacktestTag {
+  /** The tag's normalized name, which is what an order reference prints. */
   static constexpr std::string_view name = "backtest";
 };
 
 /** One execution the engine produced, and what it cost. */
 struct Execution {
+  /** The fill itself, in the same shape a strategy receives live. */
   strategy::Fill fill_;
   /** Commission charged, in the instrument's currency. */
   Decimal64 commission_;

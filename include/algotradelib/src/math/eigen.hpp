@@ -94,7 +94,9 @@ inline Matrix unobserved(std::size_t rows, std::size_t columns) {
  * ```
  */
 struct Observed {
+  /** The input with every absent entry replaced by zero, so a plain sum ignores them. */
   Vector values_;
+  /** One for an observed entry and zero for an absent one, so a plain sum counts them. */
   Vector present_;
 };
 

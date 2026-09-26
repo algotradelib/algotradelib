@@ -171,10 +171,15 @@ private:
  * easy, which is why it is computed once here rather than in every strategy.
  */
 struct BarEvent {
+  /** What the bar is for. */
   InstrumentId instrument_;
+  /** The period the bar covers, carried because a `Bar` does not carry it. */
   BarInterval interval_{BarInterval::ONE_DAY};
+  /** Which edge of that period `bar_.timestamp_` marks. */
   BarStamp stamp_{BarStamp::CLOSE};
+  /** The bar itself, always closed. A runner never delivers a forming one. */
   Bar bar_;
+  /** When the period finished: the earliest moment a strategy could legitimately know this bar. */
   std::chrono::system_clock::time_point period_end_{};
 };
 
@@ -230,6 +235,7 @@ inline BarEvent make_bar_event(
 
 /** One quote the runner has just read. */
 struct QuoteEvent {
+  /** The quote as the broker reported it. */
   QuoteSnapshot quote_;
 };
 
@@ -250,12 +256,19 @@ struct QuoteEvent {
  * total is in the portfolio.
  */
 struct Fill {
+  /** The broker's own order id, as a string, so this signature names no broker. */
   std::string order_id_;
+  /** What was traded. */
   InstrumentId instrument_;
+  /** Which way. */
   OrderSide side_{OrderSide::BUY};
+  /** The quantity of *this* execution, not the order's running total. */
   Decimal64 quantity_;
+  /** The price this execution went off at. */
   Decimal64 price_;
+  /** The label the strategy put on the intent that produced the order. */
   std::string tag_;
+  /** When the execution happened. */
   std::chrono::system_clock::time_point at_{};
 };
 

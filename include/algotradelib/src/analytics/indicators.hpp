@@ -187,8 +187,11 @@ inline math::Vector zscore(math::SeriesView values, std::size_t window) {
 
 /** The three lines of a Bollinger band, all on the same rows as the input. */
 struct BollingerBands {
+  /** The trailing mean. */
   math::Vector middle_;
+  /** `middle_` plus `multiplier` sample deviations. */
   math::Vector upper_;
+  /** `middle_` minus `multiplier` sample deviations. */
   math::Vector lower_;
 };
 
@@ -345,8 +348,11 @@ inline math::Vector atr(
 
 /** The three series of a MACD, all on the same rows as the input. */
 struct MacdLines {
+  /** The fast average less the slow one. */
   math::Vector macd_;
+  /** The exponential average of `macd_`. */
   math::Vector signal_;
+  /** `macd_` less `signal_`. */
   math::Vector histogram_;
 };
 
