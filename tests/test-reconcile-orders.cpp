@@ -402,6 +402,13 @@ TEST_CASE("a row whose condition the broker did not report is a candidate, not a
   REQUIRE(match.order_id_.empty());
   // And specifically not an absence, which is the half that was right.
   REQUIRE(match.verdict_ != MatchVerdict::NOT_PLACED);
+  // **Counted once.** The verdict alone cannot tell a correct answer from a
+  // lenient `row_corresponds` that matched this row *and* counted it as
+  // plausible -- both give AMBIGUOUS. The number is what differs, and it is not
+  // cosmetic: the detail string tells an operator how many orders could be this
+  // instruction, and one row reported as two sends them looking for an order
+  // that does not exist. A surviving mutation found this.
+  REQUIRE(match.candidates_ == 1);
 
   // A row that does report them still resolves, so this is about the silence.
   auto reported = row("KRX-2");
