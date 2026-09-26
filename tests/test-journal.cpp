@@ -835,6 +835,29 @@ TEST_CASE("a torn line's wrong-typed prefix field is damage, not an absent one",
   REQUIRE(ordinary->requires_operator_);
   REQUIRE(ordinary->instrument_.symbol_ == "005930");
   REQUIRE(ordinary->instrument_.country_ == Country::KR);
+
+  // **And a key whose value the truncation cut off mid-write is the ordinary
+  // shape of a torn line, not damage.** The first version of this check asked
+  // only whether the key was *mentioned*, which made every fragment's own last
+  // field look damaged and turned every torn line into a global halt. The comma
+  // is the tell: a value followed by one finished being written, so failing to
+  // read it is damage; a value with nothing after it is where the writer
+  // stopped.
+  const auto cut_mid_value = R"({"id":"run-3","action":"place","outcome":"pending",)"
+                             R"("country":"KR","venue":"COMBINED","symbol":"005930","side":"BU)";
+  const auto cut = runner::salvage_journal_line(cut_mid_value);
+  REQUIRE(cut.has_value());
+  REQUIRE(cut->requires_operator_);
+  REQUIRE(cut->instrument_.symbol_ == "005930");
+  REQUIRE(cut->side_ == OrderSide::BUY);
+
+  // The same key, written to completion and unreadable, is still damage.
+  const auto completed = R"({"id":"run-4","action":"place","outcome":"pending",)"
+                         R"("country":"KR","venue":"COMBINED","side":null,)"
+                         R"("symbol":"005930","quan)";
+  const auto damaged_side = runner::salvage_journal_line(completed);
+  REQUIRE(damaged_side.has_value());
+  REQUIRE(damaged_side->instrument_.symbol_.empty());
 }
 
 TEST_CASE("a truncated line with a damaged value is unattributable too", "[journal]") {

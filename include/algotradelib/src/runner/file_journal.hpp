@@ -742,19 +742,33 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
  *   can lose money, which is the same asymmetry `outcome_of` is built on.
  */
 /**
- * Returns whether `line` mentions `key` at all, however its value is written.
+ * Returns whether `line` carries `key` with a value that *finished being
+ * written* and still could not be read.
  *
- * `salvage_string` recognizes only `"key":"value"`, so it answers nothing for a
- * key whose value is `null`, a number or a bare token -- indistinguishable, to
- * its caller, from a key the truncation removed. That difference decides
- * whether a default is a fact about a torn line or a guess about a damaged one:
- * a fragment reading `"country":null,"venue":"COMBINED","symbol":"AAPL"` was
+ * Three states, and a torn line has all three. `salvage_string` recognizes only
+ * `"key":"value"`, so it answers nothing both for a key whose value is `null`,
+ * a number or a bare token -- **damage** -- and for one the truncation cut off
+ * -- **expected**. Telling them apart is what decides whether a default is a
+ * fact about a torn line or a guess about a damaged one.
+ *
+ * A fragment reading `"country":null,"venue":"COMBINED","symbol":"AAPL"` was
  * salvaged as a *Korean* instrument, marked operator-only on that guessed key,
- * and left the real US instrument free to trade.
+ * and left the real US instrument free to trade. But the first version of this
+ * asked only whether the key was *mentioned*, which made the fragment's own
+ * half-written final field -- the ordinary shape of truncation -- look like
+ * damage too, and turned every torn line into a global halt.
+ *
+ * The comma is the tell: a value followed by one was written to completion, so
+ * failing to read it is damage. A value with nothing after it is where the
+ * writer stopped.
  */
-inline bool salvage_mentions(std::string_view line, std::string_view key) {
+inline bool salvage_damaged(std::string_view line, std::string_view key) {
   const std::string needle = "\"" + std::string(key) + "\":";
-  return line.find(needle) != std::string_view::npos;
+  const auto at = line.find(needle);
+  if (at == std::string_view::npos) {
+    return false;
+  }
+  return line.find(',', at + needle.size()) != std::string_view::npos;
 }
 
 inline std::optional<JournalEntry> salvage_journal_line(std::string_view line) {
@@ -791,7 +805,7 @@ inline std::optional<JournalEntry> salvage_journal_line(std::string_view line) {
     if (text) {
       return std::optional<std::string>(*text);
     }
-    return salvage_mentions(line, key) ? std::optional<std::string>()
+    return salvage_damaged(line, key) ? std::optional<std::string>()
                                                        : std::optional<std::string>(fallback);
   };
   const auto parsed = [&salvaged](std::string_view key, const char* fallback, auto reader) {
