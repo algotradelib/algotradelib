@@ -11,39 +11,57 @@ against either broker without being rewritten. Selecting a broker is choosing a 
 
 ```mermaid
 graph TD
-  S["<b>your strategy</b><br/>a struct with template handlers<br/><i>no I/O, no session, no broker</i>"]
+  You["<b>your strategy</b><br/><i>no I/O, no session, no broker</i>"]
 
-  R["<b>Runner</b><br/>dispatch · reconcile against the portfolio<br/>· risk limits · order safety · journal"]
+  subgraph SA["strategy and analytics"]
+    StrategyCore["<b>strategy</b><br/>events · intents · portfolio · risk"]
+    Vanilla["<b>vanilla</b><br/>buy_and_hold · crossover · reversion"]
+    Analytics["<b>analytics</b><br/>indicators · metrics · rolling · frames"]
+  end
 
-  D["<b>DryRunner</b><br/>records what it<br/>would have sent"]
-  B["<b>Backtester</b><br/>replay clock, fill and<br/>cost models, report"]
-  L["<b>LiveRunner</b> + <b>PollingLoop</b><br/>cadence, stops, staleness<br/>and recovery gates"]
+  subgraph EX["execution"]
+    Runner["<b>runner</b><br/>context · dispatch · journal · stops"]
+    Dry["<b>DryRunner</b><br/>records, sends nothing"]
+    Backtest["<b>backtest</b><br/>clock · fill · cost · ledger · report"]
+    Live["<b>live</b><br/>session_executor · session_source · PollingLoop"]
+  end
 
-  P["<b>BrokerSession&lt;Client&gt;</b><br/>one verb set, no vendor type<br/><i>bound by a BrokerTraits specialization</i>"]
-  A["<b>KIS</b> · <b>Toss</b> adapters<br/>+ HTTPS transport, OAuth, rate-limit pacer"]
-  X(("broker"))
+  subgraph INF["infrastructure and brokers"]
+    Brokers["<b>broker port</b><br/>BrokerTraits · BrokerCaps · BrokerSession"]
+    KIS["KIS adapter"]
+    Toss["Toss adapter"]
+    Core["<b>core</b><br/>Decimal64 · instrument · market_data · calendar"]
+    Math["<b>math</b><br/>Scalar · eigen · matrix"]
+    Network["<b>network</b><br/>http_client · ws_session · oauth · rate_limit"]
+  end
 
-  C["<b>core</b> — Decimal64, Money, InstrumentId, bars, calendar, Result, BrokerError"]
-  N["<b>analytics</b> — frames, rolling windows, indicators, metrics <i>(optional backend)</i>"]
+  Venue(("KIS / Toss"))
 
-  S --> R
-  R --> D
-  R --> B
-  R --> L
-  L --> P
-  P --> A
-  A --> X
-  R -.-> C
-  B -.-> N
-  N -.-> C
-  P -.-> C
+  You --> StrategyCore
+  Vanilla --> StrategyCore
+  StrategyCore --> Core
+  StrategyCore --> Runner
+  Runner --> Dry
+  Runner --> Backtest
+  Runner --> Live
+  Backtest --> Analytics
+  Analytics --> Math
+  Analytics --> Core
+  Live --> Brokers
+  KIS --> Brokers
+  Toss --> Brokers
+  Brokers --> Core
+  Brokers --> Network
+  KIS --> Network
+  Toss --> Network
+  Network --> Venue
 
   classDef pure fill:#e8f4ea,stroke:#4a7a55,color:#123
   classDef io fill:#fdeee6,stroke:#a4663c,color:#123
   classDef you fill:#e7eefc,stroke:#3f5f9e,color:#123
-  class S you
-  class R,D,B,C,N pure
-  class L,P,A io
+  class You you
+  class StrategyCore,Vanilla,Analytics,Runner,Dry,Backtest,Core,Math pure
+  class Live,Brokers,KIS,Toss,Network io
 ```
 
 Green reaches no transport header and instantiates no adapter or TLS code — asserted at compile
@@ -76,15 +94,9 @@ what happened.
 
 **Boost and OpenSSL are required even for a backtest that touches no network.** The library exports
 one interface target for every consumer, so an offline program still links `libssl`, `libcrypto` and
-`boost_json`. That is measured, not assumed — `otool -L` on a dry-run binary shows them. What is
-genuinely true is the narrower claim above: a dry run or a replay instantiates no adapter and no
-transport code, asserted at compile time by `tests/test-runner-isolation.cpp`.
-
-On macOS with Homebrew:
-
-```sh
-brew install boost openssl@3 eigen cmake
-```
+`boost_json`. That is measured, not assumed — inspecting a dry-run binary's dynamic dependencies
+shows them. What is genuinely true is the narrower claim above: a dry run or a replay instantiates
+no adapter and no transport code, asserted at compile time by `tests/test-runner-isolation.cpp`.
 
 ## Install
 
@@ -261,16 +273,3 @@ The [user guide](doxygen/vignettes/guide.md) is eleven pages in the order they a
 | 9 | [The broker port](doxygen/vignettes/the-broker-port.md) | `BrokerTraits`, `BrokerCaps`, order identity — read this to add a broker |
 | 10 | [Talking to a broker directly](doxygen/vignettes/broker-clients.md) | the KIS and Toss clients, and the order-safety rules |
 | 11 | [Transport and request pacing](doxygen/vignettes/transport-and-pacing.md) | the pacer, the traffic classes, how each broker reports a refusal |
-
-### Building the API reference
-
-The same pages, plus the generated reference and its call, include and collaboration graphs:
-
-```sh
-brew install doxygen graphviz      # or your platform's equivalent
-doxygen doxygen/Doxyfile           # from the repository root
-open doxygen/docs/html/index.html
-```
-
-Run it from the repository root — `doxygen/Doxyfile` uses paths relative to it. Graphviz is optional;
-without `dot` on the path, set `HAVE_DOT = NO` and everything but the graphs still builds.
