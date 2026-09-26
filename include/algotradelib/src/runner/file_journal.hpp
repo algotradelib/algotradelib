@@ -73,9 +73,6 @@ inline std::string string_field(const json::object& row, std::string_view key) {
  * enumerator order. An enum's numeric value is an implementation detail that a reordering may
  * change; a file written by yesterday's build has to be readable by today's.
  */
-inline Country country_from(std::string_view text) noexcept {
-  return text == "US" ? Country::US : Country::KR;
-}
 
 /** Returns a stable name for `country`, as written to the journal. */
 inline constexpr std::string_view country_name(Country country) noexcept {
@@ -124,29 +121,12 @@ inline std::optional<Venue> known_venue_from(std::string_view text) noexcept {
   return std::nullopt;
 }
 
-/** Returns the venue `text` names, defaulting to `UNSPECIFIED`. */
-inline Venue venue_from(std::string_view text) noexcept {
-  if (text == "KRX") {
-    return Venue::KRX;
-  }
-  if (text == "NXT") {
-    return Venue::NXT;
-  }
-  if (text == "COMBINED") {
-    return Venue::COMBINED;
-  }
-  return Venue::UNSPECIFIED;
-}
 
 /** Returns a stable name for `side`, as written to the journal. */
 inline constexpr std::string_view side_name(OrderSide side) noexcept {
   return side == OrderSide::SELL ? "SELL" : "BUY";
 }
 
-/** Returns the side `text` names, defaulting to `BUY`. */
-inline OrderSide side_from(std::string_view text) noexcept {
-  return text == "SELL" ? OrderSide::SELL : OrderSide::BUY;
-}
 
 /**
  * Returns a stable name for `type`, as written to the journal.
@@ -651,24 +631,47 @@ inline std::optional<JournalEntry> salvage_journal_line(std::string_view line) {
     journal_action_from(journal_detail::salvage_string(line, "action").value_or("place"))
       .value_or(JournalAction::PLACE);
   entry.outcome_ = JournalOutcome::PENDING;
-  entry.instrument_ = InstrumentId{
-    journal_detail::country_from(journal_detail::salvage_string(line, "country").value_or("KR")),
-    journal_detail::venue_from(
-      journal_detail::salvage_string(line, "venue").value_or("UNSPECIFIED")
-    ),
-    *symbol,
-  };
-  entry.side_ =
-    journal_detail::side_from(journal_detail::salvage_string(line, "side").value_or("BUY"));
-  entry.type_ = journal_detail::order_type_from(
+  // **Absent is a default; present and unreadable is damage** -- the same rule
+  // the strict reader follows, and for the same reason. A truncated line is
+  // missing its *tail*, so an absent field is expected and its default is a fact
+  // about what the line could have said. A field that is there and cannot be
+  // read is corruption in the middle, and guessing it hands this entry a
+  // different instrument than the order had: `requires_operator_` would then
+  // withhold a key the runner is not trading under, while the real one stays
+  // open. Such a line becomes unattributable instead, carrying no instrument at
+  // all, which recovery turns into a global halt.
+  const auto country = journal_detail::known_country_from(
+    journal_detail::salvage_string(line, "country").value_or("KR")
+  );
+  const auto venue = journal_detail::known_venue_from(
+    journal_detail::salvage_string(line, "venue").value_or("UNSPECIFIED")
+  );
+  const auto side = journal_detail::known_side_from(
+    journal_detail::salvage_string(line, "side").value_or("BUY")
+  );
+  const auto type = journal_detail::known_order_type_from(
     journal_detail::salvage_string(line, "type").value_or("UNKNOWN")
   );
-  entry.time_in_force_ = journal_detail::time_in_force_from(
+  const auto condition = journal_detail::known_time_in_force_from(
     journal_detail::salvage_string(line, "time_in_force").value_or("DAY")
   );
-  entry.session_ = journal_detail::order_session_from(
+  const auto session = journal_detail::known_order_session_from(
     journal_detail::salvage_string(line, "session").value_or("REGULAR")
   );
+  if (!country || !venue || !side || !type || !condition || !session) {
+    auto unattributable = unattributable_journal_entry(line);
+    unattributable.id_ = entry.id_;
+    unattributable.detail_ =
+      "a truncated journal line carries a value this release cannot read, so the order it "
+      "describes cannot be identified; nothing may be traded until an operator resolves it: " +
+      std::string(line.substr(0, line.size() < 160 ? line.size() : 160));
+    return unattributable;
+  }
+  entry.instrument_ = InstrumentId{*country, *venue, *symbol};
+  entry.side_ = *side;
+  entry.type_ = *type;
+  entry.time_in_force_ = *condition;
+  entry.session_ = *session;
   entry.venue_ = journal_detail::known_venue_from(
     journal_detail::salvage_string(line, "route").value_or("")
   );

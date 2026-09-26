@@ -767,6 +767,42 @@ TEST_CASE("a damaged value makes a line unattributable, not a different order", 
   REQUIRE_FALSE(intact->requires_operator_);
 }
 
+TEST_CASE("a truncated line with a damaged value is unattributable too", "[journal]") {
+  // The salvage path had the same hole as the strict reader, and this branch
+  // found it by looking for the rest of the pattern rather than waiting to be
+  // told. A truncated line is missing its *tail*, so an absent field is
+  // expected and its default is a fact about such a line. A field that is
+  // present and unreadable is corruption in the middle, and guessing it hands
+  // the entry a different instrument -- `requires_operator_` then withholds a
+  // key the runner is not trading under while the real one stays open.
+  const auto truncate_after = [](std::string_view field) {
+    auto line = runner::journal_entry_to_line(sample_entry());
+    const auto at = line.find(std::string("\"") + std::string(field) + "\":");
+    REQUIRE(at != std::string::npos);
+    const auto end = line.find(',', at);
+    REQUIRE(end != std::string::npos);
+    return line.substr(0, end);
+  };
+
+  // A genuinely truncated line still salvages, with the instrument it names.
+  const auto truncated = runner::journal_entry_from_line(truncate_after("quantity"));
+  REQUIRE_FALSE(truncated.has_value());
+  const auto salvaged = runner::salvage_journal_line(truncate_after("quantity"));
+  REQUIRE(salvaged.has_value());
+  REQUIRE(salvaged->requires_operator_);
+  REQUIRE(salvaged->instrument_.symbol_ == sample_entry().instrument_.symbol_);
+
+  // The same truncation with a damaged country carries no instrument at all.
+  auto damaged = truncate_after("quantity");
+  const auto at = damaged.find("\"country\":\"KR\"");
+  REQUIRE(at != std::string::npos);
+  damaged.replace(at, std::string("\"country\":\"KR\"").size(), "\"country\":\"K?\"");
+  const auto unattributable = runner::salvage_journal_line(damaged);
+  REQUIRE(unattributable.has_value());
+  REQUIRE(unattributable->requires_operator_);
+  REQUIRE(unattributable->instrument_.symbol_.empty());
+}
+
 TEST_CASE("an absent shape key keeps its documented default", "[journal]") {
   // The other half of the same rule: a line that predates a field has no key
   // for it, and the default is then a fact about what such a line could have
