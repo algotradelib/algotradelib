@@ -72,13 +72,6 @@ public:
   LimitFillPrice limit_price() const noexcept { return limit_price_; }
 
   /**
-   * Decides `order` against `next`, the bar after the one that produced it.
-   *
-   * @param order the queued instruction
-   * @param next the bar to fill against; never the bar the order was decided on
-   * @param rule the instrument's price grid, for the tick component of slippage
-   */
-  /**
    * Returns whether an unfilled order stays queued for a later bar.
    *
    * Resting is a property of the *condition*, not of the basis: an
@@ -103,6 +96,13 @@ public:
     return order.type_ == OrderType::LIMIT;
   }
 
+  /**
+   * Decides `order` against `next`, the bar after the one that produced it.
+   *
+   * @param order the queued instruction
+   * @param next the bar to fill against; never the bar the order was decided on
+   * @param rule the instrument's price grid, for the tick component of slippage
+   */
   FillDecision decide(
     const strategy::PlannedOrder& order,
     const strategy::BarEvent& next,
