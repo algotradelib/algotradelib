@@ -709,7 +709,7 @@ struct HoldingPosition {
   Money purchase_value_;
   /** Current value, as the broker computed it. */
   Money market_value_;
-  /** `market_value_ - purchase_value_`, as the broker computed it. */
+  /** Unrealized profit and loss on the position, as the broker reported it. */
   Money unrealized_profit_loss_;
   /** The broker's own return figure, as a fraction rather than a percentage. */
   Decimal64 unrealized_return_;
@@ -719,11 +719,16 @@ struct HoldingPosition {
 struct HoldingsTotals {
   /** The currency these totals are in. There is one row per currency and no conversion. */
   Currency currency_;
-  /** Total cost basis across every position in `currency_`. */
+  /**
+   * The broker's own cost-basis total for `currency_`.
+   *
+   * Read from the broker's summary row, **not** summed from `positions_`. The two need not agree:
+   * a paged holdings inquiry can return part of the positions beside an account-wide summary.
+   */
   Decimal64 purchase_value_;
-  /** Total current value across every position in `currency_`. */
+  /** The broker's own market-value total for `currency_`. Read from its summary, as above. */
   Decimal64 market_value_;
-  /** `market_value_ - purchase_value_` for `currency_`. */
+  /** The broker's own unrealized profit and loss for `currency_`. Read from its summary, as above. */
   Decimal64 unrealized_profit_loss_;
 };
 

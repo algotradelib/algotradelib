@@ -39,7 +39,7 @@ graph TD
   ST --> CO
   RU --> ST
   BT --> RU
-  BT --> AN
+  BT -. "with a backend" .-> AN
   LV --> RU
   LV --> BR
   AN --> MA
@@ -76,9 +76,12 @@ Two other edges are worth reading off the picture:
 - **`<core>` does not include `<network>`.** `BrokerSession` does, which is why it ships under
   `<algotradelib/broker>` rather than being reachable from the value types. A program that only
   parses bars links no transport.
-- **`<analytics>` is the only layer that needs a linear-algebra backend**, and it is optional. With
-  `ATL_USE_EIGEN=OFF` that header is a deliberate `#error` naming the option; everything above the
-  line still builds.
+- **`<analytics>` is the only layer that *implements* against a linear-algebra backend**, and it is
+  optional — but turning it off reaches further than that one box. With `ATL_USE_EIGEN=OFF`,
+  `<algotradelib/analytics>` is a deliberate `#error` naming the option, `backtest::summarize` and
+  `backtest::Report` are gone, and `<algotradelib/vanilla>` ships only `BuyAndHold` and
+  `TimedLiquidation`, because every other vanilla computes an indicator. The replay engine itself
+  still runs, so such a build can execute a strategy; it cannot score one.
 
 ## The dependency rule, and the rule underneath it
 
@@ -168,13 +171,14 @@ sequenceDiagram
   Run->>Jrn: append the outcome
 ```
 
-Step 12 is the one the rest of the library is arranged around. A POST that fails **in transit** is
+The executor's answer — `ACCEPTED`, `REJECTED` or `INDETERMINATE` — is the step the rest of the
+library is arranged around. A POST that fails **in transit** is
 not a failure — it is an *unknown*, because the order may or may not have reached the broker. The
 runner never retries it. It marks the instrument in the indeterminacy ledger and withholds everything
 further for that instrument until the broker's own order list has been read, because a retry is
 exactly what doubles a position.
 
-Step 8 is why the journal exists. The record is appended, flushed and `fsync`ed **before** the send
+The `append + fsync` before the send is why the journal exists. The record is appended, flushed and `fsync`ed **before** the send
 is attempted, so it exists during the exact window in which the process may vanish. An in-memory
 ledger cannot survive a `SIGKILL`, and an empty ledger after a restart means *nothing is remembered*,
 not that nothing is owed.
