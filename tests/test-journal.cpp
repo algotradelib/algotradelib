@@ -1698,6 +1698,71 @@ TEST_CASE("a torn line naming nothing halts the runner outright", "[journal][fil
   REQUIRE(dry.ledger().empty());
 }
 
+TEST_CASE(
+  "a cancellation of a market order the broker priced survives writer to reader",
+  "[journal][file][reconcile]"
+) {
+  // Codex round 7's blocker, as the path it actually travels rather than as a hand-built
+  // `OpenInstruction`. Round 7 asked for this distinction explicitly and the first fix did not
+  // supply it: the direct test shows the matcher tolerates a price-inconsistent cancellation, but
+  // only this one shows such a line is *written* in the first place, accepted by the reader, and
+  // still resolvable. Without it the guard could be protecting a case that never occurs.
+  //
+  // `JournalingExecutor::cancel` copies `type_` and `price_` straight off the working order, and a
+  // working order is read back from the broker -- so a `MARKET` order the broker reports a price
+  // for puts an inconsistency in the line with nothing wrong anywhere. The cancellation is matched
+  // on `order_id_` alone, so that inconsistency is not evidence about anything.
+  const TempJournal path("cancel-priced-market");
+
+  auto working = resting("KRX-1");
+  working.order_.type_ = OrderType::MARKET;
+  working.order_.price_ = Decimal64::parse("70000");
+
+  {
+    runner::FileJournal journal(path.str(), "test:account");
+    REQUIRE(journal.open());
+    ObservingExecutor<runner::DryTag> inner;
+    inner.cancel_outcome_ = SendOutcome::INDETERMINATE;
+    runner::JournalingExecutor<ObservingExecutor<runner::DryTag>, runner::FileJournal,
+      runner::ManualClock>
+      executor{inner, journal, runner::ManualClock{utc(2026, 3, 30, 1, 0)}};
+    // No answer came back, which is what leaves the instruction open across the restart.
+    REQUIRE(executor.cancel(working) == SendOutcome::INDETERMINATE);
+  }
+
+  // A new process, reading the file its predecessor wrote.
+  const auto replay = runner::read_journal_file(path.str());
+  REQUIRE(replay.intact());
+  const auto open = runner::unresolved_instructions(replay);
+  REQUIRE(open.size() == 1);
+  REQUIRE(open.front().entry_.action_ == runner::JournalAction::CANCEL);
+  // The reader kept both, so the inconsistency really is present at the matcher.
+  REQUIRE(open.front().entry_.type_ == OrderType::MARKET);
+  REQUIRE(open.front().entry_.price_.has_value());
+  REQUIRE(open.front().entry_.order_id_ == "KRX-1");
+
+  const auto now = utc(2026, 3, 30, 1, 10);
+
+  OrderSnapshot listed;
+  listed.order_id_ = "KRX-1";
+  listed.instrument_ = samsung();
+  listed.side_ = OrderSide::BUY;
+  listed.type_ = OrderType::MARKET;
+  listed.time_in_force_ = TimeInForce::DAY;
+  listed.session_ = OrderSession::REGULAR;
+  listed.status_ = OrderStatus::PENDING;
+  listed.quantity_ = Decimal64::parse("10");
+  listed.price_ = Decimal64::parse("70000");
+
+  // Present: the named order is still there, so the cancellation did not take.
+  REQUIRE(runner::match_against(open.front(), {listed}, now).verdict_ ==
+    runner::MatchVerdict::MATCHED);
+  // Absent, past the window: it is gone, and the instrument may trade again. Before the fix both
+  // of these were NEEDS_OPERATOR and the instrument was withheld for ever.
+  REQUIRE(runner::match_against(open.front(), {}, now).verdict_ ==
+    runner::MatchVerdict::NOT_PLACED);
+}
+
 // ---------------------------------------------------------------------------
 // One journal, one account
 // ---------------------------------------------------------------------------
