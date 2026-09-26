@@ -169,12 +169,30 @@ TEST_CASE("recovery tells two orders apart by the venue each was routed to") {
         MatchVerdict::NOT_PLACED
     );
 
-    // And a row that differs on an attribute the route does not touch is not a
-    // plausible row either, so it does not withhold.
-    auto different = row("KRX-9", samsung(), "999");
+    // And a row that differs on an attribute the unknown route does not hide is
+    // not a plausible row either, so it does not withhold. The quantity is
+    // compared whatever the shape says, so it proves nothing about the guard --
+    // these differ only in the *price* and the *basis*, which are readable here
+    // and are exactly what a row with an unreadable shape would have lost.
+    auto repriced = row("KRX-9", samsung(), "10", "71000");
     REQUIRE(
-      runner::match_against(legacy, {different}, after_the_window()).verdict_ ==
+      runner::match_against(legacy, {repriced}, after_the_window()).verdict_ ==
         MatchVerdict::NOT_PLACED
+    );
+
+    auto other_basis = row("KRX-8");
+    other_basis.type_ = OrderType::MARKET;
+    other_basis.price_.reset();
+    REQUIRE(
+      runner::match_against(legacy, {other_basis}, after_the_window()).verdict_ ==
+        MatchVerdict::NOT_PLACED
+    );
+
+    // A row differing in neither still withholds, so the two above are about the
+    // attributes they name rather than about the legacy line.
+    REQUIRE(
+      runner::match_against(legacy, {row("KRX-7")}, after_the_window()).verdict_ ==
+        MatchVerdict::AMBIGUOUS
     );
   }
 
