@@ -849,7 +849,16 @@ struct BuyingPower {
  * stated, so they are kept as plain dates.
  */
 struct Date {
-  /** The four-digit year. */
+  /**
+   * The four-digit year.
+   *
+   * **A `Date` parsed from a broker string is not proof the broker sent that date.** Both adapters
+   * split a fixed-width field and hand each part to `std::stoi`, which accepts a numeric prefix and
+   * ignores the rest: `std::stoi("2x")` is `2`. So KIS's `2026092x` and Toss's `2026-09-2x` both
+   * become 2026-09-02, a real date that is not the one on the wire. A field with no leading digit
+   * throws instead, and an impossible day yields empty where the caller holds an optional. Three
+   * outcomes, and only two of them are visible.
+   */
   int year_{0};
   /** The month, `1`-`12`. Zero means unset. */
   unsigned month_{0};
@@ -964,10 +973,12 @@ struct CommissionRate {
   /**
    * The first date the rate applies on. Empty is open-ended, and deliberately not "today".
    *
-   * **Empty has a second source.** Toss's `optional_calendar_date` also yields empty for a date
-   * that is present but malformed -- wrong length, wrong separators, or not a real calendar day --
-   * and `parse_commissions` keeps the row. `applies_on` then treats the bound as unbounded, so a
-   * damaged `endDate` can make an expired rate read as current.
+   * **Empty has a second source, and a damaged bound has a third outcome.** Toss's
+   * `optional_calendar_date` yields empty for a date that is present but malformed -- wrong length,
+   * wrong separators, or not a real calendar day -- and `parse_commissions` keeps the row.
+   * `applies_on` then treats the bound as unbounded, so a damaged `endDate` can make an expired
+   * rate read as current. A bound that parses to a *different* date instead, by the numeric-prefix
+   * rule on `Date::year_`, silently moves the window rather than removing it.
    */
   std::optional<Date> from_;
   /** The last date the rate applies on. Empty means no scheduled change -- or, as above, a bound that could not be read. */

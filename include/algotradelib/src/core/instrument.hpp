@@ -371,8 +371,11 @@ struct Instrument {
    * Empty also covers a date that was present and unreadable -- a published date can look absent.
    * KIS's `compact_date_field` wants eight characters forming a real day and Toss's
    * `optional_calendar_date` wants `YYYY-MM-DD`; a wrong length, a wrong separator or an impossible
-   * day yields empty rather than failing the row. It is not true of *every* malformation, though:
-   * non-numeric text of the right length throws out of the parse instead, failing the request.
+   * day yields empty rather than failing the row.
+   *
+   * Empty is not the only way a malformed date goes wrong, though. See the caveat on `Date::year_`:
+   * a numeric prefix with trailing junk parses to a different real date, and a part with no leading
+   * digit throws and fails the request.
    */
   std::optional<Date> listed_on_;
   /** The delisting date, where one exists and the broker publishes it. Empty as for `listed_on_`. */

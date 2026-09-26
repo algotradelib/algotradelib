@@ -20,7 +20,14 @@ namespace algotradelib {
  * itself directs callers to use.
  */
 struct TradingDay {
-  /** The calendar date, in the broker's own locale. */
+  /**
+   * The calendar date, in the broker's own locale.
+   *
+   * Toss builds it with `parse_calendar_date`, so the caveat on `Date::year_` applies and matters
+   * more here than anywhere else it does: `is_trading_day` is what decides whether a strategy may
+   * place an order, and a row whose date silently parsed to a different day answers for that day
+   * instead. An unparseable date fails the calendar request rather than producing a row.
+   */
   Date date_{};
   /** Whether the market opens on it. Not a banking or settlement day; see above. */
   bool open_{false};
