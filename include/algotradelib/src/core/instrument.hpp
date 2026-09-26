@@ -374,8 +374,9 @@ struct Instrument {
    * day yields empty rather than failing the row.
    *
    * Empty is not the only way a malformed date goes wrong, though. See the caveat on `Date::year_`:
-   * a numeric prefix with trailing junk parses to a different real date, and a part with no leading
-   * digit throws and fails the request.
+   * a component carrying a numeric prefix can produce a *different but valid* date, which arrives
+   * here looking like an ordinary answer -- or empty, if the value it produced is an impossible
+   * day. Only a component with no convertible number at all fails the request.
    */
   std::optional<Date> listed_on_;
   /** The delisting date, where one exists and the broker publishes it. Empty as for `listed_on_`. */
