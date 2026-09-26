@@ -354,6 +354,15 @@ struct Capabilities {
 template <>
 struct BrokerTraits<tossinvest::TossClient>
 : tossinvest::traits_detail::Normalizers, tossinvest::traits_detail::Capabilities {
+  /**
+   * Toss routes nowhere, so an order reaches no particular venue.
+   *
+   * Not a gap: its listings carry no venue and never could, so `UNSPECIFIED` is
+   * the truth about a Toss order rather than an unrecorded fact, and recovery
+   * matches such an instruction on its other attributes.
+   */
+  static constexpr Venue effective_route(Venue) noexcept { return Venue::UNSPECIFIED; }
+
   /** Concrete client this specialization adapts. */
   using Client = tossinvest::TossClient;
 
@@ -539,6 +548,15 @@ struct BrokerTraits<tossinvest::TossClient>
 template <>
 struct BrokerTraits<tossinvest::TossBlockingClient>
 : tossinvest::traits_detail::Normalizers, tossinvest::traits_detail::Capabilities {
+  /**
+   * Toss routes nowhere, so an order reaches no particular venue.
+   *
+   * Not a gap: its listings carry no venue and never could, so `UNSPECIFIED` is
+   * the truth about a Toss order rather than an unrecorded fact, and recovery
+   * matches such an instruction on its other attributes.
+   */
+  static constexpr Venue effective_route(Venue) noexcept { return Venue::UNSPECIFIED; }
+
   /** Concrete client this specialization adapts. */
   using Client = tossinvest::TossBlockingClient;
 

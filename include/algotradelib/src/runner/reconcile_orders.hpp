@@ -477,11 +477,16 @@ inline OrderMatch match_against(
     match.verdict_ = MatchVerdict::AMBIGUOUS;
     match.candidates_ += unreadable;
     match.order_id_.clear();
+    // Says which it is. An operator reading "unrecognized order code" about a
+    // row whose code was perfectly readable, and whose *route* was the unknown,
+    // is being sent to look at the wrong field.
     match.detail_ = std::to_string(unreadable) +
       " order(s) in the broker's listing match this instruction on instrument, side, quantity "
-      "and time but carry an order code this library does not recognize" +
+      "and time, but this library cannot confirm which order they are: an order code it does "
+      "not recognize, a route nobody recorded, or both" +
       (found != nullptr ? ", and another row matches it fully" : "") +
-      "; nothing was resolved. The broker's own code is on each row as shape_code_";
+      "; nothing was resolved. Each row carries the broker's own code as shape_code_ and its "
+      "venue as venue_";
     return match;
   }
   if (match.candidates_ == 1) {

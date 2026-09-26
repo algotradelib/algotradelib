@@ -474,6 +474,43 @@ TEST_CASE("a journal entry stamps the clock the runner reads", "[journal]") {
   REQUIRE(journal.records().front().recorded_at_ == utc(2026, 3, 30, 1, 0));
 }
 
+TEST_CASE("a journal line records where the order goes, not what it asked", "[journal]") {
+  // The default strategy order asks for nothing, and at KIS it still reaches
+  // KRX. Recording the request would put "no venue was reached" in the line, and
+  // recovery confirms a row from any venue against that -- so a lone NXT
+  // lookalike could be attributed to an order that went to KRX.
+  //
+  // The binding is asked before the durable line is written, which keeps the
+  // ordering `ai/order-journal` chose: `effective_route` is a pure function of
+  // the order, so nothing has been sent when the line lands.
+  struct RoutingExecutor : ObservingExecutor<runner::DryTag> {
+    using ObservingExecutor<runner::DryTag>::ObservingExecutor;
+    Venue effective_route(Venue asked) const noexcept {
+      return asked == Venue::UNSPECIFIED ? Venue::KRX : asked;
+    }
+  };
+
+  MemoryJournal journal;
+  runner::JournalingExecutor<RoutingExecutor, MemoryJournal, runner::ManualClock>
+    executor{RoutingExecutor{&journal}, journal, runner::ManualClock{}};
+
+  auto order = buy_ten();
+  REQUIRE(order.venue_ == Venue::UNSPECIFIED);
+  executor.place(order);
+
+  REQUIRE_FALSE(journal.records().empty());
+  REQUIRE(journal.records().front().venue_ == std::optional<Venue>(Venue::KRX));
+
+  // An explicit route is recorded as itself rather than re-resolved.
+  MemoryJournal second;
+  runner::JournalingExecutor<RoutingExecutor, MemoryJournal, runner::ManualClock>
+    routed{RoutingExecutor{&second}, second, runner::ManualClock{}};
+  auto to_nxt = buy_ten();
+  to_nxt.venue_ = Venue::NXT;
+  routed.place(to_nxt);
+  REQUIRE(second.records().front().venue_ == std::optional<Venue>(Venue::NXT));
+}
+
 TEST_CASE("a journal line records the venue the order was routed to", "[journal]") {
   // **Through `JournalingExecutor::place`, not by building the entry.** The
   // round-trip test above states a route on an entry it constructs itself, so
@@ -670,6 +707,29 @@ TEST_CASE("a journal entry survives a round trip through a line", "[journal][fil
   REQUIRE(parsed->price_ == original.price_);
   // Exactly, not approximately: the matching window is measured against this.
   REQUIRE(parsed->recorded_at_ == original.recorded_at_);
+}
+
+TEST_CASE("an unrecognized route is unknown, not a request for no venue", "[journal]") {
+  // A damaged token, or one a newer release wrote, must not read as
+  // `UNSPECIFIED`. That value is a *positive* claim that no particular venue was
+  // reached, and recovery confirms a row from any venue against it -- so reading
+  // "NX?" as no-preference lets a KRX lookalike clear the hold on an NXT order.
+  // Same silence-to-confirmation failure as the missing key, one layer in.
+  auto entry = sample_entry();
+  entry.venue_ = Venue::NXT;
+  auto damaged = runner::journal_entry_to_line(entry);
+  const auto at = damaged.find("\"NXT\"");
+  REQUIRE(at != std::string::npos);
+  damaged.replace(at, 5, "\"NX?\"");
+
+  const auto parsed = runner::journal_entry_from_line(damaged);
+  REQUIRE(parsed.has_value());
+  REQUIRE_FALSE(parsed->venue_.has_value());
+
+  // The undamaged line still reads as the venue it names, so the assertion above
+  // is about the token and not about the parse.
+  REQUIRE(runner::journal_entry_from_line(runner::journal_entry_to_line(entry))->venue_ ==
+    std::optional<Venue>(Venue::NXT));
 }
 
 TEST_CASE("a line with no route key is unknown, not unrouted", "[journal]") {

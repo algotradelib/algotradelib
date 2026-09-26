@@ -1327,12 +1327,10 @@ struct PlacedOrder {
  * `OrderShape{OrderType::LIMIT, price}` is both the common case and what every
  * existing caller writes.
  *
- * **That is source compatibility for a two-argument brace, not for every
- * caller.** A build with `-Wmissing-field-initializers` promoted to an error --
- * which this library's own warnings configuration has -- reports a brace that
- * omits the new members, so a consumer using that flag still sees each site.
- * Ordering the members this way buys a smaller diff for callers who do not, and
- * nothing more; it is not a claim that the change is invisible.
+ * The two-argument form compiles cleanly under `-Wmissing-field-initializers`
+ * because `OrderShape` has a constructor; as a plain aggregate it did not, and
+ * the safe form would have been one a consumer with that flag could not write.
+ * That is what the constructor is for.
  */
 struct OrderShape {
   /**

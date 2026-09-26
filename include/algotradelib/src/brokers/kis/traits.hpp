@@ -368,10 +368,33 @@ struct Capabilities {
 } // namespace traits_detail
 } // namespace kis
 
+/**
+ * Returns the venue a KIS order with `asked` actually reaches.
+ *
+ * KIS documents an omitted `EXCG_ID_DVSN_CD` as proceeding at the Korea
+ * Exchange, so an order that names no venue is not an order that goes nowhere --
+ * it goes to KRX. Recovery has to record *that*, because `UNSPECIFIED` in a
+ * journal line is a positive assertion that no particular venue was reached, and
+ * it confirms a row from any venue. An NXT lookalike could then be attributed to
+ * an order that went to KRX.
+ *
+ * Shared by both KIS clients' traits, and applied where the planned order is
+ * resolved rather than where the request is built, so the durable journal line
+ * written *before* the send already names the venue the order will reach.
+ */
+inline constexpr Venue kis_effective_route(Venue asked) noexcept {
+  return asked == Venue::UNSPECIFIED ? Venue::KRX : asked;
+}
+
 /** Broker port adaptation for the asynchronous KIS client. */
 template <>
 struct BrokerTraits<kis::KisClient>
 : kis::traits_detail::Normalizers, kis::traits_detail::Capabilities {
+  /** Where an order carrying `asked` actually goes; see `kis_effective_route`. */
+  static constexpr Venue effective_route(Venue asked) noexcept {
+    return kis_effective_route(asked);
+  }
+
   /** Concrete client this specialization adapts. */
   using Client = kis::KisClient;
 
@@ -512,6 +535,11 @@ struct BrokerTraits<kis::KisClient>
 template <>
 struct BrokerTraits<kis::KisBlockingClient>
 : kis::traits_detail::Normalizers, kis::traits_detail::Capabilities {
+  /** Where an order carrying `asked` actually goes; see `kis_effective_route`. */
+  static constexpr Venue effective_route(Venue asked) noexcept {
+    return kis_effective_route(asked);
+  }
+
   /** Concrete client this specialization adapts. */
   using Client = kis::KisBlockingClient;
 

@@ -41,6 +41,26 @@ public:
   explicit SessionExecutor(Session& session) : session_(&session) {}
 
   /**
+   * Returns the venue an order carrying `asked` will actually reach.
+   *
+   * The binding knows this and nothing above it does: KIS documents an omitted
+   * exchange field as proceeding at KRX, and Toss routes nowhere at all. It is
+   * exposed here so a journaling wrapper can record the venue the order will
+   * reach **before** the durable line is written, rather than the `UNSPECIFIED`
+   * a strategy left behind -- which recovery reads as a positive claim that no
+   * venue was reached, and confirms a row from any venue against.
+   *
+   * Resolving it here rather than in the request builder keeps the write
+   * ordering `ai/order-journal` chose: the line is still appended before any
+   * network I/O, and this is a pure function of the order.
+   */
+  template <typename S = Session>
+  auto effective_route(Venue asked) const noexcept
+    -> decltype(S::Traits::effective_route(asked)) {
+    return S::Traits::effective_route(asked);
+  }
+
+  /**
    * Places one order, and reports whether it might now exist.
    *
    * A planned order carrying an idempotency key for a broker that accepts none is **refused rather

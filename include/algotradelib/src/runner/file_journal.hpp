@@ -97,6 +97,33 @@ inline constexpr std::string_view venue_name(Venue venue) noexcept {
   return "UNSPECIFIED";
 }
 
+/**
+ * Returns the venue `text` names, or nothing when it names none this reader knows.
+ *
+ * The distinction matters only for the recorded **route**, and there it is the
+ * difference between "the runner asked for no particular venue" and "this line
+ * says something I cannot read". A damaged token, or one written by a newer
+ * release, must not become the first: `UNSPECIFIED` is a positive assertion that
+ * recovery confirms any row against, so reading `"NX?"` as it would let a KRX
+ * lookalike clear the hold on an NXT order. That is the same
+ * silence-to-confirmation failure two earlier rounds closed elsewhere.
+ */
+inline std::optional<Venue> known_venue_from(std::string_view text) noexcept {
+  if (text == "KRX") {
+    return Venue::KRX;
+  }
+  if (text == "NXT") {
+    return Venue::NXT;
+  }
+  if (text == "COMBINED") {
+    return Venue::COMBINED;
+  }
+  if (text == "UNSPECIFIED") {
+    return Venue::UNSPECIFIED;
+  }
+  return std::nullopt;
+}
+
 /** Returns the venue `text` names, defaulting to `UNSPECIFIED`. */
 inline Venue venue_from(std::string_view text) noexcept {
   if (text == "KRX") {
@@ -425,11 +452,11 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
   // than "no route was asked for". Recovery will not attribute a row to an
   // instruction whose route nobody recorded. The field defaults to a recorded
   // `UNSPECIFIED`, so this clears it rather than leaving the default standing.
-  if (const auto route = journal_detail::string_field(row, "route"); route.empty()) {
-    entry.venue_.reset();
-  } else {
-    entry.venue_ = journal_detail::venue_from(route);
-  }
+  // An absent key means the line predates the field. An unrecognized value means
+  // the line says something this reader cannot use. Both are "unknown", and
+  // neither may become the `UNSPECIFIED` that recovery treats as a recorded
+  // request for no venue.
+  entry.venue_ = journal_detail::known_venue_from(journal_detail::string_field(row, "route"));
   const auto quantity = journal_detail::string_field(row, "quantity");
   if (!quantity.empty()) {
     entry.quantity_ = Decimal64::parse(quantity);
@@ -494,11 +521,9 @@ inline std::optional<JournalEntry> salvage_journal_line(std::string_view line) {
   entry.session_ = journal_detail::order_session_from(
     journal_detail::salvage_string(line, "session").value_or("REGULAR")
   );
-  if (const auto route = journal_detail::salvage_string(line, "route")) {
-    entry.venue_ = journal_detail::venue_from(*route);
-  } else {
-    entry.venue_.reset();
-  }
+  entry.venue_ = journal_detail::known_venue_from(
+    journal_detail::salvage_string(line, "route").value_or("")
+  );
   if (const auto quantity = journal_detail::salvage_string(line, "quantity")) {
     entry.quantity_ = Decimal64::parse(*quantity);
   }

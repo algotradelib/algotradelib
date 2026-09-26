@@ -562,6 +562,26 @@ public:
    */
   void set_id_prefix(std::string prefix) { prefix_ = std::move(prefix); }
 
+  /**
+   * Returns the venue the bound executor says this order will reach.
+   *
+   * Detected rather than required: only a broker binding can answer it, and a
+   * replay executor or a test double has no venue to speak of. The fallback is
+   * the venue the caller asked for, which is the most that can be known without
+   * a broker.
+   */
+  template <typename E = Inner>
+  auto route_of(const strategy::PlannedOrder& order, int) const
+    -> decltype(std::declval<const E&>().effective_route(order.venue_)) {
+    return inner_.effective_route(order.venue_);
+  }
+
+  Venue route_of(const strategy::PlannedOrder& order, long) const { return order.venue_; }
+
+  Venue effective_route_of(const strategy::PlannedOrder& order) const {
+    return route_of(order, 0);
+  }
+
   /** Places one order, recording the attempt before making it. */
   SendOutcome place(const strategy::PlannedOrder& order) {
     JournalEntry entry;
@@ -574,7 +594,20 @@ public:
     entry.type_ = order.type_;
     entry.time_in_force_ = order.time_in_force_;
     entry.session_ = order.session_;
-    entry.venue_ = order.venue_;
+    // **Where the order will actually go, not what the caller asked for.**
+    // Nothing on the strategy path sets `venue_`, so every strategy-placed order
+    // asks for `UNSPECIFIED` -- and at KIS that order still reaches KRX, by the
+    // broker's documented default for an omitted exchange field. Recording the
+    // request would put a positive "no venue was reached" claim in the line, and
+    // recovery confirms a row from *any* venue against one of those: a lone NXT
+    // lookalike could be attributed to an order that went to KRX.
+    //
+    // The binding is the only thing that knows, and asking it here keeps the
+    // ordering `ai/order-journal` chose -- `effective_route` is a pure function
+    // of the order, so the durable line is still appended before any network
+    // I/O. An executor that does not answer (a replay, a test double) leaves the
+    // requested value, which is all it could mean there.
+    entry.venue_ = effective_route_of(order);
     entry.quantity_ = order.quantity_;
     entry.price_ = order.price_;
     if (!journal_->append(entry)) {
