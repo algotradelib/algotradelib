@@ -5,6 +5,37 @@ reports what a broker said. The two need different number types, and most of the
 layer can quietly go wrong are ways of forgetting that. This page is the set of rules that
 prevent it.
 
+The whole path, in one block: exact decimals in, a computation, and one gated route back out to
+something a broker will accept.
+
+```cpp
+#include <algotradelib/analytics>
+
+namespace analytics = algotradelib::analytics;
+
+// The one place a broker's exact decimals become scalars.
+const analytics::SeriesFrame frame = analytics::from_bars(bars);
+
+const auto close = frame.close();               // a view, not a copy
+const auto average = analytics::sma(close, 20);
+const auto bands = analytics::bollinger(close, 20, 2.0);
+const auto strength = analytics::rsi(close, 14);
+
+// And the one route back to something a broker will accept.
+const auto rule = algotradelib::price_rule_for(instrument.country_, SecurityType::STOCK);
+const auto limit = analytics::round_scalar_to_tick(
+  bands.upper_[close.size() - 1], rule, OrderSide::SELL
+);
+```
+
+`example-analytics-offline` runs that path with bars built in code — no credentials, no network,
+identical output every time.
+
+This layer is also the only one that needs a linear-algebra backend, and it is optional. With
+`-DATL_USE_EIGEN=OFF` the quote, order, holdings and market-data headers all still build, and
+`<algotradelib/analytics>` refuses to compile with a message naming the option to set, rather than
+producing twenty errors about missing types.
+
 ## Why there are two numeric types at all
 
 `Decimal64` holds what a broker said, exactly: a 64-bit integer coefficient and a decimal
@@ -135,7 +166,10 @@ decorating them:
 Two of those are named rather than parameterized on purpose. `one_way_turnover` and
 `two_way_turnover` exist as separate functions because turnover is usually multiplied by a cost per
 unit traded, and a silent factor of two there separates a profitable strategy from a losing one —
-the convention belongs in the name, not only in the documentation. Annualization is a separate call
+the convention belongs in the name, not only in the documentation. `TurnoverStart` then chooses
+whether the first period is measured against an all-cash portfolio — the default, because building a
+position is real trading — or left unobserved, which is what you want when comparing strategies
+whose histories start on different dates. Annualization is a separate call
 because the factor is the square root of the period count, not the count (confusing them overstates
 a daily Sharpe ratio about sixteenfold), and because the period count is a calendar question — 245
 KRX trading days, 252 US, 12 months — that no default answers correctly for everyone.
@@ -257,6 +291,18 @@ then contiguous, so `column()` hands out a `math::SeriesView` referencing the fr
 memory and an indicator never walks a strided view of its input. It is also why the same
 `sma` call serves a completed frame and a live window — both are one contiguous series, which
 is what keeps a backtest and a live loop from computing different things.
+
+`RollingWindow` expands until it is full and rolls afterwards, in storage taken once: `2n` rows,
+compacted at an amortized one row moved per push, with `compactions()` exposing the bound. There is
+deliberately **no unbounded expanding window**, because the statistics that would want one — a
+cumulative return, an all-time high, the worst drawdown so far — are answered in constant space by
+the running accumulators: `RunningSum`, `RunningMoments`, `RunningExtremes`, `RunningDrawdown` and
+`RunningEma`.
+
+`RunningEma` is the one worth a sentence of its own. An exponential average depends on all of its
+history, so recomputing one over a trailing window does not reproduce what a live loop would have
+produced. A strategy fitted over frames and then traded from a window would be trading a slightly
+different indicator from the one it was fitted on, and the difference does not announce itself.
 
 ## What is single-owner, and where parallelism goes
 

@@ -1,4 +1,4 @@
-# Running a strategy live
+# Running a strategy live {#running-a-strategy-live}
 
 This is the operational half of `runner::PollingLoop`: how to start one, how to stop one on purpose,
 and which of the ways to stop it will cost you money. The programming half is in the header. Read this

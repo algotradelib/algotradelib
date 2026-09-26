@@ -1,4 +1,4 @@
-# Recovering after a crash
+# Recovering after a crash {#recovering-after-a-crash}
 
 This is the operational half of the order journal: what to turn on before you leave a runner
 unattended, what the file looks like at four in the afternoon when something has gone wrong, and how
