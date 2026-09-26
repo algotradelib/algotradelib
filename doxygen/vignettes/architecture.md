@@ -75,7 +75,8 @@ Two other edges are worth reading off the picture:
 
 - **`<core>` does not include `<network>`.** `BrokerSession` does, which is why it ships under
   `<algotradelib/broker>` rather than being reachable from the value types. A program that only
-  parses bars links no transport.
+  parses bars therefore compiles no transport code — though it still *links* libssl, because the
+  package exports one interface target for every consumer. The paragraph above is the exact claim.
 - **`<analytics>` is the only layer that *implements* against a linear-algebra backend**, and it is
   optional — but turning it off reaches further than that one box. With `ATL_USE_EIGEN=OFF`,
   `<algotradelib/analytics>` is a deliberate `#error` naming the option, `backtest::summarize` and

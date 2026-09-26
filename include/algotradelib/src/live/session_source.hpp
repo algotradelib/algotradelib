@@ -282,8 +282,10 @@ private:
 
     auto portfolio = runner_instance.context().portfolio();
     portfolio.positions_ = result.value().positions_;
-    // The broker's own timestamp, not the local clock: it is when the positions were true, which is
-    // what the loop's staleness gate has to measure against.
+    // When the snapshot arrived, which is the best the two brokers allow: neither timestamps a
+    // holdings answer, so `received_at_` is this machine's clock at parse time. The loop's staleness
+    // gate therefore measures time since arrival, and understates the age of the figures by the
+    // request's own latency.
     portfolio.as_of_ = result.value().received_at_;
     runner_instance.context().set_portfolio(std::move(portfolio));
     return runner::PollOutcome::UPDATED;

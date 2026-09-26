@@ -35,7 +35,15 @@ struct MarketSegment {
 
   /** The normalized segment, or `Known::UNKNOWN` when the broker's code was not recognized. */
   Known known_{Known::UNKNOWN};
-  /** The broker's own code, preserved verbatim when `known_` is `UNKNOWN`, so nothing is lost. */
+  /**
+   * The broker's own code, preserved verbatim when `known_` is `UNKNOWN`.
+   *
+   * **Preservation is best-effort, not a guarantee.** `market_segment()` stores an unrecognized
+   * code only if `Code<12>::try_make` accepts it, so one too long or outside its alphabet leaves
+   * both this and `known_` empty and is genuinely lost. An empty `other_` beside
+   * `Known::UNKNOWN` therefore means either "the broker named no segment" or "it named one this
+   * field cannot hold".
+   */
   Code<12> other_;
 
   /** Returns a display form: the normalized name, or the preserved raw code. */

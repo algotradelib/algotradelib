@@ -46,8 +46,10 @@ graph TD
   class L,P,A io
 ```
 
-Green links no TLS and instantiates no adapter code — asserted at compile time, not by convention, so
-there is no instantiated code path from a backtest to a market. The
+Green reaches no transport header and instantiates no adapter or TLS code — asserted at compile
+time, not by convention, so there is no instantiated code path from a backtest to a market. It does
+**not** mean libssl is off the link line; the package exports one interface target for every
+consumer, as the prerequisites below explain. The
 [architecture vignette](doxygen/vignettes/architecture.md) has the full picture, the dependency rule
 underneath it, and what that compile-time claim does and does not cover.
 

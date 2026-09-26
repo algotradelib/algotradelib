@@ -138,7 +138,7 @@ built while the durable ledger is not.
 **A stale holdings snapshot blocks sizing.** Set `set_maximum_portfolio_age` and the loop refuses to
 send while the snapshot is older than that, reporting `portfolio_stale`. Reconciling a target against
 stale positions is how a position gets double-sized by a route that `working_quantity` does not close.
-Staleness is measured against the broker's own `as_of_` — when the positions were *true* — not against
+Staleness is measured against `Portfolio::as_of_`, which is when the snapshot *arrived*, not against
 when the reply arrived.
 
 **An unknown buying power blocks buying.** Only if you asked for the check: set

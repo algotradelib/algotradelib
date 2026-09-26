@@ -81,7 +81,15 @@ struct Portfolio {
    * fill. `working_quantity` does that arithmetic.
    */
   std::vector<WorkingOrder<Broker>> working_;
-  /** The broker's own `as_of_`, not when the reply arrived, which is what a staleness gate measures. */
+  /**
+   * When the holdings behind this portfolio arrived, and what a staleness gate measures against.
+   *
+   * **The local clock, not the broker's.** It is copied from `HoldingsSnapshot::received_at_`, which
+   * both adapters set to `system_clock::now()` as they parse the reply, because neither broker
+   * timestamps a holdings answer -- the same reason `BuyingPower::received_at_` gives. So this is
+   * when the figures *arrived*, not when they were true, and the gate understates their age by
+   * however long the request took.
+   */
   std::chrono::system_clock::time_point as_of_{};
 
   /**

@@ -285,9 +285,17 @@ struct TradePrint {
  * of zero.
  */
 struct PriceLimits {
-  /** The highest price allowed today. Empty means the market imposes none, never zero. */
+  /**
+   * The highest price allowed today, where there is one and the broker published it.
+   *
+   * **Empty has two meanings and the value cannot tell them apart.** A market that imposes no
+   * limit -- United States equities among them -- reports none. But the KIS adapter also reports
+   * empty for a blank or zero `stck_mxpr`, where KRX does set a limit on every listed equity and
+   * the figure was simply not available. So empty is never a bound of zero, and it is not evidence
+   * that the market is unlimited either.
+   */
   std::optional<Decimal64> upper_;
-  /** The lowest price allowed today. Empty means the market imposes none, never zero. */
+  /** The lowest price allowed today. Empty carries the same two meanings as `upper_`. */
   std::optional<Decimal64> lower_;
   /** The currency the bounds are in. */
   Currency currency_;

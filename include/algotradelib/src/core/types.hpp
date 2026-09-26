@@ -309,7 +309,14 @@ public:
     return digits;
   }
 
-  /** Compares two decimals by value, so `1.50` and `1.5` are equal despite differing scales. */
+  /**
+   * Compares the representation: both the coefficient **and** the scale.
+   *
+   * So `1.50` and `1.5` are **not** equal, because the scale is part of the value -- a broker that
+   * reported two decimal places said something different from one that reported one. Use this for
+   * reconciliation, where the question is whether the same figure came back; do not use it to ask
+   * whether two numbers are numerically equal, because it will say no.
+   */
   friend bool operator==(const Decimal64& lhs, const Decimal64& rhs) {
     return lhs.coefficient_ == rhs.coefficient_ && lhs.scale_ == rhs.scale_;
   }
@@ -1215,16 +1222,29 @@ struct OrderRequest {
 /**
  * Realized execution totals for one order.
  *
- * Monetary members are optional because a broker reports them only once the
- * corresponding amount exists; an unfilled order has a filled quantity of zero
- * and no amounts at all.
+ * Monetary members are optional because a broker need not report them, **but a present one is not
+ * evidence of a fill and the two adapters differ**. Toss omits each field the broker left out. KIS
+ * sets `filled_amount_` on every row of its open-order and history listings, from `tot_ccld_amt`,
+ * so an unfilled KIS order carries a present `Money{0, KRW}`.
+ *
+ * Decide whether an order filled from `filled_quantity_`, which is always present and is zero
+ * exactly when nothing has filled. Never from `filled_amount_.has_value()`.
  */
 struct OrderExecution {
-  /** How much has filled so far. Zero on an unfilled order, and never absent. */
+  /**
+   * How much has filled so far. Zero on an unfilled order, and never absent.
+   *
+   * **This is the field to test a fill against**, for the reason the struct comment gives.
+   */
   Decimal64 filled_quantity_;
   /** The volume-weighted fill price, once anything has filled. */
   std::optional<Decimal64> average_filled_price_;
-  /** The cash the fills came to, as the broker computed it. */
+  /**
+   * The cash the fills came to, as the broker computed it.
+   *
+   * Present on every KIS listing row, including an unfilled one, where it is zero. Absent at Toss
+   * when the broker reported none. See the note above: this is not a fill indicator.
+   */
   std::optional<Money> filled_amount_;
   /** Commission charged so far, where the broker reports it per order. */
   std::optional<Money> commission_;
