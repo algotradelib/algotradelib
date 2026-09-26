@@ -808,6 +808,35 @@ TEST_CASE("a damaged number does not throw out of recovery", "[journal]") {
   REQUIRE(salvaged->requires_operator_);
 }
 
+TEST_CASE("a torn line's wrong-typed prefix field is damage, not an absent one", "[journal]") {
+  // `salvage_string` recognizes `"key":"value"` and nothing else, so `null` and
+  // `7` read as *absent* -- and a truncated line's absent fields legitimately
+  // take defaults, because truncation removes the tail. A fragment reading
+  // `"country":null,…,"symbol":"AAPL"` was therefore salvaged as a **Korean**
+  // instrument, marked operator-only on that guessed key, while the real US
+  // instrument stayed free to trade. `requires_operator_` does not protect a
+  // key nobody is trading under.
+  const auto torn = R"({"id":"run-1","action":"place","outcome":"pending","country":null,)"
+                    R"("venue":"COMBINED","symbol":"AAPL","side":"BUY","quan)";
+  const auto salvaged = runner::salvage_journal_line(torn);
+  REQUIRE(salvaged.has_value());
+  REQUIRE(salvaged->requires_operator_);
+  REQUIRE(salvaged->instrument_.symbol_.empty());
+  // Specifically not the instrument the guess would have named.
+  REQUIRE_FALSE((salvaged->instrument_.country_ == Country::KR &&
+    salvaged->instrument_.symbol_ == "AAPL"));
+
+  // A fragment that simply *ends* before those keys still takes its defaults,
+  // because that is what a torn line is.
+  const auto plain = R"({"id":"run-2","action":"place","outcome":"pending",)"
+                     R"("symbol":"005930","side":"BUY","quan)";
+  const auto ordinary = runner::salvage_journal_line(plain);
+  REQUIRE(ordinary.has_value());
+  REQUIRE(ordinary->requires_operator_);
+  REQUIRE(ordinary->instrument_.symbol_ == "005930");
+  REQUIRE(ordinary->instrument_.country_ == Country::KR);
+}
+
 TEST_CASE("a truncated line with a damaged value is unattributable too", "[journal]") {
   // The salvage path had the same hole as the strict reader, and this branch
   // found it by looking for the rest of the pattern rather than waiting to be
@@ -922,83 +951,48 @@ TEST_CASE("an implausible instant is not read as a current one", "[journal]") {
   REQUIRE(repaired->requires_operator_);
 }
 
-TEST_CASE("a cancellation with no trustworthy target id is unattributable", "[journal]") {
-  // A cancellation names an order that already exists, and `match_against`
-  // finds it by that id **alone**. A line whose `order_id` is absent, empty or
-  // not a string leaves it matching nothing, and the sweep then closes it
-  // `NOT_PLACED` -- reporting that a still-resting order is gone. The id is the
-  // whole content of such a line.
+TEST_CASE("a line the writer emits is readable, and unresolvable", "[journal]") {
+  // **These two shapes are written by this library itself.**
+  // `JournalingExecutor` appends the pending line *before* the binding runs, so
+  // an order the binding then refuses locally -- a cancellation of a
+  // reservation whose broker id is unknown, a limit with no price -- is already
+  // on disk by the time anything could object.
+  //
+  // Round 5 made the reader reject them, and that turned an ordinary local
+  // refusal into a global halt on the next restart: both lines became
+  // `~damaged` operator-only entries with fresh ids, so the terminal line could
+  // no longer close its pending partner. The reader reads them now; refusing to
+  // *conclude* from one is `match_against`'s job.
   auto cancel = sample_entry();
   cancel.action_ = runner::JournalAction::CANCEL;
-  cancel.order_id_ = "KRX-1";
-  const auto intact = runner::journal_entry_from_line(runner::journal_entry_to_line(cancel));
-  REQUIRE(intact.has_value());
-  REQUIRE(intact->order_id_ == "KRX-1");
-  REQUIRE_FALSE(intact->requires_operator_);
+  cancel.order_id_.clear();
+  const auto read_cancel =
+    runner::journal_entry_from_line(runner::journal_entry_to_line(cancel));
+  REQUIRE(read_cancel.has_value());
+  REQUIRE(read_cancel->instrument_ == cancel.instrument_);
+  REQUIRE_FALSE(read_cancel->requires_operator_);
 
-  const auto without = [&cancel](std::string_view with) {
-    auto line = runner::journal_entry_to_line(cancel);
-    const auto at = line.find("\"order_id\":");
-    REQUIRE(at != std::string::npos);
-    // The field may be last, so the value ends at a comma or at the brace.
-    const auto end = line.find_first_of(",}", at);
-    REQUIRE(end != std::string::npos);
-    if (with.empty()) {
-      line.erase(at - 1, end - at + 1);
-    } else {
-      line.replace(at, end - at, std::string("\"order_id\":") + std::string(with));
-    }
-    return line;
-  };
+  auto unpriced = sample_entry();
+  unpriced.type_ = OrderType::LIMIT;
+  unpriced.price_.reset();
+  const auto read_unpriced =
+    runner::journal_entry_from_line(runner::journal_entry_to_line(unpriced));
+  REQUIRE(read_unpriced.has_value());
+  REQUIRE(read_unpriced->instrument_ == unpriced.instrument_);
 
-  for (const auto* value : {"\"\"", "null", "42"}) {
-    INFO("order_id = " << value);
-    const auto parsed = runner::journal_entry_from_line(without(value));
-    REQUIRE(parsed.has_value());
-    REQUIRE(parsed->instrument_.symbol_.empty());
-    REQUIRE(parsed->requires_operator_);
-  }
-  const auto absent = runner::journal_entry_from_line(without(""));
-  REQUIRE(absent.has_value());
-  REQUIRE(absent->instrument_.symbol_.empty());
-
-  // A *placement* has no target id and must still read: the order does not
-  // exist yet, and inventing one would be a claim about the broker.
-  auto placement = sample_entry();
-  placement.order_id_.clear();
-  const auto placed = runner::journal_entry_from_line(runner::journal_entry_to_line(placement));
-  REQUIRE(placed.has_value());
-  REQUIRE(placed->instrument_ == placement.instrument_);
-  REQUIRE_FALSE(placed->requires_operator_);
-}
-
-TEST_CASE("a priced basis without a price is damage", "[journal]") {
-  // `carries_caller_price` says which bases state one. A limit line whose price
-  // key is gone is not a market order; it is a limit order whose price this
-  // reader cannot see, and matching on a missing price would confirm the wrong
-  // row.
-  auto entry = sample_entry();
-  entry.type_ = OrderType::LIMIT;
-  entry.price_ = Decimal64::parse("70000");
-  auto line = runner::journal_entry_to_line(entry);
-  const auto at = line.find(",\"price\":");
+  // And a damaged *terminal* line keeps its own outcome, so it still closes the
+  // damaged pending line it belongs to. Forcing PENDING left both open and
+  // halted a runner over an instruction that had already resolved.
+  auto terminal = sample_entry();
+  terminal.outcome_ = runner::JournalOutcome::REJECTED;
+  auto damaged = runner::journal_entry_to_line(terminal);
+  const auto at = damaged.find("\"side\":\"SELL\"");
   REQUIRE(at != std::string::npos);
-  const auto end = line.find(',', at + 1);
-  REQUIRE(end != std::string::npos);
-  line.erase(at, end - at);
-
-  const auto parsed = runner::journal_entry_from_line(line);
-  REQUIRE(parsed.has_value());
-  REQUIRE(parsed->instrument_.symbol_.empty());
-
-  // A market order legitimately carries none, and still reads.
-  auto market = sample_entry();
-  market.type_ = OrderType::MARKET;
-  market.price_.reset();
-  const auto readable = runner::journal_entry_from_line(runner::journal_entry_to_line(market));
-  REQUIRE(readable.has_value());
-  REQUIRE(readable->instrument_ == market.instrument_);
-  REQUIRE_FALSE(readable->price_.has_value());
+  damaged.replace(at, std::string("\"side\":\"SELL\"").size(), "\"side\":\"SEL?\"");
+  const auto read_damaged = runner::journal_entry_from_line(damaged);
+  REQUIRE(read_damaged.has_value());
+  REQUIRE(read_damaged->instrument_.symbol_.empty());
+  REQUIRE(read_damaged->outcome_ == runner::JournalOutcome::REJECTED);
 }
 
 TEST_CASE("an absent shape key keeps its documented default", "[journal]") {

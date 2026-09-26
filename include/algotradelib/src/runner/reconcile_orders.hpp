@@ -460,6 +460,42 @@ inline bool row_might_correspond(
 }
 
 /**
+ * Returns why this instruction cannot be resolved from a broker listing, or "".
+ *
+ * Two shapes qualify, and both are lines this library's own writer emits before
+ * the binding has had a chance to refuse the order:
+ *
+ * - **a cancellation with no target id.** The cancellation matcher finds its
+ *   order by that id alone, so without one it matches nothing and a closed
+ *   window would report a still-resting order as gone.
+ * - **a placement whose basis states a price and whose line carries none**, or
+ *   the reverse. `row_corresponds` compares the price, so either way every real
+ *   row is excluded and the same false absence follows.
+ *
+ * Refusing to conclude is not the same as refusing to read: the line stays
+ * readable, its own terminal line still closes it when the refusal was
+ * ordinary, and only one still open at recovery is withheld.
+ */
+inline std::string unresolvable_reason(const JournalEntry& entry) {
+  if (entry.action_ == JournalAction::CANCEL && entry.order_id_.empty()) {
+    return "a cancellation was journalled without the order id it names, so no row can be "
+           "identified as its target; an operator must say what became of it";
+  }
+  if (entry.type_ != OrderType::UNKNOWN) {
+    const bool priced = carries_caller_price(entry.type_);
+    if (priced && !entry.price_) {
+      return "a price-bearing order was journalled without its price, so no row can be matched "
+             "on it; an operator must say what became of it";
+    }
+    if (!priced && entry.price_) {
+      return "an order whose price the market sets was journalled carrying one, so no row can "
+             "be matched on it; an operator must say what became of it";
+    }
+  }
+  return {};
+}
+
+/**
  * Decides what the broker's order list says about one unresolved instruction.
  *
  * **One matcher serves every broker.** Both adapters already normalize their listings into
@@ -492,6 +528,21 @@ inline OrderMatch match_against(
   match.instrument_ = instruction.entry_.instrument_;
   match.entry_id_ = instruction.entry_.id_;
 
+  // **An instruction whose own line cannot support a conclusion.** These are
+  // written by this library -- `JournalingExecutor` appends the pending line
+  // before the binding runs, so a locally refused order is on disk before
+  // anything could object -- which is why the *reader* accepts them. What must
+  // not happen is resolving one: each lacks precisely the field the matcher
+  // would decide on, so a sweep would conclude from silence.
+  //
+  // An ordinary local refusal is unaffected: its own terminal line closes the
+  // pending one before any of this is reached. Only an instruction still open
+  // at recovery arrives here, and for those the honest answer is an operator.
+  if (const auto reason = unresolvable_reason(instruction.entry_); !reason.empty()) {
+    match.verdict_ = MatchVerdict::NEEDS_OPERATOR;
+    match.detail_ = reason;
+    return match;
+  }
   if (instruction.entry_.requires_operator_) {
     // Checked before anything else, so no window arithmetic runs on a timestamp that was never
     // recorded. This is the entry the file-journal documentation calls "something nothing can ever

@@ -662,20 +662,30 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
     // A price is absent for a market order and required for a basis that
     // carries one, so its presence is judged against the basis rather than
     // assumed either way.
-    unusable("price", price.has_value()) ||
-    (type && carries_caller_price(*type) && !price) ||
-    // A cancellation names an order that already exists, and the matcher finds
-    // it **by that id alone**. A line whose target id is absent, empty or not a
-    // string leaves the cancellation matching nothing, so the sweep eventually
-    // closes it `NOT_PLACED` -- reporting that a still-resting order is gone.
-    // The id is the whole content of such a line; without it there is nothing
-    // to reconcile and nothing to guess.
-    (*action == JournalAction::CANCEL && !journal_detail::readable_string(row, "order_id"));
+    unusable("price", price.has_value());
+  // **A price missing from a priced basis, and a cancellation with no target
+  // id, are deliberately *not* damage here.** Both are lines this library's own
+  // writer emits: `JournalingExecutor` appends the pending line *before* the
+  // executor runs, so an order the binding then refuses locally -- a limit with
+  // no price, a cancellation of a reservation whose broker id is not known --
+  // has already been written by the time anyone could object. Rejecting them
+  // turned an ordinary local refusal into a global halt on the next restart,
+  // which is worse than the hazard the rejection was meant to close.
+  //
+  // The hazard is real and it lives one step later: such a line must not be
+  // *resolved* on evidence it does not have. `runner::match_against` refuses to
+  // conclude anything from one, which leaves it withheld for an operator while
+  // its own terminal line still closes it when the refusal was ordinary.
   if (damaged) {
     auto unattributable = unattributable_journal_entry(line);
     const auto id = journal_detail::string_field(row, "id");
     unattributable.id_ = (id.empty() ? std::string("unknown") : id) + "~damaged";
     unattributable.action_ = *action;
+    // Its own outcome, not `PENDING`. Both lines of a pair carry the same id, so
+    // a damaged *terminal* line still closes its damaged pending partner --
+    // forcing `PENDING` left both open and halted a runner over an instruction
+    // that had already resolved.
+    unattributable.outcome_ = *outcome;
     unattributable.recorded_at_ = journal_detail::instant_from(at->as_int64());
     unattributable.detail_ =
       "a journal line carries a value this release cannot read, so the order it describes cannot "
@@ -731,6 +741,22 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
  *   reconciliation; a wrongly resolved one risks an order nobody is watching. Only one of those
  *   can lose money, which is the same asymmetry `outcome_of` is built on.
  */
+/**
+ * Returns whether `line` mentions `key` at all, however its value is written.
+ *
+ * `salvage_string` recognizes only `"key":"value"`, so it answers nothing for a
+ * key whose value is `null`, a number or a bare token -- indistinguishable, to
+ * its caller, from a key the truncation removed. That difference decides
+ * whether a default is a fact about a torn line or a guess about a damaged one:
+ * a fragment reading `"country":null,"venue":"COMBINED","symbol":"AAPL"` was
+ * salvaged as a *Korean* instrument, marked operator-only on that guessed key,
+ * and left the real US instrument free to trade.
+ */
+inline bool salvage_mentions(std::string_view line, std::string_view key) {
+  const std::string needle = "\"" + std::string(key) + "\":";
+  return line.find(needle) != std::string_view::npos;
+}
+
 inline std::optional<JournalEntry> salvage_journal_line(std::string_view line) {
   const auto symbol = journal_detail::salvage_string(line, "symbol");
   if (!symbol || symbol->empty()) {
@@ -756,24 +782,31 @@ inline std::optional<JournalEntry> salvage_journal_line(std::string_view line) {
   // withhold a key the runner is not trading under, while the real one stays
   // open. Such a line becomes unattributable instead, carrying no instrument at
   // all, which recovery turns into a global halt.
-  const auto country = journal_detail::known_country_from(
-    journal_detail::salvage_string(line, "country").value_or("KR")
-  );
-  const auto venue = journal_detail::known_venue_from(
-    journal_detail::salvage_string(line, "venue").value_or("UNSPECIFIED")
-  );
-  const auto side = journal_detail::known_side_from(
-    journal_detail::salvage_string(line, "side").value_or("BUY")
-  );
-  const auto type = journal_detail::known_order_type_from(
-    journal_detail::salvage_string(line, "type").value_or("UNKNOWN")
-  );
-  const auto condition = journal_detail::known_time_in_force_from(
-    journal_detail::salvage_string(line, "time_in_force").value_or("DAY")
-  );
-  const auto session = journal_detail::known_order_session_from(
-    journal_detail::salvage_string(line, "session").value_or("REGULAR")
-  );
+  // A key the truncation removed takes its default; a key that is *there* and
+  // unreadable is damage, and `salvage_string` cannot tell those apart on its
+  // own -- it recognizes `"key":"value"` and nothing else, so `null` and `7`
+  // both read as absent.
+  const auto salvaged = [&line](std::string_view key, const char* fallback) {
+    const auto text = journal_detail::salvage_string(line, key);
+    if (text) {
+      return std::optional<std::string>(*text);
+    }
+    return salvage_mentions(line, key) ? std::optional<std::string>()
+                                                       : std::optional<std::string>(fallback);
+  };
+  const auto parsed = [&salvaged](std::string_view key, const char* fallback, auto reader) {
+    using Result = decltype(reader(std::string_view{}));
+    const auto text = salvaged(key, fallback);
+    return text ? reader(*text) : Result{};
+  };
+
+  const auto country = parsed("country", "KR", journal_detail::known_country_from);
+  const auto venue = parsed("venue", "UNSPECIFIED", journal_detail::known_venue_from);
+  const auto side = parsed("side", "BUY", journal_detail::known_side_from);
+  const auto type = parsed("type", "UNKNOWN", journal_detail::known_order_type_from);
+  const auto condition =
+    parsed("time_in_force", "DAY", journal_detail::known_time_in_force_from);
+  const auto session = parsed("session", "REGULAR", journal_detail::known_order_session_from);
   if (!country || !venue || !side || !type || !condition || !session) {
     auto unattributable = unattributable_journal_entry(line);
     unattributable.id_ = entry.id_;

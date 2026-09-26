@@ -125,6 +125,59 @@ public:
 // A placement, matched on attributes
 // ---------------------------------------------------------------------------
 
+TEST_CASE("an instruction whose own line cannot decide anything needs an operator") {
+  // The other half of the writer/reader split. These lines are readable, and
+  // each lacks precisely the field the matcher would decide on -- so resolving
+  // one would conclude from silence, and a closed window would report a
+  // still-resting order as gone.
+  SECTION("a cancellation with no target id") {
+    auto instruction = cancellation("KRX-1");
+    instruction.entry_.order_id_.clear();
+    const auto match = runner::match_against(instruction, {row("KRX-1")}, after_the_window());
+    REQUIRE(match.verdict_ == MatchVerdict::NEEDS_OPERATOR);
+    REQUIRE(match.order_id_.empty());
+    // With the id it names, it resolves -- so this is about the missing id.
+    REQUIRE(
+      runner::match_against(cancellation("KRX-1"), {row("KRX-1")}, after_the_window()).verdict_ ==
+        MatchVerdict::MATCHED
+    );
+  }
+
+  SECTION("a priced basis journalled without its price") {
+    auto instruction = placement();
+    instruction.entry_.type_ = OrderType::LIMIT;
+    instruction.entry_.price_.reset();
+    REQUIRE(
+      runner::match_against(instruction, {row("KRX-1")}, after_the_window()).verdict_ ==
+        MatchVerdict::NEEDS_OPERATOR
+    );
+  }
+
+  SECTION("a market order journalled carrying one") {
+    auto instruction = placement();
+    instruction.entry_.type_ = OrderType::MARKET;
+    instruction.entry_.price_ = Decimal64::parse("70000");
+    REQUIRE(
+      runner::match_against(instruction, {row("KRX-1")}, after_the_window()).verdict_ ==
+        MatchVerdict::NEEDS_OPERATOR
+    );
+  }
+
+  SECTION("an ordinary market order still resolves") {
+    // The rule is about the *combination*, not about market orders.
+    auto instruction = placement();
+    instruction.entry_.type_ = OrderType::MARKET;
+    instruction.entry_.price_.reset();
+    auto market_row = row("KRX-1");
+    market_row.type_ = OrderType::MARKET;
+    market_row.price_.reset();
+    REQUIRE(
+      runner::match_against(instruction, {market_row}, after_the_window()).verdict_ ==
+        MatchVerdict::MATCHED
+    );
+  }
+}
+
 TEST_CASE("recovery tells two orders apart by the venue each was routed to") {
   // Two orders in one symbol, side, quantity, price and second differ only by
   // where they went. Without the route on the journal line and in the matcher,
