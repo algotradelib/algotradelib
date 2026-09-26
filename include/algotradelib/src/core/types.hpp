@@ -609,7 +609,14 @@ struct BrokerError {
    * when to retry cannot tell the two apart and should back off on its own rather than retry at once.
    */
   std::optional<std::chrono::seconds> retry_after_;
-  /** The allowance the broker states it is enforcing, in requests per second, where it published one. */
+  /**
+   * The allowance the broker states it is enforcing, in requests per second, where it published one.
+   *
+   * Read through `broker_detail::integer_header` and then `reported_rate_limit`, so empty covers an
+   * absent header and one that could not be used: malformed, negative, zero, or above `INT_MAX`.
+   * A 429 can therefore carry `X-RateLimit-Limit` and still leave this empty. KIS states no
+   * allowance at all, with either of its two metering layers, so this is empty on every KIS refusal.
+   */
   std::optional<int> rate_limit_;
 };
 
@@ -923,10 +930,15 @@ inline bool is_valid_date(const Date& date) {
  * `backtest::CommissionModel::rate_`: `0.00015` is the order of magnitude a Korean online
  * brokerage charges.
  *
- * Both bounds are optional and absent means open-ended in that direction, which is how Toss
+ * Both bounds are optional. Absent usually means open-ended in that direction, which is how Toss
  * publishes them — a `null` end date is a rate with no scheduled change. Absent is deliberately not
  * "today": a schedule that started before the account did is a normal thing to be told, and
  * inventing a start for it would make a date comparison say something the broker did not.
+ *
+ * **But absent does not prove the broker declared it open-ended.** `optional_calendar_date` also
+ * yields empty for a bound that was present and unreadable, `parse_commissions` keeps the row, and
+ * `applies_on` treats either empty bound as unbounded — so a damaged `endDate` makes an expired
+ * rate read as current, and a damaged `startDate` makes a future one read as already in force.
  *
  * There is no per-order floor and no transaction tax here, because neither broker publishes one.
  */
@@ -1283,9 +1295,9 @@ struct OrderExecution {
    * when the broker reported none. See the note above: this is not a fill indicator.
    */
   std::optional<Money> filled_amount_;
-  /** Commission charged so far, where the broker reports it per order. */
+  /** Commission charged so far, where the broker reports it per order. Absence as the struct comment describes. */
   std::optional<Money> commission_;
-  /** Transaction tax charged so far, where the broker reports it per order. */
+  /** Transaction tax charged so far, where the broker reports it per order. Absence as the struct comment describes. */
   std::optional<Money> tax_;
   /** When the most recent fill happened, where the broker timestamps it. */
   std::optional<std::chrono::system_clock::time_point> filled_at_;
@@ -1347,9 +1359,10 @@ struct OrderSnapshot {
    * a client to tolerate an unknown code and one odd row must not fail a whole
    * listing.
    *
-   * Empty therefore means one of two things -- the broker reported no code, or
-   * it reported one outside that alphabet -- and the normalized fields say
-   * `UNKNOWN` in both cases.
+   * Empty therefore means one of three things -- the broker reported no code, it
+   * reported one outside that alphabet, or it reported a valid uppercase code
+   * longer than eight characters, which `Code<8>::try_make` also rejects -- and
+   * the normalized fields say `UNKNOWN` in all three.
    */
   Code<8> shape_code_;
   /** Where the order stands. `UNKNOWN` where the broker publishes no status column. */

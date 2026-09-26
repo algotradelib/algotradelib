@@ -365,9 +365,17 @@ struct Instrument {
   Currency currency_;
   /** Whether this is the common share rather than a preferred or derived line. */
   bool common_share_{true};
-  /** The listing date, where the broker publishes one. */
+  /**
+   * The listing date, where the broker publishes one.
+   *
+   * Empty also covers a date that was present and unreadable -- a published date can look absent.
+   * KIS's `compact_date_field` wants eight characters forming a real day and Toss's
+   * `optional_calendar_date` wants `YYYY-MM-DD`; a wrong length, a wrong separator or an impossible
+   * day yields empty rather than failing the row. It is not true of *every* malformation, though:
+   * non-numeric text of the right length throws out of the parse instead, failing the request.
+   */
   std::optional<Date> listed_on_;
-  /** The delisting date, where one exists and the broker publishes it. */
+  /** The delisting date, where one exists and the broker publishes it. Empty as for `listed_on_`. */
   std::optional<Date> delisted_on_;
   /**
    * Shares outstanding, where the broker publishes the figure.

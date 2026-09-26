@@ -248,12 +248,18 @@ struct JournalEntry {
    * Toss order can never ask for one, so recovery has nothing to verify and the
    * other attributes decide.
    *
-   * Empty means the line **predates this field**, so what the order asked for is
-   * unknowable. Only the file journal's reader produces that, and only when the
-   * line carries no `route` key at all. A row is then not attributed to the
-   * instruction on the strength of a venue nobody recorded -- it is reported as
-   * ambiguous instead, because the order may have gone somewhere this row did
-   * not.
+   * Empty means the route is **unknowable from the line**, and the recovery
+   * consequence is the same whichever way it got there: the row is not
+   * attributed to the instruction on the strength of a venue nobody recorded,
+   * and is reported as ambiguous instead, because the order may have gone
+   * somewhere this row did not.
+   *
+   * Only the file journal's reader produces empty, and it does so three ways.
+   * The line carries no `route` key, so it predates this field. The key is
+   * present but not a string, or names a venue this reader does not recognize
+   * -- `known_venue_from` returns nothing for both. Or the line was torn and
+   * salvage recovered no usable route, which reaches the same place through
+   * `salvage_string(..., "route").value_or("")`.
    */
   std::optional<Venue> venue_{Venue::UNSPECIFIED};
   /** The quantity the instruction named, which recovery matches a listing row against. */

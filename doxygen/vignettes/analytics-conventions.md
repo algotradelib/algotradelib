@@ -39,8 +39,14 @@ producing twenty errors about missing types.
 ## Why there are two numeric types at all
 
 `Decimal64` holds what a broker said, exactly: a 64-bit integer coefficient and a decimal
-scale. `70000.50` is the coefficient `7000050` at scale `2`, and it stays that through a
-round trip, a reconciliation, and a comparison. That property is not a nicety. An order
+scale. `70000.50` is the *value* seventy thousand and a half, held without binary floating
+point, and it stays that through a round trip, a reconciliation, and a comparison.
+
+What it does **not** preserve is the broker's formatting. `parse` normalizes away trailing
+zeros, so `parse("70000.50")` is the coefficient `700005` at scale `1`, the same
+representation `parse("70000.5")` gives — which is exactly why two spellings of one figure
+reconcile equal. Only a value built at an explicit scale keeps that scale; see
+`Decimal64::operator==`. That exactness is not a nicety. An order
 price is a value an exchange either accepts or rejects, a filled quantity is a number a
 ledger must balance, and a price that is right to within one part in `2^52` is still wrong.
 
