@@ -144,7 +144,7 @@ TEST_CASE("recovery tells two orders apart by the venue each was routed to") {
     REQUIRE(match.order_id_ == "NXT-1");
   }
 
-  SECTION("a journal line written before the route existed resolves nothing") {
+  SECTION("a journal line written before the route existed resolves no plausible row") {
     // **Silence is not confirmation.** A line with no `route` key was written
     // before the field existed, so what its order asked for is unknowable -- and
     // the order may well have been the NXT one. Attributing it to the only row
@@ -158,6 +158,24 @@ TEST_CASE("recovery tells two orders apart by the venue each was routed to") {
     // And not NOT_PLACED either: the row may be the order, so re-sending would
     // be the other half of the same mistake.
     REQUIRE(match.verdict_ != MatchVerdict::NOT_PLACED);
+
+    // **But an empty listing is still an absence, and needs no route to be one.**
+    // "Resolves nothing" is about rows that *could* be the order; a complete
+    // listing carrying nothing that resembles it says the order is not there
+    // whatever venue it was headed for. Withholding on that would strand a
+    // legacy line forever.
+    REQUIRE(
+      runner::match_against(legacy, {}, after_the_window()).verdict_ ==
+        MatchVerdict::NOT_PLACED
+    );
+
+    // And a row that differs on an attribute the route does not touch is not a
+    // plausible row either, so it does not withhold.
+    auto different = row("KRX-9", samsung(), "999");
+    REQUIRE(
+      runner::match_against(legacy, {different}, after_the_window()).verdict_ ==
+        MatchVerdict::NOT_PLACED
+    );
   }
 
   SECTION("an instruction that asked for no venue is not silence") {

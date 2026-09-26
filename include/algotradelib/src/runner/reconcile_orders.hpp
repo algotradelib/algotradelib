@@ -379,6 +379,20 @@ inline bool row_might_correspond(
   if (!reconcile_detail::same_value(row.quantity_, entry.quantity_)) {
     return false;
   }
+  // Compare whatever survived. When only the *route* is unknown the shape is
+  // perfectly readable, so a row with a different basis or a different price is
+  // plainly another order -- and admitting it would withhold the instrument
+  // until an operator looked at a row nothing about it resembled. Only an
+  // unreadable shape justifies skipping these, because then the parser has
+  // discarded them.
+  if (!shape_unreadable) {
+    if (row.type_ != entry.type_) {
+      return false;
+    }
+    if (!reconcile_detail::same_value(row.price_, entry.price_)) {
+      return false;
+    }
+  }
   if (!row.ordered_at_) {
     return true;
   }

@@ -276,6 +276,34 @@ TEST_CASE("amendment factories carry the broker's own requirements") {
   REQUIRE_FALSE(cancel_all(without_quantity).quantity_.has_value());
 }
 
+TEST_CASE("each broker says where an order actually goes", "[broker][route]") {
+  // **The real policies, not a double.** The journal test drives this through a
+  // local executor with its own hardcoded rule, so it pins the wiring and says
+  // nothing about what either broker answers -- verified, because replacing
+  // KIS's policy with the identity failed nothing. Fourth time in this branch a
+  // test has exercised a reimplementation rather than the thing reimplemented.
+  using KisTraits = BrokerTraits<kis::KisClient>;
+  using TossTraits = BrokerTraits<tossinvest::TossClient>;
+
+  // KIS documents an omitted EXCG_ID_DVSN_CD as proceeding at KRX, so an order
+  // that named no venue is not one that reaches nowhere. Recording UNSPECIFIED
+  // for it would let recovery confirm a row from any venue against it.
+  REQUIRE(KisTraits::effective_route(Venue::UNSPECIFIED) == Venue::KRX);
+  // A stated route is itself, not re-resolved.
+  REQUIRE(KisTraits::effective_route(Venue::KRX) == Venue::KRX);
+  REQUIRE(KisTraits::effective_route(Venue::NXT) == Venue::NXT);
+  REQUIRE(KisTraits::effective_route(Venue::COMBINED) == Venue::COMBINED);
+
+  // Both KIS clients share the policy, so a blocking caller records the same
+  // thing an asynchronous one does.
+  REQUIRE(BrokerTraits<kis::KisBlockingClient>::effective_route(Venue::UNSPECIFIED) == Venue::KRX);
+
+  // Toss routes nowhere and its listings carry no venue, so UNSPECIFIED is the
+  // truth about a Toss order rather than an unrecorded fact.
+  REQUIRE(TossTraits::effective_route(Venue::UNSPECIFIED) == Venue::UNSPECIFIED);
+  REQUIRE(TossTraits::effective_route(Venue::KRX) == Venue::UNSPECIFIED);
+}
+
 TEST_CASE("an amendment changes what it states and leaves the rest alone") {
   using TossTraits = BrokerTraits<tossinvest::TossClient>;
   const OrderRef<tossinvest::Broker> toss_ref{"order-1", ""};
