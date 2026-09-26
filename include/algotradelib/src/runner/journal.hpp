@@ -226,7 +226,7 @@ struct JournalEntry {
   TimeInForce time_in_force_{TimeInForce::DAY};
   OrderSession session_{OrderSession::REGULAR};
   /**
-   * The venue this runner asked the order to be routed to, where it asked.
+   * The venue this order actually reaches, where the binding can say.
    *
    * Recorded beside the shape and **not** on `instrument_`, which is identity.
    * Recovery matches a recorded instruction against a broker's listing on

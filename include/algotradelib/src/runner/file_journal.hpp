@@ -283,6 +283,97 @@ inline OrderSession order_session_from(std::string_view text) noexcept {
   return OrderSession::REGULAR;
 }
 
+/**
+ * Strict readers for a value a journal line actually carries.
+ *
+ * **A field that is absent and a field that is present but unreadable are not
+ * the same thing, and the lenient readers below cannot tell them apart.** An
+ * absent key means the line predates the field, and the documented default is
+ * then a fact about what such a line could have recorded. A present token this
+ * reader cannot parse means the line says something, and guessing what turns
+ * damage into evidence: `"SELL"` damaged to `"SEL?"` reads as a buy, `"IOC"` to
+ * `"IO?"` reads as a day order, and `"COMBINED"` to `"COMBIN?D"` moves the
+ * order to a different instrument entirely. Recovery then matches a lookalike,
+ * records its id and clears the hold on an order still at the exchange.
+ *
+ * So the strict readers answer `std::nullopt`, and `journal_entry_from_line`
+ * turns that into an entry with **no instrument at all** -- which recovery
+ * already treats as a global halt rather than withholding one instrument,
+ * because a guessed instrument is not the key the runner is trading under.
+ */
+inline std::optional<Country> known_country_from(std::string_view text) noexcept {
+  if (text == "KR") {
+    return Country::KR;
+  }
+  if (text == "US") {
+    return Country::US;
+  }
+  return std::nullopt;
+}
+
+inline std::optional<OrderSide> known_side_from(std::string_view text) noexcept {
+  if (text == "BUY") {
+    return OrderSide::BUY;
+  }
+  if (text == "SELL") {
+    return OrderSide::SELL;
+  }
+  return std::nullopt;
+}
+
+inline std::optional<OrderType> known_order_type_from(std::string_view text) noexcept {
+  for (const auto type : {
+         OrderType::UNKNOWN,
+         OrderType::LIMIT,
+         OrderType::MARKET,
+         OrderType::CONDITIONAL_LIMIT,
+         OrderType::BEST_LIMIT,
+         OrderType::PRIMARY_LIMIT,
+         OrderType::MID_PRICE,
+         OrderType::STOP_LIMIT,
+         OrderType::CLOSING_PRICE,
+       }) {
+    if (text == order_type_name(type)) {
+      return type;
+    }
+  }
+  return std::nullopt;
+}
+
+inline std::optional<TimeInForce> known_time_in_force_from(std::string_view text) noexcept {
+  for (const auto condition : {
+         TimeInForce::UNKNOWN,
+         TimeInForce::DAY,
+         TimeInForce::IMMEDIATE_OR_CANCEL,
+         TimeInForce::FILL_OR_KILL,
+       }) {
+    if (text == time_in_force_name(condition)) {
+      return condition;
+    }
+  }
+  return std::nullopt;
+}
+
+inline std::optional<OrderSession> known_order_session_from(std::string_view text) noexcept {
+  for (const auto session : {
+         OrderSession::UNKNOWN,
+         OrderSession::REGULAR,
+         OrderSession::OPENING_AUCTION,
+         OrderSession::CLOSING_AUCTION,
+         OrderSession::PRE_MARKET,
+         OrderSession::AFTER_HOURS,
+         OrderSession::AFTER_HOURS_AUCTION,
+         OrderSession::AFTER_MARKET,
+         OrderSession::GTP,
+       }) {
+    if (text == order_session_name(session)) {
+      return session;
+    }
+  }
+  return std::nullopt;
+}
+
+
 /** Returns the instant `micros` names, as microseconds since the epoch. */
 inline std::chrono::system_clock::time_point instant_from(std::int64_t micros) noexcept {
   return std::chrono::system_clock::time_point{} + std::chrono::microseconds(micros);
@@ -385,7 +476,9 @@ inline std::string journal_entry_to_line(const JournalEntry& entry) {
   row["time_in_force"] = std::string(journal_detail::time_in_force_name(entry.time_in_force_));
   row["session"] = std::string(journal_detail::order_session_name(entry.session_));
   // Distinct from `venue`, which is the instrument's identity venue. This is
-  // where the order was asked to go, and a line that omits the key entirely is
+  // where the order actually goes -- the binding resolves a request that named
+  // no venue into the one the broker's default reaches -- and a line that omits
+  // the key entirely is
   // one written before the field existed -- which is not the same as one that
   // asked for no particular venue, and recovery treats the two differently.
   if (entry.venue_) {
@@ -415,6 +508,23 @@ inline std::string journal_entry_to_line(const JournalEntry& entry) {
   return json::serialize(row);
 }
 
+/**
+ * Returns the record that stands for a torn line too short to name anything.
+ *
+ * Carries no instrument, which is exactly what makes it dangerous and exactly what it has to say:
+ * something was in flight and the journal cannot name it. Recovery turns this into a global halt
+ * rather than withholding one instrument, because there is no instrument to withhold.
+ */
+inline JournalEntry unattributable_journal_entry(std::string_view line) {
+  JournalEntry entry;
+  entry.id_ = "unknown~truncated";
+  entry.outcome_ = JournalOutcome::PENDING;
+  entry.requires_operator_ = true;
+  entry.detail_ = "a truncated journal line named no instrument; something was in flight: " +
+    std::string(line.substr(0, line.size() < 120 ? line.size() : 120));
+  return entry;
+}
+
 /** Parses one journal line, or reports nothing when it is not a complete journal object. */
 inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line) {
   boost::system::error_code error;
@@ -433,21 +543,59 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
     return std::nullopt;
   }
 
+  // **A present value this reader cannot parse is damage, not a default.**
+  // Each of these has a documented default for an *absent* key -- a line that
+  // predates the field -- and applying that default to a token the line does
+  // carry turns damage into evidence: a damaged `"SELL"` reads as a buy, a
+  // damaged `"IOC"` as a day order, and a damaged `"COMBINED"` moves the entry
+  // to an instrument the runner is not trading, so the ledger marks the wrong
+  // key and the right one is never withheld at all.
+  //
+  // An unreadable value therefore produces an entry with **no instrument**,
+  // which `unattributable_journal_entry` documents and recovery already turns
+  // into a global halt. Marking a guessed instrument would not protect the real
+  // one, because they are different keys.
+  const auto country_text = journal_detail::string_field(row, "country");
+  const auto venue_text = journal_detail::string_field(row, "venue");
+  const auto side_text = journal_detail::string_field(row, "side");
+  const auto type_text = journal_detail::string_field(row, "type");
+  const auto condition_text = journal_detail::string_field(row, "time_in_force");
+  const auto session_text = journal_detail::string_field(row, "session");
+  const auto symbol = journal_detail::string_field(row, "symbol");
+
+  const auto country = journal_detail::known_country_from(country_text);
+  const auto venue = journal_detail::known_venue_from(venue_text);
+  const auto side = journal_detail::known_side_from(side_text);
+  const auto type = journal_detail::known_order_type_from(type_text);
+  const auto condition = journal_detail::known_time_in_force_from(condition_text);
+  const auto session = journal_detail::known_order_session_from(session_text);
+
+  const bool damaged = !country || !venue || !side || !type || symbol.empty() ||
+    (!condition_text.empty() && !condition) || (!session_text.empty() && !session);
+  if (damaged) {
+    auto unattributable = unattributable_journal_entry(line);
+    const auto id = journal_detail::string_field(row, "id");
+    unattributable.id_ = (id.empty() ? std::string("unknown") : id) + "~damaged";
+    unattributable.action_ = *action;
+    unattributable.recorded_at_ = journal_detail::instant_from(at->as_int64());
+    unattributable.detail_ =
+      "a journal line carries a value this release cannot read, so the order it describes cannot "
+      "be identified; nothing may be traded until an operator resolves it: " +
+      std::string(line.substr(0, line.size() < 160 ? line.size() : 160));
+    return unattributable;
+  }
+
   JournalEntry entry;
   entry.id_ = journal_detail::string_field(row, "id");
   entry.action_ = *action;
   entry.outcome_ = *outcome;
-  entry.instrument_ = InstrumentId{
-    journal_detail::country_from(journal_detail::string_field(row, "country")),
-    journal_detail::venue_from(journal_detail::string_field(row, "venue")),
-    journal_detail::string_field(row, "symbol"),
-  };
-  entry.side_ = journal_detail::side_from(journal_detail::string_field(row, "side"));
-  entry.type_ = journal_detail::order_type_from(journal_detail::string_field(row, "type"));
-  entry.time_in_force_ =
-    journal_detail::time_in_force_from(journal_detail::string_field(row, "time_in_force"));
-  entry.session_ =
-    journal_detail::order_session_from(journal_detail::string_field(row, "session"));
+  entry.instrument_ = InstrumentId{*country, *venue, symbol};
+  entry.side_ = *side;
+  entry.type_ = *type;
+  // These two keep their documented defaults for an *absent* key only; a
+  // present value that failed to parse was caught above.
+  entry.time_in_force_ = condition ? *condition : TimeInForce::DAY;
+  entry.session_ = session ? *session : OrderSession::REGULAR;
   // Absent key -> absent value, which is "this line predates the field" rather
   // than "no route was asked for". Recovery will not attribute a row to an
   // instruction whose route nobody recorded. The field defaults to a recorded
@@ -534,22 +682,6 @@ inline std::optional<JournalEntry> salvage_journal_line(std::string_view line) {
   return entry;
 }
 
-/**
- * Returns the record that stands for a torn line too short to name anything.
- *
- * Carries no instrument, which is exactly what makes it dangerous and exactly what it has to say:
- * something was in flight and the journal cannot name it. Recovery turns this into a global halt
- * rather than withholding one instrument, because there is no instrument to withhold.
- */
-inline JournalEntry unattributable_journal_entry(std::string_view line) {
-  JournalEntry entry;
-  entry.id_ = "unknown~truncated";
-  entry.outcome_ = JournalOutcome::PENDING;
-  entry.requires_operator_ = true;
-  entry.detail_ = "a truncated journal line named no instrument; something was in flight: " +
-    std::string(line.substr(0, line.size() < 120 ? line.size() : 120));
-  return entry;
-}
 
 /**
  * Reads a journal file into a replay, salvaging a truncated final line.

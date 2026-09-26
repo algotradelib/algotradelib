@@ -212,22 +212,14 @@ enum class RouteEvidence {
  * listings carry no venue at all and never could. There is nothing to verify, so
  * the other attributes decide.
  *
- * **A residual gap, stated rather than left to be found.** Nothing on the
- * strategy path sets `PlannedOrder::venue_`, so *every* order a strategy places
- * records `UNSPECIFIED` -- and at KIS such an order still goes somewhere, KRX,
- * by the broker's documented default for an omitted field. This function
- * therefore confirms a KIS row reporting NXT against an instruction that in fact
- * went to KRX. The harm needs three things at once: this runner's own order
- * absent from the listing, a lookalike at another venue matching instrument,
- * side, quantity, price and the clock-skew window, and no third row. With both
- * rows present there are two candidates and the verdict is `AMBIGUOUS`.
- *
- * Closing it means recording where the order *actually* went rather than what
- * was asked, and only the adapter knows that -- the journal line is written
- * before the send and is broker-neutral. That is a change to the journal's
- * contract and belongs in a branch that is looking at it; see
- * `plan/todo/journal-effective-route.md`. Until then, a caller who wants the
- * comparison to be exact states `OrderRequest::venue_`, and gets it.
+ * **What the instruction "asked for" is the route it will actually take.**
+ * Nothing on the strategy path sets `PlannedOrder::venue_`, so every order a
+ * strategy places asks for `UNSPECIFIED` -- and at KIS such an order still
+ * reaches KRX, by the broker's documented default for an omitted field. So the
+ * journal does not record the request: `JournalingExecutor` asks the binding
+ * for the effective route before it writes the pending line, and it is that
+ * which lands here. A row reporting NXT therefore contradicts a default KIS
+ * order rather than confirming it.
  */
 inline RouteEvidence route_evidence(
   const OpenInstruction& instruction, const OrderSnapshot& row

@@ -709,6 +709,85 @@ TEST_CASE("a journal entry survives a round trip through a line", "[journal][fil
   REQUIRE(parsed->recorded_at_ == original.recorded_at_);
 }
 
+TEST_CASE("a damaged value makes a line unattributable, not a different order", "[journal]") {
+  // **Every one of these parsed successfully before, into a different order.**
+  // The lenient readers exist so a line written before a field existed still
+  // reads, and their defaults are a fact about such a line. Applying them to a
+  // token the line *does* carry turns damage into evidence: recovery matches a
+  // lookalike, records its id and clears the hold on an order still resting.
+  //
+  // An unreadable value now yields an entry with no instrument, which is what
+  // `unattributable_journal_entry` is for -- recovery turns that into a global
+  // halt, because a guessed instrument is not the key the runner trades under
+  // and withholding it protects nothing.
+  const auto damage = [](std::string_view field, std::string_view from, std::string_view to) {
+    auto line = runner::journal_entry_to_line(sample_entry());
+    const std::string needle = std::string("\"") + std::string(field) + "\":\"" +
+      std::string(from) + "\"";
+    const auto at = line.find(needle);
+    REQUIRE(at != std::string::npos);
+    line.replace(at, needle.size(),
+      std::string("\"") + std::string(field) + "\":\"" + std::string(to) + "\"");
+    return line;
+  };
+
+  struct Case {
+    const char* field;
+    const char* from;
+    const char* to;
+  };
+  const Case cases[] = {
+    {"country", "KR", "K?"},
+    {"venue", "COMBINED", "COMBIN?D"},
+    {"side", "SELL", "SEL?"},
+    {"type", "BEST_LIMIT", "BEST_LIM?T"},
+    {"time_in_force", "IOC", "IO?"},
+    {"session", "AFTER_MARKET", "AFTER_MARK?T"},
+  };
+
+  for (const auto& one : cases) {
+    INFO("damaged field: " << one.field);
+    const auto parsed = runner::journal_entry_from_line(damage(one.field, one.from, one.to));
+    REQUIRE(parsed.has_value());
+    // No instrument: that is what makes the halt global rather than a
+    // withholding of whatever the damage happened to spell.
+    REQUIRE(parsed->instrument_.symbol_.empty());
+    REQUIRE(parsed->requires_operator_);
+    // And specifically not the order the damage would otherwise have named.
+    REQUIRE_FALSE(parsed->instrument_ == sample_entry().instrument_);
+  }
+
+  // The undamaged line still reads as itself, so the assertions above are about
+  // the damage rather than about the reader refusing everything.
+  const auto intact = runner::journal_entry_from_line(
+    runner::journal_entry_to_line(sample_entry())
+  );
+  REQUIRE(intact.has_value());
+  REQUIRE(intact->instrument_ == sample_entry().instrument_);
+  REQUIRE_FALSE(intact->requires_operator_);
+}
+
+TEST_CASE("an absent shape key keeps its documented default", "[journal]") {
+  // The other half of the same rule: a line that predates a field has no key
+  // for it, and the default is then a fact about what such a line could have
+  // recorded. Only a *present* unreadable token is damage.
+  auto line = runner::journal_entry_to_line(sample_entry());
+  for (const auto* key : {"time_in_force", "session"}) {
+    const std::string needle = std::string(",\"") + key + "\":";
+    const auto at = line.find(needle);
+    REQUIRE(at != std::string::npos);
+    const auto end = line.find(',', at + 1);
+    REQUIRE(end != std::string::npos);
+    line.erase(at, end - at);
+  }
+  const auto parsed = runner::journal_entry_from_line(line);
+  REQUIRE(parsed.has_value());
+  REQUIRE(parsed->instrument_ == sample_entry().instrument_);
+  REQUIRE_FALSE(parsed->requires_operator_);
+  REQUIRE(parsed->time_in_force_ == TimeInForce::DAY);
+  REQUIRE(parsed->session_ == OrderSession::REGULAR);
+}
+
 TEST_CASE("an unrecognized route is unknown, not a request for no venue", "[journal]") {
   // A damaged token, or one a newer release wrote, must not read as
   // `UNSPECIFIED`. That value is a *positive* claim that no particular venue was
