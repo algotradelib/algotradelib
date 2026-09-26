@@ -69,6 +69,30 @@ inline bool flush_to_disk(std::FILE* handle) noexcept {
  * same defect the strict readers were added to stop, wearing JSON's clothes: an
  * IOC line changed to `"time_in_force":""` or `null` reads as a day order.
  */
+/**
+ * Returns whether `micros` could be an instant this library wrote.
+ *
+ * **A bound, not a check.** It catches the demonstrated case -- an `at` changed
+ * to `0`, which puts the matching window at the epoch so every real row falls
+ * outside it and the sweep writes `NOT_PLACED` for an order that exists -- and
+ * it does not catch a stamp that is merely an hour wrong, because nothing in a
+ * line can. Distinguishing a valid value from a valid-but-changed one needs the
+ * line to carry a digest of itself; see `plan/todo/journal-line-integrity.md`.
+ *
+ * The lower bound is 2020-01-01, comfortably before this library existed, and
+ * the upper is a century out, which is far enough that clock skew and a
+ * deliberately future-dated test cannot trip it while `0`, a negative, and a
+ * value near the representable limit all do. The limit matters on its own:
+ * `system_clock::duration` is finer than microseconds on some
+ * implementations, so an extreme value overflows the conversion rather than
+ * merely lying.
+ */
+inline bool plausible_instant(std::int64_t micros) noexcept {
+  constexpr std::int64_t kYear2020 = 1577836800LL * 1000000LL;
+  constexpr std::int64_t kCenturyOut = 4102444800LL * 1000000LL;
+  return micros >= kYear2020 && micros <= kCenturyOut;
+}
+
 inline bool has_field(const json::object& row, std::string_view key) {
   return row.if_contains(key) != nullptr;
 }
@@ -562,8 +586,19 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
 
   const auto action = journal_action_from(journal_detail::string_field(row, "action"));
   const auto outcome = journal_outcome_from(journal_detail::string_field(row, "outcome"));
+  // An operator-only line is exempt from the bound below, and deliberately: a
+  // salvaged fragment records the epoch precisely *because* it has no
+  // timestamp, and `requires_operator_` is what stops that epoch window
+  // resolving it. Repairing such a line writes it back, so rejecting the epoch
+  // here would make every repair unreadable on the next open. The bound is for
+  // a line that claims to be ordinary and carries an instant it cannot have.
+  const auto operator_only = row.if_contains("requires_operator");
+  const bool marked = operator_only != nullptr && operator_only->is_bool() &&
+    operator_only->as_bool();
+
   const auto at = row.if_contains("at");
-  if (!action || !outcome || at == nullptr || !at->is_int64()) {
+  if (!action || !outcome || at == nullptr || !at->is_int64() ||
+      (!marked && !journal_detail::plausible_instant(at->as_int64()))) {
     // A well-formed JSON object that is not a journal line. Treated as damage rather than as an
     // empty entry, because an entry with a default instrument would be a claim about an order.
     return std::nullopt;
@@ -679,9 +714,7 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
   entry.recorded_at_ = journal_detail::instant_from(at->as_int64());
   entry.order_id_ = journal_detail::string_field(row, "order_id");
   entry.detail_ = journal_detail::string_field(row, "detail");
-  const auto operator_only = row.if_contains("requires_operator");
-  entry.requires_operator_ = operator_only != nullptr && operator_only->is_bool() &&
-    operator_only->as_bool();
+  entry.requires_operator_ = marked;
   entry.scope_ = journal_detail::string_field(row, "scope");
   return entry;
 }

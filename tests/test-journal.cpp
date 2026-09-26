@@ -881,6 +881,47 @@ TEST_CASE("an empty or wrong-typed value is damage, not an absent key", "[journa
   }
 }
 
+TEST_CASE("an implausible instant is not read as a current one", "[journal]") {
+  // `at` changed to 0 is still an int64, so the line parsed as ordinary and its
+  // matching window sat at the epoch: every real row fell outside it, the
+  // window was already closed, and the sweep wrote NOT_PLACED for an order that
+  // exists.
+  //
+  // **This is a bound, not an integrity check.** It catches the demonstrated
+  // case and it cannot catch a stamp that is merely an hour wrong, because
+  // nothing inside a line can. See plan/todo/journal-line-integrity.md.
+  const auto with_instant = [](const char* micros) {
+    auto line = runner::journal_entry_to_line(sample_entry());
+    const auto at = line.find("\"at\":");
+    REQUIRE(at != std::string::npos);
+    const auto end = line.find_first_of(",}", at);
+    REQUIRE(end != std::string::npos);
+    line.replace(at, end - at, std::string("\"at\":") + micros);
+    return line;
+  };
+
+  for (const auto* micros : {"0", "-1", "9223372036854775807", "1000"}) {
+    INFO("at = " << micros);
+    REQUIRE_FALSE(runner::journal_entry_from_line(with_instant(micros)).has_value());
+  }
+
+  // The entry's own instant still reads, so the bound is not simply refusing.
+  REQUIRE(runner::journal_entry_from_line(
+    runner::journal_entry_to_line(sample_entry())
+  ).has_value());
+
+  // And a salvaged fragment records the epoch *because* it has no timestamp --
+  // `requires_operator_` is what stops that window resolving it -- so repairing
+  // one must not make it unreadable on the next open.
+  auto operator_only = sample_entry();
+  operator_only.requires_operator_ = true;
+  operator_only.recorded_at_ = std::chrono::system_clock::time_point{};
+  const auto repaired =
+    runner::journal_entry_from_line(runner::journal_entry_to_line(operator_only));
+  REQUIRE(repaired.has_value());
+  REQUIRE(repaired->requires_operator_);
+}
+
 TEST_CASE("a cancellation with no trustworthy target id is unattributable", "[journal]") {
   // A cancellation names an order that already exists, and `match_against`
   // finds it by that id **alone**. A line whose `order_id` is absent, empty or
