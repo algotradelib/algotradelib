@@ -487,7 +487,15 @@ inline std::string unresolvable_reason(const JournalEntry& entry) {
     return "a cancellation was journalled without the order id it names, so no row can be "
            "identified as its target; an operator must say what became of it";
   }
-  if (entry.type_ != OrderType::UNKNOWN) {
+  // **Placements only.** A cancellation is matched on the broker id alone --
+  // `row.order_id_ == entry.order_id_` and nothing else -- so its copy of the
+  // order's shape is never compared and an inconsistency in it cannot mislead
+  // anything. Applying the check to every action withheld an instrument whose
+  // identity the journal *had* recorded, for a cancellation `main` resolved
+  // without trouble: the shape is copied from the working order, so a
+  // reservation carrying an unpriced `LIMIT` or a reported `MARKET` price puts
+  // it there without the cancellation caring.
+  if (entry.action_ == JournalAction::PLACE && entry.type_ != OrderType::UNKNOWN) {
     const bool priced = carries_caller_price(entry.type_);
     if (priced && !entry.price_) {
       return "a price-bearing order was journalled without its price, so no row can be matched "

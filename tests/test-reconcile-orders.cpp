@@ -163,6 +163,45 @@ TEST_CASE("an instruction whose own line cannot decide anything needs an operato
     );
   }
 
+  SECTION("a cancellation is judged on its target id, not on the shape it copied") {
+    // A cancellation matches on `order_id_` alone, so its copy of the order's
+    // shape is never compared and an inconsistency there cannot mislead
+    // anything. The shape is copied from the working order, so a reservation
+    // carrying an unpriced LIMIT -- or a MARKET the broker reported a price for
+    // -- puts one there without the cancellation caring. Applying the placement
+    // check to it withheld an instrument whose identity the journal had
+    // recorded, for a cancellation `main` resolved without trouble.
+    auto unpriced = cancellation("KRX-1");
+    unpriced.entry_.type_ = OrderType::LIMIT;
+    unpriced.entry_.price_.reset();
+    const auto match = runner::match_against(unpriced, {row("KRX-1")}, after_the_window());
+    REQUIRE(match.verdict_ == MatchVerdict::MATCHED);
+    REQUIRE(match.order_id_ == "KRX-1");
+
+    auto priced_market = cancellation("KRX-1");
+    priced_market.entry_.type_ = OrderType::MARKET;
+    priced_market.entry_.price_ = Decimal64::parse("70000");
+    REQUIRE(
+      runner::match_against(priced_market, {row("KRX-1")}, after_the_window()).order_id_ ==
+        "KRX-1"
+    );
+
+    // And absence still concludes, rather than withholding for ever.
+    REQUIRE(
+      runner::match_against(unpriced, {}, after_the_window()).verdict_ ==
+        MatchVerdict::NOT_PLACED
+    );
+
+    // The empty-target guard still applies to a cancellation, because that one
+    // is about the field the matcher actually uses.
+    auto nameless = cancellation("KRX-1");
+    nameless.entry_.order_id_.clear();
+    REQUIRE(
+      runner::match_against(nameless, {row("KRX-1")}, after_the_window()).verdict_ ==
+        MatchVerdict::NEEDS_OPERATOR
+    );
+  }
+
   SECTION("an ordinary market order still resolves") {
     // The rule is about the *combination*, not about market orders.
     auto instruction = placement();
