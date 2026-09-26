@@ -844,6 +844,122 @@ TEST_CASE("a truncated line with a damaged value is unattributable too", "[journ
   REQUIRE(unattributable->instrument_.symbol_.empty());
 }
 
+TEST_CASE("an empty or wrong-typed value is damage, not an absent key", "[journal]") {
+  // `string_field` returns `""` for a key that is absent, one whose value is
+  // not a string, and one whose value is the empty string. The legacy defaults
+  // are a fact about the *first*; giving them to the other two is the same
+  // defect in JSON's clothing. An IOC line changed to `"time_in_force":""` or
+  // `null` read as a day order, and a lookalike could then close the wrong
+  // hold.
+  const auto replace_value = [](std::string_view field, std::string_view with) {
+    auto line = runner::journal_entry_to_line(sample_entry());
+    const std::string key = std::string("\"") + std::string(field) + "\":";
+    const auto at = line.find(key);
+    REQUIRE(at != std::string::npos);
+    const auto end = line.find(',', at);
+    REQUIRE(end != std::string::npos);
+    line.replace(at, end - at, key + std::string(with));
+    return line;
+  };
+
+  for (const auto* field : {"time_in_force", "session", "country", "side", "type", "symbol"}) {
+    for (const auto* value : {"\"\"", "null", "123", "true"}) {
+      INFO("field " << field << " = " << value);
+      const auto parsed = runner::journal_entry_from_line(replace_value(field, value));
+      REQUIRE(parsed.has_value());
+      REQUIRE(parsed->instrument_.symbol_.empty());
+      REQUIRE(parsed->requires_operator_);
+    }
+  }
+
+  // A complete line must carry a quantity; a silent zero is a claim about how
+  // much of something was ordered.
+  for (const auto* value : {"\"\"", "null"}) {
+    const auto parsed = runner::journal_entry_from_line(replace_value("quantity", value));
+    REQUIRE(parsed.has_value());
+    REQUIRE(parsed->instrument_.symbol_.empty());
+  }
+}
+
+TEST_CASE("a cancellation with no trustworthy target id is unattributable", "[journal]") {
+  // A cancellation names an order that already exists, and `match_against`
+  // finds it by that id **alone**. A line whose `order_id` is absent, empty or
+  // not a string leaves it matching nothing, and the sweep then closes it
+  // `NOT_PLACED` -- reporting that a still-resting order is gone. The id is the
+  // whole content of such a line.
+  auto cancel = sample_entry();
+  cancel.action_ = runner::JournalAction::CANCEL;
+  cancel.order_id_ = "KRX-1";
+  const auto intact = runner::journal_entry_from_line(runner::journal_entry_to_line(cancel));
+  REQUIRE(intact.has_value());
+  REQUIRE(intact->order_id_ == "KRX-1");
+  REQUIRE_FALSE(intact->requires_operator_);
+
+  const auto without = [&cancel](std::string_view with) {
+    auto line = runner::journal_entry_to_line(cancel);
+    const auto at = line.find("\"order_id\":");
+    REQUIRE(at != std::string::npos);
+    // The field may be last, so the value ends at a comma or at the brace.
+    const auto end = line.find_first_of(",}", at);
+    REQUIRE(end != std::string::npos);
+    if (with.empty()) {
+      line.erase(at - 1, end - at + 1);
+    } else {
+      line.replace(at, end - at, std::string("\"order_id\":") + std::string(with));
+    }
+    return line;
+  };
+
+  for (const auto* value : {"\"\"", "null", "42"}) {
+    INFO("order_id = " << value);
+    const auto parsed = runner::journal_entry_from_line(without(value));
+    REQUIRE(parsed.has_value());
+    REQUIRE(parsed->instrument_.symbol_.empty());
+    REQUIRE(parsed->requires_operator_);
+  }
+  const auto absent = runner::journal_entry_from_line(without(""));
+  REQUIRE(absent.has_value());
+  REQUIRE(absent->instrument_.symbol_.empty());
+
+  // A *placement* has no target id and must still read: the order does not
+  // exist yet, and inventing one would be a claim about the broker.
+  auto placement = sample_entry();
+  placement.order_id_.clear();
+  const auto placed = runner::journal_entry_from_line(runner::journal_entry_to_line(placement));
+  REQUIRE(placed.has_value());
+  REQUIRE(placed->instrument_ == placement.instrument_);
+  REQUIRE_FALSE(placed->requires_operator_);
+}
+
+TEST_CASE("a priced basis without a price is damage", "[journal]") {
+  // `carries_caller_price` says which bases state one. A limit line whose price
+  // key is gone is not a market order; it is a limit order whose price this
+  // reader cannot see, and matching on a missing price would confirm the wrong
+  // row.
+  auto entry = sample_entry();
+  entry.type_ = OrderType::LIMIT;
+  entry.price_ = Decimal64::parse("70000");
+  auto line = runner::journal_entry_to_line(entry);
+  const auto at = line.find(",\"price\":");
+  REQUIRE(at != std::string::npos);
+  const auto end = line.find(',', at + 1);
+  REQUIRE(end != std::string::npos);
+  line.erase(at, end - at);
+
+  const auto parsed = runner::journal_entry_from_line(line);
+  REQUIRE(parsed.has_value());
+  REQUIRE(parsed->instrument_.symbol_.empty());
+
+  // A market order legitimately carries none, and still reads.
+  auto market = sample_entry();
+  market.type_ = OrderType::MARKET;
+  market.price_.reset();
+  const auto readable = runner::journal_entry_from_line(runner::journal_entry_to_line(market));
+  REQUIRE(readable.has_value());
+  REQUIRE(readable->instrument_ == market.instrument_);
+  REQUIRE_FALSE(readable->price_.has_value());
+}
+
 TEST_CASE("an absent shape key keeps its documented default", "[journal]") {
   // The other half of the same rule: a line that predates a field has no key
   // for it, and the default is then a fact about what such a line could have

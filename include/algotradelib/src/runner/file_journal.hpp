@@ -58,6 +58,32 @@ inline bool flush_to_disk(std::FILE* handle) noexcept {
 }
 
 /** Returns the value of a JSON string field, or an empty string when it is absent or not one. */
+/**
+ * Returns whether the line carries `key` at all.
+ *
+ * **Presence and readability are different questions**, and `string_field`
+ * answers neither on its own: it returns `""` for a key that is absent, for one
+ * whose value is not a string, and for one whose value is an empty string. The
+ * legacy defaults in this file are justified for the *first* of those -- a line
+ * written before a field existed -- and applying them to the other two is the
+ * same defect the strict readers were added to stop, wearing JSON's clothes: an
+ * IOC line changed to `"time_in_force":""` or `null` reads as a day order.
+ */
+inline bool has_field(const json::object& row, std::string_view key) {
+  return row.if_contains(key) != nullptr;
+}
+
+/** Returns the non-empty string `key` holds, or nothing when it holds no such thing. */
+inline std::optional<std::string> readable_string(
+  const json::object& row, std::string_view key
+) {
+  const auto value = row.if_contains(key);
+  if (value == nullptr || !value->is_string() || value->as_string().empty()) {
+    return std::nullopt;
+  }
+  return std::string(value->as_string());
+}
+
 inline std::string string_field(const json::object& row, std::string_view key) {
   const auto value = row.if_contains(key);
   if (value == nullptr || !value->is_string()) {
@@ -555,29 +581,61 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
   // which `unattributable_journal_entry` documents and recovery already turns
   // into a global halt. Marking a guessed instrument would not protect the real
   // one, because they are different keys.
-  const auto country_text = journal_detail::string_field(row, "country");
-  const auto venue_text = journal_detail::string_field(row, "venue");
-  const auto side_text = journal_detail::string_field(row, "side");
-  const auto type_text = journal_detail::string_field(row, "type");
-  const auto condition_text = journal_detail::string_field(row, "time_in_force");
-  const auto session_text = journal_detail::string_field(row, "session");
-  const auto symbol = journal_detail::string_field(row, "symbol");
+  // Each field is asked two questions, because they have different answers.
+  // *Is the key there?* -- if not, the line predates the field and its
+  // documented default is a fact about such a line. *Is what it holds
+  // readable?* -- if not, the line says something this release cannot use, and
+  // guessing turns damage into evidence. `string_field` answers neither: it
+  // flattens absent, non-string and empty into the same `""`.
+  const auto read = [&row](std::string_view key) {
+    return journal_detail::readable_string(row, key);
+  };
+  // Present but unusable, for any reason: not a string, an empty string, or a
+  // token the reader could not parse. The first version of this asked only
+  // whether the *string* was readable, which let `"IOC"` damaged to `"IO?"`
+  // through -- that is a perfectly good string, and a perfectly bad condition.
+  const auto unusable = [&row](std::string_view key, bool parsed) {
+    return journal_detail::has_field(row, key) && !parsed;
+  };
 
-  const auto country = journal_detail::known_country_from(country_text);
-  const auto venue = journal_detail::known_venue_from(venue_text);
-  const auto side = journal_detail::known_side_from(side_text);
-  const auto type = journal_detail::known_order_type_from(type_text);
-  const auto condition = journal_detail::known_time_in_force_from(condition_text);
-  const auto session = journal_detail::known_order_session_from(session_text);
+  // `std::optional::and_then` is C++23 and this library is C++17.
+  const auto parsed = [&read](std::string_view key, auto reader) {
+    using Result = decltype(reader(std::string_view{}));
+    const auto text = read(key);
+    return text ? reader(*text) : Result{};
+  };
 
-  const auto quantity_text = journal_detail::string_field(row, "quantity");
-  const auto price_text = journal_detail::string_field(row, "price");
-  const auto quantity = journal_detail::known_decimal_from(quantity_text);
-  const auto price = journal_detail::known_decimal_from(price_text);
+  const auto symbol = read("symbol");
+  const auto country = parsed("country", journal_detail::known_country_from);
+  const auto venue = parsed("venue", journal_detail::known_venue_from);
+  const auto side = parsed("side", journal_detail::known_side_from);
+  const auto type = parsed("type", journal_detail::known_order_type_from);
+  const auto condition = parsed("time_in_force", journal_detail::known_time_in_force_from);
+  const auto session = parsed("session", journal_detail::known_order_session_from);
+  const auto quantity = parsed("quantity", journal_detail::known_decimal_from);
+  const auto price = parsed("price", journal_detail::known_decimal_from);
 
-  const bool damaged = !country || !venue || !side || !type || symbol.empty() ||
-    (!condition_text.empty() && !condition) || (!session_text.empty() && !session) ||
-    (!quantity_text.empty() && !quantity) || (!price_text.empty() && !price);
+  const bool damaged =
+    // Identity and the fields every complete line carries: required outright.
+    // A line this reader cannot attribute to an instrument must not be
+    // attributed to a guess, and `quantity` at a silent zero is a claim about
+    // an order's size.
+    !symbol || !country || !venue || !side || !type || !quantity ||
+    // Legacy-defaulted fields: absent is fine, present and unreadable is not.
+    unusable("time_in_force", condition.has_value()) ||
+    unusable("session", session.has_value()) ||
+    // A price is absent for a market order and required for a basis that
+    // carries one, so its presence is judged against the basis rather than
+    // assumed either way.
+    unusable("price", price.has_value()) ||
+    (type && carries_caller_price(*type) && !price) ||
+    // A cancellation names an order that already exists, and the matcher finds
+    // it **by that id alone**. A line whose target id is absent, empty or not a
+    // string leaves the cancellation matching nothing, so the sweep eventually
+    // closes it `NOT_PLACED` -- reporting that a still-resting order is gone.
+    // The id is the whole content of such a line; without it there is nothing
+    // to reconcile and nothing to guess.
+    (*action == JournalAction::CANCEL && !journal_detail::readable_string(row, "order_id"));
   if (damaged) {
     auto unattributable = unattributable_journal_entry(line);
     const auto id = journal_detail::string_field(row, "id");
@@ -595,7 +653,7 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
   entry.id_ = journal_detail::string_field(row, "id");
   entry.action_ = *action;
   entry.outcome_ = *outcome;
-  entry.instrument_ = InstrumentId{*country, *venue, symbol};
+  entry.instrument_ = InstrumentId{*country, *venue, *symbol};
   entry.side_ = *side;
   entry.type_ = *type;
   // These two keep their documented defaults for an *absent* key only; a
@@ -614,10 +672,8 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
   // Damaged numbers land in the same place as damaged enumerations, for the
   // same reason -- and they used to land somewhere far worse, throwing out of
   // recovery entirely. See `known_decimal_from`.
-  if (!quantity_text.empty()) {
-    entry.quantity_ = *quantity;
-  }
-  if (!price_text.empty()) {
+  entry.quantity_ = *quantity;
+  if (price) {
     entry.price_ = *price;
   }
   entry.recorded_at_ = journal_detail::instant_from(at->as_int64());
