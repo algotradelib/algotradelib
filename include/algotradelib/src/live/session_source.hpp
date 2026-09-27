@@ -529,7 +529,7 @@ private:
    * amounts that differ are a conflict and the held one stands.
    */
   void take_figure(
-    std::vector<Money>& totals,
+    std::vector<runner::ChargedCosts::StatedTotal>& totals,
     ObservedFigure& held,
     const std::optional<Money>& now,
     const Decimal64& quantity

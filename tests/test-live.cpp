@@ -2294,3 +2294,39 @@ TEST_CASE("a sum that will not fit is counted, not silently left out of the tota
   CHECK(source.charged_costs().commission_in(Currency::krw()) ==
         std::optional<Decimal64>(Decimal64::parse("5000000000000000000")));
 }
+
+TEST_CASE("a zero stated in a currency already seen is still an observation of that run") {
+  // Round 6's counterexample, and the narrower half of the one before it. Keeping a zero only when
+  // its currency was *new* left the ordinary case broken: a run whose only observation is an order
+  // stating zero, in a currency an earlier run already saw, moves no total -- so a delta computed
+  // from the money alone omitted it and the run reported absence where the broker had spoken.
+  // What decides whether something was stated is the count of accepted statements, not the money.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  auto first = charged_row("A1", "10", "5");
+  first.order_.execution_.tax_ = Money{Decimal64::parse("3"), Currency::krw()};
+  poll_rows(source, live_runner, session, {first});
+  const auto after_first_run = source.charged_costs();
+
+  auto second = charged_row("B1", "10", "0");
+  second.order_.execution_.tax_ = Money{Decimal64::parse("0"), Currency::krw()};
+  poll_rows(source, live_runner, session, {second});
+
+  const auto second_run = source.charged_costs().since(after_first_run);
+  // The broker stated zero, so the run states zero -- not nothing.
+  CHECK(second_run.commission_in(Currency::krw()) ==
+        std::optional<Decimal64>(Decimal64::parse("0")));
+  CHECK(second_run.tax_in(Currency::krw()) == std::optional<Decimal64>(Decimal64::parse("0")));
+  CHECK(second_run.commission_statements_in(Currency::krw()) == 1);
+  CHECK(second_run.orders_stating_cost_ == 1);
+
+  // And a run that observed nothing new still reports nothing, which is the other half: the
+  // distinction is between a statement of zero and no statement, not between zero and non-zero.
+  const auto after_second_run = source.charged_costs();
+  poll_rows(source, live_runner, session, {second});
+  const auto third_run = source.charged_costs().since(after_second_run);
+  CHECK_FALSE(third_run.commission_in(Currency::krw()));
+  CHECK(third_run.commission_.empty());
+}

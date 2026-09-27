@@ -2980,6 +2980,18 @@ namespace {
  * is withdrawn either way, and only a second eligible order behind it can demonstrate that nothing
  * filled after the refusal.
  */
+/** Buys one share at a time, so a huge per-execution commission can be charged twice over. */
+struct BuysOneEachBar {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ctx.submit(
+      strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
+      ).with_tag("buys-one")
+    );
+  }
+};
+
 /** Buys a quantity whose notional cannot fit an exact decimal, to reach the ledger's refusal. */
 struct BuysHuge {
   template <class Ctx>
@@ -3474,6 +3486,36 @@ TEST_CASE("a cost total that will not sum is stated as incomplete rather than sh
   const auto report = backtest::summarize(result, fills);
   CHECK(report.caveats_.cost_totals_incomplete_);
   // Nothing is stated rather than a figure short by an amount nobody can name.
+  CHECK_FALSE(report.commission_paid_);
+  CHECK_FALSE(report.institution_fees_paid_);
+}
+
+TEST_CASE("an unsummable cost total is reported through a real replay, not only a built result") {
+  // The route rather than the arithmetic: the previous case builds a `ReplayResult` directly, and
+  // review asked for one that reaches `summarize` the way a replay does -- through the fill model,
+  // the ledger's acceptance, and the engine's own accounting. Two one-share fills, each charged a
+  // commission that is representable on its own and not when added to the other.
+  backtest::ReplayConfig config = replay_config();
+  config.cash_ = Decimal64::parse("9000000000000000000");
+
+  backtest::Backtester<BuysOneEachBar> engine(
+    BuysOneEachBar{}, config,
+    backtest::NextBarFillModel(backtest::CommissionModel::of(Decimal64::parse("5000000000000000000")))
+  );
+  for (int day = 10; day < 14; ++day) {
+    engine.feed(moving_bar(utc(2026, 3, day, 6, 30), BarInterval::ONE_DAY, "1", "1"));
+  }
+  engine.finish();
+
+  // Each fill's own arithmetic fits -- 5e18 charged against 9e18 of cash, then against what is
+  // left, which goes negative and stays representable -- so the ledger accepts them and the
+  // replay runs to the end. Their sum is 1e19, which
+  // does not fit, and that is what the report has to say rather than quietly state the first.
+  REQUIRE_FALSE(engine.result().halted_);
+  REQUIRE(engine.result().executions_.size() >= 2);
+
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  CHECK(report.caveats_.cost_totals_incomplete_);
   CHECK_FALSE(report.commission_paid_);
   CHECK_FALSE(report.institution_fees_paid_);
 }

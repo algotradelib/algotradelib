@@ -52,7 +52,7 @@ namespace math = algotradelib::math;
  * executed nothing -- neither is a charge of zero, and printing `0` would say it was.
  */
 std::string money_or_absent(const std::optional<algotradelib::Decimal64>& amount) {
-  return amount ? amount->str() : std::string("(not a single currency)");
+  return amount ? amount->str() : std::string("(absent: see the caveats)");
 }
 
 

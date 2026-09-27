@@ -39,7 +39,7 @@ namespace math = algotradelib::math;
  * executed nothing -- neither is a charge of zero, and printing `0` would say it was.
  */
 std::string money_or_absent(const std::optional<algotradelib::Decimal64>& amount) {
-  return amount ? amount->str() : std::string("(not a single currency)");
+  return amount ? amount->str() : std::string("(absent: see the caveats)");
 }
 
 
@@ -166,6 +166,13 @@ void print(const std::string& title, const backtest::Report& report) {
               << applied.minimum_.str() << " floor, "
               << commission_origin_name(applied.origin_) << ", charged "
               << applied.executions_ << " execution(s)\n";
+  }
+  if (report.caveats_.cost_totals_incomplete_) {
+    // The third reason a total can be absent, and the one a reader must not miss: it is not that
+    // the run spanned currencies or traded nothing, it is that an addition did not fit and the
+    // figures below it are short by an amount nobody can name.
+    std::cout << "  cost totals     INCOMPLETE -- an exact sum did not fit; slippage is understated"
+              << " and the fee totals are withheld\n";
   }
   if (report.caveats_.inclusive_commission_executions_ > 0) {
     std::cout << "  commission is    inclusive of any institution charge on "

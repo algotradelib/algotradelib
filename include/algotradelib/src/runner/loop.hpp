@@ -273,15 +273,34 @@ struct source_provides_working_orders<
  */
 struct ChargedCosts {
   /**
+   * One currency's running figure, and **how many accepted statements are in it**.
+   *
+   * The count is what makes "the broker said something this run" answerable, and inferring it from
+   * the money does not work: a broker that states a charge of zero moves no total, so a run in
+   * which that was the only thing observed looked identical to a run in which nothing was
+   * observed -- which is the absence-versus-zero contract inverted, in the one place it is hardest
+   * to notice. Review demonstrated both halves of it with a probe; the first fix caught only the
+   * case where the currency was new.
+   *
+   * Monotone, like the order counters and for the same reason: `since` subtracts it.
+   */
+  struct StatedTotal {
+    /** The running figure for this currency. */
+    Money amount_;
+    /** How many accepted figures have contributed to it. */
+    std::size_t statements_{0};
+  };
+
+  /**
    * Broker-stated commission observed, per currency.
    *
    * Per currency because `Money` refuses to add unlike currencies and a run can poll a universe
    * spanning markets: one scalar would either be wrong or would have to refuse to exist. A currency
    * nobody stated a cost in has **no entry**, which is not the same as an entry of zero.
    */
-  std::vector<Money> commission_;
+  std::vector<StatedTotal> commission_;
   /** Broker-stated tax observed, per currency, on the same terms. */
-  std::vector<Money> tax_;
+  std::vector<StatedTotal> tax_;
   /**
    * How many distinct orders have **ever** stated a cost, including a stated zero.
    *
@@ -331,22 +350,22 @@ struct ChargedCosts {
 
   /** Returns the commission observed in `currency`, or nothing when none was stated in it. */
   std::optional<Decimal64> commission_in(const Currency& currency) const {
-    for (const auto& amount : commission_) {
-      if (amount.currency_ == currency) {
-        return amount.amount_;
-      }
-    }
-    return std::nullopt;
+    return figure_in(commission_, currency);
   }
 
   /** Returns the tax observed in `currency`, or nothing when none was stated in it. */
   std::optional<Decimal64> tax_in(const Currency& currency) const {
-    for (const auto& amount : tax_) {
-      if (amount.currency_ == currency) {
-        return amount.amount_;
-      }
-    }
-    return std::nullopt;
+    return figure_in(tax_, currency);
+  }
+
+  /** Returns how many accepted commission statements `currency` holds. */
+  std::size_t commission_statements_in(const Currency& currency) const {
+    return statements_in(commission_, currency);
+  }
+
+  /** Returns how many accepted tax statements `currency` holds. */
+  std::size_t tax_statements_in(const Currency& currency) const {
+    return statements_in(tax_, currency);
   }
 
   /**
@@ -358,20 +377,47 @@ struct ChargedCosts {
    * incomplete monetary answer, which is the one thing every exact-decimal path here exists to
    * avoid. It takes two individually representable figures to reach, and the type accepts both.
    */
-  bool add(std::vector<Money>& totals, const Money& amount) {
+  bool add(std::vector<StatedTotal>& totals, const Money& amount) {
     for (auto& held : totals) {
-      if (held.currency_ == amount.currency_) {
-        const auto sum = decimal_add(held.amount_, amount.amount_);
+      if (held.amount_.currency_ == amount.currency_) {
+        const auto sum = decimal_add(held.amount_.amount_, amount.amount_);
         if (!sum) {
           ++unrepresentable_sums_;
           return false;
         }
-        held.amount_ = *sum;
+        held.amount_.amount_ = *sum;
+        ++held.statements_;
         return true;
       }
     }
-    totals.push_back(amount);
+    totals.push_back(StatedTotal{amount, 1});
     return true;
+  }
+
+  /** Returns the figure held for `currency`, or nothing when none was stated in it. */
+  static std::optional<Decimal64> figure_in(
+    const std::vector<StatedTotal>& totals,
+    const Currency& currency
+  ) {
+    for (const auto& held : totals) {
+      if (held.amount_.currency_ == currency) {
+        return held.amount_.amount_;
+      }
+    }
+    return std::nullopt;
+  }
+
+  /** Returns how many accepted statements `currency` holds in `totals`. */
+  static std::size_t statements_in(
+    const std::vector<StatedTotal>& totals,
+    const Currency& currency
+  ) {
+    for (const auto& held : totals) {
+      if (held.amount_.currency_ == currency) {
+        return held.statements_;
+      }
+    }
+    return 0;
   }
 
   /**
@@ -389,30 +435,36 @@ struct ChargedCosts {
    */
   ChargedCosts since(const ChargedCosts& before) const {
     ChargedCosts delta;
-    const auto difference = [](const std::vector<Money>& now, const std::vector<Money>& then) {
-      std::vector<Money> out;
-      for (const auto& amount : now) {
-        bool existed = false;
+    const auto difference = [](
+      const std::vector<StatedTotal>& now,
+      const std::vector<StatedTotal>& then
+    ) {
+      std::vector<StatedTotal> out;
+      for (const auto& held : now) {
         auto earlier = Decimal64::parse("0");
+        std::size_t before_statements = 0;
         for (const auto& was : then) {
-          if (was.currency_ == amount.currency_) {
-            existed = true;
-            earlier = was.amount_;
+          if (was.amount_.currency_ == held.amount_.currency_) {
+            earlier = was.amount_.amount_;
+            before_statements = was.statements_;
             break;
           }
         }
-        const auto moved = decimal_subtract(amount.amount_, earlier);
+        // **Whether anything was stated this run is the statement count, not the money.** A broker
+        // that states a charge of zero moves no total, so a delta of zero says nothing about
+        // whether it spoke -- and testing the money made a stated zero indistinguishable from
+        // silence whenever the currency had been seen before. A currency whose count did not rise
+        // had nothing observed for it in this run and stays out.
+        if (held.statements_ == before_statements) {
+          continue;
+        }
+        const auto moved = decimal_subtract(held.amount_.amount_, earlier);
         if (!moved) {
           continue;
         }
-        // **A currency seen for the first time in this run is stated even at zero**, and dropping
-        // it was a straight contradiction of the contract right above: a broker that stated zero
-        // said something, and omitting the entry made it read as a broker that said nothing. A
-        // currency that was already there and did not move is a different case -- nothing was
-        // observed for it in this run -- and stays out.
-        if (moved->coefficient() != 0 || !existed) {
-          out.push_back(Money{*moved, amount.currency_});
-        }
+        out.push_back(
+          StatedTotal{Money{*moved, held.amount_.currency_}, held.statements_ - before_statements}
+        );
       }
       return out;
     };

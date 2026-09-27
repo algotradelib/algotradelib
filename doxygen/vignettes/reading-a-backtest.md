@@ -184,6 +184,20 @@ Three things to know before you rely on it:
 `ReportCaveats::applied_rates_` then lists the rates that actually **charged** something, each with
 its origin and how many executions it charged — not the rows the schedule happens to contain.
 
+**`Report::commission_paid_` is optional, and there are three reasons it can be absent.** Two are
+ordinary and one is not:
+
+1. **The replay executed nothing.** No trade, no total — which is not a charge of zero.
+2. **The replay spanned currencies.** `commission_by_currency_` is the answer, and a scalar could
+   only have been a sum of unlike money.
+3. **An addition did not fit an exact decimal**, which sets `ReportCaveats::cost_totals_incomplete_`.
+   Then the per-currency vectors hold only what could be added and `slippage_paid_` is understated
+   by whatever was refused. It takes figures far beyond any real account to reach; it is reported
+   because a money total that is quietly short is worse than one that says it is short.
+
+`institution_fees_paid_` is absent for those three reasons and a fourth: any rate that stated a
+single figure without splitting the components, counted in `inclusive_commission_executions_`.
+
 No tax model, deliberately: Korean securities transaction tax has changed repeatedly, and a hard-coded
 number that moves would silently misprice every run after it changed. State it in the rate for sells if
 you want it.
