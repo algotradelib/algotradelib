@@ -20,6 +20,35 @@ namespace kis {
 // https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/auth/auth_examples.py
 // https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/auth/auth_functions.py
 struct KisConfig;
+
+/**
+ * Which venue's book a KIS domestic market-data call reads.
+ *
+ * KIS-private on purpose. A tape is Korean market structure -- two venues trading
+ * one listing, plus the consolidated feed over them -- and broker-neutral `core/`
+ * has nothing to normalize it to. See `KisConfig::market_tape_`.
+ */
+enum class MarketTape {
+  /** The consolidated KRX+NXT tape (`UN`). */
+  CONSOLIDATED,
+  /** KRX alone (`J`). */
+  KRX,
+  /** NXT alone (`NX`). */
+  NXT,
+};
+
+/** Returns the `FID_COND_MRKT_DIV_CODE` value for `tape`. */
+inline constexpr const char* market_division_code(MarketTape tape) noexcept {
+  switch (tape) {
+    case MarketTape::KRX:
+      return "J";
+    case MarketTape::NXT:
+      return "NX";
+    case MarketTape::CONSOLIDATED:
+      return "UN";
+  }
+  return "UN";
+}
 struct KisRest;
 struct KisWebsocket;
 
@@ -57,6 +86,34 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
   // std::string app_secret_; // length = 180
   /** Whether to use KIS's 모의투자 endpoints. Set from `KIS_DEMO=1`. */
   bool is_demo_ = false;
+
+  /**
+   * Which book KIS's domestic market-data calls read.
+   *
+   * KRX-listed equities trade on two venues since Nextrade opened (2025-03-04),
+   * and `FID_COND_MRKT_DIV_CODE` selects which one a quote, a bar, the depth, the
+   * price limits or the recent prints describe: `J` is KRX alone, `NX` is NXT
+   * alone, `UN` is the consolidated tape.
+   *
+   * **It is one setting for every market-data verb, and that is the point.** Five
+   * of the seven verbs used to send `J` unconditionally while the quote derived its
+   * code from the instrument, so a caller's last price came from the consolidated
+   * tape and their bars from KRX -- and `Context::last_price`, which the exposure
+   * ceiling is measured against, is written from both.
+   *
+   * **It is deliberately not read from `InstrumentId::venue_`.** That field is an
+   * identity: `validate_order` refuses an order whose instrument names anything but
+   * the combined venue, because a holding carries no venue and a mismatch makes
+   * `Portfolio::working_quantity` read zero. A tape is a question about data, not
+   * about which instrument this is, so it lives here where changing it cannot
+   * invalidate an order.
+   *
+   * Consolidated by default, which is what a Korean equity's price means when
+   * nobody says otherwise, and what Toss reports -- its market data takes no tape
+   * parameter at all and its trading hours are stated on the 통합 (KRX+NXT) basis.
+   * So the default makes the two brokers answer the same question.
+   */
+  MarketTape market_tape_ = MarketTape::CONSOLIDATED;
 
   /** Reads KIS credentials and environment selection from process variables. */
   void from_env_impl() {

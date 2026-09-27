@@ -42,6 +42,10 @@ struct KisClientTestAccess {
     return KisClient::parse_buying_power(std::move(response));
   }
 
+  static std::string market_query(const kis::KisConfig& config, const std::string& symbol) {
+    return KisClient::market_query(config, symbol);
+  }
+
   static network::HttpRequest buying_power_request(
     const KisConfig& config,
     std::string_view access_token,
@@ -1734,6 +1738,65 @@ TEST_CASE(
   REQUIRE(match.order_id_ == "0001569139");
   // Stated as its own assertion because it is the harm, not the mechanism.
   REQUIRE(match.verdict_ != runner::MatchVerdict::NOT_PLACED);
+}
+
+TEST_CASE("every KIS market-data request reads the tape the adapter was told to", "[broker][kis]") {
+  // The defect this replaces: five of the seven domestic market-data verbs sent `J` (KRX alone)
+  // unconditionally while the quote derived its code from `InstrumentId::venue_`, whose default
+  // means the consolidated tape. So a caller's last price and their bars described different
+  // markets, and `Context::last_price` -- what the exposure ceiling is measured against -- is
+  // written from both.
+  kis::KisConfig config;
+
+  SECTION("consolidated is the default") {
+    REQUIRE(std::string(kis::market_division_code(config.market_tape_)) == "UN");
+    REQUIRE(
+      kis::KisClientTestAccess::market_query(config, "005930") ==
+      "?FID_COND_MRKT_DIV_CODE=UN&FID_INPUT_ISCD=005930"
+    );
+  }
+
+  SECTION("each tape has one code, and the fragment carries it") {
+    config.market_tape_ = kis::MarketTape::KRX;
+    REQUIRE(std::string(kis::market_division_code(config.market_tape_)) == "J");
+    REQUIRE(
+      kis::KisClientTestAccess::market_query(config, "005930") ==
+      "?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=005930"
+    );
+
+    config.market_tape_ = kis::MarketTape::NXT;
+    REQUIRE(std::string(kis::market_division_code(config.market_tape_)) == "NX");
+    REQUIRE(
+      kis::KisClientTestAccess::market_query(config, "005930") ==
+      "?FID_COND_MRKT_DIV_CODE=NX&FID_INPUT_ISCD=005930"
+    );
+  }
+
+  SECTION("the instrument cannot influence it, by construction") {
+    // `market_query` takes a symbol and a config and **no `InstrumentId`**, which is the guarantee
+    // rather than an assertion about it: there is no identity for a tape to be derived from. That
+    // matters because the first draft of this change did derive it from `InstrumentId::venue_`,
+    // and setting that field to name a book makes an order invalid -- see the next test.
+    REQUIRE(
+      kis::KisClientTestAccess::market_query(config, "000660").find("FID_INPUT_ISCD=000660") !=
+      std::string::npos
+    );
+  }
+}
+
+TEST_CASE("choosing a tape cannot invalidate an order", "[broker][kis][order]") {
+  // The reason the tape is a setting rather than a field on the instrument. `validate_order` refuses
+  // an order whose `instrument_.venue_` is anything but the combined venue, because a holding
+  // carries no venue and a mismatch makes `Portfolio::working_quantity` read zero resting quantity.
+  // So a caller told to "set Venue::KRX to read the KRX book" would have broken their own trading.
+  for (const auto tape :
+       {kis::MarketTape::CONSOLIDATED, kis::MarketTape::KRX, kis::MarketTape::NXT}) {
+    kis::KisConfig config;
+    config.market_tape_ = tape;
+    auto order = korean_limit_buy();
+    std::string division;
+    REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division, config));
+  }
 }
 
 TEST_CASE("a KIS demo account trades on KRX and is told so before I/O", "[broker][kis][order]") {

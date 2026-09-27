@@ -926,9 +926,8 @@ private:
         from = previous_day(from);
       }
       request.target_ =
-        "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
-        "?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=" +
-        broker_detail::query_encode(operation->query_.instrument_.symbol_) +
+        "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice" +
+        market_query(config_, operation->query_.instrument_.symbol_) +
         "&FID_INPUT_DATE_1=" + compact_date(from) +
         "&FID_INPUT_DATE_2=" + compact_date(operation->date_) +
         "&FID_PERIOD_DIV_CODE=" + period_code(operation->query_.interval_) +
@@ -938,16 +937,14 @@ private:
       transaction = "FHKST03010100";
     } else if (today_in_korea(operation->date_)) {
       request.target_ =
-        "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
-        "?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=" +
-        broker_detail::query_encode(operation->query_.instrument_.symbol_) +
+        "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice" +
+        market_query(config_, operation->query_.instrument_.symbol_) +
         "&FID_INPUT_HOUR_1=" + operation->time_ + "&FID_PW_DATA_INCU_YN=Y&FID_ETC_CLS_CODE=";
       transaction = "FHKST03010200";
     } else {
       request.target_ =
-        "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"
-        "?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=" +
-        broker_detail::query_encode(operation->query_.instrument_.symbol_) +
+        "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice" +
+        market_query(config_, operation->query_.instrument_.symbol_) +
         "&FID_INPUT_DATE_1=" + compact_date(operation->date_) +
         "&FID_INPUT_HOUR_1=" + operation->time_ + "&FID_PW_DATA_INCU_YN=Y&FID_FAKE_TICK_INCU_YN=N";
       transaction = "FHKST03010230";
@@ -1586,8 +1583,7 @@ private:
           // Market data is the traffic the trading reserve holds back.
           request.group_ = network::RateLimitGroup::MARKET_DATA;
           request.method_ = http::verb::get;
-          request.target_ = path + "?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=" +
-            broker_detail::query_encode(instrument.symbol_);
+          request.target_ = path + market_query(self->config_, instrument.symbol_);
           request.headers_ = {
             {"authorization", "Bearer " + self->token_.access_token_},
             {"appkey", self->config_.key()},
@@ -1791,8 +1787,7 @@ private:
           request.method_ = http::verb::get;
           request.target_ =
             "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
-            "?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=" +
-            broker_detail::query_encode(instrument.symbol_);
+            + market_query(self->config_, instrument.symbol_);
           request.headers_ = {
             {"authorization", "Bearer " + self->token_.access_token_},
             {"appkey", self->config_.key()},
@@ -2167,22 +2162,42 @@ private:
     }
   }
 
-  void request_quote(InstrumentId instrument, QuoteHandler completion) {
-    const char* market = "UN";
-    if (instrument.venue_ == Venue::KRX) {
-      market = "J";
-    } else if (instrument.venue_ == Venue::NXT) {
-      market = "NX";
-    }
+  /**
+   * Returns the query fragment naming the tape to read and the instrument to read.
+   *
+   * **Every domestic market-data request in this adapter builds this pair, and after
+   * this function exists there is exactly one place that does** -- so
+   * `FID_COND_MRKT_DIV_CODE` appears once in this file rather than six times, and a
+   * seventh endpoint cannot quietly disagree with the other six about which book it
+   * reads. That is what went wrong before: five verbs sent `J` unconditionally while
+   * the quote derived its code from the instrument, so a caller's last price and
+   * their bars described different markets, and `Context::last_price` -- which the
+   * exposure ceiling is measured against -- was written from both.
+   *
+   * The symbol is percent-encoded here for every caller. The quote path used to
+   * interpolate it raw; a Korean six-digit code encodes to itself, so this changes
+   * no request that has ever been sent, and it removes a difference that had no
+   * reason to exist.
+   */
+  static std::string market_query(const KisConfig& config, const std::string& symbol) {
+    return "?FID_COND_MRKT_DIV_CODE=" + std::string(market_division_code(config.market_tape_)) +
+      "&FID_INPUT_ISCD=" + broker_detail::query_encode(symbol);
+  }
 
+  void request_quote(InstrumentId instrument, QuoteHandler completion) {
+    // **The tape is a setting, not a property of the instrument.** This used to read
+    // `instrument.venue_`, which made the quote the one verb that honoured it while the
+    // other six sent `J` -- so a caller's last price and their bars described different
+    // books. It was also unreachable for anything tradeable: `validate_order` refuses an
+    // order whose instrument names a venue other than the combined one, so an instrument
+    // marked KRX or NXT could be quoted and never traded.
     network::HttpRequest request;
     // Quote polling is the traffic a reserve exists to hold back.
     request.group_ = network::RateLimitGroup::MARKET_DATA;
     request.method_ = http::verb::get;
     request.target_ =
       "/uapi/domestic-stock/v1/quotations/inquire-price"
-      "?FID_COND_MRKT_DIV_CODE=" +
-      std::string(market) + "&FID_INPUT_ISCD=" + instrument.symbol_;
+      + market_query(config_, instrument.symbol_);
     request.headers_ = {
       {"authorization", "Bearer " + token_.access_token_},
       {"appkey", config_.key()},
