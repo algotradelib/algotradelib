@@ -3317,3 +3317,72 @@ TEST_CASE("a calendar revised by on_stop is in force for the closing pass", "[lo
   CHECK(report.final_phase_ == strategy::MarketPhase::OPEN);
   CHECK(runner_instance.executor().placed().size() == 1);
 }
+
+namespace {
+
+/**
+ * A source that states a broker charge on every poll, for testing the loop's run-scope arithmetic.
+ *
+ * It inherits the manual source rather than reimplementing it because the loop reaches a source
+ * through duck typing, and what is being tested here is the loop's differencing rather than any
+ * accumulation rule -- those are asserted against the real `live::SessionSource` in `test-live`.
+ */
+struct ChargingSource : runner::ManualSource<InertRunner> {
+  runner::ChargedCosts charged_;
+
+  const runner::ChargedCosts& charged_costs() const noexcept { return charged_; }
+
+  runner::PollOutcome poll(runner::PollKind kind, InertRunner& runner_instance) {
+    if (kind == runner::PollKind::BARS) {
+      charged_.add(charged_.commission_, algotradelib::Money{algotradelib::Decimal64::parse("100"), algotradelib::Currency::krw()});
+      ++charged_.orders_stating_cost_;
+    }
+    return runner::ManualSource<InertRunner>::poll(kind, runner_instance);
+  }
+};
+
+using ChargingLoop = runner::PollingLoop<InertRunner, ChargingSource, runner::ManualClock>;
+
+} // namespace
+
+TEST_CASE("a second run reports its own charges rather than the first run's as well", "[loop]") {
+  // A `SessionSource` outlives the runs made against it and accumulates absolutely, while
+  // `Loop::run` builds a fresh report each call. Copying the absolute figure at the end would put
+  // the first run's charges into the second run's report -- and a figure that grew every run while
+  // the account was charged the same amount would be indistinguishable from a busier day.
+  //
+  // Differenced around the run, exactly as `sends_outside_permitted_phase` already is.
+  InertRunner runner_instance;
+  ChargingSource source;
+  ChargingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  const auto first = loop.run(stop, 3);
+  REQUIRE(first.iterations_ == 3);
+  CHECK(first.charged_costs_.commission_in(algotradelib::Currency::krw()) ==
+        std::optional<algotradelib::Decimal64>(algotradelib::Decimal64::parse("300")));
+  CHECK(first.charged_costs_.orders_stating_cost_ == 3);
+
+  const auto second = loop.run(stop, 2);
+  REQUIRE(second.iterations_ == 2);
+  CHECK(second.charged_costs_.commission_in(algotradelib::Currency::krw()) ==
+        std::optional<algotradelib::Decimal64>(algotradelib::Decimal64::parse("200")));
+  CHECK(second.charged_costs_.orders_stating_cost_ == 2);
+
+  // The source itself still holds the whole history, which is what makes the subtraction possible.
+  CHECK(source.charged_costs().commission_in(algotradelib::Currency::krw()) ==
+        std::optional<algotradelib::Decimal64>(algotradelib::Decimal64::parse("500")));
+}
+
+TEST_CASE("a run in which nothing was charged reports no currency at all", "[loop]") {
+  // Absence is not zero on the way out either: a run that observed no stated cost must not produce
+  // an entry reading zero, which would claim the broker charged nothing.
+  InertRunner runner_instance;
+  InertSource source;
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 2);
+  CHECK(report.charged_costs_.commission_.empty());
+  CHECK_FALSE(report.charged_costs_.commission_in(algotradelib::Currency::krw()));
+}

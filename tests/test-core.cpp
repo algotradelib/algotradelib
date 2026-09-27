@@ -1225,6 +1225,26 @@ CommissionRate rate_row(
   return row;
 }
 
+/** Builds one venue-keyed commission row, with both components stated. */
+CommissionRate venue_row(
+  Venue venue,
+  const char* rate,
+  const char* institution,
+  std::optional<Date> from = std::nullopt,
+  std::optional<Date> until = std::nullopt
+) {
+  CommissionRate row;
+  row.country_ = Country::KR;
+  const auto key = VenueKey::normalized(venue);
+  REQUIRE(key);
+  row.venue_ = *key;
+  row.rate_ = Decimal64::parse(rate);
+  row.institution_rate_ = Decimal64::parse(institution);
+  row.from_ = std::move(from);
+  row.until_ = std::move(until);
+  return row;
+}
+
 /** Builds a limit buy order for ten shares of one Korean equity. */
 OrderRequest korean_limit_buy() {
   OrderRequest order;
@@ -4458,4 +4478,145 @@ TEST_CASE(
   );
   REQUIRE_FALSE(malformed);
   REQUIRE(malformed.error().category_ == ErrorCategory::PROTOCOL);
+}
+
+TEST_CASE("a venue key keeps three kinds apart") {
+  // The defect this type replaced: an unnormalized row defaulted to `Venue::UNSPECIFIED`, which was
+  // also how a row said "any venue" -- so a rate published for a market nobody normalized could be
+  // charged on every venue. The kinds are compared before the values for that reason.
+  const auto neutral = VenueKey::any();
+  const auto krx = VenueKey::normalized(Venue::KRX);
+  const auto raw_krx = VenueKey::raw("KRX");
+  REQUIRE(krx);
+  REQUIRE(raw_krx);
+
+  CHECK(neutral.is_any());
+  CHECK(krx->matches(*krx));
+  CHECK_FALSE(krx->matches(neutral));
+  CHECK_FALSE(neutral.matches(*krx));
+  // Same text, different kind, and they must not be the same key: nothing has established that the
+  // broker's `KRX` means this library's `Venue::KRX`.
+  CHECK_FALSE(raw_krx->matches(*krx));
+  CHECK_FALSE(krx->matches(*raw_krx));
+  CHECK(raw_krx->matches(*VenueKey::raw("KRX")));
+  CHECK_FALSE(raw_krx->matches(*VenueKey::raw("NXT")));
+
+  // `UNSPECIFIED` is the absence of a statement, which is `any()`, so it is refused here rather than
+  // quietly becoming a fourth spelling of neutral.
+  CHECK_FALSE(VenueKey::normalized(Venue::UNSPECIFIED));
+  // A code too long to preserve, and an empty one, are both refused rather than stored as blank.
+  CHECK_FALSE(VenueKey::raw("VERYLONGVENUECODE"));
+  CHECK_FALSE(VenueKey::raw(""));
+}
+
+TEST_CASE("a schedule charges the venue's own rate, and falls back only when none names it") {
+  // The gap this closes: KRX and NXT charge differently at both brokers, and a rate keyed on
+  // `Country` alone charged a KRX fill and an NXT fill the same number with no way to say otherwise.
+  CommissionSchedule schedule;
+  schedule.origin_ = CommissionOrigin::CALLER_STATED;
+  schedule.tariff_ = "online, branch-opened account";
+  schedule.rates_.push_back(venue_row(Venue::KRX, "0.00147", "0.000036396"));
+  schedule.rates_.push_back(venue_row(Venue::NXT, "0.00146", "0.000031833"));
+
+  const auto date = Date{2026, 9, 23};
+  const auto on_krx = schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::KRX), date);
+  const auto on_nxt = schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::NXT), date);
+  REQUIRE(on_krx);
+  REQUIRE(on_nxt);
+  CHECK(on_krx->rate_ == Decimal64::parse("0.00147"));
+  CHECK(on_nxt->rate_ == Decimal64::parse("0.00146"));
+  // Both components differ by venue and are charged by different parties, so a schedule carrying one
+  // combined number would be wrong for whichever it folded away.
+  CHECK(on_krx->institution_rate_ == std::optional<Decimal64>(Decimal64::parse("0.000036396")));
+  CHECK(on_nxt->institution_rate_ == std::optional<Decimal64>(Decimal64::parse("0.000031833")));
+
+  // **No venue asserted against a venue-specific schedule refuses**, rather than picking the first
+  // row. A caller who did not say where a fill happened is told so.
+  CHECK_FALSE(schedule.rate_for(Country::KR, date));
+  CHECK_FALSE(schedule.rate_for(Country::KR, VenueKey::any(), date));
+
+  // A venue the schedule does not name also refuses rather than borrowing another venue's number.
+  CHECK_FALSE(schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::COMBINED), date));
+}
+
+TEST_CASE("a neutral row answers an unasserted question in either row order") {
+  // The migration property, asserted in both orders because a plain first-match rule makes venue
+  // rows unreachable in one of them and makes the neutral row unreachable in the other.
+  for (const bool neutral_first : {true, false}) {
+    CommissionSchedule schedule;
+    auto neutral = rate_row(Country::KR, Decimal64::parse("0.00015"), std::nullopt, std::nullopt);
+    auto krx = venue_row(Venue::KRX, "0.00147", "0.000036396");
+    if (neutral_first) {
+      schedule.rates_.push_back(neutral);
+      schedule.rates_.push_back(krx);
+    } else {
+      schedule.rates_.push_back(krx);
+      schedule.rates_.push_back(neutral);
+    }
+
+    const auto date = Date{2026, 9, 23};
+    // Unasserted reads the neutral row whichever order they are in.
+    const auto unasserted = schedule.rate_for(Country::KR, date);
+    REQUIRE(unasserted);
+    CHECK(unasserted->rate_ == Decimal64::parse("0.00015"));
+    // And an assertion reaches the exact row even when a neutral row precedes it.
+    const auto asserted = schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::KRX), date);
+    REQUIRE(asserted);
+    CHECK(asserted->rate_ == Decimal64::parse("0.00147"));
+    // A venue with no row of its own falls back to the neutral one, which is what makes adding one
+    // venue's rate to an existing schedule additive rather than a migration.
+    const auto other = schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::NXT), date);
+    REQUIRE(other);
+    CHECK(other->rate_ == Decimal64::parse("0.00015"));
+  }
+}
+
+TEST_CASE("an unnormalized venue row is preserved and selected by nothing else") {
+  // The `other_` precedent, applied to a venue: a row the library cannot interpret is kept so a
+  // caller can see the broker sent it -- and a row that was silently *matched* would be worse than
+  // one silently dropped, because it would charge a number for a market nobody established.
+  CommissionSchedule schedule;
+  CommissionRate exotic;
+  exotic.country_ = Country::KR;
+  exotic.venue_ = *VenueKey::raw("XQTC");
+  exotic.rate_ = Decimal64::parse("0.009");
+  schedule.rates_.push_back(exotic);
+
+  const auto date = Date{2026, 9, 23};
+  CHECK_FALSE(schedule.rate_for(Country::KR, date));
+  CHECK_FALSE(schedule.rate_for(Country::KR, VenueKey::any(), date));
+  CHECK_FALSE(schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::KRX), date));
+  // Only the same raw code reaches it, and the row is still there to be read.
+  const auto exact = schedule.rate_for(Country::KR, *VenueKey::raw("XQTC"), date);
+  REQUIRE(exact);
+  CHECK(exact->rate_ == Decimal64::parse("0.009"));
+  CHECK(schedule.rates_.front().venue_.raw_code().view() == "XQTC");
+}
+
+TEST_CASE("a schedule mixing all four venue kinds keeps every one of them apart") {
+  // One fixture covering every exact match, the neutral fallback, and the two refusals -- because
+  // separate fixtures can each pass while the combination picks the wrong row.
+  CommissionSchedule schedule;
+  schedule.rates_.push_back(rate_row(Country::KR, Decimal64::parse("0.001"), std::nullopt, std::nullopt));
+  schedule.rates_.push_back(venue_row(Venue::KRX, "0.002", "0.00002"));
+  schedule.rates_.push_back(venue_row(Venue::COMBINED, "0.003", "0.00003"));
+  CommissionRate raw;
+  raw.country_ = Country::KR;
+  raw.venue_ = *VenueKey::raw("KRX");
+  raw.rate_ = Decimal64::parse("0.004");
+  schedule.rates_.push_back(raw);
+
+  const auto date = Date{2026, 9, 23};
+  CHECK(schedule.rate_for(Country::KR, date)->rate_ == Decimal64::parse("0.001"));
+  CHECK(schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::KRX), date)->rate_ ==
+        Decimal64::parse("0.002"));
+  // COMBINED is storable and reachable as a *rate*; what it may not be is the venue a fill is
+  // asserted to have happened at, which `CommissionPolicy` refuses rather than this type.
+  CHECK(schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::COMBINED), date)->rate_ ==
+        Decimal64::parse("0.003"));
+  CHECK(schedule.rate_for(Country::KR, *VenueKey::raw("KRX"), date)->rate_ ==
+        Decimal64::parse("0.004"));
+  // A venue named by none of the four still falls back to the neutral row.
+  CHECK(schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::NXT), date)->rate_ ==
+        Decimal64::parse("0.001"));
 }

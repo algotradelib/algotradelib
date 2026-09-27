@@ -214,6 +214,16 @@ public:
     }
   }
 
+  /**
+   * Returns the broker-stated cost observed on the order snapshots polled so far.
+   *
+   * Absolute and monotone across every run made against this source; `Loop::run` differences it so
+   * a report carries its own run's observations rather than the previous run's as well. Read
+   * `runner::ChargedCosts` before believing it is a total -- it is a subtotal of unknown coverage,
+   * because a working-order listing cannot show an order that filled between two polls.
+   */
+  const runner::ChargedCosts& charged_costs() const noexcept { return charged_; }
+
 private:
   /** Fetches bars for each instrument and feeds only those not seen before. */
   template <typename Runner>

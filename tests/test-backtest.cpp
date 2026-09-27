@@ -2770,3 +2770,422 @@ TEST_CASE("a replay believes feed's own trading-day argument, not the configured
   REQUIRE(engine.strategy().calendar_says_.has_value());
   CHECK_FALSE(*engine.strategy().calendar_says_);
 }
+
+namespace {
+
+/** Builds a caller-stated schedule naming its tariff, as a cost policy requires. */
+CommissionSchedule operator_tariff(std::vector<CommissionRate> rows) {
+  CommissionSchedule schedule;
+  schedule.origin_ = CommissionOrigin::CALLER_STATED;
+  schedule.tariff_ = "online, branch-opened account";
+  schedule.rates_ = std::move(rows);
+  return schedule;
+}
+
+/** One venue-keyed row with both components stated. */
+CommissionRate venue_rate(
+  Venue venue,
+  const char* rate,
+  const char* institution,
+  std::optional<Date> from = std::nullopt,
+  std::optional<Date> until = std::nullopt
+) {
+  CommissionRate row;
+  row.country_ = Country::KR;
+  row.venue_ = *VenueKey::normalized(venue);
+  row.rate_ = Decimal64::parse(rate);
+  row.institution_rate_ = Decimal64::parse(institution);
+  row.from_ = std::move(from);
+  row.until_ = std::move(until);
+  return row;
+}
+
+/** Runs a two-bar replay costed by `policy` and returns the engine, so a caller can read the ledger. */
+backtest::CommissionPolicy policy_for(Venue venue, std::vector<CommissionRate> rows) {
+  auto policy = backtest::CommissionPolicy::scheduled(
+    operator_tariff(std::move(rows)), Country::KR, *VenueKey::normalized(venue)
+  );
+  REQUIRE(policy);
+  return std::move(policy.value());
+}
+
+} // namespace
+
+TEST_CASE("a KRX fill and an NXT fill of the same size are charged differently") {
+  // The whole point of the slice, asserted end to end rather than on the schedule alone. The rates
+  // are hand-picked round numbers rather than the operator's published table, which is still
+  // disputed -- see issues/venue-aware-costs-rate-components.md. What is asserted is that the venue
+  // reaches the arithmetic, not that any particular percentage is the right one.
+  const std::vector<CommissionRate> rows{
+    venue_rate(Venue::KRX, "0.002", "0.0001"),
+    venue_rate(Venue::NXT, "0.001", "0.00005"),
+  };
+
+  const auto charge_at = [&](Venue venue) {
+    backtest::Backtester<HoldsTen> engine(
+      HoldsTen{}, replay_config(), backtest::NextBarFillModel(policy_for(venue, rows))
+    );
+    engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+    engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+    engine.finish();
+    return backtest::summarize(engine.result(), engine.fills());
+  };
+
+  const auto krx = charge_at(Venue::KRX);
+  const auto nxt = charge_at(Venue::NXT);
+  REQUIRE(krx.executions_ == 1);
+  REQUIRE(nxt.executions_ == 1);
+
+  // Ten shares at 70,000 is 700,000. 0.2% is 1,400 and 0.1% is 700; the institution components are
+  // 70 and 35. Computed by hand so the test states the arithmetic rather than echoing the code.
+  CHECK(krx.commission_paid_ == Decimal64::parse("1400"));
+  CHECK(nxt.commission_paid_ == Decimal64::parse("700"));
+  CHECK(krx.institution_fees_paid_ == std::optional<Decimal64>(Decimal64::parse("70")));
+  CHECK(nxt.institution_fees_paid_ == std::optional<Decimal64>(Decimal64::parse("35")));
+  CHECK_FALSE(krx.commission_paid_ == nxt.commission_paid_);
+}
+
+TEST_CASE("each cost component moves the ledger's cash, not only the report") {
+  // A version of this that checked the two report totals alone would pass while every equity figure
+  // and every realized profit was too high by the institution fee, with nothing in the run saying so.
+  const auto cash_after = [](const char* institution) {
+    backtest::Backtester<HoldsTen> engine(
+      HoldsTen{},
+      replay_config(),
+      backtest::NextBarFillModel(
+        policy_for(Venue::KRX, {venue_rate(Venue::KRX, "0.002", institution)})
+      )
+    );
+    engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+    engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+    engine.finish();
+    const auto cash = engine.ledger().cash_in(Currency{"KRW"});
+    REQUIRE(cash);
+    return *cash;
+  };
+
+  // 100,000,000 less 700,000 of stock, less 1,400 commission, less the institution component: 70 at
+  // 0.01% and nothing at all when the component is zero.
+  CHECK(cash_after("0.0001") == Decimal64::parse("99298530"));
+  CHECK(cash_after("0") == Decimal64::parse("99298600"));
+  // The difference is exactly the institution fee, which is the claim: it left the account.
+  CHECK(decimal_subtract(cash_after("0"), cash_after("0.0001")) ==
+        std::optional<Decimal64>(Decimal64::parse("70")));
+}
+
+TEST_CASE("one replay spanning a rate change charges each rate on its own dates") {
+  // Deliberately one replay with one policy. Constructing two frozen models at two dates already
+  // worked before this branch, so a test doing that would pass against `main` and prove nothing.
+  auto policy = backtest::CommissionPolicy::scheduled(
+    operator_tariff({
+      venue_rate(Venue::KRX, "0.002", "0", std::nullopt, Date{2026, 3, 11}),
+      venue_rate(Venue::KRX, "0.001", "0", Date{2026, 3, 12}, std::nullopt),
+    }),
+    Country::KR,
+    *VenueKey::normalized(Venue::KRX)
+  );
+  REQUIRE(policy);
+
+  backtest::Backtester<BuysThenSells> engine(
+    BuysThenSells{}, replay_config(), backtest::NextBarFillModel(std::move(policy.value()))
+  );
+  // Buys on the 11th at the old rate, sells on the 13th at the new one.
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.finish();
+
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  REQUIRE(report.executions_ == 2);
+  // Two rates, each charging one execution -- not one rate charging both, which is what a frozen
+  // model produces.
+  REQUIRE(report.caveats_.applied_rates_.size() == 2);
+  CHECK(report.caveats_.applied_rates_[0].rate_ == Decimal64::parse("0.002"));
+  CHECK(report.caveats_.applied_rates_[0].executions_ == 1);
+  CHECK(report.caveats_.applied_rates_[1].rate_ == Decimal64::parse("0.001"));
+  CHECK(report.caveats_.applied_rates_[1].executions_ == 1);
+  // 1,400 on the buy and 700 on the sale.
+  CHECK(report.commission_paid_ == Decimal64::parse("2100"));
+}
+
+TEST_CASE("a rate window is bounded by the market-local date, not the timestamp") {
+  // A bar stamped just after UTC midnight is the *previous* day in Seoul, so a window ending that
+  // day still covers it. Reading the instant instead would charge the next window's rate.
+  auto policy = backtest::CommissionPolicy::scheduled(
+    operator_tariff({
+      venue_rate(Venue::KRX, "0.002", "0", std::nullopt, Date{2026, 3, 11}),
+      venue_rate(Venue::KRX, "0.001", "0", Date{2026, 3, 12}, std::nullopt),
+    }),
+    Country::KR,
+    *VenueKey::normalized(Venue::KRX)
+  );
+  REQUIRE(policy);
+
+  backtest::Backtester<HoldsTen> engine(
+    HoldsTen{}, replay_config(), backtest::NextBarFillModel(std::move(policy.value()))
+  );
+  // 2026-03-11 06:30 UTC is 15:30 in Seoul on the 11th; 2026-03-11 23:00 UTC is 08:00 on the 12th.
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.finish();
+
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  REQUIRE(report.executions_ == 1);
+  CHECK(report.commission_paid_ == Decimal64::parse("1400"));
+}
+
+TEST_CASE("COMBINED cannot be asserted as the venue a fill happened at") {
+  // It is what KIS's `SOR` normalizes to: consolidated routing, not a venue an order matched on.
+  // A rate row may still be keyed to it, which the core tests assert.
+  const auto refused = backtest::CommissionPolicy::scheduled(
+    operator_tariff({venue_rate(Venue::KRX, "0.002", "0")}),
+    Country::KR,
+    *VenueKey::normalized(Venue::COMBINED)
+  );
+  REQUIRE_FALSE(refused);
+  CHECK(refused.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+  CHECK(refused.error().broker_code_ == "commission_venue_not_an_execution");
+  CHECK_FALSE(refused.error().reached_broker_);
+}
+
+TEST_CASE("a caller-stated schedule that does not name its tariff is refused") {
+  // The published table is channel by venue and the channel is a property of the account -- 뱅키스
+  // against a branch-opened account is an order of magnitude. Nothing here can select it, so
+  // omitting it is an error rather than a plausible default.
+  CommissionSchedule unnamed;
+  unnamed.origin_ = CommissionOrigin::CALLER_STATED;
+  unnamed.rates_.push_back(venue_rate(Venue::KRX, "0.002", "0"));
+
+  const auto refused = backtest::CommissionPolicy::scheduled(
+    unnamed, Country::KR, *VenueKey::normalized(Venue::KRX)
+  );
+  REQUIRE_FALSE(refused);
+  CHECK(refused.error().broker_code_ == "commission_tariff_unnamed");
+
+  // A broker-published schedule needs nothing from the caller, because the broker is the source.
+  CommissionSchedule published;
+  published.origin_ = CommissionOrigin::BROKER_PUBLISHED;
+  published.rates_.push_back(venue_rate(Venue::KRX, "0.002", "0"));
+  CHECK(backtest::CommissionPolicy::scheduled(
+    published, Country::KR, *VenueKey::normalized(Venue::KRX)
+  ));
+}
+
+namespace {
+
+/**
+ * Places two market buys every bar and records whether it was ever stopped.
+ *
+ * Two, because one order cannot show that a halt governs the *rest of the bar*: the refused order
+ * is withdrawn either way, and only a second eligible order behind it can demonstrate that nothing
+ * filled after the refusal.
+ */
+struct PlacesTwoEachBar {
+  bool stopped_{false};
+  std::size_t fills_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    for (const char* tag : {"first", "second"}) {
+      ctx.submit(
+        strategy::OrderIntent::market(
+          bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
+        ).with_tag(tag)
+      );
+    }
+  }
+
+  template <class Ctx>
+  void on_fill(Ctx&, const strategy::Fill&) { ++fills_; }
+
+  template <class Ctx>
+  void on_stop(Ctx& ctx) {
+    stopped_ = true;
+    // If this ever runs after a halt, the order has nowhere honest to go: the replay has already
+    // stopped being able to cost one.
+    ctx.submit(
+      strategy::OrderIntent::market(
+        samsung(), OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("1"))
+      ).with_tag("stop-flatten")
+    );
+  }
+};
+
+} // namespace
+
+TEST_CASE("a date the schedule does not cover halts the replay rather than dropping a trade") {
+  // The defect this replaces: an uncostable fill returned a decision with no execution, which read
+  // as an order that did not trade. The replay carried on, the strategy took a path it would not
+  // have taken, and every figure derived from that path -- equity, return, drawdown, Sharpe,
+  // turnover -- described a run that never happened, while the report looked complete.
+  auto policy = backtest::CommissionPolicy::scheduled(
+    operator_tariff({venue_rate(Venue::KRX, "0.002", "0", std::nullopt, Date{2026, 3, 11})}),
+    Country::KR,
+    *VenueKey::normalized(Venue::KRX)
+  );
+  REQUIRE(policy);
+
+  backtest::Backtester<PlacesTwoEachBar> engine(
+    PlacesTwoEachBar{}, replay_config(), backtest::NextBarFillModel(std::move(policy.value()))
+  );
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  // Both orders from the first bar fill here, inside the window.
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  REQUIRE(engine.result().executions_.size() == 2);
+  // Outside the window: the first eligible order cannot be costed.
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+
+  const auto& halted = engine.result();
+  REQUIRE(halted.halted_);
+  CHECK(halted.halted_->broker_code_ == "no_rate_for_date");
+  // The refusal names the date rather than describing it, so a reader does not have to reproduce
+  // the run to find out which day was uncovered.
+  CHECK(halted.halted_->message_.find("2026-03-12") != std::string::npos);
+  CHECK_FALSE(halted.halted_->reached_broker_);
+
+  // **The halt governed the rest of the bar.** The second order eligible on the refusal bar did not
+  // fill behind the first; it was cleared into `aborted_`.
+  CHECK(halted.executions_.size() == 2);
+  CHECK(engine.strategy().fills_ == 2);
+  CHECK(halted.aborted_ == 1);
+
+  // A further bar changes nothing at all: no bar counted, no fill, no callback.
+  const auto bars_at_halt = halted.bars_;
+  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  CHECK(engine.result().bars_ == bars_at_halt);
+  CHECK(engine.result().executions_.size() == 2);
+
+  engine.finish();
+  // **`on_stop` never ran**, so nothing was placed into a replay that cannot cost an order, and
+  // `unfilled_` is not where the aborted order landed -- the two counts mean different things.
+  CHECK_FALSE(engine.strategy().stopped_);
+  CHECK(engine.result().unfilled_ == 0);
+  CHECK(engine.result().aborted_ == 1);
+
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  REQUIRE(report.halted_);
+  CHECK(report.aborted_ == 1);
+  CHECK(report.executions_ == 2);
+}
+
+TEST_CASE("a replay that can cost every fill still runs to the end and stops its strategy") {
+  // The control for the case above: without it, a mutation that halted on *every* bar would leave
+  // that test passing and this one is what notices.
+  auto policy = backtest::CommissionPolicy::scheduled(
+    operator_tariff({venue_rate(Venue::KRX, "0.002", "0")}),
+    Country::KR,
+    *VenueKey::normalized(Venue::KRX)
+  );
+  REQUIRE(policy);
+
+  backtest::Backtester<PlacesTwoEachBar> engine(
+    PlacesTwoEachBar{}, replay_config(), backtest::NextBarFillModel(std::move(policy.value()))
+  );
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.finish();
+
+  CHECK_FALSE(engine.result().halted_);
+  CHECK(engine.result().aborted_ == 0);
+  CHECK(engine.strategy().stopped_);
+  CHECK(engine.result().executions_.size() == 4);
+}
+
+TEST_CASE("the report states the rates it applied, not the rates the schedule holds") {
+  // A table listing the schedule's rows would describe what was available. The two differ whenever
+  // a schedule spans more dates or venues than the replay traded, which is the normal case.
+  auto policy = backtest::CommissionPolicy::scheduled(
+    operator_tariff({
+      venue_rate(Venue::KRX, "0.002", "0"),
+      // Eligible by country and venue, and never reached: this replay never trades after 2027.
+      venue_rate(Venue::KRX, "0.009", "0", Date{2027, 1, 1}, std::nullopt),
+    }),
+    Country::KR,
+    *VenueKey::normalized(Venue::KRX)
+  );
+  REQUIRE(policy);
+
+  backtest::Backtester<HoldsTen> engine(
+    HoldsTen{}, replay_config(), backtest::NextBarFillModel(std::move(policy.value()))
+  );
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.finish();
+
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  REQUIRE(report.caveats_.applied_rates_.size() == 1);
+  CHECK(report.caveats_.applied_rates_.front().rate_ == Decimal64::parse("0.002"));
+  CHECK(report.caveats_.applied_rates_.front().executions_ == 1);
+  // The venue is recorded as *asserted*, because a replay cannot observe where a fill executed.
+  REQUIRE(report.caveats_.asserted_venue_);
+  CHECK(report.caveats_.asserted_venue_->venue() == Venue::KRX);
+  CHECK(report.caveats_.commission_tariff_ == "online, branch-opened account");
+}
+
+TEST_CASE("a rate stating one figure leaves the institution total absent rather than zero") {
+  // Every rate Toss publishes is one of these: a single `commissionRate` that says nothing about
+  // whether an institution charge sits inside it. A zero total would claim the charge was levied
+  // and came to nothing, which nobody said.
+  CommissionSchedule published;
+  published.origin_ = CommissionOrigin::BROKER_PUBLISHED;
+  published.rates_.push_back(
+    rate_row(Country::KR, Decimal64::parse("0.002"), std::nullopt, std::nullopt)
+  );
+  auto policy =
+    backtest::CommissionPolicy::scheduled(published, Country::KR, VenueKey::any());
+  REQUIRE(policy);
+
+  backtest::Backtester<HoldsTen> engine(
+    HoldsTen{}, replay_config(), backtest::NextBarFillModel(std::move(policy.value()))
+  );
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.finish();
+
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  CHECK(report.commission_paid_ == Decimal64::parse("1400"));
+  CHECK_FALSE(report.institution_fees_paid_);
+  CHECK(report.caveats_.inclusive_commission_executions_ == 1);
+}
+
+TEST_CASE("an existing schedule with no venue on it charges exactly what it charged") {
+  // The migration regression, and it matters because the operator consumes this library as a
+  // submodule: a number that moved under them would move silently.
+  CommissionSchedule published;
+  published.origin_ = CommissionOrigin::BROKER_PUBLISHED;
+  published.rates_.push_back(
+    rate_row(Country::KR, Decimal64::parse("0.00015"), std::nullopt, std::nullopt)
+  );
+
+  // The pre-venue path: a frozen model from `commission_model_from`.
+  const auto frozen = backtest::commission_model_from(published, Country::KR, Date{2026, 3, 10});
+  REQUIRE(frozen);
+  backtest::Backtester<HoldsTen> old_way(
+    HoldsTen{}, replay_config(), backtest::NextBarFillModel(frozen.value())
+  );
+  old_way.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  old_way.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  old_way.finish();
+
+  // The new path over the same schedule, with no venue asserted.
+  auto policy = backtest::CommissionPolicy::scheduled(published, Country::KR, VenueKey::any());
+  REQUIRE(policy);
+  backtest::Backtester<HoldsTen> new_way(
+    HoldsTen{}, replay_config(), backtest::NextBarFillModel(std::move(policy.value()))
+  );
+  new_way.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  new_way.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  new_way.finish();
+
+  const auto before = backtest::summarize(old_way.result(), old_way.fills());
+  const auto after = backtest::summarize(new_way.result(), new_way.fills());
+  CHECK(before.commission_paid_ == Decimal64::parse("105"));
+  CHECK(after.commission_paid_ == before.commission_paid_);
+  CHECK(old_way.ledger().cash_in(Currency{"KRW"}) == new_way.ledger().cash_in(Currency{"KRW"}));
+  // And a model seeded from a broker's schedule still says so after passing through the policy,
+  // rather than being relabelled as the caller's because it took the flat route.
+  CHECK(before.caveats_.applied_rates_.front().origin_ == CommissionOrigin::BROKER_PUBLISHED);
+  CHECK(after.caveats_.applied_rates_.front().origin_ == CommissionOrigin::BROKER_PUBLISHED);
+}

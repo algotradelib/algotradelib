@@ -1985,3 +1985,145 @@ TEST_CASE("a broker that publishes no calendar is asked for none") {
   CHECK(session.calendar_calls() == 0);
   CHECK(live_runner.context().calendar().days_.empty());
 }
+
+namespace {
+
+/** A working-order row with an id, a filled quantity, and optionally a stated charge. */
+WorkingOrder<FakeBroker> charged_row(
+  const char* id,
+  const char* filled,
+  std::optional<const char*> commission,
+  const Currency& currency = Currency::krw()
+) {
+  auto row = working();
+  row.order_.order_id_ = id;
+  row.ref_ = OrderRef<FakeBroker>{id, ""};
+  row.order_.execution_.filled_quantity_ = Decimal64::parse(filled);
+  if (commission) {
+    row.order_.execution_.commission_ = Money{Decimal64::parse(*commission), currency};
+  }
+  return row;
+}
+
+/** Polls working orders once against `rows`. */
+template <typename Source, typename Runner>
+void poll_rows(
+  Source& source,
+  Runner& live_runner,
+  FakeSession<WithWorkingOrders>& session,
+  std::vector<WorkingOrder<FakeBroker>> rows
+) {
+  WorkingOrders<FakeBroker> listing;
+  listing.orders_ = std::move(rows);
+  session.set_working_orders(std::move(listing));
+  REQUIRE(source.poll(runner::PollKind::WORKING_ORDERS, live_runner) ==
+          runner::PollOutcome::UPDATED);
+}
+
+} // namespace
+
+TEST_CASE("a broker-stated commission is observed once, not once per poll") {
+  // The figure on an order snapshot is *cumulative for that order*, so adding each reading would
+  // multiply one commission by the number of polls that happened to see it -- and a loop polling
+  // every few seconds would report a charge orders of magnitude too large.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  poll_rows(source, live_runner, session, {charged_row("A1", "10", "1400")});
+  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
+        std::optional<Decimal64>(Decimal64::parse("1400")));
+
+  // The same order again, unchanged.
+  poll_rows(source, live_runner, session, {charged_row("A1", "10", "1400")});
+  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
+        std::optional<Decimal64>(Decimal64::parse("1400")));
+  CHECK(source.charged_costs().orders_stating_cost_ == 1);
+
+  // More of it fills and the charge rises: the total moves by the difference, not by the whole
+  // figure again.
+  poll_rows(source, live_runner, session, {charged_row("A1", "20", "2800")});
+  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
+        std::optional<Decimal64>(Decimal64::parse("2800")));
+  CHECK(source.charged_costs().orders_stating_cost_ == 1);
+}
+
+TEST_CASE("an order stating no commission is an absence, not a charge of zero") {
+  // Every KIS order is one of these: its snapshots carry no commission field at all. A currency
+  // reading zero would be this library claiming the broker charged nothing.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  poll_rows(source, live_runner, session, {charged_row("K1", "10", std::nullopt)});
+  CHECK_FALSE(source.charged_costs().commission_in(Currency::krw()));
+  CHECK(source.charged_costs().orders_stating_none_ == 1);
+  CHECK(source.charged_costs().orders_stating_cost_ == 0);
+
+  // A stated zero is a different answer, and it is counted as a statement.
+  poll_rows(source, live_runner, session, {charged_row("T1", "10", "0")});
+  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
+        std::optional<Decimal64>(Decimal64::parse("0")));
+  CHECK(source.charged_costs().orders_stating_cost_ == 1);
+}
+
+TEST_CASE("a stale reading at the same filled quantity does not reduce a charge") {
+  // Nothing on an order snapshot says which of two readings the broker sent later: `filled_at_`
+  // timestamps the latest fill and `received_at_` is local arrival. So at an equal filled quantity
+  // the held value stands and the disagreement is reported, rather than being settled by whichever
+  // payload happened to arrive second.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  poll_rows(source, live_runner, session, {charged_row("A1", "10", "1400")});
+  poll_rows(source, live_runner, session, {charged_row("A1", "10", "900")});
+
+  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
+        std::optional<Decimal64>(Decimal64::parse("1400")));
+  CHECK(source.charged_costs().conflicting_restatements_ == 1);
+}
+
+TEST_CASE("costs stated in two currencies are kept apart and never summed") {
+  // `Money` refuses to add unlike currencies, and a Toss universe can span KR and US. One scalar
+  // total would either be wrong or would have to refuse to exist.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  poll_rows(source, live_runner, session, {
+    charged_row("KR1", "10", "1400"),
+    charged_row("US1", "10", "2", Currency::usd()),
+  });
+
+  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
+        std::optional<Decimal64>(Decimal64::parse("1400")));
+  CHECK(source.charged_costs().commission_in(Currency::usd()) ==
+        std::optional<Decimal64>(Decimal64::parse("2")));
+  CHECK(source.charged_costs().commission_.size() == 2);
+}
+
+TEST_CASE("an order that fills between two polls is missed, and the counter does not notice") {
+  // **This test asserts the limitation rather than a feature**, because the figure is documented as
+  // a subtotal of unknown coverage and a reader has to be able to see why. A loop polls *working*
+  // orders; an order placed and completely filled between two polls appears in no listing at all,
+  // so its charge is absent from the subtotal and the disappearance counter -- which only sees rows
+  // that were once present -- reads zero over it. A total with known coverage needs a deliberate
+  // order-history poll, which this loop does not make.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  poll_rows(source, live_runner, session, {charged_row("A1", "10", "1400")});
+  // "B1" was placed and filled in here, and was never listed.
+  poll_rows(source, live_runner, session, {charged_row("A1", "10", "1400")});
+
+  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
+        std::optional<Decimal64>(Decimal64::parse("1400")));
+  CHECK(source.charged_costs().working_list_disappearances_ == 0);
+
+  // And when a row *does* leave the listing, the counter says only that it left -- which happens on
+  // a cancellation exactly as it does on a fill, so it certifies nothing either way.
+  poll_rows(source, live_runner, session, {});
+  CHECK(source.charged_costs().working_list_disappearances_ == 1);
+}

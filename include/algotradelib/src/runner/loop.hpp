@@ -993,6 +993,9 @@ public:
     // nothing to leave behind in that case.
     report.sends_outside_permitted_phase_ =
       runner_->sends_outside_permitted_phase() - outside_phase_before;
+    if constexpr (source_states_charged_costs<Source>::value) {
+      report.charged_costs_ = source_->charged_costs().since(charged_before);
+    }
     note_sellable_convention(report);
     note_unestablished_phase(report);
     return report;
