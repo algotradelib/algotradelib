@@ -373,6 +373,30 @@ re-spend the same money.
 without telling anyone. The check is the difference between sizing against the broker's last answer
 and sizing against nothing.
 
+## What the broker says it charged you
+
+`LoopReport::charged_costs_` carries the commission and tax the broker stated on the orders this run
+saw, per currency. Toss states both on every order; at KIS the order snapshots state neither, and
+that absence is reported as an absence rather than as a charge of zero.
+
+It exists because a replay reports a modelled commission and a live run reported **nothing at all**,
+so there was no direction in which the two could be compared.
+
+**Read it as a subtotal of unknown coverage, not as a total**, and the field's own documentation says
+so first. The loop polls *working* orders: an order that fills and leaves that listing between two
+polls is never seen carrying its final commission, and one placed and filled between two polls is
+never seen at all. Neither is detectable from a listing, so:
+
+- `working_list_disappearances_` counts rows that left the listing — on a fill, and equally on a
+  cancellation. It is a diagnostic, and it **can read zero over a charge that was missed**.
+- `conflicting_restatements_` counts orders that restated a different amount at the same filled
+  quantity. Nothing on a snapshot says which reading is later, so the first is kept and the
+  disagreement is reported rather than settled by arrival order.
+- The figures are differenced per `run`, so a second run on the same source reports its own
+  observations rather than the first run's as well.
+
+A total with known coverage needs a deliberate order-history poll, which this loop does not make.
+
 ## The portfolio exposure ceiling, and what it means by "portfolio"
 
 `RiskLimits::max_gross_exposure_` caps the exposure the account may reach. Until `ai/guard-inputs` it
