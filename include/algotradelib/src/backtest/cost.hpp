@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -120,6 +121,268 @@ inline Result<CommissionModel> commission_model_from(
   model.from_broker_ = true;
   return Result<CommissionModel>(std::move(model));
 }
+
+/**
+ * Which rate charged an execution, carried so a report can state rates *used* rather than rates held.
+ *
+ * A report that listed the rows a schedule contains would be describing what was available, not what
+ * was charged — and the two differ whenever a schedule spans more dates or more venues than the
+ * replay traded. Reconstructing it afterwards from the amounts is not possible either: two rows can
+ * charge the same figure on one fill. So the row travels with the charge, onto the execution, and the
+ * report accumulates it at the point the ledger accepts the fill.
+ */
+struct AppliedRate {
+  /** Which venue the rate was keyed to. */
+  VenueKey venue_;
+  /** The broker's commission component, as a fraction of traded value. */
+  Decimal64 rate_;
+  /** The institution component, empty when the source said nothing about a split. */
+  std::optional<Decimal64> institution_rate_;
+  /** The per-order floor applied to the broker component, zero when none. */
+  Decimal64 minimum_{Decimal64::parse("0")};
+  /** The window the rate applies from, empty when open-ended. */
+  std::optional<Date> from_;
+  /** The window the rate applies until, empty when open-ended. */
+  std::optional<Date> until_;
+  /** Whether a broker published the number or a caller stated it. */
+  CommissionOrigin origin_{CommissionOrigin::CALLER_STATED};
+
+  /** Compares every field, so a report can collapse identical rates into one row with a count. */
+  friend bool operator==(const AppliedRate& lhs, const AppliedRate& rhs) {
+    return lhs.venue_ == rhs.venue_ && lhs.rate_ == rhs.rate_ &&
+      lhs.institution_rate_ == rhs.institution_rate_ && lhs.minimum_ == rhs.minimum_ &&
+      lhs.from_ == rhs.from_ && lhs.until_ == rhs.until_ && lhs.origin_ == rhs.origin_;
+  }
+};
+
+/**
+ * What one execution was charged, by component.
+ *
+ * The two components are charged by **different parties** — a broker's commission and Korea's
+ * 유관기관제비용, billed by the exchange and the depository — so they are rounded separately, each to
+ * whole currency units, rather than summed and rounded once. Rounding the sum would be arithmetic
+ * about a single charge that nobody makes.
+ *
+ * `institution_` is empty when the rate said nothing about a split, which is every rate Toss
+ * publishes. Empty is not zero: it means `broker_` is an **inclusive** figure, and a report says so
+ * rather than claiming a known zero for a component nobody described.
+ */
+struct CommissionCharge {
+  /** The broker's commission on this execution, after its floor. */
+  Decimal64 broker_{Decimal64::parse("0")};
+  /** The institution component, empty when the rate did not distinguish one. */
+  std::optional<Decimal64> institution_;
+  /** Which rate charged it. */
+  AppliedRate applied_;
+};
+
+/**
+ * What a trade costs, resolved per execution rather than frozen at construction.
+ *
+ * Two origins, one type. A caller who states their own number gets `stated`; a caller who has a
+ * schedule — published by a broker or read off a fee page for their own account — gets `scheduled`,
+ * and the rate is chosen **per execution**, against the date that execution happened on and the venue
+ * the caller asserted. That is what lets a replay spanning a rate change charge each rate on its own
+ * dates instead of one rate throughout.
+ *
+ * **The venue is asserted once, here, and never inferred.** A replay has no execution venue to offer:
+ * a bar does not say where it traded, `PlannedOrder::venue_` is routing *intent*, and KIS's own
+ * response fields for the venue an order reached are undocumented — see
+ * `issues/venue-aware-costs-kis-venue-attribution.md`. So the venue a cost is computed at is something
+ * a caller states and the report discloses as an assumption, which is the same shape as
+ * `ReportCaveats::bar_tape_unverified`.
+ *
+ * **A rate that cannot be resolved is a refusal, not a zero and not a missing fill.** `charge` returns
+ * `Result`, and the replay turns a refusal into a halt: a fill that silently did not happen would
+ * change the path the strategy takes and every performance figure derived from it, which is the most
+ * flattering wrong answer a backtester can give.
+ */
+class CommissionPolicy {
+public:
+  /** Constructs a policy charging nothing, which a report will say it applied. */
+  CommissionPolicy() = default;
+
+  /**
+   * Returns a policy charging what `model` states, on every execution and every date.
+   *
+   * **It preserves `model.from_broker_`** rather than labelling every flat model caller-stated: a
+   * model built by `commission_model_from` came from a broker's published schedule and has to keep
+   * saying so wherever it is carried.
+   */
+  static CommissionPolicy stated(CommissionModel model) {
+    CommissionPolicy policy;
+    policy.flat_ = std::move(model);
+    return policy;
+  }
+
+  /**
+   * Returns a policy resolving `schedule` per execution, or an error the caller cannot recover from.
+   *
+   * Two refusals, both before any costing happens:
+   *
+   * - **A caller-stated schedule with no `tariff_`.** The published fee table is channel by venue and
+   *   the channel is a property of the account that no API states — 뱅키스 against a branch-opened
+   *   account is an order of magnitude. Nothing here can select it, so a schedule that does not name
+   *   the row it was read from is refused rather than defaulted.
+   * - **`Venue::COMBINED` as the asserted venue.** It is what KIS's `SOR` normalizes to: consolidated
+   *   *routing*, not a venue an order matched on. A rate row may be keyed to it, because a broker
+   *   could publish a consolidated rate; asserting it as the place a fill happened is a guess.
+   */
+  static Result<CommissionPolicy> scheduled(
+    CommissionSchedule schedule,
+    Country country,
+    VenueKey asserted
+  ) {
+    if (schedule.origin_ == CommissionOrigin::CALLER_STATED && schedule.tariff_.empty()) {
+      return Result<CommissionPolicy>(refusal(
+        "commission_tariff_unnamed",
+        "a caller-stated commission schedule must name the tariff it was read from, because the "
+        "published table is channel by venue and nothing here can select the channel"
+      ));
+    }
+    if (asserted.kind() == VenueKeyKind::NORMALIZED && asserted.venue() == Venue::COMBINED) {
+      return Result<CommissionPolicy>(refusal(
+        "commission_venue_not_an_execution",
+        "COMBINED is consolidated routing rather than a venue an order matched on, so it cannot be "
+        "asserted as the venue a fill happened at"
+      ));
+    }
+    CommissionPolicy policy;
+    policy.schedule_ = std::move(schedule);
+    policy.country_ = country;
+    policy.asserted_ = std::move(asserted);
+    return Result<CommissionPolicy>(std::move(policy));
+  }
+
+  /** Returns whether this policy resolves a schedule rather than charging one stated number. */
+  bool is_scheduled() const noexcept { return schedule_.has_value(); }
+
+  /** Returns the venue a scheduled policy costs at; neutral on a stated one. */
+  const VenueKey& asserted_venue() const noexcept { return asserted_; }
+
+  /** Returns the tariff the schedule named, empty on a stated model. */
+  std::string_view tariff() const noexcept {
+    return schedule_ ? std::string_view(schedule_->tariff_) : std::string_view();
+  }
+
+  /**
+   * Returns what `quantity` at `price` costs on `date`, or why it cannot be costed.
+   *
+   * `date` is the **market-local** calendar day the execution happened on, which is what a published
+   * rate window is written in; `SessionWindow::local_date` converts the replay clock's instant. A bar
+   * either side of UTC midnight is the case that distinguishes the two.
+   */
+  Result<CommissionCharge> charge(
+    const Decimal64& quantity,
+    const Decimal64& price,
+    const Date& date
+  ) const {
+    if (!schedule_) {
+      const auto charged = flat_.on(quantity, price);
+      if (!charged) {
+        return Result<CommissionCharge>(refusal(
+          "commission_not_representable",
+          "the commission on that execution does not fit an exact decimal"
+        ));
+      }
+      CommissionCharge result;
+      result.broker_ = *charged;
+      // A flat model states one number and says nothing about its composition, which is the same
+      // answer an empty `institution_rate_` gives: the figure is inclusive, not split.
+      result.applied_.rate_ = flat_.rate_;
+      result.applied_.minimum_ = flat_.minimum_;
+      result.applied_.origin_ = flat_.from_broker_ ?
+        CommissionOrigin::BROKER_PUBLISHED :
+        CommissionOrigin::CALLER_STATED;
+      return Result<CommissionCharge>(std::move(result));
+    }
+
+    const auto rate = schedule_->rate_for(country_, asserted_, date);
+    if (!rate) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
+      error.broker_code_ = "no_rate_for_date";
+      // The date is named rather than described: a refusal a reader has to reproduce to understand
+      // is a refusal they will work around instead of fixing.
+      error.message_ = "the schedule states no commission rate for " + named(date) +
+        " at a venue keyed '" + std::string(venue_key_kind_name(asserted_.kind())) + "'";
+      return Result<CommissionCharge>(std::move(error));
+    }
+
+    const auto broker = component(quantity, price, rate->rate_, flat_.minimum_);
+    if (!broker) {
+      return Result<CommissionCharge>(refusal(
+        "commission_not_representable",
+        "the commission on that execution does not fit an exact decimal"
+      ));
+    }
+    CommissionCharge result;
+    result.broker_ = *broker;
+    if (rate->institution_rate_) {
+      // Rounded on its own component and with no floor: the floor is a broker's per-order minimum,
+      // and this charge is not the broker's.
+      const auto institution =
+        component(quantity, price, *rate->institution_rate_, Decimal64::parse("0"));
+      if (!institution) {
+        return Result<CommissionCharge>(refusal(
+          "commission_not_representable",
+          "the institution fee on that execution does not fit an exact decimal"
+        ));
+      }
+      result.institution_ = *institution;
+    }
+    result.applied_.venue_ = rate->venue_;
+    result.applied_.rate_ = rate->rate_;
+    result.applied_.institution_rate_ = rate->institution_rate_;
+    result.applied_.minimum_ = flat_.minimum_;
+    result.applied_.from_ = rate->from_;
+    result.applied_.until_ = rate->until_;
+    result.applied_.origin_ = schedule_->origin_;
+    return Result<CommissionCharge>(std::move(result));
+  }
+
+private:
+  /** Returns `date` as `YYYY-MM-DD`, for a refusal that names what it refused. */
+  static std::string named(const Date& date) {
+    const auto pad = [](unsigned value) {
+      return value < 10 ? "0" + std::to_string(value) : std::to_string(value);
+    };
+    return std::to_string(date.year_) + "-" + pad(date.month_) + "-" + pad(date.day_);
+  }
+
+  static BrokerError refusal(std::string code, std::string message) {
+    BrokerError error;
+    error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    // Nothing was asked of anybody: this reads a schedule already in hand.
+    error.reached_broker_ = false;
+    error.broker_code_ = std::move(code);
+    error.message_ = std::move(message);
+    return error;
+  }
+
+  /** Returns one component's charge, rounded to whole currency units and floored at `minimum`. */
+  static std::optional<Decimal64> component(
+    const Decimal64& quantity,
+    const Decimal64& price,
+    const Decimal64& rate,
+    const Decimal64& minimum
+  ) {
+    CommissionModel model;
+    model.rate_ = rate;
+    model.minimum_ = minimum;
+    return model.on(quantity, price);
+  }
+
+  /** The stated model, and the source of `minimum_` for a scheduled policy that wants a floor. */
+  CommissionModel flat_{};
+  /** Present exactly when this policy resolves a schedule. */
+  std::optional<CommissionSchedule> schedule_;
+  /** The market the schedule is asked about. */
+  Country country_{Country::KR};
+  /** The venue a caller asserted its fills happened at. */
+  VenueKey asserted_;
+};
 
 /**
  * How far a fill lands from the price the model would otherwise give.
