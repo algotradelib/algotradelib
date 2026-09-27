@@ -14,8 +14,10 @@
 
 #include <boost/json.hpp>
 
+#include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -94,7 +96,19 @@ private:
   }
 };
 
-/** CRTP storage and parsing for an OAuth access-token response. */
+/**
+ * CRTP storage and parsing for an OAuth access-token response.
+ *
+ * **The base names no wire field of its own**, which is the whole reason it is a template. It used
+ * to read the literal `"access_token"` and to fall back to a twenty-four hour lifetime, and both
+ * were properties of the two brokers that existed rather than of OAuth: Kiwoom's `au10001` returns
+ * the token under `token` and states its expiry as an absolute `expires_dt`, with no relative field
+ * at all. A broker declares its own spelling through `token_field()`, exactly as it already declares
+ * the request side through `ClientCredentials<BrokerType>::key_field()`.
+ *
+ * `token_field()` is required rather than defaulted on purpose. A default would let a new broker
+ * inherit KIS's spelling in silence and discover it on the first live token.
+ */
 template <typename BrokerType>
 struct AuthBody {
   /** The bearer token itself. Never logged. */
@@ -102,31 +116,66 @@ struct AuthBody {
   /** When it stops being usable, absolute rather than relative. */
   std::chrono::system_clock::time_point expires_at_{};
 
-  /** Parses common token fields before invoking broker-specific parsing. */
+  /**
+   * Parses the token and any relative expiry, then hands over to broker-specific parsing.
+   *
+   * **A response that states no expiry is refused rather than given one.** The relative
+   * `expires_in` is read when the broker sends it; a broker that states its expiry absolutely sets
+   * `expires_at_` in its own `from_json_impl`, as `KisRest` does for `access_token_token_expired`
+   * and `KiwoomRest` does for `expires_dt`. If neither happened, `expires_at_` is still unset and
+   * this throws, because the alternative -- the invented day this code used to supply -- is a
+   * guessed lifetime presented as a stated one, and every caller treats it as stated. Decision 6:
+   * never silently downgrade.
+   */
   void from_json(const json::object& document) {
-    const auto token = document.if_contains("access_token");
+    const std::string_view field = BrokerType::token_field();
+    const auto token = document.if_contains(field);
     if (!token || !token->is_string()) {
-      throw std::runtime_error("token response has no access_token string");
+      throw std::runtime_error("token response has no " + std::string(field) + " string");
     }
     access_token_ = token->as_string().c_str();
 
-    std::int64_t expires_in = 86400;
+    expires_at_ = std::chrono::system_clock::time_point{};
     if (const auto value = document.if_contains("expires_in")) {
+      std::optional<std::int64_t> expires_in;
       if (value->is_int64()) {
         expires_in = value->as_int64();
       } else if (value->is_uint64()) {
         expires_in = static_cast<std::int64_t>(value->as_uint64());
       } else if (value->is_string()) {
-        expires_in = std::stoll(std::string(value->as_string()));
+        expires_in = parse_seconds(value->as_string());
+      }
+      if (expires_in) {
+        expires_at_ = std::chrono::system_clock::now() + std::chrono::seconds(*expires_in);
       }
     }
-    expires_at_ = std::chrono::system_clock::now() + std::chrono::seconds(expires_in);
     static_cast<BrokerType*>(this)->from_json_impl(document);
+    if (expires_at_ == std::chrono::system_clock::time_point{}) {
+      throw std::runtime_error(
+        "token response states no expiry, neither expires_in nor a broker-specific absolute one"
+      );
+    }
   }
 
   /** Returns whether the token remains valid beyond the requested margin. */
   bool valid(std::chrono::seconds margin = std::chrono::minutes(5)) const noexcept {
     return !access_token_.empty() && std::chrono::system_clock::now() + margin < expires_at_;
+  }
+
+private:
+  /**
+   * Reads a whole number of seconds, or nothing when the text is not one.
+   *
+   * A malformed `expires_in` leaves `expires_at_` unset, so it reaches the refusal above rather
+   * than throwing an exception whose message names neither the broker nor the field.
+   */
+  static std::optional<std::int64_t> parse_seconds(std::string_view text) {
+    std::int64_t seconds{0};
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), seconds);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size()) {
+      return std::nullopt;
+    }
+    return seconds;
   }
 };
 

@@ -67,6 +67,8 @@ struct TossConfig : public network::ClientCredentials<TossConfig> {
 
 /** Parsed Toss Securities REST OAuth token. */
 struct TossRest : public network::AuthBody<TossRest> {
+  /** The field Toss returns the bearer token under. */
+  static constexpr std::string_view token_field() noexcept { return "access_token"; }
 
   /** Nothing to read: Toss's token response carries no field beyond the shared base's. */
   void from_json_impl(const json::object&) {}

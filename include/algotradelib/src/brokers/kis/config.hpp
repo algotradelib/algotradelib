@@ -196,6 +196,9 @@ struct KisRest : public network::AuthBody<KisRest> {
 
   KisRest() {}
 
+  /** The field KIS returns the bearer token under. */
+  static constexpr std::string_view token_field() noexcept { return "access_token"; }
+
   /** Reads KIS's absolute expiry out of the token response. */
   void from_json_impl(
     const json::object& doc
