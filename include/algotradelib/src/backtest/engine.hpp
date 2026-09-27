@@ -498,6 +498,9 @@ private:
       // Removed before the ledger moves and before anything is shown a portfolio, so no view ever
       // carries a filled order as still working.
       runner_.executor().withdraw(ref);
+      // Stamped from the same reference data the ledger is given, so the two can never disagree
+      // about what currency one fill was in.
+      decision.execution_->currency_ = currency_for(order.instrument_);
       if (!ledger_.apply(*decision.execution_, currency_for(order.instrument_))) {
         // Arithmetic that will not fit an exact decimal. Counted as unfilled rather than applied
         // partly, because a half-applied ledger is worse than an order that did not trade.

@@ -61,6 +61,15 @@ struct Execution {
    */
   std::optional<Decimal64> institution_fee_;
   /**
+   * The currency the cost figures above are in.
+   *
+   * Carried because a report totals costs and `Money` refuses to add unlike currencies: a replay
+   * whose instruments span markets would otherwise have its commissions summed as bare decimals,
+   * which is the one arithmetic every monetary type here exists to prevent. The engine fills it
+   * from the same reference data it resolves the ledger's currency from.
+   */
+  Currency currency_{Currency{"KRW"}};
+  /**
    * Which rate charged this execution, so a report can state the rates it *used*.
    *
    * Carried on the execution rather than recovered afterwards, because two rows of a schedule can

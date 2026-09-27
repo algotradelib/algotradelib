@@ -45,6 +45,17 @@ namespace backtest = algotradelib::backtest;
 namespace vanilla = algotradelib::strategy::vanilla;
 namespace math = algotradelib::math;
 
+/**
+ * Returns a monetary figure, or why there is none.
+ *
+ * A total that spans currencies is absent rather than summed, and so is one from a replay that
+ * executed nothing -- neither is a charge of zero, and printing `0` would say it was.
+ */
+std::string money_or_absent(const std::optional<algotradelib::Decimal64>& amount) {
+  return amount ? amount->str() : std::string("(not a single currency)");
+}
+
+
 using algotradelib::BarInterval;
 using algotradelib::BarQuery;
 using algotradelib::BarSeries;
@@ -157,7 +168,7 @@ void replay_and_report(const char* title, Strategy instance, const FetchedHistor
             << "  Sortino         " << show(report.sortino_, false) << "\n"
             << "  max drawdown    " << show(report.max_drawdown_, true) << "\n"
             << "  turnover        " << show(report.total_turnover_, true) << "\n"
-            << "  commission      " << report.commission_paid_.str() << "\n"
+            << "  commission      " << money_or_absent(report.commission_paid_) << "\n"
             << "  slippage        " << report.slippage_paid_.str() << "\n"
             << "  not modelled    volume, queue position, market impact, borrow\n\n";
 }

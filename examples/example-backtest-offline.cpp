@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -30,6 +31,17 @@ namespace strategy = algotradelib::strategy;
 namespace backtest = algotradelib::backtest;
 namespace vanilla = algotradelib::strategy::vanilla;
 namespace math = algotradelib::math;
+
+/**
+ * Returns a monetary figure, or why there is none.
+ *
+ * A total that spans currencies is absent rather than summed, and so is one from a replay that
+ * executed nothing -- neither is a charge of zero, and printing `0` would say it was.
+ */
+std::string money_or_absent(const std::optional<algotradelib::Decimal64>& amount) {
+  return amount ? amount->str() : std::string("(not a single currency)");
+}
+
 
 using algotradelib::Bar;
 using algotradelib::BarInterval;
@@ -142,7 +154,7 @@ void print(const std::string& title, const backtest::Report& report) {
             << "  Sortino         " << plain(report.sortino_) << "\n"
             << "  max drawdown    " << percent(report.max_drawdown_) << "\n"
             << "  turnover        " << percent(report.total_turnover_) << "\n"
-            << "  commission      " << report.commission_paid_.str() << " KRW\n"
+            << "  commission      " << money_or_absent(report.commission_paid_) << " KRW\n"
             << "  slippage        " << report.slippage_paid_.str() << " KRW\n";
   std::cout << "  assumed         limit fills "
             << backtest::limit_fill_price_name(report.caveats_.limit_fill_) << ", slippage "

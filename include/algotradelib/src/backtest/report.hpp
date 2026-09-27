@@ -205,16 +205,26 @@ struct Report {
    * **Inclusive of any institution charge for executions whose rate did not distinguish one** --
    * `ReportCaveats::inclusive_commission_executions_` counts those. Where every rate did distinguish
    * one, this is the broker's component alone and `institution_fees_paid_` carries the other.
+   *
+   * **Absent on a replay whose executions span currencies**, rather than a sum of unlike ones:
+   * `commission_by_currency_` is the answer there, and a scalar could only have been produced by
+   * adding won to dollars. Absent also on a replay that executed nothing, which is not a charge of
+   * zero -- a zero-cost run that *traded* states a zero here, with a zero rate in `applied_rates_`.
    */
-  Decimal64 commission_paid_;
+  std::optional<Decimal64> commission_paid_;
+  /** Commission paid per currency, which is always stated whatever the scalar above does. */
+  std::vector<Money> commission_by_currency_;
   /**
    * Korea's 유관기관제비용, totalled separately because a different party charges it.
    *
    * **Absent rather than zero when any charged rate stated a single figure**, because the component
    * is then inside `commission_paid_` and nobody said how much. Present only when every execution was
-   * charged by a rate that split the two, which makes the total complete rather than partial.
+   * charged by a rate that split the two, which makes the total complete rather than partial -- and
+   * subject to the same currency rule as `commission_paid_`.
    */
   std::optional<Decimal64> institution_fees_paid_;
+  /** The institution component per currency, on the same terms as `commission_by_currency_`. */
+  std::vector<Money> institution_by_currency_;
   /** @copydoc Report::commission_paid_ */
   Decimal64 slippage_paid_;
 
@@ -286,19 +296,27 @@ inline Report summarize(
   report.caveats_.gaps_ = result.gaps_;
   report.caveats_.unfilled_ = result.unfilled_;
 
-  // Costs summed exactly, because they are money.
-  auto commission = Decimal64::parse("0");
-  auto institution = Decimal64::parse("0");
+  // Costs summed exactly, because they are money -- and **per currency**, because a replay whose
+  // instruments span markets would otherwise have won added to dollars to make one scalar.
+  const auto accumulate = [](std::vector<Money>& totals, const Money& amount) {
+    for (auto& held : totals) {
+      if (held.currency_ == amount.currency_) {
+        if (const auto sum = decimal_add(held.amount_, amount.amount_)) {
+          held.amount_ = *sum;
+        }
+        return;
+      }
+    }
+    totals.push_back(amount);
+  };
   auto slippage = Decimal64::parse("0");
   std::vector<InstrumentId> seen;
   for (const auto& execution : result.executions_) {
-    if (const auto sum = decimal_add(commission, execution.commission_)) {
-      commission = *sum;
-    }
+    accumulate(report.commission_by_currency_, Money{execution.commission_, execution.currency_});
     if (execution.institution_fee_) {
-      if (const auto sum = decimal_add(institution, *execution.institution_fee_)) {
-        institution = *sum;
-      }
+      accumulate(
+        report.institution_by_currency_, Money{*execution.institution_fee_, execution.currency_}
+      );
     } else {
       // The rate stated one figure, so this execution's commission is inclusive and the split total
       // below cannot be completed. Counted rather than approximated.
@@ -337,11 +355,17 @@ inline Report summarize(
       seen.push_back(execution.fill_.instrument_);
     }
   }
-  report.commission_paid_ = commission;
+  // A scalar is stated only where one can be true: one currency, and something executed. On a
+  // mixed-currency replay the per-currency vectors are the whole answer and the scalars stay absent
+  // rather than becoming a sum of unlike money.
+  if (report.commission_by_currency_.size() == 1) {
+    report.commission_paid_ = report.commission_by_currency_.front().amount_;
+  }
   // Present only when every charged rate split the two components, so the total is complete rather
   // than a sum over the subset that happened to state one.
-  if (!result.executions_.empty() && report.caveats_.inclusive_commission_executions_ == 0) {
-    report.institution_fees_paid_ = institution;
+  if (report.caveats_.inclusive_commission_executions_ == 0 &&
+      report.institution_by_currency_.size() == 1) {
+    report.institution_fees_paid_ = report.institution_by_currency_.front().amount_;
   }
   report.slippage_paid_ = slippage;
   report.caveats_.multiple_instruments_ = seen.size() > 1;

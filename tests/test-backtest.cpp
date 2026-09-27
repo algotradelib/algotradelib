@@ -1146,7 +1146,8 @@ TEST_CASE("a report summarizes a replay and states what the model assumed") {
   const auto report = backtest::summarize(engine.result(), engine.fills());
   REQUIRE(report.bars_ == 10);
   REQUIRE(report.executions_ == 1);
-  REQUIRE(report.commission_paid_.coefficient() > 0);
+  REQUIRE(report.commission_paid_);
+  REQUIRE(report.commission_paid_->coefficient() > 0);
   REQUIRE(report.slippage_paid_.coefficient() > 0);
 
   // The assumptions travel with the figures, as fields rather than as documentation a reader has to
@@ -1173,7 +1174,8 @@ TEST_CASE("a zero-cost run says so rather than leaving it to be assumed") {
   REQUIRE(report.caveats_.applied_rates_.size() == 1);
   REQUIRE(report.caveats_.applied_rates_.front().rate_.coefficient() == 0);
   REQUIRE(report.caveats_.slippage_ticks_ == 0);
-  REQUIRE(report.commission_paid_.coefficient() == 0);
+  REQUIRE(report.commission_paid_);
+  REQUIRE(report.commission_paid_->coefficient() == 0);
 }
 
 TEST_CASE("an annualized figure is unobserved unless a period count was supplied") {
@@ -2838,8 +2840,8 @@ TEST_CASE("a KRX fill and an NXT fill of the same size are charged differently")
 
   // Ten shares at 70,000 is 700,000. 0.2% is 1,400 and 0.1% is 700; the institution components are
   // 70 and 35. Computed by hand so the test states the arithmetic rather than echoing the code.
-  CHECK(krx.commission_paid_ == Decimal64::parse("1400"));
-  CHECK(nxt.commission_paid_ == Decimal64::parse("700"));
+  CHECK(krx.commission_paid_ == std::optional<Decimal64>(Decimal64::parse("1400")));
+  CHECK(nxt.commission_paid_ == std::optional<Decimal64>(Decimal64::parse("700")));
   CHECK(krx.institution_fees_paid_ == std::optional<Decimal64>(Decimal64::parse("70")));
   CHECK(nxt.institution_fees_paid_ == std::optional<Decimal64>(Decimal64::parse("35")));
   CHECK_FALSE(krx.commission_paid_ == nxt.commission_paid_);
@@ -2906,7 +2908,7 @@ TEST_CASE("one replay spanning a rate change charges each rate on its own dates"
   CHECK(report.caveats_.applied_rates_[1].rate_ == Decimal64::parse("0.001"));
   CHECK(report.caveats_.applied_rates_[1].executions_ == 1);
   // 1,400 on the buy and 700 on the sale.
-  CHECK(report.commission_paid_ == Decimal64::parse("2100"));
+  CHECK(report.commission_paid_ == std::optional<Decimal64>(Decimal64::parse("2100")));
 }
 
 TEST_CASE("a rate window is bounded by the market-local date, not the timestamp") {
@@ -2932,7 +2934,7 @@ TEST_CASE("a rate window is bounded by the market-local date, not the timestamp"
 
   const auto report = backtest::summarize(engine.result(), engine.fills());
   REQUIRE(report.executions_ == 1);
-  CHECK(report.commission_paid_ == Decimal64::parse("1400"));
+  CHECK(report.commission_paid_ == std::optional<Decimal64>(Decimal64::parse("1400")));
 }
 
 TEST_CASE("COMBINED cannot be asserted as the venue a fill happened at") {
@@ -3145,7 +3147,7 @@ TEST_CASE("a rate stating one figure leaves the institution total absent rather 
   engine.finish();
 
   const auto report = backtest::summarize(engine.result(), engine.fills());
-  CHECK(report.commission_paid_ == Decimal64::parse("1400"));
+  CHECK(report.commission_paid_ == std::optional<Decimal64>(Decimal64::parse("1400")));
   CHECK_FALSE(report.institution_fees_paid_);
   CHECK(report.caveats_.inclusive_commission_executions_ == 1);
 }
@@ -3181,11 +3183,82 @@ TEST_CASE("an existing schedule with no venue on it charges exactly what it char
 
   const auto before = backtest::summarize(old_way.result(), old_way.fills());
   const auto after = backtest::summarize(new_way.result(), new_way.fills());
-  CHECK(before.commission_paid_ == Decimal64::parse("105"));
+  CHECK(before.commission_paid_ == std::optional<Decimal64>(Decimal64::parse("105")));
   CHECK(after.commission_paid_ == before.commission_paid_);
   CHECK(old_way.ledger().cash_in(Currency{"KRW"}) == new_way.ledger().cash_in(Currency{"KRW"}));
   // And a model seeded from a broker's schedule still says so after passing through the policy,
   // rather than being relabelled as the caller's because it took the flat route.
   CHECK(before.caveats_.applied_rates_.front().origin_ == CommissionOrigin::BROKER_PUBLISHED);
   CHECK(after.caveats_.applied_rates_.front().origin_ == CommissionOrigin::BROKER_PUBLISHED);
+}
+
+namespace {
+
+/** An American listing, so a replay can span two currencies. */
+Instrument apple_reference() {
+  Instrument reference;
+  reference.id_ = InstrumentId{Country::US, Venue::UNSPECIFIED, "AAPL"};
+  reference.type_ = SecurityType::STOCK;
+  reference.currency_ = Currency::usd();
+  reference.lot_size_ = Decimal64::parse("1");
+  reference.price_rule_ = PriceRule::krx_equity();
+  return reference;
+}
+
+} // namespace
+
+TEST_CASE("a replay spanning two currencies states each, and no scalar total at all") {
+  // `Money` refuses to add unlike currencies everywhere else in this library, and a cost total is
+  // not an exception: a scalar here could only have been produced by adding won to dollars. The
+  // per-currency figures are the answer and the scalar is **absent**, which is distinguishable from
+  // a charge of zero.
+  backtest::ReplayConfig config;
+  config.cash_ = Decimal64::parse("100000000");
+  config.instruments_ = {samsung_reference(), apple_reference()};
+  config.limits_.permitted_phases_ = std::nullopt;
+
+  auto policy = backtest::CommissionPolicy::scheduled(
+    operator_tariff({
+      venue_rate(Venue::KRX, "0.002", "0"),
+      [] {
+        // The American row, keyed to no venue: the US listing has none this library normalizes.
+        CommissionRate row;
+        row.country_ = Country::US;
+        row.rate_ = Decimal64::parse("0.002");
+        row.institution_rate_ = Decimal64::parse("0");
+        return row;
+      }(),
+    }),
+    Country::KR,
+    *VenueKey::normalized(Venue::KRX)
+  );
+  REQUIRE(policy);
+
+  backtest::Backtester<HoldsTen> engine(
+    HoldsTen{}, config, backtest::NextBarFillModel(std::move(policy.value()))
+  );
+  engine.feed(bar_for(samsung(), utc(2026, 3, 10, 6, 30), "70000"));
+  engine.feed(bar_for(apple_reference().id_, utc(2026, 3, 10, 6, 31), "200"));
+  engine.feed(bar_for(samsung(), utc(2026, 3, 11, 6, 30), "70000"));
+  engine.feed(bar_for(apple_reference().id_, utc(2026, 3, 11, 6, 31), "200"));
+  engine.finish();
+
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  REQUIRE(report.executions_ == 2);
+  // Two entries, each in its own currency, and nothing added across them.
+  REQUIRE(report.commission_by_currency_.size() == 2);
+  CHECK_FALSE(report.commission_paid_);
+  CHECK_FALSE(report.institution_fees_paid_);
+
+  const auto in = [&](const Currency& currency) -> std::optional<Decimal64> {
+    for (const auto& amount : report.commission_by_currency_) {
+      if (amount.currency_ == currency) {
+        return amount.amount_;
+      }
+    }
+    return std::nullopt;
+  };
+  // Ten at 70,000 is 700,000 and 0.2% of that is 1,400; ten at 200 is 2,000 and 0.2% is 4.
+  CHECK(in(Currency{"KRW"}) == std::optional<Decimal64>(Decimal64::parse("1400")));
+  CHECK(in(Currency::usd()) == std::optional<Decimal64>(Decimal64::parse("4")));
 }
