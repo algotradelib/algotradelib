@@ -339,12 +339,18 @@ struct ChargedCosts {
    */
   std::size_t conflicting_restatements_{0};
   /**
-   * How many stated figures could not be added to their currency's running total.
+   * How many stated figures could not be carried through exact decimal arithmetic.
    *
-   * Nonzero means the totals above are **incomplete**: each figure was representable on its own and
-   * their sum was not, so the charge was left out rather than approximated. A figure this large is
-   * implausible against a real account, and it is counted rather than ignored because the
-   * alternative is a total that is quietly short by an unknown amount.
+   * Nonzero means the figures above are **incomplete**, and there are three ways to reach it: a sum
+   * that did not fit, a per-order delta that did not fit, and a run's own subtraction in `since`
+   * that did not fit. Each takes amounts or precisions far beyond a real account -- two figures
+   * representable on their own whose sum is not, or a five-quintillion-won correction restated at
+   * a tenth of a won, where the two scales cannot be aligned.
+   *
+   * **All three are counted rather than ignored**, and the third was the last to be: `since`
+   * skipped a currency whose subtraction failed, so a run reported absence where a charge had been
+   * observed and nothing said the figure was missing rather than nil. That is the same
+   * wrong-answer class as the two before it, one step further out.
    */
   std::size_t unrepresentable_sums_{0};
 
@@ -435,7 +441,8 @@ struct ChargedCosts {
    */
   ChargedCosts since(const ChargedCosts& before) const {
     ChargedCosts delta;
-    const auto difference = [](
+    std::size_t refused = 0;
+    const auto difference = [&refused](
       const std::vector<StatedTotal>& now,
       const std::vector<StatedTotal>& then
     ) {
@@ -460,6 +467,11 @@ struct ChargedCosts {
         }
         const auto moved = decimal_subtract(held.amount_.amount_, earlier);
         if (!moved) {
+          // **Counted, not skipped.** Something was observed for this currency -- the statement
+          // count says so -- and the amount of it cannot be represented. Reporting no entry would
+          // say the broker was silent, which is the absence-versus-zero contract inverted once
+          // again, and this is the third shape it has taken.
+          ++refused;
           continue;
         }
         out.push_back(
@@ -475,7 +487,8 @@ struct ChargedCosts {
     delta.working_list_disappearances_ =
       working_list_disappearances_ - before.working_list_disappearances_;
     delta.conflicting_restatements_ = conflicting_restatements_ - before.conflicting_restatements_;
-    delta.unrepresentable_sums_ = unrepresentable_sums_ - before.unrepresentable_sums_;
+    delta.unrepresentable_sums_ =
+      (unrepresentable_sums_ - before.unrepresentable_sums_) + refused;
     return delta;
   }
 };

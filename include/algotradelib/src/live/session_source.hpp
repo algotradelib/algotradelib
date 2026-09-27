@@ -559,11 +559,18 @@ private:
       }
       return;
     }
-    if (const auto moved = decimal_subtract(now->amount_, held.amount_->amount_)) {
-      if (charged_.add(totals, Money{*moved, now->currency_})) {
-        held.amount_ = now;
-        held.at_ = quantity;
-      }
+    const auto moved = decimal_subtract(now->amount_, held.amount_->amount_);
+    if (!moved) {
+      // The delta between two figures the broker stated does not fit -- a held five quintillion
+      // restated at a tenth of a won reaches it. Counted for the same reason a failed sum is: the
+      // figure is not contributed, and a reader has to be able to see that rather than read the
+      // total as complete.
+      ++charged_.unrepresentable_sums_;
+      return;
+    }
+    if (charged_.add(totals, Money{*moved, now->currency_})) {
+      held.amount_ = now;
+      held.at_ = quantity;
     }
   }
 

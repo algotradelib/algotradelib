@@ -3397,6 +3397,32 @@ TEST_CASE("a broker-stated zero survives the run boundary", "[loop]") {
   CHECK(quiet.commission_.empty());
 }
 
+TEST_CASE("a run delta that cannot be represented is counted, not dropped", "[loop]") {
+  // Round 7's counterexample. `since` skipped a currency whose own subtraction failed, so a run
+  // reported absence where a charge had been observed -- the third shape of the same
+  // wrong-answer: a figure missing rather than nil, with nothing saying which.
+  //
+  // Five quintillion won, corrected away, then restated at a tenth of a won: both additions
+  // succeed and the two scales cannot be aligned to subtract.
+  algotradelib::runner::ChargedCosts before;
+  before.add(before.commission_, algotradelib::Money{
+    algotradelib::Decimal64::parse("5000000000000000000"), algotradelib::Currency::krw()
+  });
+
+  auto after = before;
+  after.add(after.commission_, algotradelib::Money{
+    algotradelib::Decimal64::parse("-5000000000000000000"), algotradelib::Currency::krw()
+  });
+  after.add(after.commission_, algotradelib::Money{
+    algotradelib::Decimal64::parse("0.1"), algotradelib::Currency::krw()
+  });
+
+  const auto delta = after.since(before);
+  // The amount cannot be stated, and the run says so rather than reading as a quiet nil.
+  CHECK_FALSE(delta.commission_in(algotradelib::Currency::krw()));
+  CHECK(delta.unrepresentable_sums_ == 1);
+}
+
 TEST_CASE("a run in which nothing was charged reports no currency at all", "[loop]") {
   // Absence is not zero on the way out either: a run that observed no stated cost must not produce
   // an entry reading zero, which would claim the broker charged nothing.

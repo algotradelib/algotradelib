@@ -170,7 +170,14 @@ void replay_and_report(const char* title, Strategy instance, const FetchedHistor
             << "  turnover        " << show(report.total_turnover_, true) << "\n"
             << "  commission      " << money_or_absent(report.commission_paid_) << "\n"
             << "  slippage        " << report.slippage_paid_.str() << "\n"
-            << "  not modelled    volume, queue position, market impact, borrow\n\n";
+            << "  not modelled    volume, queue position, market impact, borrow\n";
+  if (report.caveats_.cost_totals_incomplete_) {
+    // The reason a total can be absent that is not "no trades" and not "two currencies": an exact
+    // sum was refused, so the figures above are short by an amount nobody can name.
+    std::cout << "  cost totals     INCOMPLETE -- an exact sum did not fit; slippage is understated"
+              << " and the fee totals are withheld\n";
+  }
+  std::cout << "\n";
 }
 #endif
 

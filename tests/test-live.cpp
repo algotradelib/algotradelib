@@ -2330,3 +2330,22 @@ TEST_CASE("a zero stated in a currency already seen is still an observation of t
   CHECK_FALSE(third_run.commission_in(Currency::krw()));
   CHECK(third_run.commission_.empty());
 }
+
+TEST_CASE("a per-order delta that cannot be represented is counted, not dropped") {
+  // The same failure one step earlier, and it was silent for the same reason: `take_figure`
+  // returned without contributing when the delta between two stated figures would not fit, so the
+  // subtotal stayed put and nothing said a figure had been left out.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  poll_rows(source, live_runner, session, {charged_row("A1", "10", "5000000000000000000")});
+  // A greater filled quantity restating the figure at a scale that cannot be aligned with it.
+  poll_rows(source, live_runner, session, {charged_row("A1", "20", "0.1")});
+
+  CHECK(source.charged_costs().unrepresentable_sums_ == 1);
+  // The held figure stands, because nothing was contributed: the invariant survives, and the
+  // count is what says the answer is short.
+  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
+        std::optional<Decimal64>(Decimal64::parse("5000000000000000000")));
+}
