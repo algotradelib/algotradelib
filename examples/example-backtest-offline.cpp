@@ -145,11 +145,21 @@ void print(const std::string& title, const backtest::Report& report) {
             << "  commission      " << report.commission_paid_.str() << " KRW\n"
             << "  slippage        " << report.slippage_paid_.str() << " KRW\n";
   std::cout << "  assumed         limit fills "
-            << backtest::limit_fill_price_name(report.caveats_.limit_fill_) << ", commission "
-            << report.caveats_.commission_rate_.str() << " with a "
-            << report.caveats_.commission_minimum_.str() << " floor, slippage "
-            << report.caveats_.slippage_ticks_ << " tick\n"
-            << "  not modelled    volume, queue position, market impact, borrow\n";
+            << backtest::limit_fill_price_name(report.caveats_.limit_fill_) << ", slippage "
+            << report.caveats_.slippage_ticks_ << " tick\n";
+  // The rates that actually charged something, rather than one number: a run spanning a rate change
+  // or costing by venue charges more than one, and printing the first would name an accident.
+  for (const auto& applied : report.caveats_.applied_rates_) {
+    std::cout << "  commission rate " << applied.rate_.str() << " with a "
+              << applied.minimum_.str() << " floor, "
+              << commission_origin_name(applied.origin_) << ", charged "
+              << applied.executions_ << " execution(s)\n";
+  }
+  if (report.caveats_.inclusive_commission_executions_ > 0) {
+    std::cout << "  commission is    inclusive of any institution charge on "
+              << report.caveats_.inclusive_commission_executions_ << " execution(s)\n";
+  }
+  std::cout << "  not modelled    volume, queue position, market impact, borrow\n";
   if (report.caveats_.gaps_ > 0) {
     std::cout << "  gaps            " << report.caveats_.gaps_
               << " (not interpolated across)\n";

@@ -219,6 +219,27 @@ struct ReplayResult {
   std::size_t bars_{0};
   /** Orders still queued when the replay ended, never filled. */
   std::size_t unfilled_{0};
+  /**
+   * Why the replay stopped early, when it did.
+   *
+   * Set when an execution could not be **costed** -- a date the schedule does not cover, or a venue
+   * it states no rate for. Present means every figure in this result and in the report derived from
+   * it describes the bars **before** the halt and not the run the caller asked for.
+   *
+   * **Why a halt rather than a skipped fill.** The refused trade would have changed the position the
+   * strategy carried, the orders it placed afterwards, and therefore the equity curve, the return,
+   * the drawdown, the Sharpe and the turnover. Continuing would have produced a complete-looking
+   * report describing a path that never happened, which is a more expensive failure than stopping.
+   */
+  std::optional<BrokerError> halted_;
+  /**
+   * Orders cleared from the queue by a halt, rather than left unfilled by the end of the data.
+   *
+   * Counted apart from `unfilled_` because they mean different things: an unfilled order is a replay
+   * that ran to the end of its bars with something still resting, and an aborted one is a replay that
+   * stopped being able to cost a trade while it was still working.
+   */
+  std::size_t aborted_{0};
 };
 
 /** Everything a replay needs beyond the strategy and the bars. */
@@ -316,6 +337,14 @@ public:
    * portfolio that had not yet been updated by its own fills.
    */
   void feed(const strategy::BarEvent& event, std::optional<bool> trading_day = true) {
+    // **A halted replay consumes nothing further.** `feed` keeps returning `void` so no caller has to
+    // change, and a caller that ignores `ReplayResult` sees a run that ends early rather than one
+    // that carries on costing nothing: no bar counted, no fill, no mark, no equity point, and no
+    // callback into the strategy. That is API compatibility, which is not the same as invisibility,
+    // and it is why the halt is stated on the result and first in the report.
+    if (result_.halted_) {
+      return;
+    }
     ++result_.bars_;
     if (previous_ && !ReplayClock::contiguous(*previous_, event)) {
       // A gap is counted rather than interpolated across: nothing happened in it that a strategy
@@ -377,12 +406,40 @@ public:
    * limit needs it.
    */
   void finish() {
+    if (result_.halted_) {
+      // **The strategy is not stopped normally, and that is deliberate.** `Runner::stop` calls
+      // `on_stop`, which may place or flatten -- and an order placed into a replay that has already
+      // stopped being able to cost one would either fill uncosted or be silently dropped. Neither is
+      // a shutdown a reader could interpret, so nothing runs: the queue was cleared at the halt and
+      // `aborted_` says how much was in it. The report states that the strategy never saw a stop.
+      return;
+    }
     install_portfolio();
     drain_reports(runner_.stop());
     result_.unfilled_ = runner_.executor().queued().size();
   }
 
 private:
+  /**
+   * Clears every order still queued after a halt, counting them.
+   *
+   * They are withdrawn rather than left outstanding so that nothing downstream reads a terminal
+   * replay as one with live working orders, and counted in `aborted_` rather than `unfilled_`
+   * because "the data ran out with this resting" and "the replay stopped while this was resting"
+   * are different facts about a run.
+   */
+  void abort_queue() {
+    std::vector<OrderRef<Tag>> remaining;
+    remaining.reserve(runner_.executor().queued().size());
+    for (const auto& entry : runner_.executor().queued()) {
+      remaining.push_back(entry.ref_);
+    }
+    for (const auto& ref : remaining) {
+      runner_.executor().withdraw(ref);
+    }
+    result_.aborted_ = remaining.size();
+  }
+
   /**
    * Fills orders resting from an earlier bar against `event`, and tells the strategy.
    *
@@ -417,7 +474,19 @@ private:
       }
       const auto order = entry->order_;
       const auto rule = rule_for(order.instrument_);
-      auto decision = fills_.decide(order, event, rule);
+      auto decision = fills_.decide(order, event, rule, clock_.session().local_date(event.period_end_));
+      if (decision.costing_error_) {
+        // **Checked before the generic no-execution branch**, because that branch would leave a
+        // resting day limit queued to be retried on the next bar, and a refusal is not a bar that
+        // failed to reach a price. The order goes whatever its type, exactly once.
+        runner_.executor().withdraw(ref);
+        result_.halted_ = std::move(*decision.costing_error_);
+        // **The halt governs the engine, not just this order.** Returning here stops the other
+        // orders eligible on this same bar from filling behind a cost the model could not compute,
+        // and `feed` stops consuming bars from its next call onward.
+        abort_queue();
+        return;
+      }
       if (!decision.execution_) {
         if (!decision.still_working_) {
           // A market order the bar could not price, or a limit whose arithmetic did not fit. It does

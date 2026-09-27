@@ -2,9 +2,11 @@
 
 #include "../strategy/event.hpp"
 #include "../strategy/portfolio.hpp"
+#include "cost.hpp"
 
 #include <algotradelib/core>
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -43,8 +45,28 @@ struct BacktestTag {
 struct Execution {
   /** The fill itself, in the same shape a strategy receives live. */
   strategy::Fill fill_;
-  /** Commission charged, in the instrument's currency. */
+  /**
+   * The broker's commission, in the instrument's currency.
+   *
+   * **Inclusive of any institution charge when `institution_fee_` is empty**, because a rate that
+   * states one number says nothing about its composition. See `CommissionRate::institution_rate_`.
+   */
   Decimal64 commission_;
+  /**
+   * The institution component -- Korea's 유관기관제비용 -- when the rate distinguished one.
+   *
+   * Empty is not zero. Empty means the rate stated a single figure, so `commission_` already carries
+   * whatever institution charge is inside it; a zero would claim this charge was levied and came to
+   * nothing. Both components leave cash: `ReplayLedger::apply` subtracts each.
+   */
+  std::optional<Decimal64> institution_fee_;
+  /**
+   * Which rate charged this execution, so a report can state the rates it *used*.
+   *
+   * Carried on the execution rather than recovered afterwards, because two rows of a schedule can
+   * charge identical amounts and nothing in the figure says which one applied.
+   */
+  AppliedRate applied_;
   /**
    * Difference between the price the order asked for and the price it got.
    *
@@ -176,6 +198,16 @@ public:
     if (!after_commission) {
       return false;
     }
+    // **Both components leave the account**, and they are charged by different parties rather than
+    // being one number reported two ways. A version of this that subtracted only the broker's
+    // commission would leave every equity figure and every realized profit too high by the
+    // institution fee, while the report stated it -- a discrepancy nothing in the run would explain.
+    const auto after_fees = execution.institution_fee_ ?
+      decimal_subtract(*after_commission, *execution.institution_fee_) :
+      after_commission;
+    if (!after_fees) {
+      return false;
+    }
 
     // Read, never opened. Opening the lot here is what made an early return leave a trace.
     const auto* existing = find(fill.instrument_);
@@ -251,7 +283,7 @@ public:
     // what the remaining half cost.
 
     const auto cash_total = decimal_add(
-      cash_in(currency).value_or(zero), *after_commission
+      cash_in(currency).value_or(zero), *after_fees
     );
     if (!cash_total) {
       return false;

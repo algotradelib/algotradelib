@@ -153,12 +153,28 @@ A tick means a tick *at that price level*, through the instrument's `PriceRule`,
 **Charging nothing is itself a model**, and the report says so. A zero-cost run should be your informed
 choice, not an oversight you cannot detect.
 
-**Or let the broker state the rate.** Where a broker publishes its schedule — Toss does; KIS
-publishes none for domestic stock — `backtest::commission_model_from(schedule, country, date)` seeds
-the model from it, and `ReportCaveats::commission_from_broker_` says the figure came from the broker
-rather than from you. It sets no floor, because a floor the broker did not publish is unknown rather
-than zero, and it answers for one date: a replay spanning a rate change charges one rate throughout.
-A date the schedule does not cover is an error rather than a free trade.
+**Or cost each execution from a schedule.** `backtest::CommissionPolicy::scheduled(schedule, country,
+venue)` resolves a rate **per execution**, against that execution's market-local date and the venue
+you assert — so a replay spanning a rate change charges each rate on its own dates instead of one
+rate throughout, and a KRX fill and an NXT fill can differ. The schedule can be the one a broker
+published (Toss does; KIS publishes none for domestic stock, and
+`backtest::commission_model_from(schedule, country, date)` remains for the older one-date shape) or
+one you state from your own fee page.
+
+Three things to know before you rely on it:
+
+- **The venue is asserted, never observed.** A replay cannot know where a fill executed — a bar does
+  not say, and the broker fields that would are undocumented. `ReportCaveats::asserted_venue_`
+  records that you asserted it, and the figure is exactly as good as the assertion.
+- **A caller-stated schedule must name its tariff**, because a published fee table is channel by
+  venue and the channel is a property of your account that no API states. A schedule without one is
+  refused rather than defaulted to a plausible row.
+- **A date no window covers halts the replay**, naming the date. It is not a free trade and not a
+  fill that quietly did not happen: the refused trade would have changed everything the strategy did
+  afterwards, so the run stops and `Report::halted_` says why.
+
+`ReportCaveats::applied_rates_` then lists the rates that actually **charged** something, each with
+its origin and how many executions it charged — not the rows the schedule happens to contain.
 
 No tax model, deliberately: Korean securities transaction tax has changed repeatedly, and a hard-coded
 number that moves would silently misprice every run after it changed. State it in the rate for sells if

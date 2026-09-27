@@ -35,19 +35,46 @@ namespace backtest {
 struct ReportCaveats {
   /** What a limit order was credited with. */
   LimitFillPrice limit_fill_{LimitFillPrice::AT_LIMIT};
-  /** The commission rate applied; zero means a zero-cost run, which is stated rather than implied. */
-  Decimal64 commission_rate_;
   /**
-   * Whether that rate came from the broker's published schedule or from the caller.
+   * Every rate that actually charged an execution, with how many it charged.
    *
-   * A replay seeded through `commission_model_from` charged what the broker says it charges; every
-   * other replay charged what someone chose. The figures look identical and mean different things,
-   * which is exactly the kind of difference this struct exists to carry -- and only one of the two
-   * brokers publishes a schedule at all, so on the other this is always false and honestly so.
+   * **This replaced a single `commission_rate_`, and the reason is that one number could not tell
+   * the truth about two.** A replay spanning a rate change charges each rate on its own dates, and a
+   * replay costing by venue charges a KRX fill and an NXT fill differently; a scalar could state
+   * only one of them, and which one was an accident of construction order.
+   *
+   * **These are the rates *used*, not the rates *available*.** A schedule row that covered dates the
+   * replay never traded on, or a venue it never asserted, does not appear -- and neither does one
+   * whose execution the ledger could not apply. A reader comparing this table against a broker's
+   * schedule is comparing what was charged against what was published, which is the comparison worth
+   * making.
+   *
+   * Empty on a zero-cost run, which is stated rather than implied: `AppliedRate::rate_` is zero and
+   * the entry is present, so a reader sees that nothing was charged rather than that nothing is known.
    */
-  bool commission_from_broker_{false};
-  /** The per-order commission floor applied. */
-  Decimal64 commission_minimum_;
+  std::vector<AppliedRate> applied_rates_;
+  /**
+   * How many executions were charged by a rate that did **not** distinguish an institution component.
+   *
+   * Nonzero means `Report::commission_paid_` is *inclusive* for those executions -- the source stated
+   * one figure and said nothing about its composition, which is every rate Toss publishes -- and it
+   * is why `Report::institution_fees_paid_` is absent whenever this is nonzero. A zero there would
+   * claim an institution charge was levied and came to nothing.
+   */
+  std::size_t inclusive_commission_executions_{0};
+  /**
+   * The venue every scheduled cost was computed at, and it was **asserted rather than observed**.
+   *
+   * A replay cannot know where a fill executed: a bar does not say, `PlannedOrder::venue_` is routing
+   * intent, and the KIS response fields that would say are undocumented. So a caller states the venue
+   * and this records that they did, in the same shape as `bar_tape_unverified` -- the figure is as
+   * good as the assertion and a reader can see the assertion.
+   *
+   * Empty when no scheduled policy was used, which is a run that cost nothing by venue at all.
+   */
+  std::optional<VenueKey> asserted_venue_;
+  /** Which tariff the schedule named, empty on a caller-stated flat model. */
+  std::string commission_tariff_;
   /** Basis points of slippage applied. */
   Decimal64 slippage_basis_points_;
   /** Tick steps of slippage applied. */
@@ -172,8 +199,22 @@ struct Report {
   /** One-way turnover summed over the replay, as a fraction of equity traded. */
   math::Scalar total_turnover_{0};
 
-  /** Commission and slippage paid, so a reader can see what the model cost. */
+  /**
+   * Commission paid, so a reader can see what the model cost.
+   *
+   * **Inclusive of any institution charge for executions whose rate did not distinguish one** --
+   * `ReportCaveats::inclusive_commission_executions_` counts those. Where every rate did distinguish
+   * one, this is the broker's component alone and `institution_fees_paid_` carries the other.
+   */
   Decimal64 commission_paid_;
+  /**
+   * Korea's 유관기관제비용, totalled separately because a different party charges it.
+   *
+   * **Absent rather than zero when any charged rate stated a single figure**, because the component
+   * is then inside `commission_paid_` and nobody said how much. Present only when every execution was
+   * charged by a rate that split the two, which makes the total complete rather than partial.
+   */
+  std::optional<Decimal64> institution_fees_paid_;
   /** @copydoc Report::commission_paid_ */
   Decimal64 slippage_paid_;
 
@@ -181,6 +222,18 @@ struct Report {
   std::size_t rejected_{0};
   /** Instructions a guard refused. */
   std::size_t refused_{0};
+
+  /**
+   * Why the replay stopped early, when it did — **read this before any figure above it**.
+   *
+   * Present means the run could not cost an execution and stopped there, so every number in this
+   * report describes the bars before that point rather than the period the caller asked for. The
+   * strategy was not stopped normally either: `on_stop` never ran, because an order placed into a
+   * replay that cannot cost one has nowhere honest to go.
+   */
+  std::optional<BrokerError> halted_;
+  /** Orders cleared from the queue by a halt, as distinct from `ReportCaveats::unfilled_`. */
+  std::size_t aborted_{0};
 
   /** What this run assumed, carried with the figures so a reader need not remember. */
   ReportCaveats caveats_;
@@ -222,9 +275,12 @@ inline Report summarize(
   report.refused_ = result.refused_.size();
 
   report.caveats_.limit_fill_ = fills.limit_price();
-  report.caveats_.commission_rate_ = fills.commission().rate_;
-  report.caveats_.commission_minimum_ = fills.commission().minimum_;
-  report.caveats_.commission_from_broker_ = fills.commission().from_broker_;
+  report.halted_ = result.halted_;
+  report.aborted_ = result.aborted_;
+  if (fills.commission().is_scheduled()) {
+    report.caveats_.asserted_venue_ = fills.commission().asserted_venue();
+  }
+  report.caveats_.commission_tariff_ = std::string(fills.commission().tariff());
   report.caveats_.slippage_basis_points_ = fills.slippage().basis_points_;
   report.caveats_.slippage_ticks_ = fills.slippage().ticks_;
   report.caveats_.gaps_ = result.gaps_;
@@ -232,11 +288,37 @@ inline Report summarize(
 
   // Costs summed exactly, because they are money.
   auto commission = Decimal64::parse("0");
+  auto institution = Decimal64::parse("0");
   auto slippage = Decimal64::parse("0");
   std::vector<InstrumentId> seen;
   for (const auto& execution : result.executions_) {
     if (const auto sum = decimal_add(commission, execution.commission_)) {
       commission = *sum;
+    }
+    if (execution.institution_fee_) {
+      if (const auto sum = decimal_add(institution, *execution.institution_fee_)) {
+        institution = *sum;
+      }
+    } else {
+      // The rate stated one figure, so this execution's commission is inclusive and the split total
+      // below cannot be completed. Counted rather than approximated.
+      ++report.caveats_.inclusive_commission_executions_;
+    }
+    // The rate that charged it, collapsed so an unchanged rate is one row with a count rather than
+    // one row per fill. Accumulated here, from the executions the ledger accepted, rather than from
+    // the schedule: a row the replay never used is not a rate this run applied.
+    bool counted = false;
+    for (auto& applied : report.caveats_.applied_rates_) {
+      if (applied == execution.applied_) {
+        ++applied.executions_;
+        counted = true;
+        break;
+      }
+    }
+    if (!counted) {
+      auto entry = execution.applied_;
+      entry.executions_ = 1;
+      report.caveats_.applied_rates_.push_back(std::move(entry));
     }
     // Slippage is a per-share price difference, so its cost is that times the quantity.
     if (const auto cost = decimal_multiply(execution.slippage_, execution.fill_.quantity_)) {
@@ -256,6 +338,11 @@ inline Report summarize(
     }
   }
   report.commission_paid_ = commission;
+  // Present only when every charged rate split the two components, so the total is complete rather
+  // than a sum over the subset that happened to state one.
+  if (!result.executions_.empty() && report.caveats_.inclusive_commission_executions_ == 0) {
+    report.institution_fees_paid_ = institution;
+  }
   report.slippage_paid_ = slippage;
   report.caveats_.multiple_instruments_ = seen.size() > 1;
 

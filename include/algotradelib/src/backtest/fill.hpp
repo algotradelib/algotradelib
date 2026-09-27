@@ -34,6 +34,15 @@ struct FillDecision {
   std::optional<Execution> execution_;
   /** Whether the order should stay queued for a later bar rather than being discarded. */
   bool still_working_{false};
+  /**
+   * Why the fill could not be **costed**, as distinct from not having traded.
+   *
+   * The two were one answer until this field existed, and conflating them is the failure it exists
+   * to prevent: a date the schedule does not cover produced a decision with no execution, which the
+   * engine read as an order that simply did not fill, and the replay continued with a trade silently
+   * missing from a path every performance figure is derived from. Present here, the engine halts.
+   */
+  std::optional<BrokerError> costing_error_;
 };
 
 /**
@@ -52,9 +61,25 @@ struct FillDecision {
  */
 class NextBarFillModel {
 public:
-  /** Constructs a model with the given costs and limit-price assumption. */
+  /**
+   * Constructs a model with the given costs and limit-price assumption.
+   *
+   * The `CommissionModel` spelling is preserved so every existing caller keeps compiling and keeps
+   * charging exactly what it charged; it becomes a `CommissionPolicy` that resolves the same number
+   * on every date and at every venue.
+   */
   explicit NextBarFillModel(
     CommissionModel commission = CommissionModel::none(),
+    SlippageModel slippage = SlippageModel::none(),
+    LimitFillPrice limit_price = LimitFillPrice::AT_LIMIT
+  )
+  : commission_(CommissionPolicy::stated(std::move(commission))),
+    slippage_(std::move(slippage)),
+    limit_price_(limit_price) {}
+
+  /** Constructs a model costing each execution through `commission`, which may resolve a schedule. */
+  explicit NextBarFillModel(
+    CommissionPolicy commission,
     SlippageModel slippage = SlippageModel::none(),
     LimitFillPrice limit_price = LimitFillPrice::AT_LIMIT
   )
@@ -62,8 +87,8 @@ public:
     slippage_(std::move(slippage)),
     limit_price_(limit_price) {}
 
-  /** Returns the commission model in force, so a report can state it. */
-  const CommissionModel& commission() const noexcept { return commission_; }
+  /** Returns the cost policy in force, so a report can state what it applied. */
+  const CommissionPolicy& commission() const noexcept { return commission_; }
 
   /** Returns the slippage model in force. */
   const SlippageModel& slippage() const noexcept { return slippage_; }
@@ -106,7 +131,8 @@ public:
   FillDecision decide(
     const strategy::PlannedOrder& order,
     const strategy::BarEvent& next,
-    const PriceRule& rule
+    const PriceRule& rule,
+    const Date& date
   ) const {
     FillDecision decision;
 
@@ -123,9 +149,12 @@ public:
       decision.still_working_ = rests_unfilled(order);
       return decision;
     }
-    const auto charged = commission_.on(order.quantity_, slipped->first);
+    auto charged = commission_.charge(order.quantity_, slipped->first, date);
     if (!charged) {
-      decision.still_working_ = rests_unfilled(order);
+      // **Not `still_working_`, and not silence.** A cost that cannot be resolved is not a bar that
+      // did not reach a limit: leaving the order queued would retry it on the next bar and leaving
+      // it quiet would drop a trade out of the path the report describes. The engine halts on this.
+      decision.costing_error_ = std::move(charged.error());
       return decision;
     }
 
@@ -136,7 +165,9 @@ public:
     execution.fill_.price_ = slipped->first;
     execution.fill_.tag_ = order.tag_;
     execution.fill_.at_ = next.period_end_;
-    execution.commission_ = *charged;
+    execution.commission_ = charged.value().broker_;
+    execution.institution_fee_ = charged.value().institution_;
+    execution.applied_ = std::move(charged.value().applied_);
     execution.slippage_ = slipped->second;
     decision.execution_ = std::move(execution);
     return decision;
@@ -180,7 +211,7 @@ private:
     return limit;
   }
 
-  CommissionModel commission_;
+  CommissionPolicy commission_;
   SlippageModel slippage_;
   LimitFillPrice limit_price_;
 };

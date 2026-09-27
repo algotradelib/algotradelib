@@ -146,8 +146,16 @@ struct AppliedRate {
   std::optional<Date> until_;
   /** Whether a broker published the number or a caller stated it. */
   CommissionOrigin origin_{CommissionOrigin::CALLER_STATED};
+  /**
+   * How many executions this rate charged, filled in by `summarize` rather than by the fill model.
+   *
+   * Zero on the copy that travels with one execution -- that copy describes one charge -- and
+   * counted up on the report's collapsed table. It is deliberately outside `operator==`, so two
+   * charges by the same rate compare equal and collapse.
+   */
+  std::size_t executions_{0};
 
-  /** Compares every field, so a report can collapse identical rates into one row with a count. */
+  /** Compares every field **but the count**, so a report can collapse identical rates into one row. */
   friend bool operator==(const AppliedRate& lhs, const AppliedRate& rhs) {
     return lhs.venue_ == rhs.venue_ && lhs.rate_ == rhs.rate_ &&
       lhs.institution_rate_ == rhs.institution_rate_ && lhs.minimum_ == rhs.minimum_ &&

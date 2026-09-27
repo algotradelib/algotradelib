@@ -512,6 +512,15 @@ strategy::BarEvent ohlc(const char* o, const char* h, const char* l, const char*
   return strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, bar);
 }
 
+/**
+ * The day every fill-model case that is not about dates asks on.
+ *
+ * `ohlc` stamps its bar 2026-03-10, and a flat commission charges the same number on every date, so
+ * the value matters only to the scheduled cases below -- which state their own dates rather than
+ * relying on this one.
+ */
+Date fill_date() { return Date{2026, 3, 10}; }
+
 } // namespace
 
 TEST_CASE("commission charges a rate and honours a per-order floor") {
@@ -585,7 +594,7 @@ TEST_CASE("a market order fills at the next bar's open") {
   // is expressed that way rather than as "the next day's open".
   const backtest::NextBarFillModel model;
   const auto decision =
-    model.decide(order_of(OrderSide::BUY, "10"), ohlc("70000", "71000", "69000", "70500"), krx_grid());
+    model.decide(order_of(OrderSide::BUY, "10"), ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date());
 
   REQUIRE(decision.execution_);
   REQUIRE(decision.execution_->fill_.price_ == Decimal64::parse("70000"));
@@ -600,7 +609,7 @@ TEST_CASE("a buy limit fills only when the bar's low reaches it") {
     order_of(OrderSide::BUY, "10", OrderType::LIMIT, "69500"),
     ohlc("70000", "71000", "69000", "70500"),
     krx_grid()
-  );
+  , fill_date());
   REQUIRE(reached.execution_);
   // At the limit, not at the low: see the conservative default below.
   REQUIRE(reached.execution_->fill_.price_ == Decimal64::parse("69500"));
@@ -610,7 +619,7 @@ TEST_CASE("a buy limit fills only when the bar's low reaches it") {
     order_of(OrderSide::BUY, "10", OrderType::LIMIT, "68000"),
     ohlc("70000", "71000", "69000", "70500"),
     krx_grid()
-  );
+  , fill_date());
   REQUIRE_FALSE(missed.execution_);
   // And it stays queued: a resting order does not expire because one bar passed it by, and discarding
   // it would silently turn every limit into a fill-or-kill.
@@ -623,7 +632,7 @@ TEST_CASE("an immediate-or-cancel order does not rest when the bar misses it") {
   auto order = order_of(OrderSide::BUY, "10", OrderType::LIMIT, "68000");
   order.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
   const auto missed =
-    model.decide(order, ohlc("70000", "71000", "69000", "70500"), krx_grid());
+    model.decide(order, ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date());
   REQUIRE_FALSE(missed.execution_);
   // Resting is a property of the condition, not of the basis. This read
   // `type_ == LIMIT`, which was the same answer while every order was a day
@@ -634,14 +643,14 @@ TEST_CASE("an immediate-or-cancel order does not rest when the bar misses it") {
 
   order.time_in_force_ = TimeInForce::FILL_OR_KILL;
   REQUIRE_FALSE(
-    model.decide(order, ohlc("70000", "71000", "69000", "70500"), krx_grid()).still_working_
+    model.decide(order, ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date()).still_working_
   );
 
   // And the day order it was cloned from still rests, so the assertion above is
   // about the condition rather than about the fixture.
   order.time_in_force_ = TimeInForce::DAY;
   REQUIRE(
-    model.decide(order, ohlc("70000", "71000", "69000", "70500"), krx_grid()).still_working_
+    model.decide(order, ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date()).still_working_
   );
 }
 
@@ -654,7 +663,7 @@ TEST_CASE("a best-limit day order rests exactly as a plain limit does") {
   // keys on the condition and not on the basis being exactly LIMIT.
   const auto missed =
     model.decide(order_of(OrderSide::BUY, "10", OrderType::LIMIT, "68000"),
-                 ohlc("70000", "71000", "69000", "70500"), krx_grid());
+                 ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date());
   REQUIRE(missed.still_working_);
 }
 
@@ -664,7 +673,7 @@ TEST_CASE("a sell limit fills only when the bar's high reaches it") {
     order_of(OrderSide::SELL, "10", OrderType::LIMIT, "70800"),
     ohlc("70000", "71000", "69000", "70500"),
     krx_grid()
-  );
+  , fill_date());
   REQUIRE(reached.execution_);
   REQUIRE(reached.execution_->fill_.price_ == Decimal64::parse("70800"));
 
@@ -672,7 +681,7 @@ TEST_CASE("a sell limit fills only when the bar's high reaches it") {
     order_of(OrderSide::SELL, "10", OrderType::LIMIT, "72000"),
     ohlc("70000", "71000", "69000", "70500"),
     krx_grid()
-  );
+  , fill_date());
   REQUIRE_FALSE(missed.execution_);
   REQUIRE(missed.still_working_);
 }
@@ -686,7 +695,7 @@ TEST_CASE("the conservative default refuses a price improvement it cannot justif
     order_of(OrderSide::BUY, "10", OrderType::LIMIT, "70000"),
     ohlc("69000", "70000", "68500", "69500"),
     krx_grid()
-  );
+  , fill_date());
   REQUIRE(held.execution_);
   REQUIRE(held.execution_->fill_.price_ == Decimal64::parse("70000"));
 
@@ -700,7 +709,7 @@ TEST_CASE("the conservative default refuses a price improvement it cannot justif
     order_of(OrderSide::BUY, "10", OrderType::LIMIT, "70000"),
     ohlc("69000", "70000", "68500", "69500"),
     krx_grid()
-  );
+  , fill_date());
   REQUIRE(improved.execution_);
   REQUIRE(improved.execution_->fill_.price_ == Decimal64::parse("69000"));
 }
@@ -708,7 +717,7 @@ TEST_CASE("the conservative default refuses a price improvement it cannot justif
 TEST_CASE("a fill is stamped at the bar it filled against, not at the signal's bar") {
   const backtest::NextBarFillModel model;
   const auto next = ohlc("70000", "71000", "69000", "70500");
-  const auto decision = model.decide(order_of(OrderSide::BUY, "10"), next, krx_grid());
+  const auto decision = model.decide(order_of(OrderSide::BUY, "10"), next, krx_grid(), fill_date());
   REQUIRE(decision.execution_);
   REQUIRE(decision.execution_->fill_.at_ == next.period_end_);
 }
@@ -719,7 +728,7 @@ TEST_CASE("costs reach the execution, so a report can separate them from the str
     backtest::SlippageModel::of_ticks(1)
   );
   const auto decision =
-    model.decide(order_of(OrderSide::BUY, "10"), ohlc("70000", "71000", "69000", "70500"), krx_grid());
+    model.decide(order_of(OrderSide::BUY, "10"), ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date());
 
   REQUIRE(decision.execution_);
   // One tick above 70,000 is 70,100, and the slippage is recorded rather than folded away.
@@ -736,7 +745,7 @@ TEST_CASE("a bar with no open falls back to its close rather than refusing to fi
   auto next = ohlc("70000", "71000", "69000", "70500");
   next.bar_.open_ = std::nullopt;
 
-  const auto decision = model.decide(order_of(OrderSide::BUY, "10"), next, krx_grid());
+  const auto decision = model.decide(order_of(OrderSide::BUY, "10"), next, krx_grid(), fill_date());
   REQUIRE(decision.execution_);
   REQUIRE(decision.execution_->fill_.price_ == Decimal64::parse("70500"));
 }
@@ -1097,8 +1106,9 @@ TEST_CASE("a replay says whether its commission came from the broker or from the
   published.finish();
 
   const auto from_broker = backtest::summarize(published.result(), published.fills());
-  REQUIRE(from_broker.caveats_.commission_from_broker_);
-  REQUIRE(from_broker.caveats_.commission_rate_ == Decimal64::parse("0.00015"));
+  REQUIRE(from_broker.caveats_.applied_rates_.size() == 1);
+  REQUIRE(from_broker.caveats_.applied_rates_.front().origin_ == CommissionOrigin::BROKER_PUBLISHED);
+  REQUIRE(from_broker.caveats_.applied_rates_.front().rate_ == Decimal64::parse("0.00015"));
 
   // The same rate chosen by the caller reads as the caller's, which is the distinction: the figures
   // are identical and they mean different things.
@@ -1112,8 +1122,10 @@ TEST_CASE("a replay says whether its commission came from the broker or from the
   chosen.finish();
 
   const auto from_caller = backtest::summarize(chosen.result(), chosen.fills());
-  REQUIRE_FALSE(from_caller.caveats_.commission_from_broker_);
-  REQUIRE(from_caller.caveats_.commission_rate_ == from_broker.caveats_.commission_rate_);
+  REQUIRE(from_caller.caveats_.applied_rates_.size() == 1);
+  REQUIRE(from_caller.caveats_.applied_rates_.front().origin_ == CommissionOrigin::CALLER_STATED);
+  REQUIRE(from_caller.caveats_.applied_rates_.front().rate_ ==
+          from_broker.caveats_.applied_rates_.front().rate_);
 }
 
 TEST_CASE("a report summarizes a replay and states what the model assumed") {
@@ -1140,8 +1152,10 @@ TEST_CASE("a report summarizes a replay and states what the model assumed") {
   // The assumptions travel with the figures, as fields rather than as documentation a reader has to
   // remember applied to their run.
   REQUIRE(report.caveats_.limit_fill_ == backtest::LimitFillPrice::AT_LIMIT);
-  REQUIRE(report.caveats_.commission_rate_ == Decimal64::parse("0.00015"));
-  REQUIRE(report.caveats_.commission_minimum_ == Decimal64::parse("100"));
+  REQUIRE(report.caveats_.applied_rates_.size() == 1);
+  REQUIRE(report.caveats_.applied_rates_.front().rate_ == Decimal64::parse("0.00015"));
+  REQUIRE(report.caveats_.applied_rates_.front().minimum_ == Decimal64::parse("100"));
+  REQUIRE(report.caveats_.applied_rates_.front().executions_ == 1);
   REQUIRE(report.caveats_.slippage_ticks_ == 1);
   REQUIRE(backtest::ReportCaveats::volume_ignored);
 }
@@ -1154,7 +1168,10 @@ TEST_CASE("a zero-cost run says so rather than leaving it to be assumed") {
   engine.finish();
 
   const auto report = backtest::summarize(engine.result(), engine.fills());
-  REQUIRE(report.caveats_.commission_rate_.coefficient() == 0);
+  // The zero rate is *stated*: an entry exists carrying zero, so a reader sees that nothing was
+  // charged rather than an empty table that could also mean nothing is known.
+  REQUIRE(report.caveats_.applied_rates_.size() == 1);
+  REQUIRE(report.caveats_.applied_rates_.front().rate_.coefficient() == 0);
   REQUIRE(report.caveats_.slippage_ticks_ == 0);
   REQUIRE(report.commission_paid_.coefficient() == 0);
 }
