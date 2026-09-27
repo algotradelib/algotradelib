@@ -314,11 +314,15 @@ public:
       // The date is named rather than described: a refusal a reader has to reproduce to understand
       // is a refusal they will work around instead of fixing.
       error.message_ = "the schedule states no commission rate for " + named(date) +
-        " at a venue keyed '" + std::string(venue_key_kind_name(asserted_.kind())) + "'";
+        " at venue " + described(asserted_);
       return Result<CommissionCharge>(std::move(error));
     }
 
-    const auto broker = component(quantity, price, rate->rate_, flat_.minimum_);
+    // **No floor on a scheduled rate, and that is not an oversight.** A per-order minimum is a term
+    // of a tariff, and neither a broker's published schedule nor the fee page a caller reads states
+    // one -- so a floor here would be a number this library invented. A caller who has one states
+    // their whole cost through `stated`, where the floor is theirs to set.
+    const auto broker = component(quantity, price, rate->rate_, Decimal64::parse("0"));
     if (!broker) {
       return Result<CommissionCharge>(refusal(
         "commission_not_representable",
@@ -343,7 +347,6 @@ public:
     result.applied_.venue_ = rate->venue_;
     result.applied_.rate_ = rate->rate_;
     result.applied_.institution_rate_ = rate->institution_rate_;
-    result.applied_.minimum_ = flat_.minimum_;
     result.applied_.from_ = rate->from_;
     result.applied_.until_ = rate->until_;
     result.applied_.origin_ = schedule_->origin_;
@@ -351,6 +354,19 @@ public:
   }
 
 private:
+  /** Returns the venue a refusal was asked about, in the terms the asker used. */
+  static std::string described(const VenueKey& venue) {
+    switch (venue.kind()) {
+      case VenueKeyKind::ANY:
+        return "(none asserted)";
+      case VenueKeyKind::NORMALIZED:
+        return std::string(venue_name(venue.venue()));
+      case VenueKeyKind::RAW:
+        return "'" + venue.raw_code().str() + "'";
+    }
+    return "(unknown)";
+  }
+
   /** Returns `date` as `YYYY-MM-DD`, for a refusal that names what it refused. */
   static std::string named(const Date& date) {
     const auto pad = [](unsigned value) {
@@ -382,7 +398,7 @@ private:
     return model.on(quantity, price);
   }
 
-  /** The stated model, and the source of `minimum_` for a scheduled policy that wants a floor. */
+  /** The stated model. Unused by a scheduled policy, which charges what the schedule says. */
   CommissionModel flat_{};
   /** Present exactly when this policy resolves a schedule. */
   std::optional<CommissionSchedule> schedule_;

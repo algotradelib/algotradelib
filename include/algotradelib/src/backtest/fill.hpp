@@ -127,6 +127,9 @@ public:
    * @param order the queued instruction
    * @param next the bar to fill against; never the bar the order was decided on
    * @param rule the instrument's price grid, for the tick component of slippage
+   * @param date the **market-local** calendar day the fill happens on, which is what a published
+   * rate window is written in. `SessionWindow::local_date` converts the replay clock's instant, and
+   * a bar either side of UTC midnight is what distinguishes the two.
    */
   FillDecision decide(
     const strategy::PlannedOrder& order,

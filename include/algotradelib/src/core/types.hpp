@@ -44,6 +44,27 @@ enum class Venue {
   COMBINED,
 };
 
+/**
+ * Returns a stable name for `venue`, for a message a person reads.
+ *
+ * **`runner::venue_name` deliberately keeps its own copy.** That one is the journal's on-disk
+ * spelling, and a recorded format must not move because a display name was reworded; they agree
+ * today and the journal's round-trip tests are what hold it to its own.
+ */
+inline constexpr std::string_view venue_name(Venue venue) noexcept {
+  switch (venue) {
+    case Venue::UNSPECIFIED:
+      return "unspecified";
+    case Venue::KRX:
+      return "KRX";
+    case Venue::NXT:
+      return "NXT";
+    case Venue::COMBINED:
+      return "COMBINED";
+  }
+  return "unspecified";
+}
+
 /** Broker-neutral identity for a financial instrument. */
 struct InstrumentId {
   /** The listing country, which selects the symbol convention and the price grid. */
