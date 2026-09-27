@@ -200,14 +200,6 @@ struct EquityPoint {
 
 /** What a replay did, for a report to summarize. */
 struct ReplayResult {
-  /**
-   * The currency the equity curve is denominated in, which is the replay's accounting currency.
-   *
-   * Carried so a report can tell whether a figure derived from *both* the curve and the executions
-   * is comparing like with like. It is not, whenever an execution happened in another currency --
-   * and a ratio of one currency's notional to another's equity looks entirely ordinary.
-   */
-  Currency currency_{Currency{"KRW"}};
   /** One point per bar that could be valued, in order. */
   std::vector<EquityPoint> equity_;
   /** Every execution the fill model produced, in order. */
@@ -227,6 +219,19 @@ struct ReplayResult {
   std::size_t bars_{0};
   /** Orders still queued when the replay ended, never filled. */
   std::size_t unfilled_{0};
+  /**
+   * The currency the equity curve is denominated in, which is the replay's accounting currency.
+   *
+   * Carried so a report can tell whether a figure derived from *both* the curve and the executions
+   * is comparing like with like. It is not, whenever an execution happened in another currency --
+   * and a ratio of one currency's notional to another's equity looks entirely ordinary.
+   *
+   * **Appended rather than placed with the other currency-ish members**, deliberately: this struct
+   * is public, and a caller aggregate-initializing it positionally would have had every field
+   * shift underneath them. A new member at the end is additive; one at the front is a source break
+   * dressed as a field.
+   */
+  Currency currency_{Currency{"KRW"}};
   /**
    * Why the replay stopped early, when it did.
    *

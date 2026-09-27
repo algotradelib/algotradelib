@@ -3372,6 +3372,10 @@ TEST_CASE("a replay spanning two currencies states each, and no scalar total at 
   // won equity produced an ordinary-looking ratio that had added the two. A whole-portfolio
   // turnover across currencies needs an exchange rate this library does not carry.
   CHECK_FALSE(math::observed(report.total_turnover_));
+  // **Missing, not undefined**, and the two are different claims: `undefined()` is a statistic
+  // whose inputs were present and whose ratio does not exist, and this ratio's inputs were never
+  // comparable. An assertion on `observed` alone would accept either.
+  CHECK_FALSE(math::is_undefined(report.total_turnover_));
   // The rest of the performance figures are the accounting currency's and stay observed, which is
   // what makes the absence above mean something.
   CHECK(math::observed(report.total_return_));
