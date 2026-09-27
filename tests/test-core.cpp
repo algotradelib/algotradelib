@@ -4620,3 +4620,42 @@ TEST_CASE("a schedule mixing all four venue kinds keeps every one of them apart"
   CHECK(schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::NXT), date)->rate_ ==
         Decimal64::parse("0.001"));
 }
+
+TEST_CASE("a rate window includes both of its own bounds, in either row order") {
+  // The migration test's other half: two-pass selection must not move where a window starts or
+  // ends. Both bounds are inclusive, which is what `applies_on` has always meant, and a fixture
+  // that only asked mid-window would pass over an off-by-one at either edge.
+  for (const bool neutral_first : {true, false}) {
+    CommissionSchedule schedule;
+    auto neutral = rate_row(
+      Country::KR, Decimal64::parse("0.00015"), Date{2026, 3, 1}, Date{2026, 3, 31}
+    );
+    auto krx = venue_row(Venue::KRX, "0.00147", "0", Date{2026, 3, 10}, Date{2026, 3, 20});
+    if (neutral_first) {
+      schedule.rates_.push_back(neutral);
+      schedule.rates_.push_back(krx);
+    } else {
+      schedule.rates_.push_back(krx);
+      schedule.rates_.push_back(neutral);
+    }
+    const auto at = [&](int day, const VenueKey& venue) {
+      return schedule.rate_for(Country::KR, venue, Date{2026, 3, static_cast<unsigned>(day)});
+    };
+    const auto asserted = *VenueKey::normalized(Venue::KRX);
+
+    // The venue row covers its first and last day, and neither one more.
+    CHECK(at(10, asserted)->rate_ == Decimal64::parse("0.00147"));
+    CHECK(at(20, asserted)->rate_ == Decimal64::parse("0.00147"));
+    // Outside it, the neutral row answers -- the fallback pass, not an off-by-one.
+    CHECK(at(9, asserted)->rate_ == Decimal64::parse("0.00015"));
+    CHECK(at(21, asserted)->rate_ == Decimal64::parse("0.00015"));
+    // And the neutral row covers its own bounds when nothing is asserted.
+    CHECK(at(1, VenueKey::any())->rate_ == Decimal64::parse("0.00015"));
+    CHECK(at(31, VenueKey::any())->rate_ == Decimal64::parse("0.00015"));
+    CHECK_FALSE(schedule.rate_for(Country::KR, VenueKey::any(), Date{2026, 4, 1}));
+    // Inside the neutral window but outside the venue one, an assertion still gets an answer --
+    // the fallback -- and outside both it refuses rather than reaching for a window that ended.
+    CHECK(at(1, asserted));
+    CHECK_FALSE(schedule.rate_for(Country::KR, asserted, Date{2026, 2, 28}));
+  }
+}
