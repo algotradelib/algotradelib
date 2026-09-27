@@ -1369,6 +1369,27 @@ TEST_CASE("polling holdings stamps the portfolio with the broker's own time") {
   CHECK(portfolio.as_of_ == snapshot.received_at_);
 }
 
+TEST_CASE("an account holding nothing still stamps the portfolio") {
+  // **The hinge of the loop's never-populated gate.** `PollingLoop` holds while a portfolio has
+  // never arrived, and it tells "never arrived" from "arrived empty" by the epoch on `as_of_`. If a
+  // successful read of an account with no positions left the stamp at the epoch, that gate would
+  // hold such an account forever -- a fix reaching well past its defect.
+  WorkingSession session;
+  HoldingsSnapshot empty;
+  empty.received_at_ = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 200);
+  session.set_holdings(empty);
+
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  CHECK(source.poll(runner::PollKind::HOLDINGS, live_runner) == runner::PollOutcome::UPDATED);
+  const auto& portfolio = live_runner.context().portfolio();
+  CHECK(portfolio.positions_.empty());
+  // Stamped, and therefore distinguishable from a portfolio that never arrived.
+  CHECK(portfolio.as_of_ == empty.received_at_);
+  CHECK(portfolio.as_of_ != std::chrono::system_clock::time_point{});
+}
+
 TEST_CASE("holdings and working orders merge rather than replace each other") {
   // They are separate inquiries on separate cadences. Rebuilding the portfolio from either alone
   // would drop the other, and a dropped working order is one reconciliation places again.

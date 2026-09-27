@@ -1492,6 +1492,14 @@ private:
         // taken in 1970, so the epoch means "never populated". Treated as stale rather than as
         // fresh-but-empty, which is the safe direction: an empty portfolio read as current would let
         // a strategy size as though it held nothing.
+        //
+        // **This is deliberately still inside the age check, and `plan/todo/
+        // holdings-failure-is-not-a-send-gate.md` is why.** Hoisting it out so that an absent
+        // portfolio always holds is the right shape and it is not a one-line change: the hold would
+        // reach *cancellations*, which need an order reference and never consult the portfolio, and
+        // blocking one is worse than the thing it guards -- the order rests and can fill. A broker
+        // that cannot establish its holdings refuses at its own boundary instead; see
+        // `BrokerTraits<kiwoom::KiwoomClient>::validate_place`.
         return strategy::HaltReason::PORTFOLIO_STALE;
       }
       if (at - as_of > *maximum_portfolio_age_) {
