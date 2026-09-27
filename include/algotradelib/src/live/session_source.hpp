@@ -63,6 +63,16 @@ inline runner::PollOutcome poll_outcome_of(const BrokerError& error) noexcept {
 template <typename Session, typename Journal = runner::MemoryJournal>
 class SessionSource {
 public:
+  /** One order's most recent stated charge, as the accumulator last accepted it. */
+  struct ObservedCharge {
+    /** How much had filled when this reading was accepted; a later reading must exceed it. */
+    Decimal64 filled_quantity_;
+    /** The commission the broker stated, empty when it stated none. */
+    std::optional<Money> commission_;
+    /** The tax the broker stated, empty when it stated none. */
+    std::optional<Money> tax_;
+  };
+
   /** The bound broker's capability set, forwarded from the session. */
   using Caps = typename Session::Caps;
   /** The bound broker's tag, forwarded from the session. */
@@ -412,6 +422,116 @@ private:
     }
   }
 
+  /**
+   * Accumulates what the broker stated it charged, from one working-order listing.
+   *
+   * Three rules, and each exists because its absence produced a wrong number:
+   *
+   * - **A figure is cumulative per order**, so the running total moves by the *delta* against what
+   *   was already held for that order rather than by the whole figure again. Adding each poll's
+   *   reading would multiply one commission by the number of polls that saw it.
+   * - **A reading is accepted only on a strictly greater filled quantity.** At an equal quantity the
+   *   held value stands and a disagreement is counted, because nothing in a snapshot says which of
+   *   two readings the broker sent later -- so a delayed stale payload cannot reduce a charge.
+   * - **Absence is not zero.** An order stating no commission is counted as stating none; it
+   *   contributes to no currency's total, so no currency reads as "charged nothing" because a broker
+   *   said nothing.
+   */
+  void observe_charged(const std::vector<OrderSnapshot>& rows) {
+    std::vector<std::string> present;
+    present.reserve(rows.size());
+    for (const auto& row : rows) {
+      present.push_back(row.order_id_);
+      const auto stated = row.execution_.commission_ || row.execution_.tax_;
+      auto held = charged_seen_.find(row.order_id_);
+      if (held == charged_seen_.end()) {
+        ObservedCharge fresh;
+        fresh.filled_quantity_ = row.execution_.filled_quantity_;
+        fresh.commission_ = row.execution_.commission_;
+        fresh.tax_ = row.execution_.tax_;
+        if (fresh.commission_) {
+          charged_.add(charged_.commission_, *fresh.commission_);
+        }
+        if (fresh.tax_) {
+          charged_.add(charged_.tax_, *fresh.tax_);
+        }
+        if (stated) {
+          ++charged_.orders_stating_cost_;
+        } else {
+          ++charged_.orders_stating_none_;
+        }
+        charged_seen_.emplace(row.order_id_, std::move(fresh));
+        continue;
+      }
+      if (decimal_less(held->second.filled_quantity_, row.execution_.filled_quantity_)) {
+        if (!held->second.commission_ && !held->second.tax_ && stated) {
+          // It stated nothing when first seen and states something now, so it moves between the two
+          // counts rather than being counted in both.
+          --charged_.orders_stating_none_;
+          ++charged_.orders_stating_cost_;
+        }
+        accumulate_delta(charged_.commission_, held->second.commission_, row.execution_.commission_);
+        accumulate_delta(charged_.tax_, held->second.tax_, row.execution_.tax_);
+        held->second.filled_quantity_ = row.execution_.filled_quantity_;
+        held->second.commission_ = row.execution_.commission_;
+        held->second.tax_ = row.execution_.tax_;
+        continue;
+      }
+      if (held->second.filled_quantity_ == row.execution_.filled_quantity_ &&
+          restates(held->second.commission_, row.execution_.commission_)) {
+        ++charged_.conflicting_restatements_;
+      }
+    }
+
+    for (const auto& previous : charged_listing_) {
+      bool still_there = false;
+      for (const auto& id : present) {
+        if (id == previous) {
+          still_there = true;
+          break;
+        }
+      }
+      if (!still_there) {
+        // A row that was there and is not. It says nothing about *why*, and nothing about whether a
+        // charge was missed -- see the field's own documentation.
+        ++charged_.working_list_disappearances_;
+      }
+    }
+    charged_listing_ = std::move(present);
+  }
+
+  /** Moves a running total by the difference between two readings of one order's figure. */
+  static void accumulate_delta(
+    std::vector<Money>& totals,
+    const std::optional<Money>& held,
+    const std::optional<Money>& now
+  ) {
+    if (!now) {
+      // A reading that stopped stating a figure does not withdraw the one already observed: a
+      // broker that says nothing has not said zero.
+      return;
+    }
+    if (!held) {
+      runner::ChargedCosts().add(totals, *now);
+      // `add` is a member for its currency lookup and holds no state of its own; the temporary is
+      // only a way to reach it.
+      return;
+    }
+    if (!(held->currency_ == now->currency_)) {
+      // An order does not change currency underneath its own charge. Refused rather than summed
+      // across two, which would be the one arithmetic `Money` exists to prevent.
+      return;
+    }
+    if (const auto moved = decimal_subtract(now->amount_, held->amount_)) {
+      runner::ChargedCosts().add(totals, Money{*moved, now->currency_});
+    }
+  }
+
+  /** Returns whether two readings of one order's commission disagree while both are present. */
+  static bool restates(const std::optional<Money>& held, const std::optional<Money>& now) {
+    return held && now && held->currency_ == now->currency_ && !(held->amount_ == now->amount_);
+  }
+
   /** Refreshes working orders, keeping positions. Compiles to nothing without the capability. */
   template <typename Runner>
   runner::PollOutcome poll_working_orders(Runner& runner_instance) {
@@ -435,6 +555,10 @@ private:
       for (const auto& working : result.value().orders_) {
         rows.push_back(working.order_);
       }
+      // **Observed here because this is where the rows exist.** `Source::poll` hands the loop a
+      // `PollOutcome` and nothing else, and these rows are swept into reconciliation and dropped --
+      // so a cost accumulated in the loop could only ever be accumulated from nothing.
+      observe_charged(rows);
       reconcile(runner_instance, rows);
       return runner::PollOutcome::UPDATED;
     } else {
@@ -557,6 +681,12 @@ private:
   Session* session_;
   std::vector<InstrumentId> universe_;
   std::vector<Currency> currencies_;
+  /** What the broker has stated it charged, across every run made against this source. */
+  runner::ChargedCosts charged_;
+  /** The last accepted reading per order id, so a cumulative figure is not added twice. */
+  std::map<std::string, ObservedCharge> charged_seen_;
+  /** The order ids in the previous working-order listing, for the disappearance diagnostic. */
+  std::vector<std::string> charged_listing_;
   Country calendar_country_{Country::KR};
   Journal* journal_{nullptr};
   int maximum_history_pages_{20};

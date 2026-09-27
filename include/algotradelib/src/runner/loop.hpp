@@ -258,6 +258,148 @@ struct source_provides_working_orders<
 > : std::bool_constant<Source::provides_working_orders> {};
 
 /**
+ * Cost a broker stated against its own orders, as observed on the snapshots a loop happened to poll.
+ *
+ * **This is a subtotal of unknown coverage, and every name here is chosen to keep saying so.** A
+ * running loop polls *working* orders; an order that fills and leaves that listing between two polls
+ * is never seen carrying its final commission, and an order placed and filled between two polls is
+ * never seen at all. Neither is detectable from the listing, so nothing here can be called a total
+ * and no counter here certifies completeness. A figure with known coverage needs a deliberate
+ * order-history poll, which this loop does not make.
+ *
+ * What it is good for is the thing that did not exist before it: Toss states the actual commission
+ * and tax it charged on every order, the library read it into `OrderExecution` and then discarded
+ * it, and a replay's modelled cost had nothing on the live side to be compared against at all.
+ */
+struct ChargedCosts {
+  /**
+   * Broker-stated commission observed, per currency.
+   *
+   * Per currency because `Money` refuses to add unlike currencies and a run can poll a universe
+   * spanning markets: one scalar would either be wrong or would have to refuse to exist. A currency
+   * nobody stated a cost in has **no entry**, which is not the same as an entry of zero.
+   */
+  std::vector<Money> commission_;
+  /** Broker-stated tax observed, per currency, on the same terms. */
+  std::vector<Money> tax_;
+  /** How many distinct orders were seen stating a cost, including a stated zero. */
+  std::size_t orders_stating_cost_{0};
+  /**
+   * How many distinct orders were seen stating no cost at all.
+   *
+   * Every KIS order is one of these: its order snapshots carry no commission field, so absence here
+   * is the broker's silence rather than a charge of nothing.
+   */
+  std::size_t orders_stating_none_{0};
+  /**
+   * How many orders left the working-order listing between two polls.
+   *
+   * **This is not a completeness measure and must not be read as one.** It counts what it says: a
+   * row that was there and then was not. That happens on a fill, and equally on a cancellation or an
+   * expiry, and it cannot see an order that was placed and filled without ever appearing. It is a
+   * diagnostic for how much of the picture moved while the loop was not looking, nothing more.
+   */
+  std::size_t working_list_disappearances_{0};
+  /**
+   * How many times an order restated a *different* cost at the same filled quantity.
+   *
+   * Nothing in an order snapshot carries a broker sequence number or a fee revision time --
+   * `ordered_at_` and `canceled_at_` are lifecycle instants and `filled_at_` timestamps the latest
+   * fill -- so when two readings disagree at the same filled quantity there is no authority that
+   * says which is later. The first is kept and the disagreement is counted here rather than being
+   * resolved by arrival order, which would let a delayed stale payload silently reduce a charge.
+   */
+  std::size_t conflicting_restatements_{0};
+
+  /** Returns the commission observed in `currency`, or nothing when none was stated in it. */
+  std::optional<Decimal64> commission_in(const Currency& currency) const {
+    for (const auto& amount : commission_) {
+      if (amount.currency_ == currency) {
+        return amount.amount_;
+      }
+    }
+    return std::nullopt;
+  }
+
+  /** Returns the tax observed in `currency`, or nothing when none was stated in it. */
+  std::optional<Decimal64> tax_in(const Currency& currency) const {
+    for (const auto& amount : tax_) {
+      if (amount.currency_ == currency) {
+        return amount.amount_;
+      }
+    }
+    return std::nullopt;
+  }
+
+  /** Adds `amount` to the running figure for its own currency, adding the currency if it is new. */
+  void add(std::vector<Money>& totals, const Money& amount) {
+    for (auto& held : totals) {
+      if (held.currency_ == amount.currency_) {
+        if (const auto sum = decimal_add(held.amount_, amount.amount_)) {
+          held.amount_ = *sum;
+        }
+        return;
+      }
+    }
+    totals.push_back(amount);
+  }
+
+  /**
+   * Returns what was observed between `before` and this, per currency.
+   *
+   * A `SessionSource` outlives the runs made against it, and `Loop::run` builds a fresh report each
+   * call -- so an absolute accumulator copied at the end would put the first run's charges in the
+   * second run's report. Differenced around the run, exactly as `sends_outside_permitted_phase` is.
+   * The totals only ever rise, which is what makes the subtraction meaningful.
+   */
+  ChargedCosts since(const ChargedCosts& before) const {
+    ChargedCosts delta;
+    const auto difference = [](const std::vector<Money>& now, const std::vector<Money>& then) {
+      std::vector<Money> out;
+      for (const auto& amount : now) {
+        const auto earlier = [&]() -> Decimal64 {
+          for (const auto& was : then) {
+            if (was.currency_ == amount.currency_) {
+              return was.amount_;
+            }
+          }
+          return Decimal64::parse("0");
+        }();
+        if (const auto moved = decimal_subtract(amount.amount_, earlier)) {
+          if (moved->coefficient() != 0) {
+            out.push_back(Money{*moved, amount.currency_});
+          }
+        }
+      }
+      return out;
+    };
+    delta.commission_ = difference(commission_, before.commission_);
+    delta.tax_ = difference(tax_, before.tax_);
+    delta.orders_stating_cost_ = orders_stating_cost_ - before.orders_stating_cost_;
+    delta.orders_stating_none_ = orders_stating_none_ - before.orders_stating_none_;
+    delta.working_list_disappearances_ =
+      working_list_disappearances_ - before.working_list_disappearances_;
+    delta.conflicting_restatements_ = conflicting_restatements_ - before.conflicting_restatements_;
+    return delta;
+  }
+};
+
+/**
+ * Whether `Source` states the broker-reported cost it observed.
+ *
+ * **Defaults to false**, so a source that stays silent reports nothing rather than failing to
+ * compile. A source declares `const ChargedCosts& charged_costs() const` to have its observations
+ * reach `LoopReport`.
+ */
+template <typename Source, typename = void>
+struct source_states_charged_costs : std::false_type {};
+
+template <typename Source>
+struct source_states_charged_costs<
+  Source, std::void_t<decltype(std::declval<const Source&>().charged_costs())>
+> : std::true_type {};
+
+/**
  * Whether `Source` can say which currencies it was configured to ask about.
  *
  * **Defaults to false**, so a source that stays silent gets the weaker gate it had before rather
@@ -323,6 +465,14 @@ struct IterationReport {
 struct LoopReport {
   /** How many iterations ran. */
   std::size_t iterations_{0};
+  /**
+   * What the broker said it charged, on the orders this run happened to see.
+   *
+   * **Read `ChargedCosts`' own documentation before using it**: it is a subtotal whose coverage is
+   * unknown on every run, not a total. It exists because a replay reports a modelled commission and
+   * a live run reported nothing at all, so the two could not be compared in any direction.
+   */
+  ChargedCosts charged_costs_;
   /** How many polls of each kind were attempted, indexed by `PollKind`. */
   std::size_t attempted_[poll_kind_count] = {};
   /** How many polls of each kind failed. */
@@ -794,6 +944,15 @@ public:
     // `RiskGuard::total_sent` is already used around a callback. Taken per `run` so a second run on
     // the same loop reports its own sends rather than the first one's as well.
     const auto outside_phase_before = runner_->sends_outside_permitted_phase();
+    // Differenced around the run for the same reason, and the reason is sharper here: the source
+    // survives `run` returning, so an absolute figure would report the previous run's charges again.
+    const auto charged_before = [&]() {
+      if constexpr (source_states_charged_costs<Source>::value) {
+        return source_->charged_costs();
+      } else {
+        return ChargedCosts{};
+      }
+    }();
     for (auto& due : next_due_) {
       due.reset();
     }
