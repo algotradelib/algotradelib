@@ -223,7 +223,15 @@ struct Report {
    * subject to the same currency rule as `commission_paid_`.
    */
   std::optional<Decimal64> institution_fees_paid_;
-  /** The institution component per currency, on the same terms as `commission_by_currency_`. */
+  /**
+   * The institution component per currency, on the same terms as `commission_by_currency_`.
+   *
+   * **Partial when `ReportCaveats::inclusive_commission_executions_` is nonzero.** It then holds the
+   * component for the executions whose rate distinguished one and nothing for the rest, whose
+   * institution charge is inside `commission_by_currency_` in an amount nobody stated. The scalar
+   * above goes absent in that case; this vector does not, because a known subset is worth having
+   * and the count beside it says the subset is not the whole.
+   */
   std::vector<Money> institution_by_currency_;
   /** @copydoc Report::commission_paid_ */
   Decimal64 slippage_paid_;

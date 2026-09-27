@@ -71,6 +71,8 @@ public:
     std::optional<Money> commission_;
     /** The tax the broker stated, empty when it stated none. */
     std::optional<Money> tax_;
+    /** Whether this order has already been counted as one that states a cost. */
+    bool counted_cost_{false};
   };
 
   /** The bound broker's capability set, forwarded from the session. */
@@ -435,37 +437,46 @@ private:
   /**
    * Accumulates what the broker stated it charged, from one working-order listing.
    *
-   * Three rules, and each exists because its absence produced a wrong number:
+   * **One invariant holds the arithmetic together: what `charged_seen_` holds for an order is
+   * exactly what has been contributed to the totals for it.** Every rule below exists to keep that
+   * true, and the three defects review found were each a place it had been broken.
    *
-   * - **A figure is cumulative per order**, so the running total moves by the *delta* against what
-   *   was already held for that order rather than by the whole figure again. Adding each poll's
-   *   reading would multiply one commission by the number of polls that saw it.
-   * - **A reading is accepted only on a strictly greater filled quantity.** At an equal quantity the
-   *   held value stands and a disagreement is counted, because nothing in a snapshot says which of
-   *   two readings the broker sent later -- so a delayed stale payload cannot reduce a charge.
-   * - **Absence is not zero.** An order stating no commission is counted as stating none; it
-   *   contributes to no currency's total, so no currency reads as "charged nothing" because a broker
-   *   said nothing.
+   * - **A figure is cumulative per order**, so the total moves by the *delta* against what is held
+   *   rather than by the whole figure again.
+   * - **A reading that states nothing withdraws nothing.** A broker that stopped reporting a figure
+   *   has not said it is now zero, so the held amount stands. Overwriting it with empty while the
+   *   total kept the old value broke the invariant, and the next stated figure was then added on
+   *   top in full: 100, then silence, then 150 reported 250.
+   * - **A first figure at an unchanged filled quantity is new information, not a disagreement.**
+   *   It is accepted and the order is reclassified. Only two *present* figures that differ are a
+   *   conflict, and then the held one stands, because nothing in a snapshot says which reading the
+   *   broker sent later.
+   * - **An order does not change currency**, so a reading that does is a conflict rather than a
+   *   silent replacement that would strand the total already accumulated in the old one.
+   * - **Absence is not zero.** An order stating nothing contributes to no currency's total.
    */
   void observe_charged(const std::vector<OrderSnapshot>& rows) {
     std::vector<std::string> present;
     present.reserve(rows.size());
     for (const auto& row : rows) {
       present.push_back(row.order_id_);
-      const auto stated = row.execution_.commission_ || row.execution_.tax_;
+      const auto& execution = row.execution_;
+      const auto states_cost = execution.commission_ || execution.tax_;
+
       auto held = charged_seen_.find(row.order_id_);
       if (held == charged_seen_.end()) {
         ObservedCharge fresh;
-        fresh.filled_quantity_ = row.execution_.filled_quantity_;
-        fresh.commission_ = row.execution_.commission_;
-        fresh.tax_ = row.execution_.tax_;
+        fresh.filled_quantity_ = execution.filled_quantity_;
+        fresh.commission_ = execution.commission_;
+        fresh.tax_ = execution.tax_;
+        fresh.counted_cost_ = states_cost;
         if (fresh.commission_) {
           charged_.add(charged_.commission_, *fresh.commission_);
         }
         if (fresh.tax_) {
           charged_.add(charged_.tax_, *fresh.tax_);
         }
-        if (stated) {
+        if (states_cost) {
           ++charged_.orders_stating_cost_;
         } else {
           ++charged_.orders_stating_none_;
@@ -473,23 +484,22 @@ private:
         charged_seen_.emplace(row.order_id_, std::move(fresh));
         continue;
       }
-      if (decimal_less(held->second.filled_quantity_, row.execution_.filled_quantity_)) {
-        if (!held->second.commission_ && !held->second.tax_ && stated) {
-          // It stated nothing when first seen and states something now, so it moves between the two
-          // counts rather than being counted in both.
-          --charged_.orders_stating_none_;
-          ++charged_.orders_stating_cost_;
-        }
-        accumulate_delta(charged_.commission_, held->second.commission_, row.execution_.commission_);
-        accumulate_delta(charged_.tax_, held->second.tax_, row.execution_.tax_);
-        held->second.filled_quantity_ = row.execution_.filled_quantity_;
-        held->second.commission_ = row.execution_.commission_;
-        held->second.tax_ = row.execution_.tax_;
-        continue;
+
+      const auto advanced = decimal_less(held->second.filled_quantity_, execution.filled_quantity_);
+      if (advanced) {
+        held->second.filled_quantity_ = execution.filled_quantity_;
       }
-      if (held->second.filled_quantity_ == row.execution_.filled_quantity_ &&
-          restates(held->second.commission_, row.execution_.commission_)) {
-        ++charged_.conflicting_restatements_;
+      // A figure is taken when the order has filled further, and also when this is the first figure
+      // the order has ever carried -- the second is new information at any quantity.
+      take_figure(charged_.commission_, held->second.commission_, execution.commission_, advanced);
+      take_figure(charged_.tax_, held->second.tax_, execution.tax_, advanced);
+
+      if (states_cost && !held->second.counted_cost_) {
+        // Counted once, the first time this order states anything, and `orders_stating_none_` is
+        // left where it is: both counters are monotone so that differencing them across runs
+        // cannot underflow, and an order that began without a figure is in both counts by design.
+        held->second.counted_cost_ = true;
+        ++charged_.orders_stating_cost_;
       }
     }
 
@@ -510,36 +520,44 @@ private:
     charged_listing_ = std::move(present);
   }
 
-  /** Moves a running total by the difference between two readings of one order's figure. */
-  static void accumulate_delta(
+  /**
+   * Moves one running total by a new reading of one order's figure, keeping `held` in step with it.
+   *
+   * `held` is only ever left holding what the total has actually been given, which is the invariant
+   * the caller's documentation describes.
+   */
+  void take_figure(
     std::vector<Money>& totals,
-    const std::optional<Money>& held,
-    const std::optional<Money>& now
+    std::optional<Money>& held,
+    const std::optional<Money>& now,
+    bool advanced
   ) {
     if (!now) {
-      // A reading that stopped stating a figure does not withdraw the one already observed: a
-      // broker that says nothing has not said zero.
+      // Silence withdraws nothing, and the held figure stays in step with the total.
       return;
     }
     if (!held) {
-      runner::ChargedCosts().add(totals, *now);
-      // `add` is a member for its currency lookup and holds no state of its own; the temporary is
-      // only a way to reach it.
+      charged_.add(totals, *now);
+      held = now;
       return;
     }
     if (!(held->currency_ == now->currency_)) {
-      // An order does not change currency underneath its own charge. Refused rather than summed
-      // across two, which would be the one arithmetic `Money` exists to prevent.
+      // An order does not change the currency of its own charge. Replacing it would strand what was
+      // accumulated in the first currency and base every later delta on the second.
+      ++charged_.conflicting_restatements_;
+      return;
+    }
+    if (!advanced) {
+      if (!(held->amount_ == now->amount_)) {
+        // Two present figures at one filled quantity, and nothing says which is later.
+        ++charged_.conflicting_restatements_;
+      }
       return;
     }
     if (const auto moved = decimal_subtract(now->amount_, held->amount_)) {
-      runner::ChargedCosts().add(totals, Money{*moved, now->currency_});
+      charged_.add(totals, Money{*moved, now->currency_});
+      held = now;
     }
-  }
-
-  /** Returns whether two readings of one order's commission disagree while both are present. */
-  static bool restates(const std::optional<Money>& held, const std::optional<Money>& now) {
-    return held && now && held->currency_ == now->currency_ && !(held->amount_ == now->amount_);
   }
 
   /** Refreshes working orders, keeping positions. Compiles to nothing without the capability. */

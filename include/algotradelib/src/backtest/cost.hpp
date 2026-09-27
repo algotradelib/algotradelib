@@ -236,11 +236,7 @@ public:
    *   *routing*, not a venue an order matched on. A rate row may be keyed to it, because a broker
    *   could publish a consolidated rate; asserting it as the place a fill happened is a guess.
    */
-  static Result<CommissionPolicy> scheduled(
-    CommissionSchedule schedule,
-    Country country,
-    VenueKey asserted
-  ) {
+  static Result<CommissionPolicy> scheduled(CommissionSchedule schedule, VenueKey asserted) {
     if (schedule.origin_ == CommissionOrigin::CALLER_STATED && schedule.tariff_.empty()) {
       return Result<CommissionPolicy>(refusal(
         "commission_tariff_unnamed",
@@ -257,7 +253,6 @@ public:
     }
     CommissionPolicy policy;
     policy.schedule_ = std::move(schedule);
-    policy.country_ = country;
     policy.asserted_ = std::move(asserted);
     return Result<CommissionPolicy>(std::move(policy));
   }
@@ -283,7 +278,8 @@ public:
   Result<CommissionCharge> charge(
     const Decimal64& quantity,
     const Decimal64& price,
-    const Date& date
+    const Date& date,
+    Country country
   ) const {
     if (!schedule_) {
       const auto charged = flat_.on(quantity, price);
@@ -305,7 +301,7 @@ public:
       return Result<CommissionCharge>(std::move(result));
     }
 
-    const auto rate = schedule_->rate_for(country_, asserted_, date);
+    const auto rate = schedule_->rate_for(country, asserted_, date);
     if (!rate) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
@@ -314,7 +310,7 @@ public:
       // The date is named rather than described: a refusal a reader has to reproduce to understand
       // is a refusal they will work around instead of fixing.
       error.message_ = "the schedule states no commission rate for " + named(date) +
-        " at venue " + described(asserted_);
+        " at venue " + described(asserted_) + " in the market this instrument is listed in";
       return Result<CommissionCharge>(std::move(error));
     }
 
@@ -402,8 +398,6 @@ private:
   CommissionModel flat_{};
   /** Present exactly when this policy resolves a schedule. */
   std::optional<CommissionSchedule> schedule_;
-  /** The market the schedule is asked about. */
-  Country country_{Country::KR};
   /** The venue a caller asserted its fills happened at. */
   VenueKey asserted_;
 };

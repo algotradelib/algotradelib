@@ -2127,3 +2127,103 @@ TEST_CASE("an order that fills between two polls is missed, and the counter does
   poll_rows(source, live_runner, session, {});
   CHECK(source.charged_costs().working_list_disappearances_ == 1);
 }
+
+TEST_CASE("silence between two stated figures does not add the second one twice") {
+  // Found in review. The held reading was overwritten with empty while the total kept the old
+  // amount, so the next stated figure was added in full on top of it: 100, then silence, then 150
+  // reported 250. The held state and the total have to stay in step.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  poll_rows(source, live_runner, session, {charged_row("A1", "10", "100")});
+  poll_rows(source, live_runner, session, {charged_row("A1", "20", std::nullopt)});
+  // Silence withdrew nothing.
+  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
+        std::optional<Decimal64>(Decimal64::parse("100")));
+
+  poll_rows(source, live_runner, session, {charged_row("A1", "30", "150")});
+  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
+        std::optional<Decimal64>(Decimal64::parse("150")));
+}
+
+TEST_CASE("a first figure at an unchanged filled quantity is taken, not discarded") {
+  // Also found in review. Only a strictly greater filled quantity was accepted, so an order seen
+  // first without a figure and then with one at the same quantity was ignored entirely -- and it
+  // was not a conflict either, because that check needed two present amounts. The charge simply
+  // vanished from the subtotal.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  poll_rows(source, live_runner, session, {charged_row("A1", "10", std::nullopt)});
+  CHECK_FALSE(source.charged_costs().commission_in(Currency::krw()));
+  CHECK(source.charged_costs().orders_stating_none_ == 1);
+
+  poll_rows(source, live_runner, session, {charged_row("A1", "10", "1400")});
+  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
+        std::optional<Decimal64>(Decimal64::parse("1400")));
+  // Counted as stating a cost now, and still counted as having been first seen without one: both
+  // counters are monotone, so a run-to-run subtraction of either cannot wrap.
+  CHECK(source.charged_costs().orders_stating_cost_ == 1);
+  CHECK(source.charged_costs().orders_stating_none_ == 1);
+  // A first figure is new information rather than a disagreement.
+  CHECK(source.charged_costs().conflicting_restatements_ == 0);
+}
+
+TEST_CASE("an order that changes the currency of its charge is a conflict, not a replacement") {
+  // An order does not change the currency of its own charge. Replacing it would strand what was
+  // already accumulated in the first currency and base every later delta on the second.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  poll_rows(source, live_runner, session, {charged_row("A1", "10", "1400")});
+  poll_rows(source, live_runner, session,
+            {charged_row("A1", "20", "3", Currency::usd())});
+
+  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
+        std::optional<Decimal64>(Decimal64::parse("1400")));
+  CHECK_FALSE(source.charged_costs().commission_in(Currency::usd()));
+  CHECK(source.charged_costs().conflicting_restatements_ == 1);
+}
+
+TEST_CASE("a tax restated at one filled quantity is noticed too") {
+  // The disagreement check read commission and not tax, so a tax figure that changed under an
+  // unchanged quantity was neither taken nor reported.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  auto first = charged_row("A1", "10", "1400");
+  first.order_.execution_.tax_ = Money{Decimal64::parse("500"), Currency::krw()};
+  poll_rows(source, live_runner, session, {first});
+
+  auto restated = charged_row("A1", "10", "1400");
+  restated.order_.execution_.tax_ = Money{Decimal64::parse("300"), Currency::krw()};
+  poll_rows(source, live_runner, session, {restated});
+
+  CHECK(source.charged_costs().tax_in(Currency::krw()) ==
+        std::optional<Decimal64>(Decimal64::parse("500")));
+  CHECK(source.charged_costs().conflicting_restatements_ == 1);
+}
+
+TEST_CASE("an order that starts stating nothing and later states a charge differences cleanly") {
+  // The run-scope failure review found: `orders_stating_none_` used to fall when an order first
+  // stated a charge, and `since` subtracts it as an unsigned count -- so the ordinary transition
+  // of one order across two runs reported a count of `0 - 1`, wrapping to an enormous number.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  poll_rows(source, live_runner, session, {charged_row("A1", "10", std::nullopt)});
+  const auto after_first_run = source.charged_costs();
+
+  poll_rows(source, live_runner, session, {charged_row("A1", "20", "1400")});
+  const auto second_run = source.charged_costs().since(after_first_run);
+
+  CHECK(second_run.orders_stating_cost_ == 1);
+  CHECK(second_run.orders_stating_none_ == 0);
+  CHECK(second_run.commission_in(Currency::krw()) ==
+        std::optional<Decimal64>(Decimal64::parse("1400")));
+}

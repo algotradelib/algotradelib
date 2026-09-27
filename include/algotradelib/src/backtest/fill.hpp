@@ -152,7 +152,8 @@ public:
       decision.still_working_ = rests_unfilled(order);
       return decision;
     }
-    auto charged = commission_.charge(order.quantity_, slipped->first, date);
+    auto charged =
+      commission_.charge(order.quantity_, slipped->first, date, order.instrument_.country_);
     if (!charged) {
       // **Not `still_working_`, and not silence.** A cost that cannot be resolved is not a bar that
       // did not reach a limit: leaving the order queued would retry it on the next bar and leaving

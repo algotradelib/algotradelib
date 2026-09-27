@@ -357,6 +357,15 @@ public:
     runner_.executor().open_bar();
 
     settle_queued_against(event);
+    // **The halt stops this bar too, not merely the next one.** Returning only from settlement left
+    // `feed` to mark the book, record an equity point, advance the clock and call `on_phase` and
+    // `on_bar` on the very bar whose fill could not be costed -- so the strategy decided once more
+    // on a portfolio missing that trade, and could queue orders that then survived in the executor
+    // because every later `feed` is a no-op and `finish` returns early. Nothing runs after the
+    // refusal.
+    if (result_.halted_) {
+      return;
+    }
     // A mark that will not fit leaves its lot at the previous price, so an equity point recorded
     // here would be stamped with this bar and computed at the last one. Skipped instead, which is
     // what `record_equity` already does when the total itself cannot be computed.
@@ -502,9 +511,21 @@ private:
       // about what currency one fill was in.
       decision.execution_->currency_ = currency_for(order.instrument_);
       if (!ledger_.apply(*decision.execution_, currency_for(order.instrument_))) {
-        // Arithmetic that will not fit an exact decimal. Counted as unfilled rather than applied
-        // partly, because a half-applied ledger is worse than an order that did not trade.
-        continue;
+        // **A modelled fill the ledger cannot record halts the replay**, for the same reason a cost
+        // it cannot compute does. `apply` is atomic, so nothing is half-written -- but the fill
+        // happened in the model and did not happen in the books, and continuing would carry on from
+        // a portfolio missing a trade the strategy was never told about. This used to `continue`,
+        // which recreated at the ledger boundary exactly the silently-missing-trade path the
+        // costing refusal above exists to remove.
+        BrokerError error;
+        error.category_ = ErrorCategory::INVALID_ARGUMENT;
+        error.reached_broker_ = false;
+        error.broker_code_ = "execution_not_representable";
+        error.message_ = "an execution's cash arithmetic does not fit an exact decimal, so the "
+          "ledger could not record a fill the model produced";
+        result_.halted_ = std::move(error);
+        abort_queue();
+        return;
       }
       result_.executions_.push_back(*decision.execution_);
       install_portfolio();

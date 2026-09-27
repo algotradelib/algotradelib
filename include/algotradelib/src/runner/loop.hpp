@@ -282,13 +282,22 @@ struct ChargedCosts {
   std::vector<Money> commission_;
   /** Broker-stated tax observed, per currency, on the same terms. */
   std::vector<Money> tax_;
-  /** How many distinct orders were seen stating a cost, including a stated zero. */
+  /**
+   * How many distinct orders have **ever** stated a cost, including a stated zero.
+   *
+   * Counted once per order, the first time it states anything, and never taken back -- both this
+   * and `orders_stating_none_` are monotone so that differencing them across runs cannot
+   * underflow. An order that was first seen without a figure and later carried one is counted in
+   * **both**, which is the honest reading of what was observed rather than a reclassification that
+   * would make a per-run subtraction wrap.
+   */
   std::size_t orders_stating_cost_{0};
   /**
-   * How many distinct orders were seen stating no cost at all.
+   * How many distinct orders were **first seen** stating no cost at all.
    *
    * Every KIS order is one of these: its order snapshots carry no commission field, so absence here
-   * is the broker's silence rather than a charge of nothing.
+   * is the broker's silence rather than a charge of nothing. Monotone, and never decremented when
+   * an order later states a figure -- see `orders_stating_cost_` for why the two can overlap.
    */
   std::size_t orders_stating_none_{0};
   /**
@@ -350,7 +359,12 @@ struct ChargedCosts {
    * A `SessionSource` outlives the runs made against it, and `Loop::run` builds a fresh report each
    * call -- so an absolute accumulator copied at the end would put the first run's charges in the
    * second run's report. Differenced around the run, exactly as `sends_outside_permitted_phase` is.
-   * The totals only ever rise, which is what makes the subtraction meaningful.
+   *
+   * **The counters are monotone, which is what makes their subtraction safe**; they are unsigned,
+   * and a classification that could fall would wrap on a perfectly ordinary transition. The money
+   * is signed and deliberately not assumed to rise: a broker that revises a cumulative figure
+   * downward at a greater filled quantity produces a negative delta, and a negative figure in a
+   * run's report is a true statement about what was observed in it.
    */
   ChargedCosts since(const ChargedCosts& before) const {
     ChargedCosts delta;

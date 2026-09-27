@@ -2805,7 +2805,7 @@ CommissionRate venue_rate(
 /** Runs a two-bar replay costed by `policy` and returns the engine, so a caller can read the ledger. */
 backtest::CommissionPolicy policy_for(Venue venue, std::vector<CommissionRate> rows) {
   auto policy = backtest::CommissionPolicy::scheduled(
-    operator_tariff(std::move(rows)), Country::KR, *VenueKey::normalized(venue)
+    operator_tariff(std::move(rows)), *VenueKey::normalized(venue)
   );
   REQUIRE(policy);
   return std::move(policy.value());
@@ -2883,7 +2883,6 @@ TEST_CASE("one replay spanning a rate change charges each rate on its own dates"
       venue_rate(Venue::KRX, "0.002", "0", std::nullopt, Date{2026, 3, 11}),
       venue_rate(Venue::KRX, "0.001", "0", Date{2026, 3, 12}, std::nullopt),
     }),
-    Country::KR,
     *VenueKey::normalized(Venue::KRX)
   );
   REQUIRE(policy);
@@ -2919,7 +2918,6 @@ TEST_CASE("a rate window is bounded by the market-local date, not the timestamp"
       venue_rate(Venue::KRX, "0.002", "0", std::nullopt, Date{2026, 3, 11}),
       venue_rate(Venue::KRX, "0.001", "0", Date{2026, 3, 12}, std::nullopt),
     }),
-    Country::KR,
     *VenueKey::normalized(Venue::KRX)
   );
   REQUIRE(policy);
@@ -2942,7 +2940,6 @@ TEST_CASE("COMBINED cannot be asserted as the venue a fill happened at") {
   // A rate row may still be keyed to it, which the core tests assert.
   const auto refused = backtest::CommissionPolicy::scheduled(
     operator_tariff({venue_rate(Venue::KRX, "0.002", "0")}),
-    Country::KR,
     *VenueKey::normalized(Venue::COMBINED)
   );
   REQUIRE_FALSE(refused);
@@ -2960,7 +2957,7 @@ TEST_CASE("a caller-stated schedule that does not name its tariff is refused") {
   unnamed.rates_.push_back(venue_rate(Venue::KRX, "0.002", "0"));
 
   const auto refused = backtest::CommissionPolicy::scheduled(
-    unnamed, Country::KR, *VenueKey::normalized(Venue::KRX)
+    unnamed, *VenueKey::normalized(Venue::KRX)
   );
   REQUIRE_FALSE(refused);
   CHECK(refused.error().broker_code_ == "commission_tariff_unnamed");
@@ -2970,7 +2967,7 @@ TEST_CASE("a caller-stated schedule that does not name its tariff is refused") {
   published.origin_ = CommissionOrigin::BROKER_PUBLISHED;
   published.rates_.push_back(venue_rate(Venue::KRX, "0.002", "0"));
   CHECK(backtest::CommissionPolicy::scheduled(
-    published, Country::KR, *VenueKey::normalized(Venue::KRX)
+    published, *VenueKey::normalized(Venue::KRX)
   ));
 }
 
@@ -2983,12 +2980,31 @@ namespace {
  * is withdrawn either way, and only a second eligible order behind it can demonstrate that nothing
  * filled after the refusal.
  */
+/** Buys a quantity whose notional cannot fit an exact decimal, to reach the ledger's refusal. */
+struct BuysHuge {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ctx.submit(
+      strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY,
+        strategy::SizeSpec::quantity(Decimal64::parse("1300000000000"))
+      ).with_tag("buys-huge")
+    );
+  }
+};
+
 struct PlacesTwoEachBar {
   bool stopped_{false};
   std::size_t fills_{0};
+  std::size_t bars_seen_{0};
+  std::size_t phases_seen_{0};
+
+  template <class Ctx>
+  void on_phase(Ctx&, strategy::MarketPhase) { ++phases_seen_; }
 
   template <class Ctx>
   void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ++bars_seen_;
     for (const char* tag : {"first", "second"}) {
       ctx.submit(
         strategy::OrderIntent::market(
@@ -3023,7 +3039,6 @@ TEST_CASE("a date the schedule does not cover halts the replay rather than dropp
   // turnover -- described a run that never happened, while the report looked complete.
   auto policy = backtest::CommissionPolicy::scheduled(
     operator_tariff({venue_rate(Venue::KRX, "0.002", "0", std::nullopt, Date{2026, 3, 11})}),
-    Country::KR,
     *VenueKey::normalized(Venue::KRX)
   );
   REQUIRE(policy);
@@ -3071,12 +3086,83 @@ TEST_CASE("a date the schedule does not cover halts the replay rather than dropp
   CHECK(report.executions_ == 2);
 }
 
+TEST_CASE("the refusal bar itself runs nothing after the refusal") {
+  // Found in review, and it is the counterexample to the promised terminal transition. `feed`
+  // returned only from settlement, so on the very bar whose fill could not be costed it still
+  // marked the book, recorded an equity point, advanced the clock, called `on_phase` and called
+  // `on_bar` -- and the strategy, deciding once more on a portfolio missing that trade, queued two
+  // fresh orders which then survived in the executor, because every later `feed` is a no-op and
+  // `finish` returns early.
+  auto policy = backtest::CommissionPolicy::scheduled(
+    operator_tariff({venue_rate(Venue::KRX, "0.002", "0", std::nullopt, Date{2026, 3, 11})}),
+    *VenueKey::normalized(Venue::KRX)
+  );
+  REQUIRE(policy);
+
+  backtest::Backtester<PlacesTwoEachBar> engine(
+    PlacesTwoEachBar{}, replay_config(), backtest::NextBarFillModel(std::move(policy.value()))
+  );
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+
+  const auto bars_before = engine.strategy().bars_seen_;
+  const auto phases_before = engine.strategy().phases_seen_;
+  const auto equity_before = engine.result().equity_.size();
+  REQUIRE(bars_before == 2);
+
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  REQUIRE(engine.result().halted_);
+
+  // Nothing downstream of settlement ran on the refusal bar.
+  CHECK(engine.strategy().bars_seen_ == bars_before);
+  CHECK(engine.strategy().phases_seen_ == phases_before);
+  CHECK(engine.result().equity_.size() == equity_before);
+
+  engine.finish();
+  // And nothing was left queued: the two orders the halted bar would have placed were never
+  // placed, and the one order already resting was cleared into `aborted_`.
+  CHECK(engine.result().aborted_ == 1);
+  CHECK(engine.result().unfilled_ == 0);
+  CHECK_FALSE(engine.strategy().stopped_);
+}
+
+TEST_CASE("a fill the ledger cannot record halts the replay rather than disappearing") {
+  // The same silently-missing-trade path the costing refusal removes, one boundary further in:
+  // `ReplayLedger::apply` is atomic and returns false on arithmetic that will not fit, and the
+  // engine used to `continue` -- so the model produced a fill, the books did not record it, and
+  // the replay carried on from a portfolio missing a trade with nothing saying so.
+  //
+  // Driven through a quantity whose notional cannot be represented, so the cash arithmetic fails
+  // rather than the costing.
+  backtest::ReplayConfig config = replay_config();
+  config.cash_ = Decimal64::parse("100000000");
+
+  // A zero-rate model, so the commission arithmetic cannot be what fails: `CommissionModel::on`
+  // computes the notional before the rate, so any notional that overflows is refused there first
+  // and the ledger is never reached. The cash total is what gives way here, on the second fill.
+  backtest::Backtester<BuysHuge> engine(
+    BuysHuge{}, config, backtest::NextBarFillModel(backtest::CommissionModel::none())
+  );
+  for (int day = 10; day < 14; ++day) {
+    engine.feed(
+      moving_bar(utc(2026, 3, day, 6, 30), BarInterval::ONE_DAY, "70000.50", "70000.50")
+    );
+  }
+  engine.finish();
+
+  REQUIRE(engine.result().halted_);
+  CHECK(engine.result().halted_->broker_code_ == "execution_not_representable");
+  CHECK_FALSE(engine.result().halted_->reached_broker_);
+  // Four bars were fed and the replay stopped inside one of them, so it did not run to the end
+  // with a trade quietly missing from its books.
+  CHECK(engine.result().bars_ < 4);
+}
+
 TEST_CASE("a replay that can cost every fill still runs to the end and stops its strategy") {
   // The control for the case above: without it, a mutation that halted on *every* bar would leave
   // that test passing and this one is what notices.
   auto policy = backtest::CommissionPolicy::scheduled(
     operator_tariff({venue_rate(Venue::KRX, "0.002", "0")}),
-    Country::KR,
     *VenueKey::normalized(Venue::KRX)
   );
   REQUIRE(policy);
@@ -3104,7 +3190,6 @@ TEST_CASE("the report states the rates it applied, not the rates the schedule ho
       // Eligible by country and venue, and never reached: this replay never trades after 2027.
       venue_rate(Venue::KRX, "0.009", "0", Date{2027, 1, 1}, std::nullopt),
     }),
-    Country::KR,
     *VenueKey::normalized(Venue::KRX)
   );
   REQUIRE(policy);
@@ -3136,7 +3221,7 @@ TEST_CASE("a rate stating one figure leaves the institution total absent rather 
     rate_row(Country::KR, Decimal64::parse("0.002"), std::nullopt, std::nullopt)
   );
   auto policy =
-    backtest::CommissionPolicy::scheduled(published, Country::KR, VenueKey::any());
+    backtest::CommissionPolicy::scheduled(published, VenueKey::any());
   REQUIRE(policy);
 
   backtest::Backtester<HoldsTen> engine(
@@ -3172,7 +3257,7 @@ TEST_CASE("an existing schedule with no venue on it charges exactly what it char
   old_way.finish();
 
   // The new path over the same schedule, with no venue asserted.
-  auto policy = backtest::CommissionPolicy::scheduled(published, Country::KR, VenueKey::any());
+  auto policy = backtest::CommissionPolicy::scheduled(published, VenueKey::any());
   REQUIRE(policy);
   backtest::Backtester<HoldsTen> new_way(
     HoldsTen{}, replay_config(), backtest::NextBarFillModel(std::move(policy.value()))
@@ -3222,14 +3307,16 @@ TEST_CASE("a replay spanning two currencies states each, and no scalar total at 
       venue_rate(Venue::KRX, "0.002", "0"),
       [] {
         // The American row, keyed to no venue: the US listing has none this library normalizes.
+        // **Deliberately a different rate from the Korean row.** With both at 0.002 this row could
+        // be deleted without changing the expected USD figure, so the test would have passed while
+        // a US fill was charged the Korean tariff -- which is exactly the defect review found.
         CommissionRate row;
         row.country_ = Country::US;
-        row.rate_ = Decimal64::parse("0.002");
+        row.rate_ = Decimal64::parse("0.005");
         row.institution_rate_ = Decimal64::parse("0");
         return row;
       }(),
     }),
-    Country::KR,
     *VenueKey::normalized(Venue::KRX)
   );
   REQUIRE(policy);
@@ -3258,7 +3345,13 @@ TEST_CASE("a replay spanning two currencies states each, and no scalar total at 
     }
     return std::nullopt;
   };
-  // Ten at 70,000 is 700,000 and 0.2% of that is 1,400; ten at 200 is 2,000 and 0.2% is 4.
+  // Ten at 70,000 is 700,000 and 0.2% of that is 1,400 won. Ten at 200 is 2,000 and the *American*
+  // row's 0.5% is 10 dollars -- charging the Korean row's 0.2% would give 4, so this figure is what
+  // says the country came from the instrument rather than from the policy.
   CHECK(in(Currency{"KRW"}) == std::optional<Decimal64>(Decimal64::parse("1400")));
-  CHECK(in(Currency::usd()) == std::optional<Decimal64>(Decimal64::parse("4")));
+  CHECK(in(Currency::usd()) == std::optional<Decimal64>(Decimal64::parse("10")));
+  // And the venue assertion is global while the country is not: the Korean row is venue-keyed and
+  // was reached by the assertion, the American row is venue-neutral and was reached by the
+  // fallback, in one replay.
+  REQUIRE(report.caveats_.applied_rates_.size() == 2);
 }
