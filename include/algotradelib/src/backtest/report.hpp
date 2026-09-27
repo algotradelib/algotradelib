@@ -207,7 +207,16 @@ struct Report {
   math::Scalar sortino_{0};
   /** Worst peak-to-trough decline, as a non-negative fraction. */
   math::Scalar max_drawdown_{0};
-  /** One-way turnover summed over the replay, as a fraction of equity traded. */
+  /**
+   * One-way turnover summed over the replay, as a fraction of equity traded.
+   *
+   * **Unobserved when any execution was in a currency the equity curve is not**, because the
+   * numerator and the denominator would then be different money. A replay holding a won fill and
+   * a dollar fill produced a perfectly ordinary-looking ratio that added two hundred dollars to
+   * seven hundred thousand won; a whole-portfolio turnover across currencies needs an exchange
+   * rate this library does not carry, and inventing one would misprice the figure rather than
+   * withhold it.
+   */
   math::Scalar total_turnover_{0};
 
   /**
@@ -459,7 +468,18 @@ inline Report summarize(
   // Turnover from the executions rather than from a weight matrix, because a replay knows what it
   // actually traded. One-way, matching `analytics::one_way_turnover`: the fraction of equity that
   // changed hands.
+  // Same money on both sides, or no figure at all.
+  bool one_currency = true;
+  for (const auto& execution : result.executions_) {
+    if (!(execution.currency_ == result.currency_)) {
+      one_currency = false;
+      break;
+    }
+  }
   report.total_turnover_ = opening == math::Scalar{0} ? math::undefined() : math::Scalar{0};
+  if (!one_currency) {
+    report.total_turnover_ = math::missing();
+  }
   if (math::observed(report.total_turnover_)) {
     for (const auto& execution : result.executions_) {
       const auto traded = decimal_multiply(execution.fill_.quantity_, execution.fill_.price_);

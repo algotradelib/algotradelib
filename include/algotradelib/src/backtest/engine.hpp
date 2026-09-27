@@ -200,6 +200,14 @@ struct EquityPoint {
 
 /** What a replay did, for a report to summarize. */
 struct ReplayResult {
+  /**
+   * The currency the equity curve is denominated in, which is the replay's accounting currency.
+   *
+   * Carried so a report can tell whether a figure derived from *both* the curve and the executions
+   * is comparing like with like. It is not, whenever an execution happened in another currency --
+   * and a ratio of one currency's notional to another's equity looks entirely ordinary.
+   */
+  Currency currency_{Currency{"KRW"}};
   /** One point per bar that could be valued, in order. */
   std::vector<EquityPoint> equity_;
   /** Every execution the fill model produced, in order. */
@@ -312,6 +320,8 @@ public:
       runner_.context().set_instrument(reference);
     }
     runner_.context().set_calendar(config_.calendar_);
+    // Stated on the result so a report can compare an execution's currency against the curve's.
+    result_.currency_ = config_.currency_;
   }
 
   /** Returns the strategy, so a caller can read the state it kept. */

@@ -3366,6 +3366,15 @@ TEST_CASE("a replay spanning two currencies states each, and no scalar total at 
   // says the country came from the instrument rather than from the policy.
   CHECK(in(Currency{"KRW"}) == std::optional<Decimal64>(Decimal64::parse("1400")));
   CHECK(in(Currency::usd()) == std::optional<Decimal64>(Decimal64::parse("10")));
+
+  // **Turnover is unobserved, not merely uncaveated.** It divides an execution's notional by the
+  // equity curve's opening value, and the curve is one currency's -- so a dollar fill against a
+  // won equity produced an ordinary-looking ratio that had added the two. A whole-portfolio
+  // turnover across currencies needs an exchange rate this library does not carry.
+  CHECK_FALSE(math::observed(report.total_turnover_));
+  // The rest of the performance figures are the accounting currency's and stay observed, which is
+  // what makes the absence above mean something.
+  CHECK(math::observed(report.total_return_));
   // And the venue assertion is global while the country is not: the Korean row is venue-keyed and
   // was reached by the assertion, the American row is venue-neutral and was reached by the
   // fallback, in one replay.
@@ -3568,4 +3577,21 @@ TEST_CASE("slippage in two currencies is kept apart like every other cost") {
   const auto at_home = backtest::summarize(home.result(), home.fills());
   REQUIRE(at_home.slippage_paid_);
   CHECK(at_home.slippage_paid_->coefficient() > 0);
+}
+
+TEST_CASE("turnover is stated when every fill is in the equity curve's own currency") {
+  // The control for the mixed-currency case: without it, withholding turnover unconditionally
+  // would satisfy that assertion and remove the figure from every replay that has one.
+  backtest::Backtester<HoldsTen> engine(
+    HoldsTen{}, replay_config(),
+    backtest::NextBarFillModel(backtest::CommissionModel::of(Decimal64::parse("0.00015")))
+  );
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.finish();
+
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  REQUIRE(report.executions_ == 1);
+  REQUIRE(math::observed(report.total_turnover_));
+  CHECK(report.total_turnover_ > math::Scalar{0});
 }
