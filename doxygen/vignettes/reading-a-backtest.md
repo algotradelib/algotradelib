@@ -190,10 +190,15 @@ ordinary and one is not:
 1. **The replay executed nothing.** No trade, no total — which is not a charge of zero.
 2. **The replay spanned currencies.** `commission_by_currency_` is the answer, and a scalar could
    only have been a sum of unlike money.
-3. **An addition did not fit an exact decimal**, which sets `ReportCaveats::cost_totals_incomplete_`.
-   Then the per-currency vectors hold only what could be added and `slippage_paid_` is understated
-   by whatever was refused. It takes figures far beyond any real account to reach; it is reported
-   because a money total that is quietly short is worse than one that says it is short.
+3. **An exact-decimal step was refused** — a sum that does not fit, or a slippage multiplication
+   that does not — which sets `ReportCaveats::cost_totals_incomplete_`. Then the per-currency
+   vectors hold only what could be accumulated. It takes figures far beyond any real account to
+   reach; it is reported because a money total that is quietly short is worse than one that says
+   it is short.
+
+`slippage_paid_` is optional for the same three reasons, and `slippage_by_currency_` is the answer
+whenever a scalar cannot be — slippage is money, and a replay holding a won fill and a dollar fill
+has no single number for it.
 
 `institution_fees_paid_` is absent for those three reasons and a fourth: any rate that stated a
 single figure without splitting the components, counted in `inclusive_commission_executions_`.

@@ -78,12 +78,12 @@ struct ReportCaveats {
   /**
    * Whether a cost total could not be summed exactly, so the figures above are **incomplete**.
    *
-   * True means at least one addition of two representable amounts did not fit an exact decimal and
-   * was left out rather than approximated. `Report::commission_paid_` and
-   * `institution_fees_paid_` go absent when it is set, the per-currency vectors hold only what
-   * could be added, and `slippage_paid_` is understated by whatever was refused. It takes figures
-   * far larger than any real account to reach; it is reported because a money total that is
-   * quietly short is worse than one that says it is short.
+   * True means at least one exact-decimal step was refused -- an addition of two representable
+   * amounts whose sum does not fit, or a slippage multiplication that does not -- and the amount
+   * was left out rather than approximated. Every scalar cost total goes absent when it is set, and
+   * the per-currency vectors hold only what could be accumulated. It takes figures far larger than
+   * any real account to reach; it is reported because a money total that is quietly short is worse
+   * than one that says it is short.
    */
   bool cost_totals_incomplete_{false};
   /** Basis points of slippage applied. */
@@ -244,8 +244,19 @@ struct Report {
    * and the count beside it says the subset is not the whole.
    */
   std::vector<Money> institution_by_currency_;
-  /** @copydoc Report::commission_paid_ */
-  Decimal64 slippage_paid_;
+  /**
+   * Slippage given up, on the same terms as `commission_paid_`.
+   *
+   * **Absent for the same three reasons**: nothing executed, the executions spanned currencies, or
+   * an exact-decimal step was refused. It used to be a bare scalar summed across every execution
+   * regardless of currency, so a replay holding one won fill and one dollar fill reported a number
+   * that was neither -- the one arithmetic every monetary type here exists to prevent, left in the
+   * one cost figure that had not been given a currency. `slippage_by_currency_` is the answer
+   * whenever a scalar cannot be.
+   */
+  std::optional<Decimal64> slippage_paid_;
+  /** Slippage given up per currency, which is always stated whatever the scalar above does. */
+  std::vector<Money> slippage_by_currency_;
 
   /** Instructions reconciliation could not build; a replay's executor refuses nothing. */
   std::size_t rejected_{0};
@@ -342,7 +353,7 @@ inline Report summarize(
     }
     totals.push_back(amount);
   };
-  auto slippage = Decimal64::parse("0");
+
   std::vector<InstrumentId> seen;
   for (const auto& execution : result.executions_) {
     accumulate(report.commission_by_currency_, Money{execution.commission_, execution.currency_});
@@ -371,13 +382,11 @@ inline Report summarize(
       entry.executions_ = 1;
       report.caveats_.applied_rates_.push_back(std::move(entry));
     }
-    // Slippage is a per-share price difference, so its cost is that times the quantity.
+    // Slippage is a per-share price difference, so its cost is that times the quantity -- and it
+    // is totalled per currency like every other cost, because a replay can hold fills in more
+    // than one and adding them would produce a figure denominated in nothing.
     if (const auto cost = decimal_multiply(execution.slippage_, execution.fill_.quantity_)) {
-      if (const auto sum = decimal_add(slippage, *cost)) {
-        slippage = *sum;
-      } else {
-        costs_fit = false;
-      }
+      accumulate(report.slippage_by_currency_, Money{*cost, execution.currency_});
     } else {
       costs_fit = false;
     }
@@ -406,7 +415,9 @@ inline Report summarize(
       report.institution_by_currency_.size() == 1) {
     report.institution_fees_paid_ = report.institution_by_currency_.front().amount_;
   }
-  report.slippage_paid_ = slippage;
+  if (costs_fit && report.slippage_by_currency_.size() == 1) {
+    report.slippage_paid_ = report.slippage_by_currency_.front().amount_;
+  }
   report.caveats_.multiple_instruments_ = seen.size() > 1;
 
   if (result.equity_.empty()) {

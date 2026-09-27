@@ -169,7 +169,7 @@ void replay_and_report(const char* title, Strategy instance, const FetchedHistor
             << "  max drawdown    " << show(report.max_drawdown_, true) << "\n"
             << "  turnover        " << show(report.total_turnover_, true) << "\n"
             << "  commission      " << money_or_absent(report.commission_paid_) << "\n"
-            << "  slippage        " << report.slippage_paid_.str() << "\n"
+            << "  slippage        " << money_or_absent(report.slippage_paid_) << "\n"
             << "  not modelled    volume, queue position, market impact, borrow\n";
   if (report.caveats_.cost_totals_incomplete_) {
     // The reason a total can be absent that is not "no trades" and not "two currencies": an exact

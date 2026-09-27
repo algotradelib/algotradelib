@@ -339,7 +339,12 @@ struct ChargedCosts {
    */
   std::size_t conflicting_restatements_{0};
   /**
-   * How many stated figures could not be carried through exact decimal arithmetic.
+   * How many arithmetic attempts were refused as unrepresentable.
+   *
+   * **Attempts, not figures**, and the distinction is real: a rejected row polled again is counted
+   * again, because the held figure is deliberately not advanced past something that was never
+   * contributed. What the count says is "this subtotal is short", not "this many distinct charges
+   * are missing".
    *
    * Nonzero means the figures above are **incomplete**, and there are three ways to reach it: a sum
    * that did not fit, a per-order delta that did not fit, and a run's own subtraction in `since`

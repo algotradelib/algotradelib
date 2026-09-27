@@ -155,7 +155,7 @@ void print(const std::string& title, const backtest::Report& report) {
             << "  max drawdown    " << percent(report.max_drawdown_) << "\n"
             << "  turnover        " << percent(report.total_turnover_) << "\n"
             << "  commission      " << money_or_absent(report.commission_paid_) << " KRW\n"
-            << "  slippage        " << report.slippage_paid_.str() << " KRW\n";
+            << "  slippage        " << money_or_absent(report.slippage_paid_) << " KRW\n";
   std::cout << "  assumed         limit fills "
             << backtest::limit_fill_price_name(report.caveats_.limit_fill_) << ", slippage "
             << report.caveats_.slippage_ticks_ << " tick\n";

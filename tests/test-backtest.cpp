@@ -1148,7 +1148,8 @@ TEST_CASE("a report summarizes a replay and states what the model assumed") {
   REQUIRE(report.executions_ == 1);
   REQUIRE(report.commission_paid_);
   REQUIRE(report.commission_paid_->coefficient() > 0);
-  REQUIRE(report.slippage_paid_.coefficient() > 0);
+  REQUIRE(report.slippage_paid_);
+  REQUIRE(report.slippage_paid_->coefficient() > 0);
 
   // The assumptions travel with the figures, as fields rather than as documentation a reader has to
   // remember applied to their run.
@@ -3518,4 +3519,53 @@ TEST_CASE("an unsummable cost total is reported through a real replay, not only 
   CHECK(report.caveats_.cost_totals_incomplete_);
   CHECK_FALSE(report.commission_paid_);
   CHECK_FALSE(report.institution_fees_paid_);
+}
+
+TEST_CASE("slippage in two currencies is kept apart like every other cost") {
+  // The last cost figure still summed across currencies, and review found it with a probe: one won
+  // fill and one dollar fill produced a scalar denominated in neither, with no caveat set and both
+  // shipped examples printing it plainly. `Execution` has carried its currency since the
+  // mixed-currency commission fix; slippage simply had not been given it.
+  backtest::ReplayConfig config;
+  config.cash_ = Decimal64::parse("100000000");
+  config.instruments_ = {samsung_reference(), apple_reference()};
+  config.limits_.permitted_phases_ = std::nullopt;
+
+  backtest::Backtester<HoldsTen> engine(
+    HoldsTen{},
+    config,
+    backtest::NextBarFillModel(
+      backtest::CommissionModel::none(), backtest::SlippageModel::of_ticks(1)
+    )
+  );
+  engine.feed(bar_for(samsung(), utc(2026, 3, 10, 6, 30), "70000"));
+  engine.feed(bar_for(apple_reference().id_, utc(2026, 3, 10, 6, 31), "200"));
+  engine.feed(bar_for(samsung(), utc(2026, 3, 11, 6, 30), "70000"));
+  engine.feed(bar_for(apple_reference().id_, utc(2026, 3, 11, 6, 31), "200"));
+  engine.finish();
+
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  REQUIRE(report.executions_ == 2);
+  REQUIRE(report.slippage_by_currency_.size() == 2);
+  // Neither currency's figure is zero, so a scalar sum would have been a number that looked real
+  // and belonged to no currency at all.
+  for (const auto& given_up : report.slippage_by_currency_) {
+    CHECK(given_up.amount_.coefficient() > 0);
+  }
+  CHECK_FALSE(report.slippage_paid_);
+
+  // And a single-currency replay still states the scalar, so the absence means something.
+  backtest::Backtester<HoldsTen> home(
+    HoldsTen{},
+    replay_config(),
+    backtest::NextBarFillModel(
+      backtest::CommissionModel::none(), backtest::SlippageModel::of_ticks(1)
+    )
+  );
+  home.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  home.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  home.finish();
+  const auto at_home = backtest::summarize(home.result(), home.fills());
+  REQUIRE(at_home.slippage_paid_);
+  CHECK(at_home.slippage_paid_->coefficient() > 0);
 }
