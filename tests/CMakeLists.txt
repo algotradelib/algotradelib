@@ -23,6 +23,12 @@ target_link_libraries(algotradelib-broker-port-tests PRIVATE
     Catch2::Catch2WithMain
 )
 
+add_executable(algotradelib-kiwoom-tests test-kiwoom.cpp)
+target_link_libraries(algotradelib-kiwoom-tests PRIVATE
+    algotradelib::algotradelib
+    Catch2::Catch2WithMain
+)
+
 add_executable(algotradelib-rate-limit-tests test-rate-limit.cpp)
 target_link_libraries(algotradelib-rate-limit-tests PRIVATE
     algotradelib::algotradelib
@@ -94,6 +100,7 @@ endif()
 include(Catch)
 catch_discover_tests(algotradelib-core-tests)
 catch_discover_tests(algotradelib-broker-port-tests)
+catch_discover_tests(algotradelib-kiwoom-tests)
 catch_discover_tests(algotradelib-rate-limit-tests)
 catch_discover_tests(algotradelib-market-data-tests)
 catch_discover_tests(algotradelib-strategy-tests)
