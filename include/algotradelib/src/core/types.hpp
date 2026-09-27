@@ -939,6 +939,151 @@ inline bool is_valid_date(const Date& date) {
   return date.day_ >= 1 && date.day_ <= days;
 }
 
+/** Which kind of venue a `VenueKey` names. */
+enum class VenueKeyKind {
+  /** Applies to any venue. Every rate row that existed before venue-aware costing is this. */
+  ANY,
+  /** A `Venue` this library normalizes. */
+  NORMALIZED,
+  /** A code the broker named that this library does not normalize, preserved verbatim. */
+  RAW,
+};
+
+/**
+ * Which venue a commission rate applies to, as a key that cannot be ambiguous.
+ *
+ * **The three kinds are mutually exclusive, and that is the whole point.** An earlier design carried a
+ * `Venue` beside a preserved code and let `Venue::UNSPECIFIED` mean "no venue stated", which made an
+ * unnormalized row indistinguishable from a venue-neutral one -- so a rate published for one unknown
+ * market could be charged on any venue at all. "Nobody said" is `ANY`; "a venue I know" is
+ * `NORMALIZED`; "a venue I do not know, spelled as the broker spelled it" is `RAW`. A `RAW` key never
+ * matches a `NORMALIZED` one even when the text looks the same, because the library has not established
+ * that they mean the same market.
+ *
+ * `Venue::UNSPECIFIED` is refused as a normalized key for the same reason: it is the absence of a
+ * statement, and the absence of a statement is `ANY`.
+ *
+ * **`Venue::COMBINED` is storable and is refused as an *execution* assertion**, and the two halves of
+ * that belong in different places. A broker that publishes a consolidated rate must be representable,
+ * so the key holds it. But `COMBINED` is what `normalized_venue` maps KIS's `SOR` to -- consolidated
+ * *routing*, not a venue an order matched on -- so `backtest::CommissionPolicy` rejects it as the venue
+ * a fill is asserted to have happened at. Costing against it would be a guess wearing a normalized name.
+ */
+class VenueKey {
+public:
+  /** Constructs the neutral key, which applies to any venue. */
+  VenueKey() = default;
+
+  /** Returns the neutral key: this rate applies whatever venue a fill happened at. */
+  static VenueKey any() noexcept { return VenueKey(); }
+
+  /**
+   * Returns a key naming a venue this library normalizes, or nothing for `UNSPECIFIED`.
+   *
+   * `UNSPECIFIED` is refused rather than accepted and treated as neutral, because a caller who has a
+   * `Venue` variable holding it has not stated a venue and should say so with `any()`.
+   */
+  static std::optional<VenueKey> normalized(Venue venue) {
+    if (venue == Venue::UNSPECIFIED) {
+      return std::nullopt;
+    }
+    VenueKey key;
+    key.kind_ = VenueKeyKind::NORMALIZED;
+    key.venue_ = venue;
+    return key;
+  }
+
+  /** Returns a key preserving a venue code this library does not normalize, or nothing if it will not fit. */
+  static std::optional<VenueKey> raw(std::string_view code) {
+    auto stored = Code<8>::try_make(code);
+    if (!stored || stored->empty()) {
+      return std::nullopt;
+    }
+    VenueKey key;
+    key.kind_ = VenueKeyKind::RAW;
+    key.raw_ = *stored;
+    return key;
+  }
+
+  /** Returns which kind of venue this key names. */
+  VenueKeyKind kind() const noexcept { return kind_; }
+
+  /** Returns whether this key applies to any venue. */
+  bool is_any() const noexcept { return kind_ == VenueKeyKind::ANY; }
+
+  /** Returns the normalized venue; meaningful only when `kind()` is `NORMALIZED`. */
+  Venue venue() const noexcept { return venue_; }
+
+  /** Returns the preserved code; empty unless `kind()` is `RAW`. */
+  const Code<8>& raw_code() const noexcept { return raw_; }
+
+  /**
+   * Returns whether this key is the one `asserted` names.
+   *
+   * Exact in both kind and value. A `RAW` key never matches a `NORMALIZED` one, and neither matches
+   * `ANY`: falling back to a neutral rate is `CommissionSchedule::rate_for`'s second pass, deliberately
+   * not something this function does, so that "an exact rate exists" and "a neutral rate exists" can
+   * never be confused at the point of comparison.
+   */
+  bool matches(const VenueKey& asserted) const noexcept {
+    if (kind_ != asserted.kind_) {
+      return false;
+    }
+    switch (kind_) {
+      case VenueKeyKind::ANY:
+        return true;
+      case VenueKeyKind::NORMALIZED:
+        return venue_ == asserted.venue_;
+      case VenueKeyKind::RAW:
+        return raw_ == asserted.raw_;
+    }
+    return false;
+  }
+
+  /** Compares kind and value. */
+  friend bool operator==(const VenueKey& lhs, const VenueKey& rhs) noexcept { return lhs.matches(rhs); }
+
+  /** The negation of `operator==`. */
+  friend bool operator!=(const VenueKey& lhs, const VenueKey& rhs) noexcept { return !(lhs == rhs); }
+
+private:
+  VenueKeyKind kind_{VenueKeyKind::ANY};
+  Venue venue_{Venue::UNSPECIFIED};
+  Code<8> raw_;
+};
+
+/** Returns a stable lowercase name for `kind`, for a report to state what a rate was keyed on. */
+inline constexpr std::string_view venue_key_kind_name(VenueKeyKind kind) noexcept {
+  switch (kind) {
+    case VenueKeyKind::ANY:
+      return "any";
+    case VenueKeyKind::NORMALIZED:
+      return "normalized";
+    case VenueKeyKind::RAW:
+      return "raw";
+  }
+  return "unknown";
+}
+
+/** Where a commission schedule's numbers came from. */
+enum class CommissionOrigin {
+  /** The broker published them through an inquiry this library called. */
+  BROKER_PUBLISHED,
+  /** A caller stated them, from a published fee page or their own agreement. */
+  CALLER_STATED,
+};
+
+/** Returns a stable lowercase name for `origin`, for a report to state where a rate came from. */
+inline constexpr std::string_view commission_origin_name(CommissionOrigin origin) noexcept {
+  switch (origin) {
+    case CommissionOrigin::BROKER_PUBLISHED:
+      return "broker_published";
+    case CommissionOrigin::CALLER_STATED:
+      return "caller_stated";
+  }
+  return "unknown";
+}
+
 /**
  * One commission rate a broker charges, and the dates it applies on.
  *
@@ -954,7 +1099,9 @@ inline bool is_valid_date(const Date& date) {
  * **But absent does not prove the broker declared it open-ended.** `optional_calendar_date` also
  * yields empty for a bound that was present and unreadable, `parse_commissions` keeps the row, and
  * `applies_on` treats either empty bound as unbounded — so a damaged `endDate` makes an expired
- * rate read as current, and a damaged `startDate` makes a future one read as already in force.
+ * rate read as current, and a damaged `startDate` makes a future one read as already in force. That
+ * is a known defect with a note of its own, `plan/todo/commission-schedule-damaged-bounds.md`, and it
+ * bounds what a costing refusal can promise: a schedule with a damaged bound has no gap to refuse at.
  *
  * There is no per-order floor and no transaction tax here, because neither broker publishes one.
  */
@@ -975,8 +1122,33 @@ struct CommissionRate {
    * than reported under a market it does not belong to.
    */
   Code<16> other_;
-  /** The rate as a fraction of traded value, not a percentage: `0.00015`, not `0.015`. */
+  /**
+   * Which venue this rate applies to.
+   *
+   * `VenueKey::any()` on every row a broker publishes today, and on every row that existed before
+   * venue-aware costing — which is what makes the venue dimension additive rather than a migration.
+   * Neither broker publishes a per-venue rate: KRX and NXT charge differently and a caller states
+   * that from the published fee page, keyed on their own account's channel.
+   */
+  VenueKey venue_;
+  /** The broker's own commission, as a fraction of traded value: `0.00015`, not `0.015`. */
   Decimal64 rate_;
+  /**
+   * The second charged component, when the rate's source distinguishes one -- and **empty when
+   * nobody said**.
+   *
+   * Korean equity trading carries 유관기관제비용 beside the broker's commission: an institution fee,
+   * charged by different parties (the exchange, the depository), differing by venue independently of
+   * the commission. A schedule carrying one combined number is wrong for whichever component it omits.
+   *
+   * **Three states, because "no separate charge" and "nobody said" are different answers.** Empty
+   * means the source stated one rate and nothing about its composition -- which is every row Toss
+   * publishes, since its schedule is a single `commissionRate`. A present zero is a stated zero. A
+   * present positive value is a second, non-overlapping charge. A report reading an empty one states
+   * its commission total as *inclusive* and its institution total as absent, rather than claiming a
+   * known zero for something nobody established.
+   */
+  std::optional<Decimal64> institution_rate_;
   /**
    * The first date the rate applies on. Empty is open-ended, and deliberately not "today".
    *
@@ -1014,17 +1186,31 @@ struct CommissionRate {
 };
 
 /**
- * The commission rates a broker published for one account.
+ * The commission rates a broker published for one account, or a caller stated for their own.
  *
- * Only one broker publishes any, so a caller reaches this through a capability gate rather than
- * assuming it. An empty schedule from a broker that *does* publish them is a real answer — the
- * account has no stated rates — and is not the same as the broker having no such inquiry.
+ * Only one broker publishes any, so a caller reaches the published kind through a capability gate
+ * rather than assuming it. An empty schedule from a broker that *does* publish them is a real answer —
+ * the account has no stated rates — and is not the same as the broker having no such inquiry.
  */
 struct CommissionSchedule {
   /** Every rate row the broker published for the account. Empty is a real answer. */
   std::vector<CommissionRate> rates_;
   /** When the schedule arrived, on this machine's clock. */
   std::chrono::system_clock::time_point received_at_{};
+  /** Whether a broker published these numbers or a caller stated them. */
+  CommissionOrigin origin_{CommissionOrigin::BROKER_PUBLISHED};
+  /**
+   * Which tariff these numbers are, in the source's own words.
+   *
+   * **Required on a caller-stated schedule, and a cost model refuses one without it.** A published
+   * fee page is a matrix of channel by venue, and the channel -- 온라인 영업점 개설 계좌,
+   * 온라인 뱅키스 계좌, 영업점매매 -- is a property of the account that no API states and that varies
+   * by an order of magnitude. Nothing here can select it, so a caller names the row they read, the
+   * report prints it, and omitting it is an error rather than a wrong number.
+   *
+   * A broker-published schedule carries the broker's own name and needs nothing from the caller.
+   */
+  std::string tariff_;
 
   /**
    * How many rows the broker sent that could not be represented at all.
@@ -1041,21 +1227,55 @@ struct CommissionSchedule {
   std::size_t dropped_{0};
 
   /**
-   * Returns the rate in force for `country` on `date`, or nothing when none is.
+   * Returns the rate in force for `country` at `venue` on `date`, or nothing when none is.
    *
-   * The first matching row wins. A broker publishing two overlapping rows for one country and date
-   * is describing something this library cannot resolve, and picking the larger or the smaller
-   * would be inventing a policy the broker did not state.
+   * **Selection is two-pass, and that is what makes the venue dimension additive.** A row keyed to
+   * the venue `asserted` names wins; only when no such row exists does a venue-neutral row answer.
+   * So a schedule of neutral rows -- which is every schedule a broker publishes -- returns exactly
+   * what it returned before venues existed, including one that appends venue rows *after* a neutral
+   * row, which a plain first-match rule would have made unreachable.
+   *
+   * **A venue-specific schedule asked without an assertion refuses.** `VenueKey::any()` matches only
+   * neutral rows, so a schedule carrying KRX and NXT rows and no neutral one answers nothing rather
+   * than picking a venue nobody named. That is Decision 6: a caller who did not say where a fill
+   * happened is told, not guessed at.
+   *
+   * Within one pass the first matching row wins, as it always has. A broker publishing two
+   * overlapping rows for one country, venue and date is describing something this library cannot
+   * resolve, and picking the larger or the smaller would be inventing a policy nobody stated.
    */
-  std::optional<CommissionRate> rate_for(Country country, const Date& date) const {
+  std::optional<CommissionRate> rate_for(
+    Country country,
+    const VenueKey& asserted,
+    const Date& date
+  ) const {
+    // A row for a market this library does not normalize can never be the answer to a question asked
+    // in terms of `Country`, and it is kept so a caller can see that the broker sent it.
+    const auto eligible = [&](const CommissionRate& rate) {
+      return rate.normalized() && rate.country_ == country && rate.applies_on(date);
+    };
     for (const auto& rate : rates_) {
-      // A row for a market this library does not normalize can never be the answer to a question
-      // asked in terms of `Country`, and it is kept so a caller can see that the broker sent it.
-      if (rate.normalized() && rate.country_ == country && rate.applies_on(date)) {
+      if (eligible(rate) && rate.venue_.matches(asserted)) {
+        return rate;
+      }
+    }
+    for (const auto& rate : rates_) {
+      if (eligible(rate) && rate.venue_.is_any()) {
         return rate;
       }
     }
     return std::nullopt;
+  }
+
+  /**
+   * Returns the rate in force for `country` on `date` with no venue asserted.
+   *
+   * The pre-venue spelling, kept so a caller who never named a venue keeps compiling and keeps its
+   * answer. It asks for `VenueKey::any()`, so it reads a neutral row and **refuses** a schedule that
+   * only carries venue-specific ones rather than choosing one of them.
+   */
+  std::optional<CommissionRate> rate_for(Country country, const Date& date) const {
+    return rate_for(country, VenueKey::any(), date);
   }
 };
 

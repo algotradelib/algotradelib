@@ -2207,6 +2207,12 @@ private:
           continue;
         }
         rate.rate_ = Decimal64::parse(broker_detail::json_string(row, "commissionRate"));
+        // `venue_` stays neutral and `institution_rate_` stays empty, and both are the honest
+        // reading rather than defaults nobody chose. Toss's schema is
+        // `[marketCountry, commissionRate, startDate, endDate]`: it names no venue, so the rate
+        // applies whatever venue a fill reached; and it states one rate without saying whether an
+        // institution charge sits inside it, which is exactly what an empty `institution_rate_`
+        // means. A zero there would claim Toss charges no institution fee, which it never said.
         // Null means open-ended in that direction, which is how Toss publishes a rate with no
         // scheduled change. It is deliberately not read as "today".
         rate.from_ = optional_calendar_date(row, "startDate");
@@ -2214,6 +2220,10 @@ private:
         schedule.rates_.push_back(std::move(rate));
       }
       schedule.received_at_ = std::chrono::system_clock::now();
+      schedule.origin_ = CommissionOrigin::BROKER_PUBLISHED;
+      // The broker is the source, so the tariff needs nothing from the caller -- but the report
+      // prints this string, and "which tariff is this" has a real answer here worth printing.
+      schedule.tariff_ = "tossinvest published commission schedule";
       return Result<CommissionSchedule>(std::move(schedule));
     } catch (const std::exception& exception) {
       return Result<CommissionSchedule>(account_error("invalid_commission_response", exception));
