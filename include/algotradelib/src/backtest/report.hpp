@@ -244,10 +244,16 @@ struct Report {
   /**
    * Why the replay stopped early, when it did — **read this before any figure above it**.
    *
-   * Present means the run could not cost an execution and stopped there, so every number in this
-   * report describes the bars before that point rather than the period the caller asked for. The
-   * strategy was not stopped normally either: `on_stop` never ran, because an order placed into a
-   * replay that cannot cost one has nowhere honest to go.
+   * Present means the replay stopped early, and there are two origins: an execution whose cost
+   * could not be resolved, and one the ledger could not record. Both mean the same thing to a
+   * reader -- a trade the model produced did not reach the books, so continuing would describe a
+   * path that did not happen.
+   *
+   * Every number in this report describes the bars **up to** that point. The bar the halt happened
+   * on is counted in `bars_`, because it was fed, but nothing downstream of the refusal ran on it:
+   * no fill, no mark, no equity point, no callback. The strategy was not stopped normally either --
+   * `on_stop` never ran, because an order placed into a replay that cannot cost one has nowhere
+   * honest to go.
    */
   std::optional<BrokerError> halted_;
   /** Orders cleared from the queue by a halt, as distinct from `ReportCaveats::unfilled_`. */

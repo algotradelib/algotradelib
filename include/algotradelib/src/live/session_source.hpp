@@ -63,14 +63,28 @@ inline runner::PollOutcome poll_outcome_of(const BrokerError& error) noexcept {
 template <typename Session, typename Journal = runner::MemoryJournal>
 class SessionSource {
 public:
-  /** One order's most recent stated charge, as the accumulator last accepted it. */
+  /**
+   * One figure of one order, and **the filled quantity it was accepted at**.
+   *
+   * The quantity lives per figure rather than per order, and review found why it has to: a silent
+   * row advanced the order's quantity while the figure stayed behind at the old one, so the fee
+   * that then arrived for the *new* quantity looked like a second opinion about the old one and was
+   * discarded as a conflict. What decides whether a reading is new information is the quantity
+   * **this figure** was last accepted at, not how far the order has filled since.
+   */
+  struct ObservedFigure {
+    /** The amount the broker stated, empty until it has stated one. */
+    std::optional<Money> amount_;
+    /** The filled quantity `amount_` was accepted at. */
+    Decimal64 at_;
+  };
+
+  /** One order's stated charges, as the accumulator last accepted them. */
   struct ObservedCharge {
-    /** How much had filled when this reading was accepted; a later reading must exceed it. */
-    Decimal64 filled_quantity_;
-    /** The commission the broker stated, empty when it stated none. */
-    std::optional<Money> commission_;
-    /** The tax the broker stated, empty when it stated none. */
-    std::optional<Money> tax_;
+    /** The commission the broker stated, with the quantity it was accepted at. */
+    ObservedFigure commission_;
+    /** The tax the broker stated, with the quantity it was accepted at. */
+    ObservedFigure tax_;
     /** Whether this order has already been counted as one that states a cost. */
     bool counted_cost_{false};
   };
@@ -437,22 +451,21 @@ private:
   /**
    * Accumulates what the broker stated it charged, from one working-order listing.
    *
-   * **One invariant holds the arithmetic together: what `charged_seen_` holds for an order is
-   * exactly what has been contributed to the totals for it.** Every rule below exists to keep that
-   * true, and the three defects review found were each a place it had been broken.
+   * **One invariant holds the arithmetic together: what `charged_seen_` holds for a figure is
+   * exactly what has been contributed to the totals for it, and at which filled quantity.** Every
+   * rule below exists to keep that true, and each was a place review found it broken.
    *
-   * - **A figure is cumulative per order**, so the total moves by the *delta* against what is held
+   * - **A figure is cumulative per order**, so a total moves by the *delta* against what is held
    *   rather than by the whole figure again.
-   * - **A reading that states nothing withdraws nothing.** A broker that stopped reporting a figure
-   *   has not said it is now zero, so the held amount stands. Overwriting it with empty while the
-   *   total kept the old value broke the invariant, and the next stated figure was then added on
-   *   top in full: 100, then silence, then 150 reported 250.
-   * - **A first figure at an unchanged filled quantity is new information, not a disagreement.**
-   *   It is accepted and the order is reclassified. Only two *present* figures that differ are a
-   *   conflict, and then the held one stands, because nothing in a snapshot says which reading the
-   *   broker sent later.
-   * - **An order does not change currency**, so a reading that does is a conflict rather than a
-   *   silent replacement that would strand the total already accumulated in the old one.
+   * - **A reading that states nothing withdraws nothing**, and does not move the quantity the held
+   *   figure belongs to. Silence that advanced the quantity made the next real fee look like a
+   *   disagreement about the previous one, and it was dropped.
+   * - **A figure for a quantity this figure has not been accepted at is new information**, whether
+   *   the order was silent in between or this is its first figure at all.
+   * - **Two present figures at one quantity are a conflict**, and the held one stands: nothing in a
+   *   snapshot says which the broker sent later.
+   * - **An order does not change the currency of its own charge**, so a reading that does is a
+   *   conflict rather than a replacement that would strand what was accumulated in the first.
    * - **Absence is not zero.** An order stating nothing contributes to no currency's total.
    */
   void observe_charged(const std::vector<OrderSnapshot>& rows) {
@@ -466,41 +479,29 @@ private:
       auto held = charged_seen_.find(row.order_id_);
       if (held == charged_seen_.end()) {
         ObservedCharge fresh;
-        fresh.filled_quantity_ = execution.filled_quantity_;
-        fresh.commission_ = execution.commission_;
-        fresh.tax_ = execution.tax_;
         fresh.counted_cost_ = states_cost;
-        if (fresh.commission_) {
-          charged_.add(charged_.commission_, *fresh.commission_);
-        }
-        if (fresh.tax_) {
-          charged_.add(charged_.tax_, *fresh.tax_);
-        }
+        charged_seen_.emplace(row.order_id_, std::move(fresh));
+        held = charged_seen_.find(row.order_id_);
         if (states_cost) {
           ++charged_.orders_stating_cost_;
         } else {
+          // Counted once, at first sight, and never taken back when a figure arrives later: both
+          // counters are monotone so that differencing them across runs cannot underflow, and an
+          // order that began without a figure is in both counts by design.
           ++charged_.orders_stating_none_;
         }
-        charged_seen_.emplace(row.order_id_, std::move(fresh));
-        continue;
-      }
-
-      const auto advanced = decimal_less(held->second.filled_quantity_, execution.filled_quantity_);
-      if (advanced) {
-        held->second.filled_quantity_ = execution.filled_quantity_;
-      }
-      // A figure is taken when the order has filled further, and also when this is the first figure
-      // the order has ever carried -- the second is new information at any quantity.
-      take_figure(charged_.commission_, held->second.commission_, execution.commission_, advanced);
-      take_figure(charged_.tax_, held->second.tax_, execution.tax_, advanced);
-
-      if (states_cost && !held->second.counted_cost_) {
-        // Counted once, the first time this order states anything, and `orders_stating_none_` is
-        // left where it is: both counters are monotone so that differencing them across runs
-        // cannot underflow, and an order that began without a figure is in both counts by design.
+      } else if (states_cost && !held->second.counted_cost_) {
         held->second.counted_cost_ = true;
         ++charged_.orders_stating_cost_;
       }
+
+      take_figure(
+        charged_.commission_, held->second.commission_,
+        execution.commission_, execution.filled_quantity_
+      );
+      take_figure(
+        charged_.tax_, held->second.tax_, execution.tax_, execution.filled_quantity_
+      );
     }
 
     for (const auto& previous : charged_listing_) {
@@ -521,42 +522,48 @@ private:
   }
 
   /**
-   * Moves one running total by a new reading of one order's figure, keeping `held` in step with it.
+   * Moves one running total by a new reading, keeping `held` in step with what the total was given.
    *
-   * `held` is only ever left holding what the total has actually been given, which is the invariant
-   * the caller's documentation describes.
+   * `quantity` is how much of the order had filled when the broker stated `now`. A figure is taken
+   * when that exceeds the quantity this figure was last accepted at; at or below it, two present
+   * amounts that differ are a conflict and the held one stands.
    */
   void take_figure(
     std::vector<Money>& totals,
-    std::optional<Money>& held,
+    ObservedFigure& held,
     const std::optional<Money>& now,
-    bool advanced
+    const Decimal64& quantity
   ) {
     if (!now) {
-      // Silence withdraws nothing, and the held figure stays in step with the total.
+      // Silence withdraws nothing, and leaves this figure where it was -- including the quantity it
+      // belongs to, so a fee arriving later for the filled quantity is still new information.
       return;
     }
-    if (!held) {
-      charged_.add(totals, *now);
-      held = now;
+    if (!held.amount_) {
+      if (charged_.add(totals, *now)) {
+        held.amount_ = now;
+        held.at_ = quantity;
+      }
       return;
     }
-    if (!(held->currency_ == now->currency_)) {
+    if (!(held.amount_->currency_ == now->currency_)) {
       // An order does not change the currency of its own charge. Replacing it would strand what was
       // accumulated in the first currency and base every later delta on the second.
       ++charged_.conflicting_restatements_;
       return;
     }
-    if (!advanced) {
-      if (!(held->amount_ == now->amount_)) {
-        // Two present figures at one filled quantity, and nothing says which is later.
+    if (!decimal_less(held.at_, quantity)) {
+      if (!(held.amount_->amount_ == now->amount_)) {
+        // Two present figures for one filled quantity, and nothing says which is later.
         ++charged_.conflicting_restatements_;
       }
       return;
     }
-    if (const auto moved = decimal_subtract(now->amount_, held->amount_)) {
-      charged_.add(totals, Money{*moved, now->currency_});
-      held = now;
+    if (const auto moved = decimal_subtract(now->amount_, held.amount_->amount_)) {
+      if (charged_.add(totals, Money{*moved, now->currency_})) {
+        held.amount_ = now;
+        held.at_ = quantity;
+      }
     }
   }
 

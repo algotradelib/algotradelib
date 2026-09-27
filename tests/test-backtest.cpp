@@ -2805,7 +2805,7 @@ CommissionRate venue_rate(
 /** Runs a two-bar replay costed by `policy` and returns the engine, so a caller can read the ledger. */
 backtest::CommissionPolicy policy_for(Venue venue, std::vector<CommissionRate> rows) {
   auto policy = backtest::CommissionPolicy::scheduled(
-    operator_tariff(std::move(rows)), *VenueKey::normalized(venue)
+    operator_tariff(std::move(rows)), *VenueKey::normalized(venue), Country::KR
   );
   REQUIRE(policy);
   return std::move(policy.value());
@@ -2883,7 +2883,7 @@ TEST_CASE("one replay spanning a rate change charges each rate on its own dates"
       venue_rate(Venue::KRX, "0.002", "0", std::nullopt, Date{2026, 3, 11}),
       venue_rate(Venue::KRX, "0.001", "0", Date{2026, 3, 12}, std::nullopt),
     }),
-    *VenueKey::normalized(Venue::KRX)
+    *VenueKey::normalized(Venue::KRX), Country::KR
   );
   REQUIRE(policy);
 
@@ -2918,7 +2918,7 @@ TEST_CASE("a rate window is bounded by the market-local date, not the timestamp"
       venue_rate(Venue::KRX, "0.002", "0", std::nullopt, Date{2026, 3, 11}),
       venue_rate(Venue::KRX, "0.001", "0", Date{2026, 3, 12}, std::nullopt),
     }),
-    *VenueKey::normalized(Venue::KRX)
+    *VenueKey::normalized(Venue::KRX), Country::KR
   );
   REQUIRE(policy);
 
@@ -2940,7 +2940,7 @@ TEST_CASE("COMBINED cannot be asserted as the venue a fill happened at") {
   // A rate row may still be keyed to it, which the core tests assert.
   const auto refused = backtest::CommissionPolicy::scheduled(
     operator_tariff({venue_rate(Venue::KRX, "0.002", "0")}),
-    *VenueKey::normalized(Venue::COMBINED)
+    *VenueKey::normalized(Venue::COMBINED), Country::KR
   );
   REQUIRE_FALSE(refused);
   CHECK(refused.error().category_ == ErrorCategory::INVALID_ARGUMENT);
@@ -2957,7 +2957,7 @@ TEST_CASE("a caller-stated schedule that does not name its tariff is refused") {
   unnamed.rates_.push_back(venue_rate(Venue::KRX, "0.002", "0"));
 
   const auto refused = backtest::CommissionPolicy::scheduled(
-    unnamed, *VenueKey::normalized(Venue::KRX)
+    unnamed, *VenueKey::normalized(Venue::KRX), Country::KR
   );
   REQUIRE_FALSE(refused);
   CHECK(refused.error().broker_code_ == "commission_tariff_unnamed");
@@ -2967,7 +2967,7 @@ TEST_CASE("a caller-stated schedule that does not name its tariff is refused") {
   published.origin_ = CommissionOrigin::BROKER_PUBLISHED;
   published.rates_.push_back(venue_rate(Venue::KRX, "0.002", "0"));
   CHECK(backtest::CommissionPolicy::scheduled(
-    published, *VenueKey::normalized(Venue::KRX)
+    published, *VenueKey::normalized(Venue::KRX), Country::KR
   ));
 }
 
@@ -3039,7 +3039,7 @@ TEST_CASE("a date the schedule does not cover halts the replay rather than dropp
   // turnover -- described a run that never happened, while the report looked complete.
   auto policy = backtest::CommissionPolicy::scheduled(
     operator_tariff({venue_rate(Venue::KRX, "0.002", "0", std::nullopt, Date{2026, 3, 11})}),
-    *VenueKey::normalized(Venue::KRX)
+    *VenueKey::normalized(Venue::KRX), Country::KR
   );
   REQUIRE(policy);
 
@@ -3095,7 +3095,7 @@ TEST_CASE("the refusal bar itself runs nothing after the refusal") {
   // `finish` returns early.
   auto policy = backtest::CommissionPolicy::scheduled(
     operator_tariff({venue_rate(Venue::KRX, "0.002", "0", std::nullopt, Date{2026, 3, 11})}),
-    *VenueKey::normalized(Venue::KRX)
+    *VenueKey::normalized(Venue::KRX), Country::KR
   );
   REQUIRE(policy);
 
@@ -3139,7 +3139,10 @@ TEST_CASE("a fill the ledger cannot record halts the replay rather than disappea
 
   // A zero-rate model, so the commission arithmetic cannot be what fails: `CommissionModel::on`
   // computes the notional before the rate, so any notional that overflows is refused there first
-  // and the ledger is never reached. The cash total is what gives way here, on the second fill.
+  // and the ledger is never reached. **Which step inside `apply` gives way is deliberately not
+  // asserted** -- an earlier version of this comment claimed the cash total and review showed it
+  // is the position valuation. What this test pins is the engine's response to `apply` refusing:
+  // a typed halt rather than a fill that quietly disappears.
   backtest::Backtester<BuysHuge> engine(
     BuysHuge{}, config, backtest::NextBarFillModel(backtest::CommissionModel::none())
   );
@@ -3163,7 +3166,7 @@ TEST_CASE("a replay that can cost every fill still runs to the end and stops its
   // that test passing and this one is what notices.
   auto policy = backtest::CommissionPolicy::scheduled(
     operator_tariff({venue_rate(Venue::KRX, "0.002", "0")}),
-    *VenueKey::normalized(Venue::KRX)
+    *VenueKey::normalized(Venue::KRX), Country::KR
   );
   REQUIRE(policy);
 
@@ -3190,7 +3193,7 @@ TEST_CASE("the report states the rates it applied, not the rates the schedule ho
       // Eligible by country and venue, and never reached: this replay never trades after 2027.
       venue_rate(Venue::KRX, "0.009", "0", Date{2027, 1, 1}, std::nullopt),
     }),
-    *VenueKey::normalized(Venue::KRX)
+    *VenueKey::normalized(Venue::KRX), Country::KR
   );
   REQUIRE(policy);
 
@@ -3221,7 +3224,7 @@ TEST_CASE("a rate stating one figure leaves the institution total absent rather 
     rate_row(Country::KR, Decimal64::parse("0.002"), std::nullopt, std::nullopt)
   );
   auto policy =
-    backtest::CommissionPolicy::scheduled(published, VenueKey::any());
+    backtest::CommissionPolicy::scheduled(published, VenueKey::any(), Country::KR);
   REQUIRE(policy);
 
   backtest::Backtester<HoldsTen> engine(
@@ -3257,7 +3260,7 @@ TEST_CASE("an existing schedule with no venue on it charges exactly what it char
   old_way.finish();
 
   // The new path over the same schedule, with no venue asserted.
-  auto policy = backtest::CommissionPolicy::scheduled(published, VenueKey::any());
+  auto policy = backtest::CommissionPolicy::scheduled(published, VenueKey::any(), Country::KR);
   REQUIRE(policy);
   backtest::Backtester<HoldsTen> new_way(
     HoldsTen{}, replay_config(), backtest::NextBarFillModel(std::move(policy.value()))
@@ -3317,7 +3320,7 @@ TEST_CASE("a replay spanning two currencies states each, and no scalar total at 
         return row;
       }(),
     }),
-    *VenueKey::normalized(Venue::KRX)
+    *VenueKey::normalized(Venue::KRX), Country::KR
   );
   REQUIRE(policy);
 
@@ -3354,4 +3357,52 @@ TEST_CASE("a replay spanning two currencies states each, and no scalar total at 
   // was reached by the assertion, the American row is venue-neutral and was reached by the
   // fallback, in one replay.
   REQUIRE(report.caveats_.applied_rates_.size() == 2);
+}
+
+TEST_CASE("a dated rate for another market's calendar is refused, not charged a day early") {
+  // Found at round 4. A replay derives one local date from its single `SessionWindow`, so a US
+  // execution in a KRX-sessioned replay can be stamped with the next day -- and a US rate window
+  // changing at that boundary would be charged on the wrong side of it, or halt despite a row that
+  // covers the real trading day. Refused only where it could matter: an open-ended row is the same
+  // rate whichever calendar named the day.
+  CommissionSchedule schedule;
+  schedule.origin_ = CommissionOrigin::CALLER_STATED;
+  schedule.tariff_ = "online, branch-opened account";
+  schedule.rates_.push_back(venue_rate(Venue::KRX, "0.002", "0"));
+  CommissionRate american;
+  american.country_ = Country::US;
+  american.rate_ = Decimal64::parse("0.005");
+  american.from_ = Date{2026, 3, 1};
+  american.until_ = Date{2026, 3, 31};
+  schedule.rates_.push_back(american);
+
+  auto policy = backtest::CommissionPolicy::scheduled(
+    schedule, *VenueKey::normalized(Venue::KRX), Country::KR
+  );
+  REQUIRE(policy);
+
+  // The Korean fill is priced: its market is the one the dates were computed in.
+  CHECK(policy.value().charge(
+    Decimal64::parse("10"), Decimal64::parse("70000"), Date{2026, 3, 10}, Country::KR
+  ));
+
+  // The American one is refused, naming why.
+  const auto refused = policy.value().charge(
+    Decimal64::parse("10"), Decimal64::parse("200"), Date{2026, 3, 10}, Country::US
+  );
+  REQUIRE_FALSE(refused);
+  CHECK(refused.error().broker_code_ == "commission_date_not_market_local");
+
+  // An open-ended American row is charged, because no boundary can fall on the wrong day.
+  schedule.rates_.back().from_.reset();
+  schedule.rates_.back().until_.reset();
+  auto undated = backtest::CommissionPolicy::scheduled(
+    schedule, *VenueKey::normalized(Venue::KRX), Country::KR
+  );
+  REQUIRE(undated);
+  const auto charged = undated.value().charge(
+    Decimal64::parse("10"), Decimal64::parse("200"), Date{2026, 3, 10}, Country::US
+  );
+  REQUIRE(charged);
+  CHECK(charged.value().broker_ == Decimal64::parse("10"));
 }

@@ -2227,3 +2227,70 @@ TEST_CASE("an order that starts stating nothing and later states a charge differ
   CHECK(second_run.commission_in(Currency::krw()) ==
         std::optional<Decimal64>(Decimal64::parse("1400")));
 }
+
+TEST_CASE("a fee arriving after a silent row at the same new quantity is taken, not discarded") {
+  // Found at round 4, and it is the sharper form of the silence case. A silent row advanced the
+  // order's filled quantity while the held figure stayed at the quantity it was accepted at, so
+  // the fee that then arrived **for the new quantity** looked like a second opinion about the old
+  // one and was dropped as a conflict. The quantity a figure was accepted at therefore lives with
+  // the figure, not with the order.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  poll_rows(source, live_runner, session, {charged_row("A1", "10", "100")});
+  poll_rows(source, live_runner, session, {charged_row("A1", "20", std::nullopt)});
+  poll_rows(source, live_runner, session, {charged_row("A1", "20", "150")});
+
+  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
+        std::optional<Decimal64>(Decimal64::parse("150")));
+  // New information, not a disagreement: nothing had been accepted at twenty shares.
+  CHECK(source.charged_costs().conflicting_restatements_ == 0);
+
+  // And a second, differing figure at that same quantity *is* a disagreement.
+  poll_rows(source, live_runner, session, {charged_row("A1", "20", "900")});
+  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
+        std::optional<Decimal64>(Decimal64::parse("150")));
+  CHECK(source.charged_costs().conflicting_restatements_ == 1);
+}
+
+TEST_CASE("a tax arriving after a silent row at the same new quantity is taken too") {
+  // The same rule, on the other component, because the first version of this check read commission
+  // and not tax.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  auto first = charged_row("A1", "10", "100");
+  first.order_.execution_.tax_ = Money{Decimal64::parse("50"), Currency::krw()};
+  poll_rows(source, live_runner, session, {first});
+  poll_rows(source, live_runner, session, {charged_row("A1", "20", std::nullopt)});
+
+  auto later = charged_row("A1", "20", "150");
+  later.order_.execution_.tax_ = Money{Decimal64::parse("80"), Currency::krw()};
+  poll_rows(source, live_runner, session, {later});
+
+  CHECK(source.charged_costs().tax_in(Currency::krw()) ==
+        std::optional<Decimal64>(Decimal64::parse("80")));
+  CHECK(source.charged_costs().conflicting_restatements_ == 0);
+}
+
+TEST_CASE("a sum that will not fit is counted, not silently left out of the total") {
+  // Each figure is representable on its own and their sum is not. The old accumulator swallowed the
+  // failed add and the caller recorded the amount as counted anyway, so the subtotal stayed at the
+  // first order's figure and nothing said it was short.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  poll_rows(source, live_runner, session, {
+    charged_row("A1", "10", "5000000000000000000"),
+    charged_row("A2", "10", "5000000000000000000"),
+  });
+
+  CHECK(source.charged_costs().unrepresentable_sums_ == 1);
+  // The first figure stands; the second was left out rather than approximated, and the count is
+  // what says the total is incomplete.
+  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
+        std::optional<Decimal64>(Decimal64::parse("5000000000000000000")));
+}

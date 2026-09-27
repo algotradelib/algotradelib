@@ -153,9 +153,9 @@ A tick means a tick *at that price level*, through the instrument's `PriceRule`,
 **Charging nothing is itself a model**, and the report says so. A zero-cost run should be your informed
 choice, not an oversight you cannot detect.
 
-**Or cost each execution from a schedule.** `backtest::CommissionPolicy::scheduled(schedule, country,
-venue)` resolves a rate **per execution**, against that execution's market-local date and the venue
-you assert — so a replay spanning a rate change charges each rate on its own dates instead of one
+**Or cost each execution from a schedule.** `backtest::CommissionPolicy::scheduled(schedule, venue,
+dating_market)` resolves a rate **per execution**, against that execution's own market, the date your
+replay's session gives it, and the venue you assert — so a replay spanning a rate change charges each rate on its own dates instead of one
 rate throughout, and a KRX fill and an NXT fill can differ. The schedule can be the one a broker
 published (Toss does; KIS publishes none for domestic stock, and
 `backtest::commission_model_from(schedule, country, date)` remains for the older one-date shape) or
@@ -165,7 +165,13 @@ Three things to know before you rely on it:
 
 - **The venue is asserted, never observed.** A replay cannot know where a fill executed — a bar does
   not say, and the broker fields that would are undocumented. `ReportCaveats::asserted_venue_`
-  records that you asserted it, and the figure is exactly as good as the assertion.
+  records that you asserted it, and the figure is exactly as good as the assertion. The assertion is
+  one per policy, so a replay whose instruments trade on different venues wants one policy each.
+- **The market comes from the instrument; the calendar comes from your session.** A replay has one
+  `SessionWindow`, so it derives one local date — `dating_market` is you saying whose trading day
+  that is. A **dated** rate for any other market is refused rather than charged against a day
+  computed nine hours away; an open-ended one is charged, because no boundary can fall on the wrong
+  side.
 - **A caller-stated schedule must name its tariff**, because a published fee table is channel by
   venue and the channel is a property of your account that no API states. A schedule without one is
   refused rather than defaulted to a plausible row.

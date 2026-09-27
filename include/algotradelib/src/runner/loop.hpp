@@ -319,6 +319,15 @@ struct ChargedCosts {
    * resolved by arrival order, which would let a delayed stale payload silently reduce a charge.
    */
   std::size_t conflicting_restatements_{0};
+  /**
+   * How many stated figures could not be added to their currency's running total.
+   *
+   * Nonzero means the totals above are **incomplete**: each figure was representable on its own and
+   * their sum was not, so the charge was left out rather than approximated. A figure this large is
+   * implausible against a real account, and it is counted rather than ignored because the
+   * alternative is a total that is quietly short by an unknown amount.
+   */
+  std::size_t unrepresentable_sums_{0};
 
   /** Returns the commission observed in `currency`, or nothing when none was stated in it. */
   std::optional<Decimal64> commission_in(const Currency& currency) const {
@@ -340,17 +349,29 @@ struct ChargedCosts {
     return std::nullopt;
   }
 
-  /** Adds `amount` to the running figure for its own currency, adding the currency if it is new. */
-  void add(std::vector<Money>& totals, const Money& amount) {
+  /**
+   * Adds `amount` to the running figure for its own currency, or reports that it would not fit.
+   *
+   * **Checked, and the caller must not record a contribution this refused.** It used to swallow a
+   * failed `decimal_add` and return as though it had succeeded, so a sum that did not fit left the
+   * total at its previous value while the caller marked the amount as counted -- a silently
+   * incomplete monetary answer, which is the one thing every exact-decimal path here exists to
+   * avoid. It takes two individually representable figures to reach, and the type accepts both.
+   */
+  bool add(std::vector<Money>& totals, const Money& amount) {
     for (auto& held : totals) {
       if (held.currency_ == amount.currency_) {
-        if (const auto sum = decimal_add(held.amount_, amount.amount_)) {
-          held.amount_ = *sum;
+        const auto sum = decimal_add(held.amount_, amount.amount_);
+        if (!sum) {
+          ++unrepresentable_sums_;
+          return false;
         }
-        return;
+        held.amount_ = *sum;
+        return true;
       }
     }
     totals.push_back(amount);
+    return true;
   }
 
   /**
@@ -394,6 +415,7 @@ struct ChargedCosts {
     delta.working_list_disappearances_ =
       working_list_disappearances_ - before.working_list_disappearances_;
     delta.conflicting_restatements_ = conflicting_restatements_ - before.conflicting_restatements_;
+    delta.unrepresentable_sums_ = unrepresentable_sums_ - before.unrepresentable_sums_;
     return delta;
   }
 };

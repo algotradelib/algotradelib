@@ -132,6 +132,13 @@ inline Result<CommissionModel> commission_model_from(
  * report accumulates it at the point the ledger accepts the fill.
  */
 struct AppliedRate {
+  /**
+   * The market the rate was selected for.
+   *
+   * Carried because two markets can publish identical venue-neutral rates, and a table that
+   * collapsed them into one row would say a single rate charged both when two rows did.
+   */
+  Country country_{Country::KR};
   /** Which venue the rate was keyed to. */
   VenueKey venue_;
   /** The broker's commission component, as a fraction of traded value. */
@@ -157,7 +164,7 @@ struct AppliedRate {
 
   /** Compares every field **but the count**, so a report can collapse identical rates into one row. */
   friend bool operator==(const AppliedRate& lhs, const AppliedRate& rhs) {
-    return lhs.venue_ == rhs.venue_ && lhs.rate_ == rhs.rate_ &&
+    return lhs.country_ == rhs.country_ && lhs.venue_ == rhs.venue_ && lhs.rate_ == rhs.rate_ &&
       lhs.institution_rate_ == rhs.institution_rate_ && lhs.minimum_ == rhs.minimum_ &&
       lhs.from_ == rhs.from_ && lhs.until_ == rhs.until_ && lhs.origin_ == rhs.origin_;
   }
@@ -236,7 +243,11 @@ public:
    *   *routing*, not a venue an order matched on. A rate row may be keyed to it, because a broker
    *   could publish a consolidated rate; asserting it as the place a fill happened is a guess.
    */
-  static Result<CommissionPolicy> scheduled(CommissionSchedule schedule, VenueKey asserted) {
+  static Result<CommissionPolicy> scheduled(
+    CommissionSchedule schedule,
+    VenueKey asserted,
+    Country dating_market
+  ) {
     if (schedule.origin_ == CommissionOrigin::CALLER_STATED && schedule.tariff_.empty()) {
       return Result<CommissionPolicy>(refusal(
         "commission_tariff_unnamed",
@@ -254,6 +265,7 @@ public:
     CommissionPolicy policy;
     policy.schedule_ = std::move(schedule);
     policy.asserted_ = std::move(asserted);
+    policy.dating_market_ = dating_market;
     return Result<CommissionPolicy>(std::move(policy));
   }
 
@@ -293,6 +305,7 @@ public:
       result.broker_ = *charged;
       // A flat model states one number and says nothing about its composition, which is the same
       // answer an empty `institution_rate_` gives: the figure is inclusive, not split.
+      result.applied_.country_ = country;
       result.applied_.rate_ = flat_.rate_;
       result.applied_.minimum_ = flat_.minimum_;
       result.applied_.origin_ = flat_.from_broker_ ?
@@ -302,6 +315,22 @@ public:
     }
 
     const auto rate = schedule_->rate_for(country, asserted_, date);
+    if (rate && country != dating_market_ && (rate->from_ || rate->until_)) {
+      // **The date belongs to another market's calendar.** A replay derives one local date, from
+      // its single `SessionWindow`, so a fill in a market nine hours away can be stamped with the
+      // next day -- and a rate window that changes at that boundary would then charge the wrong
+      // side of it. Refused rather than charged, and only where it could matter: an undated row is
+      // the same rate whichever calendar named the day, so a foreign listing priced by an
+      // open-ended row is unaffected.
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
+      error.broker_code_ = "commission_date_not_market_local";
+      error.message_ = "the rate for this market has dated bounds, and the replay's date " +
+        named(date) + " is that of another market's trading day; price it in a replay whose "
+        "session is that market's, or state an open-ended rate";
+      return Result<CommissionCharge>(std::move(error));
+    }
     if (!rate) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
@@ -340,6 +369,7 @@ public:
       }
       result.institution_ = *institution;
     }
+    result.applied_.country_ = country;
     result.applied_.venue_ = rate->venue_;
     result.applied_.rate_ = rate->rate_;
     result.applied_.institution_rate_ = rate->institution_rate_;
@@ -400,6 +430,14 @@ private:
   std::optional<CommissionSchedule> schedule_;
   /** The venue a caller asserted its fills happened at. */
   VenueKey asserted_;
+  /**
+   * The market whose local trading day the `date` handed to `charge` is in.
+   *
+   * A replay has one `SessionWindow` and therefore one local calendar, so this is the caller's
+   * statement of which market's day that is. A dated rate for any other market is refused rather
+   * than charged against a day computed in the wrong place.
+   */
+  Country dating_market_{Country::KR};
 };
 
 /**
