@@ -1784,6 +1784,26 @@ TEST_CASE("every KIS market-data request reads the tape the adapter was told to"
   }
 }
 
+TEST_CASE("a depth response with no levels is an empty book, not an error", "[broker][kis]") {
+  // **This pins the residual risk of moving the depth verb to the consolidated tape, rather than
+  // claiming there is none.** The workbook gives the same response layout for J, NX and UN, and the
+  // parser reads `askp1..10` / `bidp1..10` out of `output1` with no KRX-specific discriminator -- but
+  // the workbook carries no per-tape example, so neither this branch nor its review could establish
+  // what a live UN depth response actually populates.
+  //
+  // What matters is what the parser does if those fields are absent: `append_level` skips a level it
+  // cannot read, so an `output1` present but empty yields an empty book and **no protocol error**. So
+  // a shape surprise on the consolidated tape would present as "no depth" rather than as a failure.
+  // Recorded here so a real response can be compared against it.
+  auto result = kis::KisClientTestAccess::parse_depth(
+    InstrumentId{Country::KR, Venue::COMBINED, "005930"},
+    json_response(R"({"rt_cd":"0","output1":{}})")
+  );
+  REQUIRE(result);
+  CHECK(result.value().asks_.empty());
+  CHECK(result.value().bids_.empty());
+}
+
 TEST_CASE("choosing a tape cannot invalidate an order", "[broker][kis][order]") {
   // The reason the tape is a setting rather than a field on the instrument. `validate_order` refuses
   // an order whose `instrument_.venue_` is anything but the combined venue, because a holding

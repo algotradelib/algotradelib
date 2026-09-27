@@ -87,6 +87,27 @@ struct ReportCaveats {
   static constexpr bool volume_ignored = true;
 
   /**
+   * Always true, and the honest value: **a replay cannot know which book its bars describe.**
+   *
+   * A KRX-listed equity trades on two venues, and KIS publishes market data for KRX alone, for NXT
+   * alone, or for the consolidated tape over both. `KisConfig::market_tape_` chooses which a live run
+   * reads, and it is consolidated by default; a dataset recorded before that setting existed came from
+   * KRX alone on every verb but the quote.
+   *
+   * Nothing carries that provenance. `BarSeries`, `strategy::BarEvent`, `SeriesKey` and
+   * `analytics::SeriesFrame` all name an instrument and an interval and nothing about a venue, and
+   * `summarize` is handed neither the config nor the bar source -- so a KRX dataset and a consolidated
+   * one produce identical inputs here. **This says unverified rather than naming a tape, because
+   * naming one would be a claim this code cannot support**, and a wrong claim would conceal exactly
+   * the backtest-versus-live mismatch a caveat exists to expose.
+   *
+   * The consequence for a reader: two bars for one instrument at one timestamp can legitimately differ
+   * between a replay and a live run, and the difference is which venues were included rather than an
+   * error in either.
+   */
+  static constexpr bool bar_tape_unverified = true;
+
+  /**
    * Always true, and present for the same reason: a replay reports every held share as sellable.
    *
    * Live, that figure comes from the broker and is routinely smaller than the holding — settlement,

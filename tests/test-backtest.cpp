@@ -884,6 +884,14 @@ strategy::BarEvent moving_bar(
 
 } // namespace
 
+TEST_CASE("the report says it cannot know which book the bars came from") {
+  // A KRX-listed equity trades on two venues and KIS can report either or the consolidated tape over
+  // both. Nothing in a bar carries that provenance and `summarize` is handed neither the config nor
+  // the bar source, so the caveat says unverified rather than naming a tape -- naming one would be a
+  // claim this code cannot support, and a wrong one would hide the very mismatch it exists to show.
+  STATIC_REQUIRE(backtest::ReportCaveats::bar_tape_unverified);
+}
+
 TEST_CASE("an order is never filled from the bar that produced it") {
   // **The defect a backtester exists to prevent.** The strategy submits on the first bar, whose close
   // is 70,000. If the engine filled from that bar it would fill at 70,000 or 70,500; filling from the
