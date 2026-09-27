@@ -75,6 +75,17 @@ struct ReportCaveats {
   std::optional<VenueKey> asserted_venue_;
   /** Which tariff the schedule named, empty on a caller-stated flat model. */
   std::string commission_tariff_;
+  /**
+   * Whether a cost total could not be summed exactly, so the figures above are **incomplete**.
+   *
+   * True means at least one addition of two representable amounts did not fit an exact decimal and
+   * was left out rather than approximated. `Report::commission_paid_` and
+   * `institution_fees_paid_` go absent when it is set, the per-currency vectors hold only what
+   * could be added, and `slippage_paid_` is understated by whatever was refused. It takes figures
+   * far larger than any real account to reach; it is reported because a money total that is
+   * quietly short is worse than one that says it is short.
+   */
+  bool cost_totals_incomplete_{false};
   /** Basis points of slippage applied. */
   Decimal64 slippage_basis_points_;
   /** Tick steps of slippage applied. */
@@ -312,12 +323,20 @@ inline Report summarize(
 
   // Costs summed exactly, because they are money -- and **per currency**, because a replay whose
   // instruments span markets would otherwise have won added to dollars to make one scalar.
-  const auto accumulate = [](std::vector<Money>& totals, const Money& amount) {
+  // Checked, and a refusal is recorded rather than swallowed: leaving the previous total in place
+  // and carrying on produced a plausible figure that was short by an unknown amount, which is the
+  // one outcome every exact-decimal path here exists to prevent. Two individually representable
+  // commissions whose sum does not fit is enough to reach it, and a probe did.
+  bool costs_fit = true;
+  const auto accumulate = [&costs_fit](std::vector<Money>& totals, const Money& amount) {
     for (auto& held : totals) {
       if (held.currency_ == amount.currency_) {
-        if (const auto sum = decimal_add(held.amount_, amount.amount_)) {
-          held.amount_ = *sum;
+        const auto sum = decimal_add(held.amount_, amount.amount_);
+        if (!sum) {
+          costs_fit = false;
+          return;
         }
+        held.amount_ = *sum;
         return;
       }
     }
@@ -356,7 +375,11 @@ inline Report summarize(
     if (const auto cost = decimal_multiply(execution.slippage_, execution.fill_.quantity_)) {
       if (const auto sum = decimal_add(slippage, *cost)) {
         slippage = *sum;
+      } else {
+        costs_fit = false;
       }
+    } else {
+      costs_fit = false;
     }
     bool known = false;
     for (const auto& id : seen) {
@@ -369,15 +392,17 @@ inline Report summarize(
       seen.push_back(execution.fill_.instrument_);
     }
   }
-  // A scalar is stated only where one can be true: one currency, and something executed. On a
-  // mixed-currency replay the per-currency vectors are the whole answer and the scalars stay absent
-  // rather than becoming a sum of unlike money.
-  if (report.commission_by_currency_.size() == 1) {
+  report.caveats_.cost_totals_incomplete_ = !costs_fit;
+  // A scalar is stated only where one can be true: one currency, something executed, and every
+  // addition representable. On a mixed-currency replay the per-currency vectors are the whole
+  // answer, and on an arithmetic refusal nothing is stated at all rather than a figure short by an
+  // amount nobody can name.
+  if (costs_fit && report.commission_by_currency_.size() == 1) {
     report.commission_paid_ = report.commission_by_currency_.front().amount_;
   }
   // Present only when every charged rate split the two components, so the total is complete rather
   // than a sum over the subset that happened to state one.
-  if (report.caveats_.inclusive_commission_executions_ == 0 &&
+  if (costs_fit && report.caveats_.inclusive_commission_executions_ == 0 &&
       report.institution_by_currency_.size() == 1) {
     report.institution_fees_paid_ = report.institution_by_currency_.front().amount_;
   }

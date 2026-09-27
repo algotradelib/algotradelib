@@ -165,13 +165,15 @@ Three things to know before you rely on it:
 
 - **The venue is asserted, never observed.** A replay cannot know where a fill executed — a bar does
   not say, and the broker fields that would are undocumented. `ReportCaveats::asserted_venue_`
-  records that you asserted it, and the figure is exactly as good as the assertion. The assertion is
-  one per policy, so a replay whose instruments trade on different venues wants one policy each.
+  records that you asserted it, and the figure is exactly as good as the assertion. There is one
+  assertion per policy and one policy per `Backtester`, so instruments that executed on different
+  venues want **separate replays** rather than separate policies.
 - **The market comes from the instrument; the calendar comes from your session.** A replay has one
   `SessionWindow`, so it derives one local date — `dating_market` is you saying whose trading day
-  that is. A **dated** rate for any other market is refused rather than charged against a day
-  computed nine hours away; an open-ended one is charged, because no boundary can fall on the wrong
-  side.
+  that is. If any rate for **another** market carries a dated bound, a fill in that market is
+  refused rather than charged against a day computed hours away: which rate applies depends on the
+  day, and this replay cannot compute that market's day. A market whose rates are all open-ended is
+  charged, because then no boundary can fall on the wrong side of anything.
 - **A caller-stated schedule must name its tariff**, because a published fee table is channel by
   venue and the channel is a property of your account that no API states. A schedule without one is
   refused rather than defaulted to a plausible row.

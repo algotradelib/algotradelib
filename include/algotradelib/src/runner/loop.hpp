@@ -392,18 +392,26 @@ struct ChargedCosts {
     const auto difference = [](const std::vector<Money>& now, const std::vector<Money>& then) {
       std::vector<Money> out;
       for (const auto& amount : now) {
-        const auto earlier = [&]() -> Decimal64 {
-          for (const auto& was : then) {
-            if (was.currency_ == amount.currency_) {
-              return was.amount_;
-            }
+        bool existed = false;
+        auto earlier = Decimal64::parse("0");
+        for (const auto& was : then) {
+          if (was.currency_ == amount.currency_) {
+            existed = true;
+            earlier = was.amount_;
+            break;
           }
-          return Decimal64::parse("0");
-        }();
-        if (const auto moved = decimal_subtract(amount.amount_, earlier)) {
-          if (moved->coefficient() != 0) {
-            out.push_back(Money{*moved, amount.currency_});
-          }
+        }
+        const auto moved = decimal_subtract(amount.amount_, earlier);
+        if (!moved) {
+          continue;
+        }
+        // **A currency seen for the first time in this run is stated even at zero**, and dropping
+        // it was a straight contradiction of the contract right above: a broker that stated zero
+        // said something, and omitting the entry made it read as a broker that said nothing. A
+        // currency that was already there and did not move is a different case -- nothing was
+        // observed for it in this run -- and stays out.
+        if (moved->coefficient() != 0 || !existed) {
+          out.push_back(Money{*moved, amount.currency_});
         }
       }
       return out;

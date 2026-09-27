@@ -3406,3 +3406,74 @@ TEST_CASE("a dated rate for another market's calendar is refused, not charged a 
   REQUIRE(charged);
   CHECK(charged.value().broker_ == Decimal64::parse("10"));
 }
+
+TEST_CASE("a foreign market with any dated rate is refused, whichever row would have won") {
+  // Round 5's counterexample, found with a probe. The earlier check asked whether the *selected*
+  // row was dated -- but `rate_for` excludes a dated row that does not cover the date it was
+  // given, so a US row dated through 11 March simply lost to an undated one when a Korean session
+  // supplied 12 March, and the undated row was charged with no refusal at all. What matters is
+  // that a dated row for the market exists, so the day decides something this replay cannot
+  // compute.
+  CommissionSchedule schedule;
+  schedule.origin_ = CommissionOrigin::CALLER_STATED;
+  schedule.tariff_ = "online, branch-opened account";
+  schedule.rates_.push_back(venue_rate(Venue::KRX, "0.002", "0"));
+
+  CommissionRate dated;
+  dated.country_ = Country::US;
+  dated.rate_ = Decimal64::parse("0.01");
+  dated.until_ = Date{2026, 3, 11};
+  schedule.rates_.push_back(dated);
+
+  CommissionRate undated;
+  undated.country_ = Country::US;
+  undated.rate_ = Decimal64::parse("0.02");
+  schedule.rates_.push_back(undated);
+
+  auto policy = backtest::CommissionPolicy::scheduled(
+    schedule, *VenueKey::normalized(Venue::KRX), Country::KR
+  );
+  REQUIRE(policy);
+
+  // 12 March in Seoul is still 11 March in New York, where the 1% row is in force -- and the old
+  // check charged the 2% row here without a word.
+  const auto refused = policy.value().charge(
+    Decimal64::parse("100"), Decimal64::parse("1"), Date{2026, 3, 12}, Country::US
+  );
+  REQUIRE_FALSE(refused);
+  CHECK(refused.error().broker_code_ == "commission_date_not_market_local");
+
+  // The home market is unaffected: its dates are the ones the replay computes.
+  CHECK(policy.value().charge(
+    Decimal64::parse("10"), Decimal64::parse("70000"), Date{2026, 3, 12}, Country::KR
+  ));
+}
+
+TEST_CASE("a cost total that will not sum is stated as incomplete rather than short") {
+  // Round 5 disproved the bound I had assumed: two ledger-accepted executions, each carrying an
+  // individually representable commission, can have a sum that does not fit -- and `summarize`
+  // left the previous total in place and reported it as the answer.
+  backtest::ReplayConfig config = replay_config();
+  config.cash_ = Decimal64::parse("5000000000000000000");
+
+  backtest::ReplayResult result;
+  const auto huge = Decimal64::parse("5000000000000000000");
+  for (int at = 0; at < 2; ++at) {
+    backtest::Execution execution;
+    execution.fill_.instrument_ = samsung();
+    execution.fill_.side_ = OrderSide::BUY;
+    execution.fill_.quantity_ = Decimal64::parse("1");
+    execution.fill_.price_ = Decimal64::parse("1");
+    execution.commission_ = huge;
+    execution.slippage_ = Decimal64::parse("0");
+    execution.currency_ = Currency{"KRW"};
+    result.executions_.push_back(execution);
+  }
+
+  const backtest::NextBarFillModel fills;
+  const auto report = backtest::summarize(result, fills);
+  CHECK(report.caveats_.cost_totals_incomplete_);
+  // Nothing is stated rather than a figure short by an amount nobody can name.
+  CHECK_FALSE(report.commission_paid_);
+  CHECK_FALSE(report.institution_fees_paid_);
+}

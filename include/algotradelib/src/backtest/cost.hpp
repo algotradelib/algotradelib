@@ -314,23 +314,27 @@ public:
       return Result<CommissionCharge>(std::move(result));
     }
 
-    const auto rate = schedule_->rate_for(country, asserted_, date);
-    if (rate && country != dating_market_ && (rate->from_ || rate->until_)) {
-      // **The date belongs to another market's calendar.** A replay derives one local date, from
-      // its single `SessionWindow`, so a fill in a market nine hours away can be stamped with the
-      // next day -- and a rate window that changes at that boundary would then charge the wrong
-      // side of it. Refused rather than charged, and only where it could matter: an undated row is
-      // the same rate whichever calendar named the day, so a foreign listing priced by an
-      // open-ended row is unaffected.
+    // **A foreign market is refused before the rate is even selected**, and the earlier version of
+    // this check was not enough. It asked whether the *selected* row was dated -- but `rate_for`
+    // excludes a dated row that does not cover the date it was given, so a US row dated through
+    // March 11 would simply lose to an undated one when a Korean session supplied March 12, and
+    // the undated row was then charged with no refusal at all. What matters is not which row won
+    // on the wrong day; it is that a dated row for this market **exists**, so the day decides
+    // something and this replay cannot compute it. Reviewed with a probe that charged 2 % where
+    // the market-local day selects 1 %.
+    if (country != dating_market_ && schedule_->any_dated_rate_for(country)) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
       error.reached_broker_ = false;
       error.broker_code_ = "commission_date_not_market_local";
-      error.message_ = "the rate for this market has dated bounds, and the replay's date " +
-        named(date) + " is that of another market's trading day; price it in a replay whose "
-        "session is that market's, or state an open-ended rate";
+      error.message_ = "this market's rates have dated bounds, and the replay's date " +
+        named(date) + " is that of another market's trading day, so which rate applies cannot be "
+        "decided here; price it in a replay whose session is that market's, or state rates with "
+        "no dated bounds";
       return Result<CommissionCharge>(std::move(error));
     }
+
+    const auto rate = schedule_->rate_for(country, asserted_, date);
     if (!rate) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;

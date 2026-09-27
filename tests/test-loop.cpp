@@ -3374,6 +3374,29 @@ TEST_CASE("a second run reports its own charges rather than the first run's as w
         std::optional<algotradelib::Decimal64>(algotradelib::Decimal64::parse("500")));
 }
 
+TEST_CASE("a broker-stated zero survives the run boundary", "[loop]") {
+  // Round 5's second counterexample. `since` dropped every zero delta, so a broker that stated a
+  // charge of zero during a run produced no entry at all -- which is exactly how the report says
+  // "the broker stated nothing". The absence-is-not-zero contract has to survive the subtraction,
+  // not only the accumulation.
+  algotradelib::runner::ChargedCosts before;
+  algotradelib::runner::ChargedCosts after;
+  after.add(after.commission_, algotradelib::Money{
+    algotradelib::Decimal64::parse("0"), algotradelib::Currency::krw()
+  });
+  ++after.orders_stating_cost_;
+
+  const auto delta = after.since(before);
+  CHECK(delta.commission_in(algotradelib::Currency::krw()) ==
+        std::optional<algotradelib::Decimal64>(algotradelib::Decimal64::parse("0")));
+  CHECK(delta.orders_stating_cost_ == 1);
+
+  // A currency that was already there and did not move is a different case: nothing was observed
+  // for it in this run, so it stays out.
+  const auto quiet = after.since(after);
+  CHECK(quiet.commission_.empty());
+}
+
 TEST_CASE("a run in which nothing was charged reports no currency at all", "[loop]") {
   // Absence is not zero on the way out either: a run that observed no stated cost must not produce
   // an entry reading zero, which would claim the broker charged nothing.

@@ -1289,6 +1289,24 @@ struct CommissionSchedule {
   }
 
   /**
+   * Returns whether any rate for `country` carries a dated bound.
+   *
+   * Asked by a cost model before it prices a market whose trading day it cannot compute: if no rate
+   * for that market is dated, every candidate is the same whichever calendar named the day, and if
+   * one is, the day decides something and a date from elsewhere cannot decide it. Deliberately not
+   * "does the row that would be selected carry a bound" -- the row that would be selected *on the
+   * wrong date* says nothing about the row that would have won on the right one.
+   */
+  bool any_dated_rate_for(Country country) const {
+    for (const auto& rate : rates_) {
+      if (rate.normalized() && rate.country_ == country && (rate.from_ || rate.until_)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Returns the rate in force for `country` on `date` with no venue asserted.
    *
    * The pre-venue spelling, kept so a caller who never named a venue keeps compiling and keeps its

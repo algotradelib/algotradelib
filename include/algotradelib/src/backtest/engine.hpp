@@ -222,9 +222,14 @@ struct ReplayResult {
   /**
    * Why the replay stopped early, when it did.
    *
-   * Set when an execution could not be **costed** -- a date the schedule does not cover, or a venue
-   * it states no rate for. Present means every figure in this result and in the report derived from
-   * it describes the bars **before** the halt and not the run the caller asked for.
+   * Two origins, and they mean the same thing to a reader: an execution that could not be
+   * **costed** -- a date the schedule does not cover, a venue it states no rate for, a market whose
+   * trading day this replay cannot compute -- and one the ledger could not **record**. Either way a
+   * trade the model produced did not reach the books.
+   *
+   * Present means every figure in this result and in the report derived from it describes the bars
+   * **up to** the halt and not the run the caller asked for. The bar it happened on is counted in
+   * `bars_`, because it was fed, but nothing downstream of the refusal ran on it.
    *
    * **Why a halt rather than a skipped fill.** The refused trade would have changed the position the
    * strategy carried, the orders it placed afterwards, and therefore the equity curve, the return,
