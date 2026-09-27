@@ -163,3 +163,5 @@ tmbootpicker.efi
 
 # Doxygen
 doxygen/docs/
+build-strict/
+build-asan/
