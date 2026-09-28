@@ -3435,3 +3435,84 @@ TEST_CASE("a run in which nothing was charged reports no currency at all", "[loo
   CHECK(report.charged_costs_.commission_.empty());
   CHECK_FALSE(report.charged_costs_.commission_in(algotradelib::Currency::krw()));
 }
+
+TEST_CASE("a run that has never read its holdings does not size an entry against an empty account",
+          "[loop][gate][portfolio]") {
+  // The measurement behind `plan/portfolio-absence-gate.md` criterion 1. A live loop with the
+  // default configuration -- no `maximum_portfolio_age_`, and no holdings cadence -- reaches a bar,
+  // runs `on_bar`, reconciles a target against a `Portfolio` that was never populated, and sends.
+  // An empty portfolio is the permissive answer for every ceiling and for the target subtraction,
+  // so what goes out is sized as though the account held nothing.
+  SendingRunner runner_instance;
+  FeedingSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  serve_calendar(runner_instance);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  SendingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 2);
+
+  CHECK(report.order_list_read_);
+  // Shape and multiplicity, not "a refusal occurred somewhere": one bar per iteration, two
+  // iterations, and nothing may leave the process in either of them.
+  CHECK(source.placed() == 0);
+  CHECK(source.refused() == 2);
+  CHECK(source.last_refusal() == strategy::HaltReason::PORTFOLIO_ABSENT);
+  CHECK(report.final_gate_ == strategy::HaltReason::PORTFOLIO_ABSENT);
+}
+
+namespace {
+
+/** A strategy that wants to be flat, which is what a stop-loss or a session exit states. */
+struct WantsFlat {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const algotradelib::strategy::BarEvent& bar) {
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = algotradelib::Decimal64::parse("0");
+    ctx.submit(target);
+  }
+};
+
+using FlatRunner = runner::DryRunner<WantsFlat>;
+using FlatSource = FeedingSourceFor<FlatRunner>;
+using FlatLoop = runner::PollingLoop<FlatRunner, FlatSource, runner::ManualClock>;
+
+} // namespace
+
+TEST_CASE("a target-derived cancellation is not sent while the account is unknown",
+          "[loop][gate][portfolio]") {
+  // Codex round 0's blocker 1, measured. The order-list read populates `working_` and satisfies the
+  // startup gate; the holdings read never succeeds, so `positions_` is empty and `as_of_` is the
+  // epoch. `reconcile` reads that as flat, `needed` is zero, and every open row on the instrument
+  // "opposes" -- so the plan withdraws a resting sell that is protecting a real holding, and
+  // `settle` sends it before the guard ever sees the replacement.
+  FlatRunner runner_instance;
+  FlatSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  serve_calendar(runner_instance);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+
+  strategy::Portfolio<runner::DryTag> portfolio;
+  // Deliberately left at the epoch: only `poll_holdings` stamps it, and that poll never succeeded.
+  algotradelib::WorkingOrder<runner::DryTag> resting;
+  resting.order_.instrument_ = samsung();
+  resting.order_.side_ = algotradelib::OrderSide::SELL;
+  resting.order_.status_ = algotradelib::OrderStatus::PENDING;
+  resting.order_.quantity_ = algotradelib::Decimal64::parse("10");
+  resting.order_.execution_.filled_quantity_ = algotradelib::Decimal64::parse("0");
+  resting.ref_ = algotradelib::OrderRef<runner::DryTag>{"0001", ""};
+  portfolio.working_.push_back(resting);
+  runner_instance.context().set_portfolio(portfolio);
+
+  FlatLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.order_list_read_);
+  // The whole plan is withheld as a unit, so nothing is withdrawn and nothing is placed.
+  CHECK(runner_instance.executor().canceled().empty());
+  CHECK(runner_instance.executor().placed().empty());
+}
