@@ -1370,10 +1370,11 @@ TEST_CASE("polling holdings stamps the portfolio with the broker's own time") {
 }
 
 TEST_CASE("an account holding nothing still stamps the portfolio") {
-  // **The hinge of the loop's never-populated gate.** `PollingLoop` holds while a portfolio has
-  // never arrived, and it tells "never arrived" from "arrived empty" by the epoch on `as_of_`. If a
-  // successful read of an account with no positions left the stamp at the epoch, that gate would
-  // hold such an account forever -- a fix reaching well past its defect.
+  // **The fact any "has a portfolio arrived" question rests on.** The epoch on `as_of_` is what
+  // tells "never arrived" from "arrived empty": `PollingLoop`'s staleness gate reads it that way
+  // today, and `plan/todo/holdings-failure-is-not-a-send-gate.md` proposes reading it that way
+  // unconditionally. If a successful read of an account with no positions left the stamp at the
+  // epoch, every such rule would hold an empty account forever.
   WorkingSession session;
   HoldingsSnapshot empty;
   empty.received_at_ = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 200);

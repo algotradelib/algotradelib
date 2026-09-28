@@ -206,25 +206,31 @@ inline Date today_in_seoul() {
 }
 
 /**
- * Refuses a *placement* while this library cannot establish what the account holds.
+ * Refuses an instruction that can *open or enlarge* a position while this library cannot establish
+ * what the account already holds.
  *
- * **A new order is the one instruction that needs a portfolio, and Kiwoom's cannot be established.**
  * `kt00018` names one venue and publishes no all-venue value, so the normalized holdings verb
- * refuses -- and a run that simply never polls holdings would otherwise place orders against an
- * empty portfolio, which is the *permissive* baseline for `RiskGuard`'s position ceiling and for
+ * refuses (see `BrokerTraits::refuse_holdings`) -- and an instruction sized against an empty
+ * portfolio is sized against the *permissive* baseline for `RiskGuard`'s position ceiling and for
  * anything sizing an entry. Leaving that to the loop's send gate left a configuration-shaped hole:
- * a schedule with no holdings cadence never calls the refusing port at all.
+ * a schedule with no holdings cadence never calls the refusing port at all. So the refusal lives at
+ * this adapter's own boundary, where the unanswered question is, and no schedule routes around it.
  *
- * So the refusal lives at this adapter's own boundary, where the unanswered question is, and no
- * schedule can route around it.
+ * **It covers a placement and a replacement, and not a cancellation.** The first version covered
+ * placements alone, on the reasoning that an amendment addresses an order the broker already has
+ * and never consults the portfolio -- which is true and is not the point. A resting buy priced
+ * below the market is not executable; `kt10002` can move it to a price that is, and the fill opens
+ * or enlarges exactly the position this cannot measure. Repricing is a risk-changing instruction
+ * wearing an amendment's clothes.
  *
- * **Placements only, deliberately.** A modification and a cancellation address an order the broker
- * already has: they need its reference and its resting shape, which a working-order listing
- * supplies, and they never consult the portfolio. Refusing them would be worse than the thing this
- * guards against -- a resting order that cannot be withdrawn keeps resting, and can fill.
+ * A **cancellation** stays available, and must: `kt10003` only ever reduces what is resting, it
+ * needs the order's reference rather than the portfolio, and an order that cannot be withdrawn
+ * keeps resting and can fill. Reducing a resting order's size is still expressible while this
+ * holds, through `cancel_quantity()`.
  *
- * Applied by the traits layer and by the client, so neither the port nor `session.client()` routes
- * around it, exactly as `unsupported_client_order_id` is.
+ * Applied by the client, which every placement and every amendment passes through -- the port's own
+ * `place` and `replace` both reach it -- so neither the normalized verb nor `session.client()`
+ * routes around it.
  *
  * Deleted when `issues/kiwoom-api-holdings-venue-scope.md` is answered; it is one request pair.
  */
@@ -236,9 +242,9 @@ inline std::optional<BrokerError> unestablished_holdings_scope() {
   error.message_ =
     "this library cannot establish what a Kiwoom account holds -- kt00018 names one venue "
     "(dmst_stex_tp: KRX or NXT) and publishes no all-venue value, and whether that filters the "
-    "positions or only values them is not stated -- so it will not place an order sized against a "
-    "position it cannot read. Amendments and cancellations are unaffected. See "
-    "issues/kiwoom-api-holdings-venue-scope.md";
+    "positions or only values them is not stated -- so it will not place a new order, or reprice a "
+    "resting one into a fillable price, against a position it cannot read. Cancelling is "
+    "unaffected, including cancel_quantity(). See issues/kiwoom-api-holdings-venue-scope.md";
   return error;
 }
 
@@ -2887,6 +2893,12 @@ private:
       error.broker_code_ = "invalid_price";
       error.message_ = "a Kiwoom domestic order price must be a whole number of won";
       return error;
+    }
+    if (!cancel) {
+      // Last, and cancellations excepted; see `unestablished_holdings_scope`. A replacement can
+      // move a resting buy to a fillable price, which opens or enlarges the position this library
+      // cannot measure. A cancellation only ever reduces what is resting.
+      return unestablished_holdings_scope();
     }
     return std::nullopt;
   }

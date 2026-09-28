@@ -226,13 +226,14 @@ struct Normalizers {
    * port cannot drift from the client it fronts.
    */
   static std::optional<BrokerError> validate_place(const OrderRequest& order) {
-    // Placements only; see `kiwoom::unestablished_holdings_scope`. A cancellation addresses an
-    // order the broker already has and never consults the portfolio, so it stays available -- a
-    // resting order that cannot be withdrawn is worse than the thing this guards.
-    if (auto error = kiwoom::unsupported_client_order_id(order)) {
-      return error;
-    }
-    return kiwoom::unestablished_holdings_scope();
+    // **The holdings refusal is deliberately not repeated here**, although this is the port's
+    // pre-flight. It lives in `KiwoomClient::validate_order`, which every placement reaches --
+    // including this port's, because `place` calls the client immediately after this returns and
+    // the client refuses before any I/O. Checking it here as well would only change *which* message
+    // a caller gets: this function does not validate the order's venue, price or shape, so it would
+    // report the holdings gap for an order that is also malformed, burying the mistake the caller
+    // can actually fix. See `kiwoom::unestablished_holdings_scope`.
+    return kiwoom::unsupported_client_order_id(order);
   }
 
   /** Normalizes a Kiwoom acknowledgement into an acknowledgement and a reference. */

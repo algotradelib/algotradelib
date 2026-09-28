@@ -1963,18 +1963,26 @@ TEST_CASE("a placement is refused while the holdings scope is unestablished", "[
   order.quantity_ = Decimal64(10, 0);
   order.price_ = Decimal64(70000, 0);
 
-  // Refused at the port...
-  const auto through_port = Traits::validate_place(order);
-  REQUIRE(through_port);
-  CHECK(through_port->broker_code_ == "holdings_scope_unestablished");
-  CHECK(through_port->category_ == ErrorCategory::INVALID_ARGUMENT);
-  CHECK_FALSE(through_port->reached_broker_);
-
-  // ...and at the client, so `session.client()` does not route around it.
+  // **The refusal is in the client, and that is where it belongs.** Every placement reaches it --
+  // including the port's, because `BrokerSession::place` calls the client immediately after its
+  // pre-flight and the client refuses before any I/O -- so there is one boundary rather than two
+  // that could disagree, and the message is chosen after the order's own validation.
   std::string code;
   const auto direct = kiwoom::KiwoomClientTestAccess::validate_order(order, code);
   REQUIRE(direct);
-  CHECK(direct->broker_code_ == through_port->broker_code_);
+  CHECK(direct->broker_code_ == "holdings_scope_unestablished");
+  CHECK(direct->category_ == ErrorCategory::INVALID_ARGUMENT);
+  CHECK_FALSE(direct->reached_broker_);
+
+  // The port's own pre-flight still refuses what it is for, and nothing else: an idempotency key
+  // Kiwoom does not publish. It deliberately does not repeat the holdings refusal, because it does
+  // not validate the order's venue, price or shape and would report the wrong problem first.
+  CHECK_FALSE(Traits::validate_place(order));
+  OrderRequest keyed = order;
+  keyed.client_order_id_ = "abc";
+  const auto through_port = Traits::validate_place(keyed);
+  REQUIRE(through_port);
+  CHECK(through_port->broker_code_ == "client_order_id_unsupported");
 
   // A caller's own mistake is still reported first: this order names no venue, and that is what it
   // hears about, because it is the thing they can fix.
@@ -2004,4 +2012,54 @@ TEST_CASE("a placement is refused while the holdings scope is unestablished", "[
   amendment.venue_ = Venue::KRX;
   amendment.quantity_ = Decimal64(3, 0);
   CHECK_FALSE(kiwoom::KiwoomClientTestAccess::validate_amendment(amendment, true));
+}
+
+TEST_CASE("a reprice is refused while the holdings scope is unestablished", "[kiwoom][orders]") {
+  // **The first version of this guard covered placements alone, and that was wrong.** The reasoning
+  // was that an amendment addresses an order the broker already has and never consults the
+  // portfolio -- true, and not the point. A resting buy priced below the market is not executable;
+  // kt10002 can move it to a price that is, and the fill opens or enlarges exactly the position
+  // this adapter cannot measure. Repricing is a risk-changing instruction wearing an amendment's
+  // clothes.
+  using Traits = BrokerTraits<kiwoom::KiwoomClient>;
+
+  WorkingOrder<kiwoom::Broker> working;
+  working.ref_ = OrderRef<kiwoom::Broker>{"0000069", "005930"};
+  working.order_.instrument_ = samsung();
+  working.order_.type_ = OrderType::LIMIT;
+  working.order_.time_in_force_ = TimeInForce::DAY;
+  working.order_.session_ = OrderSession::REGULAR;
+  working.order_.venue_ = Venue::KRX;
+  working.order_.price_ = Decimal64(70000, 0);
+  working.amendable_quantity_ = Decimal64(7, 0);
+
+  // The conversion still succeeds -- it is a well-formed instruction -- and the client refuses it
+  // before any I/O, which is the boundary no caller routes around.
+  const auto converted = Traits::to_replacement(working.ref_, reprice(working, Decimal64(71000, 0)));
+  REQUIRE(converted);
+  const auto refused = kiwoom::KiwoomClientTestAccess::validate_amendment(converted.value(), false);
+  REQUIRE(refused);
+  CHECK(refused->broker_code_ == "holdings_scope_unestablished");
+  CHECK_FALSE(refused->reached_broker_);
+
+  // **Cancelling is unaffected, and must be**: kt10003 only ever reduces what is resting, and an
+  // order that cannot be withdrawn keeps resting and can fill.
+  const auto withdraw = Traits::to_cancellation(working.ref_, cancel_all(working));
+  REQUIRE(withdraw);
+  CHECK_FALSE(kiwoom::KiwoomClientTestAccess::validate_amendment(withdraw.value(), true));
+
+  // Reducing a resting order's size is still expressible while this holds.
+  const auto partial =
+    Traits::to_cancellation(working.ref_, cancel_quantity(working, Decimal64(3, 0)));
+  REQUIRE(partial);
+  CHECK_FALSE(kiwoom::KiwoomClientTestAccess::validate_amendment(partial.value(), true));
+
+  // A malformed amendment still hears about itself first, for the same reason a placement does.
+  kiwoom::KiwoomAmendment nameless;
+  nameless.order_ = kiwoom::KiwoomOrderRef{"0000069", ""};
+  nameless.venue_ = Venue::KRX;
+  nameless.quantity_ = Decimal64(3, 0);
+  const auto own_mistake = kiwoom::KiwoomClientTestAccess::validate_amendment(nameless, false);
+  REQUIRE(own_mistake);
+  CHECK(own_mistake->broker_code_ == "invalid_order_reference");
 }
