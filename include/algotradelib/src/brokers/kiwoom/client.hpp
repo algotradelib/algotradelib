@@ -2313,6 +2313,29 @@ private:
    * for what an assertion does and does not claim, and note that the runner's own portfolio gate is
    * a separate rule that still applies.
    */
+  /**
+   * Returns what `trde_able_qty` on a `kt00018` row is evidence of, given what the operator asserted.
+   *
+   * **A named decision with one caller**, rather than three lines inside the paging branch that
+   * completes a snapshot. That branch is unreachable without a live HTTP round trip, so a rule
+   * written there is a rule no test can drive -- and slice 25 spent a round learning that a
+   * decision worth making is worth naming (`validate_amendment`). This is the same shape.
+   *
+   * The coverage is the operator's assertion and nothing more. The resting treatment is this
+   * library's own conservative rule either way and is deliberately not a caller's to state:
+   * deducting a resting sell Kiwoom had also deducted refuses a trade, while not deducting one
+   * sells the same shares twice, and only the first error is recoverable. `verified_` stays false
+   * because an assertion is not a measurement.
+   */
+  static SellableBasis holdings_sellable_basis(KiwoomSellableScope scope) {
+    return SellableBasis{
+      scope == KiwoomSellableScope::WHOLE_HOLDING ? SellableBasis::Coverage::WHOLE_HOLDING
+                                                 : SellableBasis::Coverage::UNESTABLISHED,
+      SellableBasis::RestingTreatment::DEDUCT,
+      false,
+    };
+  }
+
   static std::optional<BrokerError> holdings_scope_refusal(KiwoomPositionScope scope) {
     if (scope == KiwoomPositionScope::UNSPECIFIED) {
       return unestablished_holdings_scope();
@@ -2417,13 +2440,8 @@ private:
         // describe one book out of two. The *resting* treatment is this library's conservative rule
         // either way and is not a caller's to assert: deducting a resting sell Kiwoom had also
         // deducted refuses a trade, where the opposite sells the same shares twice.
-        operation->snapshot_.sellable_basis_ = SellableBasis{
-          config_.holdings_sellable_scope_ == KiwoomSellableScope::WHOLE_HOLDING
-            ? SellableBasis::Coverage::WHOLE_HOLDING
-            : SellableBasis::Coverage::UNESTABLISHED,
-          SellableBasis::RestingTreatment::DEDUCT,
-          false,
-        };
+        operation->snapshot_.sellable_basis_ =
+          holdings_sellable_basis(config_.holdings_sellable_scope_);
         deliver(
           std::move(operation->completion_),
           Result<HoldingsSnapshot>(std::move(operation->snapshot_))

@@ -98,6 +98,11 @@ struct KiwoomClientTestAccess {
    * question it was written to ask -- and so the *default* is what an unqualified call exercises,
    * which is the behaviour this adapter ships with.
    */
+  /** Drives the real basis decision the holdings path uses. */
+  static SellableBasis holdings_sellable_basis(kiwoom::KiwoomSellableScope scope) {
+    return KiwoomClient::holdings_sellable_basis(scope);
+  }
+
   static std::optional<BrokerError> validate_order(
     const OrderRequest& order,
     std::string& code,
@@ -1852,6 +1857,113 @@ TEST_CASE("repricing through the runner's own helper reaches the wire", "[kiwoom
   );
   REQUIRE(restated);
   CHECK(restated.value().price_ == Decimal64(71000, 0));
+}
+
+TEST_CASE("the two holdings assertions are independent of each other", "[kiwoom][holdings]") {
+  // **Two switches, not one, and this is the test that keeps them apart.** kt00018's `dmst_stex_tp`
+  // desc is "KRX:한국거래소,NXT:넥스트트레이드" and both quantity fields' descs carry units and
+  // zero-padding, so nothing ties `rmnd_qty`'s scope to `trde_able_qty`'s. One switch covering both
+  // would assume exactly that, and the sellable half is the one that can admit a sell of shares
+  // that are not there.
+  using Access = kiwoom::KiwoomClientTestAccess;
+
+  // Asserting the *positions* scope establishes nothing about the sellable figure.
+  const auto unstated = Access::holdings_sellable_basis(kiwoom::KiwoomSellableScope::UNSPECIFIED);
+  CHECK(unstated.coverage_ == SellableBasis::Coverage::UNESTABLISHED);
+  CHECK_FALSE(unstated.is_enforceable());
+
+  const auto stated = Access::holdings_sellable_basis(kiwoom::KiwoomSellableScope::WHOLE_HOLDING);
+  CHECK(stated.coverage_ == SellableBasis::Coverage::WHOLE_HOLDING);
+  CHECK(stated.is_enforceable());
+
+  // Neither assertion is a measurement, and the type says so rather than a comment saying so.
+  CHECK_FALSE(unstated.verified_);
+  CHECK_FALSE(stated.verified_);
+
+  // The resting treatment is this library's, not the caller's: conservative under both, because
+  // over-deducting only ever refuses a trade. A caller cannot assert it away.
+  CHECK(unstated.resting_ == SellableBasis::RestingTreatment::DEDUCT);
+  CHECK(stated.resting_ == SellableBasis::RestingTreatment::DEDUCT);
+
+  // And the config's defaults are both unstated, so neither is answered by a silent default.
+  kiwoom::KiwoomConfig fresh;
+  CHECK(fresh.holdings_position_scope_ == kiwoom::KiwoomPositionScope::UNSPECIFIED);
+  CHECK(fresh.holdings_sellable_scope_ == kiwoom::KiwoomSellableScope::UNSPECIFIED);
+}
+
+TEST_CASE("asserting the scope admits what it refused, per instruction", "[kiwoom][orders]") {
+  // **The positive control for the refusal above.** A refusal on its own does not show the gate is
+  // the holdings scope -- it could be anything else about the order -- so this changes only the
+  // scope and requires each instruction through. Enumerated per instruction because slice 25 spent
+  // four rounds discovering that a reprice is a placement wearing an amendment's clothes.
+  using Access = kiwoom::KiwoomClientTestAccess;
+  using Traits = BrokerTraits<kiwoom::KiwoomClient>;
+  const auto asserted = kiwoom::KiwoomPositionScope::VALUATION_ONLY;
+
+  OrderRequest buy;
+  buy.instrument_ = samsung();
+  buy.side_ = OrderSide::BUY;
+  buy.type_ = OrderType::LIMIT;
+  buy.venue_ = Venue::KRX;
+  buy.quantity_ = Decimal64(10, 0);
+  buy.price_ = Decimal64(70000, 0);
+
+  // kt10000, a new buy: refused unstated, admitted asserted.
+  std::string code;
+  REQUIRE(Access::validate_order(buy, code));
+  CHECK_FALSE(Access::validate_order(buy, code, asserted));
+
+  // kt10001, a new sell -- which can open or enlarge a short where one is permitted, so it is not
+  // exempt for being a sale. Asserted separately rather than assumed to follow the buy.
+  OrderRequest sell = buy;
+  sell.side_ = OrderSide::SELL;
+  REQUIRE(Access::validate_order(sell, code));
+  CHECK_FALSE(Access::validate_order(sell, code, asserted));
+
+  WorkingOrder<kiwoom::Broker> working;
+  working.ref_ = OrderRef<kiwoom::Broker>{"0000123", "005930"};
+  working.order_.instrument_ = samsung();
+  working.order_.type_ = OrderType::LIMIT;
+  working.order_.time_in_force_ = TimeInForce::DAY;
+  working.order_.session_ = OrderSession::REGULAR;
+  working.order_.venue_ = Venue::KRX;
+  working.order_.price_ = Decimal64(70000, 0);
+  working.order_.quantity_ = Decimal64(10, 0);
+  working.amendable_quantity_ = Decimal64(7, 0);
+
+  // kt10002 through `reprice()`: the instruction that moves a resting buy into a fillable price.
+  const auto repriced = Traits::to_replacement(working.ref_, reprice(working, Decimal64(71000, 0)));
+  REQUIRE(repriced);
+  REQUIRE(Access::validate_amendment(repriced.value(), false));
+  CHECK_FALSE(Access::validate_amendment(repriced.value(), false, asserted));
+
+  // kt10002 through `replace_with()`, the other normalized form of the same instruction. Both, not
+  // one: a gate reached by one builder and not the other is a gate with a hole in it.
+  const auto restated = Traits::to_replacement(
+    working.ref_,
+    replace_with(
+      working,
+      OrderShape(OrderType::LIMIT, Decimal64(71000, 0), TimeInForce::DAY, OrderSession::REGULAR)
+    )
+  );
+  REQUIRE(restated);
+  REQUIRE(Access::validate_amendment(restated.value(), false));
+  CHECK_FALSE(Access::validate_amendment(restated.value(), false, asserted));
+
+  // **And cancelling was never refused and still is not**, under either scope. kt10003 only ever
+  // reduces what is resting, and an order that cannot be withdrawn keeps resting and can fill.
+  const auto withdraw = Traits::to_cancellation(working.ref_, cancel_all(working));
+  REQUIRE(withdraw);
+  CHECK_FALSE(Access::validate_amendment(withdraw.value(), true));
+  CHECK_FALSE(Access::validate_amendment(withdraw.value(), true, asserted));
+
+  // A caller's own mistake is still reported ahead of the holdings gap once the gap is gone: an
+  // order naming no venue is refused for that, not silently admitted by the assertion.
+  OrderRequest ventureless = buy;
+  ventureless.venue_ = Venue::UNSPECIFIED;
+  const auto still_bad = Access::validate_order(ventureless, code, asserted);
+  REQUIRE(still_bad);
+  CHECK(still_bad->broker_code_ != "holdings_scope_unestablished");
 }
 
 TEST_CASE("the normalized holdings verb refuses while its scope is unestablished", "[kiwoom][holdings]") {
