@@ -1076,6 +1076,11 @@ TEST_CASE("an unstated terminal-state answer defaults to the one that cannot str
   static_assert(!caps_detail::stated_terminal_working_state<BrokerTraits<SilentAboutTerminal>>::value);
   static_assert(caps_detail::stated_terminal_working_state<BrokerTraits<StatesTerminal>>::value);
 
+  // **And through the public member, not only the detector.** Asserting on `caps_detail` alone
+  // would leave `BrokerCaps<...>::working_orders_state_terminal` -- the thing a caller actually
+  // gates on -- uninstantiated for the `true` answer.
+  static_assert(BrokerCaps<mock::MockClient>::working_orders_state_terminal);
+
   // And what the shipped adapters actually answer, which is the same for all three: none of their
   // working-order inquiries states a terminal status.
   static_assert(!BrokerCaps<kis::KisClient>::working_orders_state_terminal);

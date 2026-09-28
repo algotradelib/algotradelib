@@ -2135,7 +2135,9 @@ TEST_CASE("a working-order poll re-verifies the source an earlier send invalidat
 
   runner::PollSchedule schedule;
   schedule.bars_ = std::chrono::seconds(1);
-  schedule.working_orders_ = std::chrono::seconds(1);
+  // Polled once, at the start, and not again before the stop -- otherwise a later read would
+  // refresh the very provenance this test is about.
+  schedule.working_orders_ = std::chrono::hours(1);
   schedule.tick_ = std::chrono::seconds(1);
   SendingLoop loop(runner_instance, source, schedule, test_clock());
   StopSource stop;
@@ -3900,4 +3902,100 @@ TEST_CASE("a parting target that is withheld is counted as resistance, not as si
 
   CHECK(report.stop_handler_sent_ == 0);
   CHECK(report.stop_handler_refused_ == 1);
+}
+
+namespace {
+
+/** Submits once, the first time it is told an order changed. */
+struct SubmitsOnOrderUpdate {
+  bool submitted_{false};
+
+  template <class Ctx>
+  void on_bar(Ctx&, const algotradelib::strategy::BarEvent&) {}
+
+  template <class Ctx>
+  void on_order_update(Ctx& ctx, const algotradelib::OrderSnapshot&) {
+    if (submitted_) {
+      return;
+    }
+    submitted_ = true;
+    ctx.submit(
+      algotradelib::strategy::OrderIntent::market(
+        samsung(),
+        algotradelib::OrderSide::BUY,
+        algotradelib::strategy::SizeSpec::quantity(algotradelib::Decimal64::parse("1"))
+      )
+    );
+  }
+};
+
+using UpdateSenderRunner = runner::DryRunner<SubmitsOnOrderUpdate>;
+
+/**
+ * A source whose working-order poll dispatches an order update, as the live one now does.
+ *
+ * That is the whole point: `Runner::feed` settles, so a handler answering an update can send from
+ * *inside* the working-order poll -- an order the listing just fetched cannot contain.
+ */
+struct UpdateSenderSource : runner::ManualSource<UpdateSenderRunner> {
+  bool feed_once_{true};
+  /** Stopped from here so the stop lands inside one run, with no second listing read between. */
+  StopSource* stop_{nullptr};
+
+  runner::PollOutcome poll(runner::PollKind kind, UpdateSenderRunner& runner_instance) {
+    const auto outcome = runner::ManualSource<UpdateSenderRunner>::poll(kind, runner_instance);
+    if (kind == runner::PollKind::WORKING_ORDERS && feed_once_) {
+      feed_once_ = false;
+      if (stop_ != nullptr) {
+        stop_->request(StopIntent::FLATTEN);
+      }
+      algotradelib::OrderSnapshot update;
+      update.order_id_ = "resting-1";
+      update.instrument_ = samsung();
+      update.quantity_ = algotradelib::Decimal64::parse("3");
+      runner_instance.feed(update);
+    }
+    return outcome;
+  }
+};
+
+using UpdateSenderLoop = runner::PollingLoop<UpdateSenderRunner, UpdateSenderSource, runner::ManualClock>;
+
+} // namespace
+
+TEST_CASE("an order sent from inside the working-order poll leaves the listing unverified",
+          "[loop][stop]") {
+  // **The listing was fetched before the handler sent.** An order accepted during that poll cannot
+  // be in the rows it returned, so a closing pass relying on those rows does not know about it.
+  // Recording the placement count *after* the poll would stamp the listing as though it covered
+  // the order, and a flatten would then be approved against a picture missing a resting order --
+  // with a second full-size order going out beside the first.
+  // Every phase permitted, because what is under test is the listing's provenance and not the
+  // guard: an order refused by a limit never reaches a broker and so could not stale a listing.
+  strategy::RiskLimits limits;
+  limits.permitted_phases_ = std::nullopt;
+  UpdateSenderRunner runner_instance(SubmitsOnOrderUpdate{}, limits);
+  runner_instance.context().set_instrument(samsung_reference());
+  serve_calendar(runner_instance);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner_instance.context().set_portfolio(portfolio_with("10", "3"));
+  UpdateSenderSource source;
+  source.set_default(runner::PollKind::WORKING_ORDERS, runner::PollOutcome::UPDATED);
+  auto schedule = bars_each_iteration();
+  schedule.working_orders_ = std::chrono::seconds(1);
+  UpdateSenderLoop loop(runner_instance, source, schedule, test_clock());
+  // The snapshot is installed once here rather than refreshed by a poll, so its age is not the
+  // subject of this test.
+  loop.allow_unbounded_portfolio_age();
+  StopSource stop;
+
+  source.stop_ = &stop;
+
+  const auto report = loop.run(stop, 5);
+  REQUIRE(runner_instance.strategy().submitted_);
+  REQUIRE(runner_instance.placements_at_broker() > 0);
+
+  CHECK(report.stopped_by_ == StopIntent::FLATTEN);
+  CHECK(report.closing_source_unverified_);
+  CHECK_FALSE(report.closing_complete());
 }

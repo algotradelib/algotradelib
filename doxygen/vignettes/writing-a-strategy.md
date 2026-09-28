@@ -52,8 +52,16 @@ replaced, and neither synthesises an execution. Discrete executions cannot be re
 periodic cumulative snapshots — that was established across thirteen review findings and the design
 is parked until the library streams execution notifications. So a strategy that places an entry and
 sets its stop from `on_fill` is **correct in a backtest and inert live**: the handler never runs, the
-stop is never placed, and nothing reports it. Until that changes, act on positions in `on_bar`, or
-on `on_order_update` below.
+stop is never placed, and nothing reports it.
+
+**`on_order_update` is not a replacement for it, and treating it as one recreates the same trap.**
+It reports rows that appear in a *listing*, and a market order can be sent, fill, and leave the
+working-order list entirely between two polls — no row is ever seen, so no update is ever emitted.
+Until the library streams executions, the reliable way to know an entry is on is to **observe the
+position**: compare `ctx.portfolio().net_quantity_of(...)` against what you expected on each
+`on_bar`, and place the protective order from there. `on_order_update` tells you what the broker is
+saying about orders it still lists, which is useful and is not a guarantee that you will be told
+about every one of them.
 
 **`on_order_update` reports what the broker last said about an order it is still listing.** The same
 detector runs over each mode's own order listing, so the *rule* is identical in a backtest and live
@@ -61,12 +69,17 @@ detector runs over each mode's own order listing, so the *rule* is identical in 
 
 | It fires when | Backtest | Live |
 | --- | --- | --- |
-| an order becomes resting | yes | yes |
+| an order appears in a listing, resting | yes | **only if a poll sees it there** |
 | an amendment moves its price or quantity | no — a replay has no amendment, only place and cancel | yes |
 | the filled quantity moves while the order rests | no — a replay fills an order whole or not at all | yes |
 
 So in a backtest you will see one update per order, when it starts resting. Do not read that as the
 library telling you nothing happened afterwards; read the transition table above.
+
+**And read the live column's condition as literally as it is written.** An order only produces an
+update if a working-order poll actually observes a row for it. An order that is sent and completes
+inside one polling interval never appears in any listing and is never reported — which is why the
+first row says *appears in a listing* rather than *is accepted by the broker*.
 
 **It never tells you why an order stopped being listed.** A working-order listing shows what is
 resting, and a row that leaves it may have filled, been cancelled, expired or been rejected; the
@@ -78,7 +91,8 @@ Two more things worth knowing before you rely on it. An order that was already r
 runner started is adopted as the baseline and is not reported as an update: the startup read happens
 before the loop's startup hold is installed, so nothing is dispatched from it, and that listing
 reaches you through `ctx.portfolio().working_` instead. And an order you place *from*
-`on_order_update` is reported at the next observation, never inside the current one.
+`on_order_update` is reported at the next observation rather than inside the current one — subject
+to the same condition as everything else here, that a later listing actually shows it.
 
 **`on_stop` is a notification, not a last trade.** Under `runner::PollingLoop` it is dispatched while
 the loop's stop hold is in force, so anything it submits is refused by the guard and counted in

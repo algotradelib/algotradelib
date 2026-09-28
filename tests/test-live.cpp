@@ -2757,16 +2757,26 @@ TEST_CASE("execution progress on a resting order is reported, with the new figur
 }
 
 TEST_CASE("a quantity restated at another scale is not a change") {
-  // `Decimal64::operator==` compares the coefficient *and the scale*, so `10` and `10.0` are
-  // distinct values. A broker restating one has not amended the order, and comparing with `==`
-  // would report an update every poll for as long as it kept doing so.
+  // `Decimal64::operator==` compares the coefficient *and the scale*, so `Decimal64(100, 1)` and
+  // `Decimal64(10, 0)` are distinct values although both are ten.
+  //
+  // **Built at an explicit scale on purpose.** `Decimal64::parse` strips trailing fractional zeros,
+  // so `parse("10")` and `parse("10.0")` are the *same* value -- a fixture written that way passes
+  // whether the detector compares numerically or with `==`, which is a test that proves nothing.
+  // The two-argument constructor is the case that can actually reach here, from an adapter this
+  // library has never seen.
   WorkingSession session;
   auto live_runner = live::bind_observer(session, WatchesOrders{});
   live::SessionSource<WorkingSession> source(session, {samsung()});
 
-  poll_rows(source, live_runner, session, {update_row("A1", "", "0")});
-  auto restated = update_row("A1", "", "0.0");
-  restated.order_.quantity_ = Decimal64::parse("10.00");
+  auto first = update_row("A1", "", "0");
+  first.order_.quantity_ = Decimal64(10, 0);
+  poll_rows(source, live_runner, session, {first});
+  REQUIRE(live_runner.strategy().updates_.size() == 1);
+
+  auto restated = update_row("A1", "", "0");
+  restated.order_.quantity_ = Decimal64(100, 1);
+  REQUIRE_FALSE(first.order_.quantity_ == restated.order_.quantity_);
   poll_rows(source, live_runner, session, {restated});
 
   CHECK(live_runner.strategy().updates_.size() == 1);
@@ -2871,5 +2881,42 @@ TEST_CASE("the startup read adopts the listing rather than reporting it") {
   poll_rows(
     source, live_runner, session, {update_row("A1", "", "3", OrderStatus::PARTIAL_FILLED)}
   );
+  CHECK(live_runner.strategy().updates_.size() == 1);
+}
+
+TEST_CASE("one order stated twice in a listing is reported once") {
+  // A duplicated row would otherwise be one change delivered as two events -- and a strategy
+  // answering an update may submit, so a duplicated row becomes a duplicated order. Both brokers
+  // that page this listing append their pages without deduplicating, so the input is not excluded
+  // upstream.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, WatchesOrders{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  poll_rows(
+    source, live_runner, session, {update_row("A1", "", "0"), update_row("A1", "", "0")}
+  );
+  CHECK(live_runner.strategy().updates_.size() == 1);
+}
+
+TEST_CASE("two readings of one order that disagree are reported to nobody") {
+  // Neither reading can be preferred and nothing here can say which is true, so reporting either
+  // states something unestablished and reporting both hands a strategy a contradiction as two
+  // events. The same answer slice 27 reached for two sellable figures that contradicted.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, WatchesOrders{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  poll_rows(
+    source,
+    live_runner,
+    session,
+    {update_row("A1", "", "0"), update_row("A1", "", "5", OrderStatus::PARTIAL_FILLED)}
+  );
+  CHECK(live_runner.strategy().updates_.empty());
+
+  // And it keeps no baseline it could not settle on: a later listing stating the order once
+  // reports it afresh rather than against a reading this one could not choose.
+  poll_rows(source, live_runner, session, {update_row("A1", "", "5", OrderStatus::PARTIAL_FILLED)});
   CHECK(live_runner.strategy().updates_.size() == 1);
 }

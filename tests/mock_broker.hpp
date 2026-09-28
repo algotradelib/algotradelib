@@ -363,6 +363,16 @@ struct BrokerTraits<mock::MockClient> {
   /** Reports the quantity still open. */
   static constexpr bool has_amendable_quantity = true;
 
+  /**
+   * Set so the `true` answer is compiled through the public capability, not only detected.
+   *
+   * Every shipped adapter answers `false`, so without a fixture stating `true` the constant's
+   * other branch would never be instantiated -- which `plan/README.md` records as the way a
+   * capability constant goes unchecked. Nothing in the library reads it yet; it is a statement
+   * a caller gates on.
+   */
+  static constexpr bool working_orders_state_terminal = true;
+
   /** No single-order inquiry. */
   static constexpr bool has_order_by_id = false;
 

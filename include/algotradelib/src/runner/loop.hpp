@@ -1258,6 +1258,14 @@ private:
       // The cost is a date comparison per due poll.
       install_phase(iteration);
       const auto watch = watch_phase(iteration);
+      // **Sampled before the poll, not after it.** A poll can send: `Runner::feed` settles, and a
+      // working-order poll now feeds `on_order_update` as well as the bar and quote polls feeding
+      // their handlers. An order a handler places during the working-order poll was sent *after*
+      // the listing was fetched and cannot be in it -- so counting placements afterwards would
+      // stamp that listing as though it covered the order, and `closing_source_verified` would
+      // then approve a flatten against a picture missing a resting order. The count taken here is
+      // the one that was true when the listing was read.
+      const auto placements_before_poll = runner_->placements_at_broker();
       const auto outcome = source_->poll(kind, *runner_);
       note_revised_phase(std::string(poll_kind_name(kind)) + " poll", watch, report);
       // `UNCHANGED` counts, because a listing that is identical to the last one is still a listing
@@ -1265,7 +1273,7 @@ private:
       // enforces: a broker without the inquiry answers `UNCHANGED` without asking anybody.
       if (kind == PollKind::WORKING_ORDERS &&
           (outcome == PollOutcome::UPDATED || outcome == PollOutcome::UNCHANGED)) {
-        note_working_orders_read(iteration.at_);
+        note_working_orders_read(iteration.at_, placements_before_poll);
       }
       ++report.attempted_[static_cast<int>(kind)];
       iteration.polls_.emplace_back(kind, outcome);
@@ -1532,6 +1540,10 @@ private:
       // source that revised the calendar and sent would reach the identical hazard through a different
       // door. The phase in force here is the one `step` installed immediately before calling this.
       const auto watch = PhaseWatch{at, phase_at(at), runner_->guard().total_sent()};
+      // As in `step`, and here the startup read dispatches nothing at all -- but the count is taken
+      // before the call for the same reason, so that the rule holds positionally rather than by an
+      // argument about which reads can send.
+      const auto placements_before_read = runner_->placements_at_broker();
       const auto outcome = source_->read_order_list(*runner_);
       note_revised_phase("order-list read", watch, report);
       if (outcome == PollOutcome::UPDATED || outcome == PollOutcome::UNCHANGED) {
@@ -1540,7 +1552,7 @@ private:
         // The startup read is a working-order read *on a source that has the inquiry*. On one that
         // does not, it reads order history for the journal and never populates `working_`, so
         // `note_working_orders_read` deliberately does nothing and a closing pass stays unverified.
-        note_working_orders_read(at);
+        note_working_orders_read(at, placements_before_read);
       } else {
         return strategy::HaltReason::ORDER_LIST_UNREAD;
       }
@@ -2066,12 +2078,18 @@ private:
    * unverified rather than being told a history read or a no-op poll refreshed a listing it never
    * built.
    */
-  void note_working_orders_read(std::chrono::system_clock::time_point at) {
+  void note_working_orders_read(
+    std::chrono::system_clock::time_point at, std::size_t placements_before_poll
+  ) {
     if constexpr (source_provides_working_orders<Source>::value) {
       working_orders_at_ = at;
-      placements_at_working_read_ = runner_->placements_at_broker();
+      // **The caller's count, taken before the poll ran.** Reading it here instead would include
+      // an order an `on_order_update` handler placed *during* the poll -- an order sent after the
+      // listing was fetched, which the listing therefore cannot contain.
+      placements_at_working_read_ = placements_before_poll;
     } else {
       (void)at;
+      (void)placements_before_poll;
     }
   }
 

@@ -3735,6 +3735,11 @@ TEST_CASE("a replay's order update carries an identifier") {
 
   REQUIRE(engine.strategy().ids_seen_.size() == 1);
   CHECK_FALSE(engine.strategy().ids_seen_[0].empty());
+  // **The mapping, not merely non-emptiness.** The id is the queue's own reference, which is what
+  // lets a handler join the event to the row it can withdraw; a nonempty check passes for any
+  // string at all.
+  REQUIRE(engine.result().unfilled_ == 0);
+  CHECK(engine.strategy().ids_seen_[0] == "1");
 }
 
 TEST_CASE("an order an update handler places is reported at the next boundary, not within it") {
@@ -3756,4 +3761,74 @@ TEST_CASE("a change made by on_stop is reported, because finish is the only boun
   CHECK(engine.strategy().updates_ == 0);
   engine.finish();
   CHECK(engine.strategy().updates_ == 1);
+}
+
+namespace {
+
+/** Places two resting orders, then withdraws the second the first time it is told about one. */
+struct WithdrawsAnotherFromAnUpdate {
+  bool submitted_{false};
+  bool answered_{false};
+  std::vector<std::string> told_about_;
+  std::vector<std::size_t> working_seen_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (submitted_) {
+      return;
+    }
+    submitted_ = true;
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")),
+        far_below()
+      ).with_tag("first")
+    );
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("2")),
+        far_below()
+      ).with_tag("second")
+    );
+  }
+
+  template <class Ctx>
+  void on_order_update(Ctx& ctx, const OrderSnapshot& order) {
+    told_about_.push_back(order.order_id_);
+    working_seen_.push_back(ctx.portfolio().working_.size());
+    if (answered_) {
+      return;
+    }
+    answered_ = true;
+    // Withdraw every *other* resting order, which is the one this batch has already captured an
+    // event for and has not yet dispatched.
+    for (const auto& working : ctx.portfolio().working_) {
+      if (working.order_.order_id_ != order.order_id_) {
+        ctx.cancel(working.ref_, "withdraw-the-other");
+      }
+    }
+  }
+};
+
+} // namespace
+
+TEST_CASE("an update is not dispatched for an order a previous update handler withdrew") {
+  // The batch is captured before the first dispatch, and the first handler can cancel an order the
+  // batch already holds an event for. Announcing it then would contradict the portfolio installed
+  // alongside it -- which correctly no longer lists it -- and would invite a strategy to act on an
+  // order that no longer exists.
+  backtest::Backtester<WithdrawsAnotherFromAnUpdate> engine(
+    WithdrawsAnotherFromAnUpdate{}, replay_config()
+  );
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
+  engine.finish();
+
+  // Two orders were placed and one was withdrawn from the first update, so exactly one update is
+  // dispatched: the second order's event describes an order that no longer exists by then.
+  CHECK(engine.strategy().told_about_.size() == 1);
+
+  // And what it was told about, it could see.
+  REQUIRE(engine.strategy().working_seen_.size() == 1);
+  CHECK(engine.strategy().working_seen_[0] == 2);
 }

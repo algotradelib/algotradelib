@@ -683,12 +683,43 @@ private:
       rows.push_back(working_row(entry));
     }
     for (const auto& update : updates_.changed(rows)) {
+      // **Re-checked against the queue immediately before it is dispatched, not only when the batch
+      // was observed.** A handler answering the first update of a batch can cancel a *different*
+      // order in the same batch, and the event captured for that order is then a statement about an
+      // order that no longer exists -- the portfolio installed below would correctly omit it while
+      // the event announced it, which is exactly the contradiction the install exists to prevent.
+      //
+      // Checked on the state as well as the reference, because a handler can also replace an order
+      // with another carrying the same one.
+      const auto* still_queued = find_queued(update);
+      if (still_queued == nullptr) {
+        continue;
+      }
       install_portfolio();
       drain_reports(runner_.feed(update));
       if (result_.halted_) {
         return;
       }
     }
+  }
+
+  /**
+   * Returns the queued order `update` describes, if it is still outstanding in that same state.
+   *
+   * Matched on the reference and then on the observable state, so an order withdrawn or amended
+   * since the batch was observed is not announced as it stood.
+   */
+  const QueuedOrder<Tag>* find_queued(const OrderSnapshot& update) const {
+    for (const auto& entry : runner_.executor().queued()) {
+      if (entry.ref_.primary_ != update.order_id_) {
+        continue;
+      }
+      const auto row = working_row(entry);
+      if (runner::order_update_detail::same_observable_state(row.order_, update)) {
+        return &entry;
+      }
+    }
+    return nullptr;
   }
 
   void install_portfolio() {

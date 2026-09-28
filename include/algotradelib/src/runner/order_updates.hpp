@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <optional>
 #include <vector>
@@ -14,14 +15,20 @@ namespace order_update_detail {
 /**
  * Returns whether two decimals are the same number, at whatever scale each was written.
  *
- * **Not `operator==`, and the difference is the whole reason this exists.** `Decimal64::operator==`
- * compares the coefficient *and the scale*, so `parse("10")` and `parse("10.0")` are distinct
- * values (`core/types.hpp:347-349`). A broker that restates one quantity at a different scale
- * between two listings has not changed the order, and a detector comparing with `==` would report
- * an update every poll for as long as it kept doing so -- a firehose driven by a wire format's
- * punctuation.
+ * **Not `operator==`, which compares the coefficient *and the scale*** (`core/types.hpp:347-349`),
+ * so `Decimal64(100, 1)` and `Decimal64(10, 0)` are distinct values although both are ten. Two
+ * readings of one order that differ only in how a quantity is written are not a change, and a
+ * detector comparing with `==` would report an update every listing for as long as they differed.
  *
- * So the comparison is numeric, via the ordering that already aligns scales.
+ * **Where that can actually arise, stated precisely rather than as a worry.** It is *not* the
+ * shipped adapters' string parsing: `Decimal64::parse` strips trailing fractional zeros, so
+ * `parse("10")` and `parse("10.0")` are the same value and no wire spelling reaches here as a
+ * scale difference. It is a value built at an explicit scale -- the two-argument constructor and
+ * `analytics::to_decimal(value, scale)`, which `Decimal64`'s own comment already calls out as not
+ * normalized -- which is what an adapter this library has never seen may well use.
+ *
+ * So the comparison is numeric, via the ordering that already aligns scales. The cost is one extra
+ * comparison; the alternative is a firehose on an adapter nobody here can inspect.
  */
 inline bool same_number(const Decimal64& lhs, const Decimal64& rhs) {
   return !decimal_less(lhs, rhs) && !decimal_less(rhs, lhs);
@@ -133,6 +140,19 @@ public:
    * Tracked rows absent from `rows` are forgotten, so the watch stays the size of the listing --
    * and a row that disappears and later returns is reported again as new, which restates something
    * the caller knows rather than claiming something it does not.
+   *
+   * ## Precondition: `rows` is a complete listing
+   *
+   * Every call must carry **every** order the broker would list, not one page of them. This class
+   * cannot tell a complete listing from a partial one -- a vector of rows looks the same either way
+   * -- and the consequence of breaking it is quiet: pages alternating between polls would forget and
+   * re-report the same orders indefinitely, and `live::SessionSource`'s disappearance counter beside
+   * it would rise for orders that never went anywhere.
+   *
+   * `WorkingOrders::orders_` promises exactly this, and all three shipped adapters keep it: KIS and
+   * Kiwoom assemble every page before completing and fail an incomplete walk, and Toss's `OPEN`
+   * listing is unpaged. An adapter this library has never seen that answers one page per call would
+   * break it, which is why the requirement is written here rather than assumed.
    */
   std::vector<OrderSnapshot> changed(const std::vector<WorkingOrder<Broker>>& rows) {
     return observe(rows, /*report=*/true);
@@ -164,22 +184,41 @@ public:
   /** Returns how many orders this watch is currently tracking. */
   std::size_t tracked_orders() const noexcept { return tracked_.size(); }
 
+  /**
+   * Returns how many times a listing stated one order twice with readings that disagreed.
+   *
+   * Monotone. Non-zero means some orders went unreported and says how often, which is the witness
+   * for a rule this class can detect and cannot repair: a broker contradicting itself about one
+   * order leaves nothing here that could choose between the two readings.
+   */
+  std::size_t contradicted_rows() const noexcept { return contradicted_; }
+
 private:
   /** One order's last observed state, against which the next listing is compared. */
   struct Tracked {
     OrderRef<Broker> ref_;
     OrderSnapshot last_;
+    /** Set when this listing stated the same order twice and the two readings disagreed. */
+    bool contradicted_{false};
   };
 
-  /** Runs one observation, reporting differences or silently adopting them. */
+  /**
+   * Runs one observation, reporting differences or silently adopting them.
+   *
+   * Two passes, and the split is what keeps the duplicate rule honest. The first reduces the
+   * listing to one entry per reference; only then does the second decide what changed, so a
+   * contradiction found on the listing's last row still suppresses a report the first row would
+   * otherwise have earned.
+   */
   std::vector<OrderSnapshot> observe(
     const std::vector<WorkingOrder<Broker>>& rows, bool report
   ) {
-    std::vector<OrderSnapshot> updates;
     std::vector<Tracked> next;
     next.reserve(rows.size());
 
     for (const auto& row : rows) {
+      // This library's own arithmetic rather than something a broker stated, and the contract is
+      // about what a broker stated. Neither caller passes one today.
       if (row.reserved_) {
         continue;
       }
@@ -187,20 +226,61 @@ private:
         ++untracked_;
         continue;
       }
-      // Found among what was tracked before this listing, not among what this listing has already
-      // contributed: a listing carrying one order twice must not compare its second row against its
-      // first and call the pair a change.
-      const auto* held = find(row.ref_);
-      const bool differs =
-        held == nullptr || !order_update_detail::same_observable_state(held->last_, row.order_);
-      if (report && differs) {
-        updates.push_back(row.order_);
+      auto* already = seen(next, row.ref_);
+      if (already == nullptr) {
+        next.push_back(Tracked{row.ref_, row.order_, false});
+        continue;
       }
-      next.push_back(Tracked{row.ref_, row.order_});
+      // **One reference, one entry, whatever the listing says.** Reporting a duplicated row twice
+      // would hand a strategy one change as two events, and a strategy answering an update may
+      // submit -- so a duplicated row becomes a duplicated order. Both brokers that page this
+      // listing append their pages without deduplicating, so the input is not excluded upstream.
+      if (!order_update_detail::same_observable_state(already->last_, row.order_)) {
+        // **Two readings of one order that disagree cannot both be true, and nothing here can say
+        // which is.** Reporting either states something unestablished; reporting both hands a
+        // strategy a contradiction as two events. So this order is reported not at all from this
+        // listing, and the disagreement is counted. That is the answer slice 27 reached for two
+        // sellable figures that contradicted each other, for the same reason.
+        already->contradicted_ = true;
+      }
     }
 
+    std::vector<OrderSnapshot> updates;
+    for (const auto& entry : next) {
+      if (entry.contradicted_) {
+        ++contradicted_;
+        continue;
+      }
+      const auto* held = find(entry.ref_);
+      const bool differs =
+        held == nullptr || !order_update_detail::same_observable_state(held->last_, entry.last_);
+      if (report && differs) {
+        updates.push_back(entry.last_);
+      }
+    }
+
+    // A contradicted order keeps no baseline, because there is no reading of it this listing could
+    // settle on. The next listing that states it once reports it afresh.
+    next.erase(
+      std::remove_if(
+        next.begin(),
+        next.end(),
+        [](const Tracked& entry) { return entry.contradicted_; }
+      ),
+      next.end()
+    );
     tracked_ = std::move(next);
     return updates;
+  }
+
+  /** Returns the entry already built for `ref` in this listing, or `nullptr`. */
+  static Tracked* seen(std::vector<Tracked>& built, const OrderRef<Broker>& ref) {
+    for (auto& entry : built) {
+      if (entry.ref_ == ref) {
+        return &entry;
+      }
+    }
+    return nullptr;
   }
 
   /** Returns the tracked entry for `ref`, or `nullptr`. */
@@ -215,6 +295,7 @@ private:
 
   std::vector<Tracked> tracked_;
   std::size_t untracked_{0};
+  std::size_t contradicted_{0};
 };
 
 } // namespace runner
