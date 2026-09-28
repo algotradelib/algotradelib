@@ -416,12 +416,18 @@ struct Normalizers {
     if (differs(instruction.shape_.session_, resting_session)) {
       return refuse("session");
     }
-    // **Compared only against a known resting shape**, because `OrderShape::type_` is a plain value
-    // rather than an optional: with nothing to compare against, a stated `LIMIT` and an untouched
-    // default are the same bytes. A replacement has already been refused above when the resting
-    // shape is unknown; a cancellation with an unknown resting shape transmits no basis at all, and
-    // its executable terms -- the price and the trigger -- are refused separately.
-    if (instruction.resting_ && instruction.shape_.type_ != instruction.resting_->type_) {
+    // `OrderShape::type_` is a plain value rather than an optional, so "left alone" and "stated
+    // `LIMIT`" are the same bytes and the comparison has to be made in two steps.
+    if (instruction.resting_) {
+      if (instruction.shape_.type_ != instruction.resting_->type_) {
+        return refuse("price basis");
+      }
+    } else if (instruction.shape_.type_ != OrderShape().type_) {
+      // **With no resting shape, a value that differs from the default is still a stated change.**
+      // Only the default is ambiguous; `MARKET` on a cancellation is a caller saying something, and
+      // `kt10003` transmits no basis, so accepting it would report acceptance for a change the
+      // broker never saw. Compared against `OrderShape`'s own default rather than a literal, so the
+      // two cannot drift apart.
       return refuse("price basis");
     }
     return std::nullopt;

@@ -2148,11 +2148,21 @@ TEST_CASE("a cancellation refuses every shape change it cannot carry", "[kiwoom]
   REQUIRE_FALSE(refused);
   CHECK(refused.error().broker_code_ == "shape_change_unsupported");
 
-  // But a bare cancellation that states nothing still works: `OrderShape::type_` is a plain value
-  // with a `LIMIT` default, so it is compared only against a known resting shape -- and a
-  // cancellation that reaches the wire carries no basis at all.
+  // A bare cancellation that states nothing still works. `OrderShape::type_` is a plain value with
+  // a `LIMIT` default, so "left alone" and "stated LIMIT" are the same bytes and only the default
+  // is ambiguous.
   AmendInstruction plain;
   plain.venue_ = Venue::KRX;
   plain.quantity_ = Decimal64(3, 0);
   CHECK(Traits::to_cancellation(working.ref_, plain));
+
+  // **But a value that differs from the default is not ambiguous**, even with no resting shape: a
+  // caller writing `MARKET` on a cancellation is saying something, kt10003 transmits no basis, and
+  // accepting it would report acceptance for a change the broker never saw.
+  AmendInstruction stated = plain;
+  stated.shape_.type_ = OrderType::MARKET;
+  refused = Traits::to_cancellation(working.ref_, stated);
+  REQUIRE_FALSE(refused);
+  CHECK(refused.error().broker_code_ == "shape_change_unsupported");
+  CHECK(refused.error().message_.find("price basis") != std::string::npos);
 }
