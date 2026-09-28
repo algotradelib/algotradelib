@@ -209,7 +209,7 @@ struct DryRunReport {
    * of why an earlier entry is here.
    */
   std::vector<strategy::Rejection> rejected_;
-  /** Instructions a guard refused, with the limit and what was attempted. */
+  /** Instructions a guard refused, with the reason -- a limit or a hold -- and what was attempted. */
   std::vector<strategy::GuardRejection> refused_;
   /**
    * Orders the runner declined to send because the instrument's state is unresolved.
@@ -1110,8 +1110,9 @@ private:
       }
       for (const auto& rejection : planned.rejected_) {
         // Reconciliation's own refusal: it could not build a valid instruction at all, which is a
-        // different fact from a broker saying no and leads an operator somewhere else -- usually to
-        // missing reference data or an unregistered price.
+        // different fact from a broker saying no. **Not a diagnosis**: the same bucket holds a
+        // quantity that rounded away on the lot, which is a deliberate drop. The reason is on the
+        // entry.
         ++orders_unbuildable_;
         report.rejected_.push_back(rejection);
       }
