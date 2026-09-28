@@ -151,6 +151,16 @@ go out is a plan the library derived from the snapshot it cannot stand behind: a
 against an account that merely *looks* flat would withdraw the orders protecting a real holding, so
 such a plan is withheld whole and reported in `withheld_plans_` rather than half-sent.
 
+**A checked sell also needs to know what the broker's figure means.** With
+`enforce_sellable_quantity_` on, the guard measures a sale against the quantity the broker said may be
+sold — and it refuses when nobody has established what that quantity *covers*. Every shipped adapter
+states it, so this is invisible until you write your own source or your own adapter: fill
+`Portfolio::sellable_basis_` (or `HoldingsSnapshot::sellable_basis_`) with the coverage and the
+resting treatment your broker actually supports, and the guard enforces. Leave it unstated and your
+sells refuse, with `QUANTITY_NOT_SELLABLE`, rather than being measured against a number of unknown
+meaning. At Kiwoom the coverage is something *you* assert, because Kiwoom's own specification does not
+say — see `KiwoomConfig::holdings_sellable_scope_`.
+
 With a policy stated, the loop refuses to place while the snapshot is older than it, reporting
 `portfolio_stale`. Reconciling a target against
 stale positions is how a position gets double-sized by a route that `working_quantity` does not close.
@@ -212,7 +222,9 @@ the same double sell by a different route. The withdrawals still go, because can
 exposure; the position stays, held and reported. If you need a flatten to actually place, give the
 loop a working-order cadence and let one poll complete before stopping it.
 
-**A hold refuses cancellations too, including a stop's own.** `halt()` means "this runner sends
+**An operator's halt refuses cancellations too, including a stop's own.** Note that this is `halt()`
+specifically, and not the uninformed holds described above — those let a withdrawal you named go out,
+which is the distinction that paragraph turns on. `halt()` means "this runner sends
 nothing", and a cancellation is a send — an order-writing request that can itself fail
 indeterminately. So a `withdraw` or `flatten` arriving while you are halted cancels nothing, reports
 `closing_refused_`, and says "the position is still held" in the notes. That is deliberate: a stop

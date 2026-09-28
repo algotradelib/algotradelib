@@ -851,7 +851,9 @@ struct SellableBasis {
     ALREADY_DEDUCTED,
   };
 
+  /** What the figure covers. Unestablished by default, which refuses. */
   Coverage coverage_ = Coverage::UNESTABLISHED;
+  /** How the guard must treat resting sells against it. Unestablished by default, which refuses. */
   RestingTreatment resting_ = RestingTreatment::UNESTABLISHED;
   /**
    * False when this basis is a stated treatment rather than a measured broker fact.
