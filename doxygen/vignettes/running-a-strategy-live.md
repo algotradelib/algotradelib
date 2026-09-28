@@ -135,8 +135,24 @@ will send anything, and retries until it succeeds. While that is pending, `repor
 This is the cheapest half of reconciliation and it needs no persistence at all, which is why it is
 built while the durable ledger is not.
 
-**A stale holdings snapshot blocks sizing.** Set `set_maximum_portfolio_age` and the loop refuses to
-send while the snapshot is older than that, reporting `portfolio_stale`. Reconciling a target against
+**A stale or absent holdings snapshot blocks sizing, and stating a policy is not optional.** A
+placement-enabled loop calls either `set_maximum_portfolio_age` or `allow_unbounded_portfolio_age`;
+one that states neither holds and the report names the missing call. The library picks no default
+duration, because how stale a position may be before it must not be sized against is a risk policy
+only the operator can state. A snapshot that was **never read** is a separate hold,
+`portfolio_absent`, which no age limit can express — an empty portfolio is the *permissive* answer to
+every ceiling and to every target subtraction, so a run that has never read the account would
+otherwise size an entry as though it were flat. `allow_absent_portfolio` is the deliberate way out
+for a run that genuinely has no holdings to read.
+
+**These holds stop a placement, not everything.** A cancellation naming a row you chose still goes
+out under them, because an order that cannot be withdrawn keeps resting and can fill. What does *not*
+go out is a plan the library derived from the snapshot it cannot stand behind: a target of zero
+against an account that merely *looks* flat would withdraw the orders protecting a real holding, so
+such a plan is withheld whole and reported in `withheld_plans_` rather than half-sent.
+
+With a policy stated, the loop refuses to place while the snapshot is older than it, reporting
+`portfolio_stale`. Reconciling a target against
 stale positions is how a position gets double-sized by a route that `working_quantity` does not close.
 Staleness is measured against `Portfolio::as_of_`, and **that is when the reply arrived here, not
 when the positions were true at the broker**. Neither broker timestamps a holdings answer, so the
@@ -248,7 +264,7 @@ instructions from the portfolio snapshot — working orders for a `withdraw`, po
   inquiries are separate polls on separate cadences, and `as_of_` is the *holdings* timestamp — so a
   snapshot stamped a second ago can carry working orders read an hour ago, missing an order this
   runner placed in between.
-- **A listing is older than `set_maximum_portfolio_age`,** when you have set one.
+- **A listing is older than `set_maximum_portfolio_age`**, or no age policy was stated at all.
 - **The source does not publish working orders at all.** A broker without the working-order inquiry
   falls back to reading order *history*, which satisfies the startup gate but never fills
   `working_`, so a withdrawal cannot be built from it. A source declares

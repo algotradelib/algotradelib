@@ -237,6 +237,8 @@ schedule.bars_ = std::chrono::minutes(1);
 schedule.holdings_ = std::chrono::seconds(30);
 
 runner::PollingLoop loop(live_runner, source, schedule);
+// Mandatory: state a maximum, or `allow_unbounded_portfolio_age()` to accept any. A run that
+// states neither holds, because sizing against a portfolio nobody bounded is how this went wrong.
 loop.set_maximum_portfolio_age(std::chrono::minutes(2));
 
 runner::StopSource stop;

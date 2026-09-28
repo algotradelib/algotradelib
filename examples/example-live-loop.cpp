@@ -66,7 +66,11 @@ using LoopRunner = runner::DryRunner<CountBars>;
  *
  *  - `poll(kind, runner)` -- fetch that kind, feed what is new, and say what happened.
  *  - `read_order_list(runner)` -- read the broker's own order list, which is what lifts the startup
- *    gate. Until it succeeds once, the loop refuses to send anything at all.
+ *    gate. Until it succeeds once, the loop refuses to place anything at all.
+ *
+ * **Refuses to place**, not to send: a hold that means only that the loop is uninformed still lets a
+ * cancellation the caller named through, because an order that cannot be withdrawn keeps resting and
+ * can fill. `strategy::halt_blocks` is where that division is written down.
  *
  * Note what is *not* here: no cadence, no stop handling, no staleness rule, no failure budget. Those
  * belong to the loop, which is why a new broker does not have to reimplement them.
@@ -194,6 +198,18 @@ int main() {
 
   runner::PollingLoop<LoopRunner, ScriptedSource, runner::ManualClock> loop(
     live_runner, source, schedule, runner::ManualClock{start_time()});
+  // **Two statements every placement-enabled run now owes, and this source cannot satisfy either.**
+  //
+  // A run states how old a holdings snapshot may be before it stops sizing against it, and a run
+  // that has never read one holds rather than treating an empty account as a current one -- an
+  // empty portfolio is the *permissive* answer to every ceiling and to every target subtraction.
+  // Neither was required before, and "not required" meant a run that never thought about holdings
+  // traded as though it held nothing.
+  //
+  // This example has no broker, so it reads no holdings ever. Saying so explicitly is what an
+  // operator in the same position does; leaving them out would hold this loop for the whole run.
+  loop.allow_unbounded_portfolio_age();
+  loop.allow_absent_portfolio();
 
   runner::StopSource stop;
   const auto report = loop.run(stop, 6);
