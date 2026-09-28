@@ -175,7 +175,7 @@ inline constexpr std::string_view halt_reason_name(HaltReason reason) noexcept {
     case HaltReason::ORDER_LIST_UNREAD:
       return "order_list_unread";
     case HaltReason::PORTFOLIO_ABSENT:
-      return "portfolio-absent";
+      return "portfolio_absent";
     case HaltReason::PORTFOLIO_STALE:
       return "portfolio_stale";
     case HaltReason::BUYING_POWER_UNREAD:
