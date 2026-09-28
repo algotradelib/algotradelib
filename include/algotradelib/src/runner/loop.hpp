@@ -749,11 +749,16 @@ struct LoopReport {
   /** @copydoc LoopReport::orders_unbuildable_ */
   std::size_t orders_indeterminate_{0};
   /**
-   * Plans this run's polling held back for want of an account it could vouch for.
+   * Plans this run's polling held back before judging any of their parts.
    *
-   * Separate from the ten because nothing was wrong with the instructions, and **not always visible
-   * in `final_gate_`**: with `allow_absent_portfolio` the gate is open while a plan that would
-   * withdraw something is still withheld. See `Runner::plans_withheld`.
+   * **Three reasons reach it and this does not distinguish them**: an account never read, one older
+   * than the stated maximum, or a hold refusing placements for a plan that also wanted to withdraw
+   * something -- and that third one happens on a perfectly fresh portfolio. `Report::withheld_plans_`
+   * carries the reason per plan.
+   *
+   * Separate from the other figures because nothing was wrong with the instructions, and **not always
+   * visible in `final_gate_`**: with `allow_absent_portfolio` the gate is open while a plan that
+   * would withdraw something is still withheld. See `Runner::plans_withheld`.
    */
   std::size_t plans_withheld_{0};
   /**
@@ -1196,9 +1201,9 @@ private:
   /**
    * Every monotone instruction-outcome figure the runner holds, read at one instant.
    *
-   * Ten of them, read together rather than one call at a time, because they are differenced against
-   * each other's snapshot: a set taken at two instants describes one interval, and ten separately
-   * captured values do not.
+   * Twelve of them, read together rather than one call at a time, because they are differenced
+   * against each other's snapshot: a set taken at two instants describes one interval, and twelve
+   * separately captured values do not.
    */
   struct InstructionOutcomes {
     std::size_t unbuildable_{0};

@@ -799,12 +799,18 @@ public:
   /**
    * The two failures that are not about one instruction's own merits.
    *
-   * - `plans_withheld` -- a whole reconciliation plan held back because this runner cannot vouch for
-   *   the account it would have been sized against. Counted apart from the six origins because
-   *   nothing was wrong with the instructions: a portfolio nobody has read makes both halves of a
-   *   target unsafe at once, and the plan goes back untouched. **The loop's own gate does not always
-   *   describe it** -- with `allow_absent_portfolio` the gate is open while this still fires for a
-   *   plan that would withdraw something, which is the case that made this a separate figure.
+   * - `plans_withheld` -- a whole reconciliation plan held back before any of its parts was judged.
+   *   Counted apart from the six origins because nothing was wrong with the instructions themselves.
+   *   **Three reasons reach it and this figure does not tell them apart**: the portfolio was never
+   *   read (`PORTFOLIO_ABSENT`), it is older than the stated maximum (`PORTFOLIO_STALE`), or a hold
+   *   is refusing placements while the plan also wanted to withdraw something (`PLACEMENT_HELD`) --
+   *   that last one on a portfolio that is perfectly fresh, so a reader who assumed this figure meant
+   *   "the account is unknown" would chase the wrong thing. `Report::withheld_plans_` carries the
+   *   reason per plan; this counts how often it happened.
+   *
+   *   **The loop's own gate does not always describe it**, which is why it is a figure at all: with
+   *   `allow_absent_portfolio` the gate is open while this still fires for a plan that would withdraw
+   *   something.
    * - `instructions_unavailable` -- local machinery, which in practice is the order journal, could
    *   not record the instruction, so it was not sent. Placements and withdrawals both, counted
    *   together because the operator's response is the same and is about the process rather than the
