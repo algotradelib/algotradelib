@@ -1992,9 +1992,10 @@ TEST_CASE("a placement is refused while the holdings scope is unestablished", "[
   REQUIRE(own_mistake);
   CHECK(own_mistake->broker_code_ == "venue_required");
 
-  // **Amendments and cancellations are unaffected**, and that is the point of the guard being on
-  // placements alone: an order already at the broker is addressed by its reference, never by the
-  // portfolio, and one that could not be withdrawn would keep resting and could fill.
+  // **Cancelling is unaffected**, which is the point of the split: a cancellation only ever
+  // reduces what is resting, and an order that could not be withdrawn would keep resting and could
+  // fill. A *replacement* is refused too -- see the reprice test -- because repricing a resting buy
+  // into a fillable price opens the position this adapter cannot measure.
   WorkingOrder<kiwoom::Broker> working;
   working.ref_ = OrderRef<kiwoom::Broker>{"0000069", "005930"};
   working.order_.instrument_ = samsung();
@@ -2006,7 +2007,6 @@ TEST_CASE("a placement is refused while the holdings scope is unestablished", "[
   working.amendable_quantity_ = Decimal64(7, 0);
 
   CHECK(Traits::to_cancellation(working.ref_, cancel_all(working)));
-  CHECK(Traits::to_replacement(working.ref_, reprice(working, Decimal64(71000, 0))));
   kiwoom::KiwoomAmendment amendment;
   amendment.order_ = kiwoom::KiwoomOrderRef{"0000069", "005930"};
   amendment.venue_ = Venue::KRX;
@@ -2091,4 +2091,68 @@ TEST_CASE("a cancellation refuses a trigger it cannot carry", "[kiwoom][orders]"
   // Without the trigger the same cancellation is fine.
   amendment.condition_price_.reset();
   CHECK_FALSE(kiwoom::KiwoomClientTestAccess::validate_amendment(amendment, true));
+}
+
+TEST_CASE("a cancellation refuses every shape change it cannot carry", "[kiwoom][orders]") {
+  // kt10003 transmits a quantity and nothing else, so *every* other stated field is one Kiwoom
+  // cannot act on. The price and the trigger were refused first because acting on them is what a
+  // caller would expect; these three are refused for the same reason and it is not a lesser one --
+  // reporting acceptance for a stated change that never reached the broker is the defect, whatever
+  // the field.
+  using Traits = BrokerTraits<kiwoom::KiwoomClient>;
+
+  WorkingOrder<kiwoom::Broker> working;
+  working.ref_ = OrderRef<kiwoom::Broker>{"0000069", "005930"};
+  working.order_.instrument_ = samsung();
+  working.order_.type_ = OrderType::LIMIT;
+  working.order_.time_in_force_ = TimeInForce::DAY;
+  working.order_.session_ = OrderSession::REGULAR;
+  working.order_.venue_ = Venue::KRX;
+  working.order_.price_ = Decimal64(70000, 0);
+  working.amendable_quantity_ = Decimal64(7, 0);
+
+  // The ordinary withdrawal is unaffected: `cancel_all` copies the resting shape into both halves,
+  // so every comparison sees a restatement.
+  REQUIRE(Traits::to_cancellation(working.ref_, cancel_all(working)));
+  REQUIRE(Traits::to_cancellation(working.ref_, cancel_quantity(working, Decimal64(3, 0))));
+
+  // A stated validity condition that differs from the resting one is refused.
+  auto condition = cancel_all(working);
+  condition.shape_.time_in_force_ = TimeInForce::FILL_OR_KILL;
+  auto refused = Traits::to_cancellation(working.ref_, condition);
+  REQUIRE_FALSE(refused);
+  CHECK(refused.error().broker_code_ == "shape_change_unsupported");
+  CHECK(refused.error().message_.find("validity condition") != std::string::npos);
+
+  // So is a session...
+  auto session = cancel_all(working);
+  session.shape_.session_ = OrderSession::AFTER_HOURS;
+  refused = Traits::to_cancellation(working.ref_, session);
+  REQUIRE_FALSE(refused);
+  CHECK(refused.error().message_.find("session") != std::string::npos);
+
+  // ...and a price basis.
+  auto basis = cancel_all(working);
+  basis.shape_.type_ = OrderType::MARKET;
+  refused = Traits::to_cancellation(working.ref_, basis);
+  REQUIRE_FALSE(refused);
+  CHECK(refused.error().message_.find("price basis") != std::string::npos);
+
+  // A condition stated with no resting shape to compare against cannot be shown to be a
+  // restatement, so it is refused rather than assumed harmless.
+  AmendInstruction bare;
+  bare.venue_ = Venue::KRX;
+  bare.quantity_ = Decimal64(3, 0);
+  bare.shape_.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
+  refused = Traits::to_cancellation(working.ref_, bare);
+  REQUIRE_FALSE(refused);
+  CHECK(refused.error().broker_code_ == "shape_change_unsupported");
+
+  // But a bare cancellation that states nothing still works: `OrderShape::type_` is a plain value
+  // with a `LIMIT` default, so it is compared only against a known resting shape -- and a
+  // cancellation that reaches the wire carries no basis at all.
+  AmendInstruction plain;
+  plain.venue_ = Venue::KRX;
+  plain.quantity_ = Decimal64(3, 0);
+  CHECK(Traits::to_cancellation(working.ref_, plain));
 }

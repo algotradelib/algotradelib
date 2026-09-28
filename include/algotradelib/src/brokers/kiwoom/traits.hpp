@@ -351,38 +351,44 @@ struct Normalizers {
     error.reached_broker_ = false;
     error.broker_code_ = "shape_change_unsupported";
 
-    const auto refuse = [&error](const char* what) {
-      error.message_ = std::string("Kiwoom's amendment endpoints carry a quantity and a price "
-                                   "only, so they cannot change an order's ") +
-        what + "; cancel the order and place a new one instead";
+    const auto refuse = [&error, cancel](const char* what) {
+      error.message_ = cancel ?
+        std::string("Kiwoom's cancellation carries a quantity and nothing else, so it cannot "
+                    "change an order's ") + what + " on the way out" :
+        std::string("Kiwoom's amendment endpoints carry a quantity and a price only, so they "
+                    "cannot change an order's ") + what +
+          "; cancel the order and place a new one instead";
       return error;
     };
 
+    // An unset field means "leave it as it is", so it is never a change. A set field is a change
+    // only when it differs from what the order already is -- and a set field with no resting shape
+    // to compare against cannot be shown to be a restatement, so it is refused rather than assumed
+    // harmless.
+    const auto differs = [](auto stated, auto current) {
+      return stated.has_value() && (!current.has_value() || *stated != *current);
+    };
+
     if (cancel) {
-      // **A price on a cancellation is usually a description, not a request.** `cancel_all()` and
-      // `cancel_quantity()` copy the resting order's whole shape -- price included -- into the
-      // instruction *and* into `resting_`, so that a broker which re-sends the shape withdraws the
-      // order it was given rather than a differently shaped one. Kiwoom's `kt10003` carries a
-      // quantity and nothing else, so it has no shape to get wrong; refusing every priced
-      // cancellation made **every priced limit order uncancellable through the runner**, which is
-      // how a `WITHDRAW` or a `FLATTEN` would have left orders resting at the exchange.
+      // **A cancellation transmits a quantity and nothing else**, so every other stated field is
+      // one Kiwoom cannot act on. The price and the trigger are refused because acting on them is
+      // what a caller would expect; these three are refused for the same reason and it is not a
+      // lesser one -- reporting acceptance for a stated change that never reached the broker is
+      // the defect, whatever the field.
       //
-      // So a price that matches the resting one states nothing new and is ignored. A price that
-      // *differs* from it, or one stated with no resting shape to compare against, is a request
-      // Kiwoom's cancellation cannot carry, and is still refused.
-      const bool restates_resting = instruction.resting_ &&
+      // `cancel_all()` and `cancel_quantity()` copy the resting order's whole shape into both
+      // `shape_` and `resting_`, so every comparison below sees a restatement and the ordinary
+      // withdrawal path is unaffected.
+      const bool restates_price = instruction.resting_ &&
         instruction.resting_->price_ == instruction.shape_.price_;
-      if (instruction.shape_.price_ && !restates_resting) {
+      if (instruction.shape_.price_ && !restates_price) {
         error.broker_code_ = "price_on_cancellation";
         error.message_ =
           "Kiwoom's cancellation carries a quantity and no price, so it cannot reprice an order on "
           "the way out; cancel it and place a new one instead";
         return error;
       }
-      // Nothing else on a cancellation reaches the wire, so nothing else can be got wrong.
-      return std::nullopt;
-    }
-    if (!instruction.resting_) {
+    } else if (!instruction.resting_) {
       // **A modification with no resting shape is refused, and that is the conservative
       // direction.** `OrderShape::type_` is a plain value defaulting to `LIMIT`, so this adapter
       // cannot tell a caller who *means* `LIMIT` from one who left it alone -- and if the resting
@@ -397,19 +403,25 @@ struct Normalizers {
         "resting order";
       return error;
     }
-    // An unset field means "leave it as it is", so it is never a change. A set field is a change
-    // only when it differs from what the order already is.
-    const auto& resting = *instruction.resting_;
-    const auto differs = [](auto stated, auto current) {
-      return stated.has_value() && (!current.has_value() || *stated != *current);
-    };
-    if (differs(instruction.shape_.time_in_force_, resting.time_in_force_)) {
+
+    const auto resting_condition = instruction.resting_ ?
+      instruction.resting_->time_in_force_ :
+      std::optional<TimeInForce>();
+    const auto resting_session = instruction.resting_ ?
+      instruction.resting_->session_ :
+      std::optional<OrderSession>();
+    if (differs(instruction.shape_.time_in_force_, resting_condition)) {
       return refuse("validity condition");
     }
-    if (differs(instruction.shape_.session_, resting.session_)) {
+    if (differs(instruction.shape_.session_, resting_session)) {
       return refuse("session");
     }
-    if (instruction.shape_.type_ != resting.type_) {
+    // **Compared only against a known resting shape**, because `OrderShape::type_` is a plain value
+    // rather than an optional: with nothing to compare against, a stated `LIMIT` and an untouched
+    // default are the same bytes. A replacement has already been refused above when the resting
+    // shape is unknown; a cancellation with an unknown resting shape transmits no basis at all, and
+    // its executable terms -- the price and the trigger -- are refused separately.
+    if (instruction.resting_ && instruction.shape_.type_ != instruction.resting_->type_) {
       return refuse("price basis");
     }
     return std::nullopt;
