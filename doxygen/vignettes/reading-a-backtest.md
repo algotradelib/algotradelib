@@ -253,6 +253,13 @@ Three things to know before you rely on it:
 - **A date no window covers halts the replay**, naming the date. It is not a free trade and not a
   fill that quietly did not happen: the refused trade would have changed everything the strategy did
   afterwards, so the run stops and `Report::halted_` says why.
+- **A window that could not be read halts it too, and under a different code.** `no_rate_for_date`
+  means the schedule covers no such date; `rate_bounds_unreadable` means the broker published a rate
+  whose start or end arrived in a form this library cannot parse, so whether it applies on your date
+  is unknown rather than known to be no. The remedies differ: the first wants a wider schedule or
+  rates you state yourself, and the second wants the schedule refetched — the rate may well be the
+  one in force. `CommissionSchedule::unreadable_bounds_` counts the rows it happened to, so you can
+  see it before a replay stops on it.
 
 `ReportCaveats::applied_rates_` then lists the rates that actually **charged** something, each with
 its origin and how many executions it charged — not the rows the schedule happens to contain.

@@ -1364,7 +1364,8 @@ struct CommissionRate {
    *
    * The row is kept rather than dropped, because the rate itself is intact and one bad bound must
    * not lose a schedule's other rows. What changes is what the row is allowed to answer:
-   * `applies_on` says no, and `bounds_unreadable_on` says why.
+   * `applies_on` returns `RateApplicability::UNREADABLE` for any date the readable bounds do not
+   * already exclude, so the row neither applies nor quietly steps aside.
    */
   bool from_unreadable_{false};
   /** @copydoc from_unreadable_ */
