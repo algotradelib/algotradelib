@@ -1870,6 +1870,77 @@ TEST_CASE("a band nobody aged is withheld, and the loop names the call once", "[
   CHECK(said == 1);
 }
 
+TEST_CASE("the policy note describes the runner's policy, not the loop's memory", "[loop][band]") {
+  // A loop borrows a mutable runner and does not own its band policy, so a flag remembered here
+  // could disagree with the real one in both directions -- and the note is read exactly when an
+  // operator is working out why orders went out unclamped.
+  SECTION("a maximum stated on the runner before the loop existed is a policy") {
+    strategy::RiskLimits any_phase;
+    any_phase.permitted_phases_ = std::nullopt;
+    LimitRunner runner_instance(LimitTen{}, any_phase);
+    LimitSource source;
+    arrange_limit_loop(runner_instance);
+    source.set_price_limits(band_at_71k());
+    // Stated here rather than through the loop, which is an ordinary thing for a caller who
+    // configured the runner first. The band goes stale during the run, so it is withheld -- and the
+    // note must not then claim nobody stated a policy.
+    runner_instance.set_maximum_price_limits_age(std::chrono::hours(6));
+    auto schedule = bars_and_band_each_iteration();
+    schedule.tick_ = std::chrono::hours(12);
+    schedule.bars_ = std::chrono::hours(12);
+    schedule.price_limits_ = std::chrono::hours(240);
+    source.creep_bar_time();
+    LimitLoop loop(runner_instance, source, schedule, test_clock());
+    not_about_the_portfolio(loop);
+    StopSource stop;
+
+    const auto report = loop.run(stop, 3);
+
+    CHECK(report.price_bands_withheld_ > 0);
+    CHECK(report.notes_.empty());
+  }
+
+  SECTION("a withdrawal made on the runner brings the note back") {
+    LimitRunner runner_instance;
+    LimitSource source;
+    arrange_limit_loop(runner_instance);
+    source.set_price_limits(band_at_71k());
+    LimitLoop loop(runner_instance, source, bars_and_band_each_iteration(), test_clock());
+    not_about_the_portfolio(loop);
+    loop.allow_unbounded_price_limits_age();
+    // The documented withdrawal, which returns this runner to having stated no policy at all.
+    runner_instance.set_maximum_price_limits_age(std::nullopt);
+    StopSource stop;
+
+    const auto report = loop.run(stop, 2);
+
+    CHECK(report.price_bands_withheld_ == 2);
+    REQUIRE(report.notes_.size() == 1);
+    CHECK(
+      report.notes_[0] ==
+      "no price band age policy: call set_maximum_price_limits_age or "
+      "allow_unbounded_price_limits_age"
+    );
+  }
+
+  SECTION("the loop can express the withdrawal itself") {
+    LimitRunner runner_instance;
+    LimitSource source;
+    arrange_limit_loop(runner_instance);
+    source.set_price_limits(band_at_71k());
+    LimitLoop loop(runner_instance, source, bars_and_band_each_iteration(), test_clock());
+    not_about_the_portfolio(loop);
+    loop.allow_unbounded_price_limits_age();
+    loop.set_maximum_price_limits_age(std::nullopt);
+    StopSource stop;
+
+    const auto report = loop.run(stop, 1);
+
+    CHECK(report.price_bands_withheld_ == 1);
+    CHECK(report.notes_.size() == 1);
+  }
+}
+
 TEST_CASE("a run that polls no band is not told to state a policy", "[loop][band]") {
   // The other half of the note's condition. Advice about a mechanism a run is not using is the
   // diagnostic branch describing a state that cannot happen, one level up.

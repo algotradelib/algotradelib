@@ -191,6 +191,8 @@ was clamped into every limit price for as long as the process lived. Now:
 - A band the broker dated is aged from **the exchange's own stamp** — Toss publishes `timestamp`,
   Kiwoom `date` and `tm` — so a successful poll returning yesterday's band does not read as fresh.
   KIS publishes no stamp, so for a KIS band the policy bounds only how long ago it was *fetched*.
+  The stamp may only make a band look **older**: one dated after the moment this process received it
+  is capped at the receipt instant, because two clocks disagreeing is not evidence of freshness.
 
 **Withholding a band does not refuse an order and does not hold anything.** It returns the order to
 the state every run that registers no band is already in: the strategy's own price on the wire. That

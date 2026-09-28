@@ -666,6 +666,20 @@ public:
   std::size_t price_bands_withheld() const noexcept { return price_bands_withheld_; }
 
   /**
+   * Returns whether a band-age policy has been stated at all, either way.
+   *
+   * Published so a driving loop's diagnostics can describe **this runner's** policy rather than
+   * remembering which of its own wrappers were called. A loop that kept its own flag could disagree
+   * with the runner in both directions -- a maximum set directly on the runner before the loop was
+   * built read as "no policy stated", and a withdrawal made directly on the runner after the loop's
+   * `allow_unbounded_price_limits_age` suppressed the note that withdrawal is supposed to produce.
+   * There is one policy; there should be one place that answers for it.
+   */
+  bool price_limits_age_policy_stated() const noexcept {
+    return maximum_price_limits_age_.has_value() || allow_unbounded_price_limits_age_;
+  }
+
+  /**
    * Returns how many **sent** orders were refused by the broker after a withheld band would have
    * moved their price.
    *
@@ -685,10 +699,11 @@ public:
   std::size_t unclamped_orders_rejected() const noexcept { return unclamped_orders_rejected_; }
 
   /**
-   * Returns how many orders a **local guard** refused while carrying a withheld band's unclamped
+   * Returns how many orders nothing sent to a broker while carrying a withheld band's unclamped
    * price.
    *
-   * Everything that never reached a broker, which is **two** sites and not one:
+   * Everything that **never reached a broker** while carrying that price, which is two sites and not
+   * one:
    *
    * - a **guard**: `RiskGuard` values an order at `quantity * price_`, so a buy left above a
    *   withheld ceiling is the larger notional and the per-order ceiling, the buying-power check or

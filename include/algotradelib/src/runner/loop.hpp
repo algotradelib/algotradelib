@@ -694,17 +694,21 @@ struct LoopReport {
    * Plans built during this run while a price band was held for the instrument and not applied.
    *
    * Plan evaluations, not orders: a plan that produced a market order or nothing at all counts.
-   * Non-zero means bands were read or registered and the age policy declined them -- either none was
-   * stated, in which case `notes_` says so, or every band was older than the one that was.
+   * Non-zero means bands were read or registered and the age policy declined them, for one of three
+   * reasons: no policy was stated, in which case `notes_` says so; the band was older than the
+   * maximum that was stated; or the band was dated **after** the instant it was being aged at, which
+   * is a clock that went backwards rather than an old band.
    */
   std::size_t price_bands_withheld_{0};
   /**
    * Orders this run **sent** that the broker refused after a withheld band would have moved them.
    *
    * The cost of `PollingLoop::set_maximum_price_limits_age`'s refusal to clamp with a band it cannot
-   * age, measured where the outcome is known. Co-occurrence rather than causation -- a broker
-   * refuses orders for its own reasons -- so read it as "withholding is costing this run orders"
-   * rather than as a proof about any one of them. See `Runner::unclamped_orders_rejected`.
+   * age, measured where the outcome is known. **Co-occurrence rather than causation** -- a broker
+   * refuses orders for its own reasons, and this counts the ones that happened to be carrying an
+   * unclamped price -- so read a count that tracks a run's rejections as a reason to look at the
+   * band policy rather than as proof about any single order. See
+   * `Runner::unclamped_orders_rejected`, which also states what neither counter can see.
    */
   std::size_t unclamped_orders_rejected_{0};
   /**
@@ -1165,9 +1169,13 @@ public:
    * **A band is a per-trading-day value**, so the useful bound is shorter than a session rather
    * than longer than one, and a run that polls `PollKind::PRICE_LIMITS` on a cadence is bounding
    * how long a *failing* poll may go on serving the last good answer.
+   *
+   * `std::nullopt` withdraws the policy entirely, including an earlier
+   * `allow_unbounded_price_limits_age`, and every band is then withheld. The parameter is an
+   * optional for exactly that reason: the runner's setter can express the withdrawal and a wrapper
+   * that could not would leave an operator calling past the loop to reach it.
    */
-  void set_maximum_price_limits_age(std::chrono::nanoseconds age) {
-    price_limits_age_stated_ = true;
+  void set_maximum_price_limits_age(std::optional<std::chrono::nanoseconds> age) {
     runner_->set_maximum_price_limits_age(age);
   }
 
@@ -1179,7 +1187,6 @@ public:
    * the operator saying they know the band will outlive the day it describes.
    */
   void allow_unbounded_price_limits_age() {
-    price_limits_age_stated_ = true;
     runner_->allow_unbounded_price_limits_age();
   }
 
@@ -1311,7 +1318,14 @@ public:
     // run that registers no band and polls none has nothing to decide, and a note telling it to
     // state a policy would be advice about a mechanism it is not using. Once per loop, like the
     // portfolio's own note, because a run that ignores it does not need it every iteration.
-    if (report.price_bands_withheld_ > 0 && !price_limits_age_stated_ && !said_no_band_age_policy_) {
+    //
+    // **Asked of the runner rather than remembered here.** This loop borrows a mutable runner and
+    // does not own its policy: a maximum stated directly on the runner before this loop existed
+    // would have read as "nobody stated one", and a withdrawal made directly on the runner would
+    // have been suppressed by this loop's memory of its own wrapper being called. One policy, one
+    // place that answers for it.
+    if (report.price_bands_withheld_ > 0 && !runner_->price_limits_age_policy_stated() &&
+        !said_no_band_age_policy_) {
       said_no_band_age_policy_ = true;
       report.notes_.emplace_back(
         "no price band age policy: call set_maximum_price_limits_age or "
@@ -2333,8 +2347,6 @@ private:
   /** Whether this loop has ever derived a phase that was not `UNKNOWN`, across every `run`. */
   bool phase_ever_known_{false};
   std::optional<std::chrono::nanoseconds> maximum_portfolio_age_;
-  /** Whether either band-age call was made, which is what the note below asks for. */
-  bool price_limits_age_stated_{false};
   /** Whether the missing-band-policy note has been said; it is said once per loop. */
   bool said_no_band_age_policy_{false};
   /** Whether the operator stated that any snapshot age is acceptable; see the setter. */
