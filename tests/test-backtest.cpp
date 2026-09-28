@@ -874,6 +874,62 @@ struct RecordsPhases {
   template <class Ctx> void on_phase(Ctx&, strategy::MarketPhase phase) { seen_.push_back(phase); }
 };
 
+/** Counts every handler it can define, which is how the audit measured the parity gap. */
+struct CountsEverything {
+  std::size_t bars_{0};
+  std::size_t quotes_{0};
+  std::size_t fills_{0};
+  std::size_t updates_{0};
+
+  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) { ++bars_; }
+  template <class Ctx> void on_quote(Ctx&, const strategy::QuoteEvent&) { ++quotes_; }
+  template <class Ctx> void on_fill(Ctx&, const strategy::Fill&) { ++fills_; }
+  template <class Ctx> void on_order_update(Ctx&, const OrderSnapshot&) { ++updates_; }
+};
+
+/** Buys once from `on_quote`, recording what the context said while it decided. */
+struct BuysOnQuote {
+  bool submitted_{false};
+  std::vector<Decimal64> fill_prices_;
+  std::optional<Decimal64> price_when_submitted_;
+  Clock::time_point now_when_submitted_{};
+  std::size_t positions_when_submitted_{0};
+
+  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
+
+  template <class Ctx>
+  void on_quote(Ctx& ctx, const strategy::QuoteEvent& quote) {
+    if (submitted_) {
+      return;
+    }
+    submitted_ = true;
+    price_when_submitted_ = ctx.last_price(quote.quote_.instrument_);
+    now_when_submitted_ = ctx.now();
+    positions_when_submitted_ = ctx.portfolio().positions_.size();
+    ctx.submit(
+      strategy::OrderIntent::market(
+        quote.quote_.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
+      ).with_tag("buys-on-quote")
+    );
+  }
+
+  template <class Ctx>
+  void on_fill(Ctx&, const strategy::Fill& fill) {
+    fill_prices_.push_back(fill.price_);
+  }
+};
+
+/** A quote for the replayed instrument at `price`. */
+strategy::QuoteEvent quote_at(Clock::time_point at, const char* price) {
+  strategy::QuoteEvent event;
+  event.quote_.instrument_ = samsung();
+  event.quote_.last_price_ = Decimal64::parse(price);
+  event.quote_.currency_ = Currency{"KRW"};
+  event.quote_.received_at_ = at;
+  event.quote_.exchange_time_ = at;
+  return event;
+}
+
 /** A bar of the given interval at `at`, with a distinct open and close. */
 strategy::BarEvent moving_bar(
   Clock::time_point at,
@@ -892,6 +948,111 @@ strategy::BarEvent moving_bar(
 }
 
 } // namespace
+
+TEST_CASE("on_quote fires in a replay, which it never did before") {
+  // `issues/live-parity-audit.md` finding 2, measured by its own probe: the same strategy driven
+  // through both paths saw one quote live and none in a replay, because `QuoteEvent` appeared
+  // nowhere in `backtest/`. A supported live cadence with no counterpart means a strategy written
+  // on this handler runs against real money having been evaluated against nothing.
+  backtest::Backtester<CountsEverything> engine(CountsEverything{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(quote_at(utc(2026, 3, 10, 7, 0), "70500"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
+  engine.finish();
+
+  CHECK(engine.strategy().bars_ == 2);
+  CHECK(engine.strategy().quotes_ == 1);
+  // Counted apart from the bars, because a per-bar statistic is about bars.
+  CHECK(engine.result().bars_ == 2);
+  CHECK(engine.result().quotes_ == 1);
+}
+
+TEST_CASE("a replayed quote sets the price and the clock, exactly as a live one does") {
+  // **Parity here is structural, and this test exists because a first draft got it backwards.**
+  // Reading `live::SessionSource::poll_quotes` alone says a quote only dispatches; the work is one
+  // level down, in `Runner::feed(const QuoteEvent&)`, which sets `last_price` from the quote and
+  // advances the decision clock to its `received_at_` -- and **both modes call that same
+  // function**. So a replay that "helpfully" left the price and the clock alone would have been the
+  // one diverging. The engine adds two things around it and no more: it refuses after a halt, and
+  // it counts.
+  backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
+  const auto first_bar = utc(2026, 3, 10, 6, 30);
+  const auto quote_time = utc(2026, 3, 10, 7, 0);
+  engine.feed(moving_bar(first_bar, BarInterval::ONE_DAY, "69000", "70000"));
+  const auto equity_after_bar = engine.result().equity_.size();
+  engine.feed(quote_at(quote_time, "70500"));
+
+  // The quote's price, not the bar's close: a market order sized from `on_quote` is valued at what
+  // the strategy was just shown.
+  CHECK(
+    engine.strategy().price_when_submitted_ == std::optional<Decimal64>(Decimal64::parse("70500"))
+  );
+  // And the quote's instant, which is what `RiskGuard`'s rate window measures from.
+  CHECK(engine.strategy().now_when_submitted_ == quote_time);
+  // What the replay does **not** do: no mark, so no equity point. That half is the engine's own,
+  // because live has no ledger to disagree with.
+  CHECK(engine.result().equity_.size() == equity_after_bar);
+}
+
+TEST_CASE("an order placed from on_quote fills against the next bar, not the quote") {
+  // The consequence a strategy author has to know, and the reason `ReportCaveats::quotes_` exists.
+  // `NextBarFillModel` is unchanged by this slice: a quote neither fills nor marks, so the order
+  // rests until a bar arrives and executes at that bar's price -- a whole bar's movement away from
+  // the quote the strategy reacted to. Live, the same order reaches the broker at once.
+  backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(quote_at(utc(2026, 3, 10, 7, 0), "70500"));
+  // Nothing has filled yet: a quote is not a bar.
+  CHECK(engine.result().executions_.empty());
+
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
+  engine.finish();
+
+  REQUIRE(engine.result().executions_.size() == 1);
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  // The next bar's open, which is what the fill model credits a market order with -- and 9,500 away
+  // from the quote that produced the order.
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("80000"));
+}
+
+TEST_CASE("the report states how many quotes a replay saw, and says so only when it saw one") {
+  // Absence versus zero, on a field a reader uses to decide whether the next-bar caveat applied to
+  // their run. A bars-only replay is every replay written before this slice and must not carry a
+  // caveat about a mechanism it never used.
+  SECTION("a replay with quotes") {
+    backtest::Backtester<CountsEverything> engine(CountsEverything{}, replay_config());
+    engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+    engine.feed(quote_at(utc(2026, 3, 10, 7, 0), "70500"));
+    engine.feed(quote_at(utc(2026, 3, 10, 7, 30), "70600"));
+    engine.finish();
+
+    const auto report = backtest::summarize(engine.result(), engine.fills());
+    CHECK(report.caveats_.quotes_ == 2);
+  }
+
+  SECTION("a replay of bars alone") {
+    backtest::Backtester<CountsEverything> engine(CountsEverything{}, replay_config());
+    engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+    engine.finish();
+
+    const auto report = backtest::summarize(engine.result(), engine.fills());
+    CHECK(report.caveats_.quotes_ == 0);
+  }
+}
+
+TEST_CASE("a quote fed before the first bar is accepted and counted") {
+  // Stated rather than forbidden: live, a quote poll can and does run before the first bar arrives,
+  // so refusing here would be a rule the live path does not have. What it costs is documented on
+  // `feed` -- the context clock is still unset, so an order placed from it decides at the epoch.
+  backtest::Backtester<CountsEverything> engine(CountsEverything{}, replay_config());
+  engine.feed(quote_at(utc(2026, 3, 10, 7, 0), "70500"));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.finish();
+
+  CHECK(engine.strategy().quotes_ == 1);
+  CHECK(engine.result().quotes_ == 1);
+  CHECK(engine.result().bars_ == 1);
+}
 
 TEST_CASE("the report says it cannot know which book the bars came from") {
   // A KRX-listed equity trades on two venues and KIS can report either or the consolidated tape over

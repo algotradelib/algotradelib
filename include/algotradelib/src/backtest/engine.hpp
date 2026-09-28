@@ -267,6 +267,19 @@ struct ReplayResult {
    * stopped being able to cost a trade while it was still working.
    */
   std::size_t aborted_{0};
+  /**
+   * Quotes replayed, which is the figure that says whether `on_quote` fired at all.
+   *
+   * Separate from `bars_` rather than added to it: a run of one bar and four hundred quotes is not a
+   * run of four hundred and one somethings, and every per-bar statistic the report derives -- the
+   * return series, the drawdown, the turnover -- is about bars. The counter exists because a handler
+   * that is wired and never fed looks exactly like one that is not wired at all, which is the defect
+   * this slice is for.
+   *
+   * **Appended**, for the reason stated on `currency_` above: this struct is public and a caller
+   * aggregate-initializing it positionally would have every later field shift underneath them.
+   */
+  std::size_t quotes_{0};
 };
 
 /** Everything a replay needs beyond the strategy and the bars. */
@@ -435,6 +448,74 @@ public:
     // reported. Before it would report only what settlement had already changed.
     publish_order_updates();
     previous_ = event;
+  }
+
+  /**
+   * Replays one quote, so a strategy that acts between bars can be evaluated against history.
+   *
+   * `on_quote` fired live and in no replay before this existed: `QuoteEvent` appeared nowhere in
+   * `backtest/`, so `PollKind::QUOTES` was a supported live cadence with no counterpart, and a
+   * strategy written on it ran against real money having been evaluated against nothing. That is
+   * `issues/live-parity-audit.md`'s finding 2.
+   *
+   * **Interleaved by the caller, in timestamp order**, exactly as bars across several instruments
+   * already are. `feed(const BarEvent&)` is caller-driven for that reason and a quote series in
+   * `ReplayConfig` would have had to invent an interleaving rule this class deliberately leaves out.
+   *
+   * ## What a quote does, and why this function is so short
+   *
+   * **Almost all of it is `Runner::feed(const strategy::QuoteEvent&)`, which both modes already
+   * share.** That function sets `Context::last_price` from the quote, advances the context clock to
+   * the quote's `received_at_`, dispatches `on_quote` and settles. Live,
+   * `live::SessionSource::poll_quotes` calls exactly that and does nothing else. So parity here is
+   * structural rather than maintained by agreement, and the only question this function answers is
+   * what a *replay* must add around it:
+   *
+   * | | Live | Here |
+   * | --- | --- | --- |
+   * | Updates the price a market order is valued at | yes, in `Runner::feed` | the same call |
+   * | Advances the decision clock to the quote's instant | yes, in `Runner::feed` | the same call |
+   * | Marks the book, records an equity point, fills anything | no ledger exists live | **no** |
+   * | Publishes order updates | **no**, the working-order poll does | **no** |
+   *
+   * The last two rows are this function's whole content, and the fourth is worth stating:
+   * `feed(const BarEvent&)` and `finish` both call `publish_order_updates`, and this does not. An
+   * order placed from `on_quote` is reported on the next bar, which is when a live run's next
+   * listing would carry it -- an observation point is where the state has finished changing, not
+   * wherever it is convenient to look.
+   *
+   * **An earlier draft of this comment claimed a quote left the price and the clock alone**, having
+   * read the source and not the runner beneath it. The test named *a replayed quote sets the price
+   * and the clock, exactly as a live one does* is what corrected it, and it is there to keep saying
+   * so.
+   *
+   * ## The consequence a strategy author has to know
+   *
+   * **An order placed from `on_quote` fills against the next *bar*, not against the quote.** That is
+   * `NextBarFillModel`, unchanged by this slice, and `ReportCaveats::quotes_` states it on every
+   * report of a run that fed one. A fill model that executes against a quote is a different design
+   * with its own argument, and this deliberately does not smuggle one in.
+   *
+   * A quote fed before the first bar is accepted and counted. The context clock is then still unset,
+   * so an order placed from it decides at the epoch and `RiskGuard`'s rate window measures from
+   * there. Refusing it would be a rule the live path does not have -- live, a quote poll can and does
+   * run before the first bar arrives -- so it is stated rather than forbidden, and it is one more
+   * reason the caller's interleaving obligation is the caller's.
+   */
+  void feed(const strategy::QuoteEvent& event) {
+    // The same rule `feed(const BarEvent&)` opens with: a halted replay consumes nothing further,
+    // because a strategy told about anything after the halt decides on a run that has stopped being
+    // able to cost what it asks for.
+    if (result_.halted_) {
+      return;
+    }
+    ++result_.quotes_;
+    // Installed before the dispatch for the reason every other dispatch site here installs: a
+    // handler reads `ctx.portfolio()`, and the engine holds a fresher answer than the last one it
+    // pushed. Nothing about this quote changes the portfolio -- it is the orders a previous bar's
+    // settlement moved that would otherwise be missing.
+    install_portfolio();
+    drain_reports(runner_.feed(event));
   }
 
   /**

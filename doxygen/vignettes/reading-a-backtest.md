@@ -75,6 +75,40 @@ than one that disappoints.
 `LimitFillPrice::AT_OPEN_IF_BETTER` is the optimistic variant, opt-in because the assumption is yours to
 make. Whichever you use, `report.caveats_.limit_fill_` says which.
 
+## Quotes, and the one place a quote-driven replay differs from a quote-driven live run
+
+`Backtester::feed` takes a `strategy::QuoteEvent` as well as a `BarEvent`, so `on_quote` fires in a
+replay. It did not before: `QuoteEvent` appeared nowhere in `backtest/`, while `PollKind::QUOTES` is
+a supported live cadence — so a strategy that acts between bars ran live having been evaluated
+against nothing. Interleave quotes and bars in timestamp order yourself, exactly as you already
+interleave bars across instruments.
+
+```cpp
+backtest::Backtester<MyStrategy> engine(MyStrategy{}, config);
+engine.feed(bar_at(09:00));      // on_bar
+engine.feed(quote_at(10:30));    // on_quote -- an order placed here rests until the next bar
+engine.feed(bar_at(15:30));      // on_bar, and the order above fills at this bar's price
+engine.finish();
+```
+
+**A quote does the same thing in both modes, because both go through the same function.**
+`Runner::feed(const QuoteEvent&)` sets the price a market order is valued at, advances the decision
+clock to the quote's own instant, and calls the handler; live, the quote poll calls exactly that and
+nothing more. What a replay adds around it is nothing you can observe:
+
+| | Live | Replay |
+| --- | --- | --- |
+| Updates the price a market order is valued at | yes | yes, the same call |
+| Advances the clock a decision is stamped with | yes | yes, the same call |
+| Marks the book, records an equity point, fills anything | no ledger exists live | **no** |
+
+**So an order placed from `on_quote` fills against the next *bar*, at that bar's price.** That is
+`NextBarFillModel`, unchanged — a quote is not a bar, so the order rests until one arrives, a whole
+bar's movement away from the quote the strategy reacted to. Live, the same order reaches the broker
+immediately. `ReportCaveats::quotes_` is non-zero on any run that fed a quote, and that is what it is
+telling you. A fill model that executes against a quote is a different design with its own argument,
+and this is not it.
+
 ## What it does not model at all
 
 `ReportCaveats::volume_ignored` is always true, and present so you are told rather than left to assume:

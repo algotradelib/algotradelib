@@ -116,6 +116,24 @@ struct ReportCaveats {
   std::size_t unfilled_{0};
 
   /**
+   * Quotes this replay was fed, and therefore whether `on_quote` fired at all.
+   *
+   * **Zero and non-zero say different things and both are worth saying.** Zero is a replay of bars
+   * alone, which is every replay written before quotes could be fed and the ordinary case; non-zero
+   * means a strategy's between-bar handler ran, and carries the caveat below with it.
+   *
+   * **What a reader has to know when this is non-zero: an order placed from `on_quote` was filled
+   * against the next *bar*, not against the quote.** `NextBarFillModel` fills what a bar's
+   * predecessor asked for, and a quote is not a bar -- it neither fills nor marks nor moves the
+   * clock. So a strategy reacting to a quote and expecting to trade at it is reading a figure this
+   * replay did not model, and the difference is a whole bar's worth of price movement. Live, the
+   * same order reaches the broker immediately. This is the one place a quote-driven backtest and a
+   * quote-driven live run are known to differ, and it is stated here rather than in prose that a
+   * reader has to remember applied to their run.
+   */
+  std::size_t quotes_{0};
+
+  /**
    * Always true, and present so a reader is told rather than left to assume.
    *
    * No fill is capped by what traded: a bar's volume says how much changed hands in total, not how much
@@ -340,6 +358,7 @@ inline Report summarize(
   report.caveats_.slippage_ticks_ = fills.slippage().ticks_;
   report.caveats_.gaps_ = result.gaps_;
   report.caveats_.unfilled_ = result.unfilled_;
+  report.caveats_.quotes_ = result.quotes_;
 
   // Costs summed exactly, because they are money -- and **per currency**, because a replay whose
   // instruments span markets would otherwise have won added to dollars to make one scalar.
