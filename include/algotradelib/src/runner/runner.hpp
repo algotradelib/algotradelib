@@ -400,10 +400,11 @@ public:
   /**
    * States whether this runner may **place** while it has never read what the account holds.
    *
-   * Set by `runner::PollingLoop` at the top of every iteration, before anything it calls can feed.
-   * Off by default, and deliberately: a runner nobody is driving has no holdings source to have
-   * failed, and a replay stamps its own portfolio, so making this the default would refuse every
-   * order in a backtest and in a `DryRunner` to close a hole neither of them has.
+   * Set by `runner::PollingLoop` at the top of every iteration, before anything it calls can feed,
+   * and defaulted from the executor: **on** for one that can reach a broker, off for a dry run and a
+   * replay, which have no holdings inquiry that could have failed and, in the replay's case, stamp
+   * their own portfolio. `runner_detail::sends_to_a_broker` holds that decision and the argument for
+   * which way an unmarked executor should fail.
    *
    * It exists because the loop's own hold is not in force at every point an instruction can be
    * settled -- a source's `read_order_list` runs before the first hold is installed and is handed a

@@ -169,29 +169,28 @@ namespace runner_detail {
 /**
  * Whether `Executor` can put an order in front of a real broker.
  *
- * Declared by the executor rather than asked of the runner's caller, because it is the executor that
- * knows. `live::SessionExecutor` says yes and `runner::JournalingExecutor` forwards whatever it
- * wraps; a `RecordingExecutor`, a replay's queueing executor and a test double say nothing and so
- * default to no.
+ * Declared by the executor, because it is the executor that knows. It decides one thing: whether a
+ * runner built on it must have read the account before it places. That requirement has to hold for
+ * every live path, and there are more of those than the two binding factories --
+ * `doxygen/vignettes/binding-a-broker.md` shows a `Runner<..., SessionExecutor<Session>>` assembled
+ * by hand, and a rule installed only by the factories would hold for their callers and nobody else.
  *
- * **It decides one thing: whether this runner must have read the account before it places.** That
- * requirement has to hold for every live path, and there are more of those than the two binding
- * factories -- `doxygen/vignettes/binding-a-broker.md` shows a `Runner<..., SessionExecutor<Session>>`
- * assembled by hand, and a rule installed only by the factories would not reach it. A property of the
- * executor reaches all of them and costs nothing at run time.
+ * **The default is `true`, and an executor opts *out*.** That is the opposite of how a detection
+ * trait beside it usually reads, and it is deliberate: the two directions fail differently. An
+ * unmarked executor assumed harmless is a consumer's own adapter -- one whose `place` forwards to
+ * `SessionExecutor` or straight to a broker client -- silently exempted from the rule this whole
+ * branch exists for, and it fails by sending a real order sized against an account nobody read. An
+ * unmarked executor assumed live is a test double that refuses until it is given a stamped portfolio
+ * or says `allow_absent_portfolio()`, and it fails by being noticed at once. Only one of those two
+ * is discoverable, so silence means live.
  *
- * **It does not reach an executor that does not declare it**, which is the thing to know before
- * writing one. The default is `false`, so a dry run and a replay stay out of a rule neither needs --
- * and a consumer's own broker executor opts *in* by declaring `reaches_a_broker` rather than
- * inheriting the protection by virtue of being live. The trait cannot tell a real session from a
- * test double by looking, so that asymmetry is deliberate; it is also something a third broker's
- * author has to be told rather than left to discover.
- *
- * A live run that genuinely reads no holdings says `allow_absent_portfolio()`, which is a statement
- * about that account rather than about the executor's type.
+ * `RecordingExecutor` and `backtest::QueueingExecutor` therefore say `false` explicitly: a dry run
+ * and a replay have no holdings inquiry that could have failed, and a replay stamps its own
+ * portfolio. `JournalingExecutor` forwards whatever it wraps, because recording an order does not
+ * change who receives it.
  */
 template <typename Executor, typename = void>
-struct sends_to_a_broker : std::false_type {};
+struct sends_to_a_broker : std::true_type {};
 
 template <typename Executor>
 struct sends_to_a_broker<Executor, std::void_t<decltype(Executor::reaches_a_broker)>>
@@ -417,6 +416,14 @@ private:
 template <typename BrokerTag>
 class RecordingExecutor {
 public:
+
+  /**
+   * A dry run reaches no broker, so it is exempt from having to have read the account.
+   *
+   * Stated rather than left to a default, because the default is `true`: see `sends_to_a_broker` for
+   * why silence has to mean live.
+   */
+  static constexpr bool reaches_a_broker = false;
   /** Accepts a placement and records it. */
   SendOutcome place(const strategy::PlannedOrder& order) {
     placed_.push_back(order);

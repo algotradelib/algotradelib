@@ -1114,6 +1114,9 @@ using runner::WithheldReason;
 template <typename Tag>
 class ScriptedExecutor {
 public:
+
+  /** A double reaches no broker, so it is exempt from having to have read the account. */
+  static constexpr bool reaches_a_broker = false;
   SendOutcome place(const strategy::PlannedOrder& order) {
     placed_.push_back(order);
     return place_outcome_;

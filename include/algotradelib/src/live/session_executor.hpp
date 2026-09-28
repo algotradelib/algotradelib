@@ -31,7 +31,7 @@ class SessionExecutor {
 public:
 
   /**
-   * This executor puts orders in front of a real broker, which `runner::sends_to_a_broker` reads.
+   * This executor puts orders in front of a real broker, which `runner::runner_detail::sends_to_a_broker` reads.
    *
    * It makes a runner built on it require an account it has actually read before it places, however
    * that runner was assembled -- by `live::bind`, by `bind_journaled`, or by hand as

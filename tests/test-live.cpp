@@ -2464,3 +2464,68 @@ TEST_CASE("a dry run is not caught by the live requirement") {
     runner::JournalingExecutor<runner::RecordingExecutor<runner::DryTag>, runner::MemoryJournal>
   >::value);
 }
+
+namespace {
+
+/**
+ * A consumer's own adapter: it forwards to a real session and declares nothing.
+ *
+ * The shape the fail-closed default exists for. Nothing about this type tells the library it reaches
+ * a broker -- it has no marker, it is not in `live/`, and its name is its author's choice -- and yet
+ * every order it is handed goes to one. A trait that defaulted to "harmless" would exempt exactly
+ * this, which is the one case the exemption cannot be afforded for.
+ */
+template <typename Session>
+class UnmarkedAdapter {
+public:
+  explicit UnmarkedAdapter(Session& session) : inner_(session) {}
+
+  runner::SendOutcome place(const strategy::PlannedOrder& order) { return inner_.place(order); }
+  runner::SendOutcome cancel(const WorkingOrder<FakeBroker>& working) {
+    return inner_.cancel(working);
+  }
+
+private:
+  live::SessionExecutor<Session> inner_;
+};
+
+} // namespace
+
+TEST_CASE("an executor that says nothing is assumed to reach a broker") {
+  // The default is `true` and an executor opts out, because the two directions fail differently: an
+  // unmarked adapter assumed harmless sends a real order against an account nobody read, and an
+  // unmarked double assumed live refuses until it is given a portfolio. Only the second is
+  // discoverable, so silence means live.
+  STATIC_REQUIRE(runner::runner_detail::sends_to_a_broker<
+    UnmarkedAdapter<FakeSession<WithKey>>>::value);
+
+  using Runner =
+    runner::Runner<HoldTen, WithKey, FakeBroker, UnmarkedAdapter<FakeSession<WithKey>>>;
+  FakeSession<WithKey> session;
+
+  SECTION("and so will not place against an account it never read") {
+    Runner live_runner(HoldTen{}, {}, 512, UnmarkedAdapter<FakeSession<WithKey>>(session));
+    live_runner.context().set_instrument(samsung_reference());
+    live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+    live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+    const auto report = live_runner.feed(bar_at(0, "70000"));
+
+    CHECK(session.placed().empty());
+    REQUIRE(report.withheld_plans_.size() == 1);
+    CHECK(report.withheld_plans_.front().reason_ == runner::WithheldPlanReason::PORTFOLIO_ABSENT);
+  }
+
+  SECTION("a stamped read lets it through, so the default is not simply a refusal") {
+    Runner live_runner(HoldTen{}, {}, 512, UnmarkedAdapter<FakeSession<WithKey>>(session));
+    live_runner.context().set_instrument(samsung_reference());
+    live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+    live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+    live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
+
+    const auto report = live_runner.feed(bar_at(0, "70000"));
+
+    CHECK(session.placed().size() == 1);
+    CHECK(report.withheld_plans_.empty());
+  }
+}

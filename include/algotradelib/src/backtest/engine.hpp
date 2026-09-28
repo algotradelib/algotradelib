@@ -68,6 +68,14 @@ struct QueuedOrder {
 template <typename BrokerTag>
 class QueueingExecutor {
 public:
+
+  /**
+   * A replay reaches no broker, and stamps its own portfolio besides.
+   *
+   * Stated rather than left to a default, because `runner::runner_detail::sends_to_a_broker` defaults
+   * to `true` so that an unmarked executor fails closed.
+   */
+  static constexpr bool reaches_a_broker = false;
   /**
    * Accepts an order, queues it, and issues it a reference.
    *

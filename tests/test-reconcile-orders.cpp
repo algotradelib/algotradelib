@@ -793,6 +793,9 @@ namespace strategy = algotradelib::strategy;
 template <typename Tag>
 class FailingExecutor {
 public:
+
+  /** A double reaches no broker, so it is exempt from having to have read the account. */
+  static constexpr bool reaches_a_broker = false;
   SendOutcome place(const strategy::PlannedOrder&) { return outcome_; }
   SendOutcome cancel(const WorkingOrder<Tag>&) { return outcome_; }
   SendOutcome outcome_{SendOutcome::INDETERMINATE};

@@ -430,6 +430,9 @@ using SellingLoop = runner::PollingLoop<SellingRunner, SellingSource, runner::Ma
 template <runner::SendOutcome Outcome>
 class CancelFailingExecutor {
 public:
+
+  /** A double reaches no broker, so it is exempt from having to have read the account. */
+  static constexpr bool reaches_a_broker = false;
   runner::SendOutcome place(const strategy::PlannedOrder&) {
     return runner::SendOutcome::ACCEPTED;
   }

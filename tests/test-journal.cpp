@@ -71,6 +71,9 @@ WorkingOrder<runner::DryTag> resting(const char* order_id) {
 template <typename Tag>
 class ObservingExecutor {
 public:
+
+  /** A double reaches no broker, so it is exempt from having to have read the account. */
+  static constexpr bool reaches_a_broker = false;
   ObservingExecutor() = default;
 
   explicit ObservingExecutor(const MemoryJournal* journal) : journal_(journal) {}
@@ -113,6 +116,9 @@ private:
 template <typename Tag>
 class ReportingExecutor {
 public:
+
+  /** A double reaches no broker, so it is exempt from having to have read the account. */
+  static constexpr bool reaches_a_broker = false;
   SendOutcome place(const strategy::PlannedOrder&) {
     if (place_outcome_ == SendOutcome::ACCEPTED) {
       last_ref_ = OrderRef<Tag>{};
