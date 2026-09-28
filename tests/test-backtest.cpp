@@ -2636,6 +2636,52 @@ TEST_CASE("the exposure ceiling counts a resting buy") {
   REQUIRE(refusals_for(engine.result(), strategy::GuardReason::GROSS_EXPOSURE_EXCEEDED) > 0);
 }
 
+/** Buys hynix from samsung's bar, so the decision is made inside another instrument's period. */
+struct BuysTheOtherName {
+  bool submitted_{false};
+  std::vector<Decimal64> fill_prices_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (submitted_ || !(bar.instrument_ == samsung())) {
+      return;
+    }
+    submitted_ = true;
+    ctx.submit(
+      strategy::OrderIntent::market(
+        hynix(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
+      )
+    );
+  }
+
+  template <class Ctx>
+  void on_fill(Ctx&, const strategy::Fill& fill) { fill_prices_.push_back(fill.price_); }
+};
+
+TEST_CASE("an order for another instrument waits for a bar that began after it was decided") {
+  // **The one existing behaviour the causal fill rule changes, and it changes it for the better.**
+  // A strategy deciding on samsung's 15:30 close and ordering hynix used to fill against hynix's
+  // *same-day* bar -- whose open was 09:00, six and a half hours before the decision. The bar
+  // counter could not see it, because the two bars are different bars of the same replay. Only a
+  // single well-formed series was ever safe.
+  auto config = replay_config();
+  config.instruments_ = {samsung_reference(), hynix_reference()};
+
+  backtest::Backtester<BuysTheOtherName> engine(BuysTheOtherName{}, std::move(config));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(bar_for(hynix(), utc(2026, 3, 10, 6, 31), "50000"));
+  // Same day, and its period began at 09:00: it cannot fill an order decided at 15:30.
+  CHECK(engine.result().executions_.empty());
+
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "71000"));
+  engine.feed(bar_for(hynix(), utc(2026, 3, 11, 6, 31), "60000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  // The next day's hynix bar, at its open.
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("60000"));
+}
+
 TEST_CASE("buying power is spent by an order that is still resting") {
   // **Rows alone do not close this one.** `enforce_buying_power_` reads the scalar, and
   // `ReplayLedger::snapshot` builds it from ledger cash that has not paid for anything outstanding.
