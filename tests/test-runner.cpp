@@ -1500,12 +1500,14 @@ TEST_CASE("a plan that only withdraws is counted and otherwise untouched by a wi
 
 namespace {
 
-/** An executor with a `last_error()` that is not a `BrokerError`, which must not be detected. */
+/**
+ * An executor-shaped type with a `last_error()` that is not a `BrokerError`.
+ *
+ * It is never instantiated as an executor -- only the trait is asked about it -- so it carries no
+ * more than the one method under test. A strict build rejects an unused constant, which is why
+ * `reaches_a_broker` is not here.
+ */
 struct UnrelatedLastError {
-  static constexpr bool reaches_a_broker = false;
-  runner::SendOutcome place(const strategy::PlannedOrder&) {
-    return runner::SendOutcome::ACCEPTED;
-  }
   const std::optional<std::string>& last_error() const noexcept { return last_error_; }
   std::optional<std::string> last_error_;
 };
