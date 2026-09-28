@@ -864,7 +864,9 @@ public:
    *
    * Overwritten rather than accumulated: a run refused ten thousand times keeps **at most** one
    * record, which is what makes this affordable at all -- at most, because a refusal that states
-   * nothing clears it, so a non-zero count can sit beside an empty optional. Empty on a runner whose broker has refused nothing, and empty
+   * nothing clears it, so a non-zero count can sit beside an empty optional.
+   *
+   * Empty on a runner whose broker has refused nothing, and empty
    * on every executor that cannot answer -- a dry runner and a replay's queueing executor have no
    * broker to have been refused by, so `runner_detail::states_last_error` detects the ability rather
    * than requiring it.
