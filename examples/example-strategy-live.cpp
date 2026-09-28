@@ -125,6 +125,11 @@ int drive(const InstrumentId& instrument, const MarketState& state, R live_runne
 
   strategy::Portfolio<Tag> portfolio;
   portfolio.positions_ = state.holdings_.positions_;
+  // **Stamped with when the broker's answer arrived, and that is not optional.** A runner bound to a
+  // session refuses to size an order against a portfolio it cannot date: an unstamped one reads as
+  // an account nobody has read, and an empty account is the permissive answer to every ceiling.
+  // Copying the rows without the timestamp is the mistake this line exists to prevent.
+  portfolio.as_of_ = state.holdings_.received_at_;
   live_runner.context().set_portfolio(std::move(portfolio));
 
   const auto& last = state.bars_.bars_.back();

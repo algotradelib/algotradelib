@@ -1087,6 +1087,9 @@ TEST_CASE("binding reads the capabilities and the tag off the session") {
   bound.context().set_instrument(samsung_reference());
   bound.context().set_phase(strategy::MarketPhase::OPEN);
   bound.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  // A session-backed runner requires an account it has read; this case is about the factory's
+  // wiring, so it supplies one rather than opting out of the requirement.
+  bound.context().set_portfolio(held_position<WithKey>("0", nullptr));
 
   const auto report = bound.feed(bar_at(0, "70000"));
   REQUIRE(report.would_place_.size() == 1);
@@ -1792,6 +1795,8 @@ TEST_CASE("a journaled binding records before the session is asked") {
   live_runner.context().set_instrument(samsung_reference());
   live_runner.context().set_phase(strategy::MarketPhase::OPEN);
   live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  // A session-backed runner requires an account it has read; this case is about the journal.
+  live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
 
   const auto report = live_runner.feed(bar_at(0, "70000"));
   REQUIRE(report.would_place_.size() == 1);

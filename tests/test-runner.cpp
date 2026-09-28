@@ -1806,3 +1806,76 @@ TEST_CASE("an unheld resize still cancels and replaces, so the rule is not simpl
   REQUIRE(report.would_place_.size() == 1);
   CHECK(report.would_place_.front().quantity_ == Decimal64::parse("5"));
 }
+
+TEST_CASE("opting out of a known account permits the placement and not the withdrawal") {
+  // The contract the two opt-outs actually make, and the one an earlier revision of this branch
+  // broke: they say the operator accepts *sizing* against an account this library cannot vouch for.
+  // They do not say it should withdraw orders it cannot account for -- an account that merely looks
+  // flat makes a resting protective order look opposed, and withdrawing it leaves a real holding
+  // naked with nothing placed in its stead.
+  SECTION("a placement goes out") {
+    runner::DryRunner<HoldTen> dry;
+    arrange(dry);
+    dry.require_known_portfolio(true);
+    dry.allow_absent_portfolio();
+
+    const auto report = dry.feed(bar_at(10, "70000"));
+
+    CHECK(report.withheld_plans_.empty());
+    CHECK(report.would_place_.size() == 1);
+  }
+
+  SECTION("a derived withdrawal does not, whatever was opted out of") {
+    runner::DryRunner<FlatTargetStrategy> dry;
+    arrange(dry);
+    dry.context().set_portfolio(resting_sell(/*stamped=*/false));
+    dry.require_known_portfolio(true);
+    dry.allow_absent_portfolio();
+
+    const auto report = dry.feed(bar_at(10, "70000"));
+
+    REQUIRE(report.withheld_plans_.size() == 1);
+    CHECK(report.withheld_plans_.front().reason_ == runner::WithheldPlanReason::PORTFOLIO_ABSENT);
+    CHECK(report.would_cancel_.empty());
+    CHECK(report.unresolved_cancel_.empty());
+    CHECK(report.refused_cancel_.empty());
+  }
+
+  SECTION("a resize under the opt-out is not split into a bare cancellation") {
+    // The cancel-plus-replace shape, which is where splitting the plan does the damage.
+    runner::DryRunner<WantsFive> dry;
+    arrange(dry);
+    auto portfolio = oversized_resting_buy();
+    portfolio.as_of_ = std::chrono::system_clock::time_point{};
+    dry.context().set_portfolio(portfolio);
+    dry.require_known_portfolio(true);
+    dry.allow_absent_portfolio();
+    dry.guard().halt(strategy::HaltReason::BUYING_POWER_UNREAD);
+
+    const auto report = dry.feed(bar_at(10, "70000"));
+
+    REQUIRE(report.withheld_plans_.size() == 1);
+    CHECK(report.withheld_plans_.front().not_canceled_.size() == 1);
+    CHECK(report.withheld_plans_.front().not_placed_ == 1);
+    CHECK(report.would_cancel_.empty());
+    CHECK(report.would_place_.empty());
+  }
+}
+
+TEST_CASE("an opted-out placement still faces a hold somebody set") {
+  // Stated because the opt-out is easy to read as "send anyway". It is not: it excuses the portfolio
+  // requirement and nothing else, and the refusal below comes from `RiskGuard` rather than from the
+  // withhold -- which is the division this branch draws, recorded here so a later change that moves
+  // the responsibility has to decide about this case rather than inherit it.
+  runner::DryRunner<HoldTen> dry;
+  arrange(dry);
+  dry.require_known_portfolio(true);
+  dry.allow_absent_portfolio();
+  dry.guard().halt();
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+
+  CHECK(report.would_place_.empty());
+  REQUIRE(report.refused_.size() == 1);
+  CHECK(report.refused_.front().halt_reason_ == strategy::HaltReason::OPERATOR);
+}

@@ -721,7 +721,8 @@ private:
       // Only a plan that would cancel something is stopped. One that only places is left to the guard
       // exactly as before, so a direct `OrderIntent` keeps reporting as a refusal rather than quietly
       // changing bucket.
-      if (const auto reason = plan_withhold_reason()) {
+      const bool would_cancel = !planned.cancel_.empty();
+      if (const auto reason = plan_withhold_reason(would_cancel)) {
         // **A missing account stops the whole plan; a hold on placements stops only a plan that
         // would also withdraw something.**
         //
@@ -734,10 +735,12 @@ private:
         // runner, so a target settled inside that call reaches here with the guard clear. Deciding
         // absence and staleness here, on the snapshot itself, is what makes the rule hold at every
         // send site rather than at most of them.
+        // A missing-account reason is only ever returned when it should stop this plan, so it needs
+        // no second test here. A hold on placements stops only a plan that would also withdraw
+        // something: a placement-only plan is left to `RiskGuard` below, which refuses it with the
+        // hold named on its own report entry, and that is the better result.
         const bool data_is_missing = *reason != WithheldPlanReason::PLACEMENT_HELD;
-        const bool stops_a_placement = data_is_missing && require_known_portfolio_;
-        if (stops_a_placement || (data_is_missing && !planned.cancel_.empty()) ||
-            !planned.cancel_.empty()) {
+        if (data_is_missing || would_cancel) {
           report.withheld_plans_.push_back(WithheldPlan<Tag>{
             *reason,
             instruction_instrument(instruction),
@@ -1258,18 +1261,31 @@ private:
    * that call would be checked against a stale verdict. Asking the question at settlement time makes
    * the answer structurally current, and there is no invalidation protocol to get wrong.
    */
-  std::optional<WithheldPlanReason> plan_withhold_reason() const {
+  std::optional<WithheldPlanReason> plan_withhold_reason(bool would_cancel) const {
     const auto& portfolio = context_.portfolio();
     // A default-constructed `Portfolio` carries the epoch, and no broker reports a snapshot taken in
     // 1970. The same sentinel the loop uses; both writers of `as_of_` in this library stamp it.
-    if (portfolio.as_of_ == std::chrono::system_clock::time_point{}) {
-      return allow_absent_portfolio_ ?
-        std::optional<WithheldPlanReason>(std::nullopt) :
-        std::optional<WithheldPlanReason>(WithheldPlanReason::PORTFOLIO_ABSENT);
-    }
-    if (maximum_portfolio_age_ &&
-        freshness_instant() - portfolio.as_of_ > *maximum_portfolio_age_) {
-      return WithheldPlanReason::PORTFOLIO_STALE;
+    const bool never_read = portfolio.as_of_ == std::chrono::system_clock::time_point{};
+    const bool too_old = !never_read && maximum_portfolio_age_ &&
+      freshness_instant() - portfolio.as_of_ > *maximum_portfolio_age_;
+
+    if (never_read || too_old) {
+      // **A plan that would withdraw something is stopped whatever was opted out of.** The opt-outs
+      // say the operator accepts *sizing* against an account this library cannot vouch for. They do
+      // not say it should withdraw orders it cannot account for, and the two are not the same
+      // concession: an account that merely looks flat makes a resting protective order look opposed.
+      if (would_cancel) {
+        return never_read ? WithheldPlanReason::PORTFOLIO_ABSENT : WithheldPlanReason::PORTFOLIO_STALE;
+      }
+      // A placement is the half the opt-outs are about, and it is also the half a driving loop's
+      // hold would otherwise catch -- so it is stopped here only for a run that asked for the
+      // account to be known.
+      if (require_known_portfolio_ && !(never_read && allow_absent_portfolio_)) {
+        return never_read ? WithheldPlanReason::PORTFOLIO_ABSENT : WithheldPlanReason::PORTFOLIO_STALE;
+      }
+      // **Falls through rather than returning.** An opted-out placement still has to face the hold
+      // check below: returning early here was a defect, because it let a plan out under an operator's
+      // halt on the strength of an unrelated opt-out.
     }
     // Any placement hold, not an enumerated few: the harm is that the replacement will be refused
     // while the withdrawal has already gone, and every reason that refuses a placement does that.
