@@ -92,6 +92,14 @@ enum class PollKind {
    * bars it would govern the *next* iteration's orders, which is the ordering defect slice 19 fixed
    * for the market phase.
    *
+   * **The claim is about polls, and one thing runs before all of them.** `PollingLoop::gate_for`
+   * calls `Source::read_order_list` out of band, before the first poll of the iteration, and a
+   * source that feeds from inside that call settles against whatever band the *previous* iteration
+   * left. Neither shipped source does -- `live::SessionSource::read_order_list` adopts the listing
+   * as a baseline and publishes nothing -- but the loop cannot depend on that, because the source is
+   * a template parameter. So: every order decided from a poll is decided under this iteration's
+   * band, and an order decided from the order-list read is not.
+   *
    * Declared last for the reason `CALENDAR` states above its own declaration: these values index
    * fixed-size arrays, so an enumerator inserted anywhere but the end renumbers existing ones.
    */
@@ -700,6 +708,15 @@ struct LoopReport {
    */
   std::size_t unclamped_orders_rejected_{0};
   /**
+   * Orders a **local guard** refused during this run while carrying a withheld band's price.
+   *
+   * The half no exchange sees, and the one an empty `unclamped_orders_rejected_` would otherwise
+   * hide: an unclamped price is a larger notional, and every limit that multiplies quantity by price
+   * can refuse an order the clamped price would have admitted. See
+   * `Runner::unclamped_orders_refused`.
+   */
+  std::size_t unclamped_orders_refused_{0};
+  /**
    * How many phase changes were announced to the strategy.
    *
    * The counter that distinguishes a mechanism that ran from one that was merely configured. A run
@@ -1234,6 +1251,7 @@ public:
     // Differenced for the reason above: both are monotone on the runner, which outlives this call.
     const auto bands_withheld_before = runner_->price_bands_withheld();
     const auto unclamped_rejected_before = runner_->unclamped_orders_rejected();
+    const auto unclamped_refused_before = runner_->unclamped_orders_refused();
     // Differenced around the run for the same reason, and the reason is sharper here: the source
     // survives `run` returning, so an absolute figure would report the previous run's charges again.
     const auto charged_before = [&]() {
@@ -1286,6 +1304,8 @@ public:
     report.price_bands_withheld_ = runner_->price_bands_withheld() - bands_withheld_before;
     report.unclamped_orders_rejected_ =
       runner_->unclamped_orders_rejected() - unclamped_rejected_before;
+    report.unclamped_orders_refused_ =
+      runner_->unclamped_orders_refused() - unclamped_refused_before;
     // **Said only when a band was actually held back**, not merely because no policy was stated. A
     // run that registers no band and polls none has nothing to decide, and a note telling it to
     // state a policy would be advice about a mechanism it is not using. Once per loop, like the

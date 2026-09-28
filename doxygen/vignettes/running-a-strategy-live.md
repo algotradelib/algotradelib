@@ -193,13 +193,24 @@ was clamped into every limit price for as long as the process lived. Now:
   KIS publishes no stamp, so for a KIS band the policy bounds only how long ago it was *fetched*.
 
 **Withholding a band does not refuse an order and does not hold anything.** It returns the order to
-the state every run that registers no band is already in: the strategy's own price on the wire.
-Clamping only ever moves a price in the direction that *reduces* aggression — a buy down to the
-ceiling, a sell up to the floor — so applying a band cannot make an order more likely to fill, and
-withholding one cannot make it less likely than applying it would have. What withholding can produce
-is a rejection from the exchange, and `LoopReport::unclamped_orders_rejected_` counts exactly those:
-orders that went out, that a withheld band would have moved, and that the broker refused.
-`LoopReport::price_bands_withheld_` counts the decisions; this counts what they cost.
+the state every run that registers no band is already in: the strategy's own price on the wire. That
+is not free, and it is worth knowing what it costs before choosing the policy:
+
+- **A fill can be lost.** Where the stated price is outside *today's real* band, the exchange refuses
+  the order, and the clamped price would have been accepted and could have traded. A reducing sell is
+  the case that stings — an exit priced below today's floor is refused instead of being lifted onto
+  it. `LoopReport::unclamped_orders_rejected_` counts those.
+- **A local guard can refuse it first.** An unclamped price is a larger notional, so the per-order
+  ceiling, the buying-power check and the gross exposure ceiling all see a bigger number.
+  `LoopReport::unclamped_orders_refused_` counts those; no exchange ever sees them.
+
+Both are co-occurrence rather than causation — orders are refused for many reasons — and
+`LoopReport::price_bands_withheld_` counts the decisions rather than their cost. The reason
+withholding is still the default: a band whose age nobody has bounded is not evidence about today's
+band, and this library does not alter an order's price on the strength of something that is not
+evidence. The alternative is not "clamp correctly", it is "clamp to a number from an unknown day",
+and that failure is an order resting at a price nobody chose which may never fill. One line of policy
+overrides it either way.
 
 **An unknown buying power blocks buying.** Only if you asked for the check: set
 `RiskLimits::enforce_buying_power_` and the loop refuses to send while it has no answer from the

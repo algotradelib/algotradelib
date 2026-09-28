@@ -876,6 +876,26 @@ struct LimitBuy {
   }
 };
 
+/** Sells one share at a stated limit, so an exit can be priced below a floor. */
+struct LimitSell {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    const auto reference = ctx.instrument(bar.instrument_);
+    if (!reference) {
+      return;
+    }
+    const auto limit = strategy::Price::checked(Decimal64::parse("60000"), reference->price_rule_);
+    if (!limit) {
+      return;
+    }
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("1")), *limit
+      )
+    );
+  }
+};
+
 /** Asks for an idempotency key on the first bar only, then buys plainly. */
 struct KeyedOnce {
   int bars_{0};
@@ -1244,6 +1264,37 @@ TEST_CASE("an order the broker refused after a band was withheld is counted, and
     CHECK(live_runner.unclamped_orders_rejected() == 0);
     CHECK(session.placed().empty());
   }
+}
+
+TEST_CASE("an exit priced below a withheld floor is refused rather than lifted onto it") {
+  // **The case that costs something, named rather than argued away.** A stale lower bound can only
+  // raise a sell's price, so applying one makes an exit less willing -- but where the strategy's own
+  // price is below *today's real* floor, the exchange refuses the order outright, and the clamped
+  // price would have been accepted and could have traded. Withholding can therefore lose a fill, and
+  // this is what it looks like: a reducing sell, refused, counted.
+  using Runner = runner::Runner<
+    LimitSell, WithKey, FakeBroker, live::SessionExecutor<FakeSession<WithKey>>
+  >;
+  FakeSession<WithKey> session;
+  Runner live_runner(LimitSell{}, {}, 512, live::SessionExecutor<FakeSession<WithKey>>(session));
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  live_runner.context().set_portfolio(held_position<WithKey>("10", nullptr));
+  PriceLimits band;
+  band.lower_ = Decimal64::parse("65000");
+  live_runner.set_price_limits(samsung(), band);
+  // Stands for the exchange refusing a price outside today's band.
+  session.fail_with(ErrorCategory::INVALID_ARGUMENT);
+
+  live_runner.feed(bar_at(1, "70000"));
+
+  REQUIRE(session.placed().size() == 1);
+  // The strategy's own price went out, not the floor the runner was holding.
+  CHECK(session.placed()[0].price_ == std::optional<Decimal64>(Decimal64::parse("60000")));
+  CHECK(live_runner.price_bands_withheld() == 1);
+  CHECK(live_runner.unclamped_orders_rejected() == 1);
+  CHECK(live_runner.unclamped_orders_refused() == 0);
 }
 
 TEST_CASE("binding reads the capabilities and the tag off the session") {

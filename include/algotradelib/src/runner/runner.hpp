@@ -565,16 +565,26 @@ public:
    * other -- which nothing reached while nothing in the library filled this map, and
    * `PollKind::PRICE_LIMITS` sweeping a universe does.
    *
-   * **A band registered before this runner has any notion of "now" is stamped at the epoch**, and is
-   * then older than any maximum an operator would state. That is a caller driving a runner directly:
-   * `PollingLoop` calls `set_observed_at` before anything can feed, so a polled band is stamped with
-   * the iteration that read it. A direct caller either states the instant itself, accepts any age,
-   * or gets a band that is held back -- which is the fail-closed direction, and visible in
-   * `price_bands_withheld`.
+   * **The receipt clock is `set_observed_at`'s instant, and deliberately not `freshness_instant()`.**
+   * That maximum includes the context's own decision instant, which is a bar's *period end* -- and a
+   * broker that publishes a forming bar puts that instant in the future. A band stamped from it would
+   * be dated ahead of the clock and stay fresh past the stated maximum in wall time, which is the one
+   * direction a staleness rule must not fail in. Stamping from the reported instant while **ageing**
+   * against `freshness_instant()` leaves the comparison never earlier than the stamp, so a band can
+   * read older than it is and never younger.
+   *
+   * **A band registered before this runner has been told any instant is stamped at the epoch**, and
+   * is then older than any maximum an operator would state. That is a caller driving a runner
+   * directly: `PollingLoop` calls `set_observed_at` before anything can feed, so a polled band
+   * carries the iteration that read it. A direct caller states the instant itself, accepts any age,
+   * or gets a band that is held back -- the fail-closed direction, and visible in
+   * `price_bands_withheld`. The library does **not** read the wall clock here to paper over it: no
+   * decision path in this runner reads one, and introducing one would make a replay's answer depend
+   * on when the replay was run.
    */
   void set_price_limits(const InstrumentId& id, PriceLimits limits) {
     DatedBand dated;
-    dated.received_at_ = freshness_instant();
+    dated.received_at_ = observed_at_;
     dated.limits_ = std::move(limits);
     price_limits_.insert_or_assign(id, std::move(dated));
   }
@@ -590,15 +600,31 @@ public:
    * this band forever"; it now means the same as an expired one. State `allow_unbounded_price_limits_age`
    * to keep the old behaviour deliberately.
    *
-   * **What withholding costs, exactly, and why it is the safe direction.** Withholding returns the
-   * order to the library's ordinary state -- no band, no clamp, the strategy's own price on the wire
-   * -- which is what every run that registers no band already does. And `clamp_to_limits` moves a
-   * price **only in the direction that reduces aggression**: a buy down to the upper bound, a sell
-   * up to the lower one, and neither of the other two cases at all. So applying a band can never
-   * make an order *more* likely to fill, and withholding one can never make it *less* likely than
-   * applying it would have. The only outcome withholding produces that applying would not is a
-   * rejection the exchange states -- against a stale band's quiet alternative, an order resting at a
-   * price nobody chose, which looks exactly like a working order and may never fill.
+   * **What withholding costs, stated without flattery.** It returns the order to the library's
+   * ordinary state -- no band, no clamp, the strategy's own price on the wire -- which is what every
+   * run that registers no band already does. That is not free, and an earlier draft of this comment
+   * claimed it was:
+   *
+   * - **A fill can be lost.** Where the stated price lies outside *today's real* band, the exchange
+   *   refuses the order, while the clamped price would have been accepted and could have traded.
+   *   `clamp_to_limits` says so itself: it turns an order the exchange would certainly reject into
+   *   one it will accept. A reducing sell is the case that stings -- an exit priced below today's
+   *   floor is refused instead of being lifted onto it.
+   * - **A local guard can refuse it instead.** `RiskGuard` values an order at `quantity * price_`,
+   *   so an unclamped price is a larger notional: the per-order ceiling, buying power and the gross
+   *   exposure ceiling all see a bigger number and one of them may refuse an order the clamped price
+   *   would have admitted. Nothing is sent, so this costs a fill without an exchange ever seeing it.
+   *
+   * Both are counted rather than argued away -- `unclamped_orders_rejected` and
+   * `unclamped_orders_refused`, which is the same division `LoopReport` already makes between a
+   * closing instruction the broker rejected and one a guard refused.
+   *
+   * **Why it is still the default.** A band whose age nobody has bounded is not evidence about
+   * today's band, and this library does not alter an order's price on the strength of something that
+   * is not evidence. The alternative is not "clamp correctly" -- it is "clamp to a number from an
+   * unknown day", whose failure is an order resting at a price nobody chose, indistinguishable from
+   * a working order and possibly never filling. Between a stated refusal and a silent misprice this
+   * library takes the stated one, and the operator overrides it in one line.
    *
    * @param age how old a band may be. `std::nullopt` withdraws a stated maximum and returns this
    *   runner to having stated no policy at all, which withholds every band -- it does not mean
@@ -635,16 +661,33 @@ public:
    * Returns how many **sent** orders were refused by the broker after a withheld band would have
    * moved their price.
    *
-   * The harm of withholding, counted where the outcome is known rather than where the decision was
-   * made -- the division `sends_outside_permitted_phase` already makes. An order the guards refused
-   * never reached a broker and is not counted, and neither is one the broker accepted.
+   * One of the two halves of what withholding costs, counted where the outcome is known rather than
+   * where the decision was made -- the division `sends_outside_permitted_phase` already makes. An
+   * order the guards refused never reached a broker and is counted by `unclamped_orders_refused`
+   * instead; an order the broker accepted is counted by neither.
    *
    * It is **co-occurrence, not causation**: a broker refuses orders for reasons that have nothing to
-   * do with a price band, and this cannot tell them apart. A run whose count tracks its rejections
-   * is a run whose band policy is costing it orders; a run at zero is one where withholding cost
-   * nothing observable.
+   * do with a price band, and this cannot tell them apart. Read a count that tracks a run's
+   * rejections as "the band policy is costing this run orders". Zero does **not** mean withholding
+   * cost nothing -- read it beside `unclamped_orders_refused`, and note that neither can see an
+   * order that was accepted and then simply did not fill.
    */
   std::size_t unclamped_orders_rejected() const noexcept { return unclamped_orders_rejected_; }
+
+  /**
+   * Returns how many orders a **local guard** refused while carrying a withheld band's unclamped
+   * price.
+   *
+   * The other half, and the half an exchange never sees. `RiskGuard` values an order at
+   * `quantity * price_`, so withholding a ceiling hands every notional limit a larger number: the
+   * per-order ceiling, the buying-power check and the gross exposure ceiling can each refuse an
+   * order that the clamped price would have admitted. Nothing is sent, so `unclamped_orders_rejected`
+   * stays at zero through every one of them.
+   *
+   * Co-occurrence on the same terms: a guard refuses orders for its own reasons, and this counts the
+   * ones that happened to be carrying an unclamped price.
+   */
+  std::size_t unclamped_orders_refused() const noexcept { return unclamped_orders_refused_; }
 
   /**
    * Sets how small a drift is not worth an instruction.
@@ -954,6 +997,12 @@ private:
       // own limits said not to trade in.
       auto decision = guard_.evaluate(order, view, inputs);
       if (decision.rejection_) {
+        // **Counted here and not at the send site, because there is no send.** A withheld band
+        // leaves a larger notional in front of every limit that multiplies quantity by price, so
+        // this is the path where withholding costs a fill without an exchange ever being asked.
+        if (order.price_would_have_been_clamped_) {
+          ++unclamped_orders_refused_;
+        }
         report.refused_.push_back(std::move(*decision.rejection_));
         continue;
       }
@@ -1777,6 +1826,8 @@ private:
   std::size_t price_bands_withheld_{0};
   /** Sent orders a broker refused after a withheld band would have moved them; see the accessor. */
   std::size_t unclamped_orders_rejected_{0};
+  /** Orders a local guard refused while carrying an unclamped price; see the accessor. */
+  std::size_t unclamped_orders_refused_{0};
   std::optional<Decimal64> portfolio_value_;
   strategy::TradeTolerance tolerance_;
 };

@@ -200,6 +200,24 @@ strategy::BarEvent bar_at(std::size_t index) {
 }
 
 /**
+ * A daily bar whose instants are one second apart, for a test about which clock ages a value.
+ *
+ * `bar_at` advances a day per index, which is what most of these tests want; a staleness test
+ * measured against a policy of hours cannot use it, because the context's own instant would then
+ * outrun the policy on its own and the test would pass whichever clock the rule read.
+ */
+strategy::BarEvent bar_seconds_apart(std::size_t index) {
+  algotradelib::Bar bar;
+  bar.timestamp_ = base_time() + std::chrono::seconds(static_cast<int>(index));
+  bar.high_ = algotradelib::Decimal64::parse("70000");
+  bar.low_ = bar.high_;
+  bar.close_ = bar.high_;
+  bar.volume_ = algotradelib::Decimal64::parse("1000000");
+  return strategy::make_bar_event(
+    samsung(), algotradelib::BarInterval::ONE_DAY, algotradelib::BarStamp::CLOSE, bar);
+}
+
+/**
  * A strategy that wants ten shares of whatever bar it is shown.
  *
  * `Inert` cannot expose an ordering bug in the loop, because a strategy that never submits cannot
@@ -289,6 +307,19 @@ public:
    */
   void set_price_limits(algotradelib::PriceLimits limits) { price_limits_ = std::move(limits); }
 
+  /**
+   * Feeds bars a second apart instead of a day apart, so the loop's clock is what moves.
+   *
+   * Without this a staleness test cannot tell which clock is ageing the value: the bar fixture
+   * advances a day per poll while a `ManualClock` advances by the tick, so a rule reading either one
+   * passes. Codex round 1 found exactly that in the band-ageing test below.
+   *
+   * A second rather than nothing at all, because the context's rolling window refuses an observation
+   * that is not later than the last -- so the instant has to move, and what matters is that it moves
+   * by far less than the policy under test.
+   */
+  void creep_bar_time() { creep_bar_time_ = true; }
+
   /** Returns the price of the last order the runner would have sent from inside a poll. */
   const std::optional<algotradelib::Decimal64>& last_planned_price() const noexcept {
     return last_planned_price_;
@@ -327,7 +358,10 @@ public:
     if (calendar_before_feeding_) {
       runner_instance.context().set_calendar(*calendar_before_feeding_);
     }
-    const auto report = runner_instance.feed(bar_at(++bars_));
+    ++bars_;
+    const auto report = runner_instance.feed(
+      creep_bar_time_ ? bar_seconds_apart(bars_) : bar_at(bars_)
+    );
     placed_ += report.would_place_.size();
     if (!report.would_place_.empty()) {
       last_planned_price_ = report.would_place_.back().price_;
@@ -424,6 +458,7 @@ private:
   std::optional<algotradelib::TradingCalendar> calendar_in_calendar_poll_;
   std::optional<algotradelib::PriceLimits> price_limits_;
   std::optional<algotradelib::Decimal64> last_planned_price_;
+  bool creep_bar_time_{false};
 };
 
 using FeedingSource = FeedingSourceFor<SendingRunner>;
@@ -1851,12 +1886,37 @@ TEST_CASE("a run that polls no band is not told to state a policy", "[loop][band
   CHECK(report.notes_.empty());
 }
 
+TEST_CASE("the counters describe the run that produced them, not every run before it", "[loop][band]") {
+  // Both are monotone on the runner, which outlives `run`, so the report differences them. Without
+  // that a second run on the same loop reports the first run's decisions again.
+  LimitRunner runner_instance;
+  LimitSource source;
+  arrange_limit_loop(runner_instance);
+  source.set_price_limits(band_at_71k());
+  LimitLoop loop(runner_instance, source, bars_and_band_each_iteration(), test_clock());
+  not_about_the_portfolio(loop);
+  StopSource stop;
+
+  const auto first = loop.run(stop, 2);
+  const auto second = loop.run(stop, 1);
+
+  CHECK(first.price_bands_withheld_ == 2);
+  CHECK(second.price_bands_withheld_ == 1);
+  // And the note is the loop's, said once across both runs rather than once per run.
+  CHECK(second.notes_.empty());
+}
+
 TEST_CASE("a band older than the loop's policy stops clamping", "[loop][band]") {
   // What the cadence is for: the band arrives once and the poll then fails, so the last good answer
   // goes on ageing. The policy is what decides when it has stopped being usable -- and the failure
   // deliberately leaves the band in place, because erasing it would make a timed-out request and a
   // deliberate policy decision look the same.
-  LimitRunner runner_instance;
+  // Any phase, because the clock crosses the close half way through this run and the point here is
+  // the band's age rather than the session -- an opening order refused for the phase would leave the
+  // second bar with no order to look at.
+  strategy::RiskLimits any_phase;
+  any_phase.permitted_phases_ = std::nullopt;
+  LimitRunner runner_instance(LimitTen{}, any_phase);
   LimitSource source;
   arrange_limit_loop(runner_instance);
   source.set_price_limits(band_at_71k());
@@ -1865,20 +1925,28 @@ TEST_CASE("a band older than the loop's policy stops clamping", "[loop][band]") 
   schedule.bars_ = std::chrono::hours(12);
   // Polled once and never again, so the band the first iteration installed is the only one there is.
   schedule.price_limits_ = std::chrono::hours(240);
+  // **The bar instant is held still on purpose.** The fixture otherwise advances a day per bar while
+  // the loop's clock advances by its tick, so a rule ageing the band against the *context's* instant
+  // would pass this test without loop time entering into it. Held still, the loop's clock is the
+  // only thing that moves, which is the property under test.
+  source.creep_bar_time();
   LimitLoop loop(runner_instance, source, schedule, test_clock());
   not_about_the_portfolio(loop);
-  loop.set_maximum_price_limits_age(std::chrono::hours(13));
+  loop.set_maximum_price_limits_age(std::chrono::hours(6));
   StopSource stop;
 
   const auto report = loop.run(stop, 3);
 
   CHECK(report.attempted(runner::PollKind::PRICE_LIMITS) == 1);
-  // The last iteration is a day past the read, and 13 hours was the stated bound.
+  // Two bar polls, twelve hours apart, against a six-hour bound: the first is inside it and clamps
+  // to the band, the second is not and the strategy's own price goes out. One transition, which is
+  // what makes this a test of the policy rather than of a fixture that never reaches it.
+  CHECK(report.attempted(runner::PollKind::BARS) == 2);
   CHECK(
     source.last_planned_price() ==
     std::optional<algotradelib::Decimal64>(algotradelib::Decimal64::parse("80000"))
   );
-  CHECK(report.price_bands_withheld_ > 0);
+  CHECK(report.price_bands_withheld_ == 1);
   // Stated, so no note is owed: the operator did consider the question.
   CHECK(report.notes_.empty());
 }

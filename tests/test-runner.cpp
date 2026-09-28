@@ -50,6 +50,17 @@ strategy::BarEvent bar_at(int day, const char* close) {
   return strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, bar);
 }
 
+/** The same bar at a stated hour, for a test that needs two bars less than a day apart. */
+strategy::BarEvent bar_at_hour(int day, int hour, const char* close) {
+  Bar bar;
+  bar.timestamp_ = utc(2026, 3, day, hour, 30);
+  bar.high_ = Decimal64::parse(close);
+  bar.low_ = Decimal64::parse(close);
+  bar.close_ = Decimal64::parse(close);
+  bar.volume_ = Decimal64::parse("1000000");
+  return strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, bar);
+}
+
 /** Holds a fixed number of shares, stated as a target. */
 struct HoldTen {
   std::size_t bars_{0};
@@ -1247,6 +1258,71 @@ TEST_CASE("two identities sharing a symbol keep their own bands") {
   const auto report = dry.feed(bar_at(10, "70000"));
   REQUIRE(report.would_place_.size() == 1);
   CHECK(report.would_place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("71000")));
+}
+
+TEST_CASE("a band registered before the runner has been told any instant is held back") {
+  // An ordinary use of the public API that fails closed, and `set_price_limits` says so: a runner
+  // nobody has told the time cannot date what it is handed, so under a stated maximum the band is
+  // withheld rather than trusted. The library will not read the wall clock to paper over it -- no
+  // decision path in the runner reads one, and a replay's answer must not depend on when it was run.
+  runner::DryRunner<LimitAt80k> dry;
+  arrange(dry);
+  dry.set_maximum_price_limits_age(std::chrono::hours(12));
+  PriceLimits band;
+  band.upper_ = Decimal64::parse("71000");
+  dry.set_price_limits(samsung(), band);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.would_place_.size() == 1);
+  CHECK(report.would_place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("80000")));
+  CHECK(dry.price_bands_withheld() == 1);
+}
+
+TEST_CASE("a band is dated by the instant reported to the runner, not by a bar's period end") {
+  // The direction a staleness rule must not fail in. A broker publishing a forming bar puts the
+  // context's decision instant *ahead* of the clock a loop reports, and a band stamped from the
+  // later of the two would be dated in the future and stay fresh past the stated maximum. Stamping
+  // from the reported instant and ageing against the later one leaves a band able to read older than
+  // it is and never younger.
+  runner::DryRunner<LimitAt80k> dry;
+  arrange(dry);
+  dry.set_maximum_price_limits_age(std::chrono::hours(12));
+  dry.set_observed_at(utc(2026, 3, 10, 6, 30));
+  // Ten days ahead of the instant above, which is what the runner now believes "now" to be.
+  dry.feed(bar_at(20, "70000"));
+
+  PriceLimits band;
+  band.upper_ = Decimal64::parse("71000");
+  dry.set_price_limits(samsung(), band);
+
+  // **One hour later, not one day.** The bars have to be closer together than the policy, or a band
+  // stamped from the *later* instant would be only an hour old at the next bar and would be
+  // withheld too -- and the test would pass whichever instant the stamp came from.
+  const auto report = dry.feed(bar_at_hour(20, 7, "70000"));
+  REQUIRE(report.would_place_.size() == 1);
+  CHECK(report.would_place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("80000")));
+  CHECK(dry.price_bands_withheld() == 1);
+}
+
+TEST_CASE("an order a guard refused while carrying an unclamped price is counted too") {
+  // The half of withholding's cost that no exchange ever sees, and the reason one counter was not
+  // enough. RiskGuard values an order at quantity times price, so a withheld ceiling hands every
+  // notional limit a larger number: this order is refused at 80,000 and would have passed at the
+  // band's 71,000. Nothing is sent, so `unclamped_orders_rejected` stays at zero through it.
+  strategy::RiskLimits limits;
+  limits.max_order_notional_ = Decimal64::parse("75000");
+  runner::DryRunner<LimitAt80k> dry(LimitAt80k{}, limits);
+  arrange(dry);
+  PriceLimits band;
+  band.upper_ = Decimal64::parse("71000");
+  dry.set_price_limits(samsung(), band);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  CHECK(report.would_place_.empty());
+  REQUIRE(report.refused_.size() == 1);
+  CHECK(report.refused_[0].reason_ == strategy::GuardReason::ORDER_NOTIONAL_TOO_LARGE);
+  CHECK(dry.unclamped_orders_refused() == 1);
+  CHECK(dry.unclamped_orders_rejected() == 0);
 }
 
 TEST_CASE("withholding a band reaches an intent as well as a target") {
