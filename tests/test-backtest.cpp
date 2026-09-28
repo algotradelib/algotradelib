@@ -992,6 +992,21 @@ struct QuoteWatchesPortfolio {
   }
 };
 
+/** Records the price and the instant it was shown when a phase change was announced. */
+struct WatchesPhase {
+  std::vector<std::optional<Decimal64>> price_at_phase_;
+  std::vector<strategy::MarketPhase> phases_;
+
+  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx> void on_quote(Ctx&, const strategy::QuoteEvent&) {}
+
+  template <class Ctx>
+  void on_phase(Ctx& ctx, strategy::MarketPhase phase) {
+    phases_.push_back(phase);
+    price_at_phase_.push_back(ctx.last_price(samsung()));
+  }
+};
+
 /** A quote for the replayed instrument at `price`. */
 strategy::QuoteEvent quote_at(Clock::time_point at, const char* price) {
   strategy::QuoteEvent event;
@@ -1117,18 +1132,93 @@ TEST_CASE("the report states how many quotes a replay saw, and says so only when
   }
 }
 
-TEST_CASE("a quote fed before the first bar is accepted and counted") {
+TEST_CASE("a quote fed before the first bar is accepted, counted, and not a special case") {
   // Stated rather than forbidden: live, a quote poll can and does run before the first bar arrives,
-  // so refusing here would be a rule the live path does not have. What it costs is documented on
-  // `feed` -- the context clock is still unset, so an order placed from it decides at the epoch.
+  // so refusing here would be a rule the live path does not have. And nothing about it is unset --
+  // the clock and the phase both come from the quote itself, which is the whole of why it needs no
+  // special handling. (An earlier version of this test fed the bar *before* the quote it was
+  // supposed to precede, and asserted a clock claim that was never true.)
   backtest::Backtester<CountsEverything> engine(CountsEverything{}, replay_config());
-  engine.feed(quote_at(utc(2026, 3, 10, 7, 0), "70500"));
+  engine.feed(quote_at(utc(2026, 3, 10, 1, 0), "70500"));
   engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
   engine.finish();
 
   CHECK(engine.strategy().quotes_ == 1);
   CHECK(engine.result().quotes_ == 1);
   CHECK(engine.result().bars_ == 1);
+}
+
+TEST_CASE("a phase announced by a quote is announced after that quote's price is installed") {
+  // `Runner::feed(QuoteEvent)` installs the price, and it runs *after* the announcement -- so
+  // announcing first left `on_phase` deciding on the previous bar's close, which for a market order
+  // is the value it is sized and guarded at. The bar path has always installed its close before
+  // announcing; this is the same order.
+  backtest::Backtester<WatchesPhase> engine(WatchesPhase{}, replay_config());
+  // 06:30 UTC is 15:30 KST: the close, so the phase after this bar is POST_CLOSE.
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  // 01:00 UTC next day is 10:00 KST, inside the session: a transition to OPEN.
+  engine.feed(quote_at(utc(2026, 3, 11, 1, 0), "70500"));
+
+  REQUIRE(engine.strategy().phases_.size() == 2);
+  CHECK(engine.strategy().phases_[1] == strategy::MarketPhase::OPEN);
+  // The quote's price, not the previous bar's close.
+  CHECK(engine.strategy().price_at_phase_[1] == std::optional<Decimal64>(Decimal64::parse("70500")));
+}
+
+TEST_CASE("a weekly bar's period start is not derivable, and the fallback is the bar before it") {
+  // A close-stamped weekly bar ends on a Friday and began on a Monday, so the session open on its
+  // *period end's* date is four days too late -- and an earlier version of this engine used exactly
+  // that and called it conservative. A Tuesday quote would have passed the check and filled at the
+  // week's Monday open, a price from two days before the decision. Unanswerable is now answered
+  // with the previous bar of the same instrument, which is never later than the true start.
+  backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
+  // Two weekly bars, so the second has a predecessor to fall back to.
+  engine.feed(moving_bar(utc(2026, 3, 6, 6, 30), BarInterval::ONE_WEEK, "60000", "61000"));
+  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_WEEK, "69000", "70000"));
+  // The Tuesday inside the following week.
+  engine.feed(quote_at(utc(2026, 3, 17, 1, 0), "70500"));
+
+  // That week's own bar cannot fill it: the order was decided inside the period it covers.
+  engine.feed(moving_bar(utc(2026, 3, 20, 6, 30), BarInterval::ONE_WEEK, "75000", "76000"));
+  CHECK(engine.result().executions_.empty());
+
+  // The week after does, at its open.
+  engine.feed(moving_bar(utc(2026, 3, 27, 6, 30), BarInterval::ONE_WEEK, "80000", "81000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("80000"));
+}
+
+TEST_CASE("an open-stamped bar states its own period start") {
+  // The case that needs no derivation at all and that the first version of this rule got wrong:
+  // `BarStamp::OPEN` means the timestamp *is* the first instant of the period, while the period end
+  // is 24 hours later -- so deriving the start from the period end's date put it a day late, and a
+  // quote inside the day passed a check it should have failed.
+  backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
+  Bar first;
+  first.timestamp_ = utc(2026, 3, 10, 0, 0);
+  first.open_ = Decimal64::parse("69000");
+  first.high_ = Decimal64::parse("70000");
+  first.low_ = Decimal64::parse("69000");
+  first.close_ = Decimal64::parse("70000");
+  first.volume_ = Decimal64::parse("1000");
+  engine.feed(strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::OPEN, first));
+
+  // 01:00 UTC on the 11th is 10:00 KST, an hour into the period the next open-stamped bar covers.
+  engine.feed(quote_at(utc(2026, 3, 11, 1, 0), "70500"));
+
+  Bar second;
+  second.timestamp_ = utc(2026, 3, 11, 0, 0);
+  second.open_ = Decimal64::parse("75000");
+  second.high_ = Decimal64::parse("76000");
+  second.low_ = Decimal64::parse("75000");
+  second.close_ = Decimal64::parse("76000");
+  second.volume_ = Decimal64::parse("1000");
+  engine.feed(strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::OPEN, second));
+
+  // Its period began at 09:00 KST, an hour before the decision, so it cannot fill the order.
+  CHECK(engine.result().executions_.empty());
 }
 
 TEST_CASE("an order placed from on_quote is announced in that same call") {

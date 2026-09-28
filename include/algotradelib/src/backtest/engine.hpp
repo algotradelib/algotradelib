@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <utility>
@@ -478,6 +479,10 @@ public:
     // reported. Before it would report only what settlement had already changed.
     publish_order_updates();
     previous_ = event;
+    // Per instrument, unlike `previous_`, because it answers a question about *this* series: the
+    // fallback in `decided_inside_after` needs the previous bar of the same instrument, and an
+    // interleaved replay's previous bar is usually somebody else's.
+    last_period_end_.insert_or_assign(event.instrument_, event.period_end_);
   }
 
   /**
@@ -506,11 +511,24 @@ public:
    * | Updates the price a market order is valued at | yes, in `Runner::feed` | the same call |
    * | Advances the decision clock to the quote's instant | yes, in `Runner::feed` | the same call |
    * | Re-derives the market phase at that instant | yes, `PollingLoop` before each due poll | **yes**, here |
-   * | Publishes order updates | yes — the working-order poll, which follows the quote poll | **yes**, here |
+   * | Announces a phase change | yes, once per iteration | **yes**, before `on_quote` |
+   * | Publishes order updates | **when** the working-order poll is due and the broker offers one | **yes**, always |
    * | Marks the book, records an equity point, fills anything | no ledger exists live | **no** |
    *
-   * The last row is the only one where the two differ, and it is the one where live has nothing to
-   * differ *with*: an equity curve is a replay's own artefact, recorded per bar.
+   * The last three rows are approximations rather than identities, and saying which way each one
+   * errs is more useful than claiming they match:
+   *
+   * - **The announcement is earlier here than live.** A live loop announces after all its polls, so
+   *   `on_phase` sees the quote *and* that iteration's other polls; this announces before `on_quote`,
+   *   which is what `feed(const BarEvent&)` has always done for a bar. Following the bar path keeps
+   *   one replay internally consistent, which matters more to a replay than matching the loop's
+   *   interleaving; the cost is that an order placed from `on_phase` is visible to `on_quote` here
+   *   and would not yet exist live.
+   * - **The update is unconditional here and conditional live**, on the working-order cadence being
+   *   set, the broker publishing the inquiry, and the listing arriving. So a replay announces an
+   *   order a live run might see later or, between two polls, not at all.
+   * - **The last row is where live has nothing to differ with**: an equity curve is a replay's own
+   *   artefact, recorded per bar.
    *
    * **Two drafts of this comment were wrong in opposite directions, and both are worth knowing.**
    * The first claimed a quote left the price and the clock alone, having read
@@ -559,9 +577,12 @@ public:
     const bool phase_changed = clock_.advance_to(event.quote_.received_at_, trading_day);
     runner_.context().set_phase(clock_.phase());
     if (phase_changed) {
-      // Set for the same reason the bar path sets it before announcing: `Runner::feed(MarketPhase)`
-      // does not advance the context's clock, and a handler deciding at the previous instant files
-      // its send under the wrong moment for `RiskLimits::rate_window_`.
+      // **The price and the clock move first, then the change is announced.** `Runner::feed` sets
+      // both from the quote, but it runs *after* this, so announcing first left `on_phase` deciding
+      // on the previous bar's close and stamping its send at the previous instant -- a market order
+      // sized and guarded at the wrong value, which Codex round 1 found. This is the order
+      // `feed(const BarEvent&)` already uses: mark, price, clock, announce, dispatch.
+      runner_.context().set_last_price(event.quote_.instrument_, event.quote_.last_price_);
       runner_.context().set_now(event.quote_.received_at_);
       install_portfolio();
       drain_reports(runner_.feed(clock_.phase()));
@@ -643,28 +664,64 @@ private:
    * every portfolio installed along the way, and addressable by a cancellation from any callback.
    */
   /**
-   * Returns when `event`'s period began, where that is answerable.
+   * Returns when `event`'s period began, where that is answerable **from the event itself**.
    *
-   * Two cases, and they are answerable for different reasons. An intraday interval has a fixed
-   * length, so the period began one length before it ended. A **calendar** interval does not --
-   * `interval_duration` returns nothing for a day, a week or a month, and deliberately, because a
-   * trading day is not 24 hours -- so a daily bar's period is taken to begin at the session open on
-   * its own local date, which is what a daily bar actually covers and where its open price comes
-   * from.
+   * Three cases, in the order they are decided, and the ordering is the correction Codex round 1
+   * forced:
    *
-   * **A week or a month is answered the same way and is therefore conservative**: the session open
-   * on the *last* date of the period, which is later than the period truly began, so an order
-   * decided inside it is deferred by one bar rather than credited a price from its start. Deferring
-   * is the safe direction, and a weekly replay fed intraday quotes is not a case any of this is
-   * tuned for.
+   * 1. **An open-stamped bar states it.** `BarStamp::OPEN` means `bar_.timestamp_` *is* the first
+   *    instant of the period, for every interval. Nothing has to be derived.
+   * 2. **An intraday interval has a fixed length**, so a close-stamped one began that long before it
+   *    ended.
+   * 3. **A close-stamped daily bar** began at the session open on its own local date, which is the
+   *    date its period end falls on and where its open price comes from.
+   *
+   * **Everything else is unanswerable and says so.** A close-stamped weekly bar ends on Friday and
+   * began on Monday; taking the session open on the *period end's* date would have called Friday
+   * 09:00 its start, which is four days too late -- so a Tuesday quote would have passed the check
+   * and filled at Monday's open, a price from two days before the decision. An earlier version of
+   * this function did exactly that and called it conservative; it was the opposite. The same was
+   * true of an open-stamped daily bar, whose period end is 24 hours after its start.
+   *
+   * What an empty answer means to the caller is in `settle_queued_against`: not "no constraint", but
+   * "fall back to a bound that *is* known".
    */
   std::optional<std::chrono::system_clock::time_point> period_start_of(
     const strategy::BarEvent& event
   ) const {
+    if (event.stamp_ == BarStamp::OPEN) {
+      return event.bar_.timestamp_;
+    }
     if (const auto duration = interval_duration(event.interval_)) {
       return event.period_end_ - *duration;
     }
-    return clock_.session().opens_at(event.period_end_);
+    if (event.interval_ == BarInterval::ONE_DAY) {
+      return clock_.session().opens_at(event.period_end_);
+    }
+    return std::nullopt;
+  }
+
+  /**
+   * Returns the instant after which a decision may have been made *inside* `event`'s period.
+   *
+   * `period_start_of` where that is answerable, and otherwise the **previous bar this instrument
+   * closed**, which is a bound this engine always knows and is never later than the true period
+   * start: whatever a weekly bar covers, it did not begin before the previous weekly bar ended.
+   *
+   * Empty only for the first bar of an instrument, where there is nothing before it and therefore
+   * nothing that could have been decided inside it.
+   */
+  std::optional<std::chrono::system_clock::time_point> decided_inside_after(
+    const strategy::BarEvent& event
+  ) const {
+    if (const auto start = period_start_of(event)) {
+      return start;
+    }
+    const auto seen = last_period_end_.find(event.instrument_);
+    if (seen == last_period_end_.end()) {
+      return std::nullopt;
+    }
+    return seen->second;
   }
 
   void settle_queued_against(const strategy::BarEvent& event) {
@@ -684,7 +741,7 @@ private:
       // without opening one, so without this an order decided at 10:30 fills at that day's 09:00
       // open -- a price from before the decision. Undated orders (instant zero) are eligible, so
       // this can only ever defer a fill to a later bar and never invent one.
-      const auto began = period_start_of(event);
+      const auto began = decided_inside_after(event);
       if (entry.decided_at_ != std::chrono::system_clock::time_point{} && began &&
           *began < entry.decided_at_) {
         continue;
@@ -1024,6 +1081,8 @@ private:
     }
   }
 
+  /** Each instrument's last period end; see `decided_inside_after`. */
+  std::map<InstrumentId, std::chrono::system_clock::time_point> last_period_end_;
   ReplayConfig config_;
   NextBarFillModel fills_;
   ReplayLedger ledger_;

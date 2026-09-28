@@ -125,15 +125,17 @@ struct ReportCaveats {
    * **What a reader has to know when this is non-zero: an order placed from `on_quote` was filled
    * against a later *bar*, not against the quote.** A quote moves the clock, the price and the
    * phase, and it neither fills nor marks: `NextBarFillModel` prices a market order at a bar's open,
-   * so the order rests until **a bar whose period began after the decision** -- which for a quote
-   * part-way through a session is not that session's bar but the next one. Live, the same order
+   * so the order rests until a bar whose period this engine can establish **began at or before the
+   * decision**. For a quote part-way through a session that is not that session's bar but the next
+   * one; for a quote between a close and the next open it is the very next bar. Live, the same order
    * reaches the broker immediately and can trade at once.
    *
-   * So a quote-driven strategy's replayed fills are later and at a different price than its live
-   * ones, and the gap is a whole bar. That is the one place a quote-driven backtest and a
-   * quote-driven live run are known to differ, and it is stated here rather than in prose a reader
-   * has to remember applied to their run. A fill model that executes against a quote would close it,
-   * and is a different design with its own argument.
+   * So a quote-driven strategy's replayed fills are later, and at a different price, than its live
+   * ones -- by one bar where the quote fell inside a period, and by whatever a bar's open differs
+   * from the quote otherwise. That is the place a quote-driven backtest and a quote-driven live run
+   * are known to differ, and it is stated here rather than in prose a reader has to remember applied
+   * to their run. A fill model that executes against a quote would close it, and is a different
+   * design with its own argument.
    */
   std::size_t quotes_{0};
 

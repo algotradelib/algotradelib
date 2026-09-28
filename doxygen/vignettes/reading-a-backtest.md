@@ -96,24 +96,29 @@ engine.finish();
 
 **A quote does the same thing in both modes, because both go through the same function.**
 `Runner::feed(const QuoteEvent&)` sets the price a market order is valued at, advances the decision
-clock to the quote's own instant, and calls the handler; live, the quote poll calls exactly that and
-nothing more. What a replay adds around it is nothing you can observe:
+clock to the quote's own instant, and calls the handler; live, the quote poll calls exactly that. What
+a replay arranges around it is an approximation of the rest of a live iteration, and the last three
+rows below say which way each one errs:
 
 | | Live | Replay |
 | --- | --- | --- |
 | Updates the price a market order is valued at | yes | yes, the same call |
 | Advances the clock a decision is stamped with | yes | yes, the same call |
 | Re-derives the market phase at that instant | yes, before every due poll | yes |
-| Announces an order placed from the handler | yes, the working-order poll follows | yes |
+| Announces an order placed from the handler | when the working-order poll is due | yes, always |
 | Marks the book, records an equity point, fills anything | no ledger exists live | **no** |
 
 The phase row matters more than it looks: `RiskLimits::permitted_phases_` defaults to `{OPEN}`, so a
 replay that derived the phase only from bars would have shown a mid-session quote the *previous
-close's* phase and refused an order a live run would have sent.
+close's* phase and refused an order a live run would have sent. A change is announced **before**
+`on_quote` here and after all polls live, which is the ordering `feed(BarEvent)` has always used; an
+order placed from `on_phase` is therefore visible to `on_quote` in a replay and would not yet exist
+live. And the announcement of an order is unconditional here and conditional live, on the
+working-order poll being due at all.
 
 **So an order placed from `on_quote` fills against a later *bar*, at that bar's price** — and
-specifically against a bar whose period began **after** the decision, which for a quote part-way
-through a session is not that session's bar but the next one. Today's daily bar opened at 09:00, and
+specifically against a bar whose period this engine can establish began **at or before** the
+decision, which for a quote part-way through a session is not that session's bar but the next one. Today's daily bar opened at 09:00, and
 crediting a 09:00 price to a 10:30 decision would be lookahead with the sign flipped. Live, the same
 order reaches the broker immediately and can trade at once. `ReportCaveats::quotes_` is non-zero on
 any run that fed a quote, and that is what it is telling you. A fill model that executes against a
