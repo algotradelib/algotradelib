@@ -307,6 +307,23 @@ struct ReplayResult {
    * aggregate-initializing it positionally would have every later field shift underneath them.
    */
   std::size_t quotes_{0};
+  /**
+   * Fills deferred because this engine could not prove the decision preceded the bar's period.
+   *
+   * Only a **close-stamped weekly, monthly or yearly** bar can reach this: every other shape states
+   * or derives its period start, and the comparison is then exact. For those, the engine falls back
+   * to "was this decided at or before the previous bar of the same instrument", which is sufficient
+   * proof when it holds and no proof at all when it does not -- so a quote in the gap between two
+   * weekly periods is deferred alongside one genuinely inside a period.
+   *
+   * Non-zero therefore means some fills happened **later than they needed to**, by at least one bar,
+   * and the report says so rather than leaving a reader to discover it from a fill price. Zero is
+   * every replay of daily, intraday or open-stamped bars, which is every replay this library's own
+   * examples and tests produce apart from the one that exists to pin this.
+   *
+   * **Appended**, for the reason `currency_` above states.
+   */
+  std::size_t fills_deferred_unprovable_{0};
 };
 
 /** Everything a replay needs beyond the strategy and the bars. */
@@ -702,26 +719,46 @@ private:
   }
 
   /**
-   * Returns the instant after which a decision may have been made *inside* `event`'s period.
+   * Returns whether `entry` may fill against `event` **without being credited a price from before it
+   * was decided**.
    *
-   * `period_start_of` where that is answerable, and otherwise the **previous bar this instrument
-   * closed**, which is a bound this engine always knows and is never later than the true period
-   * start: whatever a weekly bar covers, it did not begin before the previous weekly bar ended.
+   * Three answers, and the third is the one two review rounds were spent arriving at.
    *
-   * Empty only for the first bar of an instrument, where there is nothing before it and therefore
-   * nothing that could have been decided inside it.
+   * 1. **An undated order is eligible.** That is every order placed by a caller driving
+   *    `QueueingExecutor` directly, and this rule exists to defer fills rather than to invent them.
+   * 2. **Where `period_start_of` answers, the comparison is exact**: the bar's period must have begun
+   *    **at or after** the decision. A period that began before it contains the decision, and its
+   *    open price -- which is what `NextBarFillModel` credits a market order with -- is from before
+   *    the strategy decided anything.
+   * 3. **Where it does not answer**, the only proof available is that the decision was made at or
+   *    before this instrument's *previous* bar ended: periods of one instrument do not overlap, so a
+   *    decision that old cannot be inside this one. It is a **sufficient** condition and not a
+   *    necessary one, which is exactly its cost -- a quote in the gap *between* two weekly periods is
+   *    also outside the later one, and this cannot tell that case from a quote inside it. Those fills
+   *    are deferred to a later bar and counted in `ReplayResult::fills_deferred_unprovable_`, because
+   *    a delay nobody can see is the kind of modelling difference this engine's caveats exist for.
+   *
+   * **With no previous bar and no derivable start, the answer is no.** An earlier version returned
+   * "no constraint" there, which made the *first* close-stamped weekly bar of an instrument fill a
+   * quote decided inside it at that week's opening price -- the precise defect the rule exists to
+   * stop, surviving in the one case the tests had not covered. Codex round 2 found it.
    */
-  std::optional<std::chrono::system_clock::time_point> decided_inside_after(
+  bool may_fill(
+    const QueuedOrder<Tag>& entry,
     const strategy::BarEvent& event
-  ) const {
+  ) {
+    if (entry.decided_at_ == std::chrono::system_clock::time_point{}) {
+      return true;
+    }
     if (const auto start = period_start_of(event)) {
-      return start;
+      return !(*start < entry.decided_at_);
     }
     const auto seen = last_period_end_.find(event.instrument_);
-    if (seen == last_period_end_.end()) {
-      return std::nullopt;
+    if (seen == last_period_end_.end() || seen->second < entry.decided_at_) {
+      ++result_.fills_deferred_unprovable_;
+      return false;
     }
-    return seen->second;
+    return true;
   }
 
   void settle_queued_against(const strategy::BarEvent& event) {
@@ -739,11 +776,9 @@ private:
       // **And it cannot fill against a bar whose period had already begun when it was decided.**
       // The counter above is enough while only bars place orders; a quote arrives inside a period
       // without opening one, so without this an order decided at 10:30 fills at that day's 09:00
-      // open -- a price from before the decision. Undated orders (instant zero) are eligible, so
-      // this can only ever defer a fill to a later bar and never invent one.
-      const auto began = decided_inside_after(event);
-      if (entry.decided_at_ != std::chrono::system_clock::time_point{} && began &&
-          *began < entry.decided_at_) {
+      // open -- a price from before the decision. See `may_fill` for the three answers and what the
+      // third one costs.
+      if (!may_fill(entry, event)) {
         continue;
       }
       eligible.push_back(entry.ref_);

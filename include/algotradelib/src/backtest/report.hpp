@@ -125,8 +125,9 @@ struct ReportCaveats {
    * **What a reader has to know when this is non-zero: an order placed from `on_quote` was filled
    * against a later *bar*, not against the quote.** A quote moves the clock, the price and the
    * phase, and it neither fills nor marks: `NextBarFillModel` prices a market order at a bar's open,
-   * so the order rests until a bar whose period this engine can establish **began at or before the
-   * decision**. For a quote part-way through a session that is not that session's bar but the next
+   * so the order rests until a bar whose period this engine can establish began **at or after the
+   * decision** -- a period that began earlier contains the decision, and its open is a price from
+   * before the strategy decided anything. For a quote part-way through a session that is not that session's bar but the next
    * one; for a quote between a close and the next open it is the very next bar. Live, the same order
    * reaches the broker immediately and can trade at once.
    *
@@ -138,6 +139,24 @@ struct ReportCaveats {
    * design with its own argument.
    */
   std::size_t quotes_{0};
+
+  /**
+   * Fills this replay deferred because it could not prove the decision preceded the bar's period.
+   *
+   * Zero for every replay of daily, intraday or open-stamped bars. Non-zero only for a close-stamped
+   * **weekly, monthly or yearly** bar, whose period start this engine cannot derive: it falls back to
+   * proving the decision was at or before the previous bar of the same instrument, which is
+   * sufficient when it holds and no proof at all when it does not. So an order decided in the gap
+   * *between* two weekly periods -- outside both, and legitimately fillable by the later one -- is
+   * deferred alongside one decided inside a period.
+   *
+   * **What it costs a reader: those fills happened at least one bar later, and at that bar's price,
+   * than the model would otherwise have given them.** The alternative was to fill them at a price
+   * from before the decision, which is the defect the rule exists to prevent, so the delay is
+   * deliberate; it is reported rather than hidden because it is a modelling difference nobody could
+   * otherwise see. See `ReplayResult::fills_deferred_unprovable_`.
+   */
+  std::size_t fills_deferred_unprovable_{0};
 
   /**
    * Always true, and present so a reader is told rather than left to assume.
@@ -365,6 +384,7 @@ inline Report summarize(
   report.caveats_.gaps_ = result.gaps_;
   report.caveats_.unfilled_ = result.unfilled_;
   report.caveats_.quotes_ = result.quotes_;
+  report.caveats_.fills_deferred_unprovable_ = result.fills_deferred_unprovable_;
 
   // Costs summed exactly, because they are money -- and **per currency**, because a replay whose
   // instruments span markets would otherwise have won added to dollars to make one scalar.

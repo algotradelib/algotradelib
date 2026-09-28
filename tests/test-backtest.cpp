@@ -1190,6 +1190,70 @@ TEST_CASE("a weekly bar's period start is not derivable, and the fallback is the
   CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("80000"));
 }
 
+TEST_CASE("an instrument's first calendar bar cannot fill an order decided inside it") {
+  // The hole the previous version left, and the one case its weekly test could not reach: with no
+  // previous bar to compare against, "the period start is unknown" was read as "no constraint", so
+  // the very first close-stamped weekly bar filled a quote decided inside it at that week's opening
+  // price. An unknown start is not permission.
+  backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
+  // A Tuesday, 10:00 KST, inside the week the first bar covers.
+  engine.feed(quote_at(utc(2026, 3, 10, 1, 0), "70500"));
+  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_WEEK, "60000", "61000"));
+
+  CHECK(engine.result().executions_.empty());
+  CHECK(engine.result().fills_deferred_unprovable_ > 0);
+
+  // And it fills once a bar exists that the engine can prove began after the decision -- here by the
+  // previous-bar rule, the week after.
+  engine.feed(moving_bar(utc(2026, 3, 20, 6, 30), BarInterval::ONE_WEEK, "80000", "81000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("80000"));
+}
+
+TEST_CASE("a fill deferred without proof is counted and reported, because it is a delay") {
+  // **The cost of the third answer, made visible rather than argued away.** This quote is at 16:00
+  // on the Friday a weekly bar ends -- outside that period and outside the next one, so the next
+  // week's bar could legitimately have filled it. The engine cannot derive where that period began,
+  // and the only proof it has is "decided at or before the previous bar ended", which this quote
+  // fails. So the fill waits a further week, and the report says how often that happened.
+  backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 6, 6, 30), BarInterval::ONE_WEEK, "60000", "61000"));
+  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_WEEK, "69000", "70000"));
+  // 07:00 UTC is 16:00 KST, half an hour after that Friday's close.
+  engine.feed(quote_at(utc(2026, 3, 13, 7, 0), "70500"));
+
+  engine.feed(moving_bar(utc(2026, 3, 20, 6, 30), BarInterval::ONE_WEEK, "75000", "76000"));
+  // Deferred, although the decision really did precede this period: unprovable, not proven inside.
+  CHECK(engine.result().executions_.empty());
+
+  engine.feed(moving_bar(utc(2026, 3, 27, 6, 30), BarInterval::ONE_WEEK, "80000", "81000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("80000"));
+  CHECK(engine.result().fills_deferred_unprovable_ > 0);
+
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  CHECK(report.caveats_.fills_deferred_unprovable_ == engine.result().fills_deferred_unprovable_);
+}
+
+TEST_CASE("a daily replay never defers a fill it could not prove") {
+  // The other half of that counter: every bar shape but a close-stamped calendar one above a day
+  // states or derives its period start, so the comparison is exact and this figure stays at zero.
+  // Absence versus zero again -- a reader seeing zero is being told the model did not delay anything.
+  backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(quote_at(utc(2026, 3, 11, 1, 0), "70500"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "75000", "76000"));
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  CHECK(engine.result().fills_deferred_unprovable_ == 0);
+}
+
 TEST_CASE("an open-stamped bar states its own period start") {
   // The case that needs no derivation at all and that the first version of this rule got wrong:
   // `BarStamp::OPEN` means the timestamp *is* the first instant of the period, while the period end

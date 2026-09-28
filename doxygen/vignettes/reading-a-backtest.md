@@ -117,12 +117,21 @@ live. And the announcement of an order is unconditional here and conditional liv
 working-order poll being due at all.
 
 **So an order placed from `on_quote` fills against a later *bar*, at that bar's price** — and
-specifically against a bar whose period this engine can establish began **at or before** the
-decision, which for a quote part-way through a session is not that session's bar but the next one. Today's daily bar opened at 09:00, and
+specifically against a bar whose period began **at or after** the decision, which for a quote
+part-way through a session is not that session's bar but the next one. A period that began earlier
+*contains* the decision, and its open is a price from before the strategy decided anything. Today's daily bar opened at 09:00, and
 crediting a 09:00 price to a 10:30 decision would be lookahead with the sign flipped. Live, the same
 order reaches the broker immediately and can trade at once. `ReportCaveats::quotes_` is non-zero on
 any run that fed a quote, and that is what it is telling you. A fill model that executes against a
 quote is a different design with its own argument, and this is not it.
+
+**One bar shape cannot be checked exactly, and the report says when that cost you something.** A
+close-stamped weekly, monthly or yearly bar does not state when its period began and the engine will
+not guess — so for those it falls back to proving the decision came at or before the *previous* bar
+of that instrument. That is proof when it holds and no proof when it does not, so an order decided in
+the gap between two weekly periods is deferred along with one decided inside a period, and fills a
+bar later than it needed to. `ReportCaveats::fills_deferred_unprovable_` counts exactly those, and is
+zero for every daily, intraday or open-stamped replay.
 
 ## What it does not model at all
 
