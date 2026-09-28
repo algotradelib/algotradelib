@@ -856,8 +856,10 @@ struct LoopReport {
   /**
    * Closing instructions local machinery refused to send, so no broker was asked.
    *
-   * The journal could not be written. Different from every count above in what an operator does
-   * about it: fix the storage, `resume_after_local_failure`, and stop again.
+   * Local machinery was unavailable -- a pre-send journal write that failed is the usual cause and
+   * not the only one, since any executor answering `UNAVAILABLE` lands here. Different from every
+   * count above in what an operator does about it: repair whatever the binding could not reach,
+   * `resume_after_local_failure`, and stop again.
    */
   std::size_t closing_unavailable_{0};
   /**

@@ -237,9 +237,9 @@ refused flatten is reported once rather than twice.
 
 | Figure | What happened |
 | --- | --- |
-| `orders_unbuildable_` | reconciliation could not build the instruction: no reference data, no price, an unknown grid — or a quantity that rounded to zero, which is a deliberate drop rather than a fault |
+| `orders_unbuildable_` | reconciliation could not build the instruction: no reference data, no price, an unknown grid — **or a quantity that rounded to zero**, which is a deliberate drop rather than a fault, so a non-zero figure is not by itself a reason to go looking for missing data |
 | `orders_reconcile_withheld_` | the indeterminacy ledger is holding that instrument until a listing settles an unknown outcome |
-| `orders_guard_refused_` | a `RiskLimits` check refused it; nothing was sent |
+| `orders_guard_refused_` | `RiskGuard` refused it — **a hold as well as a limit**, since it checks the active holds first, so a halted run reports every order here. Nothing was sent |
 | `orders_binding_refused_` | the binding would not send it; no request went out |
 | `orders_broker_refused_` | the broker was asked and said no; a request was spent |
 | `orders_indeterminate_` | the request failed in transit, so the order may or may not exist |
@@ -341,7 +341,8 @@ if (!report.closing_complete()) {
 happens — `closing_rejected_` (reconciliation could not build it, the broker refused it, or the
 binding refused to send it),
 `closing_refused_`, `closing_withheld_`, `closing_indeterminate_`, `closing_unavailable_` (the
-journal could not be written, so no broker was asked) and `closing_unresolved_` (a cancellation named
+local machinery was unavailable, so no broker was
+asked — usually a journal write that failed, and not only that) and `closing_unresolved_` (a cancellation named
 an order the snapshot does not hold). Cancellations count in these as well as placements: a
 withdrawal that failed in transit may have withdrawn the order or may not, and that is not the same
 as one that went.

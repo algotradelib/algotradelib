@@ -1514,6 +1514,56 @@ struct UnrelatedLastError {
 
 } // namespace
 
+/** An executor that refuses every order and may or may not say why. */
+struct SilentRejector {
+  static constexpr bool reaches_a_broker = true;
+
+  runner::SendOutcome place(const strategy::PlannedOrder&) {
+    return runner::SendOutcome::REJECTED;
+  }
+
+  /** Never reached here, and required because `Runner` compiles the withdrawal path unconditionally. */
+  runner::SendOutcome cancel(const WorkingOrder<runner::DryTag>&) {
+    return runner::SendOutcome::ACCEPTED;
+  }
+
+  const std::optional<BrokerError>& last_error() const noexcept { return last_error_; }
+
+  std::optional<BrokerError> last_error_;
+};
+
+TEST_CASE("a refusal that says nothing does not inherit the last one's account") {
+  // **The record's contract is "the last refusal, or nothing", never "the last refusal that came
+  // with words".** `SessionExecutor` always states something on this path, so this is about a
+  // binding somebody else writes: it answers `REJECTED` and says nothing, the counter still moves,
+  // and a record kept from an earlier refusal would be handed on as though it described this one --
+  // the wrong instrument under the wrong tag.
+  using Refusing = runner::Runner<HoldTen, strategy::NoCaps, runner::DryTag, SilentRejector>;
+  SilentRejector executor;
+  BrokerError first;
+  first.broker_code_ = "SPOKE";
+  first.message_ = "the broker explained itself";
+  executor.last_error_ = first;
+
+  Refusing runner_instance(HoldTen{}, {}, 512, executor);
+  arrange(runner_instance);
+  // This executor reaches a broker, so the runner requires an account it has read before it places.
+  strategy::Portfolio<runner::DryTag> known;
+  known.as_of_ = utc(2026, 3, 10, 6, 30);
+  runner_instance.context().set_portfolio(known);
+
+  runner_instance.feed(bar_at(10, "70000"));
+  REQUIRE(runner_instance.last_broker_refusal().has_value());
+  CHECK(runner_instance.last_broker_refusal()->code_ == "SPOKE");
+
+  // The same executor, refusing again and saying nothing this time.
+  runner_instance.executor().last_error_.reset();
+  runner_instance.feed(bar_at(11, "70000"));
+
+  CHECK(runner_instance.orders_broker_refused() == 2);
+  CHECK_FALSE(runner_instance.last_broker_refusal().has_value());
+}
+
 TEST_CASE("the refusal record is detected by shape, not by a method's name") {
   // **A name is not a contract.** An earlier version of `states_last_error` asked only whether
   // `last_error()` was a valid expression, so any executor with a method of that name selected the

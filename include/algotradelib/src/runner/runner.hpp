@@ -259,7 +259,9 @@ struct DryRunReport {
   /**
    * Instructions local machinery refused to send, with the reason.
    *
-   * Never a broker's answer. The order journal could not be written, and so nothing was attempted.
+   * Never a broker's answer. **Local machinery was unavailable**, so nothing was attempted -- a
+   * pre-send journal write that failed is the usual cause and not the only one, since any executor
+   * answering `SendOutcome::UNAVAILABLE` lands here.
    * Reported separately from `rejected_` because the two ask for opposite responses: a rejection is
    * about one instruction, this is about whether the runner should still be trading at all.
    */
@@ -776,12 +778,15 @@ public:
    * **Six origins for placements**, not one figure, because an operator's next move differs for each
    * and the library already distinguishes them:
    *
-   * - `orders_unbuildable` -- **every** reconciliation rejection, including a quantity that rounded
-   *   to zero, which is an instruction deliberately dropped rather than a failure. Missing reference
-   *   data, no price, an unknown grid: the library could not build a valid order.
+   * - `orders_unbuildable` -- **every** reconciliation rejection. Missing reference data, no price,
+   *   an unknown grid -- and a quantity that rounded to zero, which is an instruction deliberately
+   *   dropped rather than anything being wrong. So a non-zero figure is not by itself a reason to go
+   *   looking for missing data; `Report::rejected_` carries the reason per instruction.
    * - `orders_reconcile_withheld` -- the indeterminacy ledger holds this instrument until a listing
    *   settles an unknown outcome. Nothing was wrong with the instruction.
-   * - `orders_guard_refused` -- a `RiskGuard` limit refused it. Nothing was sent.
+   * - `orders_guard_refused` -- `RiskGuard` refused it. **A hold as well as a limit**: it checks the
+   *   active holds first, so a halted run reports every order here, not only one that breached a
+   *   number. `Report::refused_` carries the reason per order, which is what a diagnosis needs.
    * - `orders_binding_refused` -- the binding would not send it. No request went out and no broker
    *   counted one.
    * - `orders_broker_refused` -- the broker was asked and said no. A request *was* spent, and
@@ -1883,6 +1888,13 @@ private:
     if constexpr (runner_detail::states_last_error<Executor>::value) {
       const auto& error = executor_.last_error();
       if (!error) {
+        // **Cleared, not left alone.** An executor may answer `REJECTED` and state nothing; the
+        // counter still moves, and a record kept from an *earlier* refusal would then be handed to
+        // the next run as though it described this one -- the wrong instrument under the wrong tag.
+        // `SessionExecutor` always states something on this path, so this is about a binding
+        // somebody else writes: the contract is "the last refusal, or nothing", never "the last
+        // refusal that happened to come with words".
+        last_broker_refusal_.reset();
         return;
       }
       BrokerRefusal refusal;
