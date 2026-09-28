@@ -368,15 +368,18 @@ struct Instrument {
   /**
    * The listing date, where the broker publishes one.
    *
-   * Empty also covers a date that was present and unreadable -- a published date can look absent.
-   * KIS's `compact_date_field` wants eight characters forming a real day and Toss's
-   * `optional_calendar_date` wants `YYYY-MM-DD`; a wrong length, a wrong separator or an impossible
-   * day yields empty rather than failing the row.
+   * **Empty means the broker published none -- from Toss. From the other two it may also mean the
+   * date could not be read.** There is nowhere here to record that difference, so Toss's parser
+   * refuses the whole reference read when it meets a stated date it cannot parse: a delisting date
+   * that goes missing reads as "still listed", which is an unreadable value downgraded to the most
+   * permissive claim available. KIS's `compact_date_field` and Kiwoom's `compact_date` still yield
+   * empty for a wrong length or an impossible day, and for them the caveat below stands. That
+   * inconsistency is deliberate and noted: `plan/todo/instrument-dates-damaged.md`.
    *
-   * Empty is not the only way a malformed date goes wrong, though. See the caveat on `Date::year_`:
-   * a component carrying a numeric prefix can produce a *different but valid* date, which arrives
-   * here looking like an ordinary answer -- or empty, if the value it produced is an impossible
-   * day. Only a component with no convertible number at all fails the request.
+   * Empty is not the only way a malformed date can go wrong. See the caveat on `Date::year_`: a
+   * component carrying a numeric prefix can produce a *different but valid* date, which arrives here
+   * looking like an ordinary answer. Toss's parser now requires every component to be digits, so its
+   * dates are no longer subject to that; the other two are.
    */
   std::optional<Date> listed_on_;
   /** The delisting date, where one exists and the broker publishes it. Empty as for `listed_on_`. */

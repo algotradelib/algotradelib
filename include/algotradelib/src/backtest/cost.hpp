@@ -107,16 +107,26 @@ inline Result<CommissionModel> commission_model_from(
   Country country,
   const Date& date
 ) {
-  const auto rate = schedule.rate_for(country, date);
-  if (!rate) {
+  const auto selection = schedule.rate_for(country, date);
+  if (!selection.rate_) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
     // Nothing was asked of anybody: this reads a schedule already in hand.
     error.reached_broker_ = false;
+    // Two different silences, and an operator acts on them differently: a schedule with no row for
+    // the date wants a rate stated or a wider schedule, and one whose window could not be read wants
+    // refetching. The second is not a missing row and must not read as one.
+    if (selection.bounds_unreadable_) {
+      error.broker_code_ = "rate_bounds_unreadable";
+      error.message_ = "the published schedule holds a commission rate for that market whose date "
+        "bounds could not be read, so whether it applies on that date is unknown";
+      return Result<CommissionModel>(std::move(error));
+    }
     error.broker_code_ = "no_rate_for_date";
     error.message_ = "the published schedule states no commission rate for that market and date";
     return Result<CommissionModel>(std::move(error));
   }
+  const auto& rate = selection.rate_;
   auto model = CommissionModel::of(rate->rate_);
   model.from_broker_ = true;
   return Result<CommissionModel>(std::move(model));
@@ -334,14 +344,24 @@ public:
       return Result<CommissionCharge>(std::move(error));
     }
 
-    const auto rate = schedule_->rate_for(country, asserted_, date);
+    const auto selection = schedule_->rate_for(country, asserted_, date);
+    const auto& rate = selection.rate_;
     if (!rate) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
       error.reached_broker_ = false;
-      error.broker_code_ = "no_rate_for_date";
       // The date is named rather than described: a refusal a reader has to reproduce to understand
-      // is a refusal they will work around instead of fixing.
+      // is a refusal they will work around instead of fixing. Which refusal it is matters for the
+      // same reason -- a damaged schedule sends a reader to the broker, a thin one to their own
+      // stated rates, and one message for both sends them to the wrong place half the time.
+      if (selection.bounds_unreadable_) {
+        error.broker_code_ = "rate_bounds_unreadable";
+        error.message_ = "the schedule holds a commission rate for " + described(asserted_) +
+          " in this instrument's market whose date bounds could not be read, so whether it applies "
+          "on " + named(date) + " is unknown; refetch the schedule or state the rates";
+        return Result<CommissionCharge>(std::move(error));
+      }
+      error.broker_code_ = "no_rate_for_date";
       error.message_ = "the schedule states no commission rate for " + named(date) +
         " at venue " + described(asserted_) + " in the market this instrument is listed in";
       return Result<CommissionCharge>(std::move(error));

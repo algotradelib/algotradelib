@@ -1006,8 +1006,14 @@ private:
       if (const auto value = row.if_contains("isCommonShare"); value && value->is_bool()) {
         instrument.common_share_ = value->as_bool();
       }
-      instrument.listed_on_ = optional_calendar_date(row, "listDate");
-      instrument.delisted_on_ = optional_calendar_date(row, "delistDate");
+      // **A listing date the broker stated and this library cannot read fails the row.** `Instrument`
+      // has nowhere to record that a date was damaged, and an empty `delisted_on_` reads as "not
+      // delisted" -- so passing the damage through would turn an unreadable date into the most
+      // permissive claim available, which is the defect this branch exists to remove. Before the
+      // parser required digits, `x026-01-01` already failed here by throwing out of `std::stoi`; this
+      // makes `2026-13-01` and a non-string do the same thing instead of reading as no date at all.
+      instrument.listed_on_ = stated_calendar_date(row, "listDate");
+      instrument.delisted_on_ = stated_calendar_date(row, "delistDate");
       instrument.shares_outstanding_ = nullable_decimal(row, "sharesOutstanding");
       instrument.price_rule_ =
         price_rule_for(instrument.id_.country_, instrument.type_);
@@ -1069,16 +1075,20 @@ private:
     return InstrumentStatus::UNKNOWN;
   }
 
-  /** Reads a `YYYY-MM-DD` field that Toss may report as null. */
-  static std::optional<Date> optional_calendar_date(
-    const json::object& row,
-    std::string_view key
-  ) {
-    const auto value = row.if_contains(key);
-    if (!value || !value->is_string()) {
-      return std::nullopt;
+  /**
+   * Reads a `YYYY-MM-DD` field Toss may report as null, and throws when one was stated unreadably.
+   *
+   * For the fields whose destination is a bare `std::optional<Date>` with nowhere to say that a date
+   * arrived damaged. Returning empty there would make "the broker published no date" and "the broker
+   * published a date nobody can read" the same answer, and for a delisting date the first of those
+   * means the instrument is still listed.
+   */
+  static std::optional<Date> stated_calendar_date(const json::object& row, std::string_view key) {
+    const auto bound = calendar_bound(row, key);
+    if (bound.unreadable_) {
+      throw std::runtime_error(std::string(key) + " is not a YYYY-MM-DD calendar date");
     }
-    return parse_calendar_date(value->as_string().c_str());
+    return bound.date_;
   }
 
   /** Validates the request and asks for the calendar of one market. */
@@ -1201,16 +1211,73 @@ private:
     calendar.days_.push_back(day);
   }
 
-  /** Parses a `YYYY-MM-DD` calendar date. */
+  /**
+   * Parses a `YYYY-MM-DD` calendar date, or nothing when the text is not one.
+   *
+   * **Every character of every field must be a digit, and that is not pedantry.** `std::stoi` takes
+   * a numeric prefix, so a shape check alone let `20x6-01-01` through as the year 20 -- a date that
+   * is valid, plausible and not the one the broker sent, which is worse than no date at all because
+   * nothing downstream can see that it is wrong. It also threw on `x026-01-01`, turning one bad
+   * field into a failure of whatever response carried it. Reading the digits here makes both cases
+   * the same answer: this text is not a date, said once, where a caller can act on it.
+   */
   static std::optional<Date> parse_calendar_date(std::string_view text) {
     if (text.size() != 10 || text[4] != '-' || text[7] != '-') {
       return std::nullopt;
     }
+    const auto digits = [&](std::size_t at, std::size_t count) -> std::optional<int> {
+      int value = 0;
+      for (std::size_t index = at; index < at + count; ++index) {
+        const auto character = text[index];
+        if (character < '0' || character > '9') {
+          return std::nullopt;
+        }
+        value = value * 10 + (character - '0');
+      }
+      return value;
+    };
+    const auto year = digits(0, 4);
+    const auto month = digits(5, 2);
+    const auto day = digits(8, 2);
+    if (!year || !month || !day) {
+      return std::nullopt;
+    }
     Date date;
-    date.year_ = std::stoi(std::string(text.substr(0, 4)));
-    date.month_ = static_cast<unsigned>(std::stoi(std::string(text.substr(5, 2))));
-    date.day_ = static_cast<unsigned>(std::stoi(std::string(text.substr(8, 2))));
+    date.year_ = *year;
+    date.month_ = static_cast<unsigned>(*month);
+    date.day_ = static_cast<unsigned>(*day);
     return is_valid_date(date) ? std::optional<Date>(date) : std::nullopt;
+  }
+
+  /** A date bound as the wire gave it: absent, readable, or stated and unreadable. */
+  struct CalendarBound {
+    std::optional<Date> date_;
+    bool unreadable_{false};
+  };
+
+  /**
+   * Reads an optional date bound, holding "the broker said nothing" apart from "the broker said
+   * something unreadable".
+   *
+   * Absent and JSON `null` are the first: `null` is Toss's own spelling for a rate with no scheduled
+   * change in that direction, and reading it as damage would refuse every open-ended rate it
+   * publishes. Anything else that does not yield a date is the second -- including a value that is
+   * not a string at all, which is a bound stated in a form nothing here can read rather than a bound
+   * withheld.
+   */
+  static CalendarBound calendar_bound(const json::object& row, std::string_view key) {
+    CalendarBound bound;
+    const auto value = row.if_contains(key);
+    if (!value || value->is_null()) {
+      return bound;
+    }
+    if (!value->is_string()) {
+      bound.unreadable_ = true;
+      return bound;
+    }
+    bound.date_ = parse_calendar_date(value->as_string().c_str());
+    bound.unreadable_ = !bound.date_;
+    return bound;
   }
 
   /** Most executions Toss returns in one request. */
@@ -2215,8 +2282,17 @@ private:
         // means. A zero there would claim Toss charges no institution fee, which it never said.
         // Null means open-ended in that direction, which is how Toss publishes a rate with no
         // scheduled change. It is deliberately not read as "today".
-        rate.from_ = optional_calendar_date(row, "startDate");
-        rate.until_ = optional_calendar_date(row, "endDate");
+        const auto from = calendar_bound(row, "startDate");
+        const auto until = calendar_bound(row, "endDate");
+        rate.from_ = from.date_;
+        rate.until_ = until.date_;
+        rate.from_unreadable_ = from.unreadable_;
+        rate.until_unreadable_ = until.unreadable_;
+        if (rate.from_unreadable_ || rate.until_unreadable_) {
+          // Counted per row rather than per bound: what a caller does about it -- refetch, or state
+          // the rates by hand -- is the same one decision whichever end of the window was lost.
+          ++schedule.unreadable_bounds_;
+        }
         schedule.rates_.push_back(std::move(rate));
       }
       schedule.received_at_ = std::chrono::system_clock::now();

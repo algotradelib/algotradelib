@@ -1264,6 +1264,21 @@ inline constexpr std::string_view commission_origin_name(CommissionOrigin origin
   return "unknown";
 }
 
+/** Whether a dated row covers a date, when that is knowable at all. */
+enum class RateApplicability {
+  /** A bound this library could read puts the date outside the row's window. */
+  NO,
+  /** Every bound was readable, and they cover the date. */
+  YES,
+  /**
+   * No readable bound excludes the date, and a bound that could not be read might have.
+   *
+   * Deliberately not folded into `NO`: the row may well be the one in force, so a caller who reaches
+   * for another row here charges a rate on the strength of something nobody established.
+   */
+  UNREADABLE,
+};
+
 /**
  * One commission rate a broker charges, and the dates it applies on.
  *
@@ -1276,12 +1291,12 @@ inline constexpr std::string_view commission_origin_name(CommissionOrigin origin
  * "today": a schedule that started before the account did is a normal thing to be told, and
  * inventing a start for it would make a date comparison say something the broker did not.
  *
- * **But absent does not prove the broker declared it open-ended.** `optional_calendar_date` also
- * yields empty for a bound that was present and unreadable, `parse_commissions` keeps the row, and
- * `applies_on` treats either empty bound as unbounded — so a damaged `endDate` makes an expired
- * rate read as current, and a damaged `startDate` makes a future one read as already in force. That
- * is a known defect with a note of its own, `plan/todo/commission-schedule-damaged-bounds.md`, and it
- * bounds what a costing refusal can promise: a schedule with a damaged bound has no gap to refuse at.
+ * **Absent is not the only way a bound can be empty, and the two are held apart.** A bound that was
+ * present and could not be read leaves the optional empty *and* sets its `_unreadable_` flag, so
+ * `applies_on` answers a definite no rather than treating the row as unbounded. Before that
+ * distinction existed, a damaged `endDate` made an expired rate read as current and a damaged
+ * `startDate` made a future one read as already in force — an unreadable value downgraded to the
+ * most permissive reading available, which is the shape Decision 6 exists to forbid.
  *
  * There is no per-order floor and no transaction tax here, because neither broker publishes one.
  */
@@ -1332,16 +1347,28 @@ struct CommissionRate {
   /**
    * The first date the rate applies on. Empty is open-ended, and deliberately not "today".
    *
-   * **Empty has a second source, and a damaged bound has a third outcome.** Toss's
-   * `optional_calendar_date` yields empty for a date that is present but malformed -- wrong length,
-   * wrong separators, or not a real calendar day -- and `parse_commissions` keeps the row.
-   * `applies_on` then treats the bound as unbounded, so a damaged `endDate` can make an expired
-   * rate read as current. A bound that parses to a *different* date instead, by the numeric-prefix
-   * rule on `Date::year_`, silently moves the window rather than removing it.
+   * **Empty means open-ended only when `from_unreadable_` is false.** A bound the source stated and
+   * this library could not read is empty here too, which is why the flag exists: the two facts are
+   * different and one optional cannot carry both.
    */
   std::optional<Date> from_;
-  /** The last date the rate applies on. Empty means no scheduled change -- or, as above, a bound that could not be read. */
+  /** The last date the rate applies on. Empty is no scheduled change, subject to `until_unreadable_`. */
   std::optional<Date> until_;
+  /**
+   * Whether `from_` is empty because the source stated a start this library could not read.
+   *
+   * False on every row whose start was absent or parsed, which is every row a caller states by hand
+   * and every row a broker publishes readably. True means the broker named a first date in a form
+   * nothing here can hold -- a wrong length, a wrong separator, a digit that is not one, a day that
+   * is not a real calendar day, or a JSON value that is not a string at all.
+   *
+   * The row is kept rather than dropped, because the rate itself is intact and one bad bound must
+   * not lose a schedule's other rows. What changes is what the row is allowed to answer:
+   * `applies_on` says no, and `bounds_unreadable_on` says why.
+   */
+  bool from_unreadable_{false};
+  /** @copydoc from_unreadable_ */
+  bool until_unreadable_{false};
 
   /**
    * Returns whether this row names a market this library normalizes.
@@ -1353,15 +1380,40 @@ struct CommissionRate {
    */
   bool normalized() const noexcept { return other_.empty(); }
 
-  /** Returns whether this rate is the one in force on `date`. */
-  bool applies_on(const Date& date) const {
-    if (from_ && date < *from_) {
-      return false;
+  /**
+   * Returns whether this rate is the one in force on `date`, or that the row cannot say.
+   *
+   * **Not a `bool`, and the loud break is the point.** This predicate used to return one, meaning
+   * "in force", and every caller wrote `if (rate.applies_on(day))`. Adding a third answer under that
+   * signature would have made an unreadable window read as `false` at every one of those sites --
+   * safe where `false` means "do nothing", and a wrong charge where it means "use the other row
+   * instead", which is what a fallback path does. An `enum class` does not convert to `bool`, so
+   * every existing caller stops compiling and is made to decide which of the two it is.
+   *
+   * **Damage the date makes immaterial reports `NO`, not `UNREADABLE`.** A row with a readable start
+   * of 2026-01-01 and an unreadable end is a plain no on 2025-06-01: the readable bound already
+   * excluded the date and no reading of the other could have changed that. Reporting doubt there
+   * would be doubt this library does not have, and a refusal a caller cannot act on is one they
+   * learn to route around.
+   */
+  RateApplicability applies_on(const Date& date) const {
+    if (excluded_on(date)) {
+      return RateApplicability::NO;
     }
-    if (until_ && *until_ < date) {
-      return false;
+    if (from_unreadable_ || until_unreadable_) {
+      return RateApplicability::UNREADABLE;
     }
-    return true;
+    return RateApplicability::YES;
+  }
+
+  /**
+   * Returns whether a bound this library **could** read puts `date` outside this row's window.
+   *
+   * The half of the question that does not depend on damage. It stays public because this is an
+   * aggregate and a private section would stop a caller brace-initializing one.
+   */
+  bool excluded_on(const Date& date) const {
+    return (from_ && date < *from_) || (until_ && *until_ < date);
   }
 };
 
@@ -1407,7 +1459,36 @@ struct CommissionSchedule {
   std::size_t dropped_{0};
 
   /**
-   * Returns the rate in force for `country` at `venue` on `date`, or nothing when none is.
+   * How many rows carry a date bound the source stated and this library could not read.
+   *
+   * Nonzero means this schedule is **partly undated**: the rows are all here and their rates are
+   * intact, but at least one row's window is unknown, so a question whose answer that row could have
+   * changed is refused rather than answered from the rows that happen to be readable.
+   *
+   * It counts rows, not bounds -- a row with both bounds damaged counts once -- because what a
+   * caller does about it is per row: refetch the schedule, or state the rates by hand. Separate from
+   * `dropped_`, which counts rows that could not be **held** at all; these are held and cannot be
+   * **dated**.
+   */
+  std::size_t unreadable_bounds_{0};
+
+  /** What a lookup found, and whether an unreadable window is why it found nothing. */
+  struct RateSelection {
+    /** The rate in force, when one definitely is. */
+    std::optional<CommissionRate> rate_;
+    /**
+     * Whether a row whose window could not be read is why no rate was returned.
+     *
+     * Never true together with a rate. A caller that falls back on an empty `rate_` -- to a stated
+     * tariff, to another schedule, to a zero -- must read this first: an absent rate means the
+     * schedule covers no such date, and an unreadable one means it may well cover it and nobody can
+     * tell. Falling back on the second charges a number the broker did not publish.
+     */
+    bool bounds_unreadable_{false};
+  };
+
+  /**
+   * Returns the rate in force for `country` at `venue` on `date`, and why none is when none is.
    *
    * **Selection is two-pass, and that is what makes the venue dimension additive.** A row keyed to
    * the venue `asserted` names wins; only when no such row exists does a venue-neutral row answer.
@@ -1423,28 +1504,62 @@ struct CommissionSchedule {
    * Within one pass the first matching row wins, as it always has. A broker publishing two
    * overlapping rows for one country, venue and date is describing something this library cannot
    * resolve, and picking the larger or the smaller would be inventing a policy nobody stated.
+   *
+   * **It returns a `RateSelection` rather than an `std::optional`, and that break is deliberate.**
+   * An empty optional said "the schedule covers no such date", and a row whose window could not be
+   * read is a different fact wearing the same emptiness. Callers fall back on emptiness, so the
+   * type has to make them look.
    */
-  std::optional<CommissionRate> rate_for(
+  RateSelection rate_for(
     Country country,
     const VenueKey& asserted,
     const Date& date
   ) const {
     // A row for a market this library does not normalize can never be the answer to a question asked
     // in terms of `Country`, and it is kept so a caller can see that the broker sent it.
-    const auto eligible = [&](const CommissionRate& rate) {
-      return rate.normalized() && rate.country_ == country && rate.applies_on(date);
+    const auto in_market = [&](const CommissionRate& rate) {
+      return rate.normalized() && rate.country_ == country;
     };
-    for (const auto& rate : rates_) {
-      if (eligible(rate) && rate.venue_.matches(asserted)) {
-        return rate;
+    // **Each pass stops at the first row that decides it, and an unreadable row decides it too.**
+    // Within a pass the first match has always won, so a damaged row *after* a definite match could
+    // never have been the answer and is not a reason to refuse -- scanning the whole pass first would
+    // throw away an answer this library knows. A damaged row reached *before* any match is the
+    // opposite case: it may have been the match, so nothing later in the pass can be trusted to be
+    // the winner.
+    const auto pass = [&](bool venue_specific) -> std::optional<RateSelection> {
+      for (const auto& rate : rates_) {
+        if (!in_market(rate)) {
+          continue;
+        }
+        if (!(venue_specific ? rate.venue_.matches(asserted) : rate.venue_.is_any())) {
+          continue;
+        }
+        switch (rate.applies_on(date)) {
+          case RateApplicability::NO:
+            continue;
+          case RateApplicability::YES: {
+            RateSelection found;
+            found.rate_ = rate;
+            return found;
+          }
+          case RateApplicability::UNREADABLE: {
+            RateSelection refused;
+            refused.bounds_unreadable_ = true;
+            return refused;
+          }
+        }
       }
+      return std::nullopt;
+    };
+    // An undecided pass one falls through; a *refused* pass one does not. Pass two's precondition is
+    // "no row for the asserted venue applies", and that is precisely what stopped being known.
+    if (const auto venue_row = pass(true)) {
+      return *venue_row;
     }
-    for (const auto& rate : rates_) {
-      if (eligible(rate) && rate.venue_.is_any()) {
-        return rate;
-      }
+    if (const auto neutral_row = pass(false)) {
+      return *neutral_row;
     }
-    return std::nullopt;
+    return RateSelection{};
   }
 
   /**
@@ -1458,7 +1573,12 @@ struct CommissionSchedule {
    */
   bool any_dated_rate_for(Country country) const {
     for (const auto& rate : rates_) {
-      if (rate.normalized() && rate.country_ == country && (rate.from_ || rate.until_)) {
+      // A bound that could not be read is still a bound the source stated. Asking only whether the
+      // optionals are filled would read a row dated *solely* by damage as undated, and hand the
+      // caller the very "every candidate is the same whichever calendar named the day" assurance
+      // that the damage makes impossible.
+      const bool dated = rate.from_ || rate.until_ || rate.from_unreadable_ || rate.until_unreadable_;
+      if (rate.normalized() && rate.country_ == country && dated) {
         return true;
       }
     }
@@ -1472,7 +1592,7 @@ struct CommissionSchedule {
    * answer. It asks for `VenueKey::any()`, so it reads a neutral row and **refuses** a schedule that
    * only carries venue-specific ones rather than choosing one of them.
    */
-  std::optional<CommissionRate> rate_for(Country country, const Date& date) const {
+  RateSelection rate_for(Country country, const Date& date) const {
     return rate_for(country, VenueKey::any(), date);
   }
 };

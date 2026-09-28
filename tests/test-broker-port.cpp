@@ -164,7 +164,7 @@ TEST_CASE("a strategy gates account-capacity calls on the capability rather than
       if (!schedule) {
         return std::nullopt;
       }
-      const auto rate = schedule.value().rate_for(Country::KR, Date{2026, 9, 23});
+      const auto rate = schedule.value().rate_for(Country::KR, Date{2026, 9, 23}).rate_;
       return rate ? std::optional<Decimal64>(rate->rate_) : std::nullopt;
     } else {
       // Nothing to ask, and nothing invented: a caller here states its own cost model.

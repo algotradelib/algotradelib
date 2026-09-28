@@ -4290,22 +4290,22 @@ TEST_CASE(
   rate.from_ = Date{2026, 1, 1};
   rate.until_ = Date{2026, 12, 31};
 
-  REQUIRE(rate.applies_on(Date{2026, 1, 1}));
-  REQUIRE(rate.applies_on(Date{2026, 12, 31}));
-  REQUIRE(rate.applies_on(Date{2026, 6, 15}));
-  REQUIRE_FALSE(rate.applies_on(Date{2025, 12, 31}));
-  REQUIRE_FALSE(rate.applies_on(Date{2027, 1, 1}));
+  REQUIRE(rate.applies_on(Date{2026, 1, 1}) == RateApplicability::YES);
+  REQUIRE(rate.applies_on(Date{2026, 12, 31}) == RateApplicability::YES);
+  REQUIRE(rate.applies_on(Date{2026, 6, 15}) == RateApplicability::YES);
+  REQUIRE(rate.applies_on(Date{2025, 12, 31}) == RateApplicability::NO);
+  REQUIRE(rate.applies_on(Date{2027, 1, 1}) == RateApplicability::NO);
 
   // An absent bound is open-ended in that direction, which is how a null date arrives.
   CommissionRate open_ended = rate;
   open_ended.until_ = std::nullopt;
-  REQUIRE(open_ended.applies_on(Date{2099, 1, 1}));
-  REQUIRE_FALSE(open_ended.applies_on(Date{2025, 12, 31}));
+  REQUIRE(open_ended.applies_on(Date{2099, 1, 1}) == RateApplicability::YES);
+  REQUIRE(open_ended.applies_on(Date{2025, 12, 31}) == RateApplicability::NO);
 
   CommissionRate unbounded;
   unbounded.rate_ = Decimal64::parse("0.001");
-  REQUIRE(unbounded.applies_on(Date{1999, 1, 1}));
-  REQUIRE(unbounded.applies_on(Date{2099, 1, 1}));
+  REQUIRE(unbounded.applies_on(Date{1999, 1, 1}) == RateApplicability::YES);
+  REQUIRE(unbounded.applies_on(Date{2099, 1, 1}) == RateApplicability::YES);
 }
 
 TEST_CASE(
@@ -4320,22 +4320,273 @@ TEST_CASE(
     rate_row(Country::US, Decimal64::parse("0.001"), std::nullopt, Date{2026, 6, 30})
   );
 
-  const auto domestic = schedule.rate_for(Country::KR, Date{2026, 9, 23});
+  const auto domestic = schedule.rate_for(Country::KR, Date{2026, 9, 23}).rate_;
   REQUIRE(domestic);
   REQUIRE(domestic->rate_ == Decimal64::parse("0.00015"));
 
   // The same date answers differently per country, which is the whole reason country is a key.
-  const auto foreign = schedule.rate_for(Country::US, Date{2026, 9, 23});
+  const auto foreign = schedule.rate_for(Country::US, Date{2026, 9, 23}).rate_;
   REQUIRE_FALSE(foreign);
-  REQUIRE(schedule.rate_for(Country::US, Date{2026, 6, 30}));
+  REQUIRE(schedule.rate_for(Country::US, Date{2026, 6, 30}).rate_);
 
   // A date before every window is unanswered rather than charged at zero, because a rate of zero
   // is a claim the broker did not make.
-  REQUIRE_FALSE(schedule.rate_for(Country::KR, Date{2025, 12, 31}));
+  REQUIRE_FALSE(schedule.rate_for(Country::KR, Date{2025, 12, 31}).rate_);
 
   // An empty schedule is a real answer from a broker that publishes them, and still answers nothing.
   const CommissionSchedule empty;
-  REQUIRE_FALSE(empty.rate_for(Country::KR, Date{2026, 9, 23}));
+  REQUIRE_FALSE(empty.rate_for(Country::KR, Date{2026, 9, 23}).rate_);
+}
+
+TEST_CASE(
+  "a bound that could not be read is unknown rather than unbounded",
+  "[core][capacity]"
+) {
+  auto damaged = rate_row(Country::KR, Decimal64::parse("0.00015"), Date{2024, 1, 1}, std::nullopt);
+  damaged.until_unreadable_ = true;
+
+  // The defect this replaces: an expired rate with an unreadable end read as still in force, because
+  // an empty bound meant open-ended whatever emptied it.
+  REQUIRE(damaged.applies_on(Date{2026, 9, 23}) == RateApplicability::UNREADABLE);
+
+  // And the answer is not simply "no". A caller told `NO` reaches for the next row; this row may be
+  // the one the broker is charging, so there is no next row to reach for.
+  REQUIRE_FALSE(damaged.applies_on(Date{2026, 9, 23}) == RateApplicability::NO);
+
+  // Damage the readable bound makes immaterial is a plain no. The start already excludes this date
+  // and no reading of the end could have changed that, so reporting doubt would invent one.
+  REQUIRE(damaged.applies_on(Date{2023, 12, 31}) == RateApplicability::NO);
+
+  // Either end, and both ends, behave the same way.
+  auto future = rate_row(Country::KR, Decimal64::parse("0.00015"), std::nullopt, Date{2030, 1, 1});
+  future.from_unreadable_ = true;
+  REQUIRE(future.applies_on(Date{2026, 9, 23}) == RateApplicability::UNREADABLE);
+  REQUIRE(future.applies_on(Date{2031, 1, 1}) == RateApplicability::NO);
+
+  // An undamaged row is untouched: absent still means open-ended, and deliberately not "today".
+  const auto sound = rate_row(Country::KR, Decimal64::parse("0.00015"), std::nullopt, std::nullopt);
+  REQUIRE(sound.applies_on(Date{1999, 1, 1}) == RateApplicability::YES);
+}
+
+TEST_CASE(
+  "a schedule refuses a date an unreadable window might have covered",
+  "[core][capacity]"
+) {
+  const auto date = Date{2026, 9, 23};
+  const auto asserted = *VenueKey::normalized(Venue::KRX);
+
+  SECTION("an unreadable row reached before any match stops the lookup") {
+    CommissionSchedule schedule;
+    auto damaged = rate_row(Country::KR, Decimal64::parse("0.005"), Date{2020, 1, 1}, std::nullopt);
+    damaged.until_unreadable_ = true;
+    schedule.rates_.push_back(damaged);
+    schedule.rates_.push_back(
+      rate_row(Country::KR, Decimal64::parse("0.00015"), std::nullopt, std::nullopt)
+    );
+
+    // The second row does apply, and is still not charged: the first row may have been the winner
+    // under the first-match rule, so which of the two the broker charges is unknown.
+    const auto selection = schedule.rate_for(Country::KR, date);
+    CHECK_FALSE(selection.rate_);
+    CHECK(selection.bounds_unreadable_);
+  }
+
+  SECTION("an unreadable row after a definite match changes nothing") {
+    CommissionSchedule schedule;
+    schedule.rates_.push_back(
+      rate_row(Country::KR, Decimal64::parse("0.00015"), std::nullopt, std::nullopt)
+    );
+    auto damaged = rate_row(Country::KR, Decimal64::parse("0.005"), Date{2020, 1, 1}, std::nullopt);
+    damaged.until_unreadable_ = true;
+    schedule.rates_.push_back(damaged);
+
+    // First match has always won, so this row could never have been the answer. Refusing here would
+    // throw away a rate the library knows.
+    const auto selection = schedule.rate_for(Country::KR, date);
+    REQUIRE(selection.rate_);
+    CHECK(selection.rate_->rate_ == Decimal64::parse("0.00015"));
+    CHECK_FALSE(selection.bounds_unreadable_);
+  }
+
+  SECTION("an unreadable neutral row does not spoil a venue row's answer") {
+    CommissionSchedule schedule;
+    auto venue_row = rate_row(Country::KR, Decimal64::parse("0.00147"), std::nullopt, std::nullopt);
+    venue_row.venue_ = asserted;
+    schedule.rates_.push_back(venue_row);
+    auto damaged = rate_row(Country::KR, Decimal64::parse("0.005"), Date{2020, 1, 1}, std::nullopt);
+    damaged.until_unreadable_ = true;
+    schedule.rates_.push_back(damaged);
+
+    // The neutral pass is only reached when no venue row applies, and one does. Its damage decides
+    // nothing, so it is not reported.
+    const auto selection = schedule.rate_for(Country::KR, asserted, date);
+    REQUIRE(selection.rate_);
+    CHECK(selection.rate_->rate_ == Decimal64::parse("0.00147"));
+    CHECK_FALSE(selection.bounds_unreadable_);
+  }
+
+  SECTION("an unreadable venue row stops the fall-through to the neutral pass") {
+    CommissionSchedule schedule;
+    auto venue_row = rate_row(Country::KR, Decimal64::parse("0.00147"), Date{2020, 1, 1}, std::nullopt);
+    venue_row.venue_ = asserted;
+    venue_row.until_unreadable_ = true;
+    schedule.rates_.push_back(venue_row);
+    schedule.rates_.push_back(
+      rate_row(Country::KR, Decimal64::parse("0.00015"), std::nullopt, std::nullopt)
+    );
+
+    // The neutral row's precondition is "no venue row applies", and that is exactly what stopped
+    // being known. Charging it would be charging the fallback on the strength of a guess.
+    const auto selection = schedule.rate_for(Country::KR, asserted, date);
+    CHECK_FALSE(selection.rate_);
+    CHECK(selection.bounds_unreadable_);
+
+    // A different venue never reached that row, so its own lookup is unaffected.
+    const auto elsewhere = schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::NXT), date);
+    REQUIRE(elsewhere.rate_);
+    CHECK(elsewhere.rate_->rate_ == Decimal64::parse("0.00015"));
+  }
+
+  SECTION("a row dated only by damage still counts as dated") {
+    CommissionSchedule schedule;
+    auto damaged = rate_row(Country::US, Decimal64::parse("0.001"), std::nullopt, std::nullopt);
+    damaged.until_unreadable_ = true;
+    schedule.rates_.push_back(damaged);
+
+    // Both optionals are empty, so asking only about them read this row as undated -- and that is
+    // the answer `ScheduledModel::charge` uses to decide whether a foreign market's trading day
+    // decides anything. It does: the window is simply unknown.
+    CHECK(schedule.any_dated_rate_for(Country::US));
+    CHECK_FALSE(schedule.any_dated_rate_for(Country::KR));
+  }
+
+  SECTION("a market the damage does not belong to is unaffected") {
+    CommissionSchedule schedule;
+    auto damaged = rate_row(Country::US, Decimal64::parse("0.001"), Date{2020, 1, 1}, std::nullopt);
+    damaged.until_unreadable_ = true;
+    schedule.rates_.push_back(damaged);
+    schedule.rates_.push_back(
+      rate_row(Country::KR, Decimal64::parse("0.00015"), std::nullopt, std::nullopt)
+    );
+
+    const auto domestic = schedule.rate_for(Country::KR, date);
+    REQUIRE(domestic.rate_);
+    CHECK_FALSE(domestic.bounds_unreadable_);
+    CHECK(schedule.rate_for(Country::US, date).bounds_unreadable_);
+  }
+}
+
+TEST_CASE(
+  "Toss holds a stated commission bound apart from an absent one",
+  "[core][capacity][toss]"
+) {
+  const auto parse = [](std::string_view start, std::string_view end) {
+    return tossinvest::TossClientTestAccess::parse_commissions(
+      json_response(
+        std::string(R"({"result":[{"marketCountry":"KR","commissionRate":"0.00015",)") +
+        R"("startDate":)" + std::string(start) + R"(,"endDate":)" + std::string(end) + "}]}"
+      )
+    );
+  };
+
+  SECTION("null is the broker's own spelling for open-ended, and is not damage") {
+    const auto schedule = parse("null", "null");
+    REQUIRE(schedule);
+    REQUIRE(schedule.value().rates_.size() == 1);
+    const auto& rate = schedule.value().rates_[0];
+    CHECK_FALSE(rate.from_);
+    CHECK_FALSE(rate.from_unreadable_);
+    CHECK_FALSE(rate.until_unreadable_);
+    CHECK(schedule.value().unreadable_bounds_ == 0);
+    // Reading `null` as damage would refuse every open-ended rate Toss publishes, which is most of
+    // them.
+    CHECK(rate.applies_on(Date{2026, 9, 23}) == RateApplicability::YES);
+  }
+
+  SECTION("an impossible day is stated and unreadable, not absent") {
+    const auto schedule = parse("null", R"("2026-13-01")");
+    REQUIRE(schedule);
+    const auto& rate = schedule.value().rates_[0];
+    CHECK_FALSE(rate.until_);
+    CHECK(rate.until_unreadable_);
+    CHECK(schedule.value().unreadable_bounds_ == 1);
+    // The row survives -- its rate is intact and one bad bound must not lose a schedule's other rows
+    // -- and it no longer answers as though the broker had said "no scheduled change".
+    CHECK(rate.applies_on(Date{2026, 9, 23}) == RateApplicability::UNREADABLE);
+  }
+
+  SECTION("a numeric prefix is unreadable rather than a different year") {
+    // `std::stoi` took the prefix, so this was the year 20: a valid, plausible date that is not the
+    // one the broker sent, arriving downstream looking like an ordinary answer.
+    const auto schedule = parse(R"("20x6-01-01")", "null");
+    REQUIRE(schedule);
+    const auto& rate = schedule.value().rates_[0];
+    CHECK_FALSE(rate.from_);
+    CHECK(rate.from_unreadable_);
+    CHECK(rate.applies_on(Date{2026, 9, 23}) == RateApplicability::UNREADABLE);
+  }
+
+  SECTION("a field with no convertible number at all is unreadable, not a failed response") {
+    // This threw out of `std::stoi` and failed the whole schedule. One unreadable bound is now the
+    // same answer as any other unreadable bound.
+    const auto schedule = parse(R"("x026-01-01")", "null");
+    REQUIRE(schedule);
+    CHECK(schedule.value().rates_[0].from_unreadable_);
+  }
+
+  SECTION("a bound that is not a string is stated in a form nothing here can read") {
+    const auto schedule = parse("20260101", "null");
+    REQUIRE(schedule);
+    CHECK(schedule.value().rates_[0].from_unreadable_);
+    CHECK(schedule.value().unreadable_bounds_ == 1);
+  }
+
+  SECTION("both bounds damaged counts the row once") {
+    const auto schedule = parse(R"("2026-00-01")", R"("2026-02-30")");
+    REQUIRE(schedule);
+    CHECK(schedule.value().rates_[0].from_unreadable_);
+    CHECK(schedule.value().rates_[0].until_unreadable_);
+    // The count is per row because the caller's response -- refetch, or state the rates by hand --
+    // is one decision whichever end of the window was lost.
+    CHECK(schedule.value().unreadable_bounds_ == 1);
+  }
+}
+
+TEST_CASE(
+  "Toss refuses an instrument whose stated listing date it cannot read",
+  "[core][reference][toss]"
+) {
+  const auto hynix = InstrumentId{Country::KR, Venue::KRX, "000660"};
+  const auto parse = [&](std::string_view list, std::string_view delist) {
+    return tossinvest::TossClientTestAccess::parse_instrument(
+      hynix,
+      json_response(
+        std::string(R"({"result":[{"symbol":"000660","name":"SK","englishName":"SK",)") +
+        R"("isinCode":"KR7000660001","market":"KOSPI","securityType":"STOCK",)" +
+        R"("isCommonShare":true,"status":"ACTIVE","currency":"KRW",)" +
+        R"("listDate":)" + std::string(list) + R"(,"delistDate":)" + std::string(delist) +
+        R"(,"sharesOutstanding":"728002365"}]})"
+      )
+    );
+  };
+
+  // `Instrument` has nowhere to record that a date arrived damaged, so the only honest answers are a
+  // date and a refusal. An empty `delisted_on_` reads as "not delisted", which is the permissive
+  // reading of an unreadable value that this branch exists to remove.
+  const auto damaged_delisting = parse(R"("1996-12-26")", R"("2026-13-01")");
+  REQUIRE_FALSE(damaged_delisting);
+  CHECK(damaged_delisting.error().broker_code_ == "invalid_reference_response");
+
+  // The numeric-prefix case read as the year 20 before the parser required digits.
+  const auto damaged_listing = parse(R"("19x6-12-26")", "null");
+  REQUIRE_FALSE(damaged_listing);
+  CHECK(damaged_listing.error().broker_code_ == "invalid_reference_response");
+
+  // A stated date and an absent one are both ordinary answers, and null still means no delisting.
+  const auto sound = parse(R"("1996-12-26")", "null");
+  REQUIRE(sound);
+  CHECK(sound.value().listed_on_ == Date{1996, 12, 26});
+  CHECK_FALSE(sound.value().delisted_on_);
 }
 
 TEST_CASE(
@@ -4424,8 +4675,8 @@ TEST_CASE(
   REQUIRE(schedule.value().rates_[1].until_ == Date{2026, 6, 30});
 
   // Answering per country and date is the whole point of keeping the windows.
-  REQUIRE(schedule.value().rate_for(Country::KR, Date{2026, 9, 23}));
-  REQUIRE_FALSE(schedule.value().rate_for(Country::US, Date{2026, 9, 23}));
+  REQUIRE(schedule.value().rate_for(Country::KR, Date{2026, 9, 23}).rate_);
+  REQUIRE_FALSE(schedule.value().rate_for(Country::US, Date{2026, 9, 23}).rate_);
 
   // The spec's "unlimited" example: a null end is a rate with no scheduled change.
   const auto unlimited = tossinvest::TossClientTestAccess::parse_commissions(
@@ -4436,7 +4687,7 @@ TEST_CASE(
   );
   REQUIRE(unlimited);
   REQUIRE_FALSE(unlimited.value().rates_[0].until_);
-  REQUIRE(unlimited.value().rate_for(Country::KR, Date{2099, 1, 1}));
+  REQUIRE(unlimited.value().rate_for(Country::KR, Date{2099, 1, 1}).rate_);
 
   // A market this library does not normalize is preserved, not dropped: Toss's own specification
   // requires accepting unknown values of this enum, so a schedule that quietly omitted the row
@@ -4457,8 +4708,8 @@ TEST_CASE(
 
   // The preserved row is visible but never answers a question asked in terms of `Country`: an
   // unnormalized market is not a country, and reporting it as one would be worse than dropping it.
-  REQUIRE(mixed.value().rate_for(Country::KR, Date{2026, 9, 23}));
-  REQUIRE_FALSE(mixed.value().rate_for(Country::US, Date{2026, 9, 23}));
+  REQUIRE(mixed.value().rate_for(Country::KR, Date{2026, 9, 23}).rate_);
+  REQUIRE_FALSE(mixed.value().rate_for(Country::US, Date{2026, 9, 23}).rate_);
 
   // A code too long for `Code<16>` cannot be preserved, and that row alone is skipped rather than
   // reported under a market it does not belong to or failing the whole schedule.
@@ -4489,12 +4740,13 @@ TEST_CASE(
   REQUIRE(nameless);
   REQUIRE(nameless.value().rates_.size() == 1);
   REQUIRE(nameless.value().dropped_ == 1);
-  const auto korean = nameless.value().rate_for(Country::KR, Date{2026, 9, 23});
+  const auto korean = nameless.value().rate_for(Country::KR, Date{2026, 9, 23}).rate_;
   REQUIRE(korean);
   REQUIRE(korean->rate_ == Decimal64::parse("0.00015"));
 
   // A complete schedule says so, which is what makes the count worth reading.
   REQUIRE(schedule.value().dropped_ == 0);
+  REQUIRE(schedule.value().unreadable_bounds_ == 0);
 
   // An account with no stated rates is a real answer, and not the same as having no inquiry.
   const auto empty = tossinvest::TossClientTestAccess::parse_commissions(
@@ -4611,8 +4863,8 @@ TEST_CASE("a schedule charges the venue's own rate, and falls back only when non
   schedule.rates_.push_back(venue_row(Venue::NXT, "0.00146", "0.000031833"));
 
   const auto date = Date{2026, 9, 23};
-  const auto on_krx = schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::KRX), date);
-  const auto on_nxt = schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::NXT), date);
+  const auto on_krx = schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::KRX), date).rate_;
+  const auto on_nxt = schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::NXT), date).rate_;
   REQUIRE(on_krx);
   REQUIRE(on_nxt);
   CHECK(on_krx->rate_ == Decimal64::parse("0.00147"));
@@ -4624,11 +4876,11 @@ TEST_CASE("a schedule charges the venue's own rate, and falls back only when non
 
   // **No venue asserted against a venue-specific schedule refuses**, rather than picking the first
   // row. A caller who did not say where a fill happened is told so.
-  CHECK_FALSE(schedule.rate_for(Country::KR, date));
-  CHECK_FALSE(schedule.rate_for(Country::KR, VenueKey::any(), date));
+  CHECK_FALSE(schedule.rate_for(Country::KR, date).rate_);
+  CHECK_FALSE(schedule.rate_for(Country::KR, VenueKey::any(), date).rate_);
 
   // A venue the schedule does not name also refuses rather than borrowing another venue's number.
-  CHECK_FALSE(schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::COMBINED), date));
+  CHECK_FALSE(schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::COMBINED), date).rate_);
 }
 
 TEST_CASE("a neutral row answers an unasserted question in either row order") {
@@ -4648,16 +4900,16 @@ TEST_CASE("a neutral row answers an unasserted question in either row order") {
 
     const auto date = Date{2026, 9, 23};
     // Unasserted reads the neutral row whichever order they are in.
-    const auto unasserted = schedule.rate_for(Country::KR, date);
+    const auto unasserted = schedule.rate_for(Country::KR, date).rate_;
     REQUIRE(unasserted);
     CHECK(unasserted->rate_ == Decimal64::parse("0.00015"));
     // And an assertion reaches the exact row even when a neutral row precedes it.
-    const auto asserted = schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::KRX), date);
+    const auto asserted = schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::KRX), date).rate_;
     REQUIRE(asserted);
     CHECK(asserted->rate_ == Decimal64::parse("0.00147"));
     // A venue with no row of its own falls back to the neutral one, which is what makes adding one
     // venue's rate to an existing schedule additive rather than a migration.
-    const auto other = schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::NXT), date);
+    const auto other = schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::NXT), date).rate_;
     REQUIRE(other);
     CHECK(other->rate_ == Decimal64::parse("0.00015"));
   }
@@ -4675,11 +4927,11 @@ TEST_CASE("an unnormalized venue row is preserved and selected by nothing else")
   schedule.rates_.push_back(exotic);
 
   const auto date = Date{2026, 9, 23};
-  CHECK_FALSE(schedule.rate_for(Country::KR, date));
-  CHECK_FALSE(schedule.rate_for(Country::KR, VenueKey::any(), date));
-  CHECK_FALSE(schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::KRX), date));
+  CHECK_FALSE(schedule.rate_for(Country::KR, date).rate_);
+  CHECK_FALSE(schedule.rate_for(Country::KR, VenueKey::any(), date).rate_);
+  CHECK_FALSE(schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::KRX), date).rate_);
   // Only the same raw code reaches it, and the row is still there to be read.
-  const auto exact = schedule.rate_for(Country::KR, *VenueKey::raw("XQTC"), date);
+  const auto exact = schedule.rate_for(Country::KR, *VenueKey::raw("XQTC"), date).rate_;
   REQUIRE(exact);
   CHECK(exact->rate_ == Decimal64::parse("0.009"));
   CHECK(schedule.rates_.front().venue_.raw_code().view() == "XQTC");
@@ -4699,17 +4951,17 @@ TEST_CASE("a schedule mixing all four venue kinds keeps every one of them apart"
   schedule.rates_.push_back(raw);
 
   const auto date = Date{2026, 9, 23};
-  CHECK(schedule.rate_for(Country::KR, date)->rate_ == Decimal64::parse("0.001"));
-  CHECK(schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::KRX), date)->rate_ ==
+  CHECK(schedule.rate_for(Country::KR, date).rate_->rate_ == Decimal64::parse("0.001"));
+  CHECK(schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::KRX), date).rate_->rate_ ==
         Decimal64::parse("0.002"));
   // COMBINED is storable and reachable as a *rate*; what it may not be is the venue a fill is
   // asserted to have happened at, which `CommissionPolicy` refuses rather than this type.
-  CHECK(schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::COMBINED), date)->rate_ ==
+  CHECK(schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::COMBINED), date).rate_->rate_ ==
         Decimal64::parse("0.003"));
-  CHECK(schedule.rate_for(Country::KR, *VenueKey::raw("KRX"), date)->rate_ ==
+  CHECK(schedule.rate_for(Country::KR, *VenueKey::raw("KRX"), date).rate_->rate_ ==
         Decimal64::parse("0.004"));
   // A venue named by none of the four still falls back to the neutral row.
-  CHECK(schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::NXT), date)->rate_ ==
+  CHECK(schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::NXT), date).rate_->rate_ ==
         Decimal64::parse("0.001"));
 }
 
@@ -4731,7 +4983,7 @@ TEST_CASE("a rate window includes both of its own bounds, in either row order") 
       schedule.rates_.push_back(neutral);
     }
     const auto at = [&](int day, const VenueKey& venue) {
-      return schedule.rate_for(Country::KR, venue, Date{2026, 3, static_cast<unsigned>(day)});
+      return schedule.rate_for(Country::KR, venue, Date{2026, 3, static_cast<unsigned>(day)}).rate_;
     };
     const auto asserted = *VenueKey::normalized(Venue::KRX);
 
@@ -4744,10 +4996,10 @@ TEST_CASE("a rate window includes both of its own bounds, in either row order") 
     // And the neutral row covers its own bounds when nothing is asserted.
     CHECK(at(1, VenueKey::any())->rate_ == Decimal64::parse("0.00015"));
     CHECK(at(31, VenueKey::any())->rate_ == Decimal64::parse("0.00015"));
-    CHECK_FALSE(schedule.rate_for(Country::KR, VenueKey::any(), Date{2026, 4, 1}));
+    CHECK_FALSE(schedule.rate_for(Country::KR, VenueKey::any(), Date{2026, 4, 1}).rate_);
     // Inside the neutral window but outside the venue one, an assertion still gets an answer --
     // the fallback -- and outside both it refuses rather than reaching for a window that ended.
     CHECK(at(1, asserted));
-    CHECK_FALSE(schedule.rate_for(Country::KR, asserted, Date{2026, 2, 28}));
+    CHECK_FALSE(schedule.rate_for(Country::KR, asserted, Date{2026, 2, 28}).rate_);
   }
 }
