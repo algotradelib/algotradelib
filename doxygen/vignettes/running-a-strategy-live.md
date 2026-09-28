@@ -221,16 +221,17 @@ overrides it either way.
 
 ## What the report says about orders that did not go out
 
-Until slice 31 it said nothing. `Runner::feed` returns a report describing what became of every
-instruction — fourteen vectors of it — and `live::SessionSource` discards that report on every poll,
-so **a run in which the broker refused every order and one in which it accepted every order produced
-the same `LoopReport`**: same iterations, same poll counts, no failures. The refusals were in the
-order journal, which is where a durable record belongs and not where a person reading the end of a
-run will look.
+Until slice 31 an ordinary broker refusal had **no field of its own**. `Runner::feed` returns a
+report describing what became of every instruction — fourteen vectors of it — and
+`live::SessionSource` discards that report on every poll, so a run in which the broker refused every
+order looked very much like one in which it accepted every order: same iterations, same poll counts,
+no failures. (Not quite identical — the phase and price-band figures can differ for some refused
+orders — but nothing said *the broker refused these*.) The refusals were in the order journal, which
+is where a durable record belongs and not where a person reading the end of a run will look.
 
-`LoopReport` now carries ten figures and one record, all describing **the polling loop** — the stop
-handler and the closing pass keep their own `closing_*` family, so a refused flatten is reported once
-rather than twice.
+`LoopReport` now carries twelve figures and one record, all describing **the polling loop** — the
+stop handler and the closing pass keep their own families, `stop_handler_*` and `closing_*`, so a
+refused flatten is reported once rather than twice.
 
 | Figure | What happened |
 | --- | --- |
@@ -244,6 +245,8 @@ rather than twice.
 | `cancels_refused_` | a hold refused the withdrawal before anything was sent |
 | `cancels_unresolved_` | the reference named an order the snapshot does not hold |
 | `cancels_indeterminate_` | the withdrawal failed in transit; **it may still have withdrawn the order** |
+| `plans_withheld_` | a whole plan held back because this run cannot vouch for the account it would be sized against. Nothing was wrong with the instructions, and **`final_gate_` does not always show it**: with `allow_absent_portfolio` the gate is open while a plan that would withdraw something is still withheld |
+| `instructions_unavailable_` | the order journal could not record it, so it was not sent. Placements and withdrawals together; it leaves a sticky `local_failure` hold, and this says how many instructions it cost |
 
 **And `last_broker_refusal_`, which is the one worth reading first.** A count tells you orders are
 being refused; this tells you which instrument, under which of your own tags, with the broker's own

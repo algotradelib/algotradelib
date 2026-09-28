@@ -1498,6 +1498,28 @@ TEST_CASE("a plan that only withdraws is counted and otherwise untouched by a wi
   CHECK(dry.price_bands_withheld() == 1);
 }
 
+namespace {
+
+/** An executor with a `last_error()` that is not a `BrokerError`, which must not be detected. */
+struct UnrelatedLastError {
+  static constexpr bool reaches_a_broker = false;
+  runner::SendOutcome place(const strategy::PlannedOrder&) {
+    return runner::SendOutcome::ACCEPTED;
+  }
+  const std::optional<std::string>& last_error() const noexcept { return last_error_; }
+  std::optional<std::string> last_error_;
+};
+
+} // namespace
+
+TEST_CASE("the refusal record is detected by shape, not by a method's name") {
+  // **A name is not a contract.** An earlier version of `states_last_error` asked only whether
+  // `last_error()` was a valid expression, so any executor with a method of that name selected the
+  // branch that reads `broker_code_` -- and a caller whose `last_error()` returned something else
+  // stopped compiling for having chosen a name. The detection is on the documented return type.
+  STATIC_REQUIRE(runner::runner_detail::states_last_error<UnrelatedLastError>::value == false);
+}
+
 TEST_CASE("each way an instruction fails is counted apart from the others") {
   // **A live run used to say nothing about any of this.** `Runner::feed` returns a report describing
   // what became of every instruction and `live::SessionSource` discards it on every poll, so a run in
