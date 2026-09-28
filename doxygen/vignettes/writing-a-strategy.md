@@ -57,11 +57,27 @@ stop is never placed, and nothing reports it.
 **`on_order_update` is not a replacement for it, and treating it as one recreates the same trap.**
 It reports rows that appear in a *listing*, and a market order can be sent, fill, and leave the
 working-order list entirely between two polls — no row is ever seen, so no update is ever emitted.
-Until the library streams executions, the reliable way to know an entry is on is to **observe the
-position**: compare `ctx.portfolio().net_quantity_of(...)` against what you expected on each
-`on_bar`, and place the protective order from there. `on_order_update` tells you what the broker is
-saying about orders it still lists, which is useful and is not a guarantee that you will be told
-about every one of them.
+
+**So say the hard part plainly: this library cannot yet guarantee you a protective order the moment
+an entry fills, live.** Nothing polled can. Until execution notifications are streamed, every
+available signal is periodic, and there is no arrangement of the handlers below that closes the gap
+between a fill happening and your process learning of it.
+
+What you can do is **observe the position** and repair the gap as soon as you see it: compare
+`ctx.portfolio().net_quantity_of(...)` against the position you intended, on each `on_bar`, and
+place the protective order when they differ. Read the three limits of that before you rely on it:
+
+- **It is as late as your holdings cadence.** `positions_` changes only when a `HOLDINGS` poll
+  replaces it, so an entry that filled between polls is invisible until the next one.
+- **It is one poll later than you might expect inside an iteration.** The loop polls `BARS` before
+  `HOLDINGS`, and `on_bar` fires during the bar poll — so the position your handler reads is the one
+  the *previous* iteration established, not one including a fill this iteration is about to discover.
+- **On daily bars, "the next `on_bar`" may be tomorrow.** A shorter bar interval, or a holdings
+  cadence faster than your bars, narrows the window; neither closes it.
+
+If your strategy genuinely cannot tolerate that window, do not paper over it with a callback: size
+the entry so an unprotected position is survivable, or use a broker-side conditional order where one
+exists, and treat this as the open gap it is.
 
 **`on_order_update` reports what the broker last said about an order it is still listing.** The same
 detector runs over each mode's own order listing, so the *rule* is identical in a backtest and live
@@ -73,8 +89,10 @@ detector runs over each mode's own order listing, so the *rule* is identical in 
 | an amendment moves its price or quantity | no — a replay has no amendment, only place and cancel | yes |
 | the filled quantity moves while the order rests | no — a replay fills an order whole or not at all | yes |
 
-So in a backtest you will see one update per order, when it starts resting. Do not read that as the
-library telling you nothing happened afterwards; read the transition table above.
+So in a backtest you will see one update per order, when it starts resting — with one exception
+worth knowing: an order placed by `on_order_update` itself *during* `finish` has no later
+observation boundary and is never reported. Do not read a single update as the library telling you
+nothing happened afterwards; read the transition table above.
 
 **And read the live column's condition as literally as it is written.** An order only produces an
 update if a working-order poll actually observes a row for it. An order that is sent and completes
