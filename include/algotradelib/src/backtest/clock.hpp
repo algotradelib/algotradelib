@@ -116,7 +116,27 @@ public:
    * uncovered date yields `UNKNOWN`, which the risk guards refuse to trade in by default.
    */
   bool advance(const strategy::BarEvent& event, std::optional<bool> trading_day) {
-    now_ = event.period_end_;
+    return advance_to(event.period_end_, trading_day);
+  }
+
+  /**
+   * Advances to `at` and recomputes the phase, for an event that is not a bar.
+   *
+   * A quote carries an instant of its own and arrives between bars, so a replay that only moved this
+   * clock on a bar would show `on_quote` the phase as it stood at the **previous close** -- and the
+   * default `RiskLimits::permitted_phases_` refuses an opening order in every phase but `OPEN`. A
+   * live loop does not behave that way: `PollingLoop` re-derives the phase before each due poll,
+   * including the quote poll. Found by Codex at this branch's round 0.
+   *
+   * `advance` is this function with a bar's period end, and both leave `now_` wherever the caller's
+   * event says -- including backwards, if a caller interleaves out of order. That obligation is the
+   * caller's and is stated on `Backtester::feed`.
+   */
+  bool advance_to(
+    std::chrono::system_clock::time_point at,
+    std::optional<bool> trading_day
+  ) {
+    now_ = at;
     const auto next = session_.phase(now_, trading_day);
     const bool changed = next != phase_;
     phase_ = next;

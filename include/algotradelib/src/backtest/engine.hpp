@@ -54,6 +54,21 @@ struct QueuedOrder {
   OrderRef<BrokerTag> ref_;
   /** The bar it was accepted during. It cannot fill against that bar, which is the lookahead rule. */
   std::uint64_t accepted_on_{0};
+  /**
+   * The instant the strategy decided it, which is the **other** half of the lookahead rule.
+   *
+   * A bar counter alone was enough while only bars could place an order: an order decided at bar
+   * *n*'s period end waits for bar *n+1*, whose period begins at or after that instant. A quote
+   * breaks that, because it arrives **inside** a bar's period without opening a new one -- so an
+   * order decided at 10:30 was eligible for the daily bar stamped 15:30 that day, and
+   * `NextBarFillModel` credits a market order with that bar's *open*, which was 09:00. The replay
+   * would then have filled a 10:30 decision at a 09:00 price: not lookahead, but its mirror image,
+   * and just as false.
+   *
+   * Zero means undated, which is every order placed by a caller driving this executor directly, and
+   * is treated as eligible -- the rule can only ever defer a fill, never invent one.
+   */
+  std::chrono::system_clock::time_point decided_at_{};
 };
 
 /**
@@ -107,6 +122,7 @@ public:
     entry.order_ = order;
     entry.ref_.primary_ = std::to_string(++issued_);
     entry.accepted_on_ = bar_;
+    entry.decided_at_ = deciding_at_;
     last_ref_ = entry.ref_;
     queued_.push_back(std::move(entry));
     return runner::SendOutcome::ACCEPTED;
@@ -190,11 +206,21 @@ public:
   /** Returns the bar being replayed, counting from one. */
   std::uint64_t bar() const noexcept { return bar_; }
 
+  /**
+   * States the instant any order accepted from here on was decided at.
+   *
+   * Set by the engine before every dispatch that can place one, because the executor has no clock
+   * of its own and the context's belongs to the runner. See `QueuedOrder::decided_at_` for what it
+   * is for.
+   */
+  void deciding_at(std::chrono::system_clock::time_point at) noexcept { deciding_at_ = at; }
+
 private:
   std::vector<QueuedOrder<BrokerTag>> queued_;
   std::optional<OrderRef<BrokerTag>> last_ref_;
   std::uint64_t issued_{0};
   std::uint64_t bar_{0};
+  std::chrono::system_clock::time_point deciding_at_{};
 };
 
 /** One point on the equity curve, recorded per bar. */
@@ -397,6 +423,10 @@ public:
     // Opened before anything fills against this bar, so that an order placed during it carries a
     // later stamp than the ones already resting and cannot fill against the bar it was decided on.
     runner_.executor().open_bar();
+    // And dated, for the half of that rule a counter cannot express -- see `QueuedOrder::decided_at_`.
+    // A bar's decisions are all made at its period end, whichever handler makes them: `on_fill`
+    // during settlement, `on_phase`, `on_bar`, and a handler answering an order update afterwards.
+    runner_.executor().deciding_at(event.period_end_);
 
     settle_queued_against(event);
     // **The halt stops this bar too, not merely the next one.** Returning only from settlement left
@@ -475,19 +505,19 @@ public:
    * | --- | --- | --- |
    * | Updates the price a market order is valued at | yes, in `Runner::feed` | the same call |
    * | Advances the decision clock to the quote's instant | yes, in `Runner::feed` | the same call |
+   * | Re-derives the market phase at that instant | yes, `PollingLoop` before each due poll | **yes**, here |
+   * | Publishes order updates | yes — the working-order poll, which follows the quote poll | **yes**, here |
    * | Marks the book, records an equity point, fills anything | no ledger exists live | **no** |
-   * | Publishes order updates | **no**, the working-order poll does | **no** |
    *
-   * The last two rows are this function's whole content, and the fourth is worth stating:
-   * `feed(const BarEvent&)` and `finish` both call `publish_order_updates`, and this does not. An
-   * order placed from `on_quote` is reported on the next bar, which is when a live run's next
-   * listing would carry it -- an observation point is where the state has finished changing, not
-   * wherever it is convenient to look.
+   * The last row is the only one where the two differ, and it is the one where live has nothing to
+   * differ *with*: an equity curve is a replay's own artefact, recorded per bar.
    *
-   * **An earlier draft of this comment claimed a quote left the price and the clock alone**, having
-   * read the source and not the runner beneath it. The test named *a replayed quote sets the price
-   * and the clock, exactly as a live one does* is what corrected it, and it is there to keep saying
-   * so.
+   * **Two drafts of this comment were wrong in opposite directions, and both are worth knowing.**
+   * The first claimed a quote left the price and the clock alone, having read
+   * `live::SessionSource::poll_quotes` and not the runner beneath it. The second claimed a quote
+   * should publish no order update, because that one call does not -- true of the call and false of
+   * the live *iteration*, where `WORKING_ORDERS` follows `QUOTES` and can list the order moments
+   * later. Parity is a property of the whole loop, not of the function with the matching name.
    *
    * ## The consequence a strategy author has to know
    *
@@ -496,13 +526,18 @@ public:
    * report of a run that fed one. A fill model that executes against a quote is a different design
    * with its own argument, and this deliberately does not smuggle one in.
    *
-   * A quote fed before the first bar is accepted and counted. The context clock is then still unset,
-   * so an order placed from it decides at the epoch and `RiskGuard`'s rate window measures from
-   * there. Refusing it would be a rule the live path does not have -- live, a quote poll can and does
-   * run before the first bar arrives -- so it is stated rather than forbidden, and it is one more
-   * reason the caller's interleaving obligation is the caller's.
+   * A quote fed **before the first bar** is accepted and counted, and it is not a special case: the
+   * clock and the phase both come from the quote itself, so a strategy decides at the quote's
+   * instant under the quote's phase. Refusing it would be a rule the live path does not have, since
+   * a quote poll can and does run before the first bar arrives. What such an order cannot do is
+   * fill, until a bar exists to fill it against.
+   *
+   * **The caller's obligation is timestamp order**, and it is load-bearing rather than tidy. This
+   * clock follows whatever instant it is handed, so a quote stamped before the previous bar's period
+   * end moves the replay backwards, and everything derived from an instant -- the phase, the rate
+   * window, which bar an order may fill against -- follows it there.
    */
-  void feed(const strategy::QuoteEvent& event) {
+  void feed(const strategy::QuoteEvent& event, std::optional<bool> trading_day = true) {
     // The same rule `feed(const BarEvent&)` opens with: a halted replay consumes nothing further,
     // because a strategy told about anything after the halt decides on a run that has stopped being
     // able to cost what it asks for.
@@ -510,12 +545,43 @@ public:
       return;
     }
     ++result_.quotes_;
+    // Dated before anything can place an order, so a decision made here is not credited a price from
+    // earlier in the bar it will fill against. See `QueuedOrder::decided_at_`.
+    runner_.executor().deciding_at(event.quote_.received_at_);
+
+    // **The phase is re-derived at the quote's own instant, before the handler runs.** Without this
+    // a quote at 10:30 was shown the phase as it stood at the previous close, and the default
+    // `RiskLimits::permitted_phases_` refuses an opening order in every phase but `OPEN` -- so a
+    // strategy that lives correctly refused in a replay. `PollingLoop` installs the phase before
+    // each due poll, this is the same rule, and a change is announced first for the reason
+    // `feed(const BarEvent&)` announces it first: a handler placing an order from `on_phase` must
+    // decide against the phase this instant established, not the one before it.
+    const bool phase_changed = clock_.advance_to(event.quote_.received_at_, trading_day);
+    runner_.context().set_phase(clock_.phase());
+    if (phase_changed) {
+      // Set for the same reason the bar path sets it before announcing: `Runner::feed(MarketPhase)`
+      // does not advance the context's clock, and a handler deciding at the previous instant files
+      // its send under the wrong moment for `RiskLimits::rate_window_`.
+      runner_.context().set_now(event.quote_.received_at_);
+      install_portfolio();
+      drain_reports(runner_.feed(clock_.phase()));
+      if (result_.halted_) {
+        return;
+      }
+    }
+
     // Installed before the dispatch for the reason every other dispatch site here installs: a
     // handler reads `ctx.portfolio()`, and the engine holds a fresher answer than the last one it
-    // pushed. Nothing about this quote changes the portfolio -- it is the orders a previous bar's
-    // settlement moved that would otherwise be missing.
+    // pushed -- an order placed by the *previous* quote has had no settlement pass behind it.
     install_portfolio();
     drain_reports(runner_.feed(event));
+    // **After the dispatch, exactly as the bar path does.** An earlier version of this branch left
+    // it out, arguing that live a quote poll publishes no order update -- which is true of that one
+    // call and false of the iteration it sits in: `WORKING_ORDERS` follows `QUOTES` in
+    // `all_poll_kinds`, so an order placed from `on_quote` can be listed moments later and
+    // announced. Codex round 0 found it. Publishing here is the closer parity, and it also announces
+    // an order that would otherwise fill and be gone before any later observation point.
+    publish_order_updates();
   }
 
   /**
@@ -576,6 +642,31 @@ private:
    * The queue is never emptied, so an order this loop has not reached yet is outstanding, visible in
    * every portfolio installed along the way, and addressable by a cancellation from any callback.
    */
+  /**
+   * Returns when `event`'s period began, where that is answerable.
+   *
+   * Two cases, and they are answerable for different reasons. An intraday interval has a fixed
+   * length, so the period began one length before it ended. A **calendar** interval does not --
+   * `interval_duration` returns nothing for a day, a week or a month, and deliberately, because a
+   * trading day is not 24 hours -- so a daily bar's period is taken to begin at the session open on
+   * its own local date, which is what a daily bar actually covers and where its open price comes
+   * from.
+   *
+   * **A week or a month is answered the same way and is therefore conservative**: the session open
+   * on the *last* date of the period, which is later than the period truly began, so an order
+   * decided inside it is deferred by one bar rather than credited a price from its start. Deferring
+   * is the safe direction, and a weekly replay fed intraday quotes is not a case any of this is
+   * tuned for.
+   */
+  std::optional<std::chrono::system_clock::time_point> period_start_of(
+    const strategy::BarEvent& event
+  ) const {
+    if (const auto duration = interval_duration(event.interval_)) {
+      return event.period_end_ - *duration;
+    }
+    return clock_.session().opens_at(event.period_end_);
+  }
+
   void settle_queued_against(const strategy::BarEvent& event) {
     std::vector<OrderRef<Tag>> eligible;
     for (const auto& entry : runner_.executor().queued()) {
@@ -586,6 +677,16 @@ private:
         continue;
       }
       if (entry.accepted_on_ >= runner_.executor().bar()) {
+        continue;
+      }
+      // **And it cannot fill against a bar whose period had already begun when it was decided.**
+      // The counter above is enough while only bars place orders; a quote arrives inside a period
+      // without opening one, so without this an order decided at 10:30 fills at that day's 09:00
+      // open -- a price from before the decision. Undated orders (instant zero) are eligible, so
+      // this can only ever defer a fill to a later bar and never invent one.
+      const auto began = period_start_of(event);
+      if (entry.decided_at_ != std::chrono::system_clock::time_point{} && began &&
+          *began < entry.decided_at_) {
         continue;
       }
       eligible.push_back(entry.ref_);

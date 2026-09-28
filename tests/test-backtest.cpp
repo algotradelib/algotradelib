@@ -1053,6 +1053,7 @@ TEST_CASE("a replayed quote sets the price and the clock, exactly as a live one 
   const auto quote_time = utc(2026, 3, 10, 7, 0);
   engine.feed(moving_bar(first_bar, BarInterval::ONE_DAY, "69000", "70000"));
   const auto equity_after_bar = engine.result().equity_.size();
+  const auto equity_before_quote = engine.ledger().equity_in(Currency{"KRW"});
   engine.feed(quote_at(quote_time, "70500"));
 
   // The quote's price, not the bar's close: a market order sized from `on_quote` is valued at what
@@ -1063,7 +1064,10 @@ TEST_CASE("a replayed quote sets the price and the clock, exactly as a live one 
   // And the quote's instant, which is what `RiskGuard`'s rate window measures from.
   CHECK(engine.strategy().now_when_submitted_ == quote_time);
   // What the replay does **not** do: no mark, so no equity point. That half is the engine's own,
-  // because live has no ledger to disagree with.
+  // because live has no ledger to disagree with -- and it is asserted on the **ledger** as well as
+  // on the curve, because an empty portfolio makes a missing equity point prove very little. A mark
+  // that moved the book without recording a point would pass the second check and fail the first.
+  CHECK(engine.ledger().equity_in(Currency{"KRW"}) == equity_before_quote);
   CHECK(engine.result().equity_.size() == equity_after_bar);
 }
 
@@ -1127,24 +1131,82 @@ TEST_CASE("a quote fed before the first bar is accepted and counted") {
   CHECK(engine.result().bars_ == 1);
 }
 
-TEST_CASE("an order placed from on_quote is reported on the next bar, not on the quote") {
-  // `feed(const BarEvent&)` and `finish` both publish order updates and this deliberately does not,
-  // because live they come from the working-order poll and a quote poll publishes none. An
-  // observation point is where the state has finished changing, which for an order placed inside
-  // `on_quote` is the next bar -- the same answer the live listing gives.
+TEST_CASE("an order placed from on_quote is announced in that same call") {
+  // **Parity is a property of the loop, not of the function with the matching name.** A quote poll
+  // publishes no order update, which is what an earlier version of this branch reasoned from -- but
+  // `WORKING_ORDERS` follows `QUOTES` in `all_poll_kinds`, so live the order can be listed and
+  // announced moments after the quote that placed it. Publishing here is the closer parity, and it
+  // also announces an order that would otherwise fill and be gone before any later observation
+  // point.
   backtest::Backtester<QuoteBuyerCountingUpdates> engine(
     QuoteBuyerCountingUpdates{}, replay_config()
   );
   engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
   engine.feed(quote_at(utc(2026, 3, 10, 7, 0), "70500"));
 
-  // The order is queued and nothing has announced it.
-  CHECK(engine.strategy().updates_ == 0);
+  // Announced by the quote that placed it, before any bar and before `finish` -- both of which
+  // would also announce it, which is why this is asserted here and not at the end of the run.
+  CHECK(engine.strategy().updates_ == 1);
+}
 
-  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
+TEST_CASE("an order decided part-way through a bar's period does not fill against that bar") {
+  // **The mirror image of lookahead, and just as false.** `NextBarFillModel` prices a market order
+  // at a bar's open. A quote arrives *inside* a period without opening a new one, so the bar-counter
+  // rule alone made an order decided at 10:00 eligible for that day's bar -- whose open was 09:00.
+  // The replay would have credited a price from an hour before the decision.
+  backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
+  // Bars stamped at the KRX close, 15:30 KST.
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  // 01:00 UTC on the 11th is 10:00 KST -- an hour into the session the next bar covers.
+  engine.feed(quote_at(utc(2026, 3, 11, 1, 0), "70500"));
+
+  // That session's own bar cannot fill it: its period began at 09:00, before the decision.
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "75000", "76000"));
+  CHECK(engine.result().executions_.empty());
+
+  // The session after it can, and does, at its open.
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
   engine.finish();
 
-  CHECK(engine.strategy().updates_ > 0);
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("80000"));
+}
+
+TEST_CASE("a quote derives the phase at its own instant, which the default guard then reads") {
+  // Live, `PollingLoop` re-derives the phase before each due poll, including the quote poll. A
+  // replay that moved the phase only on a bar showed `on_quote` the phase as it stood at the
+  // previous close -- and `RiskLimits::permitted_phases_` defaults to `{OPEN}`, so a strategy that
+  // trades correctly live was refused in a replay. These two sections are the same quote at two
+  // times of day, under the **default** limits rather than the permissive ones the other cases use.
+  SECTION("inside the session, the order goes out") {
+    backtest::Backtester<BuysOnQuote> engine(
+      BuysOnQuote{}, replay_config_with_default_phases()
+    );
+    engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+    // 01:00 UTC is 10:00 KST, an hour into the session.
+    engine.feed(quote_at(utc(2026, 3, 11, 1, 0), "70500"));
+
+    CHECK(engine.result().refused_.empty());
+    CHECK(engine.result().rejected_.empty());
+    // One order outstanding, which is what "it went out" means to a replay.
+    engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
+    engine.finish();
+    CHECK(engine.result().executions_.size() == 1);
+  }
+
+  SECTION("after the close, the operator's own limit refuses it") {
+    backtest::Backtester<BuysOnQuote> engine(
+      BuysOnQuote{}, replay_config_with_default_phases()
+    );
+    engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+    // 07:00 UTC is 16:00 KST, half an hour after the close.
+    engine.feed(quote_at(utc(2026, 3, 10, 7, 0), "70500"));
+    engine.finish();
+
+    REQUIRE(engine.result().refused_.size() == 1);
+    CHECK(engine.result().refused_[0].reason_ == strategy::GuardReason::PHASE_NOT_PERMITTED);
+    CHECK(engine.result().executions_.empty());
+  }
 }
 
 TEST_CASE("a quote sees what the quote before it did, not the last bar's picture") {
@@ -3284,6 +3346,7 @@ struct PlacesTwoEachBar {
   std::size_t fills_{0};
   std::size_t bars_seen_{0};
   std::size_t phases_seen_{0};
+  std::size_t quotes_seen_{0};
 
   template <class Ctx>
   void on_phase(Ctx&, strategy::MarketPhase) { ++phases_seen_; }
@@ -3302,6 +3365,10 @@ struct PlacesTwoEachBar {
 
   template <class Ctx>
   void on_fill(Ctx&, const strategy::Fill&) { ++fills_; }
+
+  /** Counts quotes, so a halt can be shown to suppress the handler and not merely the counter. */
+  template <class Ctx>
+  void on_quote(Ctx&, const strategy::QuoteEvent&) { ++quotes_seen_; }
 
   template <class Ctx>
   void on_stop(Ctx& ctx) {
@@ -3382,6 +3449,8 @@ TEST_CASE("a halted replay consumes no quote either") {
   );
   REQUIRE(policy);
 
+  // **A strategy with an `on_quote` to suppress**, because a strategy without one proves nothing
+  // about whether the handler ran.
   backtest::Backtester<PlacesTwoEachBar> engine(
     PlacesTwoEachBar{}, replay_config(), backtest::NextBarFillModel(std::move(policy.value()))
   );
@@ -3391,10 +3460,13 @@ TEST_CASE("a halted replay consumes no quote either") {
   REQUIRE(engine.result().halted_);
 
   const auto quotes_before = engine.result().quotes_;
+  const auto handled_before = engine.strategy().quotes_seen_;
   engine.feed(quote_at(utc(2026, 3, 12, 7, 0), "70500"));
 
-  // Not counted, and no handler ran: the quote was refused entry, not merely ignored downstream.
+  // Not counted, and the handler did not run: the quote was refused entry, not merely ignored
+  // downstream of something.
   CHECK(engine.result().quotes_ == quotes_before);
+  CHECK(engine.strategy().quotes_seen_ == handled_before);
 }
 
 TEST_CASE("the refusal bar itself runs nothing after the refusal") {

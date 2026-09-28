@@ -83,11 +83,14 @@ a supported live cadence — so a strategy that acts between bars ran live havin
 against nothing. Interleave quotes and bars in timestamp order yourself, exactly as you already
 interleave bars across instruments.
 
-```cpp
-backtest::Backtester<MyStrategy> engine(MyStrategy{}, config);
-engine.feed(bar_at(09:00));      // on_bar
-engine.feed(quote_at(10:30));    // on_quote -- an order placed here rests until the next bar
-engine.feed(bar_at(15:30));      // on_bar, and the order above fills at this bar's price
+Sketched — `bar` and `quote` stand for events you build from your own data:
+
+```
+engine.feed(bar);      // yesterday's close  -> on_bar
+engine.feed(quote);    // today 10:30        -> on_quote; an order placed here cannot fill
+                       //                       against today's bar, whose open was 09:00
+engine.feed(bar);      // today's close      -> on_bar
+engine.feed(bar);      // tomorrow's close   -> the quote's order fills, at tomorrow's open
 engine.finish();
 ```
 
@@ -100,14 +103,21 @@ nothing more. What a replay adds around it is nothing you can observe:
 | --- | --- | --- |
 | Updates the price a market order is valued at | yes | yes, the same call |
 | Advances the clock a decision is stamped with | yes | yes, the same call |
+| Re-derives the market phase at that instant | yes, before every due poll | yes |
+| Announces an order placed from the handler | yes, the working-order poll follows | yes |
 | Marks the book, records an equity point, fills anything | no ledger exists live | **no** |
 
-**So an order placed from `on_quote` fills against the next *bar*, at that bar's price.** That is
-`NextBarFillModel`, unchanged — a quote is not a bar, so the order rests until one arrives, a whole
-bar's movement away from the quote the strategy reacted to. Live, the same order reaches the broker
-immediately. `ReportCaveats::quotes_` is non-zero on any run that fed a quote, and that is what it is
-telling you. A fill model that executes against a quote is a different design with its own argument,
-and this is not it.
+The phase row matters more than it looks: `RiskLimits::permitted_phases_` defaults to `{OPEN}`, so a
+replay that derived the phase only from bars would have shown a mid-session quote the *previous
+close's* phase and refused an order a live run would have sent.
+
+**So an order placed from `on_quote` fills against a later *bar*, at that bar's price** — and
+specifically against a bar whose period began **after** the decision, which for a quote part-way
+through a session is not that session's bar but the next one. Today's daily bar opened at 09:00, and
+crediting a 09:00 price to a 10:30 decision would be lookahead with the sign flipped. Live, the same
+order reaches the broker immediately and can trade at once. `ReportCaveats::quotes_` is non-zero on
+any run that fed a quote, and that is what it is telling you. A fill model that executes against a
+quote is a different design with its own argument, and this is not it.
 
 ## What it does not model at all
 
