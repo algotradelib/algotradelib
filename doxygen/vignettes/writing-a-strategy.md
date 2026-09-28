@@ -75,9 +75,17 @@ place the protective order when they differ. Read the three limits of that befor
 - **On daily bars, "the next `on_bar`" may be tomorrow.** A shorter bar interval, or a holdings
   cadence faster than your bars, narrows the window; neither closes it.
 
-If your strategy genuinely cannot tolerate that window, do not paper over it with a callback: size
-the entry so an unprotected position is survivable, or use a broker-side conditional order where one
-exists, and treat this as the open gap it is.
+**And do not reach for the obvious escape, because this library does not have it yet.** A broker-side
+stop would close the gap by leaving the trigger at the exchange — but `OrderRequest` carries no
+trigger price, so no adapter can send one: KIS's `ORD_DVSN` `22` and Kiwoom's `trde_tp` `28` are both
+marked non-requestable for exactly that reason. Both brokers *read* a stop order back, because one
+placed through another channel must still be reportable; neither can be sent one from here.
+
+So the options that actually exist are: **poll holdings more often**, which narrows the window and
+cannot close it; **size the entry so an unprotected position is survivable**, which is the only one
+that does not depend on timing at all; or place the protective order at the same time as the entry
+rather than after it, accepting that it rests against a position you do not yet hold. Choose
+deliberately, and treat the window as the open gap it is rather than as something a callback hides.
 
 **`on_order_update` reports what the broker last said about an order it is still listing.** The same
 detector runs over each mode's own order listing, so the *rule* is identical in a backtest and live
