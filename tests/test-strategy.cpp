@@ -1751,12 +1751,39 @@ TEST_CASE("a split holding cannot borrow one lot's declaration for another lot's
   // differently cannot be reconciled by this library, so nothing is enforced against either.
   REQUIRE(guard.check(planned("30", "70000", OrderSide::SELL), split, open_market()));
 
-  // The positive control: two lots described the *same* way are ordinary, and the first row's figure
-  // is used exactly as a single-row holding's would be. Without this the test would also pass if a
-  // split holding simply always refused.
-  ProbePortfolio agreeing = split;
-  agreeing.positions_[0].sellable_basis_ = second.sellable_basis_;
+  // **Two lots that agree on a basis but disagree on the figure also refuse**, and this is the case
+  // round 4 caught -- in a fixture of mine that had asserted the opposite. If both rows say
+  // `WHOLE_HOLDING`, both claim to state the limit for the *same* shares, so 100 and 30 are a
+  // contradiction rather than two facts, and taking the first row's number would put a sell above the
+  // real limit on the wire whenever the larger row comes first. Reachable from the shipped KIS parser,
+  // which concatenates every `output1` row across pages without checking for a repeated `pdno`.
+  ProbePortfolio conflicting = split;
+  conflicting.positions_[0].sellable_basis_ = second.sellable_basis_;
+  const auto contradiction =
+    guard.check(planned("100", "70000", OrderSide::SELL), conflicting, open_market());
+  REQUIRE(contradiction);
+  REQUIRE(contradiction->reason_ == GuardReason::SELLABLE_BASIS_UNESTABLISHED);
+
+  // Both orders again, since a first-row rule is right by accident in one of them.
+  ProbePortfolio conflicting_reversed;
+  conflicting_reversed.positions_.push_back(conflicting.positions_[1]);
+  conflicting_reversed.positions_.push_back(conflicting.positions_[0]);
+  REQUIRE(guard.check(planned("30", "70000", OrderSide::SELL), conflicting_reversed, open_market()));
+
+  // **The positive control, now coherent**: two lots described the same way *and* stating the same
+  // limit. That is what a whole-holding figure repeated across rows actually looks like, and it
+  // enforces exactly as a single row would. Without this the test would also pass if a split holding
+  // simply always refused, which is the failure mode of being too strict.
+  ProbePortfolio agreeing = conflicting;
+  agreeing.positions_[1].sellable_quantity_ = Decimal64::parse("100");
   REQUIRE_FALSE(guard.check(planned("100", "70000", OrderSide::SELL), agreeing, open_market()));
+  REQUIRE(guard.check(planned("101", "70000", OrderSide::SELL), agreeing, open_market()));
+
+  // And a lot carrying no figure beside one that does is not a conflict -- it is the only figure
+  // anyone stated, so it is the reading rather than a refusal.
+  ProbePortfolio one_silent = agreeing;
+  one_silent.positions_[0].sellable_quantity_.reset();
+  REQUIRE_FALSE(guard.check(planned("100", "70000", OrderSide::SELL), one_silent, open_market()));
 }
 
 TEST_CASE("a figure covering part of a holding refuses, and says so distinguishably") {

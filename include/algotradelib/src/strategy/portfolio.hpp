@@ -230,12 +230,30 @@ struct Portfolio {
         seen = true;
         continue;
       }
-      // A second row of the same instrument. Its figure is not summed -- that is the open question in
-      // `split-position-rows.md` -- but a basis that disagrees with the first row's makes even the
-      // first row's figure uninterpretable, because nothing says which lot a sale draws from.
+      // A second row of the same instrument. Its figure is never summed -- that is the open question
+      // in `split-position-rows.md` -- and two kinds of disagreement make even the first row's figure
+      // uninterpretable, because nothing says which lot a sale draws from.
+      //
+      // **A basis that disagrees**, first: one lot declared and another not, or declared differently.
       if (basis.coverage_ != reading.basis_.coverage_ ||
           basis.resting_ != reading.basis_.resting_) {
         return SellableReading{reading.quantity_, SellableBasis{}};
+      }
+      // **And figures that disagree while the bases agree**, which is the subtler one. If both rows
+      // say `WHOLE_HOLDING`, both are claiming to state the limit for the *same* shares -- so two
+      // different numbers are a contradiction, not two facts. Taking the first row's would put a sell
+      // above the real limit on the wire whenever the larger row happens to come first, and taking the
+      // smaller would be inventing a reconciliation nobody stated. This is reachable from the shipped
+      // KIS parser, which concatenates every `output1` row across pages without checking for a
+      // repeated `pdno`.
+      if (reading.quantity_ && position.sellable_quantity_ &&
+          !(*position.sellable_quantity_ == *reading.quantity_)) {
+        return SellableReading{reading.quantity_, SellableBasis{}};
+      }
+      // A later row carrying a figure where the first carried none is not a conflict; it is the only
+      // figure anyone stated, so it is the reading.
+      if (!reading.quantity_) {
+        reading.quantity_ = position.sellable_quantity_;
       }
     }
     return reading;

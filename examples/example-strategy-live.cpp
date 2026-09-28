@@ -130,6 +130,13 @@ int drive(const InstrumentId& instrument, const MarketState& state, R live_runne
   // an account nobody has read, and an empty account is the permissive answer to every ceiling.
   // Copying the rows without the timestamp is the mistake this line exists to prevent.
   portfolio.as_of_ = state.holdings_.received_at_;
+  // **And with what the broker's sellable figures are evidence of, for the same reason.** A guard
+  // enforcing `enforce_sellable_quantity_` refuses a figure whose coverage nobody stated, so a hand-
+  // built portfolio that copies the rows without this refuses every sell -- and one that invented an
+  // enforceable basis would measure a sale against a number it had not characterized. Copy it; do not
+  // construct it. This example does not enable that limit, and the line is here because the example is
+  // a pattern people copy into programs that do.
+  portfolio.sellable_basis_ = state.holdings_.sellable_basis_;
   live_runner.context().set_portfolio(std::move(portfolio));
 
   const auto& last = state.bars_.bars_.back();

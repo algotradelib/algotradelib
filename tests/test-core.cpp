@@ -854,6 +854,98 @@ TEST_CASE(
 }
 
 TEST_CASE(
+  "two KIS rows for one holding that disagree cannot authorize a sell",
+  "[broker][kis][holdings]"
+) {
+  // **The minimum test round 4 asked for, and it starts at the wire rather than at a hand-built
+  // portfolio.** `parse_holdings_page` appends every `output1` row and `append_holdings_page`
+  // concatenates pages, neither checking for a repeated `pdno` -- so a KIS response listing one
+  // instrument twice with different `ord_psbl_qty` reaches the guard, and every row carries the same
+  // enforceable basis the completed traversal assigns. Picking the first row's figure would put a sell
+  // above the real limit on the wire whenever the larger row comes first.
+  network::HttpResponse response{http::status::ok, 11};
+  response.body() = R"({
+    "rt_cd":"0",
+    "msg_cd":"MCA00000",
+    "output1":[{
+      "pdno":"005930",
+      "prdt_name":"Samsung Electronics",
+      "hldg_qty":"100",
+      "ord_psbl_qty":"100",
+      "pchs_avg_pric":"70000.0000",
+      "pchs_amt":"7000000",
+      "prpr":"72000",
+      "evlu_amt":"7200000",
+      "evlu_pfls_amt":"200000",
+      "evlu_pfls_rt":"2.857142"
+    },{
+      "pdno":"005930",
+      "prdt_name":"Samsung Electronics",
+      "hldg_qty":"30",
+      "ord_psbl_qty":"30",
+      "pchs_avg_pric":"70000.0000",
+      "pchs_amt":"2100000",
+      "prpr":"72000",
+      "evlu_amt":"2160000",
+      "evlu_pfls_amt":"60000",
+      "evlu_pfls_rt":"2.857142"
+    }],
+    "output2":[{
+      "pchs_amt_smtl_amt":"9100000",
+      "evlu_amt_smtl_amt":"9360000",
+      "evlu_pfls_smtl_amt":"260000"
+    }]
+  })";
+
+  std::string foreign_cursor;
+  std::string domestic_cursor;
+  const auto parsed = kis::KisClientTestAccess::parse_holdings_page(
+    std::move(response), foreign_cursor, domestic_cursor
+  );
+  REQUIRE(parsed);
+  // The parser does not dedupe, which is the premise rather than the defect: two rows arrive.
+  REQUIRE(parsed.value().positions_.size() == 2);
+
+  // The basis a completed KIS traversal assigns, applied to the whole snapshot as the client does.
+  strategy::Portfolio<kis::Broker> portfolio;
+  portfolio.positions_ = parsed.value().positions_;
+  portfolio.as_of_ = std::chrono::system_clock::now();
+  portfolio.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
+
+  strategy::RiskLimits limits;
+  limits.enforce_sellable_quantity_ = true;
+  const strategy::RiskGuard guard(limits);
+
+  strategy::PlannedOrder sell;
+  sell.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+  sell.side_ = OrderSide::SELL;
+  sell.quantity_ = Decimal64::parse("100");
+  sell.price_ = Decimal64::parse("72000");
+
+  strategy::GuardInputs inputs;
+  inputs.now_ = std::chrono::system_clock::now();
+  inputs.phase_ = strategy::MarketPhase::OPEN;
+
+  const auto refused = guard.check(sell, portfolio, inputs);
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == strategy::GuardReason::SELLABLE_BASIS_UNESTABLISHED);
+
+  // **And in the other row order**, because a first-row rule is right by accident in one of them: with
+  // 30 first, a sell of 100 would be refused for the quantity and the test would pass while the defect
+  // stood. Asking for 30 is what exposes it.
+  strategy::Portfolio<kis::Broker> reversed = portfolio;
+  std::swap(reversed.positions_[0], reversed.positions_[1]);
+  sell.quantity_ = Decimal64::parse("30");
+  const auto also = guard.check(sell, reversed, inputs);
+  REQUIRE(also);
+  REQUIRE(also->reason_ == strategy::GuardReason::SELLABLE_BASIS_UNESTABLISHED);
+}
+
+TEST_CASE(
   "KIS holdings payload normalizes positions and summary",
   "[broker][kis][holdings]"
 ) {
