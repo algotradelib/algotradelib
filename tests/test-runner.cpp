@@ -1498,6 +1498,59 @@ TEST_CASE("a plan that only withdraws is counted and otherwise untouched by a wi
   CHECK(dry.price_bands_withheld() == 1);
 }
 
+TEST_CASE("each way an instruction fails is counted apart from the others") {
+  // **A live run used to say nothing about any of this.** `Runner::feed` returns a report describing
+  // what became of every instruction and `live::SessionSource` discards it on every poll, so a run in
+  // which everything was refused looked exactly like one in which everything was accepted. These are
+  // the figures a driving loop differences to say otherwise -- and they are counted by *origin*,
+  // because an operator's next move differs for each.
+  SECTION("reconciliation could not build it") {
+    // No reference data, so neither the tick grid nor the lot size is known.
+    runner::DryRunner<HoldTen> dry;
+    dry.context().set_phase(strategy::MarketPhase::OPEN);
+    dry.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+    const auto report = dry.feed(bar_at(10, "70000"));
+    REQUIRE(report.rejected_.size() == 1);
+    CHECK(dry.orders_unbuildable() == 1);
+    CHECK(dry.orders_guard_refused() == 0);
+    CHECK(dry.orders_broker_refused() == 0);
+    CHECK(dry.orders_binding_refused() == 0);
+    CHECK(dry.orders_indeterminate() == 0);
+    CHECK(dry.orders_reconcile_withheld() == 0);
+  }
+
+  SECTION("a guard refused it") {
+    strategy::RiskLimits limits;
+    limits.max_order_notional_ = Decimal64::parse("1");
+    runner::DryRunner<HoldTen> dry(HoldTen{}, limits);
+    arrange(dry);
+
+    const auto report = dry.feed(bar_at(10, "70000"));
+    REQUIRE(report.refused_.size() == 1);
+    CHECK(dry.orders_guard_refused() == 1);
+    CHECK(dry.orders_unbuildable() == 0);
+    CHECK(dry.orders_broker_refused() == 0);
+  }
+
+  SECTION("a clean run counts nothing at all") {
+    // Absence versus zero, from the other side: every figure stays at zero when nothing failed, so a
+    // reader seeing zeros is being told the run was clean rather than that nothing was measured.
+    runner::DryRunner<HoldTen> dry;
+    arrange(dry);
+
+    const auto report = dry.feed(bar_at(10, "70000"));
+    REQUIRE(report.would_place_.size() == 1);
+    CHECK(dry.orders_unbuildable() == 0);
+    CHECK(dry.orders_guard_refused() == 0);
+    CHECK(dry.orders_broker_refused() == 0);
+    CHECK(dry.orders_binding_refused() == 0);
+    CHECK(dry.orders_indeterminate() == 0);
+    CHECK(dry.orders_reconcile_withheld() == 0);
+    CHECK_FALSE(dry.last_broker_refusal().has_value());
+  }
+}
+
 TEST_CASE("a weighted intent needs the portfolio value the runner was given") {
   runner::DryRunner<QuarterWeight> dry;
   arrange(dry);

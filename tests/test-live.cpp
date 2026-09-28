@@ -125,6 +125,13 @@ public:
     if (observed_ != nullptr) {
       journal_at_send_ = observed_->records();
     }
+    // **Placement only**, so a test can have the broker refuse an *order* while every read still
+    // answers. The session-wide switch below fails the polls too, which makes a loop that never
+    // feeds a bar and therefore never places anything -- a fixture that arranges for the subject
+    // not to happen.
+    if (place_error_) {
+      return Result<Placed>(*place_error_);
+    }
     if (error_) {
       return Result<Placed>(*error_);
     }
@@ -159,6 +166,12 @@ public:
 
   /** Returns every instrument the sellable inquiry was asked about. */
   const std::vector<InstrumentId>& sellable_asked() const noexcept { return sellable_asked_; }
+
+  /** Makes every later **placement** fail with exactly `error`, so a test can pin the broker's words. */
+  void fail_place_with(BrokerError error) { place_error_ = std::move(error); }
+
+  /** Lets placements succeed again. */
+  void heal_place() { place_error_.reset(); }
 
   /** Makes every later call fail with `category` and `status`. */
   void fail_with(ErrorCategory category, int status = 0) {
@@ -469,6 +482,7 @@ private:
   std::vector<AmendInstruction> canceled_;
   std::vector<Ref> canceled_refs_;
   std::optional<BrokerError> error_;
+  std::optional<BrokerError> place_error_;
   std::optional<BrokerError> local_refusal_;
 };
 
@@ -1480,6 +1494,103 @@ BarSeries two_bars(const char* first_close, const char* last_close) {
 }
 
 } // namespace
+
+TEST_CASE("a broker refusal reaches a live run's report, with what the broker said") {
+  // **The defect this slice exists for, exercised through the real source.** Five direct `feed`
+  // cases prove the counters classify correctly and prove nothing about the defect, which lives in
+  // `SessionSource` discarding the report `feed` returns. So this drives a real `SessionSource` and a
+  // real `PollingLoop`: the poll succeeds, the order it produces is refused by the broker, and the
+  // run's report has to say so.
+  using LoopRunner = runner::Runner<
+    BuysOne, WithKey, FakeBroker, live::SessionExecutor<FakeSession<WithKey>>
+  >;
+  FakeSession<WithKey> session;
+  session.set_bars(two_bars("70000", "71000"));
+  strategy::RiskLimits any_phase;
+  any_phase.permitted_phases_ = std::nullopt;
+  LoopRunner live_runner(
+    BuysOne{}, any_phase, 512, live::SessionExecutor<FakeSession<WithKey>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
+
+  live::SessionSource<FakeSession<WithKey>> source(session, {samsung()});
+  runner::PollSchedule schedule;
+  schedule.bars_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  schedule.calendar_.reset();
+  runner::PollingLoop<LoopRunner, live::SessionSource<FakeSession<WithKey>>, runner::ManualClock>
+    loop(live_runner, source, schedule, runner::ManualClock{});
+  loop.allow_unbounded_portfolio_age();
+  loop.allow_absent_portfolio();
+  runner::StopSource stop;
+
+  BrokerError refusal;
+  refusal.category_ = ErrorCategory::INVALID_ARGUMENT;
+  refusal.broker_code_ = "APBK0918";
+  refusal.message_ = "the account may not trade this instrument";
+  session.fail_place_with(refusal);
+
+  const auto report = loop.run(stop, 1);
+
+  // The poll itself succeeded: this is not a failed request, it is a successful one the broker
+  // answered with a refusal, which is exactly the case that used to be invisible.
+  CHECK(report.attempted(runner::PollKind::BARS) == 1);
+  CHECK(report.failed(runner::PollKind::BARS) == 0);
+  // Two, because the scripted series carries two bars and this strategy buys on each of them.
+  CHECK(report.orders_broker_refused_ == 2);
+  CHECK(report.orders_guard_refused_ == 0);
+  CHECK(report.orders_unbuildable_ == 0);
+  REQUIRE(report.last_broker_refusal_.has_value());
+  CHECK(report.last_broker_refusal_->code_ == "APBK0918");
+  CHECK(report.last_broker_refusal_->message_ == "the account may not trade this instrument");
+  CHECK(report.last_broker_refusal_->instrument_ == samsung());
+
+  // And a second run reports its own polling only: no stale count and no stale text, although the
+  // runner still holds both.
+  session.heal_place();
+  const auto second = loop.run(stop, 1);
+  CHECK(second.orders_broker_refused_ == 0);
+  CHECK_FALSE(second.last_broker_refusal_.has_value());
+  CHECK(live_runner.last_broker_refusal().has_value());
+}
+
+TEST_CASE("a refusal's account is replaced by the next one, not accumulated") {
+  // One record, overwritten, which is what makes it affordable -- and the assertion is exact
+  // replacement rather than "the newest text appears somewhere", because the second is satisfied by
+  // an implementation that keeps every refusal forever.
+  using Runner = runner::Runner<
+    BuysOne, WithKey, FakeBroker, live::SessionExecutor<FakeSession<WithKey>>
+  >;
+  FakeSession<WithKey> session;
+  Runner live_runner(BuysOne{}, {}, 512, live::SessionExecutor<FakeSession<WithKey>>(session));
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
+
+  BrokerError first;
+  first.category_ = ErrorCategory::INVALID_ARGUMENT;
+  first.broker_code_ = "FIRST";
+  first.message_ = "the first refusal";
+  session.fail_place_with(first);
+  live_runner.feed(bar_at(1, "70000"));
+  REQUIRE(live_runner.last_broker_refusal().has_value());
+  CHECK(live_runner.last_broker_refusal()->code_ == "FIRST");
+
+  BrokerError second;
+  second.category_ = ErrorCategory::INVALID_ARGUMENT;
+  second.broker_code_ = "SECOND";
+  second.message_ = "the second refusal";
+  session.fail_place_with(second);
+  live_runner.feed(bar_at(2, "70000"));
+
+  REQUIRE(live_runner.last_broker_refusal().has_value());
+  CHECK(live_runner.last_broker_refusal()->code_ == "SECOND");
+  CHECK(live_runner.last_broker_refusal()->message_ == "the second refusal");
+  CHECK(live_runner.orders_broker_refused() == 2);
+}
 
 TEST_CASE("a rate-limit refusal is not counted as a poll failure") {
   // The limiter working as designed. Counting it as an outage would make a loop polling slightly too
