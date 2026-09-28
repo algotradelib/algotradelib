@@ -1,6 +1,7 @@
 #pragma once
 
 #include "./clock.hpp"
+#include "./execution.hpp"
 #include "./stop.hpp"
 
 #include <algotradelib/core>
@@ -722,6 +723,47 @@ struct LoopReport {
    */
   std::size_t unclamped_orders_refused_{0};
   /**
+   * What became of the instructions this run's **polling** decided, for every way one failed.
+   *
+   * A live run used to say nothing about any of this. `Runner::feed` returns a report describing
+   * what became of every instruction, and `live::SessionSource` discards it on every poll -- so a run
+   * in which the broker refused everything and one in which it accepted everything produced the same
+   * `LoopReport`. See `Runner::orders_unbuildable` for what each origin means and why they are
+   * counted apart.
+   *
+   * **The polling path only.** These stop at the moment an operator's stop is honoured, because the
+   * stop handler and the closing pass have their own figures -- `closing_rejected_`,
+   * `closing_refused_`, `closing_withheld_` -- and a refused flatten counted in both families would
+   * be one failure reported twice. (`sends_outside_permitted_phase_` does span both, which is a fact
+   * about that figure rather than about these.)
+   */
+  std::size_t orders_unbuildable_{0};
+  /** @copydoc LoopReport::orders_unbuildable_ */
+  std::size_t orders_reconcile_withheld_{0};
+  /** @copydoc LoopReport::orders_unbuildable_ */
+  std::size_t orders_guard_refused_{0};
+  /** @copydoc LoopReport::orders_unbuildable_ */
+  std::size_t orders_binding_refused_{0};
+  /** @copydoc LoopReport::orders_unbuildable_ */
+  std::size_t orders_broker_refused_{0};
+  /** @copydoc LoopReport::orders_unbuildable_ */
+  std::size_t orders_indeterminate_{0};
+  /** Withdrawals this run's polling could not complete; see `Runner::cancels_rejected`. */
+  std::size_t cancels_rejected_{0};
+  /** @copydoc LoopReport::cancels_rejected_ */
+  std::size_t cancels_refused_{0};
+  /** @copydoc LoopReport::cancels_rejected_ */
+  std::size_t cancels_unresolved_{0};
+  /** @copydoc LoopReport::cancels_rejected_ */
+  std::size_t cancels_indeterminate_{0};
+  /**
+   * What the broker said about the last order **this run** saw it refuse.
+   *
+   * Empty when this run's polling saw none, even though the runner may still hold one from a previous
+   * run -- the same rule the counters follow, applied to a value. See `Runner::last_broker_refusal`.
+   */
+  std::optional<BrokerRefusal> last_broker_refusal_;
+  /**
    * How many phase changes were announced to the strategy.
    *
    * The counter that distinguishes a mechanism that ran from one that was merely configured. A run
@@ -1135,6 +1177,63 @@ public:
   /** Returns the schedule. */
   const PollSchedule& schedule() const noexcept { return schedule_; }
 
+private:
+  /**
+   * Every monotone instruction-outcome figure the runner holds, read at one instant.
+   *
+   * Ten of them, read together rather than one call at a time, because they are differenced against
+   * each other's snapshot: a set taken at two instants describes one interval, and ten separately
+   * captured values do not.
+   */
+  struct InstructionOutcomes {
+    std::size_t unbuildable_{0};
+    std::size_t reconcile_withheld_{0};
+    std::size_t guard_refused_{0};
+    std::size_t binding_refused_{0};
+    std::size_t broker_refused_{0};
+    std::size_t indeterminate_{0};
+    std::size_t cancels_rejected_{0};
+    std::size_t cancels_refused_{0};
+    std::size_t cancels_unresolved_{0};
+    std::size_t cancels_indeterminate_{0};
+  };
+
+  /** Reads them all from the runner. */
+  InstructionOutcomes instruction_outcomes() const {
+    InstructionOutcomes at;
+    at.unbuildable_ = runner_->orders_unbuildable();
+    at.reconcile_withheld_ = runner_->orders_reconcile_withheld();
+    at.guard_refused_ = runner_->orders_guard_refused();
+    at.binding_refused_ = runner_->orders_binding_refused();
+    at.broker_refused_ = runner_->orders_broker_refused();
+    at.indeterminate_ = runner_->orders_indeterminate();
+    at.cancels_rejected_ = runner_->cancels_rejected();
+    at.cancels_refused_ = runner_->cancels_refused();
+    at.cancels_unresolved_ = runner_->cancels_unresolved();
+    at.cancels_indeterminate_ = runner_->cancels_indeterminate();
+    return at;
+  }
+
+  /** Writes the difference between two snapshots onto `report`. */
+  static void note_instruction_outcomes(
+    LoopReport& report,
+    const InstructionOutcomes& before,
+    const InstructionOutcomes& after
+  ) {
+    report.orders_unbuildable_ = after.unbuildable_ - before.unbuildable_;
+    report.orders_reconcile_withheld_ = after.reconcile_withheld_ - before.reconcile_withheld_;
+    report.orders_guard_refused_ = after.guard_refused_ - before.guard_refused_;
+    report.orders_binding_refused_ = after.binding_refused_ - before.binding_refused_;
+    report.orders_broker_refused_ = after.broker_refused_ - before.broker_refused_;
+    report.orders_indeterminate_ = after.indeterminate_ - before.indeterminate_;
+    report.cancels_rejected_ = after.cancels_rejected_ - before.cancels_rejected_;
+    report.cancels_refused_ = after.cancels_refused_ - before.cancels_refused_;
+    report.cancels_unresolved_ = after.cancels_unresolved_ - before.cancels_unresolved_;
+    report.cancels_indeterminate_ = after.cancels_indeterminate_ - before.cancels_indeterminate_;
+  }
+
+public:
+
   /** Sets how stale a holdings snapshot may be before sending is blocked. */
   void set_maximum_portfolio_age(std::chrono::nanoseconds age) {
     maximum_portfolio_age_ = age;
@@ -1260,6 +1359,12 @@ public:
     const auto bands_withheld_before = runner_->price_bands_withheld();
     const auto unclamped_rejected_before = runner_->unclamped_orders_rejected();
     const auto unclamped_refused_before = runner_->unclamped_orders_refused();
+    // **The polling path's own figures, taken before any stop is honoured.** `honour` runs the stop
+    // handler and the closing pass through the same `Runner::settle`, so a snapshot taken at the end
+    // of `run` would count a refused flatten here *and* in `closing_refused_` -- one failure reported
+    // twice, under a contract that says this family describes the polling path.
+    const auto outcomes_before = instruction_outcomes();
+    auto outcomes_after = outcomes_before;
     // Differenced around the run for the same reason, and the reason is sharper here: the source
     // survives `run` returning, so an absolute figure would report the previous run's charges again.
     const auto charged_before = [&]() {
@@ -1290,9 +1395,12 @@ public:
       last_ = iteration;
 
       if (report.abandoned_) {
+        outcomes_after = instruction_outcomes();
         break;
       }
       if (const auto intent = stop.intent()) {
+        // Sampled here, before the stop runs anything, for the reason stated where this began.
+        outcomes_after = instruction_outcomes();
         honour(*intent, report);
         report.stopped_by_ = intent;
         break;
@@ -1314,6 +1422,18 @@ public:
       runner_->unclamped_orders_rejected() - unclamped_rejected_before;
     report.unclamped_orders_refused_ =
       runner_->unclamped_orders_refused() - unclamped_refused_before;
+    // Taken at the loop's exit for a run nothing stopped, and at the stop for one something did.
+    if (!report.stopped_by_ && !report.abandoned_) {
+      outcomes_after = instruction_outcomes();
+    }
+    note_instruction_outcomes(report, outcomes_before, outcomes_after);
+    // **Carried only when this run's polling saw one**, which the count already decides: any refusal
+    // during this run overwrote whatever the runner held before it, so a non-zero count means the
+    // record is this run's. Comparing the records instead would need an equality `BrokerRefusal` has
+    // no reason to have.
+    if (report.orders_broker_refused_ != 0) {
+      report.last_broker_refusal_ = runner_->last_broker_refusal();
+    }
     // **Said only when a band was actually held back**, not merely because no policy was stated. A
     // run that registers no band and polls none has nothing to decide, and a note telling it to
     // state a policy would be advice about a mechanism it is not using. Once per loop, like the
