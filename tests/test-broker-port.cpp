@@ -1052,10 +1052,9 @@ struct StatesTerminal {};
 
 namespace algotradelib {
 
+/** Deliberately empty: this is an adapter written before the constant existed. */
 template <>
-struct BrokerTraits<SilentAboutTerminal> {
-  static constexpr bool working_orders_state_terminal_is_unset = true;
-};
+struct BrokerTraits<SilentAboutTerminal> {};
 
 template <>
 struct BrokerTraits<StatesTerminal> {
