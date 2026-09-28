@@ -135,10 +135,10 @@ the engine derive it, as three attempts to infer it from a previous bar each pro
 bar of any calendar interval does not state when its period *ended* either: that is
 `bar_period_end`'s nominal 24 hours, 7, 31 or 366 days, which is what **every shipped adapter
 produces for every non-minute bar**. So an adapter-fetched monthly or yearly replay carries this on
-most of its fills, and a weekly one after any shortened week; only intraday and close-stamped daily
-bars are checked on both sides.
+most of its fills — though not all: the nominal end is an upper *bound*, so wherever the next
+period's start reaches it the check still passes, which every Monday-to-Monday week does.
 
-For those, the check does not run: the fill is allowed on the older rule that an order never fills
+Where it does not run: the fill is allowed on the older rule that an order never fills
 against the bar that produced it, and `ReportCaveats::unchecked_fill_causality_` counts every such
 decision. Non-zero means those fill prices are not guaranteed to come from after the decision, and
 **any dated order can be one of them** — a quote is the obvious way in, and a bars-only replay

@@ -148,8 +148,9 @@ struct ReportCaveats {
   std::size_t quotes_{0};
 
   /**
-   * How many times this replay allowed a fill it could **not** check for causality -- the bar's
-   * period start was not derivable, so nothing established that the decision came before the period.
+   * How many times this replay allowed a fill it could **not** check for causality, because one of
+   * the two instants the check compares was a calendar boundary it cannot establish: the bar's
+   * period start, or the decision's own instant.
    *
    * **Eligibility decisions, not fills**: one per queued order per bar it was considered against, and
    * the fill model may decline it afterwards.
@@ -160,7 +161,10 @@ struct ReportCaveats {
    * of any calendar interval does not state where its period *ended*: that is `bar_period_end`'s
    * nominal 24 hours, 7, 31 or 366 days, which is what **every shipped adapter produces for every
    * non-minute bar**, so an adapter-fetched monthly or yearly replay carries this on most of its
-   * fills. Only intraday and close-stamped daily bars are checked on both sides.
+   * fills. **Not on all of them**: a nominal end is an upper bound, so whenever the next period's
+   * start reaches it the check still passes -- which is every Monday-to-Monday week, and is why a
+   * clean weekly series counts nothing at all. The figure rises when a candidate start falls
+   * *before* that bound.
    *
    * **What non-zero tells a reader**: for those, the fill price is not guaranteed to come from after
    * the decision. **Any dated order can be one**, and a quote is only the obvious way in -- a

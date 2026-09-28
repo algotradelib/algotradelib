@@ -341,13 +341,21 @@ struct ReplayResult {
    * Two shapes reach it. A close-stamped weekly, monthly or yearly bar does not state where its
    * period began. And an open-stamped bar of any calendar interval carries a period *end* that is
    * only an upper bound -- which is what every shipped adapter produces for every non-minute bar, so
-   * **an adapter-fetched monthly or yearly replay will carry this on most of its fills**, and a
-   * weekly one after any shortened week. Only intraday bars and close-stamped daily bars are checked
-   * on both sides.
+   * **an adapter-fetched monthly or yearly replay will carry this on most of its fills**. Not on all
+   * of them: the nominal end is an upper *bound*, so wherever the next period's start reaches it the
+   * check still passes -- every Monday-to-Monday week does, which is why a clean weekly series counts
+   * nothing. The figure rises when a candidate start falls *before* that bound.
    *
    * **A reader can discharge it**: with no quotes, one interval per instrument, and series whose
    * periods do not overlap, the fills were causal whatever this figure says -- the engine simply
    * could not prove it from the events it was handed.
+   *
+   * **And one thing it does not cover**, noted in review and older than this branch: a nominal
+   * `period_end_` is also the replay's clock, its equity timestamp, its execution timestamp and the
+   * date a commission schedule is read at. A February open-stamped monthly bar can be priced at its
+   * February open and have its fill dated in March. This flag keeps that nominal value out of the
+   * *causal* comparison and changes none of those other uses; see
+   * `plan/todo/nominal-period-end-dates-a-fill.md`.
    *
    * **What non-zero tells a reader:** for those, the engine cannot promise the fill price came from
    * after the decision. **Any dated order can be one of them**, not only an order a quote placed.
