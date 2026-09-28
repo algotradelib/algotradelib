@@ -95,13 +95,24 @@ struct reports_last_ref<
  * `const std::optional<BrokerError>& last_error() const` and its refusals then reach
  * `Runner::last_broker_refusal`, where a report can carry the broker's own code and message instead
  * of a count with nothing to chase.
+ *
+ * **The *shape* is detected, not the name.** An earlier version asked only whether `last_error()`
+ * was a valid expression, which would have selected this branch for any executor that happened to
+ * have a method of that name -- one returning `std::optional<std::string>`, say -- and then failed
+ * to compile on `broker_code_`. A name is not a contract; the return type is.
  */
 template <typename Executor, typename = void>
 struct states_last_error : std::false_type {};
 
 template <typename Executor>
 struct states_last_error<
-  Executor, std::void_t<decltype(std::declval<const Executor&>().last_error())>
+  Executor,
+  std::enable_if_t<
+    std::is_same_v<
+      std::decay_t<decltype(std::declval<const Executor&>().last_error())>,
+      std::optional<BrokerError>
+    >
+  >
 > : std::true_type {};
 
 } // namespace runner_detail
@@ -786,6 +797,25 @@ public:
   std::size_t orders_indeterminate() const noexcept { return orders_indeterminate_; }
 
   /**
+   * The two failures that are not about one instruction's own merits.
+   *
+   * - `plans_withheld` -- a whole reconciliation plan held back because this runner cannot vouch for
+   *   the account it would have been sized against. Counted apart from the six origins because
+   *   nothing was wrong with the instructions: a portfolio nobody has read makes both halves of a
+   *   target unsafe at once, and the plan goes back untouched. **The loop's own gate does not always
+   *   describe it** -- with `allow_absent_portfolio` the gate is open while this still fires for a
+   *   plan that would withdraw something, which is the case that made this a separate figure.
+   * - `instructions_unavailable` -- local machinery, which in practice is the order journal, could
+   *   not record the instruction, so it was not sent. Placements and withdrawals both, counted
+   *   together because the operator's response is the same and is about the process rather than the
+   *   order. It leaves a sticky `LOCAL_FAILURE` hold, so a gate reader knows *something* failed; this
+   *   is how many.
+   */
+  std::size_t plans_withheld() const noexcept { return plans_withheld_; }
+  /** @copydoc Runner::plans_withheld */
+  std::size_t instructions_unavailable() const noexcept { return instructions_unavailable_; }
+
+  /**
    * The same question for **withdrawals**, in four figures rather than one.
    *
    * One figure was the plan and it would have stated a falsehood. An `INDETERMINATE` cancellation may
@@ -1040,7 +1070,12 @@ private:
         // hold named on its own report entry, and that is the better result.
         const bool data_is_missing = *reason != WithheldPlanReason::PLACEMENT_HELD;
         if (data_is_missing || would_cancel) {
-          report.withheld_plans_.push_back(WithheldPlan<Tag>{
+          // The whole plan, before any of its parts were counted separately: a portfolio this runner
+        // cannot vouch for makes both halves of a target unsafe. Counted here because the loop's own
+        // gate does not always describe it -- with `allow_absent_portfolio` the gate can be open
+        // while this fires, which is the case Codex round 0 named.
+        ++plans_withheld_;
+        report.withheld_plans_.push_back(WithheldPlan<Tag>{
             *reason,
             instruction_instrument(instruction),
             instruction_tag(instruction),
@@ -1101,6 +1136,7 @@ private:
       // what makes the condition hold for a direct `feed()`, which never reaches `PollingLoop`'s
       // gate at all.
       if (guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
+        ++instructions_unavailable_;
         report.unavailable_.push_back(
           WithheldOrder{
             WithheldReason::LOCAL_FAILURE,
@@ -1246,6 +1282,7 @@ private:
           // budget was spent. The ledger is not marked either -- an instruction that was never
           // attempted leaves no doubt about the position, and withholding the instrument would be
           // withholding it for the wrong reason.
+          ++instructions_unavailable_;
           report.unavailable_.push_back(
             WithheldOrder{
               WithheldReason::LOCAL_FAILURE,
@@ -1687,6 +1724,7 @@ private:
     // still goes through the journal, and a journal that cannot record it must not let it be sent
     // unrecorded.
     if (guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
+      ++instructions_unavailable_;
       report.unavailable_cancel_.push_back(ref);
       return;
     }
@@ -1773,6 +1811,7 @@ private:
       case SendOutcome::UNAVAILABLE:
         // Not reported as a withdrawal that happened, because it did not. A cancellation nobody
         // sent must not read as one the broker has.
+        ++instructions_unavailable_;
         report.unavailable_cancel_.push_back(ref);
         return;
     }
@@ -2060,6 +2099,10 @@ private:
   std::size_t cancels_unresolved_{0};
   /** @copydoc Runner::cancels_rejected_ */
   std::size_t cancels_indeterminate_{0};
+  /** Plans held back for want of an account this runner can vouch for; see `plans_withheld`. */
+  std::size_t plans_withheld_{0};
+  /** Instructions local machinery could not record and so did not send; see the accessor. */
+  std::size_t instructions_unavailable_{0};
   /** What the broker said about the most recent order it refused; see the accessor. */
   std::optional<BrokerRefusal> last_broker_refusal_;
   std::optional<Decimal64> portfolio_value_;

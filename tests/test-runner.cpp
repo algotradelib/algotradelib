@@ -1533,6 +1533,21 @@ TEST_CASE("each way an instruction fails is counted apart from the others") {
     CHECK(dry.orders_broker_refused() == 0);
   }
 
+  SECTION("a plan held back for want of an account is counted apart") {
+    // Nothing is wrong with the instructions: the runner cannot vouch for the account they would be
+    // sized against, so the whole plan goes back untouched. Counted apart from the six origins for
+    // that reason -- and because the loop's own gate does not always describe it.
+    runner::DryRunner<HoldTen> dry;
+    arrange(dry);
+    dry.require_known_portfolio(true);
+
+    const auto report = dry.feed(bar_at(10, "70000"));
+    REQUIRE(report.withheld_plans_.size() == 1);
+    CHECK(dry.plans_withheld() == 1);
+    CHECK(dry.orders_unbuildable() == 0);
+    CHECK(dry.orders_guard_refused() == 0);
+  }
+
   SECTION("a clean run counts nothing at all") {
     // Absence versus zero, from the other side: every figure stays at zero when nothing failed, so a
     // reader seeing zeros is being told the run was clean rather than that nothing was measured.
@@ -1547,6 +1562,8 @@ TEST_CASE("each way an instruction fails is counted apart from the others") {
     CHECK(dry.orders_binding_refused() == 0);
     CHECK(dry.orders_indeterminate() == 0);
     CHECK(dry.orders_reconcile_withheld() == 0);
+    CHECK(dry.plans_withheld() == 0);
+    CHECK(dry.instructions_unavailable() == 0);
     CHECK_FALSE(dry.last_broker_refusal().has_value());
   }
 }

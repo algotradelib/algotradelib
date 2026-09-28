@@ -748,6 +748,21 @@ struct LoopReport {
   std::size_t orders_broker_refused_{0};
   /** @copydoc LoopReport::orders_unbuildable_ */
   std::size_t orders_indeterminate_{0};
+  /**
+   * Plans this run's polling held back for want of an account it could vouch for.
+   *
+   * Separate from the ten because nothing was wrong with the instructions, and **not always visible
+   * in `final_gate_`**: with `allow_absent_portfolio` the gate is open while a plan that would
+   * withdraw something is still withheld. See `Runner::plans_withheld`.
+   */
+  std::size_t plans_withheld_{0};
+  /**
+   * Instructions this run's polling could not record, and therefore did not send.
+   *
+   * The order journal failing. It leaves a sticky `LOCAL_FAILURE` hold, so `final_gate_` says
+   * something broke; this says how many instructions it cost. See `Runner::instructions_unavailable`.
+   */
+  std::size_t instructions_unavailable_{0};
   /** Withdrawals this run's polling could not complete; see `Runner::cancels_rejected`. */
   std::size_t cancels_rejected_{0};
   /** @copydoc LoopReport::cancels_rejected_ */
@@ -1196,6 +1211,8 @@ private:
     std::size_t cancels_refused_{0};
     std::size_t cancels_unresolved_{0};
     std::size_t cancels_indeterminate_{0};
+    std::size_t plans_withheld_{0};
+    std::size_t instructions_unavailable_{0};
   };
 
   /** Reads them all from the runner. */
@@ -1211,6 +1228,8 @@ private:
     at.cancels_refused_ = runner_->cancels_refused();
     at.cancels_unresolved_ = runner_->cancels_unresolved();
     at.cancels_indeterminate_ = runner_->cancels_indeterminate();
+    at.plans_withheld_ = runner_->plans_withheld();
+    at.instructions_unavailable_ = runner_->instructions_unavailable();
     return at;
   }
 
@@ -1230,6 +1249,8 @@ private:
     report.cancels_refused_ = after.cancels_refused_ - before.cancels_refused_;
     report.cancels_unresolved_ = after.cancels_unresolved_ - before.cancels_unresolved_;
     report.cancels_indeterminate_ = after.cancels_indeterminate_ - before.cancels_indeterminate_;
+    report.plans_withheld_ = after.plans_withheld_ - before.plans_withheld_;
+    report.instructions_unavailable_ = after.instructions_unavailable_ - before.instructions_unavailable_;
   }
 
 public:
@@ -1365,6 +1386,10 @@ public:
     // twice, under a contract that says this family describes the polling path.
     const auto outcomes_before = instruction_outcomes();
     auto outcomes_after = outcomes_before;
+    // **The record travels with the counters, and for the same reason.** Read after `honour`, a
+    // refusal from the *closing* pass would have replaced it while the count still described a
+    // polling one -- a report naming an order none of its figures counted.
+    std::optional<BrokerRefusal> refusal_at_boundary;
     // Differenced around the run for the same reason, and the reason is sharper here: the source
     // survives `run` returning, so an absolute figure would report the previous run's charges again.
     const auto charged_before = [&]() {
@@ -1396,11 +1421,13 @@ public:
 
       if (report.abandoned_) {
         outcomes_after = instruction_outcomes();
+        refusal_at_boundary = runner_->last_broker_refusal();
         break;
       }
       if (const auto intent = stop.intent()) {
         // Sampled here, before the stop runs anything, for the reason stated where this began.
         outcomes_after = instruction_outcomes();
+        refusal_at_boundary = runner_->last_broker_refusal();
         honour(*intent, report);
         report.stopped_by_ = intent;
         break;
@@ -1425,6 +1452,7 @@ public:
     // Taken at the loop's exit for a run nothing stopped, and at the stop for one something did.
     if (!report.stopped_by_ && !report.abandoned_) {
       outcomes_after = instruction_outcomes();
+      refusal_at_boundary = runner_->last_broker_refusal();
     }
     note_instruction_outcomes(report, outcomes_before, outcomes_after);
     // **Carried only when this run's polling saw one**, which the count already decides: any refusal
@@ -1432,7 +1460,7 @@ public:
     // record is this run's. Comparing the records instead would need an equality `BrokerRefusal` has
     // no reason to have.
     if (report.orders_broker_refused_ != 0) {
-      report.last_broker_refusal_ = runner_->last_broker_refusal();
+      report.last_broker_refusal_ = refusal_at_boundary;
     }
     // **Said only when a band was actually held back**, not merely because no policy was stated. A
     // run that registers no band and polls none has nothing to decide, and a note telling it to
