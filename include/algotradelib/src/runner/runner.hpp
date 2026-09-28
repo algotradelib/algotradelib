@@ -378,16 +378,17 @@ public:
   /**
    * Returns why local machinery can no longer send, or nothing while it can.
    *
-   * **Sticky on purpose.** A journal that cannot be written will fail on the next order too, and
-   * the one after that. Clearing it on the next quiet bar would turn a storage outage into a
-   * trickle of unexplained refusals; leaving it set is what "a runner that cannot journal should
-   * not trade" actually requires.
+   * **Sticky on purpose.** Whatever the binding could not reach will still be unreachable on the
+   * next order, and the one after that. Clearing it on the next quiet bar would turn an outage into
+   * a trickle of unexplained refusals; leaving it set is what "a runner that cannot record what it
+   * sends should not send" actually requires.
    *
    * **It is a hold on the guard**, `strategy::HaltReason::LOCAL_FAILURE`, not a flag beside it.
    * That is the difference between a condition every send path has to remember to check and one
    * checked by the single function every order already passes through. It also means an operator
-   * asking the guard why it will not trade is told about the journal, rather than being told only
-   * that trading is halted.
+   * asking the guard why it will not trade is told **what the binding said** -- a journal write that
+   * failed is the usual answer and not the only one, since any executor answering `UNAVAILABLE`
+   * takes this hold -- rather than being told only that trading is halted.
    *
    * Cleared only by `resume_after_local_failure`, which a program calls when it has fixed whatever
    * was broken.
@@ -759,7 +760,8 @@ public:
    * separately rather than being folded in. Co-occurrence on the same terms as its sibling: a guard
    * and a binding each refuse orders for their own reasons, and this counts the ones that happened
    * to be carrying an unclamped price. `UNAVAILABLE` is **not** counted -- that is this process's
-   * journal failing, and no price affects it.
+   * local machinery being unavailable -- usually a pre-send journal write that failed, and not only
+   * that -- which no price affects.
    */
   std::size_t unclamped_orders_refused() const noexcept { return unclamped_orders_refused_; }
 
@@ -1231,7 +1233,7 @@ private:
       // range, and review found the concrete case, a sell at zero that `Price::checked` admits
       // because zero sits on a stated grid. Counting only the first left that invisible.
       // `INDETERMINATE` is excluded because it is not a refusal at all -- the request may well be
-      // resting -- and `UNAVAILABLE` because it is this process's journal failing, which no price
+      // resting -- and `UNAVAILABLE` because it is local machinery being unavailable, which no price
       // affects.
       if (order.price_would_have_been_clamped_) {
         if (outcome == SendOutcome::REJECTED) {
