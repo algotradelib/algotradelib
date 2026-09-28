@@ -619,9 +619,11 @@ public:
    *   passes `Price::checked`, because zero sits on a stated grid, and every shipped adapter rejects
    *   it before any request goes out.
    *
-   * Both are counted rather than argued away -- `unclamped_orders_rejected` and
-   * `unclamped_orders_refused`, which is the same division `LoopReport` already makes between a
-   * closing instruction the broker rejected and one a guard refused.
+   * **Both of those are refusals, and both are counted** -- `unclamped_orders_rejected` for the one
+   * a broker made and `unclamped_orders_refused` for the ones nothing sent, which is the same
+   * division `LoopReport` already makes between a closing instruction the broker rejected and one a
+   * guard refused. The case with **no refusal in it** is counted by neither and cannot be: an order
+   * accepted at the raw price that then simply never filled leaves nothing to observe.
    *
    * **Why it is still the default.** A band whose age nobody has bounded is not evidence about
    * today's band, and this library does not alter an order's price on the strength of something that
