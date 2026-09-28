@@ -55,10 +55,18 @@ sets its stop from `on_fill` is **correct in a backtest and inert live**: the ha
 stop is never placed, and nothing reports it. Until that changes, act on positions in `on_bar`, or
 on `on_order_update` below.
 
-**`on_order_update` reports what the broker last said about an order it is still listing.** It fires
-when an order becomes resting, when an amendment moves its price or quantity, and when the broker
-moves its filled quantity while it rests — in a backtest and live, from the same detector over each
-mode's own order listing.
+**`on_order_update` reports what the broker last said about an order it is still listing.** The same
+detector runs over each mode's own order listing, so the *rule* is identical in a backtest and live
+— but what each mode can show you is not, because a replay is a simpler broker than a real one:
+
+| It fires when | Backtest | Live |
+| --- | --- | --- |
+| an order becomes resting | yes | yes |
+| an amendment moves its price or quantity | no — a replay has no amendment, only place and cancel | yes |
+| the filled quantity moves while the order rests | no — a replay fills an order whole or not at all | yes |
+
+So in a backtest you will see one update per order, when it starts resting. Do not read that as the
+library telling you nothing happened afterwards; read the transition table above.
 
 **It never tells you why an order stopped being listed.** A working-order listing shows what is
 resting, and a row that leaves it may have filled, been cancelled, expired or been rejected; the
