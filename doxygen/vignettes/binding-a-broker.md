@@ -255,9 +255,11 @@ every position ceiling and to every target the runner reconciles — so copying 
 `received_at_` gets the orders withheld, reported in `Report::withheld_plans_`. A run that genuinely
 has no holdings to read says `live.allow_absent_portfolio()` and means it.
 
-The same applies to an executor you write yourself: declare `static constexpr bool reaches_a_broker =
-true` on it if it can reach one, because the default is `false` so that dry runs and replays are not
-caught by a rule neither needs.
+An executor you write yourself is **assumed to reach a broker** and needs no marker to be covered.
+Declare `static constexpr bool reaches_a_broker = false` on it only if it reaches none — a recorder,
+a simulator, a test double. The default runs that way round because the two mistakes are not
+symmetrical: an adapter wrongly exempted sends a real order against an account nobody read, while a
+double wrongly treated as live withholds until you classify it, which you find out immediately.
 
 Note that the runner is held **by value**, not behind a smart pointer, and so is the strategy inside
 it. The strategy is a template parameter resolved at compile time, so there is no base class to point
