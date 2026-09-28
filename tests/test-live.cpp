@@ -1300,6 +1300,47 @@ TEST_CASE("a holdings poll carries the basis with the rows it describes") {
   CHECK(replaced.positions_.size() == 1);
 }
 
+TEST_CASE("a failed holdings poll leaves the rows and their basis together") {
+  // **The waiver's own consequence, asserted rather than only documented.** Asserting a Kiwoom scope
+  // turns the holdings verb on; it does not promise a read has succeeded, and a failed poll keeps the
+  // previous portfolio rather than erasing it -- so a run can go on sizing against an older snapshot,
+  // which is what the portfolio age policy exists to bound. What must not happen is the two halves
+  // coming apart: rows from one read described by another read's basis, in either direction.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  HoldingsSnapshot declared;
+  HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = Decimal64::parse("100");
+  position.sellable_quantity_ = Decimal64::parse("100");
+  declared.positions_.push_back(position);
+  declared.received_at_ = std::chrono::system_clock::now();
+  declared.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
+  session.set_holdings(declared);
+  REQUIRE(source.poll(runner::PollKind::HOLDINGS, live_runner) == runner::PollOutcome::UPDATED);
+  REQUIRE(live_runner.context().portfolio().sellable_basis_.is_enforceable());
+
+  // Now the read fails. The previous portfolio survives, which is deliberate and is slice 26's rule
+  // rather than this branch's -- and it survives *whole*.
+  session.fail_with(ErrorCategory::TRANSPORT, 503);
+  const auto outcome = source.poll(runner::PollKind::HOLDINGS, live_runner);
+  REQUIRE(outcome != runner::PollOutcome::UPDATED);
+
+  const auto& kept = live_runner.context().portfolio();
+  // The rows are still there, and so is the basis that describes them. Clearing one and not the other
+  // is the defect this pins: an enforceable basis over no rows refuses harmlessly, but rows left
+  // behind with no basis would refuse a sell the previous read had fully established.
+  CHECK(kept.positions_.size() == 1);
+  CHECK(kept.sellable_basis_.is_enforceable());
+  CHECK(kept.sellable_quantity_of(samsung()) == Decimal64::parse("100"));
+}
+
 TEST_CASE("an inquiry answers for one instrument and certifies no other") {
   // **One declaration must not travel to a figure it says nothing about.** The inquiry is asked per
   // instrument, so writing its basis to the whole portfolio would let the asked instrument's
