@@ -564,6 +564,13 @@ public:
    * keyed on the symbol alone lets a KRX band and an NXT band for the same stock overwrite each
    * other -- which nothing reached while nothing in the library filled this map, and
    * `PollKind::PRICE_LIMITS` sweeping a universe does.
+   *
+   * **A band registered before this runner has any notion of "now" is stamped at the epoch**, and is
+   * then older than any maximum an operator would state. That is a caller driving a runner directly:
+   * `PollingLoop` calls `set_observed_at` before anything can feed, so a polled band is stamped with
+   * the iteration that read it. A direct caller either states the instant itself, accepts any age,
+   * or gets a band that is held back -- which is the fail-closed direction, and visible in
+   * `price_bands_withheld`.
    */
   void set_price_limits(const InstrumentId& id, PriceLimits limits) {
     DatedBand dated;
@@ -593,7 +600,9 @@ public:
    * rejection the exchange states -- against a stale band's quiet alternative, an order resting at a
    * price nobody chose, which looks exactly like a working order and may never fill.
    *
-   * @param age how old a band may be, or `std::nullopt` to withdraw a stated maximum.
+   * @param age how old a band may be. `std::nullopt` withdraws a stated maximum and returns this
+   *   runner to having stated no policy at all, which withholds every band -- it does not mean
+   *   "any age", which is what `allow_unbounded_price_limits_age` is for.
    */
   void set_maximum_price_limits_age(std::optional<std::chrono::nanoseconds> age) {
     maximum_price_limits_age_ = age;
