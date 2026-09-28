@@ -3,6 +3,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <optional>
@@ -216,6 +217,30 @@ struct HoldTen {
 
 using SendingRunner = runner::DryRunner<HoldTen>;
 
+/** Wants ten shares at a stated limit, so the order carries a price a band can move. */
+struct LimitTen {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const algotradelib::strategy::BarEvent& bar) {
+    const auto reference = ctx.instrument(bar.instrument_);
+    if (!reference) {
+      return;
+    }
+    const auto limit = strategy::Price::checked(
+      algotradelib::Decimal64::parse("80000"), reference->price_rule_
+    );
+    if (!limit) {
+      return;
+    }
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = algotradelib::Decimal64::parse("10");
+    target.limit_ = limit;
+    ctx.submit(target);
+  }
+};
+
+using LimitRunner = runner::DryRunner<LimitTen>;
+
 /**
  * A source that feeds the runner from inside `poll`, the way a real one does.
  *
@@ -255,6 +280,20 @@ public:
     calendar_before_feeding_ = std::move(calendar);
   }
 
+  /**
+   * Scripts the band a price-limits poll installs, the way `live::SessionSource` installs one.
+   *
+   * Installed from inside that poll and nowhere else, so a test asserting that a band read in an
+   * iteration governs the order that iteration's bar produces is asserting about the poll order
+   * rather than about a value some fixture set beforehand.
+   */
+  void set_price_limits(algotradelib::PriceLimits limits) { price_limits_ = std::move(limits); }
+
+  /** Returns the price of the last order the runner would have sent from inside a poll. */
+  const std::optional<algotradelib::Decimal64>& last_planned_price() const noexcept {
+    return last_planned_price_;
+  }
+
   /** Feeds one bar per bars poll, and records what the runner decided while doing it. */
   runner::PollOutcome poll(runner::PollKind kind, RunnerT& runner_instance) {
     if (kind == runner::PollKind::CALENDAR) {
@@ -275,6 +314,13 @@ public:
       runner_instance.context().set_calendar(*calendar_);
       return runner::PollOutcome::UPDATED;
     }
+    if (kind == runner::PollKind::PRICE_LIMITS) {
+      if (!price_limits_) {
+        return runner::PollOutcome::UNCHANGED;
+      }
+      runner_instance.set_price_limits(samsung(), *price_limits_);
+      return runner::PollOutcome::UPDATED;
+    }
     if (kind != runner::PollKind::BARS) {
       return runner::PollOutcome::UNCHANGED;
     }
@@ -283,6 +329,9 @@ public:
     }
     const auto report = runner_instance.feed(bar_at(++bars_));
     placed_ += report.would_place_.size();
+    if (!report.would_place_.empty()) {
+      last_planned_price_ = report.would_place_.back().price_;
+    }
     refused_ += report.refused_.size();
     canceled_ += report.would_cancel_.size();
     withheld_plans_ += report.withheld_plans_.size();
@@ -373,10 +422,14 @@ private:
   std::optional<algotradelib::TradingCalendar> calendar_on_order_list_;
   std::optional<algotradelib::TradingCalendar> calendar_before_feeding_;
   std::optional<algotradelib::TradingCalendar> calendar_in_calendar_poll_;
+  std::optional<algotradelib::PriceLimits> price_limits_;
+  std::optional<algotradelib::Decimal64> last_planned_price_;
 };
 
 using FeedingSource = FeedingSourceFor<SendingRunner>;
 using SendingLoop = runner::PollingLoop<SendingRunner, FeedingSource, runner::ManualClock>;
+using LimitSource = FeedingSourceFor<LimitRunner>;
+using LimitLoop = runner::PollingLoop<LimitRunner, LimitSource, runner::ManualClock>;
 
 /** A strategy that wants out of whatever it is shown, so a bar produces a sell. */
 struct SellEverything {
@@ -1699,6 +1752,135 @@ TEST_CASE("a runner halted before the loop starts sends nothing on the first ite
   // The order list is never read either: a runner that cannot journal is not sent looking for more
   // work to fail at.
   CHECK(source.order_list_reads() == 0);
+}
+
+
+/** A schedule that reads bars and today's band on every iteration. */
+runner::PollSchedule bars_and_band_each_iteration() {
+  auto schedule = bars_each_iteration();
+  schedule.price_limits_ = std::chrono::seconds(1);
+  return schedule;
+}
+
+/** Arranges a limit-order loop with reference data, a calendar and a last price. */
+void arrange_limit_loop(LimitRunner& runner_instance) {
+  runner_instance.context().set_instrument(samsung_reference());
+  serve_calendar(runner_instance);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+}
+
+/** A band whose ceiling is below the strategy's own limit, so applying it moves the price. */
+algotradelib::PriceLimits band_at_71k() {
+  algotradelib::PriceLimits band;
+  band.upper_ = algotradelib::Decimal64::parse("71000");
+  return band;
+}
+
+TEST_CASE("a band read this iteration governs the order this iteration produces", "[loop][band]") {
+  // The ordering claim, and the reason `PollKind::PRICE_LIMITS` is second in `all_poll_kinds`. The
+  // source installs the band from inside its own poll and feeds the bar from inside the next one,
+  // which is what both real polls do -- so moving the kind after `BARS` leaves the very first
+  // order priced against no band at all, and a loop that only ever ran one iteration would never
+  // notice.
+  LimitRunner runner_instance;
+  LimitSource source;
+  arrange_limit_loop(runner_instance);
+  source.set_price_limits(band_at_71k());
+  LimitLoop loop(runner_instance, source, bars_and_band_each_iteration(), test_clock());
+  not_about_the_portfolio(loop);
+  loop.allow_unbounded_price_limits_age();
+  StopSource stop;
+
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.iterations_ == 1);
+  CHECK(source.placed() == 1);
+  CHECK(
+    source.last_planned_price() ==
+    std::optional<algotradelib::Decimal64>(algotradelib::Decimal64::parse("71000"))
+  );
+  CHECK(report.attempted(runner::PollKind::PRICE_LIMITS) == 1);
+  CHECK(report.price_bands_withheld_ == 0);
+}
+
+TEST_CASE("a band nobody aged is withheld, and the loop names the call once", "[loop][band]") {
+  // Fail-open was the defect: a band of unknown age used to reprice every order for the life of the
+  // process. The note is said once rather than per iteration, and only because a band was actually
+  // held back -- a run polling no band has nothing to be told.
+  LimitRunner runner_instance;
+  LimitSource source;
+  arrange_limit_loop(runner_instance);
+  source.set_price_limits(band_at_71k());
+  LimitLoop loop(runner_instance, source, bars_and_band_each_iteration(), test_clock());
+  not_about_the_portfolio(loop);
+  StopSource stop;
+
+  const auto report = loop.run(stop, 3);
+
+  CHECK(source.placed() == 3);
+  // The strategy's own price, on every one of them.
+  CHECK(
+    source.last_planned_price() ==
+    std::optional<algotradelib::Decimal64>(algotradelib::Decimal64::parse("80000"))
+  );
+  CHECK(report.price_bands_withheld_ == 3);
+  const auto said = std::count(
+    report.notes_.begin(),
+    report.notes_.end(),
+    std::string(
+      "no price band age policy: call set_maximum_price_limits_age or "
+      "allow_unbounded_price_limits_age"
+    )
+  );
+  CHECK(said == 1);
+}
+
+TEST_CASE("a run that polls no band is not told to state a policy", "[loop][band]") {
+  // The other half of the note's condition. Advice about a mechanism a run is not using is the
+  // diagnostic branch describing a state that cannot happen, one level up.
+  LimitRunner runner_instance;
+  LimitSource source;
+  arrange_limit_loop(runner_instance);
+  LimitLoop loop(runner_instance, source, bars_and_band_each_iteration(), test_clock());
+  not_about_the_portfolio(loop);
+  StopSource stop;
+
+  const auto report = loop.run(stop, 2);
+
+  CHECK(report.price_bands_withheld_ == 0);
+  CHECK(report.notes_.empty());
+}
+
+TEST_CASE("a band older than the loop's policy stops clamping", "[loop][band]") {
+  // What the cadence is for: the band arrives once and the poll then fails, so the last good answer
+  // goes on ageing. The policy is what decides when it has stopped being usable -- and the failure
+  // deliberately leaves the band in place, because erasing it would make a timed-out request and a
+  // deliberate policy decision look the same.
+  LimitRunner runner_instance;
+  LimitSource source;
+  arrange_limit_loop(runner_instance);
+  source.set_price_limits(band_at_71k());
+  auto schedule = bars_and_band_each_iteration();
+  schedule.tick_ = std::chrono::hours(12);
+  schedule.bars_ = std::chrono::hours(12);
+  // Polled once and never again, so the band the first iteration installed is the only one there is.
+  schedule.price_limits_ = std::chrono::hours(240);
+  LimitLoop loop(runner_instance, source, schedule, test_clock());
+  not_about_the_portfolio(loop);
+  loop.set_maximum_price_limits_age(std::chrono::hours(13));
+  StopSource stop;
+
+  const auto report = loop.run(stop, 3);
+
+  CHECK(report.attempted(runner::PollKind::PRICE_LIMITS) == 1);
+  // The last iteration is a day past the read, and 13 hours was the stated bound.
+  CHECK(
+    source.last_planned_price() ==
+    std::optional<algotradelib::Decimal64>(algotradelib::Decimal64::parse("80000"))
+  );
+  CHECK(report.price_bands_withheld_ > 0);
+  // Stated, so no note is owed: the operator did consider the question.
+  CHECK(report.notes_.empty());
 }
 
 TEST_CASE("nothing is sent before the first order-list read, from inside a poll", "[loop][gate]") {

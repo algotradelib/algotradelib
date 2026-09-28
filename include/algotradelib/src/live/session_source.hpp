@@ -194,6 +194,8 @@ public:
         return poll_working_orders(runner_instance);
       case runner::PollKind::BUYING_POWER:
         return poll_buying_power(runner_instance);
+      case runner::PollKind::PRICE_LIMITS:
+        return poll_price_limits(runner_instance);
     }
     return runner::PollOutcome::UNCHANGED;
   }
@@ -418,6 +420,71 @@ private:
       // figure from hours ago. The readings are kept because the alternative -- dropping a budget
       // the guard is about to size against -- is worse, and the staleness gate is what decides when
       // an old reading stops being good enough. `last_error_` survives for the same reason.
+      if (outright) {
+        return runner::PollOutcome::FAILED;
+      }
+      if (throttled) {
+        return poll_outcome_of(*throttled);
+      }
+      return updated ? runner::PollOutcome::UPDATED : runner::PollOutcome::UNCHANGED;
+    }
+  }
+
+  /**
+   * Refreshes today's permitted price band for each instrument, and records it on the runner.
+   *
+   * The second poll whose result is not an event, and the second that **installs and feeds nothing**
+   * -- `runner::PollKind::PRICE_LIMITS` states that obligation and why it is stated for a poll that
+   * cannot break it. The band lands in `Runner::set_price_limits`, which dates it, and
+   * reconciliation reads it when a plan is built.
+   *
+   * Swept per instrument, with the partial-failure rules `poll_buying_power` argues in full and for
+   * the same reasons: **a real failure outranks a rate-limit refusal** wherever in the sweep each
+   * landed, the reason is kept beside its own outcome so `last_error()` describes the failure it
+   * reports, and **a partial answer is a failed poll** even though the instruments that answered are
+   * still installed.
+   *
+   * **A failure leaves the previous band in place**, as the calendar and the budget both do. Erasing
+   * it would turn a timed-out request into an unclamped order, which is the opposite of the
+   * direction a failure should push; the runner's age policy is what decides when the band that is
+   * still there has stopped being usable, and it can only decide that if it is still there.
+   */
+  template <typename Runner>
+  runner::PollOutcome poll_price_limits(Runner& runner_instance) {
+    if constexpr (!Caps::has_price_limits) {
+      // A broker that publishes no band compiles no request, and a loop with this cadence set
+      // against one simply never reads a band -- Decision 2b, the capability is absent and absent is
+      // not faked.
+      static_cast<void>(runner_instance);
+      return runner::PollOutcome::UNCHANGED;
+    } else {
+      if (universe_.empty()) {
+        return runner::PollOutcome::UNCHANGED;
+      }
+      bool updated = false;
+      std::optional<BrokerError> outright;
+      std::optional<BrokerError> throttled;
+      for (const auto& instrument : universe_) {
+        auto result = session_->price_limits(instrument);
+        if (!result) {
+          if (poll_outcome_of(result.error()) == runner::PollOutcome::FAILED) {
+            if (!outright) {
+              outright = result.error();
+            }
+          } else if (!throttled) {
+            throttled = result.error();
+          }
+          continue;
+        }
+        runner_instance.set_price_limits(instrument, std::move(result.value()));
+        updated = true;
+      }
+      const auto& reason = outright ? outright : throttled;
+      if (reason) {
+        last_error_ = *reason;
+      } else {
+        last_error_.reset();
+      }
       if (outright) {
         return runner::PollOutcome::FAILED;
       }

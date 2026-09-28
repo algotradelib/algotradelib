@@ -550,10 +550,92 @@ public:
    *
    * Absent for an instrument means the broker published no band, which reconciliation treats as no
    * clamping rather than as a band of zero width.
+   *
+   * **Dated on arrival, because a band is a per-trading-day value.** `PriceLimits` is "the highest
+   * price allowed today" and for KRX it moves with the previous close, so one registered at startup
+   * describes the day it was registered on. The date recorded is the **exchange's own stamp where
+   * the broker published one** -- Toss's `timestamp` and Kiwoom's `date`/`tm` both reach
+   * `PriceLimits::exchange_time_` -- and the instant this call was made where it did not, which is
+   * every KIS band. The difference is not cosmetic and `set_maximum_price_limits_age` states it: a
+   * stamped band can be asked how old the *exchange's statement* is, an unstamped one only how long
+   * ago it was fetched, and a successful fetch of a week-old band would otherwise read as brand new.
+   *
+   * Keyed on the whole identity. Country and venue participate in `InstrumentId` equality, so a map
+   * keyed on the symbol alone lets a KRX band and an NXT band for the same stock overwrite each
+   * other -- which nothing reached while nothing in the library filled this map, and
+   * `PollKind::PRICE_LIMITS` sweeping a universe does.
    */
   void set_price_limits(const InstrumentId& id, PriceLimits limits) {
-    price_limits_.insert_or_assign(id.symbol_, std::move(limits));
+    DatedBand dated;
+    dated.received_at_ = freshness_instant();
+    dated.limits_ = std::move(limits);
+    price_limits_.insert_or_assign(id, std::move(dated));
   }
+
+  /**
+   * States how old a price band may be before it is **not applied** to an order's price.
+   *
+   * The policy, not a verdict, on the same terms as `set_maximum_portfolio_age`: it is evaluated
+   * against whatever band is in hand each time a plan is built.
+   *
+   * **A band nobody has aged is not applied either**, which is the one behavioural change this
+   * carries for a caller who already registers bands. Leaving the policy unset used to mean "apply
+   * this band forever"; it now means the same as an expired one. State `allow_unbounded_price_limits_age`
+   * to keep the old behaviour deliberately.
+   *
+   * **What withholding costs, exactly, and why it is the safe direction.** Withholding returns the
+   * order to the library's ordinary state -- no band, no clamp, the strategy's own price on the wire
+   * -- which is what every run that registers no band already does. And `clamp_to_limits` moves a
+   * price **only in the direction that reduces aggression**: a buy down to the upper bound, a sell
+   * up to the lower one, and neither of the other two cases at all. So applying a band can never
+   * make an order *more* likely to fill, and withholding one can never make it *less* likely than
+   * applying it would have. The only outcome withholding produces that applying would not is a
+   * rejection the exchange states -- against a stale band's quiet alternative, an order resting at a
+   * price nobody chose, which looks exactly like a working order and may never fill.
+   *
+   * @param age how old a band may be, or `std::nullopt` to withdraw a stated maximum.
+   */
+  void set_maximum_price_limits_age(std::optional<std::chrono::nanoseconds> age) {
+    maximum_price_limits_age_ = age;
+    if (age) {
+      allow_unbounded_price_limits_age_ = false;
+    }
+  }
+
+  /**
+   * States that this runner applies a price band of any age, in place of stating a maximum.
+   *
+   * The deliberate half of the requirement above, and the pre-2026 behaviour named rather than
+   * defaulted into. It does not make a stale band safe; it records that the caller considered it.
+   */
+  void allow_unbounded_price_limits_age() {
+    allow_unbounded_price_limits_age_ = true;
+    maximum_price_limits_age_.reset();
+  }
+
+  /**
+   * Returns how many plans were built while a band was held for the instrument and not applied.
+   *
+   * **Plan evaluations, not orders**: a plan that produced a market order, or no order at all, is
+   * counted the same as one that produced a limit. Monotone, so a driving loop differences it.
+   * `unclamped_orders_rejected` is the half that measures harm.
+   */
+  std::size_t price_bands_withheld() const noexcept { return price_bands_withheld_; }
+
+  /**
+   * Returns how many **sent** orders were refused by the broker after a withheld band would have
+   * moved their price.
+   *
+   * The harm of withholding, counted where the outcome is known rather than where the decision was
+   * made -- the division `sends_outside_permitted_phase` already makes. An order the guards refused
+   * never reached a broker and is not counted, and neither is one the broker accepted.
+   *
+   * It is **co-occurrence, not causation**: a broker refuses orders for reasons that have nothing to
+   * do with a price band, and this cannot tell them apart. A run whose count tracks its rejections
+   * is a run whose band policy is costing it orders; a run at zero is one where withholding cost
+   * nothing observable.
+   */
+  std::size_t unclamped_orders_rejected() const noexcept { return unclamped_orders_rejected_; }
 
   /**
    * Sets how small a drift is not worth an instruction.
@@ -880,6 +962,14 @@ private:
           (outcome == SendOutcome::ACCEPTED || outcome == SendOutcome::REJECTED ||
            outcome == SendOutcome::INDETERMINATE)) {
         ++sends_outside_permitted_phase_;
+      }
+      // **`REJECTED` alone, and only for an order a withheld band would have moved.** This is the
+      // cost of declining to clamp with a band whose age nobody bounded, and the broker refusing is
+      // the only form that cost can take -- an accepted order was priced as the strategy asked, and
+      // an order nothing sent was never exposed to the exchange's opinion of its price.
+      // `INDETERMINATE` is excluded because it is not a refusal: the request may well be resting.
+      if (order.price_would_have_been_clamped_ && outcome == SendOutcome::REJECTED) {
+        ++unclamped_orders_rejected_;
       }
       // After every send, not only after a refusal. A terminal journal write that fails leaves the
       // broker's own outcome intact -- the send happened, and saying otherwise would be a lie -- but
@@ -1474,24 +1564,36 @@ private:
    * copying one per instruction per bar would be paying repeatedly for a value that does not
    * change.
    */
-  strategy::Plan<Tag> plan_for(const Instruction<Tag>& instruction) const {
+  strategy::Plan<Tag> plan_for(const Instruction<Tag>& instruction) {
     const auto id = instrument_of(instruction);
     const auto reference = context_.instrument(id);
+    const auto band = band_for(id);
 
     strategy::ReconcileInputs inputs;
     inputs.instrument_ = reference ? &*reference : nullptr;
     inputs.reference_price_ = context_.last_price(id);
-    inputs.limits_ = limits_for(id);
+    inputs.limits_ = band.applied_;
     inputs.portfolio_value_ = portfolio_value_;
     inputs.tolerance_ = tolerance_;
 
-    if (const auto* target = std::get_if<strategy::TargetPosition>(&instruction)) {
-      return strategy::reconcile(*target, context_.portfolio(), inputs);
+    auto plan = [&] {
+      if (const auto* target = std::get_if<strategy::TargetPosition>(&instruction)) {
+        return strategy::reconcile(*target, context_.portfolio(), inputs);
+      }
+      if (const auto* intent = std::get_if<strategy::OrderIntent>(&instruction)) {
+        return strategy::reconcile(*intent, context_.portfolio(), inputs);
+      }
+      return strategy::Plan<Tag>{};
+    }();
+
+    // Counted per plan rather than per order, and counted even when the plan placed nothing: the
+    // figure answers "how often did this run decline to use a band it was holding", which is a fact
+    // about the policy. Whether it cost anything is the other counter's question.
+    if (band.withheld_) {
+      ++price_bands_withheld_;
+      mark_withheld_band(plan, *band.withheld_);
     }
-    if (const auto* intent = std::get_if<strategy::OrderIntent>(&instruction)) {
-      return strategy::reconcile(*intent, context_.portfolio(), inputs);
-    }
-    return strategy::Plan<Tag>{};
+    return plan;
   }
 
   /** Returns which instrument a queued instruction concerns. */
@@ -1505,13 +1607,73 @@ private:
     return InstrumentId{};
   }
 
-  /** Returns today's permitted band for `id`, when one was supplied. */
-  std::optional<PriceLimits> limits_for(const InstrumentId& id) const {
-    const auto found = price_limits_.find(id.symbol_);
-    if (found == price_limits_.end()) {
-      return std::nullopt;
+  /** A band and what its age is measured from; see `set_price_limits`. */
+  struct DatedBand {
+    /** The band as the broker published it. */
+    PriceLimits limits_;
+    /** When this runner was told about it, which is all an unstamped band has. */
+    std::chrono::system_clock::time_point received_at_{};
+    /** Returns the instant the band's age is measured from; see `set_price_limits`. */
+    std::chrono::system_clock::time_point as_of() const noexcept {
+      return limits_.exchange_time_ ? *limits_.exchange_time_ : received_at_;
     }
-    return found->second;
+  };
+  /** Which band a plan may use, and which it was denied; see `band_for`. */
+  struct BandDecision {
+    /** The band to clamp with, when there is one this runner will stand behind. */
+    std::optional<PriceLimits> applied_;
+    /** The band that was held back, when one was, so the decision can be counted. */
+    std::optional<PriceLimits> withheld_;
+  };
+
+  /**
+   * Returns the band to apply to `id`'s prices, and separately the one that was held back.
+   *
+   * Exactly one of the two is filled when a band is registered, and neither when none is. The
+   * withheld half exists so the decision can be counted and reported: a band silently dropped is
+   * the same failure as a band silently applied.
+   */
+  BandDecision band_for(const InstrumentId& id) const {
+    BandDecision decision;
+    const auto found = price_limits_.find(id);
+    if (found == price_limits_.end()) {
+      return decision;
+    }
+    if (!maximum_price_limits_age_ && !allow_unbounded_price_limits_age_) {
+      // No policy stated. Not applied, and deliberately not the same as an absent band: the caller
+      // asked for clamping and is getting none, which `price_bands_withheld` reports and a driving
+      // loop names in its notes.
+      decision.withheld_ = found->second.limits_;
+      return decision;
+    }
+    if (maximum_price_limits_age_ &&
+        freshness_instant() - found->second.as_of() > *maximum_price_limits_age_) {
+      decision.withheld_ = found->second.limits_;
+      return decision;
+    }
+    decision.applied_ = found->second.limits_;
+    return decision;
+  }
+
+  /**
+   * Marks the orders in `plan` whose price the band that was **not** applied would have moved.
+   *
+   * A statement about the planned price, not a prediction about the wire: clamping happens before
+   * tick rounding (`reconcile_detail::prepare_price`), so a bound that binds here could in principle
+   * round back to the same price. What the flag says is the checkable thing -- this order's price
+   * lies outside the withheld band on the side the clamp corrects.
+   */
+  static void mark_withheld_band(strategy::Plan<Tag>& plan, const PriceLimits& withheld) {
+    for (auto& order : plan.place_) {
+      if (!order.price_) {
+        continue;
+      }
+      bool would_move = false;
+      static_cast<void>(strategy::reconcile_detail::clamp_to_limits(
+        *order.price_, order.side_, std::optional<PriceLimits>(withheld), would_move
+      ));
+      order.price_would_have_been_clamped_ = would_move;
+    }
   }
 
   Strategy strategy_;
@@ -1597,7 +1759,15 @@ private:
   Executor executor_;
   IndeterminacyLedger ledger_;
   std::size_t acknowledged_journal_failures_{0};
-  std::map<std::string, PriceLimits> price_limits_;
+  std::map<InstrumentId, DatedBand> price_limits_;
+  /** How old a band may be before it is not applied; see `set_maximum_price_limits_age`. */
+  std::optional<std::chrono::nanoseconds> maximum_price_limits_age_;
+  /** Whether the caller stated this runner applies a band of any age; see the setter. */
+  bool allow_unbounded_price_limits_age_{false};
+  /** Plans built while a band was held and not applied; see `price_bands_withheld`. */
+  std::size_t price_bands_withheld_{0};
+  /** Sent orders a broker refused after a withheld band would have moved them; see the accessor. */
+  std::size_t unclamped_orders_rejected_{0};
   std::optional<Decimal64> portfolio_value_;
   strategy::TradeTolerance tolerance_;
 };

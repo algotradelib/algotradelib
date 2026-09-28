@@ -146,6 +146,19 @@ struct PlannedOrder {
   bool price_rounded_{false};
   /** Whether the price was moved into today's permitted band. */
   bool price_clamped_{false};
+  /**
+   * Whether a band was held for this instrument, **not applied**, and would have moved this price.
+   *
+   * Never set by reconciliation, which is handed one band or none and cannot know a second existed.
+   * `runner::Runner` sets it after the fact when its own age policy withheld a band -- see
+   * `Runner::set_maximum_price_limits_age` for why withholding is the safe direction and
+   * `Runner::unclamped_orders_rejected` for what it costs when it is not.
+   *
+   * A statement about this price, not a prediction about the wire: the price lies outside the
+   * withheld band on the side the clamp corrects. Clamping runs before tick rounding, so a bound
+   * that binds here could in principle round back to the same value.
+   */
+  bool price_would_have_been_clamped_{false};
   /** Whether the quantity was moved onto the lot. */
   bool quantity_rounded_{false};
 };

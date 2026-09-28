@@ -70,6 +70,32 @@ enum class PollKind {
    * call that both sent an order and left the phase changed, whichever poll it was.
    */
   CALENDAR,
+  /**
+   * Today's permitted price band, which reconciliation clamps a limit price into.
+   *
+   * **A per-trading-day value, which is what makes a cadence the point of it.** `PriceLimits` is
+   * "the highest price allowed today", and for KRX it moves with the previous close -- so a band
+   * registered once at startup describes the day it was registered on and no other. Before this
+   * kind existed there was no way for a loop to read one at all, and `Runner::set_price_limits` was
+   * the operator's own startup step with nothing ageing it.
+   *
+   * **On the same obligation as `CALENDAR`: this poll installs and feeds nothing.** It lands in
+   * `Runner::set_price_limits` and no strategy handler runs for it. The hazard the calendar's own
+   * note describes -- a source that installs and then feeds, sending an order against the answer as
+   * it stood when the poll began -- does not arise here, because a band changes no gate and is read
+   * only when a plan is built. The obligation is stated anyway so the next kind added does not have
+   * to re-derive which polls may feed.
+   *
+   * **Polled second, immediately after the calendar and before anything that feeds.** A band read at
+   * the top of an iteration is in force for the orders that iteration's bars produce, because every
+   * other poll settles through `Runner::feed` while this one has already returned. Polled after the
+   * bars it would govern the *next* iteration's orders, which is the ordering defect slice 19 fixed
+   * for the market phase.
+   *
+   * Declared last for the reason `CALENDAR` states above its own declaration: these values index
+   * fixed-size arrays, so an enumerator inserted anywhere but the end renumbers existing ones.
+   */
+  PRICE_LIMITS,
 };
 
 /**
@@ -80,7 +106,7 @@ enum class PollKind {
  * enum and out of range for the array. Naming the count is what makes the next enumerator a
  * one-line change rather than a hunt.
  */
-inline constexpr std::size_t poll_kind_count = 6;
+inline constexpr std::size_t poll_kind_count = 7;
 
 /** Returns a stable lowercase name for `kind`. */
 inline constexpr std::string_view poll_kind_name(PollKind kind) noexcept {
@@ -97,6 +123,8 @@ inline constexpr std::string_view poll_kind_name(PollKind kind) noexcept {
       return "working_orders";
     case PollKind::BUYING_POWER:
       return "buying_power";
+    case PollKind::PRICE_LIMITS:
+      return "price_limits";
   }
   return "unknown";
 }
@@ -108,6 +136,11 @@ inline constexpr PollKind all_poll_kinds[] = {
   // in the same iteration, since the phase is re-derived before each of them. It used to be in force
   // only from the next iteration, which was a defect rather than a design: see `PollingLoop::step`.
   PollKind::CALENDAR,
+  // Second, and before every poll that can feed. A band installed here governs the orders this
+  // iteration's bars produce; installed after them it would govern the next iteration's, which is
+  // the phase's own ordering defect one level down. It feeds nothing itself, so nothing can be sent
+  // between reading it and applying it.
+  PollKind::PRICE_LIMITS,
   PollKind::BARS,
   PollKind::QUOTES,
   PollKind::HOLDINGS,
@@ -221,6 +254,25 @@ struct PollSchedule {
    * only layout.
    */
   std::optional<std::chrono::nanoseconds> calendar_{std::chrono::hours(6)};
+  /**
+   * How often to re-read today's permitted price band; absent disables the poll.
+   *
+   * Absent by default like every cadence but the calendar's, and the band it would refresh is
+   * itself optional: a run that registers no band and sets no cadence clamps nothing, which is what
+   * every run in this repository did before this member existed.
+   *
+   * **A band is a per-trading-day value, so an interval longer than a session is a band from
+   * another day.** The library states no default here for the reason it states none for the
+   * portfolio: how fresh a band must be is a judgement about the operator's own market and cadence.
+   * What it does refuse to do is apply one whose age nobody has bounded -- see
+   * `PollingLoop::set_maximum_price_limits_age`.
+   *
+   * **Declared last**, after `calendar_`, for the reason `calendar_` states above: this is an
+   * aggregate, and an appended member is the only kind that preserves every existing positional
+   * initialization. Declaration order here is layout; `all_poll_kinds` is the poll order, and there
+   * this kind is second.
+   */
+  std::optional<std::chrono::nanoseconds> price_limits_;
   /** Returns the interval configured for `kind`, or nothing when it is disabled. */
   std::optional<std::chrono::nanoseconds> interval_for(PollKind kind) const noexcept {
     switch (kind) {
@@ -236,6 +288,8 @@ struct PollSchedule {
         return working_orders_;
       case PollKind::BUYING_POWER:
         return buying_power_;
+      case PollKind::PRICE_LIMITS:
+        return price_limits_;
     }
     return std::nullopt;
   }
@@ -629,6 +683,23 @@ struct LoopReport {
    */
   std::size_t sends_under_a_revised_phase_{0};
   /**
+   * Plans built during this run while a price band was held for the instrument and not applied.
+   *
+   * Plan evaluations, not orders: a plan that produced a market order or nothing at all counts.
+   * Non-zero means bands were read or registered and the age policy declined them -- either none was
+   * stated, in which case `notes_` says so, or every band was older than the one that was.
+   */
+  std::size_t price_bands_withheld_{0};
+  /**
+   * Orders this run **sent** that the broker refused after a withheld band would have moved them.
+   *
+   * The cost of `PollingLoop::set_maximum_price_limits_age`'s refusal to clamp with a band it cannot
+   * age, measured where the outcome is known. Co-occurrence rather than causation -- a broker
+   * refuses orders for its own reasons -- so read it as "withholding is costing this run orders"
+   * rather than as a proof about any one of them. See `Runner::unclamped_orders_rejected`.
+   */
+  std::size_t unclamped_orders_rejected_{0};
+  /**
    * How many phase changes were announced to the strategy.
    *
    * The counter that distinguishes a mechanism that ran from one that was merely configured. A run
@@ -887,6 +958,18 @@ public:
   /** Returns how many times `kind` was polled. */
   std::size_t polls(PollKind kind) const noexcept { return polls_[static_cast<int>(kind)]; }
 
+  /**
+   * Sets the band a successful price-limits poll installs, and makes that poll succeed.
+   *
+   * On the same terms as `set_calendar` above, and for the same reason: a test that supplied a band
+   * and then had to remember a second call to make it arrive would be a test that silently asserts
+   * nothing about clamping.
+   */
+  void set_price_limits(InstrumentId instrument, PriceLimits limits) {
+    price_limits_.emplace_back(std::move(instrument), std::move(limits));
+    defaults_[static_cast<int>(PollKind::PRICE_LIMITS)] = PollOutcome::UPDATED;
+  }
+
   /** Returns the queued outcome for `kind`, or its default, installing a calendar that arrived. */
   PollOutcome poll(PollKind kind, Runner& runner_instance) {
     const int at = static_cast<int>(kind);
@@ -901,6 +984,14 @@ public:
     // an empty calendar.
     if (kind == PollKind::CALENDAR && calendar_ && outcome == PollOutcome::UPDATED) {
       runner_instance.context().set_calendar(*calendar_);
+    }
+    // The second kind whose answer goes somewhere -- onto the runner rather than into the context,
+    // which is where reconciliation reads a band from. Installed on every successful poll, as a real
+    // source does, so a test can age one by letting the loop's clock run.
+    if (kind == PollKind::PRICE_LIMITS && outcome == PollOutcome::UPDATED) {
+      for (const auto& band : price_limits_) {
+        runner_instance.set_price_limits(band.first, band.second);
+      }
     }
     return outcome;
   }
@@ -930,6 +1021,7 @@ private:
   PollOutcome order_list_{PollOutcome::UPDATED};
   std::vector<Currency> currencies_;
   std::optional<TradingCalendar> calendar_;
+  std::vector<std::pair<InstrumentId, PriceLimits>> price_limits_;
   std::size_t polls_[poll_kind_count] = {};
   std::size_t order_list_reads_{0};
 };
@@ -1046,6 +1138,34 @@ public:
   }
 
   /**
+   * Sets how old a price band may be before it is not applied to an order's price.
+   *
+   * Pushed down to the runner as the **policy**, for the reason `set_maximum_portfolio_age` states:
+   * the runner re-evaluates it against whatever band is in hand when it settles, and a source
+   * callback can install a band and settle between this loop's own checks.
+   *
+   * **A band is a per-trading-day value**, so the useful bound is shorter than a session rather
+   * than longer than one, and a run that polls `PollKind::PRICE_LIMITS` on a cadence is bounding
+   * how long a *failing* poll may go on serving the last good answer.
+   */
+  void set_maximum_price_limits_age(std::chrono::nanoseconds age) {
+    price_limits_age_stated_ = true;
+    runner_->set_maximum_price_limits_age(age);
+  }
+
+  /**
+   * States that this run applies a price band of any age, in place of stating a maximum.
+   *
+   * The deliberate half, as `allow_unbounded_portfolio_age` is for a snapshot. A run that registers
+   * a band at startup and never polls one is exactly the case this exists to make visible: it is
+   * the operator saying they know the band will outlive the day it describes.
+   */
+  void allow_unbounded_price_limits_age() {
+    price_limits_age_stated_ = true;
+    runner_->allow_unbounded_price_limits_age();
+  }
+
+  /**
    * States that this run may act although it has never read what the account holds.
    *
    * For a run that genuinely has no holdings to read -- a broker with no such inquiry, or a loop
@@ -1111,6 +1231,9 @@ public:
     // `RiskGuard::total_sent` is already used around a callback. Taken per `run` so a second run on
     // the same loop reports its own sends rather than the first one's as well.
     const auto outside_phase_before = runner_->sends_outside_permitted_phase();
+    // Differenced for the reason above: both are monotone on the runner, which outlives this call.
+    const auto bands_withheld_before = runner_->price_bands_withheld();
+    const auto unclamped_rejected_before = runner_->unclamped_orders_rejected();
     // Differenced around the run for the same reason, and the reason is sharper here: the source
     // survives `run` returning, so an absolute figure would report the previous run's charges again.
     const auto charged_before = [&]() {
@@ -1160,6 +1283,20 @@ public:
     // nothing to leave behind in that case.
     report.sends_outside_permitted_phase_ =
       runner_->sends_outside_permitted_phase() - outside_phase_before;
+    report.price_bands_withheld_ = runner_->price_bands_withheld() - bands_withheld_before;
+    report.unclamped_orders_rejected_ =
+      runner_->unclamped_orders_rejected() - unclamped_rejected_before;
+    // **Said only when a band was actually held back**, not merely because no policy was stated. A
+    // run that registers no band and polls none has nothing to decide, and a note telling it to
+    // state a policy would be advice about a mechanism it is not using. Once per loop, like the
+    // portfolio's own note, because a run that ignores it does not need it every iteration.
+    if (report.price_bands_withheld_ > 0 && !price_limits_age_stated_ && !said_no_band_age_policy_) {
+      said_no_band_age_policy_ = true;
+      report.notes_.emplace_back(
+        "no price band age policy: call set_maximum_price_limits_age or "
+        "allow_unbounded_price_limits_age"
+      );
+    }
     if constexpr (source_states_charged_costs<Source>::value) {
       report.charged_costs_ = source_->charged_costs().since(charged_before);
     }
@@ -2175,6 +2312,10 @@ private:
   /** Whether this loop has ever derived a phase that was not `UNKNOWN`, across every `run`. */
   bool phase_ever_known_{false};
   std::optional<std::chrono::nanoseconds> maximum_portfolio_age_;
+  /** Whether either band-age call was made, which is what the note below asks for. */
+  bool price_limits_age_stated_{false};
+  /** Whether the missing-band-policy note has been said; it is said once per loop. */
+  bool said_no_band_age_policy_{false};
   /** Whether the operator stated that any snapshot age is acceptable; see the setter. */
   bool allow_unbounded_portfolio_age_{false};
   /** Whether the operator stated that this run may act with no snapshot at all; see the setter. */

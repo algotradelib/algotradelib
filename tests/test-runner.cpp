@@ -130,6 +130,48 @@ struct LimitAt80k {
   }
 };
 
+/** Sells a holding down to flat at a stated limit, so the order reduces a position. */
+struct LimitSellToFlat {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    const auto reference = ctx.instrument(bar.instrument_);
+    if (!reference) {
+      return;
+    }
+    const auto limit =
+      strategy::Price::checked(Decimal64::parse("60000"), reference->price_rule_);
+    if (!limit) {
+      return;
+    }
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = Decimal64::parse("0");
+    target.limit_ = limit;
+    ctx.submit(target);
+  }
+};
+
+/** Buys at a stated limit as an intent rather than a target, which skips the portfolio diff. */
+struct LimitBuyIntent {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    const auto reference = ctx.instrument(bar.instrument_);
+    if (!reference) {
+      return;
+    }
+    const auto limit =
+      strategy::Price::checked(Decimal64::parse("80000"), reference->price_rule_);
+    if (!limit) {
+      return;
+    }
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")), *limit
+      )
+    );
+  }
+};
+
 /** Asks for a quarter of the portfolio, to show weight sizing needing a total. */
 struct QuarterWeight {
   template <class Ctx>
@@ -1081,6 +1123,10 @@ TEST_CASE("rate budget is consumed across bars, as it will be in production") {
 TEST_CASE("a price band recorded on the runner clamps the order it produces") {
   runner::DryRunner<LimitAt80k> dry;
   arrange(dry);
+  // Stated deliberately, because an unpoliced band is no longer applied. This registration happens
+  // before any bar, so the runner has no instant to date it from and any finite maximum would
+  // withhold it -- which is the case the test below this one pins down.
+  dry.allow_unbounded_price_limits_age();
   PriceLimits band;
   band.upper_ = Decimal64::parse("71000");
   dry.set_price_limits(samsung(), band);
@@ -1089,6 +1135,195 @@ TEST_CASE("a price band recorded on the runner clamps the order it produces") {
   REQUIRE(report.would_place_.size() == 1);
   REQUIRE(report.would_place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("71000")));
   REQUIRE(report.would_place_[0].price_clamped_);
+  REQUIRE_FALSE(report.would_place_[0].price_would_have_been_clamped_);
+  CHECK(dry.price_bands_withheld() == 0);
+}
+
+TEST_CASE("a band nobody has aged is not applied, and the order keeps its own price") {
+  runner::DryRunner<LimitAt80k> dry;
+  arrange(dry);
+  PriceLimits band;
+  band.upper_ = Decimal64::parse("71000");
+  dry.set_price_limits(samsung(), band);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.would_place_.size() == 1);
+  // The strategy's own limit, untouched: withholding returns the order to the state every run that
+  // registers no band is already in.
+  CHECK(report.would_place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("80000")));
+  CHECK_FALSE(report.would_place_[0].price_clamped_);
+  // And the decision is witnessed rather than silent, on both counts: a band was held back, and it
+  // would have moved this order's price.
+  CHECK(dry.price_bands_withheld() == 1);
+  CHECK(report.would_place_[0].price_would_have_been_clamped_);
+}
+
+TEST_CASE("a withheld band that would not have bound is counted, and not blamed") {
+  runner::DryRunner<LimitAt80k> dry;
+  arrange(dry);
+  // Above the strategy's own limit of 80,000, so the clamp would not have bound even if this band
+  // had been applied. The band was still withheld -- that is a fact about the policy -- but nothing
+  // about this order differs from what it would have been.
+  PriceLimits band;
+  band.upper_ = Decimal64::parse("90000");
+  dry.set_price_limits(samsung(), band);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.would_place_.size() == 1);
+  CHECK(dry.price_bands_withheld() == 1);
+  CHECK_FALSE(report.would_place_[0].price_would_have_been_clamped_);
+}
+
+TEST_CASE("a band older than the stated maximum is not applied, and a fresh one is") {
+  const auto arrange_with = [](runner::DryRunner<LimitAt80k>& dry, int registered_on_day) {
+    arrange(dry);
+    dry.set_maximum_price_limits_age(std::chrono::hours(12));
+    // Dates the registration: the runner measures a band's age from the later of the last instant a
+    // driving loop reported and its own decision instant, so stating one is what a `PollingLoop`
+    // does for a live run before anything can feed.
+    dry.set_observed_at(utc(2026, 3, registered_on_day, 6, 30));
+    PriceLimits band;
+    band.upper_ = Decimal64::parse("71000");
+    dry.set_price_limits(samsung(), band);
+    dry.set_observed_at(utc(2026, 3, 10, 6, 30));
+  };
+
+  SECTION("read this morning") {
+    runner::DryRunner<LimitAt80k> dry;
+    arrange_with(dry, 10);
+    const auto report = dry.feed(bar_at(10, "70000"));
+    REQUIRE(report.would_place_.size() == 1);
+    CHECK(report.would_place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("71000")));
+    CHECK(dry.price_bands_withheld() == 0);
+  }
+
+  SECTION("read yesterday") {
+    runner::DryRunner<LimitAt80k> dry;
+    arrange_with(dry, 9);
+    const auto report = dry.feed(bar_at(10, "70000"));
+    REQUIRE(report.would_place_.size() == 1);
+    CHECK(report.would_place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("80000")));
+    CHECK(dry.price_bands_withheld() == 1);
+  }
+}
+
+TEST_CASE("a band the exchange dated is aged from that date, not from when it arrived") {
+  // The case a receipt instant cannot see: a poll that succeeded a moment ago and returned a band
+  // the exchange stated yesterday. Toss publishes `timestamp` and Kiwoom `date`/`tm`, so this is
+  // what two of the three shipped adapters actually hand over.
+  runner::DryRunner<LimitAt80k> dry;
+  arrange(dry);
+  dry.set_maximum_price_limits_age(std::chrono::hours(12));
+  dry.set_observed_at(utc(2026, 3, 10, 6, 30));
+  PriceLimits band;
+  band.upper_ = Decimal64::parse("71000");
+  band.exchange_time_ = utc(2026, 3, 9, 0, 0);
+  dry.set_price_limits(samsung(), band);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.would_place_.size() == 1);
+  CHECK(report.would_place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("80000")));
+  CHECK(dry.price_bands_withheld() == 1);
+}
+
+TEST_CASE("two identities sharing a symbol keep their own bands") {
+  // `InstrumentId` equality is country, venue and symbol, and the band map used to be keyed on the
+  // symbol alone -- so the second registration below silently replaced the first, and an NXT order
+  // was clamped to KRX's band.
+  runner::DryRunner<LimitAt80k> dry;
+  arrange(dry);
+  dry.allow_unbounded_price_limits_age();
+  Instrument on_nxt = samsung_reference();
+  on_nxt.id_.venue_ = Venue::NXT;
+  dry.context().set_instrument(on_nxt);
+
+  PriceLimits combined;
+  combined.upper_ = Decimal64::parse("71000");
+  dry.set_price_limits(samsung(), combined);
+  PriceLimits nxt;
+  nxt.upper_ = Decimal64::parse("72000");
+  dry.set_price_limits(on_nxt.id_, nxt);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.would_place_.size() == 1);
+  CHECK(report.would_place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("71000")));
+}
+
+TEST_CASE("withholding a band reaches an intent as well as a target") {
+  runner::DryRunner<LimitBuyIntent> dry;
+  arrange(dry);
+  PriceLimits band;
+  band.upper_ = Decimal64::parse("71000");
+  dry.set_price_limits(samsung(), band);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.would_place_.size() == 1);
+  CHECK(report.would_place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("80000")));
+  CHECK(report.would_place_[0].price_would_have_been_clamped_);
+  CHECK(dry.price_bands_withheld() == 1);
+}
+
+TEST_CASE("withholding a band does not stop a sell that reduces a holding") {
+  // The case worth pinning, because every guard in this library has at some point reached an exit
+  // it had no business reaching. A band is not a permission and no instruction needs one: the sell
+  // goes out at the price the strategy stated. Applying a stale lower bound could only have raised
+  // that price and made the exit *less* likely to fill, which is why withholding is not the timid
+  // half of this choice.
+  using Tag = runner::DryRunner<LimitSellToFlat>::Tag;
+  runner::DryRunner<LimitSellToFlat> dry;
+  arrange(dry);
+  strategy::Portfolio<Tag> portfolio;
+  HoldingPosition held;
+  held.instrument_ = samsung();
+  held.quantity_ = Decimal64::parse("10");
+  portfolio.positions_.push_back(held);
+  dry.context().set_portfolio(portfolio);
+
+  PriceLimits band;
+  band.lower_ = Decimal64::parse("65000");
+  dry.set_price_limits(samsung(), band);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.would_place_.size() == 1);
+  CHECK(report.would_place_[0].side_ == OrderSide::SELL);
+  CHECK(report.would_place_[0].quantity_ == Decimal64::parse("10"));
+  CHECK(report.would_place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("60000")));
+  CHECK(report.would_place_[0].price_would_have_been_clamped_);
+}
+
+TEST_CASE("a plan that only withdraws is counted and otherwise untouched by a withheld band") {
+  // Withholding changes prices and nothing else. A cancellation carries no price and consults no
+  // band, and the count still moves because the unit is a plan evaluation rather than an order --
+  // which is the half of that figure a reader has to know before believing it.
+  using Tag = runner::DryRunner<HoldTen>::Tag;
+  runner::DryRunner<HoldTen> dry;
+  arrange(dry);
+  strategy::Portfolio<Tag> portfolio;
+  HoldingPosition held;
+  held.instrument_ = samsung();
+  held.quantity_ = Decimal64::parse("10");
+  portfolio.positions_.push_back(held);
+  WorkingOrder<Tag> opposing;
+  opposing.order_.instrument_ = samsung();
+  opposing.order_.side_ = OrderSide::SELL;
+  opposing.order_.status_ = OrderStatus::PENDING;
+  opposing.order_.quantity_ = Decimal64::parse("4");
+  opposing.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+  opposing.ref_ = OrderRef<Tag>{"0001", ""};
+  portfolio.working_.push_back(opposing);
+  // Dated, because a plan that would *withdraw* something is stopped outright on a snapshot this
+  // runner has never read -- and then nothing would reach the band at all.
+  portfolio.as_of_ = utc(2026, 3, 10, 6, 30);
+  dry.context().set_portfolio(portfolio);
+
+  PriceLimits band;
+  band.upper_ = Decimal64::parse("71000");
+  dry.set_price_limits(samsung(), band);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  CHECK(report.would_place_.empty());
+  CHECK(report.would_cancel_.size() == 1);
+  CHECK(dry.price_bands_withheld() == 1);
 }
 
 TEST_CASE("a weighted intent needs the portfolio value the runner was given") {

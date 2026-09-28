@@ -72,16 +72,16 @@ struct SeriesKey {
   /** The bar interval, so the same instrument at two intervals is two series. */
   BarInterval interval_{BarInterval::ONE_DAY};
 
-  /** Orders keys so they can live in a map; the ordering itself carries no meaning. */
+  /**
+   * Orders keys so they can live in a map; the ordering itself carries no meaning.
+   *
+   * The identity half is `InstrumentId`'s own ordering rather than a copy of it, so the fields a
+   * container distinguishes are stated in one place and cannot drift from the fields `operator==`
+   * compares.
+   */
   friend bool operator<(const SeriesKey& lhs, const SeriesKey& rhs) {
-    if (lhs.instrument_.country_ != rhs.instrument_.country_) {
-      return lhs.instrument_.country_ < rhs.instrument_.country_;
-    }
-    if (lhs.instrument_.venue_ != rhs.instrument_.venue_) {
-      return lhs.instrument_.venue_ < rhs.instrument_.venue_;
-    }
-    if (lhs.instrument_.symbol_ != rhs.instrument_.symbol_) {
-      return lhs.instrument_.symbol_ < rhs.instrument_.symbol_;
+    if (!(lhs.instrument_ == rhs.instrument_)) {
+      return lhs.instrument_ < rhs.instrument_;
     }
     return lhs.interval_ < rhs.interval_;
   }

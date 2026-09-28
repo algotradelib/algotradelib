@@ -67,6 +67,22 @@ struct WithBuyingPower : strategy::NoCaps {
 };
 
 /**
+ * Capability variants for the price band, for the reason the calendar pair states below.
+ *
+ * All three shipped adapters publish a band, so the `false` side is the one nothing would otherwise
+ * instantiate -- and a branch inside `if constexpr` that nothing instantiates has never been
+ * compiled at all.
+ */
+struct WithPriceLimits : strategy::NoCaps {
+  static constexpr bool has_price_limits = true;
+  static constexpr bool has_working_orders = true;
+};
+struct WithoutPriceLimits : strategy::NoCaps {
+  static constexpr bool has_price_limits = false;
+  static constexpr bool has_working_orders = true;
+};
+
+/**
  * Capability variants for the trading calendar, for the same reason as the pair above.
  *
  * `SessionSource::poll_calendar` branches on `has_calendar` at compile time, and a branch nothing
@@ -298,6 +314,56 @@ public:
     return Result<BuyingPower>(std::move(reading));
   }
 
+  /**
+   * Returns today's band for `instrument`, or the failure a test asked for on that one instrument.
+   *
+   * Per instrument for the reason `buying_power` is per currency: the case worth testing is the
+   * mixed one, where the broker answers about one name and fails about another, which is not an
+   * outage anybody notices and is exactly when a band from another day goes on being applied.
+   */
+  Result<PriceLimits> price_limits(const InstrumentId& instrument) {
+    price_limits_asked_.push_back(instrument);
+    for (const auto& failing : failing_instruments_) {
+      if (failing == instrument) {
+        BrokerError error;
+        error.category_ = ErrorCategory::TRANSPORT;
+        return Result<PriceLimits>(error);
+      }
+    }
+    for (const auto& throttled : throttled_instruments_) {
+      if (throttled == instrument) {
+        BrokerError error;
+        error.category_ = ErrorCategory::RATE_LIMIT;
+        return Result<PriceLimits>(error);
+      }
+    }
+    if (error_) {
+      return Result<PriceLimits>(*error_);
+    }
+    PriceLimits limits;
+    limits.currency_ = Currency{"KRW"};
+    limits.upper_ = price_limits_upper_;
+    return Result<PriceLimits>(std::move(limits));
+  }
+
+  /** Sets the ceiling a successful band inquiry answers with. */
+  void set_price_limit_upper(const char* price) { price_limits_upper_ = Decimal64::parse(price); }
+
+  /** Makes the band inquiry fail for `instrument` alone. */
+  void fail_price_limits_for(const InstrumentId& instrument) {
+    failing_instruments_.push_back(instrument);
+  }
+
+  /** Makes the band inquiry answer `instrument` with a rate-limit refusal alone. */
+  void throttle_price_limits_for(const InstrumentId& instrument) {
+    throttled_instruments_.push_back(instrument);
+  }
+
+  /** Returns every instrument the band inquiry was asked about. */
+  const std::vector<InstrumentId>& price_limits_asked() const noexcept {
+    return price_limits_asked_;
+  }
+
   /** Makes the buying-power inquiry fail for `currency` alone. */
   void fail_buying_power_in(const Currency& currency) {
     failing_currencies_.push_back(currency);
@@ -313,6 +379,11 @@ public:
 
   /** Returns every currency the buying-power inquiry was asked about. */
   const std::vector<Currency>& buying_power_asked() const noexcept { return buying_power_asked_; }
+
+  std::vector<InstrumentId> price_limits_asked_;
+  std::vector<InstrumentId> failing_instruments_;
+  std::vector<InstrumentId> throttled_instruments_;
+  Decimal64 price_limits_upper_{Decimal64::parse("71000")};
 
   /** Returns the scripted working orders, counting the call. */
   Result<WorkingOrders<FakeBroker>> working_orders() {
@@ -785,6 +856,26 @@ struct BuysOne {
   }
 };
 
+/** Buys one share at a stated limit, so the order carries a price a band could move. */
+struct LimitBuy {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    const auto reference = ctx.instrument(bar.instrument_);
+    if (!reference) {
+      return;
+    }
+    const auto limit = strategy::Price::checked(Decimal64::parse("80000"), reference->price_rule_);
+    if (!limit) {
+      return;
+    }
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")), *limit
+      )
+    );
+  }
+};
+
 /** Asks for an idempotency key on the first bar only, then buys plainly. */
 struct KeyedOnce {
   int bars_{0};
@@ -1110,6 +1201,51 @@ TEST_CASE("a mid-flight failure on the live path stops the next order for that i
 // Binding in one call
 // ---------------------------------------------------------------------------
 
+TEST_CASE("an order the broker refused after a band was withheld is counted, and only then") {
+  // What withholding costs, measured where the outcome is known. The band this runner is holding
+  // would have moved the price; the policy declined it, the strategy's own price went out, and the
+  // broker refused it. That is the whole of the argument for withholding being answerable rather
+  // than merely arguable -- a run whose count tracks its rejections is a run whose band policy is
+  // costing it orders.
+  using Runner = runner::Runner<
+    LimitBuy, WithKey, FakeBroker, live::SessionExecutor<FakeSession<WithKey>>
+  >;
+  FakeSession<WithKey> session;
+  Runner live_runner(LimitBuy{}, {}, 512, live::SessionExecutor<FakeSession<WithKey>>(session));
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
+  PriceLimits band;
+  band.upper_ = Decimal64::parse("71000");
+  live_runner.set_price_limits(samsung(), band);
+
+  SECTION("the broker refuses it") {
+    // Reached the broker and was refused by it, which is `SendOutcome::REJECTED`.
+    session.fail_with(ErrorCategory::INVALID_ARGUMENT);
+    live_runner.feed(bar_at(1, "70000"));
+    CHECK(live_runner.price_bands_withheld() == 1);
+    CHECK(live_runner.unclamped_orders_rejected() == 1);
+  }
+
+  SECTION("the broker accepts it") {
+    // The band was still withheld -- that is the policy -- and nothing was lost by it.
+    live_runner.feed(bar_at(1, "70000"));
+    CHECK(live_runner.price_bands_withheld() == 1);
+    CHECK(live_runner.unclamped_orders_rejected() == 0);
+  }
+
+  SECTION("nothing was sent at all") {
+    // A local refusal reaches no broker, so there is no opinion about the price to count. Counting
+    // here would report a cost that was never paid.
+    session.refuse_next_locally();
+    live_runner.feed(bar_at(1, "70000"));
+    CHECK(live_runner.price_bands_withheld() == 1);
+    CHECK(live_runner.unclamped_orders_rejected() == 0);
+    CHECK(session.placed().empty());
+  }
+}
+
 TEST_CASE("binding reads the capabilities and the tag off the session") {
   // The repetition the factories remove, and the mismatch they make unexpressible: writing the four
   // parameters out lets a caller pair one broker's tag with another's capabilities.
@@ -1196,6 +1332,8 @@ struct CountEvents {
 
 using WorkingSession = FakeSession<WithWorkingOrders>;
 using BudgetSession = FakeSession<WithBuyingPower>;
+using BandSession = FakeSession<WithPriceLimits>;
+using NoBandSession = FakeSession<WithoutPriceLimits>;
 using HistorySession = FakeSession<WithoutWorkingOrders>;
 using CalendarSession = FakeSession<WithCalendar>;
 using NoCalendarSession = FakeSession<WithoutCalendar>;
@@ -1422,6 +1560,108 @@ TEST_CASE("polling bars feeds each new bar exactly once") {
   const auto after = source.poll(runner::PollKind::BARS, live_runner);
   CHECK(after == runner::PollOutcome::UPDATED);
   CHECK(live_runner.strategy().bars_ == 3);
+}
+
+TEST_CASE("a price-limits poll records today's band for every instrument it polls") {
+  BandSession session;
+  session.set_price_limit_upper("71000");
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<BandSession> source(session, {samsung(), hynix()});
+  live_runner.allow_unbounded_price_limits_age();
+
+  const auto outcome = source.poll(runner::PollKind::PRICE_LIMITS, live_runner);
+
+  CHECK(outcome == runner::PollOutcome::UPDATED);
+  // The whole universe, because an instrument this loop trades is one whose band it needs.
+  REQUIRE(session.price_limits_asked().size() == 2);
+  CHECK(session.price_limits_asked()[0] == samsung());
+  CHECK(session.price_limits_asked()[1] == hynix());
+  // And it feeds nothing, which is `PollKind::PRICE_LIMITS`'s own obligation.
+  CHECK(live_runner.strategy().bars_ == 0);
+  CHECK(live_runner.strategy().quotes_ == 0);
+}
+
+TEST_CASE("a broker that publishes no band compiles no request") {
+  // The `if constexpr` false branch. All three shipped adapters publish a band, so without this
+  // instantiation that branch is never compiled at all -- which is how a call to a member the
+  // capability set says does not exist survives in a header for a year.
+  NoBandSession session;
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<NoBandSession> source(session, {samsung()});
+
+  CHECK(source.poll(runner::PollKind::PRICE_LIMITS, live_runner) == runner::PollOutcome::UNCHANGED);
+  CHECK(session.price_limits_asked().empty());
+}
+
+TEST_CASE("a band poll that answers for one instrument and fails for another has failed") {
+  // The same partial-answer rule the buying-power sweep argues in full: reporting `UPDATED` because
+  // something arrived resets the loop's consecutive-failure count, and a name that fails every
+  // sweep would then go on being priced against a band from another day.
+  BandSession session;
+  session.fail_price_limits_for(hynix());
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<BandSession> source(session, {samsung(), hynix()});
+
+  CHECK(source.poll(runner::PollKind::PRICE_LIMITS, live_runner) == runner::PollOutcome::FAILED);
+  CHECK(source.last_error().has_value());
+  // Both were asked: one name failing must not abandon the rest of the round.
+  CHECK(session.price_limits_asked().size() == 2);
+}
+
+TEST_CASE("a throttled band poll does not downgrade another instrument's outright failure") {
+  BandSession session;
+  session.fail_price_limits_for(samsung());
+  session.throttle_price_limits_for(hynix());
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<BandSession> source(session, {samsung(), hynix()});
+
+  CHECK(source.poll(runner::PollKind::PRICE_LIMITS, live_runner) == runner::PollOutcome::FAILED);
+  REQUIRE(source.last_error().has_value());
+  // The reason names the instrument that actually failed, not the one throttled behind it.
+  CHECK(source.last_error()->category_ == ErrorCategory::TRANSPORT);
+}
+
+TEST_CASE("an outright band failure wins however late in the sweep it lands") {
+  BandSession session;
+  session.throttle_price_limits_for(samsung());
+  session.fail_price_limits_for(hynix());
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<BandSession> source(session, {samsung(), hynix()});
+
+  CHECK(source.poll(runner::PollKind::PRICE_LIMITS, live_runner) == runner::PollOutcome::FAILED);
+  REQUIRE(source.last_error().has_value());
+  CHECK(source.last_error()->category_ == ErrorCategory::TRANSPORT);
+}
+
+TEST_CASE("a throttled band poll alone is a throttled poll, not an outage") {
+  BandSession session;
+  session.throttle_price_limits_for(samsung());
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<BandSession> source(session, {samsung()});
+
+  CHECK(
+    source.poll(runner::PollKind::PRICE_LIMITS, live_runner) == runner::PollOutcome::RATE_LIMITED
+  );
+}
+
+TEST_CASE("a failed band poll leaves the band it could not refresh in place") {
+  // The same rule the calendar and the budget follow. Erasing the previous answer would turn a
+  // timed-out request into an unclamped order, and the age policy -- not the transport -- is what
+  // decides when a band has stopped being usable.
+  BandSession session;
+  session.set_price_limit_upper("71000");
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<BandSession> source(session, {samsung()});
+  live_runner.allow_unbounded_price_limits_age();
+  REQUIRE(source.poll(runner::PollKind::PRICE_LIMITS, live_runner) == runner::PollOutcome::UPDATED);
+
+  session.fail_price_limits_for(samsung());
+  CHECK(source.poll(runner::PollKind::PRICE_LIMITS, live_runner) == runner::PollOutcome::FAILED);
+
+  // Still clamping, which is what "left in place" means where it can be observed.
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  CHECK(live_runner.price_bands_withheld() == 0);
 }
 
 TEST_CASE("a buying-power poll that answers for one currency and fails for another has failed") {

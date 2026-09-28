@@ -78,6 +78,24 @@ struct InstrumentId {
   friend bool operator==(const InstrumentId& lhs, const InstrumentId& rhs) {
     return lhs.country_ == rhs.country_ && lhs.venue_ == rhs.venue_ && lhs.symbol_ == rhs.symbol_;
   }
+
+  /**
+   * Orders identities so they can key a map. The ordering itself carries no meaning.
+   *
+   * It compares **exactly what `operator==` compares**, which is the whole reason it is declared
+   * beside it: a container keyed on less than all three fields silently merges two instruments that
+   * are not equal. `runner::Runner`'s price bands were such a container -- keyed on `symbol_` alone,
+   * so a KRX identity and an NXT identity for the same stock overwrote each other's band.
+   */
+  friend bool operator<(const InstrumentId& lhs, const InstrumentId& rhs) {
+    if (lhs.country_ != rhs.country_) {
+      return lhs.country_ < rhs.country_;
+    }
+    if (lhs.venue_ != rhs.venue_) {
+      return lhs.venue_ < rhs.venue_;
+    }
+    return lhs.symbol_ < rhs.symbol_;
+  }
 };
 
 /**
