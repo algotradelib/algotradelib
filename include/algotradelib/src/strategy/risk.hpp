@@ -99,6 +99,70 @@ enum class HaltReason {
 /** How many `HaltReason` enumerators there are, for the guard's fixed-capacity storage. */
 inline constexpr std::size_t halt_reason_count = 8;
 
+/**
+ * What an instruction can do to a position, which is what decides whether a hold reaches it.
+ *
+ * A hold used to stop every instruction, which was right while every hold meant "somebody says
+ * stop". It stopped being right once holds also meant "this library does not know something":
+ * refusing to *withdraw* a resting order because the holdings poll failed is worse than the exposure
+ * that refusal guards, since the order keeps resting and can fill.
+ *
+ * So the question a hold is asked is no longer "is trading stopped" but "is trading stopped *for
+ * this*". Two classes, because two is what the send path actually has -- and note which side a
+ * replacement falls on: `reconcile` emits one as a withdrawal plus a placement, and the placement is
+ * an `OPENING`, so repricing a resting buy into a fillable price cannot slip through as an
+ * amendment.
+ */
+enum class InstructionClass {
+  /** A placement: it can open a position, or enlarge one. */
+  OPENING,
+  /**
+   * A cancellation of a row the caller named.
+   *
+   * **Named** is the operative word and it is not the same as "a cancellation". A withdrawal the
+   * caller states refers to an order it chose; a cancellation `reconcile` derived from the portfolio
+   * refers to whatever an unknown account made look opposed, which is not safe under the same holds.
+   * That distinction is enforced in `runner::Runner::settle`, before a derived plan sends anything.
+   */
+  WITHDRAWAL,
+};
+
+/**
+ * Returns whether `reason` stops an instruction of `klass`.
+ *
+ * The division is by *why* the hold is in force, not by how serious it is. A hold that says somebody
+ * or something stopped this runner reaches every instruction: an operator's kill switch a control
+ * file could otherwise partly bypass, a journal that cannot record what is about to be sent, and a
+ * stop already in progress. A hold that says this library does not know something reaches only what
+ * it could get wrong, and withdrawing an order the caller named is not that -- `Runner::send_cancel`
+ * resolves it through `Portfolio::find_working` and reports `unresolved_cancel_` when the row is not
+ * there, so an uninformed withdrawal is already visible rather than blind.
+ */
+inline constexpr bool halt_blocks(HaltReason reason, InstructionClass klass) noexcept {
+  if (klass == InstructionClass::OPENING) {
+    return true;
+  }
+  switch (reason) {
+    case HaltReason::OPERATOR:
+    case HaltReason::LOCAL_FAILURE:
+    case HaltReason::STOPPING:
+      return true;
+    // Its argument is about an *opening* order duplicating one a predecessor left resting. A named
+    // withdrawal cannot duplicate anything, and an unread list leaves `working_` empty, so there is
+    // no row for it to be wrong about.
+    case HaltReason::ORDER_LIST_UNREAD:
+    // None of these four says anything about a row the caller already named.
+    case HaltReason::PORTFOLIO_ABSENT:
+    case HaltReason::PORTFOLIO_STALE:
+    case HaltReason::BUYING_POWER_UNREAD:
+    // Polling was abandoned; a known resting order did not thereby become unsafe to withdraw, and
+    // getting out is the one thing a failing run most wants to be able to do.
+    case HaltReason::POLL_FAILING:
+      return false;
+  }
+  return true;
+}
+
 /** Returns a stable lowercase name for `reason`, for logs and structured reporting. */
 inline constexpr std::string_view halt_reason_name(HaltReason reason) noexcept {
   switch (reason) {
@@ -946,9 +1010,21 @@ public:
    * applies to limits: say the reason that most needs attention, not an incidental one.
    */
   std::optional<HaltReason> blocking_reason() const noexcept {
+    return blocking_reason_for(InstructionClass::OPENING);
+  }
+
+  /**
+   * Returns the most fundamental hold that stops an instruction of `klass`, or nothing.
+   *
+   * Same order and same contract as `blocking_reason`, asked of a narrower question. A hold that
+   * does not reach `klass` is skipped rather than reported, so a withdrawal permitted under an
+   * uninformed hold is not refused with a reason that was never about it.
+   */
+  std::optional<HaltReason> blocking_reason_for(InstructionClass klass) const noexcept {
     for (std::size_t index = 0; index < halt_reason_count; ++index) {
-      if (held_[index]) {
-        return static_cast<HaltReason>(index);
+      const auto reason = static_cast<HaltReason>(index);
+      if (held_[index] && halt_blocks(reason, klass)) {
+        return reason;
       }
     }
     return std::nullopt;

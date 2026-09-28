@@ -1147,13 +1147,22 @@ private:
       report.unavailable_cancel_.push_back(ref);
       return;
     }
-    // And a halt stops this runner *sending*, which a cancellation is. Withdrawing reduces exposure
-    // and it is tempting to let it through anyway; the argument against is that `StopIntent` reaches
-    // this runner from a signal and from a file, so exempting cancellations would let
-    // `echo withdraw > /var/run/atl/stop` send an instruction that an operator's own halt forbade.
-    // A kill switch a control file can partly bypass is not one. An operator who wants out resumes
-    // first, which is one deliberate act and is visible in the report either way.
-    if (const auto holding = guard_.blocking_reason()) {
+    // And a halt stops this runner *sending*, which a cancellation is -- but only a halt that is
+    // about this instruction. The argument for refusing here is `StopIntent` reaching this runner
+    // from a signal and from a file: exempting cancellations wholesale would let
+    // `echo withdraw > /var/run/atl/stop` send an instruction that an operator's own halt forbade,
+    // and a kill switch a control file can partly bypass is not one. An operator who wants out
+    // resumes first, which is one deliberate act and is visible in the report either way.
+    //
+    // **That argument covers the holds somebody set, and not the holds that merely mean this runner
+    // is uninformed.** Refusing to withdraw a resting order because the *holdings* poll failed is
+    // worse than the exposure it guards: the order keeps resting and can fill, and the reference it
+    // would be withdrawn by came from a working-order read that succeeded. So the question asked is
+    // `InstructionClass::WITHDRAWAL`, and `strategy::halt_blocks` holds the division and its
+    // reasoning. The row is still resolved below, and a reference the snapshot cannot place is
+    // reported rather than sent blind.
+    if (const auto holding =
+          guard_.blocking_reason_for(strategy::InstructionClass::WITHDRAWAL)) {
       report.refused_cancel_.push_back(RefusedCancel<Tag>{ref, *holding});
       return;
     }
