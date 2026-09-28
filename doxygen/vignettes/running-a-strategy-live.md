@@ -248,7 +248,7 @@ refused flatten is reported once rather than twice.
 | `cancels_unresolved_` | the reference named an order the snapshot does not hold |
 | `cancels_indeterminate_` | the withdrawal failed in transit; **it may still have withdrawn the order** |
 | `plans_withheld_` | a whole plan held back before any of its parts was judged — **for one of three reasons this figure does not distinguish**: the account was never read, it is older than your stated maximum, or a hold is refusing placements for a plan that also wanted to withdraw something. That third one happens on a perfectly fresh portfolio, so do not read this as "the account is unknown". And **`final_gate_` does not always show it**: with `allow_absent_portfolio` the gate is open while a plan that would withdraw something is still withheld |
-| `instructions_unavailable_` | the order journal could not record it, so it was not sent. Placements and withdrawals together; it leaves a sticky `local_failure` hold, and this says how many instructions it cost |
+| `instructions_unavailable_` | local machinery was unavailable, so it was not sent — a pre-send journal write that failed is the usual cause and **not the only one**, since any executor answering `UNAVAILABLE` lands here. Placements and withdrawals together. It leaves a sticky `local_failure` hold, which `final_gate_` *may* name — a higher-priority hold can be reported while that one is still in force — so read this as how many instructions it cost |
 
 **And `last_broker_refusal_`, which is the one worth reading first.** A count tells you orders are
 being refused; this tells you which instrument, under which of your own tags, with the broker's own

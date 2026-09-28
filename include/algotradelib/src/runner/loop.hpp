@@ -727,8 +727,9 @@ struct LoopReport {
    *
    * A live run used to say nothing about any of this. `Runner::feed` returns a report describing
    * what became of every instruction, and `live::SessionSource` discards it on every poll -- so a run
-   * in which the broker refused everything and one in which it accepted everything produced the same
-   * `LoopReport`. See `Runner::orders_unbuildable` for what each origin means and why they are
+   * in which the broker refused everything looked very much like one in which it accepted
+   * everything. Not identically: the phase and price-band figures can differ for some refused
+   * orders. But nothing said *the broker refused these*. See `Runner::orders_unbuildable` for what each origin means and why they are
    * counted apart.
    *
    * **The polling path only.** These stop at the moment an operator's stop is honoured, because the
@@ -762,10 +763,16 @@ struct LoopReport {
    */
   std::size_t plans_withheld_{0};
   /**
-   * Instructions this run's polling could not record, and therefore did not send.
+   * Instructions this run's polling could not send because **local machinery was unavailable**.
    *
-   * The order journal failing. It leaves a sticky `LOCAL_FAILURE` hold, so `final_gate_` says
-   * something broke; this says how many instructions it cost. See `Runner::instructions_unavailable`.
+   * A pre-send journal write that failed is the usual cause and not the only one: any executor
+   * answering `SendOutcome::UNAVAILABLE` lands here, journal or no journal, so a custom binding can
+   * produce this figure with nothing to repair in a journal at all.
+   *
+   * It leaves a sticky `LOCAL_FAILURE` hold. `final_gate_` **may** name it — or may show a
+   * higher-priority hold while that one is still in force — so this figure is how many instructions
+   * it cost rather than a second opinion about which hold was reported.
+   * See `Runner::instructions_unavailable`.
    */
   std::size_t instructions_unavailable_{0};
   /** Withdrawals this run's polling could not complete; see `Runner::cancels_rejected`. */

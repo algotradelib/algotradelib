@@ -815,11 +815,13 @@ public:
    *   **The loop's own gate does not always describe it**, which is why it is a figure at all: with
    *   `allow_absent_portfolio` the gate is open while this still fires for a plan that would withdraw
    *   something.
-   * - `instructions_unavailable` -- local machinery, which in practice is the order journal, could
-   *   not record the instruction, so it was not sent. Placements and withdrawals both, counted
-   *   together because the operator's response is the same and is about the process rather than the
-   *   order. It leaves a sticky `LOCAL_FAILURE` hold, so a gate reader knows *something* failed; this
-   *   is how many.
+   * - `instructions_unavailable` -- **local machinery was unavailable**, so the instruction was not
+   *   sent. A pre-send journal write that failed is the usual cause and not the only one: any
+   *   executor answering `SendOutcome::UNAVAILABLE` lands here, so a binding with no journal at all
+   *   can produce this. Placements and withdrawals together, because the operator's response is about
+   *   the process rather than the order. It leaves a sticky `LOCAL_FAILURE` hold, which the loop's
+   *   gate *may* report -- a higher-priority hold can be named instead while that one is still in
+   *   force -- so this figure is how many instructions it cost rather than evidence about the gate.
    */
   std::size_t plans_withheld() const noexcept { return plans_withheld_; }
   /** @copydoc Runner::plans_withheld */
@@ -2113,7 +2115,7 @@ private:
   std::size_t cancels_indeterminate_{0};
   /** Plans held back whole, for any of three reasons; see `plans_withheld`. */
   std::size_t plans_withheld_{0};
-  /** Instructions local machinery could not record and so did not send; see the accessor. */
+  /** Instructions local machinery was unavailable to send; see the accessor. */
   std::size_t instructions_unavailable_{0};
   /** What the broker said about the most recent order it refused; see the accessor. */
   std::optional<BrokerRefusal> last_broker_refusal_;
