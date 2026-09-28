@@ -1728,3 +1728,81 @@ TEST_CASE("every halt reason has a name, and the count matches the enumerators")
   CHECK(runner::withheld_plan_reason_name(runner::WithheldPlanReason::PLACEMENT_HELD) ==
         "placement_held");
 }
+
+namespace {
+
+/** Wants five long, so a larger resting buy has to be withdrawn and replaced. */
+struct WantsFive {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = Decimal64::parse("5");
+    target.tag_ = "resize";
+    ctx.submit(target);
+  }
+};
+
+/** A portfolio carrying a resting BUY larger than the target, stamped and current. */
+strategy::Portfolio<runner::DryTag> oversized_resting_buy() {
+  strategy::Portfolio<runner::DryTag> portfolio;
+  portfolio.as_of_ = utc(2026, 3, 10, 6, 30);
+  WorkingOrder<runner::DryTag> working;
+  working.order_.instrument_ = samsung();
+  working.order_.side_ = OrderSide::BUY;
+  working.order_.status_ = OrderStatus::PENDING;
+  working.order_.quantity_ = Decimal64::parse("10");
+  working.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+  working.ref_ = OrderRef<runner::DryTag>{"0002", ""};
+  portfolio.working_.push_back(working);
+  return portfolio;
+}
+
+} // namespace
+
+TEST_CASE("a resize is withheld whole when the hold would refuse its replacement half") {
+  // The shape the plan calls "a placement wearing an amendment's clothes", and the one the
+  // cancel-only cases cannot exercise: this plan really does have both halves. Sending the
+  // withdrawal and then having the replacement refused turns a resize into a bare cancellation,
+  // which is not the instruction the strategy stated.
+  auto uninformed = GENERATE(
+    strategy::HaltReason::ORDER_LIST_UNREAD,
+    strategy::HaltReason::BUYING_POWER_UNREAD);
+
+  runner::DryRunner<WantsFive> dry;
+  arrange(dry);
+  dry.context().set_portfolio(oversized_resting_buy());
+  dry.guard().halt(uninformed);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+
+  CAPTURE(strategy::halt_reason_name(uninformed));
+  REQUIRE(report.withheld_plans_.size() == 1);
+  const auto& withheld = report.withheld_plans_.front();
+  CHECK(withheld.reason_ == runner::WithheldPlanReason::PLACEMENT_HELD);
+  CHECK(withheld.detail_ == strategy::halt_reason_name(uninformed));
+  CHECK(withheld.tag_ == "resize");
+  // Both halves are named, and they are told apart by the counts rather than by two entries.
+  REQUIRE(withheld.not_canceled_.size() == 1);
+  CHECK(withheld.not_canceled_.front() == OrderRef<runner::DryTag>{"0002", ""});
+  CHECK(withheld.not_placed_ == 1);
+  // Nothing escaped in either direction, and no other bucket absorbed it.
+  CHECK(report.would_cancel_.empty());
+  CHECK(report.would_place_.empty());
+  CHECK(report.refused_.empty());
+  CHECK(report.withheld_.empty());
+  CHECK_FALSE(report.quiet());
+}
+
+TEST_CASE("an unheld resize still cancels and replaces, so the rule is not simply never act") {
+  runner::DryRunner<WantsFive> dry;
+  arrange(dry);
+  dry.context().set_portfolio(oversized_resting_buy());
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+
+  CHECK(report.withheld_plans_.empty());
+  REQUIRE(report.would_cancel_.size() == 1);
+  REQUIRE(report.would_place_.size() == 1);
+  CHECK(report.would_place_.front().quantity_ == Decimal64::parse("5"));
+}

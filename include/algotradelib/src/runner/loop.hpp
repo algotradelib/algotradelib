@@ -1059,7 +1059,13 @@ public:
    * `allow_unbounded_portfolio_age` this restores the library's previous *placement* behaviour, and
    * deliberately not its previous cancellation behaviour.
    */
-  void allow_absent_portfolio() { allow_absent_portfolio_ = true; }
+  void allow_absent_portfolio() {
+    allow_absent_portfolio_ = true;
+    // Pushed down for the same reason the age policy is: this loop's hold is not in force at every
+    // point an instruction can be settled, so the runner enforces the absence rule itself and an
+    // opt-out that stopped at the hold would not actually opt out of anything.
+    runner_->allow_absent_portfolio();
+  }
 
   /**
    * Sets the session the market phase is derived against.
@@ -1213,6 +1219,17 @@ private:
     // the same argument: a handler deciding on a mark from one moment beside a price from another is
     // not looking at a fresher picture, it is looking at an incoherent one.
     install_phase(iteration);
+
+    // **Before anything this loop calls can feed, because several of them can.** The runner measures
+    // a snapshot's age against the later of this and its own decision instant, and its decision
+    // instant is a bar's period end -- which on a daily bar is yesterday's close. Set here, a plan
+    // settled from inside `read_order_list` or a poll is aged against the clock rather than against
+    // the event that triggered it.
+    runner_->set_observed_at(iteration.at_);
+    // Stated here too, and for the same reason: the runner enforces the absence rule at the moment
+    // an instruction is decided, which is the only place that is inside every callback this loop
+    // makes. A run that opted out says so, and the runner then places as it did before.
+    runner_->require_known_portfolio(!allow_absent_portfolio_);
 
     // **Established before any poll runs, because a poll is what feeds the runner.** A source's
     // `poll` calls `Runner::feed` itself -- `live::SessionSource::poll_bars` does, per instrument --

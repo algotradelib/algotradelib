@@ -373,6 +373,50 @@ public:
   }
 
   /**
+   * Records the wall-clock instant a driving loop believes it is, for measuring a snapshot's age.
+   *
+   * **Not the same question as `Context::now()`, and using that one understates age.** `now_` is the
+   * *decision* instant, and `feed(BarEvent)` sets it to the bar's period end -- which on a daily bar
+   * is yesterday's close. A bar that arrives late would then measure a snapshot taken at the same
+   * moment as zero seconds old and act on it, however long ago that actually was.
+   *
+   * Set by `runner::PollingLoop` at the top of each iteration, before anything it calls can feed, so
+   * a plan settled from inside a source callback is measured against the clock rather than against
+   * the event that triggered it. A runner with no loop leaves it unset and falls back to `now()`.
+   */
+  void set_observed_at(std::chrono::system_clock::time_point at) { observed_at_ = at; }
+
+  /**
+   * States that this runner may act although it has never read what the account holds.
+   *
+   * The runner's half of `PollingLoop::allow_absent_portfolio`, which pushes it down. It exists here
+   * too because the loop's hold is not installed for the whole of an iteration -- a source callback
+   * can settle before it -- so the absence rule has to be enforced where the instruction is decided,
+   * and an opt-out that reached only the hold would be an opt-out with no effect on the rule that
+   * matters.
+   */
+  void allow_absent_portfolio() { allow_absent_portfolio_ = true; }
+
+  /**
+   * States whether this runner may **place** while it has never read what the account holds.
+   *
+   * Set by `runner::PollingLoop` at the top of every iteration, before anything it calls can feed.
+   * Off by default, and deliberately: a runner nobody is driving has no holdings source to have
+   * failed, and a replay stamps its own portfolio, so making this the default would refuse every
+   * order in a backtest and in a `DryRunner` to close a hole neither of them has.
+   *
+   * It exists because the loop's own hold is not in force at every point an instruction can be
+   * settled -- a source's `read_order_list` runs before the first hold is installed and is handed a
+   * mutable runner. A rule enforced only by that hold is a rule with a hole in it on the first
+   * iteration, which is exactly the iteration a run has read nothing.
+   *
+   * Withdrawing is unaffected, and so is a plan that would cancel something: that one is withheld on
+   * the snapshot alone, whoever is driving, because a cancellation derived from an account nobody
+   * has read can withdraw the order protecting a real position.
+   */
+  void require_known_portfolio(bool required) { require_known_portfolio_ = required; }
+
+  /**
    * Stops this runner sending, for a reason that has nothing to do with any one instruction.
    *
    * Public because the conditions that warrant it are not all inside the runner. Recovery is the
@@ -677,8 +721,23 @@ private:
       // Only a plan that would cancel something is stopped. One that only places is left to the guard
       // exactly as before, so a direct `OrderIntent` keeps reporting as a refusal rather than quietly
       // changing bucket.
-      if (!planned.cancel_.empty()) {
-        if (const auto reason = plan_withhold_reason()) {
+      if (const auto reason = plan_withhold_reason()) {
+        // **A missing account stops the whole plan; a hold on placements stops only a plan that
+        // would also withdraw something.**
+        //
+        // The difference is which of the two the *guard* can be relied on to catch. A held placement
+        // is refused by `RiskGuard` a few lines below, with the hold named on its own report entry,
+        // and that is the better result -- so a plan with nothing to cancel is left to it. What the
+        // guard cannot catch is data: a snapshot nobody has read is not a hold, and the loop's hold
+        // for it is not yet installed at every point an instruction can be settled. A source's
+        // `read_order_list` runs before `PollingLoop` installs any hold and is handed a mutable
+        // runner, so a target settled inside that call reaches here with the guard clear. Deciding
+        // absence and staleness here, on the snapshot itself, is what makes the rule hold at every
+        // send site rather than at most of them.
+        const bool data_is_missing = *reason != WithheldPlanReason::PLACEMENT_HELD;
+        const bool stops_a_placement = data_is_missing && require_known_portfolio_;
+        if (stops_a_placement || (data_is_missing && !planned.cancel_.empty()) ||
+            !planned.cancel_.empty()) {
           report.withheld_plans_.push_back(WithheldPlan<Tag>{
             *reason,
             instruction_instrument(instruction),
@@ -1204,10 +1263,12 @@ private:
     // A default-constructed `Portfolio` carries the epoch, and no broker reports a snapshot taken in
     // 1970. The same sentinel the loop uses; both writers of `as_of_` in this library stamp it.
     if (portfolio.as_of_ == std::chrono::system_clock::time_point{}) {
-      return WithheldPlanReason::PORTFOLIO_ABSENT;
+      return allow_absent_portfolio_ ?
+        std::optional<WithheldPlanReason>(std::nullopt) :
+        std::optional<WithheldPlanReason>(WithheldPlanReason::PORTFOLIO_ABSENT);
     }
     if (maximum_portfolio_age_ &&
-        context_.now() - portfolio.as_of_ > *maximum_portfolio_age_) {
+        freshness_instant() - portfolio.as_of_ > *maximum_portfolio_age_) {
       return WithheldPlanReason::PORTFOLIO_STALE;
     }
     // Any placement hold, not an enumerated few: the harm is that the replacement will be refused
@@ -1216,6 +1277,17 @@ private:
       return WithheldPlanReason::PLACEMENT_HELD;
     }
     return std::nullopt;
+  }
+
+  /**
+   * Returns the instant a snapshot's age is measured against.
+   *
+   * The later of the decision instant and the last clock reading a loop supplied, so neither can be
+   * used to make an old snapshot look fresh: a late bar cannot rewind the clock, and a loop that has
+   * not spoken yet cannot erase the decision instant.
+   */
+  std::chrono::system_clock::time_point freshness_instant() const {
+    return observed_at_ > context_.now() ? observed_at_ : context_.now();
   }
 
   /** Returns the detail recorded with a withheld plan, naming the hold where there is one. */
@@ -1397,6 +1469,12 @@ private:
   std::size_t sends_outside_permitted_phase_{0};
   /** How old a snapshot may be before a plan derived from it is withheld; see the setter. */
   std::optional<std::chrono::nanoseconds> maximum_portfolio_age_;
+  /** The last wall-clock instant a driving loop reported; see `set_observed_at`. */
+  std::chrono::system_clock::time_point observed_at_{};
+  /** Whether the caller stated this runner may act with no snapshot at all; see the setter. */
+  bool allow_absent_portfolio_{false};
+  /** Whether a placement needs a portfolio that has actually been read; see the setter. */
+  bool require_known_portfolio_{false};
   bool probing_sellable_{false};
   strategy::SellableConventionProbe<Tag> sellable_probe_;
   Context context_;

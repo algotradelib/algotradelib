@@ -284,12 +284,26 @@ public:
     const auto report = runner_instance.feed(bar_at(++bars_));
     placed_ += report.would_place_.size();
     refused_ += report.refused_.size();
+    canceled_ += report.would_cancel_.size();
+    withheld_plans_ += report.withheld_plans_.size();
+    if (!report.withheld_plans_.empty()) {
+      last_withheld_ = report.withheld_plans_.front().reason_;
+    }
     if (!report.refused_.empty()) {
       last_refusal_ = report.refused_.front().halt_reason_;
       last_guard_reason_ = report.refused_.front().reason_;
     }
     return runner::PollOutcome::UPDATED;
   }
+
+  /** Returns how many cancellations actually reached the executor from inside a poll. */
+  std::size_t canceled() const noexcept { return canceled_; }
+
+  /** Returns how many whole plans were held back before any part of them was sent. */
+  std::size_t withheld_plans() const noexcept { return withheld_plans_; }
+
+  /** Returns why the first such plan was held back. */
+  std::optional<runner::WithheldPlanReason> last_withheld() const noexcept { return last_withheld_; }
 
   /**
    * Returns the configured order-list outcome, installing a calendar first when asked to.
@@ -351,6 +365,9 @@ private:
   std::size_t placed_{0};
   std::size_t refused_{0};
   std::optional<strategy::HaltReason> last_refusal_;
+  std::size_t canceled_{0};
+  std::size_t withheld_plans_{0};
+  std::optional<runner::WithheldPlanReason> last_withheld_;
   std::optional<strategy::GuardReason> last_guard_reason_;
   std::optional<algotradelib::TradingCalendar> calendar_;
   std::optional<algotradelib::TradingCalendar> calendar_on_order_list_;
@@ -444,10 +461,11 @@ using RejectingLoop = runner::PollingLoop<RejectingRunner, RejectingSource, runn
  *
  * Slice 26 made two things mandatory that were optional: a run states how old a holdings snapshot
  * may be, and a run that has never read one holds rather than sizing against an empty account. Most
- * of the cases in this file predate that and are about the calendar, the phase, a stop or a
- * cadence -- they construct no portfolio because they never needed one. Stating both opt-outs is how
- * such a case says "not about the portfolio" in one line, and it is exactly the pair an operator
- * would state to keep the previous placement behaviour.
+ * of the cases in this file predate that and are about the calendar, the phase, a stop, a cadence or
+ * buying power. Most construct no portfolio because they never needed one; a few do construct one and
+ * simply have no opinion about its age. Stating both opt-outs is how such a case says "not about the
+ * portfolio" in one line, and it is exactly the pair an operator would state to keep the previous
+ * placement behaviour.
  *
  * The cases that *are* about the portfolio gate do not call this, and assert the holds instead.
  */
@@ -455,6 +473,22 @@ template <typename Loop>
 void not_about_the_portfolio(Loop& loop) {
   loop.allow_unbounded_portfolio_age();
   loop.allow_absent_portfolio();
+}
+
+/** A stamped portfolio carrying one resting sell, for a parting target to try to withdraw. */
+template <typename RunnerT>
+strategy::Portfolio<typename RunnerT::Tag> portfolio_with_resting() {
+  strategy::Portfolio<typename RunnerT::Tag> portfolio;
+  portfolio.as_of_ = base_time();
+  algotradelib::WorkingOrder<typename RunnerT::Tag> working;
+  working.order_.instrument_ = samsung();
+  working.order_.side_ = algotradelib::OrderSide::SELL;
+  working.order_.status_ = algotradelib::OrderStatus::PENDING;
+  working.order_.quantity_ = algotradelib::Decimal64::parse("10");
+  working.order_.execution_.filled_quantity_ = algotradelib::Decimal64::parse("0");
+  working.ref_ = algotradelib::OrderRef<typename RunnerT::Tag>{"0001", ""};
+  portfolio.working_.push_back(working);
+  return portfolio;
 }
 
 /** A portfolio holding one resting order, for a closing pass to try to withdraw. */
@@ -1669,6 +1703,10 @@ TEST_CASE("nothing is sent before the first order-list read, from inside a poll"
   runner_instance.context().set_instrument(samsung_reference());
   serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  // Stamped, so this stays a test about its own subject rather than about an unread account.
+  strategy::Portfolio<SendingRunner::Tag> known;
+  known.as_of_ = base_time();
+  runner_instance.context().set_portfolio(known);
   SendingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
   StopSource stop;
 
@@ -1723,8 +1761,9 @@ TEST_CASE("a stale portfolio blocks a send made from inside a poll", "[loop][gat
   const auto report = loop.run(stop, 2);
 
   CHECK(source.placed() == 0);
-  CHECK(source.refused() == 2);
-  CHECK(source.last_refusal() == strategy::HaltReason::PORTFOLIO_STALE);
+  CHECK(source.canceled() == 0);
+  CHECK(source.withheld_plans() == 2);
+  CHECK(source.last_withheld() == runner::WithheldPlanReason::PORTFOLIO_STALE);
   CHECK(report.final_gate_ == strategy::HaltReason::PORTFOLIO_STALE);
 }
 
@@ -1736,6 +1775,10 @@ TEST_CASE("an operator's halt stops a send made from inside a poll", "[loop][hal
   runner_instance.context().set_instrument(samsung_reference());
   serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  // Stamped, so this stays a test about its own subject rather than about an unread account.
+  strategy::Portfolio<SendingRunner::Tag> known;
+  known.as_of_ = base_time();
+  runner_instance.context().set_portfolio(known);
   runner_instance.guard().halt();
   SendingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
   StopSource stop;
@@ -3508,10 +3551,14 @@ TEST_CASE("a run that has never read its holdings does not size an entry against
 
   CHECK(report.order_list_read_);
   // Shape and multiplicity, not "a refusal occurred somewhere": one bar per iteration, two
-  // iterations, and nothing may leave the process in either of them.
+  // iterations, and nothing may leave the process in either of them, in either direction.
   CHECK(source.placed() == 0);
-  CHECK(source.refused() == 2);
-  CHECK(source.last_refusal() == strategy::HaltReason::PORTFOLIO_ABSENT);
+  CHECK(source.canceled() == 0);
+  // Reported as a plan held back on the snapshot rather than as a guard refusal, because the runner
+  // decides it where the instruction is decided -- the loop's hold is not yet installed at every
+  // point a source can settle one.
+  CHECK(source.withheld_plans() == 2);
+  CHECK(source.last_withheld() == runner::WithheldPlanReason::PORTFOLIO_ABSENT);
   CHECK(report.final_gate_ == strategy::HaltReason::PORTFOLIO_ABSENT);
 }
 
@@ -3659,4 +3706,188 @@ TEST_CASE("an externally seeded snapshot still ages out against the stated polic
 
   CHECK(report.final_gate_ == strategy::HaltReason::PORTFOLIO_STALE);
   CHECK(report.blocked_ == 1);
+}
+
+namespace {
+
+/** A bar whose period ends at `at`, for measuring what a *late* bar does to a freshness check. */
+strategy::BarEvent bar_ending_at(std::chrono::system_clock::time_point at) {
+  algotradelib::Bar bar;
+  bar.timestamp_ = at;
+  bar.high_ = algotradelib::Decimal64::parse("70000");
+  bar.low_ = bar.high_;
+  bar.close_ = bar.high_;
+  bar.volume_ = algotradelib::Decimal64::parse("1000000");
+  return strategy::make_bar_event(
+    samsung(), algotradelib::BarInterval::ONE_DAY, algotradelib::BarStamp::CLOSE, bar);
+}
+
+/**
+ * A source that feeds from inside `read_order_list`, which runs before the loop holds anything.
+ *
+ * Not a contrived shape: `read_order_list` is part of the source interface, it is handed a mutable
+ * runner, and the loop's own comment lists it among the calls that can send. It is the one send site
+ * that exists *before* the first gate is installed, so a rule enforced only by that gate has a hole
+ * here on the first iteration -- which is the iteration on which a run has read nothing.
+ */
+template <typename RunnerT>
+class FeedsDuringOrderListRead {
+public:
+  static constexpr bool provides_working_orders = true;
+
+  explicit FeedsDuringOrderListRead(strategy::BarEvent bar) : bar_(std::move(bar)) {}
+
+  runner::PollOutcome poll(runner::PollKind, RunnerT&) { return runner::PollOutcome::UNCHANGED; }
+
+  runner::PollOutcome read_order_list(RunnerT& runner_instance) {
+    if (!fed_) {
+      fed_ = true;
+      const auto report = runner_instance.feed(bar_);
+      placed_ = report.would_place_.size();
+      canceled_ = report.would_cancel_.size();
+      withheld_plans_ = report.withheld_plans_.size();
+    }
+    return runner::PollOutcome::UPDATED;
+  }
+
+  std::size_t placed() const noexcept { return placed_; }
+  std::size_t canceled() const noexcept { return canceled_; }
+  std::size_t withheld_plans() const noexcept { return withheld_plans_; }
+
+private:
+  strategy::BarEvent bar_;
+  bool fed_{false};
+  std::size_t placed_{0};
+  std::size_t canceled_{0};
+  std::size_t withheld_plans_{0};
+};
+
+} // namespace
+
+TEST_CASE("a late bar cannot make a stale snapshot look fresh", "[loop][gate][portfolio]") {
+  // A snapshot's age must be measured against the clock, not against the event that triggered the
+  // decision. `feed(BarEvent)` sets the decision instant to the bar's period end, which on a daily
+  // bar is yesterday's close -- so a bar arriving late would measure a snapshot taken at the same
+  // moment as zero seconds old, and act on it.
+  //
+  // Settled from inside `read_order_list`, which is the one send site that runs before the loop has
+  // installed any hold at all.
+  using Runner = runner::DryRunner<WantsFlat>;
+  Runner runner_instance;
+  runner_instance.context().set_instrument(samsung_reference());
+  serve_calendar(runner_instance);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+
+  // The snapshot and the bar are both an hour old; the loop's clock is not.
+  const auto an_hour_ago = base_time() - std::chrono::hours(1);
+  strategy::Portfolio<runner::DryTag> portfolio;
+  portfolio.as_of_ = an_hour_ago;
+  algotradelib::WorkingOrder<runner::DryTag> resting;
+  resting.order_.instrument_ = samsung();
+  resting.order_.side_ = algotradelib::OrderSide::SELL;
+  resting.order_.status_ = algotradelib::OrderStatus::PENDING;
+  resting.order_.quantity_ = algotradelib::Decimal64::parse("10");
+  resting.order_.execution_.filled_quantity_ = algotradelib::Decimal64::parse("0");
+  resting.ref_ = algotradelib::OrderRef<runner::DryTag>{"0001", ""};
+  portfolio.working_.push_back(resting);
+  runner_instance.context().set_portfolio(portfolio);
+
+  FeedsDuringOrderListRead<Runner> source(bar_ending_at(an_hour_ago));
+  runner::PollingLoop<Runner, FeedsDuringOrderListRead<Runner>, runner::ManualClock> loop(
+    runner_instance, source, bars_each_iteration(), test_clock());
+  loop.set_maximum_portfolio_age(std::chrono::minutes(5));
+  StopSource stop;
+
+  loop.run(stop, 1);
+
+  // The protective sell stays where it is, and the plan says why rather than vanishing.
+  CHECK(source.canceled() == 0);
+  CHECK(source.placed() == 0);
+  CHECK(source.withheld_plans() == 1);
+  CHECK(runner_instance.executor().canceled().empty());
+}
+
+TEST_CASE("a placement settled before the first gate is still refused an unknown account",
+          "[loop][gate][portfolio]") {
+  // The same window, the other instruction. A hold this loop has not installed yet cannot refuse
+  // anything, so the absence rule is enforced where the instruction is decided instead.
+  using Runner = runner::DryRunner<HoldTen>;
+  Runner runner_instance;
+  runner_instance.context().set_instrument(samsung_reference());
+  serve_calendar(runner_instance);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+
+  FeedsDuringOrderListRead<Runner> source(bar_ending_at(base_time()));
+  runner::PollingLoop<Runner, FeedsDuringOrderListRead<Runner>, runner::ManualClock> loop(
+    runner_instance, source, bars_each_iteration(), test_clock());
+  loop.allow_unbounded_portfolio_age();
+  StopSource stop;
+
+  loop.run(stop, 1);
+
+  CHECK(source.placed() == 0);
+  CHECK(source.withheld_plans() == 1);
+  CHECK(runner_instance.executor().placed().empty());
+}
+
+TEST_CASE("the same placement goes out once the run says it expects no holdings",
+          "[loop][gate][portfolio]") {
+  // The other side, so the rule above is not simply "never send from a callback".
+  using Runner = runner::DryRunner<HoldTen>;
+  Runner runner_instance;
+  runner_instance.context().set_instrument(samsung_reference());
+  serve_calendar(runner_instance);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+
+  FeedsDuringOrderListRead<Runner> source(bar_ending_at(base_time()));
+  runner::PollingLoop<Runner, FeedsDuringOrderListRead<Runner>, runner::ManualClock> loop(
+    runner_instance, source, bars_each_iteration(), test_clock());
+  loop.allow_unbounded_portfolio_age();
+  loop.allow_absent_portfolio();
+  StopSource stop;
+
+  loop.run(stop, 1);
+
+  CHECK(source.placed() == 1);
+  CHECK(source.withheld_plans() == 0);
+}
+
+namespace {
+
+/** States a target on the way out, which is a plan rather than a named instruction. */
+struct TargetsFlatOnStop {
+  template <class Ctx>
+  void on_stop(Ctx& ctx) {
+    strategy::TargetPosition target;
+    target.instrument_ = samsung();
+    target.target_quantity_ = algotradelib::Decimal64::parse("0");
+    ctx.submit(target);
+  }
+};
+
+} // namespace
+
+TEST_CASE("a parting target that is withheld is counted as resistance, not as silence",
+          "[loop][stop][portfolio]") {
+  // `STOPPING` is held by the time `on_stop` runs, so a target that would cancel something is
+  // withheld whole. If the loop's rollup did not know the new bucket, it would report that the
+  // parting instruction met no resistance while the instruction never went anywhere.
+  using Runner = runner::DryRunner<TargetsFlatOnStop>;
+  Runner runner_instance;
+  runner_instance.context().set_instrument(samsung_reference());
+  serve_calendar(runner_instance);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner_instance.context().set_portfolio(portfolio_with_resting<Runner>());
+
+  runner::ManualSource<Runner> source;
+  runner::PollingLoop<Runner, runner::ManualSource<Runner>, runner::ManualClock> loop(
+    runner_instance, source, bars_each_iteration(), test_clock());
+  loop.allow_unbounded_portfolio_age();
+  StopSource stop;
+  stop.request(StopIntent::QUIESCE);
+
+  const auto report = loop.run(stop, 2);
+
+  CHECK(report.stop_handler_sent_ == 0);
+  CHECK(report.stop_handler_refused_ == 1);
 }
