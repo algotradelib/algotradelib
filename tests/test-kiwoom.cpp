@@ -2063,3 +2063,32 @@ TEST_CASE("a reprice is refused while the holdings scope is unestablished", "[ki
   REQUIRE(own_mistake);
   CHECK(own_mistake->broker_code_ == "invalid_order_reference");
 }
+
+TEST_CASE("a cancellation refuses a trigger it cannot carry", "[kiwoom][orders]") {
+  // kt10003 sends a quantity and nothing else. A stated trigger would be dropped on the way to the
+  // wire, and acknowledging the instruction afterwards would report success for a change that did
+  // not happen -- the same failure refusing a *price* on a cancellation exists to stop. This is
+  // reachable only through `session.client()`; the normalized helpers never set the field.
+  kiwoom::KiwoomAmendment amendment;
+  amendment.order_ = kiwoom::KiwoomOrderRef{"0000069", "005930"};
+  amendment.venue_ = Venue::KRX;
+  amendment.quantity_ = Decimal64(3, 0);
+  amendment.condition_price_ = Decimal64(69000, 0);
+
+  const auto refused = kiwoom::KiwoomClientTestAccess::validate_amendment(amendment, true);
+  REQUIRE(refused);
+  CHECK(refused->broker_code_ == "invalid_condition_price");
+  CHECK_FALSE(refused->reached_broker_);
+
+  // And the request builder really does drop it, which is why the refusal has to be here.
+  ClientFixture fixture;
+  const auto request =
+    kiwoom::KiwoomClientTestAccess::amend_request(*fixture.client_, amendment, true);
+  const auto body = body_of(request);
+  CHECK_FALSE(body.contains("mdfy_cond_uv"));
+  CHECK_FALSE(body.contains("cond_uv"));
+
+  // Without the trigger the same cancellation is fine.
+  amendment.condition_price_.reset();
+  CHECK_FALSE(kiwoom::KiwoomClientTestAccess::validate_amendment(amendment, true));
+}

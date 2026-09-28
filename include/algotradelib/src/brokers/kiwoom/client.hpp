@@ -2889,6 +2889,17 @@ private:
       error.message_ = "Kiwoom's cancellation carries a quantity and no price";
       return error;
     }
+    if (cancel && amendment.condition_price_) {
+      // `kt10003` has no trigger field, so a stated trigger cannot be sent -- and acknowledging
+      // the instruction after dropping it would report success for a change that did not happen,
+      // which is the same failure refusing a price on a cancellation exists to stop. The
+      // normalized helpers never set this, so no port path is affected.
+      error.broker_code_ = "invalid_condition_price";
+      error.message_ =
+        "Kiwoom's cancellation carries a quantity and no trigger price, so it cannot change an "
+        "order's stop condition on the way out; cancel the order and place a new one instead";
+      return error;
+    }
     if (!cancel && amendment.price_ && amendment.price_->scale() != 0) {
       error.broker_code_ = "invalid_price";
       error.message_ = "a Kiwoom domestic order price must be a whole number of won";
