@@ -164,8 +164,16 @@ TEST_CASE("a strategy gates account-capacity calls on the capability rather than
       if (!schedule) {
         return std::nullopt;
       }
-      const auto rate = schedule.value().rate_for(Country::KR, Date{2026, 9, 23});
-      return rate ? std::optional<Decimal64>(rate->rate_) : std::nullopt;
+      const auto selection = schedule.value().rate_for(Country::KR, Date{2026, 9, 23});
+      // Two silences, and a caller reaching past them wants to know which: no row for the date is a
+      // schedule to widen, and a row whose window could not be read is a schedule to refetch. The
+      // empty answer alone would let this state its own rate over a rate the broker may be charging.
+      if (selection.bounds_unreadable_) {
+        return std::nullopt;
+      }
+      return selection.rate_ ?
+        std::optional<Decimal64>(selection.rate_->rate_) :
+        std::nullopt;
     } else {
       // Nothing to ask, and nothing invented: a caller here states its own cost model.
       static_cast<void>(session);

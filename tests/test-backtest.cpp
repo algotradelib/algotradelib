@@ -2243,6 +2243,36 @@ TEST_CASE("a cost model seeded from a broker's schedule charges what the broker 
   REQUIRE_FALSE(backtest::commission_model_from(empty, Country::KR, Date{2026, 9, 23}));
 }
 
+TEST_CASE("a rate whose window could not be read is refused as unknown, not as missing") {
+  CommissionSchedule schedule;
+  auto damaged = rate_row(Country::KR, Decimal64::parse("0.00015"), Date{2024, 1, 1}, std::nullopt);
+  damaged.until_unreadable_ = true;
+  schedule.rates_.push_back(damaged);
+
+  // Before the two were held apart, this row read as open-ended and was charged: an expired rate
+  // billed for years because the bound that ended it arrived unreadable.
+  const auto unknown = backtest::commission_model_from(schedule, Country::KR, Date{2026, 9, 23});
+  REQUIRE_FALSE(unknown);
+  CHECK(unknown.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+  CHECK_FALSE(unknown.error().reached_broker_);
+  // The code is its own, because the two silences want different things of an operator: a missing
+  // row wants a rate stated or a wider schedule, and an unreadable window wants the schedule
+  // refetched. One code for both sends half of them hunting for a row that is sitting right there.
+  CHECK(unknown.error().broker_code_ == "rate_bounds_unreadable");
+
+  // A date the readable bound already excludes is a plain missing row, not an unknown one.
+  const auto before = backtest::commission_model_from(schedule, Country::KR, Date{2023, 12, 31});
+  REQUIRE_FALSE(before);
+  CHECK(before.error().broker_code_ == "no_rate_for_date");
+
+  // And a whole schedule of readable rows is unchanged.
+  CommissionSchedule sound;
+  sound.rates_.push_back(
+    rate_row(Country::KR, Decimal64::parse("0.00015"), std::nullopt, std::nullopt)
+  );
+  REQUIRE(backtest::commission_model_from(sound, Country::KR, Date{2026, 9, 23}));
+}
+
 // ---------------------------------------------------------------------------
 // Order identity in a replay: what rests, and which one a withdrawal names
 // ---------------------------------------------------------------------------
@@ -4047,6 +4077,51 @@ TEST_CASE("a dated rate for another market's calendar is refused, not charged a 
   );
   REQUIRE(charged);
   CHECK(charged.value().broker_ == Decimal64::parse("10"));
+}
+
+TEST_CASE("a costing refusal names the unreadable window, and the foreign guard sees it") {
+  CommissionSchedule schedule;
+  schedule.origin_ = CommissionOrigin::CALLER_STATED;
+  schedule.tariff_ = "online, branch-opened account";
+  auto krx = venue_rate(Venue::KRX, "0.002", "0", Date{2026, 1, 1});
+  krx.until_unreadable_ = true;
+  schedule.rates_.push_back(krx);
+
+  auto policy = backtest::CommissionPolicy::scheduled(
+    schedule, *VenueKey::normalized(Venue::KRX), Country::KR
+  );
+  REQUIRE(policy);
+  const auto refused = policy.value().charge(
+    Decimal64::parse("10"), Decimal64::parse("200"), Date{2026, 3, 10}, Country::KR
+  );
+  REQUIRE_FALSE(refused);
+  CHECK(refused.error().broker_code_ == "rate_bounds_unreadable");
+  // A refusal a reader has to reproduce to understand is one they work around, so the date and the
+  // remedy are both in the message.
+  CHECK(refused.error().message_.find("2026-03-10") != std::string::npos);
+  CHECK(refused.error().message_.find("refetch") != std::string::npos);
+
+  // And the foreign-market guard, which asks whether *any* row for the market is dated, sees a row
+  // dated only by damage. Asking about the two optionals alone read it as undated and walked past.
+  CommissionSchedule foreign;
+  foreign.origin_ = CommissionOrigin::CALLER_STATED;
+  foreign.tariff_ = "online, branch-opened account";
+  foreign.rates_.push_back(venue_rate(Venue::KRX, "0.002", "0"));
+  CommissionRate american;
+  american.country_ = Country::US;
+  american.rate_ = Decimal64::parse("0.01");
+  american.until_unreadable_ = true;
+  foreign.rates_.push_back(american);
+
+  auto abroad = backtest::CommissionPolicy::scheduled(
+    foreign, *VenueKey::normalized(Venue::KRX), Country::KR
+  );
+  REQUIRE(abroad);
+  const auto not_local = abroad.value().charge(
+    Decimal64::parse("10"), Decimal64::parse("200"), Date{2026, 3, 10}, Country::US
+  );
+  REQUIRE_FALSE(not_local);
+  CHECK(not_local.error().broker_code_ == "commission_date_not_market_local");
 }
 
 TEST_CASE("a foreign market with any dated rate is refused, whichever row would have won") {

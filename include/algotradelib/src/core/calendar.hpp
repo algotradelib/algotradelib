@@ -23,10 +23,12 @@ struct TradingDay {
   /**
    * The calendar date, in the broker's own locale.
    *
-   * Toss builds it with `parse_calendar_date`, so the caveat on `Date::year_` applies and matters
-   * more here than anywhere else it does: `is_trading_day` is what decides whether a strategy may
-   * place an order, and a row whose date silently parsed to a different day answers for that day
-   * instead. An unparseable date fails the calendar request rather than producing a row.
+   * Toss builds it with `parse_calendar_date`, which requires every component to be digits -- so a
+   * value carrying a numeric prefix is rejected rather than silently becoming a different, valid
+   * day. That mattered more here than anywhere else the caveat on `Date::year_` applies:
+   * `is_trading_day` is what decides whether a strategy may place an order, and a row answering for
+   * the wrong day answers that question wrongly. An unreadable date fails the calendar request
+   * rather than producing a row.
    */
   Date date_{};
   /** Whether the market opens on it. Not a banking or settlement day; see above. */
