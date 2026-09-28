@@ -86,6 +86,35 @@ struct reports_last_ref<
   Executor, std::void_t<decltype(std::declval<const Executor&>().last_ref())>
 > : std::true_type {};
 
+/**
+ * Whether `Executor` can say **why** the last instruction failed.
+ *
+ * Detected rather than required, on the same terms as the two above: a dry runner refuses nothing
+ * and a replay's queueing executor has no broker to be refused by, so neither should have to grow a
+ * method that answers nothing. An executor that binds a session declares
+ * `const std::optional<BrokerError>& last_error() const` and its refusals then reach
+ * `Runner::last_broker_refusal`, where a report can carry the broker's own code and message instead
+ * of a count with nothing to chase.
+ *
+ * **The *shape* is detected, not the name.** An earlier version asked only whether `last_error()`
+ * was a valid expression, which would have selected this branch for any executor that happened to
+ * have a method of that name -- one returning `std::optional<std::string>`, say -- and then failed
+ * to compile on `broker_code_`. A name is not a contract; the return type is.
+ */
+template <typename Executor, typename = void>
+struct states_last_error : std::false_type {};
+
+template <typename Executor>
+struct states_last_error<
+  Executor,
+  std::enable_if_t<
+    std::is_same_v<
+      std::decay_t<decltype(std::declval<const Executor&>().last_error())>,
+      std::optional<BrokerError>
+    >
+  >
+> : std::true_type {};
+
 } // namespace runner_detail
 
 /**
@@ -180,7 +209,7 @@ struct DryRunReport {
    * of why an earlier entry is here.
    */
   std::vector<strategy::Rejection> rejected_;
-  /** Instructions a guard refused, with the limit and what was attempted. */
+  /** Instructions a guard refused, with the reason -- a limit or a hold -- and what was attempted. */
   std::vector<strategy::GuardRejection> refused_;
   /**
    * Orders the runner declined to send because the instrument's state is unresolved.
@@ -193,8 +222,10 @@ struct DryRunReport {
    * Whole reconciliation plans held back before any part of them was sent.
    *
    * Distinct from `withheld_`, which is about an order. A plan's cancellations go out before its
-   * placements are guard-checked, so a plan computed from an account this runner cannot stand behind
-   * has to be stopped as a unit or not at all -- see `WithheldPlan`.
+   * placements are guard-checked, so a plan that cannot be acted on has to be stopped as a unit or
+   * not at all. **Three reasons put one here** and `WithheldPlan::reason_` says which: an account
+   * never read, one older than the stated maximum, or a placement hold in force for a plan that also
+   * wanted to withdraw something -- and that last one on a portfolio that is perfectly current.
    */
   std::vector<WithheldPlan<BrokerTag>> withheld_plans_;
   /** Instructions whose send failed in transit, leaving their outcome unknown. */
@@ -228,7 +259,9 @@ struct DryRunReport {
   /**
    * Instructions local machinery refused to send, with the reason.
    *
-   * Never a broker's answer. The order journal could not be written, and so nothing was attempted.
+   * Never a broker's answer. **Local machinery was unavailable**, so nothing was attempted -- a
+   * pre-send journal write that failed is the usual cause and not the only one, since any executor
+   * answering `SendOutcome::UNAVAILABLE` lands here.
    * Reported separately from `rejected_` because the two ask for opposite responses: a rejection is
    * about one instruction, this is about whether the runner should still be trading at all.
    */
@@ -345,16 +378,24 @@ public:
   /**
    * Returns why local machinery can no longer send, or nothing while it can.
    *
-   * **Sticky on purpose.** A journal that cannot be written will fail on the next order too, and
-   * the one after that. Clearing it on the next quiet bar would turn a storage outage into a
-   * trickle of unexplained refusals; leaving it set is what "a runner that cannot journal should
-   * not trade" actually requires.
+   * **Sticky by policy, not by prediction.** Whatever failed may well fail on the next order too --
+   * but it may equally have recovered, and this hold stays either way. Clearing it on the next quiet
+   * bar would turn an outage into a trickle of unexplained refusals, and would decide on its own
+   * that a transient failure was transient; leaving it set makes resuming a deliberate act.
    *
    * **It is a hold on the guard**, `strategy::HaltReason::LOCAL_FAILURE`, not a flag beside it.
    * That is the difference between a condition every send path has to remember to check and one
    * checked by the single function every order already passes through. It also means an operator
-   * asking the guard why it will not trade is told about the journal, rather than being told only
-   * that trading is halted.
+   * asking the guard why it will not trade is told a local-failure detail -- what the binding said it
+   * could not do, or whatever a caller of `halt_locally` supplied, which `live::SessionSource` does
+   * when it cannot journal a reconciliation decision. A failed journal write is the usual answer and
+   * not the only one. Better than being told only that trading is halted.
+   *
+   * **Recorded through this runner it is the *first* detail**, kept while the hold stands, so a
+   * cascade of later failures cannot bury the one that started it. That promise covers
+   * `note_local_failure` and `halt_locally` and stops there: `guard()` hands out a mutable guard, and
+   * `RiskGuard::halt(LOCAL_FAILURE, detail)` replaces the detail on a hold already standing. A
+   * program that takes this hold itself owns what it reads back.
    *
    * Cleared only by `resume_after_local_failure`, which a program calls when it has fixed whatever
    * was broken.
@@ -726,9 +767,122 @@ public:
    * separately rather than being folded in. Co-occurrence on the same terms as its sibling: a guard
    * and a binding each refuse orders for their own reasons, and this counts the ones that happened
    * to be carrying an unclamped price. `UNAVAILABLE` is **not** counted -- that is this process's
-   * journal failing, and no price affects it.
+   * local machinery being unavailable -- usually a pre-send journal write that failed, and not only
+   * that -- which no price affects.
    */
   std::size_t unclamped_orders_refused() const noexcept { return unclamped_orders_refused_; }
+
+  /**
+   * How many instructions failed to reach a broker, by **origin**, and how many reached one and were
+   * refused.
+   *
+   * **All monotone, so a driving loop differences them**, exactly as it does
+   * `sends_outside_permitted_phase`. They exist because a live run threw every one of these away: a
+   * `Runner::Report` carries fourteen vectors describing what became of each instruction, and
+   * `live::SessionSource` discards the report on every poll -- so a run in which the broker refused
+   * everything looked very much like one in which it accepted everything. Not identical: the phase
+   * and price-band figures can differ for some refused orders. But nothing said *the broker refused
+   * these*.
+   *
+   * **Six origins for placements**, not one figure, because an operator's next move differs for each
+   * and the library already distinguishes them:
+   *
+   * - `orders_unbuildable` -- **every** reconciliation rejection. Missing reference data, no price,
+   *   an unknown grid -- and a quantity that rounded to zero, which is an instruction deliberately
+   *   dropped rather than anything being wrong. So a non-zero figure is not by itself a reason to go
+   *   looking for missing data; `Report::rejected_` carries the reason per instruction.
+   * - `orders_reconcile_withheld` -- the indeterminacy ledger holds this instrument until a listing
+   *   settles an unknown outcome. Nothing was wrong with the instruction.
+   * - `orders_guard_refused` -- `RiskGuard` refused it. **A hold as well as a limit**: it checks the
+   *   active holds first, so a halted run reports every order here, not only one that breached a
+   *   number. `Report::refused_` carries the reason per order, which is what a diagnosis needs.
+   * - `orders_binding_refused` -- the binding would not send it. No request went out and no broker
+   *   counted one.
+   * - `orders_broker_refused` -- the broker was asked and said no. A request *was* spent, and
+   *   `last_broker_refusal` carries what it said.
+   * - `orders_indeterminate` -- the request failed in transit, so the order may or may not exist.
+   */
+  std::size_t orders_unbuildable() const noexcept { return orders_unbuildable_; }
+  /** @copydoc Runner::orders_unbuildable */
+  std::size_t orders_reconcile_withheld() const noexcept { return orders_reconcile_withheld_; }
+  /** @copydoc Runner::orders_unbuildable */
+  std::size_t orders_guard_refused() const noexcept { return orders_guard_refused_; }
+  /** @copydoc Runner::orders_unbuildable */
+  std::size_t orders_binding_refused() const noexcept { return orders_binding_refused_; }
+  /** @copydoc Runner::orders_unbuildable */
+  std::size_t orders_broker_refused() const noexcept { return orders_broker_refused_; }
+  /** @copydoc Runner::orders_unbuildable */
+  std::size_t orders_indeterminate() const noexcept { return orders_indeterminate_; }
+
+  /**
+   * The two failures that are not about one instruction's own merits.
+   *
+   * - `plans_withheld` -- a whole reconciliation plan held back before any of its parts was judged.
+   *   Counted apart from the six origins because nothing was wrong with the instructions themselves.
+   *   **Three reasons reach it and this figure does not tell them apart**: the portfolio was never
+   *   read (`PORTFOLIO_ABSENT`), it is older than the stated maximum (`PORTFOLIO_STALE`), or a hold
+   *   is refusing placements while the plan also wanted to withdraw something (`PLACEMENT_HELD`) --
+   *   that last one on a portfolio that is perfectly fresh, so a reader who assumed this figure meant
+   *   "the account is unknown" would chase the wrong thing. `Report::withheld_plans_` carries the
+   *   reason per plan; this counts how often it happened.
+   *
+   *   **The loop's own gate does not always describe it**, which is why it is a figure at all: with
+   *   `allow_absent_portfolio` the gate is open while this still fires for a plan that would withdraw
+   *   something.
+   * - `instructions_unavailable` -- **local machinery was unavailable**, so the instruction was not
+   *   sent. A pre-send journal write that failed is the usual cause and not the only one: any
+   *   executor answering `SendOutcome::UNAVAILABLE` lands here, so a binding with no journal at all
+   *   can produce this. Placements and withdrawals together, because the operator's response is about
+   *   the process rather than the order. It leaves a sticky `LOCAL_FAILURE` hold, which the loop's
+   *   gate *may* report -- a higher-priority hold can be named instead while that one is still in
+   *   force -- so this figure is how many instructions it cost rather than evidence about the gate.
+   */
+  std::size_t plans_withheld() const noexcept { return plans_withheld_; }
+  /** @copydoc Runner::plans_withheld */
+  std::size_t instructions_unavailable() const noexcept { return instructions_unavailable_; }
+
+  /**
+   * The same question for **withdrawals**, in four figures rather than one.
+   *
+   * One figure was the plan and it would have stated a falsehood. An `INDETERMINATE` cancellation may
+   * have reached the broker and may have withdrawn the order -- which is why `send_cancel` records it
+   * apart from a refusal in the first place -- so calling it "not sent" would claim something nobody
+   * knows.
+   *
+   * - `cancels_rejected` -- refused outright, **by the broker or by the binding**. The two share a
+   *   vector, which carries `RejectedCancel::by_broker_` to tell them apart; this figure does not.
+   * - `cancels_refused` -- a hold refused it before anything was sent.
+   * - `cancels_unresolved` -- the reference named an order the snapshot does not hold, so there was
+   *   nothing to withdraw.
+   * - `cancels_indeterminate` -- the request failed in transit. It may have withdrawn the order.
+   */
+  std::size_t cancels_rejected() const noexcept { return cancels_rejected_; }
+  /** @copydoc Runner::cancels_rejected */
+  std::size_t cancels_refused() const noexcept { return cancels_refused_; }
+  /** @copydoc Runner::cancels_rejected */
+  std::size_t cancels_unresolved() const noexcept { return cancels_unresolved_; }
+  /** @copydoc Runner::cancels_rejected */
+  std::size_t cancels_indeterminate() const noexcept { return cancels_indeterminate_; }
+
+  /**
+   * What the broker said about the **most recent** order it refused, where the executor can say.
+   *
+   * Overwritten rather than accumulated: a run refused ten thousand times keeps **at most** one
+   * record, which is what makes this affordable at all -- at most, because a refusal that states
+   * nothing clears it, so a non-zero count can sit beside an empty optional.
+   *
+   * Empty on a runner whose broker has refused nothing, and empty
+   * on every executor that cannot answer -- a dry runner and a replay's queueing executor have no
+   * broker to have been refused by, so `runner_detail::states_last_error` detects the ability rather
+   * than requiring it.
+   *
+   * **A count without this was the half-measure worth avoiding.** `orders_broker_refused` says an
+   * operator has a problem; this says which instrument, under which of the strategy's own tags, and
+   * in the broker's own words.
+   */
+  const std::optional<BrokerRefusal>& last_broker_refusal() const noexcept {
+    return last_broker_refusal_;
+  }
 
   /**
    * Sets how small a drift is not worth an instruction.
@@ -945,7 +1099,14 @@ private:
         // hold named on its own report entry, and that is the better result.
         const bool data_is_missing = *reason != WithheldPlanReason::PLACEMENT_HELD;
         if (data_is_missing || would_cancel) {
-          report.withheld_plans_.push_back(WithheldPlan<Tag>{
+          // The whole plan, before any of its parts were counted separately. **Three reasons reach
+        // here** and this counts them together: an account never read, one older than the stated
+        // maximum, and a hold refusing placements for a plan that also wanted to withdraw something
+        // -- that third on a perfectly fresh portfolio. Counted at all because the loop's own gate
+        // does not always describe it: with `allow_absent_portfolio` the gate can be open while this
+        // fires, which is the case Codex round 0 named.
+        ++plans_withheld_;
+        report.withheld_plans_.push_back(WithheldPlan<Tag>{
             *reason,
             instruction_instrument(instruction),
             instruction_tag(instruction),
@@ -960,6 +1121,11 @@ private:
         attempt_cancel(ref);
       }
       for (const auto& rejection : planned.rejected_) {
+        // Reconciliation's own refusal: it could not build a valid instruction at all, which is a
+        // different fact from a broker saying no. **Not a diagnosis**: the same bucket holds a
+        // quantity that rounded away on the lot, which is a deliberate drop. The reason is on the
+        // entry.
+        ++orders_unbuildable_;
         report.rejected_.push_back(rejection);
       }
       for (const auto& order : planned.place_) {
@@ -1002,6 +1168,7 @@ private:
       // what makes the condition hold for a direct `feed()`, which never reaches `PollingLoop`'s
       // gate at all.
       if (guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
+        ++instructions_unavailable_;
         report.unavailable_.push_back(
           WithheldOrder{
             WithheldReason::LOCAL_FAILURE,
@@ -1012,6 +1179,11 @@ private:
         continue;
       }
       if (ledger_.requires_reconcile(order.instrument_)) {
+        // The indeterminacy ledger, not a guard: this instrument has an outcome nobody knows, so
+        // nothing further goes out for it until a listing settles the question. Counted apart from
+        // every other origin because the operator's response is to reconcile rather than to relax a
+        // limit or fix a price.
+        ++orders_reconcile_withheld_;
         report.withheld_.push_back(
           WithheldOrder{
             WithheldReason::RECONCILE_REQUIRED,
@@ -1045,6 +1217,7 @@ private:
         if (order.price_would_have_been_clamped_) {
           ++unclamped_orders_refused_;
         }
+        ++orders_guard_refused_;
         report.refused_.push_back(std::move(*decision.rejection_));
         continue;
       }
@@ -1070,7 +1243,7 @@ private:
       // range, and review found the concrete case, a sell at zero that `Price::checked` admits
       // because zero sits on a stated grid. Counting only the first left that invisible.
       // `INDETERMINATE` is excluded because it is not a refusal at all -- the request may well be
-      // resting -- and `UNAVAILABLE` because it is this process's journal failing, which no price
+      // resting -- and `UNAVAILABLE` because it is local machinery being unavailable, which no price
       // affects.
       if (order.price_would_have_been_clamped_) {
         if (outcome == SendOutcome::REJECTED) {
@@ -1103,6 +1276,8 @@ private:
           // A refusal is an answer: the order does not exist, so nothing needs reconciling. It
           // still consumed a request, which is what the broker will have counted.
           guard_.note_sent(inputs.now_);
+          ++orders_broker_refused_;
+          note_broker_refusal(order);
           report.rejected_.push_back(
             strategy::Rejection{
               strategy::RejectReason::BROKER_REFUSED, order.instrument_, order.tag_
@@ -1115,6 +1290,7 @@ private:
           // read before this moment cannot show it either way.
           ++placements_at_broker_;
           ledger_.mark(order.instrument_, "an order request failed in transit");
+          ++orders_indeterminate_;
           report.indeterminate_.push_back(std::move(order));
           break;
         case SendOutcome::REFUSED_LOCALLY:
@@ -1126,6 +1302,7 @@ private:
           // perfectly sendable. The reason is carried on the entry itself rather than left to
           // `last_error()`: a later accepted order in the same pass clears that, so a report can
           // outlive the only record of which refusal this was.
+          ++orders_binding_refused_;
           report.rejected_.push_back(
             strategy::Rejection{
               strategy::RejectReason::BINDING_REFUSED, order.instrument_, order.tag_
@@ -1137,6 +1314,7 @@ private:
           // budget was spent. The ledger is not marked either -- an instruction that was never
           // attempted leaves no doubt about the position, and withholding the instrument would be
           // withholding it for the wrong reason.
+          ++instructions_unavailable_;
           report.unavailable_.push_back(
             WithheldOrder{
               WithheldReason::LOCAL_FAILURE,
@@ -1578,6 +1756,7 @@ private:
     // still goes through the journal, and a journal that cannot record it must not let it be sent
     // unrecorded.
     if (guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
+      ++instructions_unavailable_;
       report.unavailable_cancel_.push_back(ref);
       return;
     }
@@ -1597,6 +1776,7 @@ private:
     // reported rather than sent blind.
     if (const auto holding =
           guard_.blocking_reason_for(strategy::InstructionClass::WITHDRAWAL)) {
+      ++cancels_refused_;
       report.refused_cancel_.push_back(RefusedCancel<Tag>{ref, *holding});
       return;
     }
@@ -1606,6 +1786,7 @@ private:
     // of blind instruction that should be visible instead.
     const auto* working = context_.portfolio().find_working(ref);
     if (working == nullptr) {
+      ++cancels_unresolved_;
       report.unresolved_cancel_.push_back(ref);
       return;
     }
@@ -1636,6 +1817,7 @@ private:
         // a withdrawal that happened, and it is not proof the order is working either -- a fill is
         // one of the ordinary reasons a withdrawal is refused. It still spent a request.
         guard_.note_sent(context_.now());
+        ++cancels_rejected_;
         report.rejected_cancel_.push_back(RejectedCancel<Tag>{ref, /*by_broker=*/true});
         return;
       case SendOutcome::INDETERMINATE:
@@ -1646,6 +1828,7 @@ private:
         // Counted like an acceptance, for the same reason a placement is: the request may well have
         // reached the broker, and a window that assumes it did not is the one that under-counts.
         guard_.note_sent(context_.now());
+        ++cancels_indeterminate_;
         report.indeterminate_cancel_.push_back(ref);
         return;
       case SendOutcome::REFUSED_LOCALLY:
@@ -1654,11 +1837,13 @@ private:
         // Reported beside the broker's own refusals because what it means for the order is the
         // same -- it was not withdrawn -- while `by_broker_` on the entry says which of the two
         // it was. Not `last_error()`: a later instruction in the same pass clears that.
+        ++cancels_rejected_;
         report.rejected_cancel_.push_back(RejectedCancel<Tag>{ref, /*by_broker=*/false});
         return;
       case SendOutcome::UNAVAILABLE:
         // Not reported as a withdrawal that happened, because it did not. A cancellation nobody
         // sent must not read as one the broker has.
+        ++instructions_unavailable_;
         report.unavailable_cancel_.push_back(ref);
         return;
     }
@@ -1702,6 +1887,38 @@ private:
       mark_withheld_band(plan, *band.withheld_);
     }
     return plan;
+  }
+
+  /**
+   * Records what the broker said about `order`, where the executor can say.
+   *
+   * Called at the `REJECTED` outcome and nowhere else, which is the only moment the answer is this
+   * order's: `SessionExecutor::last_error()` is cleared by the next accepted instruction in the same
+   * pass, so reading it later would attribute somebody else's silence to this refusal -- or nothing
+   * at all.
+   */
+  void note_broker_refusal(const strategy::PlannedOrder& order) {
+    if constexpr (runner_detail::states_last_error<Executor>::value) {
+      const auto& error = executor_.last_error();
+      if (!error) {
+        // **Cleared, not left alone.** An executor may answer `REJECTED` and state nothing; the
+        // counter still moves, and a record kept from an *earlier* refusal would then be handed to
+        // the next run as though it described this one -- the wrong instrument under the wrong tag.
+        // `SessionExecutor` always states something on this path, so this is about a binding
+        // somebody else writes: the contract is "the last refusal, or nothing", never "the last
+        // refusal that happened to come with words".
+        last_broker_refusal_.reset();
+        return;
+      }
+      BrokerRefusal refusal;
+      refusal.code_ = error->broker_code_;
+      refusal.message_ = error->message_;
+      refusal.instrument_ = order.instrument_;
+      refusal.tag_ = order.tag_;
+      last_broker_refusal_ = std::move(refusal);
+    } else {
+      static_cast<void>(order);
+    }
   }
 
   /** Returns which instrument a queued instruction concerns. */
@@ -1901,6 +2118,32 @@ private:
   std::size_t unclamped_orders_rejected_{0};
   /** Orders nothing sent to a broker while carrying an unclamped price; see the accessor. */
   std::size_t unclamped_orders_refused_{0};
+  /** Instructions that failed by each origin, and refusals a broker made; see the accessors. */
+  std::size_t orders_unbuildable_{0};
+  /** @copydoc Runner::orders_unbuildable_ */
+  std::size_t orders_reconcile_withheld_{0};
+  /** @copydoc Runner::orders_unbuildable_ */
+  std::size_t orders_guard_refused_{0};
+  /** @copydoc Runner::orders_unbuildable_ */
+  std::size_t orders_binding_refused_{0};
+  /** @copydoc Runner::orders_unbuildable_ */
+  std::size_t orders_broker_refused_{0};
+  /** @copydoc Runner::orders_unbuildable_ */
+  std::size_t orders_indeterminate_{0};
+  /** Withdrawals that failed, by origin; see `cancels_rejected`. */
+  std::size_t cancels_rejected_{0};
+  /** @copydoc Runner::cancels_rejected_ */
+  std::size_t cancels_refused_{0};
+  /** @copydoc Runner::cancels_rejected_ */
+  std::size_t cancels_unresolved_{0};
+  /** @copydoc Runner::cancels_rejected_ */
+  std::size_t cancels_indeterminate_{0};
+  /** Plans held back whole, for any of three reasons; see `plans_withheld`. */
+  std::size_t plans_withheld_{0};
+  /** Instructions local machinery was unavailable to send; see the accessor. */
+  std::size_t instructions_unavailable_{0};
+  /** What the broker said about the most recent order it refused; see the accessor. */
+  std::optional<BrokerRefusal> last_broker_refusal_;
   std::optional<Decimal64> portfolio_value_;
   strategy::TradeTolerance tolerance_;
 };

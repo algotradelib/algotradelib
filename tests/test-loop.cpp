@@ -2122,6 +2122,34 @@ TEST_CASE("an operator's halt stops a send made from inside a poll", "[loop][hal
   CHECK(report.final_gate_ == strategy::HaltReason::OPERATOR);
 }
 
+TEST_CASE("the stop's own refusals stay out of the polling figures", "[loop][stop][band]") {
+  // **One failure must not be reported twice.** `PollingLoop::honour` runs the stop handler and the
+  // closing pass through the same `Runner::settle`, so a snapshot taken at the end of `run` would
+  // count a refused flatten in the polling family *and* in `closing_refused_`. The polling family's
+  // snapshot is therefore taken before the stop is honoured, and this is what holds it there: the
+  // withdraw below is refused by an operator's halt, `closing_refused_` sees it, and the polling
+  // figure does not.
+  InertRunner runner_instance;
+  InertSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_portfolio(portfolio_with("10", "5"));
+  serve_calendar(runner_instance);
+  runner_instance.guard().halt();
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  stop.request(StopIntent::WITHDRAW);
+
+  const auto report = loop.run(stop, 1);
+
+  REQUIRE(report.closing_refused_ == 1);
+  // The stop's, not the polling loop's.
+  CHECK(report.cancels_refused_ == 0);
+  CHECK(report.orders_guard_refused_ == 0);
+  // And the runner's own monotone figure did move, which is what makes this a division rather than
+  // a failure to count: the loop chose which interval to report, not whether to count at all.
+  CHECK(runner_instance.cancels_refused() == 1);
+}
+
 TEST_CASE("a halt an operator set refuses a withdraw's cancellations", "[loop][stop][halt]") {
   // A withdraw reaches this runner from a signal and from a control file, so a cancellation exempt
   // from the halt would mean `echo withdraw > /var/run/atl/stop` could send an instruction the

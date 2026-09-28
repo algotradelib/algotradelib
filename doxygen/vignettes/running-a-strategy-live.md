@@ -219,6 +219,48 @@ evidence. The alternative is not "clamp correctly", it is "clamp to a number fro
 and that failure is an order resting at a price nobody chose which may never fill. One line of policy
 overrides it either way.
 
+## What the report says about orders that did not go out
+
+Until slice 31 an ordinary broker refusal had **no field of its own**. `Runner::feed` returns a
+report describing what became of every instruction — fourteen vectors of it — and
+`live::SessionSource` discards that report on every poll, so a run in which the broker refused every
+order looked very much like one in which it accepted every order: same iterations, same poll counts,
+no failures. (Not quite identical — the phase and price-band figures can differ for some refused
+orders — but nothing said *the broker refused these*.) The refusal was in the report `Runner::feed`
+returns, which the source drops on the floor — and, **if you bound a journaling executor whose
+terminal write landed**, in the order journal. `live::bind` does not journal at all: journalling is
+`live::bind_journaled`, so a run built the way this page opens has no record of a refusal beyond the
+report. And `bind_journaled` is not itself a promise of durability — it takes whatever journal you hand
+it, including a `MemoryJournal` that is gone when the process is, and its *terminal* append can fail
+after the broker has already answered, leaving the `PENDING` line and no outcome.
+
+`LoopReport` now carries twelve figures and one record, all describing **the polling loop** — the
+stop handler and the closing pass keep their own families, `stop_handler_*` and `closing_*`, so a
+refused flatten is reported once rather than twice.
+
+| Figure | What happened |
+| --- | --- |
+| `orders_unbuildable_` | reconciliation could not build the instruction: no reference data, no price, an unknown grid — **or a quantity that rounded to zero**, which is a deliberate drop rather than a fault, so a non-zero figure is not by itself a reason to go looking for missing data |
+| `orders_reconcile_withheld_` | the indeterminacy ledger is holding that instrument until a listing settles an unknown outcome |
+| `orders_guard_refused_` | `RiskGuard` refused it — **a hold as well as a limit**, since it checks the active holds first, so a halted run reports every order here. Nothing was sent |
+| `orders_binding_refused_` | the binding would not send it; no request went out |
+| `orders_broker_refused_` | the broker was asked and said no; a request was spent |
+| `orders_indeterminate_` | the request failed in transit, so the order may or may not exist |
+| `cancels_rejected_` | a withdrawal refused outright — **by the broker or by the binding**; `RejectedCancel::by_broker_` distinguishes them and this figure does not |
+| `cancels_refused_` | a hold refused the withdrawal before anything was sent |
+| `cancels_unresolved_` | the reference named an order the snapshot does not hold |
+| `cancels_indeterminate_` | the withdrawal failed in transit; **it may still have withdrawn the order** |
+| `plans_withheld_` | a whole plan held back before any of its parts was judged — **for one of three reasons this figure does not distinguish**: the account was never read, it is older than your stated maximum, or a hold is refusing placements for a plan that also wanted to withdraw something. That third one happens on a perfectly fresh portfolio, so do not read this as "the account is unknown". And **`final_gate_` does not always show it**: with `allow_absent_portfolio` the gate is open while a plan that would withdraw something is still withheld |
+| `instructions_unavailable_` | local machinery was unavailable, so it was not sent — a pre-send journal write that failed is the usual cause and **not the only one**, since any executor answering `UNAVAILABLE` lands here. Placements and withdrawals together. It leaves a sticky `local_failure` hold, which `final_gate_` *may* name — a higher-priority hold can be reported while that one is still in force — so read this as how many instructions it cost |
+
+**And `last_broker_refusal_`, which is the one worth reading first.** A count tells you orders are
+being refused; this tells you which instrument, under which of your own tags, with the broker's own
+code and message. One record, overwritten — a run refused ten thousand times keeps the last
+one **that came with an error**, and a refusal that says nothing clears it rather than leaving the
+previous order's words behind. Empty when *this* run's polling saw no refusal, even though the runner
+may still hold one from an earlier run; and empty, with a non-zero count beside it, when the refusals
+themselves were silent. It is empty on a dry runner and in a replay, which have no broker to be refused by.
+
 **An unknown buying power blocks buying.** Only if you asked for the check: set
 `RiskLimits::enforce_buying_power_` and the loop refuses to send while it has no answer from the
 broker about what may be spent, reporting `buying_power_unread`. Set a cadence with
@@ -239,7 +281,7 @@ refusal — `insufficient_buying_power`, carrying the budget and the attempt.
 All three gates work by holding the guard, which is the library's one primitive for "stop sending
 without withdrawing or flattening". **A hold names who took it**, and is released only by them: the loop takes
 `portfolio_stale`, `order_list_unread` and `buying_power_unread`, you take `operator` when you call
-`halt()` by hand, and the runner takes `local_failure` when its journal cannot be written. Trading resumes when the last hold is
+`halt()` by hand, and the runner takes `local_failure` when local machinery cannot send — usually a journal write that failed, and not only that. Trading resumes when the last hold is
 released, so the loop opening its gate cannot lift your halt, and your `resume()` cannot lift the
 loop's.
 
@@ -284,7 +326,12 @@ every instruction was accepted.
 `report.final_gate_` is an optional, and names the most fundamental hold in force rather than only the
 loop's own — so a run that sent nothing because *you* halted it says `operator`, instead of showing you
 an open gate while nothing goes out. `guard().holds()` lists every hold when more than one stands, and
-`guard().hold_detail(HaltReason::LOCAL_FAILURE)` carries the reason the journal gave up.
+`guard().hold_detail(HaltReason::LOCAL_FAILURE)` carries a local-failure detail — whatever the binding
+said it could not do, or whatever a caller of `halt_locally` supplied, such as a source that could not
+journal a reconciliation decision. A failed journal write is the usual answer and not the only one.
+Recorded through the runner it is the **first** such detail, kept while the hold stands; a program that
+reaches past it and calls `guard().halt(LOCAL_FAILURE, …)` itself replaces the detail, so if you take
+that hold directly the value is yours, not the first cause.
 
 ## Did everything I asked for go out?
 
@@ -304,7 +351,8 @@ if (!report.closing_complete()) {
 happens — `closing_rejected_` (reconciliation could not build it, the broker refused it, or the
 binding refused to send it),
 `closing_refused_`, `closing_withheld_`, `closing_indeterminate_`, `closing_unavailable_` (the
-journal could not be written, so no broker was asked) and `closing_unresolved_` (a cancellation named
+local machinery was unavailable, so no broker was
+asked — usually a journal write that failed, and not only that) and `closing_unresolved_` (a cancellation named
 an order the snapshot does not hold). Cancellations count in these as well as placements: a
 withdrawal that failed in transit may have withdrawn the order or may not, and that is not the same
 as one that went.
@@ -351,7 +399,11 @@ hours still goes out.** The phase limit governs what an order *opens*, not what 
 reducing a held position toward flat is permitted in any phase, because a limit that cannot be
 de-risked past turns "the market is shut" into "you may not reduce risk". So an operator who asks to
 be flat at 22:00 gets a request sent, and very likely a *broker's* rejection rather than the
-library's — which is the better answer, since it is the venue's and it is journalled.
+library's — which is the better answer, since it is the venue's own, and recorded beyond the report
+**if you bound a journaling executor and its terminal write landed**: `live::bind` does not journal,
+`live::bind_journaled` does, and a failed terminal append leaves the `PENDING` line with no answer
+beside it. Whether a recorded answer then outlives the process is a property of the journal you handed
+in — a `MemoryJournal` is gone when the process is.
 `LoopReport::sends_outside_permitted_phase_` counts how often that happened.
 
 **Every other limit still applies to that flatten, and each of them is silent in the same way.** A

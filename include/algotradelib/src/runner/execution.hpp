@@ -296,6 +296,29 @@ struct WithheldPlan {
   std::string detail_;
 };
 
+/**
+ * The broker's own account of one refusal, kept so a count has something to chase.
+ *
+ * A figure tells an operator that orders are being refused; it does not tell them why, and the
+ * cheapest useful answer is the last one. Structured rather than a formatted string so a reader of
+ * many symbols can find which instrument it was about, and so a caller can match on the code without
+ * parsing prose.
+ *
+ * **`message_` is the broker's, and this library does not bound its length.** One record is kept
+ * rather than a list, so a run refused ten thousand times costs one of them -- but the one it costs
+ * is whatever the broker wrote.
+ */
+struct BrokerRefusal {
+  /** The broker's own code for the refusal, where it published one. */
+  std::string code_;
+  /** The broker's own message, unbounded in length and unedited. */
+  std::string message_;
+  /** Which instrument the refused instruction was for. */
+  InstrumentId instrument_;
+  /** The strategy's own label on the intent that produced it, for attribution. */
+  std::string tag_;
+};
+
 /** One order the runner declined to send, and why. */
 struct WithheldOrder {
   /** Why the runner declined to send it. A local refusal, never a broker's. */

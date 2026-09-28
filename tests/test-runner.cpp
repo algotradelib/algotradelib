@@ -1498,6 +1498,150 @@ TEST_CASE("a plan that only withdraws is counted and otherwise untouched by a wi
   CHECK(dry.price_bands_withheld() == 1);
 }
 
+namespace {
+
+/**
+ * An executor-shaped type with a `last_error()` that is not a `BrokerError`.
+ *
+ * It is never instantiated as an executor -- only the trait is asked about it -- so it carries no
+ * more than the one method under test. A strict build rejects an unused constant, which is why
+ * `reaches_a_broker` is not here.
+ */
+struct UnrelatedLastError {
+  const std::optional<std::string>& last_error() const noexcept { return last_error_; }
+  std::optional<std::string> last_error_;
+};
+
+} // namespace
+
+/** An executor that refuses every order and may or may not say why. */
+struct SilentRejector {
+  static constexpr bool reaches_a_broker = true;
+
+  runner::SendOutcome place(const strategy::PlannedOrder&) {
+    return runner::SendOutcome::REJECTED;
+  }
+
+  /** Never reached here, and required because `Runner` compiles the withdrawal path unconditionally. */
+  runner::SendOutcome cancel(const WorkingOrder<runner::DryTag>&) {
+    return runner::SendOutcome::ACCEPTED;
+  }
+
+  const std::optional<BrokerError>& last_error() const noexcept { return last_error_; }
+
+  std::optional<BrokerError> last_error_;
+};
+
+TEST_CASE("a refusal that says nothing does not inherit the last one's account") {
+  // **The record's contract is "the last refusal, or nothing", never "the last refusal that came
+  // with words".** `SessionExecutor` always states something on this path, so this is about a
+  // binding somebody else writes: it answers `REJECTED` and says nothing, the counter still moves,
+  // and a record kept from an earlier refusal would be handed on as though it described this one --
+  // the wrong instrument under the wrong tag.
+  using Refusing = runner::Runner<HoldTen, strategy::NoCaps, runner::DryTag, SilentRejector>;
+  SilentRejector executor;
+  BrokerError first;
+  first.broker_code_ = "SPOKE";
+  first.message_ = "the broker explained itself";
+  executor.last_error_ = first;
+
+  Refusing runner_instance(HoldTen{}, {}, 512, executor);
+  arrange(runner_instance);
+  // This executor reaches a broker, so the runner requires an account it has read before it places.
+  strategy::Portfolio<runner::DryTag> known;
+  known.as_of_ = utc(2026, 3, 10, 6, 30);
+  runner_instance.context().set_portfolio(known);
+
+  runner_instance.feed(bar_at(10, "70000"));
+  REQUIRE(runner_instance.last_broker_refusal().has_value());
+  CHECK(runner_instance.last_broker_refusal()->code_ == "SPOKE");
+
+  // The same executor, refusing again and saying nothing this time.
+  runner_instance.executor().last_error_.reset();
+  runner_instance.feed(bar_at(11, "70000"));
+
+  CHECK(runner_instance.orders_broker_refused() == 2);
+  CHECK_FALSE(runner_instance.last_broker_refusal().has_value());
+}
+
+TEST_CASE("the refusal record is detected by shape, not by a method's name") {
+  // **A name is not a contract.** An earlier version of `states_last_error` asked only whether
+  // `last_error()` was a valid expression, so any executor with a method of that name selected the
+  // branch that reads `broker_code_` -- and a caller whose `last_error()` returned something else
+  // stopped compiling for having chosen a name. The detection is on the documented return type.
+  STATIC_REQUIRE(runner::runner_detail::states_last_error<UnrelatedLastError>::value == false);
+}
+
+TEST_CASE("each way an instruction fails is counted apart from the others") {
+  // **A live run used to say nothing about any of this.** `Runner::feed` returns a report describing
+  // what became of every instruction and `live::SessionSource` discards it on every poll, so a run in
+  // which everything was refused looked exactly like one in which everything was accepted. These are
+  // the figures a driving loop differences to say otherwise -- and they are counted by *origin*,
+  // because an operator's next move differs for each.
+  SECTION("reconciliation could not build it") {
+    // No reference data, so neither the tick grid nor the lot size is known.
+    runner::DryRunner<HoldTen> dry;
+    dry.context().set_phase(strategy::MarketPhase::OPEN);
+    dry.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+    const auto report = dry.feed(bar_at(10, "70000"));
+    REQUIRE(report.rejected_.size() == 1);
+    CHECK(dry.orders_unbuildable() == 1);
+    CHECK(dry.orders_guard_refused() == 0);
+    CHECK(dry.orders_broker_refused() == 0);
+    CHECK(dry.orders_binding_refused() == 0);
+    CHECK(dry.orders_indeterminate() == 0);
+    CHECK(dry.orders_reconcile_withheld() == 0);
+  }
+
+  SECTION("a guard refused it") {
+    strategy::RiskLimits limits;
+    limits.max_order_notional_ = Decimal64::parse("1");
+    runner::DryRunner<HoldTen> dry(HoldTen{}, limits);
+    arrange(dry);
+
+    const auto report = dry.feed(bar_at(10, "70000"));
+    REQUIRE(report.refused_.size() == 1);
+    CHECK(dry.orders_guard_refused() == 1);
+    CHECK(dry.orders_unbuildable() == 0);
+    CHECK(dry.orders_broker_refused() == 0);
+  }
+
+  SECTION("a plan held back for want of an account is counted apart") {
+    // Nothing is wrong with the instructions: the runner cannot vouch for the account they would be
+    // sized against, so the whole plan goes back untouched. Counted apart from the six origins for
+    // that reason -- and because the loop's own gate does not always describe it.
+    runner::DryRunner<HoldTen> dry;
+    arrange(dry);
+    dry.require_known_portfolio(true);
+
+    const auto report = dry.feed(bar_at(10, "70000"));
+    REQUIRE(report.withheld_plans_.size() == 1);
+    CHECK(dry.plans_withheld() == 1);
+    CHECK(dry.orders_unbuildable() == 0);
+    CHECK(dry.orders_guard_refused() == 0);
+  }
+
+  SECTION("a clean run counts nothing at all") {
+    // Absence versus zero, from the other side: every figure stays at zero when nothing failed, so a
+    // reader seeing zeros is being told the run was clean rather than that nothing was measured.
+    runner::DryRunner<HoldTen> dry;
+    arrange(dry);
+
+    const auto report = dry.feed(bar_at(10, "70000"));
+    REQUIRE(report.would_place_.size() == 1);
+    CHECK(dry.orders_unbuildable() == 0);
+    CHECK(dry.orders_guard_refused() == 0);
+    CHECK(dry.orders_broker_refused() == 0);
+    CHECK(dry.orders_binding_refused() == 0);
+    CHECK(dry.orders_indeterminate() == 0);
+    CHECK(dry.orders_reconcile_withheld() == 0);
+    CHECK(dry.plans_withheld() == 0);
+    CHECK(dry.instructions_unavailable() == 0);
+    CHECK_FALSE(dry.last_broker_refusal().has_value());
+  }
+}
+
 TEST_CASE("a weighted intent needs the portfolio value the runner was given") {
   runner::DryRunner<QuarterWeight> dry;
   arrange(dry);
