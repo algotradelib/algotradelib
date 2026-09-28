@@ -3297,7 +3297,63 @@ private:
     // from the request instead, because there the row can be any day's.
     order.ordered_at_ = detail::seoul_timestamp(today_in_seoul(), detail::text_field(row, "tm"));
     order.execution_.filled_quantity_ = detail::required_magnitude(row, "cntr_qty");
+    resolve_open_status(open_order.amendable_quantity_, order);
     return open_order;
+  }
+
+  /**
+   * Refuses to report an order closed on a row that says quantity is still outstanding.
+   *
+   * ## The contradiction
+   *
+   * `normalized_order_status` is shared with the history parser, so it maps `체결` to `FILLED` and
+   * `취소` to `CANCELED` -- correct there, and on *this* endpoint those words would contradict the
+   * row they arrive on. `ka10075` is the 미체결 listing, its array is `oso`, and `oso_qty` is the
+   * quantity still outstanding. The specification documents `ord_stt` here with the single value
+   * `접수`, so nothing establishes that Kiwoom ever sends the other two on this inquiry.
+   *
+   * **This is therefore a defensive rule, not a repair of an observed incident.** What is
+   * established is only that if such a row arrived, the adapter would mishandle it, and that the
+   * response carries the field needed to refuse to.
+   *
+   * ## Why a wrong answer here is not cosmetic
+   *
+   * `strategy::order_is_open` is false for `FILLED` and `CANCELED`, and
+   * `Portfolio::working_quantity` skips any row that is not open. A resting order reported closed
+   * would read as **zero** resting quantity: no sellable deduction, no working-order component in
+   * the position ceiling, and a reconciliation that plans a second order beside the one already
+   * out.
+   *
+   * ## The rule
+   *
+   * A word and a number disagree, and only one of them can be checked, so the number wins:
+   * a positive `oso_qty` means the order is still open whatever `ord_stt` says. Which open status
+   * follows from the filled quantity, the same way KIS's parser answers the same question --
+   * `PARTIAL_FILLED` where something has filled, `PENDING` where nothing has. A row reporting
+   * nothing outstanding keeps whatever the broker said, so this narrows a contradiction rather than
+   * refusing to believe the broker.
+   *
+   * Applied here rather than inside `normalized_order_status`, because the contradicting quantity
+   * exists only on this endpoint and the history parser reads those words legitimately.
+   *
+   * The two statuses tested are the two `normalized_order_status` can produce that mean the order
+   * is over, named here rather than asked of `strategy::order_is_open`: an adapter must not depend
+   * on the strategy layer, and `core/` is where the two layers may meet.
+   */
+  static void resolve_open_status(
+    const std::optional<Decimal64>& amendable, OrderSnapshot& order
+  ) {
+    const bool reported_over =
+      order.status_ == OrderStatus::FILLED || order.status_ == OrderStatus::CANCELED;
+    if (!reported_over) {
+      return;
+    }
+    if (!amendable || amendable->coefficient() <= 0) {
+      return;
+    }
+    order.status_ = order.execution_.filled_quantity_.coefficient() > 0 ?
+      OrderStatus::PARTIAL_FILLED :
+      OrderStatus::PENDING;
   }
 
   /**

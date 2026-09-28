@@ -31,6 +31,27 @@ struct stated_inquiry_basis<Traits, std::void_t<decltype(Traits::sellable_inquir
   static constexpr SellableBasis value = Traits::sellable_inquiry_basis;
 };
 
+/**
+ * Whether a traits specialization says its working-order listing can state a terminal status.
+ *
+ * **Detected with a default of `false`, for the same reason as `stated_inquiry_basis` above and
+ * with the safe direction pointing the other way.** An adapter written against an earlier release
+ * says nothing, and an unstated answer must be the one that cannot mislead: a caller told `false`
+ * polls for an order's outcome, while a caller told a wrong `true` waits for an event that never
+ * arrives. Those two mistakes are not symmetrical, and only the first is recoverable by the caller.
+ */
+template <typename Traits, typename = void>
+struct stated_terminal_working_state {
+  static constexpr bool value = false;
+};
+
+template <typename Traits>
+struct stated_terminal_working_state<
+  Traits, std::void_t<decltype(Traits::working_orders_state_terminal)>
+> {
+  static constexpr bool value = Traits::working_orders_state_terminal;
+};
+
 }  // namespace caps_detail
 
 /**
@@ -64,6 +85,30 @@ struct BrokerCaps {
 
   /** Whether the broker reports the quantity still amendable on an open order. */
   static constexpr bool has_amendable_quantity = Traits::has_amendable_quantity;
+
+  /**
+   * Whether a row in that listing can report a *terminal* status, so an order's outcome is
+   * observable without a second inquiry.
+   *
+   * **False on all three shipped adapters**, and the constant exists for the adapters this library
+   * has never seen rather than to describe a difference between KIS, Toss and Kiwoom. KIS's
+   * 정정취소가능주문조회 derives `PENDING` or `PARTIAL_FILLED` from the filled quantity and can
+   * state nothing else; Toss requests the `OPEN` lifecycle group, whose terminal counterpart is
+   * `CLOSED`; Kiwoom's `ka10075` is the 미체결 listing and its specification documents `ord_stt`
+   * with the single value `접수`.
+   *
+   * **What `false` means for a caller, exactly.** `runner::OrderUpdateWatch` reports what a listed
+   * row says and never interprets a row's *disappearance*, because a listing cannot say whether an
+   * order filled, was cancelled, expired or was rejected. So under `false` a strategy must not wait
+   * for a terminal `on_order_update`: it will not arrive, and the order's outcome has to be read
+   * from holdings or an order inquiry. Under `true` it may.
+   *
+   * This is a statement about the *inquiry*, not about the adapter's parser. A parser able to
+   * represent a terminal status proves only what it would do with such a row, never that the
+   * endpoint supplies one, and answering `true` on that evidence would strand a caller waiting.
+   */
+  static constexpr bool working_orders_state_terminal =
+    caps_detail::stated_terminal_working_state<Traits>::value;
 
   /** Whether the broker retrieves one order by its identifier. */
   static constexpr bool has_order_by_id = Traits::has_order_by_id;

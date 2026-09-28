@@ -2692,3 +2692,184 @@ TEST_CASE("an executor that says nothing is assumed to reach a broker") {
     CHECK(report.withheld_plans_.empty());
   }
 }
+
+namespace {
+
+/** Records every order update, and what its portfolio held at the time. */
+struct WatchesOrders {
+  std::vector<OrderSnapshot> updates_;
+
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {}
+
+  template <class Ctx>
+  void on_order_update(Ctx&, const OrderSnapshot& order) {
+    updates_.push_back(order);
+  }
+};
+
+/** A working row with a stated reference, filled quantity and status. */
+WorkingOrder<FakeBroker> update_row(
+  const char* primary,
+  const char* secondary,
+  const char* filled,
+  OrderStatus status = OrderStatus::PENDING
+) {
+  auto row = working();
+  row.ref_ = OrderRef<FakeBroker>{primary, secondary};
+  row.order_.order_id_ = primary;
+  row.order_.execution_.filled_quantity_ = Decimal64::parse(filled);
+  row.order_.status_ = status;
+  return row;
+}
+
+} // namespace
+
+TEST_CASE("a resting order is reported once, not once per poll") {
+  // A working listing republishes every resting order on every poll. Reporting each of them would
+  // make `on_order_update` a per-poll firehose rather than a change notification.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, WatchesOrders{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  poll_rows(source, live_runner, session, {update_row("A1", "", "0")});
+  CHECK(live_runner.strategy().updates_.size() == 1);
+
+  poll_rows(source, live_runner, session, {update_row("A1", "", "0")});
+  CHECK(live_runner.strategy().updates_.size() == 1);
+}
+
+TEST_CASE("execution progress on a resting order is reported, with the new figure") {
+  // Asserted on the *value* and not only the count: a detector feeding the previous row would pass
+  // a count-only assertion while telling the strategy nothing had happened.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, WatchesOrders{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  poll_rows(source, live_runner, session, {update_row("A1", "", "0")});
+  poll_rows(
+    source, live_runner, session, {update_row("A1", "", "4", OrderStatus::PARTIAL_FILLED)}
+  );
+
+  REQUIRE(live_runner.strategy().updates_.size() == 2);
+  CHECK(live_runner.strategy().updates_[1].execution_.filled_quantity_ == Decimal64::parse("4"));
+  CHECK(live_runner.strategy().updates_[1].status_ == OrderStatus::PARTIAL_FILLED);
+}
+
+TEST_CASE("a quantity restated at another scale is not a change") {
+  // `Decimal64::operator==` compares the coefficient *and the scale*, so `10` and `10.0` are
+  // distinct values. A broker restating one has not amended the order, and comparing with `==`
+  // would report an update every poll for as long as it kept doing so.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, WatchesOrders{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  poll_rows(source, live_runner, session, {update_row("A1", "", "0")});
+  auto restated = update_row("A1", "", "0.0");
+  restated.order_.quantity_ = Decimal64::parse("10.00");
+  poll_rows(source, live_runner, session, {restated});
+
+  CHECK(live_runner.strategy().updates_.size() == 1);
+}
+
+TEST_CASE("a row that leaves the listing is reported to nobody") {
+  // A listing cannot say whether an order filled, was cancelled, expired or was rejected, so a
+  // disappearance is counted where it is already counted and interpreted nowhere.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, WatchesOrders{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  poll_rows(source, live_runner, session, {update_row("A1", "", "0")});
+  poll_rows(source, live_runner, session, {});
+
+  CHECK(live_runner.strategy().updates_.size() == 1);
+  CHECK(source.charged_costs().working_list_disappearances_ == 1);
+}
+
+TEST_CASE("two rows sharing an order number and differing in branch are two orders") {
+  // KIS's reference carries `odno` *and* `ord_gno_brno`, and the branch code is what an amendment
+  // must address. Keyed on `order_id_` alone these two rows would compare against each other and
+  // one update would be suppressed.
+  //
+  // The KIS workbook states no uniqueness scope either way, so this is an adversarial fixture
+  // protecting the address identity rather than evidence that KIS emits such a pair.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, WatchesOrders{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  poll_rows(
+    source, live_runner, session,
+    {update_row("0001569139", "01", "0"), update_row("0001569139", "02", "0")}
+  );
+  CHECK(live_runner.strategy().updates_.size() == 2);
+
+  // And a change to one of them is still reported while the other is unchanged.
+  poll_rows(
+    source, live_runner, session,
+    {update_row("0001569139", "01", "0"),
+     update_row("0001569139", "02", "5", OrderStatus::PARTIAL_FILLED)}
+  );
+  REQUIRE(live_runner.strategy().updates_.size() == 3);
+  CHECK(live_runner.strategy().updates_[2].execution_.filled_quantity_ == Decimal64::parse("5"));
+}
+
+TEST_CASE("a row with no reference at all is counted and reported to nobody") {
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, WatchesOrders{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  auto anonymous = update_row("A1", "", "0");
+  anonymous.ref_ = OrderRef<FakeBroker>{"", ""};
+  anonymous.order_.order_id_ = "";
+  poll_rows(source, live_runner, session, {anonymous});
+
+  CHECK(live_runner.strategy().updates_.empty());
+}
+
+TEST_CASE("a row with a reference but no display order id is still reported") {
+  // The converse of the case above, and the one that matters for an adapter this library has never
+  // seen: a third party may fill an addressable reference and leave the display id empty, and
+  // dropping its updates would punish it for a field it does not need.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, WatchesOrders{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  auto addressable = update_row("A1", "", "0");
+  addressable.order_.order_id_ = "";
+  poll_rows(source, live_runner, session, {addressable});
+
+  CHECK(live_runner.strategy().updates_.size() == 1);
+}
+
+TEST_CASE("the startup read adopts the listing rather than reporting it") {
+  // `read_order_list` runs inside `PollingLoop::gate_for`, which the loop calls *before* it applies
+  // the startup hold, and it is handed a mutable runner -- so a `Runner::feed` there would dispatch
+  // to a strategy that can still submit, against the picture the gate exists to withhold.
+  //
+  // **The second half is what makes this a test rather than a coincidence.** Skipping the feed
+  // without adopting the rows would also leave the count at zero here, and the whole listing would
+  // then arrive at the first scheduled poll as if it were new. So the same unchanged listing is
+  // polled afterwards and must still report nothing.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, WatchesOrders{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  WorkingOrders<FakeBroker> listing;
+  listing.orders_ = {update_row("A1", "", "0")};
+  session.set_working_orders(listing);
+
+  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+  CHECK(live_runner.strategy().updates_.empty());
+  // And it is state rather than an event: the same call installed it where a strategy reads what a
+  // predecessor left resting.
+  CHECK(live_runner.context().portfolio().working_.size() == 1);
+
+  poll_rows(source, live_runner, session, {update_row("A1", "", "0")});
+  CHECK(live_runner.strategy().updates_.empty());
+
+  // A genuine change after that startup read is still reported, so adopting is not muting.
+  poll_rows(
+    source, live_runner, session, {update_row("A1", "", "3", OrderStatus::PARTIAL_FILLED)}
+  );
+  CHECK(live_runner.strategy().updates_.size() == 1);
+}

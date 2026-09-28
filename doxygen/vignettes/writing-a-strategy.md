@@ -41,10 +41,36 @@ only `on_bar` and costs nothing for the rest.
 | `on_start(Ctx&)` | before the first event |
 | `on_bar(Ctx&, const BarEvent&)` | a bar has **closed** |
 | `on_quote(Ctx&, const QuoteEvent&)` | a quote was read |
-| `on_fill(Ctx&, const Fill&)` | one execution happened against an order of yours |
-| `on_order_update(Ctx&, const OrderSnapshot&)` | an order changed state |
+| `on_fill(Ctx&, const Fill&)` | one execution happened against an order of yours — **in a backtest only**, see below |
+| `on_order_update(Ctx&, const OrderSnapshot&)` | an order the broker is still listing changed — see below |
 | `on_phase(Ctx&, MarketPhase)` | the session moved between phases |
 | `on_stop(Ctx&)` | after the last event — see below, it cannot trade |
+
+**`on_fill` does not fire live, and this is the one difference between the two modes that can cost
+money.** A fill is discovered live by polling: positions are replaced and working orders are
+replaced, and neither synthesises an execution. Discrete executions cannot be recovered from
+periodic cumulative snapshots — that was established across thirteen review findings and the design
+is parked until the library streams execution notifications. So a strategy that places an entry and
+sets its stop from `on_fill` is **correct in a backtest and inert live**: the handler never runs, the
+stop is never placed, and nothing reports it. Until that changes, act on positions in `on_bar`, or
+on `on_order_update` below.
+
+**`on_order_update` reports what the broker last said about an order it is still listing.** It fires
+when an order becomes resting, when an amendment moves its price or quantity, and when the broker
+moves its filled quantity while it rests — in a backtest and live, from the same detector over each
+mode's own order listing.
+
+**It never tells you why an order stopped being listed.** A working-order listing shows what is
+resting, and a row that leaves it may have filled, been cancelled, expired or been rejected; the
+listing does not say which, and this library will not guess. So do not wait for a terminal update
+unless `BrokerCaps<Client>::working_orders_state_terminal` says the broker states one — it is
+`false` on all three shipped adapters. Read the outcome from holdings or an order inquiry.
+
+Two more things worth knowing before you rely on it. An order that was already resting when the
+runner started is adopted as the baseline and is not reported as an update: the startup read happens
+before the loop's startup hold is installed, so nothing is dispatched from it, and that listing
+reaches you through `ctx.portfolio().working_` instead. And an order you place *from*
+`on_order_update` is reported at the next observation, never inside the current one.
 
 **`on_stop` is a notification, not a last trade.** Under `runner::PollingLoop` it is dispatched while
 the loop's stop hold is in force, so anything it submits is refused by the guard and counted in

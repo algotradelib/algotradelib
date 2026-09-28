@@ -545,6 +545,19 @@ struct Capabilities {
   static constexpr bool has_amendable_quantity = true;
 
   /**
+   * `ka10075` 미체결 states no terminal status this library will stand behind.
+   *
+   * The specification documents `ord_stt` on this endpoint with the single value `접수`, and the
+   * listing is by definition the unfilled one. `normalized_order_status` accepts `체결` and `취소`
+   * because it is shared with the history parser, which is where those belong -- and a parser able
+   * to represent a terminal status is evidence about the parser, never about what the endpoint
+   * sends. Answering `true` on that evidence would leave a caller waiting for an event that may
+   * never arrive, so this stays `false` until an official statement or an observed payload says
+   * otherwise.
+   */
+  static constexpr bool working_orders_state_terminal = false;
+
+  /**
    * Kiwoom has no single-order inquiry.
    *
    * `kt00007`'s `fr_ord_no` is documented as a lower bound — "시작주문번호 입력 시 이전 주문은

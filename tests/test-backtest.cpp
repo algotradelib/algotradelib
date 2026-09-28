@@ -3599,3 +3599,161 @@ TEST_CASE("turnover is stated when every fill is in the equity curve's own curre
   REQUIRE(math::observed(report.total_turnover_));
   CHECK(report.total_turnover_ > math::Scalar{0});
 }
+
+namespace {
+
+/**
+ * Buys ten on the first bar and records every order update, with the portfolio it saw at the time.
+ *
+ * `working_seen_` is the part that matters: a handler told about an order that cannot find that
+ * order in its own portfolio has been handed a picture contradicting the event.
+ */
+struct WatchesItsOwnOrder {
+  bool submitted_{false};
+  std::vector<OrderSnapshot> updates_;
+  std::vector<std::size_t> working_seen_;
+  std::vector<std::string> ids_seen_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (submitted_) {
+      return;
+    }
+    submitted_ = true;
+    ctx.submit(
+      strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
+      )
+    );
+  }
+
+  template <class Ctx>
+  void on_order_update(Ctx& ctx, const OrderSnapshot& order) {
+    updates_.push_back(order);
+    ids_seen_.push_back(order.order_id_);
+    working_seen_.push_back(ctx.portfolio().working_.size());
+  }
+};
+
+/** Places a second order the first time it is told about the first one. */
+struct PlacesFromAnUpdate {
+  bool submitted_{false};
+  bool answered_{false};
+  std::size_t updates_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (submitted_) {
+      return;
+    }
+    submitted_ = true;
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")),
+        far_below()
+      )
+    );
+  }
+
+  template <class Ctx>
+  void on_order_update(Ctx& ctx, const OrderSnapshot& order) {
+    ++updates_;
+    if (answered_) {
+      return;
+    }
+    answered_ = true;
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        order.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("2")),
+        far_below()
+      )
+    );
+  }
+};
+
+/** Places an unfillable order from `on_stop`, and counts updates. */
+struct PlacesOnStop {
+  std::size_t updates_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {}
+
+  template <class Ctx>
+  void on_stop(Ctx& ctx) {
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        samsung(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")),
+        far_below()
+      )
+    );
+  }
+
+  template <class Ctx>
+  void on_order_update(Ctx&, const OrderSnapshot&) { ++updates_; }
+};
+
+} // namespace
+
+TEST_CASE("an order placed on one bar and filled on the next is reported once") {
+  // **The case the first design of this feature reported zero times.** Observing the queue at
+  // `install_portfolio` misses it entirely: the last install of a bar precedes `on_bar`, and the
+  // next bar's settlement withdraws the order before that bar's first install. A fixture letting
+  // the order rest an extra bar would pass against that design, which is why this one does not.
+  backtest::Backtester<WatchesItsOwnOrder> engine(WatchesItsOwnOrder{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
+  engine.finish();
+
+  // One update: the order became resting. The fill is *not* a second one -- the row left the queue,
+  // and a disappearance is never reported.
+  CHECK(engine.strategy().updates_.size() == 1);
+  REQUIRE(engine.strategy().updates_.size() >= 1);
+  CHECK(engine.strategy().updates_[0].status_ == OrderStatus::PENDING);
+  CHECK(engine.strategy().updates_[0].quantity_ == Decimal64::parse("10"));
+}
+
+TEST_CASE("a strategy told about its own order can find it in its portfolio") {
+  // With every optional limit off, `persist_reservation` writes no working row, so nothing but the
+  // install inside the publish puts the order in the view. Without it the handler is told about an
+  // order it can neither see nor withdraw.
+  backtest::Backtester<WatchesItsOwnOrder> engine(WatchesItsOwnOrder{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().working_seen_.size() == 1);
+  CHECK(engine.strategy().working_seen_[0] == 1);
+}
+
+TEST_CASE("a replay's order update carries an identifier") {
+  // A replay is this order's broker, so a row with no `order_id_` is an order the handler cannot
+  // name -- which a live row never is.
+  backtest::Backtester<WatchesItsOwnOrder> engine(WatchesItsOwnOrder{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().ids_seen_.size() == 1);
+  CHECK_FALSE(engine.strategy().ids_seen_[0].empty());
+}
+
+TEST_CASE("an order an update handler places is reported at the next boundary, not within it") {
+  // Bounded rather than recursive: the second order enters the queue behind the observation that is
+  // running, so it is seen next time. Two updates over the run, never a loop inside one.
+  backtest::Backtester<PlacesFromAnUpdate> engine(PlacesFromAnUpdate{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
+  engine.finish();
+
+  CHECK(engine.strategy().updates_ == 2);
+}
+
+TEST_CASE("a change made by on_stop is reported, because finish is the only boundary that can") {
+  // An `on_bar` placement on the last bar is already observed by the end-of-`feed` call, so a
+  // fixture built that way would pass without `finish` publishing at all.
+  backtest::Backtester<PlacesOnStop> engine(PlacesOnStop{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  CHECK(engine.strategy().updates_ == 0);
+  engine.finish();
+  CHECK(engine.strategy().updates_ == 1);
+}

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../runner/loop.hpp"
+#include "../runner/order_updates.hpp"
 #include "../runner/reconcile_orders.hpp"
 
 #include <algotradelib/broker>
@@ -213,7 +214,17 @@ public:
   template <typename Runner>
   runner::PollOutcome read_order_list(Runner& runner_instance) {
     if constexpr (Caps::has_working_orders) {
-      return poll_working_orders(runner_instance);
+      // **No order updates from this read, and the reason is a hazard rather than a preference.**
+      // This runs inside `PollingLoop::gate_for`, which the loop calls *before* it applies the
+      // startup hold, and it is handed a mutable runner -- so a `Runner::feed` here would dispatch
+      // to a strategy that can still submit, against the picture the gate exists to withhold. The
+      // listing is adopted as the baseline instead, which is also the honest reading of it: a
+      // predecessor's resting order is initial state, not a change, and it is installed on
+      // `Portfolio::working_` by the same call, which is where a strategy reads what it inherited.
+      //
+      // The cost is stated rather than hidden: an order present at startup that fills or is
+      // cancelled before the first scheduled poll produces no update at all.
+      return poll_working_orders(runner_instance, /*publish=*/false);
     } else {
       OrderHistoryQuery query;
       query.limit_ = history_limit_;
@@ -583,7 +594,7 @@ private:
 
   /** Refreshes working orders, keeping positions. Compiles to nothing without the capability. */
   template <typename Runner>
-  runner::PollOutcome poll_working_orders(Runner& runner_instance) {
+  runner::PollOutcome poll_working_orders(Runner& runner_instance, bool publish = true) {
     if constexpr (Caps::has_working_orders) {
       auto result = session_->working_orders();
       if (!result) {
@@ -609,8 +620,25 @@ private:
       // so a cost accumulated in the loop could only ever be accumulated from nothing.
       observe_charged(rows);
       reconcile(runner_instance, rows);
+
+      // **Last, and after reconciliation, deliberately.** `Runner::feed` settles, so an order can
+      // leave the process from inside this call -- and a strategy answering an update must do so
+      // against the portfolio this poll installed, with reconciliation already done and any local
+      // failure it raised already standing as a hold. Feeding earlier would let a strategy act on a
+      // poll whose own conclusions were still being drawn.
+      //
+      // `publish` is false only for the startup read; see `read_order_list` for why that is a
+      // hazard rather than a preference.
+      if (publish) {
+        for (const auto& update : updates_.changed(result.value().orders_)) {
+          runner_instance.feed(update);
+        }
+      } else {
+        updates_.adopt(result.value().orders_);
+      }
       return runner::PollOutcome::UPDATED;
     } else {
+      (void)publish;
       // Unreachable through the loop, which never schedules a kind the caller left unset, and a
       // caller who sets a cadence for an inquiry this broker lacks gets a poll that does nothing
       // rather than a compile error -- the cadence is data, not a capability claim.
@@ -741,6 +769,8 @@ private:
   int maximum_history_pages_{20};
   runner::MatchWindow window_;
   runner::ReconcileReport reconcile_;
+  /** Turns successive working-order listings into `on_order_update` events. */
+  runner::OrderUpdateWatch<BrokerTag> updates_;
   BarInterval interval_{BarInterval::ONE_DAY};
   int count_{100};
   int history_limit_{100};

@@ -2290,3 +2290,58 @@ TEST_CASE("a cancellation refuses every shape change it cannot carry", "[kiwoom]
   CHECK(refused.error().broker_code_ == "shape_change_unsupported");
   CHECK(refused.error().message_.find("price basis") != std::string::npos);
 }
+
+TEST_CASE("an unfilled row is open however its status word reads", "[kiwoom][orders]") {
+  // `normalized_order_status` is shared with the history parser, where `체결` legitimately means
+  // filled. On `ka10075` it would contradict the row it arrives on: the listing *is* the unfilled
+  // one, and `oso_qty` says how much is still outstanding.
+  //
+  // This is defensive rather than a repair of an observed incident -- the specification documents
+  // `ord_stt` here with the single value `접수`. What it protects is real: `order_is_open` is false
+  // for `FILLED`, and `Portfolio::working_quantity` skips a row that is not open, so a resting
+  // order reported that way reads as zero resting quantity. No sellable deduction, no working-order
+  // component in the position ceiling, and a reconciliation that plans a second order beside the
+  // one already out.
+  const auto contradictory = kiwoom::KiwoomClientTestAccess::open_order(
+    json::parse(
+      R"({"ord_no":"0000069","stk_cd":"005930","ord_stt":"체결","stk_nm":"삼성전자",
+          "ord_qty":"10","ord_pric":"70000","oso_qty":"7","orig_ord_no":"0000068",
+          "io_tp_nm":"-매도","trde_tp":"보통","tm":"154113","cntr_qty":"3","stex_tp":"1"})"
+    ).as_object()
+  );
+  CHECK(contradictory.order_.status_ == OrderStatus::PARTIAL_FILLED);
+
+  // **The quantity, not only the status.** `working_quantity` sizes the remainder as the ordered
+  // quantity less what filled, so the override earns nothing unless those two agree with the
+  // positive `oso_qty` the row states.
+  strategy::Portfolio<kiwoom::Broker> portfolio;
+  WorkingOrder<kiwoom::Broker> row;
+  row.order_ = contradictory.order_;
+  row.ref_ = OrderRef<kiwoom::Broker>{"0000069", "005930"};
+  portfolio.working_.push_back(row);
+  CHECK(portfolio.working_quantity(samsung(), OrderSide::SELL) == Decimal64::parse("7"));
+}
+
+TEST_CASE("a row with nothing outstanding keeps the status the broker stated", "[kiwoom][orders]") {
+  // The rule narrows a contradiction; it is not a blanket refusal to believe the broker. With
+  // `oso_qty` at zero the two fields agree and the word stands.
+  const auto settled = kiwoom::KiwoomClientTestAccess::open_order(
+    json::parse(
+      R"({"ord_no":"0000069","stk_cd":"005930","ord_stt":"체결","stk_nm":"삼성전자",
+          "ord_qty":"10","ord_pric":"70000","oso_qty":"0","orig_ord_no":"0000068",
+          "io_tp_nm":"-매도","trde_tp":"보통","tm":"154113","cntr_qty":"10","stex_tp":"1"})"
+    ).as_object()
+  );
+  CHECK(settled.order_.status_ == OrderStatus::FILLED);
+}
+
+TEST_CASE("an unfilled row that states nothing has filled reports pending", "[kiwoom][orders]") {
+  const auto untouched = kiwoom::KiwoomClientTestAccess::open_order(
+    json::parse(
+      R"({"ord_no":"0000069","stk_cd":"005930","ord_stt":"취소","stk_nm":"삼성전자",
+          "ord_qty":"10","ord_pric":"70000","oso_qty":"10","orig_ord_no":"0000068",
+          "io_tp_nm":"+매수","trde_tp":"보통","tm":"154113","cntr_qty":"0","stex_tp":"1"})"
+    ).as_object()
+  );
+  CHECK(untouched.order_.status_ == OrderStatus::PENDING);
+}

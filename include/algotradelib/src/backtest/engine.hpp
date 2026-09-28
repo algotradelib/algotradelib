@@ -5,6 +5,7 @@
 #include "./fill.hpp"
 #include "./ledger.hpp"
 
+#include "../runner/order_updates.hpp"
 #include "../runner/runner.hpp"
 
 #include <algotradelib/core>
@@ -430,6 +431,9 @@ public:
 
     install_portfolio();
     drain_reports(runner_.feed(event));
+    // **After the dispatch, not before it**, so an order this bar's `on_bar` or `on_phase` placed is
+    // reported. Before it would report only what settlement had already changed.
+    publish_order_updates();
     previous_ = event;
   }
 
@@ -453,6 +457,9 @@ public:
     }
     install_portfolio();
     drain_reports(runner_.stop());
+    // The only boundary that can observe what `on_stop` placed or withdrew. Before `unfilled_` is
+    // counted, so the count describes the queue the run actually ended with.
+    publish_order_updates();
     result_.unfilled_ = runner_.executor().queued().size();
   }
 
@@ -559,6 +566,9 @@ private:
       install_portfolio();
       drain_reports(runner_.feed(decision.execution_->fill_));
     }
+    // Closes the settlement batch: every withdrawal this bar made is now done, and so is anything
+    // an `on_fill` handler placed or cancelled in response to one.
+    publish_order_updates();
   }
 
   /** Records equity at this bar, and the return since the previous point. */
@@ -631,6 +641,56 @@ private:
    * The reservation carried two things, so this carries both: the outstanding orders themselves,
    * and the money an outstanding buy has committed.
    */
+  /**
+   * Reports every queued order whose state has changed since the last observation.
+   *
+   * ## Where this is called from, and why not simply beside `install_portfolio`
+   *
+   * At the three points where a *batch* of changes to the queue has finished: the end of
+   * settlement, the end of `feed`, and the end of `finish`. The queue changes in exactly three
+   * ways -- `place` and `cancel` from a strategy dispatch, and `withdraw` from settlement -- and
+   * each of those three boundaries closes one batch of them.
+   *
+   * The obvious alternative, publishing from `install_portfolio`, is wrong and quietly so: the
+   * last install of a bar runs *before* `feed(BarEvent)` dispatches `on_bar`, so an order placed
+   * there enters the queue after it, and the next bar's settlement withdraws the order before that
+   * bar's first install. An order placed on one bar and filled on the next -- which is every market
+   * order -- would be present at no install at all and would be reported nowhere.
+   *
+   * ## The portfolio is installed before each dispatch, not once for the batch
+   *
+   * A handler told about an order has to be able to find it. With every optional limit disabled
+   * `Runner::persist_reservation` writes no working row, so nothing else would put the order in
+   * the view, and a strategy would be told about an order it could neither see nor withdraw.
+   * Installing once for the batch is not enough either, because a handler answering the first
+   * update may place or cancel, which invalidates the picture the second one reads.
+   *
+   * ## What a handler's own order does
+   *
+   * It enters the queue behind this observation and is reported at the *next* boundary, never
+   * within this one, so a strategy cannot drive itself round a loop here. An order placed by
+   * `on_order_update` during `finish` has no later boundary and is not reported at all.
+   */
+  void publish_order_updates() {
+    if (result_.halted_) {
+      // Nothing runs after a refusal, for the reason `feed` documents: a handler called here would
+      // decide on a replay that has stopped being able to cost what it asks for.
+      return;
+    }
+    std::vector<WorkingOrder<Tag>> rows;
+    rows.reserve(runner_.executor().queued().size());
+    for (const auto& entry : runner_.executor().queued()) {
+      rows.push_back(working_row(entry));
+    }
+    for (const auto& update : updates_.changed(rows)) {
+      install_portfolio();
+      drain_reports(runner_.feed(update));
+      if (result_.halted_) {
+        return;
+      }
+    }
+  }
+
   void install_portfolio() {
     auto portfolio = ledger_.snapshot<Tag>(clock_.now());
     for (const auto& entry : runner_.executor().queued()) {
@@ -653,6 +713,12 @@ private:
   WorkingOrder<Tag> working_row(const QueuedOrder<Tag>& entry) const {
     WorkingOrder<Tag> row;
     row.ref_ = entry.ref_;
+    // **The replay is this order's broker, so it is the thing that issued the number.** A row left
+    // with an empty `order_id_` is an order a reader cannot name, which a live row never is; the
+    // reference's primary part is the only identifier a replay has, and it is already monotone and
+    // stable for as long as the order is outstanding. Nothing in the library matched a replay
+    // working row on this field while it was empty, so filling it changes no existing decision.
+    row.order_.order_id_ = entry.ref_.primary_;
     row.order_.instrument_ = entry.order_.instrument_;
     row.order_.side_ = entry.order_.side_;
     row.order_.type_ = entry.order_.type_;
@@ -750,6 +816,8 @@ private:
   ReplayLedger ledger_;
   ReplayClock clock_;
   Runner runner_;
+  /** Turns this replay's own working listing into `on_order_update` events. */
+  runner::OrderUpdateWatch<Tag> updates_;
   ReplayResult result_;
   std::optional<strategy::BarEvent> previous_;
 };

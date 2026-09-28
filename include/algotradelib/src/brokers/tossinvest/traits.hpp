@@ -349,6 +349,15 @@ struct Capabilities {
   /** Toss reports no separately amendable quantity. */
   static constexpr bool has_amendable_quantity = false;
 
+  /**
+   * The `OPEN` lifecycle group states no terminal status.
+   *
+   * Toss groups order states rather than listing them: `OPEN` covers pending, partially filled
+   * and pending-amendment, and every terminal state is in `CLOSED`. A working-order listing is a
+   * request for the first group, so an order's outcome arrives only through the second.
+   */
+  static constexpr bool working_orders_state_terminal = false;
+
   /** Toss retrieves one order in any lifecycle state by identifier. */
   static constexpr bool has_order_by_id = true;
 

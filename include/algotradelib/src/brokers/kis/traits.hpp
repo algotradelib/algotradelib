@@ -340,6 +340,15 @@ struct Capabilities {
   /** KIS reports `psbl_qty`, the quantity still amendable. */
   static constexpr bool has_amendable_quantity = true;
 
+  /**
+   * 정정취소가능주문조회 states no terminal status.
+   *
+   * The parser derives the status from the filled quantity and can produce only `PENDING` or
+   * `PARTIAL_FILLED`, and the inquiry lists what is still open to amendment. An order's outcome
+   * is therefore not observable here, and a caller must read it from holdings or the history.
+   */
+  static constexpr bool working_orders_state_terminal = false;
+
   /** KIS has no single-order inquiry by order number. */
   static constexpr bool has_order_by_id = false;
 

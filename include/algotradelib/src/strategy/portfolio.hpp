@@ -61,7 +61,23 @@ struct Portfolio {
    * rather than reading the first match.
    */
   std::vector<HoldingPosition> positions_;
-  /** Spendable cash per currency, unconverted — no implicit foreign exchange. */
+  /**
+   * Spendable cash per currency, unconverted — no implicit foreign exchange.
+   *
+   * **Replay-only, and a strategy reading it behaves differently in the two modes.**
+   * `backtest::ReplayLedger::snapshot` is the one thing in this library that writes it; a live
+   * `poll_holdings` sets positions and a timestamp and never touches it. So `cash_in(krw)` answers
+   * a number in a backtest and `std::nullopt` live, for the same strategy and the same account.
+   *
+   * Nothing shipped reads it — no guard, no vanilla strategy, no example — which is why this is a
+   * documented trap rather than a defect. A strategy sizing against available money should read
+   * `buying_power_`, which both adapters fill live and the replay models and discloses.
+   *
+   * Whether the field should be filled live at all is open: both brokers publish several deposit
+   * figures that mean different things, and `plan/todo/deposit-balances.md` argues the honest
+   * outcome may be to say so rather than to pick one. This comment is that saying-so, at the point
+   * where a strategy author reads the field.
+   */
   std::vector<Money> cash_;
   /**
    * What the broker said may be spent, per currency.
