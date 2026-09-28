@@ -629,6 +629,12 @@ private:
       //
       // `publish` is false only for the startup read; see `read_order_list` for why that is a
       // hazard rather than a preference.
+      //
+      // **No halt check between updates, which the replay does have, and the asymmetry is the
+      // point.** A hold here refuses what a strategy *sends* and does not make what the broker
+      // *said* untrue -- a runner that has stopped trading still wants its handler told that a
+      // resting order filled. A halted replay is the opposite case: the engine can no longer model
+      // what it is being asked to, so no callback may run at all.
       if (publish) {
         for (const auto& update : updates_.changed(result.value().orders_)) {
           runner_instance.feed(update);
