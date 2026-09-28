@@ -178,7 +178,14 @@ namespace runner_detail {
  * requirement has to hold for every live path, and there are more of those than the two binding
  * factories -- `doxygen/vignettes/binding-a-broker.md` shows a `Runner<..., SessionExecutor<Session>>`
  * assembled by hand, and a rule installed only by the factories would not reach it. A property of the
- * executor reaches all of them, including one a consumer writes, and costs nothing at run time.
+ * executor reaches all of them and costs nothing at run time.
+ *
+ * **It does not reach an executor that does not declare it**, which is the thing to know before
+ * writing one. The default is `false`, so a dry run and a replay stay out of a rule neither needs --
+ * and a consumer's own broker executor opts *in* by declaring `reaches_a_broker` rather than
+ * inheriting the protection by virtue of being live. The trait cannot tell a real session from a
+ * test double by looking, so that asymmetry is deliberate; it is also something a third broker's
+ * author has to be told rather than left to discover.
  *
  * A live run that genuinely reads no holdings says `allow_absent_portfolio()`, which is a statement
  * about that account rather than about the executor's type.

@@ -247,6 +247,18 @@ changes, and nothing in the loop around it changes. `example-strategy-live` comp
 Fill the context from what the session reads — reference data first, because without a tick grid and
 a lot size reconciliation has nothing to build and will refuse every order by name.
 
+**Include the holdings snapshot, and stamp it with when the broker answered.** A runner built on a
+`SessionExecutor` will not place against an account it has never read: `SessionExecutor` declares
+`reaches_a_broker`, and a `Portfolio` whose `as_of_` is unset reads as one nobody has read rather than
+as an account that is empty. That distinction is the point — empty is the *permissive* answer to
+every position ceiling and to every target the runner reconciles — so copying the rows without
+`received_at_` gets the orders withheld, reported in `Report::withheld_plans_`. A run that genuinely
+has no holdings to read says `live.allow_absent_portfolio()` and means it.
+
+The same applies to an executor you write yourself: declare `static constexpr bool reaches_a_broker =
+true` on it if it can reach one, because the default is `false` so that dry runs and replays are not
+caught by a rule neither needs.
+
 Note that the runner is held **by value**, not behind a smart pointer, and so is the strategy inside
 it. The strategy is a template parameter resolved at compile time, so there is no base class to point
 at and no dynamic dispatch to enable; an indirection would cost a dereference in an otherwise inlined
