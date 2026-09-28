@@ -1376,10 +1376,13 @@ TEST_CASE("an inquiry answers for one instrument and certifies no other") {
 
   const auto report = live_runner.feed(bar_at(1, "70000"));
 
-  // The inquiry ran for Samsung and its order went out, so the declared path works.
+  // The inquiry ran for Samsung and its order went out, so the declared path works. The *count* of
+  // placements matters, not just the absence of refusals: a run that placed nothing would also have an
+  // empty refusal list, and this test would then pass while the declared path did nothing at all.
   REQUIRE(session.sellable_asked().size() == 1);
   REQUIRE(session.sellable_asked()[0] == samsung());
   REQUIRE(report.refused_.empty());
+  REQUIRE(session.placed().size() == 1);
 
   const auto& after = live_runner.context().portfolio();
   REQUIRE(after.sellable_reading_for(samsung()).basis_.is_enforceable());
