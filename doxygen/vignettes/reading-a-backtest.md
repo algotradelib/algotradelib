@@ -75,6 +75,79 @@ than one that disappoints.
 `LimitFillPrice::AT_OPEN_IF_BETTER` is the optimistic variant, opt-in because the assumption is yours to
 make. Whichever you use, `report.caveats_.limit_fill_` says which.
 
+## Quotes, and the one place a quote-driven replay differs from a quote-driven live run
+
+`Backtester::feed` takes a `strategy::QuoteEvent` as well as a `BarEvent`, so `on_quote` fires in a
+replay. It did not before: `QuoteEvent` appeared nowhere in `backtest/`, while `PollKind::QUOTES` is
+a supported live cadence — so a strategy that acts between bars ran live having been evaluated
+against nothing. Interleave quotes and bars in timestamp order yourself, exactly as you already
+interleave bars across instruments.
+
+Sketched — `bar` and `quote` stand for events you build from your own data:
+
+```
+engine.feed(bar);      // yesterday's close  -> on_bar
+engine.feed(quote);    // today 10:30        -> on_quote; an order placed here cannot fill
+                       //                       against today's bar, whose open was 09:00
+engine.feed(bar);      // today's close      -> on_bar
+engine.feed(bar);      // tomorrow's close   -> a market order from the quote fills here, at
+                       //                       tomorrow's open; a limit may miss and stay queued
+engine.finish();
+```
+
+**A quote does the same thing in both modes, because both go through the same function.**
+`Runner::feed(const QuoteEvent&)` sets the price a market order is valued at, advances the decision
+clock to the quote's own instant, and calls the handler; live, the quote poll calls exactly that. What
+a replay arranges around it is an approximation of the rest of a live iteration, and the last three
+rows below say which way each one errs:
+
+| | Live | Replay |
+| --- | --- | --- |
+| Updates the price a market order is valued at | yes | yes, the same call |
+| Advances the clock a decision is stamped with | yes | yes, the same call |
+| Re-derives the market phase at that instant | yes, before every due poll | yes |
+| Announces an order placed from the handler | when the working-order poll is due | yes, always |
+| Marks the book, records an equity point, fills anything | no ledger exists live | **no** |
+
+The phase row matters more than it looks: `RiskLimits::permitted_phases_` defaults to `{OPEN}`, so a
+replay that derived the phase only from bars would have shown a mid-session quote the *previous
+close's* phase and refused an order a live run would have sent. A change is announced **before**
+`on_quote` here and after all polls live, which is the ordering `feed(BarEvent)` has always used; an
+order placed from `on_phase` is therefore visible to `on_quote` in a replay and would not yet exist
+live. And the announcement of an order is unconditional here and conditional live, on the
+working-order poll being due at all.
+
+**So an order placed from `on_quote`, if it fills at all, fills against a later *bar*, at that bar's
+price** — and, where
+this engine can establish when a bar's period began, specifically against one that began **at or
+after** the decision. For a quote part-way through a session that is not that session's bar but the
+next one. A period that began earlier *contains* the decision, and its open is a price from before
+the strategy decided anything. Today's daily bar opened at 09:00, and
+crediting a 09:00 price to a 10:30 decision would be lookahead with the sign flipped. Live, the same
+order reaches the broker immediately and can trade at once. `ReportCaveats::quotes_` is non-zero on
+any run that fed a quote, and that is what it is telling you. A fill model that executes against a
+quote is a different design with its own argument, and this is not it.
+
+**A calendar period boundary the engine cannot establish makes the check impossible, and the report
+says so rather than guessing.** It happens on either side of the comparison. A close-stamped weekly,
+monthly or yearly bar does not state when its period *began* — and nothing in `feed`'s contract lets
+the engine derive it, as three attempts to infer it from a previous bar each proved. An open-stamped
+bar of any calendar interval does not state when its period *ended* either: that is
+`bar_period_end`'s nominal 24 hours, 7, 31 or 366 days, which is what **every shipped adapter
+produces for every non-minute bar**. So an adapter-fetched monthly or yearly replay carries this on
+most of its fills — though not all: the nominal end is an upper *bound*, so wherever the next
+period's start reaches it the check still passes, which every Monday-to-Monday week does.
+
+Where it does not run: the fill is allowed on the older rule that an order never fills
+against the bar that produced it, and `ReportCaveats::unchecked_fill_causality_` counts every such
+decision. Non-zero means those fill prices are not guaranteed to come from after the decision, and
+**any dated order can be one of them** — a quote is the obvious way in, and a bars-only replay
+reaches it too.
+
+**You can discharge it yourself**: with no quotes, one interval per instrument, and series whose
+periods do not overlap, the fills were causal whatever this figure says. The engine simply could not
+prove it from the events it was handed.
+
 ## What it does not model at all
 
 `ReportCaveats::volume_ignored` is always true, and present so you are told rather than left to assume:

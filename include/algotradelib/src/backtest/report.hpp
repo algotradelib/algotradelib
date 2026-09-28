@@ -116,6 +116,66 @@ struct ReportCaveats {
   std::size_t unfilled_{0};
 
   /**
+   * Quotes this replay was fed, and therefore whether any reached the dispatcher at all.
+   *
+   * **Zero and non-zero say different things and both are worth saying.** Zero is a replay of bars
+   * alone, which is every replay written before quotes could be fed and the ordinary case; non-zero
+   * means quotes were fed and dispatched, and carries the caveat below with it. It does **not** say
+   * a strategy handled one -- `on_quote` is optional -- or that anything was placed or filled
+   * because of one.
+   *
+   * **What a reader has to know when this is non-zero: an order placed from `on_quote`, if it fills
+   * at all, fills against a later *bar* and not against the quote.** (If at all: a limit can miss
+   * every bar and end the run in `unfilled_`.) A quote moves the clock, the price and the
+   * phase, and it neither fills nor marks: `NextBarFillModel` prices a market order at a bar's open,
+   * so -- **where this engine can establish when a bar's period began** -- the order rests until one
+   * that began at or after the decision, because a period that began earlier contains the decision
+   * and its open is a price from before the strategy decided anything. For a quote part-way through
+   * a session that is not that session's bar but the next one; for a quote between a close and the
+   * next open it is the very next bar. Where it **cannot** establish it -- a close-stamped weekly,
+   * monthly or yearly bar -- no such rule applies and the fill can happen at a price from before the
+   * quote, which is what `unchecked_fill_causality_` exists to say. Live, the same order reaches the
+   * broker immediately and can trade at once.
+   *
+   * So a quote-driven strategy's replayed fills **can be** later, and at a different price, than the
+   * same strategy's live ones -- by a bar where the quote fell inside a period, and by whatever a
+   * bar's open differs from the quote otherwise. Can be, rather than are: a replay knows nothing
+   * about when a live order would have executed, or whether it would have at all. That is the place a quote-driven backtest and a quote-driven live run
+   * are known to differ, and it is stated here rather than in prose a reader has to remember applied
+   * to their run. A fill model that executes against a quote would close it, and is a different
+   * design with its own argument.
+   */
+  std::size_t quotes_{0};
+
+  /**
+   * How many times this replay allowed a fill it could **not** check for causality, because one of
+   * the two instants the check compares was a calendar boundary it cannot establish: the bar's
+   * period start, or the decision's own instant.
+   *
+   * **Eligibility decisions, not fills**: one per queued order per bar it was considered against, and
+   * the fill model may decline it afterwards.
+   *
+   * **A calendar period boundary the engine cannot establish, on either side of the comparison.** A
+   * close-stamped weekly, monthly or yearly bar does not state where its period *began* -- three
+   * attempts to infer that from a previous bar were each falsified in review. And an open-stamped bar
+   * of any calendar interval does not state where its period *ended*: that is `bar_period_end`'s
+   * nominal 24 hours, 7, 31 or 366 days, which is what **every shipped adapter produces for every
+   * non-minute bar**, so an adapter-fetched monthly or yearly replay carries this on most of its
+   * fills. **Not on all of them**: a nominal end is an upper bound, so whenever the next period's
+   * start reaches it the check still passes -- which is every Monday-to-Monday week, and is why a
+   * clean weekly series counts nothing at all. The figure rises when a candidate start falls
+   * *before* that bound.
+   *
+   * **What non-zero tells a reader**: for those, the fill price is not guaranteed to come from after
+   * the decision. **Any dated order can be one**, and a quote is only the obvious way in -- a
+   * bars-only replay reaches it too. **A reader can discharge it**: with no quotes, one interval per
+   * instrument, and series whose periods do not overlap, the fills were causal whatever this figure
+   * says -- the engine simply could not prove it from the events it was handed. See
+   * `ReplayResult::unchecked_fill_causality_`.
+   */
+  std::size_t unchecked_fill_causality_{0};
+
+  /**
    * Always true, and present so a reader is told rather than left to assume.
    *
    * No fill is capped by what traded: a bar's volume says how much changed hands in total, not how much
@@ -340,6 +400,8 @@ inline Report summarize(
   report.caveats_.slippage_ticks_ = fills.slippage().ticks_;
   report.caveats_.gaps_ = result.gaps_;
   report.caveats_.unfilled_ = result.unfilled_;
+  report.caveats_.quotes_ = result.quotes_;
+  report.caveats_.unchecked_fill_causality_ = result.unchecked_fill_causality_;
 
   // Costs summed exactly, because they are money -- and **per currency**, because a replay whose
   // instruments span markets would otherwise have won added to dollars to make one scalar.

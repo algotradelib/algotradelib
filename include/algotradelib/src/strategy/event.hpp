@@ -133,6 +133,21 @@ struct SessionWindow {
     );
   }
 
+  /**
+   * Returns the instant this session opens on `now`'s local date.
+   *
+   * Here rather than computed by a caller for the reason `local_date` states above: the offset lives
+   * here, and a second type doing this arithmetic is how two components come to disagree about which
+   * day it is. `backtest::Backtester` needs it to answer *when did this bar's period begin*, which
+   * decides whether an order decided part-way through that period may be credited a price from its
+   * start.
+   */
+  std::chrono::system_clock::time_point opens_at(
+    std::chrono::system_clock::time_point now
+  ) const {
+    return local_midnight(now) - utc_offset_ + open_;
+  }
+
 private:
   /**
    * Returns the instant of the market's local midnight preceding `now`, as a UTC-shifted value.

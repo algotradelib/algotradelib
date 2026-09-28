@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <utility>
@@ -54,6 +55,37 @@ struct QueuedOrder {
   OrderRef<BrokerTag> ref_;
   /** The bar it was accepted during. It cannot fill against that bar, which is the lookahead rule. */
   std::uint64_t accepted_on_{0};
+  /**
+   * The instant the strategy decided it, which is the **other** half of the lookahead rule.
+   *
+   * A bar counter alone was enough while only bars could place an order and no two of an
+   * instrument's periods overlapped: an order decided at bar *n*'s period end then waits for bar
+   * *n+1*, which began at or after that instant. A quote breaks it, because it arrives **inside** a
+   * bar's period without opening a new one -- so an order decided at 10:30 was eligible for the
+   * daily bar stamped 15:30 that day, and
+   * `NextBarFillModel` credits a market order with that bar's *open*, which was 09:00. The replay
+   * would then have filled a 10:30 decision at a 09:00 price: not lookahead, but its mirror image,
+   * and just as false.
+   *
+   * **`decision_is_exact_` is the other half, and leaving it out was this branch's last defect.** An
+   * instant is exact when the event states it: a quote's `received_at_`, a close-stamped bar's period
+   * end (which *is* its timestamp), and an open-stamped minute bar's timestamp plus a minute. It is
+   * **nominal** for every other open-stamped bar, because `strategy::bar_period_end` adds 24 hours, 7
+   * days, 31 days or 366 days to a period whose real length is none of those -- and that function's
+   * own comment warns that a caller comparing the result to a precise instant is relying on more than
+   * it can promise. This class became that caller. A nominal instant is an **upper bound** on the
+   * true one, which is exactly enough to keep the rule sound: see `may_fill`.
+   *
+   * **Empty means undated**, which is every order placed by a caller driving this executor directly,
+   * and is treated as eligible -- the rule can only ever defer a fill, never invent one. An
+   * `optional` rather than a zero sentinel because the epoch is a perfectly good instant for a
+   * replay to reach: a quote stamped 1970-01-01 placed an order that then took the *undated* branch
+   * and filled at a price from before it, which is the defect this field exists to prevent, wearing
+   * the field's own sentinel.
+   */
+  std::optional<std::chrono::system_clock::time_point> decided_at_;
+  /** Whether `decided_at_` is the instant itself or an upper bound on it; see above. */
+  bool decision_is_exact_{true};
 };
 
 /**
@@ -107,6 +139,8 @@ public:
     entry.order_ = order;
     entry.ref_.primary_ = std::to_string(++issued_);
     entry.accepted_on_ = bar_;
+    entry.decided_at_ = deciding_at_;
+    entry.decision_is_exact_ = decision_is_exact_;
     last_ref_ = entry.ref_;
     queued_.push_back(std::move(entry));
     return runner::SendOutcome::ACCEPTED;
@@ -190,11 +224,25 @@ public:
   /** Returns the bar being replayed, counting from one. */
   std::uint64_t bar() const noexcept { return bar_; }
 
+  /**
+   * States the instant any order accepted from here on was decided at.
+   *
+   * Set by the engine before every dispatch that can place one, because the executor has no clock
+   * of its own and the context's belongs to the runner. See `QueuedOrder::decided_at_` for what it
+   * is for.
+   */
+  void deciding_at(std::chrono::system_clock::time_point at, bool exact = true) {
+    deciding_at_ = at;
+    decision_is_exact_ = exact;
+  }
+
 private:
   std::vector<QueuedOrder<BrokerTag>> queued_;
   std::optional<OrderRef<BrokerTag>> last_ref_;
   std::uint64_t issued_{0};
   std::uint64_t bar_{0};
+  std::optional<std::chrono::system_clock::time_point> deciding_at_;
+  bool decision_is_exact_{true};
 };
 
 /** One point on the equity curve, recorded per bar. */
@@ -267,6 +315,58 @@ struct ReplayResult {
    * stopped being able to cost a trade while it was still working.
    */
   std::size_t aborted_{0};
+  /**
+   * Quotes replayed, which is the figure that says whether any were **fed and dispatched** at all.
+   *
+   * Separate from `bars_` rather than added to it: a run of one bar and four hundred quotes is not a
+   * run of four hundred and one somethings, and every per-bar statistic the report derives -- the
+   * return series, the drawdown, the turnover -- is about bars. The counter exists because a handler
+   * that is wired and never fed looks exactly like one that is not wired at all, which is the defect
+   * this slice is for. It counts what reached the dispatcher and not what a strategy did with it:
+   * `on_quote` is optional, and a strategy defining none is counted here just the same.
+   *
+   * **Appended**, for the reason stated on `currency_` above: this struct is public and a caller
+   * aggregate-initializing it positionally would have every later field shift underneath them.
+   */
+  std::size_t quotes_{0};
+  /**
+   * How many times an order was allowed to fill against a bar whose period start this engine could
+   * not derive -- so it could **not** check that the decision preceded the period.
+   *
+   * **Eligibility decisions, not fills**: one per queued order per bar it was considered against, and
+   * the fill model may then decline it anyway. The name says `fill` because that is what the check
+   * guards; the unit is stated here because no name carries it.
+   *
+   * **A calendar period boundary this engine cannot establish, on either side of the comparison.**
+   * Two shapes reach it. A close-stamped weekly, monthly or yearly bar does not state where its
+   * period began. And an open-stamped bar of any calendar interval carries a period *end* that is
+   * only an upper bound -- which is what every shipped adapter produces for every non-minute bar, so
+   * **an adapter-fetched monthly or yearly replay will carry this on most of its fills**. Not on all
+   * of them: the nominal end is an upper *bound*, so wherever the next period's start reaches it the
+   * check still passes -- every Monday-to-Monday week does, which is why a clean weekly series counts
+   * nothing. The figure rises when a candidate start falls *before* that bound.
+   *
+   * **A reader can discharge it**: with no quotes, one interval per instrument, and series whose
+   * periods do not overlap, the fills were causal whatever this figure says -- the engine simply
+   * could not prove it from the events it was handed.
+   *
+   * **And one thing it does not cover**, noted in review and older than this branch: a nominal
+   * `period_end_` is also the replay's clock, its equity timestamp, its execution timestamp and the
+   * date a commission schedule is read at. A February open-stamped monthly bar can be priced at its
+   * February open and have its fill dated in March. This flag keeps that nominal value out of the
+   * *causal* comparison and changes none of those other uses; see
+   * `plan/todo/nominal-period-end-dates-a-fill.md`.
+   *
+   * **What non-zero tells a reader:** for those, the engine cannot promise the fill price came from
+   * after the decision. **Any dated order can be one of them**, not only an order a quote placed.
+   * The obvious case is a quote falling part-way through such a bar's period; the less obvious one
+   * needs no quote at all -- a decision made on Tuesday's *daily* bar, against Friday's *weekly* bar
+   * of the same instrument, whose period began on Monday. The bar-counter rule does not catch that,
+   * because those are two different bars, and the period check cannot run on the weekly one.
+   *
+   * **Appended**, for the reason `currency_` above states.
+   */
+  std::size_t unchecked_fill_causality_{0};
 };
 
 /** Everything a replay needs beyond the strategy and the bars. */
@@ -384,6 +484,18 @@ public:
     // Opened before anything fills against this bar, so that an order placed during it carries a
     // later stamp than the ones already resting and cannot fill against the bar it was decided on.
     runner_.executor().open_bar();
+    // And dated, for the half of that rule a counter cannot express -- see `QueuedOrder::decided_at_`.
+    // A bar's decisions are all made at its period end, whichever handler makes them: `on_fill`
+    // during settlement, `on_phase`, `on_bar`, and a handler answering an order update afterwards.
+    //
+    // **Whether that instant is exact depends on the stamp**, and getting this wrong deferred real
+    // fills by a month. A close-stamped bar's period end is its own timestamp, stated by the broker.
+    // An open-stamped one is `bar_period_end`'s arithmetic, which is exact for a minute and
+    // deliberately **nominal** for a day, a week, a month and a year -- and every shipped adapter
+    // stamps every non-minute bar `OPEN`. February's nominal end is five days into March, so an
+    // order decided on February's bar looked as though it had been decided inside March's period and
+    // was deferred to April.
+    runner_.executor().deciding_at(event.period_end_, period_end_is_exact(event));
 
     settle_queued_against(event);
     // **The halt stops this bar too, not merely the next one.** Returning only from settlement left
@@ -438,6 +550,124 @@ public:
   }
 
   /**
+   * Replays one quote, so a strategy that acts between bars can be evaluated against history.
+   *
+   * `on_quote` fired live and in no replay before this existed: `QuoteEvent` appeared nowhere in
+   * `backtest/`, so `PollKind::QUOTES` was a supported live cadence with no counterpart, and a
+   * strategy written on it ran against real money having been evaluated against nothing. That is
+   * `issues/live-parity-audit.md`'s finding 2.
+   *
+   * **Interleaved by the caller, in timestamp order**, exactly as bars across several instruments
+   * already are. `feed(const BarEvent&)` is caller-driven for that reason and a quote series in
+   * `ReplayConfig` would have had to invent an interleaving rule this class deliberately leaves out.
+   *
+   * ## What a quote does, and why this function is so short
+   *
+   * **Almost all of it is `Runner::feed(const strategy::QuoteEvent&)`, which both modes already
+   * share.** That function sets `Context::last_price` from the quote, advances the context clock to
+   * the quote's `received_at_`, dispatches `on_quote` and settles. Live,
+   * `live::SessionSource::poll_quotes` calls exactly that and does nothing else. So parity here is
+   * structural rather than maintained by agreement, and the only question this function answers is
+   * what a *replay* must add around it:
+   *
+   * | | Live | Here |
+   * | --- | --- | --- |
+   * | Updates the price a market order is valued at | yes, in `Runner::feed` | the same call |
+   * | Advances the decision clock to the quote's instant | yes, in `Runner::feed` | the same call |
+   * | Re-derives the market phase at that instant | yes, `PollingLoop` before each due poll | **yes**, here |
+   * | Announces a phase change | yes, once per iteration | **yes**, before `on_quote` |
+   * | Publishes order updates | **when** the working-order poll is due and the broker offers one | **yes**, always |
+   * | Marks the book, records an equity point, fills anything | no ledger exists live | **no** |
+   *
+   * The last three rows are approximations rather than identities, and saying which way each one
+   * errs is more useful than claiming they match:
+   *
+   * - **The announcement is earlier here than live.** A live loop announces after all its polls, so
+   *   `on_phase` sees the quote *and* that iteration's other polls; this announces before `on_quote`,
+   *   which is what `feed(const BarEvent&)` has always done for a bar. Following the bar path keeps
+   *   one replay internally consistent, which matters more to a replay than matching the loop's
+   *   interleaving; the cost is that an order placed from `on_phase` is visible to `on_quote` here
+   *   and would not yet exist live.
+   * - **The update is unconditional here and conditional live**, on the working-order cadence being
+   *   set, the broker publishing the inquiry, and the listing arriving. So a replay announces an
+   *   order a live run might see later or, between two polls, not at all.
+   * - **The last row is where live has nothing to differ with**: an equity curve is a replay's own
+   *   artefact, recorded per bar.
+   *
+   * **Two drafts of this comment were wrong in opposite directions, and both are worth knowing.**
+   * The first claimed a quote left the price and the clock alone, having read
+   * `live::SessionSource::poll_quotes` and not the runner beneath it. The second claimed a quote
+   * should publish no order update, because that one call does not -- true of the call and false of
+   * the live *iteration*, where `WORKING_ORDERS` follows `QUOTES` and can list the order moments
+   * later. Parity is a property of the whole loop, not of the function with the matching name.
+   *
+   * ## The consequence a strategy author has to know
+   *
+   * **An order placed from `on_quote`, if it fills, fills against a later *bar* and not against the
+   * quote.** That is
+   * `NextBarFillModel`, unchanged by this slice, and `ReportCaveats::quotes_` states it on every
+   * report of a run that fed one. A fill model that executes against a quote is a different design
+   * with its own argument, and this deliberately does not smuggle one in.
+   *
+   * A quote fed **before the first bar** is accepted and counted, and it is not a special case: the
+   * clock and the phase both come from the quote itself, so a strategy decides at the quote's
+   * instant under the quote's phase. Refusing it would be a rule the live path does not have, since
+   * a quote poll can and does run before the first bar arrives. What such an order cannot do is
+   * fill, until a bar exists to fill it against.
+   *
+   * **The caller's obligation is timestamp order**, and it is load-bearing rather than tidy. This
+   * clock follows whatever instant it is handed, so a quote stamped before the previous bar's period
+   * end moves the replay backwards, and everything derived from an instant -- the phase, the rate
+   * window, which bar an order may fill against -- follows it there.
+   */
+  void feed(const strategy::QuoteEvent& event, std::optional<bool> trading_day = true) {
+    // The same rule `feed(const BarEvent&)` opens with: a halted replay consumes nothing further,
+    // because a strategy told about anything after the halt decides on a run that has stopped being
+    // able to cost what it asks for.
+    if (result_.halted_) {
+      return;
+    }
+    ++result_.quotes_;
+    // Dated before anything can place an order, so a decision made here is not credited a price from
+    // earlier in the bar it will fill against. See `QueuedOrder::decided_at_`.
+    runner_.executor().deciding_at(event.quote_.received_at_);
+
+    // **The phase is re-derived at the quote's own instant, before the handler runs.** Without this
+    // a quote at 10:30 was shown the phase as it stood at the previous close, and the default
+    // `RiskLimits::permitted_phases_` refuses an opening order in every phase but `OPEN` -- so a
+    // strategy that lives correctly refused in a replay. `PollingLoop` installs the phase before
+    // each due poll, this is the same rule, and a change is announced first for the reason
+    // `feed(const BarEvent&)` announces it first: a handler placing an order from `on_phase` must
+    // decide against the phase this instant established, not the one before it.
+    const bool phase_changed = clock_.advance_to(event.quote_.received_at_, trading_day);
+    runner_.context().set_phase(clock_.phase());
+    if (phase_changed) {
+      // **The price and the clock move first, then the change is announced.** `Runner::feed` sets
+      // both from the quote, but it runs *after* this, so announcing first left `on_phase` deciding
+      // on the previous bar's close and stamping its send at the previous instant -- a market order
+      // sized and guarded at the wrong value, which Codex round 1 found. This is the order
+      // `feed(const BarEvent&)` already uses: mark, price, clock, announce, dispatch.
+      runner_.context().set_last_price(event.quote_.instrument_, event.quote_.last_price_);
+      runner_.context().set_now(event.quote_.received_at_);
+      install_portfolio();
+      drain_reports(runner_.feed(clock_.phase()));
+    }
+
+    // Installed before the dispatch for the reason every other dispatch site here installs: a
+    // handler reads `ctx.portfolio()`, and the engine holds a fresher answer than the last one it
+    // pushed -- an order placed by the *previous* quote has had no settlement pass behind it.
+    install_portfolio();
+    drain_reports(runner_.feed(event));
+    // **After the dispatch, exactly as the bar path does.** An earlier version of this branch left
+    // it out, arguing that live a quote poll publishes no order update -- which is true of that one
+    // call and false of the iteration it sits in: `WORKING_ORDERS` follows `QUOTES` in
+    // `all_poll_kinds`, so an order placed from `on_quote` can be listed moments later and
+    // announced. Codex round 0 found it. Publishing here is the closer parity, and it also announces
+    // an order that would otherwise fill and be gone before any later observation point.
+    publish_order_updates();
+  }
+
+  /**
    * Ends the replay, counting whatever never filled.
    *
    * The portfolio is installed first because `Runner::stop` calls `on_stop` and settles what it
@@ -485,6 +715,128 @@ private:
   }
 
   /**
+   * Returns whether `event`'s period end is the instant itself rather than an upper bound on it.
+   *
+   * A close-stamped bar carries its period end as its timestamp, so the broker stated it. An
+   * open-stamped bar's end is derived by adding the interval's nominal length, which is right for a
+   * minute and an approximation for every calendar interval -- 24 hours is not a trading day, 31 days
+   * is not a month, and 366 is not a year. The approximation always runs **long**, which is what
+   * makes it usable: an upper bound on the decision instant still proves causality whenever a bar's
+   * start is at or after it.
+   */
+  static bool period_end_is_exact(const strategy::BarEvent& event) noexcept {
+    return event.stamp_ == BarStamp::CLOSE || event.interval_ == BarInterval::ONE_MINUTE;
+  }
+
+  /**
+   * Returns when `event`'s period began, where that is answerable **from the event itself**.
+   *
+   * Three cases, in the order they are decided, and the ordering is the correction Codex round 1
+   * forced:
+   *
+   * 1. **An open-stamped bar states it.** `BarStamp::OPEN` means `bar_.timestamp_` *is* the first
+   *    instant of the period, for every interval. Nothing has to be derived.
+   * 2. **An intraday interval has a fixed length**, so a close-stamped one began that long before it
+   *    ended.
+   * 3. **A close-stamped daily bar** began at the session open on its own local date, which is the
+   *    date its period end falls on and where its open price comes from. **That assumes the stamp
+   *    falls on the session's own date**, which is true of a bar stamped at the close and false of
+   *    one stamped at the following local midnight; such a series gets a start a day late.
+   *
+   * **Everything else is unanswerable and says so.** A close-stamped weekly bar ends on Friday and
+   * began on Monday; taking the session open on the *period end's* date would have called Friday
+   * 09:00 its start, which is four days too late -- so a Tuesday quote would have passed the check
+   * and filled at Monday's open, a price from two days before the decision. An earlier version of
+   * this function did exactly that and called it conservative; it was the opposite. The same was
+   * true of an open-stamped daily bar, whose period end is 24 hours after its start.
+   *
+   * What an empty answer means to the caller is in `may_fill`: not "no constraint", and not a bound
+   * to be inferred from somewhere else either, but "this check cannot run -- allow the fill and
+   * record that it was not checked".
+   */
+  std::optional<std::chrono::system_clock::time_point> period_start_of(
+    const strategy::BarEvent& event
+  ) const {
+    if (event.stamp_ == BarStamp::OPEN) {
+      return event.bar_.timestamp_;
+    }
+    if (const auto duration = interval_duration(event.interval_)) {
+      return event.period_end_ - *duration;
+    }
+    if (event.interval_ == BarInterval::ONE_DAY) {
+      return clock_.session().opens_at(event.period_end_);
+    }
+    return std::nullopt;
+  }
+
+  /**
+   * Returns whether `entry` may fill against `event`, and records where the question *could this be
+   * credited a price from before it was decided* could not be answered at all.
+   *
+   * Three answers, and the third one is what four review rounds cost:
+   *
+   * 1. **An undated order is eligible.** That is every order placed by a caller driving
+   *    `QueueingExecutor` directly, and this rule exists to defer fills rather than to invent them.
+   *    **No test can reach this branch through `Backtester`**, because the engine stamps the instant
+   *    before every dispatch that can place -- so a mutation removing it is not caught, and that is
+   *    a property of the branch rather than a weakness in the tests. It is kept because
+   *    `QueuedOrder::decided_at_` is an optional on a public type, and an undated one is a state the
+   *    type admits; nothing outside this class calls this function, so no caller exercises it today.
+   * 2. **Where `period_start_of` answers, the comparison is exact**: the bar's period must have begun
+   *    **at or after** the decision. A period that began before it contains the decision, and its
+   *    open price -- which is what `NextBarFillModel` credits a market order with -- is from before
+   *    the strategy decided anything. This is every bar shape this library produces: intraday,
+   *    open-stamped, and close-stamped daily.
+   * 3. **Where either side of that comparison is a calendar boundary this engine cannot establish,
+   *    it makes no inference at all.** Two ways in, and the second was found last: the bar's start is
+   *    underivable (a close-stamped weekly, monthly or yearly bar), or the decision instant is only
+   *    an upper bound (an open-stamped bar of any calendar interval, which is what every shipped
+   *    adapter produces) and the bar's start falls before it. Either way the fill is allowed, on the
+   *    bar-counter rule that governed every fill before this branch, and **counted** in
+   *    `ReplayResult::unchecked_fill_causality_` so the report can say the check did not happen.
+   *
+   * **Three successive versions of this function tried to infer that period instead, and a reviewer
+   * falsified all three.** The previous bar of the instrument: wrong, because two intervals of one
+   * instrument overlap. The previous bar of the same instrument *and* interval: wrong, because
+   * nothing in `feed`'s contract requires one stamp convention or anchor for a series, so two
+   * same-interval weekly bars can overlap too. Each inference rested on an invariant that is usually
+   * true and is not guaranteed -- and the repository's own rule covers exactly this: *a conservative
+   * refusal beats a narrow test you cannot justify.* There is no refusal available here either,
+   * because deferring an unprovable fill would stop a close-stamped weekly replay filling **anything**
+   * -- every order in one is decided at a boundary this engine equally cannot place. That is a
+   * statement about the shape rather than about every interval in it: a sound lower bound of *period
+   * end minus seven days* does exist for a week and would let a full-week series fill on time, but it
+   * defers a week after every holiday-shortened one, and the 31-day and 366-day bounds defer nearly
+   * every monthly and yearly order. So the honest third answer is to check nothing, claim nothing,
+   * and report the gap.
+   */
+  bool may_fill(
+    const QueuedOrder<Tag>& entry,
+    const strategy::BarEvent& event
+  ) {
+    if (!entry.decided_at_) {
+      return true;
+    }
+    if (const auto start = period_start_of(event)) {
+      if (!(*start < *entry.decided_at_)) {
+        // Proven: the period began at or after the decision. A *nominal* decision instant is an
+        // upper bound on the true one, so this proves it for those too.
+        return true;
+      }
+      if (entry.decision_is_exact_) {
+        return false;
+      }
+      // The start is known and the decision is only bounded, so this is the unprovable case again
+      // from the other side: the order may have been decided before this period after all. Allowed
+      // and counted, on the same terms as an underivable start.
+      ++result_.unchecked_fill_causality_;
+      return true;
+    }
+    ++result_.unchecked_fill_causality_;
+    return true;
+  }
+
+  /**
    * Fills orders resting from an earlier bar against `event`, and tells the strategy.
    *
    * **Walked by reference rather than by iterator or index.** Applying a fill calls `on_fill`, which
@@ -505,6 +857,15 @@ private:
         continue;
       }
       if (entry.accepted_on_ >= runner_.executor().bar()) {
+        continue;
+      }
+      // **And, where the event says enough to check it, it cannot fill against a bar whose period
+      // had already begun when it was decided.** The counter above is enough while only bars place
+      // orders and no two periods overlap; a quote arrives inside a period without opening one, so
+      // without this an order decided at 10:30 fills at that day's 09:00 open -- a price from before
+      // the decision. Where the event does *not* say enough, `may_fill` allows the fill and records
+      // that nothing was checked. See it for all three answers.
+      if (!may_fill(entry, event)) {
         continue;
       }
       eligible.push_back(entry.ref_);

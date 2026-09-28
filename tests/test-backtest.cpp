@@ -874,6 +874,172 @@ struct RecordsPhases {
   template <class Ctx> void on_phase(Ctx&, strategy::MarketPhase phase) { seen_.push_back(phase); }
 };
 
+/** Counts every handler it can define, which is how the audit measured the parity gap. */
+struct CountsEverything {
+  std::size_t bars_{0};
+  std::size_t quotes_{0};
+  std::size_t fills_{0};
+  std::size_t updates_{0};
+
+  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) { ++bars_; }
+  template <class Ctx> void on_quote(Ctx&, const strategy::QuoteEvent&) { ++quotes_; }
+  template <class Ctx> void on_fill(Ctx&, const strategy::Fill&) { ++fills_; }
+  template <class Ctx> void on_order_update(Ctx&, const OrderSnapshot&) { ++updates_; }
+};
+
+/** Buys once from `on_quote`, recording what the context said while it decided. */
+struct BuysOnQuote {
+  bool submitted_{false};
+  std::vector<Decimal64> fill_prices_;
+  std::optional<Decimal64> price_when_submitted_;
+  Clock::time_point now_when_submitted_{};
+  std::size_t positions_when_submitted_{0};
+
+  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
+
+  template <class Ctx>
+  void on_quote(Ctx& ctx, const strategy::QuoteEvent& quote) {
+    if (submitted_) {
+      return;
+    }
+    submitted_ = true;
+    price_when_submitted_ = ctx.last_price(quote.quote_.instrument_);
+    now_when_submitted_ = ctx.now();
+    positions_when_submitted_ = ctx.portfolio().positions_.size();
+    ctx.submit(
+      strategy::OrderIntent::market(
+        quote.quote_.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
+      ).with_tag("buys-on-quote")
+    );
+  }
+
+  template <class Ctx>
+  void on_fill(Ctx&, const strategy::Fill& fill) {
+    fill_prices_.push_back(fill.price_);
+  }
+};
+
+/** Buys once from `on_quote` and counts the order updates it is told about. */
+struct QuoteBuyerCountingUpdates {
+  bool submitted_{false};
+  std::size_t updates_{0};
+
+  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
+
+  template <class Ctx>
+  void on_quote(Ctx& ctx, const strategy::QuoteEvent& quote) {
+    if (submitted_) {
+      return;
+    }
+    submitted_ = true;
+    const auto reference = ctx.instrument(quote.quote_.instrument_);
+    if (!reference) {
+      return;
+    }
+    // **A limit the bars never reach**, so the order is still resting when the next bar publishes.
+    // A market order placed here would fill against that same bar and be gone before the
+    // observation point -- which is not this test's subject, and is the limitation slice 28 already
+    // documented: an order placed and completed between two listings appears in neither.
+    const auto limit =
+      strategy::Price::checked(Decimal64::parse("10000"), reference->price_rule_);
+    if (!limit) {
+      return;
+    }
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        quote.quote_.instrument_,
+        OrderSide::BUY,
+        strategy::SizeSpec::quantity(Decimal64::parse("10")),
+        *limit
+      )
+    );
+  }
+
+  template <class Ctx> void on_order_update(Ctx&, const OrderSnapshot&) { ++updates_; }
+};
+
+/** Places a resting order on its first quote, and records what it is shown working on every quote. */
+struct QuoteWatchesPortfolio {
+  bool submitted_{false};
+  std::vector<std::size_t> working_seen_;
+
+  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
+
+  template <class Ctx>
+  void on_quote(Ctx& ctx, const strategy::QuoteEvent& quote) {
+    working_seen_.push_back(ctx.portfolio().working_.size());
+    if (submitted_) {
+      return;
+    }
+    const auto reference = ctx.instrument(quote.quote_.instrument_);
+    if (!reference) {
+      return;
+    }
+    const auto limit =
+      strategy::Price::checked(Decimal64::parse("10000"), reference->price_rule_);
+    if (!limit) {
+      return;
+    }
+    submitted_ = true;
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        quote.quote_.instrument_,
+        OrderSide::BUY,
+        strategy::SizeSpec::quantity(Decimal64::parse("10")),
+        *limit
+      )
+    );
+  }
+};
+
+/** Records the price and the instant it was shown when a phase change was announced. */
+struct WatchesPhase {
+  std::vector<std::optional<Decimal64>> price_at_phase_;
+  std::vector<strategy::MarketPhase> phases_;
+
+  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx> void on_quote(Ctx&, const strategy::QuoteEvent&) {}
+
+  template <class Ctx>
+  void on_phase(Ctx& ctx, strategy::MarketPhase phase) {
+    phases_.push_back(phase);
+    price_at_phase_.push_back(ctx.last_price(samsung()));
+  }
+};
+
+/** Buys the instrument it is shown, once, on its first bar, and records what filled. */
+struct BuysOnFirstBar {
+  bool submitted_{false};
+  std::vector<Decimal64> fill_prices_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (submitted_) {
+      return;
+    }
+    submitted_ = true;
+    ctx.submit(
+      strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
+      )
+    );
+  }
+
+  template <class Ctx>
+  void on_fill(Ctx&, const strategy::Fill& fill) { fill_prices_.push_back(fill.price_); }
+};
+
+/** A quote for the replayed instrument at `price`. */
+strategy::QuoteEvent quote_at(Clock::time_point at, const char* price) {
+  strategy::QuoteEvent event;
+  event.quote_.instrument_ = samsung();
+  event.quote_.last_price_ = Decimal64::parse(price);
+  event.quote_.currency_ = Currency{"KRW"};
+  event.quote_.received_at_ = at;
+  event.quote_.exchange_time_ = at;
+  return event;
+}
+
 /** A bar of the given interval at `at`, with a distinct open and close. */
 strategy::BarEvent moving_bar(
   Clock::time_point at,
@@ -892,6 +1058,375 @@ strategy::BarEvent moving_bar(
 }
 
 } // namespace
+
+TEST_CASE("on_quote fires in a replay, which it never did before") {
+  // `issues/live-parity-audit.md` finding 2, measured by its own probe: the same strategy driven
+  // through both paths saw one quote live and none in a replay, because `QuoteEvent` appeared
+  // nowhere in `backtest/`. A supported live cadence with no counterpart means a strategy written
+  // on this handler runs against real money having been evaluated against nothing.
+  backtest::Backtester<CountsEverything> engine(CountsEverything{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(quote_at(utc(2026, 3, 10, 7, 0), "70500"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
+  engine.finish();
+
+  CHECK(engine.strategy().bars_ == 2);
+  CHECK(engine.strategy().quotes_ == 1);
+  // Counted apart from the bars, because a per-bar statistic is about bars.
+  CHECK(engine.result().bars_ == 2);
+  CHECK(engine.result().quotes_ == 1);
+}
+
+TEST_CASE("a replayed quote sets the price and the clock, exactly as a live one does") {
+  // **Parity here is structural, and this test exists because a first draft got it backwards.**
+  // Reading `live::SessionSource::poll_quotes` alone says a quote only dispatches; the work is one
+  // level down, in `Runner::feed(const QuoteEvent&)`, which sets `last_price` from the quote and
+  // advances the decision clock to its `received_at_` -- and **both modes call that same
+  // function**. So a replay that "helpfully" left the price and the clock alone would have been the
+  // one diverging. The engine adds two things around it and no more: it refuses after a halt, and
+  // it counts.
+  backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
+  const auto first_bar = utc(2026, 3, 10, 6, 30);
+  const auto quote_time = utc(2026, 3, 10, 7, 0);
+  engine.feed(moving_bar(first_bar, BarInterval::ONE_DAY, "69000", "70000"));
+  const auto equity_after_bar = engine.result().equity_.size();
+  const auto equity_before_quote = engine.ledger().equity_in(Currency{"KRW"});
+  engine.feed(quote_at(quote_time, "70500"));
+
+  // The quote's price, not the bar's close: a market order sized from `on_quote` is valued at what
+  // the strategy was just shown.
+  CHECK(
+    engine.strategy().price_when_submitted_ == std::optional<Decimal64>(Decimal64::parse("70500"))
+  );
+  // And the quote's instant, which is what `RiskGuard`'s rate window measures from.
+  CHECK(engine.strategy().now_when_submitted_ == quote_time);
+  // What the replay does **not** do: no mark, so no equity point. That half is the engine's own,
+  // because live has no ledger to disagree with -- and it is asserted on the **ledger** as well as
+  // on the curve, because an empty portfolio makes a missing equity point prove very little. A mark
+  // that moved the book without recording a point would pass the second check and fail the first.
+  CHECK(engine.ledger().equity_in(Currency{"KRW"}) == equity_before_quote);
+  CHECK(engine.result().equity_.size() == equity_after_bar);
+}
+
+TEST_CASE("an order placed from on_quote fills against the next bar, not the quote") {
+  // The consequence a strategy author has to know, and the reason `ReportCaveats::quotes_` exists.
+  // `NextBarFillModel` is unchanged by this slice: a quote neither fills nor marks, so the order
+  // rests until a bar arrives and executes at that bar's price -- a whole bar's movement away from
+  // the quote the strategy reacted to. Live, the same order reaches the broker at once.
+  backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(quote_at(utc(2026, 3, 10, 7, 0), "70500"));
+  // Nothing has filled yet: a quote is not a bar.
+  CHECK(engine.result().executions_.empty());
+
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
+  engine.finish();
+
+  REQUIRE(engine.result().executions_.size() == 1);
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  // The next bar's open, which is what the fill model credits a market order with -- and 9,500 away
+  // from the quote that produced the order.
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("80000"));
+}
+
+TEST_CASE("the report states how many quotes a replay saw, and says so only when it saw one") {
+  // Absence versus zero, on a field a reader uses to decide whether the next-bar caveat applied to
+  // their run. A bars-only replay is every replay written before this slice and must not carry a
+  // caveat about a mechanism it never used.
+  SECTION("a replay with quotes") {
+    backtest::Backtester<CountsEverything> engine(CountsEverything{}, replay_config());
+    engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+    engine.feed(quote_at(utc(2026, 3, 10, 7, 0), "70500"));
+    engine.feed(quote_at(utc(2026, 3, 10, 7, 30), "70600"));
+    engine.finish();
+
+    const auto report = backtest::summarize(engine.result(), engine.fills());
+    CHECK(report.caveats_.quotes_ == 2);
+  }
+
+  SECTION("a replay of bars alone") {
+    backtest::Backtester<CountsEverything> engine(CountsEverything{}, replay_config());
+    engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+    engine.finish();
+
+    const auto report = backtest::summarize(engine.result(), engine.fills());
+    CHECK(report.caveats_.quotes_ == 0);
+  }
+}
+
+TEST_CASE("a quote fed before the first bar is accepted, counted, and not a special case") {
+  // Stated rather than forbidden: live, a quote poll can and does run before the first bar arrives,
+  // so refusing here would be a rule the live path does not have. And nothing about it is unset --
+  // the clock and the phase both come from the quote itself, which is the whole of why it needs no
+  // special handling. (An earlier version of this test fed the bar *before* the quote it was
+  // supposed to precede, and asserted a clock claim that was never true.)
+  backtest::Backtester<CountsEverything> engine(CountsEverything{}, replay_config());
+  engine.feed(quote_at(utc(2026, 3, 10, 1, 0), "70500"));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.finish();
+
+  CHECK(engine.strategy().quotes_ == 1);
+  CHECK(engine.result().quotes_ == 1);
+  CHECK(engine.result().bars_ == 1);
+}
+
+TEST_CASE("a phase announced by a quote is announced after that quote's price is installed") {
+  // `Runner::feed(QuoteEvent)` installs the price, and it runs *after* the announcement -- so
+  // announcing first left `on_phase` deciding on the previous bar's close, which for a market order
+  // is the value it is sized and guarded at. The bar path has always installed its close before
+  // announcing; this is the same order.
+  backtest::Backtester<WatchesPhase> engine(WatchesPhase{}, replay_config());
+  // 06:30 UTC is 15:30 KST: the close, so the phase after this bar is POST_CLOSE.
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  // 01:00 UTC next day is 10:00 KST, inside the session: a transition to OPEN.
+  engine.feed(quote_at(utc(2026, 3, 11, 1, 0), "70500"));
+
+  REQUIRE(engine.strategy().phases_.size() == 2);
+  CHECK(engine.strategy().phases_[1] == strategy::MarketPhase::OPEN);
+  // The quote's price, not the previous bar's close.
+  CHECK(engine.strategy().price_at_phase_[1] == std::optional<Decimal64>(Decimal64::parse("70500")));
+}
+
+TEST_CASE("a weekly bar's period start is not derivable, and the engine says so instead of guessing") {
+  // **The one shape this engine cannot check, and the third answer it took four review rounds to
+  // arrive at.** A close-stamped weekly bar ends on a Friday and began on a Monday, and nothing in
+  // the event says when. Three versions of this code inferred it from a previous bar -- of the
+  // instrument, then of the instrument and interval -- and a reviewer falsified each in turn, because
+  // `feed`'s contract requires timestamp order and nothing about stamps, anchors or overlap. So the
+  // fill is allowed on the rule that governed every fill before this branch, and **counted**: the
+  // report says the check did not happen rather than claiming one that did not.
+  backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 6, 6, 30), BarInterval::ONE_WEEK, "60000", "61000"));
+  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_WEEK, "69000", "70000"));
+  // The Tuesday inside the following week.
+  engine.feed(quote_at(utc(2026, 3, 17, 1, 0), "70500"));
+  engine.feed(moving_bar(utc(2026, 3, 20, 6, 30), BarInterval::ONE_WEEK, "75000", "76000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  // That week's own bar filled it, at that week's open, which may be a price from before the quote.
+  // Unchecked, not endorsed -- and the figure below is the whole of what the engine will say.
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("75000"));
+  CHECK(engine.result().unchecked_fill_causality_ > 0);
+
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  CHECK(report.caveats_.unchecked_fill_causality_ == engine.result().unchecked_fill_causality_);
+}
+
+TEST_CASE("a daily replay checks every fill, and says so with a zero") {
+  // The other half of that figure, and the reason it is worth reading: every bar shape this library
+  // produces -- intraday, open-stamped, and close-stamped daily -- states or derives its period
+  // start, so the causal comparison is exact and this stays at zero. Absence versus zero again: a
+  // reader seeing zero is being told the check ran on everything, not that nothing was checked.
+  backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(quote_at(utc(2026, 3, 11, 1, 0), "70500"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "75000", "76000"));
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  // Deferred past the session it fell inside, and filled at the next one's open.
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("80000"));
+  CHECK(engine.result().unchecked_fill_causality_ == 0);
+}
+
+TEST_CASE("an order decided at the epoch is dated, not undated") {
+  // The sentinel that was also a value. A replay's instants come from its data, and 1970 is a
+  // perfectly reachable one -- so an order decided then took the *undated* branch, which is the
+  // branch that skips the causal check entirely rather than recording that it was skipped.
+  backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
+  strategy::QuoteEvent at_epoch;
+  at_epoch.quote_.instrument_ = samsung();
+  at_epoch.quote_.last_price_ = Decimal64::parse("70000");
+  at_epoch.quote_.currency_ = Currency{"KRW"};
+  at_epoch.quote_.received_at_ = Clock::time_point{};
+  engine.feed(at_epoch);
+  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_WEEK, "60000", "61000"));
+
+  // Dated: the weekly bar cannot check it, so the engine records that it could not -- which an
+  // undated order would not have done.
+  CHECK(engine.result().unchecked_fill_causality_ > 0);
+}
+
+/** An open-stamped bar of `interval` at `at`, which is how every shipped adapter stamps one. */
+strategy::BarEvent open_stamped(
+  Clock::time_point at,
+  BarInterval interval,
+  const char* open,
+  const char* close
+) {
+  Bar bar;
+  bar.timestamp_ = at;
+  bar.open_ = Decimal64::parse(open);
+  bar.high_ = Decimal64::parse(close);
+  bar.low_ = Decimal64::parse(open);
+  bar.close_ = Decimal64::parse(close);
+  bar.volume_ = Decimal64::parse("1000");
+  return strategy::make_bar_event(samsung(), interval, BarStamp::OPEN, bar);
+}
+
+TEST_CASE("a nominal period end does not defer a fill by a whole month") {
+  // **The defect a senior review found after eight rounds of the other one.** The causal rule
+  // compares two instants and this branch had checked only one of them. `bar_period_end` adds a
+  // nominal 31 days to an open-stamped monthly bar, and every shipped adapter stamps every
+  // non-minute bar `OPEN` -- so February's period end lands on 5 March, an order decided on
+  // February's bar looked as though it had been decided inside March's period, and it was deferred
+  // to April. Bars only, no quote, in the shape the library itself fetches.
+  backtest::Backtester<BuysOnFirstBar> engine(BuysOnFirstBar{}, replay_config());
+  engine.feed(open_stamped(utc(2026, 2, 2, 0, 0), BarInterval::ONE_MONTH, "60000", "61000"));
+  engine.feed(open_stamped(utc(2026, 3, 2, 0, 0), BarInterval::ONE_MONTH, "70000", "71000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  // March's open, which is the month after the decision -- not April's.
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("70000"));
+  // And the engine says it could not prove that, rather than claiming it checked.
+  CHECK(engine.result().unchecked_fill_causality_ > 0);
+}
+
+TEST_CASE("an open-stamped week whose successor starts exactly a week later is checked") {
+  // The other side of the same figure. Seven days after a Monday-stamped weekly bar is the next
+  // Monday, so the nominal end and the next period's start coincide: the comparison proves
+  // causality and nothing is counted. A shortened week would not, and would be counted -- which is
+  // the honest difference between "checked" and "assumed".
+  backtest::Backtester<BuysOnFirstBar> engine(BuysOnFirstBar{}, replay_config());
+  engine.feed(open_stamped(utc(2026, 3, 2, 0, 0), BarInterval::ONE_WEEK, "60000", "61000"));
+  engine.feed(open_stamped(utc(2026, 3, 9, 0, 0), BarInterval::ONE_WEEK, "70000", "71000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("70000"));
+  CHECK(engine.result().unchecked_fill_causality_ == 0);
+}
+
+TEST_CASE("an open-stamped bar states its own period start") {
+  // The case that needs no derivation at all and that the first version of this rule got wrong:
+  // `BarStamp::OPEN` means the timestamp *is* the first instant of the period, while the period end
+  // is 24 hours later -- so deriving the start from the period end's date put it a day late, and a
+  // quote inside the day passed a check it should have failed.
+  backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
+  Bar first;
+  first.timestamp_ = utc(2026, 3, 10, 0, 0);
+  first.open_ = Decimal64::parse("69000");
+  first.high_ = Decimal64::parse("70000");
+  first.low_ = Decimal64::parse("69000");
+  first.close_ = Decimal64::parse("70000");
+  first.volume_ = Decimal64::parse("1000");
+  engine.feed(strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::OPEN, first));
+
+  // 01:00 UTC on the 11th is 10:00 KST, an hour into the period the next open-stamped bar covers.
+  engine.feed(quote_at(utc(2026, 3, 11, 1, 0), "70500"));
+
+  Bar second;
+  second.timestamp_ = utc(2026, 3, 11, 0, 0);
+  second.open_ = Decimal64::parse("75000");
+  second.high_ = Decimal64::parse("76000");
+  second.low_ = Decimal64::parse("75000");
+  second.close_ = Decimal64::parse("76000");
+  second.volume_ = Decimal64::parse("1000");
+  engine.feed(strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::OPEN, second));
+
+  // Its period began at 09:00 KST, an hour before the decision, so it cannot fill the order.
+  CHECK(engine.result().executions_.empty());
+}
+
+TEST_CASE("an order placed from on_quote is announced in that same call") {
+  // **Parity is a property of the loop, not of the function with the matching name.** A quote poll
+  // publishes no order update, which is what an earlier version of this branch reasoned from -- but
+  // `WORKING_ORDERS` follows `QUOTES` in `all_poll_kinds`, so live the order can be listed and
+  // announced moments after the quote that placed it. Publishing here is the closer parity, and it
+  // also announces an order that would otherwise fill and be gone before any later observation
+  // point.
+  backtest::Backtester<QuoteBuyerCountingUpdates> engine(
+    QuoteBuyerCountingUpdates{}, replay_config()
+  );
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(quote_at(utc(2026, 3, 10, 7, 0), "70500"));
+
+  // Announced by the quote that placed it, before any bar and before `finish` -- both of which
+  // would also announce it, which is why this is asserted here and not at the end of the run.
+  CHECK(engine.strategy().updates_ == 1);
+}
+
+TEST_CASE("an order decided part-way through a bar's period does not fill against that bar") {
+  // **The mirror image of lookahead, and just as false.** `NextBarFillModel` prices a market order
+  // at a bar's open. A quote arrives *inside* a period without opening a new one, so the bar-counter
+  // rule alone made an order decided at 10:00 eligible for that day's bar -- whose open was 09:00.
+  // The replay would have credited a price from an hour before the decision.
+  backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
+  // Bars stamped at the KRX close, 15:30 KST.
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  // 01:00 UTC on the 11th is 10:00 KST -- an hour into the session the next bar covers.
+  engine.feed(quote_at(utc(2026, 3, 11, 1, 0), "70500"));
+
+  // That session's own bar cannot fill it: its period began at 09:00, before the decision.
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "75000", "76000"));
+  CHECK(engine.result().executions_.empty());
+
+  // The session after it can, and does, at its open.
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("80000"));
+}
+
+TEST_CASE("a quote derives the phase at its own instant, which the default guard then reads") {
+  // Live, `PollingLoop` re-derives the phase before each due poll, including the quote poll. A
+  // replay that moved the phase only on a bar showed `on_quote` the phase as it stood at the
+  // previous close -- and `RiskLimits::permitted_phases_` defaults to `{OPEN}`, so a strategy that
+  // trades correctly live was refused in a replay. These two sections are the same quote at two
+  // times of day, under the **default** limits rather than the permissive ones the other cases use.
+  SECTION("inside the session, the order goes out") {
+    backtest::Backtester<BuysOnQuote> engine(
+      BuysOnQuote{}, replay_config_with_default_phases()
+    );
+    engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+    // 01:00 UTC is 10:00 KST, an hour into the session.
+    engine.feed(quote_at(utc(2026, 3, 11, 1, 0), "70500"));
+
+    CHECK(engine.result().refused_.empty());
+    CHECK(engine.result().rejected_.empty());
+    // One order outstanding, which is what "it went out" means to a replay.
+    engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
+    engine.finish();
+    CHECK(engine.result().executions_.size() == 1);
+  }
+
+  SECTION("after the close, the operator's own limit refuses it") {
+    backtest::Backtester<BuysOnQuote> engine(
+      BuysOnQuote{}, replay_config_with_default_phases()
+    );
+    engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+    // 07:00 UTC is 16:00 KST, half an hour after the close.
+    engine.feed(quote_at(utc(2026, 3, 10, 7, 0), "70500"));
+    engine.finish();
+
+    REQUIRE(engine.result().refused_.size() == 1);
+    CHECK(engine.result().refused_[0].reason_ == strategy::GuardReason::PHASE_NOT_PERMITTED);
+    CHECK(engine.result().executions_.empty());
+  }
+}
+
+TEST_CASE("a quote sees what the quote before it did, not the last bar's picture") {
+  // Every dispatch site in this engine installs the portfolio first, because the engine holds a
+  // fresher answer than the one it last pushed. **Between two quotes is where that matters and
+  // nowhere else is:** after a bar, the bar's own install and its order-update pass have already
+  // refreshed the context, so a quote arriving next would see a current picture either way. An order
+  // placed *from a quote* has no such pass behind it -- the next quote's install is the only thing
+  // that puts it in front of the strategy.
+  backtest::Backtester<QuoteWatchesPortfolio> engine(QuoteWatchesPortfolio{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(quote_at(utc(2026, 3, 10, 7, 0), "70500"));
+  engine.feed(quote_at(utc(2026, 3, 10, 7, 30), "70600"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().working_seen_.size() == 2);
+  // Nothing working when the first quote arrived, and the order it placed working at the second.
+  CHECK(engine.strategy().working_seen_[0] == 0);
+  CHECK(engine.strategy().working_seen_[1] == 1);
+}
 
 TEST_CASE("the report says it cannot know which book the bars came from") {
   // A KRX-listed equity trades on two venues and KIS can report either or the consolidated tape over
@@ -2211,6 +2746,52 @@ TEST_CASE("the exposure ceiling counts a resting buy") {
   REQUIRE(refusals_for(engine.result(), strategy::GuardReason::GROSS_EXPOSURE_EXCEEDED) > 0);
 }
 
+/** Buys hynix from samsung's bar, so the decision is made inside another instrument's period. */
+struct BuysTheOtherName {
+  bool submitted_{false};
+  std::vector<Decimal64> fill_prices_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (submitted_ || !(bar.instrument_ == samsung())) {
+      return;
+    }
+    submitted_ = true;
+    ctx.submit(
+      strategy::OrderIntent::market(
+        hynix(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
+      )
+    );
+  }
+
+  template <class Ctx>
+  void on_fill(Ctx&, const strategy::Fill& fill) { fill_prices_.push_back(fill.price_); }
+};
+
+TEST_CASE("an order for another instrument waits for a bar that began after it was decided") {
+  // **The one existing behaviour the causal fill rule changes, and it changes it for the better.**
+  // A strategy deciding on samsung's 15:30 close and ordering hynix used to fill against hynix's
+  // *same-day* bar -- whose open was 09:00, six and a half hours before the decision. The bar
+  // counter could not see it, because the two bars are different bars of the same replay. Only a
+  // single well-formed series was ever safe.
+  auto config = replay_config();
+  config.instruments_ = {samsung_reference(), hynix_reference()};
+
+  backtest::Backtester<BuysTheOtherName> engine(BuysTheOtherName{}, std::move(config));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(bar_for(hynix(), utc(2026, 3, 10, 6, 31), "50000"));
+  // Same day, and its period began at 09:00: it cannot fill an order decided at 15:30.
+  CHECK(engine.result().executions_.empty());
+
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "71000"));
+  engine.feed(bar_for(hynix(), utc(2026, 3, 11, 6, 31), "60000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  // The next day's hynix bar, at its open.
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("60000"));
+}
+
 TEST_CASE("buying power is spent by an order that is still resting") {
   // **Rows alone do not close this one.** `enforce_buying_power_` reads the scalar, and
   // `ReplayLedger::snapshot` builds it from ledger cash that has not paid for anything outstanding.
@@ -3011,6 +3592,7 @@ struct PlacesTwoEachBar {
   std::size_t fills_{0};
   std::size_t bars_seen_{0};
   std::size_t phases_seen_{0};
+  std::size_t quotes_seen_{0};
 
   template <class Ctx>
   void on_phase(Ctx&, strategy::MarketPhase) { ++phases_seen_; }
@@ -3029,6 +3611,10 @@ struct PlacesTwoEachBar {
 
   template <class Ctx>
   void on_fill(Ctx&, const strategy::Fill&) { ++fills_; }
+
+  /** Counts quotes, so a halt can be shown to suppress the handler and not merely the counter. */
+  template <class Ctx>
+  void on_quote(Ctx&, const strategy::QuoteEvent&) { ++quotes_seen_; }
 
   template <class Ctx>
   void on_stop(Ctx& ctx) {
@@ -3097,6 +3683,36 @@ TEST_CASE("a date the schedule does not cover halts the replay rather than dropp
   REQUIRE(report.halted_);
   CHECK(report.aborted_ == 1);
   CHECK(report.executions_ == 2);
+}
+
+TEST_CASE("a halted replay consumes no quote either") {
+  // The same rule `feed(const BarEvent&)` opens with, and it has to hold for every way into the
+  // engine: a strategy told about anything after the halt decides on a run that has stopped being
+  // able to cost what it asks for, and `finish` will not stop it either.
+  auto policy = backtest::CommissionPolicy::scheduled(
+    operator_tariff({venue_rate(Venue::KRX, "0.002", "0", std::nullopt, Date{2026, 3, 11})}),
+    *VenueKey::normalized(Venue::KRX), Country::KR
+  );
+  REQUIRE(policy);
+
+  // **A strategy with an `on_quote` to suppress**, because a strategy without one proves nothing
+  // about whether the handler ran.
+  backtest::Backtester<PlacesTwoEachBar> engine(
+    PlacesTwoEachBar{}, replay_config(), backtest::NextBarFillModel(std::move(policy.value()))
+  );
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  REQUIRE(engine.result().halted_);
+
+  const auto quotes_before = engine.result().quotes_;
+  const auto handled_before = engine.strategy().quotes_seen_;
+  engine.feed(quote_at(utc(2026, 3, 12, 7, 0), "70500"));
+
+  // Not counted, and the handler did not run: the quote was refused entry, not merely ignored
+  // downstream of something.
+  CHECK(engine.result().quotes_ == quotes_before);
+  CHECK(engine.strategy().quotes_seen_ == handled_before);
 }
 
 TEST_CASE("the refusal bar itself runs nothing after the refusal") {
