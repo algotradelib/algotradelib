@@ -219,6 +219,38 @@ evidence. The alternative is not "clamp correctly", it is "clamp to a number fro
 and that failure is an order resting at a price nobody chose which may never fill. One line of policy
 overrides it either way.
 
+## What the report says about orders that did not go out
+
+Until slice 31 it said nothing. `Runner::feed` returns a report describing what became of every
+instruction — fourteen vectors of it — and `live::SessionSource` discards that report on every poll,
+so **a run in which the broker refused every order and one in which it accepted every order produced
+the same `LoopReport`**: same iterations, same poll counts, no failures. The refusals were in the
+order journal, which is where a durable record belongs and not where a person reading the end of a
+run will look.
+
+`LoopReport` now carries ten figures and one record, all describing **the polling loop** — the stop
+handler and the closing pass keep their own `closing_*` family, so a refused flatten is reported once
+rather than twice.
+
+| Figure | What happened |
+| --- | --- |
+| `orders_unbuildable_` | reconciliation could not build the instruction: no reference data, no price, an unknown grid — or a quantity that rounded to zero, which is a deliberate drop rather than a fault |
+| `orders_reconcile_withheld_` | the indeterminacy ledger is holding that instrument until a listing settles an unknown outcome |
+| `orders_guard_refused_` | a `RiskLimits` check refused it; nothing was sent |
+| `orders_binding_refused_` | the binding would not send it; no request went out |
+| `orders_broker_refused_` | the broker was asked and said no; a request was spent |
+| `orders_indeterminate_` | the request failed in transit, so the order may or may not exist |
+| `cancels_rejected_` | a withdrawal refused outright — **by the broker or by the binding**; `RejectedCancel::by_broker_` distinguishes them and this figure does not |
+| `cancels_refused_` | a hold refused the withdrawal before anything was sent |
+| `cancels_unresolved_` | the reference named an order the snapshot does not hold |
+| `cancels_indeterminate_` | the withdrawal failed in transit; **it may still have withdrawn the order** |
+
+**And `last_broker_refusal_`, which is the one worth reading first.** A count tells you orders are
+being refused; this tells you which instrument, under which of your own tags, with the broker's own
+code and message. One record, overwritten — a run refused ten thousand times keeps the last — and
+empty when *this* run's polling saw none, even though the runner may still hold one from an earlier
+run. It is empty on a dry runner and in a replay, which have no broker to be refused by.
+
 **An unknown buying power blocks buying.** Only if you asked for the check: set
 `RiskLimits::enforce_buying_power_` and the loop refuses to send while it has no answer from the
 broker about what may be spent, reporting `buying_power_unread`. Set a cadence with
