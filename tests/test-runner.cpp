@@ -1362,6 +1362,21 @@ TEST_CASE("stating a maximum age withdraws an earlier acceptance of any age, in 
   }
 }
 
+TEST_CASE("a runner answers for its own band policy, whichever way it was stated") {
+  // Read by `PollingLoop`'s missing-policy note instead of a flag the loop kept, because a loop
+  // borrows a mutable runner and its memory of its own wrappers can disagree with the runner in
+  // both directions. Asserted here directly: accepting any age *is* stating a policy, and a loop
+  // cannot currently reach a state that proves it -- an unbounded policy withholds no band for age.
+  runner::DryRunner<LimitAt80k> dry;
+  CHECK_FALSE(dry.price_limits_age_policy_stated());
+  dry.set_maximum_price_limits_age(std::chrono::hours(12));
+  CHECK(dry.price_limits_age_policy_stated());
+  dry.set_maximum_price_limits_age(std::nullopt);
+  CHECK_FALSE(dry.price_limits_age_policy_stated());
+  dry.allow_unbounded_price_limits_age();
+  CHECK(dry.price_limits_age_policy_stated());
+}
+
 TEST_CASE("an exchange stamp may age a band and never freshen it") {
   // Two clocks disagreeing is not evidence of freshness. A stamp *later* than the moment this
   // process received the band would otherwise date it into the future and outlive any maximum --

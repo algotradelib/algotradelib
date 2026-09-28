@@ -674,6 +674,14 @@ public:
    * built read as "no policy stated", and a withdrawal made directly on the runner after the loop's
    * `allow_unbounded_price_limits_age` suppressed the note that withdrawal is supposed to produce.
    * There is one policy; there should be one place that answers for it.
+   *
+   * **Both halves are load-bearing as an answer, and only one of them is reachable through a loop
+   * today.** A run that accepts any age withholds no band for age, so the note that reads this
+   * cannot currently fire while `allow_unbounded_price_limits_age` is in force -- the one state that
+   * would combine them, a band dated after the instant it is aged at, needs a caller moving the
+   * reported clock backwards, which `PollingLoop` does not do. The term stays because this answers
+   * "has a policy been stated", not "is the note due", and an accessor that answered its own
+   * question wrongly would be waiting for the first caller who asked it directly.
    */
   bool price_limits_age_policy_stated() const noexcept {
     return maximum_price_limits_age_.has_value() || allow_unbounded_price_limits_age_;
