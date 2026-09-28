@@ -1187,84 +1187,37 @@ TEST_CASE("a phase announced by a quote is announced after that quote's price is
   CHECK(engine.strategy().price_at_phase_[1] == std::optional<Decimal64>(Decimal64::parse("70500")));
 }
 
-TEST_CASE("a weekly bar's period start is not derivable, and the fallback is the bar before it") {
-  // A close-stamped weekly bar ends on a Friday and began on a Monday, so the session open on its
-  // *period end's* date is four days too late -- and an earlier version of this engine used exactly
-  // that and called it conservative. A Tuesday quote would have passed the check and filled at the
-  // week's Monday open, a price from two days before the decision. Unanswerable is now answered
-  // with the previous bar of the same instrument, which is never later than the true start.
+TEST_CASE("a weekly bar's period start is not derivable, and the engine says so instead of guessing") {
+  // **The one shape this engine cannot check, and the third answer it took four review rounds to
+  // arrive at.** A close-stamped weekly bar ends on a Friday and began on a Monday, and nothing in
+  // the event says when. Three versions of this code inferred it from a previous bar -- of the
+  // instrument, then of the instrument and interval -- and a reviewer falsified each in turn, because
+  // `feed`'s contract requires timestamp order and nothing about stamps, anchors or overlap. So the
+  // fill is allowed on the rule that governed every fill before this branch, and **counted**: the
+  // report says the check did not happen rather than claiming one that did not.
   backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
-  // Two weekly bars, so the second has a predecessor to fall back to.
   engine.feed(moving_bar(utc(2026, 3, 6, 6, 30), BarInterval::ONE_WEEK, "60000", "61000"));
   engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_WEEK, "69000", "70000"));
   // The Tuesday inside the following week.
   engine.feed(quote_at(utc(2026, 3, 17, 1, 0), "70500"));
-
-  // That week's own bar cannot fill it: the order was decided inside the period it covers.
   engine.feed(moving_bar(utc(2026, 3, 20, 6, 30), BarInterval::ONE_WEEK, "75000", "76000"));
-  CHECK(engine.result().executions_.empty());
-
-  // The week after does, at its open.
-  engine.feed(moving_bar(utc(2026, 3, 27, 6, 30), BarInterval::ONE_WEEK, "80000", "81000"));
   engine.finish();
 
   REQUIRE(engine.strategy().fill_prices_.size() == 1);
-  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("80000"));
-}
-
-TEST_CASE("an instrument's first calendar bar cannot fill an order decided inside it") {
-  // The hole the previous version left, and the one case its weekly test could not reach: with no
-  // previous bar to compare against, "the period start is unknown" was read as "no constraint", so
-  // the very first close-stamped weekly bar filled a quote decided inside it at that week's opening
-  // price. An unknown start is not permission.
-  backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
-  // A Tuesday, 10:00 KST, inside the week the first bar covers.
-  engine.feed(quote_at(utc(2026, 3, 10, 1, 0), "70500"));
-  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_WEEK, "60000", "61000"));
-
-  CHECK(engine.result().executions_.empty());
-  CHECK(engine.result().fills_deferred_unprovable_ > 0);
-
-  // And it fills once a bar exists that the engine can prove began after the decision -- here by the
-  // previous-bar rule, the week after.
-  engine.feed(moving_bar(utc(2026, 3, 20, 6, 30), BarInterval::ONE_WEEK, "80000", "81000"));
-  engine.finish();
-
-  REQUIRE(engine.strategy().fill_prices_.size() == 1);
-  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("80000"));
-}
-
-TEST_CASE("a fill deferred without proof is counted and reported, because it is a delay") {
-  // **The cost of the third answer, made visible rather than argued away.** This quote is at 16:00
-  // on the Friday a weekly bar ends -- outside that period and outside the next one, so the next
-  // week's bar could legitimately have filled it. The engine cannot derive where that period began,
-  // and the only proof it has is "decided at or before the previous bar ended", which this quote
-  // fails. So the fill waits a further week, and the report says how often that happened.
-  backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
-  engine.feed(moving_bar(utc(2026, 3, 6, 6, 30), BarInterval::ONE_WEEK, "60000", "61000"));
-  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_WEEK, "69000", "70000"));
-  // 07:00 UTC is 16:00 KST, half an hour after that Friday's close.
-  engine.feed(quote_at(utc(2026, 3, 13, 7, 0), "70500"));
-
-  engine.feed(moving_bar(utc(2026, 3, 20, 6, 30), BarInterval::ONE_WEEK, "75000", "76000"));
-  // Deferred, although the decision really did precede this period: unprovable, not proven inside.
-  CHECK(engine.result().executions_.empty());
-
-  engine.feed(moving_bar(utc(2026, 3, 27, 6, 30), BarInterval::ONE_WEEK, "80000", "81000"));
-  engine.finish();
-
-  REQUIRE(engine.strategy().fill_prices_.size() == 1);
-  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("80000"));
-  CHECK(engine.result().fills_deferred_unprovable_ > 0);
+  // That week's own bar filled it, at that week's open, which may be a price from before the quote.
+  // Unchecked, not endorsed -- and the figure below is the whole of what the engine will say.
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("75000"));
+  CHECK(engine.result().unchecked_fill_causality_ > 0);
 
   const auto report = backtest::summarize(engine.result(), engine.fills());
-  CHECK(report.caveats_.fills_deferred_unprovable_ == engine.result().fills_deferred_unprovable_);
+  CHECK(report.caveats_.unchecked_fill_causality_ == engine.result().unchecked_fill_causality_);
 }
 
-TEST_CASE("a daily replay never defers a fill it could not prove") {
-  // The other half of that counter: every bar shape but a close-stamped calendar one above a day
-  // states or derives its period start, so the comparison is exact and this figure stays at zero.
-  // Absence versus zero again -- a reader seeing zero is being told the model did not delay anything.
+TEST_CASE("a daily replay checks every fill, and says so with a zero") {
+  // The other half of that figure, and the reason it is worth reading: every bar shape this library
+  // produces -- intraday, open-stamped, and close-stamped daily -- states or derives its period
+  // start, so the causal comparison is exact and this stays at zero. Absence versus zero again: a
+  // reader seeing zero is being told the check ran on everything, not that nothing was checked.
   backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
   engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
   engine.feed(quote_at(utc(2026, 3, 11, 1, 0), "70500"));
@@ -1273,45 +1226,27 @@ TEST_CASE("a daily replay never defers a fill it could not prove") {
   engine.finish();
 
   REQUIRE(engine.strategy().fill_prices_.size() == 1);
-  CHECK(engine.result().fills_deferred_unprovable_ == 0);
-}
-
-TEST_CASE("a weekly bar is not proven by a daily one of the same instrument") {
-  // **Two intervals of one instrument overlap rather than tile**, so the previous bar of the
-  // *instrument* proves nothing about the period of a bar at a different interval. The decision here
-  // is Tuesday's daily close; Friday's weekly bar began on Monday and would have filled it at
-  // Monday's open, which is two days before the decision. Keying the predecessor by interval as well
-  // is what makes the proof rest on something the feed contract actually guarantees.
-  backtest::Backtester<BuysOnFirstBar> engine(BuysOnFirstBar{}, replay_config());
-  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
-  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_WEEK, "50000", "51000"));
-
-  // The weekly bar has no weekly predecessor, so nothing proves the Tuesday decision preceded it.
-  CHECK(engine.result().executions_.empty());
-  CHECK(engine.result().fills_deferred_unprovable_ > 0);
+  // Deferred past the session it fell inside, and filled at the next one's open.
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("80000"));
+  CHECK(engine.result().unchecked_fill_causality_ == 0);
 }
 
 TEST_CASE("an order decided at the epoch is dated, not undated") {
   // The sentinel that was also a value. A replay's instants come from its data, and 1970 is a
-  // perfectly reachable one -- so an order decided then took the *undated* branch and filled at a
-  // price from before itself, which is the defect the field exists to prevent wearing the field's
-  // own sentinel.
+  // perfectly reachable one -- so an order decided then took the *undated* branch, which is the
+  // branch that skips the causal check entirely rather than recording that it was skipped.
   backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
   strategy::QuoteEvent at_epoch;
   at_epoch.quote_.instrument_ = samsung();
   at_epoch.quote_.last_price_ = Decimal64::parse("70000");
   at_epoch.quote_.currency_ = Currency{"KRW"};
   at_epoch.quote_.received_at_ = Clock::time_point{};
-  // A trading day is not asserted for 1970, and the phase does not matter here; the permissive
-  // fixture is what lets the order out.
   engine.feed(at_epoch);
-
-  // The first weekly bar of this instrument covers a period this engine cannot place the epoch
-  // inside or outside, so it does not fill the order.
   engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_WEEK, "60000", "61000"));
 
-  CHECK(engine.result().executions_.empty());
-  CHECK(engine.result().fills_deferred_unprovable_ > 0);
+  // Dated: the weekly bar cannot check it, so the engine records that it could not -- which an
+  // undated order would not have done.
+  CHECK(engine.result().unchecked_fill_causality_ > 0);
 }
 
 TEST_CASE("an open-stamped bar states its own period start") {

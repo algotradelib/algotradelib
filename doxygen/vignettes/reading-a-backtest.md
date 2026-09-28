@@ -125,14 +125,15 @@ order reaches the broker immediately and can trade at once. `ReportCaveats::quot
 any run that fed a quote, and that is what it is telling you. A fill model that executes against a
 quote is a different design with its own argument, and this is not it.
 
-**One bar shape cannot be checked exactly, and the report says when that may have cost you
-something.** A close-stamped weekly, monthly or yearly bar does not state when its period began and
-the engine will not guess — so for those it falls back to proving the decision came at or before the
-*previous bar of the same series*, same instrument and same interval. That is proof when it holds and
-no proof when it does not, so an order decided in the gap between two weekly periods is deferred
-along with one decided inside a period. `ReportCaveats::fills_deferred_unprovable_` counts those
-**deferral events** — not fills, and not proven-unnecessary delays — and is zero for every daily,
-intraday or open-stamped replay.
+**One bar shape cannot be checked at all, and the report says so rather than guessing.** A
+close-stamped weekly, monthly or yearly bar does not state when its period began, and nothing in
+`feed`'s contract lets the engine derive it — three attempts to infer it from a previous bar were
+each wrong, because timestamp order does not imply that two bars of one series tile. So for those
+bars the check does not run: the fill is allowed on the older rule that an order never fills against
+the bar that produced it, and `ReportCaveats::unchecked_fill_causality_` counts every such decision.
+Zero for every daily, intraday or open-stamped replay, which is every shape this library produces.
+Non-zero means those fill prices are not guaranteed to come from after the decision — which can only
+bite an order a **quote** placed, since a bar's own order is already covered by the older rule.
 
 ## What it does not model at all
 

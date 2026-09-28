@@ -299,38 +299,40 @@ struct ReplayResult {
    */
   std::size_t aborted_{0};
   /**
-   * Quotes replayed, which is the figure that says whether `on_quote` fired at all.
+   * Quotes replayed, which is the figure that says whether any were **fed and dispatched** at all.
    *
    * Separate from `bars_` rather than added to it: a run of one bar and four hundred quotes is not a
    * run of four hundred and one somethings, and every per-bar statistic the report derives -- the
    * return series, the drawdown, the turnover -- is about bars. The counter exists because a handler
    * that is wired and never fed looks exactly like one that is not wired at all, which is the defect
-   * this slice is for.
+   * this slice is for. It counts what reached the dispatcher and not what a strategy did with it:
+   * `on_quote` is optional, and a strategy defining none is counted here just the same.
    *
    * **Appended**, for the reason stated on `currency_` above: this struct is public and a caller
    * aggregate-initializing it positionally would have every later field shift underneath them.
    */
   std::size_t quotes_{0};
   /**
-   * **Deferral events**, not orders and not fills: one per queued order per bar it was skipped
-   * against for want of proof that the decision preceded that bar's period.
+   * How many times an order was allowed to fill against a bar whose period start this engine could
+   * not derive -- so it could **not** check that the decision preceded the period.
    *
-   * The unit matters and the name cannot carry it. An order counted here may have been decided
-   * genuinely inside the period, in which case the deferral is simply correct; it may be a limit that
-   * would not have executed against that bar anyway; and it may never fill at all. What non-zero
-   * means is only this: **some fill could have happened a bar earlier, at a different price, under a
-   * model that knew where the period began.** Under timestamp-ordered events one order ordinarily
-   * reaches this branch at most once, because after that bar its predecessor is no longer older than
-   * the decision.
+   * **Eligibility decisions, not fills**: one per queued order per bar it was considered against, and
+   * the fill model may then decline it anyway. The name says `fill` because that is what the check
+   * guards; the unit is stated here because no name carries it.
    *
-   * Only a **close-stamped weekly, monthly or yearly** bar can reach it: every other shape states or
-   * derives its period start and the comparison is then exact. Zero is every replay of daily,
-   * intraday or open-stamped bars, which is every replay this library's own examples and tests
-   * produce apart from the ones that exist to pin this.
+   * Only a **close-stamped weekly, monthly or yearly** bar can reach it. Every other shape -- every
+   * intraday interval, every open-stamped bar, and a close-stamped daily bar -- states or derives its
+   * period start, and the comparison is then exact. So this is **zero for every replay this
+   * library's own examples and tests produce** apart from the ones that exist to pin it.
+   *
+   * **What non-zero tells a reader:** for those fills the engine cannot promise the fill price came
+   * from after the decision. It matters in one combination -- an order decided by a **quote**, which
+   * can fall part-way through such a bar's period -- and not for an order decided on a bar, which is
+   * already governed by the rule that an order never fills against the bar that produced it.
    *
    * **Appended**, for the reason `currency_` above states.
    */
-  std::size_t fills_deferred_unprovable_{0};
+  std::size_t unchecked_fill_causality_{0};
 };
 
 /** Everything a replay needs beyond the strategy and the bars. */
@@ -503,13 +505,6 @@ public:
     // reported. Before it would report only what settlement had already changed.
     publish_order_updates();
     previous_ = event;
-    // Per instrument **and interval**, unlike `previous_`, because it answers a question about
-    // *this* series: `may_fill`'s fallback needs the previous bar of the same series, an interleaved
-    // replay's previous bar is usually somebody else's, and a *different interval* of the same
-    // instrument overlaps rather than tiles -- which is the whole reason the interval is in the key.
-    last_period_end_.insert_or_assign(
-      runner::SeriesKey{event.instrument_, event.interval_}, event.period_end_
-    );
   }
 
   /**
@@ -680,17 +675,6 @@ private:
   }
 
   /**
-   * Fills orders resting from an earlier bar against `event`, and tells the strategy.
-   *
-   * **Walked by reference rather than by iterator or index.** Applying a fill calls `on_fill`, which
-   * may place or withdraw orders, so any position into the queue is invalid the moment the strategy
-   * is told anything. The eligible references are collected first and each is looked up again when
-   * its turn comes; one the callback withdrew is simply no longer there.
-   *
-   * The queue is never emptied, so an order this loop has not reached yet is outstanding, visible in
-   * every portfolio installed along the way, and addressable by a cancellation from any callback.
-   */
-  /**
    * Returns when `event`'s period began, where that is answerable **from the event itself**.
    *
    * Three cases, in the order they are decided, and the ordering is the correction Codex round 1
@@ -730,35 +714,36 @@ private:
 
   /**
    * Returns whether `entry` may fill against `event` **without being credited a price from before it
-   * was decided**.
+   * was decided**, and records where that question could not be answered.
    *
-   * Three answers, and the third is the one two review rounds were spent arriving at.
+   * Three answers, and the third one is what four review rounds cost:
    *
    * 1. **An undated order is eligible.** That is every order placed by a caller driving
    *    `QueueingExecutor` directly, and this rule exists to defer fills rather than to invent them.
+   *    **No test can reach this branch through `Backtester`**, because the engine stamps the instant
+   *    before every dispatch that can place -- so a mutation removing it is not caught, and that is
+   *    a property of the branch rather than a weakness in the tests. It is kept because the executor
+   *    is public and a caller outside this engine has no instant to give it.
    * 2. **Where `period_start_of` answers, the comparison is exact**: the bar's period must have begun
    *    **at or after** the decision. A period that began before it contains the decision, and its
    *    open price -- which is what `NextBarFillModel` credits a market order with -- is from before
-   *    the strategy decided anything.
-   * 3. **Where it does not answer**, the only proof available is that the decision was made at or
-   *    before the previous bar **of this same series** ended -- same instrument *and* same interval.
-   *    Consecutive periods of one series tile, so a decision that old is provably outside this one.
-   *    It is a **sufficient** condition and not a necessary one, which is exactly its cost: a quote
-   *    in the gap *between* two weekly periods is also outside the later one, and this cannot tell
-   *    that case from a quote inside it. Those deferrals are counted in
-   *    `ReplayResult::fills_deferred_unprovable_`, because a delay nobody can see is the kind of
-   *    modelling difference this engine's caveats exist for.
+   *    the strategy decided anything. This is every bar shape this library produces: intraday,
+   *    open-stamped, and close-stamped daily.
+   * 3. **Where it does not answer -- a close-stamped weekly, monthly or yearly bar -- this engine
+   *    makes no inference at all.** It allows the fill, on the bar-counter rule that governed every
+   *    fill before this branch, and **counts** it in `ReplayResult::unchecked_fill_causality_` so the
+   *    report can say the check did not happen.
    *
-   * **The interval belongs in that key**, and leaving it out was a defect: a caller may feed a daily
-   * and a weekly bar for one instrument, and those periods *overlap*. A decision made on Tuesday's
-   * daily close is at or before that daily bar's end, and Friday's weekly bar -- which began on
-   * Monday -- would have passed the test and filled it at Monday's open. Codex round 3 found it, and
-   * it is the same lesson twice: the proof has to rest on something the feed contract guarantees.
-   *
-   * **With no such predecessor and no derivable start, the answer is no.** An earlier version
-   * returned "no constraint" there, which made the *first* close-stamped weekly bar of an instrument
-   * fill a quote decided inside it at that week's opening price -- the precise defect the rule exists
-   * to stop, surviving in the one case the tests had not covered. Codex round 2 found that one.
+   * **Three successive versions of this function tried to infer that period instead, and a reviewer
+   * falsified all three.** The previous bar of the instrument: wrong, because two intervals of one
+   * instrument overlap. The previous bar of the same instrument *and* interval: wrong, because
+   * nothing in `feed`'s contract requires one stamp convention or anchor for a series, so two
+   * same-interval weekly bars can overlap too. Each inference rested on an invariant that is usually
+   * true and is not guaranteed -- and the repository's own rule covers exactly this: *a conservative
+   * refusal beats a narrow test you cannot justify.* There is no refusal available here either,
+   * because deferring an unprovable fill would stop a close-stamped weekly replay filling **anything**
+   * -- every order in one is decided at a boundary this engine equally cannot place. So the honest
+   * third answer is to check nothing, claim nothing, and report the gap.
    */
   bool may_fill(
     const QueuedOrder<Tag>& entry,
@@ -770,14 +755,21 @@ private:
     if (const auto start = period_start_of(event)) {
       return !(*start < *entry.decided_at_);
     }
-    const auto seen = last_period_end_.find(runner::SeriesKey{event.instrument_, event.interval_});
-    if (seen == last_period_end_.end() || seen->second < *entry.decided_at_) {
-      ++result_.fills_deferred_unprovable_;
-      return false;
-    }
+    ++result_.unchecked_fill_causality_;
     return true;
   }
 
+  /**
+   * Fills orders resting from an earlier bar against `event`, and tells the strategy.
+   *
+   * **Walked by reference rather than by iterator or index.** Applying a fill calls `on_fill`, which
+   * may place or withdraw orders, so any position into the queue is invalid the moment the strategy
+   * is told anything. The eligible references are collected first and each is looked up again when
+   * its turn comes; one the callback withdrew is simply no longer there.
+   *
+   * The queue is never emptied, so an order this loop has not reached yet is outstanding, visible in
+   * every portfolio installed along the way, and addressable by a cancellation from any callback.
+   */
   void settle_queued_against(const strategy::BarEvent& event) {
     std::vector<OrderRef<Tag>> eligible;
     for (const auto& entry : runner_.executor().queued()) {
@@ -1133,8 +1125,6 @@ private:
     }
   }
 
-  /** Each series' last period end, keyed by instrument and interval; see `may_fill`. */
-  std::map<runner::SeriesKey, std::chrono::system_clock::time_point> last_period_end_;
   ReplayConfig config_;
   NextBarFillModel fills_;
   ReplayLedger ledger_;

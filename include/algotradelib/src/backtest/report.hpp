@@ -116,7 +116,7 @@ struct ReportCaveats {
   std::size_t unfilled_{0};
 
   /**
-   * Quotes this replay was fed, and therefore whether `on_quote` fired at all.
+   * Quotes this replay was fed, and therefore whether any reached the dispatcher at all.
    *
    * **Zero and non-zero say different things and both are worth saying.** Zero is a replay of bars
    * alone, which is every replay written before quotes could be fed and the ordinary case; non-zero
@@ -125,17 +125,18 @@ struct ReportCaveats {
    * **What a reader has to know when this is non-zero: an order placed from `on_quote` was filled
    * against a later *bar*, not against the quote.** A quote moves the clock, the price and the
    * phase, and it neither fills nor marks: `NextBarFillModel` prices a market order at a bar's open,
-   * so the order rests until a bar whose period this engine can establish began **at or after the
-   * decision** -- a period that began earlier contains the decision, and its open is a price from
+   * so the order rests until a bar whose period began **at or after the decision**, wherever this
+   * engine can establish that -- a period that began earlier contains the decision, and its open is a price from
    * before the strategy decided anything. For a quote part-way through a session that is not
    * that session's bar but the next one; for a quote between a close and the next open it is usually
    * the very next bar, and for the one bar shape whose period start cannot be derived it may be
    * later still -- see `fills_deferred_unprovable_`. Live, the same order reaches the broker
    * immediately and can trade at once.
    *
-   * So a quote-driven strategy's replayed fills are later, and at a different price, than its live
-   * ones -- by one bar where the quote fell inside a period, and by whatever a bar's open differs
-   * from the quote otherwise. That is the place a quote-driven backtest and a quote-driven live run
+   * So a quote-driven strategy's replayed fills **can be** later, and at a different price, than the
+   * same strategy's live ones -- by a bar where the quote fell inside a period, and by whatever a
+   * bar's open differs from the quote otherwise. Can be, rather than are: a replay knows nothing
+   * about when a live order would have executed, or whether it would have at all. That is the place a quote-driven backtest and a quote-driven live run
    * are known to differ, and it is stated here rather than in prose a reader has to remember applied
    * to their run. A fill model that executes against a quote would close it, and is a different
    * design with its own argument.
@@ -143,25 +144,25 @@ struct ReportCaveats {
   std::size_t quotes_{0};
 
   /**
-   * **Deferral events**: one per queued order per bar it was skipped against for want of proof that
-   * the decision preceded that bar's period.
+   * How many times this replay allowed a fill it could **not** check for causality -- the bar's
+   * period start was not derivable, so nothing established that the decision came before the period.
    *
-   * Zero for every replay of daily, intraday or open-stamped bars. Non-zero only for a close-stamped
-   * **weekly, monthly or yearly** bar, whose period start this engine cannot derive: it falls back to
-   * proving the decision came at or before the previous bar of the same **series** -- same instrument
-   * and same interval -- which is sufficient when it holds and no proof at all when it does not. So
-   * an order decided in the gap *between* two weekly periods, outside both and legitimately fillable
-   * by the later one, is deferred alongside one decided inside a period.
+   * **Eligibility decisions, not fills**: one per queued order per bar it was considered against, and
+   * the fill model may decline it afterwards.
    *
-   * **What non-zero tells a reader**: some fill here could have happened a bar earlier, and at a
-   * different price, under a model that knew where the period began. Not every increment is such a
-   * case -- the order may have been decided genuinely inside the period, may be a limit that would
-   * not have executed anyway, or may never fill at all. The alternative to deferring was to fill at
-   * a price from before the decision, which is the defect the rule exists to prevent, so the delay
-   * is deliberate and is reported rather than left for a reader to find in a fill price. See
-   * `ReplayResult::fills_deferred_unprovable_`.
+   * Zero for every replay of daily, intraday or open-stamped bars, which is every shape this library
+   * produces. Non-zero only for a close-stamped **weekly, monthly or yearly** bar, whose period start
+   * cannot be derived from the event and which this engine refuses to guess at: three successive
+   * attempts to infer it from a previous bar were each falsified in review, every one resting on an
+   * invariant `Backtester::feed`'s contract does not require.
+   *
+   * **What non-zero tells a reader**: for those, the fill price is not guaranteed to come from after
+   * the decision. It matters in one combination -- an order decided by a **quote**, which can fall
+   * part-way through such a bar's period -- and not for an order decided on a bar, which the rule
+   * that an order never fills against the bar that produced it already covers. See
+   * `ReplayResult::unchecked_fill_causality_`.
    */
-  std::size_t fills_deferred_unprovable_{0};
+  std::size_t unchecked_fill_causality_{0};
 
   /**
    * Always true, and present so a reader is told rather than left to assume.
@@ -389,7 +390,7 @@ inline Report summarize(
   report.caveats_.gaps_ = result.gaps_;
   report.caveats_.unfilled_ = result.unfilled_;
   report.caveats_.quotes_ = result.quotes_;
-  report.caveats_.fills_deferred_unprovable_ = result.fills_deferred_unprovable_;
+  report.caveats_.unchecked_fill_causality_ = result.unchecked_fill_causality_;
 
   // Costs summed exactly, because they are money -- and **per currency**, because a replay whose
   // instruments span markets would otherwise have won added to dollars to make one scalar.
