@@ -227,9 +227,12 @@ report describing what became of every instruction — fourteen vectors of it �
 order looked very much like one in which it accepted every order: same iterations, same poll counts,
 no failures. (Not quite identical — the phase and price-band figures can differ for some refused
 orders — but nothing said *the broker refused these*.) The refusal was in the report `Runner::feed`
-returns, which the source drops on the floor — and, **if you bound a journaling executor**, in the
-order journal. `live::bind` does not: journalling is `live::bind_journaled`, so a run built the way
-this page opens has no durable record of a refusal at all.
+returns, which the source drops on the floor — and, **if you bound a journaling executor whose
+terminal write landed**, in the order journal. `live::bind` does not journal at all: journalling is
+`live::bind_journaled`, so a run built the way this page opens has no record of a refusal beyond the
+report. And `bind_journaled` is not itself a promise of durability — it takes whatever journal you hand
+it, including a `MemoryJournal` that is gone when the process is, and its *terminal* append can fail
+after the broker has already answered, leaving the `PENDING` line and no outcome.
 
 `LoopReport` now carries twelve figures and one record, all describing **the polling loop** — the
 stop handler and the closing pass keep their own families, `stop_handler_*` and `closing_*`, so a
@@ -323,7 +326,12 @@ every instruction was accepted.
 `report.final_gate_` is an optional, and names the most fundamental hold in force rather than only the
 loop's own — so a run that sent nothing because *you* halted it says `operator`, instead of showing you
 an open gate while nothing goes out. `guard().holds()` lists every hold when more than one stands, and
-`guard().hold_detail(HaltReason::LOCAL_FAILURE)` carries the **first** local-failure detail recorded — whatever the binding said it could not do, or whatever a caller of `halt_locally` supplied, such as a source that could not journal a reconciliation decision. A failed journal write is the usual answer and not the only one.
+`guard().hold_detail(HaltReason::LOCAL_FAILURE)` carries a local-failure detail — whatever the binding
+said it could not do, or whatever a caller of `halt_locally` supplied, such as a source that could not
+journal a reconciliation decision. A failed journal write is the usual answer and not the only one.
+Recorded through the runner it is the **first** such detail, kept while the hold stands; a program that
+reaches past it and calls `guard().halt(LOCAL_FAILURE, …)` itself replaces the detail, so if you take
+that hold directly the value is yours, not the first cause.
 
 ## Did everything I asked for go out?
 
@@ -391,8 +399,10 @@ hours still goes out.** The phase limit governs what an order *opens*, not what 
 reducing a held position toward flat is permitted in any phase, because a limit that cannot be
 de-risked past turns "the market is shut" into "you may not reduce risk". So an operator who asks to
 be flat at 22:00 gets a request sent, and very likely a *broker's* rejection rather than the
-library's — which is the better answer, since it is the venue's own, and durable **if you bound a
-journaling executor**: `live::bind` does not, `live::bind_journaled` does.
+library's — which is the better answer, since it is the venue's own, and recorded beyond the report
+**if you bound a journaling executor**: `live::bind` does not, `live::bind_journaled` does. Whether
+that record outlives the process is a property of the journal you handed it and of the terminal write
+landing, not of the binding.
 `LoopReport::sends_outside_permitted_phase_` counts how often that happened.
 
 **Every other limit still applies to that flatten, and each of them is silent in the same way.** A

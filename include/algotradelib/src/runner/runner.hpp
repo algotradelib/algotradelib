@@ -386,11 +386,16 @@ public:
    * **It is a hold on the guard**, `strategy::HaltReason::LOCAL_FAILURE`, not a flag beside it.
    * That is the difference between a condition every send path has to remember to check and one
    * checked by the single function every order already passes through. It also means an operator
-   * asking the guard why it will not trade is told **the first local-failure detail recorded** --
-   * what the binding said it could not do, or whatever a caller of `halt_locally` supplied, which
-   * `live::SessionSource` does when it cannot journal a reconciliation decision. A failed journal
-   * write is the usual answer and not the only one. Better than being told only that trading is
-   * halted.
+   * asking the guard why it will not trade is told a local-failure detail -- what the binding said it
+   * could not do, or whatever a caller of `halt_locally` supplied, which `live::SessionSource` does
+   * when it cannot journal a reconciliation decision. A failed journal write is the usual answer and
+   * not the only one. Better than being told only that trading is halted.
+   *
+   * **Recorded through this runner it is the *first* detail**, kept while the hold stands, so a
+   * cascade of later failures cannot bury the one that started it. That promise covers
+   * `note_local_failure` and `halt_locally` and stops there: `guard()` hands out a mutable guard, and
+   * `RiskGuard::halt(LOCAL_FAILURE, detail)` replaces the detail on a hold already standing. A
+   * program that takes this hold itself owns what it reads back.
    *
    * Cleared only by `resume_after_local_failure`, which a program calls when it has fixed whatever
    * was broken.
