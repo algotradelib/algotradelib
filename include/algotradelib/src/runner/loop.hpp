@@ -547,7 +547,13 @@ struct IterationReport {
   std::chrono::system_clock::time_point at_{};
   /** What each poll returned, in the order they were attempted. */
   std::vector<std::pair<PollKind, PollOutcome>> polls_;
-  /** Which hold blocked sending, or nothing when nothing did. */
+  /**
+   * Which hold blocked a **placement**, or nothing when none did.
+   *
+   * Placement, not "sending", and the distinction is not pedantry: a hold that means only that this
+   * runner is uninformed does not stop a cancellation the caller named, so an iteration can report a
+   * gate here and still have withdrawn an order. `strategy::halt_blocks` is the division.
+   */
   std::optional<strategy::HaltReason> gate_;
   /** Whether anything was fed to the runner. */
   bool fed_{false};
@@ -591,11 +597,15 @@ struct LoopReport {
   std::size_t attempted_[poll_kind_count] = {};
   /** How many polls of each kind failed. */
   std::size_t failed_[poll_kind_count] = {};
-  /** How many iterations were blocked from sending, by reason. */
+  /** How many iterations were blocked from **placing**; a named withdrawal may still have gone. */
   std::size_t blocked_{0};
   /** The intent that ended the run, or nothing when it ended for another reason. */
   std::optional<StopIntent> stopped_by_;
-  /** Which hold stopped the loop sending when it did, for an operator reading the tail of a log. */
+  /**
+   * Which hold stopped the loop **placing** when it did, for an operator reading the tail of a log.
+   *
+   * See `IterationReport::gate_`: this does not mean nothing left the process.
+   */
   std::optional<strategy::HaltReason> final_gate_;
   /** The phase the last iteration computed. */
   strategy::MarketPhase final_phase_{strategy::MarketPhase::UNKNOWN};
@@ -1012,7 +1022,44 @@ public:
   const PollSchedule& schedule() const noexcept { return schedule_; }
 
   /** Sets how stale a holdings snapshot may be before sending is blocked. */
-  void set_maximum_portfolio_age(std::chrono::nanoseconds age) { maximum_portfolio_age_ = age; }
+  void set_maximum_portfolio_age(std::chrono::nanoseconds age) {
+    maximum_portfolio_age_ = age;
+    // Pushed down as the **policy**, not as a verdict. The runner re-evaluates it against whatever
+    // snapshot is in hand when it settles, which is the only version that cannot describe a
+    // portfolio that has since been replaced -- a source callback can feed, and settle, between this
+    // loop's own checks.
+    runner_->set_maximum_portfolio_age(age);
+  }
+
+  /**
+   * States that this run accepts a snapshot of any age, in place of stating a maximum.
+   *
+   * The deliberate half of the requirement above. It does not make staleness safe; it records that
+   * the operator considered it and chose to proceed, which is the difference between a risk taken
+   * and a risk defaulted into. It does **not** suspend the absent-portfolio hold: never read and
+   * unboundedly old are different states, and this answers only the second.
+   */
+  void allow_unbounded_portfolio_age() {
+    allow_unbounded_portfolio_age_ = true;
+    maximum_portfolio_age_.reset();
+    runner_->set_maximum_portfolio_age(std::nullopt);
+  }
+
+  /**
+   * States that this run may act although it has never read what the account holds.
+   *
+   * For a run that genuinely has no holdings to read -- a broker with no such inquiry, or a loop
+   * deliberately configured without the cadence. It suspends the `PORTFOLIO_ABSENT` hold **and the
+   * epoch's participation in any age comparison**, because the epoch is older than any bound and an
+   * opt-out that left it in the comparison would merely rename the refusal.
+   *
+   * It does not suspend a configured bound for a snapshot that *was* read, and it does not permit a
+   * cancellation derived from an account nobody has seen: `Runner::plan_withhold_reason` decides
+   * that on the snapshot itself, and no switch here reaches it. Together with
+   * `allow_unbounded_portfolio_age` this restores the library's previous *placement* behaviour, and
+   * deliberately not its previous cancellation behaviour.
+   */
+  void allow_absent_portfolio() { allow_absent_portfolio_ = true; }
 
   /**
    * Sets the session the market phase is derived against.
@@ -1481,30 +1528,59 @@ private:
         return strategy::HaltReason::ORDER_LIST_UNREAD;
       }
     }
-    if (maximum_portfolio_age_) {
-      // Measured from the snapshot's own `as_of_` rather than from when the poll returned, because
-      // that is when the broker says the positions were true. A poll that succeeded at noon carrying
-      // a snapshot the broker took at 11:00 is an hour stale, and the poll's own timestamp would call
-      // it fresh.
-      const auto as_of = runner_->context().portfolio().as_of_;
-      if (as_of == std::chrono::system_clock::time_point{}) {
-        // A default-constructed `Portfolio` carries the epoch, and no broker ever reports a snapshot
-        // taken in 1970, so the epoch means "never populated". Treated as stale rather than as
-        // fresh-but-empty, which is the safe direction: an empty portfolio read as current would let
-        // a strategy size as though it held nothing.
-        //
-        // **This is deliberately still inside the age check, and `plan/todo/
-        // holdings-failure-is-not-a-send-gate.md` is why.** Hoisting it out so that an absent
-        // portfolio always holds is the right shape and it is not a one-line change: the hold would
-        // reach *cancellations*, which need an order reference and never consult the portfolio, and
-        // blocking one is worse than the thing it guards -- the order rests and can fill. A broker
-        // that cannot establish its holdings refuses at its own boundary instead; see
-        // `BrokerTraits<kiwoom::KiwoomClient>::validate_place`.
-        return strategy::HaltReason::PORTFOLIO_STALE;
+    // Measured from the snapshot's own `as_of_` rather than from when the poll returned, because
+    // that is when the broker says the positions were true. A poll that succeeded at noon carrying
+    // a snapshot the broker took at 11:00 is an hour stale, and the poll's own timestamp would call
+    // it fresh.
+    const auto as_of = runner_->context().portfolio().as_of_;
+    if (as_of == std::chrono::system_clock::time_point{}) {
+      // A default-constructed `Portfolio` carries the epoch, and no broker ever reports a snapshot
+      // taken in 1970, so the epoch means **never populated** -- which is not the same as old, and
+      // is the more dangerous of the two: an empty portfolio is the *permissive* answer to every
+      // question the send path asks it, so a run that has never read the account sizes an entry as
+      // though it were flat.
+      //
+      // **No longer inside the age check.** It was, and `plan/todo/
+      // holdings-failure-is-not-a-send-gate.md` recorded why hoisting it was not a one-line change:
+      // the hold would reach cancellations, and an order that cannot be withdrawn keeps resting and
+      // can fill. That objection is answered rather than avoided -- `strategy::halt_blocks` lets a
+      // named withdrawal through a hold that only means this runner is uninformed, and
+      // `Runner::plan_withhold_reason` stops the *derived* cancellation that objection overlooked.
+      //
+      // The opt-out reaches the age comparison below as well, not just this hold. The epoch is 1970
+      // and therefore older than any bound an operator would state, so an absence opt-out that did
+      // not skip the comparison would simply move the refusal to `PORTFOLIO_STALE`.
+      if (!allow_absent_portfolio_) {
+        return strategy::HaltReason::PORTFOLIO_ABSENT;
       }
-      if (at - as_of > *maximum_portfolio_age_) {
-        return strategy::HaltReason::PORTFOLIO_STALE;
+      // Opted out, so the age comparison is skipped rather than fallen through to -- and the checks
+      // after this one still run, because an absent portfolio says nothing about buying power.
+    }
+
+    // **A run must state how old a snapshot may be, or state that it accepts any age.**
+    //
+    // This was optional, and optional meant that a run which never thought about holdings sent
+    // orders sized against whatever the portfolio happened to contain -- including nothing at all.
+    // Fail-open by default is the defect this branch exists for. The library states no default
+    // duration of its own, because any constant it picked would be a risk policy it has no basis
+    // for: how stale a position may be before it must not be sized against is the operator's
+    // judgement about their own market and cadence, not this library's.
+    // **Checked after absence, not before it.** Both can be true at once, and "you have never read
+    // this account" is the more useful of the two to be told: the missing policy is a configuration
+    // fact the note below states in full, while absence is a fact about the data every ceiling and
+    // every target subtraction is about to be measured against.
+    if (!maximum_portfolio_age_ && !allow_unbounded_portfolio_age_) {
+      if (!said_no_age_policy_) {
+        said_no_age_policy_ = true;
+        report.notes_.emplace_back(
+          "no portfolio age policy: call set_maximum_portfolio_age or allow_unbounded_portfolio_age"
+        );
       }
+      return strategy::HaltReason::PORTFOLIO_STALE;
+    }
+    if (maximum_portfolio_age_ && as_of != std::chrono::system_clock::time_point{} &&
+        at - as_of > *maximum_portfolio_age_) {
+      return strategy::HaltReason::PORTFOLIO_STALE;
     }
     if (runner_->guard().limits().enforce_buying_power_) {
       // Checked only when the caller asked for the limit. A loop with no buying-power cadence and
@@ -1634,8 +1710,13 @@ private:
     // reads the portfolio and dispatches nothing), this one, and `settle_closing`. The two that can send
     // under a phase are watched.
     const auto parting = runner_->notify_stop();
+    // `withheld_plans_` counts here for the same reason it counts in `Report::quiet`: an `on_stop`
+    // handler may state a target, `STOPPING` is held by then, and a plan that would have cancelled
+    // something is withheld whole. Left out of this total, the loop would report that a parting
+    // instruction met no resistance while the instruction never went anywhere.
     report.stop_handler_refused_ = parting.refused_.size() + parting.refused_cancel_.size() +
-      parting.rejected_.size() + parting.withheld_.size() + parting.unavailable_.size();
+      parting.rejected_.size() + parting.withheld_.size() + parting.withheld_plans_.size() +
+      parting.unavailable_.size();
     report.stop_handler_sent_ = parting.would_place_.size() + parting.would_cancel_.size();
 
     if (intent == StopIntent::QUIESCE) {
@@ -2059,6 +2140,12 @@ private:
   /** Whether this loop has ever derived a phase that was not `UNKNOWN`, across every `run`. */
   bool phase_ever_known_{false};
   std::optional<std::chrono::nanoseconds> maximum_portfolio_age_;
+  /** Whether the operator stated that any snapshot age is acceptable; see the setter. */
+  bool allow_unbounded_portfolio_age_{false};
+  /** Whether the operator stated that this run may act with no snapshot at all; see the setter. */
+  bool allow_absent_portfolio_{false};
+  /** Whether the missing-age-policy note has been reported, so it is said once and not per poll. */
+  bool said_no_age_policy_{false};
   std::optional<std::chrono::nanoseconds> maximum_buying_power_age_;
   std::optional<std::chrono::system_clock::time_point> next_due_[poll_kind_count];
   std::size_t consecutive_failures_[poll_kind_count] = {};

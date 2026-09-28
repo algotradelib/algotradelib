@@ -439,6 +439,24 @@ using RejectingRunner = runner::Runner<Inert, strategy::NoCaps, runner::DryTag, 
 using RejectingSource = runner::ManualSource<RejectingRunner>;
 using RejectingLoop = runner::PollingLoop<RejectingRunner, RejectingSource, runner::ManualClock>;
 
+/**
+ * States a portfolio policy on a loop whose test is about something else.
+ *
+ * Slice 26 made two things mandatory that were optional: a run states how old a holdings snapshot
+ * may be, and a run that has never read one holds rather than sizing against an empty account. Most
+ * of the cases in this file predate that and are about the calendar, the phase, a stop or a
+ * cadence -- they construct no portfolio because they never needed one. Stating both opt-outs is how
+ * such a case says "not about the portfolio" in one line, and it is exactly the pair an operator
+ * would state to keep the previous placement behaviour.
+ *
+ * The cases that *are* about the portfolio gate do not call this, and assert the holds instead.
+ */
+template <typename Loop>
+void not_about_the_portfolio(Loop& loop) {
+  loop.allow_unbounded_portfolio_age();
+  loop.allow_absent_portfolio();
+}
+
 /** A portfolio holding one resting order, for a closing pass to try to withdraw. */
 template <typename Portfolio>
 void give_one_resting_order(Portfolio& portfolio) {
@@ -746,6 +764,7 @@ TEST_CASE("a successful order-list read opens the gate once and stays open", "[l
   InertRunner runner_instance;
   InertSource source;
   InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  not_about_the_portfolio(loop);
   StopSource stop;
 
   const auto report = loop.run(stop, 4);
@@ -768,9 +787,11 @@ TEST_CASE("a stale portfolio blocks sending", "[loop][gate]") {
   loop.set_maximum_portfolio_age(std::chrono::minutes(5));
   StopSource stop;
 
-  SECTION("a portfolio that was never populated is stale") {
+  SECTION("a portfolio that was never populated is absent, which is not the same as stale") {
+    // It used to report staleness, and the two need different answers from an operator: too old
+    // says the age limit or the cadence is wrong, never read says the inquiry has not worked once.
     const auto report = loop.run(stop, 2);
-    CHECK(report.final_gate_ == strategy::HaltReason::PORTFOLIO_STALE);
+    CHECK(report.final_gate_ == strategy::HaltReason::PORTFOLIO_ABSENT);
     CHECK(report.blocked_ == 2);
     CHECK(runner_instance.guard().halted());
   }
@@ -809,6 +830,7 @@ TEST_CASE("an unread buying power blocks sending, and only when asked for", "[lo
     InertRunner runner_instance(Inert{}, limits);
     InertSource source;
     InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+    not_about_the_portfolio(loop);
     StopSource stop;
 
     const auto report = loop.run(stop, 2);
@@ -821,6 +843,7 @@ TEST_CASE("an unread buying power blocks sending, and only when asked for", "[lo
     InertRunner runner_instance(Inert{}, limits);
     InertSource source;
     InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+    not_about_the_portfolio(loop);
     StopSource stop;
 
     strategy::Portfolio<InertRunner::Tag> portfolio;
@@ -843,6 +866,7 @@ TEST_CASE("an unread buying power blocks sending, and only when asked for", "[lo
     InertRunner runner_instance(Inert{}, limits);
     InertSource source;
     InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+    not_about_the_portfolio(loop);
     loop.set_maximum_buying_power_age(std::chrono::minutes(5));
     StopSource stop;
 
@@ -873,6 +897,7 @@ TEST_CASE("an unread buying power blocks sending, and only when asked for", "[lo
       {algotradelib::Currency::krw(), algotradelib::Currency::usd()}
     );
     InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+    not_about_the_portfolio(loop);
     StopSource stop;
 
     strategy::Portfolio<InertRunner::Tag> portfolio;
@@ -898,6 +923,7 @@ TEST_CASE("an unread buying power blocks sending, and only when asked for", "[lo
       {algotradelib::Currency::krw(), algotradelib::Currency::usd()}
     );
     InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+    not_about_the_portfolio(loop);
     StopSource stop;
 
     strategy::Portfolio<InertRunner::Tag> portfolio;
@@ -934,6 +960,7 @@ TEST_CASE("an unread buying power blocks sending, and only when asked for", "[lo
       {algotradelib::Currency::krw(), algotradelib::Currency::usd()}
     );
     InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+    not_about_the_portfolio(loop);
     loop.set_maximum_buying_power_age(std::chrono::minutes(5));
     StopSource stop;
 
@@ -965,6 +992,7 @@ TEST_CASE("an unread buying power blocks sending, and only when asked for", "[lo
     InertRunner runner_instance;  // default limits: no buying-power check
     InertSource source;
     InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+    not_about_the_portfolio(loop);
     StopSource stop;
 
     const auto report = loop.run(stop, 2);
@@ -1199,10 +1227,10 @@ TEST_CASE("an operator halting into a closed gate survives the gate opening", "[
   loop.set_maximum_portfolio_age(std::chrono::minutes(5));
   StopSource stop;
 
-  // 1. The gate closes, because the holdings snapshot was never populated.
+  // 1. The gate closes, because the holdings snapshot has never been read.
   const auto stale = loop.run(stop, 1);
-  CHECK(stale.final_gate_ == strategy::HaltReason::PORTFOLIO_STALE);
-  CHECK(runner_instance.guard().halted(strategy::HaltReason::PORTFOLIO_STALE));
+  CHECK(stale.final_gate_ == strategy::HaltReason::PORTFOLIO_ABSENT);
+  CHECK(runner_instance.guard().halted(strategy::HaltReason::PORTFOLIO_ABSENT));
 
   // 2. An operator, watching, decides independently to stop trading.
   runner_instance.guard().halt();
@@ -1214,7 +1242,7 @@ TEST_CASE("an operator halting into a closed gate survives the gate opening", "[
 
   // 4. The loop releases its hold -- and only its hold.
   const auto after = loop.run(stop, 1);
-  CHECK_FALSE(runner_instance.guard().halted(strategy::HaltReason::PORTFOLIO_STALE));
+  CHECK_FALSE(runner_instance.guard().halted(strategy::HaltReason::PORTFOLIO_ABSENT));
   CHECK(runner_instance.guard().halted());
   CHECK(runner_instance.guard().halted(strategy::HaltReason::OPERATOR));
   CHECK(after.final_gate_ == strategy::HaltReason::OPERATOR);
@@ -1235,11 +1263,11 @@ TEST_CASE("an operator resuming does not open a gate the loop holds closed", "[l
 
   // The loop reported the operator's hold, which outranks its own, but it took its own as well.
   CHECK(report.final_gate_ == strategy::HaltReason::OPERATOR);
-  CHECK(runner_instance.guard().halted(strategy::HaltReason::PORTFOLIO_STALE));
+  CHECK(runner_instance.guard().halted(strategy::HaltReason::PORTFOLIO_ABSENT));
 
   runner_instance.guard().resume();
   CHECK(runner_instance.guard().halted());
-  CHECK(runner_instance.guard().halted(strategy::HaltReason::PORTFOLIO_STALE));
+  CHECK(runner_instance.guard().halted(strategy::HaltReason::PORTFOLIO_ABSENT));
 }
 
 TEST_CASE("a withdraw cancels what is resting and leaves the position", "[loop][stop]") {
@@ -1574,6 +1602,7 @@ TEST_CASE("a local failure halts the loop and nothing lifts it", "[loop][gate]")
   InertRunner runner_instance;
   InertSource source;
   InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  not_about_the_portfolio(loop);
   StopSource stop;
 
   runner_instance.ledger();  // the ledger is untouched: nothing was ever attempted.
@@ -1662,6 +1691,7 @@ TEST_CASE("the gate opens for the same iteration once the order list is read", "
   serve_calendar(runner_instance);
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
   SendingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  not_about_the_portfolio(loop);
   StopSource stop;
 
   const auto report = loop.run(stop, 1);
@@ -1683,6 +1713,12 @@ TEST_CASE("a stale portfolio blocks a send made from inside a poll", "[loop][gat
   SendingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
   loop.set_maximum_portfolio_age(std::chrono::minutes(5));
   StopSource stop;
+
+  // Stamped past the limit, so this stays a test about *staleness*. Left unstamped it would now be
+  // a test about absence, which the case above already covers.
+  strategy::Portfolio<SendingRunner::Tag> portfolio;
+  portfolio.as_of_ = base_time() - std::chrono::minutes(10);
+  runner_instance.context().set_portfolio(portfolio);
 
   const auto report = loop.run(stop, 2);
 
@@ -2005,6 +2041,8 @@ TEST_CASE("an order sent after the last working-order read leaves the stop unver
   runner_instance.context().set_portfolio(portfolio);
 
   SendingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+
+  not_about_the_portfolio(loop);
   StopSource stop;
 
   // One iteration: the startup read, then a bar that places an order from inside the poll.
@@ -2312,6 +2350,8 @@ TEST_CASE("a flatten sends no close when a sell it cannot see may already be wor
   runner_instance.context().set_portfolio(portfolio);
 
   SellingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+
+  not_about_the_portfolio(loop);
   StopSource stop;
 
   // One iteration: the startup read sees an empty list, then the bar sells the position.
@@ -2619,6 +2659,8 @@ TEST_CASE("an uncovered date is UNKNOWN and the report says why", "[loop][phase]
   runner_instance.context().set_calendar(elsewhere);
 
   PhaseLoop loop(runner_instance, source, ticking(std::chrono::hours(1)), test_clock());
+
+  not_about_the_portfolio(loop);
   StopSource stop;
 
   const auto report = loop.run(stop, 3);
@@ -2652,6 +2694,8 @@ TEST_CASE("an unestablished phase does not stop a cancellation", "[loop][phase]"
   // No calendar at all, so the phase is UNKNOWN for the whole run.
 
   CancelLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+
+  not_about_the_portfolio(loop);
   StopSource stop;
 
   const auto report = loop.run(stop, 1);
@@ -2679,6 +2723,7 @@ TEST_CASE("an exit settled inside a poll is counted in the run's report", "[loop
   serve_calendar(runner_instance, /*trades=*/true);
   // 16:00, half an hour after the close, on a day the market did trade.
   FlattenLoop loop(runner_instance, source, bars_each_iteration(), clock_at_local_hour(16));
+  not_about_the_portfolio(loop);
   StopSource stop;
 
   const auto report = loop.run(stop, 1);
@@ -2702,6 +2747,7 @@ TEST_CASE("an order that opens a short is refused after the close, and not count
   runner_instance.context().set_portfolio(portfolio_with("10", nullptr));
   serve_calendar(runner_instance, /*trades=*/true);
   ShortLoop loop(runner_instance, source, bars_each_iteration(), clock_at_local_hour(16));
+  not_about_the_portfolio(loop);
   StopSource stop;
 
   const auto report = loop.run(stop, 1);
@@ -2729,6 +2775,7 @@ TEST_CASE("an order settled inside a poll is checked against this iteration's ph
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
   serve_calendar(runner_instance);
   SendingLoop loop(runner_instance, source, bars_each_iteration(), clock_at_local_hour(14));
+  not_about_the_portfolio(loop);
   StopSource stop;
 
   // 14:00: the session is open and bars settled inside the polls go out. Without this half the
@@ -2908,6 +2955,7 @@ TEST_CASE("TimedLiquidation flattens live, which it could not do before", "[loop
   StopSource stop;
 
   // 14:00 and 15:00: the session is open and the vanilla holds.
+  not_about_the_portfolio(loop);
   loop.run(stop, 2);
   REQUIRE(runner_instance.executor().placed().empty());
 
@@ -2966,6 +3014,7 @@ TEST_CASE("a calendar arriving mid-iteration reaches the order polled after it",
   serve_calendar(runner_instance, /*trades=*/true);
   source.set_calendar(krx_calendar(/*trades=*/true));
   SendingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  not_about_the_portfolio(loop);
   StopSource stop;
 
   // The market trades, and the bar settled inside the poll goes out.
@@ -3092,6 +3141,7 @@ TEST_CASE("a calendar learned during the order-list read reaches the first poll"
   schedule.tick_ = std::chrono::seconds(1);
   schedule.calendar_.reset();
   SendingLoop loop(runner_instance, source, schedule, test_clock());
+  not_about_the_portfolio(loop);
   StopSource stop;
 
   const auto report = loop.run(stop, 1);
@@ -3124,6 +3174,7 @@ TEST_CASE("a source that writes the calendar mid-poll is reported, since it cann
   schedule.tick_ = std::chrono::seconds(1);
   schedule.calendar_.reset();
   SendingLoop loop(runner_instance, source, schedule, test_clock());
+  not_about_the_portfolio(loop);
   StopSource stop;
 
   const auto report = loop.run(stop, 1);
@@ -3221,6 +3272,7 @@ TEST_CASE("a calendar change that does not move today's answer is not reported",
   schedule.tick_ = std::chrono::seconds(1);
   schedule.calendar_.reset();
   SendingLoop loop(runner_instance, source, schedule, test_clock());
+  not_about_the_portfolio(loop);
   StopSource stop;
 
   const auto report = loop.run(stop, 1);
@@ -3251,6 +3303,7 @@ TEST_CASE("a source obeying only half the calendar contract is still reported", 
   schedule.calendar_ = std::chrono::seconds(1);
   schedule.tick_ = std::chrono::seconds(1);
   SendingLoop loop(runner_instance, source, schedule, test_clock());
+  not_about_the_portfolio(loop);
   StopSource stop;
 
   const auto report = loop.run(stop, 1);
