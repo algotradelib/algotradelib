@@ -325,10 +325,12 @@ struct ReplayResult {
    * period start, and the comparison is then exact. So this is **zero for every replay this
    * library's own examples and tests produce** apart from the ones that exist to pin it.
    *
-   * **What non-zero tells a reader:** for those fills the engine cannot promise the fill price came
-   * from after the decision. It matters in one combination -- an order decided by a **quote**, which
-   * can fall part-way through such a bar's period -- and not for an order decided on a bar, which is
-   * already governed by the rule that an order never fills against the bar that produced it.
+   * **What non-zero tells a reader:** for those, the engine cannot promise the fill price came from
+   * after the decision. **Any dated order can be one of them**, not only an order a quote placed.
+   * The obvious case is a quote falling part-way through such a bar's period; the less obvious one
+   * needs no quote at all -- a decision made on Tuesday's *daily* bar, against Friday's *weekly* bar
+   * of the same instrument, whose period began on Monday. The bar-counter rule does not catch that,
+   * because those are two different bars, and the period check cannot run on the weekly one.
    *
    * **Appended**, for the reason `currency_` above states.
    */
@@ -694,8 +696,9 @@ private:
    * this function did exactly that and called it conservative; it was the opposite. The same was
    * true of an open-stamped daily bar, whose period end is 24 hours after its start.
    *
-   * What an empty answer means to the caller is in `settle_queued_against`: not "no constraint", but
-   * "fall back to a bound that *is* known".
+   * What an empty answer means to the caller is in `may_fill`: not "no constraint", and not a bound
+   * to be inferred from somewhere else either, but "this check cannot run -- allow the fill and
+   * record that it was not checked".
    */
   std::optional<std::chrono::system_clock::time_point> period_start_of(
     const strategy::BarEvent& event
@@ -722,8 +725,9 @@ private:
    *    `QueueingExecutor` directly, and this rule exists to defer fills rather than to invent them.
    *    **No test can reach this branch through `Backtester`**, because the engine stamps the instant
    *    before every dispatch that can place -- so a mutation removing it is not caught, and that is
-   *    a property of the branch rather than a weakness in the tests. It is kept because the executor
-   *    is public and a caller outside this engine has no instant to give it.
+   *    a property of the branch rather than a weakness in the tests. It is kept because
+   *    `QueuedOrder::decided_at_` is an optional on a public type, and an undated one is a state the
+   *    type admits; nothing outside this class calls this function, so no caller exercises it today.
    * 2. **Where `period_start_of` answers, the comparison is exact**: the bar's period must have begun
    *    **at or after** the decision. A period that began before it contains the decision, and its
    *    open price -- which is what `NextBarFillModel` credits a market order with -- is from before
@@ -782,11 +786,12 @@ private:
       if (entry.accepted_on_ >= runner_.executor().bar()) {
         continue;
       }
-      // **And it cannot fill against a bar whose period had already begun when it was decided.**
-      // The counter above is enough while only bars place orders; a quote arrives inside a period
-      // without opening one, so without this an order decided at 10:30 fills at that day's 09:00
-      // open -- a price from before the decision. See `may_fill` for the three answers and what the
-      // third one costs.
+      // **And, where the event says enough to check it, it cannot fill against a bar whose period
+      // had already begun when it was decided.** The counter above is enough while only bars place
+      // orders and no two periods overlap; a quote arrives inside a period without opening one, so
+      // without this an order decided at 10:30 fills at that day's 09:00 open -- a price from before
+      // the decision. Where the event does *not* say enough, `may_fill` allows the fill and records
+      // that nothing was checked. See it for all three answers.
       if (!may_fill(entry, event)) {
         continue;
       }

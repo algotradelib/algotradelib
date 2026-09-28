@@ -116,10 +116,11 @@ order placed from `on_phase` is therefore visible to `on_quote` in a replay and 
 live. And the announcement of an order is unconditional here and conditional live, on the
 working-order poll being due at all.
 
-**So an order placed from `on_quote` fills against a later *bar*, at that bar's price** — and
-specifically against a bar whose period began **at or after** the decision, which for a quote
-part-way through a session is not that session's bar but the next one. A period that began earlier
-*contains* the decision, and its open is a price from before the strategy decided anything. Today's daily bar opened at 09:00, and
+**So an order placed from `on_quote` fills against a later *bar*, at that bar's price** — and, where
+this engine can establish when a bar's period began, specifically against one that began **at or
+after** the decision. For a quote part-way through a session that is not that session's bar but the
+next one. A period that began earlier *contains* the decision, and its open is a price from before
+the strategy decided anything. Today's daily bar opened at 09:00, and
 crediting a 09:00 price to a 10:30 decision would be lookahead with the sign flipped. Live, the same
 order reaches the broker immediately and can trade at once. `ReportCaveats::quotes_` is non-zero on
 any run that fed a quote, and that is what it is telling you. A fill model that executes against a
@@ -132,8 +133,10 @@ each wrong, because timestamp order does not imply that two bars of one series t
 bars the check does not run: the fill is allowed on the older rule that an order never fills against
 the bar that produced it, and `ReportCaveats::unchecked_fill_causality_` counts every such decision.
 Zero for every daily, intraday or open-stamped replay, which is every shape this library produces.
-Non-zero means those fill prices are not guaranteed to come from after the decision — which can only
-bite an order a **quote** placed, since a bar's own order is already covered by the older rule.
+Non-zero means those fill prices are not guaranteed to come from after the decision, and **any dated
+order can be one of them**. A quote is the obvious way in; a bars-only replay reaches it too, when a
+decision made on one interval's bar meets a longer interval's bar of the same instrument whose period
+had already begun.
 
 ## What it does not model at all
 

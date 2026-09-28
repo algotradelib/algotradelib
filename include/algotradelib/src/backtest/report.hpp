@@ -120,18 +120,21 @@ struct ReportCaveats {
    *
    * **Zero and non-zero say different things and both are worth saying.** Zero is a replay of bars
    * alone, which is every replay written before quotes could be fed and the ordinary case; non-zero
-   * means a strategy's between-bar handler ran, and carries the caveat below with it.
+   * means quotes were fed and dispatched, and carries the caveat below with it. It does **not** say
+   * a strategy handled one -- `on_quote` is optional -- or that anything was placed or filled
+   * because of one.
    *
-   * **What a reader has to know when this is non-zero: an order placed from `on_quote` was filled
+   * **What a reader has to know when this is non-zero: an order placed from `on_quote` is filled
    * against a later *bar*, not against the quote.** A quote moves the clock, the price and the
    * phase, and it neither fills nor marks: `NextBarFillModel` prices a market order at a bar's open,
-   * so the order rests until a bar whose period began **at or after the decision**, wherever this
-   * engine can establish that -- a period that began earlier contains the decision, and its open is a price from
-   * before the strategy decided anything. For a quote part-way through a session that is not
-   * that session's bar but the next one; for a quote between a close and the next open it is usually
-   * the very next bar, and for the one bar shape whose period start cannot be derived it may be
-   * later still -- see `fills_deferred_unprovable_`. Live, the same order reaches the broker
-   * immediately and can trade at once.
+   * so -- **where this engine can establish when a bar's period began** -- the order rests until one
+   * that began at or after the decision, because a period that began earlier contains the decision
+   * and its open is a price from before the strategy decided anything. For a quote part-way through
+   * a session that is not that session's bar but the next one; for a quote between a close and the
+   * next open it is the very next bar. Where it **cannot** establish it -- a close-stamped weekly,
+   * monthly or yearly bar -- no such rule applies and the fill can happen at a price from before the
+   * quote, which is what `unchecked_fill_causality_` exists to say. Live, the same order reaches the
+   * broker immediately and can trade at once.
    *
    * So a quote-driven strategy's replayed fills **can be** later, and at a different price, than the
    * same strategy's live ones -- by a bar where the quote fell inside a period, and by whatever a
@@ -157,9 +160,9 @@ struct ReportCaveats {
    * invariant `Backtester::feed`'s contract does not require.
    *
    * **What non-zero tells a reader**: for those, the fill price is not guaranteed to come from after
-   * the decision. It matters in one combination -- an order decided by a **quote**, which can fall
-   * part-way through such a bar's period -- and not for an order decided on a bar, which the rule
-   * that an order never fills against the bar that produced it already covers. See
+   * the decision. **Any dated order can be one**, and a quote is only the obvious way in -- a
+   * bars-only replay reaches it too, when a decision on one interval's bar meets a longer interval's
+   * bar of the same instrument whose period had already begun. See
    * `ReplayResult::unchecked_fill_causality_`.
    */
   std::size_t unchecked_fill_causality_{0};
