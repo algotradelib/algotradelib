@@ -222,8 +222,10 @@ struct DryRunReport {
    * Whole reconciliation plans held back before any part of them was sent.
    *
    * Distinct from `withheld_`, which is about an order. A plan's cancellations go out before its
-   * placements are guard-checked, so a plan computed from an account this runner cannot stand behind
-   * has to be stopped as a unit or not at all -- see `WithheldPlan`.
+   * placements are guard-checked, so a plan that cannot be acted on has to be stopped as a unit or
+   * not at all. **Three reasons put one here** and `WithheldPlan::reason_` says which: an account
+   * never read, one older than the stated maximum, or a placement hold in force for a plan that also
+   * wanted to withdraw something -- and that last one on a portfolio that is perfectly current.
    */
   std::vector<WithheldPlan<BrokerTag>> withheld_plans_;
   /** Instructions whose send failed in transit, leaving their outcome unknown. */
@@ -766,8 +768,10 @@ public:
    * **All monotone, so a driving loop differences them**, exactly as it does
    * `sends_outside_permitted_phase`. They exist because a live run threw every one of these away: a
    * `Runner::Report` carries fourteen vectors describing what became of each instruction, and
-   * `live::SessionSource` discards the report on every poll, so a run in which the broker refused
-   * everything and one in which it accepted everything produced identical `LoopReport`s.
+   * `live::SessionSource` discards the report on every poll -- so a run in which the broker refused
+   * everything looked very much like one in which it accepted everything. Not identical: the phase
+   * and price-band figures can differ for some refused orders. But nothing said *the broker refused
+   * these*.
    *
    * **Six origins for placements**, not one figure, because an operator's next move differs for each
    * and the library already distinguishes them:
@@ -1076,10 +1080,12 @@ private:
         // hold named on its own report entry, and that is the better result.
         const bool data_is_missing = *reason != WithheldPlanReason::PLACEMENT_HELD;
         if (data_is_missing || would_cancel) {
-          // The whole plan, before any of its parts were counted separately: a portfolio this runner
-        // cannot vouch for makes both halves of a target unsafe. Counted here because the loop's own
-        // gate does not always describe it -- with `allow_absent_portfolio` the gate can be open
-        // while this fires, which is the case Codex round 0 named.
+          // The whole plan, before any of its parts were counted separately. **Three reasons reach
+        // here** and this counts them together: an account never read, one older than the stated
+        // maximum, and a hold refusing placements for a plan that also wanted to withdraw something
+        // -- that third on a perfectly fresh portfolio. Counted at all because the loop's own gate
+        // does not always describe it: with `allow_absent_portfolio` the gate can be open while this
+        // fires, which is the case Codex round 0 named.
         ++plans_withheld_;
         report.withheld_plans_.push_back(WithheldPlan<Tag>{
             *reason,
@@ -2105,7 +2111,7 @@ private:
   std::size_t cancels_unresolved_{0};
   /** @copydoc Runner::cancels_rejected_ */
   std::size_t cancels_indeterminate_{0};
-  /** Plans held back for want of an account this runner can vouch for; see `plans_withheld`. */
+  /** Plans held back whole, for any of three reasons; see `plans_withheld`. */
   std::size_t plans_withheld_{0};
   /** Instructions local machinery could not record and so did not send; see the accessor. */
   std::size_t instructions_unavailable_{0};

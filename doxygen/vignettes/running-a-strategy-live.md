@@ -226,8 +226,10 @@ report describing what became of every instruction — fourteen vectors of it �
 `live::SessionSource` discards that report on every poll, so a run in which the broker refused every
 order looked very much like one in which it accepted every order: same iterations, same poll counts,
 no failures. (Not quite identical — the phase and price-band figures can differ for some refused
-orders — but nothing said *the broker refused these*.) The refusals were in the order journal, which
-is where a durable record belongs and not where a person reading the end of a run will look.
+orders — but nothing said *the broker refused these*.) The refusal was in the report `Runner::feed`
+returns, which the source drops on the floor — and, **if you bound a journaling executor**, in the
+order journal. `live::bind` does not: journalling is `live::bind_journaled`, so a run built the way
+this page opens has no durable record of a refusal at all.
 
 `LoopReport` now carries twelve figures and one record, all describing **the polling loop** — the
 stop handler and the closing pass keep their own families, `stop_handler_*` and `closing_*`, so a
