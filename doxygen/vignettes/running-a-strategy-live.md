@@ -153,13 +153,18 @@ such a plan is withheld whole and reported in `withheld_plans_` rather than half
 
 **A checked sell also needs to know what the broker's figure means.** With
 `enforce_sellable_quantity_` on, the guard measures a sale against the quantity the broker said may be
-sold — and it refuses when nobody has established what that quantity *covers*. Every shipped adapter
-states it, so this is invisible until you write your own source or your own adapter: fill
-`Portfolio::sellable_basis_` (or `HoldingsSnapshot::sellable_basis_`) with the coverage and the
-resting treatment your broker actually supports, and the guard enforces. Leave it unstated and your
-sells refuse, with `QUANTITY_NOT_SELLABLE`, rather than being measured against a number of unknown
-meaning. At Kiwoom the coverage is something *you* assert, because Kiwoom's own specification does not
-say — see `KiwoomConfig::holdings_sellable_scope_`.
+sold — and it refuses, with `sellable_basis_unestablished`, when nobody has established what that
+quantity *covers*. That is a different refusal from `quantity_not_sellable`, deliberately: one means
+resize the order, this one means declare a basis.
+
+KIS and Toss declare one, so you will not meet this there. **Kiwoom does not by default** — its
+coverage is something *you* assert, because Kiwoom's own specification does not say whether
+`dmst_stex_tp` filters the positions or only values them, so a Kiwoom run with this limit on refuses
+every sell until you set `KiwoomConfig::holdings_sellable_scope_`. You will also meet it if you write
+your own source or your own adapter: fill `HoldingsSnapshot::sellable_basis_` (or, for a figure that
+arrived per instrument, that row's `HoldingPosition::sellable_basis_`) with the coverage and the
+resting treatment your broker actually supports, and the guard enforces. Leave it unstated and the
+refusal names the declaration to add rather than being measured against a number of unknown meaning.
 
 With a policy stated, the loop refuses to place while the snapshot is older than it, reporting
 `portfolio_stale`. Reconciling a target against

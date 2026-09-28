@@ -1382,11 +1382,11 @@ TEST_CASE("an inquiry answers for one instrument and certifies no other") {
   REQUIRE(report.refused_.empty());
 
   const auto& after = live_runner.context().portfolio();
-  REQUIRE(after.sellable_basis_for(samsung()).is_enforceable());
+  REQUIRE(after.sellable_reading_for(samsung()).basis_.is_enforceable());
 
   // **And Hynix is untouched.** This is the assertion the defect failed: its figure was populated
   // before the inquiry and nobody has said what it covers.
-  REQUIRE_FALSE(after.sellable_basis_for(hynix()).is_enforceable());
+  REQUIRE_FALSE(after.sellable_reading_for(hynix()).basis_.is_enforceable());
   // The portfolio-wide basis stays unestablished too, which is what stops the promotion.
   REQUIRE_FALSE(after.sellable_basis_.is_enforceable());
 }

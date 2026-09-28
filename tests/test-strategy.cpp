@@ -688,6 +688,24 @@ TEST_CASE("the probe learns nothing from a figure of unknown coverage") {
   stated.observe(observed("100", "100", "0"));
   stated.observe(observed("100", "100", "30"));
   REQUIRE(stated.verdict() == strategy::SellableConvention::GROSS_OF_RESTING);
+
+  // **And a gap drops the baseline rather than spanning it**, which is the half that skipping alone
+  // does not give. Found at round 3: a declared reading, then an undeclared one, then a declared one
+  // would otherwise be judged against the reading from *before* the gap -- so the distance appears to
+  // move by everything that happened while the probe was not looking, and it records a confident
+  // verdict about a window it never observed.
+  Probe across_a_gap;
+  across_a_gap.observe(observed("100", "100", "0"));
+
+  auto unobservable = observed("100", "70", "0");
+  unobservable.sellable_basis_ = SellableBasis{};
+  across_a_gap.observe(unobservable);
+
+  across_a_gap.observe(observed("100", "70", "30"));
+
+  // Nothing is concluded: the only comparable pair is separated by a reading nobody could interpret.
+  REQUIRE(across_a_gap.verdict() == strategy::SellableConvention::UNDETERMINED);
+  REQUIRE(across_a_gap.overall().total() == 0);
 }
 
 TEST_CASE("the probe says nothing until a sell starts resting") {
@@ -1684,6 +1702,61 @@ TEST_CASE("a sellable figure nobody characterized refuses, and works the moment 
   ProbePortfolio resting_only = undeclared;
   resting_only.sellable_basis_.resting_ = SellableBasis::RestingTreatment::DEDUCT;
   REQUIRE(guard.check(planned("10", "70000", OrderSide::SELL), resting_only, open_market()));
+}
+
+TEST_CASE("a split holding cannot borrow one lot's declaration for another lot's figure") {
+  // **Round 3's blocker, and it is the first-row pattern this repository has paid for before.** The
+  // figure and its basis were two accessors, each walking the rows and each taking the first match on
+  // its own criterion: the figure from the first row of the instrument, the basis from the first row
+  // carrying an override. For a holding split across two lots those are different rows.
+  RiskLimits limits;
+  limits.enforce_sellable_quantity_ = true;
+  const RiskGuard guard(limits);
+
+  // Lot one: a figure of 100 and nothing said about it.
+  ProbePortfolio split;
+  HoldingPosition first;
+  first.instrument_ = samsung();
+  first.quantity_ = Decimal64::parse("100");
+  first.sellable_quantity_ = Decimal64::parse("100");
+  split.positions_.push_back(first);
+
+  // Lot two: a declared basis, and the declaration answered thirty.
+  HoldingPosition second;
+  second.instrument_ = samsung();
+  second.quantity_ = Decimal64::parse("30");
+  second.sellable_quantity_ = Decimal64::parse("30");
+  second.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
+  split.positions_.push_back(second);
+
+  // A sell of 100 must **not** pass: the only number anyone characterized is thirty, and the hundred
+  // sitting on the first row is uninterpretable. Under the two-accessor version this was admitted.
+  const auto refused = guard.check(planned("100", "70000", OrderSide::SELL), split, open_market());
+  REQUIRE(refused);
+  REQUIRE(refused->reason_ == GuardReason::SELLABLE_BASIS_UNESTABLISHED);
+
+  // **Both row orders**, because a rule that reads the first row is right by accident in one of them.
+  ProbePortfolio reversed;
+  reversed.positions_.push_back(second);
+  reversed.positions_.push_back(first);
+  const auto also = guard.check(planned("100", "70000", OrderSide::SELL), reversed, open_market());
+  REQUIRE(also);
+  REQUIRE(also->reason_ == GuardReason::SELLABLE_BASIS_UNESTABLISHED);
+
+  // Even a sell of thirty refuses, which is the deliberately conservative half: two lots described
+  // differently cannot be reconciled by this library, so nothing is enforced against either.
+  REQUIRE(guard.check(planned("30", "70000", OrderSide::SELL), split, open_market()));
+
+  // The positive control: two lots described the *same* way are ordinary, and the first row's figure
+  // is used exactly as a single-row holding's would be. Without this the test would also pass if a
+  // split holding simply always refused.
+  ProbePortfolio agreeing = split;
+  agreeing.positions_[0].sellable_basis_ = second.sellable_basis_;
+  REQUIRE_FALSE(guard.check(planned("100", "70000", OrderSide::SELL), agreeing, open_market()));
 }
 
 TEST_CASE("a figure covering part of a holding refuses, and says so distinguishably") {
@@ -2826,6 +2899,23 @@ TEST_CASE("every guard reason has a stable name") {
   );
   REQUIRE(strategy::guard_reason_name(GuardReason::ORDER_RATE_EXCEEDED) == "order_rate_exceeded");
   REQUIRE(strategy::guard_reason_name(GuardReason::VALUE_NOT_KNOWN) == "value_not_known");
+  // **The last three were missing, and two of them predate this branch.** A test called "every guard
+  // reason" that covers most of them is worse than one that names its subset, because the gap is
+  // exactly where a new enumerator slips through unnamed -- and `guard_reason_name`'s trailing
+  // `return "unknown"` means an unhandled reason compiles and reports nothing useful rather than
+  // failing to build. The library declares no `-Wswitch`-forcing flags of its own, so nothing else
+  // would have said so.
+  REQUIRE(
+    strategy::guard_reason_name(GuardReason::QUANTITY_NOT_SELLABLE) == "quantity_not_sellable"
+  );
+  REQUIRE(
+    strategy::guard_reason_name(GuardReason::SELLABLE_BASIS_UNESTABLISHED) ==
+    "sellable_basis_unestablished"
+  );
+  REQUIRE(
+    strategy::guard_reason_name(GuardReason::INSUFFICIENT_BUYING_POWER) ==
+    "insufficient_buying_power"
+  );
 }
 
 TEST_CASE("a shortfall below the tolerance is left alone rather than chased") {

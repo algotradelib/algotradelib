@@ -188,22 +188,57 @@ struct Portfolio {
   }
 
  public:
+  /** A sellable figure together with what it is evidence of, read from one row. */
+  struct SellableReading {
+    /** The figure, or nothing when no row of the instrument reported one. */
+    std::optional<Decimal64> quantity_;
+    /** What that figure is evidence of. Unestablished refuses, and so does a disagreement. */
+    SellableBasis basis_;
+  };
+
   /**
-   * Returns what the sellable figure for `instrument` is evidence of.
+   * Returns the sellable figure for `instrument` **and its basis, from the same row**.
    *
-   * **Per figure, not per portfolio**, because a per-instrument inquiry answers for the one instrument
-   * it was asked about. A row that carries its own basis keeps it; every other row is described by the
-   * snapshot's. Without this, answering A by inquiry would promote A's declaration to the whole
-   * portfolio and make an undeclared figure sitting on B enforceable, putting a wrong-sized B sell on
-   * the wire.
+   * **The pairing is the whole point, and reading them separately was a defect.** An earlier revision
+   * offered the figure and the basis as two accessors, each walking the rows independently and each
+   * returning the first match on its own criterion -- the figure from the first row of the instrument,
+   * the basis from the first row carrying an override. For a holding split across two lots those are
+   * different rows: the first lot's unestablished figure of 100 paired with the second lot's declared
+   * basis authorizes a sell of 100 when the declaration answered 30. This repository has paid for that
+   * shape before, in `quantity_of` versus `net_quantity_of`, and this is the same mistake one level up.
+   *
+   * A row carrying its own basis keeps it -- a per-instrument inquiry answers for the instrument it was
+   * asked about and says nothing about any other. A row without one is described by the snapshot's.
+   *
+   * **Two lots described differently refuse**, rather than one of them winning. Whether two rows of one
+   * instrument can be reconciled is a statement about what the broker meant, which is not this
+   * library's to make -- the same argument `plan/todo/split-position-rows.md` records for their
+   * quantities. The reading comes back unestablished and the guard refuses, naming the gap.
    */
-  SellableBasis sellable_basis_for(const InstrumentId& instrument) const {
+  SellableReading sellable_reading_for(const InstrumentId& instrument) const {
+    SellableReading reading;
+    bool seen = false;
     for (const auto& position : positions_) {
-      if (position.instrument_ == instrument && position.sellable_basis_) {
-        return *position.sellable_basis_;
+      if (!(position.instrument_ == instrument)) {
+        continue;
+      }
+      const SellableBasis basis =
+        position.sellable_basis_ ? *position.sellable_basis_ : sellable_basis_;
+      if (!seen) {
+        reading.quantity_ = position.sellable_quantity_;
+        reading.basis_ = basis;
+        seen = true;
+        continue;
+      }
+      // A second row of the same instrument. Its figure is not summed -- that is the open question in
+      // `split-position-rows.md` -- but a basis that disagrees with the first row's makes even the
+      // first row's figure uninterpretable, because nothing says which lot a sale draws from.
+      if (basis.coverage_ != reading.basis_.coverage_ ||
+          basis.resting_ != reading.basis_.resting_) {
+        return SellableReading{reading.quantity_, SellableBasis{}};
       }
     }
-    return sellable_basis_;
+    return reading;
   }
 
   /** Returns the cash held in `currency`, or nothing when the broker reported none. */

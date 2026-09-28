@@ -1252,7 +1252,11 @@ public:
     }
 
     if (limits_.enforce_sellable_quantity_ && order.side_ == OrderSide::SELL) {
-      const auto sellable = portfolio.sellable_quantity_of(order.instrument_);
+      // **One read, so the figure and its authority cannot come from different rows.** See
+      // `Portfolio::sellable_reading_for`: taking them separately let a split holding pair the first
+      // lot's unestablished quantity with a later lot's declaration.
+      const auto reading = portfolio.sellable_reading_for(order.instrument_);
+      const auto& sellable = reading.quantity_;
       if (!sellable) {
         // Absent is unknown, and unknown refuses. The broker did not publish the figure, or there
         // is no such position; neither is permission to sell, and substituting the held quantity
@@ -1267,8 +1271,7 @@ public:
       // venue-scoped figure bound a whole-holding sell, which is the defect this branch exists to
       // close, and it fails closed so that a broker adapter this library has never seen is refused
       // rather than trusted.
-      const auto basis = portfolio.sellable_basis_for(order.instrument_);
-      if (!basis.is_enforceable()) {
+      if (!reading.basis_.is_enforceable()) {
         return refuse(GuardReason::SELLABLE_BASIS_UNESTABLISHED);
       }
       // Resting sells count against the same figure -- **every** open sell, the broker's own rows and

@@ -118,10 +118,20 @@ public:
     // `SellableBasis::Coverage::UNESTABLISHED` means at Kiwoom -- the distance is a venue split, and a
     // position moving between venues would read as a resting convention. So an unenforceable basis is
     // skipped whole rather than judged, and the verdict stays `UNDETERMINED`, which is true.
-    if (!portfolio.sellable_basis_.is_enforceable()) {
-      return;
-    }
     for (const auto& position : portfolio.positions_) {
+      const auto reading = portfolio.sellable_reading_for(position.instrument_);
+      if (!reading.basis_.is_enforceable()) {
+        // **Skipped, and the baseline is dropped with it.** Merely ignoring the reading would leave the
+        // previous one pending, so the *next* enforceable reading would be compared against a
+        // baseline from before the gap -- and the distance would appear to move by whatever happened
+        // in between. A declared 100/100/0, an undeclared 100/70/0, then a declared 100/70/30 would
+        // record a confident NET_OF_RESTING across a window the probe never observed.
+        //
+        // Resolved per instrument rather than per portfolio, because a per-instrument inquiry's basis
+        // lands on its own row: checking only the snapshot's would discard every Toss reading.
+        forget(position.instrument_);
+        continue;
+      }
       if (!position.sellable_quantity_) {
         // The broker did not publish it, so there is nothing to learn from this position.
         continue;
@@ -134,6 +144,21 @@ public:
         continue;
       }
       last_.push_back({position.instrument_, now});
+    }
+  }
+
+  /**
+   * Drops any pending baseline for `instrument`.
+   *
+   * Called when a reading cannot be judged, so the next one that can is compared against a reading it
+   * actually follows rather than across a gap.
+   */
+  void forget(const InstrumentId& instrument) {
+    for (auto it = last_.begin(); it != last_.end(); ++it) {
+      if (it->first == instrument) {
+        last_.erase(it);
+        return;
+      }
     }
   }
 
