@@ -323,7 +323,7 @@ every instruction was accepted.
 `report.final_gate_` is an optional, and names the most fundamental hold in force rather than only the
 loop's own — so a run that sent nothing because *you* halted it says `operator`, instead of showing you
 an open gate while nothing goes out. `guard().holds()` lists every hold when more than one stands, and
-`guard().hold_detail(HaltReason::LOCAL_FAILURE)` carries what the binding said it could not do — a journal write that failed is the usual answer, and not the only one.
+`guard().hold_detail(HaltReason::LOCAL_FAILURE)` carries the **first** local-failure detail recorded — whatever the binding said it could not do, or whatever a caller of `halt_locally` supplied, such as a source that could not journal a reconciliation decision. A failed journal write is the usual answer and not the only one.
 
 ## Did everything I asked for go out?
 
@@ -391,7 +391,8 @@ hours still goes out.** The phase limit governs what an order *opens*, not what 
 reducing a held position toward flat is permitted in any phase, because a limit that cannot be
 de-risked past turns "the market is shut" into "you may not reduce risk". So an operator who asks to
 be flat at 22:00 gets a request sent, and very likely a *broker's* rejection rather than the
-library's — which is the better answer, since it is the venue's and it is journalled.
+library's — which is the better answer, since it is the venue's own, and durable **if you bound a
+journaling executor**: `live::bind` does not, `live::bind_journaled` does.
 `LoopReport::sends_outside_permitted_phase_` counts how often that happened.
 
 **Every other limit still applies to that flatten, and each of them is silent in the same way.** A

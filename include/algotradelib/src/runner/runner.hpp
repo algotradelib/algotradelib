@@ -378,17 +378,19 @@ public:
   /**
    * Returns why local machinery can no longer send, or nothing while it can.
    *
-   * **Sticky on purpose.** Whatever the binding could not reach will still be unreachable on the
-   * next order, and the one after that. Clearing it on the next quiet bar would turn an outage into
-   * a trickle of unexplained refusals; leaving it set is what "a runner that cannot record what it
-   * sends should not send" actually requires.
+   * **Sticky by policy, not by prediction.** Whatever failed may well fail on the next order too --
+   * but it may equally have recovered, and this hold stays either way. Clearing it on the next quiet
+   * bar would turn an outage into a trickle of unexplained refusals, and would decide on its own
+   * that a transient failure was transient; leaving it set makes resuming a deliberate act.
    *
    * **It is a hold on the guard**, `strategy::HaltReason::LOCAL_FAILURE`, not a flag beside it.
    * That is the difference between a condition every send path has to remember to check and one
    * checked by the single function every order already passes through. It also means an operator
-   * asking the guard why it will not trade is told **what the binding said** -- a journal write that
-   * failed is the usual answer and not the only one, since any executor answering `UNAVAILABLE`
-   * takes this hold -- rather than being told only that trading is halted.
+   * asking the guard why it will not trade is told **the first local-failure detail recorded** --
+   * what the binding said it could not do, or whatever a caller of `halt_locally` supplied, which
+   * `live::SessionSource` does when it cannot journal a reconciliation decision. A failed journal
+   * write is the usual answer and not the only one. Better than being told only that trading is
+   * halted.
    *
    * Cleared only by `resume_after_local_failure`, which a program calls when it has fixed whatever
    * was broken.
@@ -860,8 +862,9 @@ public:
   /**
    * What the broker said about the **most recent** order it refused, where the executor can say.
    *
-   * Overwritten rather than accumulated: a run refused ten thousand times keeps one record, which is
-   * what makes this affordable at all. Empty on a runner whose broker has refused nothing, and empty
+   * Overwritten rather than accumulated: a run refused ten thousand times keeps **at most** one
+   * record, which is what makes this affordable at all -- at most, because a refusal that states
+   * nothing clears it, so a non-zero count can sit beside an empty optional. Empty on a runner whose broker has refused nothing, and empty
    * on every executor that cannot answer -- a dry runner and a replay's queueing executor have no
    * broker to have been refused by, so `runner_detail::states_last_error` detects the ability rather
    * than requiring it.
