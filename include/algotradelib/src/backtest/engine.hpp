@@ -66,10 +66,14 @@ struct QueuedOrder {
    * would then have filled a 10:30 decision at a 09:00 price: not lookahead, but its mirror image,
    * and just as false.
    *
-   * Zero means undated, which is every order placed by a caller driving this executor directly, and
-   * is treated as eligible -- the rule can only ever defer a fill, never invent one.
+   * **Empty means undated**, which is every order placed by a caller driving this executor directly,
+   * and is treated as eligible -- the rule can only ever defer a fill, never invent one. An
+   * `optional` rather than a zero sentinel because the epoch is a perfectly good instant for a
+   * replay to reach: a quote stamped 1970-01-01 placed an order that then took the *undated* branch
+   * and filled at a price from before it, which is the defect this field exists to prevent, wearing
+   * the field's own sentinel.
    */
-  std::chrono::system_clock::time_point decided_at_{};
+  std::optional<std::chrono::system_clock::time_point> decided_at_;
 };
 
 /**
@@ -214,14 +218,14 @@ public:
    * of its own and the context's belongs to the runner. See `QueuedOrder::decided_at_` for what it
    * is for.
    */
-  void deciding_at(std::chrono::system_clock::time_point at) noexcept { deciding_at_ = at; }
+  void deciding_at(std::chrono::system_clock::time_point at) { deciding_at_ = at; }
 
 private:
   std::vector<QueuedOrder<BrokerTag>> queued_;
   std::optional<OrderRef<BrokerTag>> last_ref_;
   std::uint64_t issued_{0};
   std::uint64_t bar_{0};
-  std::chrono::system_clock::time_point deciding_at_{};
+  std::optional<std::chrono::system_clock::time_point> deciding_at_;
 };
 
 /** One point on the equity curve, recorded per bar. */
@@ -308,18 +312,21 @@ struct ReplayResult {
    */
   std::size_t quotes_{0};
   /**
-   * Fills deferred because this engine could not prove the decision preceded the bar's period.
+   * **Deferral events**, not orders and not fills: one per queued order per bar it was skipped
+   * against for want of proof that the decision preceded that bar's period.
    *
-   * Only a **close-stamped weekly, monthly or yearly** bar can reach this: every other shape states
-   * or derives its period start, and the comparison is then exact. For those, the engine falls back
-   * to "was this decided at or before the previous bar of the same instrument", which is sufficient
-   * proof when it holds and no proof at all when it does not -- so a quote in the gap between two
-   * weekly periods is deferred alongside one genuinely inside a period.
+   * The unit matters and the name cannot carry it. An order counted here may have been decided
+   * genuinely inside the period, in which case the deferral is simply correct; it may be a limit that
+   * would not have executed against that bar anyway; and it may never fill at all. What non-zero
+   * means is only this: **some fill could have happened a bar earlier, at a different price, under a
+   * model that knew where the period began.** Under timestamp-ordered events one order ordinarily
+   * reaches this branch at most once, because after that bar its predecessor is no longer older than
+   * the decision.
    *
-   * Non-zero therefore means some fills happened **later than they needed to**, by at least one bar,
-   * and the report says so rather than leaving a reader to discover it from a fill price. Zero is
-   * every replay of daily, intraday or open-stamped bars, which is every replay this library's own
-   * examples and tests produce apart from the one that exists to pin this.
+   * Only a **close-stamped weekly, monthly or yearly** bar can reach it: every other shape states or
+   * derives its period start and the comparison is then exact. Zero is every replay of daily,
+   * intraday or open-stamped bars, which is every replay this library's own examples and tests
+   * produce apart from the ones that exist to pin this.
    *
    * **Appended**, for the reason `currency_` above states.
    */
@@ -496,10 +503,13 @@ public:
     // reported. Before it would report only what settlement had already changed.
     publish_order_updates();
     previous_ = event;
-    // Per instrument, unlike `previous_`, because it answers a question about *this* series: the
-    // fallback in `decided_inside_after` needs the previous bar of the same instrument, and an
-    // interleaved replay's previous bar is usually somebody else's.
-    last_period_end_.insert_or_assign(event.instrument_, event.period_end_);
+    // Per instrument **and interval**, unlike `previous_`, because it answers a question about
+    // *this* series: `may_fill`'s fallback needs the previous bar of the same series, an interleaved
+    // replay's previous bar is usually somebody else's, and a *different interval* of the same
+    // instrument overlaps rather than tiles -- which is the whole reason the interval is in the key.
+    last_period_end_.insert_or_assign(
+      runner::SeriesKey{event.instrument_, event.interval_}, event.period_end_
+    );
   }
 
   /**
@@ -731,30 +741,37 @@ private:
    *    open price -- which is what `NextBarFillModel` credits a market order with -- is from before
    *    the strategy decided anything.
    * 3. **Where it does not answer**, the only proof available is that the decision was made at or
-   *    before this instrument's *previous* bar ended: periods of one instrument do not overlap, so a
-   *    decision that old cannot be inside this one. It is a **sufficient** condition and not a
-   *    necessary one, which is exactly its cost -- a quote in the gap *between* two weekly periods is
-   *    also outside the later one, and this cannot tell that case from a quote inside it. Those fills
-   *    are deferred to a later bar and counted in `ReplayResult::fills_deferred_unprovable_`, because
-   *    a delay nobody can see is the kind of modelling difference this engine's caveats exist for.
+   *    before the previous bar **of this same series** ended -- same instrument *and* same interval.
+   *    Consecutive periods of one series tile, so a decision that old is provably outside this one.
+   *    It is a **sufficient** condition and not a necessary one, which is exactly its cost: a quote
+   *    in the gap *between* two weekly periods is also outside the later one, and this cannot tell
+   *    that case from a quote inside it. Those deferrals are counted in
+   *    `ReplayResult::fills_deferred_unprovable_`, because a delay nobody can see is the kind of
+   *    modelling difference this engine's caveats exist for.
    *
-   * **With no previous bar and no derivable start, the answer is no.** An earlier version returned
-   * "no constraint" there, which made the *first* close-stamped weekly bar of an instrument fill a
-   * quote decided inside it at that week's opening price -- the precise defect the rule exists to
-   * stop, surviving in the one case the tests had not covered. Codex round 2 found it.
+   * **The interval belongs in that key**, and leaving it out was a defect: a caller may feed a daily
+   * and a weekly bar for one instrument, and those periods *overlap*. A decision made on Tuesday's
+   * daily close is at or before that daily bar's end, and Friday's weekly bar -- which began on
+   * Monday -- would have passed the test and filled it at Monday's open. Codex round 3 found it, and
+   * it is the same lesson twice: the proof has to rest on something the feed contract guarantees.
+   *
+   * **With no such predecessor and no derivable start, the answer is no.** An earlier version
+   * returned "no constraint" there, which made the *first* close-stamped weekly bar of an instrument
+   * fill a quote decided inside it at that week's opening price -- the precise defect the rule exists
+   * to stop, surviving in the one case the tests had not covered. Codex round 2 found that one.
    */
   bool may_fill(
     const QueuedOrder<Tag>& entry,
     const strategy::BarEvent& event
   ) {
-    if (entry.decided_at_ == std::chrono::system_clock::time_point{}) {
+    if (!entry.decided_at_) {
       return true;
     }
     if (const auto start = period_start_of(event)) {
-      return !(*start < entry.decided_at_);
+      return !(*start < *entry.decided_at_);
     }
-    const auto seen = last_period_end_.find(event.instrument_);
-    if (seen == last_period_end_.end() || seen->second < entry.decided_at_) {
+    const auto seen = last_period_end_.find(runner::SeriesKey{event.instrument_, event.interval_});
+    if (seen == last_period_end_.end() || seen->second < *entry.decided_at_) {
       ++result_.fills_deferred_unprovable_;
       return false;
     }
@@ -1116,8 +1133,8 @@ private:
     }
   }
 
-  /** Each instrument's last period end; see `decided_inside_after`. */
-  std::map<InstrumentId, std::chrono::system_clock::time_point> last_period_end_;
+  /** Each series' last period end, keyed by instrument and interval; see `may_fill`. */
+  std::map<runner::SeriesKey, std::chrono::system_clock::time_point> last_period_end_;
   ReplayConfig config_;
   NextBarFillModel fills_;
   ReplayLedger ledger_;

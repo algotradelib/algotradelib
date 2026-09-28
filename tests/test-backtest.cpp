@@ -1007,6 +1007,28 @@ struct WatchesPhase {
   }
 };
 
+/** Buys the instrument it is shown, once, on its first bar, and records what filled. */
+struct BuysOnFirstBar {
+  bool submitted_{false};
+  std::vector<Decimal64> fill_prices_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (submitted_) {
+      return;
+    }
+    submitted_ = true;
+    ctx.submit(
+      strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
+      )
+    );
+  }
+
+  template <class Ctx>
+  void on_fill(Ctx&, const strategy::Fill& fill) { fill_prices_.push_back(fill.price_); }
+};
+
 /** A quote for the replayed instrument at `price`. */
 strategy::QuoteEvent quote_at(Clock::time_point at, const char* price) {
   strategy::QuoteEvent event;
@@ -1252,6 +1274,44 @@ TEST_CASE("a daily replay never defers a fill it could not prove") {
 
   REQUIRE(engine.strategy().fill_prices_.size() == 1);
   CHECK(engine.result().fills_deferred_unprovable_ == 0);
+}
+
+TEST_CASE("a weekly bar is not proven by a daily one of the same instrument") {
+  // **Two intervals of one instrument overlap rather than tile**, so the previous bar of the
+  // *instrument* proves nothing about the period of a bar at a different interval. The decision here
+  // is Tuesday's daily close; Friday's weekly bar began on Monday and would have filled it at
+  // Monday's open, which is two days before the decision. Keying the predecessor by interval as well
+  // is what makes the proof rest on something the feed contract actually guarantees.
+  backtest::Backtester<BuysOnFirstBar> engine(BuysOnFirstBar{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_WEEK, "50000", "51000"));
+
+  // The weekly bar has no weekly predecessor, so nothing proves the Tuesday decision preceded it.
+  CHECK(engine.result().executions_.empty());
+  CHECK(engine.result().fills_deferred_unprovable_ > 0);
+}
+
+TEST_CASE("an order decided at the epoch is dated, not undated") {
+  // The sentinel that was also a value. A replay's instants come from its data, and 1970 is a
+  // perfectly reachable one -- so an order decided then took the *undated* branch and filled at a
+  // price from before itself, which is the defect the field exists to prevent wearing the field's
+  // own sentinel.
+  backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
+  strategy::QuoteEvent at_epoch;
+  at_epoch.quote_.instrument_ = samsung();
+  at_epoch.quote_.last_price_ = Decimal64::parse("70000");
+  at_epoch.quote_.currency_ = Currency{"KRW"};
+  at_epoch.quote_.received_at_ = Clock::time_point{};
+  // A trading day is not asserted for 1970, and the phase does not matter here; the permissive
+  // fixture is what lets the order out.
+  engine.feed(at_epoch);
+
+  // The first weekly bar of this instrument covers a period this engine cannot place the epoch
+  // inside or outside, so it does not fill the order.
+  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_WEEK, "60000", "61000"));
+
+  CHECK(engine.result().executions_.empty());
+  CHECK(engine.result().fills_deferred_unprovable_ > 0);
 }
 
 TEST_CASE("an open-stamped bar states its own period start") {

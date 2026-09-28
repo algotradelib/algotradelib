@@ -127,9 +127,11 @@ struct ReportCaveats {
    * phase, and it neither fills nor marks: `NextBarFillModel` prices a market order at a bar's open,
    * so the order rests until a bar whose period this engine can establish began **at or after the
    * decision** -- a period that began earlier contains the decision, and its open is a price from
-   * before the strategy decided anything. For a quote part-way through a session that is not that session's bar but the next
-   * one; for a quote between a close and the next open it is the very next bar. Live, the same order
-   * reaches the broker immediately and can trade at once.
+   * before the strategy decided anything. For a quote part-way through a session that is not
+   * that session's bar but the next one; for a quote between a close and the next open it is usually
+   * the very next bar, and for the one bar shape whose period start cannot be derived it may be
+   * later still -- see `fills_deferred_unprovable_`. Live, the same order reaches the broker
+   * immediately and can trade at once.
    *
    * So a quote-driven strategy's replayed fills are later, and at a different price, than its live
    * ones -- by one bar where the quote fell inside a period, and by whatever a bar's open differs
@@ -141,20 +143,23 @@ struct ReportCaveats {
   std::size_t quotes_{0};
 
   /**
-   * Fills this replay deferred because it could not prove the decision preceded the bar's period.
+   * **Deferral events**: one per queued order per bar it was skipped against for want of proof that
+   * the decision preceded that bar's period.
    *
    * Zero for every replay of daily, intraday or open-stamped bars. Non-zero only for a close-stamped
    * **weekly, monthly or yearly** bar, whose period start this engine cannot derive: it falls back to
-   * proving the decision was at or before the previous bar of the same instrument, which is
-   * sufficient when it holds and no proof at all when it does not. So an order decided in the gap
-   * *between* two weekly periods -- outside both, and legitimately fillable by the later one -- is
-   * deferred alongside one decided inside a period.
+   * proving the decision came at or before the previous bar of the same **series** -- same instrument
+   * and same interval -- which is sufficient when it holds and no proof at all when it does not. So
+   * an order decided in the gap *between* two weekly periods, outside both and legitimately fillable
+   * by the later one, is deferred alongside one decided inside a period.
    *
-   * **What it costs a reader: those fills happened at least one bar later, and at that bar's price,
-   * than the model would otherwise have given them.** The alternative was to fill them at a price
-   * from before the decision, which is the defect the rule exists to prevent, so the delay is
-   * deliberate; it is reported rather than hidden because it is a modelling difference nobody could
-   * otherwise see. See `ReplayResult::fills_deferred_unprovable_`.
+   * **What non-zero tells a reader**: some fill here could have happened a bar earlier, and at a
+   * different price, under a model that knew where the period began. Not every increment is such a
+   * case -- the order may have been decided genuinely inside the period, may be a limit that would
+   * not have executed anyway, or may never fill at all. The alternative to deferring was to fill at
+   * a price from before the decision, which is the defect the rule exists to prevent, so the delay
+   * is deliberate and is reported rather than left for a reader to find in a fill price. See
+   * `ReplayResult::fills_deferred_unprovable_`.
    */
   std::size_t fills_deferred_unprovable_{0};
 
