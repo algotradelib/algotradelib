@@ -199,13 +199,18 @@ is not free, and it is worth knowing what it costs before choosing the policy:
 - **A fill can be lost.** Where the stated price is outside *today's real* band, the exchange refuses
   the order, and the clamped price would have been accepted and could have traded. A reducing sell is
   the case that stings — an exit priced below today's floor is refused instead of being lifted onto
-  it. `LoopReport::unclamped_orders_rejected_` counts those.
-- **A local guard can refuse it first.** An unclamped price is a larger notional, so the per-order
-  ceiling, the buying-power check and the gross exposure ceiling all see a bigger number.
-  `LoopReport::unclamped_orders_refused_` counts those; no exchange ever sees them.
+  it. `LoopReport::unclamped_orders_rejected_` moves when an order it sent was refused.
+- **Or nothing sends it at all.** A buy left above a withheld ceiling is the larger notional, so the
+  per-order ceiling, the buying-power check or the gross exposure ceiling can refuse it; and a price
+  no adapter will send — a sell at zero passes the grid check — is refused by the binding before any
+  request goes out. `LoopReport::unclamped_orders_refused_` moves for both, and no exchange ever sees
+  them.
 
-Both are co-occurrence rather than causation — orders are refused for many reasons — and
-`LoopReport::price_bands_withheld_` counts the decisions rather than their cost. The reason
+Read both as **co-occurrence, not causation**: orders are refused for many reasons, and a count of
+one is one order that happened to be carrying an unclamped price. They are a reason to look at the
+policy, not proof about any single order — and **neither can see the case with no refusal in it**, an
+order accepted at the raw price that then never filled. `LoopReport::price_bands_withheld_` counts
+the decisions rather than their cost. The reason
 withholding is still the default: a band whose age nobody has bounded is not evidence about today's
 band, and this library does not alter an order's price on the strength of something that is not
 evidence. The alternative is not "clamp correctly", it is "clamp to a number from an unknown day",

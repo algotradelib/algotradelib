@@ -1189,9 +1189,8 @@ TEST_CASE("a band older than the stated maximum is not applied, and a fresh one 
   const auto arrange_with = [](runner::DryRunner<LimitAt80k>& dry, int registered_on_day) {
     arrange(dry);
     dry.set_maximum_price_limits_age(std::chrono::hours(12));
-    // Dates the registration: the runner measures a band's age from the later of the last instant a
-    // driving loop reported and its own decision instant, so stating one is what a `PollingLoop`
-    // does for a live run before anything can feed.
+    // Dates the registration: a band is stamped with the last instant a driving loop reported, which
+    // is what `PollingLoop` states for a live run before anything can feed.
     dry.set_observed_at(utc(2026, 3, registered_on_day, 6, 30));
     PriceLimits band;
     band.upper_ = Decimal64::parse("71000");
@@ -1323,6 +1322,88 @@ TEST_CASE("an order a guard refused while carrying an unclamped price is counted
   CHECK(report.refused_[0].reason_ == strategy::GuardReason::ORDER_NOTIONAL_TOO_LARGE);
   CHECK(dry.unclamped_orders_refused() == 1);
   CHECK(dry.unclamped_orders_rejected() == 0);
+}
+
+TEST_CASE("stating a maximum age withdraws an earlier acceptance of any age, in both orders") {
+  // The withdrawal doing nothing was the defect: clearing the unbounded flag only when an age was
+  // *given* left `set_maximum_price_limits_age(std::nullopt)` after `allow_unbounded_price_limits_age()`
+  // still clamping with a band of any age -- under the one call an operator would reach for to stop
+  // it. This call is the policy, whichever call came before it.
+  const auto place_price = [](runner::DryRunner<LimitAt80k>& dry) {
+    const auto report = dry.feed(bar_at(10, "70000"));
+    REQUIRE(report.would_place_.size() == 1);
+    return report.would_place_[0].price_;
+  };
+
+  SECTION("nullopt after any-age withholds again") {
+    runner::DryRunner<LimitAt80k> dry;
+    arrange(dry);
+    dry.allow_unbounded_price_limits_age();
+    dry.set_maximum_price_limits_age(std::nullopt);
+    PriceLimits band;
+    band.upper_ = Decimal64::parse("71000");
+    dry.set_price_limits(samsung(), band);
+
+    CHECK(place_price(dry) == std::optional<Decimal64>(Decimal64::parse("80000")));
+    CHECK(dry.price_bands_withheld() == 1);
+  }
+
+  SECTION("any-age after a maximum applies again") {
+    runner::DryRunner<LimitAt80k> dry;
+    arrange(dry);
+    dry.set_maximum_price_limits_age(std::chrono::hours(12));
+    dry.allow_unbounded_price_limits_age();
+    PriceLimits band;
+    band.upper_ = Decimal64::parse("71000");
+    dry.set_price_limits(samsung(), band);
+
+    CHECK(place_price(dry) == std::optional<Decimal64>(Decimal64::parse("71000")));
+    CHECK(dry.price_bands_withheld() == 0);
+  }
+}
+
+TEST_CASE("an exchange stamp may age a band and never freshen it") {
+  // Two clocks disagreeing is not evidence of freshness. A stamp *later* than the moment this
+  // process received the band would otherwise date it into the future and outlive any maximum --
+  // and capping at the receipt instant needs no invented tolerance for how far apart two clocks
+  // may be.
+  runner::DryRunner<LimitAt80k> dry;
+  arrange(dry);
+  dry.set_maximum_price_limits_age(std::chrono::hours(18));
+  dry.set_observed_at(utc(2026, 3, 9, 6, 30));
+  PriceLimits band;
+  band.upper_ = Decimal64::parse("71000");
+  // **Twelve hours ahead of the receipt and still behind the moment it is aged at**, which is the
+  // only arrangement that separates capping the stamp from refusing a band dated after the ageing
+  // instant. Uncapped this band is twelve hours old against an eighteen-hour bound and clamps;
+  // capped it is a day old and does not.
+  band.exchange_time_ = utc(2026, 3, 9, 18, 30);
+  dry.set_price_limits(samsung(), band);
+  dry.set_observed_at(utc(2026, 3, 10, 6, 30));
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.would_place_.size() == 1);
+  CHECK(report.would_place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("80000")));
+  CHECK(dry.price_bands_withheld() == 1);
+}
+
+TEST_CASE("a band dated after the instant it is aged at is not applied") {
+  // A clock that goes backwards. The age would be negative and pass every positive maximum, so a
+  // band from the caller's own future would clamp -- which is the one direction this policy exists
+  // to close. A duration the runner cannot compute is not an age.
+  runner::DryRunner<LimitAt80k> dry;
+  arrange(dry);
+  dry.set_maximum_price_limits_age(std::chrono::hours(12));
+  dry.set_observed_at(utc(2026, 3, 20, 6, 30));
+  PriceLimits band;
+  band.upper_ = Decimal64::parse("71000");
+  dry.set_price_limits(samsung(), band);
+  dry.set_observed_at(utc(2026, 3, 10, 6, 30));
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+  REQUIRE(report.would_place_.size() == 1);
+  CHECK(report.would_place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("80000")));
+  CHECK(dry.price_bands_withheld() == 1);
 }
 
 TEST_CASE("withholding a band reaches an intent as well as a target") {

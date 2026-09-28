@@ -708,12 +708,13 @@ struct LoopReport {
    */
   std::size_t unclamped_orders_rejected_{0};
   /**
-   * Orders a **local guard** refused during this run while carrying a withheld band's price.
+   * Orders nothing sent to a broker during this run while carrying a withheld band's price.
    *
    * The half no exchange sees, and the one an empty `unclamped_orders_rejected_` would otherwise
-   * hide: an unclamped price is a larger notional, and every limit that multiplies quantity by price
-   * can refuse an order the clamped price would have admitted. See
-   * `Runner::unclamped_orders_refused`.
+   * hide. Two sites: a guard, where a buy left above a withheld ceiling is the larger notional and a
+   * limit that multiplies quantity by price refuses what the band would have admitted; and the
+   * binding, where a price no adapter will send never becomes a request. See
+   * `Runner::unclamped_orders_refused`, and read both counters as co-occurrence.
    */
   std::size_t unclamped_orders_refused_{0};
   /**

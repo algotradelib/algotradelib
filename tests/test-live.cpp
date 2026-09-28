@@ -896,6 +896,33 @@ struct LimitSell {
   }
 };
 
+/**
+ * Sells one share at a price of zero, which `Price::checked` admits.
+ *
+ * Zero sits on a stated tick grid and `RiskGuard` has no general positivity rule, so this reaches
+ * the binding -- where every shipped adapter refuses it before any request goes out. It is the
+ * concrete case behind `Runner::unclamped_orders_refused`'s second site: a withheld floor would have
+ * lifted this price into range.
+ */
+struct SellsAtZero {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    const auto reference = ctx.instrument(bar.instrument_);
+    if (!reference) {
+      return;
+    }
+    const auto limit = strategy::Price::checked(Decimal64::parse("0"), reference->price_rule_);
+    if (!limit) {
+      return;
+    }
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("1")), *limit
+      )
+    );
+  }
+};
+
 /** Asks for an idempotency key on the first bar only, then buys plainly. */
 struct KeyedOnce {
   int bars_{0};
@@ -1255,13 +1282,15 @@ TEST_CASE("an order the broker refused after a band was withheld is counted, and
     CHECK(live_runner.unclamped_orders_rejected() == 0);
   }
 
-  SECTION("nothing was sent at all") {
-    // A local refusal reaches no broker, so there is no opinion about the price to count. Counting
-    // here would report a cost that was never paid.
+  SECTION("the binding refuses it") {
+    // No broker was asked, so the counter about brokers stays still -- and the one about everything
+    // that never reached a broker moves, because a price the binding will not send is a price the
+    // withheld band might have moved into range.
     session.refuse_next_locally();
     live_runner.feed(bar_at(1, "70000"));
     CHECK(live_runner.price_bands_withheld() == 1);
     CHECK(live_runner.unclamped_orders_rejected() == 0);
+    CHECK(live_runner.unclamped_orders_refused() == 1);
     CHECK(session.placed().empty());
   }
 }
@@ -1295,6 +1324,39 @@ TEST_CASE("an exit priced below a withheld floor is refused rather than lifted o
   CHECK(live_runner.price_bands_withheld() == 1);
   CHECK(live_runner.unclamped_orders_rejected() == 1);
   CHECK(live_runner.unclamped_orders_refused() == 0);
+}
+
+TEST_CASE("a price no adapter will send is counted as a local refusal, not as silence") {
+  // **The third outcome, and the one that was invisible.** A sell at zero passes `Price::checked`,
+  // because zero is on a stated grid, and passes a guard that has no positivity rule -- then the
+  // binding refuses it and no request goes out. Counting only what a broker refused left this
+  // looking exactly like a run where withholding cost nothing, and applying the withheld floor
+  // would have produced a valid order.
+  using Runner = runner::Runner<
+    SellsAtZero, WithKey, FakeBroker, live::SessionExecutor<FakeSession<WithKey>>
+  >;
+  FakeSession<WithKey> session;
+  Runner live_runner(SellsAtZero{}, {}, 512, live::SessionExecutor<FakeSession<WithKey>>(session));
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  live_runner.context().set_portfolio(held_position<WithKey>("10", nullptr));
+  PriceLimits band;
+  band.lower_ = Decimal64::parse("65000");
+  live_runner.set_price_limits(samsung(), band);
+  // Stands for what every shipped adapter does with a nonpositive limit price: refuse before any
+  // I/O, with `reached_broker_` false.
+  session.refuse_next_locally();
+
+  const auto report = live_runner.feed(bar_at(1, "70000"));
+
+  REQUIRE(report.rejected_.size() == 1);
+  CHECK(report.rejected_[0].reason_ == strategy::RejectReason::BINDING_REFUSED);
+  CHECK(session.placed().empty());
+  CHECK(live_runner.price_bands_withheld() == 1);
+  CHECK(live_runner.unclamped_orders_refused() == 1);
+  // The broker was never asked, so the counter about brokers must not move.
+  CHECK(live_runner.unclamped_orders_rejected() == 0);
 }
 
 TEST_CASE("binding reads the capabilities and the tag off the session") {
