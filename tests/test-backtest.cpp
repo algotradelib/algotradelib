@@ -919,6 +919,79 @@ struct BuysOnQuote {
   }
 };
 
+/** Buys once from `on_quote` and counts the order updates it is told about. */
+struct QuoteBuyerCountingUpdates {
+  bool submitted_{false};
+  std::size_t updates_{0};
+
+  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
+
+  template <class Ctx>
+  void on_quote(Ctx& ctx, const strategy::QuoteEvent& quote) {
+    if (submitted_) {
+      return;
+    }
+    submitted_ = true;
+    const auto reference = ctx.instrument(quote.quote_.instrument_);
+    if (!reference) {
+      return;
+    }
+    // **A limit the bars never reach**, so the order is still resting when the next bar publishes.
+    // A market order placed here would fill against that same bar and be gone before the
+    // observation point -- which is not this test's subject, and is the limitation slice 28 already
+    // documented: an order placed and completed between two listings appears in neither.
+    const auto limit =
+      strategy::Price::checked(Decimal64::parse("10000"), reference->price_rule_);
+    if (!limit) {
+      return;
+    }
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        quote.quote_.instrument_,
+        OrderSide::BUY,
+        strategy::SizeSpec::quantity(Decimal64::parse("10")),
+        *limit
+      )
+    );
+  }
+
+  template <class Ctx> void on_order_update(Ctx&, const OrderSnapshot&) { ++updates_; }
+};
+
+/** Places a resting order on its first quote, and records what it is shown working on every quote. */
+struct QuoteWatchesPortfolio {
+  bool submitted_{false};
+  std::vector<std::size_t> working_seen_;
+
+  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
+
+  template <class Ctx>
+  void on_quote(Ctx& ctx, const strategy::QuoteEvent& quote) {
+    working_seen_.push_back(ctx.portfolio().working_.size());
+    if (submitted_) {
+      return;
+    }
+    const auto reference = ctx.instrument(quote.quote_.instrument_);
+    if (!reference) {
+      return;
+    }
+    const auto limit =
+      strategy::Price::checked(Decimal64::parse("10000"), reference->price_rule_);
+    if (!limit) {
+      return;
+    }
+    submitted_ = true;
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        quote.quote_.instrument_,
+        OrderSide::BUY,
+        strategy::SizeSpec::quantity(Decimal64::parse("10")),
+        *limit
+      )
+    );
+  }
+};
+
 /** A quote for the replayed instrument at `price`. */
 strategy::QuoteEvent quote_at(Clock::time_point at, const char* price) {
   strategy::QuoteEvent event;
@@ -1052,6 +1125,45 @@ TEST_CASE("a quote fed before the first bar is accepted and counted") {
   CHECK(engine.strategy().quotes_ == 1);
   CHECK(engine.result().quotes_ == 1);
   CHECK(engine.result().bars_ == 1);
+}
+
+TEST_CASE("an order placed from on_quote is reported on the next bar, not on the quote") {
+  // `feed(const BarEvent&)` and `finish` both publish order updates and this deliberately does not,
+  // because live they come from the working-order poll and a quote poll publishes none. An
+  // observation point is where the state has finished changing, which for an order placed inside
+  // `on_quote` is the next bar -- the same answer the live listing gives.
+  backtest::Backtester<QuoteBuyerCountingUpdates> engine(
+    QuoteBuyerCountingUpdates{}, replay_config()
+  );
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(quote_at(utc(2026, 3, 10, 7, 0), "70500"));
+
+  // The order is queued and nothing has announced it.
+  CHECK(engine.strategy().updates_ == 0);
+
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
+  engine.finish();
+
+  CHECK(engine.strategy().updates_ > 0);
+}
+
+TEST_CASE("a quote sees what the quote before it did, not the last bar's picture") {
+  // Every dispatch site in this engine installs the portfolio first, because the engine holds a
+  // fresher answer than the one it last pushed. **Between two quotes is where that matters and
+  // nowhere else is:** after a bar, the bar's own install and its order-update pass have already
+  // refreshed the context, so a quote arriving next would see a current picture either way. An order
+  // placed *from a quote* has no such pass behind it -- the next quote's install is the only thing
+  // that puts it in front of the strategy.
+  backtest::Backtester<QuoteWatchesPortfolio> engine(QuoteWatchesPortfolio{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(quote_at(utc(2026, 3, 10, 7, 0), "70500"));
+  engine.feed(quote_at(utc(2026, 3, 10, 7, 30), "70600"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().working_seen_.size() == 2);
+  // Nothing working when the first quote arrived, and the order it placed working at the second.
+  CHECK(engine.strategy().working_seen_[0] == 0);
+  CHECK(engine.strategy().working_seen_[1] == 1);
 }
 
 TEST_CASE("the report says it cannot know which book the bars came from") {
@@ -3258,6 +3370,31 @@ TEST_CASE("a date the schedule does not cover halts the replay rather than dropp
   REQUIRE(report.halted_);
   CHECK(report.aborted_ == 1);
   CHECK(report.executions_ == 2);
+}
+
+TEST_CASE("a halted replay consumes no quote either") {
+  // The same rule `feed(const BarEvent&)` opens with, and it has to hold for every way into the
+  // engine: a strategy told about anything after the halt decides on a run that has stopped being
+  // able to cost what it asks for, and `finish` will not stop it either.
+  auto policy = backtest::CommissionPolicy::scheduled(
+    operator_tariff({venue_rate(Venue::KRX, "0.002", "0", std::nullopt, Date{2026, 3, 11})}),
+    *VenueKey::normalized(Venue::KRX), Country::KR
+  );
+  REQUIRE(policy);
+
+  backtest::Backtester<PlacesTwoEachBar> engine(
+    PlacesTwoEachBar{}, replay_config(), backtest::NextBarFillModel(std::move(policy.value()))
+  );
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  REQUIRE(engine.result().halted_);
+
+  const auto quotes_before = engine.result().quotes_;
+  engine.feed(quote_at(utc(2026, 3, 12, 7, 0), "70500"));
+
+  // Not counted, and no handler ran: the quote was refused entry, not merely ignored downstream.
+  CHECK(engine.result().quotes_ == quotes_before);
 }
 
 TEST_CASE("the refusal bar itself runs nothing after the refusal") {
