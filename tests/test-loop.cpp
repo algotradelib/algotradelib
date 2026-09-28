@@ -3569,3 +3569,94 @@ TEST_CASE("a target-derived cancellation is not sent while the account is unknow
   CHECK(runner_instance.executor().canceled().empty());
   CHECK(runner_instance.executor().placed().empty());
 }
+
+TEST_CASE("a run states a portfolio policy, or is told which call is missing", "[loop][gate]") {
+  // Optional was the defect: a run that never thought about holdings sent orders sized against
+  // whatever the portfolio happened to contain, which before the first successful read is nothing.
+  InertRunner runner_instance;
+  InertSource source;
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  // Absence is opted out of, so this case is about the age policy alone.
+  loop.allow_absent_portfolio();
+
+  const auto report = loop.run(stop, 2);
+
+  CHECK(report.final_gate_ == strategy::HaltReason::PORTFOLIO_STALE);
+  // Named once for the whole run, not once per poll or once per iteration, and naming both ways out
+  // rather than only the problem. Counted rather than searched for: a note repeated every iteration
+  // would bury the rest of the report in a long run, which is the failure mode this asserts against.
+  const auto policy_notes = static_cast<std::size_t>(std::count(
+    report.notes_.begin(), report.notes_.end(),
+    std::string(
+      "no portfolio age policy: call set_maximum_portfolio_age or allow_unbounded_portfolio_age")));
+  CHECK(policy_notes == 1);
+}
+
+TEST_CASE("the two portfolio opt-outs each suspend exactly what they say", "[loop][gate]") {
+  // All four combinations, because the previous revision of this design promised a switch that
+  // could not work: the epoch is 1970, so an absence opt-out that did not also reach the age
+  // comparison merely renamed the refusal from absent to stale.
+  InertRunner runner_instance;
+  InertSource source;
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+
+  SECTION("neither: a portfolio never read holds, and says so as absence") {
+    loop.set_maximum_portfolio_age(std::chrono::minutes(5));
+    const auto report = loop.run(stop, 1);
+    CHECK(report.final_gate_ == strategy::HaltReason::PORTFOLIO_ABSENT);
+  }
+
+  SECTION("absence alone, under a bounded age: the epoch is exempt from the comparison") {
+    // The case the previous revision got wrong.
+    loop.set_maximum_portfolio_age(std::chrono::minutes(5));
+    loop.allow_absent_portfolio();
+    const auto report = loop.run(stop, 1);
+    CHECK_FALSE(report.final_gate_.has_value());
+  }
+
+  SECTION("absence alone does not excuse a snapshot that was read and then aged out") {
+    loop.set_maximum_portfolio_age(std::chrono::minutes(5));
+    loop.allow_absent_portfolio();
+    strategy::Portfolio<InertRunner::Tag> portfolio;
+    portfolio.as_of_ = base_time() - std::chrono::minutes(10);
+    runner_instance.context().set_portfolio(portfolio);
+
+    const auto report = loop.run(stop, 1);
+    CHECK(report.final_gate_ == strategy::HaltReason::PORTFOLIO_STALE);
+  }
+
+  SECTION("an unbounded age alone does not excuse a portfolio never read") {
+    loop.allow_unbounded_portfolio_age();
+    const auto report = loop.run(stop, 1);
+    CHECK(report.final_gate_ == strategy::HaltReason::PORTFOLIO_ABSENT);
+  }
+
+  SECTION("both together restore the previous placement behaviour") {
+    loop.allow_unbounded_portfolio_age();
+    loop.allow_absent_portfolio();
+    const auto report = loop.run(stop, 1);
+    CHECK_FALSE(report.final_gate_.has_value());
+    CHECK(report.blocked_ == 0);
+  }
+}
+
+TEST_CASE("an externally seeded snapshot still ages out against the stated policy", "[loop][gate]") {
+  // No holdings cadence at all, so nothing will ever refresh what the consumer installed by hand.
+  // The absence trigger cannot see this one, which is why the age policy is not optional.
+  InertRunner runner_instance;
+  InertSource source;
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  loop.set_maximum_portfolio_age(std::chrono::minutes(5));
+  StopSource stop;
+
+  strategy::Portfolio<InertRunner::Tag> seeded;
+  seeded.as_of_ = base_time() - std::chrono::hours(9);
+  runner_instance.context().set_portfolio(seeded);
+
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.final_gate_ == strategy::HaltReason::PORTFOLIO_STALE);
+  CHECK(report.blocked_ == 1);
+}

@@ -1,7 +1,9 @@
 #include <algotradelib/runner>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
+#include <array>
 #include <chrono>
 #include <optional>
 #include <string>
@@ -1503,4 +1505,226 @@ TEST_CASE("a cancellation naming an order the snapshot does not hold is reported
   REQUIRE(report.unresolved_cancel_.size() == 1);
   REQUIRE(report.would_cancel_.empty());
   REQUIRE(dry.executor().canceled().empty());
+}
+
+namespace {
+
+/** A portfolio carrying one resting sell, stamped or not as the case under test needs. */
+strategy::Portfolio<runner::DryTag> resting_sell(bool stamped) {
+  strategy::Portfolio<runner::DryTag> portfolio;
+  if (stamped) {
+    portfolio.as_of_ = utc(2026, 3, 10, 6, 30);
+  }
+  WorkingOrder<runner::DryTag> working;
+  working.order_.instrument_ = samsung();
+  working.order_.side_ = OrderSide::SELL;
+  working.order_.status_ = OrderStatus::PENDING;
+  working.order_.quantity_ = Decimal64::parse("10");
+  working.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+  working.ref_ = OrderRef<runner::DryTag>{"0001", ""};
+  portfolio.working_.push_back(working);
+  return portfolio;
+}
+
+/** Wants to be flat, so its plan is a withdrawal and nothing else. */
+struct FlatTargetStrategy {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = Decimal64::parse("0");
+    target.tag_ = "exit";
+    ctx.submit(target);
+  }
+};
+
+} // namespace
+
+TEST_CASE("a plan derived from an account never read is withheld whole, and says so") {
+  // The runner half of the gate, with no loop and therefore no holds at all: the epoch trigger is
+  // intrinsic, so a consumer driving a runner directly is protected by the same rule.
+  runner::DryRunner<FlatTargetStrategy> dry;
+  arrange(dry);
+  dry.context().set_portfolio(resting_sell(/*stamped=*/false));
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+
+  REQUIRE(report.withheld_plans_.size() == 1);
+  const auto& withheld = report.withheld_plans_.front();
+  CHECK(withheld.reason_ == runner::WithheldPlanReason::PORTFOLIO_ABSENT);
+  CHECK(withheld.instrument_ == samsung());
+  CHECK(withheld.tag_ == "exit");
+  REQUIRE(withheld.not_canceled_.size() == 1);
+  CHECK(withheld.not_canceled_.front() == OrderRef<runner::DryTag>{"0001", ""});
+  // A target of zero against an apparently-flat account plans no placement at all, which is exactly
+  // why `WithheldOrder` could not carry this result.
+  CHECK(withheld.not_placed_ == 0);
+  // Nothing was sent, in either direction.
+  CHECK(report.would_cancel_.empty());
+  CHECK(report.would_place_.empty());
+  // And the run did not decide to do nothing: a `quiet()` that said so would hide the whole result.
+  CHECK_FALSE(report.quiet());
+}
+
+TEST_CASE("a plan is withheld when a hold would refuse the replacement it depends on") {
+  // The third trigger, and the one that has nothing to do with the portfolio. The snapshot is fresh
+  // and the account is known; what makes the plan unsafe is that its cancellations would go out
+  // while its placement half is refused, leaving a bare withdrawal the strategy never stated.
+  runner::DryRunner<FlatTargetStrategy> dry;
+  arrange(dry);
+  dry.context().set_portfolio(resting_sell(/*stamped=*/true));
+  dry.guard().halt(strategy::HaltReason::BUYING_POWER_UNREAD);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+
+  REQUIRE(report.withheld_plans_.size() == 1);
+  CHECK(report.withheld_plans_.front().reason_ == runner::WithheldPlanReason::PLACEMENT_HELD);
+  // The hold is named, so an operator is not left to guess which of eight it was.
+  CHECK(report.withheld_plans_.front().detail_ == "buying_power_unread");
+  CHECK(report.would_cancel_.empty());
+}
+
+TEST_CASE("a plan derived from a snapshot past the stated age is withheld") {
+  // The second trigger. The policy is evaluated here, against the snapshot in hand, rather than
+  // being handed in as a verdict computed about some earlier portfolio.
+  runner::DryRunner<FlatTargetStrategy> dry;
+  arrange(dry);
+  auto portfolio = resting_sell(/*stamped=*/true);
+  portfolio.as_of_ = utc(2026, 3, 1, 6, 30);
+  dry.context().set_portfolio(portfolio);
+  dry.set_maximum_portfolio_age(std::chrono::minutes(5));
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+
+  REQUIRE(report.withheld_plans_.size() == 1);
+  CHECK(report.withheld_plans_.front().reason_ == runner::WithheldPlanReason::PORTFOLIO_STALE);
+  CHECK(report.would_cancel_.empty());
+}
+
+TEST_CASE("a fresh snapshot within the stated age plans and sends as before") {
+  // The other side of all three triggers, so the rule is not simply "never act".
+  runner::DryRunner<FlatTargetStrategy> dry;
+  arrange(dry);
+  auto portfolio = resting_sell(/*stamped=*/true);
+  dry.context().set_portfolio(portfolio);
+  dry.set_maximum_portfolio_age(std::chrono::hours(24 * 365));
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+
+  CHECK(report.withheld_plans_.empty());
+  REQUIRE(report.would_cancel_.size() == 1);
+  CHECK(report.would_cancel_.front() == OrderRef<runner::DryTag>{"0001", ""});
+}
+
+namespace {
+
+/** Withdraws the first resting row by name, which is the instruction a plan never derived. */
+struct WithdrawsOne {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent&) {
+    const auto& working = ctx.portfolio().working_;
+    if (!working.empty()) {
+      ctx.cancel(working.front().ref_, "bye");
+    }
+  }
+};
+
+} // namespace
+
+TEST_CASE("a named withdrawal survives a hold that only means the runner is uninformed") {
+  // The half of this branch that *permits* rather than refuses, and the reason the two halves could
+  // not ship apart: an order that cannot be withdrawn keeps resting and can fill, which is worse
+  // than the exposure a holdings-shaped hold was guarding.
+  runner::DryRunner<WithdrawsOne> dry;
+  arrange(dry);
+  dry.context().set_portfolio(resting_sell(/*stamped=*/false));
+
+  auto uninformed = GENERATE(
+    strategy::HaltReason::ORDER_LIST_UNREAD,
+    strategy::HaltReason::PORTFOLIO_ABSENT,
+    strategy::HaltReason::PORTFOLIO_STALE,
+    strategy::HaltReason::BUYING_POWER_UNREAD,
+    strategy::HaltReason::POLL_FAILING);
+  dry.guard().halt(uninformed);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+
+  CAPTURE(strategy::halt_reason_name(uninformed));
+  REQUIRE(report.would_cancel_.size() == 1);
+  CHECK(report.refused_cancel_.empty());
+  CHECK(report.unavailable_cancel_.empty());
+  CHECK(report.unresolved_cancel_.empty());
+}
+
+TEST_CASE("a hold somebody set still refuses a named withdrawal") {
+  // The kill switch, intact. One case per reason rather than one test over all three, so a future
+  // reclassification of any single reason is a failure here rather than a silent widening.
+  runner::DryRunner<WithdrawsOne> dry;
+  arrange(dry);
+  dry.context().set_portfolio(resting_sell(/*stamped=*/true));
+
+  SECTION("an operator's halt refuses it, and says which hold did") {
+    dry.guard().halt();
+    const auto report = dry.feed(bar_at(10, "70000"));
+    CHECK(report.would_cancel_.empty());
+    REQUIRE(report.refused_cancel_.size() == 1);
+    CHECK(report.refused_cancel_.front().reason_ == strategy::HaltReason::OPERATOR);
+  }
+
+  SECTION("a stop in progress refuses it") {
+    dry.guard().halt(strategy::HaltReason::STOPPING);
+    const auto report = dry.feed(bar_at(10, "70000"));
+    CHECK(report.would_cancel_.empty());
+    REQUIRE(report.refused_cancel_.size() == 1);
+    CHECK(report.refused_cancel_.front().reason_ == strategy::HaltReason::STOPPING);
+  }
+
+  SECTION("a local failure reports it as unavailable, not refused") {
+    // A different bucket, and the distinction is real: nothing was asked of the broker, because the
+    // machinery that would have recorded the request is what failed.
+    dry.guard().halt(strategy::HaltReason::LOCAL_FAILURE);
+    const auto report = dry.feed(bar_at(10, "70000"));
+    CHECK(report.would_cancel_.empty());
+    CHECK(report.refused_cancel_.empty());
+    CHECK(report.unavailable_cancel_.size() == 1);
+  }
+}
+
+TEST_CASE("a hold somebody set outranks one that only means the runner is uninformed") {
+  // Both in force at once. The permissive rule must not be able to let an instruction through a
+  // kill switch merely because a second, weaker hold is also present.
+  runner::DryRunner<WithdrawsOne> dry;
+  arrange(dry);
+  dry.context().set_portfolio(resting_sell(/*stamped=*/false));
+  dry.guard().halt(strategy::HaltReason::PORTFOLIO_ABSENT);
+  dry.guard().halt();
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+
+  CHECK(report.would_cancel_.empty());
+  REQUIRE(report.refused_cancel_.size() == 1);
+  CHECK(report.refused_cancel_.front().reason_ == strategy::HaltReason::OPERATOR);
+}
+
+TEST_CASE("every halt reason has a name, and the count matches the enumerators") {
+  const std::array<strategy::HaltReason, strategy::halt_reason_count> all{
+    strategy::HaltReason::OPERATOR,
+    strategy::HaltReason::LOCAL_FAILURE,
+    strategy::HaltReason::STOPPING,
+    strategy::HaltReason::ORDER_LIST_UNREAD,
+    strategy::HaltReason::PORTFOLIO_ABSENT,
+    strategy::HaltReason::PORTFOLIO_STALE,
+    strategy::HaltReason::BUYING_POWER_UNREAD,
+    strategy::HaltReason::POLL_FAILING,
+  };
+  for (std::size_t index = 0; index < all.size(); ++index) {
+    CAPTURE(index);
+    // Declaration order is gravity order and `blocking_reason` depends on it, so the position each
+    // reason occupies is part of the contract rather than an implementation detail.
+    CHECK(static_cast<std::size_t>(all[index]) == index);
+    CHECK(strategy::halt_reason_name(all[index]) != "unknown");
+  }
+  CHECK(strategy::halt_reason_name(strategy::HaltReason::PORTFOLIO_ABSENT) == "portfolio_absent");
+  CHECK(runner::withheld_plan_reason_name(runner::WithheldPlanReason::PLACEMENT_HELD) ==
+        "placement_held");
 }
