@@ -28,10 +28,12 @@ runner::PollSchedule schedule;
 schedule.bars_ = std::chrono::minutes(1);
 schedule.holdings_ = std::chrono::seconds(30);
 schedule.working_orders_ = std::chrono::seconds(30);
+schedule.price_limits_ = std::chrono::minutes(10);
 schedule.tick_ = std::chrono::seconds(1);
 
 runner::PollingLoop loop(live_runner, source, schedule);
 loop.set_maximum_portfolio_age(std::chrono::minutes(2));
+loop.set_maximum_price_limits_age(std::chrono::minutes(30));
 
 runner::StopSource stop;
 runner::SignalStop::install(stop);
@@ -175,6 +177,29 @@ adapters stamp `HoldingsSnapshot::received_at_` with the local clock as they par
 `SessionSource` copies it straight into `as_of_`. The gate therefore understates the age of the
 figures by however long the request took: a snapshot the broker computed slowly can pass an age
 limit it should have failed. Set the limit with that headroom in mind.
+
+**A price band is a per-trading-day value, and one nobody has aged is not applied.** `PriceLimits`
+is "the highest price allowed today" and for KRX it moves with the previous close, so a band
+registered once at startup describes the day the process started on. Until slice 29 nothing refreshed
+one: `Runner::set_price_limits` was an operator's startup step, no `PollKind` read one, and the band
+was clamped into every limit price for as long as the process lived. Now:
+
+- `PollSchedule::price_limits_` refreshes it, one request per instrument in the source's universe, at
+  market-data priority. Absent by default like every cadence but the calendar's.
+- A run states `set_maximum_price_limits_age` or `allow_unbounded_price_limits_age`. A band with
+  neither stated is **not applied**, and the report's notes name the two calls, once.
+- A band the broker dated is aged from **the exchange's own stamp** — Toss publishes `timestamp`,
+  Kiwoom `date` and `tm` — so a successful poll returning yesterday's band does not read as fresh.
+  KIS publishes no stamp, so for a KIS band the policy bounds only how long ago it was *fetched*.
+
+**Withholding a band does not refuse an order and does not hold anything.** It returns the order to
+the state every run that registers no band is already in: the strategy's own price on the wire.
+Clamping only ever moves a price in the direction that *reduces* aggression — a buy down to the
+ceiling, a sell up to the floor — so applying a band cannot make an order more likely to fill, and
+withholding one cannot make it less likely than applying it would have. What withholding can produce
+is a rejection from the exchange, and `LoopReport::unclamped_orders_rejected_` counts exactly those:
+orders that went out, that a withheld band would have moved, and that the broker refused.
+`LoopReport::price_bands_withheld_` counts the decisions; this counts what they cost.
 
 **An unknown buying power blocks buying.** Only if you asked for the check: set
 `RiskLimits::enforce_buying_power_` and the loop refuses to send while it has no answer from the

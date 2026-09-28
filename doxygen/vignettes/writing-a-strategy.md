@@ -290,7 +290,11 @@ These live in the runner, once, and restating them in a strategy is how they get
 inconsistently:
 
 - rounding to the tick grid and the lot;
-- clamping into today's permitted price band;
+- clamping into today's permitted price band — **where there is a band the runner will stand behind**.
+  A band is a per-trading-day value, and one whose age nobody has bounded is not applied at all, so
+  the price you state can reach the broker unmodified and be refused by the exchange. Nothing about
+  your strategy changes either way: state the price you mean. See @ref running-a-strategy-live for
+  the two calls an operator makes;
 - diffing a target against the portfolio and the working orders;
 - every risk limit, and the kill switch;
 - the order-safety rules — in particular that a request failing in transit leaves the outcome

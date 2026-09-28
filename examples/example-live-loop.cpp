@@ -80,6 +80,18 @@ public:
   explicit ScriptedSource(int bars) : remaining_(bars) {}
 
   runner::PollOutcome poll(runner::PollKind kind, LoopRunner& live_runner) {
+    if (kind == runner::PollKind::PRICE_LIMITS) {
+      // Today's permitted band, which reconciliation clamps a limit price into. A real source calls
+      // `session.price_limits(instrument)` per instrument here; what matters is that it lands on the
+      // runner rather than being fed as an event, and that it arrives **on a cadence** -- the band
+      // is a per-trading-day value, so one read at startup describes the day the process started on.
+      PriceLimits band;
+      band.currency_ = Currency{"KRW"};
+      band.upper_ = Decimal64::parse("91000");
+      band.lower_ = Decimal64::parse("49000");
+      live_runner.set_price_limits(samsung(), band);
+      return runner::PollOutcome::UPDATED;
+    }
     if (kind != runner::PollKind::BARS) {
       return runner::PollOutcome::UNCHANGED;
     }
@@ -146,7 +158,15 @@ void describe(const runner::LoopReport& report) {
             // a held position is permitted in any phase -- which is what lets a flatten after the
             // close reach the broker instead of being refused by the operator's own limit -- so this
             // is the line that says it happened. Non-zero is not a fault; a nightly flatten is one.
-            << "sent off-phase  : " << report.sends_outside_permitted_phase_ << '\n';
+            << "sent off-phase  : " << report.sends_outside_permitted_phase_ << '\n'
+            // And what the price-band policy decided. A band is a per-trading-day value, so a run
+            // that outlives the day it read one has to decide what to do with it: this library does
+            // not apply a band whose age nobody has bounded, and says so here rather than repricing
+            // an order against yesterday's ceiling in silence. Both stay zero in this example
+            // because `CountBars` places nothing -- the first counts plans, the second counts sent
+            // orders a broker refused after a band was withheld.
+            << "bands withheld  : " << report.price_bands_withheld_ << '\n'
+            << "refused unclamped: " << report.unclamped_orders_rejected_ << '\n';
   for (const auto& note : report.notes_) {
     std::cout << "note            : " << note << '\n';
   }
@@ -195,6 +215,11 @@ int main() {
   // No broker here, so nothing could answer a calendar request; a real program leaves this at its
   // six-hour default.
   schedule.calendar_.reset();
+  // **The band, on a cadence rather than once.** Nothing in this library used to refresh one, so an
+  // operator who registered a band at startup was clamping every limit order to it for as long as
+  // the process ran. Ten minutes here is arbitrary; the real constraint is that it be shorter than
+  // the session, because the value changes with the previous close.
+  schedule.price_limits_ = std::chrono::minutes(10);
 
   runner::PollingLoop<LoopRunner, ScriptedSource, runner::ManualClock> loop(
     live_runner, source, schedule, runner::ManualClock{start_time()});
@@ -210,6 +235,12 @@ int main() {
   // operator in the same position does; leaving them out would hold this loop for the whole run.
   loop.allow_unbounded_portfolio_age();
   loop.allow_absent_portfolio();
+  // **The third statement, and the same shape as the first.** A band of unbounded age used to be
+  // applied forever; now a run states how old one may be, or states that it accepts any age. Twenty
+  // minutes against a ten-minute cadence, so one failed poll is tolerated and a run of failures is
+  // not -- which is what the policy is actually bounding, since a failed poll deliberately leaves
+  // the last good band in place.
+  loop.set_maximum_price_limits_age(std::chrono::minutes(20));
 
   runner::StopSource stop;
   const auto report = loop.run(stop, 6);
