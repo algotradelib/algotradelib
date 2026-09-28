@@ -400,9 +400,10 @@ reducing a held position toward flat is permitted in any phase, because a limit 
 de-risked past turns "the market is shut" into "you may not reduce risk". So an operator who asks to
 be flat at 22:00 gets a request sent, and very likely a *broker's* rejection rather than the
 library's — which is the better answer, since it is the venue's own, and recorded beyond the report
-**if you bound a journaling executor**: `live::bind` does not, `live::bind_journaled` does. Whether
-that record outlives the process is a property of the journal you handed it and of the terminal write
-landing, not of the binding.
+**if you bound a journaling executor and its terminal write landed**: `live::bind` does not journal,
+`live::bind_journaled` does, and a failed terminal append leaves the `PENDING` line with no answer
+beside it. Whether a recorded answer then outlives the process is a property of the journal you handed
+in — a `MemoryJournal` is gone when the process is.
 `LoopReport::sends_outside_permitted_phase_` counts how often that happened.
 
 **Every other limit still applies to that flatten, and each of them is silent in the same way.** A
