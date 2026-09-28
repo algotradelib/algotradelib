@@ -556,6 +556,15 @@ template <typename Inner, typename Journal, typename Clock = SteadyClock>
 class JournalingExecutor {
 public:
   /**
+   * Forwarded from whatever this wraps: journalling an order does not change who receives it.
+   *
+   * Written as a forward rather than a fixed value because this executor is the decorator, and a
+   * decorator that answered for itself would lose the fact. Journalling a dry run reaches no broker;
+   * journalling a session executor reaches one.
+   */
+  static constexpr bool reaches_a_broker = runner_detail::sends_to_a_broker<Inner>::value;
+
+  /**
    * Wraps `inner`, recording into `journal`.
    *
    * The journal is borrowed rather than owned, for the same reason a session is: recovery reads it

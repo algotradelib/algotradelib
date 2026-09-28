@@ -64,19 +64,11 @@ BoundRunner<Strategy, Session> bind(
     series_capacity,
     SessionExecutor<Session>(session)
   );
-  // **A runner that can reach a broker requires an account it has actually read.**
-  //
-  // Set here rather than on every `Runner`, because this is where the distinction is knowable: a
-  // `DryRunner` and a replay have no holdings inquiry that could have failed, and a replay stamps
-  // its own portfolio, so requiring it of them would refuse every order in a backtest to close a
-  // hole neither has. A session-backed runner has exactly that inquiry, and an empty `Portfolio` is
-  // the permissive answer to every ceiling it is about to be measured against.
-  //
-  // Not only for `runner::PollingLoop`: that one sets this itself each iteration, but driving a
-  // bound runner by hand is a supported path -- `examples/example-strategy-live.cpp` does -- and it
-  // is the path with no loop to hold anything. A run that genuinely reads no holdings says
-  // `allow_absent_portfolio()` on the runner.
-  bound.require_known_portfolio(true);
+  // **A runner that can reach a broker requires an account it has actually read** -- and that is not
+  // arranged here. It comes from `SessionExecutor::reaches_a_broker`, so a runner assembled by hand
+  // carries it too: `doxygen/vignettes/binding-a-broker.md` shows exactly that, and a rule this
+  // factory installed would hold for its own callers and for nobody else. A run that genuinely reads
+  // no holdings says `allow_absent_portfolio()` on the runner.
   return bound;
 }
 
@@ -118,8 +110,7 @@ JournaledRunner<Strategy, Session, Journal> bind_journaled(
       SessionExecutor<Session>(session), journal
     )
   );
-  // The same contract as `bind`, for the same reason: this one can reach a broker too.
-  bound.require_known_portfolio(true);
+  // As in `bind`: the requirement travels with the executor, not with this factory.
   return bound;
 }
 

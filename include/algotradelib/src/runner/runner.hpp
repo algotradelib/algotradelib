@@ -1489,8 +1489,14 @@ private:
   std::chrono::system_clock::time_point observed_at_{};
   /** Whether the caller stated this runner may act with no snapshot at all; see the setter. */
   bool allow_absent_portfolio_{false};
-  /** Whether a placement needs a portfolio that has actually been read; see the setter. */
-  bool require_known_portfolio_{false};
+  /**
+   * Whether a placement needs a portfolio that has actually been read; see the setter.
+   *
+   * Defaulted from the executor: a runner that can reach a broker requires it, and one that cannot
+   * does not. That is what makes the rule hold for a live runner assembled by hand rather than only
+   * for one the binding factories produced.
+   */
+  bool require_known_portfolio_{runner_detail::sends_to_a_broker<Executor>::value};
   bool probing_sellable_{false};
   strategy::SellableConventionProbe<Tag> sellable_probe_;
   Context context_;

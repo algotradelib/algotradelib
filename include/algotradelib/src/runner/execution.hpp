@@ -5,6 +5,7 @@
 #include <algotradelib/core>
 
 #include <string>
+#include <type_traits>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -162,6 +163,34 @@ inline SendOutcome outcome_of(const BrokerError& error) {
 inline constexpr bool send_outcome_reached_broker(SendOutcome outcome) noexcept {
   return outcome != SendOutcome::UNAVAILABLE && outcome != SendOutcome::REFUSED_LOCALLY;
 }
+
+namespace runner_detail {
+
+/**
+ * Whether `Executor` can put an order in front of a real broker.
+ *
+ * Declared by the executor rather than asked of the runner's caller, because it is the executor that
+ * knows. `live::SessionExecutor` says yes and `runner::JournalingExecutor` forwards whatever it
+ * wraps; a `RecordingExecutor`, a replay's queueing executor and a test double say nothing and so
+ * default to no.
+ *
+ * **It decides one thing: whether this runner must have read the account before it places.** That
+ * requirement has to hold for every live path, and there are more of those than the two binding
+ * factories -- `doxygen/vignettes/binding-a-broker.md` shows a `Runner<..., SessionExecutor<Session>>`
+ * assembled by hand, and a rule installed only by the factories would not reach it. A property of the
+ * executor reaches all of them, including one a consumer writes, and costs nothing at run time.
+ *
+ * A live run that genuinely reads no holdings says `allow_absent_portfolio()`, which is a statement
+ * about that account rather than about the executor's type.
+ */
+template <typename Executor, typename = void>
+struct sends_to_a_broker : std::false_type {};
+
+template <typename Executor>
+struct sends_to_a_broker<Executor, std::void_t<decltype(Executor::reaches_a_broker)>>
+  : std::bool_constant<Executor::reaches_a_broker> {};
+
+} // namespace runner_detail
 
 /** Why a planned order was held back rather than sent or refused. */
 enum class WithheldReason {

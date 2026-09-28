@@ -29,6 +29,17 @@ namespace live {
 template <typename Session>
 class SessionExecutor {
 public:
+
+  /**
+   * This executor puts orders in front of a real broker, which `runner::sends_to_a_broker` reads.
+   *
+   * It makes a runner built on it require an account it has actually read before it places, however
+   * that runner was assembled -- by `live::bind`, by `bind_journaled`, or by hand as
+   * `doxygen/vignettes/binding-a-broker.md` shows. An empty `Portfolio` is the permissive answer to
+   * every ceiling, so a run whose holdings read failed would otherwise size an entry as though the
+   * account held nothing. A live run that genuinely reads no holdings says `allow_absent_portfolio()`.
+   */
+  static constexpr bool reaches_a_broker = true;
   /** The bound broker's capability set, forwarded from the session. */
   using Caps = typename Session::Caps;
   /** The bound broker's tag, forwarded from the session. */

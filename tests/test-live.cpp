@@ -803,6 +803,9 @@ TEST_CASE("a send the binding itself refused spends no rate-limit budget") {
   live_runner.context().set_instrument(samsung_reference());
   live_runner.context().set_phase(strategy::MarketPhase::OPEN);
   live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  // A session-backed runner requires an account it has read before it places; this case is about
+  // something else, so it supplies one.
+  live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
 
   // Bar one asks for a guarantee this broker cannot give, so nothing is sent.
   const auto first = live_runner.feed(bar_at(1, "70000"));
@@ -841,6 +844,9 @@ TEST_CASE("a client refusing before it sends is not the broker refusing") {
   live_runner.context().set_instrument(samsung_reference());
   live_runner.context().set_phase(strategy::MarketPhase::OPEN);
   live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  // A session-backed runner requires an account it has read before it places; this case is about
+  // something else, so it supplies one.
+  live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
 
   const auto first = live_runner.feed(bar_at(1, "70000"));
   REQUIRE(first.rejected_.size() == 1);
@@ -875,6 +881,9 @@ TEST_CASE("a token refresh that failed is not the broker refusing an order it ne
   live_runner.context().set_instrument(samsung_reference());
   live_runner.context().set_phase(strategy::MarketPhase::OPEN);
   live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  // A session-backed runner requires an account it has read before it places; this case is about
+  // something else, so it supplies one.
+  live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
 
   const auto first = live_runner.feed(bar_at(1, "70000"));
   REQUIRE(first.rejected_.size() == 1);
@@ -1027,6 +1036,9 @@ TEST_CASE("a strategy drives a session through the same pipeline a dry run uses"
   live_runner.context().set_instrument(samsung_reference());
   live_runner.context().set_phase(strategy::MarketPhase::OPEN);
   live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  // A session-backed runner requires an account it has read before it places; this case is about
+  // something else, so it supplies one.
+  live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
 
   const auto report = live_runner.feed(bar_at(0, "70000"));
   REQUIRE(report.would_place_.size() == 1);
@@ -1049,6 +1061,9 @@ TEST_CASE("a mid-flight failure on the live path stops the next order for that i
   live_runner.context().set_instrument(samsung_reference());
   live_runner.context().set_phase(strategy::MarketPhase::OPEN);
   live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  // A session-backed runner requires an account it has read before it places; this case is about
+  // something else, so it supplies one.
+  live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
 
   session.fail_with(ErrorCategory::TRANSPORT);
   const auto first = live_runner.feed(bar_at(0, "70000"));
@@ -2378,4 +2393,74 @@ TEST_CASE("a per-order delta that cannot be represented is counted, not dropped"
   // count is what says the answer is short.
   CHECK(source.charged_costs().commission_in(Currency::krw()) ==
         std::optional<Decimal64>(Decimal64::parse("5000000000000000000")));
+}
+
+TEST_CASE("a hand-assembled live runner will not place against an account it never read") {
+  // `live::bind` is not the only way to reach a broker: `doxygen/vignettes/binding-a-broker.md`
+  // shows a `Runner` assembled directly on a `SessionExecutor`, and that path has no factory and no
+  // `PollingLoop` to hold anything. The requirement therefore travels with the executor --
+  // `SessionExecutor::reaches_a_broker` -- rather than being installed by whoever built the runner.
+  using Runner = runner::Runner<
+    HoldTen, WithKey, FakeBroker, live::SessionExecutor<FakeSession<WithKey>>
+  >;
+  FakeSession<WithKey> session;
+
+  SECTION("an unread account places nothing, and says why") {
+    Runner live_runner(HoldTen{}, {}, 512, live::SessionExecutor<FakeSession<WithKey>>(session));
+    live_runner.context().set_instrument(samsung_reference());
+    live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+    live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+    const auto report = live_runner.feed(bar_at(0, "70000"));
+
+    // Nothing reached the broker, which is the assertion that matters.
+    CHECK(session.placed().empty());
+    CHECK(report.would_place_.empty());
+    REQUIRE(report.withheld_plans_.size() == 1);
+    CHECK(report.withheld_plans_.front().reason_ == runner::WithheldPlanReason::PORTFOLIO_ABSENT);
+    CHECK_FALSE(report.quiet());
+  }
+
+  SECTION("a stamped read lets the same order go") {
+    Runner live_runner(HoldTen{}, {}, 512, live::SessionExecutor<FakeSession<WithKey>>(session));
+    live_runner.context().set_instrument(samsung_reference());
+    live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+    live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+    live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
+
+    const auto report = live_runner.feed(bar_at(0, "70000"));
+
+    CHECK(session.placed().size() == 1);
+    CHECK(report.would_place_.size() == 1);
+    CHECK(report.withheld_plans_.empty());
+  }
+
+  SECTION("so does saying the run expects no holdings") {
+    Runner live_runner(HoldTen{}, {}, 512, live::SessionExecutor<FakeSession<WithKey>>(session));
+    live_runner.context().set_instrument(samsung_reference());
+    live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+    live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+    live_runner.allow_absent_portfolio();
+
+    const auto report = live_runner.feed(bar_at(0, "70000"));
+
+    CHECK(session.placed().size() == 1);
+    CHECK(report.withheld_plans_.empty());
+  }
+}
+
+TEST_CASE("a dry run is not caught by the live requirement") {
+  // The other side of the executor property, and the reason it is a property of the executor rather
+  // than a default on every runner: a dry run has no holdings inquiry that could have failed.
+  STATIC_REQUIRE_FALSE(
+    runner::runner_detail::sends_to_a_broker<runner::RecordingExecutor<runner::DryTag>>::value);
+  STATIC_REQUIRE(
+    runner::runner_detail::sends_to_a_broker<live::SessionExecutor<FakeSession<WithKey>>>::value);
+  // And journalling does not change who receives the order.
+  STATIC_REQUIRE(runner::runner_detail::sends_to_a_broker<
+    runner::JournalingExecutor<live::SessionExecutor<FakeSession<WithKey>>, runner::MemoryJournal>
+  >::value);
+  STATIC_REQUIRE_FALSE(runner::runner_detail::sends_to_a_broker<
+    runner::JournalingExecutor<runner::RecordingExecutor<runner::DryTag>, runner::MemoryJournal>
+  >::value);
 }
