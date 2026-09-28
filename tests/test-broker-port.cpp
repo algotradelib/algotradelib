@@ -1039,3 +1039,47 @@ TEST_CASE("reference data is answered one instrument at a time by both brokers")
   static_assert(BrokerCaps<tossinvest::TossClient>::has_batch_reference_data);
   SUCCEED("reference-data reach is a compile-time capability");
 }
+
+namespace {
+
+/** A client whose traits say nothing about the working-order listing's terminal states. */
+struct SilentAboutTerminal {};
+
+/** A client whose traits say its working-order listing does state them. */
+struct StatesTerminal {};
+
+} // namespace
+
+namespace algotradelib {
+
+template <>
+struct BrokerTraits<SilentAboutTerminal> {
+  static constexpr bool working_orders_state_terminal_is_unset = true;
+};
+
+template <>
+struct BrokerTraits<StatesTerminal> {
+  static constexpr bool working_orders_state_terminal = true;
+};
+
+} // namespace algotradelib
+
+TEST_CASE("an unstated terminal-state answer defaults to the one that cannot strand a caller") {
+  // **Both sides of this constant are instantiated here on purpose.** Every shipped adapter answers
+  // `false`, so without these two the `true` branch would never be compiled and the default would
+  // never be exercised -- which is the shape `plan/README.md` records as *a capability constant that
+  // nothing instantiates is not checked*.
+  //
+  // The default is `false` rather than required, so an adapter written against an earlier release
+  // still compiles. `false` is the safe direction and the two mistakes are not symmetrical: a caller
+  // told `false` polls for an order's outcome, while a caller told a wrong `true` waits for an event
+  // that never arrives.
+  static_assert(!caps_detail::stated_terminal_working_state<BrokerTraits<SilentAboutTerminal>>::value);
+  static_assert(caps_detail::stated_terminal_working_state<BrokerTraits<StatesTerminal>>::value);
+
+  // And what the shipped adapters actually answer, which is the same for all three: none of their
+  // working-order inquiries states a terminal status.
+  static_assert(!BrokerCaps<kis::KisClient>::working_orders_state_terminal);
+  static_assert(!BrokerCaps<tossinvest::TossClient>::working_orders_state_terminal);
+  SUCCEED("the capability is read at compile time");
+}

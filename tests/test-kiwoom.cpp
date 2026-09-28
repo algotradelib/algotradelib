@@ -1286,6 +1286,12 @@ TEST_CASE("Kiwoom's capability answers are what the adapter can back", "[kiwoom]
   STATIC_REQUIRE_FALSE(Caps::has_client_order_id);
   STATIC_REQUIRE(Caps::has_working_orders);
   STATIC_REQUIRE(Caps::has_amendable_quantity);
+  // `ka10075` is the 미체결 listing and its specification documents `ord_stt` as `접수` alone.
+  // `normalized_order_status` accepts `체결` and `취소` only because the history parser shares it,
+  // and what a parser can represent is evidence about the parser rather than about what the
+  // endpoint sends. Answering `true` here would leave a caller waiting for an event that may never
+  // arrive.
+  STATIC_REQUIRE_FALSE(Caps::working_orders_state_terminal);
   STATIC_REQUIRE_FALSE(Caps::has_order_by_id);
   STATIC_REQUIRE(Caps::has_partial_cancel);
   STATIC_REQUIRE_FALSE(Caps::history_requires_range);
