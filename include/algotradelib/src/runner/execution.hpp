@@ -192,6 +192,75 @@ inline constexpr std::string_view withheld_reason_name(WithheldReason reason) no
   return "unknown";
 }
 
+/**
+ * Why a whole reconciliation plan was held back before any of it was sent.
+ *
+ * Separate from `WithheldReason` because the two answer different questions. That one is about a
+ * *planned order*; this one is about a plan, which may contain no order at all -- a target of zero
+ * against an account that is already flat plans only withdrawals -- and whose danger is precisely in
+ * the half that is not an order.
+ */
+enum class WithheldPlanReason {
+  /**
+   * No holdings snapshot has ever been read, so the plan was computed from an account nobody has
+   * seen.
+   *
+   * The dangerous case, because an empty `Portfolio` reads as *flat*: a target of zero is then
+   * already satisfied, every open row on the instrument counts as opposing it, and the plan withdraws
+   * orders that may be the only thing protecting a real holding.
+   */
+  PORTFOLIO_ABSENT,
+  /** The snapshot the plan was computed from is older than the stated policy allows. */
+  PORTFOLIO_STALE,
+  /**
+   * Something is holding placements, so the plan's replacement half cannot go out.
+   *
+   * Withdrawing without replacing is not the instruction the strategy stated. `Runner::settle` sends
+   * a plan's cancellations before its placements are ever guard-checked, so without this the
+   * cancellation is already gone by the time the refusal is known -- and a reprice becomes a bare
+   * withdrawal, which is how a resting protective order disappears.
+   */
+  PLACEMENT_HELD,
+};
+
+/** Returns a stable lowercase name for `reason`. */
+inline constexpr std::string_view withheld_plan_reason_name(WithheldPlanReason reason) noexcept {
+  switch (reason) {
+    case WithheldPlanReason::PORTFOLIO_ABSENT:
+      return "portfolio_absent";
+    case WithheldPlanReason::PORTFOLIO_STALE:
+      return "portfolio_stale";
+    case WithheldPlanReason::PLACEMENT_HELD:
+      return "placement_held";
+  }
+  return "unknown";
+}
+
+/**
+ * One reconciliation plan the runner declined to act on, and what it would have done.
+ *
+ * Reported instead of, not beside, the plan's own orders: the entry exists so that a withheld plan
+ * is *visible* rather than silent, and reporting its halves separately would suggest each was
+ * decided on its own when the whole point is that they were decided together.
+ *
+ * Templated on the broker tag because `not_canceled_` names real order references.
+ */
+template <typename BrokerTag>
+struct WithheldPlan {
+  /** Why the plan was held back. */
+  WithheldPlanReason reason_{WithheldPlanReason::PORTFOLIO_ABSENT};
+  /** The instrument the plan was for. */
+  InstrumentId instrument_;
+  /** The stating intent's own tag, so an operator can find which instruction this was. */
+  std::string tag_;
+  /** The rows the plan would have withdrawn, and did not. */
+  std::vector<OrderRef<BrokerTag>> not_canceled_;
+  /** How many orders the plan would have placed, and did not. Zero for a withdrawal-only plan. */
+  std::size_t not_placed_{0};
+  /** What the runner knows about why, including the blocking hold when there was one. */
+  std::string detail_;
+};
+
 /** One order the runner declined to send, and why. */
 struct WithheldOrder {
   /** Why the runner declined to send it. A local refusal, never a broker's. */

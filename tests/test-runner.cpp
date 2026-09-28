@@ -333,6 +333,9 @@ TEST_CASE("an order the strategy already withdrew is not withdrawn again by reco
   arrange(dry);
 
   strategy::Portfolio<Tag> portfolio;
+  // Stamped: an unstamped snapshot reads as never having been read, and a plan derived from one
+  // is withheld before any of it is sent.
+  portfolio.as_of_ = utc(2026, 3, 1, 6, 30);
   for (const char* id : {"0001", "0002"}) {
     WorkingOrder<Tag> working;
     working.order_.instrument_ = samsung();
@@ -667,6 +670,9 @@ TEST_CASE("a replay withdraws a reservation it never had a reference for") {
   arrange(dry);
 
   strategy::Portfolio<runner::DryRunner<FlipTarget>::Tag> portfolio;
+  // Stamped: an unstamped snapshot reads as never having been read, and a plan derived from one
+  // is withheld before any of it is sent.
+  portfolio.as_of_ = utc(2026, 3, 1, 6, 30);
   HoldingPosition held;
   held.instrument_ = samsung();
   held.quantity_ = Decimal64::parse("10");

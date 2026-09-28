@@ -665,6 +665,9 @@ using FlipRunner = runner::Runner<
 template <typename CapsType>
 strategy::Portfolio<FakeBroker> held_position(const char* held, const char* sellable) {
   strategy::Portfolio<FakeBroker> portfolio;
+  // Stamped, because an unstamped snapshot now means "never read" rather than "empty and current",
+  // and a plan derived from one is withheld. This helper stands for a listing the broker answered.
+  portfolio.as_of_ = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 100);
   HoldingPosition position;
   position.instrument_ = samsung();
   position.quantity_ = Decimal64::parse(held);

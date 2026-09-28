@@ -161,6 +161,14 @@ struct DryRunReport {
    * failure, so these are surfaced for an operator and left alone.
    */
   std::vector<WithheldOrder> withheld_;
+  /**
+   * Whole reconciliation plans held back before any part of them was sent.
+   *
+   * Distinct from `withheld_`, which is about an order. A plan's cancellations go out before its
+   * placements are guard-checked, so a plan computed from an account this runner cannot stand behind
+   * has to be stopped as a unit or not at all -- see `WithheldPlan`.
+   */
+  std::vector<WithheldPlan<BrokerTag>> withheld_plans_;
   /** Instructions whose send failed in transit, leaving their outcome unknown. */
   std::vector<strategy::PlannedOrder> indeterminate_;
   /**
@@ -213,8 +221,11 @@ struct DryRunReport {
 
   /** Returns whether the run decided to do nothing at all. */
   bool quiet() const noexcept {
+    // `withheld_plans_` is in this list for the reason the list exists at all: a run that withheld a
+    // cancel-only target did *not* decide to do nothing, and a `quiet()` that said so would hide the
+    // one result this branch added. A bucket left out of here is a result that reports as silence.
     return would_place_.empty() && would_cancel_.empty() && rejected_.empty() &&
-      refused_.empty() && withheld_.empty() && indeterminate_.empty() &&
+      refused_.empty() && withheld_.empty() && withheld_plans_.empty() && indeterminate_.empty() &&
       unresolved_cancel_.empty() && unavailable_.empty() && unavailable_cancel_.empty() &&
       refused_cancel_.empty() && indeterminate_cancel_.empty() && rejected_cancel_.empty();
   }
@@ -343,6 +354,22 @@ public:
   void resume_after_local_failure() {
     guard_.resume(strategy::HaltReason::LOCAL_FAILURE);
     acknowledged_journal_failures_ = executor_journal_failures();
+  }
+
+  /**
+   * States how old a holdings snapshot may be before a plan derived from it is not acted on.
+   *
+   * The **policy**, not a verdict: this runner evaluates it against the snapshot in hand every time
+   * it settles, so the answer cannot describe a portfolio that has since been replaced. A
+   * `runner::PollingLoop` pushes its own configured age down here; a consumer driving a runner
+   * directly sets it themselves, and leaving it unset means only that age is not a reason -- a
+   * snapshot that was never read, and a hold on placements, still are.
+   *
+   * It does not hold, refuse or halt anything on its own. `PollingLoop` owns the *hold*; this owns
+   * only whether a reconciliation plan may be acted on.
+   */
+  void set_maximum_portfolio_age(std::optional<std::chrono::nanoseconds> age) {
+    maximum_portfolio_age_ = age;
   }
 
   /**
@@ -640,6 +667,29 @@ private:
       }
 
       const auto planned = plan_for(instruction);
+      // **Checked before a single cancellation goes out, and on the plan rather than on its parts.**
+      //
+      // `plan_for` derives both halves from `context_.portfolio()`: which rows oppose the target, and
+      // what remains to be placed. So a plan is only as good as the snapshot under it, and the
+      // cancellations are sent below -- before the guard has seen the placements at all. Deciding the
+      // halves separately is how a reprice becomes a bare withdrawal.
+      //
+      // Only a plan that would cancel something is stopped. One that only places is left to the guard
+      // exactly as before, so a direct `OrderIntent` keeps reporting as a refusal rather than quietly
+      // changing bucket.
+      if (!planned.cancel_.empty()) {
+        if (const auto reason = plan_withhold_reason()) {
+          report.withheld_plans_.push_back(WithheldPlan<Tag>{
+            *reason,
+            instruction_instrument(instruction),
+            instruction_tag(instruction),
+            planned.cancel_,
+            planned.place_.size(),
+            withhold_detail(*reason),
+          });
+          continue;
+        }
+      }
       for (const auto& ref : planned.cancel_) {
         attempt_cancel(ref);
       }
@@ -1138,6 +1188,67 @@ private:
     }
   }
 
+  /**
+   * Returns why a plan derived from the current portfolio must not be acted on, or nothing.
+   *
+   * **The policy is evaluated here, against the snapshot in hand, rather than being pushed in as a
+   * verdict somebody else computed earlier.** A `bool` set by the loop would be a judgement about
+   * whatever portfolio was current when the loop last looked, and the loop looks at points a source
+   * callback can get between: `PollingLoop::gate_for` calls `read_order_list` -- which is handed a
+   * mutable runner and can feed -- before it ever reaches its own age check. A plan settled inside
+   * that call would be checked against a stale verdict. Asking the question at settlement time makes
+   * the answer structurally current, and there is no invalidation protocol to get wrong.
+   */
+  std::optional<WithheldPlanReason> plan_withhold_reason() const {
+    const auto& portfolio = context_.portfolio();
+    // A default-constructed `Portfolio` carries the epoch, and no broker reports a snapshot taken in
+    // 1970. The same sentinel the loop uses; both writers of `as_of_` in this library stamp it.
+    if (portfolio.as_of_ == std::chrono::system_clock::time_point{}) {
+      return WithheldPlanReason::PORTFOLIO_ABSENT;
+    }
+    if (maximum_portfolio_age_ &&
+        context_.now() - portfolio.as_of_ > *maximum_portfolio_age_) {
+      return WithheldPlanReason::PORTFOLIO_STALE;
+    }
+    // Any placement hold, not an enumerated few: the harm is that the replacement will be refused
+    // while the withdrawal has already gone, and every reason that refuses a placement does that.
+    if (guard_.blocking_reason()) {
+      return WithheldPlanReason::PLACEMENT_HELD;
+    }
+    return std::nullopt;
+  }
+
+  /** Returns the detail recorded with a withheld plan, naming the hold where there is one. */
+  std::string withhold_detail(WithheldPlanReason reason) const {
+    if (reason != WithheldPlanReason::PLACEMENT_HELD) {
+      return {};
+    }
+    const auto holding = guard_.blocking_reason();
+    return holding ? std::string(strategy::halt_reason_name(*holding)) : std::string{};
+  }
+
+  /** Returns the instrument an instruction is about, for reporting a plan that was not acted on. */
+  static InstrumentId instruction_instrument(const Instruction<Tag>& instruction) {
+    if (const auto* target = std::get_if<strategy::TargetPosition>(&instruction)) {
+      return target->instrument_;
+    }
+    if (const auto* order = std::get_if<strategy::OrderIntent>(&instruction)) {
+      return order->instrument();
+    }
+    return InstrumentId{};
+  }
+
+  /** Returns the tag an instruction carries, so a withheld plan can be attributed to it. */
+  static std::string instruction_tag(const Instruction<Tag>& instruction) {
+    if (const auto* target = std::get_if<strategy::TargetPosition>(&instruction)) {
+      return target->tag_;
+    }
+    if (const auto* order = std::get_if<strategy::OrderIntent>(&instruction)) {
+      return order->tag();
+    }
+    return {};
+  }
+
   void send_cancel(const OrderRef<Tag>& ref, Report& report) {
     // Gated like a placement, and in the same order. A cancellation is the one instruction that
     // cannot make an unresolved *position* worse, which is why the ledger does not gate it -- but it
@@ -1284,6 +1395,8 @@ private:
   std::size_t placements_at_broker_{0};
   /** Orders sent under a phase the limits did not permit; see `sends_outside_permitted_phase`. */
   std::size_t sends_outside_permitted_phase_{0};
+  /** How old a snapshot may be before a plan derived from it is withheld; see the setter. */
+  std::optional<std::chrono::nanoseconds> maximum_portfolio_age_;
   bool probing_sellable_{false};
   strategy::SellableConventionProbe<Tag> sellable_probe_;
   Context context_;
