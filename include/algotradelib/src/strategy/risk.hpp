@@ -57,6 +57,20 @@ enum class HaltReason {
    */
   ORDER_LIST_UNREAD,
   /**
+   * No holdings snapshot has ever been read, so what the account holds is not merely old but
+   * unknown.
+   *
+   * Distinct from `PORTFOLIO_STALE`, and more fundamental than it, because the two need different
+   * answers from an operator: too old says the age limit or the cadence is wrong, never read says
+   * the inquiry has not worked once. Reported as staleness, they are indistinguishable.
+   *
+   * It is the dangerous one. An empty `Portfolio` is the *permissive* answer to every question the
+   * send path asks it -- a position ceiling measured against zero held passes, a stated target has
+   * nothing subtracted from it, and the sellable deduction has no row to read -- so a run that has
+   * never established what it holds sizes an entry as though the account were flat.
+   */
+  PORTFOLIO_ABSENT,
+  /**
    * The holdings snapshot is older than the configured maximum.
    *
    * Reconciling a target against a stale portfolio is how a position gets double-sized by a route
@@ -83,7 +97,7 @@ enum class HaltReason {
 };
 
 /** How many `HaltReason` enumerators there are, for the guard's fixed-capacity storage. */
-inline constexpr std::size_t halt_reason_count = 7;
+inline constexpr std::size_t halt_reason_count = 8;
 
 /** Returns a stable lowercase name for `reason`, for logs and structured reporting. */
 inline constexpr std::string_view halt_reason_name(HaltReason reason) noexcept {
@@ -96,6 +110,8 @@ inline constexpr std::string_view halt_reason_name(HaltReason reason) noexcept {
       return "stopping";
     case HaltReason::ORDER_LIST_UNREAD:
       return "order_list_unread";
+    case HaltReason::PORTFOLIO_ABSENT:
+      return "portfolio-absent";
     case HaltReason::PORTFOLIO_STALE:
       return "portfolio_stale";
     case HaltReason::BUYING_POWER_UNREAD:
