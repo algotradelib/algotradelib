@@ -2303,6 +2303,11 @@ private:
       }
       append_totals(output, snapshot.totals_);
       snapshot.received_at_ = std::chrono::system_clock::now();
+      // Left unestablished deliberately: a Toss holdings row carries no sellable quantity at all
+      // (`sellable_source` is `INQUIRY`), so this read establishes nothing about a figure it never
+      // reported. The inquiry that does report one carries its own basis --
+      // `TossBlockingSession::sellable_inquiry_basis`.
+      snapshot.sellable_basis_ = SellableBasis{};
       return Result<HoldingsSnapshot>(std::move(snapshot));
     } catch (const std::exception& exception) {
       BrokerError error;

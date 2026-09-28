@@ -2368,6 +2368,18 @@ private:
     }
 
     operation->snapshot_.received_at_ = std::chrono::system_clock::now();
+    // **What `ord_psbl_qty` on these rows is evidence of, and it is a treatment rather than a
+    // measurement.** The workbook gives 주문가능수량 an empty Description column, so whether the
+    // figure is already reduced by resting sell orders is unestablished --
+    // `issues/pre-trade-checks-sellable-deduction.md`. `DEDUCT` is therefore the conservative rule
+    // this library applies, not a claim that KIS reports a gross figure: deducting resting sells
+    // that the broker had also deducted over-refuses a trade, where the other error sells the same
+    // shares twice. `verified_` stays false to say exactly that nobody has measured it.
+    operation->snapshot_.sellable_basis_ = SellableBasis{
+      SellableBasis::Coverage::WHOLE_HOLDING,
+      SellableBasis::RestingTreatment::DEDUCT,
+      false,
+    };
     finish_holdings(operation, Result<HoldingsSnapshot>(std::move(operation->snapshot_)));
   }
 

@@ -189,8 +189,12 @@ struct Normalizers {
     error.message_ =
       "Kiwoom's balance inquiry names one venue (kt00018 dmst_stex_tp: KRX or NXT) and publishes no "
       "all-venue value, and whether that filters the positions or only values them is not stated. "
-      "This library will not present one venue's answer as the account's holdings; read the rows "
-      "through session.client().holdings() and see issues/kiwoom-api-holdings-venue-scope.md";
+      "This library will not present one venue's answer as the account's holdings unless you say "
+      "that is what it is: set KiwoomConfig::holdings_position_scope_ to "
+      "KiwoomPositionScope::VALUATION_ONLY to assert it, and "
+      "KiwoomConfig::holdings_sellable_scope_ separately for trde_able_qty. Until then read the rows "
+      "through session.client().holdings(). Both assertions are unverified; the experiment that "
+      "settles them is in issues/kiwoom-api-holdings-venue-scope.md";
     return Result<HoldingsSnapshot>(std::move(error));
   }
 
@@ -677,23 +681,31 @@ struct BrokerTraits<kiwoom::KiwoomClient>
     return client.async_buying_power(currency, account, std::forward<Token>(token));
   }
 
-  /** Refuses the normalized holdings verb; see `refuse_holdings`. */
+  /**
+   * Serves the normalized holdings verb once the operator has asserted what the venue means.
+   *
+   * Refuses before any I/O while the scope is unstated -- see `refuse_holdings`, which is the
+   * behaviour this adapter shipped with and stays the default. An assertion is what turns it on, and
+   * `KiwoomConfig::holdings_position_scope_` documents that asserting is not knowing.
+   */
   template <typename Token>
   static auto holdings(Client& client, const Account& account, Token&& token) {
-    static_cast<void>(client);
-    static_cast<void>(account);
-    return net::async_initiate<Token, void(Result<HoldingsSnapshot>)>(
-      [](auto&& handler) mutable {
-        auto executor = net::get_associated_executor(handler, net::system_executor());
-        net::post(
-          executor,
-          [handler = std::forward<decltype(handler)>(handler)]() mutable {
-            std::move(handler)(refuse_holdings());
-          }
-        );
-      },
-      token
-    );
+    if (client.config().holdings_position_scope_ == kiwoom::KiwoomPositionScope::UNSPECIFIED) {
+      static_cast<void>(account);
+      return net::async_initiate<Token, void(Result<HoldingsSnapshot>)>(
+        [](auto&& handler) mutable {
+          auto executor = net::get_associated_executor(handler, net::system_executor());
+          net::post(
+            executor,
+            [handler = std::forward<decltype(handler)>(handler)]() mutable {
+              std::move(handler)(refuse_holdings());
+            }
+          );
+        },
+        token
+      );
+    }
+    return client.async_holdings(account, std::forward<Token>(token));
   }
 
   /** Forwards an order submission for the bound account. */
@@ -831,11 +843,13 @@ struct BrokerTraits<kiwoom::KiwoomBlockingClient>
     return client.accounts();
   }
 
-  /** Refuses the normalized holdings verb; see `refuse_holdings`. */
+  /** Serves the normalized holdings verb once a scope is asserted; see the asynchronous thunk. */
   static Result<HoldingsSnapshot> holdings(Client& client, const Account& account) {
-    static_cast<void>(client);
-    static_cast<void>(account);
-    return refuse_holdings();
+    if (client.config().holdings_position_scope_ == kiwoom::KiwoomPositionScope::UNSPECIFIED) {
+      static_cast<void>(account);
+      return refuse_holdings();
+    }
+    return client.holdings(account);
   }
 
   /** Returns what the bound account may spend in `currency`. */

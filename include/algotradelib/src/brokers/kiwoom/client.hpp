@@ -239,12 +239,18 @@ inline std::optional<BrokerError> unestablished_holdings_scope() {
   error.category_ = ErrorCategory::INVALID_ARGUMENT;
   error.reached_broker_ = false;
   error.broker_code_ = "holdings_scope_unestablished";
+  // **Names the way out, not only the gap.** A refusal that reports a fact about a vendor and no
+  // action leaves a caller with nothing to do about it, and this one has a remedy: state what the
+  // parameter means. Saying which setting that is turns a dead end into a decision.
   error.message_ =
     "this library cannot establish what a Kiwoom account holds -- kt00018 names one venue "
     "(dmst_stex_tp: KRX or NXT) and publishes no all-venue value, and whether that filters the "
     "positions or only values them is not stated -- so it will not place a new order, or reprice a "
     "resting one into a fillable price, against a position it cannot read. Cancelling is "
-    "unaffected, including cancel_quantity(). See issues/kiwoom-api-holdings-venue-scope.md";
+    "unaffected, including cancel_quantity(). To proceed, assert what the parameter means by "
+    "setting KiwoomConfig::holdings_position_scope_ to KiwoomPositionScope::VALUATION_ONLY, having "
+    "read issues/kiwoom-api-holdings-venue-scope.md -- an assertion that is wrong undercounts the "
+    "account. Two requests settle it for real; the experiment is in that issue";
   return error;
 }
 
@@ -1072,6 +1078,15 @@ public:
       std::move(query)
     );
   }
+
+  /**
+   * Returns the configuration this client was built with.
+   *
+   * Exposed because the port has to read one run-time assertion out of it -- what the operator says
+   * `dmst_stex_tp` means -- to decide whether the normalized holdings verb may answer at all. A
+   * capability constant cannot carry that, since it varies per configuration rather than per adapter.
+   */
+  const KiwoomConfig& config() const noexcept { return config_; }
 
   /** Requests every holding, paging `kt00018` 계좌평가잔고내역요청. */
   template <typename CompletionToken>
@@ -2289,6 +2304,22 @@ private:
    * measured against. See `KiwoomConfig::holdings_venue_` and
    * `issues/kiwoom-api-holdings-venue-scope.md`.
    */
+  /**
+   * Refuses an instruction that can open or enlarge a position while the holdings scope is unstated.
+   *
+   * Nothing once the operator has asserted what `dmst_stex_tp` means: the assertion is what this
+   * refusal exists to demand, so honouring it is the whole point rather than a weakening. It does
+   * **not** promise a holdings read has succeeded -- see `KiwoomConfig::holdings_position_scope_`
+   * for what an assertion does and does not claim, and note that the runner's own portfolio gate is
+   * a separate rule that still applies.
+   */
+  static std::optional<BrokerError> holdings_scope_refusal(KiwoomPositionScope scope) {
+    if (scope == KiwoomPositionScope::UNSPECIFIED) {
+      return unestablished_holdings_scope();
+    }
+    return std::nullopt;
+  }
+
   std::optional<BrokerError> validate_holdings_venue() const {
     if (config_.holdings_venue_ == Venue::KRX || config_.holdings_venue_ == Venue::NXT) {
       return std::nullopt;
@@ -2379,6 +2410,20 @@ private:
     switch (advance_page(operation->next_key_, operation->pages_, grew, std::move(next_key))) {
       case PageStep::FINISH:
         operation->snapshot_.received_at_ = std::chrono::system_clock::now();
+        // **What the `trde_able_qty` figures on these rows are evidence of, per the operator's own
+        // assertion and nothing more.** `WHOLE_HOLDING` only when somebody has stated that the
+        // venue parameter does not restrict the figure; unestablished otherwise, which makes
+        // `RiskGuard` refuse a checked sell rather than measure one against a number that may
+        // describe one book out of two. The *resting* treatment is this library's conservative rule
+        // either way and is not a caller's to assert: deducting a resting sell Kiwoom had also
+        // deducted refuses a trade, where the opposite sells the same shares twice.
+        operation->snapshot_.sellable_basis_ = SellableBasis{
+          config_.holdings_sellable_scope_ == KiwoomSellableScope::WHOLE_HOLDING
+            ? SellableBasis::Coverage::WHOLE_HOLDING
+            : SellableBasis::Coverage::UNESTABLISHED,
+          SellableBasis::RestingTreatment::DEDUCT,
+          false,
+        };
         deliver(
           std::move(operation->completion_),
           Result<HoldingsSnapshot>(std::move(operation->snapshot_))
@@ -2809,6 +2854,7 @@ private:
 
   /** Returns an error when an order cannot be represented as a Kiwoom instruction. */
   static std::optional<BrokerError> validate_order(
+    KiwoomPositionScope scope,
     const OrderRequest& order,
     std::string& division
   ) {
@@ -2848,7 +2894,7 @@ private:
     // **Last**, so a caller hears about their own order's problems before this one. An order that
     // is malformed is malformed whatever this library knows about the account, and reporting the
     // holdings gap first would bury the mistake the caller can actually fix.
-    return unestablished_holdings_scope();
+    return holdings_scope_refusal(scope);
   }
 
   /**
@@ -2858,6 +2904,7 @@ private:
    * the one the submission path takes, not one a test re-derives from the same inputs.
    */
   static std::optional<BrokerError> validate_amendment(
+    KiwoomPositionScope scope,
     const KiwoomAmendment& amendment,
     bool cancel
   ) {
@@ -2909,7 +2956,7 @@ private:
       // Last, and cancellations excepted; see `unestablished_holdings_scope`. A replacement can
       // move a resting buy to a fillable price, which opens or enlarges the position this library
       // cannot measure. A cancellation only ever reduces what is resting.
-      return unestablished_holdings_scope();
+      return holdings_scope_refusal(scope);
     }
     return std::nullopt;
   }
@@ -2967,7 +3014,7 @@ private:
   /** Validates and submits a placement. */
   void start_place_order(OrderRequest order, OrderAckHandler completion) {
     std::string division;
-    if (auto invalid = validate_order(order, division)) {
+    if (auto invalid = validate_order(config_.holdings_position_scope_, order, division)) {
       deliver(std::move(completion), Result<KiwoomOrderAck>(std::move(*invalid)));
       return;
     }
@@ -3000,7 +3047,7 @@ private:
 
   /** Validates and submits a modification or a cancellation. */
   void start_amend_order(KiwoomAmendment amendment, bool cancel, OrderAckHandler completion) {
-    if (auto invalid = validate_amendment(amendment, cancel)) {
+    if (auto invalid = validate_amendment(config_.holdings_position_scope_, amendment, cancel)) {
       deliver(std::move(completion), Result<KiwoomOrderAck>(std::move(*invalid)));
       return;
     }
@@ -3506,6 +3553,9 @@ public:
       "bars"
     );
   }
+
+  /** Returns the configuration this facade's client was built with; see `KiwoomClient::config`. */
+  const KiwoomConfig& config() const noexcept { return client_->config(); }
 
   /** Returns every holding for the bound credential. */
   Result<HoldingsSnapshot> holdings(KiwoomAccount account) {

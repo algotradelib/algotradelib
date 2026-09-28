@@ -1553,6 +1553,13 @@ TEST_CASE("a sell beyond what the broker says is sellable is refused with both n
   position.quantity_ = Decimal64::parse("100");
   position.sellable_quantity_ = Decimal64::parse("70");
   portfolio.positions_.push_back(position);
+  // Standing for a broker that published the figure and said what it covers; an unstated basis is
+  // its own test, below.
+  portfolio.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
 
   const auto refused = guard.check(planned("100", "70000", OrderSide::SELL), portfolio, open_market());
   REQUIRE(refused);
@@ -1580,6 +1587,13 @@ TEST_CASE("a resting sell spends the same sellable quantity as a new one") {
   position.sellable_quantity_ = Decimal64::parse("70");
   portfolio.positions_.push_back(position);
   portfolio.working_.push_back(working("50", "0", OrderStatus::PENDING, OrderSide::SELL));
+  // A fixture standing for a broker that published a figure has to say what the figure covers,
+  // because an unstated basis now refuses. Whole holding, and this library deducts resting sells.
+  portfolio.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
 
   // Fifty already working plus forty more is ninety against seventy sellable.
   const auto refused = guard.check(planned("40", "70000", OrderSide::SELL), portfolio, open_market());
@@ -1595,6 +1609,11 @@ TEST_CASE("a resting sell spends the same sellable quantity as a new one") {
   ProbePortfolio with_buy;
   with_buy.positions_.push_back(position);
   with_buy.working_.push_back(working("50", "0", OrderStatus::PENDING, OrderSide::BUY));
+  with_buy.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
   REQUIRE_FALSE(guard.check(planned("70", "70000", OrderSide::SELL), with_buy, open_market()));
 }
 

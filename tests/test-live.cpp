@@ -51,6 +51,14 @@ struct SellableInHoldings : strategy::NoCaps {
 /** A broker that answers a per-instrument inquiry, as Toss does. */
 struct SellableByInquiry : strategy::NoCaps {
   static constexpr SellableSource sellable_source = SellableSource::INQUIRY;
+  // Declares what Toss declares, because this stands for Toss. An inquiry answer carries its own
+  // basis rather than inheriting the holdings read's -- the poll established nothing about a figure
+  // it never reported -- so a capability set that says nothing here has its checked sells refused.
+  static constexpr SellableBasis sellable_inquiry_basis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
 };
 /** A broker that publishes what may be spent, per currency, as both of them do. */
 struct WithBuyingPower : strategy::NoCaps {
@@ -668,6 +676,15 @@ strategy::Portfolio<FakeBroker> held_position(const char* held, const char* sell
   // Stamped, because an unstamped snapshot now means "never read" rather than "empty and current",
   // and a plan derived from one is withheld. This helper stands for a listing the broker answered.
   portfolio.as_of_ = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 100);
+  // Declared for the same reason it is stamped: an unestablished basis now means "nobody said what
+  // this figure covers" and a checked sell refuses, so a helper standing for a broker's answered
+  // listing has to state what that broker states. This is the conservative pair every shipped
+  // adapter declares -- whole holding, and this library deducts the resting sells itself.
+  portfolio.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
   HoldingPosition position;
   position.instrument_ = samsung();
   position.quantity_ = Decimal64::parse(held);

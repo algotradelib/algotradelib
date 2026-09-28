@@ -788,6 +788,115 @@ struct HoldingsTotals {
   Decimal64 unrealized_profit_loss_;
 };
 
+/**
+ * What a sellable figure is evidence of.
+ *
+ * `SellableSource` above says **where** the figure came from, which is a fact about this library's
+ * plumbing and is correctly a compile-time constant. This says **what it means**, which is the
+ * question `RiskGuard` actually asks of it, and it is a run-time value because one broker's answer
+ * is a caller's assertion about an account rather than a property of the adapter.
+ *
+ * **Why a type and not a comment.** `HoldingPosition::sellable_quantity_` documents in prose that
+ * whether the figure is already net of resting sell orders "is not stated by either broker and is
+ * not assumed here" -- and then the guard reads the number and trusts it completely. A third party
+ * writing an adapter fills that field from a vendor field whose scope they may never have
+ * established, and nothing tells them. Both axes below therefore default to `UNESTABLISHED`, which
+ * refuses: a safety rule has to fail closed for code this library has never seen.
+ */
+struct SellableBasis {
+  /** Whether the figure covers the whole holding it will be measured against. */
+  enum class Coverage {
+    /** Nobody has established what the figure covers. The guard refuses. */
+    UNESTABLISHED,
+    /** It covers every share held of the instrument, whatever venue or lot they sit in. */
+    WHOLE_HOLDING,
+    /**
+     * It covers only part of the holding.
+     *
+     * The guard refuses this too, and the value exists so the refusal can say *which* gap it is: a
+     * figure covering one venue's slice cannot bound a sell of the whole position, and reporting
+     * that as "unestablished" would lose the distinction between nobody having looked and somebody
+     * having looked and found a partial answer.
+     */
+    PARTIAL,
+  };
+
+  /**
+   * How the guard must treat resting sell orders against this figure.
+   *
+   * **A treatment, not a claim about the broker**, and that distinction is load-bearing. An earlier
+   * revision of this type named these `GROSS` and `NET` -- assertions about what a vendor reports.
+   * No broker publishes that fact, so no adapter could honestly declare one, so every guarded sell
+   * refused at two of three brokers. A policy this library applies is always statable; what nobody
+   * may state is a measurement nobody made, and `verified_` is where that goes.
+   */
+  enum class RestingTreatment {
+    /** No treatment stated. The guard refuses. */
+    UNESTABLISHED,
+    /**
+     * Deduct every resting sell.
+     *
+     * Declarable by any adapter without establishing anything, because it errs in the only safe
+     * direction: if the broker had already deducted them the result over-refuses, which costs a
+     * trade, where the other error sells the same shares twice.
+     */
+    DEDUCT,
+    /**
+     * The broker had already deducted the resting orders **it had seen when the figure was read**.
+     *
+     * So the guard still deducts what this library reserved *after* that read. It cannot mean
+     * "ignore resting sells": a broker's figure cannot reflect an order accepted since it was
+     * computed, and ignoring the reservation lets one sellable quantity authorize two sells.
+     */
+    ALREADY_DEDUCTED,
+  };
+
+  Coverage coverage_ = Coverage::UNESTABLISHED;
+  RestingTreatment resting_ = RestingTreatment::UNESTABLISHED;
+  /**
+   * False when this basis is a stated treatment rather than a measured broker fact.
+   *
+   * Nothing in this library sets it true. It is here so that "we apply the conservative rule" stays
+   * distinguishable, in the type, from "somebody read a real response and confirmed this" -- the
+   * distinction `issues/pre-trade-checks-sellable-deduction.md` records in prose because no type
+   * could hold it.
+   */
+  bool verified_ = false;
+
+  /** Whether the guard may measure a sell against a figure carrying this basis at all. */
+  constexpr bool is_enforceable() const noexcept {
+    return coverage_ == Coverage::WHOLE_HOLDING && resting_ != RestingTreatment::UNESTABLISHED;
+  }
+};
+
+/** Returns a stable lowercase name for `coverage`, for logs and refusal detail. */
+inline constexpr std::string_view sellable_coverage_name(SellableBasis::Coverage coverage
+) noexcept {
+  switch (coverage) {
+    case SellableBasis::Coverage::UNESTABLISHED:
+      return "unestablished";
+    case SellableBasis::Coverage::WHOLE_HOLDING:
+      return "whole_holding";
+    case SellableBasis::Coverage::PARTIAL:
+      return "partial";
+  }
+  return "unestablished";
+}
+
+/** Returns a stable lowercase name for `treatment`, for logs and refusal detail. */
+inline constexpr std::string_view sellable_resting_name(SellableBasis::RestingTreatment treatment
+) noexcept {
+  switch (treatment) {
+    case SellableBasis::RestingTreatment::UNESTABLISHED:
+      return "unestablished";
+    case SellableBasis::RestingTreatment::DEDUCT:
+      return "deduct";
+    case SellableBasis::RestingTreatment::ALREADY_DEDUCTED:
+      return "already_deducted";
+  }
+  return "unestablished";
+}
+
 /** Point-in-time normalized positions and per-currency totals. */
 struct HoldingsSnapshot {
   /** Every position row the broker reported; one instrument may appear in more than one. */
@@ -796,6 +905,18 @@ struct HoldingsSnapshot {
   std::vector<HoldingsTotals> totals_;
   /** When this process received the answer, which is what a staleness gate measures against. */
   std::chrono::system_clock::time_point received_at_;
+  /**
+   * What `HoldingPosition::sellable_quantity_` on these rows is evidence of.
+   *
+   * Describes **every** populated row in this snapshot, which is why it sits here rather than on
+   * each row: one read has one basis, and a per-row basis would invite an adapter to vary it
+   * without evidence. An adapter whose response would need two different bases to describe it must
+   * fail the snapshot rather than pick one.
+   *
+   * Defaults to unestablished, so an adapter that fills a sellable quantity and states nothing has
+   * its sells refused rather than measured against a figure nobody has characterized.
+   */
+  SellableBasis sellable_basis_;
 };
 
 /**

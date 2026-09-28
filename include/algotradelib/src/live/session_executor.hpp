@@ -190,6 +190,21 @@ public:
   /** Whether asking this broker for a sellable quantity costs a request. */
   static constexpr bool inquires_sellable = Caps::sellable_source == SellableSource::INQUIRY;
 
+  /**
+   * Returns what this broker's inquiry answer is evidence of.
+   *
+   * The runner writes this beside the figure rather than letting it inherit the holdings read's
+   * basis, because an inquiry is a separate reading: the holdings poll established nothing about a
+   * number it never reported.
+   */
+  static constexpr SellableBasis sellable_inquiry_basis() {
+    // Detected on `Caps` rather than read off it, because `Caps` is a caller's type parameter and
+    // need not be `BrokerCaps`: a hand-written capability set states the constants it cares about.
+    // One that says nothing about a basis has established nothing, so the guard refuses -- the same
+    // fail-closed default a third-party adapter's traits get.
+    return caps_detail::stated_inquiry_basis<Caps>::value;
+  }
+
   /** Returns the reference the broker issued for the last accepted order. */
   const std::optional<OrderRef<BrokerTag>>& last_ref() const noexcept { return last_ref_; }
 

@@ -5,7 +5,33 @@
 #include "./instrument.hpp"
 #include "./market_data.hpp"
 
+#include <type_traits>
+
 namespace algotradelib {
+
+namespace caps_detail {
+
+/**
+ * Whether a traits specialization states what its sellable *inquiry* answer is evidence of.
+ *
+ * **Detected with a default rather than required**, which is the opposite of the rule every other
+ * constant here follows, and deliberately. Requiring it would make a traits specialization written
+ * against an earlier release fail to compile on a member its author never heard of; detecting it
+ * makes that adapter's checked sells *refuse*, at run time, with a message naming the declaration to
+ * add. Both are discoverable and only the second leaves the rest of the adapter working -- and
+ * neither one lets an unstated basis be enforced against, which is what matters.
+ */
+template <typename Traits, typename = void>
+struct stated_inquiry_basis {
+  static constexpr SellableBasis value{};
+};
+
+template <typename Traits>
+struct stated_inquiry_basis<Traits, std::void_t<decltype(Traits::sellable_inquiry_basis)>> {
+  static constexpr SellableBasis value = Traits::sellable_inquiry_basis;
+};
+
+}  // namespace caps_detail
 
 /**
  * Compile-time feature set of one broker client.
@@ -99,6 +125,17 @@ struct BrokerCaps {
    * a runner branches on: `HOLDINGS` costs nothing, `INQUIRY` costs one request per instrument sold.
    */
   static constexpr SellableSource sellable_source = Traits::sellable_source;
+
+  /**
+   * What a sellable figure obtained through the *inquiry* answers about.
+   *
+   * Only meaningful where `sellable_source` is `INQUIRY`: the figure arrives on its own, outside any
+   * holdings read, so nothing else can say what it covers. Unestablished unless the traits state it,
+   * so an adapter that answers an inquiry and characterizes nothing has its checked sells refused
+   * rather than enforced against a number of unknown meaning.
+   */
+  static constexpr SellableBasis sellable_inquiry_basis =
+    caps_detail::stated_inquiry_basis<Traits>::value;
 
   /** Whether the broker publishes the commission rates it charges the account. */
   static constexpr bool has_commission_schedule = Traits::has_commission_schedule;

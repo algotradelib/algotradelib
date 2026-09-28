@@ -78,6 +78,27 @@ struct Normalizers {
    */
   static constexpr SellableSource sellable_source = SellableSource::INQUIRY;
 
+  /**
+   * What `/api/v1/sellable-quantity` answers about.
+   *
+   * The endpoint is 특정 종목의 판매 가능 수량 -- one symbol's sellable quantity -- so it answers for
+   * the whole holding of the instrument asked about, which follows from the endpoint's own shape
+   * rather than from an assumption. What its schema does **not** state is anything about resting
+   * orders: `SellableQuantityResponse.sellableQuantity` is documented as
+   * "판매 가능 수량. KR: 정수 (주 단위). US: 소수점 포함 가능 (주 단위)." -- units, and nothing else.
+   *
+   * So `DEDUCT` is the rule this library applies rather than a claim about Toss, for the same reason
+   * KIS's holdings read carries it: deducting a resting sell the broker had also deducted refuses a
+   * trade, while not deducting one sells the same shares twice. `verified_` false says nobody has
+   * measured which it is. `issues/pre-trade-checks-sellable-deduction.md` is the KIS half of the
+   * same open question.
+   */
+  static constexpr SellableBasis sellable_inquiry_basis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
+
   /** Toss publishes the account's commission rates; KIS publishes none for domestic stock. */
   static constexpr bool has_commission_schedule = true;
 

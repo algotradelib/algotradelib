@@ -43,6 +43,34 @@ struct fills_sellable<
 > : std::true_type {};
 
 /**
+ * Whether `Executor` states what its sellable *inquiry* answer is evidence of.
+ *
+ * Detected rather than required, and the default is what matters: an executor that answers a
+ * sellable quantity and says nothing about its basis is treated as having established nothing, so
+ * the guard refuses rather than measuring a sell against a figure nobody characterized. A consumer's
+ * own executor gets that default without being told it exists, which is the point -- the alternative
+ * default would silently enforce against whatever its author happened to return.
+ */
+template <typename Executor, typename = void>
+struct states_sellable_basis : std::false_type {};
+
+template <typename Executor>
+struct states_sellable_basis<
+  Executor,
+  std::void_t<decltype(Executor::sellable_inquiry_basis())>
+> : std::true_type {};
+
+/** Returns what `Executor`'s inquiry answer is evidence of, or an unestablished basis. */
+template <typename Executor>
+constexpr SellableBasis sellable_inquiry_basis_of() {
+  if constexpr (states_sellable_basis<Executor>::value) {
+    return Executor::sellable_inquiry_basis();
+  } else {
+    return SellableBasis{};
+  }
+}
+
+/**
  * Whether `Executor` can say which reference the broker issued for the order it just accepted.
  *
  * Detected rather than required, for the same reason as above: a dry runner and a replay's
@@ -1158,6 +1186,12 @@ private:
     for (auto& position : portfolio.positions_) {
       if (position.instrument_ == instrument) {
         position.sellable_quantity_ = quantity;
+        // **The inquiry is its own reading, so it carries its own basis.** The holdings poll that
+        // built this portfolio established nothing about a figure it never reported, and inheriting
+        // that snapshot's basis would let one read vouch for another's number. An executor that
+        // declares nothing leaves the basis unestablished, and the guard then refuses -- which is
+        // the same fail-closed default a consumer's own source gets.
+        portfolio.sellable_basis_ = runner_detail::sellable_inquiry_basis_of<Executor>();
         return;
       }
     }

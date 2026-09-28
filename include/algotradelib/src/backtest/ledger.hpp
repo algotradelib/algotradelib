@@ -383,6 +383,17 @@ public:
     for (auto& position : portfolio.positions_) {
       position.sellable_quantity_ = position.quantity_;
     }
+    // **And the model has to say so in the type, not only in the comment above.** This ledger is a
+    // *producer* of sellable figures, exactly like a broker adapter, and a guard that refuses a
+    // figure whose basis is unestablished would otherwise refuse every replay sale -- the same trap
+    // the two fields above describe, one level up. Whole-holding by construction, because the
+    // preceding loop makes it so; `DEDUCT` because a replay's resting sells are this library's own
+    // rows and nothing has netted them out; `verified_` false because it is a model.
+    portfolio.sellable_basis_ = SellableBasis{
+      SellableBasis::Coverage::WHOLE_HOLDING,
+      SellableBasis::RestingTreatment::DEDUCT,
+      false,
+    };
     portfolio.cash_ = cash_;
     // **The broker's answer, modelled, because a replay has no broker to ask.** A buying-power check
     // reads this field and refuses when it is absent, so leaving it empty would refuse every buy a

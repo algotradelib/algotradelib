@@ -512,6 +512,13 @@ TEST_CASE("a second sell in one pass is sized against the first, not against the
   held.quantity_ = Decimal64::parse("100");
   held.sellable_quantity_ = Decimal64::parse("100");
   portfolio.positions_.push_back(held);
+  // Standing for a broker that published the figure and stated what it covers. An unstated basis
+  // refuses, which is its own test rather than a surprise here.
+  portfolio.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
   dry.context().set_portfolio(portfolio);
 
   const auto report = dry.feed(bar_at(10, "70000"));
@@ -738,6 +745,13 @@ TEST_CASE("the probe learns the broker's sellable convention from ordinary polls
   held.quantity_ = Decimal64::parse("100");
   held.sellable_quantity_ = Decimal64::parse("100");
   portfolio.positions_.push_back(held);
+  // Standing for a broker that published the figure and stated what it covers. An unstated basis
+  // refuses, which is its own test rather than a surprise here.
+  portfolio.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
   dry.context().set_portfolio(portfolio);
   dry.feed(bar_at(10, "70000"));
   REQUIRE(dry.sellable_convention().verdict() == strategy::SellableConvention::UNDETERMINED);
@@ -767,6 +781,13 @@ TEST_CASE("the probe is off by default and changes nothing when on") {
   held.quantity_ = Decimal64::parse("100");
   held.sellable_quantity_ = Decimal64::parse("100");
   portfolio.positions_.push_back(held);
+  // Standing for a broker that published the figure and stated what it covers. An unstated basis
+  // refuses, which is its own test rather than a surprise here.
+  portfolio.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
 
   runner::DryRunner<HoldTen> quiet;
   arrange(quiet);
@@ -802,6 +823,13 @@ TEST_CASE("a second pass cannot re-sell what the first pass already committed") 
   held.quantity_ = Decimal64::parse("100");
   held.sellable_quantity_ = Decimal64::parse("100");
   portfolio.positions_.push_back(held);
+  // Standing for a broker that published the figure and stated what it covers. An unstated basis
+  // refuses, which is its own test rather than a surprise here.
+  portfolio.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
   dry.context().set_portfolio(portfolio);
 
   const auto first = dry.feed(bar_at(10, "70000"));
@@ -829,6 +857,13 @@ TEST_CASE("a poll replaces a reservation rather than adding to it") {
   held.quantity_ = Decimal64::parse("100");
   held.sellable_quantity_ = Decimal64::parse("100");
   portfolio.positions_.push_back(held);
+  // Standing for a broker that published the figure and stated what it covers. An unstated basis
+  // refuses, which is its own test rather than a surprise here.
+  portfolio.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
   dry.context().set_portfolio(portfolio);
 
   dry.feed(bar_at(10, "70000"));
@@ -841,6 +876,14 @@ TEST_CASE("a poll replaces a reservation rather than adding to it") {
   after.quantity_ = Decimal64::parse("40");
   after.sellable_quantity_ = Decimal64::parse("40");
   polled.positions_.push_back(after);
+  // The polled snapshot states its basis too. Without it this test still saw a refusal -- for the
+  // unestablished basis rather than for the quantity -- which is the exact failure shape where a
+  // fixture makes a test pass for a reason it was not written to check.
+  polled.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
   dry.context().set_portfolio(polled);
 
   // Forty sellable against a sixty-share order, and the reservation is gone rather than doubled.
@@ -923,6 +966,13 @@ TEST_CASE("the probe does not learn the broker's convention from this runner's o
   held.quantity_ = Decimal64::parse("100");
   held.sellable_quantity_ = Decimal64::parse("100");
   portfolio.positions_.push_back(held);
+  // Standing for a broker that published the figure and stated what it covers. An unstated basis
+  // refuses, which is its own test rather than a surprise here.
+  portfolio.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
   dry.context().set_portfolio(portfolio);
 
   dry.feed(bar_at(10, "70000"));   // sells sixty, and reserves it

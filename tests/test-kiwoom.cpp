@@ -91,15 +91,27 @@ struct KiwoomClientTestAccess {
     KiwoomClient::append_holdings_page(snapshot, totals_seen, p);
   }
 
-  static std::optional<BrokerError> validate_order(const OrderRequest& order, std::string& code) {
-    return KiwoomClient::validate_order(order, code);
+  /**
+   * Drives the real order validator, with the holdings scope the caller wants to test under.
+   *
+   * The scope defaults to `UNSPECIFIED` so every test written before it existed still asks the
+   * question it was written to ask -- and so the *default* is what an unqualified call exercises,
+   * which is the behaviour this adapter ships with.
+   */
+  static std::optional<BrokerError> validate_order(
+    const OrderRequest& order,
+    std::string& code,
+    KiwoomPositionScope scope = KiwoomPositionScope::UNSPECIFIED
+  ) {
+    return KiwoomClient::validate_order(scope, order, code);
   }
 
   static std::optional<BrokerError> validate_amendment(
     const KiwoomAmendment& amendment,
-    bool cancel
+    bool cancel,
+    KiwoomPositionScope scope = KiwoomPositionScope::UNSPECIFIED
   ) {
-    return KiwoomClient::validate_amendment(amendment, cancel);
+    return KiwoomClient::validate_amendment(scope, amendment, cancel);
   }
 
   /** Drives the real paging decision the three account listings share. */

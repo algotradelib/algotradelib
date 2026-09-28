@@ -1247,12 +1247,28 @@ public:
         // honored or refused, never quietly approximated.
         return refuse(GuardReason::QUANTITY_NOT_SELLABLE);
       }
-      // Resting sells count against the same figure. Whether a broker's number is already net of
-      // them is not stated by either specification, so this subtracts them: over-counting can only
-      // refuse an order that would have been accepted, while under-counting sells a position
-      // twice. `ai/halt-provenance` spent two review rounds on exactly that asymmetry, and
-      // reconciliation's same-side offset exists for the same reason.
-      const auto resting = portfolio.working_quantity(order.instrument_, OrderSide::SELL);
+      // **A figure whose meaning nobody established refuses, even though it is present.** A number
+      // is not evidence on its own: `SellableBasis` says what this one covers and how resting
+      // orders relate to it, and an adapter that states neither has handed over a quantity that
+      // cannot answer the question being asked of it. Defaulting to enforceable here is what let a
+      // venue-scoped figure bound a whole-holding sell, which is the defect this branch exists to
+      // close, and it fails closed so that a broker adapter this library has never seen is refused
+      // rather than trusted.
+      if (!portfolio.sellable_basis_.is_enforceable()) {
+        return refuse(GuardReason::QUANTITY_NOT_SELLABLE);
+      }
+      // Resting sells count against the same figure, and **which** of them depends on what the
+      // broker already did. Under `DEDUCT` every open sell counts: this library does the whole
+      // subtraction, which over-refuses if the broker had also done it and never under-refuses.
+      // Under `ALREADY_DEDUCTED` the broker has accounted for the orders it could see when the
+      // figure was read, so only what this library reserved since then is left to deduct --
+      // deducting the broker's rows again would charge one order twice, and deducting nothing at
+      // all lets one figure authorize two sells. `ai/halt-provenance` spent two review rounds on
+      // that asymmetry and reconciliation's same-side offset exists for the same reason.
+      const auto resting =
+        portfolio.sellable_basis_.resting_ == SellableBasis::RestingTreatment::ALREADY_DEDUCTED
+          ? portfolio.reserved_working_quantity(order.instrument_, OrderSide::SELL)
+          : portfolio.working_quantity(order.instrument_, OrderSide::SELL);
       const auto committed = decimal_add(resting, order.quantity_);
       if (!committed) {
         return refuse(GuardReason::QUANTITY_NOT_SELLABLE);

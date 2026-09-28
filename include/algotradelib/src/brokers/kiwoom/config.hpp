@@ -103,6 +103,40 @@ inline std::chrono::system_clock::time_point parse_compact_expiry(std::string_vi
   return std::chrono::system_clock::from_time_t(utc);
 }
 
+/**
+ * What a Kiwoom balance request's `dmst_stex_tp` means for the positions it lists.
+ *
+ * Kiwoom's specification does not say, and the two readings have opposite failure modes, so this is
+ * asserted by whoever runs the account and never inferred by this library. See
+ * `KiwoomConfig::holdings_position_scope_` for the argument and
+ * `issues/kiwoom-api-holdings-venue-scope.md` for the experiment that settles it.
+ */
+enum class KiwoomPositionScope {
+  /** Nobody has stated it: the holdings verb refuses, as does anything that can open a position. */
+  UNSPECIFIED,
+  /**
+   * Asserted: the parameter selects whose price values a position, and every position is listed.
+   *
+   * The more plausible reading of a 계좌평가 inquiry, because custody at a Korean broker is not held
+   * per venue -- a share is a share, and KRX and NXT are two places to trade it. Plausible is not
+   * established, which is exactly why this is an assertion and why nothing sets it by default.
+   */
+  VALUATION_ONLY,
+};
+
+/**
+ * What a Kiwoom balance row's `trde_able_qty` covers.
+ *
+ * Independent of `KiwoomPositionScope` on purpose: nothing in the specification ties the two fields'
+ * scopes together, and this is the one that can admit a sell of shares that are not there.
+ */
+enum class KiwoomSellableScope {
+  /** Nobody has stated it: the published basis is unestablished and a checked sell refuses. */
+  UNSPECIFIED,
+  /** Asserted: it covers every share held of the instrument, whatever venue it trades on. */
+  WHOLE_HOLDING,
+};
+
 /** Kiwoom application credentials and live/demo endpoint selection. */
 struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
   /** Whether to use Kiwoom's 모의투자 endpoints. Set from `KIWOOM_DEMO=1`. */
@@ -155,6 +189,44 @@ struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
    * the experiment is written out at `issues/kiwoom-api-holdings-venue-scope.md`.
    */
   Venue holdings_venue_ = Venue::UNSPECIFIED;
+
+  /**
+   * What the operator asserts `dmst_stex_tp` *means* for the positions `kt00018` lists.
+   *
+   * `holdings_venue_` above names the book a request is sent for. This states what naming it does,
+   * which is the thing the specification never says: `kt00018`'s `dmst_stex_tp` documents
+   * `KRX:한국거래소,NXT:넥스트트레이드` and no meaning, and both quantity fields' descriptions carry
+   * units and zero-padding and nothing else.
+   *
+   * **The library will not infer this, and the reason is recorded rather than assumed.** Sending
+   * both requests and comparing them was analysed and rejected: two reads are not a snapshot, so
+   * disjoint row sets are evidence of a change *between* the reads rather than of what the parameter
+   * means -- read KRX holding A, sell A and buy B, read NXT, and the union is `{A, B}` when only B
+   * is held. `issues/kiwoom-api-holdings-venue-scope.md` carries the full argument.
+   *
+   * So a caller may **assert** it, and asserting is not knowing: an assertion that is wrong
+   * *undercounts* the account, which admits a buy at a ceiling already reached and refuses or
+   * undersizes a sell. That is the milder of the two failure directions and it is not safe. The
+   * experiment that would settle it is two requests and about a minute of an account's time.
+   */
+  KiwoomPositionScope holdings_position_scope_ = KiwoomPositionScope::UNSPECIFIED;
+
+  /**
+   * What the operator asserts `trde_able_qty` covers.
+   *
+   * **Separate from the position scope above, because the specification promises nothing about
+   * either and certainly not that they agree.** `rmnd_qty` could be the whole account while
+   * `trde_able_qty` is what may be traded on the named venue -- both `desc` columns say only
+   * "단위: 1주, 좌측 0-padding 처리된 부호 포함 15자리 숫자". One switch covering both would assume
+   * exactly the thing nobody has checked, and the sellable half is the one that admits a wrong-sized
+   * sell rather than merely refusing one.
+   *
+   * `UNSPECIFIED` publishes an unestablished `SellableBasis`, so `RiskGuard` refuses a checked sell
+   * instead of measuring it against a figure of unknown coverage. Asserting `WHOLE_HOLDING` supplies
+   * the coverage; the *resting* treatment is this library's conservative `DEDUCT` either way and is
+   * not a caller's to state, because over-deducting only ever refuses a trade.
+   */
+  KiwoomSellableScope holdings_sellable_scope_ = KiwoomSellableScope::UNSPECIFIED;
 
   /** Reads Kiwoom credentials and environment selection from process variables. */
   void from_env_impl() {
