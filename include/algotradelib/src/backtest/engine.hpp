@@ -67,6 +67,15 @@ struct QueuedOrder {
    * would then have filled a 10:30 decision at a 09:00 price: not lookahead, but its mirror image,
    * and just as false.
    *
+   * **`decision_is_exact_` is the other half, and leaving it out was this branch's last defect.** An
+   * instant is exact when the event states it: a quote's `received_at_`, a close-stamped bar's period
+   * end (which *is* its timestamp), and an open-stamped minute bar's timestamp plus a minute. It is
+   * **nominal** for every other open-stamped bar, because `strategy::bar_period_end` adds 24 hours, 7
+   * days, 31 days or 366 days to a period whose real length is none of those -- and that function's
+   * own comment warns that a caller comparing the result to a precise instant is relying on more than
+   * it can promise. This class became that caller. A nominal instant is an **upper bound** on the
+   * true one, which is exactly enough to keep the rule sound: see `may_fill`.
+   *
    * **Empty means undated**, which is every order placed by a caller driving this executor directly,
    * and is treated as eligible -- the rule can only ever defer a fill, never invent one. An
    * `optional` rather than a zero sentinel because the epoch is a perfectly good instant for a
@@ -75,6 +84,8 @@ struct QueuedOrder {
    * the field's own sentinel.
    */
   std::optional<std::chrono::system_clock::time_point> decided_at_;
+  /** Whether `decided_at_` is the instant itself or an upper bound on it; see above. */
+  bool decision_is_exact_{true};
 };
 
 /**
@@ -129,6 +140,7 @@ public:
     entry.ref_.primary_ = std::to_string(++issued_);
     entry.accepted_on_ = bar_;
     entry.decided_at_ = deciding_at_;
+    entry.decision_is_exact_ = decision_is_exact_;
     last_ref_ = entry.ref_;
     queued_.push_back(std::move(entry));
     return runner::SendOutcome::ACCEPTED;
@@ -219,7 +231,10 @@ public:
    * of its own and the context's belongs to the runner. See `QueuedOrder::decided_at_` for what it
    * is for.
    */
-  void deciding_at(std::chrono::system_clock::time_point at) { deciding_at_ = at; }
+  void deciding_at(std::chrono::system_clock::time_point at, bool exact = true) {
+    deciding_at_ = at;
+    decision_is_exact_ = exact;
+  }
 
 private:
   std::vector<QueuedOrder<BrokerTag>> queued_;
@@ -227,6 +242,7 @@ private:
   std::uint64_t issued_{0};
   std::uint64_t bar_{0};
   std::optional<std::chrono::system_clock::time_point> deciding_at_;
+  bool decision_is_exact_{true};
 };
 
 /** One point on the equity curve, recorded per bar. */
@@ -321,10 +337,17 @@ struct ReplayResult {
    * the fill model may then decline it anyway. The name says `fill` because that is what the check
    * guards; the unit is stated here because no name carries it.
    *
-   * Only a **close-stamped weekly, monthly or yearly** bar can reach it. Every other shape -- every
-   * intraday interval, every open-stamped bar, and a close-stamped daily bar -- states or derives its
-   * period start, and the comparison is then exact. So this is **zero for every replay this
-   * library's own examples and tests produce** apart from the ones that exist to pin it.
+   * **A calendar period boundary this engine cannot establish, on either side of the comparison.**
+   * Two shapes reach it. A close-stamped weekly, monthly or yearly bar does not state where its
+   * period began. And an open-stamped bar of any calendar interval carries a period *end* that is
+   * only an upper bound -- which is what every shipped adapter produces for every non-minute bar, so
+   * **an adapter-fetched monthly or yearly replay will carry this on most of its fills**, and a
+   * weekly one after any shortened week. Only intraday bars and close-stamped daily bars are checked
+   * on both sides.
+   *
+   * **A reader can discharge it**: with no quotes, one interval per instrument, and series whose
+   * periods do not overlap, the fills were causal whatever this figure says -- the engine simply
+   * could not prove it from the events it was handed.
    *
    * **What non-zero tells a reader:** for those, the engine cannot promise the fill price came from
    * after the decision. **Any dated order can be one of them**, not only an order a quote placed.
@@ -456,7 +479,15 @@ public:
     // And dated, for the half of that rule a counter cannot express -- see `QueuedOrder::decided_at_`.
     // A bar's decisions are all made at its period end, whichever handler makes them: `on_fill`
     // during settlement, `on_phase`, `on_bar`, and a handler answering an order update afterwards.
-    runner_.executor().deciding_at(event.period_end_);
+    //
+    // **Whether that instant is exact depends on the stamp**, and getting this wrong deferred real
+    // fills by a month. A close-stamped bar's period end is its own timestamp, stated by the broker.
+    // An open-stamped one is `bar_period_end`'s arithmetic, which is exact for a minute and
+    // deliberately **nominal** for a day, a week, a month and a year -- and every shipped adapter
+    // stamps every non-minute bar `OPEN`. February's nominal end is five days into March, so an
+    // order decided on February's bar looked as though it had been decided inside March's period and
+    // was deferred to April.
+    runner_.executor().deciding_at(event.period_end_, period_end_is_exact(event));
 
     settle_queued_against(event);
     // **The halt stops this bar too, not merely the next one.** Returning only from settlement left
@@ -612,9 +643,6 @@ public:
       runner_.context().set_now(event.quote_.received_at_);
       install_portfolio();
       drain_reports(runner_.feed(clock_.phase()));
-      if (result_.halted_) {
-        return;
-      }
     }
 
     // Installed before the dispatch for the reason every other dispatch site here installs: a
@@ -679,6 +707,20 @@ private:
   }
 
   /**
+   * Returns whether `event`'s period end is the instant itself rather than an upper bound on it.
+   *
+   * A close-stamped bar carries its period end as its timestamp, so the broker stated it. An
+   * open-stamped bar's end is derived by adding the interval's nominal length, which is right for a
+   * minute and an approximation for every calendar interval -- 24 hours is not a trading day, 31 days
+   * is not a month, and 366 is not a year. The approximation always runs **long**, which is what
+   * makes it usable: an upper bound on the decision instant still proves causality whenever a bar's
+   * start is at or after it.
+   */
+  static bool period_end_is_exact(const strategy::BarEvent& event) noexcept {
+    return event.stamp_ == BarStamp::CLOSE || event.interval_ == BarInterval::ONE_MINUTE;
+  }
+
+  /**
    * Returns when `event`'s period began, where that is answerable **from the event itself**.
    *
    * Three cases, in the order they are decided, and the ordering is the correction Codex round 1
@@ -689,7 +731,9 @@ private:
    * 2. **An intraday interval has a fixed length**, so a close-stamped one began that long before it
    *    ended.
    * 3. **A close-stamped daily bar** began at the session open on its own local date, which is the
-   *    date its period end falls on and where its open price comes from.
+   *    date its period end falls on and where its open price comes from. **That assumes the stamp
+   *    falls on the session's own date**, which is true of a bar stamped at the close and false of
+   *    one stamped at the following local midnight; such a series gets a start a day late.
    *
    * **Everything else is unanswerable and says so.** A close-stamped weekly bar ends on Friday and
    * began on Monday; taking the session open on the *period end's* date would have called Friday
@@ -735,10 +779,13 @@ private:
    *    open price -- which is what `NextBarFillModel` credits a market order with -- is from before
    *    the strategy decided anything. This is every bar shape this library produces: intraday,
    *    open-stamped, and close-stamped daily.
-   * 3. **Where it does not answer -- a close-stamped weekly, monthly or yearly bar -- this engine
-   *    makes no inference at all.** It allows the fill, on the bar-counter rule that governed every
-   *    fill before this branch, and **counts** it in `ReplayResult::unchecked_fill_causality_` so the
-   *    report can say the check did not happen.
+   * 3. **Where either side of that comparison is a calendar boundary this engine cannot establish,
+   *    it makes no inference at all.** Two ways in, and the second was found last: the bar's start is
+   *    underivable (a close-stamped weekly, monthly or yearly bar), or the decision instant is only
+   *    an upper bound (an open-stamped bar of any calendar interval, which is what every shipped
+   *    adapter produces) and the bar's start falls before it. Either way the fill is allowed, on the
+   *    bar-counter rule that governed every fill before this branch, and **counted** in
+   *    `ReplayResult::unchecked_fill_causality_` so the report can say the check did not happen.
    *
    * **Three successive versions of this function tried to infer that period instead, and a reviewer
    * falsified all three.** The previous bar of the instrument: wrong, because two intervals of one
@@ -748,8 +795,12 @@ private:
    * true and is not guaranteed -- and the repository's own rule covers exactly this: *a conservative
    * refusal beats a narrow test you cannot justify.* There is no refusal available here either,
    * because deferring an unprovable fill would stop a close-stamped weekly replay filling **anything**
-   * -- every order in one is decided at a boundary this engine equally cannot place. So the honest
-   * third answer is to check nothing, claim nothing, and report the gap.
+   * -- every order in one is decided at a boundary this engine equally cannot place. That is a
+   * statement about the shape rather than about every interval in it: a sound lower bound of *period
+   * end minus seven days* does exist for a week and would let a full-week series fill on time, but it
+   * defers a week after every holiday-shortened one, and the 31-day and 366-day bounds defer nearly
+   * every monthly and yearly order. So the honest third answer is to check nothing, claim nothing,
+   * and report the gap.
    */
   bool may_fill(
     const QueuedOrder<Tag>& entry,
@@ -759,7 +810,19 @@ private:
       return true;
     }
     if (const auto start = period_start_of(event)) {
-      return !(*start < *entry.decided_at_);
+      if (!(*start < *entry.decided_at_)) {
+        // Proven: the period began at or after the decision. A *nominal* decision instant is an
+        // upper bound on the true one, so this proves it for those too.
+        return true;
+      }
+      if (entry.decision_is_exact_) {
+        return false;
+      }
+      // The start is known and the decision is only bounded, so this is the unprovable case again
+      // from the other side: the order may have been decided before this period after all. Allowed
+      // and counted, on the same terms as an underivable start.
+      ++result_.unchecked_fill_causality_;
+      return true;
     }
     ++result_.unchecked_fill_causality_;
     return true;

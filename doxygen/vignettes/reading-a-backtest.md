@@ -128,17 +128,25 @@ order reaches the broker immediately and can trade at once. `ReportCaveats::quot
 any run that fed a quote, and that is what it is telling you. A fill model that executes against a
 quote is a different design with its own argument, and this is not it.
 
-**One bar shape cannot be checked at all, and the report says so rather than guessing.** A
-close-stamped weekly, monthly or yearly bar does not state when its period began, and nothing in
-`feed`'s contract lets the engine derive it — three attempts to infer it from a previous bar were
-each wrong, because timestamp order does not imply that two bars of one series tile. So for those
-bars the check does not run: the fill is allowed on the older rule that an order never fills against
-the bar that produced it, and `ReportCaveats::unchecked_fill_causality_` counts every such decision.
-Zero for every daily, intraday or open-stamped replay, which is every shape this library produces.
-Non-zero means those fill prices are not guaranteed to come from after the decision, and **any dated
-order can be one of them**. A quote is the obvious way in; a bars-only replay reaches it too, when a
-decision made on one interval's bar meets a longer interval's bar of the same instrument whose period
-had already begun.
+**A calendar period boundary the engine cannot establish makes the check impossible, and the report
+says so rather than guessing.** It happens on either side of the comparison. A close-stamped weekly,
+monthly or yearly bar does not state when its period *began* — and nothing in `feed`'s contract lets
+the engine derive it, as three attempts to infer it from a previous bar each proved. An open-stamped
+bar of any calendar interval does not state when its period *ended* either: that is
+`bar_period_end`'s nominal 24 hours, 7, 31 or 366 days, which is what **every shipped adapter
+produces for every non-minute bar**. So an adapter-fetched monthly or yearly replay carries this on
+most of its fills, and a weekly one after any shortened week; only intraday and close-stamped daily
+bars are checked on both sides.
+
+For those, the check does not run: the fill is allowed on the older rule that an order never fills
+against the bar that produced it, and `ReportCaveats::unchecked_fill_causality_` counts every such
+decision. Non-zero means those fill prices are not guaranteed to come from after the decision, and
+**any dated order can be one of them** — a quote is the obvious way in, and a bars-only replay
+reaches it too.
+
+**You can discharge it yourself**: with no quotes, one interval per instrument, and series whose
+periods do not overlap, the fills were causal whatever this figure says. The engine simply could not
+prove it from the events it was handed.
 
 ## What it does not model at all
 

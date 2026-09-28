@@ -1249,6 +1249,57 @@ TEST_CASE("an order decided at the epoch is dated, not undated") {
   CHECK(engine.result().unchecked_fill_causality_ > 0);
 }
 
+/** An open-stamped bar of `interval` at `at`, which is how every shipped adapter stamps one. */
+strategy::BarEvent open_stamped(
+  Clock::time_point at,
+  BarInterval interval,
+  const char* open,
+  const char* close
+) {
+  Bar bar;
+  bar.timestamp_ = at;
+  bar.open_ = Decimal64::parse(open);
+  bar.high_ = Decimal64::parse(close);
+  bar.low_ = Decimal64::parse(open);
+  bar.close_ = Decimal64::parse(close);
+  bar.volume_ = Decimal64::parse("1000");
+  return strategy::make_bar_event(samsung(), interval, BarStamp::OPEN, bar);
+}
+
+TEST_CASE("a nominal period end does not defer a fill by a whole month") {
+  // **The defect a senior review found after eight rounds of the other one.** The causal rule
+  // compares two instants and this branch had checked only one of them. `bar_period_end` adds a
+  // nominal 31 days to an open-stamped monthly bar, and every shipped adapter stamps every
+  // non-minute bar `OPEN` -- so February's period end lands on 5 March, an order decided on
+  // February's bar looked as though it had been decided inside March's period, and it was deferred
+  // to April. Bars only, no quote, in the shape the library itself fetches.
+  backtest::Backtester<BuysOnFirstBar> engine(BuysOnFirstBar{}, replay_config());
+  engine.feed(open_stamped(utc(2026, 2, 2, 0, 0), BarInterval::ONE_MONTH, "60000", "61000"));
+  engine.feed(open_stamped(utc(2026, 3, 2, 0, 0), BarInterval::ONE_MONTH, "70000", "71000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  // March's open, which is the month after the decision -- not April's.
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("70000"));
+  // And the engine says it could not prove that, rather than claiming it checked.
+  CHECK(engine.result().unchecked_fill_causality_ > 0);
+}
+
+TEST_CASE("an open-stamped week whose successor starts exactly a week later is checked") {
+  // The other side of the same figure. Seven days after a Monday-stamped weekly bar is the next
+  // Monday, so the nominal end and the next period's start coincide: the comparison proves
+  // causality and nothing is counted. A shortened week would not, and would be counted -- which is
+  // the honest difference between "checked" and "assumed".
+  backtest::Backtester<BuysOnFirstBar> engine(BuysOnFirstBar{}, replay_config());
+  engine.feed(open_stamped(utc(2026, 3, 2, 0, 0), BarInterval::ONE_WEEK, "60000", "61000"));
+  engine.feed(open_stamped(utc(2026, 3, 9, 0, 0), BarInterval::ONE_WEEK, "70000", "71000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("70000"));
+  CHECK(engine.result().unchecked_fill_causality_ == 0);
+}
+
 TEST_CASE("an open-stamped bar states its own period start") {
   // The case that needs no derivation at all and that the first version of this rule got wrong:
   // `BarStamp::OPEN` means the timestamp *is* the first instant of the period, while the period end

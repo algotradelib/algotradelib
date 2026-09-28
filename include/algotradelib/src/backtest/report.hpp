@@ -154,16 +154,19 @@ struct ReportCaveats {
    * **Eligibility decisions, not fills**: one per queued order per bar it was considered against, and
    * the fill model may decline it afterwards.
    *
-   * Zero for every replay of daily, intraday or open-stamped bars, which is every shape this library
-   * produces. Non-zero only for a close-stamped **weekly, monthly or yearly** bar, whose period start
-   * cannot be derived from the event and which this engine refuses to guess at: three successive
-   * attempts to infer it from a previous bar were each falsified in review, every one resting on an
-   * invariant `Backtester::feed`'s contract does not require.
+   * **A calendar period boundary the engine cannot establish, on either side of the comparison.** A
+   * close-stamped weekly, monthly or yearly bar does not state where its period *began* -- three
+   * attempts to infer that from a previous bar were each falsified in review. And an open-stamped bar
+   * of any calendar interval does not state where its period *ended*: that is `bar_period_end`'s
+   * nominal 24 hours, 7, 31 or 366 days, which is what **every shipped adapter produces for every
+   * non-minute bar**, so an adapter-fetched monthly or yearly replay carries this on most of its
+   * fills. Only intraday and close-stamped daily bars are checked on both sides.
    *
    * **What non-zero tells a reader**: for those, the fill price is not guaranteed to come from after
    * the decision. **Any dated order can be one**, and a quote is only the obvious way in -- a
-   * bars-only replay reaches it too, when a decision on one interval's bar meets a longer interval's
-   * bar of the same instrument whose period had already begun. See
+   * bars-only replay reaches it too. **A reader can discharge it**: with no quotes, one interval per
+   * instrument, and series whose periods do not overlap, the fills were causal whatever this figure
+   * says -- the engine simply could not prove it from the events it was handed. See
    * `ReplayResult::unchecked_fill_causality_`.
    */
   std::size_t unchecked_fill_causality_{0};
