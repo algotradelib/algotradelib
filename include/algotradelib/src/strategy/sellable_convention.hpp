@@ -111,6 +111,16 @@ class SellableConventionProbe {
 public:
   /** Records one portfolio, completing any observation the previous one opened. */
   void observe(const Portfolio<Broker>& portfolio) {
+    // **A figure of unknown coverage teaches nothing about resting orders, and would teach something
+    // false.** This probe reads the *distance* between what is held and what is sellable and watches
+    // how that distance moves. Both numbers have to describe the same shares for the distance to mean
+    // anything: if `rmnd_qty` is account-wide while `trde_able_qty` covers one venue -- exactly what
+    // `SellableBasis::Coverage::UNESTABLISHED` means at Kiwoom -- the distance is a venue split, and a
+    // position moving between venues would read as a resting convention. So an unenforceable basis is
+    // skipped whole rather than judged, and the verdict stays `UNDETERMINED`, which is true.
+    if (!portfolio.sellable_basis_.is_enforceable()) {
+      return;
+    }
     for (const auto& position : portfolio.positions_) {
       if (!position.sellable_quantity_) {
         // The broker did not publish it, so there is nothing to learn from this position.

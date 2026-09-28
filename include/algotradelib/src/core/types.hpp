@@ -709,6 +709,7 @@ struct QuoteSnapshot {
   std::optional<std::chrono::system_clock::time_point> exchange_time_;
   /** When this process received the answer. A local clock, and the weaker of the two claims. */
   std::chrono::system_clock::time_point received_at_;
+
   /**
    * Best bid and offer alongside the quote -- **and no adapter fills this today**.
    *
@@ -735,57 +736,6 @@ struct Money {
   friend bool operator==(const Money& lhs, const Money& rhs) {
     return lhs.amount_ == rhs.amount_ && lhs.currency_ == rhs.currency_;
   }
-};
-
-/** One broker-neutral position in an account holdings snapshot. */
-struct HoldingPosition {
-  /** What is held. A broker reports a holding with no venue, so this carries the identity venue. */
-  InstrumentId instrument_;
-  /** The instrument's display name as the broker spells it. */
-  std::string name_;
-  /**
-   * The quantity in this row.
-   *
-   * A broker may report one instrument across several rows, so this is not necessarily the whole
-   * position. Size a holding with `Portfolio::net_quantity_of`, never from one row.
-   */
-  Decimal64 quantity_;
-  /**
-   * How much of it the broker says may be sold now.
-   *
-   * Empty means the broker did not state one, which is not the same as zero. Whether the figure is
-   * already net of resting sell orders is not stated by either broker and is not assumed here.
-   */
-  std::optional<Decimal64> sellable_quantity_;
-  /** The broker's own average cost for the position. */
-  Decimal64 average_purchase_price_;
-  /** The mark the broker valued the position at. */
-  Decimal64 last_price_;
-  /** Cost basis, as the broker computed it. */
-  Money purchase_value_;
-  /** Current value, as the broker computed it. */
-  Money market_value_;
-  /** Unrealized profit and loss on the position, as the broker reported it. */
-  Money unrealized_profit_loss_;
-  /** The broker's own return figure, as a fraction rather than a percentage. */
-  Decimal64 unrealized_return_;
-};
-
-/** Gross holdings totals for one currency without implicit conversion. */
-struct HoldingsTotals {
-  /** The currency these totals are in. There is one row per currency and no conversion. */
-  Currency currency_;
-  /**
-   * The broker's own cost-basis total for `currency_`.
-   *
-   * Read from the broker's summary row, **not** summed from `positions_`. The two need not agree:
-   * a paged holdings inquiry can return part of the positions beside an account-wide summary.
-   */
-  Decimal64 purchase_value_;
-  /** The broker's own market-value total for `currency_`. Read from its summary, as above. */
-  Decimal64 market_value_;
-  /** The broker's own unrealized profit and loss for `currency_`. Read from its summary, as above. */
-  Decimal64 unrealized_profit_loss_;
 };
 
 /**
@@ -839,16 +789,20 @@ struct SellableBasis {
      * Declarable by any adapter without establishing anything, because it errs in the only safe
      * direction: if the broker had already deducted them the result over-refuses, which costs a
      * trade, where the other error sells the same shares twice.
+     *
+     * **There is deliberately no second value, and the reason is worth keeping.** A broker that
+     * reports a figure already net of resting orders is double-counted by this rule, which refuses an
+     * honest exit -- a real defect, and one this axis was originally shaped to express. It cannot be
+     * expressed safely with what a broker publishes. Such a figure accounts for the orders the broker
+     * saw *when it computed the figure*, so a guard trusting it must still deduct anything
+     * acknowledged since -- and nothing can identify those orders. `OrderSnapshot::ordered_at_` is
+     * optional and no shipped adapter fills it, because KIS's working-order inquiry publishes no
+     * timestamp at all; and a working-order poll replaces this library's own reservation rows with the
+     * broker's, losing the one marker that distinguished them. So the only implementable rule is this
+     * one, and an enumerator whose sole safe behaviour duplicates another is not offered.
+     * `plan/todo/netted-sellable-figures.md` carries the work.
      */
     DEDUCT,
-    /**
-     * The broker had already deducted the resting orders **it had seen when the figure was read**.
-     *
-     * So the guard still deducts what this library reserved *after* that read. It cannot mean
-     * "ignore resting sells": a broker's figure cannot reflect an order accepted since it was
-     * computed, and ignoring the reservation lets one sellable quantity authorize two sells.
-     */
-    ALREADY_DEDUCTED,
   };
 
   /** What the figure covers. Unestablished by default, which refuses. */
@@ -893,11 +847,75 @@ inline constexpr std::string_view sellable_resting_name(SellableBasis::RestingTr
       return "unestablished";
     case SellableBasis::RestingTreatment::DEDUCT:
       return "deduct";
-    case SellableBasis::RestingTreatment::ALREADY_DEDUCTED:
-      return "already_deducted";
   }
   return "unestablished";
 }
+
+/** One broker-neutral position in an account holdings snapshot. */
+struct HoldingPosition {
+  /** What is held. A broker reports a holding with no venue, so this carries the identity venue. */
+  InstrumentId instrument_;
+  /** The instrument's display name as the broker spells it. */
+  std::string name_;
+  /**
+   * The quantity in this row.
+   *
+   * A broker may report one instrument across several rows, so this is not necessarily the whole
+   * position. Size a holding with `Portfolio::net_quantity_of`, never from one row.
+   */
+  Decimal64 quantity_;
+  /**
+   * How much of it the broker says may be sold now.
+   *
+   * Empty means the broker did not state one, which is not the same as zero. Whether the figure is
+   * already net of resting sell orders is not stated by either broker and is not assumed here.
+   */
+  std::optional<Decimal64> sellable_quantity_;
+  /**
+   * What *this row's* `sellable_quantity_` is evidence of, when it did not come from the holdings read.
+   *
+   * Empty means the figure arrived with the snapshot and `HoldingsSnapshot::sellable_basis_` describes
+   * it, which is the ordinary case. It is filled only where a figure reached this row by another route
+   * -- a per-instrument inquiry, which answers for the one instrument asked about and says nothing
+   * about any other row.
+   *
+   * **Why a row needs its own at all.** Promoting an inquiry's basis to the whole portfolio lets one
+   * instrument's declaration certify another's: answer A by inquiry, and a populated but undeclared
+   * figure sitting on B is suddenly enforceable, so a wrong-sized B sell reaches the wire. Provenance
+   * has to stay with the figure it describes.
+   */
+  std::optional<SellableBasis> sellable_basis_;
+  /** The broker's own average cost for the position. */
+  Decimal64 average_purchase_price_;
+  /** The mark the broker valued the position at. */
+  Decimal64 last_price_;
+  /** Cost basis, as the broker computed it. */
+  Money purchase_value_;
+  /** Current value, as the broker computed it. */
+  Money market_value_;
+  /** Unrealized profit and loss on the position, as the broker reported it. */
+  Money unrealized_profit_loss_;
+  /** The broker's own return figure, as a fraction rather than a percentage. */
+  Decimal64 unrealized_return_;
+};
+
+/** Gross holdings totals for one currency without implicit conversion. */
+struct HoldingsTotals {
+  /** The currency these totals are in. There is one row per currency and no conversion. */
+  Currency currency_;
+  /**
+   * The broker's own cost-basis total for `currency_`.
+   *
+   * Read from the broker's summary row, **not** summed from `positions_`. The two need not agree:
+   * a paged holdings inquiry can return part of the positions beside an account-wide summary.
+   */
+  Decimal64 purchase_value_;
+  /** The broker's own market-value total for `currency_`. Read from its summary, as above. */
+  Decimal64 market_value_;
+  /** The broker's own unrealized profit and loss for `currency_`. Read from its summary, as above. */
+  Decimal64 unrealized_profit_loss_;
+};
+
 
 /** Point-in-time normalized positions and per-currency totals. */
 struct HoldingsSnapshot {

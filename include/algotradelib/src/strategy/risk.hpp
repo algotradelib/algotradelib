@@ -228,6 +228,17 @@ enum class GuardReason {
   VALUE_NOT_KNOWN,
   /** The sell exceeds what the broker says is sellable, or the broker did not say. */
   QUANTITY_NOT_SELLABLE,
+  /**
+   * A sellable figure is present, and nobody established what it is evidence of.
+   *
+   * Distinct from `QUANTITY_NOT_SELLABLE` because the remedy is different and the caller cannot guess
+   * it: that one means the number was too small or absent, and this one means the number is there and
+   * uninterpretable. A caller resizes for the first and **declares a `SellableBasis`** for the second,
+   * so reporting both under one name sends a third party writing an adapter looking at their
+   * quantities instead of at their declaration. `SellableBasis::Coverage::PARTIAL` reports here too:
+   * somebody looked and found a figure that cannot bound a sale of the whole holding.
+   */
+  SELLABLE_BASIS_UNESTABLISHED,
   /** The buy costs more than the broker says may be spent, or the broker did not say. */
   INSUFFICIENT_BUYING_POWER,
 };
@@ -253,6 +264,8 @@ inline constexpr std::string_view guard_reason_name(GuardReason reason) noexcept
       return "value_not_known";
     case GuardReason::QUANTITY_NOT_SELLABLE:
       return "quantity_not_sellable";
+    case GuardReason::SELLABLE_BASIS_UNESTABLISHED:
+      return "sellable_basis_unestablished";
     case GuardReason::INSUFFICIENT_BUYING_POWER:
       return "insufficient_buying_power";
   }
@@ -1254,21 +1267,16 @@ public:
       // venue-scoped figure bound a whole-holding sell, which is the defect this branch exists to
       // close, and it fails closed so that a broker adapter this library has never seen is refused
       // rather than trusted.
-      if (!portfolio.sellable_basis_.is_enforceable()) {
-        return refuse(GuardReason::QUANTITY_NOT_SELLABLE);
+      const auto basis = portfolio.sellable_basis_for(order.instrument_);
+      if (!basis.is_enforceable()) {
+        return refuse(GuardReason::SELLABLE_BASIS_UNESTABLISHED);
       }
-      // Resting sells count against the same figure, and **which** of them depends on what the
-      // broker already did. Under `DEDUCT` every open sell counts: this library does the whole
-      // subtraction, which over-refuses if the broker had also done it and never under-refuses.
-      // Under `ALREADY_DEDUCTED` the broker has accounted for the orders it could see when the
-      // figure was read, so only what this library reserved since then is left to deduct --
-      // deducting the broker's rows again would charge one order twice, and deducting nothing at
-      // all lets one figure authorize two sells. `ai/halt-provenance` spent two review rounds on
-      // that asymmetry and reconciliation's same-side offset exists for the same reason.
-      const auto resting =
-        portfolio.sellable_basis_.resting_ == SellableBasis::RestingTreatment::ALREADY_DEDUCTED
-          ? portfolio.reserved_working_quantity(order.instrument_, OrderSide::SELL)
-          : portfolio.working_quantity(order.instrument_, OrderSide::SELL);
+      // Resting sells count against the same figure -- **every** open sell, the broker's own rows and
+      // this library's reservations alike. That over-refuses where the broker had already deducted
+      // them, and never under-refuses, which is the only asymmetry available: `SellableBasis::DEDUCT`
+      // documents why no other treatment can be served. `ai/halt-provenance` spent two review rounds
+      // on that asymmetry and reconciliation's same-side offset exists for the same reason.
+      const auto resting = portfolio.working_quantity(order.instrument_, OrderSide::SELL);
       const auto committed = decimal_add(resting, order.quantity_);
       if (!committed) {
         return refuse(GuardReason::QUANTITY_NOT_SELLABLE);

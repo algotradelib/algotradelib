@@ -626,6 +626,14 @@ using Probe = strategy::SellableConventionProbe<strategy::ProbeBroker>;
 /** A portfolio holding `held` with `sellable` reported, and `resting` on the sell side. */
 ProbePortfolio observed(const char* held, const char* sellable, const char* resting) {
   ProbePortfolio portfolio;
+  // The probe learns a resting convention from how the held-to-sellable *distance* moves, which only
+  // means something when both numbers describe the same shares. So a fixture for it has to state a
+  // coverage, exactly as a broker publishing the figure does; the unstated case is its own test.
+  portfolio.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
   HoldingPosition position;
   position.instrument_ = samsung();
   position.quantity_ = Decimal64::parse(held);
@@ -638,6 +646,49 @@ ProbePortfolio observed(const char* held, const char* sellable, const char* rest
 }
 
 } // namespace
+
+TEST_CASE("the probe learns nothing from a figure of unknown coverage") {
+  // **Why this gate exists.** The probe reads the distance between what is held and what is sellable.
+  // If `rmnd_qty` is account-wide while `trde_able_qty` covers one venue -- which is precisely what an
+  // unestablished coverage means at Kiwoom -- that distance is a venue split, and a position moving
+  // between venues would be read as a broker's resting convention. A confident wrong verdict about
+  // whether a figure is already net is worse than no verdict, because the guard's arithmetic follows it.
+  Probe probe;
+
+  // The same two readings that yield GROSS_OF_RESTING below, with the coverage unstated.
+  auto first = observed("100", "100", "0");
+  first.sellable_basis_ = SellableBasis{};
+  auto second = observed("100", "100", "30");
+  second.sellable_basis_ = SellableBasis{};
+
+  probe.observe(first);
+  probe.observe(second);
+
+  REQUIRE(probe.verdict() == strategy::SellableConvention::UNDETERMINED);
+  REQUIRE(probe.overall().total() == 0);
+  REQUIRE(probe.evidence(samsung()).gross_ == 0);
+  REQUIRE(probe.evidence(samsung()).net_ == 0);
+
+  // A partial coverage is refused for the same reason and is not a milder case: a figure covering
+  // part of the holding makes the distance a partition rather than a reservation.
+  auto partial_first = observed("100", "100", "0");
+  partial_first.sellable_basis_.coverage_ = SellableBasis::Coverage::PARTIAL;
+  auto partial_second = observed("100", "100", "30");
+  partial_second.sellable_basis_.coverage_ = SellableBasis::Coverage::PARTIAL;
+
+  Probe partial_probe;
+  partial_probe.observe(partial_first);
+  partial_probe.observe(partial_second);
+  REQUIRE(partial_probe.verdict() == strategy::SellableConvention::UNDETERMINED);
+  REQUIRE(partial_probe.overall().total() == 0);
+
+  // The positive control: the identical readings *with* a coverage stated do reach a verdict, so this
+  // test cannot pass because the probe stopped working.
+  Probe stated;
+  stated.observe(observed("100", "100", "0"));
+  stated.observe(observed("100", "100", "30"));
+  REQUIRE(stated.verdict() == strategy::SellableConvention::GROSS_OF_RESTING);
+}
 
 TEST_CASE("the probe says nothing until a sell starts resting") {
   Probe probe;
@@ -1595,7 +1646,12 @@ TEST_CASE("a sellable figure nobody characterized refuses, and works the moment 
 
   const auto refused = guard.check(planned("10", "70000", OrderSide::SELL), undeclared, open_market());
   REQUIRE(refused);
-  REQUIRE(refused->reason_ == GuardReason::QUANTITY_NOT_SELLABLE);
+  // **Its own reason, not the quantity one**, because the remedies differ and a caller cannot guess
+  // which applies: resize for a quantity, declare a basis for this. Reporting both under one name is
+  // what sends a third party looking at their numbers instead of at their declaration.
+  REQUIRE(refused->reason_ == GuardReason::SELLABLE_BASIS_UNESTABLISHED);
+  REQUIRE(refused->reason_ != GuardReason::QUANTITY_NOT_SELLABLE);
+  REQUIRE(guard_reason_name(refused->reason_) == "sellable_basis_unestablished");
 
   // A buy is untouched: this rule is about measuring a sale against a figure, and nothing about a
   // purchase reads it. Without this the test would also pass if the guard refused everything.
@@ -1610,6 +1666,14 @@ TEST_CASE("a sellable figure nobody characterized refuses, and works the moment 
   };
   REQUIRE(declared.sellable_basis_.is_enforceable());
   REQUIRE_FALSE(guard.check(planned("10", "70000", OrderSide::SELL), declared, open_market()));
+
+  // And a genuine shortfall still reports the *quantity* reason under a declared basis, so the two
+  // values cannot collapse into one without a test failing.
+  ProbePortfolio short_figure = declared;
+  short_figure.positions_[0].sellable_quantity_ = Decimal64::parse("5");
+  const auto too_big = guard.check(planned("10", "70000", OrderSide::SELL), short_figure, open_market());
+  REQUIRE(too_big);
+  REQUIRE(too_big->reason_ == GuardReason::QUANTITY_NOT_SELLABLE);
 
   // Half a statement is not a statement. Each axis alone still refuses, so neither can be dropped
   // later without a test failing.
@@ -1645,7 +1709,7 @@ TEST_CASE("a figure covering part of a holding refuses, and says so distinguisha
   REQUIRE_FALSE(partial.sellable_basis_.is_enforceable());
   const auto refused = guard.check(planned("10", "70000", OrderSide::SELL), partial, open_market());
   REQUIRE(refused);
-  REQUIRE(refused->reason_ == GuardReason::QUANTITY_NOT_SELLABLE);
+  REQUIRE(refused->reason_ == GuardReason::SELLABLE_BASIS_UNESTABLISHED);
 
   // Distinguishable from an absent basis by the value itself rather than by both being refusals,
   // which is what lets a caller tell "unasked" from "asked and partial".
@@ -1653,59 +1717,50 @@ TEST_CASE("a figure covering part of a holding refuses, and says so distinguisha
   REQUIRE(sellable_coverage_name(SellableBasis{}.coverage_) == "unestablished");
 }
 
-TEST_CASE("a broker-netted figure still counts what this library reserved since it was read") {
-  // **The defect the `ALREADY_DEDUCTED` rule exists to prevent, and the reason it is not simply
-  // "ignore resting sells".** A broker's netted figure accounts for the orders *it* could see when
-  // it computed the figure. It cannot account for one this library accepted afterwards -- so the
-  // reservation still has to be deducted, or one sellable quantity authorizes two sells.
+TEST_CASE("every resting sell counts, whichever side of the book reported it") {
+  // **What replaced a second resting treatment, and the argument is in `SellableBasis::DEDUCT`.** An
+  // earlier revision offered `ALREADY_DEDUCTED` for a broker whose figure is already net of resting
+  // orders, so the guard would deduct only this library's own reservations. It cannot be served: such
+  // a figure accounts for the orders the broker saw when it computed it, so anything acknowledged
+  // since must still be deducted -- and nothing can identify those orders, because
+  // `OrderSnapshot::ordered_at_` is unfilled by every shipped adapter and a working-order poll
+  // replaces a reservation with the broker's own row. What is pinned here is the rule that survives:
+  // both kinds of row count, so no poll ordering can drop one.
   RiskLimits limits;
   limits.enforce_sellable_quantity_ = true;
   const RiskGuard guard(limits);
 
-  // A hundred held; the broker says seventy may be sold, having already netted out a resting
-  // thirty of its own.
   ProbePortfolio portfolio;
   HoldingPosition position;
   position.instrument_ = samsung();
   position.quantity_ = Decimal64::parse("100");
-  position.sellable_quantity_ = Decimal64::parse("70");
+  position.sellable_quantity_ = Decimal64::parse("100");
   portfolio.positions_.push_back(position);
   portfolio.sellable_basis_ = SellableBasis{
     SellableBasis::Coverage::WHOLE_HOLDING,
-    SellableBasis::RestingTreatment::ALREADY_DEDUCTED,
+    SellableBasis::RestingTreatment::DEDUCT,
     false,
   };
 
-  // The broker's own resting row is *not* deducted again: seventy is already net of it, so a
-  // seventy-share sell fits exactly. Deducting it twice would refuse a legitimate exit.
+  // A row the broker reported: not ours, and it counts.
   auto broker_reported = working("30", "0", OrderStatus::PENDING, OrderSide::SELL);
   broker_reported.reserved_ = false;
   portfolio.working_.push_back(broker_reported);
-  REQUIRE_FALSE(guard.check(planned("70", "70000", OrderSide::SELL), portfolio, open_market()));
 
-  // Now this library accepts that sell, so a reservation joins the list. The broker's figure is
-  // unchanged -- it was read before this order existed -- and a *second* seventy must be refused.
-  auto reserved = working("70", "0", OrderStatus::PENDING, OrderSide::SELL);
+  // A row this library reserved for an order it just accepted: also counts.
+  auto reserved = working("30", "0", OrderStatus::PENDING, OrderSide::SELL);
   reserved.reserved_ = true;
   portfolio.working_.push_back(reserved);
 
-  const auto refused = guard.check(planned("70", "70000", OrderSide::SELL), portfolio, open_market());
+  // Sixty committed against a hundred sellable, so forty more fits and forty-one does not. The
+  // boundary is asserted from both sides, because a rule that counted only one kind of row would put
+  // the boundary at seventy and a single-sided test would agree with it.
+  REQUIRE_FALSE(guard.check(planned("40", "70000", OrderSide::SELL), portfolio, open_market()));
+  const auto refused = guard.check(planned("41", "70000", OrderSide::SELL), portfolio, open_market());
   REQUIRE(refused);
   REQUIRE(refused->reason_ == GuardReason::QUANTITY_NOT_SELLABLE);
-  // Seventy reserved plus seventy asked, against seventy sellable -- and the broker's own thirty is
-  // absent from the arithmetic, which is what distinguishes this rule from `DEDUCT`.
-  REQUIRE(refused->limit_ == Decimal64::parse("70"));
-  REQUIRE(refused->attempted_ == Decimal64::parse("140"));
-
-  // And under `DEDUCT` the same portfolio refuses the *first* seventy, because there every open
-  // sell counts. The two treatments are therefore not interchangeable, which a single-treatment
-  // test could not show.
-  ProbePortfolio deducting = portfolio;
-  deducting.working_.pop_back();
-  deducting.sellable_basis_.resting_ = SellableBasis::RestingTreatment::DEDUCT;
-  const auto strict = guard.check(planned("70", "70000", OrderSide::SELL), deducting, open_market());
-  REQUIRE(strict);
-  REQUIRE(strict->attempted_ == Decimal64::parse("100"));
+  REQUIRE(refused->limit_ == Decimal64::parse("100"));
+  REQUIRE(refused->attempted_ == Decimal64::parse("101"));
 }
 
 TEST_CASE("a resting sell spends the same sellable quantity as a new one") {

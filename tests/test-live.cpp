@@ -403,6 +403,9 @@ private:
 
 InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
 
+/** A second instrument, so a per-instrument rule can be shown not to reach the other row. */
+InstrumentId hynix() { return InstrumentId{Country::KR, Venue::COMBINED, "000660"}; }
+
 /** A planned order as reconciliation would have produced it: on the grid, on the lot. */
 strategy::PlannedOrder planned() {
   strategy::PlannedOrder order;
@@ -1246,6 +1249,105 @@ TEST_CASE("a rate-limit refusal is not counted as a poll failure") {
     error.category_ = category;
     CHECK(live::poll_outcome_of(error) == runner::PollOutcome::FAILED);
   }
+}
+
+TEST_CASE("a holdings poll carries the basis with the rows it describes") {
+  // **The boundary every hand-built `Portfolio` test skips, and a real defect lived here.** The
+  // adapters set `HoldingsSnapshot::sellable_basis_` and `RiskGuard` reads
+  // `Portfolio::sellable_basis_`; if the poll between them copies only the rows, a broker that
+  // declared is treated as having declared nothing and every checked sell refuses. That shipped for
+  // four commits and no fixture test could see it, because they all write the `Portfolio` directly.
+  WorkingSession session;
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+
+  HoldingsSnapshot declared;
+  HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = Decimal64::parse("100");
+  position.sellable_quantity_ = Decimal64::parse("100");
+  declared.positions_.push_back(position);
+  declared.received_at_ = std::chrono::system_clock::now();
+  declared.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
+  session.set_holdings(declared);
+
+  REQUIRE(source.poll(runner::PollKind::HOLDINGS, live_runner) == runner::PollOutcome::UPDATED);
+  const auto& carried = live_runner.context().portfolio();
+  CHECK(carried.sellable_basis_.coverage_ == SellableBasis::Coverage::WHOLE_HOLDING);
+  CHECK(carried.sellable_basis_.resting_ == SellableBasis::RestingTreatment::DEDUCT);
+  CHECK(carried.sellable_basis_.is_enforceable());
+
+  // **And the other direction, which is the dangerous one.** A later snapshot that establishes
+  // nothing must not inherit the enforceable basis this one left behind: a third-party source's
+  // undeclared figure would otherwise be authorized by an earlier broker's declaration. The basis is
+  // assigned with the rows, not merged into them.
+  HoldingsSnapshot undeclared;
+  HoldingPosition later = position;
+  later.sellable_quantity_ = Decimal64::parse("100");
+  undeclared.positions_.push_back(later);
+  undeclared.received_at_ = std::chrono::system_clock::now();
+  session.set_holdings(undeclared);
+
+  REQUIRE(source.poll(runner::PollKind::HOLDINGS, live_runner) == runner::PollOutcome::UPDATED);
+  const auto& replaced = live_runner.context().portfolio();
+  CHECK(replaced.sellable_basis_.coverage_ == SellableBasis::Coverage::UNESTABLISHED);
+  CHECK_FALSE(replaced.sellable_basis_.is_enforceable());
+  // The rows did arrive, so this is not a poll that failed -- it is a poll that established nothing.
+  CHECK(replaced.positions_.size() == 1);
+}
+
+TEST_CASE("an inquiry answers for one instrument and certifies no other") {
+  // **One declaration must not travel to a figure it says nothing about.** The inquiry is asked per
+  // instrument, so writing its basis to the whole portfolio would let the asked instrument's
+  // declaration make an undeclared figure on another row enforceable -- and a wrong-sized sell of
+  // that other instrument would reach the wire.
+  //
+  // Driven through `Runner::write_sellable` rather than by setting the fields, because that is the
+  // code under test: a version of this that built the portfolio by hand passed while the defect was
+  // present, which is how the defect got here.
+  FakeSession<SellableByInquiry> session;
+  session.set_sellable("10");
+  strategy::RiskLimits limits;
+  limits.enforce_sellable_quantity_ = true;
+
+  SellRunner<SellableByInquiry> live_runner(
+    SellsAll{}, limits, 512, live::SessionExecutor<FakeSession<SellableByInquiry>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+  // Samsung has no figure, so it is the one asked about. Hynix arrives with a figure already
+  // populated and nothing said about it -- the third-party shape: a source whose author filled the
+  // field they found in their own broker's response and never heard of a basis.
+  auto portfolio = held_position<SellableByInquiry>("10", nullptr);
+  portfolio.sellable_basis_ = SellableBasis{};
+  HoldingPosition undeclared;
+  undeclared.instrument_ = hynix();
+  undeclared.quantity_ = Decimal64::parse("100");
+  undeclared.sellable_quantity_ = Decimal64::parse("100");
+  portfolio.positions_.push_back(undeclared);
+  live_runner.context().set_portfolio(portfolio);
+
+  const auto report = live_runner.feed(bar_at(1, "70000"));
+
+  // The inquiry ran for Samsung and its order went out, so the declared path works.
+  REQUIRE(session.sellable_asked().size() == 1);
+  REQUIRE(session.sellable_asked()[0] == samsung());
+  REQUIRE(report.refused_.empty());
+
+  const auto& after = live_runner.context().portfolio();
+  REQUIRE(after.sellable_basis_for(samsung()).is_enforceable());
+
+  // **And Hynix is untouched.** This is the assertion the defect failed: its figure was populated
+  // before the inquiry and nobody has said what it covers.
+  REQUIRE_FALSE(after.sellable_basis_for(hynix()).is_enforceable());
+  // The portfolio-wide basis stays unestablished too, which is what stops the promotion.
+  REQUIRE_FALSE(after.sellable_basis_.is_enforceable());
 }
 
 TEST_CASE("polling bars feeds each new bar exactly once") {

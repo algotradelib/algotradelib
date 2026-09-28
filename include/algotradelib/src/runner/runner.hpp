@@ -1186,12 +1186,14 @@ private:
     for (auto& position : portfolio.positions_) {
       if (position.instrument_ == instrument) {
         position.sellable_quantity_ = quantity;
-        // **The inquiry is its own reading, so it carries its own basis.** The holdings poll that
-        // built this portfolio established nothing about a figure it never reported, and inheriting
-        // that snapshot's basis would let one read vouch for another's number. An executor that
-        // declares nothing leaves the basis unestablished, and the guard then refuses -- which is
-        // the same fail-closed default a consumer's own source gets.
-        portfolio.sellable_basis_ = runner_detail::sellable_inquiry_basis_of<Executor>();
+        // **The inquiry is its own reading, so it carries its own basis -- on this row only.** The
+        // holdings poll that built this portfolio established nothing about a figure it never
+        // reported, and the inquiry answered for *this* instrument and no other. Writing the basis to
+        // the portfolio would let one instrument's declaration certify every other row's figure: a
+        // populated but undeclared quantity on another instrument would become enforceable, and a
+        // wrong-sized sell of it would reach the wire. An executor that declares nothing leaves this
+        // unestablished, and the guard then refuses.
+        position.sellable_basis_ = runner_detail::sellable_inquiry_basis_of<Executor>();
         return;
       }
     }

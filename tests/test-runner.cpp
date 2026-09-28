@@ -986,6 +986,13 @@ TEST_CASE("the probe does not learn the broker's convention from this runner's o
   // sixty, which is the real observation the probe exists for.
   strategy::Portfolio<runner::DryRunner<SellSixty>::Tag> polled;
   polled.positions_.push_back(held);
+  // The probe needs a stated coverage on every reading it compares, not only the first: two readings
+  // whose basis differs are not comparable, and one with no basis teaches nothing.
+  polled.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
   dry.context().set_portfolio(polled);
   dry.feed(bar_at(12, "70000"));
 

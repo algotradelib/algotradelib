@@ -1080,6 +1080,13 @@ TEST_CASE("a run reports what it learned about the broker's sellable figure", "[
   position.quantity_ = algotradelib::Decimal64::parse("100");
   position.sellable_quantity_ = algotradelib::Decimal64::parse("100");
   before.positions_.push_back(position);
+  // Stated, because the probe reads the held-to-sellable distance and that only means something when
+  // both numbers cover the same shares. A fixture for a broker that published the figure says so.
+  before.sellable_basis_ = algotradelib::SellableBasis{
+    algotradelib::SellableBasis::Coverage::WHOLE_HOLDING,
+    algotradelib::SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
   runner_instance.context().set_portfolio(before);
   loop.run(stop, 1);
 

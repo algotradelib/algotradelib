@@ -164,41 +164,9 @@ struct Portfolio {
    * describing something this arithmetic should not amplify.
    */
   Decimal64 working_quantity(const InstrumentId& instrument, OrderSide side) const {
-    return working_quantity_of(instrument, side, false);
-  }
-
-  /**
-   * Returns only what **this library reserved** of `instrument` on `side` and the broker has not
-   * confirmed.
-   *
-   * The complement of the figure a broker reports, and it exists for one rule. A sellable quantity
-   * a broker has already netted its own resting orders out of cannot have accounted for an order
-   * this library accepted *after* that figure was read -- so a guard measuring against such a
-   * figure must still deduct these rows, and only these. Deducting the broker-reported ones as well
-   * would charge the same order twice; deducting none of them lets one sellable quantity authorize
-   * two sells, which was measured: 100 held, a netted figure of 70, and two sells of 70 both
-   * reaching the wire.
-   *
-   * `Runner::reserve` sets `WorkingOrder::reserved_` on every row it writes for an accepted order,
-   * and `persist_reservation` carries it to the next pass, so a reservation outlives the pass that
-   * made it and is visible here until a working-order poll replaces it with the broker's own row.
-   */
-  Decimal64 reserved_working_quantity(const InstrumentId& instrument, OrderSide side) const {
-    return working_quantity_of(instrument, side, true);
-  }
-
- private:
-  Decimal64 working_quantity_of(
-    const InstrumentId& instrument,
-    OrderSide side,
-    bool only_reserved
-  ) const {
     Decimal64 total = Decimal64::parse("0");
     for (const auto& order : working_) {
       if (!(order.order_.instrument_ == instrument) || order.order_.side_ != side) {
-        continue;
-      }
-      if (only_reserved && !order.reserved_) {
         continue;
       }
       if (!order_is_open(order.order_.status_)) {
@@ -220,6 +188,24 @@ struct Portfolio {
   }
 
  public:
+  /**
+   * Returns what the sellable figure for `instrument` is evidence of.
+   *
+   * **Per figure, not per portfolio**, because a per-instrument inquiry answers for the one instrument
+   * it was asked about. A row that carries its own basis keeps it; every other row is described by the
+   * snapshot's. Without this, answering A by inquiry would promote A's declaration to the whole
+   * portfolio and make an undeclared figure sitting on B enforceable, putting a wrong-sized B sell on
+   * the wire.
+   */
+  SellableBasis sellable_basis_for(const InstrumentId& instrument) const {
+    for (const auto& position : positions_) {
+      if (position.instrument_ == instrument && position.sellable_basis_) {
+        return *position.sellable_basis_;
+      }
+    }
+    return sellable_basis_;
+  }
+
   /** Returns the cash held in `currency`, or nothing when the broker reported none. */
   std::optional<Decimal64> cash_in(const Currency& currency) const {
     for (const auto& amount : cash_) {
