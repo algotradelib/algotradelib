@@ -90,7 +90,8 @@ engine.feed(bar);      // yesterday's close  -> on_bar
 engine.feed(quote);    // today 10:30        -> on_quote; an order placed here cannot fill
                        //                       against today's bar, whose open was 09:00
 engine.feed(bar);      // today's close      -> on_bar
-engine.feed(bar);      // tomorrow's close   -> the quote's order fills, at tomorrow's open
+engine.feed(bar);      // tomorrow's close   -> a market order from the quote fills here, at
+                       //                       tomorrow's open; a limit may miss and stay queued
 engine.finish();
 ```
 

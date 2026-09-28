@@ -718,8 +718,8 @@ private:
   }
 
   /**
-   * Returns whether `entry` may fill against `event` **without being credited a price from before it
-   * was decided**, and records where that question could not be answered.
+   * Returns whether `entry` may fill against `event`, and records where the question *could this be
+   * credited a price from before it was decided* could not be answered at all.
    *
    * Three answers, and the third one is what four review rounds cost:
    *
