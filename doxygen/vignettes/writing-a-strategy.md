@@ -2,7 +2,7 @@
 
 A strategy is a plain struct with template member functions. It receives events and emits intents.
 It performs no I/O, holds no session, names no broker, and therefore runs unchanged in a dry run, in
-a live session against either broker, and later in a backtest.
+a live session against any of the supported brokers, and later in a backtest.
 
 ```cpp
 #include <algotradelib/strategy>
@@ -63,17 +63,19 @@ an entry fills, live.** Nothing polled can. Until execution notifications are st
 available signal is periodic, and there is no arrangement of the handlers below that closes the gap
 between a fill happening and your process learning of it.
 
-What you can do is **observe the position** and repair the gap as soon as you see it: compare
-`ctx.portfolio().net_quantity_of(...)` against the position you intended, on each `on_bar`, and
-place the protective order when they differ. Read the three limits of that before you rely on it:
+What you can do is **observe the position** and act on the difference as soon as you see it: compare
+`ctx.portfolio().net_quantity_of(...)` against the position you intended, on each `on_bar`. That is
+remediation after the fact, not protection — read the three limits of it before relying on it:
 
 - **It is as late as your holdings cadence.** `positions_` changes only when a `HOLDINGS` poll
   replaces it, so an entry that filled between polls is invisible until the next one.
 - **It is one poll later than you might expect inside an iteration.** The loop polls `BARS` before
   `HOLDINGS`, and `on_bar` fires during the bar poll — so the position your handler reads is the one
-  the *previous* iteration established, not one including a fill this iteration is about to discover.
-- **On daily bars, "the next `on_bar`" may be tomorrow.** A shorter bar interval, or a holdings
-  cadence faster than your bars, narrows the window; neither closes it.
+  the *latest successful holdings poll* established, not one including a fill this iteration is
+  about to discover. That poll need not have been the previous iteration's, and it may have failed.
+- **On daily bars, "the next `on_bar`" may be tomorrow.** A shorter bar interval narrows the window.
+  A faster holdings cadence does **not** on its own, because the check runs in `on_bar`: a fresher
+  position nobody looks at until the next bar is still not looked at until the next bar.
 
 **And do not reach for the obvious escape, because this library does not have it yet.** A broker-side
 stop would close the gap by leaving the trigger at the exchange — but `OrderRequest` carries no
@@ -81,11 +83,22 @@ trigger price, so no adapter can send one: KIS's `ORD_DVSN` `22` and Kiwoom's `t
 marked non-requestable for exactly that reason. Both brokers *read* a stop order back, because one
 placed through another channel must still be reportable; neither can be sent one from here.
 
-So the options that actually exist are: **poll holdings more often**, which narrows the window and
-cannot close it; **size the entry so an unprotected position is survivable**, which is the only one
-that does not depend on timing at all; or place the protective order at the same time as the entry
-rather than after it, accepting that it rests against a position you do not yet hold. Choose
-deliberately, and treat the window as the open gap it is rather than as something a callback hides.
+**And placing the exit alongside the entry is not the answer either**, which is worth saying because
+it is the next thing anyone tries. The two are independent submissions: there is no linked
+entry-and-stop, and no reduce-only condition. So the exit can execute *first* — opening the position
+it was meant to close — or rest at the exchange after the entry was rejected, leaving an order
+against a position you never took.
+
+**Two options actually exist, and only one of them is inside this library.**
+
+1. **Size the entry so an unprotected interval is survivable.** This is the only choice that does not
+   depend on timing at all, and it is the one this library supports today.
+2. **Place the entry-linked protective order through a channel that has one** — the broker's own
+   application or an API this library does not wrap. That is explicitly *outside* here, and naming
+   it as outside is the point: nothing in this library can create that order for you.
+
+Whichever you choose, treat the window as the open gap it is rather than as something a callback
+hides.
 
 **`on_order_update` reports what the broker last said about an order it is still listing.** The same
 detector runs over each mode's own order listing, so the *rule* is identical in a backtest and live
