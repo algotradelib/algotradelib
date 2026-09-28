@@ -124,7 +124,11 @@ first row says *appears in a listing* rather than *is accepted by the broker*.
 resting, and a row that leaves it may have filled, been cancelled, expired or been rejected; the
 listing does not say which, and this library will not guess. So do not wait for a terminal update
 unless `BrokerCaps<Client>::working_orders_state_terminal` says the broker states one — it is
-`false` on all three shipped adapters. Read the outcome from holdings or an order inquiry.
+`false` on all three shipped adapters.
+
+To learn what actually became of an order, read the two things that can answer it: **holdings** give
+you the resulting *position*, and an **order-history inquiry** gives you that order's own outcome —
+filled, cancelled, rejected or expired. Holdings alone cannot tell you which order did it.
 
 Two more things worth knowing before you rely on it. An order that was already resting when the
 runner started is adopted as the baseline and is not reported as an update: the startup read happens
