@@ -124,8 +124,9 @@ struct ReportCaveats {
    * a strategy handled one -- `on_quote` is optional -- or that anything was placed or filled
    * because of one.
    *
-   * **What a reader has to know when this is non-zero: an order placed from `on_quote` is filled
-   * against a later *bar*, not against the quote.** A quote moves the clock, the price and the
+   * **What a reader has to know when this is non-zero: an order placed from `on_quote`, if it fills
+   * at all, fills against a later *bar* and not against the quote.** (If at all: a limit can miss
+   * every bar and end the run in `unfilled_`.) A quote moves the clock, the price and the
    * phase, and it neither fills nor marks: `NextBarFillModel` prices a market order at a bar's open,
    * so -- **where this engine can establish when a bar's period began** -- the order rests until one
    * that began at or after the decision, because a period that began earlier contains the decision

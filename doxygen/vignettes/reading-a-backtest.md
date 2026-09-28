@@ -116,7 +116,8 @@ order placed from `on_phase` is therefore visible to `on_quote` in a replay and 
 live. And the announcement of an order is unconditional here and conditional live, on the
 working-order poll being due at all.
 
-**So an order placed from `on_quote` fills against a later *bar*, at that bar's price** — and, where
+**So an order placed from `on_quote`, if it fills at all, fills against a later *bar*, at that bar's
+price** — and, where
 this engine can establish when a bar's period began, specifically against one that began **at or
 after** the decision. For a quote part-way through a session that is not that session's bar but the
 next one. A period that began earlier *contains* the decision, and its open is a price from before

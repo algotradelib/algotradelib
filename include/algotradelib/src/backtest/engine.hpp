@@ -58,10 +58,11 @@ struct QueuedOrder {
   /**
    * The instant the strategy decided it, which is the **other** half of the lookahead rule.
    *
-   * A bar counter alone was enough while only bars could place an order: an order decided at bar
-   * *n*'s period end waits for bar *n+1*, whose period begins at or after that instant. A quote
-   * breaks that, because it arrives **inside** a bar's period without opening a new one -- so an
-   * order decided at 10:30 was eligible for the daily bar stamped 15:30 that day, and
+   * A bar counter alone was enough while only bars could place an order and no two of an
+   * instrument's periods overlapped: an order decided at bar *n*'s period end then waits for bar
+   * *n+1*, which began at or after that instant. A quote breaks it, because it arrives **inside** a
+   * bar's period without opening a new one -- so an order decided at 10:30 was eligible for the
+   * daily bar stamped 15:30 that day, and
    * `NextBarFillModel` credits a market order with that bar's *open*, which was 09:00. The replay
    * would then have filled a 10:30 decision at a 09:00 price: not lookahead, but its mirror image,
    * and just as false.
@@ -563,7 +564,8 @@ public:
    *
    * ## The consequence a strategy author has to know
    *
-   * **An order placed from `on_quote` fills against the next *bar*, not against the quote.** That is
+   * **An order placed from `on_quote`, if it fills, fills against a later *bar* and not against the
+   * quote.** That is
    * `NextBarFillModel`, unchanged by this slice, and `ReportCaveats::quotes_` states it on every
    * report of a run that fed one. A fill model that executes against a quote is a different design
    * with its own argument, and this deliberately does not smuggle one in.
