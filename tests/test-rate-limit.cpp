@@ -614,7 +614,16 @@ TEST_CASE("the closed loopback port the connect-failure tests use is refused", "
   boost::system::error_code error;
   const auto port = static_cast<unsigned short>(std::stoi(test::closed_loopback_port()));
   socket.connect(tcp::endpoint(net::ip::address_v4::loopback(), port), error);
-  CHECK(error == net::error::connection_refused);
+  if (!error) {
+    // The one way this can connect without anyone listening: the port is in the ephemeral range, so
+    // the kernel may pick it as this socket's own source port, and a loopback connect to yourself
+    // succeeds (TCP simultaneous open). That is not a listener -- the endpoints are the same socket --
+    // and the transport tests still fail before any write against it. Anything else is a real
+    // listener on the port, which is what this test exists to catch.
+    CHECK(socket.local_endpoint() == socket.remote_endpoint());
+  } else {
+    CHECK(error == net::error::connection_refused);
+  }
 }
 
 TEST_CASE("a connection that never opened never sent the order", "[http][tls][provenance]") {
