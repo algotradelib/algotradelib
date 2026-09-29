@@ -82,8 +82,10 @@ worth knowing before reaching for it.** `OrderIntent::stop_limit(instrument, sid
 limit)` places one at KIS (`ORD_DVSN` `22`) and Kiwoom (`trde_tp` `28`); a broker that cannot carry a
 trigger refuses it rather than sending a plain limit.
 
-- **A replay does not model it.** `ReplayExecutor` refuses a stop-limit order, and the backtest reports
-  it in `rejected_` with its tag. The strategy runs live with a stop its backtest never had.
+- **A replay models it with stated assumptions.** It releases when a bar reaches the trigger and fills
+  as the limit it becomes, at a price inside the bar that never breaches the limit. The report counts
+  releases and same-bar fills (`stop_releases_`, `stop_fills_intrabar_`); see
+  [Reading a backtest](reading-a-backtest.md).
 - **A target that needs a trade withdraws it first.** While a stop rests on an instrument, a
   `TargetPosition` the holding already meets keeps the stop (it is protecting what you mean to hold).
   One that needs a trade withdraws the stop, sends nothing, and is reported as

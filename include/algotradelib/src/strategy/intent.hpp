@@ -246,9 +246,9 @@ public:
    * move reaches the trigger, and how the trigger may relate to the limit, is the broker's rule and
    * is not checked here, because neither KIS nor Kiwoom documents it.
    *
-   * **A replay refuses this order rather than model it** (`ReplayExecutor::place`), so a strategy
-   * that emits one backtests without it. The refusal is reported, not silent; see
-   * `plan/todo/replay-stop-limit.md` for what modelling it needs.
+   * A replay models it with stated assumptions -- release when a bar reaches the trigger, a release
+   * inside a bar filling at the limit and never better -- and counts both in `ReportCaveats`; see
+   * `NextBarFillModel::decide`.
    */
   static OrderIntent stop_limit(
     InstrumentId instrument,
