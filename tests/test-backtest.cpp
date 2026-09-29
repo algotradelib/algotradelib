@@ -3816,6 +3816,7 @@ TEST_CASE("a mark that will not fit halts the replay before the strategy decides
   REQUIRE(engine.strategy().bars_seen_ == 2);
   const auto fills_before = engine.strategy().fills_;
   const auto equity_before = engine.result().equity_.size();
+  const auto phases_before = engine.strategy().phases_seen_;
 
   engine.feed(moving_bar(
     utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "9223372036854775807"
@@ -3827,8 +3828,9 @@ TEST_CASE("a mark that will not fit halts the replay before the strategy decides
   CHECK_FALSE(engine.result().halted_->reached_broker_);
   // The orders resting from the second bar filled at the third bar's open, before the mark...
   CHECK(engine.strategy().fills_ > fills_before);
-  // ...and nothing decided on the unmarked book: no `on_bar`, so no order from that view.
+  // ...and nothing decided on the unmarked book: no `on_phase`, no `on_bar`, so no order from it.
   CHECK(engine.strategy().bars_seen_ == 2);
+  CHECK(engine.strategy().phases_seen_ == phases_before);
   CHECK(engine.result().equity_.size() == equity_before);
   // The lot is still coherent at its previous mark.
   for (const auto& lot : engine.ledger().positions()) {

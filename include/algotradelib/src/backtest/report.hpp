@@ -353,10 +353,13 @@ struct Report {
    * its price. Either way continuing would describe a path that did not happen.
    *
    * Every number in this report describes the bars **up to** that point. The bar the halt happened
-   * on is counted in `bars_`, because it was fed, but nothing downstream of the refusal ran on it:
-   * no fill, no mark, no equity point, no callback. The strategy was not stopped normally either --
-   * `on_stop` never ran, because an order placed into a replay that cannot cost one has nowhere
-   * honest to go.
+   * on is counted in `bars_`, because it was fed, and **what ran on it depends on where the refusal
+   * fell**. Each bar settles resting orders first: settlement ahead of a refused fill may already have
+   * filled other orders on that bar, with their `on_fill` and order updates, and a mark refusal comes
+   * after the whole of that bar's settlement, so every fill due on it is in these figures. After the
+   * refusal nothing ran -- no further fill, no mark, no equity point, no `on_phase`, no `on_bar`.
+   * The strategy was not stopped normally either: `on_stop` never ran, because whatever it placed
+   * would go into a replay that has stopped being able to describe the path honestly.
    */
   std::optional<BrokerError> halted_;
   /** Orders cleared from the queue by a halt, as distinct from `ReportCaveats::unfilled_`. */
