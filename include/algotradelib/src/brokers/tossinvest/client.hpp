@@ -1077,9 +1077,10 @@ private:
   /**
    * Reads a listing or delisting date as one of three answers.
    *
-   * `null` or absent is **not stated** -- Toss documents `null` as 정보 미제공, information not
-   * provided -- a `YYYY-MM-DD` of digits forming a real date is **stated**, and anything else,
-   * including a value that is not a string, is **unreadable**.
+   * `null` or absent is **not stated** -- Toss documents a `null` `listDate` as 정보 미제공,
+   * information not provided, and a `null` `delistDate` as the value an active instrument carries --
+   * a `YYYY-MM-DD` of digits forming a real date is **stated**, and anything else, including a value
+   * that is not a string, is **unreadable**.
    */
   static StatedDate stated_calendar_date(const json::object& row, std::string_view key) {
     const auto bound = calendar_bound(row, key);
