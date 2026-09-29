@@ -1006,12 +1006,11 @@ private:
       if (const auto value = row.if_contains("isCommonShare"); value && value->is_bool()) {
         instrument.common_share_ = value->as_bool();
       }
-      // **A listing date the broker stated and this library cannot read fails the row.** `Instrument`
-      // has nowhere to record that a date was damaged, and an empty `delisted_on_` reads as "not
-      // delisted" -- so passing the damage through would turn an unreadable date into the most
-      // permissive claim available, which is the defect this branch exists to remove. Before the
-      // parser required digits, `x026-01-01` already failed here by throwing out of `std::stoi`; this
-      // makes `2026-13-01` and a non-string do the same thing instead of reading as no date at all.
+      // **A listing date the broker stated and this library cannot read is recorded as unreadable,
+      // and the row survives.** This used to fail the whole read, because `Instrument` then had
+      // nowhere to record damage and an empty `delisted_on_` read as "still listed". `StatedDate`
+      // is that place, and it has no spelling of the old reading, so the refusal would now only
+      // cost the currency and the price grid of an instrument that is otherwise fully described.
       instrument.listed_on_ = stated_calendar_date(row, "listDate");
       instrument.delisted_on_ = stated_calendar_date(row, "delistDate");
       instrument.shares_outstanding_ = nullable_decimal(row, "sharesOutstanding");
@@ -1076,19 +1075,19 @@ private:
   }
 
   /**
-   * Reads a `YYYY-MM-DD` field Toss may report as null, and throws when one was stated unreadably.
+   * Reads a listing or delisting date as one of three answers.
    *
-   * For the fields whose destination is a bare `std::optional<Date>` with nowhere to say that a date
-   * arrived damaged. Returning empty there would make "the broker published no date" and "the broker
-   * published a date nobody can read" the same answer, and for a delisting date the first of those
-   * means the instrument is still listed.
+   * `null` or absent is **not stated** -- Toss documents a `null` `listDate` as 정보 미제공,
+   * information not provided, and a `null` `delistDate` as the value an active instrument carries --
+   * a `YYYY-MM-DD` of digits forming a real date is **stated**, and anything else, including a value
+   * that is not a string, is **unreadable**.
    */
-  static std::optional<Date> stated_calendar_date(const json::object& row, std::string_view key) {
+  static StatedDate stated_calendar_date(const json::object& row, std::string_view key) {
     const auto bound = calendar_bound(row, key);
     if (bound.unreadable_) {
-      throw std::runtime_error(std::string(key) + " is not a YYYY-MM-DD calendar date");
+      return StatedDate::unreadable();
     }
-    return bound.date_;
+    return bound.date_ ? StatedDate::stated(*bound.date_) : StatedDate{};
   }
 
   /** Validates the request and asks for the calendar of one market. */

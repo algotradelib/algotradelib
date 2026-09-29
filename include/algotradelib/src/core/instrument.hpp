@@ -4,6 +4,7 @@
 #include "./types.hpp"
 
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -338,6 +339,100 @@ inline PriceRule price_rule_for(Country country, SecurityType type) {
 }
 
 /**
+ * A date a broker may state, withhold, or state in a form this library cannot read.
+ *
+ * **Three answers, because two of them used to share one spelling.** Held as `std::optional<Date>`,
+ * a date that was *not stated* and one that was *stated and unreadable* were both empty -- and an
+ * empty delisting date reads as "still listed", which turned damage into the most permissive claim
+ * available (`plan/done/instrument-dates-damaged.md`).
+ *
+ * **Deliberately not an optional.** There is no conversion to `bool`, no `operator*` or `->`, no
+ * `has_value()`, no comparison with a `Date`, and no conversion to or from `std::optional<Date>`:
+ * each would be a spelling of the old reading, and code written against the old field would compile
+ * again with its old meaning. Reading the date means naming the state first:
+ *
+ * @code
+ * switch (instrument.delisted_on_.state()) {
+ *   case StatedDate::State::STATED:     use(instrument.delisted_on_.date()); break;
+ *   case StatedDate::State::NOT_STATED: ...; break;  // the broker said nothing
+ *   case StatedDate::State::UNREADABLE: ...; break;  // the broker said something; nobody can read it
+ * }
+ * @endcode
+ *
+ * The date itself is private for the same reason: an unread `Date` is `0000-00-00`, which orders
+ * before every real date, so a public member would let `listed_on_.date_ < day` pass for an
+ * instrument whose listing date is unknown. `date()` refuses unless the state is `STATED`.
+ */
+class StatedDate {
+public:
+  /** What the broker's field said. */
+  enum class State {
+    /** The broker published no date here: absent, `null`, or its documented empty spelling. */
+    NOT_STATED,
+    /** The broker published this date, and it was read. */
+    STATED,
+    /** The broker published something here that is not a readable calendar date. */
+    UNREADABLE,
+  };
+
+  /** A date the broker did not state. */
+  StatedDate() = default;
+
+  /** A date the broker stated and this library read. */
+  static StatedDate stated(Date date) {
+    StatedDate result;
+    result.state_ = State::STATED;
+    result.date_ = date;
+    return result;
+  }
+
+  /** A date the broker stated in a form this library cannot read. */
+  static StatedDate unreadable() {
+    StatedDate result;
+    result.state_ = State::UNREADABLE;
+    return result;
+  }
+
+  /** What the broker's field said. */
+  State state() const noexcept { return state_; }
+
+  /**
+   * Returns the stated date.
+   *
+   * @throws std::logic_error unless `state()` is `STATED`, since there is no date to return and
+   * any default would be an invented one.
+   */
+  const Date& date() const {
+    if (state_ != State::STATED) {
+      throw std::logic_error("StatedDate::date() read a date that was not stated");
+    }
+    return date_;
+  }
+
+  /** Whether two answers say the same thing: the same state, and the same date where stated. */
+  friend bool operator==(const StatedDate& lhs, const StatedDate& rhs) {
+    return lhs.state_ == rhs.state_ && (lhs.state_ != State::STATED || lhs.date_ == rhs.date_);
+  }
+
+  /** The negation of `operator==`. */
+  friend bool operator!=(const StatedDate& lhs, const StatedDate& rhs) { return !(lhs == rhs); }
+
+private:
+  State state_{State::NOT_STATED};
+  Date date_{};
+};
+
+/** What an instrument's stated listing and delisting dates say about one day. */
+enum class DateExclusion {
+  /** A date that was read rules the day out: listed after it, or delisted on or before it. */
+  EXCLUDED,
+  /** No date that was read rules it out, and neither date is unreadable. **Not "listed".** */
+  NOT_EXCLUDED,
+  /** Nothing read rules it out, and a date that could not be read might. */
+  UNREADABLE,
+};
+
+/**
  * Static reference data for one instrument.
  *
  * Everything a broker may omit is optional. `price_rule_` is the library's own grid
@@ -366,24 +461,17 @@ struct Instrument {
   /** Whether this is the common share rather than a preferred or derived line. */
   bool common_share_{true};
   /**
-   * The listing date, where the broker publishes one.
+   * The listing date, as the broker stated it: read, not stated, or stated and unreadable.
    *
-   * **Empty means the broker published none -- from Toss. From the other two it may also mean the
-   * date could not be read.** There is nowhere here to record that difference, so Toss's parser
-   * refuses the whole reference read when it meets a stated date it cannot parse: a delisting date
-   * that goes missing reads as "still listed", which is an unreadable value downgraded to the most
-   * permissive claim available. KIS's `compact_date_field` and Kiwoom's `compact_date` still yield
-   * empty for a wrong length or an impossible day, and for them the caveat below stands. That
-   * inconsistency is deliberate and noted: `plan/todo/instrument-dates-damaged.md`.
-   *
-   * Empty is not the only way a malformed date can go wrong. See the caveat on `Date::year_`: a
-   * component carrying a numeric prefix can produce a *different but valid* date, which arrives here
-   * looking like an ordinary answer. Toss's parser now requires every component to be digits, so its
-   * dates are no longer subject to that; the other two are.
+   * All three adapters read every component as digits, so a malformed date is `UNREADABLE` rather
+   * than a different valid date, and a damaged date no longer costs the rest of the row -- the
+   * currency and the price grid a strategy needs are unaffected by it. What "not stated" covers
+   * differs per broker: Toss sends `null`; KIS sends `""` and, by inference from its other sheets,
+   * `"00000000"`; Kiwoom sends `""`.
    */
-  std::optional<Date> listed_on_;
-  /** The delisting date, where one exists and the broker publishes it. Empty as for `listed_on_`. */
-  std::optional<Date> delisted_on_;
+  StatedDate listed_on_;
+  /** The delisting date, as for `listed_on_`. Kiwoom publishes none, so it is always `NOT_STATED` there. */
+  StatedDate delisted_on_;
   /**
    * Shares outstanding, where the broker publishes the figure.
    *
@@ -395,6 +483,33 @@ struct Instrument {
   std::optional<Decimal64> lot_size_;
   /** The library's own price grid for this instrument; `UNKNOWN` where it has no table. */
   PriceRule price_rule_;
+
+  /**
+   * Whether the stated listing and delisting dates rule `day` out.
+   *
+   * `EXCLUDED` when a date that was read rules it out -- a listing date after `day`, or a delisting
+   * date on or before it -- whatever the other date says. Otherwise `UNREADABLE` if either date
+   * could not be read, since it might have. Otherwise `NOT_EXCLUDED`.
+   *
+   * **`NOT_EXCLUDED` is not "listed on `day`".** A row with no stated dates answers it because the
+   * dates say nothing, and Toss documents a `null` listing date as information not provided -- so a
+   * `SCHEDULED` instrument with no dates answers it too. Whether an instrument trades is `status_`,
+   * a separate statement this does not consult: combining the two would invent a precedence no
+   * broker publishes.
+   */
+  DateExclusion dates_exclude(Date day) const {
+    using State = StatedDate::State;
+    if (listed_on_.state() == State::STATED && day < listed_on_.date()) {
+      return DateExclusion::EXCLUDED;
+    }
+    if (delisted_on_.state() == State::STATED && !(day < delisted_on_.date())) {
+      return DateExclusion::EXCLUDED;
+    }
+    if (listed_on_.state() == State::UNREADABLE || delisted_on_.state() == State::UNREADABLE) {
+      return DateExclusion::UNREADABLE;
+    }
+    return DateExclusion::NOT_EXCLUDED;
+  }
 };
 
 } // namespace algotradelib
