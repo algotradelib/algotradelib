@@ -230,12 +230,18 @@ refuses an order that sets it.
 
 Toss amount-based and fractional order *placement* — an amount-based order is
 read back with its amount, and placing one is outstanding. Toss conditional
-orders. KIS credit, reserved and overseas orders. KIS stop-limit *placement*:
-`ORD_DVSN` `22` is read and normalized, and requires a `CNDT_PRIC` that
-`OrderRequest` has nowhere to carry, so it is refused on a request; the trigger
-price it needs is the same field Toss's conditional orders need and belongs with
-them. KIS's 시간외 단일가 (`07`) likewise: the inquiry publishes it, the order
-sheet does not. KIS history older than three months, and real-time execution
+orders. KIS credit, reserved and overseas orders. KIS's 시간외 단일가 (`07`):
+the inquiry publishes it, the order sheet does not.
+
+A **stop-limit** order is placeable at KIS (`ORD_DVSN` `22`, trigger in
+`CNDT_PRIC`) and at Kiwoom (`trde_tp` `28`, trigger in `cond_uv`) through
+`OrderRequest::trigger_price_`, which a stop-limit order requires beside its
+limit and every other basis refuses. Both adapters read the trigger back onto
+`OrderSnapshot::trigger_price_`, and an amendment carries it on
+`OrderShape::trigger_price_` — literally, so `reprice` restates the resting
+trigger rather than leaving it to the broker. A broker whose
+`BrokerCaps::has_trigger_price` is false, Toss included, never receives one:
+the session refuses the request as `unsupported_trigger_price`. KIS history older than three months, and real-time execution
 notifications.
 
 

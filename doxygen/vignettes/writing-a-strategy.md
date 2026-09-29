@@ -77,11 +77,13 @@ remediation after the fact, not protection — read the three limits of it befor
   A faster holdings cadence does **not** on its own, because the check runs in `on_bar`: a fresher
   position nobody looks at until the next bar is still not looked at until the next bar.
 
-**And do not reach for the obvious escape, because this library does not have it yet.** A broker-side
-stop would close the gap by leaving the trigger at the exchange — but `OrderRequest` carries no
-trigger price, so no adapter can send one: KIS's `ORD_DVSN` `22` and Kiwoom's `trde_tp` `28` are both
-marked non-requestable for exactly that reason. Both brokers *read* a stop order back, because one
-placed through another channel must still be reportable; neither can be sent one from here.
+**And do not reach for the obvious escape from a strategy, because the strategy layer does not have
+it yet.** A broker-side stop would close the gap by leaving the trigger at the exchange, and the broker
+port can now place one — `OrderRequest::trigger_price_` carries it to KIS's `ORD_DVSN` `22` and
+Kiwoom's `trde_tp` `28` — but a strategy states targets and intents, which reconcile into limit and
+market orders only, and a replay refuses a stop-limit order rather than model one. Until both of those
+change, a stop placed beside a strategy through the session directly is an order the strategy's
+backtest never saw.
 
 **And placing the exit alongside the entry is not the answer either**, which is worth saying because
 it is the next thing anyone tries. The two are independent submissions: there is no linked
