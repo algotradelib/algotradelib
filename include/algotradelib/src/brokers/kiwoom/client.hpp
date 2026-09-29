@@ -106,14 +106,11 @@ struct KiwoomAmendment {
   /**
    * The new trigger price, which Kiwoom carries as `mdfy_cond_uv`.
    *
-   * **Empty on every amendment the port builds**, and that is not a gap. A trigger belongs to a
-   * stop order, `OrderRequest` has no field for one, so this adapter never places one and
-   * `BrokerTraits::to_amendment` has nothing to put here. It is reachable by a caller that goes
-   * through `session.client()` to amend a stop order placed through another channel -- Kiwoom
-   * reports both the shape (`스톱지정가`) and the trigger (`stop_pric`) on such an order's working
-   * row, so amending it is the one thing this library can do with a stop order today.
-   *
-   * `plan/todo/stop-limit-trigger-price.md` is the field on `OrderRequest`.
+   * Set by `BrokerTraits::to_amendment` from `OrderShape::trigger_price_` on a modification of a
+   * stop-limit (`28`) order, and never on a cancellation: `kt10003` has no trigger field, and a
+   * cancellation carrying one is refused here rather than acknowledged with the trigger dropped.
+   * `reprice` restates the resting trigger, so a repriced stop keeps it rather than sending the
+   * empty `mdfy_cond_uv` whose meaning Kiwoom does not document.
    */
   std::optional<Decimal64> condition_price_;
 };
@@ -273,6 +270,49 @@ inline std::optional<BrokerError> unsupported_client_order_id(const OrderRequest
     "Kiwoom publishes no caller-supplied order identifier; its order endpoints accept no such "
     "field and it would be silently dropped";
   return error;
+}
+
+/** Returns whether `trigger` is a value `cond_uv` and `mdfy_cond_uv` can carry: positive, whole won. */
+inline bool valid_trigger_value(const Decimal64& trigger) {
+  return trigger.coefficient() > 0 && trigger.scale() == 0;
+}
+
+/**
+ * Returns an error when a trigger price does not match its price basis.
+ *
+ * `28` 스톱지정가 needs one in `cond_uv` and every other `trde_tp` has nowhere to put one, so a
+ * trigger stated on it would be sent as `""` and dropped (Decision 6). The trigger's direction and
+ * its relation to the limit are not checked: the specification documents neither.
+ *
+ * Applied to a placement by the client and to a modification by the traits layer, which is the one
+ * that still knows the basis -- `kt10002` carries no `trde_tp`, so `KiwoomAmendment` has none.
+ */
+inline std::optional<BrokerError> invalid_trigger(
+  OrderType type,
+  const std::optional<Decimal64>& trigger
+) {
+  BrokerError error;
+  error.category_ = ErrorCategory::INVALID_ARGUMENT;
+  error.reached_broker_ = false;
+  error.broker_code_ = "invalid_trigger_price";
+  if (carries_trigger_price(type)) {
+    if (!trigger) {
+      error.message_ = "a Kiwoom stop-limit order (28) requires a trigger price in cond_uv";
+      return error;
+    }
+    if (!valid_trigger_value(*trigger)) {
+      error.message_ = "a Kiwoom trigger price must be a positive whole number of won";
+      return error;
+    }
+    return std::nullopt;
+  }
+  if (trigger) {
+    error.message_ =
+      "Kiwoom takes a trigger price only on a stop-limit order (28); on this basis it would be "
+      "dropped";
+    return error;
+  }
+  return std::nullopt;
 }
 
 namespace detail {
@@ -563,12 +603,8 @@ struct KiwoomOrderShapeRow {
  * recording: the three-axis decomposition was derived from KIS's `ORD_DVSN` and Toss's
  * `timeInForce`, and Kiwoom shares no wire format with either.
  *
- * **Two rows are read-only, for two different reasons.**
- *
- * `28` 스톱지정가 has a code and is never sent: the trigger price goes in `cond_uv` and
- * `OrderRequest` has no field for a trigger, so sending one would be an order whose releasing
- * condition nobody stated. KIS's `22` is refused for the identical reason. See
- * `plan/todo/stop-limit-trigger-price.md`.
+ **One row is read-only.** `28` 스톱지정가 was a second until `OrderRequest::trigger_price_`
+ * existed; its trigger goes in `cond_uv`, and `invalid_trigger` refuses a `28` without one.
  *
  * `시간외단일가` has **no code at all**. It appears in `ka10075`'s and `ka10076`'s label lists and in
  * no request table, so this library could not place one even if `OrderRequest` could express it.
@@ -605,7 +641,7 @@ inline constexpr std::array<KiwoomOrderShapeRow, 21> kOrderShapes{{
   {"40", "보통(GTP)",      nullptr,       OrderType::LIMIT,             TimeInForce::DAY,                 OrderSession::GTP,                 true},
   {"46", "최유리(GTP)",    nullptr,       OrderType::BEST_LIMIT,        TimeInForce::DAY,                 OrderSession::GTP,                 true},
   {"47", "최우선(GTP)",    nullptr,       OrderType::PRIMARY_LIMIT,     TimeInForce::DAY,                 OrderSession::GTP,                 true},
-  {"28", "스톱지정가",     nullptr,       OrderType::STOP_LIMIT,        TimeInForce::DAY,                 OrderSession::REGULAR,             false},
+  {"28", "스톱지정가",     nullptr,       OrderType::STOP_LIMIT,        TimeInForce::DAY,                 OrderSession::REGULAR,             true},
   {nullptr, "시간외단일가", nullptr,      OrderType::LIMIT,             TimeInForce::DAY,                 OrderSession::AFTER_HOURS_AUCTION, false},
 }};
 
@@ -644,7 +680,7 @@ inline std::optional<BrokerError> order_division(
       " on an inquiry but this library cannot place one" +
       (matched->code_ == nullptr ?
          ": it publishes no order code for that shape at all" :
-         ": its trigger price has no field on OrderRequest");
+         ": the code is read on a response and not sent on a request");
     return error;
   }
   division = matched->code_;
@@ -1701,6 +1737,24 @@ private:
       return std::nullopt;
     }
     return value;
+  }
+
+  /**
+   * Returns an order's trigger from `key`, or nothing.
+   *
+   * `ka10075`'s `stop_pric` and `kt00007`'s `cond_uv` are both documented as "스톱지정가주문
+   * 스톱가", and `kt00007`'s own example carries `"0000000000"` on a market order -- so an ordinary
+   * order reports zero, and a positive value is recorded **whatever the row's basis**, for the
+   * reason `OrderSnapshot::trigger_price_` gives. An empty, zero or unreadable value leaves the
+   * trigger unreported rather than failing the listing: a trigger is one fact about one order, and
+   * the row is still the order, which must stay cancellable.
+   */
+  static std::optional<Decimal64> reported_trigger(const json::object& row, std::string_view key) {
+    try {
+      return positive(detail::magnitude(row, key));
+    } catch (const std::exception&) {
+      return std::nullopt;
+    }
   }
 
   /** Builds a `PROTOCOL` failure from a parser exception. */
@@ -2922,6 +2976,9 @@ private:
     if (auto error = validate_price(order.type_, order.price_)) {
       return error;
     }
+    if (auto error = invalid_trigger(order.type_, order.trigger_price_)) {
+      return error;
+    }
     if (auto error = validate_venue(order.venue_)) {
       return error;
     }
@@ -2989,6 +3046,13 @@ private:
       error.message_ = "a Kiwoom domestic order price must be a whole number of won";
       return error;
     }
+    // Only the value: whether the order's basis wants a trigger at all is decided where the basis
+    // is known, `BrokerTraits<KiwoomClient>::to_amendment`, because `kt10002` carries none.
+    if (!cancel && amendment.condition_price_ && !valid_trigger_value(*amendment.condition_price_)) {
+      error.broker_code_ = "invalid_trigger_price";
+      error.message_ = "a Kiwoom trigger price must be a positive whole number of won";
+      return error;
+    }
     if (!cancel) {
       // Last, and cancellations excepted; see `unestablished_holdings_scope`. A replacement can
       // move a resting buy to a fillable price, which opens or enlarges the position this library
@@ -3012,8 +3076,9 @@ private:
     // decides which, and a zero would be a price the caller did not state.
     body["ord_uv"] = order.price_ ? order.price_->str() : "";
     body["trde_tp"] = std::string(division);
-    // `cond_uv` is the stop trigger, and no requestable shape in this adapter has one.
-    body["cond_uv"] = "";
+    // `cond_uv` is the stop trigger. `invalid_trigger` has restricted it to `28`, so every other
+    // body carries the `""` it always has.
+    body["cond_uv"] = order.trigger_price_ ? order.trigger_price_->str() : "";
     return client.make_request(
       order.side_ == OrderSide::BUY ? "kt10000" : "kt10001",
       "/api/dostk/ordr",
@@ -3310,6 +3375,7 @@ private:
     order.venue_ = normalized_venue(detail::text_field(row, "stex_tp"));
     order.quantity_ = detail::required_magnitude(row, "ord_qty");
     order.price_ = positive(detail::magnitude(row, "ord_pric"));
+    order.trigger_price_ = reported_trigger(row, "stop_pric");
     // `tm` is `HHmmss` with no date. The calendar day is today in Seoul, which is sound *for this
     // endpoint*: `ka10075` 미체결 lists the orders still unfilled, and a KRX day order does not
     // outlive its session, so an unfilled order was placed today. The history path takes its date
@@ -3543,6 +3609,7 @@ private:
     order.venue_ = normalized_venue(detail::text_field(row, "dmst_stex_tp"));
     order.quantity_ = detail::required_magnitude(row, "ord_qty");
     order.price_ = positive(detail::magnitude(row, "ord_uv"));
+    order.trigger_price_ = reported_trigger(row, "cond_uv");
     order.ordered_at_ = detail::seoul_timestamp(date, detail::text_field(row, "ord_tm"));
     order.execution_.filled_quantity_ = detail::required_magnitude(row, "cntr_qty");
     if (const auto average = positive(detail::magnitude(row, "cntr_uv"))) {

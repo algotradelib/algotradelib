@@ -338,8 +338,18 @@ struct Normalizers {
     amendment.quantity_ =
       instruction.all_remaining_ ? Decimal64() : *instruction.quantity_;
     if (!cancel) {
+      // The basis is known here and nowhere after: `kt10002` carries no `trde_tp`, so this is the
+      // last point that can tell a trigger the order wants from one it would silently lose.
+      const auto trigger = amended_trigger_price(instruction);
+      if (auto invalid = kiwoom::invalid_trigger(instruction.shape_.type_, trigger)) {
+        return Result<KiwoomAmendment>(std::move(*invalid));
+      }
       amendment.price_ = instruction.shape_.price_;
+      amendment.condition_price_ = trigger;
     }
+    // **Never on a cancellation.** `kt10003` has no trigger field and the client refuses a
+    // cancellation carrying one; `cancel_all` restates the resting trigger, so copying it here would
+    // make every stop order impossible to withdraw through the port.
     return Result<KiwoomAmendment>(std::move(amendment));
   }
 
@@ -396,6 +406,17 @@ struct Normalizers {
         error.message_ =
           "Kiwoom's cancellation carries a quantity and no price, so it cannot reprice an order on "
           "the way out; cancel it and place a new one instead";
+        return error;
+      }
+      // The same rule as the price: a restatement of the resting trigger -- which is what
+      // `cancel_all` writes -- is the ordinary withdrawal, and only a stated *change* is refused.
+      const bool restates_trigger = instruction.resting_ &&
+        instruction.resting_->trigger_price_ == instruction.shape_.trigger_price_;
+      if (instruction.shape_.trigger_price_ && !restates_trigger) {
+        error.broker_code_ = "trigger_on_cancellation";
+        error.message_ =
+          "Kiwoom's cancellation carries a quantity and no trigger price, so it cannot move an "
+          "order's stop on the way out; cancel it and place a new one instead";
         return error;
       }
     } else if (!instruction.resting_) {
@@ -543,6 +564,9 @@ struct Capabilities {
 
   /** Kiwoom documents no caller-supplied order identifier. */
   static constexpr bool has_client_order_id = false;
+
+  /** Kiwoom sends a stop-limit (`28`) order's trigger as `cond_uv`, and a modified one as `mdfy_cond_uv`. */
+  static constexpr bool has_trigger_price = true;
 
   /** Kiwoom publishes its unfilled orders, through `ka10075`. */
   static constexpr bool has_working_orders = true;

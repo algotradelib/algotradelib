@@ -400,7 +400,7 @@ TEST_CASE("both inquiry vocabularies read back to the same shape", "[kiwoom][ord
   }
 }
 
-TEST_CASE("the two read-only shapes read and are refused on a request", "[kiwoom][orders]") {
+TEST_CASE("the read-only shape reads and is refused on a request", "[kiwoom][orders]") {
   // 시간외단일가 appears in ka10075's label list and in no request table at all.
   const auto* auction = kiwoom::shape_by_name("시간외단일가");
   REQUIRE(auction != nullptr);
@@ -416,17 +416,17 @@ TEST_CASE("the two read-only shapes read and are refused on a request", "[kiwoom
   CHECK(code == "unchanged");
   CHECK(refusal->message_.find("no order code") != std::string::npos);
 
-  // 스톱지정가 has a code and is still never sent: `cond_uv` is its trigger and `OrderRequest`
-  // has no field for one.
+  // 스톱지정가 was the second read-only row until `OrderRequest` could carry its trigger.
   const auto* stop = kiwoom::shape_by_name("스톱지정가");
   REQUIRE(stop != nullptr);
   CHECK(stop->type_ == OrderType::STOP_LIMIT);
   CHECK(std::string_view(stop->code_) == "28");
+  CHECK(stop->requestable_);
   refusal = kiwoom::order_division(
     OrderType::STOP_LIMIT, TimeInForce::DAY, OrderSession::REGULAR, code
   );
-  REQUIRE(refusal);
-  CHECK(refusal->message_.find("trigger price") != std::string::npos);
+  REQUIRE_FALSE(refusal);
+  CHECK(code == "28");
 }
 
 TEST_CASE("an unrecognized label leaves the shape unknown and preserves it", "[kiwoom][orders]") {
@@ -2384,4 +2384,177 @@ TEST_CASE("an unfilled row that states nothing has filled reports pending", "[ki
     ).as_object()
   );
   CHECK(untouched.order_.status_ == OrderStatus::PENDING);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stop-limit orders
+// ---------------------------------------------------------------------------------------------
+
+TEST_CASE("Kiwoom places, amends and reads back a stop-limit order's trigger", "[kiwoom][trigger]") {
+  using Traits = BrokerTraits<kiwoom::KiwoomClient>;
+  ClientFixture fixture;
+
+  OrderRequest stop;
+  stop.instrument_ = samsung();
+  stop.side_ = OrderSide::SELL;
+  stop.type_ = OrderType::STOP_LIMIT;
+  stop.venue_ = Venue::KRX;
+  stop.quantity_ = Decimal64(10, 0);
+  stop.price_ = Decimal64(69000, 0);
+  stop.trigger_price_ = Decimal64(69500, 0);
+
+  SECTION("28 is composed, and the trigger goes in cond_uv") {
+    std::string code;
+    // A settled holdings scope, so the only refusals possible are about the order itself.
+    REQUIRE_FALSE(kiwoom::KiwoomClientTestAccess::validate_order(
+      stop, code, kiwoom::KiwoomPositionScope::VALUATION_ONLY
+    ));
+    CHECK(code == "28");
+    const auto body = json::parse(
+      kiwoom::KiwoomClientTestAccess::place_request(*fixture.client_, stop, code).body_
+    ).as_object();
+    CHECK(body.at("trde_tp").as_string() == "28");
+    CHECK(body.at("ord_uv").as_string() == "69000");
+    CHECK(body.at("cond_uv").as_string() == "69500");
+  }
+
+  SECTION("every other body keeps its empty cond_uv") {
+    auto limit = stop;
+    limit.type_ = OrderType::LIMIT;
+    limit.trigger_price_.reset();
+    const auto body = json::parse(
+      kiwoom::KiwoomClientTestAccess::place_request(*fixture.client_, limit, "0").body_
+    ).as_object();
+    CHECK(body.at("cond_uv").as_string() == "");
+  }
+
+  SECTION("a trigger the order cannot carry, or a stop without one, is refused before I/O") {
+    const auto refused = [](OrderRequest order) {
+      std::string code;
+      const auto error = kiwoom::KiwoomClientTestAccess::validate_order(
+        order, code, kiwoom::KiwoomPositionScope::VALUATION_ONLY
+      );
+      REQUIRE(error);
+      CHECK(error->broker_code_ == "invalid_trigger_price");
+      CHECK_FALSE(error->reached_broker_);
+    };
+    auto missing = stop;
+    missing.trigger_price_.reset();
+    refused(missing);
+    auto on_limit = stop;
+    on_limit.type_ = OrderType::LIMIT;
+    refused(on_limit);
+    for (const auto* value : {"0", "-69500", "69500.5"}) {
+      auto bad = stop;
+      bad.trigger_price_ = Decimal64::parse(value);
+      INFO("trigger " << value);
+      refused(bad);
+    }
+  }
+
+  WorkingOrder<kiwoom::Broker> working;
+  working.ref_.primary_ = "0000069";
+  working.ref_.secondary_ = "005930";
+  working.order_.type_ = OrderType::STOP_LIMIT;
+  working.order_.time_in_force_ = TimeInForce::DAY;
+  working.order_.session_ = OrderSession::REGULAR;
+  working.order_.venue_ = Venue::KRX;
+  working.order_.price_ = Decimal64(69000, 0);
+  working.order_.trigger_price_ = Decimal64(69500, 0);
+  working.amendable_quantity_ = Decimal64(10, 0);
+
+  SECTION("a reprice restates the trigger in mdfy_cond_uv rather than sending it empty") {
+    auto amendment = Traits::to_replacement(working.ref_, reprice(working, Decimal64(68000, 0)));
+    REQUIRE(amendment);
+    CHECK(amendment.value().condition_price_ == Decimal64(69500, 0));
+    const auto body = json::parse(
+      kiwoom::KiwoomClientTestAccess::amend_request(*fixture.client_, amendment.value(), false).body_
+    ).as_object();
+    CHECK(body.at("mdfy_uv").as_string() == "68000");
+    CHECK(body.at("mdfy_cond_uv").as_string() == "69500");
+  }
+
+  SECTION("a stated trigger is sent as the new one") {
+    auto amendment = Traits::to_replacement(
+      working.ref_,
+      replace_with(
+        working,
+        OrderShape{
+          OrderType::STOP_LIMIT, Decimal64(69000, 0), std::nullopt, std::nullopt, Decimal64(69800, 0)
+        }
+      )
+    );
+    REQUIRE(amendment);
+    CHECK(amendment.value().condition_price_ == Decimal64(69800, 0));
+  }
+
+  SECTION("a stop is withdrawn by cancel_all, which carries no trigger to kt10003") {
+    // The regression the design exists to prevent: `cancel_all` restates the resting trigger, and
+    // copying it into the cancellation would make the client refuse every stop withdrawal.
+    auto amendment = Traits::to_cancellation(working.ref_, cancel_all(working));
+    REQUIRE(amendment);
+    CHECK_FALSE(amendment.value().condition_price_);
+    CHECK_FALSE(kiwoom::KiwoomClientTestAccess::validate_amendment(amendment.value(), true));
+  }
+
+  SECTION("a cancellation stating a different trigger is refused as a change it cannot make") {
+    auto instruction = cancel_all(working);
+    instruction.shape_.trigger_price_ = Decimal64(69800, 0);
+    const auto amendment = Traits::to_cancellation(working.ref_, instruction);
+    REQUIRE_FALSE(amendment);
+    CHECK(amendment.error().broker_code_ == "trigger_on_cancellation");
+  }
+
+  SECTION("a trigger on a modification of a basis that takes none is refused") {
+    auto limit = working;
+    limit.order_.type_ = OrderType::LIMIT;
+    const auto amendment = Traits::to_replacement(limit.ref_, reprice(limit, Decimal64(68000, 0)));
+    REQUIRE_FALSE(amendment);
+    CHECK(amendment.error().broker_code_ == "invalid_trigger_price");
+  }
+
+  SECTION("the working listing reports the trigger from stop_pric") {
+    const auto row = kiwoom::KiwoomClientTestAccess::open_order(json::parse(
+      R"({"ord_no":"0000069","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
+          "ord_qty":"10","ord_pric":"69000","oso_qty":"10","orig_ord_no":"0000000",
+          "io_tp_nm":"-매도","trde_tp":"스톱지정가","tm":"154113","cntr_qty":"0","stex_tp":"1",
+          "stop_pric":"69500"})"
+    ).as_object());
+    CHECK(row.order_.type_ == OrderType::STOP_LIMIT);
+    CHECK(row.order_.trigger_price_ == Decimal64(69500, 0));
+  }
+
+  SECTION("an ordinary order's zero is not a trigger, and an unreadable one costs only the trigger") {
+    const auto plain = kiwoom::KiwoomClientTestAccess::open_order(json::parse(
+      R"({"ord_no":"0000070","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
+          "ord_qty":"10","ord_pric":"70000","oso_qty":"10","orig_ord_no":"0000000",
+          "io_tp_nm":"+매수","trde_tp":"보통","tm":"154113","cntr_qty":"0","stex_tp":"1",
+          "stop_pric":"0"})"
+    ).as_object());
+    CHECK_FALSE(plain.order_.trigger_price_);
+    const auto unreadable = kiwoom::KiwoomClientTestAccess::open_order(json::parse(
+      R"({"ord_no":"0000071","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
+          "ord_qty":"10","ord_pric":"69000","oso_qty":"10","orig_ord_no":"0000000",
+          "io_tp_nm":"-매도","trde_tp":"스톱지정가","tm":"154113","cntr_qty":"0","stex_tp":"1",
+          "stop_pric":"69.5.0"})"
+    ).as_object());
+    CHECK(unreadable.order_.type_ == OrderType::STOP_LIMIT);
+    CHECK_FALSE(unreadable.order_.trigger_price_);
+  }
+
+  SECTION("the history listing reports the trigger from cond_uv") {
+    const auto row = kiwoom::KiwoomClientTestAccess::history_row(
+      json::parse(
+        R"({"ord_no":"0000050","stk_cd":"A005930","trde_tp":"스톱지정가","crd_tp":"보통매매",
+            "ord_qty":"0000000010","ord_uv":"0000069000","cnfm_qty":"0000000000","acpt_tp":"접수",
+            "rsrv_tp":"","ord_tm":"13:05:43","ori_ord":"0000000","stk_nm":"삼성전자",
+            "io_tp_nm":"현금매도","loan_dt":"","cntr_qty":"0000000000","cntr_uv":"0000000000",
+            "ord_remnq":"0000000010","comm_ord_tp":"영웅문4","mdfy_cncl":"","cnfm_tm":"",
+            "dmst_stex_tp":"KRX","cond_uv":"0000069500"})"
+      ).as_object(),
+      Date{2026, 3, 28}
+    );
+    CHECK(row.type_ == OrderType::STOP_LIMIT);
+    CHECK(row.trigger_price_ == Decimal64(69500, 0));
+  }
 }
