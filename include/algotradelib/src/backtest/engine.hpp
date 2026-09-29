@@ -292,10 +292,12 @@ struct ReplayResult {
   /**
    * Why the replay stopped early, when it did.
    *
-   * Two origins, and they mean the same thing to a reader: an execution that could not be
-   * **costed** -- a date the schedule does not cover, a venue it states no rate for, a market whose
-   * trading day this replay cannot compute -- and one the ledger could not **record**. Either way a
-   * trade the model produced did not reach the books.
+   * Three origins. An execution that could not be **costed** -- a date the schedule does not cover,
+   * a venue it states no rate for, a market whose trading day this replay cannot compute -- and one
+   * the ledger could not **record** mean the same thing to a reader: a trade the model produced did
+   * not reach the books. The third, `mark_not_representable`, is a book that could not be **marked**
+   * at a bar's close: no trade is missing, but the strategy would have decided on that bar with a
+   * position one bar behind its price, and what it placed from there would have changed the run.
    *
    * Present means every figure in this result and in the report derived from it describes the bars
    * **up to** the halt and not the run the caller asked for. The bar it happened on is counted in
@@ -367,6 +369,18 @@ struct ReplayResult {
    * **Appended**, for the reason `currency_` above states.
    */
   std::size_t unchecked_fill_causality_{0};
+  /**
+   * Bars whose equity total could not be computed exactly, and therefore have no point.
+   *
+   * Every lot was marked -- a mark that will not fit halts the replay instead -- but cash and the
+   * marked lots together do not fit an exact decimal. The curve skips the bar, and the next point
+   * carries no return rather than one spanning the gap. It takes totals far beyond any real account.
+   *
+   * **Appended**, for the reason stated on `currency_` above.
+   */
+  std::size_t unvalued_bars_{0};
+  /** The first such bar's period end, so a reader has a date to look up; empty when there was none. */
+  std::optional<std::chrono::system_clock::time_point> first_unvalued_;
 };
 
 /** Everything a replay needs beyond the strategy and the bars. */
@@ -507,12 +521,25 @@ public:
     if (result_.halted_) {
       return;
     }
-    // A mark that will not fit leaves its lot at the previous price, so an equity point recorded
-    // here would be stamped with this bar and computed at the last one. Skipped instead, which is
-    // what `record_equity` already does when the total itself cannot be computed.
-    if (ledger_.mark(event.instrument_, event.bar_.close_)) {
-      record_equity(event);
+    // **A mark that will not fit halts the replay**, like a fill it cannot cost or record. The lot
+    // stays at its previous price, while `Runner::feed` is about to hand the strategy this bar's
+    // close as the last price -- so `on_bar` would decide, and `Runner::settle` would size and check
+    // an order, against a position valued one bar ago beside a price from this one. An order placed
+    // from that view fills on a later bar and changes every figure after it. This used to skip only
+    // the equity point and carry on, which reported nothing and let that order through.
+    if (!ledger_.mark(event.instrument_, event.bar_.close_)) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
+      error.broker_code_ = "mark_not_representable";
+      error.message_ = "a position in " + event.instrument_.symbol_ + " could not be valued at the "
+        "bar's close without leaving an exact decimal, so the replay stopped rather than let a "
+        "strategy decide on a position one bar behind its price";
+      result_.halted_ = std::move(error);
+      abort_queue();
+      return;
     }
+    record_equity(event);
 
     // **The price moves with the portfolio, not after it.** `Runner::settle` values a market order
     // at `context_.last_price`, so a view whose positions are marked to this bar while the price is
@@ -936,13 +963,26 @@ private:
   void record_equity(const strategy::BarEvent& event) {
     const auto equity = ledger_.equity_in(config_.currency_);
     if (!equity) {
+      // Every lot was marked, and the total of cash and lots still does not fit an exact decimal.
+      // No point is recorded -- a point at an approximate total would be a figure nobody computed
+      // -- and the omission is counted, because a gap in the curve has other causes too.
+      ++result_.unvalued_bars_;
+      if (!result_.first_unvalued_) {
+        result_.first_unvalued_ = event.period_end_;
+      }
+      equity_gap_ = true;
       return;
     }
     EquityPoint point;
     point.at_ = event.period_end_;
     point.equity_ = *equity;
     point.period_return_ = math::missing();
-    if (!result_.equity_.empty()) {
+    // **No return across an omitted point.** The one below would measure two or more bars and be
+    // handed to the Sharpe ratio and the annualization as one bar's return, so the first point
+    // after a gap carries none -- as the first point of the run does.
+    const bool after_gap = equity_gap_;
+    equity_gap_ = false;
+    if (!result_.equity_.empty() && !after_gap) {
       const auto& previous = result_.equity_.back().equity_;
       if (previous.coefficient() != 0) {
         const auto moved = decimal_subtract(*equity, previous);
@@ -1211,6 +1251,8 @@ private:
   /** Turns this replay's own working listing into `on_order_update` events. */
   runner::OrderUpdateWatch<Tag> updates_;
   ReplayResult result_;
+  /** Whether a bar since the last equity point went unvalued, so the next point carries no return. */
+  bool equity_gap_{false};
   std::optional<strategy::BarEvent> previous_;
 };
 
