@@ -3725,3 +3725,29 @@ TEST_CASE("an update in the same listing supersedes the deferred flatten before 
   CHECK(bound.deferred_targets().empty());
   CHECK(session.placed().empty());
 }
+
+TEST_CASE("the evidence read covers the Korean day when UTC has not reached it yet", "[trigger]") {
+  // **Codex round 6.** At 08:45 KST on 30 September it is 23:45 UTC on the 29th. A stop placed and
+  // withdrawn that morning lives in Kiwoom's history under 30 September, which a read ending at the UTC
+  // date never asked for.
+  WorkingSession session;
+  auto bound = live::bind(session, FlattensOnPhase{}, {});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  const auto morning_kst = std::chrono::system_clock::time_point{} +
+    std::chrono::hours(24 * 20726) - std::chrono::minutes(15);  // 2026-09-29T23:45Z
+  REQUIRE(runner::date_of(morning_kst).day_ == 29);
+  bound.context().set_now(morning_kst);
+  leave_behind_a_stop(bound, session);
+
+  record_stop(session, OrderStatus::CANCELED, "0");
+  poll_listing_at(source, bound, session, {}, 1);
+  bool asked_for_the_30th = false;
+  for (const auto& query : session.history_queries()) {
+    REQUIRE(query.from_);
+    if (query.from_->month_ == 9 && query.from_->day_ == 30) {
+      asked_for_the_30th = true;
+    }
+  }
+  CHECK(asked_for_the_30th);
+  CHECK(session.placed().size() == 1);
+}

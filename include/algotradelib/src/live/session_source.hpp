@@ -817,8 +817,9 @@ private:
    *
    * **Two query shapes, because the brokers that hold stops disagree.** KIS takes a range
    * (`history_requires_range`), so one query covers it. Kiwoom's `kt00007` takes **one** date, which it
-   * requires, and refuses a range -- so each day is asked for on its own; a stop is a day order, so that
-   * is two or three requests at most. A broker taking neither shape is asked each day as well, which
+   * requires, and refuses a range -- so each day is asked for on its own, from the day before the
+   * deferral to the day after now, both in UTC so the market-local day is always inside; a stop is a
+   * day order, so that is three or four requests at most. A broker taking neither shape is asked each day as well, which
    * states a date it may ignore rather than omitting one it may need.
    */
   bool read_evidence(
@@ -841,10 +842,14 @@ private:
         }
         days.push_back(day);
       };
-      for (auto at = since - std::chrono::hours(24); at < now; at += std::chrono::hours(24)) {
+      // **Through the day after `now` in UTC**, the same upper bound as the ranged query. `date_of` is a
+      // UTC date and a broker's order date is its own market's: at 08:45 KST it is still the previous
+      // day in UTC, and stopping at `date_of(now)` never asked for the Korean day the stop was on.
+      const auto until = now + std::chrono::hours(24);
+      for (auto at = since - std::chrono::hours(24); at < until; at += std::chrono::hours(24)) {
         add(runner::date_of(at));
       }
-      add(runner::date_of(now));
+      add(runner::date_of(until));
       for (const auto& day : days) {
         if (!read_history_in({day, day}, into, true)) {
           return false;
