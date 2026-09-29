@@ -3544,7 +3544,7 @@ TEST_CASE("a stop's trigger moved on its own is reported, and a disagreement abo
 
 namespace {
 
-/** Flattens on leaving the session and does nothing else -- no bar handler to retry with. */
+/** Flattens on leaving the session; holds ten again if an update names the order "KEEP". */
 struct FlattensOnPhase {
   template <class Ctx>
   void on_phase(Ctx& ctx, strategy::MarketPhase phase) {
@@ -3556,37 +3556,127 @@ struct FlattensOnPhase {
     flat.target_quantity_ = Decimal64::parse("0");
     ctx.submit(flat);
   }
+
+  template <class Ctx>
+  void on_order_update(Ctx& ctx, const OrderSnapshot& order) {
+    if (order.order_id_ != "KEEP") {
+      return;
+    }
+    strategy::TargetPosition hold;
+    hold.instrument_ = samsung();
+    hold.target_quantity_ = Decimal64::parse("10");
+    ctx.submit(hold);
+  }
 };
 
-} // namespace
+std::chrono::system_clock::time_point live_hour(int hours) {
+  return std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 100 + hours);
+}
 
-TEST_CASE("a working-order poll that no longer lists the stop sends the deferred flatten", "[trigger]") {
-  // The live half of the round-2 sequence: the stop's disappearance is observed only by this poll, and
-  // a disappearance feeds no strategy callback. The sell must reach the session anyway.
-  WorkingSession session;
-  auto bound = live::bind(session, FlattensOnPhase{}, {});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-  bound.context().set_instrument(samsung_reference());
-  bound.context().set_last_price(samsung(), Decimal64::parse("70000"));
+/** Polls a working-order listing received at `hour`. */
+template <typename Source, typename Runner>
+void poll_listing_at(
+  Source& source, Runner& bound, WorkingSession& session,
+  std::vector<WorkingOrder<FakeBroker>> rows, int hour
+) {
+  WorkingOrders<FakeBroker> listing;
+  listing.orders_ = std::move(rows);
+  listing.received_at_ = live_hour(hour);
+  session.set_working_orders(std::move(listing));
+  REQUIRE(source.poll(runner::PollKind::WORKING_ORDERS, bound) == runner::PollOutcome::UPDATED);
+}
 
+/** Polls holdings of `held` received at `hour`. */
+template <typename Source, typename Runner>
+void poll_holdings_at(Source& source, Runner& bound, WorkingSession& session, const char* held, int hour) {
+  HoldingsSnapshot snapshot;
+  HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = Decimal64::parse(held);
+  snapshot.positions_.push_back(position);
+  snapshot.received_at_ = live_hour(hour);
+  snapshot.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING, SellableBasis::RestingTreatment::DEDUCT, false,
+  };
+  session.set_holdings(snapshot);
+  REQUIRE(source.poll(runner::PollKind::HOLDINGS, bound) == runner::PollOutcome::UPDATED);
+}
+
+WorkingOrder<FakeBroker> resting_stop() {
   auto stop = update_row("STOP-1", "", "0");
   stop.order_.side_ = OrderSide::SELL;
   stop.order_.type_ = OrderType::STOP_LIMIT;
   stop.order_.quantity_ = Decimal64::parse("10");
   stop.order_.price_ = Decimal64::parse("69000");
   stop.order_.trigger_price_ = Decimal64::parse("69500");
-  auto portfolio = held_position<WithWorkingOrders>("10", nullptr);
-  portfolio.working_.push_back(stop);
-  bound.context().set_portfolio(portfolio);
+  return stop;
+}
 
+/** Binds the strategy, holds ten behind a resting stop, and leaves the session. */
+template <typename Bound>
+void leave_behind_a_stop(Bound& bound, WorkingSession& session) {
+  bound.context().set_instrument(samsung_reference());
+  bound.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  auto portfolio = held_position<WithWorkingOrders>("10", nullptr);
+  portfolio.working_.push_back(resting_stop());
+  bound.context().set_portfolio(portfolio);
   bound.feed(strategy::MarketPhase::POST_CLOSE);
   CHECK(session.canceled().size() == 1);
   CHECK(session.placed().empty());
   REQUIRE(bound.deferred_targets().size() == 1);
+}
 
-  poll_rows(source, bound, session, {});
+} // namespace
+
+TEST_CASE("a deferred flatten is sent once holdings read after the stop left still hold it", "[trigger]") {
+  // The live half of the round-2 sequence, with the round-3 timing: the listing that drops the stop
+  // arrives first and releases nothing, because it cannot say whether the stop was cancelled or filled.
+  WorkingSession session;
+  auto bound = live::bind(session, FlattensOnPhase{}, {});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  leave_behind_a_stop(bound, session);
+
+  poll_listing_at(source, bound, session, {}, 1);
+  CHECK(session.placed().empty());
+  REQUIRE(bound.deferred_targets().size() == 1);
+
+  // Holdings read after that listing: still ten, so it was cancelled, and the flatten goes.
+  poll_holdings_at(source, bound, session, "10", 2);
   REQUIRE(session.placed().size() == 1);
   CHECK(session.placed()[0].side_ == OrderSide::SELL);
   CHECK(session.placed()[0].quantity_ == Decimal64::parse("10"));
   CHECK(bound.deferred_targets().empty());
+}
+
+TEST_CASE("a deferred flatten does not sell again after the stop filled", "[trigger]") {
+  WorkingSession session;
+  auto bound = live::bind(session, FlattensOnPhase{}, {});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  leave_behind_a_stop(bound, session);
+
+  poll_listing_at(source, bound, session, {}, 1);
+  // Holdings read before the listing say nothing about the stop's fate and release nothing.
+  poll_holdings_at(source, bound, session, "10", 0);
+  CHECK(session.placed().empty());
+  // Holdings read after it: the stop filled and nothing is left, so the flatten is met.
+  poll_holdings_at(source, bound, session, "0", 2);
+  CHECK(session.placed().empty());
+  CHECK(bound.deferred_targets().empty());
+}
+
+TEST_CASE("an update in the same listing supersedes the deferred flatten before it can go", "[trigger]") {
+  // **Codex round 3's second blocker.** The listing that drops the stop also carries an update the
+  // strategy answers by holding ten. That answer must win, whatever the order of rows.
+  WorkingSession session;
+  auto bound = live::bind(session, FlattensOnPhase{}, {});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  leave_behind_a_stop(bound, session);
+  poll_holdings_at(source, bound, session, "10", 2);
+
+  auto first = update_row("OTHER", "", "0");
+  auto keep = update_row("KEEP", "", "0");
+  poll_listing_at(source, bound, session, {first, keep}, 1);
+  CHECK(bound.deferred_targets().empty());
+  poll_holdings_at(source, bound, session, "10", 3);
+  CHECK(session.placed().empty());
 }

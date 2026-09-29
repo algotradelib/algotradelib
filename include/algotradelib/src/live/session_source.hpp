@@ -344,6 +344,9 @@ private:
     // request's own latency.
     portfolio.as_of_ = result.value().received_at_;
     runner_instance.context().set_portfolio(std::move(portfolio));
+    // Fresh holdings are the second half of a deferred target's release: they say whether a stop
+    // that left the listing was cancelled or filled. See `Runner::retry_deferred`.
+    runner_instance.retry_deferred();
     return runner::PollOutcome::UPDATED;
   }
 
@@ -710,9 +713,10 @@ private:
         updates_.adopt(result.value().orders_);
       }
       // **After** the updates, so a strategy's own `on_order_update` has spoken first. This listing is
-      // the only thing that sees a stop leave, and a disappearance feeds no callback -- so a target
-      // the runner deferred behind that stop is released here or not at all.
-      runner_instance.retry_deferred();
+      // the only thing that sees a stop leave, and a disappearance feeds no callback; its receive time
+      // is what a later holdings snapshot must postdate before the deferred target is released. See
+      // `Runner::retry_deferred`.
+      runner_instance.retry_deferred(result.value().received_at_);
       return runner::PollOutcome::UPDATED;
     } else {
       (void)publish;

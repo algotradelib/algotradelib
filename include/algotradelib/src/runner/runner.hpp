@@ -851,35 +851,82 @@ public:
    *
    * - **retained** when a `TargetPosition`'s plan passed the withheld-plan gate and came back refused
    *   for `STOP_ORDER_RESTING`. A plan withheld whole retains nothing -- its withdrawal never went out;
-   * - **released**, into the next `settle`, once `context().portfolio()` lists no open stop on the
-   *   instrument (`strategy::is_stop_order`, `PENDING_CANCEL` counting as open). It then goes through
-   *   every gate, guard and ledger check any target does, against the portfolio as it is then -- so a
-   *   stop that released and sold the holding makes the flatten a met target that plans nothing;
    * - **replaced** by any `TargetPosition` or `OrderIntent` the strategy states for the instrument
-   *   later. It is a fallback for silence, not a goal that outranks what the strategy says next;
+   *   later, in any pass. It is a fallback for silence, not a goal that outranks what the strategy says;
+   * - **released** only by `retry_deferred`, never inside an ordinary pass, and only once **both**
+   *   are true: a listing no longer reports an open stop on the instrument (`strategy::is_stop_order`,
+   *   `PENDING_CANCEL` counting as open), **and** a holdings snapshot received *after* that listing is
+   *   installed. The second condition is what makes the release safe: a stop that left the listing may
+   *   have been cancelled or may have **filled**, and the listing cannot say which. Sized against the
+   *   holding as it was before, a filled stop would be followed by a second sell of the same shares;
+   *   sized against holdings that postdate its disappearance, a fill makes the flatten a met target that
+   *   plans nothing. Released, it goes through every gate, guard and ledger check any target does;
    * - **cleared** by its release, whatever that release's outcome. Refused by a guard, withheld, or
    *   rejected by the broker, it is reported in that bucket and not kept again -- except that meeting
    *   another resting stop keeps it again by the same rule. It waits for exactly one thing.
    *
    * Not journalled: it has produced no instruction a broker could have seen, and a restart loses it
-   * as it loses every unstated intention. `retry_deferred` is how a listing that has just landed
-   * releases one without waiting for the next event.
+   * as it loses every unstated intention.
    */
-  const std::vector<strategy::TargetPosition>& deferred_targets() const noexcept {
-    return deferred_targets_;
+  std::vector<strategy::TargetPosition> deferred_targets() const {
+    std::vector<strategy::TargetPosition> targets;
+    targets.reserve(deferred_targets_.size());
+    for (const auto& deferred : deferred_targets_) {
+      targets.push_back(deferred.target_);
+    }
+    return targets;
   }
 
   /** How many targets have been deferred behind a stop's withdrawal; see `deferred_targets`. */
   std::size_t targets_deferred() const noexcept { return targets_deferred_; }
 
   /**
-   * Settles any deferred target whose stop is gone, dispatching no handler.
+   * Releases, and settles, every deferred target whose stop is gone and whose holdings are fresh.
    *
-   * Called by `live::SessionSource` after each working-order poll, which is the only thing that sees
-   * a stop leave the listing. The queue is empty between feeds, so this settles the released targets
-   * and nothing else.
+   * @param listed_at when the working-order listing now in the portfolio was received, where the
+   * caller has just installed one. A deferred target records the first such instant at which its stop
+   * was no longer listed, and is released only once `Portfolio::as_of_` -- the holdings snapshot's own
+   * receive time -- is **later** than it. Without a listing time nothing new can be established about
+   * a disappearance, which is how a holdings poll calls this.
+   *
+   * `live::SessionSource` calls it after every working-order poll, with that listing's receive time,
+   * and after every holdings poll, without one. It dispatches no handler, settles only when it released
+   * something, and it is never run from
+   * inside an ordinary pass: an order update's pass would otherwise release the fallback before a
+   * later update in the same listing let the strategy say something else.
    */
-  Report retry_deferred() { return settle(); }
+  Report retry_deferred(
+    std::optional<std::chrono::system_clock::time_point> listed_at = std::nullopt
+  ) {
+    bool released = false;
+    for (auto at = deferred_targets_.begin(); at != deferred_targets_.end();) {
+      if (stop_listed(at->target_.instrument_)) {
+        at->gone_since_.reset();
+        ++at;
+        continue;
+      }
+      if (!at->gone_since_) {
+        if (!listed_at) {
+          ++at;
+          continue;
+        }
+        at->gone_since_ = listed_at;
+      }
+      if (!(*at->gone_since_ < context_.portfolio().as_of_)) {
+        ++at;
+        continue;
+      }
+      context_.submit(at->target_);
+      at = deferred_targets_.erase(at);
+      released = true;
+    }
+    // **Nothing released, nothing settled.** A pass has effects of its own -- it observes the
+    // sellable convention from the portfolio -- and this runs on every poll of two kinds.
+    if (!released) {
+      return Report{};
+    }
+    return settle();
+  }
   /** @copydoc Runner::plans_withheld */
   std::size_t instructions_unavailable() const noexcept { return instructions_unavailable_; }
 
@@ -1070,7 +1117,7 @@ private:
 
     Report report;
     auto instructions = context_.drain();
-    release_deferred(instructions);
+    drop_superseded_deferred(instructions);
     std::vector<strategy::PlannedOrder> pending;
 
     // **One withdrawal per order per pass.** A strategy that clears what is resting and then states
@@ -1727,18 +1774,19 @@ private:
    * the answer structurally current, and there is no invalidation protocol to get wrong.
    */
   /**
-   * Drops the deferred targets `instructions` supersede, then puts those whose stop is gone in front.
+   * Drops the deferred targets `instructions` supersede.
    *
-   * Superseded first, so a target the strategy has just restated -- or replaced with an order -- is
-   * never settled twice in one pass. See `deferred_targets` for the whole contract.
+   * Every pass, so a target or order the strategy states for an instrument -- in answer to an order
+   * update, a bar, anything -- replaces the fallback before `retry_deferred` could release it. See
+   * `deferred_targets` for the whole contract.
    */
-  void release_deferred(std::vector<Instruction<Tag>>& instructions) {
+  void drop_superseded_deferred(const std::vector<Instruction<Tag>>& instructions) {
     if (deferred_targets_.empty()) {
       return;
     }
     const auto drop = [this](const InstrumentId& instrument) {
       for (auto at = deferred_targets_.begin(); at != deferred_targets_.end(); ++at) {
-        if (at->instrument_ == instrument) {
+        if (at->target_.instrument_ == instrument) {
           deferred_targets_.erase(at);
           return;
         }
@@ -1751,25 +1799,18 @@ private:
         drop(intent->instrument());
       }
     }
-    std::vector<Instruction<Tag>> released;
-    for (auto at = deferred_targets_.begin(); at != deferred_targets_.end();) {
-      bool stop_listed = false;
-      for (const auto& working : context_.portfolio().working_) {
-        if (working.order_.instrument_ == at->instrument_ &&
-            strategy::order_is_open(working.order_.status_) &&
-            strategy::is_stop_order(working.order_)) {
-          stop_listed = true;
-          break;
-        }
+  }
+
+  /** Returns whether the portfolio lists an open stop order on `instrument`. */
+  bool stop_listed(const InstrumentId& instrument) const {
+    for (const auto& working : context_.portfolio().working_) {
+      if (working.order_.instrument_ == instrument &&
+          strategy::order_is_open(working.order_.status_) &&
+          strategy::is_stop_order(working.order_)) {
+        return true;
       }
-      if (stop_listed) {
-        ++at;
-        continue;
-      }
-      released.emplace_back(std::move(*at));
-      at = deferred_targets_.erase(at);
     }
-    instructions.insert(instructions.begin(), released.begin(), released.end());
+    return false;
   }
 
   /** Keeps a target whose plan is waiting on a stop's withdrawal; see `deferred_targets`. */
@@ -1786,13 +1827,13 @@ private:
         continue;
       }
       for (auto& kept : deferred_targets_) {
-        if (kept.instrument_ == target->instrument_) {
-          kept = *target;
+        if (kept.target_.instrument_ == target->instrument_) {
+          kept = DeferredTarget{*target, std::nullopt};
           ++targets_deferred_;
           return;
         }
       }
-      deferred_targets_.push_back(*target);
+      deferred_targets_.push_back(DeferredTarget{*target, std::nullopt});
       ++targets_deferred_;
       return;
     }
@@ -2264,8 +2305,15 @@ private:
   std::size_t cancels_indeterminate_{0};
   /** Plans held back whole, for any of three reasons; see `plans_withheld`. */
   std::size_t plans_withheld_{0};
+  /** One target waiting for a stop's withdrawal, and when a listing first showed the stop gone. */
+  struct DeferredTarget {
+    /** The target, exactly as the strategy stated it. */
+    strategy::TargetPosition target_;
+    /** The receive time of the first listing without the stop; empty while it is still listed. */
+    std::optional<std::chrono::system_clock::time_point> gone_since_;
+  };
   /** Targets waiting for a stop's withdrawal; see `deferred_targets`. */
-  std::vector<strategy::TargetPosition> deferred_targets_;
+  std::vector<DeferredTarget> deferred_targets_;
   /** How many were ever deferred; see `targets_deferred`. */
   std::size_t targets_deferred_{0};
   /** Instructions local machinery was unavailable to send; see the accessor. */
