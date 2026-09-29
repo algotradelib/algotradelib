@@ -5116,3 +5116,57 @@ TEST_CASE("a stop released at the open is dated from the open whatever the price
   REQUIRE(inside.execution_);
   CHECK(inside.execution_->applied_.rate_ == Decimal64::parse("0.001"));
 }
+
+namespace {
+
+/** Places one sell stop at a stated trigger and limit on the first bar. */
+struct PlacesStopAt {
+  const char* trigger_;
+  const char* limit_;
+  bool sent_{false};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (sent_) {
+      return;
+    }
+    sent_ = true;
+    ctx.submit(strategy::OrderIntent::stop_limit(
+      bar.instrument_,
+      OrderSide::SELL,
+      strategy::SizeSpec::quantity(Decimal64::parse("10")),
+      *strategy::Price::checked(Decimal64::parse(trigger_), PriceRule::krx_equity()),
+      *strategy::Price::checked(Decimal64::parse(limit_), PriceRule::krx_equity())
+    ));
+  }
+};
+
+strategy::BarEvent stop_bar(int day, const char* o, const char* h, const char* l, const char* c) {
+  Bar bar;
+  bar.timestamp_ = utc(2026, 3, day, 6, 30);
+  bar.open_ = Decimal64::parse(o);
+  bar.high_ = Decimal64::parse(h);
+  bar.low_ = Decimal64::parse(l);
+  bar.close_ = Decimal64::parse(c);
+  bar.volume_ = Decimal64::parse("1000");
+  return strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, bar);
+}
+
+} // namespace
+
+TEST_CASE("a released stop stays released on the bars after", "[trigger]") {
+  // Released on the 11th -- the low fell through 69,500 -- with a limit above the trigger the close
+  // did not come back to, so it rests. The 12th never reaches the trigger again; as the limit it has
+  // become, its 70,000 high fills it. Treated as dormant again, it would never trade.
+  backtest::Backtester<PlacesStopAt> engine(PlacesStopAt{"69500", "69800"}, replay_config());
+  engine.feed(stop_bar(10, "70000", "70000", "70000", "70000"));
+  engine.feed(stop_bar(11, "70000", "70500", "69000", "69200"));
+  REQUIRE(engine.result().executions_.empty());
+  engine.feed(stop_bar(12, "69900", "70000", "69700", "69950"));
+  engine.finish();
+
+  REQUIRE(engine.result().executions_.size() == 1);
+  CHECK(engine.result().executions_[0].fill_.price_ == Decimal64::parse("69800"));
+  CHECK(engine.result().stop_releases_ == 1);
+  CHECK(engine.result().stop_fills_intrabar_ == 0);
+}
