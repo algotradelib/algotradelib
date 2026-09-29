@@ -159,6 +159,20 @@ set_tests_properties(conformance-verbs-reject-a-wrong-signature PROPERTIES
     TIMEOUT 300
 )
 
+# A thunk that copies its token works for every copyable token and not for a move-only one, which
+# a caller may pass; `ATL_ASSERT_BROKER_VERBS` calls every verb with one, so it must fail here.
+add_library(algotradelib-conformance-probe-move-only OBJECT EXCLUDE_FROM_ALL conformance-probe-move-only.cpp)
+target_link_libraries(algotradelib-conformance-probe-move-only PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME conformance-verbs-reject-a-token-copy
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-conformance-probe-move-only
+            --config "$<CONFIG>"
+)
+set_tests_properties(conformance-verbs-reject-a-token-copy PROPERTIES
+    PASS_REGULAR_EXPRESSION "deleted (copy )?constructor[^\n]*MoveOnlyCallback|MoveOnlyCallback[^\n]*deleted|use of deleted function[^\n]*MoveOnlyCallback"
+    TIMEOUT 300
+)
+
 # The same guarantee for the dry runner: a dry run links no transport, so a dry-run binary has no
 # code path that could place an order.
 add_executable(algotradelib-runner-isolation test-runner-isolation.cpp)
