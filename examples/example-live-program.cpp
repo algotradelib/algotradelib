@@ -80,9 +80,10 @@ live_program::Settings settings_for(const atl::InstrumentId& instrument) {
   settings.limits_.max_position_quantity_ = atl::Decimal64::parse("1");
   settings.limits_.max_orders_per_window_ = 2;
 
-  // Daily bars, `SessionSource`'s default: the strategy decides once on the history read at start
-  // (after holdings are read, so the decision is not withheld) and once at each close. Polled every
-  // minute so a close is seen promptly; a minute-bar strategy sets `bar_interval_`.
+  // Daily bars, `SessionSource`'s default. The decisions on the history read at start are withheld,
+  // because the loop polls bars before the account is read, so the strategy first acts at the next
+  // close (plan/todo/first-iteration-poll-order.md). Polled every minute so a close is seen promptly;
+  // a minute-bar strategy sets `bar_interval_`.
   settings.schedule_.bars_ = std::chrono::minutes(1);
   settings.schedule_.holdings_ = std::chrono::seconds(30);
   settings.schedule_.working_orders_ = std::chrono::seconds(30);
