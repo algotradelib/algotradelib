@@ -2,7 +2,9 @@
 
 A strategy is a plain struct with template member functions. It receives events and emits intents.
 It performs no I/O, holds no session, names no broker, and therefore runs unchanged in a dry run, in
-a live session against any of the supported brokers, and later in a backtest.
+a live session against any of the supported brokers, and later in a backtest. (Kiwoom is the
+exception today: a strategy runner there places nothing yet — see the README's "Brokers and
+accounts".)
 
 ```cpp
 #include <algotradelib/strategy>
@@ -78,10 +80,11 @@ remediation after the fact, not protection — read the three limits of it befor
 
 - **It is as late as your holdings cadence.** `positions_` changes only when a `HOLDINGS` poll
   replaces it, so an entry that filled between polls is invisible until the next one.
-- **It is one poll later than you might expect inside an iteration.** The loop polls `BARS` before
-  `HOLDINGS`, and `on_bar` fires during the bar poll — so the position your handler reads is the one
-  the *latest successful holdings poll* established, not one including a fill this iteration is
-  about to discover. That poll need not have been the previous iteration's, and it may have failed.
+- **It is only as fresh as the latest successful holdings poll.** The loop polls working orders, then
+  holdings, then bars, so when both account reads are due in an iteration, `on_bar` sees the holdings
+  read moments earlier. When holdings were not due, or failed, it sees an older read — and if the
+  working-order listing is newer than that read, what your handler decides is withheld as
+  `portfolio_superseded` rather than sized against it.
 - **On daily bars, "the next `on_bar`" may be tomorrow.** A shorter bar interval narrows the window.
   A faster holdings cadence does **not** on its own, because the check runs in `on_bar`: a fresher
   position nobody looks at until the next bar is still not looked at until the next bar.

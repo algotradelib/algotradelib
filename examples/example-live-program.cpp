@@ -18,8 +18,9 @@
  *
  * The broker-free part -- the order of journal, recovery, loop and report -- is `live_program.hpp`,
  * which the test suite drives against an in-memory session. This file only chooses a broker and a
- * strategy. The strategy is deliberately trivial: `BuyAndHold` of one share. Replace it with yours;
- * nothing else has to change.
+ * strategy. The strategy is deliberately trivial: `BuyAndHold` of one share. Replace it with yours,
+ * and its limits in `settings_for`; on KIS and Toss nothing else has to change. On Kiwoom it places
+ * nothing yet (see `run_kiwoom`).
  */
 
 #include "live_program.hpp"

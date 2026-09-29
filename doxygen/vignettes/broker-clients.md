@@ -1,15 +1,17 @@
 # Talking to a broker directly {#broker-clients}
 
-`KisClient` and `TossClient` are the layer underneath the [broker port](the-broker-port.md). Strategy
+`KisClient`, `KiwoomClient` and `TossClient` are the layer underneath the
+[broker port](the-broker-port.md). Strategy
 code should not name them — that is what the port is for — but a program that needs one broker's
 particular verb, or that is not running a strategy at all, talks to them.
 
 Every verb exists twice: an asynchronous form taking a completion handler, and a blocking facade
-(`KisBlockingClient`, `TossBlockingClient`) that drives the same implementation on the caller's thread
+(`KisBlockingClient`, `KiwoomBlockingClient`, `TossBlockingClient`) that drives the same implementation on the caller's thread
 and keeps the HTTPS connection between sequential calls. Both apply the same normalizers, so they
 cannot disagree about what a broker response means.
 
-Both brokers expose the same broker-neutral results while retaining concrete client types. The first
+The brokers expose the same broker-neutral results while retaining concrete client types; this page
+covers KIS and Toss in detail, and Kiwoom's own examples are `example-kiwoom-*`. The first
 supported instrument scope is Korean equities.
 
 ## Quote clients

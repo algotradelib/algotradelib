@@ -67,7 +67,7 @@ struct Settings {
   std::size_t max_iterations_{0};
 };
 
-/** What the program exits with, so a supervisor can tell the four endings apart. */
+/** What the program exits with, so a supervisor can tell its endings apart. */
 enum class Exit : int {
   /** The run ended, and any closing pass it made got every instruction out. */
   CLEAN = 0,
@@ -165,7 +165,7 @@ inline void print_loop(const runner::LoopReport& report, std::ostream& out) {
       << "market phase    : " << strategy::market_phase_name(report.final_phase_) << '\n'
       // Every way an order the strategy wanted did not go out, each with its own count, so an empty
       // placement count explains itself.
-      << "plans withheld  : " << report.plans_withheld_ << " (account unread, too old, or older than the order listing)\n"
+      << "plans withheld  : " << report.plans_withheld_ << " (account unread, too old or older than the order listing, or a hold while it would cancel)\n"
       << "not buildable   : " << report.orders_unbuildable_ << '\n'
       << "withheld        : " << report.orders_reconcile_withheld_ << " (unresolved earlier orders)\n"
       << "refused by guard: " << report.orders_guard_refused_ << '\n'

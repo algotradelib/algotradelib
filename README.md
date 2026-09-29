@@ -5,7 +5,8 @@ Investment & Securities (KIS), Kiwoom Securities and Toss Securities.
 
 Header-only, consumed through CMake. A strategy is a plain struct that performs no I/O and names no
 broker, so one source is replayed against history, dry-run with no credentials, and then run live
-against any of the three without being rewritten. Selecting a broker is choosing a type parameter.
+without being rewritten — against KIS or Toss today; a Kiwoom strategy runner places nothing yet (see
+"Brokers and accounts"). Selecting a broker is choosing a type parameter.
 
 > **This library sends real orders to real accounts.** It is provided as is, with no warranty of any
 > kind (see the License section at the end), and nothing in it is investment advice. It is in development
@@ -199,7 +200,8 @@ const auto report = backtest::summarize(engine.result(), engine.fills(), periods
 
 **Run it live.** Copy [`examples/example-live-program.cpp`](examples/example-live-program.cpp) and
 [`examples/live_program.hpp`](examples/live_program.hpp), and replace the strategy — `BuyAndHold` of one
-share — with yours. It is the production path, for KIS, Kiwoom and Toss:
+share — with yours. It is the production path, for KIS and Toss (on Kiwoom it observes and places
+nothing yet):
 
 ```sh
 export KIS_APP_KEY=... KIS_APP_SECRET=... KIS_CANO=... KIS_DEMO=1

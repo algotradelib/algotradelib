@@ -20,9 +20,16 @@ while (true) { runner.feed(next_bar()); }   // don't
 At that moment you own four things you probably did not mean to: a cadence, a rate-limit interaction, a
 reconciliation obligation, and a stop control. The loop exists to own them for you.
 
+The whole production path — journal, recovery, loop, stops and the report — is
+[`examples/example-live-program.cpp`](../../examples/example-live-program.cpp) with
+[`examples/live_program.hpp`](../../examples/live_program.hpp); copy that. The loop at its centre:
+
 ```cpp
-auto live_runner = live::bind(session, MyStrategy{}, limits);
-live::SessionSource<Session> source(session, {samsung()});
+runner::FileJournal journal(path, scope);                     // one journal per account
+auto live_runner = live::bind_journaled(session, journal, MyStrategy{}, limits);
+const auto recovery = runner::recover_runner(live_runner, journal);
+live::SessionSource<Session, runner::FileJournal> source(session, {samsung()});
+source.set_journal(journal);
 
 runner::PollSchedule schedule;
 schedule.bars_ = std::chrono::minutes(1);
@@ -134,8 +141,9 @@ owed — it means nothing is remembered. So the loop reads the broker's own orde
 will send anything, and retries until it succeeds. While that is pending, `report.final_gate_` is
 `order_list_unread`.
 
-This is the cheapest half of reconciliation and it needs no persistence at all, which is why it is
-built while the durable ledger is not.
+This is the cheapest half of reconciliation and it needs no persistence at all. The durable half is
+the journal: `bind_journaled`, `recover_runner` and `set_journal`, in
+[Recovering after a crash](recovering-after-a-crash.md).
 
 **A stale or absent holdings snapshot blocks sizing, and stating a policy is not optional.** A
 placement-enabled loop calls either `set_maximum_portfolio_age` or `allow_unbounded_portfolio_age`;
@@ -267,7 +275,7 @@ refused flatten is reported once rather than twice.
 | `cancels_refused_` | a hold refused the withdrawal before anything was sent |
 | `cancels_unresolved_` | the reference named an order the snapshot does not hold |
 | `cancels_indeterminate_` | the withdrawal failed in transit; **it may still have withdrawn the order** |
-| `plans_withheld_` | a whole plan held back before any of its parts was judged — **for one of three reasons this figure does not distinguish**: the account was never read, it is older than your stated maximum, or a hold is refusing placements for a plan that also wanted to withdraw something. That third one happens on a perfectly fresh portfolio, so do not read this as "the account is unknown". And **`final_gate_` does not always show it**: with `allow_absent_portfolio` the gate is open while a plan that would withdraw something is still withheld |
+| `plans_withheld_` | a whole plan held back before any of its parts was judged — **for one of four reasons this figure does not distinguish**: the account was never read, it is older than your stated maximum, it was read before the working-order listing it would be reconciled with (`portfolio_superseded`), or a hold is refusing placements for a plan that also wanted to withdraw something. The last two happen on a perfectly fresh portfolio, so do not read this as "the account is unknown". And **`final_gate_` does not always show it**: with `allow_absent_portfolio` the gate is open while a plan that would withdraw something is still withheld |
 | `instructions_unavailable_` | local machinery was unavailable, so it was not sent — a pre-send journal write that failed is the usual cause and **not the only one**, since any executor answering `UNAVAILABLE` lands here. Placements and withdrawals together. It leaves a sticky `local_failure` hold, which `final_gate_` *may* name — a higher-priority hold can be reported while that one is still in force — so read this as how many instructions it cost |
 
 **And `last_broker_refusal_`, which is the one worth reading first.** A count tells you orders are
