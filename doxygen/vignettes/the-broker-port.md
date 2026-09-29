@@ -106,13 +106,12 @@ closed. Recovery merges the two listings and drops a history row only as an **ex
 copy** of a working row (`runner::exact_copy`: the same order id, instrument and
 `ordered_at_`), because an order number alone is not an order's identity across days.
 So **where your history can list an order your working listing also lists, stamp
-`ordered_at_` on both rows alike**: the order is then one candidate. Stamped
-differently, or unstamped on either side, it is two, and an order the journal is
-waiting on recovers as `AMBIGUOUS` and holds its instrument until an operator settles
-it. Kiwoom's two listings overlap and it stamps both from the broker's own order time;
-Toss's do not overlap (its working listing is the `OPEN` scope and its history the
-`CLOSED` one), and an order caught in both mid-transition carries one stamp, since one
-parser reads both.
+`ordered_at_` on both rows alike**: the order is then one row. Stamped differently, or
+unstamped on either side, both rows are kept, and if both answer the instruction a
+journal is waiting on, it recovers as `AMBIGUOUS` and holds its instrument until an
+operator settles it. Kiwoom stamps both listings from the broker's own order time; Toss
+reads both (its `OPEN` and `CLOSED` scopes, which can both list a partly filled order)
+with one parser from the order's `orderedAt`.
 
 ## Example
 
