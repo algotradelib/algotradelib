@@ -1330,25 +1330,50 @@ private:
     return "frbd_mket_lstg_abol_dt";
   }
 
-  /** Reads a `YYYYMMDD` field that KIS blanks when it does not apply. */
-  static std::optional<Date> compact_date_field(
+  /**
+   * Reads a `YYYYMMDD` field that KIS blanks when it does not apply.
+   *
+   * Three answers. **Not stated**: the key is absent, `null`, `""` -- the `주식기본조회` sheet's own
+   * example for an inapplicable date -- or `"00000000"`. The last is an inference, not a documented
+   * convention for this sheet: the same workbook uses `"00000000"` as its no-date value in
+   * `장내채권 기본조회` and `해외주식 상품기본정보`, and a zero date is no calendar date under any
+   * reading, so treating it as KIS's blank invents nothing that could be mistaken for a date.
+   * **Stated**: eight ASCII digits forming a real date. **Unreadable**: anything else, including a
+   * value that is not a string.
+   *
+   * Every character is checked as a digit before any arithmetic. This used `std::stoi` per
+   * component, which takes a numeric prefix, so `"1996122x"` read as 1996-12-02 -- a different,
+   * valid date instead of an unreadable one.
+   */
+  static StatedDate compact_date_field(
     const json::object& row,
     std::string_view key
   ) {
     const auto value = row.if_contains(key);
-    if (!value || !value->is_string()) {
-      return std::nullopt;
+    if (!value || value->is_null()) {
+      return StatedDate{};
     }
-    const std::string text(value->as_string());
-    if (text.size() != 8) {
-      return std::nullopt;
+    if (!value->is_string()) {
+      return StatedDate::unreadable();
     }
-    Date date{
-      std::stoi(text.substr(0, 4)),
-      static_cast<unsigned>(std::stoi(text.substr(4, 2))),
-      static_cast<unsigned>(std::stoi(text.substr(6, 2))),
+    const std::string_view text(value->as_string());
+    if (text.empty() || text == "00000000") {
+      return StatedDate{};
+    }
+    if (!broker_detail::decimal_digits(text, 8)) {
+      return StatedDate::unreadable();
+    }
+    const auto number = [text](std::size_t offset, std::size_t length) {
+      int result = 0;
+      for (std::size_t index = offset; index < offset + length; ++index) {
+        result = result * 10 + (text[index] - '0');
+      }
+      return result;
     };
-    return is_valid_date(date) ? std::optional<Date>(date) : std::nullopt;
+    Date date{
+      number(0, 4), static_cast<unsigned>(number(4, 2)), static_cast<unsigned>(number(6, 2))
+    };
+    return is_valid_date(date) ? StatedDate::stated(date) : StatedDate::unreadable();
   }
 
   /** One calendar request spanning however many continuation pages it needs. */

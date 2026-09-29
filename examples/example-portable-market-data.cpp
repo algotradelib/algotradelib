@@ -43,6 +43,7 @@ using algotradelib::Instrument;
 using algotradelib::InstrumentId;
 using algotradelib::OrderSide;
 using algotradelib::PriceLimits;
+using algotradelib::StatedDate;
 using algotradelib::TradingCalendar;
 using algotradelib::Venue;
 using algotradelib::bar_interval_name;
@@ -110,9 +111,18 @@ void print_instrument(const Instrument& instrument) {
   if (!instrument.isin_.empty()) {
     std::cout << "  isin: " << instrument.isin_;
   }
-  if (instrument.listed_on_) {
-    std::cout << "  listed: " << instrument.listed_on_->year_ << '-'
-      << instrument.listed_on_->month_ << '-' << instrument.listed_on_->day_;
+  switch (instrument.listed_on_.state()) {
+    case StatedDate::State::STATED: {
+      const auto& listed = instrument.listed_on_.date();
+      std::cout << "  listed: " << listed.year_ << '-' << listed.month_ << '-' << listed.day_;
+      break;
+    }
+    case StatedDate::State::UNREADABLE:
+      // The broker stated a date nobody can read, which is not the same as stating none.
+      std::cout << "  listed: (unreadable)";
+      break;
+    case StatedDate::State::NOT_STATED:
+      break;
   }
   std::cout << '\n';
   std::cout << "  price grid: " << instrument.price_rule_.source_ << '\n';

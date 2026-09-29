@@ -1032,19 +1032,14 @@ struct Date {
   /**
    * The four-digit year.
    *
-   * **A `Date` parsed from a broker string is not proof the broker sent that date.** Both adapters
-   * split a fixed-width field and hand each part to `std::stoi`, which skips leading whitespace,
-   * accepts a sign, takes the digits that follow and ignores the rest. `std::stoi` returns `2` for
-   * `"2x"`, `" 2"` and `"+2"` alike, so KIS's `2026092x` and `202609 2`, and Toss's `2026-09-2x`
-   * and `2026-09- 2`, all become 2026-09-02 -- a real date that is not the one on the wire.
-   *
-   * Three outcomes, and only two of them are visible:
-   *
-   * - a component with **no convertible number at all** (`"x2"`, `"+x"`, empty, all spaces) throws,
-   *   and the request fails;
-   * - a component that parses to an impossible day yields **empty** where the caller holds an
-   *   optional, so a published date looks absent;
-   * - anything else is **accepted silently**, at whatever value the leading digits gave.
+   * **A `Date` parsed from a broker string is not proof the broker sent that date** -- in one
+   * remaining reader. `std::stoi` skips leading whitespace, accepts a sign, takes the digits that
+   * follow and ignores the rest, so it returns `2` for `"2x"`, `" 2"` and `"+2"` alike, and a
+   * fixed-width field split into components and handed to it becomes a real date that is not the one
+   * on the wire. The instrument dates of all three adapters and Toss's calendar bounds now read
+   * every character as a digit first, so a malformed value there is unreadable rather than
+   * different. **KIS's trading-calendar reader (`bass_dt`) still uses `std::stoi`**, so `2026092x`
+   * becomes 2026-09-02 there: `plan/todo/kis-calendar-date-prefix.md`.
    */
   int year_{0};
   /** The month, `1`-`12`. Zero means unset. */

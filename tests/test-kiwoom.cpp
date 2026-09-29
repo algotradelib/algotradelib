@@ -1084,6 +1084,41 @@ TEST_CASE("recent executions stop at the count asked for", "[kiwoom][market-data
   REQUIRE(prints.value().front().exchange_time_);
 }
 
+TEST_CASE("Kiwoom reads a listing date as stated, not stated, or unreadable", "[kiwoom][reference]") {
+  const auto parse = [](std::string_view reg_day) {
+    return kiwoom::KiwoomClientTestAccess::instrument(
+      samsung(),
+      ok_body(
+        std::string(R"({"return_code":0,"code":"005930","name":"x","marketCode":"0",)") +
+        R"("auditInfo":"정상","listCount":"0000000026034239")" +
+        (reg_day.empty() ? std::string() : std::string(R"(,"regDay":)") + std::string(reg_day)) + "}"
+      )
+    );
+  };
+  using State = StatedDate::State;
+
+  const auto read = parse(R"("20090803")");
+  REQUIRE(read);
+  CHECK(read.value().listed_on_ == StatedDate::stated(Date{2009, 8, 3}));
+
+  for (const auto* blank : {"", R"("")", "null"}) {
+    const auto result = parse(blank);
+    REQUIRE(result);
+    CHECK(result.value().listed_on_.state() == State::NOT_STATED);
+  }
+
+  // Unlike KIS, a zero date is damage here: nothing in Kiwoom's specification uses one as a blank.
+  // And a number is a date stated in a form nothing here reads, not a date withheld.
+  for (const auto* damaged : {R"("00000000")", R"("2009083x")", R"("20091332")", "20090803"}) {
+    const auto result = parse(damaged);
+    REQUIRE(result);
+    CHECK(result.value().listed_on_.state() == State::UNREADABLE);
+    CHECK(result.value().currency_ == Currency::krw());
+  }
+  // Kiwoom publishes no delisting date at all.
+  CHECK(read.value().delisted_on_.state() == State::NOT_STATED);
+}
+
 TEST_CASE("reference data normalizes Kiwoom's market code", "[kiwoom][reference]") {
   auto listed = kiwoom::KiwoomClientTestAccess::instrument(
     samsung(),
@@ -1097,8 +1132,7 @@ TEST_CASE("reference data normalizes Kiwoom's market code", "[kiwoom][reference]
   CHECK(listed.value().segment_.known_ == MarketSegment::Known::KOSPI);
   CHECK(listed.value().status_ == InstrumentStatus::ACTIVE);
   CHECK(listed.value().shares_outstanding_ == Decimal64(26034239, 0));
-  REQUIRE(listed.value().listed_on_);
-  CHECK(listed.value().listed_on_->year_ == 2009);
+  CHECK(listed.value().listed_on_ == StatedDate::stated(Date{2009, 8, 3}));
 
   auto kosdaq = kiwoom::KiwoomClientTestAccess::instrument(
     samsung(), ok_body(R"({"return_code":0,"name":"x","marketCode":"10","auditInfo":"관리종목"})")

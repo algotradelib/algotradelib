@@ -18,6 +18,7 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <type_traits>
 #include <string>
 #include <vector>
 
@@ -4046,8 +4047,8 @@ TEST_CASE("instrument reference data normalizes from both brokers") {
     REQUIRE(instrument.type_ == SecurityType::STOCK);
     REQUIRE(instrument.status_ == InstrumentStatus::ACTIVE);
     REQUIRE(instrument.common_share_);
-    REQUIRE(instrument.listed_on_ == Date{1996, 12, 26});
-    REQUIRE_FALSE(instrument.delisted_on_.has_value());
+    REQUIRE(instrument.listed_on_ == StatedDate::stated(Date{1996, 12, 26}));
+    REQUIRE(instrument.delisted_on_.state() == StatedDate::State::NOT_STATED);
     REQUIRE(*instrument.shares_outstanding_ == Decimal64::parse("728002365"));
 
     // The grid is the library's own, because no broker publishes tick size, and this
@@ -4093,8 +4094,8 @@ TEST_CASE("instrument reference data normalizes from both brokers") {
     REQUIRE(result.value().isin_ == "KR7000660001");
 
     // KIS reports a listing date per market and blanks the ones that do not apply.
-    REQUIRE(result.value().listed_on_ == Date{1996, 12, 26});
-    REQUIRE_FALSE(result.value().delisted_on_.has_value());
+    REQUIRE(result.value().listed_on_ == StatedDate::stated(Date{1996, 12, 26}));
+    REQUIRE(result.value().delisted_on_.state() == StatedDate::State::NOT_STATED);
 
     // KIS publishes no listing status, and one is not inferred from a date.
     REQUIRE(result.value().status_ == InstrumentStatus::UNKNOWN);
@@ -4112,7 +4113,7 @@ TEST_CASE("instrument reference data normalizes from both brokers") {
     );
     REQUIRE(result);
     REQUIRE(result.value().segment_.known_ == MarketSegment::Known::KOSDAQ);
-    REQUIRE(result.value().listed_on_ == Date{2017, 1, 1});
+    REQUIRE(result.value().listed_on_ == StatedDate::stated(Date{2017, 1, 1}));
   }
 
   SECTION("a KONEX listing keeps its own market code rather than a nearby one") {
@@ -4552,41 +4553,199 @@ TEST_CASE(
   }
 }
 
+namespace stated_date_break {
+
+template <typename T, typename = void>
+struct testable_as_bool : std::false_type {};
+template <typename T>
+struct testable_as_bool<T, std::void_t<decltype(static_cast<bool>(std::declval<const T&>()))>>
+: std::true_type {};
+
+template <typename T, typename = void>
+struct dereferenceable : std::false_type {};
+template <typename T>
+struct dereferenceable<T, std::void_t<decltype(*std::declval<const T&>())>> : std::true_type {};
+
+template <typename T, typename = void>
+struct comparable_with_date : std::false_type {};
+template <typename T>
+struct comparable_with_date<T, std::void_t<decltype(std::declval<const T&>() == std::declval<Date>())>>
+: std::true_type {};
+
+template <typename T, typename = void>
+struct orderable_with_date : std::false_type {};
+template <typename T>
+struct orderable_with_date<T, std::void_t<decltype(std::declval<const T&>() < std::declval<Date>())>>
+: std::true_type {};
+
+template <typename T, typename = void>
+struct has_value_member : std::false_type {};
+template <typename T>
+struct has_value_member<T, std::void_t<decltype(std::declval<const T&>().has_value())>>
+: std::true_type {};
+
+template <typename T, typename = void>
+struct exposes_date_member : std::false_type {};
+template <typename T>
+struct exposes_date_member<T, std::void_t<decltype(std::declval<const T&>().date_)>>
+: std::true_type {};
+
+} // namespace stated_date_break
+
+TEST_CASE("an instrument date cannot be read the way an optional was", "[core][reference]") {
+  // Every one of these is a spelling of the old reading, under which an unreadable delisting date
+  // read as "still listed". Pinned so a convenience operator added later is a failing test, not a
+  // quiet return of the defect.
+  using stated_date_break::comparable_with_date;
+  using stated_date_break::dereferenceable;
+  using stated_date_break::exposes_date_member;
+  using stated_date_break::has_value_member;
+  using stated_date_break::orderable_with_date;
+  using stated_date_break::testable_as_bool;
+  STATIC_REQUIRE_FALSE(testable_as_bool<StatedDate>::value);
+  STATIC_REQUIRE_FALSE(dereferenceable<StatedDate>::value);
+  STATIC_REQUIRE_FALSE(comparable_with_date<StatedDate>::value);
+  STATIC_REQUIRE_FALSE(orderable_with_date<StatedDate>::value);
+  STATIC_REQUIRE_FALSE(has_value_member<StatedDate>::value);
+  STATIC_REQUIRE_FALSE(std::is_convertible_v<std::optional<Date>, StatedDate>);
+  STATIC_REQUIRE_FALSE(std::is_convertible_v<Date, StatedDate>);
+  STATIC_REQUIRE_FALSE(std::is_convertible_v<StatedDate, std::optional<Date>>);
+  // And the payload is not reachable without naming the state: an unread `Date` is 0000-00-00,
+  // which orders before every real date.
+  STATIC_REQUIRE_FALSE(exposes_date_member<StatedDate>::value);
+  CHECK_THROWS_AS(StatedDate{}.date(), std::logic_error);
+  CHECK_THROWS_AS(StatedDate::unreadable().date(), std::logic_error);
+  CHECK(StatedDate::stated(Date{2020, 1, 2}).date() == Date{2020, 1, 2});
+}
+
+TEST_CASE("an instrument's dates rule a day out only from a date that was read", "[core][reference]") {
+  const Date listed{2010, 5, 3};
+  const Date delisted{2020, 7, 1};
+  const auto with = [](StatedDate list, StatedDate delist) {
+    Instrument instrument;
+    instrument.listed_on_ = list;
+    instrument.delisted_on_ = delist;
+    return instrument;
+  };
+  const auto stated = [](Date date) { return StatedDate::stated(date); };
+  const auto unreadable = StatedDate::unreadable();
+  const StatedDate absent;
+
+  // The boundaries, which a test of days well either side would not pin: the listing day itself is
+  // not ruled out, and the delisting day is.
+  CHECK(with(stated(listed), absent).dates_exclude(listed) == DateExclusion::NOT_EXCLUDED);
+  CHECK(with(stated(listed), absent).dates_exclude(Date{2010, 5, 2}) == DateExclusion::EXCLUDED);
+  CHECK(with(absent, stated(delisted)).dates_exclude(delisted) == DateExclusion::EXCLUDED);
+  CHECK(with(absent, stated(delisted)).dates_exclude(Date{2020, 6, 30}) == DateExclusion::NOT_EXCLUDED);
+  CHECK(with(stated(listed), stated(delisted)).dates_exclude(Date{2015, 1, 1}) == DateExclusion::NOT_EXCLUDED);
+
+  // A date that was read and rules the day out decides it, whatever the other date says.
+  CHECK(with(stated(listed), unreadable).dates_exclude(Date{2009, 1, 1}) == DateExclusion::EXCLUDED);
+  CHECK(with(unreadable, stated(delisted)).dates_exclude(Date{2021, 1, 1}) == DateExclusion::EXCLUDED);
+
+  // Otherwise an unreadable date might rule it out, and the answer says so.
+  CHECK(with(stated(listed), unreadable).dates_exclude(Date{2015, 1, 1}) == DateExclusion::UNREADABLE);
+  CHECK(with(unreadable, stated(delisted)).dates_exclude(Date{2015, 1, 1}) == DateExclusion::UNREADABLE);
+  CHECK(with(unreadable, absent).dates_exclude(Date{2015, 1, 1}) == DateExclusion::UNREADABLE);
+
+  // No dates rule nothing out -- which is not a statement that the instrument is listed.
+  CHECK(with(absent, absent).dates_exclude(Date{2015, 1, 1}) == DateExclusion::NOT_EXCLUDED);
+}
+
+TEST_CASE("KIS reads an instrument date as stated, not stated, or unreadable", "[core][reference][kis]") {
+  const auto parse = [](std::string_view listing) {
+    return kis::KisClientTestAccess::parse_instrument(
+      InstrumentId{Country::KR, Venue::COMBINED, "000660"},
+      json_response(
+        std::string(R"({"rt_cd":"0","output":{"mket_id_cd":"STK","scty_grp_id_cd":"ST",)") +
+        R"("std_pdno":"KR7000660001","prdt_name":"x","prdt_eng_name":"x",)" +
+        R"("scts_mket_lstg_dt":)" + std::string(listing) + R"(,"scts_mket_lstg_abol_dt":""}})"
+      )
+    );
+  };
+  using State = StatedDate::State;
+
+  const auto read = parse(R"("19961226")");
+  REQUIRE(read);
+  CHECK(read.value().listed_on_ == StatedDate::stated(Date{1996, 12, 26}));
+
+  // The sheet's own blank, JSON null, and the zero date the rest of the workbook uses as a blank.
+  for (const auto* blank : {R"("")", "null", R"("00000000")"}) {
+    const auto result = parse(blank);
+    REQUIRE(result);
+    CHECK(result.value().listed_on_.state() == State::NOT_STATED);
+  }
+
+  // The prefix case first, with its premise: `std::stoi` reads "2x" as 2, so the old reader
+  // produced 1996-12-02 here -- a different, valid date.
+  REQUIRE(std::stoi("2x") == 2);
+  for (const auto* damaged :
+       {R"("1996122x")", R"("1996-12-26")", R"("19961332")", R"("2024023")", R"("1996 226")", "19961226"}) {
+    const auto result = parse(damaged);
+    // The row survives: a damaged date costs nothing else in it.
+    REQUIRE(result);
+    CHECK(result.value().listed_on_.state() == State::UNREADABLE);
+    CHECK(result.value().currency_ == Currency::krw());
+    CHECK(result.value().price_rule_.kind_ != PriceRule::Kind::UNKNOWN);
+  }
+}
+
 TEST_CASE(
-  "Toss refuses an instrument whose stated listing date it cannot read",
+  "Toss records an instrument date it cannot read, and keeps the row",
   "[core][reference][toss]"
 ) {
   const auto hynix = InstrumentId{Country::KR, Venue::KRX, "000660"};
-  const auto parse = [&](std::string_view list, std::string_view delist) {
+  const auto parse = [&](std::string_view list, std::string_view delist, std::string_view status) {
     return tossinvest::TossClientTestAccess::parse_instrument(
       hynix,
       json_response(
         std::string(R"({"result":[{"symbol":"000660","name":"SK","englishName":"SK",)") +
         R"("isinCode":"KR7000660001","market":"KOSPI","securityType":"STOCK",)" +
-        R"("isCommonShare":true,"status":"ACTIVE","currency":"KRW",)" +
+        R"("isCommonShare":true,"status":")" + std::string(status) + R"(","currency":"KRW",)" +
         R"("listDate":)" + std::string(list) + R"(,"delistDate":)" + std::string(delist) +
         R"(,"sharesOutstanding":"728002365"}]})"
       )
     );
   };
+  const Date today{2026, 9, 29};
 
-  // `Instrument` has nowhere to record that a date arrived damaged, so the only honest answers are a
-  // date and a refusal. An empty `delisted_on_` reads as "not delisted", which is the permissive
-  // reading of an unreadable value that this branch exists to remove.
-  const auto damaged_delisting = parse(R"("1996-12-26")", R"("2026-13-01")");
-  REQUIRE_FALSE(damaged_delisting);
-  CHECK(damaged_delisting.error().broker_code_ == "invalid_reference_response");
+  // Slice 32 refused this read, because an empty `delisted_on_` read as "not delisted". That field
+  // can no longer be read that way, so the row survives -- currency and price grid included -- and
+  // the damage is recorded where the date would have been.
+  const auto damaged_delisting = parse(R"("1996-12-26")", R"("2026-13-01")", "ACTIVE");
+  REQUIRE(damaged_delisting);
+  CHECK(damaged_delisting.value().delisted_on_.state() == StatedDate::State::UNREADABLE);
+  CHECK(damaged_delisting.value().listed_on_ == StatedDate::stated(Date{1996, 12, 26}));
+  CHECK(damaged_delisting.value().currency_ == Currency::krw());
+  CHECK(damaged_delisting.value().price_rule_.kind_ != PriceRule::Kind::UNKNOWN);
+  CHECK(damaged_delisting.value().dates_exclude(today) == DateExclusion::UNREADABLE);
 
   // The numeric-prefix case read as the year 20 before the parser required digits.
-  const auto damaged_listing = parse(R"("19x6-12-26")", "null");
-  REQUIRE_FALSE(damaged_listing);
-  CHECK(damaged_listing.error().broker_code_ == "invalid_reference_response");
+  const auto damaged_listing = parse(R"("19x6-12-26")", "null", "ACTIVE");
+  REQUIRE(damaged_listing);
+  CHECK(damaged_listing.value().listed_on_.state() == StatedDate::State::UNREADABLE);
+  CHECK(damaged_listing.value().delisted_on_.state() == StatedDate::State::NOT_STATED);
+
+  // A value that is not a string at all is a date stated in a form nothing here reads.
+  const auto numeric = parse("19961226", "null", "ACTIVE");
+  REQUIRE(numeric);
+  CHECK(numeric.value().listed_on_.state() == StatedDate::State::UNREADABLE);
 
   // A stated date and an absent one are both ordinary answers, and null still means no delisting.
-  const auto sound = parse(R"("1996-12-26")", "null");
+  const auto sound = parse(R"("1996-12-26")", "null", "ACTIVE");
   REQUIRE(sound);
-  CHECK(sound.value().listed_on_ == Date{1996, 12, 26});
-  CHECK_FALSE(sound.value().delisted_on_);
+  CHECK(sound.value().listed_on_ == StatedDate::stated(Date{1996, 12, 26}));
+  CHECK(sound.value().delisted_on_.state() == StatedDate::State::NOT_STATED);
+  CHECK(sound.value().dates_exclude(today) == DateExclusion::NOT_EXCLUDED);
+
+  // Toss documents `null` as information not provided, so a scheduled listing with no dates makes
+  // no claim about being listed: the dates rule nothing out, and the status is what says it is not
+  // trading yet.
+  const auto scheduled = parse("null", "null", "SCHEDULED");
+  REQUIRE(scheduled);
+  CHECK(scheduled.value().listed_on_.state() == StatedDate::State::NOT_STATED);
+  CHECK(scheduled.value().dates_exclude(today) == DateExclusion::NOT_EXCLUDED);
+  CHECK(scheduled.value().status_ == InstrumentStatus::SCHEDULED);
 }
 
 TEST_CASE(

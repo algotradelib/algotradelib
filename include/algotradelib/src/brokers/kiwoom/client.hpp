@@ -492,6 +492,30 @@ inline std::optional<Date> compact_date(std::string_view text) {
   return is_valid_date(date) ? std::optional<Date>(date) : std::nullopt;
 }
 
+/**
+ * Reads a `YYYYMMDD` field that states a date or leaves it blank, as one of three answers.
+ *
+ * Reads the raw value rather than `text_field`, which maps every non-string to `""` and would so
+ * report a number as a date not stated. Not stated: absent, `null` or `""`. Stated: eight digits
+ * forming a real date. Unreadable: anything else -- **including `"00000000"`**, since nothing in
+ * Kiwoom's specification uses a zero date as a blank, and KIS's use of one says nothing about Kiwoom.
+ */
+inline StatedDate stated_compact_date(const json::object& row, std::string_view key) {
+  const auto value = row.if_contains(key);
+  if (!value || value->is_null()) {
+    return StatedDate{};
+  }
+  if (!value->is_string()) {
+    return StatedDate::unreadable();
+  }
+  const std::string_view text(value->as_string());
+  if (text.empty()) {
+    return StatedDate{};
+  }
+  const auto date = compact_date(text);
+  return date ? StatedDate::stated(*date) : StatedDate::unreadable();
+}
+
 /** Renders a calendar date as Kiwoom's `YYYYMMDD`. */
 inline std::string compact_text(const Date& date) {
   std::string text(8, '0');
@@ -1890,7 +1914,7 @@ private:
       subject.type_ = SecurityType::STOCK;
       subject.status_ = kiwoom_status(detail::text_field(row, "auditInfo"));
       subject.shares_outstanding_ = positive(detail::magnitude(row, "listCount"));
-      subject.listed_on_ = detail::compact_date(detail::text_field(row, "regDay"));
+      subject.listed_on_ = detail::stated_compact_date(row, "regDay");
       subject.price_rule_ = price_rule_for(subject.id_.country_, subject.type_);
       return Result<Instrument>(std::move(subject));
     } catch (const std::exception& exception) {
