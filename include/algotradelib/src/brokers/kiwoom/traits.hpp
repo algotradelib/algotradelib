@@ -700,18 +700,27 @@ struct BrokerTraits<kiwoom::KiwoomClient>
    * Refuses before any I/O while the scope is unstated -- see `refuse_holdings`, which is the
    * behaviour this adapter shipped with and stays the default. An assertion is what turns it on, and
    * `KiwoomConfig::holdings_position_scope_` documents that asserting is not knowing.
+   *
+   * The refusal is posted to the client's strand and then dispatched on the handler's own
+   * executor, which is the path every other completion of this client takes. Posting to the
+   * handler's executor directly does not compile once it is Asio's `inline_executor` -- the default
+   * a handler naming no executor carries in recent Boost, and what `BrokerSession` binds a plain
+   * callback to -- and posting to `system_executor` instead would complete outside the
+   * `io_context` running this client, which does not count it as work.
    */
   template <typename Token>
   static auto holdings(Client& client, const Account& account, Token&& token) {
     if (client.config().holdings_position_scope_ == kiwoom::KiwoomPositionScope::UNSPECIFIED) {
       static_cast<void>(account);
       return net::async_initiate<Token, void(Result<HoldingsSnapshot>)>(
-        [](auto&& handler) mutable {
-          auto executor = net::get_associated_executor(handler, net::system_executor());
+        [strand = client.get_executor()](auto&& handler) mutable {
           net::post(
-            executor,
+            strand,
             [handler = std::forward<decltype(handler)>(handler)]() mutable {
-              std::move(handler)(refuse_holdings());
+              auto executor = net::get_associated_executor(handler);
+              net::dispatch(executor, [handler = std::move(handler)]() mutable {
+                std::move(handler)(refuse_holdings());
+              });
             }
           );
         },

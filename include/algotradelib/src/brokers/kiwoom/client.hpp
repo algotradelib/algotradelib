@@ -1088,6 +1088,15 @@ public:
    */
   const KiwoomConfig& config() const noexcept { return config_; }
 
+  /**
+   * Returns the strand every completion of this client is initiated from.
+   *
+   * Exposed for the port's one completion that performs no I/O -- the holdings refusal while the
+   * scope is unstated -- so it is posted where every other completion of this client starts, and an
+   * `io_context` running this client counts it as outstanding work.
+   */
+  net::strand<net::any_io_executor> get_executor() const noexcept { return strand_; }
+
   /** Requests every holding, paging `kt00018` 계좌평가잔고내역요청. */
   template <typename CompletionToken>
   auto async_holdings(KiwoomAccount account, CompletionToken&& token) {
