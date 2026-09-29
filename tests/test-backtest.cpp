@@ -5365,3 +5365,123 @@ TEST_CASE("a replay releases a deferred target only after the whole update batch
     CHECK(execution.fill_.side_ == OrderSide::BUY);
   }
 }
+
+TEST_CASE("a marketable limit is credited the bar's worst price, not a limit the bar never reached", "[limit-bounds]") {
+  const backtest::NextBarFillModel model;
+  // A buy limited at 72,000 against a bar whose high is 71,000: every price of the bar satisfied it,
+  // and `AT_LIMIT` credited 72,000 -- a price nobody traded.
+  const auto buy = model.decide(
+    order_of(OrderSide::BUY, "10", OrderType::LIMIT, "72000"),
+    ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date()
+  );
+  REQUIRE(buy.execution_);
+  CHECK(buy.execution_->fill_.price_ == Decimal64::parse("71000"));
+  CHECK(buy.bounded_);
+
+  const auto sell = model.decide(
+    order_of(OrderSide::SELL, "10", OrderType::LIMIT, "68000"),
+    ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date()
+  );
+  REQUIRE(sell.execution_);
+  CHECK(sell.execution_->fill_.price_ == Decimal64::parse("69000"));
+  CHECK(sell.bounded_);
+
+  // A limit the bar reached from the far side was already credited inside the bar: unchanged.
+  const auto reached = model.decide(
+    order_of(OrderSide::BUY, "10", OrderType::LIMIT, "69500"),
+    ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date()
+  );
+  REQUIRE(reached.execution_);
+  CHECK(reached.execution_->fill_.price_ == Decimal64::parse("69500"));
+  CHECK_FALSE(reached.bounded_);
+}
+
+TEST_CASE("the better open is still credited where the bar allows it", "[limit-bounds]") {
+  const backtest::NextBarFillModel model(
+    backtest::CommissionModel::none(),
+    backtest::SlippageModel::none(),
+    backtest::LimitFillPrice::AT_OPEN_IF_BETTER
+  );
+  const auto buy = model.decide(
+    order_of(OrderSide::BUY, "10", OrderType::LIMIT, "72000"),
+    ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date()
+  );
+  REQUIRE(buy.execution_);
+  CHECK(buy.execution_->fill_.price_ == Decimal64::parse("70000"));
+  CHECK_FALSE(buy.bounded_);
+}
+
+TEST_CASE("slippage never carries a limit fill through its limit or out of its bar", "[limit-bounds]") {
+  const backtest::NextBarFillModel slipping(
+    backtest::CommissionModel::none(),
+    backtest::SlippageModel::of_basis_points(Decimal64::parse("10"))
+  );
+  // Credited its 70,000 limit, which the bar's 71,000 high reached; ten basis points would record
+  // 69,930 for a sell limited at 70,000.
+  const auto held = slipping.decide(
+    order_of(OrderSide::SELL, "10", OrderType::LIMIT, "70000"),
+    ohlc("69500", "71000", "69000", "70500"), krx_grid(), fill_date()
+  );
+  REQUIRE(held.execution_);
+  CHECK(held.execution_->fill_.price_ == Decimal64::parse("70000"));
+  CHECK(held.execution_->slippage_ == Decimal64::parse("0"));
+  CHECK(held.bounded_);
+
+  // Where the bar leaves room, it still slips: a buy limited at 72,000 credited the 70,000 open under
+  // `AT_OPEN_IF_BETTER` moves 70 won against it and stays inside the bar and the limit.
+  const backtest::NextBarFillModel roomy(
+    backtest::CommissionModel::none(),
+    backtest::SlippageModel::of_basis_points(Decimal64::parse("10")),
+    backtest::LimitFillPrice::AT_OPEN_IF_BETTER
+  );
+  const auto moved = roomy.decide(
+    order_of(OrderSide::BUY, "10", OrderType::LIMIT, "72000"),
+    ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date()
+  );
+  REQUIRE(moved.execution_);
+  CHECK(moved.execution_->fill_.price_ == Decimal64::parse("70070"));
+  CHECK_FALSE(moved.bounded_);
+
+  // A market order is not a limit and is not bounded: it slips from the open as it always has.
+  const auto market = slipping.decide(
+    order_of(OrderSide::SELL, "10"), ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date()
+  );
+  REQUIRE(market.execution_);
+  CHECK(market.execution_->fill_.price_ == Decimal64::parse("69930"));
+  CHECK_FALSE(market.bounded_);
+}
+
+namespace {
+
+/** Buys ten with a limit far above the market on the first bar. */
+struct BuysThroughTheMarket {
+  bool sent_{false};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (sent_) {
+      return;
+    }
+    sent_ = true;
+    ctx.submit(strategy::OrderIntent::limit(
+      bar.instrument_,
+      OrderSide::BUY,
+      strategy::SizeSpec::quantity(Decimal64::parse("10")),
+      *strategy::Price::checked(Decimal64::parse("75000"), PriceRule::krx_equity())
+    ));
+  }
+};
+
+} // namespace
+
+TEST_CASE("a replay counts the limit fills its bars bounded", "[limit-bounds]") {
+  backtest::Backtester<BuysThroughTheMarket> engine(BuysThroughTheMarket{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "71000"));
+  engine.finish();
+
+  REQUIRE(engine.result().executions_.size() == 1);
+  CHECK(engine.result().executions_[0].fill_.price_ == Decimal64::parse("71000"));
+  CHECK(engine.result().limit_fills_bounded_ == 1);
+  CHECK(backtest::summarize(engine.result(), engine.fills()).caveats_.limit_fills_bounded_ == 1);
+}

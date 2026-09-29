@@ -272,6 +272,16 @@ struct ReportCaveats {
    * credited a price inside its bar and never through its limit, slippage included.
    */
   std::size_t stop_fills_intrabar_{0};
+  /**
+   * Limit-basis fills whose credit was moved onto the bar or back to the limit.
+   *
+   * A limit is credited the worst price its bar traded that the limit allows: a buy no higher than the
+   * lesser of the bar's high and its limit, a sell no lower than the greater of the low and its limit.
+   * `AT_LIMIT` credits the limit itself, which lies outside the bar whenever the limit was marketable
+   * through all of it, and slippage can carry any credit out of the bar or through the limit. Each
+   * count is a fill whose recorded price the bar, not the configuration, decided. Appended.
+   */
+  std::size_t limit_fills_bounded_{0};
 };
 
 /** What a replay produced, with every figure's absence meaning what `analytics` says it means. */
@@ -435,6 +445,7 @@ inline Report summarize(
   report.caveats_.unfilled_ = result.unfilled_;
   report.caveats_.stop_releases_ = result.stop_releases_;
   report.caveats_.stop_fills_intrabar_ = result.stop_fills_intrabar_;
+  report.caveats_.limit_fills_bounded_ = result.limit_fills_bounded_;
   report.caveats_.quotes_ = result.quotes_;
   report.caveats_.unchecked_fill_causality_ = result.unchecked_fill_causality_;
   report.caveats_.unvalued_bars_ = result.unvalued_bars_;

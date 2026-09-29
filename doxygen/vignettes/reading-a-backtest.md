@@ -63,7 +63,8 @@ next bar, and inventing one would be inventing data.
 | Market order | fills at the next bar's open | the only price the next bar states before trading |
 | Buy limit | fills if the bar's low reached it | a bar that never touched the price is one the order sat through |
 | Sell limit | fills if the bar's high reached it | the same, mirrored |
-| Limit price | **at the limit, never better** | see below |
+| Limit price | **at the limit, never better** — but never outside the bar: a limit marketable through the whole bar is credited the bar's worst price (a buy its high, a sell its low) | see below; a price the bar never showed is not a fill |
+| Slippage on a limit | never carries the fill through its limit or out of its bar | a limit order that could only have traded worse did not trade worse; `caveats_.limit_fills_bounded_` counts both |
 | Missed limit | stays queued | discarding it would turn every limit into fill-or-kill |
 
 **The limit-price choice is the one to understand.** A bar opening at 69,000 through a buy limit of
@@ -85,7 +86,7 @@ make. Whichever you use, `report.caveats_.limit_fill_` says which.
 | Released inside the bar, limit marketable at the trigger | fills on that bar at **the worst price the bar traded that the limit allows** — a sell the higher of its limit and the low, a buy the lower of its limit and the high | the price at release was the trigger; crediting the limit itself could name a price the bar never reached |
 | Released inside the bar, limit not marketable there | fills at the limit on that bar only if the **close** is at or through it, else rests from the next bar | the close is the one price known to come after the release |
 | A bar with no open | a release is always "inside the bar" | a close cannot stand in for an open the bar did not state |
-| Slippage | never carries a stop fill out of its bar or through its limit | a limit order that could only have traded worse did not trade |
+| Slippage | never carries a stop fill out of its bar or through its limit — the same bound as a plain limit | a limit order that could only have traded worse did not trade |
 
 `caveats_.stop_fills_intrabar_` counts the fills that relied on a release inside the bar. Each assumes
 the price moved continuously through the trigger; a jump past both trigger and limit would have left
