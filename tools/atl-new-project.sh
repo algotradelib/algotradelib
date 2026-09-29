@@ -178,7 +178,7 @@ GITEOF
 cat > "$TARGET/README.md" <<MDEOF
 # $NAME
 
-A strategy built on [algotradelib](https://github.com/), replayed beside the library's own.
+A strategy built on [algotradelib](https://github.com/ygeunkim/algotradelib), replayed beside the library's own.
 
 ## Build and run
 
