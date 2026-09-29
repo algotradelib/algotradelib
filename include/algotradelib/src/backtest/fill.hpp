@@ -235,6 +235,26 @@ public:
     }
     auto slipped = slippage_.apply(*reference, order.side_, rule);
     if (slipped && bound) {
+      // **The other side too.** `SlippageModel` accepts a negative figure, which moves a fill in the
+      // order's favour -- and past the bar's opposite extreme it is a price the bar never showed, the
+      // same as one pushed past the limit. Held at that extreme, with the move recorded as it was.
+      const auto& ceiling = order.side_ == OrderSide::SELL ? next.bar_.high_ : next.bar_.low_;
+      const bool past = order.side_ == OrderSide::SELL ?
+        decimal_less(ceiling, slipped->first) :
+        decimal_less(slipped->first, ceiling);
+      if (past) {
+        const auto moved = order.side_ == OrderSide::SELL ?
+          decimal_subtract(*reference, ceiling) :
+          decimal_subtract(ceiling, *reference);
+        if (!moved) {
+          slipped.reset();
+        } else {
+          slipped->first = ceiling;
+          slipped->second = *moved;
+        }
+      }
+    }
+    if (slipped && bound) {
       const bool beyond = order.side_ == OrderSide::SELL ?
         decimal_less(slipped->first, *bound) :
         decimal_less(*bound, slipped->first);

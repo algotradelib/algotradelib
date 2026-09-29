@@ -1296,12 +1296,39 @@ private:
   /** Collects what a runner pass reported, so a replay ends with the whole picture. */
   template <typename Report>
   void drain_reports(const Report& report) {
+    collect(report);
+    settle_deferred();
+  }
+
+  /** Adds a pass's refusals to the result. */
+  template <typename Report>
+  void collect(const Report& report) {
     for (const auto& rejection : report.rejected_) {
       result_.rejected_.push_back(rejection);
     }
     for (const auto& refusal : report.refused_) {
       result_.refused_.push_back(refusal);
     }
+  }
+
+  /**
+   * Settles a target the runner deferred behind a stop, as soon as this replay has withdrawn the stop.
+   *
+   * **A replay's withdrawal is synchronous**: `QueueingExecutor::cancel` removes the stop from the
+   * queue before the pass that asked for it returns. Waiting for the next bar's portfolio to show that
+   * would place the flatten a bar late and fill it two bars late -- a delay the live path, whose
+   * cancellation can be confirmed between bars, does not have. So after every pass the replay shows
+   * the runner its book as it now stands and lets it release from that one snapshot: this ledger is the
+   * broker, so the stop's absence and the holding after it are known together. See
+   * `Runner::retry_deferred_on_one_snapshot`. An order placed here waits for the next bar like any
+   * other, which is the lookahead rule.
+   */
+  void settle_deferred() {
+    if (runner_.deferred_targets().empty()) {
+      return;
+    }
+    install_portfolio();
+    collect(runner_.retry_deferred_on_one_snapshot());
   }
 
   ReplayConfig config_;

@@ -5202,3 +5202,75 @@ TEST_CASE("a released stop stays released on the bars after", "[trigger]") {
   CHECK(engine.result().stop_releases_ == 1);
   CHECK(engine.result().stop_fills_intrabar_ == 0);
 }
+
+namespace {
+
+/** Enters on bar 1, protects on bar 2, and states a flatten exactly once, on bar 3. */
+struct FlattensOnce {
+  int bars_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ++bars_;
+    if (bars_ == 1) {
+      strategy::TargetPosition entry;
+      entry.instrument_ = bar.instrument_;
+      entry.target_quantity_ = Decimal64::parse("10");
+      ctx.submit(entry);
+    } else if (bars_ == 2) {
+      ctx.submit(strategy::OrderIntent::stop_limit(
+        bar.instrument_,
+        OrderSide::SELL,
+        strategy::SizeSpec::quantity(Decimal64::parse("10")),
+        *strategy::Price::checked(Decimal64::parse("66500"), PriceRule::krx_equity()),
+        *strategy::Price::checked(Decimal64::parse("66000"), PriceRule::krx_equity())
+      ));
+    } else if (bars_ == 3) {
+      strategy::TargetPosition flat;
+      flat.instrument_ = bar.instrument_;
+      flat.target_quantity_ = Decimal64::parse("0");
+      flat.tag_ = "flat";
+      ctx.submit(flat);
+    }
+  }
+};
+
+} // namespace
+
+TEST_CASE("a replay's deferred flatten goes the bar its stop is withdrawn", "[trigger]") {
+  // **Codex round 2's first blocker.** The replay withdraws a stop synchronously, so the flatten the
+  // runner deferred behind it is placed in the same bar and fills on the next -- stated once, with no
+  // restatement to lean on. Waiting for the next bar's portfolio filled it a bar later than live.
+  backtest::Backtester<FlattensOnce> engine(FlattensOnce{}, replay_config());
+  engine.feed(stop_bar(10, "70000", "70000", "70000", "70000"));
+  engine.feed(stop_bar(11, "70000", "70000", "70000", "70000"));
+  engine.feed(stop_bar(12, "70000", "70000", "70000", "70000"));
+  REQUIRE(engine.result().executions_.size() == 1);
+  engine.feed(stop_bar(13, "71000", "71000", "71000", "71000"));
+  engine.finish();
+
+  REQUIRE(engine.result().executions_.size() == 2);
+  CHECK(engine.result().executions_[1].fill_.side_ == OrderSide::SELL);
+  CHECK(engine.result().executions_[1].fill_.tag_ == "flat");
+  CHECK(engine.result().executions_[1].fill_.price_ == Decimal64::parse("71000"));
+}
+
+TEST_CASE("negative slippage never lifts a stop fill past its bar", "[trigger]") {
+  // **Codex round 2's second blocker.** `SlippageModel` accepts a negative figure, which moves a fill
+  // in the order's favour; past the bar's opposite extreme that is a price the bar never showed.
+  const backtest::NextBarFillModel generous(
+    backtest::CommissionModel::none(),
+    backtest::SlippageModel::of_basis_points(Decimal64::parse("-1000"))
+  );
+  const auto sell = generous.decide(
+    sell_stop("69500", "68000"), ohlc("69200", "69400", "69000", "69100"), krx_grid(), fill_date()
+  );
+  REQUIRE(sell.execution_);
+  CHECK(sell.execution_->fill_.price_ == Decimal64::parse("69400"));
+
+  const auto buy = generous.decide(
+    buy_stop("70500", "72000"), ohlc("70800", "71000", "70600", "70900"), krx_grid(), fill_date()
+  );
+  REQUIRE(buy.execution_);
+  CHECK(buy.execution_->fill_.price_ == Decimal64::parse("70600"));
+}
