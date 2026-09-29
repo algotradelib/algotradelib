@@ -30,8 +30,20 @@ disagree about what a broker response means.
 Binding a broker is a `BrokerTraits<Client>` specialization, which lives in that
 broker's own directory. Core headers include no broker header, and adding a
 broker edits no shared file — `tests/mock_broker.hpp` adds a third broker
-entirely within itself. `ATL_ASSERT_BROKER(Client)` reports a missing trait
-member by name.
+entirely within itself. Two checks tell an adapter author their traits are
+complete, and they answer different questions:
+
+- `ATL_ASSERT_BROKER(Client)` runs whenever a session is built. It names a missing
+  member in its own words: a mandatory type or thunk, any capability constant left
+  unanswered, and any capability claimed with nothing behind it. A blocking facade's
+  thunks are checked in the shape its session calls them; an asynchronous client's
+  **by name only**, because the handler a session passes is built around the
+  caller's, and no stand-in can model every caller's executor or a move-only one.
+- `ATL_ASSERT_BROKER_VERBS(Client)` calls every verb the capabilities claim,
+  through the real session, with a plain, a move-only and a `use_future` token, and
+  fails the build if one does not compile. Assert it once in any source file of the
+  adapter's own — a test is the natural place — or a wrong-signature thunk for a
+  capability nobody calls yet is found by the first caller instead.
 
 ## Order identity
 

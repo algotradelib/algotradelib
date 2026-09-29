@@ -3,3 +3,4 @@
 #include "src/core/broker_caps.hpp"
 #include "src/core/broker_session.hpp"
 #include "src/core/broker_traits.hpp"
+#include "src/core/broker_verbs.hpp"

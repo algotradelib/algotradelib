@@ -355,10 +355,19 @@ struct listed_items<Result<Items>> {
 namespace account_rows {
 
 using std::begin;
+using std::end;
 
-/** The row `to_account_info` binds, `const auto& item : raw.value()`, found as a range-for finds it. */
+/**
+ * The row `to_account_info` binds, `const auto& item : raw.value()`, found as a range-for finds it --
+ * and declared only where the whole loop is well-formed: `begin`, `end`, the comparison between
+ * them, the increment and the dereference.
+ */
 template <typename Items>
-auto row_of(Items& items) -> const std::remove_reference_t<decltype(*begin(items))>&;
+auto row_of(Items& items) -> decltype(
+  static_cast<void>(begin(items) != end(items)),
+  static_cast<void>(++std::declval<decltype(begin(items))&>()),
+  std::declval<const std::remove_reference_t<decltype(*begin(items))>&>()
+);
 
 }  // namespace account_rows
 

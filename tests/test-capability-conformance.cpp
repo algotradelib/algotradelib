@@ -19,179 +19,17 @@
 
 using namespace algotradelib;
 
-namespace {
-
-/** A completion handler naming no executor, which is what a plain callback is. */
-struct PlainCallback {
-  /** Accepts and discards any completion argument. */
-  template <typename T>
-  void operator()(T) const {}
-};
-
-/** A plain callback that cannot be copied, which a thunk that copies its token would not accept. */
-struct MoveOnlyCallback {
-  MoveOnlyCallback() = default;
-  MoveOnlyCallback(MoveOnlyCallback&&) = default;
-  MoveOnlyCallback& operator=(MoveOnlyCallback&&) = default;
-  MoveOnlyCallback(const MoveOnlyCallback&) = delete;
-  MoveOnlyCallback& operator=(const MoveOnlyCallback&) = delete;
-
-  /** Accepts and discards any completion argument. */
-  template <typename T>
-  void operator()(T) {}
-};
-
-/** Returns the instrument used throughout these probes. */
-InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
-
-/**
- * Calls every verb an asynchronous session's capabilities claim, with a fresh `Token` each time.
- *
- * Never run. It is explicitly instantiated below, which compiles every call it makes, so a claimed
- * capability whose verb does not compile for this client and this token shape fails the build of
- * this file. It is also the only check of an asynchronous thunk's *signature*: `BrokerConformance`
- * detects those by name, because the handler a session passes is the caller's to choose. That is the whole test: a verb inside an `if constexpr` of a member template is never
- * compiled until something calls it, and before this file nothing called most of them.
- */
-template <typename Client, typename Token>
-void call_every_claimed_verb(
-  BrokerSession<Client>& session, typename BrokerSession<Client>::Ref ref, Token
-) {
-  // A fresh token per call, so a move-only one is moved into each verb rather than copied.
-  using Caps = BrokerCaps<Client>;
-  session.async_quote(samsung(), Token{});
-  session.async_holdings(Token{});
-  session.async_bars(BarQuery{}, Token{});
-  session.async_place(OrderRequest{}, Token{});
-  session.async_replace(ref, AmendInstruction{}, Token{});
-  session.async_cancel(ref, AmendInstruction{}, Token{});
-  session.async_order_history(OrderHistoryQuery{}, Token{});
-  if constexpr (Caps::has_buying_power) {
-    session.async_buying_power(Currency{}, Token{});
-  }
-  if constexpr (Caps::sellable_source == SellableSource::INQUIRY) {
-    session.async_sellable_quantity(samsung(), Token{});
-  }
-  if constexpr (Caps::has_commission_schedule) {
-    session.async_commissions(Token{});
-  }
-  if constexpr (Caps::has_working_orders) {
-    session.async_working_orders(Token{});
-  }
-  if constexpr (Caps::has_reference_data) {
-    session.async_instrument(samsung(), Token{});
-  }
-  if constexpr (Caps::has_calendar) {
-    session.async_calendar(Country::KR, std::nullopt, Token{});
-  }
-  if constexpr (Caps::has_price_limits) {
-    session.async_price_limits(samsung(), Token{});
-  }
-  if constexpr (Caps::has_trade_prints) {
-    session.async_trades(samsung(), 1, Token{});
-  }
-  if constexpr (Caps::has_batch_prices) {
-    session.async_prices(std::vector<InstrumentId>{samsung()}, Token{});
-  }
-  if constexpr (Caps::has_depth) {
-    session.async_depth(samsung(), Token{});
-  }
-  if constexpr (Caps::has_order_by_id) {
-    session.async_order(ref, Token{});
-  }
-  if constexpr (Caps::has_account_discovery) {
-    async_accounts(session.client(), Token{});
-  }
-}
-
-/** The blocking counterpart: every verb a blocking session's capabilities claim. */
-template <typename Client>
-void call_every_claimed_blocking_verb(
-  BlockingSession<Client>& session, const typename BlockingSession<Client>::Ref& ref
-) {
-  using Caps = BrokerCaps<Client>;
-  static_cast<void>(session.quote(samsung()));
-  static_cast<void>(session.holdings());
-  static_cast<void>(session.bars(BarQuery{}));
-  static_cast<void>(session.place(OrderRequest{}));
-  static_cast<void>(session.replace(ref, AmendInstruction{}));
-  static_cast<void>(session.cancel(ref, AmendInstruction{}));
-  static_cast<void>(session.order_history(OrderHistoryQuery{}));
-  if constexpr (Caps::has_buying_power) {
-    static_cast<void>(session.buying_power(Currency{}));
-  }
-  if constexpr (Caps::sellable_source == SellableSource::INQUIRY) {
-    static_cast<void>(session.sellable_quantity(samsung()));
-  }
-  if constexpr (Caps::has_commission_schedule) {
-    static_cast<void>(session.commissions());
-  }
-  if constexpr (Caps::has_working_orders) {
-    static_cast<void>(session.working_orders());
-  }
-  if constexpr (Caps::has_reference_data) {
-    static_cast<void>(session.instrument(samsung()));
-  }
-  if constexpr (Caps::has_calendar) {
-    static_cast<void>(session.calendar(Country::KR));
-  }
-  if constexpr (Caps::has_price_limits) {
-    static_cast<void>(session.price_limits(samsung()));
-  }
-  if constexpr (Caps::has_trade_prints) {
-    static_cast<void>(session.trades(samsung(), 1));
-  }
-  if constexpr (Caps::has_batch_prices) {
-    static_cast<void>(session.prices(std::vector<InstrumentId>{samsung()}));
-  }
-  if constexpr (Caps::has_depth) {
-    static_cast<void>(session.depth(samsung()));
-  }
-  if constexpr (Caps::has_order_by_id) {
-    static_cast<void>(session.order(ref));
-  }
-  if constexpr (Caps::has_account_discovery) {
-    static_cast<void>(session.accounts());
-    static_cast<void>(list_accounts(session.client()));
-  }
-}
-
-// Every shipped asynchronous client, with both a plain callback and a token that names an executor.
-// The plain callback is the shape no other test used: under a Boost whose default associated
-// executor is `inline_executor`, it is what exposed Kiwoom's holdings refusal.
-#define ATL_INSTANTIATE_ASYNC(CLIENT, TOKEN)                                             \
-  template void call_every_claimed_verb<CLIENT, TOKEN>(                                  \
-    BrokerSession<CLIENT>&, BrokerSession<CLIENT>::Ref, TOKEN                            \
-  )
-
-ATL_INSTANTIATE_ASYNC(kis::KisClient, PlainCallback);
-ATL_INSTANTIATE_ASYNC(kis::KisClient, MoveOnlyCallback);
-ATL_INSTANTIATE_ASYNC(kis::KisClient, boost::asio::use_future_t<>);
-ATL_INSTANTIATE_ASYNC(tossinvest::TossClient, PlainCallback);
-ATL_INSTANTIATE_ASYNC(tossinvest::TossClient, MoveOnlyCallback);
-ATL_INSTANTIATE_ASYNC(tossinvest::TossClient, boost::asio::use_future_t<>);
-ATL_INSTANTIATE_ASYNC(kiwoom::KiwoomClient, PlainCallback);
-ATL_INSTANTIATE_ASYNC(kiwoom::KiwoomClient, MoveOnlyCallback);
-ATL_INSTANTIATE_ASYNC(kiwoom::KiwoomClient, boost::asio::use_future_t<>);
-ATL_INSTANTIATE_ASYNC(mock::MockClient, PlainCallback);
-ATL_INSTANTIATE_ASYNC(mock::MockClient, MoveOnlyCallback);
-ATL_INSTANTIATE_ASYNC(mock::MockClient, boost::asio::use_future_t<>);
-
-#undef ATL_INSTANTIATE_ASYNC
-
-template void call_every_claimed_blocking_verb<kis::KisBlockingClient>(
-  BlockingSession<kis::KisBlockingClient>&, const BlockingSession<kis::KisBlockingClient>::Ref&
-);
-template void call_every_claimed_blocking_verb<tossinvest::TossBlockingClient>(
-  BlockingSession<tossinvest::TossBlockingClient>&,
-  const BlockingSession<tossinvest::TossBlockingClient>::Ref&
-);
-template void call_every_claimed_blocking_verb<kiwoom::KiwoomBlockingClient>(
-  BlockingSession<kiwoom::KiwoomBlockingClient>&,
-  const BlockingSession<kiwoom::KiwoomBlockingClient>::Ref&
-);
-
-} // namespace
+// Every shipped client, through the public check a third-party adapter author uses. The plain
+// callback is the shape no other test used: under a Boost whose default associated executor is
+// `inline_executor`, it is what exposed Kiwoom's holdings refusal; the move-only one proves no
+// shipped thunk copies its token.
+ATL_ASSERT_BROKER_VERBS(kis::KisClient);
+ATL_ASSERT_BROKER_VERBS(kis::KisBlockingClient);
+ATL_ASSERT_BROKER_VERBS(tossinvest::TossClient);
+ATL_ASSERT_BROKER_VERBS(tossinvest::TossBlockingClient);
+ATL_ASSERT_BROKER_VERBS(kiwoom::KiwoomClient);
+ATL_ASSERT_BROKER_VERBS(kiwoom::KiwoomBlockingClient);
+ATL_ASSERT_BROKER_VERBS(mock::MockClient);
 
 TEST_CASE("every verb a shipped client's capabilities claim compiles", "[port][conformance]") {
   // Checked by the explicit instantiations above; reaching this line means they compiled.
@@ -224,6 +62,7 @@ struct BlockingClaimsWithWrongArity {};
 struct RequiresTheInlineExecutor {};
 struct ExplicitRefusal {};
 struct AccountsWithoutValueType {};
+struct AccountsWithoutEnd {};
 struct AccountSelectorNotDefaultConstructible {};
 
 /** A refusal whose dereference converts to `BrokerError` only explicitly. */
@@ -251,6 +90,12 @@ struct AccountRow {
 struct AccountRange {
   const AccountRow* begin() const { return nullptr; }
   const AccountRow* end() const { return nullptr; }
+  std::size_t size() const { return 0; }
+};
+
+/** A listing with `begin` and `size` and no `end`, which a range-for cannot iterate. */
+struct AccountRangeWithoutEnd {
+  const AccountRow* begin() const { return nullptr; }
   std::size_t size() const { return 0; }
 };
 
@@ -432,6 +277,20 @@ struct BrokerTraits<conformance_fakes::AccountsWithoutValueType> {
   static int selector_of(const conformance_fakes::AccountRow&) { return 1; }
 };
 
+/** Account discovery over a range a range-for cannot iterate. */
+template <>
+struct BrokerTraits<conformance_fakes::AccountsWithoutEnd> {
+  using Account = int;
+  static constexpr bool blocking = true;
+  static constexpr bool has_account_discovery = true;
+  static Result<conformance_fakes::AccountRangeWithoutEnd> accounts(conformance_fakes::AccountsWithoutEnd&) {
+    return Result<conformance_fakes::AccountRangeWithoutEnd>(conformance_fakes::AccountRangeWithoutEnd{});
+  }
+  static std::string display_of(const conformance_fakes::AccountRow& row) { return row.number_; }
+  static std::string type_of(const conformance_fakes::AccountRow&) { return "cash"; }
+  static int selector_of(const conformance_fakes::AccountRow&) { return 1; }
+};
+
 /** Account discovery whose selector `AccountInfo` cannot default-construct. */
 template <>
 struct BrokerTraits<conformance_fakes::AccountSelectorNotDefaultConstructible> {
@@ -472,6 +331,8 @@ TEST_CASE("conformance checks the shape the session uses, not only that a member
   STATIC_REQUIRE_FALSE(port_detail::serves_account_discovery<BlockingAccountsWithoutRowNormalizers>);
   // `AccountInfo<Client> info;` needs the selector default-constructible.
   STATIC_REQUIRE_FALSE(port_detail::serves_account_discovery<AccountSelectorNotDefaultConstructible>);
+  // A range-for needs `end` as much as `begin`.
+  STATIC_REQUIRE_FALSE(port_detail::serves_account_discovery<AccountsWithoutEnd>);
   // What is checked is the iteration `to_account_info` performs, not a `value_type` it never names.
   STATIC_REQUIRE(port_detail::serves_account_discovery<AccountsWithoutValueType>);
 }
@@ -485,9 +346,10 @@ TEST_CASE("a claimed capability is served only by a thunk behind it", "[port][co
   // ...and the type it returns.
   STATIC_REQUIRE_FALSE(port_detail::serves_reference_data<BlockingClaimsWithWrongResult>);
 
-  // **The stated limit, pinned so it cannot change silently.** An asynchronous thunk is detected by
-  // name, so a wrong signature -- here the instrument argument missing, or a blocking-shaped thunk on
-  // an asynchronous client -- passes conformance and is reported where the verb is first called.
+  // **The stated limit, pinned so it cannot change silently.** `ATL_ASSERT_BROKER` detects an
+  // asynchronous thunk by name, so a wrong signature -- here the instrument argument missing, or a
+  // blocking-shaped thunk on an asynchronous client -- passes it. `ATL_ASSERT_BROKER_VERBS` is what
+  // rejects them; `conformance-verbs-reject-a-wrong-signature` builds that case and must fail.
   STATIC_REQUIRE(port_detail::serves_reference_data<ClaimsWithWrongArity>);
   STATIC_REQUIRE(port_detail::serves_reference_data<AsyncClaimsWithBlockingThunk>);
 

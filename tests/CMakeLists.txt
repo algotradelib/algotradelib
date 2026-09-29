@@ -145,6 +145,20 @@ set_tests_properties(conformance-names-an-unbacked-capability PROPERTIES
     TIMEOUT 300
 )
 
+# And the stronger check: an asynchronous thunk with the wrong signature passes `ATL_ASSERT_BROKER`,
+# which detects it by name, and must fail `ATL_ASSERT_BROKER_VERBS`, which calls it.
+add_library(algotradelib-conformance-probe-verbs OBJECT EXCLUDE_FROM_ALL conformance-probe-verbs.cpp)
+target_link_libraries(algotradelib-conformance-probe-verbs PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME conformance-verbs-reject-a-wrong-signature
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-conformance-probe-verbs
+            --config "$<CONFIG>"
+)
+set_tests_properties(conformance-verbs-reject-a-wrong-signature PROPERTIES
+    PASS_REGULAR_EXPRESSION "no matching[a-z ]*function for call to[^\n]*instrument"
+    TIMEOUT 300
+)
+
 # The same guarantee for the dry runner: a dry run links no transport, so a dry-run binary has no
 # code path that could place an order.
 add_executable(algotradelib-runner-isolation test-runner-isolation.cpp)

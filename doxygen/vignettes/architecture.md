@@ -222,7 +222,8 @@ graph TD
 Core headers include no broker header, and adding a broker edits no shared file:
 `tests/mock_broker.hpp` adds a third broker entirely within itself, which is the only evidence worth
 having for that claim. `ATL_ASSERT_BROKER(Client)` reports a missing trait member by name instead of
-a template backtrace.
+a template backtrace, and `ATL_ASSERT_BROKER_VERBS(Client)` compiles every verb the capabilities claim
+(see [the broker port](the-broker-port.md)).
 
 Three consequences that come up constantly:
 
