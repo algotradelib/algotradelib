@@ -130,16 +130,26 @@ public:
    * @param date the **market-local** calendar day the fill happens on, which is what a published
    * rate window is written in. `SessionWindow::local_date` converts the replay clock's instant, and
    * a bar either side of UTC midnight is what distinguishes the two.
+   * @param open_date the market-local day the bar's **open** belongs to, where the caller knows it;
+   * used instead of `date` when the fill is priced at the open -- a market order, or a limit under
+   * `AT_OPEN_IF_BETTER` whose open was better. `Backtester` supplies it for an `OPEN`-stamped bar,
+   * whose stamp is its period's start: `date` there comes from a *nominal* period end, one day late
+   * for a daily bar and up to five days into the next month for a monthly one, and a rate that
+   * changed in between was charged a fill it did not apply to. Absent, every fill uses `date`, as
+   * before. **A partial correction**: a fill priced inside a multi-day bar has no known day and still
+   * uses `date` (`plan/todo/nominal-period-end-dates-a-fill.md`).
    */
   FillDecision decide(
     const strategy::PlannedOrder& order,
     const strategy::BarEvent& next,
     const PriceRule& rule,
-    const Date& date
+    const Date& date,
+    const std::optional<Date>& open_date = std::nullopt
   ) const {
     FillDecision decision;
 
-    const auto reference = reference_price(order, next);
+    bool at_open = false;
+    const auto reference = reference_price(order, next, at_open);
     if (!reference) {
       // A limit the bar never reached. It stays queued: a resting order does not expire because one
       // bar passed it by, and discarding it would silently turn every limit into a fill-or-kill.
@@ -152,8 +162,9 @@ public:
       decision.still_working_ = rests_unfilled(order);
       return decision;
     }
+    const auto& charged_on = at_open && open_date ? *open_date : date;
     auto charged =
-      commission_.charge(order.quantity_, slipped->first, date, order.instrument_.country_);
+      commission_.charge(order.quantity_, slipped->first, charged_on, order.instrument_.country_);
     if (!charged) {
       // **Not `still_working_`, and not silence.** A cost that cannot be resolved is not a bar that
       // did not reach a limit: leaving the order queued would retry it on the next bar and leaving
@@ -187,11 +198,16 @@ private:
    */
   std::optional<Decimal64> reference_price(
     const strategy::PlannedOrder& order,
-    const strategy::BarEvent& next
+    const strategy::BarEvent& next,
+    bool& at_open
   ) const {
-    const auto open = next.bar_.open_ ? *next.bar_.open_ : next.bar_.close_;
+    at_open = false;
+    // A bar with no open prices a market order at its close, which is not the open's moment.
+    const bool has_open = next.bar_.open_.has_value();
+    const auto open = has_open ? *next.bar_.open_ : next.bar_.close_;
 
     if (order.type_ != OrderType::LIMIT || !order.price_) {
+      at_open = has_open;
       return open;
     }
     const auto& limit = *order.price_;
@@ -201,6 +217,7 @@ private:
         return std::nullopt;
       }
       if (limit_price_ == LimitFillPrice::AT_OPEN_IF_BETTER && decimal_less(open, limit)) {
+        at_open = has_open;
         return open;
       }
       return limit;
@@ -210,6 +227,7 @@ private:
       return std::nullopt;
     }
     if (limit_price_ == LimitFillPrice::AT_OPEN_IF_BETTER && decimal_less(limit, open)) {
+      at_open = has_open;
       return open;
     }
     return limit;
