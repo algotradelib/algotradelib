@@ -23,6 +23,12 @@ target_link_libraries(algotradelib-broker-port-tests PRIVATE
     Catch2::Catch2WithMain
 )
 
+add_executable(algotradelib-capability-conformance-tests test-capability-conformance.cpp)
+target_link_libraries(algotradelib-capability-conformance-tests PRIVATE
+    algotradelib::algotradelib
+    Catch2::Catch2WithMain
+)
+
 add_executable(algotradelib-kiwoom-tests test-kiwoom.cpp)
 target_link_libraries(algotradelib-kiwoom-tests PRIVATE
     algotradelib::algotradelib
@@ -100,6 +106,7 @@ endif()
 include(Catch)
 catch_discover_tests(algotradelib-core-tests)
 catch_discover_tests(algotradelib-broker-port-tests)
+catch_discover_tests(algotradelib-capability-conformance-tests)
 catch_discover_tests(algotradelib-kiwoom-tests)
 catch_discover_tests(algotradelib-rate-limit-tests)
 catch_discover_tests(algotradelib-market-data-tests)
@@ -121,6 +128,22 @@ endif()
 add_executable(algotradelib-strategy-isolation test-strategy-isolation.cpp)
 target_link_libraries(algotradelib-strategy-isolation PRIVATE algotradelib::algotradelib)
 add_test(NAME strategy-surface-stays-isolated COMMAND algotradelib-strategy-isolation)
+
+# A traits specialization that claims a capability with no verb behind it must fail to compile, and
+# the failure must name what is missing. Built by the test rather than by `all`, because it is meant
+# not to build; the regular expression is the assertion text, so a deleted assertion -- or one that
+# no longer fires -- fails this test rather than passing it silently.
+add_library(algotradelib-conformance-probe OBJECT EXCLUDE_FROM_ALL conformance-probe.cpp)
+target_link_libraries(algotradelib-conformance-probe PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME conformance-names-an-unbacked-capability
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-conformance-probe
+            --config "$<CONFIG>"
+)
+set_tests_properties(conformance-names-an-unbacked-capability PROPERTIES
+    PASS_REGULAR_EXPRESSION "has_reference_data is true but instrument\\(client, instrument"
+    TIMEOUT 300
+)
 
 # The same guarantee for the dry runner: a dry run links no transport, so a dry-run binary has no
 # code path that could place an order.
