@@ -2585,3 +2585,23 @@ TEST_CASE("Kiwoom places, amends and reads back a stop-limit order's trigger", "
     CHECK(row.trigger_price_ == Decimal64(69500, 0));
   }
 }
+
+TEST_CASE("the single-date query a deferred target's evidence read sends is one Kiwoom accepts", "[kiwoom][trigger]") {
+  // `SessionSource::read_evidence` asks a broker without `history_requires_range` for one stated date at
+  // a time. Kiwoom's `kt00007` requires that date and refuses a range; an undated query is refused.
+  using Traits = BrokerTraits<kiwoom::KiwoomClient>;
+  OrderHistoryQuery dated;
+  dated.from_ = Date{2026, 9, 29};
+  dated.to_ = Date{2026, 9, 29};
+  CHECK(Traits::to_history_query(kiwoom::KiwoomAccount{}, dated));
+
+  OrderHistoryQuery undated;
+  const auto refused = Traits::to_history_query(kiwoom::KiwoomAccount{}, undated);
+  REQUIRE_FALSE(refused);
+  CHECK(refused.error().broker_code_ == "date_required");
+
+  OrderHistoryQuery ranged;
+  ranged.from_ = Date{2026, 9, 28};
+  ranged.to_ = Date{2026, 9, 29};
+  CHECK_FALSE(Traits::to_history_query(kiwoom::KiwoomAccount{}, ranged));
+}

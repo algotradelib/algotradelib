@@ -414,8 +414,9 @@ public:
    * *history* fail while working orders still succeed. That combination is the one the sweep has to
    * survive: it has a listing, it just does not have the one that covers closed orders.
    */
-  Result<OrderPage> order_history(const OrderHistoryQuery&) {
+  Result<OrderPage> order_history(const OrderHistoryQuery& query) {
     ++history_calls_;
+    history_queries_.push_back(query);
     if (history_error_) {
       return Result<OrderPage>(*history_error_);
     }
@@ -453,11 +454,13 @@ public:
   std::size_t holdings_calls() const noexcept { return holdings_calls_; }
   std::size_t working_calls() const noexcept { return working_calls_; }
   std::size_t history_calls() const noexcept { return history_calls_; }
+  const std::vector<OrderHistoryQuery>& history_queries() const noexcept { return history_queries_; }
 
 private:
   BarSeries bars_;
   QuoteSnapshot quote_;
   HoldingsSnapshot holdings_;
+  std::vector<OrderHistoryQuery> history_queries_;
   WorkingOrders<FakeBroker> working_orders_;
   OrderPage history_;
   std::optional<BrokerError> history_error_;
@@ -3654,7 +3657,14 @@ TEST_CASE("a deferred flatten is sent once the broker records its stop cancelled
 
   record_stop(session, OrderStatus::CANCELED, "0");
   poll_listing_at(source, bound, session, {}, 1);
-  CHECK(session.history_calls() == 1);
+  // A broker that takes no range -- this fake, like Kiwoom -- is asked one stated date at a time:
+  // Kiwoom's `kt00007` requires the date and refuses a range. (Codex round 5.)
+  REQUIRE(session.history_calls() >= 1);
+  for (const auto& query : session.history_queries()) {
+    REQUIRE(query.from_);
+    REQUIRE(query.to_);
+    CHECK(query.from_->day_ == query.to_->day_);
+  }
   REQUIRE(session.placed().size() == 1);
   CHECK(session.placed()[0].side_ == OrderSide::SELL);
   CHECK(session.placed()[0].quantity_ == Decimal64::parse("10"));
@@ -3686,7 +3696,7 @@ TEST_CASE("a deferred flatten waits while the stop's record is not terminal, or 
   // History lags the listing: still open. Asked again on each working-order poll, and nothing sent.
   record_stop(session, OrderStatus::PENDING, "0");
   poll_listing_at(source, bound, session, {}, 1);
-  CHECK(session.history_calls() == 1);
+  CHECK(session.history_calls() >= 1);
   CHECK(session.placed().empty());
   REQUIRE(bound.deferred_targets().size() == 1);
 

@@ -716,11 +716,7 @@ private:
       // `Runner::deferred_targets`.
       if (const auto since = runner_instance.deferred_awaiting_evidence()) {
         std::vector<OrderSnapshot> evidence;
-        const auto range = std::make_pair(
-          runner::date_of(*since - std::chrono::hours(24)),
-          runner::date_of(runner_instance.context().now() + std::chrono::hours(24))
-        );
-        if (!read_history_in(range, evidence)) {
+        if (!read_evidence(*since, runner_instance.context().now(), evidence)) {
           return poll_outcome_of(*last_error_);
         }
         runner_instance.retry_deferred(evidence);
@@ -815,8 +811,58 @@ private:
     return read_history_in(runner::history_range_for(open, window_), into);
   }
 
-  /** Fills `into` with the order history over `range` where the broker takes one; see `read_history`. */
-  bool read_history_in(const std::pair<Date, Date>& range, std::vector<OrderSnapshot>& into) {
+  /**
+   * Fills `into` with the history a deferred target's stops can appear in: from the day before it was
+   * deferred to today.
+   *
+   * **Two query shapes, because the brokers that hold stops disagree.** KIS takes a range
+   * (`history_requires_range`), so one query covers it. Kiwoom's `kt00007` takes **one** date, which it
+   * requires, and refuses a range -- so each day is asked for on its own; a stop is a day order, so that
+   * is two or three requests at most. A broker taking neither shape is asked each day as well, which
+   * states a date it may ignore rather than omitting one it may need.
+   */
+  bool read_evidence(
+    std::chrono::system_clock::time_point since,
+    std::chrono::system_clock::time_point now,
+    std::vector<OrderSnapshot>& into
+  ) {
+    if constexpr (Caps::history_requires_range) {
+      return read_history_in(
+        {runner::date_of(since - std::chrono::hours(24)), runner::date_of(now + std::chrono::hours(24))},
+        into
+      );
+    } else {
+      std::vector<Date> days;
+      const auto add = [&days](const Date& day) {
+        for (const auto& seen : days) {
+          if (seen.year_ == day.year_ && seen.month_ == day.month_ && seen.day_ == day.day_) {
+            return;
+          }
+        }
+        days.push_back(day);
+      };
+      for (auto at = since - std::chrono::hours(24); at < now; at += std::chrono::hours(24)) {
+        add(runner::date_of(at));
+      }
+      add(runner::date_of(now));
+      for (const auto& day : days) {
+        if (!read_history_in({day, day}, into, true)) {
+          return false;
+        }
+      }
+      return true;
+    }
+  }
+
+  /**
+   * Fills `into` with the order history over `range` where the broker takes one, or wherever `dated`
+   * asks for the dates to be stated regardless; see `read_history`.
+   */
+  bool read_history_in(
+    const std::pair<Date, Date>& range,
+    std::vector<OrderSnapshot>& into,
+    bool dated = Caps::history_requires_range
+  ) {
     OrderHistoryQuery query;
     if constexpr (Caps::has_history_limit) {
       // Gated, because KIS does not ignore a limit it cannot honour -- it refuses the whole inquiry
@@ -824,11 +870,9 @@ private:
       // history-failure branch, so a KIS runner recovered nothing and withheld forever.
       query.limit_ = history_limit_;
     }
-    if constexpr (Caps::history_requires_range) {
+    if (dated) {
       query.from_ = range.first;
       query.to_ = range.second;
-    } else {
-      (void)range;
     }
 
     for (int page = 0; page < maximum_history_pages_; ++page) {
