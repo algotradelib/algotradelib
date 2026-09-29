@@ -870,9 +870,7 @@ private:
       for (const auto& row : page) {
         bool copy = false;
         for (const auto& held : into) {
-          if (!row.order_id_.empty() && held.order_id_ == row.order_id_ &&
-              held.instrument_ == row.instrument_ && held.ordered_at_ && row.ordered_at_ &&
-              *held.ordered_at_ == *row.ordered_at_) {
+          if (runner::exact_copy(held, row)) {
             copy = true;
             break;
           }

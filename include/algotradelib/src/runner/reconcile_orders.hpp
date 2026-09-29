@@ -872,17 +872,26 @@ inline bool any_placement(const std::vector<OpenInstruction>& open) {
 }
 
 /**
- * Adds a single-date broker's history rows to a working-order listing, keeping every terminal one.
+ * Returns whether `a` and `b` are **established** to be two copies of one order: the same broker id and
+ * instrument, and the same order time stated on both. Anything less is not proof.
+ */
+inline bool exact_copy(const OrderSnapshot& a, const OrderSnapshot& b) {
+  return !a.order_id_.empty() && a.order_id_ == b.order_id_ && a.instrument_ == b.instrument_ &&
+    a.ordered_at_ && b.ordered_at_ && *a.ordered_at_ == *b.ordered_at_;
+}
+
+/**
+ * Adds a single-date broker's history rows to a working-order listing, dropping only exact copies.
  *
- * **Its history pages are merged against each other only for exact copies** (same id, instrument and
- * stated order time; `SessionSource::read_history_days`). Each page is one order date and Kiwoom numbers
- * orders per day, so an earlier day's order can carry today's number. Merged by the id, the later row
- * was dropped as a duplicate and recovery could report `NOT_PLACED` for an order that exists.
+ * **A history row is kept unless it is established to be a working row's copy** (`exact_copy`). Kiwoom
+ * numbers orders per day, so a history row under a working row's number may be another day's order --
+ * the very one a journal is waiting on -- and Kiwoom stamps its working and history rows from different
+ * fields, so neither the number nor a near time proves identity. Dropping on either was how recovery
+ * could report `NOT_PLACED` for an order that exists. Keeping an uncertain row costs at most a second
+ * candidate, an `AMBIGUOUS` verdict, and a hold an operator settles.
  *
- * Against the working listing, a history row is dropped only while it is itself **open**: that is the
- * one case where it is a second copy of a resting row. A terminal row is kept even under a working row's
- * number -- it may be another day's order -- and if it is in fact the same order, filled between the two
- * reads, the matcher sees two candidates and answers `AMBIGUOUS`, which keeps the hold.
+ * Its history pages are merged against each other by the same rule
+ * (`SessionSource::read_history_days`).
  */
 inline void merge_dated_history(
   std::vector<OrderSnapshot>& into,
@@ -891,13 +900,10 @@ inline void merge_dated_history(
   const auto listed = into.size();
   for (const auto& row : rows) {
     bool known = false;
-    if (strategy::order_is_open(row.status_)) {
-      for (std::size_t at = 0; at < listed; ++at) {
-        if (!row.order_id_.empty() && into[at].order_id_ == row.order_id_ &&
-            into[at].instrument_ == row.instrument_) {
-          known = true;
-          break;
-        }
+    for (std::size_t at = 0; at < listed; ++at) {
+      if (exact_copy(into[at], row)) {
+        known = true;
+        break;
       }
     }
     if (!known) {

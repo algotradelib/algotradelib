@@ -3817,11 +3817,44 @@ TEST_CASE("a row from another day under the same order number is a different ord
   // an operator settles -- never `NOT_PLACED`, and never today's order silently attributed away.
   CHECK(other.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::AMBIGUOUS);
 
-  // Against the working list: an open history copy of a resting row is one candidate; a terminal row
-  // under the same number is kept.
+  // Against the working list: an exact copy of a resting row is one candidate; a terminal row under
+  // the same number is kept.
   auto resting = listed_order("KRX-1");
   resting.status_ = OrderStatus::PENDING;
   std::vector<OrderSnapshot> candidates{resting};
   runner::merge_dated_history(candidates, {resting, yesterday});
   CHECK(candidates.size() == 2);
+}
+
+TEST_CASE("an open history row is not dropped under a working row that only shares its number", "[recovery]") {
+  // **Codex round 3.** Yesterday's journalled order is still open in yesterday's history; today a
+  // different order resting in the working list carries the same number. Dropping the history row as
+  // the working row's copy left no candidate inside the window, and recovery said `NOT_PLACED`.
+  WorkingSession session;
+  auto today = working();
+  today.ref_ = OrderRef<FakeBroker>{"KRX-1", ""};
+  today.order_.order_id_ = "KRX-1";
+  today.order_.ordered_at_ = journaled_at() + std::chrono::hours(20);
+  WorkingOrders<FakeBroker> listing;
+  listing.orders_.push_back(today);
+  session.set_working_orders(listing);
+  auto pending = listed_order("KRX-1");
+  pending.status_ = OrderStatus::PENDING;
+  OrderPage page;
+  page.orders_.push_back(pending);
+  session.set_history(page);
+
+  runner::MemoryJournal journal;
+  journal.append(journaled_placement());
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live_runner.context().set_now(swept_at());
+  live_runner.ledger().mark(samsung(), "an order request failed in transit");
+  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
+  source.set_journal(journal);
+
+  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+  REQUIRE_FALSE(source.last_reconcile().matches_.empty());
+  // The history row survives and is the journalled order: matched, on the evidence of its own row.
+  CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::MATCHED);
+  CHECK(source.last_reconcile().matches_.front().order_id_ == "KRX-1");
 }
