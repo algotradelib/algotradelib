@@ -5489,3 +5489,28 @@ TEST_CASE("a replay counts the limit fills its bars bounded", "[limit-bounds]") 
   CHECK(engine.result().limit_fills_bounded_ == 1);
   CHECK(backtest::summarize(engine.result(), engine.fills()).caveats_.limit_fills_bounded_ == 1);
 }
+
+TEST_CASE("a limit fill held at the bar's far extreme is counted as bounded", "[limit-bounds]") {
+  // Negative slippage from a better open reaches past the bar: held at the low (a buy) or the high (a
+  // sell), which the counter must report like any other bound.
+  const backtest::NextBarFillModel generous(
+    backtest::CommissionModel::none(),
+    backtest::SlippageModel::of_basis_points(Decimal64::parse("-2000")),
+    backtest::LimitFillPrice::AT_OPEN_IF_BETTER
+  );
+  const auto buy = generous.decide(
+    order_of(OrderSide::BUY, "10", OrderType::LIMIT, "72000"),
+    ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date()
+  );
+  REQUIRE(buy.execution_);
+  CHECK(buy.execution_->fill_.price_ == Decimal64::parse("69000"));
+  CHECK(buy.bounded_);
+
+  const auto sell = generous.decide(
+    order_of(OrderSide::SELL, "10", OrderType::LIMIT, "68000"),
+    ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date()
+  );
+  REQUIRE(sell.execution_);
+  CHECK(sell.execution_->fill_.price_ == Decimal64::parse("71000"));
+  CHECK(sell.bounded_);
+}

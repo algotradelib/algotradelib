@@ -56,9 +56,12 @@ struct FillDecision {
    */
   bool intrabar_release_fill_{false};
   /**
-   * Whether a limit-basis fill's credit was moved by the bound in `decide` -- onto its bar or back to
-   * its limit. Counted by the report, so a reader sees how often the model declined to credit a price
-   * the bar never showed.
+   * Whether a limit-basis fill's credit was moved by the bound in `decide` -- onto its bar, back to its
+   * limit, or back from the bar's opposite extreme that negative slippage reached. Counted by the
+   * report, so a reader sees how often the model declined to credit a price the bar never showed.
+   *
+   * A stop released inside its bar is credited by `intrabar_release_price`, which chooses a price
+   * inside the bar and the limit to begin with; only a later move counts here.
    */
   bool bounded_{false};
 };
@@ -274,6 +277,7 @@ public:
         } else {
           slipped->first = ceiling;
           slipped->second = *moved;
+          decision.bounded_ = true;
         }
       }
     }

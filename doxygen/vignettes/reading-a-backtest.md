@@ -63,7 +63,7 @@ next bar, and inventing one would be inventing data.
 | Market order | fills at the next bar's open | the only price the next bar states before trading |
 | Buy limit | fills if the bar's low reached it | a bar that never touched the price is one the order sat through |
 | Sell limit | fills if the bar's high reached it | the same, mirrored |
-| Limit price | **at the limit, never better** — but never outside the bar: a limit marketable through the whole bar is credited the bar's worst price (a buy its high, a sell its low) | see below; a price the bar never showed is not a fill |
+| Limit price | **the limit itself under `AT_LIMIT`** — or, when the limit was marketable through the whole bar, the bar's worst price instead (a buy its high, a sell its low), which is better than the limit but never better than anything the bar traded | see below; a price the bar never showed is not a fill |
 | Slippage on a limit | never carries the fill through its limit or out of its bar | a limit order that could only have traded worse did not trade worse; `caveats_.limit_fills_bounded_` counts both |
 | Missed limit | stays queued | discarding it would turn every limit into fill-or-kill |
 

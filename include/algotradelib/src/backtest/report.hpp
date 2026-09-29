@@ -273,7 +273,9 @@ struct ReportCaveats {
    */
   std::size_t stop_fills_intrabar_{0};
   /**
-   * Limit-basis fills whose credit was moved onto the bar or back to the limit.
+   * Limit-basis fills whose credit the bound moved: onto the bar, back to the limit, or back from the
+   * bar's opposite extreme. (A stop released inside its bar is *chosen* inside both, and counts only
+   * if a later step moved it.)
    *
    * A limit is credited the worst price its bar traded that the limit allows: a buy no higher than the
    * lesser of the bar's high and its limit, a sell no lower than the greater of the low and its limit.
