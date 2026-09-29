@@ -1197,7 +1197,11 @@ private:
     const auto& row = value->as_object();
     const auto date = parse_calendar_date(broker_detail::json_string(row, "date"));
     if (!date) {
-      throw std::runtime_error("invalid calendar date");
+      // A reported day whose date cannot be read produces no row and is counted, as KIS's are --
+      // failing the response would lose `today` over a damaged neighbour. A day field that is absent
+      // or not an object is not a reported day, and is skipped above without a count.
+      ++calendar.unreadable_days_;
+      return;
     }
     TradingDay day;
     day.date_ = *date;

@@ -475,21 +475,7 @@ inline std::optional<std::chrono::system_clock::time_point> seoul_timestamp(
 
 /** Reads Kiwoom's `YYYYMMDD` as a calendar date, or nothing when it is not one. */
 inline std::optional<Date> compact_date(std::string_view text) {
-  if (!broker_detail::decimal_digits(text, 8)) {
-    return std::nullopt;
-  }
-  const auto number = [text](std::size_t offset, std::size_t length) {
-    int value = 0;
-    for (std::size_t index = offset; index < offset + length; ++index) {
-      value = value * 10 + (text[index] - '0');
-    }
-    return value;
-  };
-  Date date;
-  date.year_ = number(0, 4);
-  date.month_ = number(4, 2);
-  date.day_ = number(6, 2);
-  return is_valid_date(date) ? std::optional<Date>(date) : std::nullopt;
+  return broker_detail::compact_date(text);
 }
 
 /**

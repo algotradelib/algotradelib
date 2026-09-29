@@ -139,6 +139,31 @@ inline bool decimal_digits(std::string_view value, std::size_t length) {
   return true;
 }
 
+/**
+ * Reads `YYYYMMDD` as a calendar date, or nothing when it is not one.
+ *
+ * The one reader for the format both Korean brokers use. Every character is checked as a digit
+ * before any arithmetic, and the result must be a real date: `std::stoi` per component would read
+ * `"2026092x"` as 2026-09-02, and unchecked digit arithmetic would read `"2026090:"` as 2026-09-10,
+ * since `':'` follows `'9'` -- each a different, valid day instead of an unreadable one.
+ */
+inline std::optional<Date> compact_date(std::string_view text) {
+  if (!decimal_digits(text, 8)) {
+    return std::nullopt;
+  }
+  const auto number = [text](std::size_t offset, std::size_t length) {
+    int value = 0;
+    for (std::size_t index = offset; index < offset + length; ++index) {
+      value = value * 10 + (text[index] - '0');
+    }
+    return value;
+  };
+  Date date{
+    number(0, 4), static_cast<unsigned>(number(4, 2)), static_cast<unsigned>(number(6, 2))
+  };
+  return is_valid_date(date) ? std::optional<Date>(date) : std::nullopt;
+}
+
 inline Decimal64 percent_to_ratio(std::string_view value) {
   const auto percent = Decimal64::parse(value);
   if (percent.scale() > std::numeric_limits<std::uint8_t>::max() - 2) {

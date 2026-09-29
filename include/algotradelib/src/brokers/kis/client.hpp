@@ -1360,20 +1360,8 @@ private:
     if (text.empty() || text == "00000000") {
       return StatedDate{};
     }
-    if (!broker_detail::decimal_digits(text, 8)) {
-      return StatedDate::unreadable();
-    }
-    const auto number = [text](std::size_t offset, std::size_t length) {
-      int result = 0;
-      for (std::size_t index = offset; index < offset + length; ++index) {
-        result = result * 10 + (text[index] - '0');
-      }
-      return result;
-    };
-    Date date{
-      number(0, 4), static_cast<unsigned>(number(4, 2)), static_cast<unsigned>(number(6, 2))
-    };
-    return is_valid_date(date) ? StatedDate::stated(date) : StatedDate::unreadable();
+    const auto date = broker_detail::compact_date(text);
+    return date ? StatedDate::stated(*date) : StatedDate::unreadable();
   }
 
   /** One calendar request spanning however many continuation pages it needs. */
@@ -1409,7 +1397,7 @@ private:
       deliver(std::move(completion), Result<TradingCalendar>(std::move(error)));
       return;
     }
-    if (!refresh && calendar_covers(from)) {
+    if (!refresh && calendar_covers(calendar_, from)) {
       deliver(std::move(completion), Result<TradingCalendar>(calendar_));
       return;
     }
@@ -1432,9 +1420,21 @@ private:
   }
 
   /** Returns whether the cached calendar already answers for `from` onwards. */
-  bool calendar_covers(const Date& from) const {
-    const auto covered = calendar_.covered();
-    return covered && !(from < covered->first) && !(covered->second < from);
+  static bool calendar_covers(const TradingCalendar& calendar, const Date& from) {
+    const auto covered = calendar.covered();
+    // A row for `from` itself, not only a span around it: a row dropped as unreadable leaves a hole
+    // inside the span, and serving the cache for that day would keep answering "not covered" at
+    // every poll without asking KIS again -- so a repaired response could never restore the day.
+    return covered && !(from < covered->first) && !(covered->second < from) &&
+      calendar.is_trading_day(from).has_value();
+  }
+
+  /**
+   * How many rows of the listing have been consumed: the days kept and the rows dropped as
+   * unreadable. Pagination measures progress by this, not by days kept alone.
+   */
+  static std::size_t calendar_rows_consumed(const TradingCalendar& calendar) {
+    return calendar.days_.size() + calendar.unreadable_days_;
   }
 
   /** Sends one calendar page, continuing from the cursors KIS returned. */
@@ -1472,7 +1472,10 @@ private:
     const std::shared_ptr<CalendarOperation>& operation,
     Result<network::HttpResponse> result
   ) {
-    const auto before = operation->calendar_.days_.size();
+    // Progress is rows *consumed*, not rows kept: a page whose every date was unreadable adds no
+    // day, and reading that as the end of the listing would drop the pages after it -- today's row
+    // among them, possibly.
+    const auto before = calendar_rows_consumed(operation->calendar_);
     const bool more = result && continuation_pending(result.value());
     std::string search = operation->search_cursor_;
     std::string next = operation->next_cursor_;
@@ -1484,7 +1487,7 @@ private:
       return;
     }
 
-    const bool empty_page = operation->calendar_.days_.size() == before;
+    const bool empty_page = calendar_rows_consumed(operation->calendar_) == before;
     const bool repeated = next == operation->next_cursor_ && search == operation->search_cursor_;
     if (!more || empty_page || repeated || operation->pages_ >= calendar_page_budget_) {
       operation->calendar_.received_at_ = std::chrono::system_clock::now();
@@ -1506,6 +1509,14 @@ private:
    * normalized, because it is the one KIS itself directs callers to use before
    * placing an order: "주문을 넣고자 할 경우 개장일여부(opnd_yn)를 사용". The other three
    * stay unread rather than being folded into one meaning.
+   *
+   * **A row whose `bass_dt` is not a readable date produces no day and is counted** in
+   * `TradingCalendar::unreadable_days_`. The sheet documents `bass_dt` as required, eight characters,
+   * `YYYYMMDD`, so there is no blank to honour: empty, absent, non-string, a wrong length, a numeric
+   * prefix and an impossible day are all damage. Dropping the row rather than failing the page is
+   * deliberate -- a page carries weeks, and failing it for one future row would lose today's row with
+   * it. Rows are staged and appended only once the whole page parses, so a page that does fail
+   * leaves `calendar` as it was.
    */
   static std::optional<BrokerError> parse_calendar_page(
     Result<network::HttpResponse> result,
@@ -1522,25 +1533,29 @@ private:
       if (!rows || !rows->is_array()) {
         throw std::runtime_error("missing array field: output");
       }
+      std::vector<TradingDay> staged;
+      std::size_t unreadable = 0;
       for (const auto& value : rows->as_array()) {
         if (!value.is_object()) {
           throw std::runtime_error("calendar entry is not an object");
         }
         const auto& row = value.as_object();
-        const auto date = broker_detail::json_string(row, "bass_dt");
-        if (date.size() != 8) {
+        const auto stated = row.if_contains("bass_dt");
+        const auto date = stated && stated->is_string()
+          ? broker_detail::compact_date(stated->as_string())
+          : std::nullopt;
+        if (!date) {
+          ++unreadable;
           continue;
         }
         TradingDay day;
-        day.date_ = Date{
-          std::stoi(date.substr(0, 4)),
-          static_cast<unsigned>(std::stoi(date.substr(4, 2))),
-          static_cast<unsigned>(std::stoi(date.substr(6, 2))),
-        };
+        day.date_ = *date;
         day.open_ = broker_detail::json_string(row, "opnd_yn") == "Y";
-        calendar.days_.push_back(day);
+        staged.push_back(day);
       }
       read_calendar_cursors(document.value(), search_cursor, next_cursor);
+      calendar.days_.insert(calendar.days_.end(), staged.begin(), staged.end());
+      calendar.unreadable_days_ += unreadable;
       return std::nullopt;
     } catch (const std::exception& exception) {
       BrokerError error;
