@@ -226,23 +226,33 @@ broker submission. Applications place orders through
 Toss, `OrderRequest::client_order_id_` carries the idempotency key, and KIS
 refuses an order that sets it.
 
-### Not supported yet
-
-Toss amount-based and fractional order *placement* — an amount-based order is
-read back with its amount, and placing one is outstanding. Toss conditional
-orders. KIS credit, reserved and overseas orders. KIS's 시간외 단일가 (`07`):
-the inquiry publishes it, the order sheet does not.
+### Stop-limit orders
 
 A **stop-limit** order is placeable at KIS (`ORD_DVSN` `22`, trigger in
 `CNDT_PRIC`) and at Kiwoom (`trde_tp` `28`, trigger in `cond_uv`) through
 `OrderRequest::trigger_price_`, which a stop-limit order requires beside its
 limit and every other basis refuses. Both adapters read the trigger back onto
-`OrderSnapshot::trigger_price_`, and an amendment carries it on
-`OrderShape::trigger_price_` — literally, so `reprice` restates the resting
-trigger rather than leaving it to the broker. A broker whose
-`BrokerCaps::has_trigger_price` is false, Toss included, never receives one:
-the session refuses the request as `unsupported_trigger_price`. KIS history older than three months, and real-time execution
-notifications.
+`OrderSnapshot::trigger_price_`.
+
+On an amendment, `OrderShape::trigger_price_` follows the same rule as the
+condition and the session: **set means the new trigger, unset means keep the
+resting one** — but only when both the resting order and the new shape are
+stop-limit orders (`amended_trigger_price`). A change of basis into a stop must
+state a trigger, a change out of one carries none, and an instruction with no
+resting shape inherits nothing. `reprice` and `cancel_all` restate the resting
+trigger explicitly.
+
+A broker whose `BrokerCaps::has_trigger_price` is false, Toss included, never
+receives a trigger on a placement or a modification: the session refuses it as
+`unsupported_trigger_price`. A cancellation is never refused for carrying one.
+
+### Not supported yet
+
+Toss amount-based and fractional order *placement* — an amount-based order is
+read back with its amount, and placing one is outstanding. Toss conditional
+orders. KIS credit, reserved and overseas orders. KIS's 시간외 단일가 (`07`):
+the inquiry publishes it, the order sheet does not. KIS history older than
+three months, and real-time execution notifications.
 
 
 ## Where to go next

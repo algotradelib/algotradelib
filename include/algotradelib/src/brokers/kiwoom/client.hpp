@@ -603,7 +603,7 @@ struct KiwoomOrderShapeRow {
  * recording: the three-axis decomposition was derived from KIS's `ORD_DVSN` and Toss's
  * `timeInForce`, and Kiwoom shares no wire format with either.
  *
- **One row is read-only.** `28` 스톱지정가 was a second until `OrderRequest::trigger_price_`
+ * **One row is read-only.** `28` 스톱지정가 was a second until `OrderRequest::trigger_price_`
  * existed; its trigger goes in `cond_uv`, and `invalid_trigger` refuses a `28` without one.
  *
  * `시간외단일가` has **no code at all**. It appears in `ka10075`'s and `ka10076`'s label lists and in
