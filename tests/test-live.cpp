@@ -1,11 +1,16 @@
 #include <algotradelib/kis>
 #include <algotradelib/live>
 #include <algotradelib/tossinvest>
+#include <algotradelib/vanilla>
+
+#include "live_program.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
+#include <cstdio>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -233,8 +238,21 @@ public:
     }
     BarSeries series = bars_;
     series.instrument_ = query.instrument_;
+    for (const auto& later : later_bars_) {
+      if (bar_calls_ >= later.first) {
+        series.bars_.push_back(later.second);
+      }
+    }
     return Result<BarSeries>(std::move(series));
   }
+
+  /**
+   * Adds `bar` to every answer from the `call`-th bars request on, as a bar closing mid-run does.
+   *
+   * A loop's first iteration polls bars before holdings, so what it feeds then meets an account not
+   * yet read and is withheld; a test of what a later bar does needs a bar that is actually later.
+   */
+  void add_bar_from_call(std::size_t call, Bar bar) { later_bars_.emplace_back(call, std::move(bar)); }
 
   /** Returns the scripted quote, counting the call. */
   Result<QuoteSnapshot> quote(const InstrumentId& instrument) {
@@ -439,6 +457,23 @@ public:
   void set_bars(BarSeries series) { bars_ = std::move(series); }
   void set_quote(QuoteSnapshot snapshot) { quote_ = std::move(snapshot); }
   void set_holdings(HoldingsSnapshot snapshot) { holdings_ = std::move(snapshot); }
+  /**
+   * Returns the scripted reference data, or a refusal when none was scripted.
+   *
+   * Independent of the session-wide failure switch, so a test can fail every poll and still get as
+   * far as the loop.
+   */
+  Result<Instrument> instrument(const InstrumentId& id) {
+    if (!reference_ || !(reference_->id_ == id)) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = true;
+      error.message_ = "no reference data scripted for " + id.symbol_;
+      return Result<Instrument>(error);
+    }
+    return Result<Instrument>(*reference_);
+  }
+  void set_reference(Instrument reference) { reference_ = std::move(reference); }
   void set_working_orders(WorkingOrders<FakeBroker> orders) {
     working_orders_ = std::move(orders);
   }
@@ -465,6 +500,8 @@ private:
   BarSeries bars_;
   QuoteSnapshot quote_;
   HoldingsSnapshot holdings_;
+  std::optional<Instrument> reference_;
+  std::vector<std::pair<std::size_t, Bar>> later_bars_;
   std::vector<OrderHistoryQuery> history_queries_;
 
   WorkingOrders<FakeBroker> working_orders_;
@@ -3906,4 +3943,291 @@ TEST_CASE("a resting order listed in both inquiries recovers as one match on a n
   CHECK(source2.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::AMBIGUOUS);
   CHECK(source2.last_reconcile().matches_.front().candidates_ == 2);
   CHECK(second.ledger().requires_reconcile(samsung()));
+}
+
+// ---------------------------------------------------------------------------
+// The live program: examples/live_program.hpp, driven against the in-memory session.
+//
+// What `main` cannot be tested for, its wiring can: the order of journal, recovery, loop and report,
+// and which exit each ending takes. No broker is involved, so what these cannot show is any real
+// broker's behaviour.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using ProgramSession = FakeSession<WithWorkingOrders>;
+
+/** The instant every program test starts at: 2026-03-30 10:00 in Seoul, a Monday. */
+std::chrono::system_clock::time_point program_start() {
+  return std::chrono::system_clock::time_point{} + std::chrono::seconds(1774832400);
+}
+
+/** A file path that exists only for the duration of one test, removed on the way in and out. */
+class TempPath {
+public:
+  explicit TempPath(std::string path) : path_(std::move(path)) { std::remove(path_.c_str()); }
+  ~TempPath() { std::remove(path_.c_str()); }
+  TempPath(const TempPath&) = delete;
+  TempPath& operator=(const TempPath&) = delete;
+  const std::string& str() const noexcept { return path_; }
+
+private:
+  std::string path_;
+};
+
+/** Returns whether `path` names a file that exists. */
+bool file_exists(const std::string& path) {
+  std::FILE* handle = std::fopen(path.c_str(), "rb");
+  if (!handle) {
+    return false;
+  }
+  std::fclose(handle);
+  return true;
+}
+
+/** Reads `path` whole. */
+std::string file_text(const std::string& path) {
+  std::string text;
+  if (std::FILE* handle = std::fopen(path.c_str(), "rb")) {
+    char buffer[4096];
+    std::size_t read = 0;
+    while ((read = std::fread(buffer, 1, sizeof buffer, handle)) > 0) {
+      text.append(buffer, read);
+    }
+    std::fclose(handle);
+  }
+  return text;
+}
+
+/** Writes `text` to `path`. */
+void write_text(const std::string& path, const std::string& text) {
+  std::FILE* handle = std::fopen(path.c_str(), "wb");
+  REQUIRE(handle != nullptr);
+  std::fwrite(text.data(), 1, text.size(), handle);
+  std::fclose(handle);
+}
+
+/** A strategy that wants one share, as the program's does. */
+strategy::vanilla::BuyAndHold one_share() {
+  strategy::vanilla::BuyAndHold holding;
+  holding.params_.instrument_ = samsung();
+  holding.params_.quantity_ = Decimal64::parse("1");
+  return holding;
+}
+
+/**
+ * A session that answers everything a trading run needs, stamped at `program_start()`.
+ *
+ * Holdings are empty but current, so the portfolio gate opens and BuyAndHold wants its share -- on
+ * the bar that closes after the account was read, as in a real run.
+ */
+void script_ready(ProgramSession& session) {
+  session.set_reference(samsung_reference());
+  session.set_bars(two_bars("70000", "71000"));
+  HoldingsSnapshot holdings;
+  holdings.received_at_ = program_start();
+  session.set_holdings(holdings);
+  // The loop's first iteration polls bars before holdings, so the two bars above meet an account not
+  // yet read and are withheld; this one arrives on the second bars poll, after holdings.
+  Bar later = two_bars("70000", "71000").bars_.back();
+  later.timestamp_ += std::chrono::hours(24);
+  later.close_ = Decimal64::parse("71500");
+  later.high_ = later.close_;
+  later.low_ = later.close_;
+  session.add_bar_from_call(2, later);
+}
+
+/**
+ * Settings for a short run: every kind due each second, and no phase restriction.
+ *
+ * `permitted_phases_` is lifted because the phase is not what these tests are about, and the fake
+ * publishes no calendar; the program itself keeps the default.
+ */
+live_program::Settings program_settings(const TempPath& journal, const TempPath& control) {
+  live_program::Settings settings;
+  settings.universe_ = {samsung()};
+  settings.limits_.permitted_phases_ = std::nullopt;
+  settings.limits_.max_position_quantity_ = Decimal64::parse("1");
+  settings.schedule_.bars_ = std::chrono::seconds(1);
+  settings.schedule_.holdings_ = std::chrono::seconds(1);
+  settings.schedule_.working_orders_ = std::chrono::seconds(1);
+  settings.schedule_.tick_ = std::chrono::seconds(1);
+  settings.schedule_.calendar_.reset();
+  settings.maximum_portfolio_age_ = std::chrono::minutes(1);
+  settings.journal_path_ = journal.str();
+  settings.journal_scope_ = "fake:demo:1";
+  settings.control_file_ = control.str();
+  settings.max_iterations_ = 3;
+  return settings;
+}
+
+} // namespace
+
+TEST_CASE("the live program journals, recovers clean and places its order", "[live][program]") {
+  const TempPath journal("atl-test-program-trade.jsonl");
+  const TempPath control("atl-test-program-trade.stop");
+  ProgramSession session;
+  script_ready(session);
+  runner::StopSource stop;
+  std::ostringstream out;
+
+  const auto exit = live_program::trade(
+    session, one_share(), program_settings(journal, control), stop, out, runner::ManualClock{program_start()}
+  );
+
+  INFO(out.str());
+  CHECK(exit == live_program::Exit::CLEAN);
+  CHECK(out.str().find("recovery: clean") != std::string::npos);
+  // The two bars read at start met an account not yet read and were withheld, not sized against
+  // nothing; the order came from the next bar. The program says so before the loop.
+  CHECK(out.str().find("plans withheld  : 2") != std::string::npos);
+  CHECK(out.str().find("the strategy first acts on the next bar") != std::string::npos);
+  REQUIRE(session.placed().size() == 1);
+  CHECK(session.placed().front().quantity_ == Decimal64::parse("1"));
+  // Recorded before it was sent, and answered after.
+  const auto text = file_text(journal.str());
+  CHECK(text.find("\"outcome\":\"pending\"") != std::string::npos);
+  CHECK(text.find("\"outcome\":\"accepted\"") != std::string::npos);
+  CHECK(text.find("fake:demo:1") != std::string::npos);
+}
+
+TEST_CASE("the live program withholds what a previous run left pending", "[live][program]") {
+  const TempPath journal("atl-test-program-pending.jsonl");
+  const TempPath control("atl-test-program-pending.stop");
+  {
+    // A predecessor that died between writing the line and hearing the answer. Stamped at the
+    // program's own start, so the startup sweep's window is still open and cannot call it
+    // `NOT_PLACED` from an empty listing.
+    runner::FileJournal previous(journal.str(), "fake:demo:1");
+    REQUIRE(previous.open());
+    runner::JournalEntry entry;
+    entry.id_ = "previous-1";
+    entry.outcome_ = runner::JournalOutcome::PENDING;
+    entry.recorded_at_ = program_start();
+    entry.instrument_ = samsung();
+    entry.side_ = OrderSide::BUY;
+    entry.quantity_ = Decimal64::parse("1");
+    entry.price_ = Decimal64::parse("70000");
+    REQUIRE(previous.append(entry));
+  }
+  ProgramSession session;
+  script_ready(session);
+  runner::StopSource stop;
+  std::ostringstream out;
+
+  const auto exit = live_program::trade(
+    session, one_share(), program_settings(journal, control), stop, out, runner::ManualClock{program_start()}
+  );
+
+  INFO(out.str());
+  CHECK(exit == live_program::Exit::CLEAN);
+  CHECK(out.str().find("recovery: NOT clean") != std::string::npos);
+  CHECK(out.str().find("withheld until the broker's lists resolve it: 005930") != std::string::npos);
+  // The share it might already have bought is not bought again.
+  CHECK(session.placed().empty());
+}
+
+TEST_CASE("the live program refuses a journal that belongs to another account", "[live][program]") {
+  const TempPath journal("atl-test-program-scope.jsonl");
+  const TempPath control("atl-test-program-scope.stop");
+  {
+    runner::FileJournal other(journal.str(), "fake:live:2");
+    REQUIRE(other.open());
+  }
+  ProgramSession session;
+  script_ready(session);
+  runner::StopSource stop;
+  std::ostringstream out;
+
+  const auto exit = live_program::trade(
+    session, one_share(), program_settings(journal, control), stop, out, runner::ManualClock{program_start()}
+  );
+
+  INFO(out.str());
+  CHECK(exit == live_program::Exit::JOURNAL_REFUSED);
+  CHECK(out.str().find("journal refused") != std::string::npos);
+  CHECK(session.placed().empty());
+  CHECK(session.holdings_calls() == 0);
+}
+
+TEST_CASE("the live program starts nothing without reference data", "[live][program]") {
+  const TempPath journal("atl-test-program-reference.jsonl");
+  const TempPath control("atl-test-program-reference.stop");
+  ProgramSession session;
+  session.set_bars(two_bars("70000", "71000"));
+  runner::StopSource stop;
+  std::ostringstream out;
+
+  const auto exit = live_program::trade(
+    session, one_share(), program_settings(journal, control), stop, out, runner::ManualClock{program_start()}
+  );
+
+  CHECK(exit == live_program::Exit::REFERENCE_UNREADABLE);
+  CHECK(session.placed().empty());
+  CHECK(session.holdings_calls() == 0);
+}
+
+TEST_CASE("the live program's observer sends nothing and opens no journal", "[live][program]") {
+  const TempPath journal("atl-test-program-observe.jsonl");
+  const TempPath control("atl-test-program-observe.stop");
+  ProgramSession session;
+  script_ready(session);
+  runner::StopSource stop;
+  std::ostringstream out;
+
+  const auto exit = live_program::observe(
+    session, one_share(), program_settings(journal, control), stop, out, runner::ManualClock{program_start()}
+  );
+
+  INFO(out.str());
+  CHECK(exit == live_program::Exit::CLEAN);
+  CHECK(session.placed().empty());
+  CHECK_FALSE(file_exists(journal.str()));
+  CHECK(out.str().find("observing: nothing can be sent") != std::string::npos);
+  // The observer's report does not claim a close it could not have made.
+  CHECK(out.str().find("closing complete") == std::string::npos);
+  CHECK(out.str().find("simulated") != std::string::npos);
+}
+
+TEST_CASE("the live program stops by its control file and reports the closing pass", "[live][program]") {
+  const TempPath journal("atl-test-program-control.jsonl");
+  const TempPath control("atl-test-program-control.stop");
+  write_text(control.str(), "withdraw\n");
+  ProgramSession session;
+  script_ready(session);
+  runner::StopSource stop;
+  std::ostringstream out;
+
+  const auto exit = live_program::trade(
+    session, one_share(), program_settings(journal, control), stop, out, runner::ManualClock{program_start()}
+  );
+
+  INFO(out.str());
+  CHECK(out.str().find("stopped by      : withdraw") != std::string::npos);
+  // A withdraw before the order list was ever read cannot know what it owed, so it is not complete,
+  // and the program exits saying so.
+  CHECK(out.str().find("closing complete: NO") != std::string::npos);
+  CHECK(exit == live_program::Exit::CLOSING_INCOMPLETE);
+  CHECK(session.placed().empty());
+}
+
+TEST_CASE("the live program exits as abandoned when polling keeps failing", "[live][program]") {
+  const TempPath journal("atl-test-program-abandon.jsonl");
+  const TempPath control("atl-test-program-abandon.stop");
+  ProgramSession session;
+  script_ready(session);
+  session.fail_with(ErrorCategory::TRANSPORT);
+  auto settings = program_settings(journal, control);
+  settings.max_iterations_ = 200;
+  runner::StopSource stop;
+  std::ostringstream out;
+
+  const auto exit = live_program::trade(
+    session, one_share(), settings, stop, out, runner::ManualClock{program_start()}
+  );
+
+  INFO(out.str());
+  CHECK(exit == live_program::Exit::LOOP_ABANDONED);
+  CHECK(out.str().find("ABANDONED") != std::string::npos);
+  CHECK(session.placed().empty());
 }

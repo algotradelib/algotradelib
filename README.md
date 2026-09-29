@@ -197,49 +197,46 @@ engine.finish();
 const auto report = backtest::summarize(engine.result(), engine.fills(), periods_per_year);
 ```
 
-**Run it live.** Binding a broker is choosing a type parameter; the loop owns the cadence, the stop
-control, and the two gates that refuse to trade before the broker's own order list has been read.
-Bind **through a journal**: without one, an order in flight when the process dies is invisible to the
-next start, and the next start may send it again.
+**Run it live.** Copy [`examples/example-live-program.cpp`](examples/example-live-program.cpp) and
+[`examples/live_program.hpp`](examples/live_program.hpp), and replace the strategy — `BuyAndHold` of one
+share — with yours. It is the production path, for KIS, Kiwoom and Toss:
 
-```cpp
-#include <algotradelib/live>
-#include <algotradelib/runner>
-
-// One journal per account, and a scope naming that account, its broker and demo or live. The header
-// records the scope, and a file whose header names another refuses to open -- which is what stops one
-// account's unresolved orders being read as another's. Both strings are yours to derive; these are
-// placeholders.
-const std::string scope = "kis:demo:<account>";
-runner::FileJournal journal("/var/lib/mybot/kis-demo-<account>.jsonl", scope);
-if (!journal.open()) {
-  std::cerr << journal.rejection() << '\n';
-  return 1;   // a runner that cannot journal should not trade
-}
-
-// `bind_journaled`, never `bind`, for anything that places orders.
-auto live_runner = live::bind_journaled(session, journal, MyStrategy{}, limits);
-
-// Before the loop starts: withhold whatever a previous process left unresolved.
-const auto recovery = runner::recover_runner(live_runner, journal);
-
-live::SessionSource<Session, runner::FileJournal> source(session, {samsung()});
-source.set_journal(journal);   // lets the listings the source reads resolve the journal
-
-runner::PollSchedule schedule;
-schedule.bars_ = std::chrono::minutes(1);
-schedule.holdings_ = std::chrono::seconds(30);
-
-runner::PollingLoop loop(live_runner, source, schedule);
-// Mandatory: state a maximum, or `allow_unbounded_portfolio_age()` to accept any. A run that
-// states neither holds, because sizing against a portfolio nobody bounded is how this went wrong.
-loop.set_maximum_portfolio_age(std::chrono::minutes(2));
-
-runner::StopSource stop;
-runner::SignalStop::install(stop);
-const auto report = loop.run(stop);
+```sh
+export KIS_APP_KEY=... KIS_APP_SECRET=... KIS_CANO=... KIS_DEMO=1
+./build/bin/example-live-program kis 005930           # observe: real data, nothing can be sent
+./build/bin/example-live-program kis 005930 --live    # trade, through a journal
 ```
 
+Without `--live` the runner is bound with `live::bind_observer`, which has nothing to send through.
+With it, `live_program::trade` does what a restartable run needs, in the order it needs it:
+
+```cpp
+runner::FileJournal journal(settings.journal_path_, settings.journal_scope_);  // one per account
+if (!journal.open()) { /* a runner that cannot record what it sends does not send */ }
+
+auto bound = live::bind_journaled(session, journal, std::move(strategy), settings.limits_);
+const auto recovery = runner::recover_runner(bound, journal);  // printed; a global halt stops here
+// ... reference data for each instrument, then:
+live::SessionSource<Session, runner::FileJournal> source(session, settings.universe_);
+source.set_journal(journal);                    // lets the listings it reads resolve the journal
+
+runner::PollingLoop<decltype(bound), decltype(source), Clock> loop(bound, source, settings.schedule_);
+loop.set_maximum_portfolio_age(settings.maximum_portfolio_age_);        // every age stated
+loop.set_maximum_price_limits_age(settings.maximum_price_limits_age_);
+loop.set_control_file(runner::FileStopChannel(settings.control_file_)); // echo withdraw > it
+const auto report = loop.run(stop);             // stop also comes from SIGINT / SIGTERM
+// ... the report, its notes, and closing_complete()
+```
+
+The journal is named after the account and scoped to broker, demo or live, and account, so a demo
+journal refuses to continue as a live one. The exit code tells the endings apart: 0 clean, 1 a closing
+pass that did not get everything out, 2 journal refused, 3 recovery halted (the program prints the
+manual procedure), 4 reference data unreadable, 5 polling abandoned, 6 a local failure during the run
+(usually a journal write; read the broker's order list), 7 the account could not be settled (a Toss
+key reaching several accounts needs `--toss-account`). The strategy first acts on the bar after the ones
+read at start: the loop polls bars before holdings, and a decision made against an account not yet read
+is withheld rather than sized against nothing — on daily bars, that is the next close. The buying-power
+guard is left off, its default. **On Kiwoom it places nothing yet** — see "Brokers and accounts" below.
 [Recovering after a crash](doxygen/vignettes/recovering-after-a-crash.md) explains each step and the
 verdicts `recover_runner` returns.
 
