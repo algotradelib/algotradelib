@@ -3977,15 +3977,16 @@ TEST_CASE("a fill at an open-stamped day bar's open is costed on that day and no
 }
 
 TEST_CASE("a fill at an open-stamped month's open is costed in that month", "[backtest][costs]") {
-  // February's bar is stamped 1 February; its nominal end is 31 days later, 4 March, after the rate
-  // changed on 1 March. The fill is priced at February's open and belongs to February's rate.
+  // February's bar is stamped on its first trading day, 2 February; its nominal end is 31 days later,
+  // 5 March, after the rate changed on 1 March. The fill is priced at February's open and belongs to
+  // February's rate.
   backtest::Backtester<BuysOnceThenHolds> engine(
     BuysOnceThenHolds{}, replay_config(),
     backtest::NextBarFillModel(rate_change(Date{2026, 2, 28}, Date{2026, 3, 1}))
   );
-  engine.feed(open_stamped(2026, 1, 1, BarInterval::ONE_MONTH, "70000"));
-  engine.feed(open_stamped(2026, 2, 1, BarInterval::ONE_MONTH, "70000"));
-  engine.feed(open_stamped(2026, 3, 1, BarInterval::ONE_MONTH, "70000"));
+  engine.feed(open_stamped(2026, 1, 2, BarInterval::ONE_MONTH, "70000"));
+  engine.feed(open_stamped(2026, 2, 2, BarInterval::ONE_MONTH, "70000"));
+  engine.feed(open_stamped(2026, 3, 2, BarInterval::ONE_MONTH, "70000"));
   engine.finish();
 
   REQUIRE_FALSE(engine.result().halted_);
@@ -3999,16 +4000,16 @@ TEST_CASE("a fill at an open-stamped month's open is costed in that month", "[ba
 TEST_CASE("a limit priced inside an open-stamped month keeps the period-end date", "[backtest][costs]") {
   // **The partial scope, pinned.** Under `AT_LIMIT` a limit is priced at the limit, somewhere inside
   // the month, and nothing says which day: this branch dates only a fill at the open. The limit keeps
-  // the old dating -- the nominal 4 March, so the March rate -- until
+  // the old dating -- the nominal 5 March, so the March rate -- until
   // `plan/todo/nominal-period-end-dates-a-fill.md` settles it; a change that widened or shrank the
   // correction would move this figure.
   backtest::Backtester<BuysOneLimit> engine(
     BuysOneLimit{}, replay_config(),
     backtest::NextBarFillModel(rate_change(Date{2026, 2, 28}, Date{2026, 3, 1}))
   );
-  engine.feed(open_stamped(2026, 1, 1, BarInterval::ONE_MONTH, "70000"));
-  engine.feed(open_stamped(2026, 2, 1, BarInterval::ONE_MONTH, "70000"));
-  engine.feed(open_stamped(2026, 3, 1, BarInterval::ONE_MONTH, "70000"));
+  engine.feed(open_stamped(2026, 1, 2, BarInterval::ONE_MONTH, "70000"));
+  engine.feed(open_stamped(2026, 2, 2, BarInterval::ONE_MONTH, "70000"));
+  engine.feed(open_stamped(2026, 3, 2, BarInterval::ONE_MONTH, "70000"));
   engine.finish();
 
   REQUIRE_FALSE(engine.result().halted_);
