@@ -4790,16 +4790,578 @@ struct PlacesAStop {
 
 } // namespace
 
-TEST_CASE("a replay reports the stop it will not model rather than dropping it", "[trigger]") {
-  // The parity gap is visible where a reader of the result looks: live, this order goes to the
-  // broker; replayed, it is in the rejection bucket with its tag, and nothing filled.
+TEST_CASE("a replay models the stop a strategy places", "[trigger]") {
+  // Parity with a live run, where this order goes to the broker: the stop is queued, released by the
+  // bar that falls through its trigger, filled at its limit, and counted as the intrabar assumption.
   backtest::Backtester<PlacesAStop> engine(PlacesAStop{}, replay_config());
   engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
-  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "68000"));
+  // A day that opens above the trigger and falls through it. (`moving_bar` makes its low the open,
+  // which cannot describe a fall.)
+  Bar falling;
+  falling.timestamp_ = utc(2026, 3, 11, 6, 30);
+  falling.open_ = Decimal64::parse("70000");
+  falling.high_ = Decimal64::parse("70000");
+  falling.low_ = Decimal64::parse("68000");
+  falling.close_ = Decimal64::parse("68000");
+  falling.volume_ = Decimal64::parse("1000");
+  engine.feed(strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, falling));
+  engine.finish();
+
+  CHECK(engine.result().rejected_.empty());
+  REQUIRE(engine.result().executions_.size() == 1);
+  const auto& fill = engine.result().executions_[0].fill_;
+  CHECK(fill.side_ == OrderSide::SELL);
+  CHECK(fill.price_ == Decimal64::parse("69000"));
+  CHECK(fill.tag_ == "stop");
+  CHECK(engine.result().stop_releases_ == 1);
+  CHECK(engine.result().stop_fills_intrabar_ == 1);
+}
+
+namespace {
+
+/** A sell stop-limit, as `reconcile` plans one. */
+strategy::PlannedOrder sell_stop(const char* trigger, const char* limit) {
+  auto order = order_of(OrderSide::SELL, "10", OrderType::STOP_LIMIT, limit);
+  order.trigger_price_ = Decimal64::parse(trigger);
+  return order;
+}
+
+/** A buy stop-limit. */
+strategy::PlannedOrder buy_stop(const char* trigger, const char* limit) {
+  auto order = order_of(OrderSide::BUY, "10", OrderType::STOP_LIMIT, limit);
+  order.trigger_price_ = Decimal64::parse(trigger);
+  return order;
+}
+
+} // namespace
+
+TEST_CASE("a dormant stop waits for a bar that reaches its trigger", "[trigger]") {
+  const backtest::NextBarFillModel model;
+  const auto sell = model.decide(
+    sell_stop("68500", "68000"), ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date()
+  );
+  CHECK_FALSE(sell.execution_);
+  CHECK_FALSE(sell.released_);
+  CHECK(sell.still_working_);
+
+  const auto buy = model.decide(
+    buy_stop("71500", "72000"), ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date()
+  );
+  CHECK_FALSE(buy.execution_);
+  CHECK_FALSE(buy.released_);
+  CHECK(buy.still_working_);
+}
+
+TEST_CASE("a stop released inside the bar fills at its limit, never better", "[trigger]") {
+  for (const auto policy : {backtest::LimitFillPrice::AT_LIMIT, backtest::LimitFillPrice::AT_OPEN_IF_BETTER}) {
+    const backtest::NextBarFillModel model(
+      backtest::CommissionModel::none(), backtest::SlippageModel::none(), policy
+    );
+    INFO("policy " << static_cast<int>(policy));
+    // The open is above the trigger and the low below it: released inside the bar, where the price
+    // was the trigger, at which a sell limited at 69,000 is marketable.
+    const auto sell = model.decide(
+      sell_stop("69500", "69000"), ohlc("70000", "70500", "68000", "68500"), krx_grid(), fill_date()
+    );
+    REQUIRE(sell.execution_);
+    CHECK(sell.released_);
+    CHECK(sell.intrabar_release_fill_);
+    CHECK(sell.execution_->fill_.price_ == Decimal64::parse("69000"));
+
+    const auto buy = model.decide(
+      buy_stop("70500", "71000"), ohlc("70000", "72000", "69500", "71500"), krx_grid(), fill_date()
+    );
+    REQUIRE(buy.execution_);
+    CHECK(buy.intrabar_release_fill_);
+    CHECK(buy.execution_->fill_.price_ == Decimal64::parse("71000"));
+  }
+}
+
+TEST_CASE("a stop released inside the bar whose limit was not marketable rests", "[trigger]") {
+  const backtest::NextBarFillModel model;
+  // A sell stop limited *above* its trigger: at the release the price was 69,500 and the limit wants
+  // 69,800. The bar's high came before or after -- it cannot say -- so it does not fill here.
+  const auto released = model.decide(
+    sell_stop("69500", "69800"), ohlc("70000", "70500", "68000", "68500"), krx_grid(), fill_date()
+  );
+  CHECK_FALSE(released.execution_);
+  CHECK(released.released_);
+  CHECK(released.still_working_);
+
+  // The next bar treats it as the limit it has become.
+  const auto later = model.decide(
+    sell_stop("69500", "69800"), ohlc("69000", "70000", "68800", "69900"), krx_grid(), fill_date(),
+    std::nullopt, true
+  );
+  REQUIRE(later.execution_);
+  CHECK_FALSE(later.released_);
+  CHECK_FALSE(later.intrabar_release_fill_);
+  CHECK(later.execution_->fill_.price_ == Decimal64::parse("69800"));
+}
+
+TEST_CASE("a stop the open gapped through is priced as a limit against the whole bar", "[trigger]") {
+  const backtest::NextBarFillModel at_limit;
+  const backtest::NextBarFillModel open_if_better(
+    backtest::CommissionModel::none(),
+    backtest::SlippageModel::none(),
+    backtest::LimitFillPrice::AT_OPEN_IF_BETTER
+  );
+
+  SECTION("through the trigger and not the limit") {
+    const auto bar = ohlc("69200", "69400", "68000", "68500");
+    const auto limit = at_limit.decide(sell_stop("69500", "69000"), bar, krx_grid(), fill_date());
+    REQUIRE(limit.execution_);
+    CHECK(limit.released_);
+    CHECK_FALSE(limit.intrabar_release_fill_);
+    CHECK(limit.execution_->fill_.price_ == Decimal64::parse("69000"));
+    const auto open = open_if_better.decide(sell_stop("69500", "69000"), bar, krx_grid(), fill_date());
+    REQUIRE(open.execution_);
+    CHECK(open.execution_->fill_.price_ == Decimal64::parse("69200"));
+  }
+
+  SECTION("through both, and the bar never came back to the limit") {
+    const auto gapped = at_limit.decide(
+      sell_stop("69500", "69000"), ohlc("68000", "68800", "67500", "68200"), krx_grid(), fill_date()
+    );
+    CHECK_FALSE(gapped.execution_);
+    CHECK(gapped.released_);
+    CHECK(gapped.still_working_);
+  }
+
+  SECTION("a buy stop gapped through") {
+    const auto buy = at_limit.decide(
+      buy_stop("70500", "71000"), ohlc("70800", "71500", "70600", "71200"), krx_grid(), fill_date()
+    );
+    REQUIRE(buy.execution_);
+    CHECK_FALSE(buy.intrabar_release_fill_);
+    CHECK(buy.execution_->fill_.price_ == Decimal64::parse("71000"));
+  }
+}
+
+TEST_CASE("the replay queues only a stop it can release", "[trigger]") {
+  ReplayExecutor executor;
+  auto modelled = resting_buy("10", "60000");
+  modelled.type_ = OrderType::STOP_LIMIT;
+  modelled.trigger_price_ = Decimal64::parse("59500");
+  REQUIRE(executor.place(modelled) == runner::SendOutcome::ACCEPTED);
+
+  auto no_trigger = modelled;
+  no_trigger.trigger_price_.reset();
+  CHECK(executor.place(no_trigger) == runner::SendOutcome::REFUSED_LOCALLY);
+  auto immediate = modelled;
+  immediate.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
+  CHECK(executor.place(immediate) == runner::SendOutcome::REFUSED_LOCALLY);
+  auto after_hours = modelled;
+  after_hours.session_ = OrderSession::AFTER_HOURS;
+  CHECK(executor.place(after_hours) == runner::SendOutcome::REFUSED_LOCALLY);
+  CHECK(executor.queued().size() == 1);
+
+  // Released and withdrawn by its reference like any queued order.
+  const auto ref = executor.queued().front().ref_;
+  CHECK(executor.release(ref));
+  CHECK(executor.queued().front().released_);
+  CHECK(executor.cancel(withdrawal_of(ref)) == runner::SendOutcome::ACCEPTED);
+  CHECK(executor.queued().empty());
+}
+
+namespace {
+
+/** Places a protective stop on the first bar and asks to be flat on every later one. */
+struct StopsThenTargetsFlat {
+  int bars_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (++bars_ == 1) {
+      strategy::TargetPosition entry;
+      entry.instrument_ = bar.instrument_;
+      entry.target_quantity_ = Decimal64::parse("10");
+      ctx.submit(entry);
+      return;
+    }
+    if (bars_ == 2) {
+      ctx.submit(strategy::OrderIntent::stop_limit(
+        bar.instrument_,
+        OrderSide::SELL,
+        strategy::SizeSpec::quantity(Decimal64::parse("10")),
+        *strategy::Price::checked(Decimal64::parse("66500"), PriceRule::krx_equity()),
+        *strategy::Price::checked(Decimal64::parse("66000"), PriceRule::krx_equity())
+      ).with_tag("stop"));
+      return;
+    }
+    strategy::TargetPosition flat;
+    flat.instrument_ = bar.instrument_;
+    flat.target_quantity_ = Decimal64::parse("0");
+    flat.tag_ = "flat";
+    ctx.submit(flat);
+  }
+};
+
+} // namespace
+
+TEST_CASE("a queued stop is withdrawn before a flatten in a replay as it is live", "[trigger]") {
+  // The parity this slice exists for: the working row a replay shows is a stop row with its trigger,
+  // so the target rule refuses exactly as it would against a live listing.
+  backtest::Backtester<StopsThenTargetsFlat> engine(StopsThenTargetsFlat{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+
+  // Bar 3's flatten withdraws the stop and sells nothing beside it; bar 4 restates it against a book
+  // with no stop, and bar 5 fills the sale -- the sequence a live run takes.
+  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 16, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
   engine.finish();
 
   REQUIRE(engine.result().rejected_.size() == 1);
-  CHECK(engine.result().rejected_[0].reason_ == strategy::RejectReason::BINDING_REFUSED);
-  CHECK(engine.result().rejected_[0].tag_ == "stop");
-  CHECK(engine.result().executions_.empty());
+  CHECK(engine.result().rejected_[0].reason_ == strategy::RejectReason::STOP_ORDER_RESTING);
+  REQUIRE(engine.result().executions_.size() == 2);
+  CHECK(engine.result().executions_[0].fill_.side_ == OrderSide::BUY);
+  CHECK(engine.result().executions_[1].fill_.side_ == OrderSide::SELL);
+  CHECK(engine.result().executions_[1].fill_.tag_ == "flat");
+  CHECK(engine.result().stop_releases_ == 0);
+  CHECK(engine.result().unfilled_ == 0);
+}
+
+TEST_CASE("a stop released inside the bar is credited a price the bar traded", "[trigger]") {
+  const backtest::NextBarFillModel model;
+
+  SECTION("a limit below the bar's low is credited the low, not the limit") {
+    // Released at 69,500 and marketable there, but the bar never traded below 69,000: crediting the
+    // 68,000 limit would name a price nobody could have been filled at.
+    const auto sell = model.decide(
+      sell_stop("69500", "68000"), ohlc("70000", "70500", "69000", "69200"), krx_grid(), fill_date()
+    );
+    REQUIRE(sell.execution_);
+    CHECK(sell.intrabar_release_fill_);
+    CHECK(sell.execution_->fill_.price_ == Decimal64::parse("69000"));
+
+    const auto buy = model.decide(
+      buy_stop("70500", "72000"), ohlc("70000", "71000", "69500", "70800"), krx_grid(), fill_date()
+    );
+    REQUIRE(buy.execution_);
+    CHECK(buy.execution_->fill_.price_ == Decimal64::parse("71000"));
+  }
+
+  SECTION("a limit the close proves the price came back to fills on the same bar") {
+    // Limited above the trigger, so not marketable at the release -- but the close is always last, and
+    // at 69,900 it proves the price rose through the 69,800 limit after falling through 69,500.
+    const auto sell = model.decide(
+      sell_stop("69500", "69800"), ohlc("70000", "70500", "68000", "69900"), krx_grid(), fill_date()
+    );
+    REQUIRE(sell.execution_);
+    CHECK(sell.intrabar_release_fill_);
+    CHECK(sell.execution_->fill_.price_ == Decimal64::parse("69800"));
+
+    const auto buy = model.decide(
+      buy_stop("70500", "70200"), ohlc("70000", "71500", "69800", "70100"), krx_grid(), fill_date()
+    );
+    REQUIRE(buy.execution_);
+    CHECK(buy.execution_->fill_.price_ == Decimal64::parse("70200"));
+  }
+
+  SECTION("a bar with no open releases inside the bar, never at an open it did not state") {
+    auto bar = ohlc("70000", "71000", "68000", "68000");
+    bar.bar_.open_.reset();
+    // Limited above the trigger with a close below it: whether 69,800 traded after the release is
+    // unknowable, so it rests.
+    const auto rests = model.decide(sell_stop("69500", "69800"), bar, krx_grid(), fill_date());
+    CHECK_FALSE(rests.execution_);
+    CHECK(rests.released_);
+    CHECK(rests.still_working_);
+  }
+}
+
+TEST_CASE("a stop fill is never credited through its limit, slippage included", "[trigger]") {
+  const backtest::NextBarFillModel slipping(
+    backtest::CommissionModel::none(),
+    backtest::SlippageModel::of_basis_points(Decimal64::parse("10"))
+  );
+  // Credited 69,000 before slippage; ten basis points would record 68,931, below the limit.
+  const auto sell = slipping.decide(
+    sell_stop("69500", "69000"), ohlc("70000", "70500", "68000", "68500"), krx_grid(), fill_date()
+  );
+  REQUIRE(sell.execution_);
+  CHECK(sell.execution_->fill_.price_ == Decimal64::parse("69000"));
+
+  // Credited the bar's 69,000 low with the limit far below: ten basis points would record 68,931,
+  // below every price the bar showed, so it is held at the low.
+  const auto out_of_bar = slipping.decide(
+    sell_stop("69500", "68000"), ohlc("70000", "70500", "69000", "69200"), krx_grid(), fill_date()
+  );
+  REQUIRE(out_of_bar.execution_);
+  CHECK(out_of_bar.execution_->fill_.price_ == Decimal64::parse("69000"));
+
+  // Where the bar leaves room, slippage still applies: opened at 69,200 through the trigger and
+  // credited the open under `AT_OPEN_IF_BETTER`, it slips to 69,130.8, above the 69,000 low.
+  const backtest::NextBarFillModel roomy_model(
+    backtest::CommissionModel::none(),
+    backtest::SlippageModel::of_basis_points(Decimal64::parse("10")),
+    backtest::LimitFillPrice::AT_OPEN_IF_BETTER
+  );
+  const auto roomy = roomy_model.decide(
+    sell_stop("69500", "68000"), ohlc("69200", "69400", "69000", "69100"), krx_grid(), fill_date()
+  );
+  REQUIRE(roomy.execution_);
+  CHECK(roomy.execution_->fill_.price_ == Decimal64::parse("69130.8"));
+}
+
+TEST_CASE("a stop released at the open is never credited outside its bar", "[trigger]") {
+  // `AT_LIMIT` credits a plain limit its limit, and a bar that opened through a stop's trigger with a
+  // limit far beyond it never traded there: the credit is the bar's own worst price instead.
+  const backtest::NextBarFillModel model;
+  const auto sell = model.decide(
+    sell_stop("69500", "68000"), ohlc("69200", "69400", "69000", "69100"), krx_grid(), fill_date()
+  );
+  REQUIRE(sell.execution_);
+  CHECK_FALSE(sell.intrabar_release_fill_);
+  CHECK(sell.execution_->fill_.price_ == Decimal64::parse("69000"));
+
+  const auto buy = model.decide(
+    buy_stop("70500", "72000"), ohlc("70800", "71000", "70600", "70900"), krx_grid(), fill_date()
+  );
+  REQUIRE(buy.execution_);
+  CHECK(buy.execution_->fill_.price_ == Decimal64::parse("71000"));
+}
+
+TEST_CASE("a stop released at the open is dated from the open whatever the price policy", "[trigger][costs]") {
+  // The same rate change as the open-stamped costing tests: 0.2% through the 11th, 0.1% from the 12th.
+  const backtest::NextBarFillModel model(rate_change(Date{2026, 3, 11}, Date{2026, 3, 12}));
+  const auto open_day = std::optional<Date>(Date{2026, 3, 11});
+  const Date nominal_end{2026, 3, 12};
+
+  // Opened below the trigger and above the limit: released and marketable at the open, credited the
+  // limit under `AT_LIMIT` -- and it traded at the open, on the 11th.
+  const auto at_open = model.decide(
+    sell_stop("69500", "69000"), ohlc("69200", "69400", "68000", "68500"), krx_grid(), nominal_end,
+    open_day
+  );
+  REQUIRE(at_open.execution_);
+  CHECK(at_open.execution_->fill_.price_ == Decimal64::parse("69000"));
+  CHECK(at_open.execution_->applied_.rate_ == Decimal64::parse("0.002"));
+
+  // Released inside the bar: no known day, so the period end's, as for any intrabar fill.
+  const auto inside = model.decide(
+    sell_stop("69500", "69000"), ohlc("70000", "70500", "68000", "68500"), krx_grid(), nominal_end,
+    open_day
+  );
+  REQUIRE(inside.execution_);
+  CHECK(inside.execution_->applied_.rate_ == Decimal64::parse("0.001"));
+}
+
+namespace {
+
+/** Places one sell stop at a stated trigger and limit on the first bar. */
+struct PlacesStopAt {
+  const char* trigger_;
+  const char* limit_;
+  bool sent_{false};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (sent_) {
+      return;
+    }
+    sent_ = true;
+    ctx.submit(strategy::OrderIntent::stop_limit(
+      bar.instrument_,
+      OrderSide::SELL,
+      strategy::SizeSpec::quantity(Decimal64::parse("10")),
+      *strategy::Price::checked(Decimal64::parse(trigger_), PriceRule::krx_equity()),
+      *strategy::Price::checked(Decimal64::parse(limit_), PriceRule::krx_equity())
+    ));
+  }
+};
+
+strategy::BarEvent stop_bar(int day, const char* o, const char* h, const char* l, const char* c) {
+  Bar bar;
+  bar.timestamp_ = utc(2026, 3, day, 6, 30);
+  bar.open_ = Decimal64::parse(o);
+  bar.high_ = Decimal64::parse(h);
+  bar.low_ = Decimal64::parse(l);
+  bar.close_ = Decimal64::parse(c);
+  bar.volume_ = Decimal64::parse("1000");
+  return strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, bar);
+}
+
+} // namespace
+
+TEST_CASE("a released stop stays released on the bars after", "[trigger]") {
+  // Released on the 11th -- the low fell through 69,500 -- with a limit above the trigger the close
+  // did not come back to, so it rests. The 12th never reaches the trigger again; as the limit it has
+  // become, its 70,000 high fills it. Treated as dormant again, it would never trade.
+  backtest::Backtester<PlacesStopAt> engine(PlacesStopAt{"69500", "69800"}, replay_config());
+  engine.feed(stop_bar(10, "70000", "70000", "70000", "70000"));
+  engine.feed(stop_bar(11, "70000", "70500", "69000", "69200"));
+  REQUIRE(engine.result().executions_.empty());
+  engine.feed(stop_bar(12, "69900", "70000", "69700", "69950"));
+  engine.finish();
+
+  REQUIRE(engine.result().executions_.size() == 1);
+  CHECK(engine.result().executions_[0].fill_.price_ == Decimal64::parse("69800"));
+  CHECK(engine.result().stop_releases_ == 1);
+  CHECK(engine.result().stop_fills_intrabar_ == 0);
+}
+
+namespace {
+
+/** Enters on bar 1, protects on bar 2, and states a flatten exactly once, on bar 3. */
+struct FlattensOnce {
+  int bars_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ++bars_;
+    if (bars_ == 1) {
+      strategy::TargetPosition entry;
+      entry.instrument_ = bar.instrument_;
+      entry.target_quantity_ = Decimal64::parse("10");
+      ctx.submit(entry);
+    } else if (bars_ == 2) {
+      ctx.submit(strategy::OrderIntent::stop_limit(
+        bar.instrument_,
+        OrderSide::SELL,
+        strategy::SizeSpec::quantity(Decimal64::parse("10")),
+        *strategy::Price::checked(Decimal64::parse("66500"), PriceRule::krx_equity()),
+        *strategy::Price::checked(Decimal64::parse("66000"), PriceRule::krx_equity())
+      ));
+    } else if (bars_ == 3) {
+      strategy::TargetPosition flat;
+      flat.instrument_ = bar.instrument_;
+      flat.target_quantity_ = Decimal64::parse("0");
+      flat.tag_ = "flat";
+      ctx.submit(flat);
+    }
+  }
+};
+
+} // namespace
+
+TEST_CASE("a replay's deferred flatten goes the bar its stop is withdrawn", "[trigger]") {
+  // **Codex round 2's first blocker.** The replay withdraws a stop synchronously, so the flatten the
+  // runner deferred behind it is placed in the same bar and fills on the next -- stated once, with no
+  // restatement to lean on. Waiting for the next bar's portfolio filled it a bar later than live.
+  backtest::Backtester<FlattensOnce> engine(FlattensOnce{}, replay_config());
+  engine.feed(stop_bar(10, "70000", "70000", "70000", "70000"));
+  engine.feed(stop_bar(11, "70000", "70000", "70000", "70000"));
+  engine.feed(stop_bar(12, "70000", "70000", "70000", "70000"));
+  REQUIRE(engine.result().executions_.size() == 1);
+  engine.feed(stop_bar(13, "71000", "71000", "71000", "71000"));
+  engine.finish();
+
+  REQUIRE(engine.result().executions_.size() == 2);
+  CHECK(engine.result().executions_[1].fill_.side_ == OrderSide::SELL);
+  CHECK(engine.result().executions_[1].fill_.tag_ == "flat");
+  CHECK(engine.result().executions_[1].fill_.price_ == Decimal64::parse("71000"));
+}
+
+TEST_CASE("negative slippage never lifts a stop fill past its bar", "[trigger]") {
+  // **Codex round 2's second blocker.** `SlippageModel` accepts a negative figure, which moves a fill
+  // in the order's favour; past the bar's opposite extreme that is a price the bar never showed.
+  const backtest::NextBarFillModel generous(
+    backtest::CommissionModel::none(),
+    backtest::SlippageModel::of_basis_points(Decimal64::parse("-1000"))
+  );
+  const auto sell = generous.decide(
+    sell_stop("69500", "68000"), ohlc("69200", "69400", "69000", "69100"), krx_grid(), fill_date()
+  );
+  REQUIRE(sell.execution_);
+  CHECK(sell.execution_->fill_.price_ == Decimal64::parse("69400"));
+
+  const auto buy = generous.decide(
+    buy_stop("70500", "72000"), ohlc("70800", "71000", "70600", "70900"), krx_grid(), fill_date()
+  );
+  REQUIRE(buy.execution_);
+  CHECK(buy.execution_->fill_.price_ == Decimal64::parse("70600"));
+}
+
+TEST_CASE("favourable slippage cannot credit a price the bar reached before the release", "[trigger]") {
+  // **Codex round 3's second blocker.** `70,000 -> 70,500 -> 69,000 -> 69,200` is a valid path for this
+  // bar: its high came before the 69,500 trigger, and after the release the price never returned
+  // above 69,500. Negative slippage used to lift the fill to that high.
+  const backtest::NextBarFillModel generous(
+    backtest::CommissionModel::none(),
+    backtest::SlippageModel::of_basis_points(Decimal64::parse("-1000"))
+  );
+  const auto sell = generous.decide(
+    sell_stop("69500", "68000"), ohlc("70000", "70500", "69000", "69200"), krx_grid(), fill_date()
+  );
+  REQUIRE(sell.execution_);
+  CHECK(sell.intrabar_release_fill_);
+  CHECK(sell.execution_->fill_.price_ == Decimal64::parse("69000"));
+
+  const auto buy = generous.decide(
+    buy_stop("70500", "72000"), ohlc("70000", "71000", "69500", "70800"), krx_grid(), fill_date()
+  );
+  REQUIRE(buy.execution_);
+  CHECK(buy.intrabar_release_fill_);
+  CHECK(buy.execution_->fill_.price_ == Decimal64::parse("71000"));
+}
+
+namespace {
+
+/**
+ * Holds ten behind a stop and answers order updates: the first update it sees for the stop states
+ * flat, and a second, for another order, buys the instrument back instead.
+ */
+struct ChangesItsMindInOneBatch {
+  int bars_{0};
+  int updates_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ++bars_;
+    if (bars_ == 1) {
+      strategy::TargetPosition entry;
+      entry.instrument_ = bar.instrument_;
+      entry.target_quantity_ = Decimal64::parse("10");
+      ctx.submit(entry);
+    } else if (bars_ == 2) {
+      ctx.submit(strategy::OrderIntent::stop_limit(
+        bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")),
+        *strategy::Price::checked(Decimal64::parse("66500"), PriceRule::krx_equity()),
+        *strategy::Price::checked(Decimal64::parse("66000"), PriceRule::krx_equity())
+      ));
+      ctx.submit(strategy::OrderIntent::limit(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")),
+        *strategy::Price::checked(Decimal64::parse("60000"), PriceRule::krx_equity())
+      ));
+    }
+  }
+
+  template <class Ctx>
+  void on_order_update(Ctx& ctx, const OrderSnapshot& order) {
+    ++updates_;
+    if (order.type_ == OrderType::STOP_LIMIT) {
+      strategy::TargetPosition flat;
+      flat.instrument_ = order.instrument_;
+      flat.target_quantity_ = Decimal64::parse("0");
+      ctx.submit(flat);
+    } else if (order.type_ == OrderType::LIMIT && order.side_ == OrderSide::BUY) {
+      ctx.submit(strategy::OrderIntent::limit(
+        order.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")),
+        *strategy::Price::checked(Decimal64::parse("60000"), PriceRule::krx_equity())
+      ));
+    }
+  }
+};
+
+} // namespace
+
+TEST_CASE("a replay releases a deferred target only after the whole update batch", "[trigger]") {
+  // **Codex round 3's first blocker.** The stop's update makes the strategy state flat, which withdraws
+  // the stop and defers flat; a later update in the same batch answers with an `OrderIntent` for the
+  // instrument, which supersedes the fallback. Released after the first update, the sell was already
+  // queued and both would trade.
+  backtest::Backtester<ChangesItsMindInOneBatch> engine(ChangesItsMindInOneBatch{}, replay_config());
+  engine.feed(stop_bar(10, "70000", "70000", "70000", "70000"));
+  engine.feed(stop_bar(11, "70000", "70000", "70000", "70000"));
+  engine.feed(stop_bar(12, "70000", "70000", "70000", "70000"));
+  engine.feed(stop_bar(13, "70000", "70000", "70000", "70000"));
+  engine.finish();
+
+  for (const auto& execution : engine.result().executions_) {
+    INFO("execution " << execution.fill_.tag_);
+    CHECK(execution.fill_.side_ == OrderSide::BUY);
+  }
 }
