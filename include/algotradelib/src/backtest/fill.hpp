@@ -55,6 +55,15 @@ struct FillDecision {
    * its open and its extremes could have ordered differently. Counted by the report.
    */
   bool intrabar_release_fill_{false};
+  /**
+   * Whether a limit-basis fill's credit was moved by the bound in `decide` -- onto its bar, back to its
+   * limit, or back from the bar's opposite extreme that negative slippage reached. Counted by the
+   * report, so a reader sees how often the model declined to credit a price the bar never showed.
+   *
+   * A stop released inside its bar is credited by `intrabar_release_price`, which chooses a price
+   * inside the bar and the limit to begin with; only a later move counts here.
+   */
+  bool bounded_{false};
 };
 
 /**
@@ -212,24 +221,27 @@ public:
       return decision;
     }
 
-    // **A stop fill is credited a price its bar traded, and never one through its limit.** The
+    // **A limit fill is credited a price its bar traded, and never one through its limit.** The
     // bound is the worst such price: a sell the higher of the bar's low and its limit, a buy the lower
-    // of the bar's high and its limit. Applied to the reference before slippage -- a plain limit's
-    // `AT_LIMIT` credit can sit outside the bar when the bar opened through it -- and to the slipped
-    // price after, since slippage can carry an in-range price out of the bar or through the limit.
-    // A plain limit is not bounded yet (`plan/todo/limit-slippage-breach.md`).
+    // of the bar's high and its limit. Applied to the reference before slippage -- `AT_LIMIT` credits
+    // the limit, which sits outside the bar whenever the limit was marketable through the whole bar --
+    // and to the slipped price after, since slippage can carry an in-range price out of the bar or
+    // through the limit. Every limit basis: a plain limit and a released stop alike.
     std::optional<Decimal64> bound;
-    if (order.type_ == OrderType::STOP_LIMIT && order.price_) {
+    const bool limit_basis = order.type_ == OrderType::LIMIT || order.type_ == OrderType::STOP_LIMIT;
+    if (limit_basis && order.price_) {
       const auto& limit = *order.price_;
       if (order.side_ == OrderSide::SELL) {
         bound = decimal_less(limit, next.bar_.low_) ? next.bar_.low_ : limit;
         if (decimal_less(*reference, *bound)) {
           reference = bound;
+          decision.bounded_ = true;
         }
       } else {
         bound = decimal_less(next.bar_.high_, limit) ? next.bar_.high_ : limit;
         if (decimal_less(*bound, *reference)) {
           reference = bound;
+          decision.bounded_ = true;
         }
       }
     }
@@ -265,6 +277,7 @@ public:
         } else {
           slipped->first = ceiling;
           slipped->second = *moved;
+          decision.bounded_ = true;
         }
       }
     }
@@ -281,6 +294,7 @@ public:
         } else {
           slipped->first = *bound;
           slipped->second = *moved;
+          decision.bounded_ = true;
         }
       }
     }

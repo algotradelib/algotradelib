@@ -421,6 +421,8 @@ struct ReplayResult {
   std::size_t stop_releases_{0};
   /** Fills that depended on a release inside the bar; see `ReportCaveats::stop_fills_intrabar_`. */
   std::size_t stop_fills_intrabar_{0};
+  /** Limit-basis fills whose credit the bound moved; see `ReportCaveats::limit_fills_bounded_`. */
+  std::size_t limit_fills_bounded_{0};
 };
 
 /** Everything a replay needs beyond the strategy and the bars. */
@@ -1007,6 +1009,9 @@ private:
       }
       if (decision.intrabar_release_fill_) {
         ++result_.stop_fills_intrabar_;
+      }
+      if (decision.bounded_) {
+        ++result_.limit_fills_bounded_;
       }
       result_.executions_.push_back(*decision.execution_);
       install_portfolio();
