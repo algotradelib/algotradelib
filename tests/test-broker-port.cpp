@@ -1095,3 +1095,182 @@ TEST_CASE("an unstated terminal-state answer defaults to the one that cannot str
   static_assert(!BrokerCaps<tossinvest::TossClient>::working_orders_state_terminal);
   SUCCEED("the capability is read at compile time");
 }
+
+namespace {
+
+/** A client whose traits say nothing about triggers: an adapter written before they existed. */
+struct SilentAboutTrigger {};
+
+/** A client whose traits say it transmits one. */
+struct StatesTrigger {};
+
+} // namespace
+
+namespace algotradelib {
+
+/** Deliberately empty, for the reason `BrokerTraits<SilentAboutTerminal>` is. */
+template <>
+struct BrokerTraits<SilentAboutTrigger> {};
+
+template <>
+struct BrokerTraits<StatesTrigger> {
+  static constexpr bool has_trigger_price = true;
+};
+
+} // namespace algotradelib
+
+TEST_CASE("an unstated trigger capability defaults to refusing a trigger", "[port][trigger]") {
+  // Both answers are instantiated, as for the terminal-state constant above: every adapter this
+  // library ships states the constant, so without these the default would never be compiled.
+  static_assert(!caps_detail::stated_trigger_price<BrokerTraits<SilentAboutTrigger>>::value);
+  static_assert(caps_detail::stated_trigger_price<BrokerTraits<StatesTrigger>>::value);
+  // The mock states nothing, so it is the adapter written before the field existed.
+  static_assert(!BrokerCaps<mock::MockClient>::has_trigger_price);
+  static_assert(BrokerCaps<kis::KisClient>::has_trigger_price);
+  static_assert(BrokerCaps<kis::KisBlockingClient>::has_trigger_price);
+  static_assert(!BrokerCaps<tossinvest::TossClient>::has_trigger_price);
+  static_assert(!BrokerCaps<tossinvest::TossBlockingClient>::has_trigger_price);
+}
+
+TEST_CASE(
+  "a trigger never reaches an adapter that does not say it can send one",
+  "[port][trigger]"
+) {
+  net::io_context ioc;
+  auto client = std::make_shared<mock::MockClient>(ioc.get_executor());
+  client->ack_ = mock::MockAck{"ticket-1", std::chrono::system_clock::now()};
+  BrokerSession<mock::MockClient> session(client, mock::MockAccount{"cust", 1});
+
+  WorkingOrder<mock::Broker> working;
+  working.ref_.primary_ = "ticket-1";
+  working.order_.instrument_ = samsung();
+  working.order_.type_ = OrderType::STOP_LIMIT;
+  working.order_.price_ = Decimal64::parse("69000");
+  working.order_.trigger_price_ = Decimal64::parse("69500");
+  working.order_.time_in_force_ = TimeInForce::DAY;
+  working.order_.session_ = OrderSession::REGULAR;
+  working.amendable_quantity_ = Decimal64::parse("10");
+
+  SECTION("a placement is refused before the client is asked") {
+    OrderRequest order;
+    order.instrument_ = samsung();
+    order.quantity_ = Decimal64::parse("1");
+    order.price_ = Decimal64::parse("70000");
+    // On a plain limit: the adapter would have sent the limit and silently lost the trigger.
+    order.trigger_price_ = Decimal64::parse("69000");
+
+    auto result = session.async_place(order, net::use_future);
+    ioc.run();
+    const auto placed = result.get();
+    REQUIRE_FALSE(placed);
+    CHECK(placed.error().broker_code_ == "unsupported_trigger_price");
+    CHECK_FALSE(placed.error().reached_broker_);
+    CHECK(client->place_calls_ == 0);
+  }
+
+  SECTION("a modification is refused, including one that only keeps the resting trigger") {
+    // `reprice` restates the trigger explicitly, and `OrderShape{STOP_LIMIT, limit}` leaves it
+    // unset to be kept: both would reach an unaware adapter as a stop with no trigger.
+    auto restated = session.async_replace(
+      working.ref_, reprice(working, Decimal64::parse("68000")), net::use_future
+    );
+    auto kept = session.async_replace(
+      working.ref_,
+      replace_with(working, OrderShape{OrderType::STOP_LIMIT, Decimal64::parse("68000")}),
+      net::use_future
+    );
+    ioc.run();
+    const auto first = restated.get();
+    const auto second = kept.get();
+    REQUIRE_FALSE(first);
+    REQUIRE_FALSE(second);
+    CHECK(first.error().broker_code_ == "unsupported_trigger_price");
+    CHECK(second.error().broker_code_ == "unsupported_trigger_price");
+    CHECK(client->replace_calls_ == 0);
+  }
+
+  SECTION("a cancellation carrying one is still sent") {
+    // `cancel_all` restates the trigger the listing reported. Refusing it would leave a stop order
+    // the caller cannot take back, through an adapter that could read the stop and not send one.
+    auto result = session.async_cancel(working.ref_, cancel_all(working), net::use_future);
+    ioc.run();
+    REQUIRE(result.get());
+    CHECK(client->cancel_calls_ == 1);
+  }
+}
+
+TEST_CASE("a blocking session refuses a trigger to a broker without the capability", "[port][trigger]") {
+  ssl::context tls(ssl::context::tls_client);
+  BlockingSession<tossinvest::TossBlockingClient> session(
+    std::make_shared<tossinvest::TossBlockingClient>(tls, tossinvest::TossConfig{}), 1
+  );
+  OrderRequest order;
+  order.instrument_ = samsung();
+  order.quantity_ = Decimal64::parse("1");
+  order.price_ = Decimal64::parse("70000");
+  order.trigger_price_ = Decimal64::parse("69000");
+
+  const auto placed = session.place(order);
+  REQUIRE_FALSE(placed);
+  CHECK(placed.error().broker_code_ == "unsupported_trigger_price");
+  // The session's own refusal, not the Toss client's: the message names the capability.
+  CHECK(placed.error().message_.find("has_trigger_price") != std::string::npos);
+  CHECK_FALSE(placed.error().reached_broker_);
+}
+
+TEST_CASE("an amendment keeps a stop's trigger only when it keeps the stop", "[port][trigger]") {
+  WorkingOrder<mock::Broker> stop;
+  stop.order_.type_ = OrderType::STOP_LIMIT;
+  stop.order_.price_ = Decimal64::parse("69000");
+  stop.order_.trigger_price_ = Decimal64::parse("69500");
+  stop.order_.time_in_force_ = TimeInForce::DAY;
+  stop.order_.session_ = OrderSession::REGULAR;
+
+  SECTION("every helper built from the order restates it") {
+    CHECK(resting_shape(stop).trigger_price_ == stop.order_.trigger_price_);
+    CHECK(cancel_all(stop).shape_.trigger_price_ == stop.order_.trigger_price_);
+    CHECK(cancel_quantity(stop, Decimal64::parse("1")).shape_.trigger_price_ ==
+          stop.order_.trigger_price_);
+    CHECK(reprice(stop, Decimal64::parse("68000")).shape_.trigger_price_ ==
+          stop.order_.trigger_price_);
+  }
+
+  SECTION("unset on a stop-to-stop amendment means unchanged") {
+    const auto instruction =
+      replace_with(stop, OrderShape{OrderType::STOP_LIMIT, Decimal64::parse("68000")});
+    CHECK_FALSE(instruction.shape_.trigger_price_);
+    CHECK(amended_trigger_price(instruction) == stop.order_.trigger_price_);
+  }
+
+  SECTION("a stated trigger is the new one") {
+    const auto instruction = replace_with(
+      stop,
+      OrderShape{
+        OrderType::STOP_LIMIT, Decimal64::parse("68000"), std::nullopt, std::nullopt,
+        Decimal64::parse("68500")
+      }
+    );
+    CHECK(amended_trigger_price(instruction) == Decimal64::parse("68500"));
+  }
+
+  SECTION("a basis change out of a stop does not carry the trigger along") {
+    const auto instruction =
+      replace_with(stop, OrderShape{OrderType::LIMIT, Decimal64::parse("68000")});
+    CHECK_FALSE(amended_trigger_price(instruction));
+  }
+
+  SECTION("a basis change into a stop has nothing to inherit") {
+    auto limit = stop;
+    limit.order_.type_ = OrderType::LIMIT;
+    limit.order_.trigger_price_.reset();
+    const auto instruction =
+      replace_with(limit, OrderShape{OrderType::STOP_LIMIT, Decimal64::parse("68000")});
+    CHECK_FALSE(amended_trigger_price(instruction));
+  }
+
+  SECTION("an unknown resting shape is never guessed at") {
+    AmendInstruction instruction;
+    instruction.shape_ = OrderShape{OrderType::STOP_LIMIT, Decimal64::parse("68000")};
+    CHECK_FALSE(amended_trigger_price(instruction));
+  }
+}

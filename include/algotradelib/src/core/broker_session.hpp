@@ -12,6 +12,7 @@
 #include <boost/asio/system_executor.hpp>
 
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -44,6 +45,38 @@ Result<std::vector<AccountInfo<Client>>> to_account_info(Result<Items> raw) {
     listed.push_back(std::move(info));
   }
   return Result<Accounts>(std::move(listed));
+}
+
+/**
+ * Refuses a trigger price bound for a broker that does not declare it transmits one.
+ *
+ * Checked here, before the adapter, because this is the one layer every adapter passes through --
+ * including one written before `OrderRequest::trigger_price_` existed, which would otherwise send
+ * a stop order without its releasing condition or a limit order with its trigger silently gone.
+ * Whether *this basis* wants a trigger is the adapter's question and is not asked here.
+ *
+ * Applied to placements and modifications only. A cancellation withdraws an order, and
+ * `cancel_all` restates whatever trigger a listing reported, so refusing one here could make a
+ * stop order impossible to withdraw -- which is the failure this library must never manufacture.
+ */
+template <typename Client>
+std::optional<BrokerError> trigger_refusal(const std::optional<Decimal64>& trigger) {
+  if constexpr (BrokerCaps<Client>::has_trigger_price) {
+    return std::nullopt;
+  } else {
+    if (!trigger) {
+      return std::nullopt;
+    }
+    BrokerError error;
+    error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = false;
+    error.broker_code_ = "unsupported_trigger_price";
+    error.message_ =
+      "this broker does not declare that it transmits a trigger price, so an order carrying one "
+      "would be sent without it; place the order without a trigger or through a broker whose "
+      "BrokerCaps::has_trigger_price is true";
+    return error;
+  }
 }
 
 } // namespace port_detail
@@ -281,6 +314,11 @@ public:
    */
   template <typename CompletionToken>
   auto async_place(OrderRequest order, CompletionToken&& token) {
+    if (auto refused = port_detail::trigger_refusal<Client>(order.trigger_price_)) {
+      return complete_error<Placed>(
+        std::forward<CompletionToken>(token), std::move(*refused)
+      );
+    }
     if (auto invalid = Traits::validate_place(order)) {
       return complete_error<Placed>(
         std::forward<CompletionToken>(token), std::move(*invalid)
@@ -305,6 +343,11 @@ public:
    */
   template <typename CompletionToken>
   auto async_replace(Ref ref, AmendInstruction instruction, CompletionToken&& token) {
+    if (auto refused = port_detail::trigger_refusal<Client>(amended_trigger_price(instruction))) {
+      return complete_error<Placed>(
+        std::forward<CompletionToken>(token), std::move(*refused)
+      );
+    }
     auto amendment = Traits::to_replacement(ref, instruction);
     if (!amendment) {
       return complete_error<Placed>(
@@ -338,6 +381,11 @@ public:
    *
    * `Ref` is typed by broker, so a reference issued by another broker is a
    * compile error rather than a run-time rejection.
+   *
+   * **A trigger price on the instruction is never refused here**, unlike on
+   * `async_place` and `async_replace`. `cancel_all` restates the trigger a
+   * listing reported, and a withdrawal refused for restating it would leave a
+   * stop order the caller cannot take back.
    */
   template <typename CompletionToken>
   auto async_cancel(Ref ref, AmendInstruction instruction, CompletionToken&& token) {
@@ -909,6 +957,9 @@ public:
 
   /** Submits a new order. The indeterminacy rule of `BrokerSession::async_place` applies. */
   Result<Placed> place(OrderRequest order) {
+    if (auto refused = port_detail::trigger_refusal<Client>(order.trigger_price_)) {
+      return Result<Placed>(std::move(*refused));
+    }
     if (auto invalid = Traits::validate_place(order)) {
       return Result<Placed>(std::move(*invalid));
     }
@@ -917,6 +968,9 @@ public:
 
   /** Modifies an existing order. */
   Result<Placed> replace(const Ref& ref, const AmendInstruction& instruction) {
+    if (auto refused = port_detail::trigger_refusal<Client>(amended_trigger_price(instruction))) {
+      return Result<Placed>(std::move(*refused));
+    }
     auto amendment = Traits::to_replacement(ref, instruction);
     if (!amendment) {
       return Result<Placed>(std::move(amendment.error()));
@@ -926,7 +980,7 @@ public:
     );
   }
 
-  /** Cancels an existing order. */
+  /** Cancels an existing order. A trigger is never refused here; see `BrokerSession::async_cancel`. */
   Result<Placed> cancel(const Ref& ref, const AmendInstruction& instruction) {
     auto amendment = Traits::to_cancellation(ref, instruction);
     if (!amendment) {

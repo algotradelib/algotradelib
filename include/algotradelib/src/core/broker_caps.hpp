@@ -52,6 +52,25 @@ struct stated_terminal_working_state<
   static constexpr bool value = Traits::working_orders_state_terminal;
 };
 
+/**
+ * Whether a traits specialization says its adapter transmits a stop order's trigger price.
+ *
+ * **Detected with a default of `false`**, because the harm is all on one side. An adapter written
+ * before `OrderRequest::trigger_price_` existed never reads it, so forwarding a trigger to one sends
+ * a stop order without its releasing condition, or a limit order with its trigger silently gone.
+ * `BrokerSession` refuses a trigger to a broker that does not say `true`, and an adapter that
+ * never offers stops needs to declare nothing.
+ */
+template <typename Traits, typename = void>
+struct stated_trigger_price {
+  static constexpr bool value = false;
+};
+
+template <typename Traits>
+struct stated_trigger_price<Traits, std::void_t<decltype(Traits::has_trigger_price)>> {
+  static constexpr bool value = Traits::has_trigger_price;
+};
+
 }  // namespace caps_detail
 
 /**
@@ -109,6 +128,19 @@ struct BrokerCaps {
    */
   static constexpr bool working_orders_state_terminal =
     caps_detail::stated_terminal_working_state<Traits>::value;
+
+  /**
+   * Whether the adapter transmits `OrderRequest::trigger_price_` and `OrderShape::trigger_price_`.
+   *
+   * **Defaulted to `false` for a traits type that does not declare it**, rather than required, so an
+   * adapter written against an earlier release keeps compiling and is treated as the adapter it is:
+   * one that has never read a trigger. `BrokerSession` refuses a placement or a modification
+   * carrying a trigger to such a broker with `unsupported_trigger_price`, before the adapter runs.
+   * A cancellation is never refused for one -- see `BrokerSession::cancel`.
+   *
+   * `true` at KIS and Kiwoom, `false` at Toss, which publishes no stop basis.
+   */
+  static constexpr bool has_trigger_price = caps_detail::stated_trigger_price<Traits>::value;
 
   /** Whether the broker retrieves one order by its identifier. */
   static constexpr bool has_order_by_id = Traits::has_order_by_id;
