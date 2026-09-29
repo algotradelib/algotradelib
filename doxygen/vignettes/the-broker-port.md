@@ -95,6 +95,24 @@ an idempotency key at KIS, a partial cancellation at Toss, an order-history
 filter neither adapter sends — is refused before authentication and before any
 socket write rather than dropped silently.
 
+**`history_requires_range = false` carries a contract of its own**, which an adapter
+author writing one must meet. Recovery (`live::SessionSource`) asks the order history
+one stated date at a time — `from_ == to_`, one inquiry per UTC day of its window,
+paged by cursor as your adapter pages — because Kiwoom's single-date inquiry requires a
+date and refuses a range; so accept a single-date query. An adapter that also declares
+`has_working_orders = false` is additionally asked once, at startup, with no date at all
+(`SessionSource::read_order_list`), so accept that too or the order-list gate stays
+closed. Recovery merges the two listings and drops a history row only as an **exact
+copy** of a working row (`runner::exact_copy`: the same order id, instrument and
+`ordered_at_`), because an order number alone is not an order's identity across days.
+So **where your history can list an order your working listing also lists, stamp
+`ordered_at_` on both rows alike**: the order is then one row. Stamped differently, or
+unstamped on either side, both rows are kept, and if both answer the instruction a
+journal is waiting on, it recovers as `AMBIGUOUS` and holds its instrument until an
+operator settles it. Kiwoom stamps both listings from the broker's own order time; Toss
+reads both (its `OPEN` and `CLOSED` scopes, which can both list a partly filled order)
+with one parser from the order's `orderedAt`.
+
 ## Example
 
 `example-portable-holdings` is one source file compiled for both brokers:

@@ -892,6 +892,13 @@ inline bool exact_copy(const OrderSnapshot& a, const OrderSnapshot& b) {
  *
  * Its history pages are merged against each other by the same rule
  * (`SessionSource::read_history_days`).
+ *
+ * **The contract this places on an adapter**: where its history can list an order its working listing
+ * also lists, stamp `OrderSnapshot::ordered_at_` on both rows alike. Otherwise both rows are kept, and
+ * if both answer a journal's waiting instruction it recovers as `AMBIGUOUS`. Kiwoom stamps both
+ * listings from the broker's order time; Toss reads both scopes with one parser from `orderedAt`. KIS
+ * leaves its working rows unstamped, which is safe only because KIS takes a range and is merged by
+ * `merge_rows` instead. See `doxygen/vignettes/the-broker-port.md`.
  */
 inline void merge_dated_history(
   std::vector<OrderSnapshot>& into,
