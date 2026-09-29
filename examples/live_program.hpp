@@ -258,6 +258,11 @@ Exit trade(
   if (!load_reference_data(session, bound, settings, out)) {
     return Exit::REFERENCE_UNREADABLE;
   }
+  // Said before trading as well as in the report at the end, so it is read before it matters.
+  if constexpr (decltype(bound)::on_fill_never_fires) {
+    out << "note: this strategy defines on_fill, which never fires on a live runner; anything it\n"
+        << "      does there (a protective stop, say) will not happen. See writing-a-strategy.md.\n";
+  }
 
   live::SessionSource<Session, runner::FileJournal> source(session, settings.universe_);
   source.set_journal(journal);

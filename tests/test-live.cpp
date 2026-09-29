@@ -1,3 +1,4 @@
+#include <algotradelib/backtest>
 #include <algotradelib/kis>
 #include <algotradelib/live>
 #include <algotradelib/tossinvest>
@@ -4230,4 +4231,134 @@ TEST_CASE("the live program exits as abandoned when polling keeps failing", "[li
   CHECK(exit == live_program::Exit::LOOP_ABANDONED);
   CHECK(out.str().find("ABANDONED") != std::string::npos);
   CHECK(session.placed().empty());
+}
+
+// ---------------------------------------------------------------------------
+// `on_fill` on a live runner: reported, never refused.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** A strategy that sets its protection from `on_fill`: correct in a replay, inert live. */
+struct StopsOnFill {
+  std::size_t fills_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {}
+
+  template <class Ctx>
+  void on_fill(Ctx&, const strategy::Fill&) {
+    ++fills_;
+  }
+};
+
+/** The same strategy without the handler. */
+struct NoFillHandler {
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {}
+};
+
+using OnFillSession = FakeSession<WithWorkingOrders>;
+using OnFillLive = live::BoundRunner<StopsOnFill, OnFillSession>;
+using OnFillObserver = live::ObservingRunner<StopsOnFill, OnFillSession>;
+using OnFillJournaled = live::JournaledRunner<StopsOnFill, OnFillSession, runner::FileJournal>;
+using NoHandlerLive = live::BoundRunner<NoFillHandler, OnFillSession>;
+
+static_assert(OnFillLive::on_fill_never_fires, "a session-backed runner never fires on_fill");
+static_assert(OnFillJournaled::on_fill_never_fires, "journaling does not change who receives fills");
+static_assert(!OnFillObserver::on_fill_never_fires, "an observer sends nothing, so it stays silent");
+static_assert(!NoHandlerLive::on_fill_never_fires, "no handler, nothing to report");
+static_assert(
+  !runner::DryRunner<StopsOnFill>::on_fill_never_fires, "a dry run sends nothing, so it stays silent"
+);
+static_assert(
+  !backtest::Backtester<StopsOnFill>::Runner::on_fill_never_fires, "a replay fires on_fill itself"
+);
+
+/** Counts how many of `notes` carry the on_fill note. */
+std::size_t on_fill_notes(const std::vector<std::string>& notes) {
+  std::size_t count = 0;
+  for (const auto& note : notes) {
+    if (note.find("strategy defines on_fill; it never fires on this runner") != std::string::npos) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+/** Runs `bound` for three iterations over a session that answers every poll, from `start`. */
+template <typename Bound>
+runner::LoopReport run_three(
+  Bound& bound,
+  OnFillSession& session,
+  std::chrono::system_clock::time_point start = {}
+) {
+  live::SessionSource<OnFillSession> source(session, {samsung()});
+  runner::PollSchedule schedule;
+  schedule.bars_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  schedule.calendar_.reset();
+  runner::PollingLoop<Bound, live::SessionSource<OnFillSession>, runner::ManualClock> loop(
+    bound, source, schedule, runner::ManualClock{start}
+  );
+  loop.allow_unbounded_portfolio_age();
+  loop.allow_absent_portfolio();
+  runner::StopSource stop;
+  return loop.run(stop, 3);
+}
+
+} // namespace
+
+TEST_CASE("a live run reports once that the strategy's on_fill never fires", "[live][on_fill]") {
+  OnFillSession session;
+  session.set_bars(two_bars("70000", "71000"));
+  auto bound = live::bind(session, StopsOnFill{});
+
+  const auto report = run_three(bound, session);
+
+  CHECK(report.iterations_ == 3);
+  CHECK(on_fill_notes(report.notes_) == 1);
+  // And again on the next run: a report is read on its own.
+  // Later than the first run, as a restarted loop over the same runner would be: a later clock, and
+  // bars the runner has not seen (a new source would otherwise feed the first two again).
+  const auto later = std::chrono::system_clock::time_point{} + std::chrono::hours(1);
+  auto newer = two_bars("72000", "73000");
+  for (auto& bar : newer.bars_) {
+    bar.timestamp_ += std::chrono::hours(24 * 10);
+  }
+  session.set_bars(newer);
+  CHECK(on_fill_notes(run_three(bound, session, later).notes_) == 1);
+  CHECK(bound.strategy().fills_ == 0);
+}
+
+TEST_CASE("an observing run and a strategy without on_fill say nothing about it", "[live][on_fill]") {
+  OnFillSession session;
+  session.set_bars(two_bars("70000", "71000"));
+
+  auto observer = live::bind_observer(session, StopsOnFill{});
+  CHECK(on_fill_notes(run_three(observer, session).notes_) == 0);
+
+  auto plain = live::bind(session, NoFillHandler{});
+  CHECK(on_fill_notes(run_three(plain, session).notes_) == 0);
+}
+
+TEST_CASE("the live program says on_fill never fires before it trades", "[live][on_fill][program]") {
+  const TempPath journal("atl-test-program-on-fill.jsonl");
+  const TempPath control("atl-test-program-on-fill.stop");
+  ProgramSession session;
+  script_ready(session);
+  runner::StopSource stop;
+  std::ostringstream out;
+
+  live_program::trade(
+    session, StopsOnFill{}, program_settings(journal, control), stop, out, runner::ManualClock{program_start()}
+  );
+
+  const auto text = out.str();
+  const auto before = text.find("note: this strategy defines on_fill");
+  const auto loop_starts = text.find("to stop:");
+  REQUIRE(before != std::string::npos);
+  REQUIRE(loop_starts != std::string::npos);
+  CHECK(before < loop_starts);
+  CHECK(text.find("strategy defines on_fill; it never fires on this runner") != std::string::npos);
 }

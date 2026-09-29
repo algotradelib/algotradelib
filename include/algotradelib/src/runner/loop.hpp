@@ -1499,6 +1499,7 @@ public:
     }
     note_sellable_convention(report);
     note_unestablished_phase(report);
+    note_on_fill_never_fires(report);
     return report;
   }
 
@@ -1527,6 +1528,23 @@ private:
       std::string(strategy::sellable_convention_name(evidence.verdict())) + " (" +
       std::to_string(evidence.net_) + " net, " + std::to_string(evidence.gross_) + " gross)"
     );
+  }
+
+  /**
+   * Says, once per run, that the strategy's `on_fill` never fires on this runner.
+   *
+   * See `Runner::on_fill_never_fires`. On every run rather than only the first, because a report is
+   * read on its own, and a note that appeared only in a run nobody kept would be no note at all.
+   */
+  void note_on_fill_never_fires(LoopReport& report) const {
+    if constexpr (Runner::on_fill_never_fires) {
+      report.notes_.push_back(
+        "strategy defines on_fill; it never fires on this runner (fills are not observed live: "
+        "read positions from holdings, see writing-a-strategy.md)"
+      );
+    } else {
+      static_cast<void>(report);
+    }
   }
 
   /** Runs one iteration: poll what is due, then let the runner act if the gate is open. */

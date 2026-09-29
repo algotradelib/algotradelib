@@ -348,6 +348,27 @@ public:
 
   ATL_ASSERT_STRATEGY(Strategy, Context);
 
+  /**
+   * Whether this runner sends to a broker and its strategy defines `on_fill` -- which then never fires.
+   *
+   * A replay synthesizes fills and calls `on_fill`; a live session reports none as events, so the same
+   * handler is correct in a backtest and inert with real money. That is the one difference between
+   * the two modes a correct strategy can lose money over (`issues/live-parity-audit.md`, finding 1).
+   * It is legitimate to use `on_fill` for backtest-only bookkeeping, so this refuses nothing: it lets
+   * `PollingLoop` put a note in every run's report, and lets a program that drives a runner by hand
+   * say the same thing itself.
+   *
+   * `false` for a dry run, for `live::bind_observer` and for a replay, whose executors state that they
+   * reach no broker; `JournalingExecutor` forwards what it wraps.
+   *
+   * "Never" describes the shipped live path: nothing this library polls produces a `Fill`. A program
+   * that calls `feed(const strategy::Fill&)` itself, from a source of its own, does reach `on_fill`,
+   * and can ignore the note.
+   */
+  static constexpr bool on_fill_never_fires =
+    runner_detail::sends_to_a_broker<Executor>::value &&
+    strategy::strategy_detail::has_on_fill<Strategy, Context>::value;
+
   /** Constructs a runner with the given strategy, limits, and series warm-up window. */
   explicit Runner(
     Strategy strategy = {},
