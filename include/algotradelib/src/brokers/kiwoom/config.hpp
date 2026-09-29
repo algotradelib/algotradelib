@@ -139,7 +139,13 @@ enum class KiwoomSellableScope {
 
 /** Kiwoom application credentials and live/demo endpoint selection. */
 struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
-  /** Whether to use Kiwoom's 모의투자 endpoints. Set from `KIWOOM_DEMO=1`. */
+  /**
+   * Whether to use Kiwoom's 모의투자 endpoints.
+   *
+   * The loaders require it: `from_env` refuses unless `KIWOOM_DEMO` is `1` or `0`, and `from_json`
+   * refuses unless `"demo"` is `true` or `false`. See `network::required_demo_flag`. A config built in
+   * code keeps this default, so such a program states the field in its own source.
+   */
   bool is_demo_ = false;
 
   /**
@@ -235,17 +241,19 @@ struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
     if (!key || !secret) {
       throw std::runtime_error("Add KIWOOM_APP_KEY and KIWOOM_SECRET_KEY environment variables.");
     }
+    // Read before anything is assigned, so a refused load leaves this config as it was.
+    const bool demo = network::required_demo_flag("KIWOOM_DEMO");
     key_ = key;
     secret_ = secret;
-    const char* demo = std::getenv("KIWOOM_DEMO");
-    is_demo_ = demo && std::string_view(demo) == "1";
+    is_demo_ = demo;
   }
 
   /**
    * Reads credentials from a JSON file.
    *
    * Expected format: `{ "appkey": "...", "secretkey": "...", "demo": false }`, which is the
-   * spelling Kiwoom's own `au10001` request body uses.
+   * spelling Kiwoom's own `au10001` request body uses. `"demo"` is required and must be `true` or
+   * `false`.
    */
   void from_json_impl(const std::string& filename) {
     std::ifstream ifs(filename);
@@ -267,9 +275,10 @@ struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
     if (!doc.contains("appkey") || !doc.contains("secretkey")) {
       throw std::runtime_error("Credential file should contain appkey and secretkey");
     }
+    const bool demo = network::required_demo_flag(doc, filename);
     key_ = doc.at("appkey").as_string().c_str();
     secret_ = doc.at("secretkey").as_string().c_str();
-    is_demo_ = doc.contains("demo") && doc.at("demo").as_bool();
+    is_demo_ = demo;
   }
 
   /** The JSON field Kiwoom expects the application key under. */

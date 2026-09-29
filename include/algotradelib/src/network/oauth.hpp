@@ -17,6 +17,7 @@
 #include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -95,6 +96,59 @@ private:
     return result;
   }
 };
+
+/**
+ * Reads a required demo/live switch from the environment variable `variable`.
+ *
+ * **Required, because the unsafe answer is the silent one.** An unset variable used to mean the live
+ * endpoints, so a shell that forgot one `export` traded real money with nothing on screen to say so.
+ * Now `1` selects the broker's 모의투자 (paper-trading) endpoints, `0` selects live, and anything else
+ * -- unset, empty, `true`, `yes`, a stray space -- refuses to load. No trimming and no case folding:
+ * a value that has to be interpreted is a value somebody could have meant the other way.
+ *
+ * @param variable The environment variable to read, such as `KIS_DEMO`.
+ * @return `true` for the demo endpoints, `false` for live.
+ * @throws std::runtime_error naming the variable and both accepted values.
+ */
+inline bool required_demo_flag(const char* variable) {
+  const char* value = std::getenv(variable);
+  if (value && std::string_view(value) == "1") {
+    return true;
+  }
+  if (value && std::string_view(value) == "0") {
+    return false;
+  }
+  throw std::runtime_error(
+    std::string(variable) + (value ? " is \"" + std::string(value) + "\"" : std::string(" is not set")) +
+    "; it is required. Set " + variable + "=1 for the paper-trading (demo) endpoints or " + variable +
+    "=0 to trade live."
+  );
+}
+
+/**
+ * Reads the required `"demo"` key from a credential file's JSON object.
+ *
+ * The file form of `required_demo_flag(const char*)`: a missing key used to mean live. The key must be a
+ * JSON boolean -- `true` for the demo endpoints, `false` for live. A string or a number is refused
+ * rather than read, for the same reason the environment form refuses `yes`.
+ *
+ * @param doc The parsed credential file.
+ * @param file The file's name, for the message.
+ * @return `true` for the demo endpoints, `false` for live.
+ * @throws std::runtime_error naming the key, the file and both accepted values.
+ */
+inline bool required_demo_flag(const json::object& doc, std::string_view file) {
+  const json::value* demo = doc.if_contains("demo");
+  if (demo && demo->is_bool()) {
+    return demo->get_bool();
+  }
+  throw std::runtime_error(
+    "Credential file " + std::string(file) +
+    (demo ? " has a \"demo\" key that is not true or false" : std::string(" has no \"demo\" key")) +
+    "; it is required. Write \"demo\": true for the paper-trading (demo) endpoints or \"demo\": false "
+    "to trade live."
+  );
+}
 
 /**
  * CRTP storage and parsing for an OAuth access-token response.

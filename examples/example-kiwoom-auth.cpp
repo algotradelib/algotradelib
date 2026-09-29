@@ -8,7 +8,7 @@ int main() {
   // Load credentials from environment variables:
   // export KIWOOM_APP_KEY=AxserEsdcredca.....
   // export KIWOOM_SECRET_KEY=SEefdcwcforehDre2fdvc....
-  // export KIWOOM_DEMO=0   (1 = paper trading)
+  // export KIWOOM_DEMO=0   (required: 1 = paper trading, 0 = live)
   algotradelib::kiwoom::KiwoomConfig cfg;
   try {
     cfg.from_env();

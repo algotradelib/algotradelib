@@ -84,7 +84,13 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
   // std::string grant_type = "client_credentials"; // length = 18
   // std::string app_key_; // length = 36
   // std::string app_secret_; // length = 180
-  /** Whether to use KIS's 모의투자 endpoints. Set from `KIS_DEMO=1`. */
+  /**
+   * Whether to use KIS's 모의투자 endpoints.
+   *
+   * The loaders require it: `from_env` refuses unless `KIS_DEMO` is `1` or `0`, and `from_json`
+   * refuses unless `"demo"` is `true` or `false`. See `network::required_demo_flag`. A config built in
+   * code keeps this default, so such a program states the field in its own source.
+   */
   bool is_demo_ = false;
 
   /**
@@ -122,16 +128,18 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
     if (!key || !secret) {
       throw std::runtime_error("Add KIS_APP_KEY and KIS_APP_SECRET environment variables.");
     }
+    // Read before anything is assigned, so a refused load leaves this config as it was.
+    const bool demo = network::required_demo_flag("KIS_DEMO");
     key_ = key;
     secret_ = secret;
-    const char* demo = std::getenv("KIS_DEMO");
-    is_demo_ = demo && std::string_view(demo) == "1";
+    is_demo_ = demo;
   }
 
   /**
    * Reads credentials from a JSON file.
    *
-   * Expected format: `{ "app_key": "...", "app_secret": "...", "demo": false }`.
+   * Expected format: `{ "app_key": "...", "app_secret": "...", "demo": false }`. `"demo"` is
+   * required and must be `true` or `false`.
    */
   void from_json_impl(
     const std::string& filename
@@ -154,9 +162,10 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
     if (!doc.contains("app_key") || !doc.contains("app_secret")) {
       throw std::runtime_error("Credential file should contain app_key and app_secret");
     }
+    const bool demo = network::required_demo_flag(doc, filename);
     key_ = doc.at("app_key").as_string().c_str();
     secret_ = doc.at("app_secret").as_string().c_str();
-    is_demo_ = doc.contains("demo") && doc.at("demo").as_bool();
+    is_demo_ = demo;
   }
 
   /** The JSON field KIS expects the application key under. */

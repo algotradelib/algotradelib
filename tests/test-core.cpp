@@ -1,4 +1,5 @@
 #include <algotradelib/kis>
+#include <algotradelib/kiwoom>
 #include <algotradelib/runner>
 #include <algotradelib/strategy>
 #include <algotradelib/tossinvest>
@@ -13,6 +14,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <memory>
@@ -559,6 +561,215 @@ TEST_CASE(
   account_number.unset();
   kis::KisAccount missing_account;
   REQUIRE_THROWS_AS(missing_account.from_env(), std::runtime_error);
+}
+
+/**
+ * A credential file that exists only for the duration of one test.
+ *
+ * Written relative to the working directory, as the journal tests do, and removed on the way out so a
+ * run from the worktree root leaves nothing for `git add` to offer.
+ */
+class TempCredentialFile {
+public:
+  TempCredentialFile(const char* name, const std::string& text)
+  : path_(std::string("atl-test-credentials-") + name + ".json") {
+    std::FILE* handle = std::fopen(path_.c_str(), "wb");
+    if (!handle) {
+      throw std::runtime_error("failed to create test credential file");
+    }
+    std::fwrite(text.data(), 1, text.size(), handle);
+    std::fclose(handle);
+  }
+
+  ~TempCredentialFile() { std::remove(path_.c_str()); }
+
+  TempCredentialFile(const TempCredentialFile&) = delete;
+  TempCredentialFile& operator=(const TempCredentialFile&) = delete;
+
+  const std::string& str() const noexcept { return path_; }
+
+private:
+  std::string path_;
+};
+
+/** Returns the message `load` throws, or an empty string when it does not throw. */
+template <typename Load>
+std::string refusal_of(Load load) {
+  try {
+    load();
+  } catch (const std::runtime_error& error) {
+    return error.what();
+  }
+  return {};
+}
+
+TEST_CASE(
+  "Loading KIS credentials from the environment requires KIS_DEMO to be 1 or 0",
+  "[broker][kis][config][environment]"
+) {
+  ScopedEnvironmentVariable key("KIS_APP_KEY");
+  ScopedEnvironmentVariable secret("KIS_APP_SECRET");
+  ScopedEnvironmentVariable demo("KIS_DEMO");
+  key.set("app-key");
+  secret.set("app-secret");
+
+  demo.unset();
+  kis::KisConfig unset;
+  const auto unset_message = refusal_of([&] { unset.from_env(); });
+  REQUIRE(unset_message.find("KIS_DEMO is not set") != std::string::npos);
+  REQUIRE(unset_message.find("KIS_DEMO=1") != std::string::npos);
+  REQUIRE(unset_message.find("KIS_DEMO=0") != std::string::npos);
+  // Refused before anything was assigned: no half-loaded config is left to build a client from.
+  REQUIRE(unset.key().empty());
+  REQUIRE_FALSE(unset.is_demo_);
+
+  demo.set("1");
+  kis::KisConfig paper;
+  paper.from_env();
+  REQUIRE(paper.is_demo_);
+  REQUIRE(paper.key() == "app-key");
+  REQUIRE(std::string_view(paper.rest_host()) == "openapivts.koreainvestment.com");
+
+  demo.set("0");
+  kis::KisConfig live;
+  live.is_demo_ = true;
+  live.from_env();
+  REQUIRE_FALSE(live.is_demo_);
+  REQUIRE(std::string_view(live.rest_host()) == "openapi.koreainvestment.com");
+
+  for (const char* junk : {"true", "yes", "", " 1", "1 ", "01", "2"}) {
+    demo.set(junk);
+    kis::KisConfig refused;
+    const auto message = refusal_of([&] { refused.from_env(); });
+    INFO("KIS_DEMO=\"" << junk << "\"");
+    REQUIRE(message.find(std::string("KIS_DEMO is \"") + junk + "\"") != std::string::npos);
+    REQUIRE(refused.key().empty());
+  }
+}
+
+TEST_CASE(
+  "Loading Kiwoom credentials from the environment requires KIWOOM_DEMO to be 1 or 0",
+  "[broker][kiwoom][config][environment]"
+) {
+  ScopedEnvironmentVariable key("KIWOOM_APP_KEY");
+  ScopedEnvironmentVariable secret("KIWOOM_SECRET_KEY");
+  ScopedEnvironmentVariable demo("KIWOOM_DEMO");
+  key.set("app-key");
+  secret.set("secret-key");
+
+  demo.unset();
+  kiwoom::KiwoomConfig unset;
+  const auto unset_message = refusal_of([&] { unset.from_env(); });
+  REQUIRE(unset_message.find("KIWOOM_DEMO is not set") != std::string::npos);
+  REQUIRE(unset_message.find("KIWOOM_DEMO=1") != std::string::npos);
+  REQUIRE(unset_message.find("KIWOOM_DEMO=0") != std::string::npos);
+  REQUIRE(unset.key().empty());
+  REQUIRE_FALSE(unset.is_demo_);
+
+  demo.set("1");
+  kiwoom::KiwoomConfig paper;
+  paper.from_env();
+  REQUIRE(paper.is_demo_);
+  REQUIRE(std::string_view(paper.rest_host()) == "mockapi.kiwoom.com");
+
+  demo.set("0");
+  kiwoom::KiwoomConfig live;
+  live.is_demo_ = true;
+  live.from_env();
+  REQUIRE_FALSE(live.is_demo_);
+  REQUIRE(std::string_view(live.rest_host()) == "api.kiwoom.com");
+
+  for (const char* junk : {"true", "no", "", "0 ", "1.0"}) {
+    demo.set(junk);
+    kiwoom::KiwoomConfig refused;
+    const auto message = refusal_of([&] { refused.from_env(); });
+    INFO("KIWOOM_DEMO=\"" << junk << "\"");
+    REQUIRE(message.find(std::string("KIWOOM_DEMO is \"") + junk + "\"") != std::string::npos);
+    REQUIRE(refused.key().empty());
+  }
+}
+
+TEST_CASE(
+  "Loading KIS credentials from a file requires a boolean demo key",
+  "[broker][kis][config][json]"
+) {
+  const TempCredentialFile paper(
+    "kis-paper", R"({"app_key":"app-key","app_secret":"app-secret","demo":true})"
+  );
+  kis::KisConfig paper_config;
+  paper_config.from_json(paper.str());
+  REQUIRE(paper_config.is_demo_);
+  REQUIRE(paper_config.key() == "app-key");
+
+  const TempCredentialFile live(
+    "kis-live", R"({"app_key":"app-key","app_secret":"app-secret","demo":false})"
+  );
+  kis::KisConfig live_config;
+  live_config.is_demo_ = true;
+  live_config.from_json(live.str());
+  REQUIRE_FALSE(live_config.is_demo_);
+
+  const TempCredentialFile missing(
+    "kis-missing", R"({"app_key":"app-key","app_secret":"app-secret"})"
+  );
+  kis::KisConfig missing_config;
+  const auto missing_message = refusal_of([&] { missing_config.from_json(missing.str()); });
+  REQUIRE(missing_message.find("has no \"demo\" key") != std::string::npos);
+  REQUIRE(missing_message.find(missing.str()) != std::string::npos);
+  REQUIRE(missing_config.key().empty());
+
+  for (const char* demo : {R"("false")", R"("1")", "1", "0", "null"}) {
+    const TempCredentialFile junk(
+      "kis-junk",
+      std::string(R"({"app_key":"app-key","app_secret":"app-secret","demo":)") + demo + "}"
+    );
+    kis::KisConfig refused;
+    const auto message = refusal_of([&] { refused.from_json(junk.str()); });
+    INFO("\"demo\": " << demo);
+    REQUIRE(message.find("not true or false") != std::string::npos);
+    REQUIRE(refused.key().empty());
+  }
+}
+
+TEST_CASE(
+  "Loading Kiwoom credentials from a file requires a boolean demo key",
+  "[broker][kiwoom][config][json]"
+) {
+  const TempCredentialFile paper(
+    "kiwoom-paper", R"({"appkey":"app-key","secretkey":"secret-key","demo":true})"
+  );
+  kiwoom::KiwoomConfig paper_config;
+  paper_config.from_json(paper.str());
+  REQUIRE(paper_config.is_demo_);
+  REQUIRE(paper_config.key() == "app-key");
+
+  const TempCredentialFile live(
+    "kiwoom-live", R"({"appkey":"app-key","secretkey":"secret-key","demo":false})"
+  );
+  kiwoom::KiwoomConfig live_config;
+  live_config.is_demo_ = true;
+  live_config.from_json(live.str());
+  REQUIRE_FALSE(live_config.is_demo_);
+
+  const TempCredentialFile missing(
+    "kiwoom-missing", R"({"appkey":"app-key","secretkey":"secret-key"})"
+  );
+  kiwoom::KiwoomConfig missing_config;
+  const auto missing_message = refusal_of([&] { missing_config.from_json(missing.str()); });
+  REQUIRE(missing_message.find("has no \"demo\" key") != std::string::npos);
+  REQUIRE(missing_config.key().empty());
+
+  for (const char* demo : {R"("true")", "0", "[]"}) {
+    const TempCredentialFile junk(
+      "kiwoom-junk",
+      std::string(R"({"appkey":"app-key","secretkey":"secret-key","demo":)") + demo + "}"
+    );
+    kiwoom::KiwoomConfig refused;
+    const auto message = refusal_of([&] { refused.from_json(junk.str()); });
+    INFO("\"demo\": " << demo);
+    REQUIRE(message.find("not true or false") != std::string::npos);
+    REQUIRE(refused.key().empty());
+  }
 }
 
 TEST_CASE(
