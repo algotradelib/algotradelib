@@ -1160,6 +1160,11 @@ private:
         return;
       }
     }
+    // **Once, after the whole batch.** Every pass that can withdraw a stop -- the bar's, the phase's,
+    // the fills' and these updates' -- ends here, so the strategy has answered every update before a
+    // fallback is released; releasing after each pass let a later update's instruction arrive after
+    // the fallback had already been queued. The live path waits for a whole listing the same way.
+    settle_deferred();
   }
 
   /**
@@ -1297,7 +1302,6 @@ private:
   template <typename Report>
   void drain_reports(const Report& report) {
     collect(report);
-    settle_deferred();
   }
 
   /** Adds a pass's refusals to the result. */
@@ -1312,7 +1316,8 @@ private:
   }
 
   /**
-   * Settles a target the runner deferred behind a stop, as soon as this replay has withdrawn the stop.
+   * Settles a target the runner deferred behind a stop, once this replay has withdrawn the stop and
+   * the strategy has answered every update of the batch. Called only from `publish_order_updates`.
    *
    * **A replay's withdrawal is synchronous**: `QueueingExecutor::cancel` removes the stop from the
    * queue before the pass that asked for it returns. Waiting for the next bar's portfolio to show that

@@ -5274,3 +5274,94 @@ TEST_CASE("negative slippage never lifts a stop fill past its bar", "[trigger]")
   REQUIRE(buy.execution_);
   CHECK(buy.execution_->fill_.price_ == Decimal64::parse("70600"));
 }
+
+TEST_CASE("favourable slippage cannot credit a price the bar reached before the release", "[trigger]") {
+  // **Codex round 3's second blocker.** `70,000 -> 70,500 -> 69,000 -> 69,200` is a valid path for this
+  // bar: its high came before the 69,500 trigger, and after the release the price never returned
+  // above 69,500. Negative slippage used to lift the fill to that high.
+  const backtest::NextBarFillModel generous(
+    backtest::CommissionModel::none(),
+    backtest::SlippageModel::of_basis_points(Decimal64::parse("-1000"))
+  );
+  const auto sell = generous.decide(
+    sell_stop("69500", "68000"), ohlc("70000", "70500", "69000", "69200"), krx_grid(), fill_date()
+  );
+  REQUIRE(sell.execution_);
+  CHECK(sell.intrabar_release_fill_);
+  CHECK(sell.execution_->fill_.price_ == Decimal64::parse("69000"));
+
+  const auto buy = generous.decide(
+    buy_stop("70500", "72000"), ohlc("70000", "71000", "69500", "70800"), krx_grid(), fill_date()
+  );
+  REQUIRE(buy.execution_);
+  CHECK(buy.intrabar_release_fill_);
+  CHECK(buy.execution_->fill_.price_ == Decimal64::parse("71000"));
+}
+
+namespace {
+
+/**
+ * Holds ten behind a stop and answers order updates: the first update it sees for the stop states
+ * flat, and a second, for another order, buys the instrument back instead.
+ */
+struct ChangesItsMindInOneBatch {
+  int bars_{0};
+  int updates_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ++bars_;
+    if (bars_ == 1) {
+      strategy::TargetPosition entry;
+      entry.instrument_ = bar.instrument_;
+      entry.target_quantity_ = Decimal64::parse("10");
+      ctx.submit(entry);
+    } else if (bars_ == 2) {
+      ctx.submit(strategy::OrderIntent::stop_limit(
+        bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")),
+        *strategy::Price::checked(Decimal64::parse("66500"), PriceRule::krx_equity()),
+        *strategy::Price::checked(Decimal64::parse("66000"), PriceRule::krx_equity())
+      ));
+      ctx.submit(strategy::OrderIntent::limit(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")),
+        *strategy::Price::checked(Decimal64::parse("60000"), PriceRule::krx_equity())
+      ));
+    }
+  }
+
+  template <class Ctx>
+  void on_order_update(Ctx& ctx, const OrderSnapshot& order) {
+    ++updates_;
+    if (order.type_ == OrderType::STOP_LIMIT) {
+      strategy::TargetPosition flat;
+      flat.instrument_ = order.instrument_;
+      flat.target_quantity_ = Decimal64::parse("0");
+      ctx.submit(flat);
+    } else if (order.type_ == OrderType::LIMIT && order.side_ == OrderSide::BUY) {
+      ctx.submit(strategy::OrderIntent::limit(
+        order.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")),
+        *strategy::Price::checked(Decimal64::parse("60000"), PriceRule::krx_equity())
+      ));
+    }
+  }
+};
+
+} // namespace
+
+TEST_CASE("a replay releases a deferred target only after the whole update batch", "[trigger]") {
+  // **Codex round 3's first blocker.** The stop's update makes the strategy state flat, which withdraws
+  // the stop and defers flat; a later update in the same batch answers with an `OrderIntent` for the
+  // instrument, which supersedes the fallback. Released after the first update, the sell was already
+  // queued and both would trade.
+  backtest::Backtester<ChangesItsMindInOneBatch> engine(ChangesItsMindInOneBatch{}, replay_config());
+  engine.feed(stop_bar(10, "70000", "70000", "70000", "70000"));
+  engine.feed(stop_bar(11, "70000", "70000", "70000", "70000"));
+  engine.feed(stop_bar(12, "70000", "70000", "70000", "70000"));
+  engine.feed(stop_bar(13, "70000", "70000", "70000", "70000"));
+  engine.finish();
+
+  for (const auto& execution : engine.result().executions_) {
+    INFO("execution " << execution.fill_.tag_);
+    CHECK(execution.fill_.side_ == OrderSide::BUY);
+  }
+}

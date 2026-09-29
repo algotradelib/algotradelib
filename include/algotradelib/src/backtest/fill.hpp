@@ -234,6 +234,20 @@ public:
       }
     }
     auto slipped = slippage_.apply(*reference, order.side_, rule);
+    if (slipped && decision.intrabar_release_fill_) {
+      // **No favourable slippage after an intrabar release.** Favourable slippage lifts a sell (lowers
+      // a buy) towards the bar's other extreme -- which, for a stop released inside the bar, may have
+      // come *before* the release, a price the order could never have met. The only prices known to
+      // follow the release are the trigger, the extreme it fell or rose to, and the close; rather than
+      // model which of those favourable slippage may reach, it is not applied here at all.
+      const bool favourable = order.side_ == OrderSide::SELL ?
+        decimal_less(*reference, slipped->first) :
+        decimal_less(slipped->first, *reference);
+      if (favourable) {
+        slipped->first = *reference;
+        slipped->second = Decimal64::parse("0");
+      }
+    }
     if (slipped && bound) {
       // **The other side too.** `SlippageModel` accepts a negative figure, which moves a fill in the
       // order's favour -- and past the bar's opposite extreme it is a price the bar never showed, the
