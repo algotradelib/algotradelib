@@ -93,6 +93,15 @@ struct KisAmendment {
   Decimal64 quantity_;
   /** The new price, for a basis that takes one. */
   std::optional<Decimal64> price_;
+  /**
+   * The trigger price, KIS's `CNDT_PRIC`, for a `STOP_LIMIT` (`22`) order.
+   *
+   * Required on a modification of a stop order and refused on any other basis. On a cancellation
+   * it is sent when it is a valid trigger for a `22` shape and silently left off otherwise: KIS
+   * re-sends the whole shape on `order-rvsecncl` for both, the sheet marks the field optional, and
+   * a withdrawal is never refused for how it restates the order it withdraws.
+   */
+  std::optional<Decimal64> trigger_price_;
   /** Whether the whole remaining quantity is affected rather than `quantity_`. */
   bool all_remaining_{false};
 };
@@ -126,6 +135,16 @@ struct KisOpenOrder {
   KisOrderRef original_order_;
   /** How much KIS says may still be amended. */
   Decimal64 amendable_quantity_;
+  /**
+   * KIS's `stpm_efct_occr_yn` 스톱지정가효력발생여부, verbatim: whether a stop order has released.
+   *
+   * **Raw, and deliberately not normalized.** The sheet names the field and documents no values,
+   * and nothing establishes what amending a stop that has already released does at KIS -- whether
+   * the new `CNDT_PRIC` is ignored, rejected or re-arms the stop. So this library does not claim to
+   * know, and keeps the broker's own answer where a caller about to amend a stop can read it.
+   * Empty where the row carries no such string.
+   */
+  std::string stop_released_;
 };
 
 /** One page of KIS orders that remain modifiable or cancellable. */
@@ -2698,6 +2717,50 @@ private:
     return std::nullopt;
   }
 
+  /** Returns whether `trigger` is a value KIS's `CNDT_PRIC` can carry: positive, whole won. */
+  static bool valid_trigger_value(const Decimal64& trigger) {
+    return trigger.coefficient() > 0 && trigger.scale() == 0;
+  }
+
+  /**
+   * Returns an error when a trigger price does not match its order type.
+   *
+   * `22` 스톱지정가 needs one -- the 주식주문(현금) sheet documents `CNDT_PRIC` as "스탑지정가호가
+   * 주문 (ORD_DVSN이 22) 사용 시에만 필수" -- and every other code has nowhere to put one, so a
+   * trigger stated on it would be dropped and the order sent as something the caller did not
+   * describe. Neither is sent (Decision 6).
+   *
+   * Nothing about the trigger's direction or its relation to the limit is checked: the sheet
+   * documents neither, and a local rule KIS does not state would refuse orders KIS accepts.
+   */
+  static std::optional<BrokerError> validate_trigger(
+    OrderType type,
+    const std::optional<Decimal64>& trigger
+  ) {
+    BrokerError error;
+    error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = false;
+    error.broker_code_ = "invalid_trigger_price";
+    if (carries_trigger_price(type)) {
+      if (!trigger) {
+        error.message_ = "a KIS stop-limit order (22) requires a trigger price in CNDT_PRIC";
+        return error;
+      }
+      if (!valid_trigger_value(*trigger)) {
+        error.message_ = "a KIS trigger price must be a positive whole number of won";
+        return error;
+      }
+      return std::nullopt;
+    }
+    if (trigger) {
+      error.message_ =
+        "KIS takes a trigger price only on a stop-limit order (22); on this basis it would be "
+        "dropped";
+      return error;
+    }
+    return std::nullopt;
+  }
+
   /**
    * One row of KIS's `ORD_DVSN` table: a wire code and the three facts it means.
    *
@@ -2769,7 +2832,7 @@ private:
     {"15", OrderType::BEST_LIMIT,        TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
     {"16", OrderType::BEST_LIMIT,        TimeInForce::FILL_OR_KILL,        OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
     {"21", OrderType::MID_PRICE,         TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx | kNxt,        true},
-    {"22", OrderType::STOP_LIMIT,        TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx | kNxt,        false},
+    {"22", OrderType::STOP_LIMIT,        TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx | kNxt,        true},
     {"23", OrderType::MID_PRICE,         TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,             kKrx | kNxt,        true},
     {"24", OrderType::MID_PRICE,         TimeInForce::FILL_OR_KILL,        OrderSession::REGULAR,             kKrx | kNxt,        true},
     {"27", OrderType::LIMIT,             TimeInForce::DAY,                 OrderSession::GTP,                 kNxt,               true},
@@ -2943,6 +3006,9 @@ private:
     if (auto error = validate_price(order.type_, order.price_)) {
       return error;
     }
+    if (auto error = validate_trigger(order.type_, order.trigger_price_)) {
+      return error;
+    }
     if (auto error = validate_venue(config, order.venue_)) {
       return error;
     }
@@ -2969,13 +3035,23 @@ private:
   static std::optional<BrokerError> validate_amendment(
     const KisConfig& config,
     const KisAmendment& amendment,
-    std::string& division
+    std::string& division,
+    bool cancel = false
   ) {
     if (auto error = validate_quantity(amendment.quantity_)) {
       return error;
     }
     if (auto error = validate_price(amendment.type_, amendment.price_)) {
       return error;
+    }
+    // A modification states the order it leaves behind, so its trigger is held to the placement
+    // rule. A cancellation is not refused for its trigger at all: `make_amend_order_request` sends
+    // `CNDT_PRIC` only when it is a valid trigger for a `22` shape, so a stop order whose trigger
+    // KIS never reported back can still be withdrawn.
+    if (!cancel) {
+      if (auto error = validate_trigger(amendment.type_, amendment.trigger_price_)) {
+        return error;
+      }
     }
     // The amendment carries its own condition and session. Sending `DAY` here,
     // as this did, re-shaped the order: an immediate-or-cancel order amended to
@@ -3096,6 +3172,12 @@ private:
       {"ORD_QTY", order.quantity_.str()},
       {"ORD_UNPR", order.price_ ? order.price_->str() : std::string("0")},
     };
+    // Only when stated, which `validate_trigger` has restricted to `22`. The sheet marks the field
+    // optional, and leaving it off every other body keeps those byte-identical to what KIS has
+    // always been sent.
+    if (order.trigger_price_) {
+      body.emplace("CNDT_PRIC", order.trigger_price_->str());
+    }
     if (const auto* exchange = transmitted_exchange(config, order.venue_);
         *exchange != '\0') {
       body.emplace("EXCG_ID_DVSN_CD", exchange);
@@ -3141,6 +3223,12 @@ private:
       {"ORD_UNPR", amendment.price_ ? amendment.price_->str() : std::string("0")},
       {"QTY_ALL_ORD_YN", amendment.all_remaining_ ? "Y" : "N"},
     };
+    // On a modification `validate_amendment` has already required this exactly for `22`. On a
+    // cancellation nothing was refused, so the same test decides whether to restate it.
+    if (amendment.trigger_price_ && carries_trigger_price(amendment.type_) &&
+        valid_trigger_value(*amendment.trigger_price_)) {
+      body.emplace("CNDT_PRIC", amendment.trigger_price_->str());
+    }
     // The 주식주문(정정취소) sheet publishes `EXCG_ID_DVSN_CD` and the same
     // per-venue `ORD_DVSN` sets as the placement sheet, and this never sent it:
     // an amendment to an order living at NXT was addressed to KRX, the sheet's
@@ -3285,7 +3373,7 @@ private:
       invalid = std::move(error);
     }
     if (!invalid) {
-      invalid = validate_amendment(config_, amendment, division);
+      invalid = validate_amendment(config_, amendment, division, cancel);
     }
     if (invalid) {
       complete_order_ack(std::move(completion), Result<KisOrderAck>(std::move(*invalid)));
@@ -3522,6 +3610,10 @@ private:
         open_order.original_order_.order_number_ = broker_detail::json_string(row, "orgn_odno");
         open_order.amendable_quantity_ =
           Decimal64::parse(broker_detail::json_string(row, "psbl_qty"));
+        if (const auto* released = row.if_contains("stpm_efct_occr_yn");
+            released != nullptr && released->is_string()) {
+          open_order.stop_released_ = std::string(released->get_string());
+        }
 
         auto& order = open_order.order_;
         order.order_id_ = open_order.order_ref_.order_number_;
@@ -3543,6 +3635,7 @@ private:
         if (carries_caller_price(order.type_)) {
           order.price_ = Decimal64::parse(broker_detail::json_string(row, "ord_unpr"));
         }
+        order.trigger_price_ = reported_trigger(row);
         order.currency_ = Currency::krw();
         order.execution_.filled_quantity_ =
           Decimal64::parse(broker_detail::json_string(row, "tot_ccld_qty"));
@@ -3771,6 +3864,7 @@ private:
         if (carries_caller_price(order.type_)) {
           order.price_ = Decimal64::parse(broker_detail::json_string(row, "ord_unpr"));
         }
+        order.trigger_price_ = reported_trigger(row);
         order.currency_ = Currency::krw();
         order.ordered_at_ = korea_timestamp(
           broker_detail::json_string(row, "ord_dt"), broker_detail::json_string(row, "ord_tmd")
@@ -3899,6 +3993,32 @@ private:
    * `OrderSnapshot::venue_` rather than on the instrument.
    */
   static constexpr Venue instrument_venue() { return Venue::COMBINED; }
+
+  /**
+   * Returns an order's trigger from `stpm_cndt_pric`, or nothing.
+   *
+   * Both 정정취소가능주문조회 and 주식일별주문체결조회 publish the field on every row, with an
+   * empty Description column. A positive value is recorded **whatever the row's code**, for the
+   * reason `OrderSnapshot::trigger_price_` gives: on anything but `22` it is KIS contradicting its
+   * own code, which a replacement then refuses rather than carrying along. A missing, empty, zero
+   * or unreadable value is **not** a failure of the listing -- a trigger is one fact about one
+   * order, and the row is still the order -- and leaves the trigger unreported.
+   */
+  static std::optional<Decimal64> reported_trigger(const json::object& row) {
+    const auto* value = row.if_contains("stpm_cndt_pric");
+    if (value == nullptr || !value->is_string()) {
+      return std::nullopt;
+    }
+    try {
+      const auto trigger = Decimal64::parse(value->get_string());
+      if (trigger.coefficient() > 0) {
+        return trigger;
+      }
+    } catch (const std::exception&) {
+      // Unreadable is "not reported", for the reason above.
+    }
+    return std::nullopt;
+  }
 
   static Venue reported_venue(const json::object& row) {
     // The workbook spells this field two ways across the sheets that publish

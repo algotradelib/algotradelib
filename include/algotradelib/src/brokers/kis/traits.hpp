@@ -265,6 +265,7 @@ struct Normalizers {
     amendment.venue_ = instruction.venue_;
     amendment.quantity_ = *instruction.quantity_;
     amendment.price_ = instruction.shape_.price_;
+    amendment.trigger_price_ = amended_trigger_price(instruction);
     amendment.all_remaining_ = instruction.all_remaining_;
     return Result<KisAmendment>(std::move(amendment));
   }
@@ -333,6 +334,9 @@ struct Capabilities {
 
   /** KIS documents no client-supplied idempotency key for individual customers. */
   static constexpr bool has_client_order_id = false;
+
+  /** KIS sends a stop-limit (`22`) order's trigger as `CNDT_PRIC`, on placement and amendment. */
+  static constexpr bool has_trigger_price = true;
 
   /** KIS publishes its modifiable and cancellable orders, except on demo accounts. */
   static constexpr bool has_working_orders = true;

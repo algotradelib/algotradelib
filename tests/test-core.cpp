@@ -168,6 +168,14 @@ struct KisClientTestAccess {
     return KisClient::validate_amendment(config, amendment, division);
   }
 
+  static std::optional<BrokerError> cancel_division(
+    const KisAmendment& amendment,
+    std::string& division,
+    const KisConfig& config = KisConfig{}
+  ) {
+    return KisClient::validate_amendment(config, amendment, division, true);
+  }
+
   static bool valid_order_reference(const KisOrderRef& order) {
     return KisClient::valid_order_reference(order);
   }
@@ -1580,7 +1588,7 @@ constexpr ShapeCase kWorkbookShapes[] = {
   {"16", OrderType::BEST_LIMIT, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR,
    true, true, true, true},
   {"21", OrderType::MID_PRICE, TimeInForce::DAY, OrderSession::REGULAR, true, true, false, true},
-  {"22", OrderType::STOP_LIMIT, TimeInForce::DAY, OrderSession::REGULAR, true, true, false, false},
+  {"22", OrderType::STOP_LIMIT, TimeInForce::DAY, OrderSession::REGULAR, true, true, false, true},
   {"23", OrderType::MID_PRICE, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,
    true, true, false, true},
   {"24", OrderType::MID_PRICE, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR,
@@ -1622,6 +1630,13 @@ OrderRequest shaped_order(const ShapeCase& shape, Venue venue) {
   // matter; `carries_caller_price` is the same predicate production uses.
   if (!carries_caller_price(shape.type_)) {
     order.price_.reset();
+  }
+  // The same for the trigger: `22` needs one and `validate_trigger` would refuse it without, which
+  // is an answer about the trigger rather than about the code. Before `22` was requestable this row
+  // expected a refusal and got one for exactly that reason, so the table could not tell the two
+  // apart.
+  if (carries_trigger_price(shape.type_)) {
+    order.trigger_price_ = Decimal64::parse("59000");
   }
   return order;
 }
@@ -3060,6 +3075,14 @@ TEST_CASE(
     ioc.run();
     REQUIRE(completed);
   };
+
+  SECTION("a trigger is refused by the client itself, not only by the session") {
+    // A caller of `TossClient` does not pass through `BrokerSession`, and Toss has no field for a
+    // trigger: sent, this would be acknowledged as the plain limit it is not.
+    auto order = korean_limit_buy();
+    order.trigger_price_ = Decimal64::parse("69000");
+    expect_rejection(std::move(order), "unsupported_trigger_price");
+  }
 
   SECTION("a fractional quantity is rejected") {
     auto order = korean_limit_buy();
@@ -5303,5 +5326,231 @@ TEST_CASE("a rate window includes both of its own bounds, in either row order") 
     // the fallback -- and outside both it refuses rather than reaching for a window that ended.
     CHECK(at(1, asserted));
     CHECK_FALSE(schedule.rate_for(Country::KR, asserted, Date{2026, 2, 28}).rate_);
+  }
+}
+
+TEST_CASE("KIS places, amends and reads back a stop-limit order's trigger", "[broker][kis][trigger]") {
+  using Traits = BrokerTraits<kis::KisClient>;
+  const kis::KisAccount account{"12345678", "01"};
+  const kis::KisConfig live;
+
+  auto stop = korean_limit_buy();
+  stop.type_ = OrderType::STOP_LIMIT;
+  stop.venue_ = Venue::KRX;
+  stop.price_ = Decimal64::parse("69000");
+  stop.trigger_price_ = Decimal64::parse("69500");
+
+  SECTION("22 is composed, and the trigger goes in CNDT_PRIC beside the limit") {
+    std::string division;
+    REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(stop, division));
+    REQUIRE(division == "22");
+    const auto body = json::parse(
+      kis::KisClientTestAccess::place_order_request(account, live, stop, division).body_
+    ).as_object();
+    CHECK(body.at("ORD_DVSN").as_string() == "22");
+    CHECK(body.at("ORD_UNPR").as_string() == "69000");
+    CHECK(body.at("CNDT_PRIC").as_string() == "69500");
+  }
+
+  SECTION("every other body is sent without the field, as before") {
+    const auto body = json::parse(
+      kis::KisClientTestAccess::place_order_request(account, live, korean_limit_buy(), "00").body_
+    ).as_object();
+    CHECK_FALSE(body.contains("CNDT_PRIC"));
+  }
+
+  SECTION("a trigger the order cannot carry, or a stop without one, is refused before I/O") {
+    const auto refused = [](OrderRequest order) {
+      std::string division;
+      const auto error = kis::KisClientTestAccess::validate_order(order, division);
+      REQUIRE(error);
+      CHECK(error->broker_code_ == "invalid_trigger_price");
+      CHECK_FALSE(error->reached_broker_);
+    };
+    auto missing = stop;
+    missing.trigger_price_.reset();
+    refused(missing);
+    auto on_limit = korean_limit_buy();
+    on_limit.trigger_price_ = Decimal64::parse("69500");
+    refused(on_limit);
+    for (const auto* value : {"0", "-69500", "69500.5"}) {
+      auto bad = stop;
+      bad.trigger_price_ = Decimal64::parse(value);
+      INFO("trigger " << value);
+      refused(bad);
+    }
+  }
+
+  SECTION("22 is not published under SOR, so a combined route is refused") {
+    auto routed = stop;
+    routed.venue_ = Venue::COMBINED;
+    std::string division;
+    const auto error = kis::KisClientTestAccess::validate_order(routed, division);
+    REQUIRE(error);
+    CHECK(error->broker_code_ != "invalid_trigger_price");
+  }
+
+  WorkingOrder<kis::Broker> working;
+  working.ref_.primary_ = "0001569139";
+  working.ref_.secondary_ = "06010";
+  working.order_.type_ = OrderType::STOP_LIMIT;
+  working.order_.time_in_force_ = TimeInForce::DAY;
+  working.order_.session_ = OrderSession::REGULAR;
+  working.order_.venue_ = Venue::KRX;
+  working.order_.price_ = Decimal64::parse("69000");
+  working.order_.trigger_price_ = Decimal64::parse("69500");
+  working.amendable_quantity_ = Decimal64::parse("10");
+
+  const auto amend_body = [&](const kis::KisAmendment& amendment, bool cancel) {
+    std::string division;
+    const auto refused = cancel ?
+      kis::KisClientTestAccess::cancel_division(amendment, division) :
+      kis::KisClientTestAccess::amendment_division(amendment, division);
+    REQUIRE_FALSE(refused);
+    return json::parse(
+      kis::KisClientTestAccess::amend_order_request(account, live, amendment, cancel, division).body_
+    ).as_object();
+  };
+
+  SECTION("a reprice restates the resting trigger") {
+    auto amendment = Traits::to_replacement(working.ref_, reprice(working, Decimal64::parse("68000")));
+    REQUIRE(amendment);
+    const auto body = amend_body(amendment.value(), false);
+    CHECK(body.at("ORD_DVSN").as_string() == "22");
+    CHECK(body.at("ORD_UNPR").as_string() == "68000");
+    CHECK(body.at("CNDT_PRIC").as_string() == "69500");
+  }
+
+  SECTION("a shape that leaves the trigger unset keeps it") {
+    auto amendment = Traits::to_replacement(
+      working.ref_, replace_with(working, OrderShape{OrderType::STOP_LIMIT, Decimal64::parse("68000")})
+    );
+    REQUIRE(amendment);
+    CHECK(amend_body(amendment.value(), false).at("CNDT_PRIC").as_string() == "69500");
+  }
+
+  SECTION("a stop whose trigger KIS never reported cannot be modified, and can be cancelled") {
+    auto unreported = working;
+    unreported.order_.trigger_price_.reset();
+    auto modified = Traits::to_replacement(unreported.ref_, reprice(unreported, Decimal64::parse("68000")));
+    REQUIRE(modified);
+    std::string division;
+    const auto error = kis::KisClientTestAccess::amendment_division(modified.value(), division);
+    REQUIRE(error);
+    CHECK(error->broker_code_ == "invalid_trigger_price");
+
+    auto canceled = Traits::to_cancellation(unreported.ref_, cancel_all(unreported));
+    REQUIRE(canceled);
+    std::string cancel_division;
+    REQUIRE_FALSE(kis::KisClientTestAccess::cancel_division(canceled.value(), cancel_division));
+    const auto body = amend_body(canceled.value(), true);
+    CHECK(body.at("RVSE_CNCL_DVSN_CD").as_string() == "02");
+    CHECK_FALSE(body.contains("CNDT_PRIC"));
+  }
+
+  SECTION("a cancellation restates a valid stop trigger and drops one that is not") {
+    auto canceled = Traits::to_cancellation(working.ref_, cancel_all(working));
+    REQUIRE(canceled);
+    CHECK(amend_body(canceled.value(), true).at("CNDT_PRIC").as_string() == "69500");
+
+    // A hand-built cancellation of a plain limit that states a trigger: withdrawn, never refused
+    // for it, and the inapplicable field is not sent.
+    auto limit = working;
+    limit.order_.type_ = OrderType::LIMIT;
+    auto stray = Traits::to_cancellation(limit.ref_, cancel_all(limit));
+    REQUIRE(stray);
+    std::string division;
+    REQUIRE_FALSE(kis::KisClientTestAccess::cancel_division(stray.value(), division));
+    const auto body = json::parse(
+      kis::KisClientTestAccess::amend_order_request(account, live, stray.value(), true, division).body_
+    ).as_object();
+    CHECK(body.at("ORD_DVSN").as_string() == "00");
+    CHECK_FALSE(body.contains("CNDT_PRIC"));
+  }
+
+  SECTION("the working listing reports the trigger and the raw release flag") {
+    auto orders = kis::KisClientTestAccess::parse_open_orders(
+      json_response(
+        R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"0001569139",)"
+        R"("orgn_odno":"","ord_dvsn_name":"stop","pdno":"005930",)"
+        R"("prdt_name":"Samsung","rvse_cncl_dvsn_name":"modify","ord_qty":"10",)"
+        R"("ord_unpr":"69000","ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0",)"
+        R"("psbl_qty":"10","sll_buy_dvsn_cd":"02","ord_dvsn_cd":"22",)"
+        R"("stpm_cndt_pric":"69500","stpm_efct_occr_yn":"N"},)"
+        R"({"ord_gno_brno":"06010","odno":"0001569140",)"
+        R"("orgn_odno":"","ord_dvsn_name":"limit","pdno":"005930",)"
+        R"("prdt_name":"Samsung","rvse_cncl_dvsn_name":"modify","ord_qty":"10",)"
+        R"("ord_unpr":"70000","ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0",)"
+        R"("psbl_qty":"10","sll_buy_dvsn_cd":"02","ord_dvsn_cd":"00",)"
+        R"("stpm_cndt_pric":"0"},)"
+        R"({"ord_gno_brno":"06010","odno":"0001569141",)"
+        R"("orgn_odno":"","ord_dvsn_name":"stop","pdno":"005930",)"
+        R"("prdt_name":"Samsung","rvse_cncl_dvsn_name":"modify","ord_qty":"10",)"
+        R"("ord_unpr":"69000","ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0",)"
+        R"("psbl_qty":"10","sll_buy_dvsn_cd":"02","ord_dvsn_cd":"22",)"
+        R"("stpm_cndt_pric":"abc"}]})"
+      )
+    );
+    REQUIRE(orders);
+    const auto& rows = orders.value().orders_;
+    REQUIRE(rows.size() == 3);
+    CHECK(rows[0].order_.type_ == OrderType::STOP_LIMIT);
+    CHECK(rows[0].order_.trigger_price_ == Decimal64::parse("69500"));
+    CHECK(rows[0].stop_released_ == "N");
+    // An ordinary order reports zero, which is not a trigger.
+    CHECK_FALSE(rows[1].order_.trigger_price_);
+    CHECK(rows[1].stop_released_.empty());
+    // An unreadable trigger costs the trigger, not the row -- the order is still listed.
+    CHECK(rows[2].order_.type_ == OrderType::STOP_LIMIT);
+    CHECK_FALSE(rows[2].order_.trigger_price_);
+  }
+
+  SECTION("a positive trigger on a row that is not a stop is recorded, and blocks a modification") {
+    auto orders = kis::KisClientTestAccess::parse_open_orders(
+      json_response(
+        R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"0001569140",)"
+        R"("orgn_odno":"","ord_dvsn_name":"limit","pdno":"005930",)"
+        R"("prdt_name":"Samsung","rvse_cncl_dvsn_name":"modify","ord_qty":"10",)"
+        R"("ord_unpr":"70000","ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0",)"
+        R"("psbl_qty":"10","sll_buy_dvsn_cd":"02","ord_dvsn_cd":"00",)"
+        R"("stpm_cndt_pric":"69500"}]})"
+      )
+    );
+    REQUIRE(orders);
+    const auto& row = orders.value().orders_.front();
+    // KIS contradicting its own code is kept where a caller can see it, not discarded.
+    REQUIRE(row.order_.trigger_price_ == Decimal64::parse("69500"));
+
+    WorkingOrder<kis::Broker> contradicted;
+    contradicted.ref_.primary_ = "0001569140";
+    contradicted.ref_.secondary_ = "06010";
+    contradicted.order_ = row.order_;
+    contradicted.amendable_quantity_ = row.amendable_quantity_;
+    auto modified = Traits::to_replacement(contradicted.ref_, reprice(contradicted, Decimal64::parse("69000")));
+    REQUIRE(modified);
+    std::string division;
+    const auto error = kis::KisClientTestAccess::amendment_division(modified.value(), division);
+    REQUIRE(error);
+    CHECK(error->broker_code_ == "invalid_trigger_price");
+    auto canceled = Traits::to_cancellation(contradicted.ref_, cancel_all(contradicted));
+    REQUIRE(canceled);
+    std::string cancel_division;
+    CHECK_FALSE(kis::KisClientTestAccess::cancel_division(canceled.value(), cancel_division));
+  }
+
+  SECTION("the history listing reports the trigger") {
+    auto result = kis::KisClientTestAccess::parse_order_history(
+      json_response(
+        R"({"rt_cd":"0","output1":[{"ord_dt":"20260328","ord_gno_brno":"06010",)"
+        R"("odno":"0001569157","orgn_odno":"","ord_dvsn_name":"stop",)"
+        R"("sll_buy_dvsn_cd":"01","sll_buy_dvsn_cd_name":"sell","pdno":"005930",)"
+        R"("prdt_name":"Samsung","ord_qty":"10","ord_unpr":"69000","ord_tmd":"093000",)"
+        R"("tot_ccld_qty":"0","avg_prvs":"0","cncl_yn":"N","tot_ccld_amt":"0",)"
+        R"("ord_dvsn_cd":"22","cncl_cfrm_qty":"0","rmn_qty":"10","rjct_qty":"0",)"
+        R"("stpm_cndt_pric":"69500"}]})"
+      )
+    );
+    REQUIRE(result);
+    CHECK(result.value().orders_.front().trigger_price_ == Decimal64::parse("69500"));
   }
 }
