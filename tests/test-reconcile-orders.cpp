@@ -1059,3 +1059,75 @@ TEST_CASE("a resolution that cannot be recorded leaves the hold standing", "[rec
   REQUIRE_FALSE(report.settled());
   REQUIRE(ledger.requires_reconcile(samsung()));
 }
+
+TEST_CASE("recovery tells two stops apart by their triggers", "[reconcile][trigger]") {
+  auto instruction = placement();
+  instruction.entry_.type_ = OrderType::STOP_LIMIT;
+  instruction.entry_.trigger_price_ = Decimal64::parse("69500");
+
+  const auto stop_row = [](const char* id, std::optional<const char*> trigger) {
+    auto snapshot = row(id);
+    snapshot.type_ = OrderType::STOP_LIMIT;
+    if (trigger) {
+      snapshot.trigger_price_ = Decimal64::parse(*trigger);
+    }
+    return snapshot;
+  };
+
+  SECTION("the same trigger matches") {
+    const auto match =
+      runner::match_against(instruction, {stop_row("KRX-1", "69500")}, after_the_window());
+    REQUIRE(match.verdict_ == MatchVerdict::MATCHED);
+    REQUIRE(match.order_id_ == "KRX-1");
+  }
+
+  SECTION("a different trigger is a different order") {
+    const auto match =
+      runner::match_against(instruction, {stop_row("KRX-1", "69800")}, after_the_window());
+    REQUIRE(match.verdict_ == MatchVerdict::NOT_PLACED);
+    REQUIRE(match.candidates_ == 0);
+  }
+
+  SECTION("a stop whose trigger the broker did not report is a candidate, not a match or an absence") {
+    // Excluding it would report NOT_PLACED for a stop that is resting, and the runner would send
+    // it again; matching it would let any lookalike clear the hold.
+    const auto match =
+      runner::match_against(instruction, {stop_row("KRX-1", std::nullopt)}, after_the_window());
+    REQUIRE(match.verdict_ == MatchVerdict::AMBIGUOUS);
+    REQUIRE(match.candidates_ == 1);
+    REQUIRE(match.order_id_.empty());
+  }
+
+  SECTION("a limit row that also reports a trigger is withheld, not read as an absence") {
+    // What slice 39's readers record when a broker reports a positive trigger on a non-stop row.
+    // It is the broker contradicting its own code, not proof of another order: reading it as one
+    // reported this runner's own limit NOT_PLACED and cleared the hold for a second send.
+    auto plain = placement();
+    auto limit_with_trigger = row("KRX-1");
+    limit_with_trigger.trigger_price_ = Decimal64::parse("69500");
+    const auto match = runner::match_against(plain, {limit_with_trigger}, after_the_window());
+    REQUIRE(match.verdict_ == MatchVerdict::AMBIGUOUS);
+    REQUIRE(match.candidates_ == 1);
+  }
+
+  SECTION("a stop row is still not a plain order's match") {
+    auto plain = placement();
+    const auto match =
+      runner::match_against(plain, {stop_row("KRX-1", "69500")}, after_the_window());
+    REQUIRE(match.verdict_ == MatchVerdict::NOT_PLACED);
+  }
+}
+
+TEST_CASE("a stop journalled without its trigger, or a limit with one, needs an operator", "[reconcile][trigger]") {
+  JournalEntry missing = placement().entry_;
+  missing.type_ = OrderType::STOP_LIMIT;
+  CHECK_FALSE(runner::unresolvable_reason(missing).empty());
+
+  JournalEntry stray = placement().entry_;
+  stray.trigger_price_ = Decimal64::parse("69500");
+  CHECK_FALSE(runner::unresolvable_reason(stray).empty());
+
+  JournalEntry stop = missing;
+  stop.trigger_price_ = Decimal64::parse("69500");
+  CHECK(runner::unresolvable_reason(stop).empty());
+}
