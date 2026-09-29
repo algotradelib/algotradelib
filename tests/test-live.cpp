@@ -3858,3 +3858,51 @@ TEST_CASE("an open history row is not dropped under a working row that only shar
   CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::MATCHED);
   CHECK(source.last_reconcile().matches_.front().order_id_ == "KRX-1");
 }
+
+TEST_CASE("a resting order listed in both inquiries recovers as one match on a no-range broker", "[recovery]") {
+  // The happy path of the exact-copy rule, end to end: the working row and the history row state the
+  // same id, instrument and order time -- as Kiwoom's and Toss's listings do -- so they are one
+  // candidate and the journalled order is `MATCHED`. (Fable's note at slice 44's merge check.)
+  WorkingSession session;
+  auto resting = working();
+  resting.ref_ = OrderRef<FakeBroker>{"KRX-1", ""};
+  resting.order_ = listed_order("KRX-1");
+  resting.order_.status_ = OrderStatus::PENDING;
+  WorkingOrders<FakeBroker> listing;
+  listing.orders_.push_back(resting);
+  session.set_working_orders(listing);
+  OrderPage page;
+  page.orders_.push_back(resting.order_);
+  session.set_history(page);
+
+  runner::MemoryJournal journal;
+  journal.append(journaled_placement());
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live_runner.context().set_now(swept_at());
+  live_runner.ledger().mark(samsung(), "an order request failed in transit");
+  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
+  source.set_journal(journal);
+
+  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+  REQUIRE_FALSE(source.last_reconcile().matches_.empty());
+  CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::MATCHED);
+  CHECK(source.last_reconcile().matches_.front().candidates_ == 1);
+  CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
+
+  // Stamped differently, the same order is two candidates and the hold stays: the stated cost.
+  auto restamped = resting.order_;
+  restamped.ordered_at_ = *restamped.ordered_at_ + std::chrono::seconds(1);
+  OrderPage other;
+  other.orders_.push_back(restamped);
+  session.set_history(other);
+  auto second = live::bind_observer(session, CountEvents{});
+  second.context().set_now(swept_at());
+  second.ledger().mark(samsung(), "an order request failed in transit");
+  runner::MemoryJournal again;
+  again.append(journaled_placement());
+  live::SessionSource<WorkingSession, runner::MemoryJournal> source2(session, {samsung()});
+  source2.set_journal(again);
+  CHECK(source2.read_order_list(second) == runner::PollOutcome::UPDATED);
+  CHECK(source2.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::AMBIGUOUS);
+  CHECK(second.ledger().requires_reconcile(samsung()));
+}
