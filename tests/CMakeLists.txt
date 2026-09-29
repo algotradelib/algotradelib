@@ -16,6 +16,12 @@ target_link_libraries(algotradelib-core-tests PRIVATE
     algotradelib::algotradelib
     Catch2::Catch2WithMain
 )
+# What CMake read out of version.hpp, so a test can compare it with what the preprocessor sees. The
+# project-named variable rather than PROJECT_VERSION, which a project() in a fetched dependency would
+# shadow within its own directory.
+target_compile_definitions(algotradelib-core-tests PRIVATE
+    ATL_TEST_PROJECT_VERSION="${algotradelib_VERSION}"
+)
 
 add_executable(algotradelib-broker-port-tests test-broker-port.cpp)
 target_link_libraries(algotradelib-broker-port-tests PRIVATE

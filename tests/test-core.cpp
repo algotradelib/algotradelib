@@ -563,6 +563,29 @@ TEST_CASE(
   REQUIRE_THROWS_AS(missing_account.from_env(), std::runtime_error);
 }
 
+TEST_CASE(
+  "The version macros agree with the version CMake read out of the header",
+  "[core][version]"
+) {
+  // CMake parses version.hpp before project(); this checks the parse against the preprocessor's view
+  // of the same file, and that the string is built from the parts rather than typed twice.
+  REQUIRE(std::string_view(ATL_VERSION_STRING) == ATL_TEST_PROJECT_VERSION);
+  const std::string parts = std::to_string(ATL_VERSION_MAJOR) + "." + std::to_string(ATL_VERSION_MINOR) +
+    "." + std::to_string(ATL_VERSION_PATCH) +
+    (ATL_VERSION_DEV != 0 ? "." + std::to_string(ATL_VERSION_DEV) : std::string());
+  REQUIRE(parts == ATL_VERSION_STRING);
+
+  // The encoded release carries no development part, as BOOST_VERSION does.
+  STATIC_REQUIRE(ATL_VERSION == ATL_VERSION_ENCODE(ATL_VERSION_MAJOR, ATL_VERSION_MINOR, ATL_VERSION_PATCH));
+  STATIC_REQUIRE(ATL_VERSION_ENCODE(1, 2, 3) == 1002003);
+  STATIC_REQUIRE(ATL_VERSION_ENCODE(0, 999, 999) < ATL_VERSION_ENCODE(1, 0, 0));
+  STATIC_REQUIRE(ATL_VERSION_ENCODE(2, 0, 0) > ATL_VERSION_ENCODE(1, 999, 999));
+
+  // Still the development version before any release: no release number until the operator decides.
+  STATIC_REQUIRE(ATL_VERSION == ATL_VERSION_ENCODE(0, 0, 0));
+  STATIC_REQUIRE(ATL_VERSION_DEV == 9000);
+}
+
 /**
  * A credential file that exists only for the duration of one test.
  *

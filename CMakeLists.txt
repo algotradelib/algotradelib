@@ -4,7 +4,31 @@ if(POLICY CMP0167)
     cmake_policy(SET CMP0167 NEW)
 endif()
 
-project(algotradelib VERSION 0.0.0.9000 LANGUAGES CXX)
+# The version is written once, in include/algotradelib/src/version.hpp, and read from there -- as
+# Eigen does -- rather than generated into it with configure_file. A generated header would live in the
+# build directory, so a consumer who adds include/ to their own build would have no version at all.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/algotradelib/src/version.hpp" ATL_VERSION_LINES
+    REGEX "^#define ATL_VERSION_(MAJOR|MINOR|PATCH|DEV) [0-9]+$")
+foreach(part MAJOR MINOR PATCH DEV)
+    set(ATL_VERSION_${part} "")
+    foreach(line IN LISTS ATL_VERSION_LINES)
+        if(line MATCHES "^#define ATL_VERSION_${part} ([0-9]+)$")
+            set(ATL_VERSION_${part} "${CMAKE_MATCH_1}")
+        endif()
+    endforeach()
+    if(ATL_VERSION_${part} STREQUAL "")
+        message(FATAL_ERROR "include/algotradelib/src/version.hpp defines no ATL_VERSION_${part}")
+    endif()
+endforeach()
+# A release has three parts; a development version carries the fourth.
+if(ATL_VERSION_DEV EQUAL 0)
+    set(ATL_PROJECT_VERSION "${ATL_VERSION_MAJOR}.${ATL_VERSION_MINOR}.${ATL_VERSION_PATCH}")
+else()
+    set(ATL_PROJECT_VERSION
+        "${ATL_VERSION_MAJOR}.${ATL_VERSION_MINOR}.${ATL_VERSION_PATCH}.${ATL_VERSION_DEV}")
+endif()
+
+project(algotradelib VERSION ${ATL_PROJECT_VERSION} LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -14,7 +38,7 @@ if ((APPLE OR WIN32) AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(Boost 1.87.0 REQUIRED COMPONENTS json)
-find_package(OpenSSL 3.6.2 REQUIRED)
+find_package(OpenSSL 3.0 REQUIRED)
 
 # Header-only library
 add_library(algotradelib INTERFACE)

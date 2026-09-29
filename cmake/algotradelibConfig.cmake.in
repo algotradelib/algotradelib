@@ -3,7 +3,7 @@
 include(CMakeFindDependencyMacro)
 
 find_dependency(Boost 1.87.0 CONFIG COMPONENTS json)
-find_dependency(OpenSSL 3.6.2)
+find_dependency(OpenSSL 3.0)
 
 # Only when this package was built with the analytics backend. A consumer of a build
 # made without it must not be asked to provide it.
