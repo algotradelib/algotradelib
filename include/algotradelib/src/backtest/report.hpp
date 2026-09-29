@@ -248,7 +248,9 @@ struct ReportCaveats {
   /**
    * Bars whose equity total could not be computed exactly, copied from
    * `ReplayResult::unvalued_bars_`: each has no point on the curve, and the point after it carries
-   * no return, so the return series is **shorter than the bar count** by at least this much.
+   * no return, so the return series is **shorter than the bar count** by at least this much. Only
+   * the curve is affected: the strategy and its guards decided on those bars from per-lot and
+   * per-currency figures, none of which is the missing total (see the result's field).
    * Appended, so a positional initializer of this struct is unaffected.
    */
   std::size_t unvalued_bars_{0};

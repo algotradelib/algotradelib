@@ -412,6 +412,13 @@ struct ReplayResult {
    * marked lots together do not fit an exact decimal. The curve skips the bar, and the next point
    * carries no return rather than one spanning the gap. It takes totals far beyond any real account.
    *
+   * **The replay goes on, and the strategy still decides on that bar -- on nothing that failed.** The
+   * portfolio it is handed holds figures per lot and per currency: cash, buying power (that same
+   * cash), each position's quantity, mark and value, and each working order. None of them is this
+   * total, which only the equity curve reads. The one portfolio-wide sum `strategy::RiskGuard`
+   * takes, the gross exposure, leaves cash out and is its own checked arithmetic: if that does not
+   * fit either, the guard refuses with `VALUE_NOT_KNOWN` rather than reading it as absent.
+   *
    * **Appended**, for the reason stated on `currency_` above.
    */
   std::size_t unvalued_bars_{0};
