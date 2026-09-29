@@ -1425,6 +1425,8 @@ private:
     // A row for `from` itself, not only a span around it: a row dropped as unreadable leaves a hole
     // inside the span, and serving the cache for that day would keep answering "not covered" at
     // every poll without asking KIS again -- so a repaired response could never restore the day.
+    // This relies on KIS listing *every* calendar day, weekends and holidays included, which its
+    // response does (each row carries a weekday code); a weekend `from` is therefore still covered.
     return covered && !(from < covered->first) && !(covered->second < from) &&
       calendar.is_trading_day(from).has_value();
   }

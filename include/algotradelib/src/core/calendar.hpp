@@ -58,8 +58,8 @@ struct TradingCalendar {
   /**
    * Rows the broker sent whose date could not be read, which therefore cover no day.
    *
-   * Such a row is dropped rather than failing the calendar, so one damaged row costs its own day and
-   * no other. The day it was for is then *uncovered* -- `is_trading_day` answers nothing -- which is
+   * Such a row is dropped rather than failing the calendar, so one damaged row costs one day of the
+   * span -- which day cannot be told from the row -- and every row that was read is kept. The day it was for is then *uncovered* -- `is_trading_day` answers nothing -- which is
    * the conservative answer, but **it can sit inside the covered span**: `next_trading_day` and
    * `previous_trading_day` step over it, so where this is nonzero their answer is not proof that no
    * trading day lies between. `runner::PollingLoop` names this count when it cannot establish the
