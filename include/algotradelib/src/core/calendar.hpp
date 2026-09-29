@@ -3,6 +3,7 @@
 #include "./types.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -27,8 +28,8 @@ struct TradingDay {
    * value carrying a numeric prefix is rejected rather than silently becoming a different, valid
    * day. That mattered more here than anywhere else the caveat on `Date::year_` applies:
    * `is_trading_day` is what decides whether a strategy may place an order, and a row answering for
-   * the wrong day answers that question wrongly. An unreadable date fails the calendar request
-   * rather than producing a row.
+   * the wrong day answers that question wrongly. KIS's `bass_dt` is read the same way. **An
+   * unreadable date produces no row** and is counted in `TradingCalendar::unreadable_days_`.
    */
   Date date_{};
   /** Whether the market opens on it. Not a banking or settlement day; see above. */
@@ -54,6 +55,17 @@ struct TradingCalendar {
   std::vector<TradingDay> days_;
   /** When the calendar arrived, on this machine's clock. */
   std::chrono::system_clock::time_point received_at_;
+  /**
+   * Rows the broker sent whose date could not be read, which therefore cover no day.
+   *
+   * Such a row is dropped rather than failing the calendar, so one damaged row costs one day of the
+   * span -- which day cannot be told from the row -- and every row that was read is kept. The day it was for is then *uncovered* -- `is_trading_day` answers nothing -- which is
+   * the conservative answer, but **it can sit inside the covered span**: `next_trading_day` and
+   * `previous_trading_day` step over it, so where this is nonzero their answer is not proof that no
+   * trading day lies between. `runner::PollingLoop` names this count when it cannot establish the
+   * phase; a damaged row for another day is visible only here.
+   */
+  std::size_t unreadable_days_{0};
 
   /** Returns whether `date` is a trading day, or nothing when uncovered. */
   std::optional<bool> is_trading_day(const Date& date) const {
@@ -65,7 +77,11 @@ struct TradingCalendar {
     return std::nullopt;
   }
 
-  /** Returns the first trading day after `date` within the covered span. */
+  /**
+   * Returns the first trading day after `date` within the covered span.
+   *
+   * Among the days that were read: see `unreadable_days_` for the day this can step over.
+   */
   std::optional<Date> next_trading_day(const Date& date) const {
     for (const auto& day : days_) {
       if (day.open_ && date < day.date_) {
@@ -75,7 +91,11 @@ struct TradingCalendar {
     return std::nullopt;
   }
 
-  /** Returns the last trading day before `date` within the covered span. */
+  /**
+   * Returns the last trading day before `date` within the covered span.
+   *
+   * Among the days that were read: see `unreadable_days_` for the day this can step over.
+   */
   std::optional<Date> previous_trading_day(const Date& date) const {
     std::optional<Date> found;
     for (const auto& day : days_) {

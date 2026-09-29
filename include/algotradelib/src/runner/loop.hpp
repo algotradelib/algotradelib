@@ -1782,6 +1782,22 @@ private:
   }
 
   /**
+   * The clause naming unreadable calendar rows, or nothing when there were none.
+   *
+   * A row whose date the broker sent unreadably is dropped, so the day it was for is uncovered and
+   * the note above would otherwise send an operator to check a span or a broker that is fine. The
+   * count says the broker *did* answer, and what it answered could not be read.
+   */
+  std::string unreadable_calendar_rows() const {
+    const auto unreadable = runner_->context().calendar().unreadable_days_;
+    if (unreadable == 0) {
+      return {};
+    }
+    return "; the broker sent " + std::to_string(unreadable) + " calendar row" +
+      (unreadable == 1 ? "" : "s") + " whose date could not be read";
+  }
+
+  /**
    * Says so when a run never established the phase, and names which of the three reasons applies.
    *
    * Silent otherwise, like `note_sellable_convention`: a line on every healthy run is how a report
@@ -1823,12 +1839,14 @@ private:
       // **not** claim to know why, because it cannot distinguish a broker that publishes none -- where
       // the request is not even compiled -- from a source that fetched one and installed nothing.
       reason = "a calendar poll succeeded but no calendar arrived (this broker may publish none)";
+      reason += unreadable_calendar_rows();
     } else {
       // Named, not merely called uncovered. "The calendar does not cover today" sends a reader to
       // check a span they cannot see; the date is the one thing that turns this note into an action.
       const auto date = session_window_.local_date(last_.at_);
       reason = "the calendar does not cover " + std::to_string(date.year_) + "-" +
         std::to_string(date.month_) + "-" + std::to_string(date.day_);
+      reason += unreadable_calendar_rows();
     }
     report.notes_.push_back(
       std::string(ever_known ?

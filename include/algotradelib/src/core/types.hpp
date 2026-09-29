@@ -1032,14 +1032,14 @@ struct Date {
   /**
    * The four-digit year.
    *
-   * **A `Date` parsed from a broker string is not proof the broker sent that date** -- in one
-   * remaining reader. `std::stoi` skips leading whitespace, accepts a sign, takes the digits that
-   * follow and ignores the rest, so it returns `2` for `"2x"`, `" 2"` and `"+2"` alike, and a
-   * fixed-width field split into components and handed to it becomes a real date that is not the one
-   * on the wire. The instrument dates of all three adapters and Toss's calendar bounds now read
-   * every character as a digit first, so a malformed value there is unreadable rather than
-   * different. **KIS's trading-calendar reader (`bass_dt`) still uses `std::stoi`**, so `2026092x`
-   * becomes 2026-09-02 there: `plan/todo/kis-calendar-date-prefix.md`.
+   * **A `Date` parsed from a broker string was checked digit by digit.** `std::stoi` skips leading
+   * whitespace, accepts a sign, takes the digits that follow and ignores the rest, so it returns `2`
+   * for `"2x"`, `" 2"` and `"+2"` alike, and a fixed-width field split into components and handed to
+   * it becomes a real date that is not the one on the wire. No adapter reads a date that way any
+   * more: KIS and Kiwoom share `broker_detail::compact_date` for `YYYYMMDD`, and Toss's
+   * `parse_calendar_date` checks `YYYY-MM-DD` the same way, so a malformed value is unreadable rather
+   * than different. Where it lands then depends on the field -- `StatedDate::State::UNREADABLE` for
+   * an instrument's dates, a dropped and counted row for a calendar day.
    */
   int year_{0};
   /** The month, `1`-`12`. Zero means unset. */

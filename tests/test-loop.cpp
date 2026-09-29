@@ -3397,6 +3397,74 @@ TEST_CASE("a calendar cadence that answers nothing is named as such", "[loop][ph
   CHECK(report.notes_[0].find("no calendar arrived") != std::string::npos);
 }
 
+TEST_CASE("a calendar whose every date was unreadable says so", "[loop][phase][calendar]") {
+  // The broker answered, and nothing it answered could be read. Without the count this report would
+  // read exactly like a broker that publishes no calendar, which sends an operator the wrong way.
+  PhaseRunner runner_instance;
+  PhaseSource source;
+  algotradelib::TradingCalendar unreadable;
+  unreadable.received_at_ = base_time();
+  unreadable.unreadable_days_ = 3;
+  source.set_calendar(unreadable);
+  runner::PollSchedule schedule;
+  schedule.calendar_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  PhaseLoop loop(runner_instance, source, schedule, test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 2);
+
+  CHECK(report.final_phase_ == strategy::MarketPhase::UNKNOWN);
+  REQUIRE(report.notes_.size() == 1);
+  CHECK(report.notes_[0].find("no calendar arrived") != std::string::npos);
+  CHECK(report.notes_[0].find("the broker sent 3 calendar rows whose date could not be read") !=
+        std::string::npos);
+}
+
+TEST_CASE("a calendar missing today because its row was unreadable names the cause", "[loop][phase][calendar]") {
+  // Readable days either side, and today's row dropped: the calendar spans today and does not cover
+  // it. The note names the date, as before, and now also that the broker's row for it was unreadable.
+  PhaseRunner runner_instance;
+  PhaseSource source;
+  const auto session = strategy::SessionWindow::krx();
+  const auto today = session.local_date(base_time());
+  algotradelib::TradingCalendar holed;
+  holed.received_at_ = base_time();
+  holed.days_.push_back(algotradelib::TradingDay{algotradelib::Date{today.year_ - 1, 1, 2}, true});
+  holed.days_.push_back(algotradelib::TradingDay{algotradelib::Date{today.year_ + 1, 1, 2}, true});
+  holed.unreadable_days_ = 1;
+  REQUIRE_FALSE(holed.is_trading_day(today).has_value());
+  source.set_calendar(holed);
+  runner::PollSchedule schedule;
+  schedule.calendar_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  PhaseLoop loop(runner_instance, source, schedule, test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 2);
+
+  CHECK(report.final_phase_ == strategy::MarketPhase::UNKNOWN);
+  REQUIRE(report.notes_.size() == 1);
+  CHECK(report.notes_[0].find("the calendar does not cover") != std::string::npos);
+  CHECK(report.notes_[0].find("; the broker sent 1 calendar row whose date could not be read") !=
+        std::string::npos);
+}
+
+TEST_CASE("a calendar with no unreadable rows adds no clause", "[loop][phase][calendar]") {
+  PhaseRunner runner_instance;
+  PhaseSource source;
+  runner::PollSchedule schedule;
+  schedule.calendar_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  PhaseLoop loop(runner_instance, source, schedule, test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 2);
+
+  REQUIRE(report.notes_.size() == 1);
+  CHECK(report.notes_[0].find("could not be read") == std::string::npos);
+}
+
 TEST_CASE("a calendar arriving mid-iteration reaches the order polled after it", "[loop][phase]") {
   // **Codex round 1's blocker, reproduced and pinned.** The calendar is polled first and a bar poll
   // settles orders, so a calendar arriving in this iteration saying the market is shut used to be

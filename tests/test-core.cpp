@@ -221,6 +221,14 @@ struct KisClientTestAccess {
     );
   }
 
+  static bool calendar_covers(const TradingCalendar& calendar, const Date& from) {
+    return KisClient::calendar_covers(calendar, from);
+  }
+
+  static std::size_t calendar_rows_consumed(const TradingCalendar& calendar) {
+    return KisClient::calendar_rows_consumed(calendar);
+  }
+
   static Result<KisOrderAck> parse_order_ack(Result<network::HttpResponse> response) {
     return KisClient::parse_order_ack(std::move(response));
   }
@@ -4014,13 +4022,143 @@ TEST_CASE("both brokers' calendars normalize to the same trading days") {
     REQUIRE(result.value().is_trading_day(Date{2026, 3, 20}) == true);
   }
 
-  SECTION("a malformed calendar date is a protocol error") {
-    auto result = tossinvest::TossClientTestAccess::parse_calendar(
+  SECTION("a Toss day whose date cannot be read produces no row and is counted") {
+    // This used to fail the whole response, which cost `today` whenever a neighbour was damaged.
+    auto alone = tossinvest::TossClientTestAccess::parse_calendar(
       Country::KR, json_response(R"({"result":{"today":{"date":"2026-13-45"}}})")
     );
-    REQUIRE_FALSE(result);
-    REQUIRE(result.error().broker_code_ == "invalid_calendar_response");
+    REQUIRE(alone);
+    CHECK(alone.value().days_.empty());
+    CHECK(alone.value().unreadable_days_ == 1);
+
+    auto neighbour = tossinvest::TossClientTestAccess::parse_calendar(
+      Country::KR,
+      json_response(
+        R"({"result":{"previousBusinessDay":{"date":"2026-03-20"},)"
+        R"("today":{"date":"2026-03-23","integrated":{"open":"09:00","close":"15:30"}},)"
+        R"("nextBusinessDay":{"date":"2026-03-2x"}}})"
+      )
+    );
+    REQUIRE(neighbour);
+    CHECK(neighbour.value().is_trading_day(Date{2026, 3, 23}) == true);
+    CHECK(neighbour.value().days_.size() == 2);
+    CHECK(neighbour.value().unreadable_days_ == 1);
   }
+}
+
+TEST_CASE("the shared YYYYMMDD reader reads only a real date spelled in digits", "[core][calendar]") {
+  CHECK(broker_detail::compact_date("20260902") == std::optional<Date>(Date{2026, 9, 2}));
+  CHECK(broker_detail::compact_date("20240229") == std::optional<Date>(Date{2024, 2, 29}));
+  // ':' follows '9', so arithmetic without the digit check reads this as 2026-09-10.
+  REQUIRE(':' - '0' == 10);
+  for (const auto* damaged : {"2026090:", "2026092x", "20261332", "20230229", "2026090", "202609021",
+                              "", " 0260902", "+0260902", "2026-9-2"}) {
+    CHECK_FALSE(broker_detail::compact_date(damaged));
+  }
+}
+
+TEST_CASE("a KIS calendar row whose date cannot be read costs no day that was read", "[core][calendar][kis]") {
+  const auto page = [](std::string_view damaged_row) {
+    return json_response(
+      std::string(R"({"rt_cd":"0","ctx_area_fk":"","ctx_area_nk":"","output":[)") +
+      R"({"bass_dt":"20260901","opnd_yn":"Y"},)" + std::string(damaged_row) +
+      R"(,{"bass_dt":"20260903","opnd_yn":"Y"}]})"
+    );
+  };
+  // The prefix case first, with its premise: `std::stoi` read "2x" as 2, so this row used to become
+  // 2026-09-02 -- a real day, answered with another day's flag.
+  REQUIRE(std::stoi("2x") == 2);
+  for (const auto* damaged :
+       {R"({"bass_dt":"2026092x","opnd_yn":"N"})", R"({"bass_dt":"20261332","opnd_yn":"N"})",
+        R"({"bass_dt":"2026090","opnd_yn":"N"})", R"({"bass_dt":"","opnd_yn":"N"})",
+        R"({"opnd_yn":"N"})", R"({"bass_dt":20260902,"opnd_yn":"N"})",
+        R"({"bass_dt":"2026-09-02","opnd_yn":"N"})"}) {
+    TradingCalendar calendar;
+    std::string search;
+    std::string next;
+    const auto failure =
+      kis::KisClientTestAccess::parse_calendar_page(page(damaged), calendar, search, next);
+    // The page succeeds and its readable days are all there -- today among them, wherever the
+    // damaged row sits -- and the damaged row produced nothing.
+    REQUIRE_FALSE(failure);
+    CHECK(calendar.days_.size() == 2);
+    CHECK(calendar.is_trading_day(Date{2026, 9, 1}) == true);
+    CHECK(calendar.is_trading_day(Date{2026, 9, 3}) == true);
+    CHECK_FALSE(calendar.is_trading_day(Date{2026, 9, 2}).has_value());
+    CHECK(calendar.unreadable_days_ == 1);
+  }
+}
+
+TEST_CASE("a damaged KIS date can no longer answer for a real day", "[core][calendar][kis]") {
+  // The hazard the prefix made possible: a real closed 2026-09-02 and a damaged row that used to
+  // read as 2026-09-02 too, marked open. `is_trading_day` takes the first match, so under `std::stoi`
+  // the answer depended on row order. Now only the real row answers, in either order.
+  for (const bool damaged_first : {true, false}) {
+    const std::string real = R"({"bass_dt":"20260902","opnd_yn":"N"})";
+    const std::string damaged = R"({"bass_dt":"2026092x","opnd_yn":"Y"})";
+    TradingCalendar calendar;
+    std::string search;
+    std::string next;
+    const auto failure = kis::KisClientTestAccess::parse_calendar_page(
+      json_response(
+        std::string(R"({"rt_cd":"0","output":[)") + (damaged_first ? damaged : real) + "," +
+        (damaged_first ? real : damaged) + "]}"
+      ),
+      calendar, search, next
+    );
+    REQUIRE_FALSE(failure);
+    CHECK(calendar.is_trading_day(Date{2026, 9, 2}) == false);
+    CHECK(calendar.unreadable_days_ == 1);
+  }
+}
+
+TEST_CASE("a KIS calendar page that fails leaves the calendar as it was", "[core][calendar][kis]") {
+  TradingCalendar calendar;
+  calendar.days_.push_back(TradingDay{Date{2026, 8, 31}, true});
+  std::string search;
+  std::string next;
+  // Good rows first, then one that is not an object: the page fails, and nothing it held is kept.
+  const auto failure = kis::KisClientTestAccess::parse_calendar_page(
+    json_response(
+      R"({"rt_cd":"0","output":[{"bass_dt":"20260901","opnd_yn":"Y"},{"bass_dt":"2026090x"},7]})"
+    ),
+    calendar, search, next
+  );
+  REQUIRE(failure);
+  CHECK(failure->broker_code_ == "invalid_calendar_response");
+  CHECK(calendar.days_.size() == 1);
+  CHECK(calendar.unreadable_days_ == 0);
+}
+
+TEST_CASE("the KIS calendar cache covers a day only where it holds that day's row", "[core][calendar][kis]") {
+  TradingCalendar calendar;
+  calendar.days_.push_back(TradingDay{Date{2026, 9, 1}, true});
+  calendar.days_.push_back(TradingDay{Date{2026, 9, 3}, true});
+  calendar.unreadable_days_ = 1;
+  // 2026-09-02 lies inside the span and has no row, because its row was unreadable. Serving the cache
+  // for it would answer "not covered" at every poll without asking again, so a repaired response
+  // could never restore the day: the cache must not claim it.
+  CHECK_FALSE(kis::KisClientTestAccess::calendar_covers(calendar, Date{2026, 9, 2}));
+  CHECK(kis::KisClientTestAccess::calendar_covers(calendar, Date{2026, 9, 1}));
+  CHECK(kis::KisClientTestAccess::calendar_covers(calendar, Date{2026, 9, 3}));
+  CHECK_FALSE(kis::KisClientTestAccess::calendar_covers(calendar, Date{2026, 9, 4}));
+}
+
+TEST_CASE("a KIS page of only unreadable rows is progress, not the end of the listing", "[core][calendar][kis]") {
+  // Pagination stops on a page that consumed nothing. A page whose every date was unreadable keeps
+  // no day and must still count, or the pages after it -- today's row, possibly -- are never asked for.
+  TradingCalendar calendar;
+  calendar.days_.push_back(TradingDay{Date{2026, 9, 1}, true});
+  const auto before = kis::KisClientTestAccess::calendar_rows_consumed(calendar);
+  std::string search;
+  std::string next;
+  const auto failure = kis::KisClientTestAccess::parse_calendar_page(
+    json_response(R"({"rt_cd":"0","output":[{"bass_dt":"2026090x"},{"bass_dt":""}]})"),
+    calendar, search, next
+  );
+  REQUIRE_FALSE(failure);
+  CHECK(calendar.days_.size() == 1);
+  CHECK(kis::KisClientTestAccess::calendar_rows_consumed(calendar) == before + 2);
 }
 
 TEST_CASE("instrument reference data normalizes from both brokers") {
