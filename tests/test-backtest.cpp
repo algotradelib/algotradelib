@@ -3948,9 +3948,10 @@ struct ReadsTheBookEachBar {
   }
 };
 
-TEST_CASE("a strategy on an unvalued bar decides on exact figures and never on the failed total", "[backtest][caveats]") {
+TEST_CASE("a strategy on an unvalued bar reads exact figures rather than the failed total", "[backtest][caveats]") {
   // `plan/todo/unvalued-bar-portfolio.md`: the replay goes on past a bar whose equity total will not
-  // fit, so `on_bar` runs there. What it reads is per lot and per currency -- cash, buying power, the
+  // fit, so `on_bar` runs there. What it reads is per lot and per currency -- cash, buying power (here
+  // equal to cash: the buying-power check is off, so no resting buy is committed against it), the
   // quantity, the lot's own mark and value -- and the one portfolio-wide sum the guard takes, the gross
   // exposure, is its own arithmetic without cash. None of them is `equity_in`'s sum.
   auto config = replay_config();
