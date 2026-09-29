@@ -197,6 +197,15 @@ struct ClaimsWithThunk {};
 struct AsyncClaimsWithBlockingThunk {};
 struct BlockingClaimsWithWrongResult {};
 struct BlockingClaimsWithThunk {};
+struct ReadsTheTokensExecutor {};
+struct CalendarValidatesToBool {};
+struct WorkingOrdersNormalizeToTheWrongType {};
+struct BlockingAccountsWithoutRowNormalizers {};
+
+/** A row type a broker might list accounts as. */
+struct AccountRow {
+  std::string number_;
+};
 
 } // namespace conformance_fakes
 
@@ -257,7 +266,85 @@ struct BrokerTraits<conformance_fakes::BlockingClaimsWithThunk> {
   }
 };
 
+/**
+ * A thunk written the way a third party would forward to an Asio client: templated on the token,
+ * deduced return, and reading the token's executor in its body. Detection instantiates that body,
+ * so a stand-in without an executor would hard-error here instead of reporting anything.
+ */
+template <>
+struct BrokerTraits<conformance_fakes::ReadsTheTokensExecutor> {
+  static constexpr bool blocking = false;
+  static constexpr bool has_reference_data = true;
+  template <typename Token>
+  static auto instrument(conformance_fakes::ReadsTheTokensExecutor&, InstrumentId, Token&& token) {
+    auto executor = token.get_executor();
+    return executor;
+  }
+};
+
+/** A pre-flight check the session cannot use: it dereferences the answer into a `BrokerError`. */
+template <>
+struct BrokerTraits<conformance_fakes::CalendarValidatesToBool> {
+  static constexpr bool blocking = true;
+  static constexpr bool has_calendar = true;
+  static bool validate_calendar(Country, std::optional<Date>) { return false; }
+  static Result<TradingCalendar> calendar(
+    conformance_fakes::CalendarValidatesToBool&, Country, std::optional<Date>
+  ) {
+    return Result<TradingCalendar>(TradingCalendar{});
+  }
+};
+
+/** A working-order normalizer answering something other than what the session returns. */
+template <>
+struct BrokerTraits<conformance_fakes::WorkingOrdersNormalizeToTheWrongType> {
+  struct Tag {};
+  using BrokerTag = Tag;
+  using Account = int;
+  using WorkingOrdersResult = std::vector<OrderSnapshot>;
+  static constexpr bool blocking = true;
+  static constexpr bool has_working_orders = true;
+  static Result<WorkingOrdersResult> working_orders(
+    conformance_fakes::WorkingOrdersNormalizeToTheWrongType&, int&
+  ) {
+    return Result<WorkingOrdersResult>(WorkingOrdersResult{});
+  }
+  static Result<WorkingOrdersResult> normalize_working_orders(Result<WorkingOrdersResult> raw) {
+    return raw;
+  }
+};
+
+/** A blocking account listing whose rows nothing can turn into an `AccountInfo`. */
+template <>
+struct BrokerTraits<conformance_fakes::BlockingAccountsWithoutRowNormalizers> {
+  using Account = int;
+  static constexpr bool blocking = true;
+  static constexpr bool has_account_discovery = true;
+  static Result<std::vector<conformance_fakes::AccountRow>> accounts(
+    conformance_fakes::BlockingAccountsWithoutRowNormalizers&
+  ) {
+    return Result<std::vector<conformance_fakes::AccountRow>>(
+      std::vector<conformance_fakes::AccountRow>{}
+    );
+  }
+};
+
 } // namespace algotradelib
+
+TEST_CASE("conformance accepts a thunk that forwards the executor-bound handler the session passes", "[port][conformance]") {
+  STATIC_REQUIRE(port_detail::serves_reference_data<conformance_fakes::ReadsTheTokensExecutor>);
+}
+
+TEST_CASE("conformance checks the shape the session uses, not only that a member exists", "[port][conformance]") {
+  using namespace conformance_fakes;
+  // `if (auto invalid = validate_calendar(...)) complete(std::move(*invalid))` -- a bool is testable
+  // and cannot be dereferenced, so the session's calendar verb would not compile.
+  STATIC_REQUIRE_FALSE(port_detail::serves_calendar<CalendarValidatesToBool>);
+  // The session returns `Result<WorkingOrders<BrokerTag>>` from whatever this answers.
+  STATIC_REQUIRE_FALSE(port_detail::serves_working_orders<WorkingOrdersNormalizeToTheWrongType>);
+  // A blocking listing's rows go through display_of, type_of and selector_of, which are absent.
+  STATIC_REQUIRE_FALSE(port_detail::serves_account_discovery<BlockingAccountsWithoutRowNormalizers>);
+}
 
 TEST_CASE("a claimed capability is served only by a thunk of the shape the session calls", "[port][conformance]") {
   using namespace conformance_fakes;
@@ -316,6 +403,35 @@ TEST_CASE("Kiwoom's holdings refusal completes later, once, for a plain callback
   REQUIRE_FALSE(*answer);
   CHECK(answer->error().broker_code_ == "holdings_scope_unestablished");
   CHECK_FALSE(answer->error().reached_broker_);
+}
+
+TEST_CASE("Kiwoom's holdings refusal keeps a separate caller context waiting for it", "[kiwoom][holdings]") {
+  // The client runs on one io_context and the caller's handler is bound to another. If the caller's
+  // context is run first it must not finish -- the refusal is outstanding work there -- or it stops
+  // and the refusal, posted later, is never delivered without a restart nobody knows to make.
+  boost::asio::io_context source;
+  boost::asio::io_context caller;
+  boost::asio::ssl::context tls(boost::asio::ssl::context::tls_client);
+  BrokerSession<kiwoom::KiwoomClient> session(
+    std::make_shared<kiwoom::KiwoomClient>(source.get_executor(), tls, kiwoom::KiwoomConfig{}),
+    kiwoom::KiwoomAccount{}
+  );
+  auto strand = boost::asio::make_strand(caller);
+
+  int calls = 0;
+  session.async_holdings(
+    boost::asio::bind_executor(strand, [&](Result<HoldingsSnapshot> result) {
+      ++calls;
+      CHECK_FALSE(result);
+    })
+  );
+  caller.poll();
+  CHECK(calls == 0);
+  CHECK_FALSE(caller.stopped());
+
+  source.run();
+  caller.run();
+  CHECK(calls == 1);
 }
 
 TEST_CASE("Kiwoom's holdings refusal completes on the caller's strand", "[kiwoom][holdings]") {

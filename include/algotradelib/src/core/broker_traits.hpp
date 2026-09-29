@@ -5,6 +5,9 @@
 #include "./market_data.hpp"
 #include "./types.hpp"
 
+#include <boost/asio/any_io_executor.hpp>
+#include <boost/asio/bind_executor.hpp>
+
 #include <functional>
 #include <optional>
 #include <string>
@@ -67,9 +70,24 @@ namespace port_detail {
 template <typename T>
 constexpr bool dependent_false = false;
 
-/** Completion handler shape used only to detect a trait thunk's presence. */
+/** The callable half of `Sink`: accepts one result of the stated type. */
 template <typename T>
-using Sink = std::function<void(Result<T>)>;
+struct SinkFunction {
+  /** Accepts and discards the result. */
+  void operator()(Result<T>) const {}
+};
+
+/**
+ * Completion handler shape used only to detect a trait thunk's presence.
+ *
+ * An executor-bound callable, because that is what `BrokerSession::translate` hands a thunk: its
+ * own completion lambda wrapped in `bind_executor`. A stand-in without an executor would reject a
+ * working thunk that reads `token.get_executor()`, and inside a thunk with a deduced return type it
+ * would do so with a hard error rather than a named conformance message. The executor is the
+ * polymorphic one, since the session's is whatever the caller's handler carries.
+ */
+template <typename T>
+using Sink = boost::asio::executor_binder<SinkFunction<T>, boost::asio::any_io_executor>;
 
 #define ATL_DETECT_TYPE(NAME, MEMBER)                                                    \
   template <typename T, typename = void>                                                 \
@@ -207,13 +225,19 @@ constexpr bool is_blocking_client() {
 /** Placeholder for the bound account, passed as the non-const lvalue a session holds. */
 struct AccountArg {};
 
-/** Resolves `AccountArg` to the traits' account selector; every other argument type is kept. */
-template <typename T, typename A>
+/**
+ * Resolves `AccountArg` to the traits' account selector; every other argument type is kept.
+ *
+ * Where the traits declare no `Account` the placeholder is left unresolved, which no thunk accepts,
+ * so the detector answers false instead of failing outside its substitution context -- the missing
+ * `Account` is already reported on its own.
+ */
+template <typename T, typename A, typename = void>
 struct thunk_arg {
   using type = A;
 };
 template <typename T>
-struct thunk_arg<T, AccountArg> {
+struct thunk_arg<T, AccountArg, std::void_t<typename BrokerTraits<T>::Account>> {
   using type = typename BrokerTraits<T>::Account&;
 };
 
@@ -221,12 +245,16 @@ struct thunk_arg<T, AccountArg> {
 template <typename... A>
 struct ThunkArgs {};
 
-/** Completion handler accepting any result, for a thunk whose result type the port leaves open. */
-struct AnySink {
+/** The callable half of `AnySink`: accepts any result. */
+struct AnySinkFunction {
   /** Accepts and discards any completion argument. */
   template <typename R>
   void operator()(R&&) const {}
 };
+
+/** Completion handler accepting any result, for a thunk whose result type the port leaves open. */
+using AnySink =
+  boost::asio::executor_binder<AnySinkFunction, boost::asio::any_io_executor>;
 
 /**
  * Detects one gated thunk in both shapes.
@@ -273,15 +301,36 @@ ATL_DETECT_THUNK(order_by_id, OrderSnapshot);
 
 #undef ATL_DETECT_THUNK
 
-/** Detects the working-order normalizer the session applies to every listing. */
+/**
+ * Detects the working-order normalizer the session applies to every listing, answering what the
+ * session returns: `Result<WorkingOrders<BrokerTag>>`.
+ */
 template <typename T, typename = void>
 struct has_normalize_working_orders : std::false_type {};
 template <typename T>
 struct has_normalize_working_orders<
   T,
-  std::void_t<decltype(BrokerTraits<T>::normalize_working_orders(
-    std::declval<Result<typename BrokerTraits<T>::WorkingOrdersResult>>()
-  ))>
+  std::enable_if_t<std::is_convertible_v<
+    decltype(BrokerTraits<T>::normalize_working_orders(
+      std::declval<Result<typename BrokerTraits<T>::WorkingOrdersResult>>()
+    )),
+    Result<WorkingOrders<typename BrokerTraits<T>::BrokerTag>>
+  >>
+> : std::true_type {};
+
+/**
+ * Whether `R` is usable the way the session uses a pre-flight answer: tested for truth, and when
+ * true, dereferenced into the `BrokerError` it completes with.
+ */
+template <typename R, typename = void>
+struct is_refusal : std::false_type {};
+template <typename R>
+struct is_refusal<
+  R,
+  std::enable_if_t<
+    std::is_constructible_v<bool, R&> &&
+    std::is_constructible_v<BrokerError, decltype(std::move(*std::declval<R&>()))>
+  >
 > : std::true_type {};
 
 /** Detects the calendar pre-flight check the session runs before any request. */
@@ -290,25 +339,60 @@ struct has_validate_calendar : std::false_type {};
 template <typename T>
 struct has_validate_calendar<
   T,
-  std::void_t<decltype(bool(BrokerTraits<T>::validate_calendar(
+  std::enable_if_t<is_refusal<decltype(BrokerTraits<T>::validate_calendar(
     std::declval<Country&>(), std::declval<std::optional<Date>&>()
-  )))>
+  ))>::value>
 > : std::true_type {};
 
-/** Detects the asynchronous account listing; its row type is the broker's own. */
+/**
+ * Detects the asynchronous account listing.
+ *
+ * **Presence only.** Its row type is the broker's own and reaches the session only through the
+ * completion, so the row normalizers cannot be checked without instantiating the client; a missing
+ * `display_of`, `type_of` or `selector_of` on an asynchronous client is reported where
+ * `async_accounts` is first called, naming the member. The blocking listing below returns its rows,
+ * so there the whole path is checked.
+ */
 template <typename T, typename = void>
 struct has_async_accounts : std::false_type {};
 template <typename T>
 struct has_async_accounts<
-  T, std::void_t<decltype(BrokerTraits<T>::accounts(std::declval<T&>(), AnySink{}))>
+  T, std::void_t<decltype(BrokerTraits<T>::accounts(std::declval<T&>(), std::declval<AnySink>()))>
 > : std::true_type {};
 
-/** Detects the blocking account listing. */
+/** The rows of a `Result<Items>`; absent for any other type. */
+template <typename R>
+struct listed_rows {};
+template <typename Items>
+struct listed_rows<Result<Items>> {
+  using type = typename Items::value_type;
+};
+
+/** Whether each row of a listing converts into the normalized account the session builds. */
+template <typename T, typename Row, typename = void>
+struct normalizes_account_row : std::false_type {};
+template <typename T, typename Row>
+struct normalizes_account_row<
+  T, Row,
+  std::enable_if_t<
+    std::is_convertible_v<decltype(BrokerTraits<T>::display_of(std::declval<const Row&>())), std::string> &&
+    std::is_convertible_v<decltype(BrokerTraits<T>::type_of(std::declval<const Row&>())), std::string> &&
+    std::is_convertible_v<
+      decltype(BrokerTraits<T>::selector_of(std::declval<const Row&>())),
+      typename BrokerTraits<T>::Account
+    >
+  >
+> : std::true_type {};
+
+/** Detects the blocking account listing, and that its rows normalize. */
 template <typename T, typename = void>
 struct has_blocking_accounts : std::false_type {};
 template <typename T>
 struct has_blocking_accounts<
-  T, std::void_t<decltype(BrokerTraits<T>::accounts(std::declval<T&>()))>
+  T,
+  std::enable_if_t<normalizes_account_row<
+    T, typename listed_rows<decltype(BrokerTraits<T>::accounts(std::declval<T&>()))>::type
+  >::value>
 > : std::true_type {};
 
 /**
@@ -592,8 +676,8 @@ struct BrokerConformance {
   static_assert(
     port_detail::serves_working_orders<Client>,
     "BrokerTraits<Client>::has_working_orders is true but working_orders(client, account[, token]) "
-    "or normalize_working_orders(Result<WorkingOrdersResult>) is missing or has the wrong "
-    "signature: define both, or declare the capability false"
+    "or normalize_working_orders(Result<WorkingOrdersResult>) -> Result<WorkingOrders<BrokerTag>> "
+    "is missing or has the wrong signature: define both, or declare the capability false"
   );
   static_assert(
     port_detail::serves_reference_data<Client>,
@@ -603,8 +687,9 @@ struct BrokerConformance {
   static_assert(
     port_detail::serves_calendar<Client>,
     "BrokerTraits<Client>::has_calendar is true but calendar(client, country, from[, token]) or "
-    "validate_calendar(country, from) is missing or has the wrong signature: define both, or "
-    "declare the capability false"
+    "validate_calendar(country, from) is missing or has the wrong signature -- validate_calendar "
+    "answers something that tests true on a refusal and dereferences to a BrokerError, such as "
+    "std::optional<BrokerError>: define both, or declare the capability false"
   );
   static_assert(
     port_detail::serves_price_limits<Client>,
@@ -634,7 +719,8 @@ struct BrokerConformance {
   static_assert(
     port_detail::serves_account_discovery<Client>,
     "BrokerTraits<Client>::has_account_discovery is true but accounts(client[, token]) is missing "
-    "or has the wrong signature: define it, or declare the capability false"
+    "or has the wrong signature, or a blocking client's rows do not pass through display_of, "
+    "type_of and selector_of: define them, or declare the capability false"
   );
 
   /** Always true; reading it forces the assertions above to be checked. */
