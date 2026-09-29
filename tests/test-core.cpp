@@ -4679,8 +4679,13 @@ TEST_CASE("KIS reads an instrument date as stated, not stated, or unreadable", "
   // The prefix case first, with its premise: `std::stoi` reads "2x" as 2, so the old reader
   // produced 1996-12-02 here -- a different, valid date.
   REQUIRE(std::stoi("2x") == 2);
+  // And the reason every character is checked as a digit before any arithmetic: ':' is the
+  // character after '9', so digit arithmetic without that check reads "0:" as 10 and "1996120:" as
+  // 1996-12-10.
+  REQUIRE(':' - '0' == 10);
   for (const auto* damaged :
-       {R"("1996122x")", R"("1996-12-26")", R"("19961332")", R"("2024023")", R"("1996 226")", "19961226"}) {
+       {R"("1996122x")", R"("1996120:")", R"("1996-12-26")", R"("19961332")", R"("2024023")",
+        R"("1996 226")", "19961226"}) {
     const auto result = parse(damaged);
     // The row survives: a damaged date costs nothing else in it.
     REQUIRE(result);
