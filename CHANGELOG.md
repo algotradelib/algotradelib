@@ -12,7 +12,8 @@ builds against an earlier commit.
 `KiwoomConfig::from_env` used to read an unset `KIS_DEMO` / `KIWOOM_DEMO` — or any value but `1` — as
 **live**. They now accept exactly `1` (the 모의투자 / paper-trading endpoints) or `0` (live) and throw
 `std::runtime_error` naming the variable otherwise. `from_json` likewise requires `"demo": true` or
-`"demo": false`; a missing key, a string or a number is refused. A refused load assigns nothing.
+`"demo": false`; a missing key, a string or a number is refused. A refused load, from either source
+and for any reason, assigns nothing: a config already loaded keeps its endpoint.
 
 What to do: add `export KIS_DEMO=0` (or `1`) beside `KIS_APP_KEY`, the same for Kiwoom, and a `"demo"`
 key to each credential file. A config constructed in code keeps `is_demo_ = false` and is unaffected.
@@ -26,7 +27,9 @@ Toss has no paper-trading environment and no such variable.
 
 ### Changed
 
-- The OpenSSL floor is **3.0**, down from 3.6.2, which no decision had chosen. Only 3.6.x is tested.
+- The OpenSSL floor is **3.0**, down from 3.6.2, which no decision had chosen. It is the API minimum:
+  upstream support for 3.0 ended in September 2026, so run live on a supported line (3.5 LTS or newer)
+  or a distribution package that still receives fixes. Only 3.6.x is tested.
 - The documentation states what was already true: order routing across both Korean books (SOR) is
   opt-in at KIS; a Kiwoom order must name its venue; the KIS client supports own-account (`custtype P`)
   customers and not the partner program.

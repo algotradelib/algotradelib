@@ -41,10 +41,12 @@ project on an old CMake can consume it. The consumer `CMakeLists.txt` shown belo
 scaffold generates — ask for 3.16, which is simply a saner floor to start a new project on. Lower it
 to 3.10 in your own project if you need to; nothing here requires the newer version.
 
-**OpenSSL's floor is the oldest supported release line, not a tested one.** The headers call
-OpenSSL directly only to set the TLS server name, which OpenSSL has offered since long before 3.0;
-everything else goes through Boost.Asio's `ssl` layer. So 3.0 is the floor. The only version this
-library has been built and tested against is 3.6.x.
+**OpenSSL's floor is an API minimum, not a recommendation.** The headers call OpenSSL directly only
+to set the TLS server name, which OpenSSL has offered since long before 3.0; everything else goes
+through Boost.Asio's `ssl` layer. So the build accepts 3.0. But upstream support for 3.0 ended in
+September 2026: for anything that trades, use a supported line (3.5 LTS or newer), or a distribution
+package that still receives security fixes. The only version this library has been built and tested
+against is 3.6.x.
 
 **Boost and OpenSSL are required even for a backtest that touches no network.** The library exports
 one interface target for every consumer, so an offline program still links `libssl`, `libcrypto` and
@@ -204,8 +206,12 @@ next start, and the next start may send it again.
 #include <algotradelib/live>
 #include <algotradelib/runner>
 
-// Name the account in the journal's header, so a file belonging to another account refuses to open.
-runner::FileJournal journal("orders.jsonl", "kis:demo:12345678-01");
+// One journal per account, and a scope naming that account, its broker and demo or live. The header
+// records the scope, and a file whose header names another refuses to open -- which is what stops one
+// account's unresolved orders being read as another's. Both strings are yours to derive; these are
+// placeholders.
+const std::string scope = "kis:demo:<account>";
+runner::FileJournal journal("/var/lib/mybot/kis-demo-<account>.jsonl", scope);
 if (!journal.open()) {
   std::cerr << journal.rejection() << '\n';
   return 1;   // a runner that cannot journal should not trade
@@ -254,7 +260,7 @@ the environment; the [broker clients](doxygen/vignettes/broker-clients.md) page 
 | Broker | State | Paper trading |
 | --- | --- | --- |
 | KIS | market data, calendar, reference data, holdings, buying power, orders (including stop-limit), order history | `KIS_DEMO=1` |
-| Kiwoom | market data, reference data, buying power, orders (including stop-limit), order history; **no calendar**; **holdings refuse** until you state what its `kt00018` inquiry covers (below) | `KIWOOM_DEMO=1` |
+| Kiwoom | market data, reference data, buying power, orders (including stop-limit) and order history through the session; **no calendar**; **holdings refuse** until you state what its `kt00018` inquiry covers (below); **a strategy runner cannot place yet** (below) | `KIWOOM_DEMO=1` |
 | Toss | market data, calendar, reference data, holdings, buying power, orders (no stop-limit), order history | **none** |
 
 **`KIS_DEMO` and `KIWOOM_DEMO` are required.** `1` selects the broker's 모의투자 (paper-trading)
@@ -270,6 +276,11 @@ venue and does not say whether it filters positions by venue or values them by i
 the adapter refuses holdings — and so every sellable and position check — until
 `KiwoomConfig::holdings_venue_` and `holdings_position_scope_` are set (and
 `holdings_sellable_scope_` for checked sells). The members' documentation explains each choice.
+
+**A strategy runner cannot place on Kiwoom yet.** Kiwoom requires every order to name its venue, and
+the orders a strategy produces name none, so the adapter refuses each one before sending it. Placing
+through the session directly, with `OrderRequest::venue_` set, works. Kiwoom also publishes no trading
+calendar, so a runner's market phase stays unknown and the default limits open no position.
 
 **KIS: own-account customers only.** The library sends `custtype P` (일반), which covers individual
 *and* corporate customers trading their own account. KIS's partner program for licensed firms serving
