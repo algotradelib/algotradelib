@@ -616,6 +616,9 @@ struct BrokerConformance {
     "BrokerTraits<Client>::normalize_place(Result<PlaceAck>) is missing or has the wrong signature"
   );
 
+  /// \cond ATL_CONFORMANCE_ASSERTIONS
+  // One named assertion per capability constant; hidden from Doxygen, which reads each macro
+  // invocation as an undocumented member.
 #define ATL_REQUIRE_CONSTANT(NAME, TYPE)                                                 \
   static_assert(                                                                         \
     port_detail::declares_##NAME<Client>::value,                                         \
@@ -648,6 +651,7 @@ struct BrokerConformance {
   ATL_REQUIRE_CONSTANT(has_calendar_sessions, bool);
 
 #undef ATL_REQUIRE_CONSTANT
+  /// \endcond
 
   static_assert(
     port_detail::declares_supports_interval<Client>::value,
