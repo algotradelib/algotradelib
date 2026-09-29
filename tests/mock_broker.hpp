@@ -385,8 +385,21 @@ struct BrokerTraits<mock::MockClient> {
   /** Exposes a cursor. */
   static constexpr bool has_history_cursor = true;
 
+  /** Honours no row limit: `to_history_query` does not carry one. */
+  static constexpr bool has_history_limit = false;
+
   /** Does not filter by instrument. */
   static constexpr bool has_history_symbol_filter = false;
+
+  /** Answers nothing about spending power. */
+  static constexpr bool has_buying_power = false;
+  static constexpr bool has_buying_power_quantity = false;
+
+  /** States no sellable figure anywhere. */
+  static constexpr SellableSource sellable_source = SellableSource::NONE;
+
+  /** Publishes no commission schedule. */
+  static constexpr bool has_commission_schedule = false;
 
   /** The in-memory broker publishes no market data beyond bars. */
   static constexpr bool has_depth = false;
