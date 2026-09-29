@@ -244,7 +244,10 @@ trigger explicitly.
 
 A broker whose `BrokerCaps::has_trigger_price` is false, Toss included, never
 receives a trigger on a placement or a modification: the session refuses it as
-`unsupported_trigger_price`. A cancellation is never refused for carrying one.
+`unsupported_trigger_price`. The session never refuses a cancellation for carrying
+one, and `cancel_all` restates the resting trigger; Kiwoom alone refuses a
+cancellation that states a *different* trigger, because `kt10003` cannot change
+one on the way out.
 
 ### Not supported yet
 
