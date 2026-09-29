@@ -76,6 +76,9 @@ target_link_libraries(algotradelib-live-tests PRIVATE
     algotradelib::algotradelib
     Catch2::Catch2WithMain
 )
+# The live program's broker-free wiring lives beside the example that uses it, and is tested here
+# against the in-memory session.
+target_include_directories(algotradelib-live-tests PRIVATE "${algotradelib_SOURCE_DIR}/examples")
 
 add_executable(algotradelib-reconcile-orders-tests test-reconcile-orders.cpp)
 target_link_libraries(algotradelib-reconcile-orders-tests PRIVATE
