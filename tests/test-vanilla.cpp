@@ -520,6 +520,19 @@ struct OnlyPhaseLiquidation {
   }
 };
 
+/** The broker's history row for the stop, in `status` with `filled` executed. */
+OrderSnapshot stop_record(OrderStatus status, const char* filled) {
+  OrderSnapshot row;
+  row.order_id_ = "STOP-1";
+  row.instrument_ = samsung();
+  row.side_ = OrderSide::SELL;
+  row.type_ = OrderType::STOP_LIMIT;
+  row.status_ = status;
+  row.quantity_ = Decimal64::parse("10");
+  row.execution_.filled_quantity_ = Decimal64::parse(filled);
+  return row;
+}
+
 /** The phase exit: the stop is withdrawn, nothing is sold, and the flatten is kept. */
 template <typename Strategy>
 void exits_behind_the_stop(runner::DryRunner<Strategy>& dry) {
@@ -534,34 +547,36 @@ void exits_behind_the_stop(runner::DryRunner<Strategy>& dry) {
   REQUIRE(dry.deferred_targets().size() == 1);
   CHECK(dry.targets_deferred() == 1);
 
-  // The listing reports the withdrawal pending: nothing withdrawn again, nothing sold, nothing
-  // re-reported, still kept.
+  // The listing reports the withdrawal pending: nothing asks for history, nothing is sent, nothing is
+  // re-reported, and the target is still kept -- even with a record that would otherwise release it.
   dry.context().set_portfolio(stop_listing(OrderStatus::PENDING_CANCEL));
-  const auto pending = dry.retry_deferred(at_hour(1));
+  CHECK_FALSE(dry.deferred_awaiting_evidence());
+  const auto pending = dry.retry_deferred({stop_record(OrderStatus::CANCELED, "0")});
   CHECK(pending.would_cancel_.empty());
   CHECK(pending.would_place_.empty());
   CHECK(pending.rejected_.empty());
   CHECK(dry.deferred_targets().size() == 1);
 
-  // The listing no longer reports the stop -- but the holdings were read before it went, and the stop
-  // may have filled rather than been cancelled. Nothing is sold on a holding that may be gone.
+  // The listing no longer reports the stop, but the broker's record of it is not terminal yet, or not
+  // there at all: a stale answer waits.
   dry.context().set_portfolio(stop_listing(std::nullopt));
-  const auto gone = dry.retry_deferred(at_hour(2));
-  CHECK(gone.would_place_.empty());
+  CHECK(dry.deferred_awaiting_evidence());
+  CHECK(dry.retry_deferred({stop_record(OrderStatus::PENDING, "0")}).would_place_.empty());
+  CHECK(dry.retry_deferred({}).would_place_.empty());
   CHECK(dry.deferred_targets().size() == 1);
 }
 
-/** The cancelled case: holdings read after the stop went still hold ten, so the flatten sells them. */
+/** The cancelled case: the stop's own record is terminal with nothing filled, so the holding sells. */
 template <typename Strategy>
 void flattens_after_the_stop_is_gone(runner::DryRunner<Strategy>& dry) {
   exits_behind_the_stop(dry);
-  // No bar, no phase change, no strategy callback: the runner's own retry sells the holding.
-  dry.context().set_portfolio(stop_listing(std::nullopt, 3));
-  const auto flat = dry.retry_deferred();
+  // No bar, no phase change, no holdings read, no strategy callback.
+  const auto flat = dry.retry_deferred({stop_record(OrderStatus::CANCELED, "0")});
   REQUIRE(flat.would_place_.size() == 1);
   CHECK(flat.would_place_[0].side_ == OrderSide::SELL);
   CHECK(flat.would_place_[0].quantity_ == Decimal64::parse("10"));
   CHECK(dry.deferred_targets().empty());
+  CHECK(dry.deferred_dropped_after_fill() == 0);
 }
 
 } // namespace
@@ -580,15 +595,26 @@ TEST_CASE("a composing strategy that forwards only on_phase is not relied on to 
 }
 
 TEST_CASE("a stop that filled while it was withdrawn is not sold again", "[trigger]") {
-  // **Codex round 3's first blocker.** The listing drops a stop that filled exactly as it drops one
-  // that was cancelled. Holdings read after it went say which: here nothing is left, so the released
-  // flatten is a met target and plans nothing.
+  // **Codex round 3's first blocker, answered by the stop's own record.** The listing drops a filled
+  // stop exactly as it drops a cancelled one, and holdings are no proof either way; the broker's row
+  // for the stop is. Anything filled -- even with a stale holding still showing ten -- sends nothing.
   runner::DryRunner<OnlyPhaseLiquidation> dry(OnlyPhaseLiquidation{});
   exits_behind_the_stop(dry);
-  dry.context().set_portfolio(stop_listing(std::nullopt, 3, "0"));
-  const auto after = dry.retry_deferred();
+  const auto after = dry.retry_deferred({stop_record(OrderStatus::FILLED, "10")});
   CHECK(after.would_place_.empty());
   CHECK(dry.deferred_targets().empty());
+  CHECK(dry.deferred_dropped_after_fill() == 1);
+}
+
+TEST_CASE("a stop cancelled after a partial fill leaves the remainder to the strategy", "[trigger]") {
+  // KIS reports such an order `CANCELED`; the fill is read from the quantity, never the status. The
+  // runner cannot know the remainder without a holding it can trust, so it stops, counted.
+  runner::DryRunner<OnlyPhaseLiquidation> dry(OnlyPhaseLiquidation{});
+  exits_behind_the_stop(dry);
+  const auto after = dry.retry_deferred({stop_record(OrderStatus::CANCELED, "4")});
+  CHECK(after.would_place_.empty());
+  CHECK(dry.deferred_targets().empty());
+  CHECK(dry.deferred_dropped_after_fill() == 1);
 }
 
 TEST_CASE("a deferred target gives way to what the strategy says next", "[trigger]") {
@@ -599,7 +625,7 @@ TEST_CASE("a deferred target gives way to what the strategy says next", "[trigge
   REQUIRE(dry.deferred_targets().size() == 1);
 
   // The strategy changes its mind about the instrument in an ordinary pass: hold the ten. The fallback
-  // for its silence is dropped, so the stop leaving sells nothing.
+  // for its silence is dropped, so the stop's cancellation sells nothing.
   strategy::TargetPosition hold;
   hold.instrument_ = samsung();
   hold.target_quantity_ = Decimal64::parse("10");
@@ -607,9 +633,7 @@ TEST_CASE("a deferred target gives way to what the strategy says next", "[trigge
   dry.settle_closing();
   CHECK(dry.deferred_targets().empty());
   dry.context().set_portfolio(stop_listing(std::nullopt));
-  dry.retry_deferred(at_hour(1));
-  dry.context().set_portfolio(stop_listing(std::nullopt, 2));
-  const auto after = dry.retry_deferred();
+  const auto after = dry.retry_deferred({stop_record(OrderStatus::CANCELED, "0")});
   CHECK(after.would_place_.empty());
 }
 
@@ -618,7 +642,6 @@ TEST_CASE("an ordinary pass never releases a deferred target", "[trigger]") {
   // there sent the fallback before a later update in the same listing let the strategy speak.
   runner::DryRunner<OnlyPhaseLiquidation> dry(OnlyPhaseLiquidation{});
   exits_behind_the_stop(dry);
-  dry.context().set_portfolio(stop_listing(std::nullopt, 3));
   OrderSnapshot unrelated;
   unrelated.order_id_ = "OTHER";
   unrelated.instrument_ = samsung();

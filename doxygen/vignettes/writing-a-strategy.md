@@ -88,12 +88,14 @@ trigger refuses it rather than sending a plain limit.
   `TargetPosition` the holding already meets keeps the stop (it is protecting what you mean to hold).
   One that needs a trade withdraws the stop, sends nothing, and is reported as
   `RejectReason::STOP_ORDER_RESTING` — the stop is neither counted as the exit nor left beside a second
-  sell. **The runner keeps that target** (`Runner::deferred_targets`) and settles it again by itself
-  once a working-order listing no longer reports the stop **and** a holdings snapshot received after
-  that listing is in — the listing cannot say whether the stop was cancelled or filled, and the
-  holdings can. No bar, phase change or callback is needed, since a stop leaving the listing produces
-  none. Anything newer the strategy states for the instrument replaces it; it is not journalled, so a
-  restart forgets it.
+  sell. **The runner keeps that target** (`Runner::deferred_targets`) and settles it by itself once
+  the broker's **own record of the stop** — read from order history, on demand, in the working-order
+  poll that no longer lists it — is terminal with nothing filled. A listing cannot tell a cancelled
+  stop from a filled one, and holdings are no proof either. If the stop filled anything, nothing is
+  sold: a full fill already met the target, and **the remainder of a partial fill is yours to
+  restate** (counted by `Runner::deferred_dropped_after_fill`). No bar, phase change or holdings poll
+  is needed. Anything newer the strategy states for the instrument replaces the kept target; it is
+  not journalled, so a restart forgets it.
 - **It counts before it releases.** A resting sell stop is deducted from what may be sold and counted
   toward position and exposure ceilings at its limit, so an immediate exit beside it may be refused.
 - **Its trigger is never moved.** A trigger off the instrument's tick grid is refused as

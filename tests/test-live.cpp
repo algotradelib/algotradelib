@@ -3628,20 +3628,33 @@ void leave_behind_a_stop(Bound& bound, WorkingSession& session) {
 
 } // namespace
 
-TEST_CASE("a deferred flatten is sent once holdings read after the stop left still hold it", "[trigger]") {
-  // The live half of the round-2 sequence, with the round-3 timing: the listing that drops the stop
-  // arrives first and releases nothing, because it cannot say whether the stop was cancelled or filled.
+/** Scripts the broker's history to hold the stop's own row, in `status` with `filled` executed. */
+void record_stop(WorkingSession& session, OrderStatus status, const char* filled) {
+  OrderSnapshot row;
+  row.order_id_ = "STOP-1";
+  row.instrument_ = samsung();
+  row.side_ = OrderSide::SELL;
+  row.type_ = OrderType::STOP_LIMIT;
+  row.status_ = status;
+  row.quantity_ = Decimal64::parse("10");
+  row.execution_.filled_quantity_ = Decimal64::parse(filled);
+  OrderPage page;
+  page.orders_.push_back(row);
+  session.set_history(std::move(page));
+}
+
+TEST_CASE("a deferred flatten is sent once the broker records its stop cancelled unfilled", "[trigger]") {
+  // No holdings poll at all: the working-order poll that no longer lists the stop reads the stop's own
+  // history row on demand, and that row decides. (Codex round 4's first blocker.)
   WorkingSession session;
   auto bound = live::bind(session, FlattensOnPhase{}, {});
   live::SessionSource<WorkingSession> source(session, {samsung()});
   leave_behind_a_stop(bound, session);
+  CHECK(session.history_calls() == 0);
 
+  record_stop(session, OrderStatus::CANCELED, "0");
   poll_listing_at(source, bound, session, {}, 1);
-  CHECK(session.placed().empty());
-  REQUIRE(bound.deferred_targets().size() == 1);
-
-  // Holdings read after that listing: still ten, so it was cancelled, and the flatten goes.
-  poll_holdings_at(source, bound, session, "10", 2);
+  CHECK(session.history_calls() == 1);
   REQUIRE(session.placed().size() == 1);
   CHECK(session.placed()[0].side_ == OrderSide::SELL);
   CHECK(session.placed()[0].quantity_ == Decimal64::parse("10"));
@@ -3649,19 +3662,42 @@ TEST_CASE("a deferred flatten is sent once holdings read after the stop left sti
 }
 
 TEST_CASE("a deferred flatten does not sell again after the stop filled", "[trigger]") {
+  // Holdings still say ten -- stale, the broker's endpoints promise no consistency -- and the stop's own
+  // record says it filled. (Codex round 4's second blocker.)
+  WorkingSession session;
+  auto bound = live::bind(session, FlattensOnPhase{}, {});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  leave_behind_a_stop(bound, session);
+  poll_holdings_at(source, bound, session, "10", 2);
+
+  record_stop(session, OrderStatus::FILLED, "10");
+  poll_listing_at(source, bound, session, {}, 1);
+  CHECK(session.placed().empty());
+  CHECK(bound.deferred_targets().empty());
+  CHECK(bound.deferred_dropped_after_fill() == 1);
+}
+
+TEST_CASE("a deferred flatten waits while the stop's record is not terminal, or cannot be read", "[trigger]") {
   WorkingSession session;
   auto bound = live::bind(session, FlattensOnPhase{}, {});
   live::SessionSource<WorkingSession> source(session, {samsung()});
   leave_behind_a_stop(bound, session);
 
+  // History lags the listing: still open. Asked again on each working-order poll, and nothing sent.
+  record_stop(session, OrderStatus::PENDING, "0");
   poll_listing_at(source, bound, session, {}, 1);
-  // Holdings read before the listing say nothing about the stop's fate and release nothing.
-  poll_holdings_at(source, bound, session, "10", 0);
+  CHECK(session.history_calls() == 1);
   CHECK(session.placed().empty());
-  // Holdings read after it: the stop filled and nothing is left, so the flatten is met.
-  poll_holdings_at(source, bound, session, "0", 2);
+  REQUIRE(bound.deferred_targets().size() == 1);
+
+  // The history read fails: reported like any poll failure, and the target still waits.
+  session.fail_history_with(ErrorCategory::TRANSPORT);
+  WorkingOrders<FakeBroker> listing;
+  listing.received_at_ = live_hour(2);
+  session.set_working_orders(listing);
+  CHECK(source.poll(runner::PollKind::WORKING_ORDERS, bound) != runner::PollOutcome::UPDATED);
   CHECK(session.placed().empty());
-  CHECK(bound.deferred_targets().empty());
+  CHECK(bound.deferred_targets().size() == 1);
 }
 
 TEST_CASE("an update in the same listing supersedes the deferred flatten before it can go", "[trigger]") {
@@ -3671,12 +3707,11 @@ TEST_CASE("an update in the same listing supersedes the deferred flatten before 
   auto bound = live::bind(session, FlattensOnPhase{}, {});
   live::SessionSource<WorkingSession> source(session, {samsung()});
   leave_behind_a_stop(bound, session);
-  poll_holdings_at(source, bound, session, "10", 2);
+  record_stop(session, OrderStatus::CANCELED, "0");
 
   auto first = update_row("OTHER", "", "0");
   auto keep = update_row("KEEP", "", "0");
   poll_listing_at(source, bound, session, {first, keep}, 1);
   CHECK(bound.deferred_targets().empty());
-  poll_holdings_at(source, bound, session, "10", 3);
   CHECK(session.placed().empty());
 }

@@ -344,9 +344,6 @@ private:
     // request's own latency.
     portfolio.as_of_ = result.value().received_at_;
     runner_instance.context().set_portfolio(std::move(portfolio));
-    // Fresh holdings are the second half of a deferred target's release: they say whether a stop
-    // that left the listing was cancelled or filled. See `Runner::retry_deferred`.
-    runner_instance.retry_deferred();
     return runner::PollOutcome::UPDATED;
   }
 
@@ -713,10 +710,21 @@ private:
         updates_.adopt(result.value().orders_);
       }
       // **After** the updates, so a strategy's own `on_order_update` has spoken first. This listing is
-      // the only thing that sees a stop leave, and a disappearance feeds no callback; its receive time
-      // is what a later holdings snapshot must postdate before the deferred target is released. See
-      // `Runner::retry_deferred`.
-      runner_instance.retry_deferred(result.value().received_at_);
+      // the only thing that sees a stop leave, and a disappearance feeds no callback -- so where a
+      // deferred target's stops are all gone, the broker's own record of them is read here, on demand,
+      // and decides it. A failed read leaves the target waiting and reports like any poll failure. See
+      // `Runner::deferred_targets`.
+      if (const auto since = runner_instance.deferred_awaiting_evidence()) {
+        std::vector<OrderSnapshot> evidence;
+        const auto range = std::make_pair(
+          runner::date_of(*since - std::chrono::hours(24)),
+          runner::date_of(runner_instance.context().now() + std::chrono::hours(24))
+        );
+        if (!read_history_in(range, evidence)) {
+          return poll_outcome_of(*last_error_);
+        }
+        runner_instance.retry_deferred(evidence);
+      }
       return runner::PollOutcome::UPDATED;
     } else {
       (void)publish;
@@ -804,6 +812,11 @@ private:
    */
   bool read_history(const std::vector<runner::OpenInstruction>& open,
     std::vector<OrderSnapshot>& into) {
+    return read_history_in(runner::history_range_for(open, window_), into);
+  }
+
+  /** Fills `into` with the order history over `range` where the broker takes one; see `read_history`. */
+  bool read_history_in(const std::pair<Date, Date>& range, std::vector<OrderSnapshot>& into) {
     OrderHistoryQuery query;
     if constexpr (Caps::has_history_limit) {
       // Gated, because KIS does not ignore a limit it cannot honour -- it refuses the whole inquiry
@@ -812,9 +825,10 @@ private:
       query.limit_ = history_limit_;
     }
     if constexpr (Caps::history_requires_range) {
-      const auto range = runner::history_range_for(open, window_);
       query.from_ = range.first;
       query.to_ = range.second;
+    } else {
+      (void)range;
     }
 
     for (int page = 0; page < maximum_history_pages_; ++page) {

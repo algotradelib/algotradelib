@@ -844,29 +844,33 @@ public:
    *
    * **Why the runner keeps them rather than the strategy.** A target that needs a trade while a stop
    * rests withdraws the stop and sends nothing (`strategy::RejectReason::STOP_ORDER_RESTING`), because
-   * a sell beside a stop that may still release can sell twice. What ends the wait is the stop
-   * leaving the broker's listing -- and a disappearance feeds no strategy callback at all
+   * a sell beside a stop that may still release can sell twice. What ends the wait is the stop's own
+   * outcome -- and a stop leaving the working-order listing feeds no strategy callback at all
    * (`OrderUpdateWatch` reports what a listing says, never what it stopped saying). A flatten stated
    * once from `on_phase` would therefore never be stated again. So the runner keeps it:
    *
    * - **retained** when a `TargetPosition`'s plan passed the withheld-plan gate and came back refused
-   *   for `STOP_ORDER_RESTING`. A plan withheld whole retains nothing -- its withdrawal never went out;
+   *   for `STOP_ORDER_RESTING`, together with the references of the stops it waits on. A plan withheld
+   *   whole retains nothing -- its withdrawal never went out;
    * - **replaced** by any `TargetPosition` or `OrderIntent` the strategy states for the instrument
    *   later, in any pass. It is a fallback for silence, not a goal that outranks what the strategy says;
-   * - **released** only by `retry_deferred`, never inside an ordinary pass, and only once **both**
-   *   are true: a listing no longer reports an open stop on the instrument (`strategy::is_stop_order`,
-   *   `PENDING_CANCEL` counting as open), **and** a holdings snapshot received *after* that listing is
-   *   installed. The second condition is what makes the release safe: a stop that left the listing may
-   *   have been cancelled or may have **filled**, and the listing cannot say which. Sized against the
-   *   holding as it was before, a filled stop would be followed by a second sell of the same shares;
-   *   sized against holdings that postdate its disappearance, a fill makes the flatten a met target that
-   *   plans nothing. Released, it goes through every gate, guard and ledger check any target does;
-   * - **cleared** by its release, whatever that release's outcome. Refused by a guard, withheld, or
-   *   rejected by the broker, it is reported in that bucket and not kept again -- except that meeting
-   *   another resting stop keeps it again by the same rule. It waits for exactly one thing.
+   * - **released** only by `retry_deferred`, never inside an ordinary pass, and only on **the broker's
+   *   own record of each stop**: every stop it waited on is no longer listed, and has a history row --
+   *   matched by `OrderSnapshot::order_id_` against the reference's primary part -- that is terminal
+   *   with **nothing filled**. A listing alone cannot tell a cancelled stop from a filled one, and a
+   *   holdings read is no proof either, since a broker's holdings and order endpoints promise no
+   *   read-after-write consistency. Fills are read from `execution_.filled_quantity_`, never from the
+   *   status: KIS reports a partly filled order it then cancelled as `CANCELED`;
+   * - **dropped without a send** when any stop it waited on shows anything filled. A full fill met the
+   *   flatten already; a partial one leaves its remainder **for the strategy to restate** -- the one
+   *   case this does not finish by itself, counted by `deferred_dropped_after_fill`. It fails towards
+   *   an omission, never a second sell;
+   * - **kept** while a stop is still listed, or its history row is missing or not yet terminal: a stale
+   *   answer waits, it does not release.
    *
-   * Not journalled: it has produced no instruction a broker could have seen, and a restart loses it
-   * as it loses every unstated intention.
+   * It needs only the working-order cadence -- `live::SessionSource` reads the history on demand in
+   * the poll that no longer lists the stop -- and no holdings poll. Not journalled: it has produced no
+   * instruction a broker could have seen, and a restart loses it as it loses every unstated intention.
    */
   std::vector<strategy::TargetPosition> deferred_targets() const {
     std::vector<strategy::TargetPosition> targets;
@@ -880,38 +884,49 @@ public:
   /** How many targets have been deferred behind a stop's withdrawal; see `deferred_targets`. */
   std::size_t targets_deferred() const noexcept { return targets_deferred_; }
 
+  /** Deferred targets dropped because a stop they waited on had filled; see `deferred_targets`. */
+  std::size_t deferred_dropped_after_fill() const noexcept { return deferred_dropped_after_fill_; }
+
   /**
-   * Releases, and settles, every deferred target whose stop is gone and whose holdings are fresh.
-   *
-   * @param listed_at when the working-order listing now in the portfolio was received, where the
-   * caller has just installed one. A deferred target records the first such instant at which its stop
-   * was no longer listed, and is released only once `Portfolio::as_of_` -- the holdings snapshot's own
-   * receive time -- is **later** than it. Without a listing time nothing new can be established about
-   * a disappearance, which is how a holdings poll calls this.
-   *
-   * `live::SessionSource` calls it after every working-order poll, with that listing's receive time,
-   * and after every holdings poll, without one. It dispatches no handler, settles only when it released
-   * something, and it is never run from
-   * inside an ordinary pass: an order update's pass would otherwise release the fallback before a
-   * later update in the same listing let the strategy say something else.
+   * Returns the earliest instant a target still waiting was deferred, where one's stops are all gone
+   * from the listing -- the start of the history a caller must read for it -- or nothing when no
+   * deferred target can be decided from history yet.
    */
-  Report retry_deferred(
-    std::optional<std::chrono::system_clock::time_point> listed_at = std::nullopt
-  ) {
-    return release_deferred(listed_at, false);
+  std::optional<std::chrono::system_clock::time_point> deferred_awaiting_evidence() const {
+    std::optional<std::chrono::system_clock::time_point> earliest;
+    for (const auto& deferred : deferred_targets_) {
+      if (stop_listed(deferred.target_.instrument_)) {
+        continue;
+      }
+      if (!earliest || deferred.deferred_at_ < *earliest) {
+        earliest = deferred.deferred_at_;
+      }
+    }
+    return earliest;
   }
 
   /**
-   * Releases, and settles, every deferred target whose stop is gone, for a caller whose working
-   * orders and holdings are **one snapshot**.
+   * Releases, drops or keeps each deferred target against `evidence`, the broker's history rows, and
+   * settles what it released.
    *
-   * A replay is that caller: its ledger is the broker, so a stop it has just withdrawn is gone from
-   * the listing and the holding after it is known in the same instant -- there is no later holdings
-   * read to wait for, and waiting for one would hold the exit a bar the live path does not. A live
-   * caller must use `retry_deferred`, because a live listing and a live holdings read are two answers
-   * taken at two moments.
+   * `live::SessionSource` calls it after a working-order poll's update feeds, with the history it read
+   * because `deferred_awaiting_evidence` asked for it. It dispatches no handler, settles only when it
+   * released something, and never runs inside an ordinary pass: an order update's pass would otherwise
+   * release the fallback before a later update in the same listing let the strategy say something else.
    */
-  Report retry_deferred_on_one_snapshot() { return release_deferred(std::nullopt, true); }
+  Report retry_deferred(const std::vector<OrderSnapshot>& evidence) {
+    return release_deferred(&evidence);
+  }
+
+  /**
+   * Releases, and settles, every deferred target whose stops are gone, for a caller whose working
+   * orders and fills are **one ledger**.
+   *
+   * A replay is that caller: its ledger is the broker, so a stop it has just withdrawn is gone and
+   * could not have filled, and there is no history to wait for. A live caller must use
+   * `retry_deferred`, because a live stop that left the listing may have filled.
+   */
+  Report retry_deferred_on_one_snapshot() { return release_deferred(nullptr); }
 
   /** @copydoc Runner::plans_withheld */
   std::size_t instructions_unavailable() const noexcept { return instructions_unavailable_; }
@@ -1787,27 +1802,44 @@ private:
     }
   }
 
-  /** The release loop behind `retry_deferred` and `retry_deferred_on_one_snapshot`. */
-  Report release_deferred(
-    std::optional<std::chrono::system_clock::time_point> listed_at,
-    bool one_snapshot
-  ) {
+  /**
+   * The release loop behind `retry_deferred` and `retry_deferred_on_one_snapshot`. `evidence` is the
+   * broker's history, or null for a caller whose own ledger decided every stop.
+   */
+  Report release_deferred(const std::vector<OrderSnapshot>* evidence) {
     bool released = false;
     for (auto at = deferred_targets_.begin(); at != deferred_targets_.end();) {
       if (stop_listed(at->target_.instrument_)) {
-        at->gone_since_.reset();
         ++at;
         continue;
       }
-      if (!one_snapshot) {
-        if (!at->gone_since_) {
-          if (!listed_at) {
-            ++at;
+      if (evidence != nullptr) {
+        bool decided = true;
+        bool filled = false;
+        for (const auto& stop : at->stops_) {
+          const OrderSnapshot* row = nullptr;
+          for (const auto& candidate : *evidence) {
+            if (candidate.order_id_ == stop.primary_) {
+              row = &candidate;
+              break;
+            }
+          }
+          if (row == nullptr) {
+            decided = false;
             continue;
           }
-          at->gone_since_ = listed_at;
+          if (row->execution_.filled_quantity_.coefficient() != 0) {
+            filled = true;
+          } else if (strategy::order_is_open(row->status_)) {
+            decided = false;
+          }
         }
-        if (!(*at->gone_since_ < context_.portfolio().as_of_)) {
+        if (filled) {
+          ++deferred_dropped_after_fill_;
+          at = deferred_targets_.erase(at);
+          continue;
+        }
+        if (!decided) {
           ++at;
           continue;
         }
@@ -1817,7 +1849,7 @@ private:
       released = true;
     }
     // **Nothing released, nothing settled.** A pass has effects of its own -- it observes the
-    // sellable convention from the portfolio -- and this runs on every poll of two kinds.
+    // sellable convention from the portfolio -- and this runs on every working-order poll.
     if (!released) {
       return Report{};
     }
@@ -1849,14 +1881,26 @@ private:
       if (rejection.reason_ != strategy::RejectReason::STOP_ORDER_RESTING) {
         continue;
       }
+      // The stops it waits on, as the listing shows them now -- `PENDING_CANCEL` included, since that
+      // is exactly a stop whose outcome is not yet known.
+      DeferredTarget deferred;
+      deferred.target_ = *target;
+      deferred.deferred_at_ = context_.now();
+      for (const auto& working : context_.portfolio().working_) {
+        if (working.order_.instrument_ == target->instrument_ &&
+            strategy::order_is_open(working.order_.status_) &&
+            strategy::is_stop_order(working.order_)) {
+          deferred.stops_.push_back(working.ref_);
+        }
+      }
       for (auto& kept : deferred_targets_) {
         if (kept.target_.instrument_ == target->instrument_) {
-          kept = DeferredTarget{*target, std::nullopt};
+          kept = std::move(deferred);
           ++targets_deferred_;
           return;
         }
       }
-      deferred_targets_.push_back(DeferredTarget{*target, std::nullopt});
+      deferred_targets_.push_back(std::move(deferred));
       ++targets_deferred_;
       return;
     }
@@ -2332,13 +2376,17 @@ private:
   struct DeferredTarget {
     /** The target, exactly as the strategy stated it. */
     strategy::TargetPosition target_;
-    /** The receive time of the first listing without the stop; empty while it is still listed. */
-    std::optional<std::chrono::system_clock::time_point> gone_since_;
+    /** The stops it waits on, whose own history rows decide its release. */
+    std::vector<OrderRef<Tag>> stops_;
+    /** When it was deferred, which bounds the history that can hold those rows. */
+    std::chrono::system_clock::time_point deferred_at_{};
   };
   /** Targets waiting for a stop's withdrawal; see `deferred_targets`. */
   std::vector<DeferredTarget> deferred_targets_;
   /** How many were ever deferred; see `targets_deferred`. */
   std::size_t targets_deferred_{0};
+  /** How many were dropped after a fill; see `deferred_dropped_after_fill`. */
+  std::size_t deferred_dropped_after_fill_{0};
   /** Instructions local machinery was unavailable to send; see the accessor. */
   std::size_t instructions_unavailable_{0};
   /** What the broker said about the most recent order it refused; see the accessor. */
