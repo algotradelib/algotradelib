@@ -272,12 +272,16 @@ struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
       );
     }
     const auto& doc = jv.as_object();
-    if (!doc.contains("appkey") || !doc.contains("secretkey")) {
-      throw std::runtime_error("Credential file should contain appkey and secretkey");
+    const json::value* key = doc.if_contains("appkey");
+    const json::value* secret = doc.if_contains("secretkey");
+    if (!key || !secret || !key->is_string() || !secret->is_string()) {
+      throw std::runtime_error("Credential file should contain appkey and secretkey as strings");
     }
+    // Everything is read and checked before anything is assigned, so a refused file leaves this
+    // config -- and the endpoint it already selected -- exactly as it was.
     const bool demo = network::required_demo_flag(doc, filename);
-    key_ = doc.at("appkey").as_string().c_str();
-    secret_ = doc.at("secretkey").as_string().c_str();
+    key_ = key->get_string().c_str();
+    secret_ = secret->get_string().c_str();
     is_demo_ = demo;
   }
 

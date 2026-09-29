@@ -660,6 +660,14 @@ TEST_CASE(
   REQUIRE_FALSE(live.is_demo_);
   REQUIRE(std::string_view(live.rest_host()) == "openapi.koreainvestment.com");
 
+  // A refused load leaves an already loaded config on the endpoint it selected.
+  demo.unset();
+  key.set("other-key");
+  CHECK_FALSE(refusal_of([&] { paper.from_env(); }).empty());
+  CHECK(paper.is_demo_);
+  CHECK(paper.key() == "app-key");
+  key.set("app-key");
+
   for (const char* junk : {"true", "yes", "", " 1", "1 ", "01", "2"}) {
     demo.set(junk);
     kis::KisConfig refused;
@@ -741,6 +749,24 @@ TEST_CASE(
   REQUIRE(missing_message.find(missing.str()) != std::string::npos);
   REQUIRE(missing_config.key().empty());
 
+  // A file refused for any reason leaves an already loaded config as it was: still demo, still the
+  // same key. A refusal that changed half the fields could leave a demo config on a live endpoint.
+  const TempCredentialFile malformed_secret(
+    "kis-malformed", R"({"app_key":"other-key","app_secret":7,"demo":false})"
+  );
+  REQUIRE(paper_config.is_demo_);
+  CHECK_FALSE(refusal_of([&] { paper_config.from_json(malformed_secret.str()); }).empty());
+  CHECK(paper_config.is_demo_);
+  CHECK(paper_config.key() == "app-key");
+  CHECK(paper_config.secret() == "app-secret");
+  CHECK(std::string_view(paper_config.rest_host()) == "openapivts.koreainvestment.com");
+  const TempCredentialFile no_demo(
+    "kis-no-demo", R"({"app_key":"other-key","app_secret":"other-secret"})"
+  );
+  CHECK_FALSE(refusal_of([&] { paper_config.from_json(no_demo.str()); }).empty());
+  CHECK(paper_config.is_demo_);
+  CHECK(paper_config.key() == "app-key");
+
   for (const char* demo : {R"("false")", R"("1")", "1", "0", "null"}) {
     const TempCredentialFile junk(
       "kis-junk",
@@ -781,6 +807,16 @@ TEST_CASE(
   const auto missing_message = refusal_of([&] { missing_config.from_json(missing.str()); });
   REQUIRE(missing_message.find("has no \"demo\" key") != std::string::npos);
   REQUIRE(missing_config.key().empty());
+
+  const TempCredentialFile malformed_secret(
+    "kiwoom-malformed", R"({"appkey":"other-key","secretkey":null,"demo":false})"
+  );
+  REQUIRE(paper_config.is_demo_);
+  CHECK_FALSE(refusal_of([&] { paper_config.from_json(malformed_secret.str()); }).empty());
+  CHECK(paper_config.is_demo_);
+  CHECK(paper_config.key() == "app-key");
+  CHECK(paper_config.secret() == "secret-key");
+  CHECK(std::string_view(paper_config.rest_host()) == "mockapi.kiwoom.com");
 
   for (const char* demo : {R"("true")", "0", "[]"}) {
     const TempCredentialFile junk(

@@ -158,13 +158,20 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
         "Failed to parse KIS credentials file: " + filename + " — " + ec.message()
       );
     }
-    const auto& doc = jv.as_object();
-    if (!doc.contains("app_key") || !doc.contains("app_secret")) {
-      throw std::runtime_error("Credential file should contain app_key and app_secret");
+    if (!jv.is_object()) {
+      throw std::runtime_error("Failed to parse KIS credentials file: " + filename + " — not a JSON object");
     }
+    const auto& doc = jv.as_object();
+    const json::value* key = doc.if_contains("app_key");
+    const json::value* secret = doc.if_contains("app_secret");
+    if (!key || !secret || !key->is_string() || !secret->is_string()) {
+      throw std::runtime_error("Credential file should contain app_key and app_secret as strings");
+    }
+    // Everything is read and checked before anything is assigned, so a refused file leaves this
+    // config -- and the endpoint it already selected -- exactly as it was.
     const bool demo = network::required_demo_flag(doc, filename);
-    key_ = doc.at("app_key").as_string().c_str();
-    secret_ = doc.at("app_secret").as_string().c_str();
+    key_ = key->get_string().c_str();
+    secret_ = secret->get_string().c_str();
     is_demo_ = demo;
   }
 
