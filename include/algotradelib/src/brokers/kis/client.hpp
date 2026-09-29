@@ -285,7 +285,15 @@ inline std::optional<BrokerError> unsupported_client_order_id(const OrderRequest
  */
 inline std::optional<BrokerError> unsupported_bar_interval(BarInterval) { return std::nullopt; }
 
-/** Persistent asynchronous KIS client with coalesced OAuth refresh. */
+/**
+ * Persistent asynchronous KIS client with coalesced OAuth refresh.
+ *
+ * **Scope: 일반 customers, `custtype P`.** That covers individual *and* corporate customers trading
+ * their own account -- KIS's own example states `# 일반(개인고객,법인고객) "P", 제휴사 "B"`, and the
+ * per-request schema's "B : 법인" label is misleading. Partner mode (`custtype B`, the 제휴사 program
+ * for licensed firms serving third parties, with `personalseckey`, per-member `phone_number` /
+ * `ip_addr` and per-transaction `gt_uid`) is not supported.
+ */
 class KisClient : public std::enable_shared_from_this<KisClient> {
 public:
   /** Completion handler for one normalized quote. */

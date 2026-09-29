@@ -44,7 +44,8 @@ ioc.run();
 
 [`examples/example-kis-quote.cpp`](../../examples/example-kis-quote.cpp) is the
 complete runnable version. It reads `KIS_APP_KEY`, `KIS_APP_SECRET`, and the
-optional `KIS_DEMO` flag from the environment. The default symbol is Samsung
+required `KIS_DEMO` (`1` for the 모의투자 endpoints, `0` for live; anything else,
+unset included, refuses to load) from the environment. The default symbol is Samsung
 Electronics (`005930`); pass another Korean equity symbol as the first argument.
 
 ```sh
@@ -69,7 +70,7 @@ HTTP connection between sequential calls.
 
 [`examples/example-kis-account.cpp`](../../examples/example-kis-account.cpp) loads
 KIS credentials from `KIS_APP_KEY` and `KIS_APP_SECRET`, selects the live or
-demo environment with optional `KIS_DEMO=1`, and selects an account using
+demo environment with the required `KIS_DEMO` (`1` or `0`), and selects an account using
 `KIS_CANO` plus optional `KIS_ACNT_PRDT_CD` (default `01`). It requests and
 prints normalized positions and KRW totals without displaying the account
 number.
@@ -146,6 +147,14 @@ Read these before using the order clients.
   `OrderSnapshot::venue_` reports the routing back. Leaving `venue_` unspecified
   sends no venue and takes the broker's documented default; `Venue::COMBINED`
   asks KIS to route the order, which it calls SOR.
+- **Routing across both books is opt-in, and that is deliberate.** At KIS an
+  unspecified venue routes to **KRX**, and SOR is a choice the caller makes with
+  `Venue::COMBINED`. It is not the default because a KIS demo account refuses
+  SOR: a default that fails on demo would make a demo run stop rehearsing the
+  live one. Kiwoom documents its `dmst_stex_tp` as required with no default, so
+  a Kiwoom order must name a venue and is refused before any request otherwise;
+  whether a Kiwoom demo account accepts SOR has not been observed. Toss offers
+  no venue choice at all, and an order naming one is refused.
 - **A demo account trades on KRX.** Both KIS order sheets say so, and a route it
   cannot reach is refused before any request rather than after the POST.
 - **A code the library does not recognize is reported rather than discarded.**

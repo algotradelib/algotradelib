@@ -1808,6 +1808,13 @@ struct OrderRequest {
    * has the same shape as the snapshot it will be read back as. `UNSPECIFIED`
    * sends no venue at all and takes the broker's documented default.
    *
+   * **Routing across both books is opt-in.** At KIS `UNSPECIFIED` routes to
+   * KRX, and `COMBINED` (sent as `SOR`) is the caller's choice. It is not the
+   * default because a KIS demo account refuses SOR, and a default that fails on
+   * demo would stop a demo run rehearsing the live one. Kiwoom requires a venue
+   * and refuses `UNSPECIFIED` before any request; Toss offers no venue choice
+   * and refuses any venue but `UNSPECIFIED`.
+   *
    * An adapter refuses an `instrument_.venue_` that is not the identity venue
    * it reports for that instrument, rather than routing on it, because a caller
    * who sets it there means routing and would otherwise get it silently.
