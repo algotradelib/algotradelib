@@ -139,15 +139,6 @@ inline void print_recovery(const runner::RecoveryReport& recovery, std::ostream&
 
 /** Prints how to stop the run, before it starts, so nobody reaches for `kill -9`. */
 inline void print_how_to_stop(const Settings& settings, std::ostream& out) {
-  // **The first decision waits for the second bar**, and that is the safe direction. The loop polls
-  // bars before holdings, so what the strategy decides on the bars read at start meets an account not
-  // yet read, and is withheld rather than sized against nothing; the source has recorded those bars,
-  // so the next decision comes with the next bar -- the next close, on daily bars. Reading holdings
-  // here first was tried and removed: an order a previous run left resting could fill between that
-  // read and the loop's first order-list read, and the first bar would then buy again against a flat
-  // snapshot. Fixing the order properly is a loop change (plan/todo/first-iteration-poll-order.md).
-  out << "note: decisions on the bars read at start are withheld until the account is read;\n"
-      << "      the strategy first acts on the next bar\n";
   out << "to stop: Ctrl-C or SIGTERM (quiesce), or\n"
       << "  echo quiesce  > " << settings.control_file_ << "   # stop placing, leave orders resting\n"
       << "  echo withdraw > " << settings.control_file_ << "   # cancel this run's working orders\n"
@@ -174,7 +165,7 @@ inline void print_loop(const runner::LoopReport& report, std::ostream& out) {
       << "market phase    : " << strategy::market_phase_name(report.final_phase_) << '\n'
       // Every way an order the strategy wanted did not go out, each with its own count, so an empty
       // placement count explains itself.
-      << "plans withheld  : " << report.plans_withheld_ << " (account unread or too old when they were made)\n"
+      << "plans withheld  : " << report.plans_withheld_ << " (account unread, too old, or older than the order listing)\n"
       << "not buildable   : " << report.orders_unbuildable_ << '\n'
       << "withheld        : " << report.orders_reconcile_withheld_ << " (unresolved earlier orders)\n"
       << "refused by guard: " << report.orders_guard_refused_ << '\n'

@@ -140,6 +140,12 @@ detector runs over each mode's own order listing, so the *rule* is identical in 
 | an amendment moves its price or quantity | no — a replay has no amendment, only place and cancel | yes |
 | the filled quantity moves while the order rests | no — a replay fills an order whole or not at all | yes |
 
+**Live, a target you state from `on_order_update` is planned against the next holdings read.** The
+update arrives during the working-order poll, which runs before holdings, so the account at that moment
+predates the listing that produced the update. The target is withheld as `portfolio_superseded`,
+retained, and planned again after the loop has read holdings; an `OrderIntent` stated there is withheld
+and dropped. So answer an update with a target, not with an order.
+
 So in a backtest you will see one update per order, when it starts resting — with one exception
 worth knowing: an order placed by `on_order_update` itself *during* `finish` has no later
 observation boundary and is never reported. Do not read a single update as the library telling you

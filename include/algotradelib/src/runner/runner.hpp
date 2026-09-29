@@ -582,7 +582,10 @@ public:
    * change in the resting quantity, so a repeat is discarded rather than counted twice.
    */
   void observe_sellable_convention() {
-    if (probing_sellable_) {
+    // Skipped, not forgotten, while the listing is newer than the holdings: the resting quantity
+    // and the sellable figure would come from two moments, and a sell starting to rest between them
+    // reads as a figure that did not move. The baseline stays the last paired reading.
+    if (probing_sellable_ && !context_.portfolio().listing_newer_than_holdings()) {
       sellable_probe_.observe(context_.portfolio());
     }
   }
@@ -840,11 +843,12 @@ public:
    *
    * - `plans_withheld` -- a whole reconciliation plan held back before any of its parts was judged.
    *   Counted apart from the six origins because nothing was wrong with the instructions themselves.
-   *   **Three reasons reach it and this figure does not tell them apart**: the portfolio was never
-   *   read (`PORTFOLIO_ABSENT`), it is older than the stated maximum (`PORTFOLIO_STALE`), or a hold
-   *   is refusing placements while the plan also wanted to withdraw something (`PLACEMENT_HELD`) --
-   *   that last one on a portfolio that is perfectly fresh, so a reader who assumed this figure meant
-   *   "the account is unknown" would chase the wrong thing. `Report::withheld_plans_` carries the
+   *   **Four reasons reach it and this figure does not tell them apart**: the portfolio was never
+   *   read (`PORTFOLIO_ABSENT`), it is older than the stated maximum (`PORTFOLIO_STALE`), the
+   *   working-order listing arrived after it (`PORTFOLIO_SUPERSEDED`), or a hold is refusing
+   *   placements while the plan also wanted to withdraw something (`PLACEMENT_HELD`) -- the last two
+   *   on a portfolio that is perfectly fresh, so a reader who assumed this figure meant "the account
+   *   is unknown" would chase the wrong thing. `Report::withheld_plans_` carries the
    *   reason per plan; this counts how often it happened.
    *
    *   **The loop's own gate does not always describe it**, which is why it is a figure at all: with
@@ -938,6 +942,45 @@ public:
   Report retry_deferred(const std::vector<OrderSnapshot>& evidence) {
     return release_deferred(&evidence);
   }
+
+  /**
+   * Plans again the targets withheld for want of a trustworthy account, once there is one.
+   *
+   * A target withheld as `PORTFOLIO_ABSENT`, `PORTFOLIO_STALE` or `PORTFOLIO_SUPERSEDED` -- stated from
+   * an `on_order_update` during the listing poll, say, or on a bar after a failed holdings read -- is
+   * kept (`targets_retained`) and resubmitted here. `PollingLoop` calls it after each iteration's
+   * polls and gate, so the account and the budget it is sized against are that iteration's.
+   *
+   * **Does nothing, and keeps them, until it can succeed**: while the account was never read or
+   * predates the listing, and while any hold is in force. A later target or order intent for the same
+   * instrument replaces a retained target; a stop or an abandoned run discards them
+   * (`clear_retained_targets`), so retained work lives for one `PollingLoop::run`. `PollingLoop`
+   * retries last in an iteration, after `on_phase`. Within a run, a target retained before an
+   * operator's halt survives it and is planned, against fresh holdings, once the halt is lifted.
+   *
+   * A program driving a `Runner` without `PollingLoop` retains the same way and must call this
+   * itself, or `clear_retained_targets`; nothing else replays or discards them. A replay never stamps
+   * `Portfolio::working_as_of_`, so a backtest never withholds as superseded.
+   */
+  Report retry_retained_targets() {
+    if (retained_targets_.empty() ||
+        context_.portfolio().as_of_ == std::chrono::system_clock::time_point{} ||
+        context_.portfolio().listing_newer_than_holdings() || guard_.blocking_reason()) {
+      return Report{};
+    }
+    auto retained = std::move(retained_targets_);
+    retained_targets_.clear();
+    for (auto& target : retained) {
+      context_.submit(std::move(target));
+    }
+    return settle();
+  }
+
+  /** Returns how many targets are retained for the next holdings read; see `retry_retained_targets`. */
+  std::size_t targets_retained() const noexcept { return retained_targets_.size(); }
+
+  /** Discards every retained target. `PollingLoop` calls it once a stop is requested. */
+  void clear_retained_targets() noexcept { retained_targets_.clear(); }
 
   /**
    * Releases, and settles, every deferred target whose stops are gone, for a caller whose working
@@ -1175,6 +1218,10 @@ private:
     };
 
     for (const auto& instruction : instructions) {
+      // **A later target or order replaces a retained target**: the strategy has spoken again about this
+      // instrument, and replaying what it said before would override it. A withheld target is retained
+      // again below, as the latest. A `CancelIntent` names an order, not an instrument, and leaves it.
+      forget_retained(instruction_instrument(instruction));
       if (const auto* cancel = std::get_if<strategy::CancelIntent<Tag>>(&instruction)) {
         attempt_cancel(cancel->ref_);
         continue;
@@ -1211,20 +1258,30 @@ private:
         // hold named on its own report entry, and that is the better result.
         const bool data_is_missing = *reason != WithheldPlanReason::PLACEMENT_HELD;
         if (data_is_missing || would_cancel) {
-          // The whole plan, before any of its parts were counted separately. **Three reasons reach
+          // The whole plan, before any of its parts were counted separately. **Four reasons reach
         // here** and this counts them together: an account never read, one older than the stated
-        // maximum, and a hold refusing placements for a plan that also wanted to withdraw something
-        // -- that third on a perfectly fresh portfolio. Counted at all because the loop's own gate
+        // maximum, one read before the listing it would be reconciled with, and a hold refusing
+        // placements for a plan that also wanted to withdraw something -- the last two on a perfectly
+        // fresh portfolio. Counted at all because the loop's own gate
         // does not always describe it: with `allow_absent_portfolio` the gate can be open while this
         // fires, which is the case Codex round 0 named.
         ++plans_withheld_;
+        std::string detail = withhold_detail(*reason);
+        if (data_is_missing) {
+          if (retain_withheld(instruction)) {
+            detail = "retained for the next holdings read";
+          } else if (*reason == WithheldPlanReason::PORTFOLIO_SUPERSEDED &&
+                     std::holds_alternative<strategy::OrderIntent>(instruction)) {
+            detail = "dropped: an order intent states a quantity against the mis-ordered picture";
+          }
+        }
         report.withheld_plans_.push_back(WithheldPlan<Tag>{
             *reason,
             instruction_instrument(instruction),
             instruction_tag(instruction),
             planned.cancel_,
             planned.place_.size(),
-            withhold_detail(*reason),
+            std::move(detail),
           });
           continue;
         }
@@ -1874,7 +1931,60 @@ private:
     if (!released) {
       return Report{};
     }
+    // Exempt from `PORTFOLIO_SUPERSEDED` for this pass only; see `plan_withhold_reason`. Scoped, so a
+    // settle that throws cannot leave the exemption on for every plan after it.
+    struct Exempt {
+      bool& flag_;
+      explicit Exempt(bool& flag) : flag_(flag) { flag_ = true; }
+      ~Exempt() { flag_ = false; }
+      Exempt(const Exempt&) = delete;
+      Exempt& operator=(const Exempt&) = delete;
+    } exempt(releasing_deferred_);
     return settle();
+  }
+
+  /** Drops the retained target on `instrument`, if there is one. */
+  void forget_retained(const InstrumentId& instrument) {
+    if (instrument.symbol_.empty()) {
+      return;
+    }
+    for (auto at = retained_targets_.begin(); at != retained_targets_.end(); ++at) {
+      if (at->instrument_ == instrument) {
+        retained_targets_.erase(at);
+        return;
+      }
+    }
+  }
+
+  /**
+   * Keeps a target withheld for want of a trustworthy account, to plan again once there is one.
+   *
+   * Withheld because the account was never read, is too old, or predates the listing: each is a fact
+   * about the data, and the next holdings read can change it. One per instrument, the latest kept, as
+   * for `deferred_targets_`. Returns false, retaining nothing:
+   *
+   * - for anything but a `TargetPosition`. An `OrderIntent` states a quantity against the picture that
+   *   was wrong, and replaying it later would act on a decision nobody re-made.
+   * - while a stop, an operator's halt or a local failure holds. What a strategy says then -- `on_stop`
+   *   included -- must not be replayed once the hold lifts.
+   */
+  bool retain_withheld(const Instruction<Tag>& instruction) {
+    const auto* target = std::get_if<strategy::TargetPosition>(&instruction);
+    if (target == nullptr) {
+      return false;
+    }
+    if (guard_.halted(strategy::HaltReason::STOPPING) || guard_.halted(strategy::HaltReason::OPERATOR) ||
+        guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
+      return false;
+    }
+    for (auto& kept : retained_targets_) {
+      if (kept.instrument_ == target->instrument_) {
+        kept = *target;
+        return true;
+      }
+    }
+    retained_targets_.push_back(*target);
+    return true;
   }
 
   /** Returns whether the portfolio lists an open stop order on `instrument`. */
@@ -1929,6 +2039,15 @@ private:
 
   std::optional<WithheldPlanReason> plan_withhold_reason(bool would_cancel) const {
     const auto& portfolio = context_.portfolio();
+    // **A picture the library can prove is mis-ordered, so no opt-out reaches it.** The opt-outs below
+    // accept an account nobody read or one read too long ago; this one was read, recently, and before
+    // the listing it would be reconciled with -- which is the order in which a fill between the two
+    // reads makes a position vanish. Exempt only while a deferred target is being released: that
+    // release fires on the stop's own history showing it ended unfilled, so the listing change behind
+    // it is by construction not a fill.
+    if (!releasing_deferred_ && portfolio.listing_newer_than_holdings()) {
+      return WithheldPlanReason::PORTFOLIO_SUPERSEDED;
+    }
     // A default-constructed `Portfolio` carries the epoch, and no broker reports a snapshot taken in
     // 1970. The same sentinel the loop uses; both writers of `as_of_` in this library stamp it.
     const bool never_read = portfolio.as_of_ == std::chrono::system_clock::time_point{};
@@ -2404,6 +2523,10 @@ private:
   };
   /** Targets waiting for a stop's withdrawal; see `deferred_targets`. */
   std::vector<DeferredTarget> deferred_targets_;
+  /** Targets withheld for want of a trustworthy account, one per instrument; see `retry_retained_targets`. */
+  std::vector<strategy::TargetPosition> retained_targets_;
+  /** True only inside a deferred release's settle, which `plan_withhold_reason` exempts. */
+  bool releasing_deferred_{false};
   /** How many were ever deferred; see `targets_deferred`. */
   std::size_t targets_deferred_{0};
   /** How many were dropped after a fill; see `deferred_dropped_after_fill`. */

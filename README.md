@@ -233,10 +233,9 @@ journal refuses to continue as a live one. The exit code tells the endings apart
 pass that did not get everything out, 2 journal refused, 3 recovery halted (the program prints the
 manual procedure), 4 reference data unreadable, 5 polling abandoned, 6 a local failure during the run
 (usually a journal write; read the broker's order list), 7 the account could not be settled (a Toss
-key reaching several accounts needs `--toss-account`). The strategy first acts on the bar after the ones
-read at start: the loop polls bars before holdings, and a decision made against an account not yet read
-is withheld rather than sized against nothing — on daily bars, that is the next close. The buying-power
-guard is left off, its default. **On Kiwoom it places nothing yet** — see "Brokers and accounts" below.
+key reaching several accounts needs `--toss-account`). Within an iteration the loop polls the order
+list, then holdings, then bars, of whichever are due, so the strategy decides on the bars read at start against an account already read.
+The buying-power guard is left off, its default. **On Kiwoom it places nothing yet** — see "Brokers and accounts" below.
 [Recovering after a crash](doxygen/vignettes/recovering-after-a-crash.md) explains each step and the
 verdicts `recover_runner` returns.
 
