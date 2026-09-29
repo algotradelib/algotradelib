@@ -9,64 +9,11 @@ against either broker without being rewritten. Selecting a broker is choosing a 
 
 ## Architecture
 
-```mermaid
-graph TD
-  You["<b>your strategy</b><br/><i>no I/O, no session, no broker</i>"]
+![How the modules depend on one another](doxygen/figures/architecture.png)
 
-  subgraph SA["strategy and analytics"]
-    StrategyCore["<b>strategy</b><br/>events · intents · portfolio · risk"]
-    Vanilla["<b>vanilla</b><br/>buy_and_hold · crossover · reversion"]
-    Analytics["<b>analytics</b><br/>indicators · metrics · rolling · frames"]
-  end
-
-  subgraph EX["execution"]
-    Runner["<b>runner</b><br/>context · dispatch · journal · stops"]
-    Dry["<b>DryRunner</b><br/>records, sends nothing"]
-    Backtest["<b>backtest</b><br/>clock · fill · cost · ledger · report"]
-    Live["<b>live</b><br/>session_executor · session_source · PollingLoop"]
-  end
-
-  subgraph INF["infrastructure and brokers"]
-    Brokers["<b>broker port</b><br/>BrokerTraits · BrokerCaps · BrokerSession"]
-    KIS["KIS adapter"]
-    Toss["Toss adapter"]
-    Core["<b>core</b><br/>Decimal64 · instrument · market_data · calendar"]
-    Math["<b>math</b><br/>Scalar · eigen · matrix"]
-    Network["<b>network</b><br/>http_client · ws_session · oauth · rate_limit"]
-  end
-
-  Venue(("KIS / Toss"))
-
-  You --> StrategyCore
-  Vanilla --> StrategyCore
-  StrategyCore --> Core
-  StrategyCore --> Runner
-  Runner --> Dry
-  Runner --> Backtest
-  Runner --> Live
-  Backtest --> Analytics
-  Analytics --> Math
-  Analytics --> Core
-  Live --> Brokers
-  KIS --> Brokers
-  Toss --> Brokers
-  Brokers --> Core
-  Brokers --> Network
-  KIS --> Network
-  Toss --> Network
-  Network --> Venue
-
-  classDef pure fill:#e8f4ea,stroke:#4a7a55,color:#123
-  classDef io fill:#fdeee6,stroke:#a4663c,color:#123
-  classDef you fill:#e7eefc,stroke:#3f5f9e,color:#123
-  class You you
-  class StrategyCore,Vanilla,Analytics,Runner,Dry,Backtest,Core,Math pure
-  class Live,Brokers,KIS,Toss,Network io
-```
-
-Green reaches no transport header and instantiates no adapter or TLS code — asserted at compile
-time, not by convention, so there is no instantiated code path from a backtest to a market. It does
-**not** mean libssl is off the link line; the package exports one interface target for every
+Blue is what you bring; orange carries the transport. Green reaches no transport header and
+instantiates no adapter or TLS code — asserted at compile time, not by convention, so there is no
+instantiated code path from a backtest to a market. It does **not** mean libssl is off the link line; the package exports one interface target for every
 consumer, as the prerequisites below explain. The
 [architecture vignette](doxygen/vignettes/architecture.md) has the full picture, the dependency rule
 underneath it, and what that compile-time claim does and does not cover.
