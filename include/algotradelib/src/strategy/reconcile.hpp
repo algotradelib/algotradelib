@@ -92,9 +92,9 @@ enum class RejectReason {
    * A stop is a *conditional* order, and target arithmetic is about orders that will trade. Counted
    * as working, a resting sell stop satisfies a target of zero and "flatten now" sends nothing;
    * ignored, an immediate exit goes out beside it and both can sell. So a target that needs a trade
-   * withdraws the stop and waits: **the target must be stated again** once the listing no longer
-   * reports the stop, and that pass trades. `vanilla::TimedLiquidation` restates its flatten on every
-   * bar outside its phases for exactly this reason.
+   * withdraws the stop and waits. **`runner::Runner` keeps the target** and settles it again, with no
+   * callback from the strategy, once a listing no longer reports a stop on the instrument -- see
+   * `Runner::deferred_targets`. A strategy stating anything newer for the instrument replaces it.
    *
    * A target the holding already meets needs no trade and is not refused: the stop stays, since
    * protecting a position the strategy means to hold is what it is for, and only other working orders
@@ -463,6 +463,17 @@ inline bool below_tolerance(
  *
  * A target already met produces an empty plan, which is the common case and must cost nothing.
  */
+/**
+ * Returns whether a working row is a stop order: its basis says so, **or** it carries a trigger.
+ *
+ * The second half is not redundant. An adapter records a positive trigger even on a row whose basis
+ * reads otherwise, and that row may be a stop that has released. Target reconciliation and the
+ * runner's deferred targets both ask this, so they cannot disagree about which rows hold a target up.
+ */
+inline bool is_stop_order(const OrderSnapshot& order) {
+  return carries_trigger_price(order.type_) || order.trigger_price_.has_value();
+}
+
 template <typename Broker>
 Plan<Broker> reconcile(
   const TargetPosition& target,
@@ -508,9 +519,7 @@ Plan<Broker> reconcile(
   // **Stops first; see `RejectReason::STOP_ORDER_RESTING`.** A row is a stop when its basis says so
   // or it carries a trigger -- an adapter records a positive trigger even on a row whose basis reads
   // otherwise, and that row may be a released stop.
-  const auto is_stop = [](const OrderSnapshot& order) {
-    return carries_trigger_price(order.type_) || order.trigger_price_.has_value();
-  };
+  const auto is_stop = [](const OrderSnapshot& order) { return is_stop_order(order); };
   bool stop_resting = false;
   for (const auto& working : portfolio.working_) {
     if (working.order_.instrument_ == target.instrument_ &&

@@ -3541,3 +3541,52 @@ TEST_CASE("a stop's trigger moved on its own is reported, and a disagreement abo
     CHECK(live_runner.strategy().updates_.empty());
   }
 }
+
+namespace {
+
+/** Flattens on leaving the session and does nothing else -- no bar handler to retry with. */
+struct FlattensOnPhase {
+  template <class Ctx>
+  void on_phase(Ctx& ctx, strategy::MarketPhase phase) {
+    if (phase == strategy::MarketPhase::OPEN) {
+      return;
+    }
+    strategy::TargetPosition flat;
+    flat.instrument_ = samsung();
+    flat.target_quantity_ = Decimal64::parse("0");
+    ctx.submit(flat);
+  }
+};
+
+} // namespace
+
+TEST_CASE("a working-order poll that no longer lists the stop sends the deferred flatten", "[trigger]") {
+  // The live half of the round-2 sequence: the stop's disappearance is observed only by this poll, and
+  // a disappearance feeds no strategy callback. The sell must reach the session anyway.
+  WorkingSession session;
+  auto bound = live::bind(session, FlattensOnPhase{}, {});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  bound.context().set_instrument(samsung_reference());
+  bound.context().set_last_price(samsung(), Decimal64::parse("70000"));
+
+  auto stop = update_row("STOP-1", "", "0");
+  stop.order_.side_ = OrderSide::SELL;
+  stop.order_.type_ = OrderType::STOP_LIMIT;
+  stop.order_.quantity_ = Decimal64::parse("10");
+  stop.order_.price_ = Decimal64::parse("69000");
+  stop.order_.trigger_price_ = Decimal64::parse("69500");
+  auto portfolio = held_position<WithWorkingOrders>("10", nullptr);
+  portfolio.working_.push_back(stop);
+  bound.context().set_portfolio(portfolio);
+
+  bound.feed(strategy::MarketPhase::POST_CLOSE);
+  CHECK(session.canceled().size() == 1);
+  CHECK(session.placed().empty());
+  REQUIRE(bound.deferred_targets().size() == 1);
+
+  poll_rows(source, bound, session, {});
+  REQUIRE(session.placed().size() == 1);
+  CHECK(session.placed()[0].side_ == OrderSide::SELL);
+  CHECK(session.placed()[0].quantity_ == Decimal64::parse("10"));
+  CHECK(bound.deferred_targets().empty());
+}

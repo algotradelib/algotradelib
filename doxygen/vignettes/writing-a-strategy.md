@@ -88,8 +88,10 @@ trigger refuses it rather than sending a plain limit.
   `TargetPosition` the holding already meets keeps the stop (it is protecting what you mean to hold).
   One that needs a trade withdraws the stop, sends nothing, and is reported as
   `RejectReason::STOP_ORDER_RESTING` — the stop is neither counted as the exit nor left beside a second
-  sell. **State the target again** once the listing stops reporting the stop; that pass trades.
-  `vanilla::TimedLiquidation` restates its flatten on every bar outside its phases for this reason.
+  sell. **The runner keeps that target** (`Runner::deferred_targets`) and settles it again by itself
+  once a working-order listing no longer reports the stop — with no bar, phase change or callback
+  needed, since a stop leaving the listing produces none. Anything newer the strategy states for the
+  instrument replaces it; it is not journalled, so a restart forgets it.
 - **It counts before it releases.** A resting sell stop is deducted from what may be sold and counted
   toward position and exposure ceilings at its limit, so an immediate exit beside it may be refused.
 - **Its trigger is never moved.** A trigger off the instrument's tick grid is refused as
