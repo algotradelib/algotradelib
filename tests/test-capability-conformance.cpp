@@ -70,6 +70,7 @@ struct AccountsWithoutValueType {};
 struct AccountsWithoutEnd {};
 struct AccountsOverLvalueCursor {};
 struct AccountsOverRvalueCursor {};
+struct AccountsNotAResult {};
 struct AccountSelectorNotDefaultConstructible {};
 
 /** A refusal whose dereference converts to `BrokerError` only explicitly. */
@@ -364,6 +365,17 @@ struct BrokerTraits<conformance_fakes::AccountsOverRvalueCursor> {
   static int selector_of(const conformance_fakes::AccountRow&) { return 1; }
 };
 
+/** Account discovery answering rows directly, with no `Result` for a failure to travel in. */
+template <>
+struct BrokerTraits<conformance_fakes::AccountsNotAResult> {
+  using Account = int;
+  static constexpr bool blocking = true;
+  static constexpr bool has_account_discovery = true;
+  static std::vector<conformance_fakes::AccountRow> accounts(conformance_fakes::AccountsNotAResult&) {
+    return {};
+  }
+};
+
 /** Account discovery whose selector `AccountInfo` cannot default-construct. */
 template <>
 struct BrokerTraits<conformance_fakes::AccountSelectorNotDefaultConstructible> {
@@ -400,26 +412,34 @@ TEST_CASE("conformance checks the shape the session uses, not only that a member
   STATIC_REQUIRE_FALSE(port_detail::serves_working_orders<WorkingOrdersNormalizeToTheWrongType>);
   // The refusal is passed by value to a `BrokerError` parameter, which an explicit conversion is not.
   STATIC_REQUIRE_FALSE(port_detail::serves_calendar<ExplicitRefusal>);
-  // A blocking listing's rows go through display_of, type_of and selector_of, which are absent.
-  STATIC_REQUIRE_FALSE(port_detail::serves_account_discovery<BlockingAccountsWithoutRowNormalizers>);
-  // `AccountInfo<Client> info;` needs the selector default-constructible.
-  STATIC_REQUIRE_FALSE(port_detail::serves_account_discovery<AccountSelectorNotDefaultConstructible>);
-  // A range-for needs `end` as much as `begin`.
-  STATIC_REQUIRE_FALSE(port_detail::serves_account_discovery<AccountsWithoutEnd>);
-  // The loop holds its cursor and sentinel as named lvalues, as a range-for does, so a cursor that
-  // compares only as an rvalue cannot be walked (`conformance-account-rows-reject-an-rvalue-cursor`
-  // proves the real call fails too)...
-  STATIC_REQUIRE_FALSE(port_detail::serves_account_discovery<AccountsOverRvalueCursor>);
-  // ...and one that works only as an lvalue can. The real call runs below.
-  STATIC_REQUIRE(port_detail::serves_account_discovery<AccountsOverLvalueCursor>);
-  {
-    AccountsOverLvalueCursor client;
-    const auto listed = list_accounts(client);
-    REQUIRE(listed);
-    CHECK(listed.value().empty());
-  }
-  // What is checked is the iteration `to_account_info` performs, not a `value_type` it never names.
+  // A blocking listing must answer a `Result` of rows; a bare vector is not what the session takes.
+  STATIC_REQUIRE_FALSE(port_detail::serves_account_discovery<AccountsNotAResult>);
+}
+
+TEST_CASE("account rows are checked by the verbs check, not modelled by the early one", "[port][conformance]") {
+  using namespace conformance_fakes;
+  // **The stated limit, pinned.** `ATL_ASSERT_BROKER` checks that a blocking listing answers a
+  // `Result` and stops there: every one of these passes it, and every one but the last two fails in
+  // `to_account_info`. Modelling that range-for was tried for four review rounds and each round found
+  // a requirement the model missed; `ATL_ASSERT_BROKER_VERBS` calls the real `list_accounts`, and
+  // `conformance-verbs-reject-unwalkable-account-rows` shows it rejecting the rvalue cursor.
+  STATIC_REQUIRE(port_detail::serves_account_discovery<BlockingAccountsWithoutRowNormalizers>);
+  STATIC_REQUIRE(port_detail::serves_account_discovery<AccountSelectorNotDefaultConstructible>);
+  STATIC_REQUIRE(port_detail::serves_account_discovery<AccountsWithoutEnd>);
+  STATIC_REQUIRE(port_detail::serves_account_discovery<AccountsOverRvalueCursor>);
   STATIC_REQUIRE(port_detail::serves_account_discovery<AccountsWithoutValueType>);
+  STATIC_REQUIRE(port_detail::serves_account_discovery<AccountsOverLvalueCursor>);
+
+  // And the two that are walkable, walked for real: no `value_type`, and a cursor that works only as
+  // a named lvalue, which is how a range-for holds it.
+  AccountsWithoutValueType plain;
+  const auto listed_plain = list_accounts(plain);
+  REQUIRE(listed_plain);
+  CHECK(listed_plain.value().empty());
+  AccountsOverLvalueCursor lvalue_only;
+  const auto listed_lvalue = list_accounts(lvalue_only);
+  REQUIRE(listed_lvalue);
+  CHECK(listed_lvalue.value().empty());
 }
 
 TEST_CASE("a claimed capability is served only by a thunk behind it", "[port][conformance]") {

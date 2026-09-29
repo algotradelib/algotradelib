@@ -5,9 +5,7 @@
 #include "./market_data.hpp"
 #include "./types.hpp"
 
-#include <cstddef>
 #include <functional>
-#include <iterator>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -344,7 +342,7 @@ struct has_validate_calendar<
   ))>::value>
 > : std::true_type {};
 
-/** The item range of a `Result<Items>`; absent for any other type, so a mismatch stays a substitution failure. */
+/** The payload of a `Result<Items>`; absent for any other type, so a mismatch stays a substitution failure. */
 template <typename R>
 struct listed_items {};
 template <typename Items>
@@ -352,85 +350,20 @@ struct listed_items<Result<Items>> {
   using type = Items;
 };
 
-namespace account_rows {
-
-using std::begin;
-using std::end;
-
 /**
- * Where an account listing's items start. `to_account_info` walks a listing with exactly these two
- * functions and the lvalue operations below, and the conformance check asks for exactly the same
- * expressions -- one definition of the loop, so the check cannot drift from the code it checks.
+ * Detects the blocking account listing: an `accounts(client)` answering a `Result` of some range.
+ *
+ * **Its rows are not checked here**, by decision. `to_account_info` walks them with a range-for and
+ * builds an `AccountInfo` from each, and a trait that models that loop has to model everything C++
+ * requires of a range-for -- rounds 1 to 4 of this branch's review each found one more requirement
+ * the model missed, in both directions. `ATL_ASSERT_BROKER_VERBS` calls the real `list_accounts`,
+ * so it checks the rows exactly, and that is where the check belongs.
  */
-template <typename Items>
-auto first(Items& items) -> decltype(begin(items)) {
-  return begin(items);
-}
-
-/** Where an account listing's items end; see `first`. */
-template <typename Items>
-auto last(Items& items) -> decltype(end(items)) {
-  return end(items);
-}
-
-/** The cursor and sentinel types of a listing, as `to_account_info` holds them: named lvalues. */
-template <typename Items>
-using cursor_t = decltype(first(std::declval<Items&>()));
-template <typename Items>
-using sentinel_t = decltype(last(std::declval<Items&>()));
-
-/**
- * The row `to_account_info` binds, `const auto& item = *cursor;`, declared only where the whole loop
- * it runs is well-formed on lvalues: `cursor != stop`, `++cursor` and `*cursor`.
- */
-template <typename Items>
-auto row_of(Items& items) -> decltype(
-  static_cast<void>(items),
-  static_cast<void>(bool(std::declval<cursor_t<Items>&>() != std::declval<sentinel_t<Items>&>())),
-  static_cast<void>(++std::declval<cursor_t<Items>&>()),
-  std::declval<const std::remove_reference_t<decltype(*std::declval<cursor_t<Items>&>())>&>()
-);
-
-}  // namespace account_rows
-
-/**
- * Whether a listing's items go through `to_account_info`, as it is written: `size()` for the
- * reservation, the loop `account_rows` defines, a default-constructed `AccountInfo` whose three members
- * are assigned from `display_of`, `type_of` and `selector_of`, and a move into the result.
- */
-template <typename T, typename Items, typename = void>
-struct normalizes_account_items : std::false_type {};
-template <typename T, typename Items>
-struct normalizes_account_items<
-  T, Items,
-  std::enable_if_t<
-    std::is_convertible_v<decltype(std::declval<Items&>().size()), std::size_t> &&
-    std::is_default_constructible_v<typename BrokerTraits<T>::Account> &&
-    std::is_move_constructible_v<typename BrokerTraits<T>::Account> &&
-    std::is_assignable_v<
-      std::string&,
-      decltype(BrokerTraits<T>::display_of(account_rows::row_of(std::declval<Items&>())))
-    > &&
-    std::is_assignable_v<
-      std::string&,
-      decltype(BrokerTraits<T>::type_of(account_rows::row_of(std::declval<Items&>())))
-    > &&
-    std::is_assignable_v<
-      typename BrokerTraits<T>::Account&,
-      decltype(BrokerTraits<T>::selector_of(account_rows::row_of(std::declval<Items&>())))
-    >
-  >
-> : std::true_type {};
-
-/** Detects the blocking account listing, and that its rows normalize. */
 template <typename T, typename = void>
 struct has_blocking_accounts : std::false_type {};
 template <typename T>
 struct has_blocking_accounts<
-  T,
-  std::enable_if_t<normalizes_account_items<
-    T, typename listed_items<decltype(BrokerTraits<T>::accounts(std::declval<T&>()))>::type
-  >::value>
+  T, std::void_t<typename listed_items<decltype(BrokerTraits<T>::accounts(std::declval<T&>()))>::type>
 > : std::true_type {};
 
 /**
@@ -761,8 +694,8 @@ struct BrokerConformance {
   static_assert(
     port_detail::serves_account_discovery<Client>,
     "BrokerTraits<Client>::has_account_discovery is true but accounts(client[, token]) is missing "
-    "or has the wrong signature, or a blocking client's rows do not pass through display_of, "
-    "type_of and selector_of: define them, or declare the capability false"
+    "or has the wrong signature (a blocking one answers a Result of the broker's account rows): "
+    "define it, or declare the capability false"
   );
 
   /** Always true; reading it forces the assertions above to be checked. */
