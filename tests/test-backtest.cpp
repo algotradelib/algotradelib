@@ -3865,9 +3865,15 @@ TEST_CASE("an equity total that will not fit is counted, and no return spans the
   REQUIRE_FALSE(engine.ledger().equity_in(Currency{"KRW"}));
   CHECK(engine.result().equity_.size() == points_before);
   CHECK(engine.result().unvalued_bars_ == 1);
-  REQUIRE(engine.result().first_unvalued_);
 
-  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  // A second in a row: counted, and the date kept is still the first one's -- a close-stamped
+  // bar's period end is its own timestamp.
+  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_DAY, "70000", "1000000"));
+  CHECK(engine.result().unvalued_bars_ == 2);
+  REQUIRE(engine.result().first_unvalued_);
+  CHECK(*engine.result().first_unvalued_ == unvalued_at);
+
+  engine.feed(moving_bar(utc(2026, 3, 14, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
   REQUIRE(engine.result().equity_.size() == points_before + 1);
   // The point after the gap carries no return; the one before it did.
   CHECK_FALSE(math::observed(engine.result().equity_.back().period_return_));
@@ -3876,10 +3882,10 @@ TEST_CASE("an equity total that will not fit is counted, and no return spans the
   engine.feed(moving_bar(utc(2026, 3, 16, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
   // And the one after that is an ordinary bar-to-bar return again.
   CHECK(math::observed(engine.result().equity_.back().period_return_));
-  CHECK(engine.result().unvalued_bars_ == 1);
+  CHECK(engine.result().unvalued_bars_ == 2);
 
   const auto report = backtest::summarize(engine.result(), engine.fills());
-  CHECK(report.caveats_.unvalued_bars_ == 1);
+  CHECK(report.caveats_.unvalued_bars_ == 2);
   CHECK(report.caveats_.first_unvalued_ == engine.result().first_unvalued_);
 }
 
