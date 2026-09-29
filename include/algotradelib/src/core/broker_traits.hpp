@@ -5,10 +5,9 @@
 #include "./market_data.hpp"
 #include "./types.hpp"
 
-#include <boost/asio/any_io_executor.hpp>
-#include <boost/asio/bind_executor.hpp>
-
+#include <cstddef>
 #include <functional>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -70,24 +69,56 @@ namespace port_detail {
 template <typename T>
 constexpr bool dependent_false = false;
 
-/** The callable half of `Sink`: accepts one result of the stated type. */
-template <typename T>
-struct SinkFunction {
-  /** Accepts and discards the result. */
-  void operator()(Result<T>) const {}
-};
-
 /**
- * Completion handler shape used only to detect a trait thunk's presence.
+ * Detects that the traits declare a member called NAME, of any kind and any signature.
  *
- * An executor-bound callable, because that is what `BrokerSession::translate` hands a thunk: its
- * own completion lambda wrapped in `bind_executor`. A stand-in without an executor would reject a
- * working thunk that reads `token.get_executor()`, and inside a thunk with a deduced return type it
- * would do so with a hard error rather than a named conformance message. The executor is the
- * polymorphic one, since the session's is whatever the caller's handler carries.
+ * Used for every **asynchronous** thunk, and deliberately no stronger. A thunk taking a completion
+ * token is handed whatever `BrokerSession::translate` builds around the *caller's* handler: bound to
+ * the caller's executor, whose type is the caller's choice, and possibly move-only. No single
+ * stand-in handler models all of those, so probing a call with one either rejects a thunk that works
+ * for the caller's actual handler -- one that requires a concrete executor type, say -- or, where the
+ * thunk's return type is deduced, fails with a hard error inside its body before any named message.
+ * A lookup that is ambiguous exactly when the traits declare the name instantiates no body and can
+ * reject nothing that works. What it cannot see is the signature; that is compiled where the verb is
+ * first called, and for the shipped adapters by `tests/test-capability-conformance.cpp`, which calls
+ * every claimed verb with a plain, a move-only and a `use_future` token.
+ *
+ * A `final` traits class cannot be derived from for the lookup, so it is read as declaring the name:
+ * the check then passes and the verb's own call site reports any absence.
  */
-template <typename T>
-using Sink = boost::asio::executor_binder<SinkFunction<T>, boost::asio::any_io_executor>;
+#define ATL_DETECT_NAME(NAME)                                                            \
+  struct NAME##_name_fallback {                                                          \
+    int NAME;                                                                            \
+  };                                                                                     \
+  template <typename B>                                                                  \
+  struct NAME##_name_probe : B, NAME##_name_fallback {};                                 \
+  template <typename T, typename = void>                                                 \
+  struct names_##NAME##_lookup : std::true_type {};                                      \
+  template <typename T>                                                                  \
+  struct names_##NAME##_lookup<                                                          \
+    T, std::void_t<decltype(&NAME##_name_probe<BrokerTraits<T>>::NAME)>                  \
+  > : std::false_type {};                                                                \
+  template <typename T>                                                                  \
+  struct names_##NAME                                                                    \
+  : std::conditional_t<                                                                  \
+      std::is_final_v<BrokerTraits<T>>, std::true_type, names_##NAME##_lookup<T>         \
+    > {}
+
+ATL_DETECT_NAME(quote);
+ATL_DETECT_NAME(buying_power);
+ATL_DETECT_NAME(sellable_quantity);
+ATL_DETECT_NAME(commissions);
+ATL_DETECT_NAME(working_orders);
+ATL_DETECT_NAME(instrument);
+ATL_DETECT_NAME(calendar);
+ATL_DETECT_NAME(price_limits);
+ATL_DETECT_NAME(trades);
+ATL_DETECT_NAME(prices);
+ATL_DETECT_NAME(depth);
+ATL_DETECT_NAME(order_by_id);
+ATL_DETECT_NAME(accounts);
+
+#undef ATL_DETECT_NAME
 
 #define ATL_DETECT_TYPE(NAME, MEMBER)                                                    \
   template <typename T, typename = void>                                                 \
@@ -119,20 +150,9 @@ template <typename T>
 struct has_blocking_flag<T, std::void_t<decltype(bool(BrokerTraits<T>::blocking))>>
 : std::true_type {};
 
-/** Detects the asynchronous quote thunk, which takes a completion token. */
-template <typename T, typename = void>
-struct has_async_quote : std::false_type {};
+/** Detects the asynchronous quote thunk, by name; see `names_quote`. */
 template <typename T>
-struct has_async_quote<
-  T,
-  std::void_t<
-    decltype(
-      BrokerTraits<T>::quote(
-        std::declval<T&>(), std::declval<InstrumentId>(), std::declval<Sink<QuoteSnapshot>>()
-      )
-    )
-  >
-> : std::true_type {};
+using has_async_quote = names_quote<T>;
 
 /** Detects the blocking quote thunk, which returns a result directly. */
 template <typename T, typename = void>
@@ -167,7 +187,8 @@ struct has_normalize_place<
  * every gated verb sits inside an `if constexpr` of a member template, so a verb nobody calls has
  * never been compiled. `BrokerTraits<kis::KisClient>` claimed reference data for eight slices with
  * no `instrument` thunk behind it. The detectors below read each constant only once it is known to
- * be declared, and ask for the thunk in the shape the session calls it.
+ * be declared, and ask for the thunk behind it: a blocking thunk in the full shape the blocking
+ * session calls it, an asynchronous one by name (see `ATL_DETECT_NAME` for why no stronger).
  */
 
 /** Detects each capability constant `BrokerCaps` reads without a default. */
@@ -245,35 +266,13 @@ struct thunk_arg<T, AccountArg, std::void_t<typename BrokerTraits<T>::Account>> 
 template <typename... A>
 struct ThunkArgs {};
 
-/** The callable half of `AnySink`: accepts any result. */
-struct AnySinkFunction {
-  /** Accepts and discards any completion argument. */
-  template <typename R>
-  void operator()(R&&) const {}
-};
-
-/** Completion handler accepting any result, for a thunk whose result type the port leaves open. */
-using AnySink =
-  boost::asio::executor_binder<AnySinkFunction, boost::asio::any_io_executor>;
-
 /**
- * Detects one gated thunk in both shapes.
- *
- * The asynchronous shape takes the arguments plus a completion sink, the stand-in the `quote`
- * detector already uses; the blocking shape takes the arguments and returns something a
- * `Result<OUT>` can be built from, which is what the blocking session returns it as.
+ * Detects one gated thunk in the blocking shape: the arguments the blocking session passes, and a
+ * return a `Result<OUT>` can be built from, which is what the blocking session returns it as. No
+ * handler is involved, so here the whole call can be checked. The asynchronous shape is detected by
+ * name; see `ATL_DETECT_NAME`.
  */
 #define ATL_DETECT_THUNK(NAME, OUT)                                                      \
-  template <typename T, typename Args, typename = void>                                  \
-  struct has_async_##NAME##_in : std::false_type {};                                     \
-  template <typename T, typename... A>                                                   \
-  struct has_async_##NAME##_in<                                                          \
-    T, ThunkArgs<A...>,                                                                  \
-    std::void_t<decltype(BrokerTraits<T>::NAME(                                          \
-      std::declval<T&>(), std::declval<typename thunk_arg<T, A>::type>()...,             \
-      std::declval<Sink<OUT>>()                                                          \
-    ))>                                                                                  \
-  > : std::true_type {};                                                                 \
   template <typename T, typename Args, typename = void>                                  \
   struct has_blocking_##NAME##_in : std::false_type {};                                  \
   template <typename T, typename... A>                                                   \
@@ -320,7 +319,8 @@ struct has_normalize_working_orders<
 
 /**
  * Whether `R` is usable the way the session uses a pre-flight answer: tested for truth, and when
- * true, dereferenced into the `BrokerError` it completes with.
+ * true, dereferenced and passed *by value* as the `BrokerError` it completes with -- so the
+ * dereference must convert implicitly, not merely construct one.
  */
 template <typename R, typename = void>
 struct is_refusal : std::false_type {};
@@ -329,7 +329,7 @@ struct is_refusal<
   R,
   std::enable_if_t<
     std::is_constructible_v<bool, R&> &&
-    std::is_constructible_v<BrokerError, decltype(std::move(*std::declval<R&>()))>
+    std::is_convertible_v<decltype(std::move(*std::declval<R&>())), BrokerError>
   >
 > : std::true_type {};
 
@@ -344,42 +344,49 @@ struct has_validate_calendar<
   ))>::value>
 > : std::true_type {};
 
-/**
- * Detects the asynchronous account listing.
- *
- * **Presence only.** Its row type is the broker's own and reaches the session only through the
- * completion, so the row normalizers cannot be checked without instantiating the client; a missing
- * `display_of`, `type_of` or `selector_of` on an asynchronous client is reported where
- * `async_accounts` is first called, naming the member. The blocking listing below returns its rows,
- * so there the whole path is checked.
- */
-template <typename T, typename = void>
-struct has_async_accounts : std::false_type {};
-template <typename T>
-struct has_async_accounts<
-  T, std::void_t<decltype(BrokerTraits<T>::accounts(std::declval<T&>(), std::declval<AnySink>()))>
-> : std::true_type {};
-
-/** The rows of a `Result<Items>`; absent for any other type. */
+/** The item range of a `Result<Items>`; absent for any other type, so a mismatch stays a substitution failure. */
 template <typename R>
-struct listed_rows {};
+struct listed_items {};
 template <typename Items>
-struct listed_rows<Result<Items>> {
-  using type = typename Items::value_type;
+struct listed_items<Result<Items>> {
+  using type = Items;
 };
 
-/** Whether each row of a listing converts into the normalized account the session builds. */
-template <typename T, typename Row, typename = void>
-struct normalizes_account_row : std::false_type {};
-template <typename T, typename Row>
-struct normalizes_account_row<
-  T, Row,
+namespace account_rows {
+
+using std::begin;
+
+/** The row `to_account_info` binds, `const auto& item : raw.value()`, found as a range-for finds it. */
+template <typename Items>
+auto row_of(Items& items) -> const std::remove_reference_t<decltype(*begin(items))>&;
+
+}  // namespace account_rows
+
+/**
+ * Whether a listing's items go through `to_account_info`, as it is written: `size()` for the
+ * reservation, a range-for over the items, a default-constructed `AccountInfo` whose three members
+ * are assigned from `display_of`, `type_of` and `selector_of`, and a move into the result.
+ */
+template <typename T, typename Items, typename = void>
+struct normalizes_account_items : std::false_type {};
+template <typename T, typename Items>
+struct normalizes_account_items<
+  T, Items,
   std::enable_if_t<
-    std::is_convertible_v<decltype(BrokerTraits<T>::display_of(std::declval<const Row&>())), std::string> &&
-    std::is_convertible_v<decltype(BrokerTraits<T>::type_of(std::declval<const Row&>())), std::string> &&
-    std::is_convertible_v<
-      decltype(BrokerTraits<T>::selector_of(std::declval<const Row&>())),
-      typename BrokerTraits<T>::Account
+    std::is_convertible_v<decltype(std::declval<Items&>().size()), std::size_t> &&
+    std::is_default_constructible_v<typename BrokerTraits<T>::Account> &&
+    std::is_move_constructible_v<typename BrokerTraits<T>::Account> &&
+    std::is_assignable_v<
+      std::string&,
+      decltype(BrokerTraits<T>::display_of(account_rows::row_of(std::declval<Items&>())))
+    > &&
+    std::is_assignable_v<
+      std::string&,
+      decltype(BrokerTraits<T>::type_of(account_rows::row_of(std::declval<Items&>())))
+    > &&
+    std::is_assignable_v<
+      typename BrokerTraits<T>::Account&,
+      decltype(BrokerTraits<T>::selector_of(account_rows::row_of(std::declval<Items&>())))
     >
   >
 > : std::true_type {};
@@ -390,15 +397,15 @@ struct has_blocking_accounts : std::false_type {};
 template <typename T>
 struct has_blocking_accounts<
   T,
-  std::enable_if_t<normalizes_account_row<
-    T, typename listed_rows<decltype(BrokerTraits<T>::accounts(std::declval<T&>()))>::type
+  std::enable_if_t<normalizes_account_items<
+    T, typename listed_items<decltype(BrokerTraits<T>::accounts(std::declval<T&>()))>::type
   >::value>
 > : std::true_type {};
 
 /**
  * Whether a thunk is present in the shape the client's `blocking` flag selects.
  *
- * `Async` and `Blocking` are the two detectors for one verb, already bound to their argument list.
+ * `Async` is the name detector for the verb and `Blocking` its full blocking-shape detector.
  */
 template <typename T, typename Async, typename Blocking>
 constexpr bool thunk_present() {
@@ -467,83 +474,83 @@ constexpr bool claimed_sellable_inquiry() {
 ATL_SERVES(
   buying_power, ATL_CLAIMS(has_buying_power),
   (thunk_present<
-    T, has_async_buying_power_in<T, ThunkArgs<AccountArg, Currency&>>,
+    T, names_buying_power<T>,
     has_blocking_buying_power_in<T, ThunkArgs<AccountArg, Currency&>>
   >())
 );
 ATL_SERVES(
   sellable_quantity, claimed_sellable_inquiry<T>(),
   (thunk_present<
-    T, has_async_sellable_quantity_in<T, ThunkArgs<AccountArg, InstrumentId>>,
+    T, names_sellable_quantity<T>,
     has_blocking_sellable_quantity_in<T, ThunkArgs<AccountArg, InstrumentId>>
   >())
 );
 ATL_SERVES(
   commissions, ATL_CLAIMS(has_commission_schedule),
   (thunk_present<
-    T, has_async_commissions_in<T, ThunkArgs<AccountArg>>,
+    T, names_commissions<T>,
     has_blocking_commissions_in<T, ThunkArgs<AccountArg>>
   >())
 );
 ATL_SERVES(
   working_orders, ATL_CLAIMS(has_working_orders),
   (thunk_present<
-    T, has_async_working_orders_in<T, ThunkArgs<AccountArg>>,
+    T, names_working_orders<T>,
     has_blocking_working_orders_in<T, ThunkArgs<AccountArg>>
   >() && has_normalize_working_orders<T>::value)
 );
 ATL_SERVES(
   reference_data, ATL_CLAIMS(has_reference_data),
   (thunk_present<
-    T, has_async_instrument_in<T, ThunkArgs<InstrumentId>>,
+    T, names_instrument<T>,
     has_blocking_instrument_in<T, ThunkArgs<InstrumentId>>
   >())
 );
 ATL_SERVES(
   calendar, ATL_CLAIMS(has_calendar),
   (thunk_present<
-    T, has_async_calendar_in<T, ThunkArgs<Country&, std::optional<Date>&>>,
+    T, names_calendar<T>,
     has_blocking_calendar_in<T, ThunkArgs<Country&, std::optional<Date>&>>
   >() && has_validate_calendar<T>::value)
 );
 ATL_SERVES(
   price_limits, ATL_CLAIMS(has_price_limits),
   (thunk_present<
-    T, has_async_price_limits_in<T, ThunkArgs<InstrumentId>>,
+    T, names_price_limits<T>,
     has_blocking_price_limits_in<T, ThunkArgs<InstrumentId>>
   >())
 );
 ATL_SERVES(
   trade_prints, ATL_CLAIMS(has_trade_prints),
   (thunk_present<
-    T, has_async_trades_in<T, ThunkArgs<InstrumentId, int&>>,
+    T, names_trades<T>,
     has_blocking_trades_in<T, ThunkArgs<InstrumentId, int&>>
   >())
 );
 ATL_SERVES(
   batch_prices, ATL_CLAIMS(has_batch_prices),
   (thunk_present<
-    T, has_async_prices_in<T, ThunkArgs<std::vector<InstrumentId>>>,
+    T, names_prices<T>,
     has_blocking_prices_in<T, ThunkArgs<std::vector<InstrumentId>>>
   >())
 );
 ATL_SERVES(
   depth, ATL_CLAIMS(has_depth),
   (thunk_present<
-    T, has_async_depth_in<T, ThunkArgs<InstrumentId>>,
+    T, names_depth<T>,
     has_blocking_depth_in<T, ThunkArgs<InstrumentId>>
   >())
 );
 ATL_SERVES(
   order_by_id, ATL_CLAIMS(has_order_by_id),
   (thunk_present<
-    T, has_async_order_by_id_in<T, ThunkArgs<AccountArg, std::string>>,
+    T, names_order_by_id<T>,
     has_blocking_order_by_id_in<T, ThunkArgs<AccountArg, const std::string&>>
   >())
 );
 ATL_SERVES(
   account_discovery, ATL_CLAIMS(has_account_discovery),
-  (thunk_present<T, has_async_accounts<T>, has_blocking_accounts<T>>())
+  (thunk_present<T, names_accounts<T>, has_blocking_accounts<T>>())
 );
 
 #undef ATL_CLAIMED
@@ -660,8 +667,8 @@ struct BrokerConformance {
   );
 
   // A claimed capability is a verb a caller may compile against, so the thunk behind it must
-  // exist in the shape the session calls it -- the blocking form for a blocking facade, the form
-  // taking a completion token otherwise.
+  // exist: for a blocking facade in the whole shape the blocking session calls it, and for an
+  // asynchronous client by name, since its handler type is the caller's choice.
   static_assert(
     port_detail::serves_buying_power<Client>,
     "BrokerTraits<Client>::has_buying_power is true but buying_power(client, account, currency"
