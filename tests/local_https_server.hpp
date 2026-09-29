@@ -86,6 +86,26 @@ inline void trustLocalhostCertificate(
   context.add_certificate_authority(net::buffer(LOCALHOST_CERTIFICATE));
 }
 
+/**
+ * Returns a loopback port nothing is listening on, as a string for `AsyncHttpClient`.
+ *
+ * Binds `127.0.0.1:0`, reads the port the OS assigned, and closes the acceptor, so the port was free a
+ * moment ago and is closed now. Replaces a hard-coded port 1, which was closed because of a property
+ * of the host -- `tcpmux` is unused and binding it needs privilege -- rather than anything a test
+ * arranged. **A race remains**: the released port is free for anyone to bind at once, so another
+ * process could claim it before the caller connects. That is a smaller assumption than the one it
+ * replaces -- a specific, well-known port being closed on every machine -- not the absence of one.
+ * Connect to `"127.0.0.1"`, not `"localhost"`, which may try `::1` first -- a socket this never
+ * looked at.
+ */
+inline std::string closed_loopback_port() {
+  net::io_context ioc;
+  tcp::acceptor acceptor(ioc, tcp::endpoint(net::ip::address_v4::loopback(), 0));
+  const auto port = acceptor.local_endpoint().port();
+  acceptor.close();
+  return std::to_string(port);
+}
+
 class LocalHttpsServer {
 public:
   LocalHttpsServer()
