@@ -51,8 +51,17 @@ money.** A fill is discovered live by polling: positions are replaced and workin
 replaced, and neither synthesises an execution. Discrete executions cannot be recovered from
 periodic cumulative snapshots — that was established across thirteen review findings and the design
 is parked until the library streams execution notifications. So a strategy that places an entry and
-sets its stop from `on_fill` is **correct in a backtest and inert live**: the handler never runs, the
-stop is never placed, and nothing reports it.
+sets its stop from `on_fill` is **correct in a backtest and inert live**: the handler never runs and
+the stop is never placed.
+
+**It is reported, not refused.** Using `on_fill` for backtest-only bookkeeping is legitimate, so
+nothing stops such a strategy compiling or running live. Instead, a runner that sends to a broker and
+whose strategy defines `on_fill` has `Runner::on_fill_never_fires`, and every `PollingLoop` run over it
+ends with the note *"strategy defines on_fill; it never fires on this runner"* in
+`LoopReport::notes_`. `example-live-program` prints it before trading too. A dry run, an observer and a
+replay stay silent: the first two send nothing, and a replay does fire `on_fill`. (A program that
+feeds `Fill` events to the runner itself, from a source of its own, does reach `on_fill` and can
+ignore the note: "never" describes what this library polls.)
 
 **`on_order_update` is not a replacement for it, and treating it as one recreates the same trap.**
 It reports rows that appear in a *listing*, and a market order can be sent, fill, and leave the
