@@ -468,3 +468,64 @@ TEST_CASE("an empty universe asks for nothing rather than dividing by zero") {
 }
 
 #endif
+
+TEST_CASE("timed liquidation withdraws a resting stop and flattens once it is gone", "[trigger]") {
+  // **Codex round 1's blocker.** A flatten stated once, from `on_phase`, and refused while a stop
+  // rested was never stated again: the position was carried past the close. The flatten now
+  // withdraws the stop, waits for the listing to stop reporting it, and restates itself on each bar.
+  vanilla::TimedLiquidation flatten;
+  runner::DryRunner<vanilla::TimedLiquidation> dry(flatten);
+  arrange(dry);
+
+  WorkingOrder<runner::DryTag> stop;
+  stop.ref_ = OrderRef<runner::DryTag>{"STOP-1", ""};
+  stop.order_.order_id_ = "STOP-1";
+  stop.order_.instrument_ = samsung();
+  stop.order_.side_ = OrderSide::SELL;
+  stop.order_.type_ = OrderType::STOP_LIMIT;
+  stop.order_.status_ = OrderStatus::PENDING;
+  stop.order_.quantity_ = Decimal64::parse("10");
+  stop.order_.price_ = Decimal64::parse("69000");
+  stop.order_.trigger_price_ = Decimal64::parse("69500");
+  stop.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+
+  const auto listing = [&](std::optional<OrderStatus> stop_status) {
+    strategy::Portfolio<runner::DryTag> portfolio;
+    // A listing that was read: a plan that withdraws something is withheld against an account
+    // nobody has read, which is the runner's own rule and not what this test is about.
+    portfolio.as_of_ = std::chrono::system_clock::time_point{} + std::chrono::hours(500000);
+    HoldingPosition position;
+    position.instrument_ = samsung();
+    position.quantity_ = Decimal64::parse("10");
+    portfolio.positions_.push_back(position);
+    if (stop_status) {
+      auto row = stop;
+      row.order_.status_ = *stop_status;
+      portfolio.working_.push_back(row);
+    }
+    return portfolio;
+  };
+
+  // The phase leaves the session: the stop is withdrawn and nothing is sold beside it.
+  dry.context().set_portfolio(listing(OrderStatus::PENDING));
+  const auto exit = dry.feed(strategy::MarketPhase::POST_CLOSE);
+  REQUIRE(exit.would_cancel_.size() == 1);
+  CHECK(exit.would_cancel_[0].primary_ == "STOP-1");
+  CHECK(exit.would_place_.empty());
+  REQUIRE(exit.rejected_.size() == 1);
+  CHECK(exit.rejected_[0].reason_ == strategy::RejectReason::STOP_ORDER_RESTING);
+
+  // The listing reports the withdrawal pending: not withdrawn a second time, and still nothing sold.
+  dry.context().set_portfolio(listing(OrderStatus::PENDING_CANCEL));
+  const auto pending = dry.feed(bar(1, "70000"));
+  CHECK(pending.would_cancel_.empty());
+  CHECK(pending.would_place_.empty());
+  CHECK(pending.rejected_.size() == 1);
+
+  // The listing no longer reports the stop: the restated flatten sells the holding.
+  dry.context().set_portfolio(listing(std::nullopt));
+  const auto flat = dry.feed(bar(2, "70000"));
+  REQUIRE(flat.would_place_.size() == 1);
+  CHECK(flat.would_place_[0].side_ == OrderSide::SELL);
+  CHECK(flat.would_place_[0].quantity_ == Decimal64::parse("10"));
+}

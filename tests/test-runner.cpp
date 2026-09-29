@@ -2519,10 +2519,12 @@ struct StopsThenFlattens {
 
 } // namespace
 
-TEST_CASE("a runner-placed stop is reserved with its trigger and holds a later target up", "[trigger]") {
+TEST_CASE("a runner-placed stop is reserved with its trigger and withdrawn before a later flatten", "[trigger]") {
   runner::DryRunner<StopsThenFlattens> dry;
   arrange(dry);
   strategy::Portfolio<runner::DryRunner<StopsThenFlattens>::Tag> portfolio;
+  // Read, so the withdrawal on the second pass is not withheld as one against an unread account.
+  portfolio.as_of_ = std::chrono::system_clock::time_point{} + std::chrono::hours(500000);
   HoldingPosition held;
   held.instrument_ = samsung();
   held.quantity_ = Decimal64::parse("100");
@@ -2540,10 +2542,11 @@ TEST_CASE("a runner-placed stop is reserved with its trigger and holds a later t
   // The row `cancel_all` restates and `OrderUpdateWatch` compares, so it must carry the trigger.
   CHECK(working[0].order_.trigger_price_ == std::optional<Decimal64>(Decimal64::parse("69500")));
 
-  // The next pass asks to be flat. The stop neither satisfies that nor gets silently withdrawn:
-  // the target is refused, visibly, and nothing is cancelled or sent.
+  // The next pass asks to be flat. The stop does not satisfy that, and nothing is sold beside it:
+  // the stop is withdrawn first and the target reported as waiting for it.
   const auto second = dry.feed(bar_at(11, "70000"));
   REQUIRE(second.rejected_.size() == 1);
   CHECK(second.rejected_[0].reason_ == strategy::RejectReason::STOP_ORDER_RESTING);
-  CHECK(dry.context().portfolio().working_.size() == 1);
+  CHECK(second.would_cancel_.size() == 1);
+  CHECK(second.would_place_.empty());
 }

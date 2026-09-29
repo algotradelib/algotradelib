@@ -84,10 +84,12 @@ trigger refuses it rather than sending a plain limit.
 
 - **A replay does not model it.** `ReplayExecutor` refuses a stop-limit order, and the backtest reports
   it in `rejected_` with its tag. The strategy runs live with a stop its backtest never had.
-- **A target waits for it.** While a stop rests on an instrument, a `TargetPosition` for that
-  instrument is refused with `RejectReason::STOP_ORDER_RESTING` — neither counted as the exit nor
-  cancelled as unwanted. To flatten, withdraw the stop with a `CancelIntent` first; the next pass after
-  the listing stops reporting it reconciles normally.
+- **A target that needs a trade withdraws it first.** While a stop rests on an instrument, a
+  `TargetPosition` the holding already meets keeps the stop (it is protecting what you mean to hold).
+  One that needs a trade withdraws the stop, sends nothing, and is reported as
+  `RejectReason::STOP_ORDER_RESTING` — the stop is neither counted as the exit nor left beside a second
+  sell. **State the target again** once the listing stops reporting the stop; that pass trades.
+  `vanilla::TimedLiquidation` restates its flatten on every bar outside its phases for this reason.
 - **It counts before it releases.** A resting sell stop is deducted from what may be sold and counted
   toward position and exposure ceilings at its limit, so an immediate exit beside it may be refused.
 - **Its trigger is never moved.** A trigger off the instrument's tick grid is refused as

@@ -3209,7 +3209,7 @@ TEST_CASE("a stop intent reconciles into a stop-limit order with its trigger unt
   }
 }
 
-TEST_CASE("a target is refused while a stop rests on its instrument", "[trigger]") {
+TEST_CASE("a target that needs a trade withdraws a resting stop first", "[trigger]") {
   // Each sequence is one a strategy that protects a holding with a stop and states targets meets.
   const auto reference = samsung_reference();
   ReconcileInputs inputs;
@@ -3218,33 +3218,51 @@ TEST_CASE("a target is refused while a stop rests on its instrument", "[trigger]
   ProbePortfolio portfolio;
   portfolio.positions_.push_back(holding("100"));
   auto stop = working("100", "0", OrderStatus::PENDING, OrderSide::SELL);
+  stop.ref_ = OrderRef<strategy::ProbeBroker>{"STOP-1", ""};
   stop.order_.type_ = OrderType::STOP_LIMIT;
   stop.order_.price_ = Decimal64::parse("69000");
   stop.order_.trigger_price_ = Decimal64::parse("69500");
   portfolio.working_.push_back(stop);
 
-  const auto refused = [&](const char* quantity) {
+  const auto withdraws = [&](const char* quantity) {
     const auto plan = strategy::reconcile(target(quantity), portfolio, inputs);
-    CHECK(plan.cancel_.empty());
+    REQUIRE(plan.cancel_.size() == 1);
+    CHECK(plan.cancel_[0].primary_ == "STOP-1");
     CHECK(plan.place_.empty());
     REQUIRE(plan.rejected_.size() == 1);
     CHECK(plan.rejected_[0].reason_ == strategy::RejectReason::STOP_ORDER_RESTING);
   };
 
-  SECTION("holding what is held does not withdraw the protective stop") {
+  SECTION("holding what is held keeps the protective stop and withdraws the rest") {
     // Before: every open order on the instrument was cancelled as unwanted, the stop included.
-    refused("100");
+    auto buy = working("5", "0", OrderStatus::PENDING, OrderSide::BUY);
+    buy.ref_ = OrderRef<strategy::ProbeBroker>{"BUY-1", ""};
+    portfolio.working_.push_back(buy);
+    const auto plan = strategy::reconcile(target("100"), portfolio, inputs);
+    CHECK(plan.rejected_.empty());
+    CHECK(plan.place_.empty());
+    REQUIRE(plan.cancel_.size() == 1);
+    CHECK(plan.cancel_[0].primary_ == "BUY-1");
   }
 
   SECTION("flattening does not count the stop as the exit") {
     // Before: the resting sell of 100 was "already working", so nothing was sent and the position
     // stayed open behind a conditional order that may never release.
-    refused("0");
+    withdraws("0");
   }
 
   SECTION("a stop the broker reports under another basis still counts") {
     portfolio.working_.front().order_.type_ = OrderType::LIMIT;
-    refused("0");
+    withdraws("0");
+  }
+
+  SECTION("a stop already on its way out is not withdrawn twice, and still holds the trade") {
+    portfolio.working_.front().order_.status_ = OrderStatus::PENDING_CANCEL;
+    const auto plan = strategy::reconcile(target("0"), portfolio, inputs);
+    CHECK(plan.cancel_.empty());
+    CHECK(plan.place_.empty());
+    REQUIRE(plan.rejected_.size() == 1);
+    CHECK(plan.rejected_[0].reason_ == strategy::RejectReason::STOP_ORDER_RESTING);
   }
 
   SECTION("a stop that is no longer open does not hold the target up") {

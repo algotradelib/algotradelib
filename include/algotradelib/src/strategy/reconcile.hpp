@@ -86,15 +86,19 @@ enum class RejectReason {
    */
   TRIGGER_OFF_GRID,
   /**
-   * A target was stated for an instrument with a stop order resting on it.
+   * A target that needs a trade was stated while a stop order rests on its instrument, so the stop
+   * is being withdrawn first and nothing is sent this pass.
    *
    * A stop is a *conditional* order, and target arithmetic is about orders that will trade. Counted
    * as working, a resting sell stop satisfies a target of zero and "flatten now" sends nothing;
-   * treated as unwanted, a target equal to the holding withdraws the stop the strategy placed to
-   * protect it; ignored, an immediate exit goes out beside it and both can sell. None of the three is
-   * what the strategy meant, so the target is refused, visibly, until the stop is gone: withdraw it
-   * with a `CancelIntent` first, and the next pass after the listing stops reporting it reconciles
-   * normally.
+   * ignored, an immediate exit goes out beside it and both can sell. So a target that needs a trade
+   * withdraws the stop and waits: **the target must be stated again** once the listing no longer
+   * reports the stop, and that pass trades. `vanilla::TimedLiquidation` restates its flatten on every
+   * bar outside its phases for exactly this reason.
+   *
+   * A target the holding already meets needs no trade and is not refused: the stop stays, since
+   * protecting a position the strategy means to hold is what it is for, and only other working orders
+   * are withdrawn as before.
    */
   STOP_ORDER_RESTING,
 };
@@ -477,17 +481,6 @@ Plan<Broker> reconcile(
     return reject(RejectReason::NO_REFERENCE_DATA);
   }
 
-  // Before any arithmetic; see `RejectReason::STOP_ORDER_RESTING`. A row is a stop when its basis
-  // says so **or** it carries a trigger -- an adapter records a positive trigger even on a row whose
-  // basis reads otherwise, and that row may be a released stop.
-  for (const auto& working : portfolio.working_) {
-    if (working.order_.instrument_ == target.instrument_ &&
-        order_is_open(working.order_.status_) &&
-        (carries_trigger_price(working.order_.type_) || working.order_.trigger_price_)) {
-      return reject(RejectReason::STOP_ORDER_RESTING);
-    }
-  }
-
   const auto zero = Decimal64::parse("0");
   // **Net across every position row, not the first one.** This read `quantity_of`, which returns the
   // first match, and a broker reporting one instrument as two lots is ordinary -- so a target of
@@ -511,6 +504,45 @@ Plan<Broker> reconcile(
 
   const bool buying = decimal_less(zero, *needed);
   const bool selling = decimal_less(*needed, zero);
+
+  // **Stops first; see `RejectReason::STOP_ORDER_RESTING`.** A row is a stop when its basis says so
+  // or it carries a trigger -- an adapter records a positive trigger even on a row whose basis reads
+  // otherwise, and that row may be a released stop.
+  const auto is_stop = [](const OrderSnapshot& order) {
+    return carries_trigger_price(order.type_) || order.trigger_price_.has_value();
+  };
+  bool stop_resting = false;
+  for (const auto& working : portfolio.working_) {
+    if (working.order_.instrument_ == target.instrument_ &&
+        order_is_open(working.order_.status_) && is_stop(working.order_)) {
+      stop_resting = true;
+    }
+  }
+  if (stop_resting) {
+    const bool met = !buying && !selling;
+    for (const auto& working : portfolio.working_) {
+      if (!(working.order_.instrument_ == target.instrument_) ||
+          !order_is_open(working.order_.status_)) {
+        continue;
+      }
+      if (is_stop(working.order_)) {
+        // Withdrawn only when a trade is needed, and not again once its withdrawal is pending: a
+        // second request for an order already on its way out can only fail.
+        if (!met && working.order_.status_ != OrderStatus::PENDING_CANCEL) {
+          plan.cancel_.push_back(working.ref_);
+        }
+      } else if (met) {
+        // The holding meets the target, so every *other* working order is unwanted, as before.
+        plan.cancel_.push_back(working.ref_);
+      }
+    }
+    if (!met) {
+      plan.rejected_.push_back(
+        Rejection{RejectReason::STOP_ORDER_RESTING, target.instrument_, target.tag_}
+      );
+    }
+    return plan;
+  }
 
   // Step 2: withdraw what works against the target. With nothing needed, that is everything.
   //

@@ -54,15 +54,39 @@ struct TimedLiquidation {
   /** Targets flat as soon as the phase is not one of `hold_through_`, `UNKNOWN` included. */
   template <class Ctx>
   void on_phase(Ctx& ctx, MarketPhase phase) {
-    for (const auto allowed : params_.hold_through_) {
-      if (allowed == phase) {
-        return;
-      }
+    if (!holds_through(phase)) {
+      flatten(ctx);
     }
-    flatten(ctx);
+  }
+
+  /**
+   * Restates the flatten on every bar outside `hold_through_`.
+   *
+   * **A target stated once is not a target kept.** A flatten can be refused for a pass --
+   * `RejectReason::STOP_ORDER_RESTING` withdraws a resting stop and sends nothing until the listing
+   * stops reporting it -- and nothing retries a refused target on the strategy's behalf. Stated only
+   * from `on_phase`, such a flatten was never stated again and the position was carried past the
+   * phase this strategy exists to leave. Restating it is harmless otherwise: a flat instrument
+   * submits nothing, and a sell already working toward zero plans nothing new.
+   */
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const BarEvent&) {
+    if (!holds_through(ctx.phase())) {
+      flatten(ctx);
+    }
   }
 
 private:
+  /** Returns whether `phase` is one this strategy may hold through. */
+  bool holds_through(MarketPhase phase) const {
+    for (const auto allowed : params_.hold_through_) {
+      if (allowed == phase) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /**
    * Targets zero in everything currently held.
    *
