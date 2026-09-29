@@ -2374,10 +2374,11 @@ TEST_CASE("the history fallback sweeps against the page it read") {
   source.set_journal(journal);
 
   CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
-  // Twice: once to satisfy the gate, once by the sweep with the calendar range the matching window
-  // actually needs. The second read happens only when something is owed, so a clean start still
-  // costs one.
-  CHECK(session.history_calls() == 2);
+  // Once to satisfy the gate, then the sweep over the days the matching window needs -- one stated
+  // date per request, because this fake, like Kiwoom, takes no range: three days here (the window's
+  // own day and one either side). The sweep happens only when something is owed, so a clean start
+  // still costs one.
+  CHECK(session.history_calls() == 4);
   CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
 }
 
@@ -2459,8 +2460,14 @@ TEST_CASE("an open-orders listing alone cannot conclude a placement was not plac
 
   CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
   // The history was consulted even though this broker has the working-order inquiry, because only
-  // history covers every lifecycle state.
-  CHECK(session.history_calls() == 1);
+  // history covers every lifecycle state -- one stated date per request, since this fake, like
+  // Kiwoom's `kt00007`, takes a single required date and no range.
+  CHECK(session.history_calls() == 3);
+  for (const auto& query : session.history_queries()) {
+    REQUIRE(query.from_);
+    REQUIRE(query.to_);
+    CHECK(query.from_->day_ == query.to_->day_);
+  }
   CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::MATCHED);
   CHECK(source.last_reconcile().matches_.front().order_id_ == "KRX-1");
 }

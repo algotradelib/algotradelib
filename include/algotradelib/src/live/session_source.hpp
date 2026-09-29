@@ -808,7 +808,57 @@ private:
    */
   bool read_history(const std::vector<runner::OpenInstruction>& open,
     std::vector<OrderSnapshot>& into) {
-    return read_history_in(runner::history_range_for(open, window_), into);
+    if constexpr (Caps::history_requires_range) {
+      return read_history_in(runner::history_range_for(open, window_), into);
+    } else {
+      // **One stated date at a time** for a broker whose history takes a single date -- Kiwoom's
+      // `kt00007` requires it and refuses a range, so an undated sweep failed every time and a journalled
+      // Kiwoom runner could resolve nothing. The days are the ones `history_range_for` spans: a day
+      // either side of the instructions' own window, in UTC, which contains every market-local day.
+      auto earliest = open.front().opened_at_;
+      auto latest = runner::instruction_sent_by(open.front(), window_);
+      for (const auto& instruction : open) {
+        if (instruction.opened_at_ < earliest) {
+          earliest = instruction.opened_at_;
+        }
+        const auto sent_by = runner::instruction_sent_by(instruction, window_);
+        if (sent_by > latest) {
+          latest = sent_by;
+        }
+      }
+      return read_history_days(earliest, latest, into);
+    }
+  }
+
+  /**
+   * Reads the history one stated date at a time, for every UTC day from the day before `from` to the
+   * day after `to`: a broker's order date is its own market's, and that span contains it.
+   */
+  bool read_history_days(
+    std::chrono::system_clock::time_point from,
+    std::chrono::system_clock::time_point to,
+    std::vector<OrderSnapshot>& into
+  ) {
+    std::vector<Date> days;
+    const auto add = [&days](const Date& day) {
+      for (const auto& seen : days) {
+        if (seen.year_ == day.year_ && seen.month_ == day.month_ && seen.day_ == day.day_) {
+          return;
+        }
+      }
+      days.push_back(day);
+    };
+    const auto until = to + std::chrono::hours(24);
+    for (auto at = from - std::chrono::hours(24); at < until; at += std::chrono::hours(24)) {
+      add(runner::date_of(at));
+    }
+    add(runner::date_of(until));
+    for (const auto& day : days) {
+      if (!read_history_in({day, day}, into, true)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /**
@@ -833,29 +883,10 @@ private:
         into
       );
     } else {
-      std::vector<Date> days;
-      const auto add = [&days](const Date& day) {
-        for (const auto& seen : days) {
-          if (seen.year_ == day.year_ && seen.month_ == day.month_ && seen.day_ == day.day_) {
-            return;
-          }
-        }
-        days.push_back(day);
-      };
       // **Through the day after `now` in UTC**, the same upper bound as the ranged query. `date_of` is a
       // UTC date and a broker's order date is its own market's: at 08:45 KST it is still the previous
       // day in UTC, and stopping at `date_of(now)` never asked for the Korean day the stop was on.
-      const auto until = now + std::chrono::hours(24);
-      for (auto at = since - std::chrono::hours(24); at < until; at += std::chrono::hours(24)) {
-        add(runner::date_of(at));
-      }
-      add(runner::date_of(until));
-      for (const auto& day : days) {
-        if (!read_history_in({day, day}, into, true)) {
-          return false;
-        }
-      }
-      return true;
+      return read_history_days(since, now, into);
     }
   }
 
