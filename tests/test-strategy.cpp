@@ -3134,3 +3134,124 @@ TEST_CASE("the runner's simple setter still sets only the share-count floor") {
   const strategy::TradeTolerance none;
   REQUIRE_FALSE(none.stated());
 }
+
+TEST_CASE("a stop-limit intent carries both prices and nothing else carries a trigger", "[trigger]") {
+  const auto trigger = Price::checked(Decimal64::parse("69500"), krx());
+  const auto limit = Price::checked(Decimal64::parse("69000"), krx());
+  REQUIRE(trigger);
+  REQUIRE(limit);
+  const auto stop = OrderIntent::stop_limit(
+    samsung(), OrderSide::SELL, SizeSpec::quantity(Decimal64::parse("10")), *trigger, *limit
+  );
+  CHECK(stop.type() == OrderType::STOP_LIMIT);
+  CHECK(stop.trigger() == trigger);
+  CHECK(stop.limit() == limit);
+  CHECK_FALSE(OrderIntent::limit(
+    samsung(), OrderSide::SELL, SizeSpec::quantity(Decimal64::parse("10")), *limit
+  ).trigger());
+  CHECK_FALSE(OrderIntent::market(
+    samsung(), OrderSide::SELL, SizeSpec::quantity(Decimal64::parse("10"))
+  ).trigger());
+}
+
+TEST_CASE("a stop intent reconciles into a stop-limit order with its trigger untouched", "[trigger]") {
+  ProbePortfolio portfolio;
+  const auto reference = samsung_reference();
+  ReconcileInputs inputs;
+  inputs.instrument_ = &reference;
+
+  SECTION("the limit sizes a notional and the trigger is carried exactly") {
+    const auto intent = OrderIntent::stop_limit(
+      samsung(),
+      OrderSide::SELL,
+      SizeSpec::notional(Money{Decimal64::parse("1380000"), Currency{"KRW"}}),
+      *Price::checked(Decimal64::parse("69500"), krx()),
+      *Price::checked(Decimal64::parse("69000"), krx())
+    );
+    const auto plan = strategy::reconcile(intent, portfolio, inputs);
+    REQUIRE(plan.rejected_.empty());
+    REQUIRE(plan.place_.size() == 1);
+    const auto& order = plan.place_[0];
+    CHECK(order.type_ == OrderType::STOP_LIMIT);
+    // 1,380,000 at the 69,000 limit is 20 shares; at the trigger it would be 19.
+    CHECK(order.quantity_ == Decimal64::parse("20"));
+    CHECK(order.price_ == std::optional<Decimal64>(Decimal64::parse("69000")));
+    CHECK(order.trigger_price_ == std::optional<Decimal64>(Decimal64::parse("69500")));
+  }
+
+  SECTION("a trigger off the instrument's own grid is refused, never rounded") {
+    // Built against a grid that is not the instrument's, which is the only way a `Price` can be off
+    // the grid reconciliation checks: 69,550 is not on KRX's 100-won step at that level.
+    const auto off = Price::checked(Decimal64::parse("69550"), PriceRule::unconstrained());
+    REQUIRE(off);
+    const auto intent = OrderIntent::stop_limit(
+      samsung(),
+      OrderSide::SELL,
+      SizeSpec::quantity(Decimal64::parse("10")),
+      *off,
+      *Price::checked(Decimal64::parse("69000"), krx())
+    );
+    const auto plan = strategy::reconcile(intent, portfolio, inputs);
+    CHECK(plan.place_.empty());
+    REQUIRE(plan.rejected_.size() == 1);
+    CHECK(plan.rejected_[0].reason_ == strategy::RejectReason::TRIGGER_OFF_GRID);
+    CHECK(strategy::reject_reason_name(strategy::RejectReason::TRIGGER_OFF_GRID) == "trigger_off_grid");
+  }
+
+  SECTION("a limit or market intent plans no trigger") {
+    const auto plan = strategy::reconcile(
+      OrderIntent::market(samsung(), OrderSide::BUY, SizeSpec::quantity(Decimal64::parse("1"))),
+      portfolio,
+      inputs
+    );
+    REQUIRE(plan.place_.size() == 1);
+    CHECK_FALSE(plan.place_[0].trigger_price_);
+  }
+}
+
+TEST_CASE("a target is refused while a stop rests on its instrument", "[trigger]") {
+  // Each sequence is one a strategy that protects a holding with a stop and states targets meets.
+  const auto reference = samsung_reference();
+  ReconcileInputs inputs;
+  inputs.instrument_ = &reference;
+
+  ProbePortfolio portfolio;
+  portfolio.positions_.push_back(holding("100"));
+  auto stop = working("100", "0", OrderStatus::PENDING, OrderSide::SELL);
+  stop.order_.type_ = OrderType::STOP_LIMIT;
+  stop.order_.price_ = Decimal64::parse("69000");
+  stop.order_.trigger_price_ = Decimal64::parse("69500");
+  portfolio.working_.push_back(stop);
+
+  const auto refused = [&](const char* quantity) {
+    const auto plan = strategy::reconcile(target(quantity), portfolio, inputs);
+    CHECK(plan.cancel_.empty());
+    CHECK(plan.place_.empty());
+    REQUIRE(plan.rejected_.size() == 1);
+    CHECK(plan.rejected_[0].reason_ == strategy::RejectReason::STOP_ORDER_RESTING);
+  };
+
+  SECTION("holding what is held does not withdraw the protective stop") {
+    // Before: every open order on the instrument was cancelled as unwanted, the stop included.
+    refused("100");
+  }
+
+  SECTION("flattening does not count the stop as the exit") {
+    // Before: the resting sell of 100 was "already working", so nothing was sent and the position
+    // stayed open behind a conditional order that may never release.
+    refused("0");
+  }
+
+  SECTION("a stop the broker reports under another basis still counts") {
+    portfolio.working_.front().order_.type_ = OrderType::LIMIT;
+    refused("0");
+  }
+
+  SECTION("a stop that is no longer open does not hold the target up") {
+    portfolio.working_.front().order_.status_ = OrderStatus::CANCELED;
+    const auto plan = strategy::reconcile(target("0"), portfolio, inputs);
+    CHECK(plan.rejected_.empty());
+    REQUIRE(plan.place_.size() == 1);
+    CHECK(plan.place_[0].side_ == OrderSide::SELL);
+  }
+}
