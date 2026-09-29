@@ -147,6 +147,23 @@ every ceiling and to every target subtraction, so a run that has never read the 
 otherwise size an entry as though it were flat. `allow_absent_portfolio` is the deliberate way out
 for a run that genuinely has no holdings to read.
 
+**Within an iteration, the loop polls the order list, then holdings, then bars and quotes** — whichever
+of them are due. A resting buy that fills
+between the two account reads is the reason. Read holdings first and the listing second, and the fill
+lands in neither: holdings still flat, the order already gone, and a target strategy buys again on the
+next bar. Read the listing first and the same fill lands in both — the target reads as met, and at
+worst a cancellation of an order that already filled is refused. Bars and quotes come after both,
+because they can send, so on a cold start the first bars meet an account already read.
+
+**A plan sized against holdings older than the listing is withheld** (`portfolio_superseded`), which
+no opt-out reaches: it happens when a holdings read failed after a listing, when working orders are
+polled more often than holdings (the loop notes it once per run), and for a target an
+`on_order_update` handler states during the listing poll. A withheld `TargetPosition` — withheld for
+this or because the account was never read or is too old — is retained and planned again at the end of
+an iteration — after its polls and `on_phase` — once the account can be trusted and nothing holds; a
+later target or order for the same instrument replaces it, and a stop discards it. An `OrderIntent` is dropped, because a fixed quantity
+decided against the wrong picture should not be replayed later.
+
 **These holds stop a placement, not everything.** A cancellation naming a row you chose still goes
 out under them, because an order that cannot be withdrawn keeps resting and can fill. What does *not*
 go out is a plan the library derived from the snapshot it cannot stand behind: a target of zero
@@ -363,7 +380,7 @@ flatten note above.
 
 **And one flag covers the case before any of those**, `closing_source_unverified_`. A stop builds its
 instructions from the portfolio snapshot — working orders for a `withdraw`, positions for a `flatten`
-— so it can only be complete if that picture is current. Four ways it is not:
+— so it can only be complete if that picture is current. Five ways it is not:
 
 - **The startup read never happened.** A stop requested before the loop's first iteration reports
   `STOPPING` and never reaches it, so the picture cannot contain an order a *previous process* left
@@ -373,6 +390,8 @@ instructions from the portfolio snapshot — working orders for a `withdraw`, po
   snapshot stamped a second ago can carry working orders read an hour ago, missing an order this
   runner placed in between.
 - **A listing is older than `set_maximum_portfolio_age`**, or no age policy was stated at all.
+- **The holdings are older than the listing** — a holdings read failed after it. A fill between the two
+  would be in neither, so a `flatten` could miss both the order and the shares it bought.
 - **The source does not publish working orders at all.** A broker without the working-order inquiry
   falls back to reading order *history*, which satisfies the startup gate but never fills
   `working_`, so a withdrawal cannot be built from it. A source declares

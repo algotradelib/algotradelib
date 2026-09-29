@@ -19,6 +19,36 @@ What to do: add `export KIS_DEMO=0` (or `1`) beside `KIS_APP_KEY`, the same for 
 key to each credential file. A config constructed in code keeps `is_demo_ = false` and is unaffected.
 Toss has no paper-trading environment and no such variable.
 
+### Changed: the live loop reads the account before anything that can send
+
+`PollingLoop` now polls, each iteration, calendar, price limits, **working orders, holdings**, buying
+power, **then bars and quotes** (it was bars and quotes first, holdings before working orders). A fill
+landing between the holdings read and the listing read used to vanish from both, and a target strategy
+bought again on the next bar; the new order makes that fill over-count instead, which is harmless.
+
+- **A plan sized against holdings older than the listing is withheld**, as the new
+  `WithheldPlanReason::PORTFOLIO_SUPERSEDED` — **a source break for an exhaustive `switch`** over that
+  enum. `Portfolio` gains `working_as_of_` and `listing_newer_than_holdings()`.
+- **A withheld `TargetPosition` is retained** — withheld as superseded, absent or stale — and planned
+  again after an iteration's polls once the account can be trusted and nothing holds
+  (`Runner::retry_retained_targets`, `targets_retained`, `clear_retained_targets`), last in an
+  iteration, after `on_phase`. A later target or order for the instrument replaces it; a stop discards
+  it; nothing stated under a stop, an
+  operator's halt or a local failure is retained; a stop or an abandoned run discards them. An
+  `OrderIntent` is dropped. **Before, a target withheld as absent or stale was simply dropped**; now a
+  one-shot target (from `on_order_update` or `on_phase`) stated during a holdings outage executes when
+  the outage ends. A program driving a `Runner` without `PollingLoop` must call the retry itself.
+- **`on_order_update` targets are planned after holdings**, live: the handler still runs during the
+  listing poll, but its target is withheld and replanned against the holdings read that follows.
+- A closing pass is unverified when the holdings are older than the listing.
+- The sellable-convention probe skips a listing newer than the holdings beside it.
+- A working-order cadence shorter than the holdings cadence gets a once-per-run note: plans between a
+  listing and the next holdings read are withheld.
+- The loop re-evaluates its gate before each poll, so a cold start's first bars, read after this
+  iteration's holdings, are no longer withheld for an account not yet read.
+- A bar placed after the listing read leaves a stop in the same iteration unverified: the listing
+  genuinely lacks that order.
+
 ### Added
 
 - `<algotradelib/version>`, included by `<algotradelib/core>`: `ATL_VERSION_MAJOR`, `_MINOR`, `_PATCH`,
