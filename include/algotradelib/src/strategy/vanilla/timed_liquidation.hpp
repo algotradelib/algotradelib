@@ -54,15 +54,22 @@ struct TimedLiquidation {
   /** Targets flat as soon as the phase is not one of `hold_through_`, `UNKNOWN` included. */
   template <class Ctx>
   void on_phase(Ctx& ctx, MarketPhase phase) {
-    for (const auto allowed : params_.hold_through_) {
-      if (allowed == phase) {
-        return;
-      }
+    if (!holds_through(phase)) {
+      flatten(ctx);
     }
-    flatten(ctx);
   }
 
 private:
+  /** Returns whether `phase` is one this strategy may hold through. */
+  bool holds_through(MarketPhase phase) const {
+    for (const auto allowed : params_.hold_through_) {
+      if (allowed == phase) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /**
    * Targets zero in everything currently held.
    *

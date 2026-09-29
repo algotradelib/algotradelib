@@ -239,6 +239,37 @@ public:
   }
 
   /**
+   * Returns a stop-limit order for `size`: a limit at `limit`, released when `trigger` is reached.
+   *
+   * Both prices, always, and only here -- no other factory can attach a trigger, so a trigger on a
+   * basis that takes none is not constructible. The broker releases the order; which direction of
+   * move reaches the trigger, and how the trigger may relate to the limit, is the broker's rule and
+   * is not checked here, because neither KIS nor Kiwoom documents it.
+   *
+   * **A replay refuses this order rather than model it** (`ReplayExecutor::place`), so a strategy
+   * that emits one backtests without it. The refusal is reported, not silent; see
+   * `plan/todo/replay-stop-limit.md` for what modelling it needs.
+   */
+  static OrderIntent stop_limit(
+    InstrumentId instrument,
+    OrderSide side,
+    SizeSpec size,
+    Price trigger,
+    Price limit,
+    TimeInForce time_in_force = TimeInForce::DAY
+  ) {
+    OrderIntent intent;
+    intent.instrument_ = std::move(instrument);
+    intent.side_ = side;
+    intent.type_ = OrderType::STOP_LIMIT;
+    intent.time_in_force_ = time_in_force;
+    intent.size_ = std::move(size);
+    intent.limit_ = std::move(limit);
+    intent.trigger_ = std::move(trigger);
+    return intent;
+  }
+
+  /**
    * Returns a market order for `size`.
    *
    * No price, and no way to attach one. A market order with a limit attached is a combination
@@ -286,7 +317,7 @@ public:
   /** Returns which side to trade. */
   OrderSide side() const noexcept { return side_; }
 
-  /** Returns whether this is a limit or a market order. */
+  /** Returns the price basis: `LIMIT`, `MARKET` or `STOP_LIMIT`. */
   OrderType type() const noexcept { return type_; }
 
   /** Returns the validity condition. */
@@ -295,8 +326,11 @@ public:
   /** Returns how much to trade. */
   const SizeSpec& size() const noexcept { return size_; }
 
-  /** Returns the limit price, present exactly when the order is a limit order. */
+  /** Returns the limit price, present exactly when the order is a limit or a stop-limit order. */
   const std::optional<Price>& limit() const noexcept { return limit_; }
+
+  /** Returns the trigger price, present exactly when the order is a stop-limit order. */
+  const std::optional<Price>& trigger() const noexcept { return trigger_; }
 
   /** Returns the strategy's own label. */
   const std::string& tag() const noexcept { return tag_; }
@@ -315,6 +349,7 @@ private:
   TimeInForce time_in_force_{TimeInForce::DAY};
   SizeSpec size_;
   std::optional<Price> limit_;
+  std::optional<Price> trigger_;
   std::string tag_;
   std::optional<std::string> client_order_id_;
 };

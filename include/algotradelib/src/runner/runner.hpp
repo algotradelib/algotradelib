@@ -838,6 +838,96 @@ public:
    *   force -- so this figure is how many instructions it cost rather than evidence about the gate.
    */
   std::size_t plans_withheld() const noexcept { return plans_withheld_; }
+
+  /**
+   * Targets held back while a stop on their instrument is withdrawn, at most one per instrument.
+   *
+   * **Why the runner keeps them rather than the strategy.** A target that needs a trade while a stop
+   * rests withdraws the stop and sends nothing (`strategy::RejectReason::STOP_ORDER_RESTING`), because
+   * a sell beside a stop that may still release can sell twice. What ends the wait is the stop's own
+   * outcome -- and a stop leaving the working-order listing feeds no strategy callback at all
+   * (`OrderUpdateWatch` reports what a listing says, never what it stopped saying). A flatten stated
+   * once from `on_phase` would therefore never be stated again. So the runner keeps it:
+   *
+   * - **retained** when a `TargetPosition`'s plan passed the withheld-plan gate and came back refused
+   *   for `STOP_ORDER_RESTING`, together with the references of the stops it waits on. A plan withheld
+   *   whole retains nothing -- its withdrawal never went out;
+   * - **replaced** by any `TargetPosition` or `OrderIntent` the strategy states for the instrument
+   *   later, in any pass. It is a fallback for silence, not a goal that outranks what the strategy says;
+   * - **released** only by `retry_deferred`, never inside an ordinary pass, and only on **the broker's
+   *   own record of each stop**: every stop it waited on is no longer listed, and has a history row --
+   *   matched by `OrderSnapshot::order_id_` against the reference's primary part -- that is terminal
+   *   with **nothing filled**. A listing alone cannot tell a cancelled stop from a filled one, and a
+   *   holdings read is no proof either, since a broker's holdings and order endpoints promise no
+   *   read-after-write consistency. Fills are read from `execution_.filled_quantity_`, never from the
+   *   status: KIS reports a partly filled order it then cancelled as `CANCELED`;
+   * - **dropped without a send** when any stop it waited on shows anything filled. A full fill met the
+   *   flatten already; a partial one leaves its remainder **for the strategy to restate** -- the one
+   *   case this does not finish by itself, counted by `deferred_dropped_after_fill`. It fails towards
+   *   an omission, never a second sell;
+   * - **kept** while a stop is still listed, or its history row is missing or not yet terminal: a stale
+   *   answer waits, it does not release.
+   *
+   * It needs only the working-order cadence -- `live::SessionSource` reads the history on demand in
+   * the poll that no longer lists the stop -- and no holdings poll. Not journalled: it has produced no
+   * instruction a broker could have seen, and a restart loses it as it loses every unstated intention.
+   */
+  std::vector<strategy::TargetPosition> deferred_targets() const {
+    std::vector<strategy::TargetPosition> targets;
+    targets.reserve(deferred_targets_.size());
+    for (const auto& deferred : deferred_targets_) {
+      targets.push_back(deferred.target_);
+    }
+    return targets;
+  }
+
+  /** How many targets have been deferred behind a stop's withdrawal; see `deferred_targets`. */
+  std::size_t targets_deferred() const noexcept { return targets_deferred_; }
+
+  /** Deferred targets dropped because a stop they waited on had filled; see `deferred_targets`. */
+  std::size_t deferred_dropped_after_fill() const noexcept { return deferred_dropped_after_fill_; }
+
+  /**
+   * Returns the earliest instant a target still waiting was deferred, where one's stops are all gone
+   * from the listing -- the start of the history a caller must read for it -- or nothing when no
+   * deferred target can be decided from history yet.
+   */
+  std::optional<std::chrono::system_clock::time_point> deferred_awaiting_evidence() const {
+    std::optional<std::chrono::system_clock::time_point> earliest;
+    for (const auto& deferred : deferred_targets_) {
+      if (stop_listed(deferred.target_.instrument_)) {
+        continue;
+      }
+      if (!earliest || deferred.deferred_at_ < *earliest) {
+        earliest = deferred.deferred_at_;
+      }
+    }
+    return earliest;
+  }
+
+  /**
+   * Releases, drops or keeps each deferred target against `evidence`, the broker's history rows, and
+   * settles what it released.
+   *
+   * `live::SessionSource` calls it after a working-order poll's update feeds, with the history it read
+   * because `deferred_awaiting_evidence` asked for it. It dispatches no handler, settles only when it
+   * released something, and never runs inside an ordinary pass: an order update's pass would otherwise
+   * release the fallback before a later update in the same listing let the strategy say something else.
+   */
+  Report retry_deferred(const std::vector<OrderSnapshot>& evidence) {
+    return release_deferred(&evidence);
+  }
+
+  /**
+   * Releases, and settles, every deferred target whose stops are gone, for a caller whose working
+   * orders and fills are **one ledger**.
+   *
+   * A replay is that caller: its ledger is the broker, so a stop it has just withdrawn is gone and
+   * could not have filled, and there is no history to wait for. A live caller must use
+   * `retry_deferred`, because a live stop that left the listing may have filled.
+   */
+  Report retry_deferred_on_one_snapshot() { return release_deferred(nullptr); }
+
   /** @copydoc Runner::plans_withheld */
   std::size_t instructions_unavailable() const noexcept { return instructions_unavailable_; }
 
@@ -1027,7 +1117,8 @@ private:
     observe_sellable_convention();
 
     Report report;
-    const auto instructions = context_.drain();
+    auto instructions = context_.drain();
+    drop_superseded_deferred(instructions);
     std::vector<strategy::PlannedOrder> pending;
 
     // **One withdrawal per order per pass.** A strategy that clears what is resting and then states
@@ -1120,6 +1211,7 @@ private:
       for (const auto& ref : planned.cancel_) {
         attempt_cancel(ref);
       }
+      defer_if_waiting_on_stop(instruction, planned);
       for (const auto& rejection : planned.rejected_) {
         // Reconciliation's own refusal: it could not build a valid instruction at all, which is a
         // different fact from a broker saying no. **Not a diagnosis**: the same bucket holds a
@@ -1437,7 +1529,12 @@ private:
     // with no poll between, passes twice against a ceiling one of them should have reached. That is
     // precisely the omission `ai/pre-trade-checks` round 2 found for `max_position_quantity_`.
     const bool exposed = guard_.limits().max_gross_exposure_.has_value();
-    if (!sells && !buys && !capped && !exposed) {
+    // A stop is read by target reconciliation whatever the limits, which refuses a target while one
+    // rests (`RejectReason::STOP_ORDER_RESTING`). Not persisted, a stop placed on this pass would be
+    // invisible to a target on the next one until a working-order poll listed it -- and "flatten"
+    // would then go out beside the stop, both of them sells.
+    const bool conditional = carries_trigger_price(order.type_);
+    if (!sells && !buys && !capped && !exposed && !conditional) {
       return;
     }
     auto persisted = context_.portfolio();
@@ -1623,6 +1720,9 @@ private:
     // broker's default venue rather than at the one it went to.
     working.order_.venue_ = order.venue_;
     working.order_.price_ = order.price_;
+    // A stop's trigger, so the reserved row has the shape the broker's listing will report --
+    // `cancel_all` restates it and `OrderUpdateWatch` compares it.
+    working.order_.trigger_price_ = order.trigger_price_;
     working.order_.time_in_force_ = order.time_in_force_;
     working.order_.quantity_ = order.quantity_;
     working.order_.execution_.filled_quantity_ = Decimal64::parse("0");
@@ -1674,6 +1774,138 @@ private:
    * that call would be checked against a stale verdict. Asking the question at settlement time makes
    * the answer structurally current, and there is no invalidation protocol to get wrong.
    */
+  /**
+   * Drops the deferred targets `instructions` supersede.
+   *
+   * Every pass, so a target or order the strategy states for an instrument -- in answer to an order
+   * update, a bar, anything -- replaces the fallback before `retry_deferred` could release it. See
+   * `deferred_targets` for the whole contract.
+   */
+  void drop_superseded_deferred(const std::vector<Instruction<Tag>>& instructions) {
+    if (deferred_targets_.empty()) {
+      return;
+    }
+    const auto drop = [this](const InstrumentId& instrument) {
+      for (auto at = deferred_targets_.begin(); at != deferred_targets_.end(); ++at) {
+        if (at->target_.instrument_ == instrument) {
+          deferred_targets_.erase(at);
+          return;
+        }
+      }
+    };
+    for (const auto& instruction : instructions) {
+      if (const auto* target = std::get_if<strategy::TargetPosition>(&instruction)) {
+        drop(target->instrument_);
+      } else if (const auto* intent = std::get_if<strategy::OrderIntent>(&instruction)) {
+        drop(intent->instrument());
+      }
+    }
+  }
+
+  /**
+   * The release loop behind `retry_deferred` and `retry_deferred_on_one_snapshot`. `evidence` is the
+   * broker's history, or null for a caller whose own ledger decided every stop.
+   */
+  Report release_deferred(const std::vector<OrderSnapshot>* evidence) {
+    bool released = false;
+    for (auto at = deferred_targets_.begin(); at != deferred_targets_.end();) {
+      if (stop_listed(at->target_.instrument_)) {
+        ++at;
+        continue;
+      }
+      if (evidence != nullptr) {
+        bool decided = true;
+        bool filled = false;
+        for (const auto& stop : at->stops_) {
+          const OrderSnapshot* row = nullptr;
+          for (const auto& candidate : *evidence) {
+            if (candidate.order_id_ == stop.primary_) {
+              row = &candidate;
+              break;
+            }
+          }
+          if (row == nullptr) {
+            decided = false;
+            continue;
+          }
+          if (row->execution_.filled_quantity_.coefficient() != 0) {
+            filled = true;
+          } else if (strategy::order_is_open(row->status_)) {
+            decided = false;
+          }
+        }
+        if (filled) {
+          ++deferred_dropped_after_fill_;
+          at = deferred_targets_.erase(at);
+          continue;
+        }
+        if (!decided) {
+          ++at;
+          continue;
+        }
+      }
+      context_.submit(at->target_);
+      at = deferred_targets_.erase(at);
+      released = true;
+    }
+    // **Nothing released, nothing settled.** A pass has effects of its own -- it observes the
+    // sellable convention from the portfolio -- and this runs on every working-order poll.
+    if (!released) {
+      return Report{};
+    }
+    return settle();
+  }
+
+  /** Returns whether the portfolio lists an open stop order on `instrument`. */
+  bool stop_listed(const InstrumentId& instrument) const {
+    for (const auto& working : context_.portfolio().working_) {
+      if (working.order_.instrument_ == instrument &&
+          strategy::order_is_open(working.order_.status_) &&
+          strategy::is_stop_order(working.order_)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Keeps a target whose plan is waiting on a stop's withdrawal; see `deferred_targets`. */
+  void defer_if_waiting_on_stop(
+    const Instruction<Tag>& instruction,
+    const strategy::Plan<Tag>& planned
+  ) {
+    const auto* target = std::get_if<strategy::TargetPosition>(&instruction);
+    if (target == nullptr) {
+      return;
+    }
+    for (const auto& rejection : planned.rejected_) {
+      if (rejection.reason_ != strategy::RejectReason::STOP_ORDER_RESTING) {
+        continue;
+      }
+      // The stops it waits on, as the listing shows them now -- `PENDING_CANCEL` included, since that
+      // is exactly a stop whose outcome is not yet known.
+      DeferredTarget deferred;
+      deferred.target_ = *target;
+      deferred.deferred_at_ = context_.now();
+      for (const auto& working : context_.portfolio().working_) {
+        if (working.order_.instrument_ == target->instrument_ &&
+            strategy::order_is_open(working.order_.status_) &&
+            strategy::is_stop_order(working.order_)) {
+          deferred.stops_.push_back(working.ref_);
+        }
+      }
+      for (auto& kept : deferred_targets_) {
+        if (kept.target_.instrument_ == target->instrument_) {
+          kept = std::move(deferred);
+          ++targets_deferred_;
+          return;
+        }
+      }
+      deferred_targets_.push_back(std::move(deferred));
+      ++targets_deferred_;
+      return;
+    }
+  }
+
   std::optional<WithheldPlanReason> plan_withhold_reason(bool would_cancel) const {
     const auto& portfolio = context_.portfolio();
     // A default-constructed `Portfolio` carries the epoch, and no broker reports a snapshot taken in
@@ -2140,6 +2372,21 @@ private:
   std::size_t cancels_indeterminate_{0};
   /** Plans held back whole, for any of three reasons; see `plans_withheld`. */
   std::size_t plans_withheld_{0};
+  /** One target waiting for a stop's withdrawal, and when a listing first showed the stop gone. */
+  struct DeferredTarget {
+    /** The target, exactly as the strategy stated it. */
+    strategy::TargetPosition target_;
+    /** The stops it waits on, whose own history rows decide its release. */
+    std::vector<OrderRef<Tag>> stops_;
+    /** When it was deferred, which bounds the history that can hold those rows. */
+    std::chrono::system_clock::time_point deferred_at_{};
+  };
+  /** Targets waiting for a stop's withdrawal; see `deferred_targets`. */
+  std::vector<DeferredTarget> deferred_targets_;
+  /** How many were ever deferred; see `targets_deferred`. */
+  std::size_t targets_deferred_{0};
+  /** How many were dropped after a fill; see `deferred_dropped_after_fill`. */
+  std::size_t deferred_dropped_after_fill_{0};
   /** Instructions local machinery was unavailable to send; see the accessor. */
   std::size_t instructions_unavailable_{0};
   /** What the broker said about the most recent order it refused; see the accessor. */

@@ -253,6 +253,43 @@ inline Evidence attribute_evidence(Enum row_value, Enum entry_value) noexcept {
 }
 
 /**
+ * Classifies a row's trigger price against the one the instruction recorded.
+ *
+ * | Row | Entry | Evidence |
+ * | --- | --- | --- |
+ * | `t` | `t` | `CONFIRMS` |
+ * | `t` | `u` | `CONTRADICTS` -- two stops released at different prices are two orders |
+ * | none | none | `CONFIRMS` -- neither is a stop, which both said |
+ * | none | `t` | `ABSENT` -- the adapters leave a trigger they could not read empty, so the broker may simply not have said |
+ * | `t` | none | `ABSENT` -- see below |
+ *
+ * The fourth row: reading it as a contradiction would exclude a real stop whose trigger the listing
+ * did not carry, report `NOT_PLACED`, and have the runner send it again beside the one resting;
+ * reading it as a confirmation would let any lookalike limit clear the hold on a stop. `ABSENT` is
+ * neither, and `row_might_correspond` turns it into an ambiguity an operator resolves.
+ *
+ * The fifth row is `ABSENT` for the mirror reason. A stop row whose entry is a plain order is
+ * already ruled out by the basis. What reaches here is a row whose **basis agrees** and which still
+ * reports a trigger -- which the adapters record precisely because it is the broker contradicting
+ * its own code. That is untrustworthy evidence, not proof of a different order: treating it as a
+ * contradiction reports the runner's own limit `NOT_PLACED` and sends it a second time.
+ */
+inline Evidence trigger_evidence(
+  const std::optional<Decimal64>& row_trigger,
+  const std::optional<Decimal64>& entry_trigger
+) {
+  if (!row_trigger) {
+    return entry_trigger ? Evidence::ABSENT : Evidence::CONFIRMS;
+  }
+  if (!entry_trigger) {
+    return Evidence::ABSENT;
+  }
+  return reconcile_detail::same_value(*row_trigger, *entry_trigger) ?
+    Evidence::CONFIRMS :
+    Evidence::CONTRADICTS;
+}
+
+/**
  * Classifies the instant a broker reported against the instruction's window.
  *
  * **A row with no timestamp is judged on its other attributes, and that is a
@@ -383,6 +420,7 @@ inline bool row_corresponds(
   for (const auto evidence : {
          attribute_evidence(row.time_in_force_, entry.time_in_force_),
          attribute_evidence(row.session_, entry.session_),
+         trigger_evidence(row.trigger_price_, entry.trigger_price_),
          route_evidence(instruction, row),
          time_evidence(instruction, row, window),
        }) {
@@ -428,6 +466,7 @@ inline bool row_might_correspond(
          attribute_evidence(row.type_, entry.type_),
          attribute_evidence(row.time_in_force_, entry.time_in_force_),
          attribute_evidence(row.session_, entry.session_),
+         trigger_evidence(row.trigger_price_, entry.trigger_price_),
          route_evidence(instruction, row),
          time_evidence(instruction, row, window),
        }) {
@@ -440,6 +479,7 @@ inline bool row_might_correspond(
     attribute_evidence(row.type_, entry.type_) == Evidence::ABSENT ||
     attribute_evidence(row.time_in_force_, entry.time_in_force_) == Evidence::ABSENT ||
     attribute_evidence(row.session_, entry.session_) == Evidence::ABSENT ||
+    trigger_evidence(row.trigger_price_, entry.trigger_price_) == Evidence::ABSENT ||
     route_evidence(instruction, row) == Evidence::ABSENT ||
     time_evidence(instruction, row, window) == Evidence::ABSENT;
   if (!anything_silent) {
@@ -505,6 +545,17 @@ inline std::string unresolvable_reason(const JournalEntry& entry) {
     if (!priced && entry.price_) {
       return "an order whose price the market sets was journalled carrying one, so no row can "
              "be matched on it; an operator must say what became of it";
+    }
+    // The trigger's twin of the price rule, for the same reason: a line the writer emits before
+    // the binding could refuse it, which no row can be matched against.
+    const bool triggered = carries_trigger_price(entry.type_);
+    if (triggered && !entry.trigger_price_) {
+      return "a stop-limit order was journalled without its trigger price, so no row can be "
+             "matched on it; an operator must say what became of it";
+    }
+    if (!triggered && entry.trigger_price_) {
+      return "an order that takes no trigger price was journalled carrying one, so no row can be "
+             "matched on it; an operator must say what became of it";
     }
   }
   return {};

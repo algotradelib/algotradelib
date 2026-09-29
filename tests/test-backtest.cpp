@@ -2335,6 +2335,14 @@ TEST_CASE("the replay refuses an order shape it cannot price instead of inventin
     REQUIRE(executor.queued().empty());
   }
 
+  SECTION("a trigger on a shape it can price is refused, not ignored") {
+    // Priced as the plain limit it would otherwise be, the trigger would simply vanish.
+    auto order = resting_buy("10", "60000");
+    order.trigger_price_ = Decimal64::parse("59500");
+    REQUIRE(executor.place(order) == runner::SendOutcome::REFUSED_LOCALLY);
+    REQUIRE(executor.queued().empty());
+  }
+
   SECTION("the shapes it can price are still accepted") {
     REQUIRE(executor.place(resting_buy("10", "60000")) == runner::SendOutcome::ACCEPTED);
     auto market = resting_buy("10", "60000");
@@ -4756,4 +4764,42 @@ TEST_CASE("an update is not dispatched for an order a previous update handler wi
   // And what it was told about, it could see.
   REQUIRE(engine.strategy().working_seen_.size() == 1);
   CHECK(engine.strategy().working_seen_[0] == 2);
+}
+
+namespace {
+
+/** Places one protective stop on the first bar, as a strategy protecting an entry would. */
+struct PlacesAStop {
+  bool sent_{false};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (sent_) {
+      return;
+    }
+    sent_ = true;
+    ctx.submit(strategy::OrderIntent::stop_limit(
+      bar.instrument_,
+      OrderSide::SELL,
+      strategy::SizeSpec::quantity(Decimal64::parse("10")),
+      *strategy::Price::checked(Decimal64::parse("69500"), PriceRule::krx_equity()),
+      *strategy::Price::checked(Decimal64::parse("69000"), PriceRule::krx_equity())
+    ).with_tag("stop"));
+  }
+};
+
+} // namespace
+
+TEST_CASE("a replay reports the stop it will not model rather than dropping it", "[trigger]") {
+  // The parity gap is visible where a reader of the result looks: live, this order goes to the
+  // broker; replayed, it is in the rejection bucket with its tag, and nothing filled.
+  backtest::Backtester<PlacesAStop> engine(PlacesAStop{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "68000"));
+  engine.finish();
+
+  REQUIRE(engine.result().rejected_.size() == 1);
+  CHECK(engine.result().rejected_[0].reason_ == strategy::RejectReason::BINDING_REFUSED);
+  CHECK(engine.result().rejected_[0].tag_ == "stop");
+  CHECK(engine.result().executions_.empty());
 }

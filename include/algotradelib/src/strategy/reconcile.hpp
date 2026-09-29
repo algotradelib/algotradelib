@@ -75,6 +75,32 @@ enum class RejectReason {
    * correctly -- what it asked for is something this binding cannot express.
    */
   BINDING_REFUSED,
+  /**
+   * A stop-limit order's trigger is not on the instrument's tick grid.
+   *
+   * Refused rather than rounded, unlike a limit. Rounding a limit toward the passive side is safe
+   * whichever way the market moves; rounding a trigger moves *when the order exists*, and which
+   * direction is the cautious one depends on whether the stop releases on a rise or a fall -- which
+   * neither KIS nor Kiwoom documents. `Price` is on-grid by construction for the rule it was built
+   * against, so this fires only when that rule was not the instrument's own.
+   */
+  TRIGGER_OFF_GRID,
+  /**
+   * A target that needs a trade was stated while a stop order rests on its instrument, so the stop
+   * is being withdrawn first and nothing is sent this pass.
+   *
+   * A stop is a *conditional* order, and target arithmetic is about orders that will trade. Counted
+   * as working, a resting sell stop satisfies a target of zero and "flatten now" sends nothing;
+   * ignored, an immediate exit goes out beside it and both can sell. So a target that needs a trade
+   * withdraws the stop and waits. **`runner::Runner` keeps the target** and settles it again, with no
+   * callback from the strategy, once a listing no longer reports a stop on the instrument -- see
+   * `Runner::deferred_targets`. A strategy stating anything newer for the instrument replaces it.
+   *
+   * A target the holding already meets needs no trade and is not refused: the stop stays, since
+   * protecting a position the strategy means to hold is what it is for, and only other working orders
+   * are withdrawn as before.
+   */
+  STOP_ORDER_RESTING,
 };
 
 /** Returns a stable lowercase name for `reason`, for logs and structured reporting. */
@@ -98,6 +124,10 @@ inline constexpr std::string_view reject_reason_name(RejectReason reason) noexce
       return "broker_refused";
     case RejectReason::BINDING_REFUSED:
       return "binding_refused";
+    case RejectReason::TRIGGER_OFF_GRID:
+      return "trigger_off_grid";
+    case RejectReason::STOP_ORDER_RESTING:
+      return "stop_order_resting";
   }
   return "unknown";
 }
@@ -137,6 +167,11 @@ struct PlannedOrder {
   Decimal64 quantity_;
   /** The limit price, after any rounding or clamping the flags below record. */
   std::optional<Decimal64> price_;
+  /**
+   * The trigger price of a `STOP_LIMIT` order, exactly as the strategy stated it. Never rounded
+   * and never clamped -- see `RejectReason::TRIGGER_OFF_GRID` -- and empty on every other basis.
+   */
+  std::optional<Decimal64> trigger_price_;
   /** The strategy's own label on the intent this order came from. */
   std::string tag_;
   /** An idempotency key, only where the bound broker supports one. */
@@ -428,6 +463,17 @@ inline bool below_tolerance(
  *
  * A target already met produces an empty plan, which is the common case and must cost nothing.
  */
+/**
+ * Returns whether a working row is a stop order: its basis says so, **or** it carries a trigger.
+ *
+ * The second half is not redundant. An adapter records a positive trigger even on a row whose basis
+ * reads otherwise, and that row may be a stop that has released. Target reconciliation and the
+ * runner's deferred targets both ask this, so they cannot disagree about which rows hold a target up.
+ */
+inline bool is_stop_order(const OrderSnapshot& order) {
+  return carries_trigger_price(order.type_) || order.trigger_price_.has_value();
+}
+
 template <typename Broker>
 Plan<Broker> reconcile(
   const TargetPosition& target,
@@ -469,6 +515,43 @@ Plan<Broker> reconcile(
 
   const bool buying = decimal_less(zero, *needed);
   const bool selling = decimal_less(*needed, zero);
+
+  // **Stops first; see `RejectReason::STOP_ORDER_RESTING`.** A row is a stop when its basis says so
+  // or it carries a trigger -- an adapter records a positive trigger even on a row whose basis reads
+  // otherwise, and that row may be a released stop.
+  const auto is_stop = [](const OrderSnapshot& order) { return is_stop_order(order); };
+  bool stop_resting = false;
+  for (const auto& working : portfolio.working_) {
+    if (working.order_.instrument_ == target.instrument_ &&
+        order_is_open(working.order_.status_) && is_stop(working.order_)) {
+      stop_resting = true;
+    }
+  }
+  if (stop_resting) {
+    const bool met = !buying && !selling;
+    for (const auto& working : portfolio.working_) {
+      if (!(working.order_.instrument_ == target.instrument_) ||
+          !order_is_open(working.order_.status_)) {
+        continue;
+      }
+      if (is_stop(working.order_)) {
+        // Withdrawn only when a trade is needed, and not again once its withdrawal is pending: a
+        // second request for an order already on its way out can only fail.
+        if (!met && working.order_.status_ != OrderStatus::PENDING_CANCEL) {
+          plan.cancel_.push_back(working.ref_);
+        }
+      } else if (met) {
+        // The holding meets the target, so every *other* working order is unwanted, as before.
+        plan.cancel_.push_back(working.ref_);
+      }
+    }
+    if (!met) {
+      plan.rejected_.push_back(
+        Rejection{RejectReason::STOP_ORDER_RESTING, target.instrument_, target.tag_}
+      );
+    }
+    return plan;
+  }
 
   // Step 2: withdraw what works against the target. With nothing needed, that is everything.
   //
@@ -681,6 +764,20 @@ Plan<Broker> reconcile(
     order.price_ = priced;
   } else {
     order.type_ = OrderType::MARKET;
+  }
+
+  if (intent.trigger()) {
+    // Checked, never moved; see `RejectReason::TRIGGER_OFF_GRID`. An unknown grid answers neither
+    // way and is refused as it is for a limit.
+    const auto aligned = inputs.instrument_->price_rule_.on_tick(intent.trigger()->value());
+    if (!aligned) {
+      return reject(RejectReason::UNKNOWN_PRICE_GRID);
+    }
+    if (!*aligned) {
+      return reject(RejectReason::TRIGGER_OFF_GRID);
+    }
+    order.type_ = OrderType::STOP_LIMIT;
+    order.trigger_price_ = intent.trigger()->value();
   }
 
   plan.place_.push_back(std::move(order));

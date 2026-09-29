@@ -155,7 +155,10 @@ public:
    */
   static bool can_model(const strategy::PlannedOrder& order) noexcept {
     const bool priceable = order.type_ == OrderType::LIMIT || order.type_ == OrderType::MARKET;
-    return priceable && order.session_ == OrderSession::REGULAR;
+    // A trigger on either would be ignored and the order filled as a plain limit or market order,
+    // which is the invented fill this function exists to refuse. `reconcile` never builds one, but
+    // `PlannedOrder` is a public struct.
+    return priceable && !order.trigger_price_ && order.session_ == OrderSession::REGULAR;
   }
 
   /**

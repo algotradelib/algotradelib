@@ -709,6 +709,18 @@ private:
       } else {
         updates_.adopt(result.value().orders_);
       }
+      // **After** the updates, so a strategy's own `on_order_update` has spoken first. This listing is
+      // the only thing that sees a stop leave, and a disappearance feeds no callback -- so where a
+      // deferred target's stops are all gone, the broker's own record of them is read here, on demand,
+      // and decides it. A failed read leaves the target waiting and reports like any poll failure. See
+      // `Runner::deferred_targets`.
+      if (const auto since = runner_instance.deferred_awaiting_evidence()) {
+        std::vector<OrderSnapshot> evidence;
+        if (!read_evidence(*since, runner_instance.context().now(), evidence)) {
+          return poll_outcome_of(*last_error_);
+        }
+        runner_instance.retry_deferred(evidence);
+      }
       return runner::PollOutcome::UPDATED;
     } else {
       (void)publish;
@@ -796,6 +808,66 @@ private:
    */
   bool read_history(const std::vector<runner::OpenInstruction>& open,
     std::vector<OrderSnapshot>& into) {
+    return read_history_in(runner::history_range_for(open, window_), into);
+  }
+
+  /**
+   * Fills `into` with the history a deferred target's stops can appear in: from the day before it was
+   * deferred to today.
+   *
+   * **Two query shapes, because the brokers that hold stops disagree.** KIS takes a range
+   * (`history_requires_range`), so one query covers it. Kiwoom's `kt00007` takes **one** date, which it
+   * requires, and refuses a range -- so each day is asked for on its own, from the day before the
+   * deferral to the day after now, both in UTC so the market-local day is always inside; a stop is a
+   * day order, so that is three or four requests at most. A broker taking neither shape is asked each day as well, which
+   * states a date it may ignore rather than omitting one it may need.
+   */
+  bool read_evidence(
+    std::chrono::system_clock::time_point since,
+    std::chrono::system_clock::time_point now,
+    std::vector<OrderSnapshot>& into
+  ) {
+    if constexpr (Caps::history_requires_range) {
+      return read_history_in(
+        {runner::date_of(since - std::chrono::hours(24)), runner::date_of(now + std::chrono::hours(24))},
+        into
+      );
+    } else {
+      std::vector<Date> days;
+      const auto add = [&days](const Date& day) {
+        for (const auto& seen : days) {
+          if (seen.year_ == day.year_ && seen.month_ == day.month_ && seen.day_ == day.day_) {
+            return;
+          }
+        }
+        days.push_back(day);
+      };
+      // **Through the day after `now` in UTC**, the same upper bound as the ranged query. `date_of` is a
+      // UTC date and a broker's order date is its own market's: at 08:45 KST it is still the previous
+      // day in UTC, and stopping at `date_of(now)` never asked for the Korean day the stop was on.
+      const auto until = now + std::chrono::hours(24);
+      for (auto at = since - std::chrono::hours(24); at < until; at += std::chrono::hours(24)) {
+        add(runner::date_of(at));
+      }
+      add(runner::date_of(until));
+      for (const auto& day : days) {
+        if (!read_history_in({day, day}, into, true)) {
+          return false;
+        }
+      }
+      return true;
+    }
+  }
+
+  /**
+   * Fills `into` with the order history over `range` where the broker takes one, or wherever `dated`
+   * asks for the dates to be stated regardless; see `read_history`.
+   */
+  bool read_history_in(
+    const std::pair<Date, Date>& range,
+    std::vector<OrderSnapshot>& into,
+    bool dated = Caps::history_requires_range
+  ) {
     OrderHistoryQuery query;
     if constexpr (Caps::has_history_limit) {
       // Gated, because KIS does not ignore a limit it cannot honour -- it refuses the whole inquiry
@@ -803,8 +875,7 @@ private:
       // history-failure branch, so a KIS runner recovered nothing and withheld forever.
       query.limit_ = history_limit_;
     }
-    if constexpr (Caps::history_requires_range) {
-      const auto range = runner::history_range_for(open, window_);
+    if (dated) {
       query.from_ = range.first;
       query.to_ = range.second;
     }

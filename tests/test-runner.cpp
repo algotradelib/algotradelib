@@ -2490,3 +2490,63 @@ TEST_CASE("an opted-out placement still faces a hold somebody set") {
   REQUIRE(report.refused_.size() == 1);
   CHECK(report.refused_.front().halt_reason_ == strategy::HaltReason::OPERATOR);
 }
+
+namespace {
+
+/** Protects a holding with a stop, then asks to be flat on the next bar. */
+struct StopsThenFlattens {
+  int bars_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (++bars_ == 1) {
+      ctx.submit(strategy::OrderIntent::stop_limit(
+        bar.instrument_,
+        OrderSide::SELL,
+        strategy::SizeSpec::quantity(Decimal64::parse("100")),
+        *strategy::Price::checked(Decimal64::parse("69500"), PriceRule::krx_equity()),
+        *strategy::Price::checked(Decimal64::parse("69000"), PriceRule::krx_equity())
+      ));
+      return;
+    }
+    strategy::TargetPosition flat;
+    flat.instrument_ = bar.instrument_;
+    flat.target_quantity_ = Decimal64::parse("0");
+    flat.tag_ = "flat";
+    ctx.submit(flat);
+  }
+};
+
+} // namespace
+
+TEST_CASE("a runner-placed stop is reserved with its trigger and withdrawn before a later flatten", "[trigger]") {
+  runner::DryRunner<StopsThenFlattens> dry;
+  arrange(dry);
+  strategy::Portfolio<runner::DryRunner<StopsThenFlattens>::Tag> portfolio;
+  // Read, so the withdrawal on the second pass is not withheld as one against an unread account.
+  portfolio.as_of_ = std::chrono::system_clock::time_point{} + std::chrono::hours(500000);
+  HoldingPosition held;
+  held.instrument_ = samsung();
+  held.quantity_ = Decimal64::parse("100");
+  portfolio.positions_.push_back(held);
+  dry.context().set_portfolio(portfolio);
+
+  // No guard limit is set, so nothing else would persist the reservation across passes.
+  const auto first = dry.feed(bar_at(10, "70000"));
+  REQUIRE(first.rejected_.empty());
+  REQUIRE(first.would_place_.size() == 1);
+  const auto& working = dry.context().portfolio().working_;
+  REQUIRE(working.size() == 1);
+  CHECK(working[0].reserved_);
+  CHECK(working[0].order_.type_ == OrderType::STOP_LIMIT);
+  // The row `cancel_all` restates and `OrderUpdateWatch` compares, so it must carry the trigger.
+  CHECK(working[0].order_.trigger_price_ == std::optional<Decimal64>(Decimal64::parse("69500")));
+
+  // The next pass asks to be flat. The stop does not satisfy that, and nothing is sold beside it:
+  // the stop is withdrawn first and the target reported as waiting for it.
+  const auto second = dry.feed(bar_at(11, "70000"));
+  REQUIRE(second.rejected_.size() == 1);
+  CHECK(second.rejected_[0].reason_ == strategy::RejectReason::STOP_ORDER_RESTING);
+  CHECK(second.would_cancel_.size() == 1);
+  CHECK(second.would_place_.empty());
+}

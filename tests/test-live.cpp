@@ -414,8 +414,9 @@ public:
    * *history* fail while working orders still succeed. That combination is the one the sweep has to
    * survive: it has a listing, it just does not have the one that covers closed orders.
    */
-  Result<OrderPage> order_history(const OrderHistoryQuery&) {
+  Result<OrderPage> order_history(const OrderHistoryQuery& query) {
     ++history_calls_;
+    history_queries_.push_back(query);
     if (history_error_) {
       return Result<OrderPage>(*history_error_);
     }
@@ -453,11 +454,13 @@ public:
   std::size_t holdings_calls() const noexcept { return holdings_calls_; }
   std::size_t working_calls() const noexcept { return working_calls_; }
   std::size_t history_calls() const noexcept { return history_calls_; }
+  const std::vector<OrderHistoryQuery>& history_queries() const noexcept { return history_queries_; }
 
 private:
   BarSeries bars_;
   QuoteSnapshot quote_;
   HoldingsSnapshot holdings_;
+  std::vector<OrderHistoryQuery> history_queries_;
   WorkingOrders<FakeBroker> working_orders_;
   OrderPage history_;
   std::optional<BrokerError> history_error_;
@@ -569,6 +572,20 @@ TEST_CASE("a non-default order shape reaches the session rather than its default
   REQUIRE(sent.time_in_force_ == TimeInForce::FILL_OR_KILL);
   REQUIRE(sent.session_ == OrderSession::AFTER_MARKET);
   REQUIRE(sent.venue_ == Venue::NXT);
+}
+
+TEST_CASE("a stop's trigger reaches the session", "[trigger]") {
+  // A copy that was never written agrees with the default -- which here is "no trigger", so the
+  // order would go out as a plain limit.
+  FakeSession<WithoutKey> session;
+  live::SessionExecutor<FakeSession<WithoutKey>> executor(session);
+
+  auto order = planned();
+  order.type_ = OrderType::STOP_LIMIT;
+  order.trigger_price_ = Decimal64::parse("69500");
+  REQUIRE(executor.place(order) == runner::SendOutcome::ACCEPTED);
+  REQUIRE(session.placed().size() == 1);
+  REQUIRE(session.placed()[0].trigger_price_ == std::optional<Decimal64>(Decimal64::parse("69500")));
 }
 
 TEST_CASE("an accepted order reaches the session with its fields intact") {
@@ -3526,4 +3543,211 @@ TEST_CASE("a stop's trigger moved on its own is reported, and a disagreement abo
     poll_rows(source, live_runner, session, {stop_row("69500"), stop_row("69800")});
     CHECK(live_runner.strategy().updates_.empty());
   }
+}
+
+namespace {
+
+/** Flattens on leaving the session; holds ten again if an update names the order "KEEP". */
+struct FlattensOnPhase {
+  template <class Ctx>
+  void on_phase(Ctx& ctx, strategy::MarketPhase phase) {
+    if (phase == strategy::MarketPhase::OPEN) {
+      return;
+    }
+    strategy::TargetPosition flat;
+    flat.instrument_ = samsung();
+    flat.target_quantity_ = Decimal64::parse("0");
+    ctx.submit(flat);
+  }
+
+  template <class Ctx>
+  void on_order_update(Ctx& ctx, const OrderSnapshot& order) {
+    if (order.order_id_ != "KEEP") {
+      return;
+    }
+    strategy::TargetPosition hold;
+    hold.instrument_ = samsung();
+    hold.target_quantity_ = Decimal64::parse("10");
+    ctx.submit(hold);
+  }
+};
+
+std::chrono::system_clock::time_point live_hour(int hours) {
+  return std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 100 + hours);
+}
+
+/** Polls a working-order listing received at `hour`. */
+template <typename Source, typename Runner>
+void poll_listing_at(
+  Source& source, Runner& bound, WorkingSession& session,
+  std::vector<WorkingOrder<FakeBroker>> rows, int hour
+) {
+  WorkingOrders<FakeBroker> listing;
+  listing.orders_ = std::move(rows);
+  listing.received_at_ = live_hour(hour);
+  session.set_working_orders(std::move(listing));
+  REQUIRE(source.poll(runner::PollKind::WORKING_ORDERS, bound) == runner::PollOutcome::UPDATED);
+}
+
+/** Polls holdings of `held` received at `hour`. */
+template <typename Source, typename Runner>
+void poll_holdings_at(Source& source, Runner& bound, WorkingSession& session, const char* held, int hour) {
+  HoldingsSnapshot snapshot;
+  HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = Decimal64::parse(held);
+  snapshot.positions_.push_back(position);
+  snapshot.received_at_ = live_hour(hour);
+  snapshot.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING, SellableBasis::RestingTreatment::DEDUCT, false,
+  };
+  session.set_holdings(snapshot);
+  REQUIRE(source.poll(runner::PollKind::HOLDINGS, bound) == runner::PollOutcome::UPDATED);
+}
+
+WorkingOrder<FakeBroker> resting_stop() {
+  auto stop = update_row("STOP-1", "", "0");
+  stop.order_.side_ = OrderSide::SELL;
+  stop.order_.type_ = OrderType::STOP_LIMIT;
+  stop.order_.quantity_ = Decimal64::parse("10");
+  stop.order_.price_ = Decimal64::parse("69000");
+  stop.order_.trigger_price_ = Decimal64::parse("69500");
+  return stop;
+}
+
+/** Binds the strategy, holds ten behind a resting stop, and leaves the session. */
+template <typename Bound>
+void leave_behind_a_stop(Bound& bound, WorkingSession& session) {
+  bound.context().set_instrument(samsung_reference());
+  bound.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  auto portfolio = held_position<WithWorkingOrders>("10", nullptr);
+  portfolio.working_.push_back(resting_stop());
+  bound.context().set_portfolio(portfolio);
+  bound.feed(strategy::MarketPhase::POST_CLOSE);
+  CHECK(session.canceled().size() == 1);
+  CHECK(session.placed().empty());
+  REQUIRE(bound.deferred_targets().size() == 1);
+}
+
+} // namespace
+
+/** Scripts the broker's history to hold the stop's own row, in `status` with `filled` executed. */
+void record_stop(WorkingSession& session, OrderStatus status, const char* filled) {
+  OrderSnapshot row;
+  row.order_id_ = "STOP-1";
+  row.instrument_ = samsung();
+  row.side_ = OrderSide::SELL;
+  row.type_ = OrderType::STOP_LIMIT;
+  row.status_ = status;
+  row.quantity_ = Decimal64::parse("10");
+  row.execution_.filled_quantity_ = Decimal64::parse(filled);
+  OrderPage page;
+  page.orders_.push_back(row);
+  session.set_history(std::move(page));
+}
+
+TEST_CASE("a deferred flatten is sent once the broker records its stop cancelled unfilled", "[trigger]") {
+  // No holdings poll at all: the working-order poll that no longer lists the stop reads the stop's own
+  // history row on demand, and that row decides. (Codex round 4's first blocker.)
+  WorkingSession session;
+  auto bound = live::bind(session, FlattensOnPhase{}, {});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  leave_behind_a_stop(bound, session);
+  CHECK(session.history_calls() == 0);
+
+  record_stop(session, OrderStatus::CANCELED, "0");
+  poll_listing_at(source, bound, session, {}, 1);
+  // A broker that takes no range -- this fake, like Kiwoom -- is asked one stated date at a time:
+  // Kiwoom's `kt00007` requires the date and refuses a range. (Codex round 5.)
+  REQUIRE(session.history_calls() >= 1);
+  for (const auto& query : session.history_queries()) {
+    REQUIRE(query.from_);
+    REQUIRE(query.to_);
+    CHECK(query.from_->day_ == query.to_->day_);
+  }
+  REQUIRE(session.placed().size() == 1);
+  CHECK(session.placed()[0].side_ == OrderSide::SELL);
+  CHECK(session.placed()[0].quantity_ == Decimal64::parse("10"));
+  CHECK(bound.deferred_targets().empty());
+}
+
+TEST_CASE("a deferred flatten does not sell again after the stop filled", "[trigger]") {
+  // Holdings still say ten -- stale, the broker's endpoints promise no consistency -- and the stop's own
+  // record says it filled. (Codex round 4's second blocker.)
+  WorkingSession session;
+  auto bound = live::bind(session, FlattensOnPhase{}, {});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  leave_behind_a_stop(bound, session);
+  poll_holdings_at(source, bound, session, "10", 2);
+
+  record_stop(session, OrderStatus::FILLED, "10");
+  poll_listing_at(source, bound, session, {}, 1);
+  CHECK(session.placed().empty());
+  CHECK(bound.deferred_targets().empty());
+  CHECK(bound.deferred_dropped_after_fill() == 1);
+}
+
+TEST_CASE("a deferred flatten waits while the stop's record is not terminal, or cannot be read", "[trigger]") {
+  WorkingSession session;
+  auto bound = live::bind(session, FlattensOnPhase{}, {});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  leave_behind_a_stop(bound, session);
+
+  // History lags the listing: still open. Asked again on each working-order poll, and nothing sent.
+  record_stop(session, OrderStatus::PENDING, "0");
+  poll_listing_at(source, bound, session, {}, 1);
+  CHECK(session.history_calls() >= 1);
+  CHECK(session.placed().empty());
+  REQUIRE(bound.deferred_targets().size() == 1);
+
+  // The history read fails: reported like any poll failure, and the target still waits.
+  session.fail_history_with(ErrorCategory::TRANSPORT);
+  WorkingOrders<FakeBroker> listing;
+  listing.received_at_ = live_hour(2);
+  session.set_working_orders(listing);
+  CHECK(source.poll(runner::PollKind::WORKING_ORDERS, bound) != runner::PollOutcome::UPDATED);
+  CHECK(session.placed().empty());
+  CHECK(bound.deferred_targets().size() == 1);
+}
+
+TEST_CASE("an update in the same listing supersedes the deferred flatten before it can go", "[trigger]") {
+  // **Codex round 3's second blocker.** The listing that drops the stop also carries an update the
+  // strategy answers by holding ten. That answer must win, whatever the order of rows.
+  WorkingSession session;
+  auto bound = live::bind(session, FlattensOnPhase{}, {});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  leave_behind_a_stop(bound, session);
+  record_stop(session, OrderStatus::CANCELED, "0");
+
+  auto first = update_row("OTHER", "", "0");
+  auto keep = update_row("KEEP", "", "0");
+  poll_listing_at(source, bound, session, {first, keep}, 1);
+  CHECK(bound.deferred_targets().empty());
+  CHECK(session.placed().empty());
+}
+
+TEST_CASE("the evidence read covers the Korean day when UTC has not reached it yet", "[trigger]") {
+  // **Codex round 6.** At 08:45 KST on 30 September it is 23:45 UTC on the 29th. A stop placed and
+  // withdrawn that morning lives in Kiwoom's history under 30 September, which a read ending at the UTC
+  // date never asked for.
+  WorkingSession session;
+  auto bound = live::bind(session, FlattensOnPhase{}, {});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  const auto morning_kst = std::chrono::system_clock::time_point{} +
+    std::chrono::hours(24 * 20726) - std::chrono::minutes(15);  // 2026-09-29T23:45Z
+  REQUIRE(runner::date_of(morning_kst).day_ == 29);
+  bound.context().set_now(morning_kst);
+  leave_behind_a_stop(bound, session);
+
+  record_stop(session, OrderStatus::CANCELED, "0");
+  poll_listing_at(source, bound, session, {}, 1);
+  bool asked_for_the_30th = false;
+  for (const auto& query : session.history_queries()) {
+    REQUIRE(query.from_);
+    if (query.from_->month_ == 9 && query.from_->day_ == 30) {
+      asked_for_the_30th = true;
+    }
+  }
+  CHECK(asked_for_the_30th);
+  CHECK(session.placed().size() == 1);
 }
