@@ -137,28 +137,17 @@ inline void print_recovery(const runner::RecoveryReport& recovery, std::ostream&
   }
 }
 
-/**
- * Reads holdings once before the loop starts.
- *
- * **The loop polls bars before holdings**, and a plan made against an account not yet read is
- * withheld, not retried -- the source has already recorded those bars as fed. On daily bars that loses
- * the first decision until the next close. Reading the account first means the first bars meet a
- * portfolio. A failure here is reported and the run continues: the loop keeps polling holdings on its
- * cadence, and its report counts what was withheld.
- */
-template <typename Source, typename Runner>
-void prime_holdings(Source& source, Runner& bound, std::ostream& out) {
-  if (source.poll(runner::PollKind::HOLDINGS, bound) == runner::PollOutcome::FAILED) {
-    out << "holdings unread at start";
-    if (source.last_error()) {
-      out << ": " << source.last_error()->message_;
-    }
-    out << "\n  the first bars will be withheld until an account read succeeds\n";
-  }
-}
-
 /** Prints how to stop the run, before it starts, so nobody reaches for `kill -9`. */
 inline void print_how_to_stop(const Settings& settings, std::ostream& out) {
+  // **The first decision waits for the second bar**, and that is the safe direction. The loop polls
+  // bars before holdings, so what the strategy decides on the bars read at start meets an account not
+  // yet read, and is withheld rather than sized against nothing; the source has recorded those bars,
+  // so the next decision comes with the next bar -- the next close, on daily bars. Reading holdings
+  // here first was tried and removed: an order a previous run left resting could fill between that
+  // read and the loop's first order-list read, and the first bar would then buy again against a flat
+  // snapshot. Fixing the order properly is a loop change (plan/todo/first-iteration-poll-order.md).
+  out << "note: decisions on the bars read at start are withheld until the account is read;\n"
+      << "      the strategy first acts on the next bar\n";
   out << "to stop: Ctrl-C or SIGTERM (quiesce), or\n"
       << "  echo quiesce  > " << settings.control_file_ << "   # stop placing, leave orders resting\n"
       << "  echo withdraw > " << settings.control_file_ << "   # cancel this run's working orders\n"
@@ -273,7 +262,6 @@ Exit trade(
   live::SessionSource<Session, runner::FileJournal> source(session, settings.universe_);
   source.set_journal(journal);
   source.set_bar_query(settings.bar_interval_, settings.bar_count_);
-  prime_holdings(source, bound, out);
 
   runner::PollingLoop<decltype(bound), decltype(source), Clock> loop(
     bound, source, settings.schedule_, std::move(clock)
@@ -284,15 +272,16 @@ Exit trade(
   const auto report = loop.run(stop, settings.max_iterations_);
   print_report(report, out);
 
-  if (report.abandoned_) {
-    return Exit::LOOP_ABANDONED;
-  }
-  // Sticky, and set by a failed journal write as much as by recovery: a run that went on under it
-  // placed nothing more, and what it was sending at the moment is unknown.
+  // Checked before abandonment: sticky, set by a failed journal write as much as by recovery, and
+  // the more urgent of the two -- what the runner was sending at that moment is unknown. A run can
+  // end both ways, and the report above still says ABANDONED.
   if (const auto failure = bound.local_failure()) {
     out << "LOCAL FAILURE   : " << *failure << '\n'
         << "                  read the broker's order list before starting again\n";
     return Exit::LOCAL_FAILURE;
+  }
+  if (report.abandoned_) {
+    return Exit::LOOP_ABANDONED;
   }
   return stop_closes(report) && !report.closing_complete() ? Exit::CLOSING_INCOMPLETE : Exit::CLEAN;
 }
@@ -320,7 +309,6 @@ Exit observe(
 
   live::SessionSource<Session> source(session, settings.universe_);
   source.set_bar_query(settings.bar_interval_, settings.bar_count_);
-  prime_holdings(source, bound, out);
   runner::PollingLoop<decltype(bound), decltype(source), Clock> loop(
     bound, source, settings.schedule_, std::move(clock)
   );

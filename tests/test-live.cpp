@@ -238,8 +238,21 @@ public:
     }
     BarSeries series = bars_;
     series.instrument_ = query.instrument_;
+    for (const auto& later : later_bars_) {
+      if (bar_calls_ >= later.first) {
+        series.bars_.push_back(later.second);
+      }
+    }
     return Result<BarSeries>(std::move(series));
   }
+
+  /**
+   * Adds `bar` to every answer from the `call`-th bars request on, as a bar closing mid-run does.
+   *
+   * A loop's first iteration polls bars before holdings, so what it feeds then meets an account not
+   * yet read and is withheld; a test of what a later bar does needs a bar that is actually later.
+   */
+  void add_bar_from_call(std::size_t call, Bar bar) { later_bars_.emplace_back(call, std::move(bar)); }
 
   /** Returns the scripted quote, counting the call. */
   Result<QuoteSnapshot> quote(const InstrumentId& instrument) {
@@ -488,6 +501,7 @@ private:
   QuoteSnapshot quote_;
   HoldingsSnapshot holdings_;
   std::optional<Instrument> reference_;
+  std::vector<std::pair<std::size_t, Bar>> later_bars_;
   std::vector<OrderHistoryQuery> history_queries_;
 
   WorkingOrders<FakeBroker> working_orders_;
@@ -4004,9 +4018,8 @@ strategy::vanilla::BuyAndHold one_share() {
 /**
  * A session that answers everything a trading run needs, stamped at `program_start()`.
  *
- * Holdings are empty but current, so the portfolio gate opens and BuyAndHold wants its share. The
- * bars never change: the program reads holdings before the loop, so these first bars are the ones
- * that trade, as a real run's history read at start is.
+ * Holdings are empty but current, so the portfolio gate opens and BuyAndHold wants its share -- on
+ * the bar that closes after the account was read, as in a real run.
  */
 void script_ready(ProgramSession& session) {
   session.set_reference(samsung_reference());
@@ -4014,6 +4027,14 @@ void script_ready(ProgramSession& session) {
   HoldingsSnapshot holdings;
   holdings.received_at_ = program_start();
   session.set_holdings(holdings);
+  // The loop's first iteration polls bars before holdings, so the two bars above meet an account not
+  // yet read and are withheld; this one arrives on the second bars poll, after holdings.
+  Bar later = two_bars("70000", "71000").bars_.back();
+  later.timestamp_ += std::chrono::hours(24);
+  later.close_ = Decimal64::parse("71500");
+  later.high_ = later.close_;
+  later.low_ = later.close_;
+  session.add_bar_from_call(2, later);
 }
 
 /**
@@ -4057,9 +4078,10 @@ TEST_CASE("the live program journals, recovers clean and places its order", "[li
   INFO(out.str());
   CHECK(exit == live_program::Exit::CLEAN);
   CHECK(out.str().find("recovery: clean") != std::string::npos);
-  // Holdings were read before the first bars, so nothing the strategy decided was withheld for an
-  // unread account -- which is what used to lose the first daily decision until the next close.
-  CHECK(out.str().find("plans withheld  : 0") != std::string::npos);
+  // The two bars read at start met an account not yet read and were withheld, not sized against
+  // nothing; the order came from the next bar. The program says so before the loop.
+  CHECK(out.str().find("plans withheld  : 2") != std::string::npos);
+  CHECK(out.str().find("the strategy first acts on the next bar") != std::string::npos);
   REQUIRE(session.placed().size() == 1);
   CHECK(session.placed().front().quantity_ == Decimal64::parse("1"));
   // Recorded before it was sent, and answered after.
@@ -4102,25 +4124,6 @@ TEST_CASE("the live program withholds what a previous run left pending", "[live]
   CHECK(out.str().find("recovery: NOT clean") != std::string::npos);
   CHECK(out.str().find("withheld until the broker's lists resolve it: 005930") != std::string::npos);
   // The share it might already have bought is not bought again.
-  CHECK(session.placed().empty());
-}
-
-TEST_CASE("the live program says when it could not read holdings before the first bars", "[live][program]") {
-  const TempPath journal("atl-test-program-unread.jsonl");
-  const TempPath control("atl-test-program-unread.stop");
-  ProgramSession session;
-  script_ready(session);
-  // Every read fails, holdings included; reference data is scripted separately and still answers.
-  session.fail_with(ErrorCategory::TRANSPORT);
-  auto settings = program_settings(journal, control);
-  settings.max_iterations_ = 1;
-  runner::StopSource stop;
-  std::ostringstream out;
-
-  live_program::trade(session, one_share(), settings, stop, out, runner::ManualClock{program_start()});
-
-  INFO(out.str());
-  CHECK(out.str().find("holdings unread at start") != std::string::npos);
   CHECK(session.placed().empty());
 }
 
