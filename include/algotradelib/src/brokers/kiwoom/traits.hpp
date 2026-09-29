@@ -13,6 +13,12 @@
 #include "../../core/broker_session.hpp"
 #include "../../core/broker_traits.hpp"
 
+#include <boost/asio/associated_executor.hpp>
+#include <boost/asio/dispatch.hpp>
+#include <boost/asio/execution/outstanding_work.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/prefer.hpp>
+
 #include <optional>
 #include <string>
 #include <utility>
@@ -707,6 +713,12 @@ struct BrokerTraits<kiwoom::KiwoomClient>
    * a handler naming no executor carries in recent Boost, and what `BrokerSession` binds a plain
    * callback to -- and posting to `system_executor` instead would complete outside the
    * `io_context` running this client, which does not count it as work.
+   *
+   * **Work is held on the handler's executor from initiation until the dispatch**, as an Asio
+   * operation does. Without it a caller whose handler is bound to a *different* `io_context` can
+   * run that context to completion before the client's strand has posted anything, and the refusal
+   * then lands in a stopped context and is never delivered. `prefer` rather than `require`, because
+   * an executor that tracks nothing -- `inline_executor` -- has no work to hold.
    */
   template <typename Token>
   static auto holdings(Client& client, const Account& account, Token&& token) {
@@ -714,11 +726,13 @@ struct BrokerTraits<kiwoom::KiwoomClient>
       static_cast<void>(account);
       return net::async_initiate<Token, void(Result<HoldingsSnapshot>)>(
         [strand = client.get_executor()](auto&& handler) mutable {
+          auto work = net::prefer(
+            net::get_associated_executor(handler), net::execution::outstanding_work.tracked
+          );
           net::post(
             strand,
-            [handler = std::forward<decltype(handler)>(handler)]() mutable {
-              auto executor = net::get_associated_executor(handler);
-              net::dispatch(executor, [handler = std::move(handler)]() mutable {
+            [handler = std::forward<decltype(handler)>(handler), work = std::move(work)]() mutable {
+              net::dispatch(work, [handler = std::move(handler)]() mutable {
                 std::move(handler)(refuse_holdings());
               });
             }
