@@ -4057,7 +4057,7 @@ TEST_CASE("the shared YYYYMMDD reader reads only a real date spelled in digits",
   }
 }
 
-TEST_CASE("a KIS calendar row whose date cannot be read costs its own day and no other", "[core][calendar][kis]") {
+TEST_CASE("a KIS calendar row whose date cannot be read costs no day that was read", "[core][calendar][kis]") {
   const auto page = [](std::string_view damaged_row) {
     return json_response(
       std::string(R"({"rt_cd":"0","ctx_area_fk":"","ctx_area_nk":"","output":[)") +
