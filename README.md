@@ -1,11 +1,17 @@
 # algotradelib
 
 C++17 building blocks for event-driven trading through Korean broker APIs — currently Korea
-Investment & Securities (KIS) and Toss Securities.
+Investment & Securities (KIS), Kiwoom Securities and Toss Securities.
 
 Header-only, consumed through CMake. A strategy is a plain struct that performs no I/O and names no
 broker, so one source is replayed against history, dry-run with no credentials, and then run live
-against either broker without being rewritten. Selecting a broker is choosing a type parameter.
+against any of the three without being rewritten. Selecting a broker is choosing a type parameter.
+
+> **This library sends real orders to real accounts.** It is provided as is, with no warranty of any
+> kind (see the License section at the end), and nothing in it is investment advice. It is in development
+> (`0.0.0.9000`, no release yet) and **has not yet been run end to end against a broker account**:
+> every broker behaviour it relies on was read from the brokers' specifications. Rehearse on a demo
+> account first, and read "Brokers and accounts" below before you do.
 
 ## Architecture
 
@@ -25,7 +31,7 @@ underneath it, and what that compile-time claim does and does not cover.
 | A C++17 compiler | — | everything |
 | CMake | 3.10 for the library, **3.16** for the project templates below | everything |
 | Boost | 1.87, component `json` | everything |
-| OpenSSL | **3.6.2** | everything (see below) |
+| OpenSSL | 3.0 | everything (see below) |
 | Eigen | 3.4 | the analytics layer, on by default |
 
 Three of those floors are worth a sentence each.
@@ -35,9 +41,10 @@ project on an old CMake can consume it. The consumer `CMakeLists.txt` shown belo
 scaffold generates — ask for 3.16, which is simply a saner floor to start a new project on. Lower it
 to 3.10 in your own project if you need to; nothing here requires the newer version.
 
-**OpenSSL's is a patch-level minimum.** A machine carrying 3.5.x fails at configure time, and the
-message names a version rather than a decision, so it reads like a mystery. If you hit it, that is
-what happened.
+**OpenSSL's floor is the oldest supported release line, not a tested one.** The headers call
+OpenSSL directly only to set the TLS server name, which OpenSSL has offered since long before 3.0;
+everything else goes through Boost.Asio's `ssl` layer. So 3.0 is the floor. The only version this
+library has been built and tested against is 3.6.x.
 
 **Boost and OpenSSL are required even for a backtest that touches no network.** The library exports
 one interface target for every consumer, so an offline program still links `libssl`, `libcrypto` and
@@ -111,6 +118,24 @@ Configure your project with `-DCMAKE_PREFIX_PATH=/your/prefix` if that is not a 
 already searches. The installed package config records whether the library was built with a backend,
 so a consumer is never asked to restate how it was configured and cannot get it wrong.
 
+### Checking the version
+
+`<algotradelib/version>` (also included by `<algotradelib/core>`) defines `ATL_VERSION_MAJOR`,
+`ATL_VERSION_MINOR`, `ATL_VERSION_PATCH` and `ATL_VERSION_DEV`, and `ATL_VERSION_STRING`. The header is
+the only place the version is written; CMake reads it, so the package version always agrees.
+
+```cpp
+#include <algotradelib/version>
+
+#if ATL_VERSION >= ATL_VERSION_ENCODE(0, 1, 0)
+// something 0.1.0 added
+#endif
+```
+
+`ATL_VERSION` encodes the release only, as `BOOST_VERSION` does. `ATL_VERSION_DEV` is 0 for a release
+and otherwise marks unreleased work after it: today's `0.0.0.9000` is the development version before
+any release. What changed is in [CHANGELOG.md](CHANGELOG.md).
+
 ### Build options
 
 | Option | Default | Effect |
@@ -172,12 +197,28 @@ const auto report = backtest::summarize(engine.result(), engine.fills(), periods
 
 **Run it live.** Binding a broker is choosing a type parameter; the loop owns the cadence, the stop
 control, and the two gates that refuse to trade before the broker's own order list has been read.
+Bind **through a journal**: without one, an order in flight when the process dies is invisible to the
+next start, and the next start may send it again.
 
 ```cpp
 #include <algotradelib/live>
+#include <algotradelib/runner>
 
-auto live_runner = live::bind(session, MyStrategy{}, limits);
-live::SessionSource<Session> source(session, {samsung()});
+// Name the account in the journal's header, so a file belonging to another account refuses to open.
+runner::FileJournal journal("orders.jsonl", "kis:demo:12345678-01");
+if (!journal.open()) {
+  std::cerr << journal.rejection() << '\n';
+  return 1;   // a runner that cannot journal should not trade
+}
+
+// `bind_journaled`, never `bind`, for anything that places orders.
+auto live_runner = live::bind_journaled(session, journal, MyStrategy{}, limits);
+
+// Before the loop starts: withhold whatever a previous process left unresolved.
+const auto recovery = runner::recover_runner(live_runner, journal);
+
+live::SessionSource<Session, runner::FileJournal> source(session, {samsung()});
+source.set_journal(journal);   // lets the listings the source reads resolve the journal
 
 runner::PollSchedule schedule;
 schedule.bars_ = std::chrono::minutes(1);
@@ -193,6 +234,9 @@ runner::SignalStop::install(stop);
 const auto report = loop.run(stop);
 ```
 
+[Recovering after a crash](doxygen/vignettes/recovering-after-a-crash.md) explains each step and the
+verdicts `recover_runner` returns.
+
 Bars reach a replay either from a broker (`example-backtest-broker` fetches real history through KIS
 or Toss) or from `Bar` values you construct yourself. This library reads no files on purpose: parsing
 somebody's CSV is not a thing it can do honestly for everyone, and it belongs in your project where
@@ -204,6 +248,38 @@ the fastest way to see each layer work: `example-strategy-dryrun`, `example-back
 `example-analytics-offline` and `example-rate-limit-stats`. `example-kis-place-order` is offline too
 — it constructs and prints an `OrderRequest` and can send nothing. The rest read credentials from
 the environment; the [broker clients](doxygen/vignettes/broker-clients.md) page lists which.
+
+## Brokers and accounts
+
+| Broker | State | Paper trading |
+| --- | --- | --- |
+| KIS | market data, calendar, reference data, holdings, buying power, orders (including stop-limit), order history | `KIS_DEMO=1` |
+| Kiwoom | market data, reference data, buying power, orders (including stop-limit), order history; **no calendar**; **holdings refuse** until you state what its `kt00018` inquiry covers (below) | `KIWOOM_DEMO=1` |
+| Toss | market data, calendar, reference data, holdings, buying power, orders (no stop-limit), order history | **none** |
+
+**`KIS_DEMO` and `KIWOOM_DEMO` are required.** `1` selects the broker's 모의투자 (paper-trading)
+endpoints, `0` selects live, and anything else — unset included — refuses to load, so a forgotten
+`export` cannot mean real money. A JSON credential file needs `"demo": true` or `"demo": false` for
+the same reason.
+
+**Toss has no paper-trading environment.** A Toss program with credentials trades real money; rehearse
+a strategy with a replay or a dry run, or on a KIS or Kiwoom demo account, first.
+
+**Kiwoom's holdings need a statement from you.** `kt00018`, the inquiry holdings come from, takes a
+venue and does not say whether it filters positions by venue or values them by it. Rather than guess,
+the adapter refuses holdings — and so every sellable and position check — until
+`KiwoomConfig::holdings_venue_` and `holdings_position_scope_` are set (and
+`holdings_sellable_scope_` for checked sells). The members' documentation explains each choice.
+
+**KIS: own-account customers only.** The library sends `custtype P` (일반), which covers individual
+*and* corporate customers trading their own account. KIS's partner program for licensed firms serving
+third parties (`custtype B`, with `personalseckey`, per-member `phone_number` / `ip_addr` and `gt_uid`)
+is not supported.
+
+**Order routing across both Korean books is opt-in.** At KIS an order that names no venue routes to
+KRX; `Venue::COMBINED` asks for SOR. That is not the default because a KIS demo account refuses SOR,
+and a default that fails on demo would stop a demo run rehearsing the live one. A Kiwoom order must
+name its venue. Toss offers no choice.
 
 ## Documentation
 
@@ -222,3 +298,9 @@ The [user guide](doxygen/vignettes/guide.md) is eleven pages in the order they a
 | 9 | [The broker port](doxygen/vignettes/the-broker-port.md) | `BrokerTraits`, `BrokerCaps`, order identity — read this to add a broker |
 | 10 | [Talking to a broker directly](doxygen/vignettes/broker-clients.md) | the KIS and Toss clients, and the order-safety rules |
 | 11 | [Transport and request pacing](doxygen/vignettes/transport-and-pacing.md) | the pacer, the traffic classes, how each broker reports a refusal |
+
+## License
+
+MIT; see [LICENSE](LICENSE). The software is provided as is, without warranty of any kind, and the
+authors are not liable for any loss, including trading losses, arising from its use. Nothing in this
+repository is investment advice.
