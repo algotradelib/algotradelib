@@ -343,6 +343,14 @@ struct Capabilities {
   /** Toss honors a client order identifier as an idempotency key for ten minutes. */
   static constexpr bool has_client_order_id = true;
 
+  /**
+   * Toss publishes no stop basis, so it has nowhere to send a trigger.
+   *
+   * Stated rather than left to the default, which is the same answer, so a reader of this list
+   * sees it was decided. `BrokerSession` refuses a trigger before this adapter is reached.
+   */
+  static constexpr bool has_trigger_price = false;
+
   /** Toss returns every pending order in its `OPEN` listing. */
   static constexpr bool has_working_orders = true;
 

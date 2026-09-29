@@ -2734,6 +2734,17 @@ private:
         return error;
       }
     }
+    // Toss publishes no stop basis and `make_place_order_request` has no field for a trigger, so
+    // one stated here would be dropped and the order acknowledged as a plain limit. The session
+    // refuses it too, but a caller of this client does not go through the session.
+    if (order.trigger_price_) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
+      error.broker_code_ = "unsupported_trigger_price";
+      error.message_ = "Toss publishes no stop order and has no field for a trigger price";
+      return error;
+    }
     // The shape is judged before the price, because whether a price is required
     // at all is a fact about the basis. Judged after, a mid-price order was
     // refused by `validate_price` as "limit and market orders only" -- the right
