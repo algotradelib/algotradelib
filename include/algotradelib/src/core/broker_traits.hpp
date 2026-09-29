@@ -358,22 +358,44 @@ using std::begin;
 using std::end;
 
 /**
- * The row `to_account_info` binds, `const auto& item : raw.value()`, found as a range-for finds it --
- * and declared only where the whole loop is well-formed: `begin`, `end`, the comparison between
- * them, the increment and the dereference.
+ * Where an account listing's items start. `to_account_info` walks a listing with exactly these two
+ * functions and the lvalue operations below, and the conformance check asks for exactly the same
+ * expressions -- one definition of the loop, so the check cannot drift from the code it checks.
+ */
+template <typename Items>
+auto first(Items& items) -> decltype(begin(items)) {
+  return begin(items);
+}
+
+/** Where an account listing's items end; see `first`. */
+template <typename Items>
+auto last(Items& items) -> decltype(end(items)) {
+  return end(items);
+}
+
+/** The cursor and sentinel types of a listing, as `to_account_info` holds them: named lvalues. */
+template <typename Items>
+using cursor_t = decltype(first(std::declval<Items&>()));
+template <typename Items>
+using sentinel_t = decltype(last(std::declval<Items&>()));
+
+/**
+ * The row `to_account_info` binds, `const auto& item = *cursor;`, declared only where the whole loop
+ * it runs is well-formed on lvalues: `cursor != stop`, `++cursor` and `*cursor`.
  */
 template <typename Items>
 auto row_of(Items& items) -> decltype(
-  static_cast<void>(begin(items) != end(items)),
-  static_cast<void>(++std::declval<decltype(begin(items))&>()),
-  std::declval<const std::remove_reference_t<decltype(*begin(items))>&>()
+  static_cast<void>(items),
+  static_cast<void>(bool(std::declval<cursor_t<Items>&>() != std::declval<sentinel_t<Items>&>())),
+  static_cast<void>(++std::declval<cursor_t<Items>&>()),
+  std::declval<const std::remove_reference_t<decltype(*std::declval<cursor_t<Items>&>())>&>()
 );
 
 }  // namespace account_rows
 
 /**
  * Whether a listing's items go through `to_account_info`, as it is written: `size()` for the
- * reservation, a range-for over the items, a default-constructed `AccountInfo` whose three members
+ * reservation, the loop `account_rows` defines, a default-constructed `AccountInfo` whose three members
  * are assigned from `display_of`, `type_of` and `selector_of`, and a move into the result.
  */
 template <typename T, typename Items, typename = void>

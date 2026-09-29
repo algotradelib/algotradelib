@@ -35,8 +35,14 @@ Result<std::vector<AccountInfo<Client>>> to_account_info(Result<Items> raw) {
     return Result<Accounts>(std::move(raw.error()));
   }
   Accounts listed;
-  listed.reserve(raw.value().size());
-  for (const auto& item : raw.value()) {
+  auto& items = raw.value();
+  listed.reserve(items.size());
+  // Walked with `account_rows`' two functions and lvalue operations rather than a range-for, so the
+  // expressions `BrokerConformance` checks for a blocking listing are the ones evaluated here.
+  auto cursor = account_rows::first(items);
+  auto stop = account_rows::last(items);
+  for (; cursor != stop; ++cursor) {
+    const auto& item = *cursor;
     AccountInfo<Client> info;
     info.display_number_ = Traits::display_of(item);
     info.type_ = Traits::type_of(item);

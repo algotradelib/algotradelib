@@ -47,6 +47,11 @@ TEST_CASE("every verb a shipped client's capabilities claim compiles", "[port][c
 // about the one member that differs between them.
 namespace conformance_fakes {
 
+/** A row type a broker might list accounts as. */
+struct AccountRow {
+  std::string number_;
+};
+
 struct ClaimsWithoutThunk {};
 struct ClaimsWithWrongArity {};
 struct DeclinesWithoutThunk {};
@@ -63,6 +68,8 @@ struct RequiresTheInlineExecutor {};
 struct ExplicitRefusal {};
 struct AccountsWithoutValueType {};
 struct AccountsWithoutEnd {};
+struct AccountsOverLvalueCursor {};
+struct AccountsOverRvalueCursor {};
 struct AccountSelectorNotDefaultConstructible {};
 
 /** A refusal whose dereference converts to `BrokerError` only explicitly. */
@@ -76,15 +83,53 @@ struct ExplicitRefusalAnswer {
   ExplicitlyAnError operator*() const { return {}; }
 };
 
+/** The sentinel of both cursor ranges below. */
+struct RowsEnd {};
+
+/**
+ * A cursor whose comparison and dereference accept only lvalues -- valid for a range-for, which
+ * holds its iterator and sentinel in named variables, and for `to_account_info`, which does too.
+ */
+struct LvalueCursor {
+  const AccountRow* at_;
+  const AccountRow& operator*() & { return *at_; }
+  LvalueCursor& operator++() {
+    ++at_;
+    return *this;
+  }
+  friend bool operator!=(LvalueCursor& cursor, RowsEnd&) { return cursor.at_ != nullptr; }
+};
+
+/** A range over `LvalueCursor`, empty. */
+struct LvalueRows {
+  LvalueCursor begin() const { return LvalueCursor{nullptr}; }
+  RowsEnd end() const { return {}; }
+  std::size_t size() const { return 0; }
+};
+
+/** A cursor whose comparison accepts only rvalues, which no loop over named variables can use. */
+struct RvalueCursor {
+  const AccountRow* at_;
+  const AccountRow& operator*() const { return *at_; }
+  RvalueCursor& operator++() {
+    ++at_;
+    return *this;
+  }
+  friend bool operator!=(RvalueCursor&& cursor, RowsEnd&&) { return cursor.at_ != nullptr; }
+};
+
+/** A range over `RvalueCursor`. */
+struct RvalueRows {
+  RvalueCursor begin() const { return RvalueCursor{nullptr}; }
+  RowsEnd end() const { return {}; }
+  std::size_t size() const { return 0; }
+};
+
 /** An account selector with no default, which `AccountInfo`'s default construction needs. */
 struct NoDefaultSelector {
   explicit NoDefaultSelector(int) {}
 };
 
-/** A row type a broker might list accounts as. */
-struct AccountRow {
-  std::string number_;
-};
 
 /** A range with `begin`, `end` and `size` and no `value_type`, which a range-for accepts. */
 struct AccountRange {
@@ -291,6 +336,34 @@ struct BrokerTraits<conformance_fakes::AccountsWithoutEnd> {
   static int selector_of(const conformance_fakes::AccountRow&) { return 1; }
 };
 
+/** Account discovery over a range whose cursor works only as a named lvalue. */
+template <>
+struct BrokerTraits<conformance_fakes::AccountsOverLvalueCursor> {
+  using Account = int;
+  static constexpr bool blocking = true;
+  static constexpr bool has_account_discovery = true;
+  static Result<conformance_fakes::LvalueRows> accounts(conformance_fakes::AccountsOverLvalueCursor&) {
+    return Result<conformance_fakes::LvalueRows>(conformance_fakes::LvalueRows{});
+  }
+  static std::string display_of(const conformance_fakes::AccountRow& row) { return row.number_; }
+  static std::string type_of(const conformance_fakes::AccountRow&) { return "cash"; }
+  static int selector_of(const conformance_fakes::AccountRow&) { return 1; }
+};
+
+/** Account discovery over a range whose cursor compares only as an rvalue. */
+template <>
+struct BrokerTraits<conformance_fakes::AccountsOverRvalueCursor> {
+  using Account = int;
+  static constexpr bool blocking = true;
+  static constexpr bool has_account_discovery = true;
+  static Result<conformance_fakes::RvalueRows> accounts(conformance_fakes::AccountsOverRvalueCursor&) {
+    return Result<conformance_fakes::RvalueRows>(conformance_fakes::RvalueRows{});
+  }
+  static std::string display_of(const conformance_fakes::AccountRow& row) { return row.number_; }
+  static std::string type_of(const conformance_fakes::AccountRow&) { return "cash"; }
+  static int selector_of(const conformance_fakes::AccountRow&) { return 1; }
+};
+
 /** Account discovery whose selector `AccountInfo` cannot default-construct. */
 template <>
 struct BrokerTraits<conformance_fakes::AccountSelectorNotDefaultConstructible> {
@@ -333,6 +406,18 @@ TEST_CASE("conformance checks the shape the session uses, not only that a member
   STATIC_REQUIRE_FALSE(port_detail::serves_account_discovery<AccountSelectorNotDefaultConstructible>);
   // A range-for needs `end` as much as `begin`.
   STATIC_REQUIRE_FALSE(port_detail::serves_account_discovery<AccountsWithoutEnd>);
+  // The loop holds its cursor and sentinel as named lvalues, as a range-for does, so a cursor that
+  // compares only as an rvalue cannot be walked (`conformance-account-rows-reject-an-rvalue-cursor`
+  // proves the real call fails too)...
+  STATIC_REQUIRE_FALSE(port_detail::serves_account_discovery<AccountsOverRvalueCursor>);
+  // ...and one that works only as an lvalue can. The real call runs below.
+  STATIC_REQUIRE(port_detail::serves_account_discovery<AccountsOverLvalueCursor>);
+  {
+    AccountsOverLvalueCursor client;
+    const auto listed = list_accounts(client);
+    REQUIRE(listed);
+    CHECK(listed.value().empty());
+  }
   // What is checked is the iteration `to_account_info` performs, not a `value_type` it never names.
   STATIC_REQUIRE(port_detail::serves_account_discovery<AccountsWithoutValueType>);
 }

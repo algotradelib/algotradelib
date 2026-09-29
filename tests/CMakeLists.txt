@@ -173,6 +173,20 @@ set_tests_properties(conformance-verbs-reject-a-token-copy PROPERTIES
     TIMEOUT 300
 )
 
+# The real call behind the account-row verdict: a cursor that compares only as an rvalue cannot be
+# walked by `to_account_info`, which holds it as a named lvalue.
+add_library(algotradelib-conformance-probe-account-rows OBJECT EXCLUDE_FROM_ALL conformance-probe-account-rows.cpp)
+target_link_libraries(algotradelib-conformance-probe-account-rows PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME conformance-account-rows-reject-an-rvalue-cursor
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-conformance-probe-account-rows
+            --config "$<CONFIG>"
+)
+set_tests_properties(conformance-account-rows-reject-an-rvalue-cursor PROPERTIES
+    PASS_REGULAR_EXPRESSION "broker_session.hpp:[0-9]+:[0-9]+: error: (invalid operands to binary expression|no match for .operator!=)"
+    TIMEOUT 300
+)
+
 # The same guarantee for the dry runner: a dry run links no transport, so a dry-run binary has no
 # code path that could place an order.
 add_executable(algotradelib-runner-isolation test-runner-isolation.cpp)
