@@ -303,9 +303,10 @@ struct ReplayResult {
    * **up to** the halt and not the run the caller asked for. The bar it happened on is counted in
    * `bars_`, because it was fed, but nothing downstream of the refusal ran on it.
    *
-   * **Why a halt rather than a skipped fill.** The refused trade would have changed the position the
+   * **Why a halt rather than skipping on.** A refused trade would have changed the position the
    * strategy carried, the orders it placed afterwards, and therefore the equity curve, the return,
-   * the drawdown, the Sharpe and the turnover. Continuing would have produced a complete-looking
+   * the drawdown, the Sharpe and the turnover; a refused mark would have had the strategy place those
+   * orders from a position one bar behind its price. Continuing would have produced a complete-looking
    * report describing a path that never happened, which is a more expensive failure than stopping.
    */
   std::optional<BrokerError> halted_;
@@ -313,8 +314,9 @@ struct ReplayResult {
    * Orders cleared from the queue by a halt, rather than left unfilled by the end of the data.
    *
    * Counted apart from `unfilled_` because they mean different things: an unfilled order is a replay
-   * that ran to the end of its bars with something still resting, and an aborted one is a replay that
-   * stopped being able to cost a trade while it was still working.
+   * that ran to the end of its bars with something still resting, and an aborted one was still
+   * working when the replay halted -- on a trade it could not cost or record, or a book it could not
+   * mark.
    */
   std::size_t aborted_{0};
   /**

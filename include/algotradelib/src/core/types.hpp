@@ -1032,7 +1032,7 @@ struct Date {
   /**
    * The four-digit year.
    *
-   * **A `Date` parsed from a broker string was checked digit by digit.** `std::stoi` skips leading
+   * **A `Date` parsed from a broker string is checked digit by digit.** `std::stoi` skips leading
    * whitespace, accepts a sign, takes the digits that follow and ignores the rest, so it returns `2`
    * for `"2x"`, `" 2"` and `"+2"` alike, and a fixed-width field split into components and handed to
    * it becomes a real date that is not the one on the wire. No adapter reads a date that way any
