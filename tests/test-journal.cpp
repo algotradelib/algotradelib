@@ -2501,3 +2501,36 @@ TEST_CASE("a header that declares checksums protects the first entry too", "[jou
   CHECK(legacy.unreadable_lines_ == 0);
   CHECK(legacy.entries_.size() == 1);
 }
+
+TEST_CASE("an entry overwritten by a newline or by the header is counted, not skipped", "[journal][integrity]") {
+  // **Codex round 2's blocker.** A blank line and a second header were skipped, so an entry replaced by
+  // either vanished from recovery with nothing counted -- and its terminal companion became an orphan.
+  const auto header = runner::journal_header_line("test:account");
+  auto pending = checked_entry();
+  pending.outcome_ = JournalOutcome::PENDING;
+  pending.order_id_.clear();
+  const auto terminal = runner::journal_entry_to_line(checked_entry());
+
+  const auto recovered = [](const std::string& text) {
+    runner::JournalBytes bytes;
+    bytes.status_ = runner::JournalReadStatus::READ;
+    bytes.text_ = text;
+    const auto replay = runner::parse_journal_bytes(bytes);
+    runner::IndeterminacyLedger ledger;
+    return std::make_pair(replay.unreadable_lines_, runner::recover_into(replay, ledger).clean());
+  };
+
+  const auto blanked = recovered(header + "\n\n" + terminal + "\n");
+  CHECK(blanked.first == 1);
+  CHECK_FALSE(blanked.second);
+
+  const auto duplicated = recovered(header + "\n" + header + "\n" + terminal + "\n");
+  CHECK(duplicated.first == 1);
+  CHECK_FALSE(duplicated.second);
+
+  // What this writer does produce is still clean: a header, then a pending and its answer.
+  const auto healthy =
+    recovered(header + "\n" + runner::journal_entry_to_line(pending) + "\n" + terminal + "\n");
+  CHECK(healthy.first == 0);
+  CHECK(healthy.second);
+}

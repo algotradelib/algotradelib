@@ -1113,10 +1113,26 @@ inline JournalReplay parse_journal_bytes(const JournalBytes& bytes) {
     }
     const std::string_view line(text.data() + begin, end - begin);
     begin = end + 1;
+    // **An empty line, or a header anywhere but first, is damage.** This writer produces neither: every
+    // append is one non-empty line and its newline, and the header is written once, before anything
+    // else. Skipping them was how an entry overwritten by a bare newline, or by a copy of the header,
+    // vanished from recovery with nothing counted -- a changed line removed rather than detected.
+    const auto unreadable = [&replay](const char* why) {
+      ++replay.unreadable_lines_;
+      if (replay.detail_.empty()) {
+        replay.detail_ = why;
+      }
+    };
     if (line.empty()) {
+      unreadable("the journal contains an empty line, which this library never writes");
       continue;
     }
     if (auto scope = journal_header_scope(line)) {
+      if (replay.has_header_ || !replay.entries_.empty() || replay.unreadable_lines_ > 0) {
+        unreadable("the journal contains a header after its first line, which this library never "
+                   "writes");
+        continue;
+      }
       // Not an instruction and not damage. Recorded so an opener can check ownership before it
       // writes anything at all.
       replay.has_header_ = true;
