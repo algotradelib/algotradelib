@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
 #include <optional>
 #include <string>
 #include <utility>
@@ -243,6 +244,16 @@ struct ReportCaveats {
    * and the live account is the only place the broker's own answer applies.
    */
   static constexpr bool buying_power_is_ledger_cash = true;
+
+  /**
+   * Bars whose equity total could not be computed exactly, copied from
+   * `ReplayResult::unvalued_bars_`: each has no point on the curve, and the point after it carries
+   * no return, so the return series is **shorter than the bar count** by at least this much.
+   * Appended, so a positional initializer of this struct is unaffected.
+   */
+  std::size_t unvalued_bars_{0};
+  /** The first such bar's period end; empty when there was none. */
+  std::optional<std::chrono::system_clock::time_point> first_unvalued_;
 };
 
 /** What a replay produced, with every figure's absence meaning what `analytics` says it means. */
@@ -335,16 +346,20 @@ struct Report {
   /**
    * Why the replay stopped early, when it did — **read this before any figure above it**.
    *
-   * Present means the replay stopped early, and there are two origins: an execution whose cost
-   * could not be resolved, and one the ledger could not record. Both mean the same thing to a
-   * reader -- a trade the model produced did not reach the books, so continuing would describe a
-   * path that did not happen.
+   * Present means the replay stopped early, and there are three origins: an execution whose cost
+   * could not be resolved, one the ledger could not record, and a book that could not be marked at a
+   * bar's close (`mark_not_representable`). The first two mean a trade the model produced did not
+   * reach the books; the third means the strategy would have decided on a position one bar behind
+   * its price. Either way continuing would describe a path that did not happen.
    *
    * Every number in this report describes the bars **up to** that point. The bar the halt happened
-   * on is counted in `bars_`, because it was fed, but nothing downstream of the refusal ran on it:
-   * no fill, no mark, no equity point, no callback. The strategy was not stopped normally either --
-   * `on_stop` never ran, because an order placed into a replay that cannot cost one has nowhere
-   * honest to go.
+   * on is counted in `bars_`, because it was fed, and **what ran on it depends on where the refusal
+   * fell**. Each bar settles resting orders first: settlement ahead of a refused fill may already have
+   * filled other orders on that bar, with their `on_fill` and order updates, and a mark refusal comes
+   * after the whole of that bar's settlement, so every fill due on it is in these figures. After the
+   * refusal nothing ran -- no further fill, no mark, no equity point, no `on_phase`, no `on_bar`.
+   * The strategy was not stopped normally either: `on_stop` never ran, because whatever it placed
+   * would go into a replay that has stopped being able to describe the path honestly.
    */
   std::optional<BrokerError> halted_;
   /** Orders cleared from the queue by a halt, as distinct from `ReportCaveats::unfilled_`. */
@@ -402,6 +417,8 @@ inline Report summarize(
   report.caveats_.unfilled_ = result.unfilled_;
   report.caveats_.quotes_ = result.quotes_;
   report.caveats_.unchecked_fill_causality_ = result.unchecked_fill_causality_;
+  report.caveats_.unvalued_bars_ = result.unvalued_bars_;
+  report.caveats_.first_unvalued_ = result.first_unvalued_;
 
   // Costs summed exactly, because they are money -- and **per currency**, because a replay whose
   // instruments span markets would otherwise have won added to dollars to make one scalar.

@@ -3617,6 +3617,24 @@ struct BuysHuge {
   }
 };
 
+/** Buys two shares on its first bar and never trades again. */
+struct BuysOnceThenHolds {
+  bool bought_{false};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (bought_) {
+      return;
+    }
+    bought_ = true;
+    ctx.submit(
+      strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("2"))
+      )
+    );
+  }
+};
+
 struct PlacesTwoEachBar {
   bool stopped_{false};
   std::size_t fills_{0};
@@ -3783,6 +3801,104 @@ TEST_CASE("the refusal bar itself runs nothing after the refusal") {
   CHECK(engine.result().aborted_ == 1);
   CHECK(engine.result().unfilled_ == 0);
   CHECK_FALSE(engine.strategy().stopped_);
+}
+
+TEST_CASE("a mark that will not fit halts the replay before the strategy decides on it") {
+  // The strategy buys two shares on every bar. The third bar opens at an ordinary price, so the two
+  // orders from the second fill at it; its close cannot value the lot, so the book cannot be marked.
+  // Continuing -- which this used to do, skipping only the equity point -- ran `on_bar` with the
+  // bar's close as the last price beside a lot valued one bar ago, and the orders placed from that
+  // view filled on the next bar.
+  backtest::Backtester<PlacesTwoEachBar> engine(PlacesTwoEachBar{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  REQUIRE_FALSE(engine.result().halted_);
+  REQUIRE(engine.strategy().bars_seen_ == 2);
+  const auto fills_before = engine.strategy().fills_;
+  const auto equity_before = engine.result().equity_.size();
+  const auto phases_before = engine.strategy().phases_seen_;
+
+  engine.feed(moving_bar(
+    utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "9223372036854775807"
+  ));
+
+  REQUIRE(engine.result().halted_);
+  CHECK(engine.result().halted_->broker_code_ == "mark_not_representable");
+  CHECK(engine.result().halted_->message_.find("005930") != std::string::npos);
+  CHECK_FALSE(engine.result().halted_->reached_broker_);
+  // The orders resting from the second bar filled at the third bar's open, before the mark...
+  CHECK(engine.strategy().fills_ > fills_before);
+  // ...and nothing decided on the unmarked book: no `on_phase`, no `on_bar`, so no order from it.
+  CHECK(engine.strategy().bars_seen_ == 2);
+  CHECK(engine.strategy().phases_seen_ == phases_before);
+  CHECK(engine.result().equity_.size() == equity_before);
+  // The lot is still coherent at its previous mark.
+  for (const auto& lot : engine.ledger().positions()) {
+    CHECK(lot.last_price_ == Decimal64::parse("70000"));
+  }
+
+  // A later ordinary bar changes nothing: the replay stopped.
+  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  CHECK(engine.strategy().bars_seen_ == 2);
+  CHECK(engine.result().equity_.size() == equity_before);
+
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  REQUIRE(report.halted_);
+  CHECK(report.halted_->broker_code_ == "mark_not_representable");
+}
+
+TEST_CASE("an equity total that will not fit is counted, and no return spans the gap", "[backtest][caveats]") {
+  // Every mark fits and the total of cash and lots does not: cash is within a million won of the
+  // largest exact decimal, and the lot's appreciation pushes the sum past it. The bar gets no point,
+  // and the next point must not carry a return measured across two bars.
+  auto config = replay_config();
+  config.cash_ = Decimal64::parse("9223372036854000000");
+  backtest::Backtester<BuysOnceThenHolds> engine(BuysOnceThenHolds{}, config);
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  REQUIRE(engine.ledger().quantity_of(samsung()) == std::optional<Decimal64>(Decimal64::parse("2")));
+  const auto points_before = engine.result().equity_.size();
+
+  const auto unvalued_at = utc(2026, 3, 12, 6, 30);
+  engine.feed(moving_bar(unvalued_at, BarInterval::ONE_DAY, "70000", "1000000"));
+  REQUIRE_FALSE(engine.result().halted_);
+  // The mark landed -- this is a total that does not fit, not a lot that does not.
+  REQUIRE(engine.ledger().positions().front().last_price_ == Decimal64::parse("1000000"));
+  REQUIRE_FALSE(engine.ledger().equity_in(Currency{"KRW"}));
+  CHECK(engine.result().equity_.size() == points_before);
+  CHECK(engine.result().unvalued_bars_ == 1);
+
+  // A second in a row: counted, and the date kept is still the first one's -- a close-stamped
+  // bar's period end is its own timestamp.
+  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_DAY, "70000", "1000000"));
+  CHECK(engine.result().unvalued_bars_ == 2);
+  REQUIRE(engine.result().first_unvalued_);
+  CHECK(*engine.result().first_unvalued_ == unvalued_at);
+
+  engine.feed(moving_bar(utc(2026, 3, 14, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  REQUIRE(engine.result().equity_.size() == points_before + 1);
+  // The point after the gap carries no return; the one before it did.
+  CHECK_FALSE(math::observed(engine.result().equity_.back().period_return_));
+  CHECK(math::observed(engine.result().equity_[points_before - 1].period_return_));
+
+  engine.feed(moving_bar(utc(2026, 3, 16, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  // And the one after that is an ordinary bar-to-bar return again.
+  CHECK(math::observed(engine.result().equity_.back().period_return_));
+  CHECK(engine.result().unvalued_bars_ == 2);
+
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  CHECK(report.caveats_.unvalued_bars_ == 2);
+  CHECK(report.caveats_.first_unvalued_ == engine.result().first_unvalued_);
+}
+
+TEST_CASE("an ordinary replay reports no unvalued bars", "[backtest][caveats]") {
+  backtest::Backtester<PlacesTwoEachBar> engine(PlacesTwoEachBar{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70500"));
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  CHECK(report.caveats_.unvalued_bars_ == 0);
+  CHECK_FALSE(report.caveats_.first_unvalued_);
+  CHECK_FALSE(engine.result().halted_);
 }
 
 TEST_CASE("a fill the ledger cannot record halts the replay rather than disappearing") {

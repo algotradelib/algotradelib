@@ -324,8 +324,9 @@ public:
    * Returns false when a lot's value at that price will not fit an exact decimal, in which case
    * **that lot is left entirely alone** -- old price, old value, still agreeing with each other.
    * A caller that ignores the result gets a ledger that is still self-consistent and one bar behind
-   * on that instrument, which is the failure that can be reasoned about; `Backtester` records no
-   * equity point for such a bar rather than curving a figure at a mark that was never applied.
+   * on that instrument, which is the failure that can be reasoned about; `Backtester` halts the
+   * replay on it (`mark_not_representable`), because a strategy deciding on that bar would see the
+   * lot one bar behind the price it is handed.
    */
   bool mark(const InstrumentId& instrument, const Decimal64& price) {
     bool marked = true;
