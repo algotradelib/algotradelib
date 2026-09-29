@@ -73,8 +73,15 @@ before the auction *and* that volume existed at that level — neither of which 
 Refusing it understates a result; claiming it overstates one, and a backtester that flatters is worse
 than one that disappoints.
 
-`LimitFillPrice::AT_OPEN_IF_BETTER` is the optimistic variant, opt-in because the assumption is yours to
-make. Whichever you use, `report.caveats_.limit_fill_` says which.
+So `AT_LIMIT`, the default, never credits the better **open**. It is still not "never better than the
+limit": a limit marketable through the whole bar is credited the bar's worst price — a buy limited at
+72,000 on a bar whose high is 71,000 fills at 71,000 — because the limit itself is a price nobody traded.
+**Backtests from before this rule can therefore show better limit fills with no configuration change**;
+`report.caveats_.limit_fills_bounded_` counts every fill the bar moved.
+
+`LimitFillPrice::AT_OPEN_IF_BETTER` is the optimistic variant: it credits the open when the bar opened
+through the limit, opt-in because the assumption is yours to make. Whichever you use,
+`report.caveats_.limit_fill_` says which.
 
 **A stop-limit order is dormant until a bar reaches its trigger**, then the limit it becomes:
 

@@ -528,7 +528,7 @@ inline bool ends_in_checksum(std::string_view line) {
 }
 
 /**
- * Returns whether a line's canonical checksum member matches the bytes before it.
+ * Returns whether a line's canonical checksum member matches the line without it.
  *
  * The digest covers the line exactly as written with that member removed -- `{...}` -- so a reader
  * never has to reproduce the writer's formatting. Call only on a line `ends_in_checksum` accepts.
@@ -656,8 +656,9 @@ inline std::string journal_entry_to_line(const JournalEntry& entry) {
   if (entry.price_) {
     row["price"] = entry.price_->str();
   }
-  // Only when present, so every line that is not a stop is byte-identical to what this writer
-  // produced before the field existed, and every old journal reads unchanged.
+  // Only when present, so a line that is not a stop carries no `trigger` key and every old journal
+  // reads unchanged. (Every new line ends in a `crc` member, added below; the fields before it are
+  // what an earlier writer produced.)
   if (entry.trigger_price_) {
     row["trigger"] = entry.trigger_price_->str();
   }
@@ -678,7 +679,8 @@ inline std::string journal_entry_to_line(const JournalEntry& entry) {
   if (!entry.scope_.empty()) {
     row["scope"] = entry.scope_;
   }
-  // **Last, and over every byte before it.** See `journal_detail::line_checksum` for what it detects
+  // **Last, and over the line as it reads without it** -- the whole object, closing brace included,
+  // which the member then replaces. See `journal_detail::line_checksum` for what it detects
   // and `journal_entry_from_line` for what a line that fails it becomes.
   auto line = json::serialize(row);
   const auto checksum = journal_detail::checksum_text(journal_detail::line_checksum(line));
@@ -772,7 +774,8 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
   };
 
   // A `crc` member anywhere but last, or not eight lowercase hex digits, is not this writer's; one
-  // that is must match the bytes before it. See `journal_detail::line_checksum`.
+  // that is must match the line without it -- the object with its own closing brace. See
+  // `journal_detail::line_checksum`.
   const bool checksum_holds = !journal_detail::has_field(row, "crc") ||
     (journal_detail::ends_in_checksum(line) && journal_detail::checksum_matches(line));
   bool unknown_key = false;

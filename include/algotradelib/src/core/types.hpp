@@ -1766,9 +1766,10 @@ enum class OrderStatus {
 /**
  * Broker-neutral instruction to open a new order.
  *
- * `price_` must be present for `OrderType::LIMIT` and absent for
- * `OrderType::MARKET`; adapters reject any other combination before performing
- * network I/O.
+ * `price_` must be present for a basis `carries_caller_price` names and absent
+ * otherwise; `trigger_price_` must be present for `OrderType::STOP_LIMIT` -- which
+ * needs both -- and absent otherwise. Adapters reject any other combination
+ * before performing network I/O.
  *
  * `client_order_id_` is an idempotency key where the broker supports one. It is
  * never generated automatically, because a generated key would make a retry

@@ -86,7 +86,9 @@ attempted; the second says what happened. A `pending` line with no companion is 
 `at` is the record and `at_text` is the caption: the integer is exact on every platform and is what
 matching reads, the text is for you.
 
-`crc` is always last: a CRC-32 over every byte of the line before it. A line whose bytes changed after
+`crc` is always last. It is the CRC-32 of the line **as it would read without it** — the whole JSON
+object, closing `}` included — after which that brace is replaced by `,"crc":"…"}`; to check a line by
+hand, cut the member and restore the brace. A line whose bytes changed after
 they were written — a bad sector, a partial overwrite, an editor — fails it and is **not read at all**:
 it counts as an unreadable line, and recovery halts the runner outright. That matters for the damage no
 reader of values could see, such as `005930` becoming `005931`, a real instrument. **So do not edit the

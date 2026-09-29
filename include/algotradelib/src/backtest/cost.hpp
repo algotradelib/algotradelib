@@ -561,13 +561,17 @@ struct SlippageModel {
 /** Whether a limit order is credited with a price better than it asked for. */
 enum class LimitFillPrice {
   /**
-   * Fill at the limit, never better.
+   * Fill at the limit -- or, where the bar never traded as far as the limit, at the bar's worst price.
    *
-   * The default, and the conservative choice. A bar that gaps through a resting limit would often fill
-   * better in reality, but claiming the improvement assumes the order was in the book before the
-   * auction *and* that volume existed at that level — neither of which a bar can tell us. Refusing it
-   * understates a result; claiming it overstates one, and a backtester that flatters is worse than one
-   * that disappoints.
+   * The default, and the conservative choice about the **open**: a bar that gaps through a resting
+   * limit would often fill at the open in reality, but claiming that assumes the order was in the book
+   * before the auction *and* that volume existed there — neither of which a bar can tell us.
+   *
+   * **It is not "never better than the limit".** Every limit fill is credited a price its bar traded
+   * (`NextBarFillModel::decide`), so a limit marketable through the whole bar -- a buy limited above
+   * the bar's high, a sell below its low -- is credited that high or low, which is better than the
+   * limit and the worst price the bar showed. Crediting the limit itself there would name a price
+   * nobody traded. `ReportCaveats::limit_fills_bounded_` counts such fills.
    */
   AT_LIMIT,
   /**
