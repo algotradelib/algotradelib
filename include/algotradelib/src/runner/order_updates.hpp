@@ -56,6 +56,7 @@ inline bool same_observable_state(const OrderSnapshot& lhs, const OrderSnapshot&
   return lhs.status_ == rhs.status_ &&
     same_number(lhs.execution_.filled_quantity_, rhs.execution_.filled_quantity_) &&
     same_number(lhs.price_, rhs.price_) &&
+    same_number(lhs.trigger_price_, rhs.trigger_price_) &&
     same_number(lhs.quantity_, rhs.quantity_) &&
     same_number(lhs.order_amount_, rhs.order_amount_) &&
     lhs.canceled_at_ == rhs.canceled_at_;
@@ -93,9 +94,11 @@ inline bool same_observable_state(const OrderSnapshot& lhs, const OrderSnapshot&
  *
  * ## What counts as a change
  *
- * `status_`, `execution_.filled_quantity_`, `price_`, `quantity_`, `order_amount_` and
- * `canceled_at_`. Those are the lifecycle, execution progress, and the two things an amendment
- * moves. A row whose readings all match its predecessor is not reported.
+ * `status_`, `execution_.filled_quantity_`, `price_`, `trigger_price_`, `quantity_`,
+ * `order_amount_` and `canceled_at_`. Those are the lifecycle, execution progress, and the three
+ * things an amendment moves -- a stop order's trigger can be amended on its own, at the same limit
+ * and quantity, and a strategy holding a stop must hear about it. A row whose readings all match
+ * its predecessor is not reported.
  *
  * Not compared: `name_`, `shape_code_`, `instrument_`, `side_`, `currency_` and `ordered_at_`,
  * which identify the order rather than describe its progress; and the monetary figures a fill

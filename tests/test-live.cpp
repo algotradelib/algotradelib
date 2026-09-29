@@ -3495,3 +3495,35 @@ TEST_CASE("two readings of one order that disagree are reported to nobody") {
   poll_rows(source, live_runner, session, {update_row("A1", "", "5", OrderStatus::PARTIAL_FILLED)});
   CHECK(live_runner.strategy().updates_.size() == 1);
 }
+
+TEST_CASE("a stop's trigger moved on its own is reported, and a disagreement about it is not") {
+  // A stop's trigger can be amended at the same limit and quantity, through this library or any
+  // other channel. A strategy holding the stop is owed that event, and two rows for one order that
+  // disagree only about the trigger are a contradiction like any other.
+  const auto stop_row = [](const char* trigger) {
+    auto row = update_row("A1", "", "0");
+    row.order_.type_ = OrderType::STOP_LIMIT;
+    row.order_.trigger_price_ = Decimal64::parse(trigger);
+    return row;
+  };
+
+  SECTION("a trigger-only change is an update, carrying the new trigger") {
+    WorkingSession session;
+    auto live_runner = live::bind_observer(session, WatchesOrders{});
+    live::SessionSource<WorkingSession> source(session, {samsung()});
+    poll_rows(source, live_runner, session, {stop_row("69500")});
+    poll_rows(source, live_runner, session, {stop_row("69500")});
+    REQUIRE(live_runner.strategy().updates_.size() == 1);
+    poll_rows(source, live_runner, session, {stop_row("69800")});
+    REQUIRE(live_runner.strategy().updates_.size() == 2);
+    CHECK(live_runner.strategy().updates_[1].trigger_price_ == Decimal64::parse("69800"));
+  }
+
+  SECTION("two rows that differ only in their trigger are reported to nobody") {
+    WorkingSession session;
+    auto live_runner = live::bind_observer(session, WatchesOrders{});
+    live::SessionSource<WorkingSession> source(session, {samsung()});
+    poll_rows(source, live_runner, session, {stop_row("69500"), stop_row("69800")});
+    CHECK(live_runner.strategy().updates_.empty());
+  }
+}
