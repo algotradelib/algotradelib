@@ -581,7 +581,24 @@ inline std::string journal_header_line(std::string_view scope) {
   row["journal"] = std::string(journal_format_name());
   row["version"] = 1;
   row["scope"] = std::string(scope);
+  // **Every entry below this header carries a checksum.** Declared here, before the first entry, so a
+  // reader can tell a protected line that lost its whole checksum member from a line an earlier release
+  // wrote -- which, in a file that began before checksums, only the order of lines can suggest. A reader
+  // from before this key ignores it: `journal_header_scope` reads `journal` and `scope` only.
+  row["integrity"] = "crc32";
   return json::serialize(row);
+}
+
+/** Returns whether a header line declares that every entry after it carries a checksum. */
+inline bool journal_header_declares_checksums(std::string_view line) {
+  boost::system::error_code error;
+  const auto value = json::parse(line, error);
+  if (error || !value.is_object()) {
+    return false;
+  }
+  const auto* integrity = value.as_object().if_contains("integrity");
+  return integrity != nullptr && integrity->is_string() &&
+    std::string_view(integrity->as_string()) == "crc32";
 }
 
 /** Returns the scope a header line declares, or nothing when the line is not a header. */
@@ -764,6 +781,15 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
       unknown_key = true;
     }
   }
+  // **A line whose bytes changed is not read at all**, rather than read as a damaged entry. A damaged
+  // entry carries its own outcome and an id suffixed `~damaged`, which is right for a line whose
+  // *value* no longer parses -- but a damaged *terminal* line with an intact pending partner then
+  // pairs with nothing, is dropped as an orphan, and the pending line stays open as an ordinary one:
+  // the change was detected and then discarded before recovery decided anything. An unreadable line
+  // is counted by `parse_journal_bytes` and halts recovery outright, whatever it was.
+  if (!checksum_holds || unknown_key) {
+    return std::nullopt;
+  }
 
   const auto symbol = read("symbol");
   const auto country = parsed("country", journal_detail::known_country_from);
@@ -792,10 +818,8 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
     // The same rule for a stop's trigger: absent on every other order and on every line written
     // before the field existed, and a present value that does not parse is damage.
     unusable("trigger", trigger.has_value()) ||
-    // **A line that says something other than what was written.** Everything above catches a value
-    // that no longer parses; this catches one damaged into another valid value -- `005930` into
-    // `005931`, a real instrument -- which no reader of the value alone can see. A line with no
-    // checksum was written before it existed and is read as it always was.
+    // Checked above, where a changed line becomes unreadable rather than damaged; restated so the
+    // condition reads whole.
     !checksum_holds ||
     unknown_key;
   // **A price missing from a priced basis, and a cancellation with no target
@@ -1097,13 +1121,17 @@ inline JournalReplay parse_journal_bytes(const JournalBytes& bytes) {
       // writes anything at all.
       replay.has_header_ = true;
       replay.scope_ = std::move(*scope);
+      // A header that declares checksums protects every entry after it, the first one included.
+      seen_checksum = seen_checksum || journal_header_declares_checksums(line);
       continue;
     }
     const bool checksummed = journal_detail::ends_in_checksum(line);
     if (seen_checksum && !checksummed) {
-      // **This writer never puts a checksum-less line after a checksummed one**, so this is a
-      // protected line that lost its checksum -- damage that removed the whole member, which the
-      // line's own reader cannot tell from a line written before checksums existed.
+      // **This writer never puts a checksum-less line after a checksummed one, or after a header that
+      // declares checksums**, so this is a protected line that lost its checksum -- damage that removed
+      // the whole member, which the line's own reader cannot tell from a line written before checksums
+      // existed. Only the first checksummed line of a file begun by an earlier release is left without
+      // this protection; see `journal_header_line`.
       ++replay.unreadable_lines_;
       if (replay.detail_.empty()) {
         replay.detail_ =

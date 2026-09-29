@@ -744,7 +744,7 @@ TEST_CASE("a damaged value makes a line unattributable, not a different order", 
   // halt, because a guessed instrument is not the key the runner trades under
   // and withholding it protects nothing.
   const auto damage = [](std::string_view field, std::string_view from, std::string_view to) {
-    auto line = runner::journal_entry_to_line(sample_entry());
+    auto line = without_checksum(runner::journal_entry_to_line(sample_entry()));
     const std::string needle = std::string("\"") + std::string(field) + "\":\"" +
       std::string(from) + "\"";
     const auto at = line.find(needle);
@@ -800,7 +800,7 @@ TEST_CASE("a damaged number does not throw out of recovery", "[journal]") {
   // of recovery and out of the runner's startup -- taking the process down
   // instead of producing the operator halt everything else here is built for.
   const auto damage_number = [](std::string_view field) {
-    auto line = runner::journal_entry_to_line(sample_entry());
+    auto line = without_checksum(runner::journal_entry_to_line(sample_entry()));
     const std::string needle = std::string("\"") + std::string(field) + "\":\"";
     const auto at = line.find(needle);
     REQUIRE(at != std::string::npos);
@@ -927,7 +927,7 @@ TEST_CASE("an empty or wrong-typed value is damage, not an absent key", "[journa
   // `null` read as a day order, and a lookalike could then close the wrong
   // hold.
   const auto replace_value = [](std::string_view field, std::string_view with) {
-    auto line = runner::journal_entry_to_line(sample_entry());
+    auto line = without_checksum(runner::journal_entry_to_line(sample_entry()));
     const std::string key = std::string("\"") + std::string(field) + "\":";
     const auto at = line.find(key);
     REQUIRE(at != std::string::npos);
@@ -1031,7 +1031,7 @@ TEST_CASE("a line the writer emits is readable, and unresolvable", "[journal]") 
   // halted a runner over an instruction that had already resolved.
   auto terminal = sample_entry();
   terminal.outcome_ = runner::JournalOutcome::REJECTED;
-  auto damaged = runner::journal_entry_to_line(terminal);
+  auto damaged = without_checksum(runner::journal_entry_to_line(terminal));
   const auto at = damaged.find("\"side\":\"SELL\"");
   REQUIRE(at != std::string::npos);
   damaged.replace(at, std::string("\"side\":\"SELL\"").size(), "\"side\":\"SEL?\"");
@@ -2272,7 +2272,9 @@ TEST_CASE("a damaged trigger makes a line unattributable, and salvage keeps a re
   const auto at = line.find(needle);
   REQUIRE(at != std::string::npos);
 
-  auto damaged = line;
+  // On a pre-checksum line, where the value reader is what catches it; a checksummed line with the
+  // same change is unreadable outright, which the integrity tests pin.
+  auto damaged = without_checksum(line);
   damaged.replace(at, needle.size(), "\"trigger\":\"69?00\"");
   std::optional<runner::JournalEntry> parsed;
   REQUIRE_NOTHROW(parsed = runner::journal_entry_from_line(damaged));
@@ -2441,4 +2443,61 @@ TEST_CASE("salvage reads a value with an escaped quote whole", "[journal][integr
   CHECK(runner::journal_detail::salvage_string(line, "symbol") == std::optional<std::string>("AB\"C"));
   // Cut inside an escape: nothing, rather than a shorter symbol.
   CHECK_FALSE(runner::journal_detail::salvage_string(R"({"id":"x","symbol":"AB\)", "symbol"));
+}
+
+TEST_CASE("a changed terminal line halts recovery rather than being dropped as an orphan", "[journal][integrity]") {
+  // **Codex round 1's first blocker.** Read as a damaged entry, a terminal line carries an id suffixed
+  // `~damaged`, pairs with nothing and is dropped -- leaving its intact pending partner open as an
+  // ordinary instruction a sweep may resolve. A changed line is unreadable instead, and that halts.
+  auto pending = checked_entry();
+  pending.outcome_ = JournalOutcome::PENDING;
+  pending.order_id_.clear();
+  auto terminal = checked_entry();
+  auto changed = runner::journal_entry_to_line(terminal);
+  const auto at = changed.find("\"accepted\"");
+  REQUIRE(at != std::string::npos);
+  changed.replace(at, 10, "\"rejected\"");
+
+  runner::JournalBytes bytes;
+  bytes.status_ = runner::JournalReadStatus::READ;
+  bytes.text_ = runner::journal_entry_to_line(pending) + "\n" + changed + "\n";
+  const auto replay = runner::parse_journal_bytes(bytes);
+  CHECK(replay.unreadable_lines_ == 1);
+  runner::IndeterminacyLedger ledger;
+  const auto recovery = runner::recover_into(replay, ledger);
+  CHECK(recovery.unreadable_lines_ == 1);
+  CHECK_FALSE(recovery.clean());
+
+  // A key no writer produced, on a line whose checksum is *correct* for it: unreadable too.
+  auto body = without_checksum(runner::journal_entry_to_line(terminal));
+  body.insert(body.size() - 1, ",\"note\":\"x\"");
+  const auto crc = runner::journal_detail::checksum_text(runner::journal_detail::line_checksum(body));
+  body.pop_back();
+  const auto annotated = body + ",\"crc\":\"" + crc + "\"}";
+  REQUIRE(runner::journal_detail::checksum_matches(annotated));
+  CHECK_FALSE(runner::journal_entry_from_line(annotated).has_value());
+}
+
+TEST_CASE("a header that declares checksums protects the first entry too", "[journal][integrity]") {
+  // **Codex round 1's third blocker.** In a file begun before checksums, only a checksummed line
+  // *above* can reveal that a line lost its whole checksum member. A file this release begins says so
+  // in its header, so even its first entry cannot pass as an older release's.
+  const auto header = runner::journal_header_line("test:account");
+  CHECK(runner::journal_header_declares_checksums(header));
+  REQUIRE(runner::journal_header_scope(header) == std::optional<std::string>("test:account"));
+
+  const auto stripped = without_checksum(runner::journal_entry_to_line(checked_entry()));
+  runner::JournalBytes declared;
+  declared.status_ = runner::JournalReadStatus::READ;
+  declared.text_ = header + "\n" + stripped + "\n";
+  CHECK(runner::parse_journal_bytes(declared).unreadable_lines_ == 1);
+
+  // An older header says nothing, and its first line is read as the older release wrote it.
+  runner::JournalBytes older;
+  older.status_ = runner::JournalReadStatus::READ;
+  older.text_ = R"({"journal":"algotradelib-order-journal","version":1,"scope":"test:account"})" "\n" +
+    stripped + "\n";
+  const auto legacy = runner::parse_journal_bytes(older);
+  CHECK(legacy.unreadable_lines_ == 0);
+  CHECK(legacy.entries_.size() == 1);
 }
