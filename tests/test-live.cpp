@@ -3904,5 +3904,6 @@ TEST_CASE("a resting order listed in both inquiries recovers as one match on a n
   source2.set_journal(again);
   CHECK(source2.read_order_list(second) == runner::PollOutcome::UPDATED);
   CHECK(source2.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::AMBIGUOUS);
+  CHECK(source2.last_reconcile().matches_.front().candidates_ == 2);
   CHECK(second.ledger().requires_reconcile(samsung()));
 }

@@ -96,17 +96,23 @@ filter neither adapter sends — is refused before authentication and before any
 socket write rather than dropped silently.
 
 **`history_requires_range = false` carries a contract of its own**, which an adapter
-author writing one must meet. Recovery (`live::SessionSource`) then asks the order
-history one stated date at a time — `from_ == to_`, one request per UTC day of its
-window — because Kiwoom's single-date inquiry requires a date and refuses a range;
-so accept a single-date query. And it drops a history row only as an **exact copy**
-of a working row (`runner::exact_copy`: the same order id, instrument and
-`ordered_at_`), because an order number alone is not an order's identity across
-days. So **stamp `ordered_at_` on your working-order rows exactly as on your history
-rows**: a resting order then recovers as `MATCHED`; stamped differently, or not at
-all, every resting order recovers as `AMBIGUOUS` and holds its instrument until an
-operator settles it. Kiwoom and Toss stamp both listings from the broker's own order
-time.
+author writing one must meet. Recovery (`live::SessionSource`) asks the order history
+one stated date at a time — `from_ == to_`, one inquiry per UTC day of its window,
+paged by cursor as your adapter pages — because Kiwoom's single-date inquiry requires a
+date and refuses a range; so accept a single-date query. An adapter that also declares
+`has_working_orders = false` is additionally asked once, at startup, with no date at all
+(`SessionSource::read_order_list`), so accept that too or the order-list gate stays
+closed. Recovery merges the two listings and drops a history row only as an **exact
+copy** of a working row (`runner::exact_copy`: the same order id, instrument and
+`ordered_at_`), because an order number alone is not an order's identity across days.
+So **where your history can list an order your working listing also lists, stamp
+`ordered_at_` on both rows alike**: the order is then one candidate. Stamped
+differently, or unstamped on either side, it is two, and an order the journal is
+waiting on recovers as `AMBIGUOUS` and holds its instrument until an operator settles
+it. Kiwoom's two listings overlap and it stamps both from the broker's own order time;
+Toss's do not overlap (its working listing is the `OPEN` scope and its history the
+`CLOSED` one), and an order caught in both mid-transition carries one stamp, since one
+parser reads both.
 
 ## Example
 
