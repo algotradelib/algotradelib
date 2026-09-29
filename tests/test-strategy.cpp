@@ -3256,6 +3256,17 @@ TEST_CASE("a target that needs a trade withdraws a resting stop first", "[trigge
     withdraws("0");
   }
 
+  SECTION("only the stop is withdrawn; the restated target decides the rest") {
+    // A sell limit already working toward the target is not the stop's problem. Withdrawing it too
+    // would only have the restated target place it again.
+    auto sell = working("40", "0", OrderStatus::PENDING, OrderSide::SELL);
+    sell.ref_ = OrderRef<strategy::ProbeBroker>{"SELL-1", ""};
+    sell.order_.type_ = OrderType::LIMIT;
+    sell.order_.price_ = Decimal64::parse("70000");
+    portfolio.working_.push_back(sell);
+    withdraws("0");
+  }
+
   SECTION("a stop already on its way out is not withdrawn twice, and still holds the trade") {
     portfolio.working_.front().order_.status_ = OrderStatus::PENDING_CANCEL;
     const auto plan = strategy::reconcile(target("0"), portfolio, inputs);
