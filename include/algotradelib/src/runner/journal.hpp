@@ -267,6 +267,14 @@ struct JournalEntry {
   /** The price the instruction named, where it had one. */
   std::optional<Decimal64> price_;
   /**
+   * The trigger price of a stop-limit instruction, and empty on every other.
+   *
+   * Recovery compares it: two stops of one symbol, side, quantity and limit released at different
+   * prices are different orders. A line written before this field existed carries no trigger key
+   * and reads as empty, which is what every such line meant -- nothing journalled a stop then.
+   */
+  std::optional<Decimal64> trigger_price_;
+  /**
    * The broker's own order id, where one is known.
    *
    * Set on a `CANCEL` line from the moment it is written, because a cancellation names an order
@@ -636,6 +644,7 @@ public:
     entry.venue_ = effective_route_of(order);
     entry.quantity_ = order.quantity_;
     entry.price_ = order.price_;
+    entry.trigger_price_ = order.trigger_price_;
     if (!journal_->append(entry)) {
       return refuse_unjournaled();
     }
@@ -673,6 +682,7 @@ public:
     entry.type_ = working.order_.type_;
     entry.quantity_ = working.order_.quantity_;
     entry.price_ = working.order_.price_;
+    entry.trigger_price_ = working.order_.trigger_price_;
     // Recorded from the start, unlike a placement's: a cancellation names an order that already
     // exists, and that name is what turns its recovery into an identity match rather than a guess.
     entry.order_id_ = working.ref_.primary_;

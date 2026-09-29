@@ -2199,3 +2199,71 @@ TEST_CASE("resuming a journal failure does not resume an operator's halt", "[jou
   const auto after = dry.feed(bar_at(32));
   REQUIRE(after.would_place_.size() == 1);
 }
+
+// ---------------------------------------------------------------------------
+// Stop-limit orders
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a stop's trigger is journalled with the attempt and read back", "[journal][trigger]") {
+  MemoryJournal journal;
+  runner::ManualClock clock{utc(2026, 3, 30, 1, 0)};
+  Journaling executor{ObservingExecutor<runner::DryTag>{&journal}, journal, clock};
+
+  auto stop = buy_ten();
+  stop.side_ = OrderSide::SELL;
+  stop.type_ = OrderType::STOP_LIMIT;
+  stop.price_ = Decimal64::parse("69000");
+  stop.trigger_price_ = Decimal64::parse("69500");
+  executor.place(stop);
+
+  // On the pending line, which is the one recovery reads when the answer never came.
+  REQUIRE(executor.inner().seen().front().front().trigger_price_ == Decimal64::parse("69500"));
+
+  auto withdrawn = resting("A1");
+  withdrawn.order_.type_ = OrderType::STOP_LIMIT;
+  withdrawn.order_.trigger_price_ = Decimal64::parse("69500");
+  executor.cancel(withdrawn);
+  REQUIRE(journal.records().back().trigger_price_ == Decimal64::parse("69500"));
+
+  const auto line = runner::journal_entry_to_line(journal.records().front());
+  const auto parsed = runner::journal_entry_from_line(line);
+  REQUIRE(parsed.has_value());
+  REQUIRE_FALSE(parsed->requires_operator_);
+  REQUIRE(parsed->type_ == OrderType::STOP_LIMIT);
+  REQUIRE(parsed->trigger_price_ == Decimal64::parse("69500"));
+}
+
+TEST_CASE("a line that is not a stop is written exactly as before", "[journal][trigger]") {
+  // No key at all, so every existing journal reads unchanged and every line a non-stop order
+  // writes is byte-identical to what this writer produced before the field existed.
+  const auto line = runner::journal_entry_to_line(sample_entry());
+  REQUIRE(line.find("\"trigger\"") == std::string::npos);
+  const auto parsed = runner::journal_entry_from_line(line);
+  REQUIRE(parsed.has_value());
+  REQUIRE_FALSE(parsed->trigger_price_);
+}
+
+TEST_CASE("a damaged trigger makes a line unattributable, and salvage keeps a readable one", "[journal][trigger]") {
+  auto stop = sample_entry();
+  stop.type_ = OrderType::STOP_LIMIT;
+  stop.trigger_price_ = Decimal64::parse("69500");
+  auto line = runner::journal_entry_to_line(stop);
+  const std::string needle = "\"trigger\":\"69500\"";
+  const auto at = line.find(needle);
+  REQUIRE(at != std::string::npos);
+
+  auto damaged = line;
+  damaged.replace(at, needle.size(), "\"trigger\":\"69?00\"");
+  std::optional<runner::JournalEntry> parsed;
+  REQUIRE_NOTHROW(parsed = runner::journal_entry_from_line(damaged));
+  REQUIRE(parsed.has_value());
+  REQUIRE(parsed->instrument_.symbol_.empty());
+  REQUIRE(parsed->requires_operator_);
+
+  // Torn just after the trigger: salvage recovers it, and the entry is still an operator's.
+  const auto torn = line.substr(0, at + needle.size());
+  const auto salvaged = runner::salvage_journal_line(torn);
+  REQUIRE(salvaged.has_value());
+  REQUIRE(salvaged->requires_operator_);
+  REQUIRE(salvaged->trigger_price_ == Decimal64::parse("69500"));
+}

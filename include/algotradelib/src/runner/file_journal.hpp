@@ -541,6 +541,11 @@ inline std::string journal_entry_to_line(const JournalEntry& entry) {
   if (entry.price_) {
     row["price"] = entry.price_->str();
   }
+  // Only when present, so every line that is not a stop is byte-identical to what this writer
+  // produced before the field existed, and every old journal reads unchanged.
+  if (entry.trigger_price_) {
+    row["trigger"] = entry.trigger_price_->str();
+  }
   // The authoritative instant, exact on every platform. `at_text` beside it is for the operator
   // reading the file with `tail`, is only second-resolution, and is never read back: one field is
   // the record and the other is the caption.
@@ -652,6 +657,7 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
   const auto session = parsed("session", journal_detail::known_order_session_from);
   const auto quantity = parsed("quantity", journal_detail::known_decimal_from);
   const auto price = parsed("price", journal_detail::known_decimal_from);
+  const auto trigger = parsed("trigger", journal_detail::known_decimal_from);
 
   const bool damaged =
     // Identity and the fields every complete line carries: required outright.
@@ -665,7 +671,10 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
     // A price is absent for a market order and required for a basis that
     // carries one, so its presence is judged against the basis rather than
     // assumed either way.
-    unusable("price", price.has_value());
+    unusable("price", price.has_value()) ||
+    // The same rule for a stop's trigger: absent on every other order and on every line written
+    // before the field existed, and a present value that does not parse is damage.
+    unusable("trigger", trigger.has_value());
   // **A price missing from a priced basis, and a cancellation with no target
   // id, are deliberately *not* damage here.** Both are lines this library's own
   // writer emits: `JournalingExecutor` appends the pending line *before* the
@@ -723,6 +732,9 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
   entry.quantity_ = *quantity;
   if (price) {
     entry.price_ = *price;
+  }
+  if (trigger) {
+    entry.trigger_price_ = *trigger;
   }
   entry.recorded_at_ = journal_detail::instant_from(at->as_int64());
   entry.order_id_ = journal_detail::string_field(row, "order_id");
@@ -852,6 +864,11 @@ inline std::optional<JournalEntry> salvage_journal_line(std::string_view line) {
   if (const auto price = journal_detail::salvage_string(line, "price")) {
     if (const auto value = journal_detail::known_decimal_from(*price)) {
       entry.price_ = *value;
+    }
+  }
+  if (const auto trigger = journal_detail::salvage_string(line, "trigger")) {
+    if (const auto value = journal_detail::known_decimal_from(*trigger)) {
+      entry.trigger_price_ = *value;
     }
   }
   entry.detail_ = "recovered from a truncated journal line; only an operator can resolve it";
