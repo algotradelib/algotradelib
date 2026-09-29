@@ -3899,6 +3899,91 @@ TEST_CASE("an equity total that will not fit is counted, and no return spans the
   CHECK(report.caveats_.first_unvalued_ == engine.result().first_unvalued_);
 }
 
+/** Records the book it decides on each bar; buys two on the first bar and one at a limit on the fourth. */
+struct ReadsTheBookEachBar {
+  struct Seen {
+    std::optional<Decimal64> cash_;
+    std::optional<Decimal64> buying_power_;
+    std::optional<Decimal64> quantity_;
+    std::optional<Decimal64> mark_;
+    std::optional<Decimal64> market_value_;
+  };
+  std::vector<Seen> seen_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    const auto& book = ctx.portfolio();
+    Seen seen;
+    seen.cash_ = book.cash_in(Currency{"KRW"});
+    seen.buying_power_ = book.buying_power_in(Currency{"KRW"});
+    seen.quantity_ = book.quantity_of(bar.instrument_);
+    for (const auto& position : book.positions_) {
+      if (position.instrument_ == bar.instrument_) {
+        seen.mark_ = position.last_price_;
+        seen.market_value_ = position.market_value_.amount_;
+      }
+    }
+    seen_.push_back(seen);
+    if (seen_.size() == 1) {
+      ctx.submit(
+        strategy::OrderIntent::market(
+          bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("2"))
+        )
+      );
+    } else if (seen_.size() == 4) {
+      const auto reference = ctx.instrument(bar.instrument_);
+      if (!reference) {
+        return;
+      }
+      const auto limit = strategy::Price::checked(Decimal64::parse("1000000"), reference->price_rule_);
+      if (!limit) {
+        return;
+      }
+      ctx.submit(
+        strategy::OrderIntent::limit(
+          bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")), *limit
+        )
+      );
+    }
+  }
+};
+
+TEST_CASE("a strategy on an unvalued bar reads exact figures rather than the failed total", "[backtest][caveats]") {
+  // `plan/todo/unvalued-bar-portfolio.md`: the replay goes on past a bar whose equity total will not
+  // fit, so `on_bar` runs there. What it reads is per lot and per currency -- cash, buying power (here
+  // equal to cash: the buying-power check is off, so no resting buy is committed against it), the
+  // quantity, the lot's own mark and value -- and the one portfolio-wide sum the guard takes, the gross
+  // exposure, is its own arithmetic without cash. None of them is `equity_in`'s sum.
+  auto config = replay_config();
+  config.cash_ = Decimal64::parse("9223372036854000000");
+  config.limits_.max_gross_exposure_ = Decimal64::parse("10000000");
+  backtest::Backtester<ReadsTheBookEachBar> engine(ReadsTheBookEachBar{}, config);
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  REQUIRE(engine.ledger().quantity_of(samsung()) == std::optional<Decimal64>(Decimal64::parse("2")));
+
+  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_DAY, "70000", "1000000"));
+  REQUIRE_FALSE(engine.result().halted_);
+  REQUIRE(engine.result().unvalued_bars_ == 1);
+  REQUIRE_FALSE(engine.ledger().equity_in(Currency{"KRW"}));
+
+  // The strategy ran on that bar, after the gap was counted, and read exact figures.
+  REQUIRE(engine.strategy().seen_.size() == 4);
+  const auto& unvalued = engine.strategy().seen_.back();
+  CHECK(unvalued.cash_ == engine.ledger().cash_in(Currency{"KRW"}));
+  CHECK(unvalued.buying_power_ == unvalued.cash_);
+  CHECK(unvalued.quantity_ == std::optional<Decimal64>(Decimal64::parse("2")));
+  CHECK(unvalued.mark_ == std::optional<Decimal64>(Decimal64::parse("1000000")));
+  CHECK(unvalued.market_value_ == std::optional<Decimal64>(Decimal64::parse("2000000")));
+
+  // And the order it placed there passed the exposure ceiling -- (2 + 1) x 1,000,000 -- and filled.
+  engine.feed(moving_bar(utc(2026, 3, 14, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  CHECK(engine.result().refused_.empty());
+  CHECK(engine.result().rejected_.empty());
+  CHECK(engine.ledger().quantity_of(samsung()) == std::optional<Decimal64>(Decimal64::parse("3")));
+}
+
 TEST_CASE("an ordinary replay reports no unvalued bars", "[backtest][caveats]") {
   backtest::Backtester<PlacesTwoEachBar> engine(PlacesTwoEachBar{}, replay_config());
   engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
