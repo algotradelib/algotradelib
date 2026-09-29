@@ -605,6 +605,18 @@ TEST_CASE("a full queue sheds with a structured error rather than growing") {
   REQUIRE(client->rate_limits()->stats().group(RateLimitGroup::REFERENCE).shed_ == 2);
 }
 
+TEST_CASE("the closed loopback port the connect-failure tests use is refused", "[http][tls]") {
+  // The premise of the two tests below, checked where a broken helper would name itself: a port the
+  // helper returns must refuse a connection. Were it still held open by the helper's acceptor, those
+  // tests would reach a listener and fail as transport tests, pointing away from the cause.
+  net::io_context ioc;
+  tcp::socket socket(ioc);
+  boost::system::error_code error;
+  const auto port = static_cast<unsigned short>(std::stoi(test::closed_loopback_port()));
+  socket.connect(tcp::endpoint(net::ip::address_v4::loopback(), port), error);
+  CHECK(error == net::error::connection_refused);
+}
+
 TEST_CASE("a connection that never opened never sent the order", "[http][tls][provenance]") {
   // A resolve, connect, or handshake failure happens before `start_write()`, so an order has
   // certainly not been sent. `TRANSPORT` alone maps to `INDETERMINATE`: the runner would spend the
@@ -616,7 +628,8 @@ TEST_CASE("a connection that never opened never sent the order", "[http][tls][pr
   ssl::context context(ssl::context::tls_client);
   test::trustLocalhostCertificate(context);
   auto client = std::make_shared<network::AsyncHttpClient>(
-    ioc.get_executor(), context, "localhost", "1", network::HttpClientOptions{}
+    ioc.get_executor(), context, "127.0.0.1", test::closed_loopback_port(),
+    network::HttpClientOptions{}
   );
 
   std::optional<BrokerError> failure;
@@ -651,7 +664,8 @@ TEST_CASE("a GET retried after failing to connect still never reached anybody", 
   ssl::context context(ssl::context::tls_client);
   test::trustLocalhostCertificate(context);
   auto client = std::make_shared<network::AsyncHttpClient>(
-    ioc.get_executor(), context, "localhost", "1", network::HttpClientOptions{}
+    ioc.get_executor(), context, "127.0.0.1", test::closed_loopback_port(),
+    network::HttpClientOptions{}
   );
 
   std::optional<BrokerError> failure;
