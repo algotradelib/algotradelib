@@ -256,6 +256,17 @@ enum class WithheldPlanReason {
    * withdrawal, which is how a resting protective order disappears.
    */
   PLACEMENT_HELD,
+  /**
+   * The working-order listing arrived after the holdings the plan was sized against.
+   *
+   * A fill landing between the two reads leaves the listing before it reaches the holdings, so the
+   * account reads as though the order never existed and a target buys again. Withheld until a holdings
+   * read newer than the listing; a `TargetPosition` is retained and planned again then
+   * (`Runner::retry_retained_targets`, which also retries targets withheld as absent or stale), an
+   * `OrderIntent` is not. See
+   * `strategy::Portfolio::listing_newer_than_holdings`.
+   */
+  PORTFOLIO_SUPERSEDED,
 };
 
 /** Returns a stable lowercase name for `reason`. */
@@ -265,6 +276,8 @@ inline constexpr std::string_view withheld_plan_reason_name(WithheldPlanReason r
       return "portfolio_absent";
     case WithheldPlanReason::PORTFOLIO_STALE:
       return "portfolio_stale";
+    case WithheldPlanReason::PORTFOLIO_SUPERSEDED:
+      return "portfolio_superseded";
     case WithheldPlanReason::PLACEMENT_HELD:
       return "placement_held";
   }

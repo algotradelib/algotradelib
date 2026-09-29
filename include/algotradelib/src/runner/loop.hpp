@@ -150,13 +150,27 @@ inline constexpr PollKind all_poll_kinds[] = {
   // the phase's own ordering defect one level down. It feeds nothing itself, so nothing can be sent
   // between reading it and applying it.
   PollKind::PRICE_LIMITS,
-  PollKind::BARS,
-  PollKind::QUOTES,
+  // **The account before anything that can decide against it, and the listing before the account.**
+  //
+  // Both halves are about one hazard: a fill landing between two reads of the same account. Holdings
+  // at *h*, the working-order listing at *w*, a resting buy filling at *f*:
+  //
+  //  - *h < f < w*: holdings still flat and the row already gone. The position is under-counted, and a
+  //    target strategy buys again. That is what the old order -- holdings, then the listing -- allowed.
+  //  - *w < f < h*: the row still listed and holdings already showing the fill. Over-counted: the
+  //    target reads as met, and at worst a cancellation of an order that has already filled is
+  //    refused. Harmless.
+  //
+  // So the listing is read first, and holdings after it. And both come before the bars and quotes,
+  // which feed and therefore send: they used to be polled first, so every decision a bar produced was
+  // sized against the previous iteration's account, and on a cold start against none at all.
+  PollKind::WORKING_ORDERS,
   PollKind::HOLDINGS,
   // After holdings, so an iteration that refreshes both leaves the money and the positions equally
   // fresh, and the buy sized against them is sized against one moment rather than two.
   PollKind::BUYING_POWER,
-  PollKind::WORKING_ORDERS,
+  PollKind::BARS,
+  PollKind::QUOTES,
 };
 
 static_assert(
@@ -221,7 +235,15 @@ struct PollSchedule {
   std::optional<std::chrono::nanoseconds> quotes_;
   /** How often to re-read holdings; absent disables the poll and leaves the portfolio stale. */
   std::optional<std::chrono::nanoseconds> holdings_;
-  /** How often to re-read the broker's working orders; absent disables the poll. */
+  /**
+   * How often to re-read the broker's working orders; absent disables the poll.
+   *
+   * **Not shorter than `holdings_`, unless you accept withheld plans.** A listing newer than the
+   * holdings makes the account unreliable -- a fill between the two reads is in neither -- so every
+   * plan made then is withheld as `PORTFOLIO_SUPERSEDED` (a target is retained and planned again
+   * after the next holdings read). Equal cadences put both reads in one iteration, listing first.
+   * The loop notes a shorter working-order cadence once per run.
+   */
   std::optional<std::chrono::nanoseconds> working_orders_;
   /**
    * How often to ask what may be spent; absent disables the poll.
@@ -752,9 +774,10 @@ struct LoopReport {
   /**
    * Plans this run's polling held back before judging any of their parts.
    *
-   * **Three reasons reach it and this does not distinguish them**: an account never read, one older
-   * than the stated maximum, or a hold refusing placements for a plan that also wanted to withdraw
-   * something -- and that third one happens on a perfectly fresh portfolio. `Report::withheld_plans_`
+   * **Four reasons reach it and this does not distinguish them**: an account never read, one older
+   * than the stated maximum, one read before the working-order listing it would be reconciled with,
+   * or a hold refusing placements for a plan that also wanted to withdraw something -- and the last
+   * two happen on a perfectly fresh portfolio. `Report::withheld_plans_`
    * carries the reason per plan.
    *
    * Separate from the other figures because nothing was wrong with the instructions, and **not always
@@ -1436,6 +1459,9 @@ public:
       if (report.abandoned_) {
         outcomes_after = instruction_outcomes();
         refusal_at_boundary = runner_->last_broker_refusal();
+        // As for a stop: retained work lives for one run. A run resumed after an outage of unknown
+        // length must not place what was decided before it.
+        runner_->clear_retained_targets();
         break;
       }
       if (const auto intent = stop.intent()) {
@@ -1500,6 +1526,7 @@ public:
     note_sellable_convention(report);
     note_unestablished_phase(report);
     note_on_fill_never_fires(report);
+    note_listing_outpaces_holdings(report);
     return report;
   }
 
@@ -1547,6 +1574,25 @@ private:
     }
   }
 
+  /**
+   * Says, once per run, that working orders are polled more often than holdings.
+   *
+   * Not refused: it is a legitimate choice for a strategy that mostly watches its orders. But every
+   * plan made between a listing and the next holdings read is withheld (`PollSchedule::working_orders_`
+   * says why), and an operator reading a report full of `portfolio_superseded` should find the cause
+   * stated beside it.
+   */
+  void note_listing_outpaces_holdings(LoopReport& report) const {
+    const auto& listing = schedule_.working_orders_;
+    const auto& holdings = schedule_.holdings_;
+    if (listing && holdings && *listing < *holdings) {
+      report.notes_.push_back(
+        "working orders are polled more often than holdings; plans made between a listing and the "
+        "next holdings read are withheld as portfolio_superseded"
+      );
+    }
+  }
+
   /** Runs one iteration: poll what is due, then let the runner act if the gate is open. */
   IterationReport step(StopSource& stop, LoopReport& report) {
     IterationReport iteration;
@@ -1555,6 +1601,11 @@ private:
     // Read before polling, so an operator's stop is honoured without first spending requests on a
     // broker the loop is about to walk away from.
     check_control_file(stop, report);
+    // A stop discards what was retained for a better account read: nothing decided before it is to be
+    // replayed after it.
+    if (stop.requested()) {
+      runner_->clear_retained_targets();
+    }
 
     // **Installed before anything can send, and announced only after the polls.** The two halves are
     // separate on purpose and neither is optional.
@@ -1609,6 +1660,12 @@ private:
       //
       // The cost is a date comparison per due poll.
       install_phase(iteration);
+      // **And the gate, for the same reason.** The polls before this one may have read the account: on
+      // a cold start the hold for an account never read was installed before the polls, and without
+      // re-evaluating it here it would still stand when the bars read after this iteration's holdings
+      // are fed -- withholding the first decision against an account that has, by then, been read.
+      // `may_read` is false: the order list is attempted once per iteration, above.
+      hold(gate_for(stop, iteration.at_, report, /*may_read=*/false));
       const auto watch = watch_phase(iteration);
       // **Sampled before the poll, not after it.** A poll can send: `Runner::feed` settles, and a
       // working-order poll now feeds `on_order_update` as well as the bar and quote polls feeding
@@ -1690,6 +1747,15 @@ private:
       runner_->feed(iteration.phase_);
       note_revised_phase("on_phase handler", watch, report);
     }
+
+    // **Last of all the iteration's decisions**, so every handler that could restate the instrument --
+    // the bars, the quotes, the listing's updates, and `on_phase` just above -- has spoken first, and
+    // its instruction has replaced the retained target; a retry before `on_phase` could send an entry
+    // the phase change was about to countermand. And after every account poll and the gate they
+    // refreshed, so what is retried is sized against this iteration's holdings, listing and budget,
+    // under this iteration's holds -- inside the holdings poll it ran before the gate lifted and before
+    // buying power was read.
+    runner_->retry_retained_targets();
 
     // Reported from the guard rather than from what the loop just computed, so the report names the
     // most fundamental hold in force whoever owns it -- an operator's halt, or a journal that
@@ -2090,6 +2156,9 @@ private:
   /** Carries out `intent`, which is where the three stops actually differ. */
   void honour(StopIntent intent, LoopReport& report) {
     hold(strategy::HaltReason::STOPPING);
+    // Whenever the stop was requested -- before the iteration or during one of its polls -- nothing
+    // retained before it is to be replayed after it, by this run or a resumed one.
+    runner_->clear_retained_targets();
 
     // **The strategy is told first, and cannot trade on the way out.** `on_stop` is dispatched here,
     // while the hold stands, so every instruction it asks for is refused by the guard and counted.
@@ -2412,7 +2481,9 @@ private:
    * Two sources, both required. The broker's own order list must have been read once, which is what
    * the startup gate exists for and what a stop requested before the first iteration skips. And the
    * holdings snapshot -- which is where a `WITHDRAW`'s working orders and a `FLATTEN`'s positions
-   * actually come from -- must exist and be within the configured age.
+   * actually come from -- must exist, be within the configured age, and be **no older than the
+   * working-order listing**: a fill between the two reads leaves the listing before it reaches the
+   * holdings, so a flatten would see neither the order nor the shares it bought.
    */
   bool closing_source_verified(std::chrono::system_clock::time_point at) const {
     if (!order_list_read_) {
@@ -2436,6 +2507,11 @@ private:
     }
     const auto as_of = runner_->context().portfolio().as_of_;
     if (as_of == std::chrono::system_clock::time_point{}) {
+      return false;
+    }
+    // On one clock: both stamps are the local arrival time of their replies, which
+    // `working_orders_at_` above is not.
+    if (runner_->context().portfolio().listing_newer_than_holdings()) {
       return false;
     }
     return !maximum_portfolio_age_ || at - as_of <= *maximum_portfolio_age_;
@@ -2476,6 +2552,9 @@ private:
     }
     if (runner_->context().portfolio().as_of_ == std::chrono::system_clock::time_point{}) {
       return "no holdings snapshot has arrived";
+    }
+    if (runner_->context().portfolio().listing_newer_than_holdings()) {
+      return "the holdings were read before the working orders, so a fill between them is in neither";
     }
     if (maximum_portfolio_age_ &&
         clock_.now() - *working_orders_at_ > *maximum_portfolio_age_) {

@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -121,6 +122,9 @@ public:
   using Placed = PlacedOrder<FakeBroker>;
 
   Result<Placed> place(OrderRequest order) {
+    if (throw_on_place_) {
+      throw std::runtime_error("the fake session was told to throw");
+    }
     if (local_refusal_) {
       // Refused before the request is recorded, because a client refusing locally sends nothing.
       auto refusal = *local_refusal_;
@@ -239,21 +243,8 @@ public:
     }
     BarSeries series = bars_;
     series.instrument_ = query.instrument_;
-    for (const auto& later : later_bars_) {
-      if (bar_calls_ >= later.first) {
-        series.bars_.push_back(later.second);
-      }
-    }
     return Result<BarSeries>(std::move(series));
   }
-
-  /**
-   * Adds `bar` to every answer from the `call`-th bars request on, as a bar closing mid-run does.
-   *
-   * A loop's first iteration polls bars before holdings, so what it feeds then meets an account not
-   * yet read and is withheld; a test of what a later bar does needs a bar that is actually later.
-   */
-  void add_bar_from_call(std::size_t call, Bar bar) { later_bars_.emplace_back(call, std::move(bar)); }
 
   /** Returns the scripted quote, counting the call. */
   Result<QuoteSnapshot> quote(const InstrumentId& instrument) {
@@ -475,6 +466,8 @@ public:
     return Result<Instrument>(*reference_);
   }
   void set_reference(Instrument reference) { reference_ = std::move(reference); }
+  /** Makes every placement throw, as a failing executor would, until told otherwise. */
+  void throw_on_place(bool enabled = true) { throw_on_place_ = enabled; }
   void set_working_orders(WorkingOrders<FakeBroker> orders) {
     working_orders_ = std::move(orders);
   }
@@ -502,7 +495,7 @@ private:
   QuoteSnapshot quote_;
   HoldingsSnapshot holdings_;
   std::optional<Instrument> reference_;
-  std::vector<std::pair<std::size_t, Bar>> later_bars_;
+  bool throw_on_place_{false};
   std::vector<OrderHistoryQuery> history_queries_;
 
   WorkingOrders<FakeBroker> working_orders_;
@@ -4019,8 +4012,11 @@ strategy::vanilla::BuyAndHold one_share() {
 /**
  * A session that answers everything a trading run needs, stamped at `program_start()`.
  *
- * Holdings are empty but current, so the portfolio gate opens and BuyAndHold wants its share -- on
- * the bar that closes after the account was read, as in a real run.
+ * Holdings are empty but current, so the portfolio gate opens and BuyAndHold wants its share. The
+ * loop reads the account before the bars, so the bars read at start are the ones that trade.
+ *
+ * The fake never lists or holds an order it accepted, so a *later* bar would buy again against a
+ * broker that forgot it; the bars here never change, which keeps that out of the fixture.
  */
 void script_ready(ProgramSession& session) {
   session.set_reference(samsung_reference());
@@ -4028,14 +4024,6 @@ void script_ready(ProgramSession& session) {
   HoldingsSnapshot holdings;
   holdings.received_at_ = program_start();
   session.set_holdings(holdings);
-  // The loop's first iteration polls bars before holdings, so the two bars above meet an account not
-  // yet read and are withheld; this one arrives on the second bars poll, after holdings.
-  Bar later = two_bars("70000", "71000").bars_.back();
-  later.timestamp_ += std::chrono::hours(24);
-  later.close_ = Decimal64::parse("71500");
-  later.high_ = later.close_;
-  later.low_ = later.close_;
-  session.add_bar_from_call(2, later);
 }
 
 /**
@@ -4079,10 +4067,9 @@ TEST_CASE("the live program journals, recovers clean and places its order", "[li
   INFO(out.str());
   CHECK(exit == live_program::Exit::CLEAN);
   CHECK(out.str().find("recovery: clean") != std::string::npos);
-  // The two bars read at start met an account not yet read and were withheld, not sized against
-  // nothing; the order came from the next bar. The program says so before the loop.
-  CHECK(out.str().find("plans withheld  : 2") != std::string::npos);
-  CHECK(out.str().find("the strategy first acts on the next bar") != std::string::npos);
+  // The account was read before the bars, so the decision on the bars read at start was not
+  // withheld: the first decision is the one that trades.
+  CHECK(out.str().find("plans withheld  : 0") != std::string::npos);
   REQUIRE(session.placed().size() == 1);
   CHECK(session.placed().front().quantity_ == Decimal64::parse("1"));
   // Recorded before it was sent, and answered after.
@@ -4361,4 +4348,637 @@ TEST_CASE("the live program says on_fill never fires before it trades", "[live][
   REQUIRE(loop_starts != std::string::npos);
   CHECK(before < loop_starts);
   CHECK(text.find("strategy defines on_fill; it never fires on this runner") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// The order a loop reads the account in: the listing, then holdings, then anything that can send.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/**
+ * A resting buy fills right after the iteration's holdings read has answered.
+ *
+ * The fill is complete: the listing loses the row **and** holdings would show the shares -- to the
+ * next read. What the loop does between the two reads is the subject.
+ */
+template <typename Session>
+class FillAfterHoldings {
+public:
+  static constexpr bool provides_working_orders = true;
+
+  FillAfterHoldings(Session& session, std::vector<InstrumentId> universe, HoldingsSnapshot filled)
+  : inner_(session, std::move(universe)), session_(&session), filled_(std::move(filled)) {}
+
+  template <typename Runner>
+  runner::PollOutcome poll(runner::PollKind kind, Runner& runner_instance) {
+    polled_.push_back(kind);
+    const auto outcome = inner_.poll(kind, runner_instance);
+    if (kind == runner::PollKind::HOLDINGS && !done_) {
+      session_->set_working_orders(WorkingOrders<FakeBroker>{});
+      session_->set_holdings(filled_);
+      done_ = true;
+    }
+    return outcome;
+  }
+
+  template <typename Runner>
+  runner::PollOutcome read_order_list(Runner& runner_instance) {
+    return inner_.read_order_list(runner_instance);
+  }
+
+  const std::vector<runner::PollKind>& polled() const noexcept { return polled_; }
+
+private:
+  live::SessionSource<Session> inner_;
+  Session* session_;
+  HoldingsSnapshot filled_;
+  std::vector<runner::PollKind> polled_;
+  bool done_{false};
+};
+
+/** Holdings of `quantity` Samsung shares, stamped at the program tests' start. */
+HoldingsSnapshot holding_samsung(const char* quantity) {
+  HoldingsSnapshot snapshot;
+  snapshot.received_at_ = program_start();
+  if (std::string_view(quantity) != "0") {
+    HoldingPosition position;
+    position.instrument_ = samsung();
+    position.quantity_ = Decimal64::parse(quantity);
+    snapshot.positions_.push_back(position);
+  }
+  return snapshot;
+}
+
+/** Runs `iterations` of a loop over `source` with every kind due each second, and a ten-share target. */
+template <typename Source>
+runner::LoopReport run_ten_share_target(ProgramSession& session, Source& source, std::size_t iterations) {
+  strategy::vanilla::BuyAndHold ten;
+  ten.params_.instrument_ = samsung();
+  ten.params_.quantity_ = Decimal64::parse("10");
+  strategy::RiskLimits any_phase;
+  any_phase.permitted_phases_ = std::nullopt;
+  auto bound = live::bind(session, ten, any_phase);
+  bound.context().set_instrument(samsung_reference());
+  runner::PollSchedule schedule;
+  schedule.bars_ = std::chrono::seconds(1);
+  schedule.holdings_ = std::chrono::seconds(1);
+  schedule.working_orders_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  schedule.calendar_.reset();
+  runner::PollingLoop<decltype(bound), Source, runner::ManualClock> loop(
+    bound, source, schedule, runner::ManualClock{program_start()}
+  );
+  loop.set_maximum_portfolio_age(std::chrono::minutes(1));
+  runner::StopSource stop;
+  return loop.run(stop, iterations);
+}
+
+} // namespace
+
+TEST_CASE("a fill between two account reads does not buy again", "[live][poll-order]") {
+  // The double buy this ordering exists to prevent. A resting buy of ten is the whole target; it fills
+  // right after holdings answered flat. Read holdings-then-listing, the listing would show it gone
+  // beside flat holdings, and the next bar would buy ten more.
+  ProgramSession session;
+  script_ready(session);
+  session.set_holdings(holding_samsung("0"));
+  WorkingOrders<FakeBroker> resting;
+  resting.orders_.push_back(working());
+  session.set_working_orders(resting);
+  FillAfterHoldings<ProgramSession> source(session, {samsung()}, holding_samsung("10"));
+
+  const auto report = run_ten_share_target(session, source, 3);
+
+  INFO("plans withheld " << report.plans_withheld_);
+  CHECK(session.placed().empty());
+}
+
+TEST_CASE("a loop reads the listing, then holdings, before anything that can send", "[live][poll-order]") {
+  ProgramSession session;
+  script_ready(session);
+  FillAfterHoldings<ProgramSession> source(session, {samsung()}, holding_samsung("0"));
+
+  run_ten_share_target(session, source, 1);
+
+  const std::vector<runner::PollKind> expected{
+    runner::PollKind::WORKING_ORDERS, runner::PollKind::HOLDINGS, runner::PollKind::BARS,
+  };
+  CHECK(source.polled() == expected);
+}
+
+namespace {
+
+/** Restates a ten-share target whenever the broker reports a change to one of its orders. */
+struct RestatesTenOnUpdate {
+  template <class Ctx>
+  void on_order_update(Ctx& ctx, const OrderSnapshot&) {
+    strategy::TargetPosition ten;
+    ten.instrument_ = samsung();
+    ten.target_quantity_ = Decimal64::parse("10");
+    ctx.submit(ten);
+  }
+};
+
+/** Answers an order update with a fixed order rather than a target. */
+struct BuysOneOnUpdate {
+  template <class Ctx>
+  void on_order_update(Ctx& ctx, const OrderSnapshot&) {
+    ctx.submit(
+      strategy::OrderIntent::market(samsung(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")))
+    );
+  }
+};
+
+/** Wants ten shares on every bar. */
+struct TenOnEveryBar {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent&) {
+    strategy::TargetPosition ten;
+    ten.instrument_ = samsung();
+    ten.target_quantity_ = Decimal64::parse("10");
+    ctx.submit(ten);
+  }
+};
+
+/** Binds `strategy` with no phase restriction and a reference and price for Samsung. */
+template <typename Strategy>
+auto bind_for_poll_order(WorkingSession& session, Strategy strategy_instance) {
+  strategy::RiskLimits any_phase;
+  any_phase.permitted_phases_ = std::nullopt;
+  auto bound = live::bind(session, std::move(strategy_instance), any_phase);
+  bound.context().set_instrument(samsung_reference());
+  bound.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  return bound;
+}
+
+} // namespace
+
+TEST_CASE("an update's target is planned against the holdings read after its listing", "[live][poll-order]") {
+  // A buy of ten rests; holdings read flat after it; five fill before the next listing, which the loop
+  // reads before holdings. Planned there, the handler's target of ten would read 0 held and 5 working
+  // and buy 5 more. It is withheld, retained, and planned against the next holdings read instead.
+  WorkingSession session;
+  auto bound = bind_for_poll_order(session, RestatesTenOnUpdate{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  poll_listing_at(source, bound, session, {update_row("B-1", "", "0")}, 0);
+  poll_holdings_at(source, bound, session, "0", 1);
+  const auto withheld_before = bound.plans_withheld();
+
+  poll_listing_at(source, bound, session, {update_row("B-1", "", "5")}, 2);
+
+  CHECK(session.placed().empty());
+  CHECK(bound.plans_withheld() == withheld_before + 1);
+  CHECK(bound.targets_retained() == 1);
+
+  poll_holdings_at(source, bound, session, "5", 3);
+  // What `PollingLoop` does after an iteration's polls.
+  bound.retry_retained_targets();
+
+  // Five held and five still working is the target: nothing to place, nothing left retained.
+  CHECK(session.placed().empty());
+  CHECK(bound.targets_retained() == 0);
+}
+
+TEST_CASE("a bar after a listing with no newer holdings waits for the next holdings read", "[live][poll-order]") {
+  // Holdings read flat; the resting buy fills and the next listing no longer shows it; the holdings
+  // read that should follow fails. A bar then must not buy against the flat snapshot.
+  WorkingSession session;
+  auto bound = bind_for_poll_order(session, TenOnEveryBar{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  poll_listing_at(source, bound, session, {update_row("B-1", "", "0")}, 0);
+  poll_holdings_at(source, bound, session, "0", 1);
+  poll_listing_at(source, bound, session, {}, 2);
+  const auto withheld_before = bound.plans_withheld();
+
+  const auto series = two_bars("70000", "71000");
+  bound.feed(strategy::make_bar_event(samsung(), series.interval_, series.stamp_, series.bars_.back()));
+
+  CHECK(session.placed().empty());
+  CHECK(bound.plans_withheld() == withheld_before + 1);
+  CHECK(bound.targets_retained() == 1);
+
+  // The next holdings read shows the fill, and the retained target finds nothing to do.
+  poll_holdings_at(source, bound, session, "10", 3);
+  bound.retry_retained_targets();
+  CHECK(session.placed().empty());
+  CHECK(bound.targets_retained() == 0);
+}
+
+TEST_CASE("an order intent stated against a superseded account is withheld and not replayed", "[live][poll-order]") {
+  WorkingSession session;
+  auto bound = bind_for_poll_order(session, BuysOneOnUpdate{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  poll_listing_at(source, bound, session, {update_row("B-1", "", "0")}, 0);
+  poll_holdings_at(source, bound, session, "0", 1);
+  const auto withheld_before = bound.plans_withheld();
+
+  poll_listing_at(source, bound, session, {update_row("B-1", "", "5")}, 2);
+
+  CHECK(session.placed().empty());
+  CHECK(bound.plans_withheld() == withheld_before + 1);
+  // A fixed quantity decided against the wrong picture is not replayed later.
+  CHECK(bound.targets_retained() == 0);
+  poll_holdings_at(source, bound, session, "5", 3);
+  bound.retry_retained_targets();
+  CHECK(session.placed().empty());
+}
+
+namespace {
+
+/**
+ * Fails the second holdings read and asks for a flatten at that moment, after a listing newer than the
+ * last successful holdings.
+ */
+class FlattenAfterFailedHoldings {
+public:
+  static constexpr bool provides_working_orders = true;
+
+  FlattenAfterFailedHoldings(WorkingSession& session, runner::StopSource& stop)
+  : inner_(session, {samsung()}), session_(&session), stop_(&stop) {}
+
+  template <typename Runner>
+  runner::PollOutcome poll(runner::PollKind kind, Runner& runner_instance) {
+    if (kind == runner::PollKind::WORKING_ORDERS) {
+      ++listings_;
+      // Each listing arrives an hour after the last, so the second is newer than the first holdings.
+      WorkingOrders<FakeBroker> listing;
+      listing.received_at_ = live_hour(listings_ * 2 - 1);
+      session_->set_working_orders(listing);
+    }
+    if (kind == runner::PollKind::HOLDINGS && listings_ >= 2) {
+      stop_->request(runner::StopIntent::FLATTEN);
+      return runner::PollOutcome::FAILED;
+    }
+    return inner_.poll(kind, runner_instance);
+  }
+
+  template <typename Runner>
+  runner::PollOutcome read_order_list(Runner& runner_instance) {
+    return inner_.read_order_list(runner_instance);
+  }
+
+private:
+  live::SessionSource<WorkingSession> inner_;
+  WorkingSession* session_;
+  runner::StopSource* stop_;
+  int listings_{0};
+};
+
+} // namespace
+
+TEST_CASE("a flatten after a listing newer than the holdings does not report a verified close", "[live][poll-order]") {
+  WorkingSession session;
+  HoldingsSnapshot held;
+  held.received_at_ = live_hour(2);
+  session.set_holdings(held);
+  auto bound = bind_for_poll_order(session, TenOnEveryBar{});
+  runner::StopSource stop;
+  FlattenAfterFailedHoldings source(session, stop);
+  runner::PollSchedule schedule;
+  schedule.holdings_ = std::chrono::seconds(1);
+  schedule.working_orders_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  schedule.calendar_.reset();
+  runner::PollingLoop<decltype(bound), FlattenAfterFailedHoldings, runner::ManualClock> loop(
+    bound, source, schedule, runner::ManualClock{live_hour(3)}
+  );
+  loop.allow_unbounded_portfolio_age();
+
+  const auto report = loop.run(stop, 4);
+
+  REQUIRE(report.stopped_by_ == runner::StopIntent::FLATTEN);
+  // The listing at hour 3 is newer than the holdings from hour 2, and a fill between them would be in
+  // neither: the closing pass could not know what it owed.
+  CHECK(report.closing_source_unverified_);
+  CHECK_FALSE(report.closing_complete());
+}
+
+namespace {
+
+/** Restates ten on an update, and answers a bar with a fixed order of one. */
+struct TargetOnUpdateOrderOnBar {
+  template <class Ctx>
+  void on_order_update(Ctx& ctx, const OrderSnapshot&) {
+    strategy::TargetPosition ten;
+    ten.instrument_ = samsung();
+    ten.target_quantity_ = Decimal64::parse("10");
+    ctx.submit(ten);
+  }
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent&) {
+    ctx.submit(
+      strategy::OrderIntent::market(samsung(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")))
+    );
+  }
+};
+
+/** Changes the listing after the startup read, so the first scheduled listing carries an update. */
+class ListingMovesAfterStartup {
+public:
+  static constexpr bool provides_working_orders = true;
+
+  explicit ListingMovesAfterStartup(WorkingSession& session) : inner_(session, {samsung()}), session_(&session) {}
+
+  template <typename Runner>
+  runner::PollOutcome poll(runner::PollKind kind, Runner& runner_instance) {
+    return inner_.poll(kind, runner_instance);
+  }
+
+  template <typename Runner>
+  runner::PollOutcome read_order_list(Runner& runner_instance) {
+    const auto outcome = inner_.read_order_list(runner_instance);
+    // Five of the resting ten fill between the startup read and the first scheduled listing.
+    WorkingOrders<FakeBroker> moved;
+    moved.orders_.push_back(update_row("B-1", "", "5"));
+    moved.received_at_ = live_hour(1);
+    session_->set_working_orders(moved);
+    return outcome;
+  }
+
+private:
+  live::SessionSource<WorkingSession> inner_;
+  WorkingSession* session_;
+};
+
+} // namespace
+
+TEST_CASE("an update's target withheld for an unread account at startup is planned after holdings", "[live][poll-order]") {
+  // The first scheduled listing runs before the first holdings read, so a target stated from its update
+  // meets an account never read. It is retained and planned after the iteration's polls -- here against
+  // holdings that (by this fake's script) show nothing held, so five of the ten are still wanted.
+  WorkingSession session;
+  WorkingOrders<FakeBroker> startup;
+  startup.orders_.push_back(update_row("B-1", "", "0"));
+  startup.received_at_ = live_hour(0);
+  session.set_working_orders(startup);
+  HoldingsSnapshot flat;
+  flat.received_at_ = live_hour(2);
+  session.set_holdings(flat);
+  auto bound = bind_for_poll_order(session, RestatesTenOnUpdate{});
+  ListingMovesAfterStartup source(session);
+  runner::PollSchedule schedule;
+  schedule.holdings_ = std::chrono::seconds(1);
+  schedule.working_orders_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  schedule.calendar_.reset();
+  runner::PollingLoop<decltype(bound), ListingMovesAfterStartup, runner::ManualClock> loop(
+    bound, source, schedule, runner::ManualClock{live_hour(2)}
+  );
+  loop.allow_unbounded_portfolio_age();
+  runner::StopSource stop;
+
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.plans_withheld_ >= 1);
+  CHECK(bound.targets_retained() == 0);
+  REQUIRE(session.placed().size() == 1);
+  CHECK(session.placed().front().quantity_ == Decimal64::parse("5"));
+}
+
+TEST_CASE("a later order decision replaces a retained target", "[live][poll-order]") {
+  WorkingSession session;
+  auto bound = bind_for_poll_order(session, TargetOnUpdateOrderOnBar{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  poll_listing_at(source, bound, session, {update_row("B-1", "", "0")}, 0);
+  poll_holdings_at(source, bound, session, "0", 1);
+  poll_listing_at(source, bound, session, {update_row("B-1", "", "5")}, 2);
+  REQUIRE(bound.targets_retained() == 1);
+
+  // The strategy decides again about the instrument -- with an order, which is itself withheld and
+  // dropped. The earlier target must not come back after it.
+  const auto series = two_bars("70000", "71000");
+  bound.feed(strategy::make_bar_event(samsung(), series.interval_, series.stamp_, series.bars_.back()));
+  CHECK(bound.targets_retained() == 0);
+
+  poll_holdings_at(source, bound, session, "0", 3);
+  bound.retry_retained_targets();
+  CHECK(session.placed().empty());
+}
+
+TEST_CASE("nothing stated under an operator's halt is retained", "[live][poll-order]") {
+  WorkingSession session;
+  auto bound = bind_for_poll_order(session, RestatesTenOnUpdate{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  poll_listing_at(source, bound, session, {update_row("B-1", "", "0")}, 0);
+  poll_holdings_at(source, bound, session, "0", 1);
+  bound.guard().halt(strategy::HaltReason::OPERATOR);
+
+  poll_listing_at(source, bound, session, {update_row("B-1", "", "5")}, 2);
+  CHECK(bound.targets_retained() == 0);
+
+  bound.guard().resume(strategy::HaltReason::OPERATOR);
+  poll_holdings_at(source, bound, session, "0", 3);
+  bound.retry_retained_targets();
+  CHECK(session.placed().empty());
+}
+
+TEST_CASE("a deferred release that throws does not leave supersession disabled", "[live][poll-order]") {
+  WorkingSession session;
+  auto bound = live::bind(session, FlattensOnPhase{}, {});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  leave_behind_a_stop(bound, session);
+  record_stop(session, OrderStatus::CANCELED, "0");
+  session.throw_on_place();
+
+  WorkingOrders<FakeBroker> empty;
+  empty.received_at_ = live_hour(1);
+  session.set_working_orders(empty);
+  CHECK_THROWS(source.poll(runner::PollKind::WORKING_ORDERS, bound));
+
+  // The listing (hour 1) is newer than the holdings (hour 0). With the exemption stuck on, the next
+  // flatten would sell against that picture; it must be withheld instead.
+  session.throw_on_place(false);
+  const auto withheld_before = bound.plans_withheld();
+  bound.feed(strategy::MarketPhase::POST_CLOSE);
+  CHECK(bound.plans_withheld() == withheld_before + 1);
+  CHECK(session.placed().empty());
+}
+
+TEST_CASE("a retained target waits while a hold is in force, then is planned", "[live][poll-order]") {
+  WorkingSession session;
+  auto bound = bind_for_poll_order(session, RestatesTenOnUpdate{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  poll_listing_at(source, bound, session, {update_row("B-1", "", "0")}, 0);
+  poll_holdings_at(source, bound, session, "0", 1);
+  poll_listing_at(source, bound, session, {update_row("B-1", "", "5")}, 2);
+  REQUIRE(bound.targets_retained() == 1);
+
+  poll_holdings_at(source, bound, session, "0", 3);
+  bound.guard().halt(strategy::HaltReason::OPERATOR);
+  bound.retry_retained_targets();
+  // Not drained into a refusal: still retained, nothing sent.
+  CHECK(bound.targets_retained() == 1);
+  CHECK(session.placed().empty());
+
+  bound.guard().resume(strategy::HaltReason::OPERATOR);
+  bound.retry_retained_targets();
+  CHECK(bound.targets_retained() == 0);
+  // By this fake's script nothing is held and five still work, so five of the ten are placed.
+  REQUIRE(session.placed().size() == 1);
+  CHECK(session.placed().front().quantity_ == Decimal64::parse("5"));
+}
+
+TEST_CASE("a stop discards retained targets", "[live][poll-order]") {
+  WorkingSession session;
+  auto bound = bind_for_poll_order(session, RestatesTenOnUpdate{});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  poll_listing_at(source, bound, session, {update_row("B-1", "", "0")}, 0);
+  poll_holdings_at(source, bound, session, "0", 1);
+  poll_listing_at(source, bound, session, {update_row("B-1", "", "5")}, 2);
+  REQUIRE(bound.targets_retained() == 1);
+
+  runner::PollSchedule schedule;
+  schedule.tick_ = std::chrono::seconds(1);
+  schedule.calendar_.reset();
+  runner::PollingLoop<decltype(bound), live::SessionSource<WorkingSession>, runner::ManualClock> loop(
+    bound, source, schedule, runner::ManualClock{live_hour(3)}
+  );
+  loop.allow_unbounded_portfolio_age();
+  runner::StopSource stop;
+  stop.request(runner::StopIntent::QUIESCE);
+  loop.run(stop, 1);
+
+  CHECK(bound.targets_retained() == 0);
+}
+
+namespace {
+
+/** Wants ten on an order update; wants nothing once a phase is announced. */
+struct EntryOnUpdateFlatOnPhase {
+  template <class Ctx>
+  void on_order_update(Ctx& ctx, const OrderSnapshot&) {
+    strategy::TargetPosition ten;
+    ten.instrument_ = samsung();
+    ten.target_quantity_ = Decimal64::parse("10");
+    ctx.submit(ten);
+  }
+
+  template <class Ctx>
+  void on_phase(Ctx& ctx, strategy::MarketPhase) {
+    strategy::TargetPosition flat;
+    flat.instrument_ = samsung();
+    flat.target_quantity_ = Decimal64::parse("0");
+    ctx.submit(flat);
+  }
+};
+
+/** Requests a stop from inside the holdings poll, after the iteration's start. */
+class StopsDuringHoldings {
+public:
+  static constexpr bool provides_working_orders = true;
+
+  StopsDuringHoldings(WorkingSession& session, runner::StopSource& stop)
+  : inner_(session, {samsung()}), stop_(&stop) {}
+
+  template <typename Runner>
+  runner::PollOutcome poll(runner::PollKind kind, Runner& runner_instance) {
+    const auto outcome = inner_.poll(kind, runner_instance);
+    if (kind == runner::PollKind::HOLDINGS) {
+      stop_->request(runner::StopIntent::QUIESCE);
+    }
+    return outcome;
+  }
+
+  template <typename Runner>
+  runner::PollOutcome read_order_list(Runner& runner_instance) {
+    return inner_.read_order_list(runner_instance);
+  }
+
+private:
+  live::SessionSource<WorkingSession> inner_;
+  runner::StopSource* stop_;
+};
+
+/** Leaves `bound` with one retained ten-share target on Samsung, as the update tests do. */
+template <typename Bound>
+void retain_one_target(Bound& bound, WorkingSession& session) {
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  poll_listing_at(source, bound, session, {update_row("B-1", "", "0")}, 0);
+  poll_holdings_at(source, bound, session, "0", 1);
+  poll_listing_at(source, bound, session, {update_row("B-1", "", "5")}, 2);
+  REQUIRE(bound.targets_retained() == 1);
+}
+
+} // namespace
+
+TEST_CASE("a retained entry does not trade before the phase decision that follows it", "[live][poll-order]") {
+  // A retained entry of ten, then an iteration whose holdings read is good and whose phase changes.
+  // `on_phase` wants flat. Retried before the announcement, the entry would buy five and the flat
+  // target would arrive too late to stop it.
+  WorkingSession session;
+  auto bound = bind_for_poll_order(session, EntryOnUpdateFlatOnPhase{});
+  retain_one_target(bound, session);
+
+  const auto start = live_hour(3);
+  bound.context().set_calendar(one_day_calendar(strategy::SessionWindow::krx().local_date(start)));
+  HoldingsSnapshot flat;
+  flat.received_at_ = live_hour(4);
+  session.set_holdings(flat);
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  runner::PollSchedule schedule;
+  schedule.holdings_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  schedule.calendar_.reset();
+  runner::PollingLoop<decltype(bound), live::SessionSource<WorkingSession>, runner::ManualClock> loop(
+    bound, source, schedule, runner::ManualClock{start}
+  );
+  loop.allow_unbounded_portfolio_age();
+  runner::StopSource stop;
+
+  const auto report = loop.run(stop, 1);
+
+  REQUIRE(report.phase_transitions_ >= 1);
+  CHECK(session.placed().empty());
+  CHECK(bound.targets_retained() == 0);
+}
+
+TEST_CASE("a stop requested during a poll discards retained targets", "[live][poll-order]") {
+  WorkingSession session;
+  auto bound = bind_for_poll_order(session, RestatesTenOnUpdate{});
+  retain_one_target(bound, session);
+
+  runner::StopSource stop;
+  StopsDuringHoldings source(session, stop);
+  runner::PollSchedule schedule;
+  schedule.holdings_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  schedule.calendar_.reset();
+  runner::PollingLoop<decltype(bound), StopsDuringHoldings, runner::ManualClock> loop(
+    bound, source, schedule, runner::ManualClock{live_hour(3)}
+  );
+  loop.allow_unbounded_portfolio_age();
+
+  const auto report = loop.run(stop, 2);
+
+  REQUIRE(report.stopped_by_ == runner::StopIntent::QUIESCE);
+  CHECK(bound.targets_retained() == 0);
+  CHECK(session.placed().empty());
+}
+
+TEST_CASE("an abandoned run discards retained targets", "[live][poll-order]") {
+  // Retained work lives for one run: a run given up after repeated poll failures, then resumed by hand,
+  // must not place a target decided before an outage of unknown length.
+  WorkingSession session;
+  auto bound = bind_for_poll_order(session, RestatesTenOnUpdate{});
+  retain_one_target(bound, session);
+
+  session.fail_with(ErrorCategory::TRANSPORT);
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  runner::PollSchedule schedule;
+  schedule.holdings_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  schedule.calendar_.reset();
+  runner::PollingLoop<decltype(bound), live::SessionSource<WorkingSession>, runner::ManualClock> loop(
+    bound, source, schedule, runner::ManualClock{live_hour(3)}
+  );
+  loop.allow_unbounded_portfolio_age();
+  runner::StopSource stop;
+
+  const auto report = loop.run(stop, 200);
+
+  REQUIRE(report.abandoned_);
+  CHECK(bound.targets_retained() == 0);
+  CHECK(session.placed().empty());
 }

@@ -108,6 +108,30 @@ struct Portfolio {
    */
   std::chrono::system_clock::time_point as_of_{};
   /**
+   * When the working-order listing behind `working_` arrived, on the same local clock as `as_of_`.
+   *
+   * Stamped by a live source from `WorkingOrders::received_at_`; a replay never sets it, and the epoch
+   * means "no stamped listing". It exists for one comparison, `listing_newer_than_holdings`.
+   */
+  std::chrono::system_clock::time_point working_as_of_{};
+
+  /**
+   * Whether the working-order listing arrived after the holdings it would be reconciled with.
+   *
+   * **Then the picture can under-count a position.** A resting buy that fills between the two reads
+   * has left the listing and is not yet in the holdings: the account reads as though the order never
+   * existed, and a target strategy buys again. The opposite order -- holdings newer than the listing
+   * -- over-counts, which at worst cancels an order that has already filled. So a plan sized against
+   * this portfolio is withheld while this is true (`WithheldPlanReason::PORTFOLIO_SUPERSEDED`).
+   *
+   * False when either stamp is the epoch: absence has its own rule, and an unstamped listing is one
+   * nothing can be compared against.
+   */
+  bool listing_newer_than_holdings() const noexcept {
+    const std::chrono::system_clock::time_point epoch{};
+    return as_of_ != epoch && working_as_of_ != epoch && working_as_of_ > as_of_;
+  }
+  /**
    * What the `sellable_quantity_` figures on `positions_` are evidence of.
    *
    * Copied from `HoldingsSnapshot::sellable_basis_` by whoever filled the positions -- the live

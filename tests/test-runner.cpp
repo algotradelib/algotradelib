@@ -826,6 +826,56 @@ TEST_CASE("the probe learns the broker's sellable convention from ordinary polls
   REQUIRE(dry.sellable_convention().overall().net_ == 1);
 }
 
+TEST_CASE("the probe does not judge a listing newer than the holdings beside it") {
+  // A sell of thirty starts resting between a holdings read and the listing read after it. Judged
+  // then, the listing shows it and the old sellable figure has not moved, which reads as a broker
+  // that does not deduct resting sells. Skipped instead, and judged once holdings catch up.
+  runner::DryRunner<HoldTen> dry;
+  arrange(dry);
+  dry.probe_sellable_convention();
+
+  using Tag = runner::DryRunner<HoldTen>::Tag;
+  const auto at = [](int hours) {
+    return std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 100 + hours);
+  };
+  strategy::Portfolio<Tag> portfolio;
+  HoldingPosition held;
+  held.instrument_ = samsung();
+  held.quantity_ = Decimal64::parse("100");
+  held.sellable_quantity_ = Decimal64::parse("100");
+  portfolio.positions_.push_back(held);
+  portfolio.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
+  portfolio.working_as_of_ = at(0);
+  portfolio.as_of_ = at(1);
+  dry.context().set_portfolio(portfolio);
+  dry.observe_sellable_convention();
+
+  WorkingOrder<Tag> resting;
+  resting.order_.instrument_ = samsung();
+  resting.order_.side_ = OrderSide::SELL;
+  resting.order_.status_ = OrderStatus::PENDING;
+  resting.order_.quantity_ = Decimal64::parse("30");
+  resting.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+  portfolio.working_.push_back(resting);
+  portfolio.working_as_of_ = at(2);
+  dry.context().set_portfolio(portfolio);
+  dry.observe_sellable_convention();
+  REQUIRE(dry.sellable_convention().overall().total() == 0);
+
+  portfolio.positions_[0].sellable_quantity_ = Decimal64::parse("70");
+  portfolio.as_of_ = at(3);
+  dry.context().set_portfolio(portfolio);
+  dry.observe_sellable_convention();
+
+  REQUIRE(dry.sellable_convention().verdict() == strategy::SellableConvention::NET_OF_RESTING);
+  REQUIRE(dry.sellable_convention().overall().net_ == 1);
+  REQUIRE(dry.sellable_convention().overall().gross_ == 0);
+}
+
 TEST_CASE("the probe is off by default and changes nothing when on") {
   using Tag = runner::DryRunner<HoldTen>::Tag;
   strategy::Portfolio<Tag> portfolio;

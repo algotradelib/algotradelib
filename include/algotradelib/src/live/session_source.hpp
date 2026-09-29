@@ -672,6 +672,9 @@ private:
 
       auto portfolio = runner_instance.context().portfolio();
       portfolio.working_ = result.value().orders_;
+      // Stamped with the listing, so a plan sized before the next holdings read can tell the account
+      // is older than the orders it is reconciled with; see `Portfolio::listing_newer_than_holdings`.
+      portfolio.working_as_of_ = result.value().received_at_;
       runner_instance.context().set_portfolio(std::move(portfolio));
 
       // Swept from the rows just fetched, so reconciliation costs no request of its own. A

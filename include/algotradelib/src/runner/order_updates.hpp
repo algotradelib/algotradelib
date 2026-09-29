@@ -75,6 +75,13 @@ inline bool same_observable_state(const OrderSnapshot& lhs, const OrderSnapshot&
  * loop sweeps them from the working-order inquiry, and a replay builds the same shape for
  * `Portfolio::working_`. This turns those listings into events, and it is the only producer.
  *
+ * **In a live loop, a handler's target is planned against the next holdings read, not this one.**
+ * The update is fed during the working-order poll, which the loop runs before holdings, so the account
+ * the handler sees predates the listing that produced the update -- a fill between the two reads is
+ * in neither. A `TargetPosition` stated there is therefore withheld as `PORTFOLIO_SUPERSEDED` and
+ * planned again after the iteration's holdings read (`Runner::retry_retained_targets`, which
+ * `PollingLoop` calls after its polls); an `OrderIntent` stated there is withheld and dropped.
+ *
  * ## The contract, which is narrower than "you will see your order's lifecycle"
  *
  * **A caller is told what the broker last stated about an order the broker is still listing. It is
