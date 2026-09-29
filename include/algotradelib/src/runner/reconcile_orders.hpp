@@ -871,6 +871,41 @@ inline bool any_placement(const std::vector<OpenInstruction>& open) {
   return false;
 }
 
+/**
+ * Adds a single-date broker's history rows to a working-order listing, keeping every terminal one.
+ *
+ * **Its history pages are merged against each other only for exact copies** (same id, instrument and
+ * stated order time; `SessionSource::read_history_days`). Each page is one order date and Kiwoom numbers
+ * orders per day, so an earlier day's order can carry today's number. Merged by the id, the later row
+ * was dropped as a duplicate and recovery could report `NOT_PLACED` for an order that exists.
+ *
+ * Against the working listing, a history row is dropped only while it is itself **open**: that is the
+ * one case where it is a second copy of a resting row. A terminal row is kept even under a working row's
+ * number -- it may be another day's order -- and if it is in fact the same order, filled between the two
+ * reads, the matcher sees two candidates and answers `AMBIGUOUS`, which keeps the hold.
+ */
+inline void merge_dated_history(
+  std::vector<OrderSnapshot>& into,
+  const std::vector<OrderSnapshot>& rows
+) {
+  const auto listed = into.size();
+  for (const auto& row : rows) {
+    bool known = false;
+    if (strategy::order_is_open(row.status_)) {
+      for (std::size_t at = 0; at < listed; ++at) {
+        if (!row.order_id_.empty() && into[at].order_id_ == row.order_id_ &&
+            into[at].instrument_ == row.instrument_) {
+          known = true;
+          break;
+        }
+      }
+    }
+    if (!known) {
+      into.push_back(row);
+    }
+  }
+}
+
 /** Adds rows to `into`, skipping any order id already there. */
 inline void merge_rows(std::vector<OrderSnapshot>& into, const std::vector<OrderSnapshot>& rows) {
   for (const auto& row : rows) {

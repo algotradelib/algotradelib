@@ -417,6 +417,9 @@ public:
   Result<OrderPage> order_history(const OrderHistoryQuery& query) {
     ++history_calls_;
     history_queries_.push_back(query);
+    if (history_by_query_) {
+      return Result<OrderPage>(history_by_query_(query));
+    }
     if (history_error_) {
       return Result<OrderPage>(*history_error_);
     }
@@ -454,6 +457,8 @@ public:
   std::size_t holdings_calls() const noexcept { return holdings_calls_; }
   std::size_t working_calls() const noexcept { return working_calls_; }
   std::size_t history_calls() const noexcept { return history_calls_; }
+  /** Answers each history query itself, where a test needs a page per date. */
+  std::function<OrderPage(const OrderHistoryQuery&)> history_by_query_;
   const std::vector<OrderHistoryQuery>& history_queries() const noexcept { return history_queries_; }
 
 private:
@@ -461,6 +466,7 @@ private:
   QuoteSnapshot quote_;
   HoldingsSnapshot holdings_;
   std::vector<OrderHistoryQuery> history_queries_;
+
   WorkingOrders<FakeBroker> working_orders_;
   OrderPage history_;
   std::optional<BrokerError> history_error_;
@@ -3757,4 +3763,65 @@ TEST_CASE("the evidence read covers the Korean day when UTC has not reached it y
   }
   CHECK(asked_for_the_30th);
   CHECK(session.placed().size() == 1);
+}
+
+TEST_CASE("a row from another day under the same order number is a different order", "[recovery]") {
+  // **Codex's round-1 finding on the single-date sweep.** Kiwoom numbers orders per day, and a sweep
+  // read one date at a time can see yesterday's order under today's number. Merged by the number alone,
+  // today's row -- the journalled order, filled and gone from the working list -- was dropped, the
+  // older row failed the time window, and recovery said `NOT_PLACED`.
+  WorkingSession session;
+  session.set_working_orders(WorkingOrders<FakeBroker>{});
+  auto yesterday = listed_order("KRX-1");
+  yesterday.ordered_at_ = journaled_at() - std::chrono::hours(20);
+  yesterday.status_ = OrderStatus::FILLED;
+  auto today = listed_order("KRX-1");
+  today.status_ = OrderStatus::FILLED;
+  const auto today_date = runner::date_of(journaled_at());
+  session.history_by_query_ = [&](const OrderHistoryQuery& query) {
+    OrderPage page;
+    if (query.from_ && query.from_->day_ == today_date.day_) {
+      page.orders_.push_back(today);
+    } else {
+      page.orders_.push_back(yesterday);
+    }
+    return page;
+  };
+
+  runner::MemoryJournal journal;
+  journal.append(journaled_placement());
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live_runner.context().set_now(swept_at());
+  live_runner.ledger().mark(samsung(), "an order request failed in transit");
+  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
+  source.set_journal(journal);
+
+  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+  REQUIRE_FALSE(source.last_reconcile().matches_.empty());
+  CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::MATCHED);
+  CHECK(source.last_reconcile().matches_.front().order_id_ == "KRX-1");
+
+  // Yesterday's row with no readable time does not swallow today's either (Codex round 2): the pages
+  // are never merged against each other.
+  yesterday.ordered_at_.reset();
+  runner::MemoryJournal again;
+  again.append(journaled_placement());
+  auto second = live::bind_observer(session, CountEvents{});
+  second.context().set_now(swept_at());
+  second.ledger().mark(samsung(), "an order request failed in transit");
+  live::SessionSource<WorkingSession, runner::MemoryJournal> other(session, {samsung()});
+  other.set_journal(again);
+  CHECK(other.read_order_list(second) == runner::PollOutcome::UPDATED);
+  REQUIRE_FALSE(other.last_reconcile().matches_.empty());
+  // Both rows are kept. The unstamped one cannot be ruled out by time, so the verdict is an ambiguity
+  // an operator settles -- never `NOT_PLACED`, and never today's order silently attributed away.
+  CHECK(other.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::AMBIGUOUS);
+
+  // Against the working list: an open history copy of a resting row is one candidate; a terminal row
+  // under the same number is kept.
+  auto resting = listed_order("KRX-1");
+  resting.status_ = OrderStatus::PENDING;
+  std::vector<OrderSnapshot> candidates{resting};
+  runner::merge_dated_history(candidates, {resting, yesterday});
+  CHECK(candidates.size() == 2);
 }

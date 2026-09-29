@@ -774,7 +774,12 @@ private:
         );
         return;
       }
-      runner::merge_rows(candidates, history);
+      if constexpr (Caps::history_requires_range) {
+        runner::merge_rows(candidates, history);
+      } else {
+        // Read one date at a time; see `runner::merge_dated_history`.
+        runner::merge_dated_history(candidates, history);
+      }
     }
 
     reconcile_ = runner::reconcile_against(
@@ -853,9 +858,28 @@ private:
       add(runner::date_of(at));
     }
     add(runner::date_of(until));
+    // Pages are concatenated, dropping only an **exact** copy -- the same id and instrument with the
+    // same order time stated on both. Two days' orders can share a number, so the id alone is not
+    // identity, and a row with no time is never assumed to be another's copy. See
+    // `runner::merge_dated_history`.
     for (const auto& day : days) {
-      if (!read_history_in({day, day}, into, true)) {
+      std::vector<OrderSnapshot> page;
+      if (!read_history_in({day, day}, page, true)) {
         return false;
+      }
+      for (const auto& row : page) {
+        bool copy = false;
+        for (const auto& held : into) {
+          if (!row.order_id_.empty() && held.order_id_ == row.order_id_ &&
+              held.instrument_ == row.instrument_ && held.ordered_at_ && row.ordered_at_ &&
+              *held.ordered_at_ == *row.ordered_at_) {
+            copy = true;
+            break;
+          }
+        }
+        if (!copy) {
+          into.push_back(row);
+        }
       }
     }
     return true;
