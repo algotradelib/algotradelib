@@ -81,10 +81,11 @@ make. Whichever you use, `report.caveats_.limit_fill_` says which.
 | --- | --- | --- |
 | Release | a sell stop when the bar's low reaches the trigger; a buy stop when its high does | the universal convention; **neither broker documents it**, and `caveats_.stop_releases_` counts how often it was used |
 | Opened through the trigger | priced as a limit against the whole bar, under your `LimitFillPrice`, and dated from the open when the open was marketable | the whole bar followed the release |
+| Any stop fill | credited a price **inside the bar** and never through the limit — a sell no lower than the higher of the low and its limit, a buy no higher than the lower of the high and its limit | an `AT_LIMIT` credit, or slippage, could otherwise name a price the bar never showed |
 | Released inside the bar, limit marketable at the trigger | fills on that bar at **the worst price the bar traded that the limit allows** — a sell the higher of its limit and the low, a buy the lower of its limit and the high | the price at release was the trigger; crediting the limit itself could name a price the bar never reached |
 | Released inside the bar, limit not marketable there | fills at the limit on that bar only if the **close** is at or through it, else rests from the next bar | the close is the one price known to come after the release |
 | A bar with no open | a release is always "inside the bar" | a close cannot stand in for an open the bar did not state |
-| Slippage | never carries a stop fill through its limit | a limit order that could only have traded worse did not trade |
+| Slippage | never carries a stop fill out of its bar or through its limit | a limit order that could only have traded worse did not trade |
 
 `caveats_.stop_fills_intrabar_` counts the fills that relied on a release inside the bar. Each assumes
 the price moved continuously through the trigger; a jump past both trigger and limit would have left

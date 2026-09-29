@@ -5084,12 +5084,44 @@ TEST_CASE("a stop fill is never credited through its limit, slippage included", 
   REQUIRE(sell.execution_);
   CHECK(sell.execution_->fill_.price_ == Decimal64::parse("69000"));
 
-  // A released stop credited above its limit still slips, down to the limit and no further.
-  const auto roomy = slipping.decide(
+  // Credited the bar's 69,000 low with the limit far below: ten basis points would record 68,931,
+  // below every price the bar showed, so it is held at the low.
+  const auto out_of_bar = slipping.decide(
     sell_stop("69500", "68000"), ohlc("70000", "70500", "69000", "69200"), krx_grid(), fill_date()
   );
+  REQUIRE(out_of_bar.execution_);
+  CHECK(out_of_bar.execution_->fill_.price_ == Decimal64::parse("69000"));
+
+  // Where the bar leaves room, slippage still applies: opened at 69,200 through the trigger and
+  // credited the open under `AT_OPEN_IF_BETTER`, it slips to 69,130.8, above the 69,000 low.
+  const backtest::NextBarFillModel roomy_model(
+    backtest::CommissionModel::none(),
+    backtest::SlippageModel::of_basis_points(Decimal64::parse("10")),
+    backtest::LimitFillPrice::AT_OPEN_IF_BETTER
+  );
+  const auto roomy = roomy_model.decide(
+    sell_stop("69500", "68000"), ohlc("69200", "69400", "69000", "69100"), krx_grid(), fill_date()
+  );
   REQUIRE(roomy.execution_);
-  CHECK(roomy.execution_->fill_.price_ == Decimal64::parse("68931"));
+  CHECK(roomy.execution_->fill_.price_ == Decimal64::parse("69130.8"));
+}
+
+TEST_CASE("a stop released at the open is never credited outside its bar", "[trigger]") {
+  // `AT_LIMIT` credits a plain limit its limit, and a bar that opened through a stop's trigger with a
+  // limit far beyond it never traded there: the credit is the bar's own worst price instead.
+  const backtest::NextBarFillModel model;
+  const auto sell = model.decide(
+    sell_stop("69500", "68000"), ohlc("69200", "69400", "69000", "69100"), krx_grid(), fill_date()
+  );
+  REQUIRE(sell.execution_);
+  CHECK_FALSE(sell.intrabar_release_fill_);
+  CHECK(sell.execution_->fill_.price_ == Decimal64::parse("69000"));
+
+  const auto buy = model.decide(
+    buy_stop("70500", "72000"), ohlc("70800", "71000", "70600", "70900"), krx_grid(), fill_date()
+  );
+  REQUIRE(buy.execution_);
+  CHECK(buy.execution_->fill_.price_ == Decimal64::parse("71000"));
 }
 
 TEST_CASE("a stop released at the open is dated from the open whatever the price policy", "[trigger][costs]") {

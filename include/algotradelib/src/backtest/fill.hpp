@@ -151,6 +151,9 @@ public:
    * changed in between was charged a fill it did not apply to. Absent, every fill uses `date`, as
    * before. **A partial correction**: a fill priced inside a multi-day bar has no known day and still
    * uses `date` (`plan/todo/nominal-period-end-dates-a-fill.md`).
+   * @param released whether an earlier bar already released this order, when it is a stop-limit
+   * order; the engine records it on the queued order. A released stop is priced as the limit it has
+   * become. Ignored for every other basis.
    */
   FillDecision decide(
     const strategy::PlannedOrder& order,
@@ -209,23 +212,40 @@ public:
       return decision;
     }
 
-    auto slipped = slippage_.apply(*reference, order.side_, rule);
-    if (slipped && order.type_ == OrderType::STOP_LIMIT && order.price_) {
-      // **A limit is a limit.** Slippage moves a fill against the order, and past the limit it
-      // describes a trade the order could not have made. Held at the limit for a stop; a plain
-      // limit's fill is not clamped yet (`plan/todo/limit-slippage-breach.md`).
+    // **A stop fill is credited a price its bar traded, and never one through its limit.** The
+    // bound is the worst such price: a sell the higher of the bar's low and its limit, a buy the lower
+    // of the bar's high and its limit. Applied to the reference before slippage -- a plain limit's
+    // `AT_LIMIT` credit can sit outside the bar when the bar opened through it -- and to the slipped
+    // price after, since slippage can carry an in-range price out of the bar or through the limit.
+    // A plain limit is not bounded yet (`plan/todo/limit-slippage-breach.md`).
+    std::optional<Decimal64> bound;
+    if (order.type_ == OrderType::STOP_LIMIT && order.price_) {
       const auto& limit = *order.price_;
-      const bool breached = order.side_ == OrderSide::SELL ?
-        decimal_less(slipped->first, limit) :
-        decimal_less(limit, slipped->first);
-      if (breached) {
+      if (order.side_ == OrderSide::SELL) {
+        bound = decimal_less(limit, next.bar_.low_) ? next.bar_.low_ : limit;
+        if (decimal_less(*reference, *bound)) {
+          reference = bound;
+        }
+      } else {
+        bound = decimal_less(next.bar_.high_, limit) ? next.bar_.high_ : limit;
+        if (decimal_less(*bound, *reference)) {
+          reference = bound;
+        }
+      }
+    }
+    auto slipped = slippage_.apply(*reference, order.side_, rule);
+    if (slipped && bound) {
+      const bool beyond = order.side_ == OrderSide::SELL ?
+        decimal_less(slipped->first, *bound) :
+        decimal_less(*bound, slipped->first);
+      if (beyond) {
         const auto moved = order.side_ == OrderSide::SELL ?
-          decimal_subtract(*reference, limit) :
-          decimal_subtract(limit, *reference);
+          decimal_subtract(*reference, *bound) :
+          decimal_subtract(*bound, *reference);
         if (!moved) {
           slipped.reset();
         } else {
-          slipped->first = limit;
+          slipped->first = *bound;
           slipped->second = *moved;
         }
       }

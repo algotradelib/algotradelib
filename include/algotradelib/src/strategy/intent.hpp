@@ -246,9 +246,9 @@ public:
    * move reaches the trigger, and how the trigger may relate to the limit, is the broker's rule and
    * is not checked here, because neither KIS nor Kiwoom documents it.
    *
-   * A replay models it with stated assumptions -- release when a bar reaches the trigger, a release
-   * inside a bar filling at the limit and never better -- and counts both in `ReportCaveats`; see
-   * `NextBarFillModel::decide`.
+   * A replay models it with stated assumptions -- release when a bar reaches the trigger, a fill
+   * credited a price the bar traded and never one through the limit -- and counts releases and
+   * intrabar fills in `ReportCaveats`; see `NextBarFillModel::decide`.
    */
   static OrderIntent stop_limit(
     InstrumentId instrument,

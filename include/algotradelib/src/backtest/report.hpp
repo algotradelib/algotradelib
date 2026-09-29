@@ -268,8 +268,8 @@ struct ReportCaveats {
    * worst price the bar traded that its limit allows; one whose limit was not is filled only when the
    * close proves the price came back to it, at the limit. A price that jumped inside the bar past both
    * trigger and limit (a halt reopening, a thin book) would have released the stop and left it resting,
-   * so each of these is a fill that rests on that continuity. A stop fill is never credited through its
-   * limit, slippage included.
+   * so each of these is a fill that rests on that continuity. Every stop fill, intrabar or not, is
+   * credited a price inside its bar and never through its limit, slippage included.
    */
   std::size_t stop_fills_intrabar_{0};
 };
