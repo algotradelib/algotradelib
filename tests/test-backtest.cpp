@@ -3955,7 +3955,7 @@ struct BuysOneLimit {
 
 } // namespace
 
-TEST_CASE("a fill at an open-stamped day bar's open is costed on that day, not the next", "[backtest][costs]") {
+TEST_CASE("a fill at an open-stamped day bar's open is costed on that day and not the next", "[backtest][costs]") {
   // The order from the 10th fills at the 11th's open. The 11th's period end is nominal -- its stamp
   // plus 24 hours, so the 12th -- and dating the charge from it charged the 12th's rate a day early.
   backtest::Backtester<BuysOnceThenHolds> engine(
