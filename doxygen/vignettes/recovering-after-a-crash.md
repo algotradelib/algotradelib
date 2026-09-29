@@ -76,8 +76,8 @@ intended interface:
 
 ```
 $ tail -2 /var/lib/mybot/orders.jsonl
-{"id":"run-a-7","action":"place","outcome":"pending","country":"KR","venue":"COMBINED","symbol":"005930","side":"BUY","type":"LIMIT","quantity":"10","price":"70000","at":1774832400000000,"at_text":"2026-03-30T01:00:00Z"}
-{"id":"run-a-7","action":"place","outcome":"accepted","country":"KR",...,"order_id":"KRX-4412"}
+{"id":"run-a-7","action":"place","outcome":"pending","country":"KR","venue":"COMBINED","symbol":"005930","side":"BUY","type":"LIMIT","quantity":"10","price":"70000","at":1774832400000000,"at_text":"2026-03-30T01:00:00Z","crc":"5d0e8a1f"}
+{"id":"run-a-7","action":"place","outcome":"accepted","country":"KR",...,"order_id":"KRX-4412","crc":"0b7c33e2"}
 ```
 
 Two lines per instruction, never an edit of one. The first is written **before** the send is
@@ -85,6 +85,15 @@ attempted; the second says what happened. A `pending` line with no companion is 
 
 `at` is the record and `at_text` is the caption: the integer is exact on every platform and is what
 matching reads, the text is for you.
+
+`crc` is always last: a CRC-32 over every byte of the line before it. A line whose bytes changed after
+they were written — a bad sector, a partial overwrite, an editor — fails it, and is read as damage: no
+instrument, `needs_operator`, and a halt, exactly as for a value that no longer parses. That matters for
+the damage no reader of values could see, such as `005930` becoming `005931`, a real instrument. **So do
+not edit the file**: a hand-edited line fails its checksum, and so does a key this library never wrote.
+A line without `crc` was written by a release before it existed and is read as it always was, but one
+*after* a checksummed line cannot be this writer's and is damage too. It is a checksum against
+corruption, not a signature against someone rewriting the file on purpose.
 
 ### Reading it under pressure
 
@@ -96,6 +105,7 @@ matching reads, the text is for you.
 | `pending` then `resolved` | a sweep read the broker's list and closed it. `order_id` says what it saw |
 | `pending` alone, at the end of the file | the process died between the write and the answer |
 | a last line with no newline | the process died *during* the write |
+| `needs_operator` on a complete line | the line changed after it was written, and its checksum says so |
 
 The last two are the reason the format is line-oriented. A line and its newline are written in one
 call, so the newline is a commit marker: a torn write loses the tail of the buffer, and the missing

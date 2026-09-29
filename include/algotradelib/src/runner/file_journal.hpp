@@ -4,6 +4,7 @@
 
 #include <algotradelib/core>
 
+#include <boost/crc.hpp>
 #include <boost/json.hpp>
 
 #include <cerrno>
@@ -457,12 +458,109 @@ inline std::optional<std::string> salvage_string(std::string_view line, std::str
     return std::nullopt;
   }
   const auto begin = at + needle.size();
-  const auto end = line.find('"', begin);
-  if (end == std::string_view::npos) {
+  // **The closing quote is the first one not escaped**, not the first one. A value holding `\"`
+  // was cut short at the escape, and a symbol cut short is another symbol's key.
+  auto end = begin;
+  while (end < line.size() && line[end] != '"') {
+    end += line[end] == '\\' ? 2 : 1;
+  }
+  if (end >= line.size()) {
     // The value itself was cut off mid-write. Reporting what is there would invent a symbol.
     return std::nullopt;
   }
-  return std::string(line.substr(begin, end - begin));
+  // Decoded as the JSON string it is, so an escape reads as the character it stands for. A value
+  // whose escapes do not decode is not salvaged, for the same reason a cut-off one is not.
+  boost::system::error_code error;
+  const auto quoted = json::parse(line.substr(begin - 1, end - begin + 2), error);
+  if (error || !quoted.is_string()) {
+    return std::nullopt;
+  }
+  return std::string(quoted.as_string());
+}
+
+/**
+ * The CRC-32 of `bytes`, which is what a journal line's `crc` member states.
+ *
+ * **A checksum, not a MAC, and that is the threat model.** What changes a journal line is a partial
+ * write, a bad sector or an editor, and CRC-32 detects every single-byte change and every burst of up
+ * to 32 bits. Someone deliberately rewriting the file can recompute any key-free digest; defending
+ * against that is not what this is for.
+ */
+inline std::uint32_t line_checksum(std::string_view bytes) {
+  boost::crc_32_type crc;
+  crc.process_bytes(bytes.data(), bytes.size());
+  return crc.checksum();
+}
+
+/** Renders a checksum as the eight lowercase hex digits a line carries. */
+inline std::string checksum_text(std::uint32_t value) {
+  static constexpr char digits[] = "0123456789abcdef";
+  std::string text(8, '0');
+  for (int i = 7; i >= 0; --i) {
+    text[static_cast<std::size_t>(i)] = digits[value & 0xFu];
+    value >>= 4;
+  }
+  return text;
+}
+
+/** The member every checksummed line ends with, less its eight digits and the closing `"}`. */
+inline constexpr std::string_view kChecksumMember = ",\"crc\":\"";
+
+/** How many bytes a checksummed line's final member takes, from its comma to the closing brace. */
+inline constexpr std::size_t kChecksumSuffixSize = kChecksumMember.size() + 8 + 2;
+
+/** Returns whether `line` ends in the canonical checksum member: `,"crc":"<8 lowercase hex>"}`. */
+inline bool ends_in_checksum(std::string_view line) {
+  if (line.size() <= kChecksumSuffixSize) {
+    return false;
+  }
+  const auto suffix = line.substr(line.size() - kChecksumSuffixSize);
+  if (suffix.substr(0, kChecksumMember.size()) != kChecksumMember ||
+      suffix.substr(kChecksumSuffixSize - 2) != "\"}") {
+    return false;
+  }
+  for (const char digit : suffix.substr(kChecksumMember.size(), 8)) {
+    if (!((digit >= '0' && digit <= '9') || (digit >= 'a' && digit <= 'f'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Returns whether a line's canonical checksum member matches the bytes before it.
+ *
+ * The digest covers the line exactly as written with that member removed -- `{...}` -- so a reader
+ * never has to reproduce the writer's formatting. Call only on a line `ends_in_checksum` accepts.
+ */
+inline bool checksum_matches(std::string_view line) {
+  std::string body(line.substr(0, line.size() - kChecksumSuffixSize));
+  body += '}';
+  const auto stated = line.substr(line.size() - kChecksumSuffixSize + kChecksumMember.size(), 8);
+  return checksum_text(line_checksum(body)) == stated;
+}
+
+/**
+ * Every key any writer in this library has put on an entry line.
+ *
+ * **A key outside this set is damage**, not a field to ignore. Without the rule, one changed byte in
+ * the checksum's own name -- `"crc"` to `"crd"` -- would turn a protected line into an unprotected
+ * legacy one that reads as ordinary. A newer writer's key read by this release halts recovery rather
+ * than being skipped, which is the conservative direction for the file that decides what is still
+ * in flight.
+ */
+inline bool known_entry_key(std::string_view key) {
+  static constexpr std::string_view known[] = {
+    "id", "action", "outcome", "symbol", "country", "venue", "side", "type", "time_in_force",
+    "session", "route", "quantity", "price", "trigger", "at", "at_text", "order_id", "detail",
+    "requires_operator", "scope", "crc",
+  };
+  for (const auto candidate : known) {
+    if (candidate == key) {
+      return true;
+    }
+  }
+  return false;
 }
 
 } // namespace journal_detail
@@ -563,7 +661,15 @@ inline std::string journal_entry_to_line(const JournalEntry& entry) {
   if (!entry.scope_.empty()) {
     row["scope"] = entry.scope_;
   }
-  return json::serialize(row);
+  // **Last, and over every byte before it.** See `journal_detail::line_checksum` for what it detects
+  // and `journal_entry_from_line` for what a line that fails it becomes.
+  auto line = json::serialize(row);
+  const auto checksum = journal_detail::checksum_text(journal_detail::line_checksum(line));
+  line.pop_back();
+  line.append(journal_detail::kChecksumMember);
+  line += checksum;
+  line += "\"}";
+  return line;
 }
 
 /**
@@ -648,6 +754,17 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
     return text ? reader(*text) : Result{};
   };
 
+  // A `crc` member anywhere but last, or not eight lowercase hex digits, is not this writer's; one
+  // that is must match the bytes before it. See `journal_detail::line_checksum`.
+  const bool checksum_holds = !journal_detail::has_field(row, "crc") ||
+    (journal_detail::ends_in_checksum(line) && journal_detail::checksum_matches(line));
+  bool unknown_key = false;
+  for (const auto& member : row) {
+    if (!journal_detail::known_entry_key(member.key())) {
+      unknown_key = true;
+    }
+  }
+
   const auto symbol = read("symbol");
   const auto country = parsed("country", journal_detail::known_country_from);
   const auto venue = parsed("venue", journal_detail::known_venue_from);
@@ -674,7 +791,13 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
     unusable("price", price.has_value()) ||
     // The same rule for a stop's trigger: absent on every other order and on every line written
     // before the field existed, and a present value that does not parse is damage.
-    unusable("trigger", trigger.has_value());
+    unusable("trigger", trigger.has_value()) ||
+    // **A line that says something other than what was written.** Everything above catches a value
+    // that no longer parses; this catches one damaged into another valid value -- `005930` into
+    // `005931`, a real instrument -- which no reader of the value alone can see. A line with no
+    // checksum was written before it existed and is read as it always was.
+    !checksum_holds ||
+    unknown_key;
   // **A price missing from a priced basis, and a cancellation with no target
   // id, are deliberately *not* damage here.** Both are lines this library's own
   // writer emits: `JournalingExecutor` appends the pending line *before* the
@@ -945,6 +1068,8 @@ inline JournalReplay parse_journal_bytes(const JournalBytes& bytes) {
 
   const auto& text = bytes.text_;
   std::size_t begin = 0;
+  // Set by the first checksummed entry line; see the check below.
+  bool seen_checksum = false;
   while (begin < text.size()) {
     const auto end = text.find('\n', begin);
     if (end == std::string::npos) {
@@ -974,6 +1099,20 @@ inline JournalReplay parse_journal_bytes(const JournalBytes& bytes) {
       replay.scope_ = std::move(*scope);
       continue;
     }
+    const bool checksummed = journal_detail::ends_in_checksum(line);
+    if (seen_checksum && !checksummed) {
+      // **This writer never puts a checksum-less line after a checksummed one**, so this is a
+      // protected line that lost its checksum -- damage that removed the whole member, which the
+      // line's own reader cannot tell from a line written before checksums existed.
+      ++replay.unreadable_lines_;
+      if (replay.detail_.empty()) {
+        replay.detail_ =
+          "a journal line without a checksum follows a checksummed one, so it was changed after it "
+          "was written";
+      }
+      continue;
+    }
+    seen_checksum = seen_checksum || checksummed;
     if (auto entry = journal_entry_from_line(line)) {
       replay.entries_.push_back(std::move(*entry));
     } else {
