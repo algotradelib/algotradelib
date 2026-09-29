@@ -439,6 +439,12 @@ struct BrokerTraits<kis::KisClient>
     return client.rate_limit_stats();
   }
 
+  /** Forwards a reference-data request for one instrument. */
+  template <typename Token>
+  static auto instrument(Client& client, InstrumentId subject, Token&& token) {
+    return client.async_instrument(std::move(subject), std::forward<Token>(token));
+  }
+
   /**
    * Forwards a calendar request, supplying today when no date was given.
    *
