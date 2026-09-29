@@ -908,7 +908,15 @@ private:
       }
       const auto order = entry->order_;
       const auto rule = rule_for(order.instrument_);
-      auto decision = fills_.decide(order, event, rule, clock_.session().local_date(event.period_end_));
+      // An `OPEN`-stamped bar states its start, so a fill at its open has a known day; the period
+      // end's day is nominal there -- a day late for a daily bar, days into the next month for a
+      // monthly one. See `NextBarFillModel::decide`'s `open_date`.
+      const auto open_date = event.stamp_ == BarStamp::OPEN
+        ? std::optional<Date>(clock_.session().local_date(event.bar_.timestamp_))
+        : std::nullopt;
+      auto decision = fills_.decide(
+        order, event, rule, clock_.session().local_date(event.period_end_), open_date
+      );
       if (decision.costing_error_) {
         // **Checked before the generic no-execution branch**, because that branch would leave a
         // resting day limit queued to be retried on the next bar, and a refusal is not a bar that

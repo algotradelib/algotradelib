@@ -3901,6 +3901,124 @@ TEST_CASE("an ordinary replay reports no unvalued bars", "[backtest][caveats]") 
   CHECK_FALSE(engine.result().halted_);
 }
 
+namespace {
+
+/** A bar stamped at Seoul midnight of its period, as every shipped adapter stamps a non-minute bar. */
+strategy::BarEvent open_stamped(int year, int month, int day, BarInterval interval, const char* price) {
+  Bar bar;
+  // Seoul midnight is 15:00 UTC the day before.
+  bar.timestamp_ = utc(year, month, day, 0, 0) - std::chrono::hours(9);
+  bar.open_ = Decimal64::parse(price);
+  bar.high_ = Decimal64::parse(price);
+  bar.low_ = Decimal64::parse(price);
+  bar.close_ = Decimal64::parse(price);
+  bar.volume_ = Decimal64::parse("1000");
+  return strategy::make_bar_event(samsung(), interval, BarStamp::OPEN, bar);
+}
+
+/** A KRX schedule charging `before` through `last_old_day` and `after` from the next day. */
+backtest::CommissionPolicy rate_change(Date last_old_day, Date first_new_day) {
+  auto policy = backtest::CommissionPolicy::scheduled(
+    operator_tariff({
+      venue_rate(Venue::KRX, "0.002", "0", std::nullopt, last_old_day),
+      venue_rate(Venue::KRX, "0.001", "0", first_new_day, std::nullopt),
+    }),
+    *VenueKey::normalized(Venue::KRX), Country::KR
+  );
+  REQUIRE(policy);
+  return std::move(policy.value());
+}
+
+/** Places one buy limit at the bar's price, so an `AT_LIMIT` fill is priced at the limit, not the open. */
+struct BuysOneLimit {
+  bool placed_{false};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (placed_) {
+      return;
+    }
+    const auto reference = ctx.instrument(bar.instrument_);
+    if (!reference) {
+      return;
+    }
+    const auto limit = strategy::Price::checked(Decimal64::parse("70000"), reference->price_rule_);
+    if (!limit) {
+      return;
+    }
+    placed_ = true;
+    ctx.submit(strategy::OrderIntent::limit(
+      bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("2")), *limit
+    ));
+  }
+};
+
+} // namespace
+
+TEST_CASE("a fill at an open-stamped day bar's open is costed on that day and not the next", "[backtest][costs]") {
+  // The order from the 10th fills at the 11th's open. The 11th's period end is nominal -- its stamp
+  // plus 24 hours, so the 12th -- and dating the charge from it charged the 12th's rate a day early.
+  backtest::Backtester<BuysOnceThenHolds> engine(
+    BuysOnceThenHolds{}, replay_config(),
+    backtest::NextBarFillModel(rate_change(Date{2026, 3, 11}, Date{2026, 3, 12}))
+  );
+  engine.feed(open_stamped(2026, 3, 10, BarInterval::ONE_DAY, "70000"));
+  engine.feed(open_stamped(2026, 3, 11, BarInterval::ONE_DAY, "70000"));
+  engine.feed(open_stamped(2026, 3, 12, BarInterval::ONE_DAY, "70000"));
+  engine.finish();
+
+  REQUIRE_FALSE(engine.result().halted_);
+  REQUIRE(engine.result().executions_.size() == 1);
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  REQUIRE(report.caveats_.applied_rates_.size() == 1);
+  // The 11th's rate: 2 x 70,000 x 0.2%.
+  CHECK(report.caveats_.applied_rates_[0].rate_ == Decimal64::parse("0.002"));
+  CHECK(report.commission_paid_ == std::optional<Decimal64>(Decimal64::parse("280")));
+}
+
+TEST_CASE("a fill at an open-stamped month's open is costed in that month", "[backtest][costs]") {
+  // February's bar is stamped on its first trading day, 2 February; its nominal end is 31 days later,
+  // 5 March, after the rate changed on 1 March. The fill is priced at February's open and belongs to
+  // February's rate.
+  backtest::Backtester<BuysOnceThenHolds> engine(
+    BuysOnceThenHolds{}, replay_config(),
+    backtest::NextBarFillModel(rate_change(Date{2026, 2, 28}, Date{2026, 3, 1}))
+  );
+  engine.feed(open_stamped(2026, 1, 2, BarInterval::ONE_MONTH, "70000"));
+  engine.feed(open_stamped(2026, 2, 2, BarInterval::ONE_MONTH, "70000"));
+  engine.feed(open_stamped(2026, 3, 2, BarInterval::ONE_MONTH, "70000"));
+  engine.finish();
+
+  REQUIRE_FALSE(engine.result().halted_);
+  REQUIRE(engine.result().executions_.size() == 1);
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  REQUIRE(report.caveats_.applied_rates_.size() == 1);
+  CHECK(report.caveats_.applied_rates_[0].rate_ == Decimal64::parse("0.002"));
+  CHECK(report.commission_paid_ == std::optional<Decimal64>(Decimal64::parse("280")));
+}
+
+TEST_CASE("a limit priced inside an open-stamped month keeps the period-end date", "[backtest][costs]") {
+  // **The partial scope, pinned.** Under `AT_LIMIT` a limit is priced at the limit, somewhere inside
+  // the month, and nothing says which day: this branch dates only a fill at the open. The limit keeps
+  // the old dating -- the nominal 5 March, so the March rate -- until
+  // `plan/todo/nominal-period-end-dates-a-fill.md` settles it; a change that widened or shrank the
+  // correction would move this figure.
+  backtest::Backtester<BuysOneLimit> engine(
+    BuysOneLimit{}, replay_config(),
+    backtest::NextBarFillModel(rate_change(Date{2026, 2, 28}, Date{2026, 3, 1}))
+  );
+  engine.feed(open_stamped(2026, 1, 2, BarInterval::ONE_MONTH, "70000"));
+  engine.feed(open_stamped(2026, 2, 2, BarInterval::ONE_MONTH, "70000"));
+  engine.feed(open_stamped(2026, 3, 2, BarInterval::ONE_MONTH, "70000"));
+  engine.finish();
+
+  REQUIRE_FALSE(engine.result().halted_);
+  REQUIRE(engine.result().executions_.size() == 1);
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  REQUIRE(report.caveats_.applied_rates_.size() == 1);
+  CHECK(report.caveats_.applied_rates_[0].rate_ == Decimal64::parse("0.001"));
+}
+
 TEST_CASE("a fill the ledger cannot record halts the replay rather than disappearing") {
   // The same silently-missing-trade path the costing refusal removes, one boundary further in:
   // `ReplayLedger::apply` is atomic and returns false on arithmetic that will not fit, and the
