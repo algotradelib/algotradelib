@@ -49,6 +49,10 @@ struct Settings {
   strategy::RiskLimits limits_;
   /** How often each kind is polled. */
   runner::PollSchedule schedule_;
+  /** Which bars the source asks for, and how many: the history read at start is this many. */
+  atl::BarInterval bar_interval_{atl::BarInterval::ONE_DAY};
+  /** How many bars each bar poll asks for. */
+  int bar_count_{100};
   /** How old a holdings snapshot may be before the loop stops sizing against it. */
   std::chrono::nanoseconds maximum_portfolio_age_{std::chrono::minutes(2)};
   /** How old a price band may be before the loop stops clamping to it. */
@@ -77,6 +81,13 @@ enum class Exit : int {
   REFERENCE_UNREADABLE = 4,
   /** The loop gave up after repeated poll failures: it was not trading when it returned. */
   LOOP_ABANDONED = 5,
+  /**
+   * Local machinery failed during the run -- usually a journal write -- and the runner halted itself.
+   * Whatever it was sending when that happened is unknown until the broker's order list is read.
+   */
+  LOCAL_FAILURE = 6,
+  /** The program could not settle which account to trade (used by `example-live-program`). */
+  ACCOUNT_UNRESOLVED = 7,
 };
 
 /**
@@ -123,6 +134,26 @@ inline void print_recovery(const runner::RecoveryReport& recovery, std::ostream&
   }
   if (!recovery.detail_.empty()) {
     out << "  detail: " << recovery.detail_ << '\n';
+  }
+}
+
+/**
+ * Reads holdings once before the loop starts.
+ *
+ * **The loop polls bars before holdings**, and a plan made against an account not yet read is
+ * withheld, not retried -- the source has already recorded those bars as fed. On daily bars that loses
+ * the first decision until the next close. Reading the account first means the first bars meet a
+ * portfolio. A failure here is reported and the run continues: the loop keeps polling holdings on its
+ * cadence, and its report counts what was withheld.
+ */
+template <typename Source, typename Runner>
+void prime_holdings(Source& source, Runner& bound, std::ostream& out) {
+  if (source.poll(runner::PollKind::HOLDINGS, bound) == runner::PollOutcome::FAILED) {
+    out << "holdings unread at start";
+    if (source.last_error()) {
+      out << ": " << source.last_error()->message_;
+    }
+    out << "\n  the first bars will be withheld until an account read succeeds\n";
   }
 }
 
@@ -241,6 +272,8 @@ Exit trade(
 
   live::SessionSource<Session, runner::FileJournal> source(session, settings.universe_);
   source.set_journal(journal);
+  source.set_bar_query(settings.bar_interval_, settings.bar_count_);
+  prime_holdings(source, bound, out);
 
   runner::PollingLoop<decltype(bound), decltype(source), Clock> loop(
     bound, source, settings.schedule_, std::move(clock)
@@ -253,6 +286,13 @@ Exit trade(
 
   if (report.abandoned_) {
     return Exit::LOOP_ABANDONED;
+  }
+  // Sticky, and set by a failed journal write as much as by recovery: a run that went on under it
+  // placed nothing more, and what it was sending at the moment is unknown.
+  if (const auto failure = bound.local_failure()) {
+    out << "LOCAL FAILURE   : " << *failure << '\n'
+        << "                  read the broker's order list before starting again\n";
+    return Exit::LOCAL_FAILURE;
   }
   return stop_closes(report) && !report.closing_complete() ? Exit::CLOSING_INCOMPLETE : Exit::CLEAN;
 }
@@ -279,6 +319,8 @@ Exit observe(
   }
 
   live::SessionSource<Session> source(session, settings.universe_);
+  source.set_bar_query(settings.bar_interval_, settings.bar_count_);
+  prime_holdings(source, bound, out);
   runner::PollingLoop<decltype(bound), decltype(source), Clock> loop(
     bound, source, settings.schedule_, std::move(clock)
   );

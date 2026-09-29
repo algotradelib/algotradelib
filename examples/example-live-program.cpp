@@ -80,6 +80,9 @@ live_program::Settings settings_for(const atl::InstrumentId& instrument) {
   settings.limits_.max_position_quantity_ = atl::Decimal64::parse("1");
   settings.limits_.max_orders_per_window_ = 2;
 
+  // Daily bars, `SessionSource`'s default: the strategy decides once on the history read at start
+  // (after holdings are read, so the decision is not withheld) and once at each close. Polled every
+  // minute so a close is seen promptly; a minute-bar strategy sets `bar_interval_`.
   settings.schedule_.bars_ = std::chrono::minutes(1);
   settings.schedule_.holdings_ = std::chrono::seconds(30);
   settings.schedule_.working_orders_ = std::chrono::seconds(30);
@@ -191,7 +194,7 @@ int run_kiwoom(ssl::context& tls, const Arguments& arguments) {
   if (!accounts || accounts.value().empty()) {
     std::cerr << "could not read which account this Kiwoom key drives"
               << (accounts ? std::string() : ": " + accounts.error().message_) << '\n';
-    return 1;
+    return static_cast<int>(live_program::Exit::ACCOUNT_UNRESOLVED);
   }
 
   const atl::InstrumentId instrument{atl::Country::KR, atl::Venue::COMBINED, arguments.symbol_};
@@ -219,13 +222,23 @@ int run_toss(ssl::context& tls, const Arguments& arguments) {
   config.from_env();
   auto client = std::make_shared<toss::TossBlockingClient>(tls, std::move(config));
 
-  // Toss selects an account by sequence number and publishes the list, so an unstated one is
-  // discovered rather than guessed.
+  // Toss selects an account by sequence number and publishes the list. With one account that is the
+  // one; with several, the program will not guess which should trade, because a sequence is a request
+  // selector rather than an identity.
+  const int unresolved = static_cast<int>(live_program::Exit::ACCOUNT_UNRESOLVED);
   auto accounts = atl::list_accounts(*client);
   if (!accounts || accounts.value().empty()) {
     std::cerr << "could not list the accounts these Toss credentials reach"
               << (accounts ? std::string() : ": " + accounts.error().message_) << '\n';
-    return 1;
+    return unresolved;
+  }
+  if (!arguments.toss_account_ && accounts.value().size() > 1) {
+    std::cerr << "these Toss credentials reach " << accounts.value().size()
+              << " accounts; choose one with --toss-account:\n";
+    for (const auto& account : accounts.value()) {
+      std::cerr << "  --toss-account " << account.selector_ << "   (" << account.type_ << ")\n";
+    }
+    return unresolved;
   }
   auto chosen = accounts.value().front();
   if (arguments.toss_account_) {
@@ -238,13 +251,20 @@ int run_toss(ssl::context& tls, const Arguments& arguments) {
     }
     if (!found) {
       std::cerr << "no Toss account has sequence " << *arguments.toss_account_ << '\n';
-      return 1;
+      return unresolved;
     }
+  }
+  if (chosen.display_number_.empty()) {
+    std::cerr << "Toss reported no account number for sequence " << chosen.selector_
+              << ", so the journal could not be named after the account\n";
+    return unresolved;
   }
 
   const atl::InstrumentId instrument{atl::Country::KR, atl::Venue::COMBINED, arguments.symbol_};
   auto settings = settings_for(instrument);
-  name_journal(settings, arguments, "toss", false, std::to_string(chosen.selector_));
+  // Named after the account number, not the sequence: two credential sets can both have a sequence 1,
+  // and a journal that one account's run could continue would read its orders as the other's.
+  name_journal(settings, arguments, "toss", false, chosen.display_number_);
   announce(arguments, settings, false);
   std::cout << "note       : Toss has no paper-trading environment; --live trades real money\n";
 

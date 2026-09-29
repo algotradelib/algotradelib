@@ -219,6 +219,7 @@ const auto recovery = runner::recover_runner(bound, journal);  // printed; a glo
 // ... reference data for each instrument, then:
 live::SessionSource<Session, runner::FileJournal> source(session, settings.universe_);
 source.set_journal(journal);                    // lets the listings it reads resolve the journal
+source.poll(runner::PollKind::HOLDINGS, bound); // the account, before the first bars meet it
 
 runner::PollingLoop<decltype(bound), decltype(source), Clock> loop(bound, source, settings.schedule_);
 loop.set_maximum_portfolio_age(settings.maximum_portfolio_age_);        // every age stated
@@ -231,8 +232,11 @@ const auto report = loop.run(stop);             // stop also comes from SIGINT /
 The journal is named after the account and scoped to broker, demo or live, and account, so a demo
 journal refuses to continue as a live one. The exit code tells the endings apart: 0 clean, 1 a closing
 pass that did not get everything out, 2 journal refused, 3 recovery halted (the program prints the
-manual procedure), 4 reference data unreadable, 5 polling abandoned. The buying-power guard is left
-off, its default. **On Kiwoom it places nothing yet** — see "Brokers and accounts" below.
+manual procedure), 4 reference data unreadable, 5 polling abandoned, 6 a local failure during the run
+(usually a journal write; read the broker's order list), 7 the account could not be settled (a Toss
+key reaching several accounts needs `--toss-account`). Holdings are read once before the loop, because
+the loop polls bars first and a decision made against an unread account is withheld, not retried. The
+buying-power guard is left off, its default. **On Kiwoom it places nothing yet** — see "Brokers and accounts" below.
 [Recovering after a crash](doxygen/vignettes/recovering-after-a-crash.md) explains each step and the
 verdicts `recover_runner` returns.
 
