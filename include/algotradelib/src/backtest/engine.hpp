@@ -86,6 +86,15 @@ struct QueuedOrder {
   std::optional<std::chrono::system_clock::time_point> decided_at_;
   /** Whether `decided_at_` is the instant itself or an upper bound on it; see above. */
   bool decision_is_exact_{true};
+  /**
+   * Whether a stop-limit order's trigger has been reached, so it now rests as its limit.
+   *
+   * Kept here rather than by rewriting the order's basis, because `order_` is also what the
+   * strategy's working row is built from, and a live listing reports a released stop as the stop it
+   * was -- Kiwoom says nothing about release and KIS's flag is undocumented. See
+   * `NextBarFillModel::decide`.
+   */
+  bool released_{false};
 };
 
 /**
@@ -120,8 +129,10 @@ public:
    * **A shape the model cannot price is `REFUSED_LOCALLY`**, which is the same answer the live
    * executor gives for an order a broker will not take, and it reaches the strategy by the same
    * route. A bar carries an open, a high, a low and a close; it carries no book and no spread, so a
-   * best-limit, primary-limit or mid-price order has no price here, a stop-limit has no trigger, a
-   * conditional limit has no close transition, and a closing-price order has no session close.
+   * best-limit, primary-limit or mid-price order has no price here, a conditional limit has no close
+   * transition, and a closing-price order has no session close. A **stop-limit** is modelled --
+   * `NextBarFillModel::decide` releases it against a bar's range -- but only as a day order carrying
+   * both prices, which is the only stop either broker publishes.
    * Filling those at the bar's open -- which is what this did, because `reference_price` returns the
    * open for every non-limit basis -- reports a fill at a price the order would never have had, and
    * a backtest that invents a fill price is worse than one that refuses to model the order.
@@ -154,11 +165,20 @@ public:
    * would fill it, rather than being silently filled at the open.
    */
   static bool can_model(const strategy::PlannedOrder& order) noexcept {
+    if (order.session_ != OrderSession::REGULAR) {
+      return false;
+    }
+    // A stop the model can release: both prices, and a day order, which is the only condition KIS's
+    // `22` and Kiwoom's `28` publish -- nothing live can place an immediate-or-cancel stop.
+    if (order.type_ == OrderType::STOP_LIMIT) {
+      return order.trigger_price_.has_value() && order.price_.has_value() &&
+        order.time_in_force_ == TimeInForce::DAY;
+    }
     const bool priceable = order.type_ == OrderType::LIMIT || order.type_ == OrderType::MARKET;
     // A trigger on either would be ignored and the order filled as a plain limit or market order,
     // which is the invented fill this function exists to refuse. `reconcile` never builds one, but
     // `PlannedOrder` is a public struct.
-    return priceable && !order.trigger_price_ && order.session_ == OrderSession::REGULAR;
+    return priceable && !order.trigger_price_;
   }
 
   /**
@@ -210,6 +230,17 @@ public:
     for (auto at = queued_.begin(); at != queued_.end(); ++at) {
       if (at->ref_ == ref) {
         queued_.erase(at);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Marks the stop `ref` names as released, and reports whether there was one. */
+  bool release(const OrderRef<BrokerTag>& ref) {
+    for (auto& entry : queued_) {
+      if (entry.ref_ == ref) {
+        entry.released_ = true;
         return true;
       }
     }
@@ -386,6 +417,10 @@ struct ReplayResult {
   std::size_t unvalued_bars_{0};
   /** The first such bar's period end, so a reader has a date to look up; empty when there was none. */
   std::optional<std::chrono::system_clock::time_point> first_unvalued_;
+  /** Stop-limit orders a bar released; see `ReportCaveats::stop_releases_`. */
+  std::size_t stop_releases_{0};
+  /** Fills that depended on a release inside the bar; see `ReportCaveats::stop_fills_intrabar_`. */
+  std::size_t stop_fills_intrabar_{0};
 };
 
 /** Everything a replay needs beyond the strategy and the bars. */
@@ -918,8 +953,15 @@ private:
         ? std::optional<Date>(clock_.session().local_date(event.bar_.timestamp_))
         : std::nullopt;
       auto decision = fills_.decide(
-        order, event, rule, clock_.session().local_date(event.period_end_), open_date
+        order, event, rule, clock_.session().local_date(event.period_end_), open_date,
+        entry->released_
       );
+      if (decision.released_) {
+        // Recorded before anything below can withdraw the order, and whether or not it filled: a stop
+        // that released and still rests is a limit from the next bar on.
+        runner_.executor().release(ref);
+        ++result_.stop_releases_;
+      }
       if (decision.costing_error_) {
         // **Checked before the generic no-execution branch**, because that branch would leave a
         // resting day limit queued to be retried on the next bar, and a refusal is not a bar that
@@ -962,6 +1004,9 @@ private:
         result_.halted_ = std::move(error);
         abort_queue();
         return;
+      }
+      if (decision.intrabar_release_fill_) {
+        ++result_.stop_fills_intrabar_;
       }
       result_.executions_.push_back(*decision.execution_);
       install_portfolio();
@@ -1171,6 +1216,9 @@ private:
     row.order_.session_ = entry.order_.session_;
     row.order_.venue_ = entry.order_.venue_;
     row.order_.price_ = entry.order_.price_;
+    // A stop's trigger, as a live listing reports it -- released or not, since neither broker's
+    // listing says which.
+    row.order_.trigger_price_ = entry.order_.trigger_price_;
     row.order_.quantity_ = entry.order_.quantity_;
     row.order_.currency_ = currency_for(entry.order_.instrument_);
     // Open, and nothing filled: a replay fills an order whole or not at all, so a row that exists

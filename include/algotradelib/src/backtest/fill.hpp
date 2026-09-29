@@ -43,6 +43,18 @@ struct FillDecision {
    * missing from a path every performance figure is derived from. Present here, the engine halts.
    */
   std::optional<BrokerError> costing_error_;
+  /**
+   * Whether this bar released a dormant stop-limit order.
+   *
+   * Set whether or not it also filled, so the engine can mark a stop that released and still rests;
+   * the next bar evaluates it as the limit it has become. See `NextBarFillModel::decide`.
+   */
+  bool released_{false};
+  /**
+   * Whether the fill depended on a release **inside** the bar -- the case a bar with no path between
+   * its open and its extremes could have ordered differently. Counted by the report.
+   */
+  bool intrabar_release_fill_{false};
 };
 
 /**
@@ -118,7 +130,8 @@ public:
     if (order.time_in_force_ != TimeInForce::DAY) {
       return false;
     }
-    return order.type_ == OrderType::LIMIT;
+    // A stop rests while it is dormant and, once released, as the limit it has become.
+    return order.type_ == OrderType::LIMIT || order.type_ == OrderType::STOP_LIMIT;
   }
 
   /**
@@ -144,12 +157,51 @@ public:
     const strategy::BarEvent& next,
     const PriceRule& rule,
     const Date& date,
-    const std::optional<Date>& open_date = std::nullopt
+    const std::optional<Date>& open_date = std::nullopt,
+    bool released = false
   ) const {
     FillDecision decision;
-
     bool at_open = false;
-    const auto reference = reference_price(order, next, at_open);
+    std::optional<Decimal64> reference;
+    if (order.type_ == OrderType::STOP_LIMIT && !released) {
+      if (!order.trigger_price_ || !order.price_) {
+        // Not a stop this model can release; `ReplayExecutor::can_model` refuses one before it is
+        // queued, so this is a caller driving the model directly. It does not trade and does not rest.
+        return decision;
+      }
+      switch (release_of(order, next)) {
+        case Release::NONE:
+          // Dormant: the bar never reached the trigger.
+          decision.still_working_ = true;
+          return decision;
+        case Release::AT_OPEN:
+          // The whole bar is after the release, so it is priced as the limit it now is.
+          decision.released_ = true;
+          reference = reference_price(order, next, at_open);
+          // **Dated from the open whatever the price policy credits.** A stop released at the open
+          // and marketable there traded at the open; `AT_LIMIT` crediting the limit rather than the
+          // open is a statement about price, not about when, and dating it from the period end
+          // charged a multi-day bar's fill on a day it did not happen.
+          if (reference && limit_marketable_at(order, *next.bar_.open_)) {
+            at_open = true;
+          }
+          break;
+        case Release::INTRABAR:
+          decision.released_ = true;
+          reference = intrabar_release_price(order, next);
+          if (!reference) {
+            // Whether the price reached the limit *after* the release is what the bar cannot say --
+            // its extreme on the other side may have come first. Released; rests from the next bar,
+            // which can only defer a fill.
+            decision.still_working_ = true;
+            return decision;
+          }
+          decision.intrabar_release_fill_ = true;
+          break;
+      }
+    } else {
+      reference = reference_price(order, next, at_open);
+    }
     if (!reference) {
       // A limit the bar never reached. It stays queued: a resting order does not expire because one
       // bar passed it by, and discarding it would silently turn every limit into a fill-or-kill.
@@ -157,7 +209,27 @@ public:
       return decision;
     }
 
-    const auto slipped = slippage_.apply(*reference, order.side_, rule);
+    auto slipped = slippage_.apply(*reference, order.side_, rule);
+    if (slipped && order.type_ == OrderType::STOP_LIMIT && order.price_) {
+      // **A limit is a limit.** Slippage moves a fill against the order, and past the limit it
+      // describes a trade the order could not have made. Held at the limit for a stop; a plain
+      // limit's fill is not clamped yet (`plan/todo/limit-slippage-breach.md`).
+      const auto& limit = *order.price_;
+      const bool breached = order.side_ == OrderSide::SELL ?
+        decimal_less(slipped->first, limit) :
+        decimal_less(limit, slipped->first);
+      if (breached) {
+        const auto moved = order.side_ == OrderSide::SELL ?
+          decimal_subtract(*reference, limit) :
+          decimal_subtract(limit, *reference);
+        if (!moved) {
+          slipped.reset();
+        } else {
+          slipped->first = limit;
+          slipped->second = *moved;
+        }
+      }
+    }
     if (!slipped) {
       decision.still_working_ = rests_unfilled(order);
       return decision;
@@ -189,6 +261,86 @@ public:
   }
 
 private:
+  /** Where in a bar a dormant stop released, if it did. */
+  enum class Release {
+    /** The bar never reached the trigger. */
+    NONE,
+    /** The open was already through the trigger, so the whole bar followed the release. */
+    AT_OPEN,
+    /** The bar's extreme reached the trigger and its open did not. */
+    INTRABAR,
+  };
+
+  /**
+   * Returns whether, and where, `next` released a dormant stop.
+   *
+   * **A sell stop releases when the price falls to its trigger and a buy stop when it rises to it.**
+   * That is an assumption about the broker -- neither KIS nor Kiwoom documents the direction -- and
+   * it is the universal convention. `ReportCaveats::stop_releases_` counts how often it was used.
+   *
+   * A bar with no open cannot establish a release *at* the open, so a release there is intrabar,
+   * which is the answer that credits less.
+   */
+  static Release release_of(const strategy::PlannedOrder& order, const strategy::BarEvent& next) {
+    const auto& trigger = *order.trigger_price_;
+    const bool sell = order.side_ == OrderSide::SELL;
+    const bool reached = sell ?
+      !decimal_less(trigger, next.bar_.low_) :
+      !decimal_less(next.bar_.high_, trigger);
+    if (!reached) {
+      return Release::NONE;
+    }
+    if (next.bar_.open_) {
+      const auto& open = *next.bar_.open_;
+      const bool through = sell ? !decimal_less(trigger, open) : !decimal_less(open, trigger);
+      if (through) {
+        return Release::AT_OPEN;
+      }
+    }
+    return Release::INTRABAR;
+  }
+
+  /** Returns whether the order's limit would trade at `price` -- a sell at or above it, a buy at or below. */
+  static bool limit_marketable_at(const strategy::PlannedOrder& order, const Decimal64& price) {
+    const auto& limit = *order.price_;
+    return order.side_ == OrderSide::SELL ? !decimal_less(price, limit) : !decimal_less(limit, price);
+  }
+
+  /**
+   * Returns what a stop released inside `next` is credited with, or nothing when the bar cannot show
+   * it traded after the release.
+   *
+   * At the release the price *was* the trigger. Two cases, using only prices the bar proves came after
+   * it -- the trigger itself and the close, which is always last:
+   *
+   * - **Marketable at the trigger** (a sell limited at or below it, a buy at or above): it trades. It is
+   *   credited the **worst price the bar traded that the limit allows** -- a sell the higher of its
+   *   limit and the bar's low, a buy the lower of its limit and the bar's high -- so the price is inside
+   *   the bar and never through the limit. Crediting the limit itself could name a price the bar never
+   *   reached; crediting the trigger would assume the book was there.
+   * - **Not marketable at the trigger** (a sell limited above it): it trades only if the price came back
+   *   to the limit after the release. The close proves that when it is at or through the limit; then it
+   *   is credited the limit. Otherwise the bar's other extreme may have come first, and nothing is.
+   */
+  static std::optional<Decimal64> intrabar_release_price(
+    const strategy::PlannedOrder& order,
+    const strategy::BarEvent& next
+  ) {
+    const auto& trigger = *order.trigger_price_;
+    const auto& limit = *order.price_;
+    const bool sell = order.side_ == OrderSide::SELL;
+    if (limit_marketable_at(order, trigger)) {
+      if (sell) {
+        return decimal_less(limit, next.bar_.low_) ? next.bar_.low_ : limit;
+      }
+      return decimal_less(next.bar_.high_, limit) ? next.bar_.high_ : limit;
+    }
+    if (limit_marketable_at(order, next.bar_.close_)) {
+      return limit;
+    }
+    return std::nullopt;
+  }
+
   /**
    * Returns the price before slippage, or nothing when the order does not trade against this bar.
    *
@@ -210,7 +362,9 @@ private:
     const bool has_open = next.bar_.open_.has_value();
     const auto open = has_open ? *next.bar_.open_ : next.bar_.close_;
 
-    if (order.type_ != OrderType::LIMIT || !order.price_) {
+    // A released stop is priced as the limit it has become.
+    const bool limit_basis = order.type_ == OrderType::LIMIT || order.type_ == OrderType::STOP_LIMIT;
+    if (!limit_basis || !order.price_) {
       at_open = has_open;
       return open;
     }

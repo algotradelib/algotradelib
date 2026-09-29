@@ -254,6 +254,24 @@ struct ReportCaveats {
   std::size_t unvalued_bars_{0};
   /** The first such bar's period end; empty when there was none. */
   std::optional<std::chrono::system_clock::time_point> first_unvalued_;
+  /**
+   * Stop-limit orders a bar released, which is how often the model's **direction assumption** was
+   * used: a sell stop releases when the price falls to its trigger and a buy stop when it rises to it.
+   * Neither KIS nor Kiwoom documents that; it is the universal convention.
+   */
+  std::size_t stop_releases_{0};
+  /**
+   * Fills that depended on a stop releasing **inside** a bar and filling on it.
+   *
+   * A bar has no path between its open and its extremes, so the model assumes the price moved
+   * continuously through the trigger. A stop whose limit was marketable at the trigger is credited the
+   * worst price the bar traded that its limit allows; one whose limit was not is filled only when the
+   * close proves the price came back to it, at the limit. A price that jumped inside the bar past both
+   * trigger and limit (a halt reopening, a thin book) would have released the stop and left it resting,
+   * so each of these is a fill that rests on that continuity. A stop fill is never credited through its
+   * limit, slippage included.
+   */
+  std::size_t stop_fills_intrabar_{0};
 };
 
 /** What a replay produced, with every figure's absence meaning what `analytics` says it means. */
@@ -415,6 +433,8 @@ inline Report summarize(
   report.caveats_.slippage_ticks_ = fills.slippage().ticks_;
   report.caveats_.gaps_ = result.gaps_;
   report.caveats_.unfilled_ = result.unfilled_;
+  report.caveats_.stop_releases_ = result.stop_releases_;
+  report.caveats_.stop_fills_intrabar_ = result.stop_fills_intrabar_;
   report.caveats_.quotes_ = result.quotes_;
   report.caveats_.unchecked_fill_causality_ = result.unchecked_fill_causality_;
   report.caveats_.unvalued_bars_ = result.unvalued_bars_;
