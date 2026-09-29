@@ -571,6 +571,20 @@ TEST_CASE("a non-default order shape reaches the session rather than its default
   REQUIRE(sent.venue_ == Venue::NXT);
 }
 
+TEST_CASE("a stop's trigger reaches the session", "[trigger]") {
+  // A copy that was never written agrees with the default -- which here is "no trigger", so the
+  // order would go out as a plain limit.
+  FakeSession<WithoutKey> session;
+  live::SessionExecutor<FakeSession<WithoutKey>> executor(session);
+
+  auto order = planned();
+  order.type_ = OrderType::STOP_LIMIT;
+  order.trigger_price_ = Decimal64::parse("69500");
+  REQUIRE(executor.place(order) == runner::SendOutcome::ACCEPTED);
+  REQUIRE(session.placed().size() == 1);
+  REQUIRE(session.placed()[0].trigger_price_ == std::optional<Decimal64>(Decimal64::parse("69500")));
+}
+
 TEST_CASE("an accepted order reaches the session with its fields intact") {
   // Reconciliation already put the price on the tick grid and the quantity on the lot, so this
   // boundary adds nothing numeric; it moves fields, and a field lost here reaches an exchange.

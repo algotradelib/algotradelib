@@ -1437,7 +1437,12 @@ private:
     // with no poll between, passes twice against a ceiling one of them should have reached. That is
     // precisely the omission `ai/pre-trade-checks` round 2 found for `max_position_quantity_`.
     const bool exposed = guard_.limits().max_gross_exposure_.has_value();
-    if (!sells && !buys && !capped && !exposed) {
+    // A stop is read by target reconciliation whatever the limits, which refuses a target while one
+    // rests (`RejectReason::STOP_ORDER_RESTING`). Not persisted, a stop placed on this pass would be
+    // invisible to a target on the next one until a working-order poll listed it -- and "flatten"
+    // would then go out beside the stop, both of them sells.
+    const bool conditional = carries_trigger_price(order.type_);
+    if (!sells && !buys && !capped && !exposed && !conditional) {
       return;
     }
     auto persisted = context_.portfolio();
@@ -1623,6 +1628,9 @@ private:
     // broker's default venue rather than at the one it went to.
     working.order_.venue_ = order.venue_;
     working.order_.price_ = order.price_;
+    // A stop's trigger, so the reserved row has the shape the broker's listing will report --
+    // `cancel_all` restates it and `OrderUpdateWatch` compares it.
+    working.order_.trigger_price_ = order.trigger_price_;
     working.order_.time_in_force_ = order.time_in_force_;
     working.order_.quantity_ = order.quantity_;
     working.order_.execution_.filled_quantity_ = Decimal64::parse("0");
