@@ -898,35 +898,21 @@ public:
   Report retry_deferred(
     std::optional<std::chrono::system_clock::time_point> listed_at = std::nullopt
   ) {
-    bool released = false;
-    for (auto at = deferred_targets_.begin(); at != deferred_targets_.end();) {
-      if (stop_listed(at->target_.instrument_)) {
-        at->gone_since_.reset();
-        ++at;
-        continue;
-      }
-      if (!at->gone_since_) {
-        if (!listed_at) {
-          ++at;
-          continue;
-        }
-        at->gone_since_ = listed_at;
-      }
-      if (!(*at->gone_since_ < context_.portfolio().as_of_)) {
-        ++at;
-        continue;
-      }
-      context_.submit(at->target_);
-      at = deferred_targets_.erase(at);
-      released = true;
-    }
-    // **Nothing released, nothing settled.** A pass has effects of its own -- it observes the
-    // sellable convention from the portfolio -- and this runs on every poll of two kinds.
-    if (!released) {
-      return Report{};
-    }
-    return settle();
+    return release_deferred(listed_at, false);
   }
+
+  /**
+   * Releases, and settles, every deferred target whose stop is gone, for a caller whose working
+   * orders and holdings are **one snapshot**.
+   *
+   * A replay is that caller: its ledger is the broker, so a stop it has just withdrawn is gone from
+   * the listing and the holding after it is known in the same instant -- there is no later holdings
+   * read to wait for, and waiting for one would hold the exit a bar the live path does not. A live
+   * caller must use `retry_deferred`, because a live listing and a live holdings read are two answers
+   * taken at two moments.
+   */
+  Report retry_deferred_on_one_snapshot() { return release_deferred(std::nullopt, true); }
+
   /** @copydoc Runner::plans_withheld */
   std::size_t instructions_unavailable() const noexcept { return instructions_unavailable_; }
 
@@ -1799,6 +1785,43 @@ private:
         drop(intent->instrument());
       }
     }
+  }
+
+  /** The release loop behind `retry_deferred` and `retry_deferred_on_one_snapshot`. */
+  Report release_deferred(
+    std::optional<std::chrono::system_clock::time_point> listed_at,
+    bool one_snapshot
+  ) {
+    bool released = false;
+    for (auto at = deferred_targets_.begin(); at != deferred_targets_.end();) {
+      if (stop_listed(at->target_.instrument_)) {
+        at->gone_since_.reset();
+        ++at;
+        continue;
+      }
+      if (!one_snapshot) {
+        if (!at->gone_since_) {
+          if (!listed_at) {
+            ++at;
+            continue;
+          }
+          at->gone_since_ = listed_at;
+        }
+        if (!(*at->gone_since_ < context_.portfolio().as_of_)) {
+          ++at;
+          continue;
+        }
+      }
+      context_.submit(at->target_);
+      at = deferred_targets_.erase(at);
+      released = true;
+    }
+    // **Nothing released, nothing settled.** A pass has effects of its own -- it observes the
+    // sellable convention from the portfolio -- and this runs on every poll of two kinds.
+    if (!released) {
+      return Report{};
+    }
+    return settle();
   }
 
   /** Returns whether the portfolio lists an open stop order on `instrument`. */

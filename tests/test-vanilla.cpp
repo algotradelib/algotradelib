@@ -639,3 +639,21 @@ TEST_CASE("a flatten withheld whole defers nothing", "[trigger]") {
   CHECK(exit.withheld_plans_.size() == 1);
   CHECK(dry.deferred_targets().empty());
 }
+
+TEST_CASE("one snapshot of listing and holdings releases a deferred target at once", "[trigger]") {
+  // A replay's ledger is the broker: the stop it withdrew is gone and the holding after it is known
+  // together, so there is no later holdings read to wait for.
+  runner::DryRunner<OnlyPhaseLiquidation> dry(OnlyPhaseLiquidation{});
+  arrange(dry);
+  dry.context().set_portfolio(stop_listing(OrderStatus::PENDING));
+  dry.feed(strategy::MarketPhase::POST_CLOSE);
+  REQUIRE(dry.deferred_targets().size() == 1);
+
+  // Still listed: nothing.
+  CHECK(dry.retry_deferred_on_one_snapshot().would_place_.empty());
+  dry.context().set_portfolio(stop_listing(std::nullopt));
+  const auto flat = dry.retry_deferred_on_one_snapshot();
+  REQUIRE(flat.would_place_.size() == 1);
+  CHECK(flat.would_place_[0].side_ == OrderSide::SELL);
+  CHECK(dry.deferred_targets().empty());
+}
