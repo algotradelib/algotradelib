@@ -77,13 +77,22 @@ remediation after the fact, not protection — read the three limits of it befor
   A faster holdings cadence does **not** on its own, because the check runs in `on_bar`: a fresher
   position nobody looks at until the next bar is still not looked at until the next bar.
 
-**And do not reach for the obvious escape from a strategy, because the strategy layer does not have
-it yet.** A broker-side stop would close the gap by leaving the trigger at the exchange, and the broker
-port can now place one — `OrderRequest::trigger_price_` carries it to KIS's `ORD_DVSN` `22` and
-Kiwoom's `trde_tp` `28` — but a strategy states targets and intents, which reconcile into limit and
-market orders only, and a replay refuses a stop-limit order rather than model one. Until both of those
-change, a stop placed beside a strategy through the session directly is an order the strategy's
-backtest never saw.
+**A broker-side stop closes the gap by leaving the trigger at the exchange, and it has three costs
+worth knowing before reaching for it.** `OrderIntent::stop_limit(instrument, side, size, trigger,
+limit)` places one at KIS (`ORD_DVSN` `22`) and Kiwoom (`trde_tp` `28`); a broker that cannot carry a
+trigger refuses it rather than sending a plain limit.
+
+- **A replay does not model it.** `ReplayExecutor` refuses a stop-limit order, and the backtest reports
+  it in `rejected_` with its tag. The strategy runs live with a stop its backtest never had.
+- **A target waits for it.** While a stop rests on an instrument, a `TargetPosition` for that
+  instrument is refused with `RejectReason::STOP_ORDER_RESTING` — neither counted as the exit nor
+  cancelled as unwanted. To flatten, withdraw the stop with a `CancelIntent` first; the next pass after
+  the listing stops reporting it reconciles normally.
+- **It counts before it releases.** A resting sell stop is deducted from what may be sold and counted
+  toward position and exposure ceilings at its limit, so an immediate exit beside it may be refused.
+- **Its trigger is never moved.** A trigger off the instrument's tick grid is refused as
+  `TRIGGER_OFF_GRID` rather than rounded, because which direction is cautious depends on whether the
+  stop releases on a rise or a fall, and neither broker documents that.
 
 **And placing the exit alongside the entry is not the answer either**, which is worth saying because
 it is the next thing anyone tries. The two are independent submissions: there is no linked
