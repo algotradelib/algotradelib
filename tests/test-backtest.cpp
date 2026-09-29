@@ -5385,6 +5385,10 @@ TEST_CASE("a marketable limit is credited the bar's worst price, not a limit the
   REQUIRE(sell.execution_);
   CHECK(sell.execution_->fill_.price_ == Decimal64::parse("69000"));
   CHECK(sell.bounded_);
+  // Bounded before slippage, not corrected after it: no slippage was configured, so none is recorded.
+  // Correcting afterwards would record the 1,000-won lift as a negative slippage.
+  CHECK(sell.execution_->slippage_ == Decimal64::parse("0"));
+  CHECK(buy.execution_->slippage_ == Decimal64::parse("0"));
 
   // A limit the bar reached from the far side was already credited inside the bar: unchanged.
   const auto reached = model.decide(
