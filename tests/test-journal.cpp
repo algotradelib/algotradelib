@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstdio>
@@ -675,6 +676,22 @@ void write_journal(const std::string& path, const std::string& body, const char*
   std::fclose(handle);
 }
 
+/**
+ * Returns `line` as a release before checksums would have written it: the same bytes without the
+ * final `crc` member.
+ *
+ * The tests below that model a line written *before some field existed* also model one written before
+ * the checksum existed, because that is the only kind of line that can lack the field. Editing a
+ * checksummed line instead is damage, which the checksum now catches -- see the checksum tests.
+ */
+std::string without_checksum(std::string line) {
+  const auto at = line.rfind(",\"crc\":\"");
+  REQUIRE(at != std::string::npos);
+  line.erase(at);
+  line += '}';
+  return line;
+}
+
 JournalEntry sample_entry() {
   JournalEntry entry;
   entry.id_ = "run-1";
@@ -727,7 +744,7 @@ TEST_CASE("a damaged value makes a line unattributable, not a different order", 
   // halt, because a guessed instrument is not the key the runner trades under
   // and withholding it protects nothing.
   const auto damage = [](std::string_view field, std::string_view from, std::string_view to) {
-    auto line = runner::journal_entry_to_line(sample_entry());
+    auto line = without_checksum(runner::journal_entry_to_line(sample_entry()));
     const std::string needle = std::string("\"") + std::string(field) + "\":\"" +
       std::string(from) + "\"";
     const auto at = line.find(needle);
@@ -783,7 +800,7 @@ TEST_CASE("a damaged number does not throw out of recovery", "[journal]") {
   // of recovery and out of the runner's startup -- taking the process down
   // instead of producing the operator halt everything else here is built for.
   const auto damage_number = [](std::string_view field) {
-    auto line = runner::journal_entry_to_line(sample_entry());
+    auto line = without_checksum(runner::journal_entry_to_line(sample_entry()));
     const std::string needle = std::string("\"") + std::string(field) + "\":\"";
     const auto at = line.find(needle);
     REQUIRE(at != std::string::npos);
@@ -910,7 +927,7 @@ TEST_CASE("an empty or wrong-typed value is damage, not an absent key", "[journa
   // `null` read as a day order, and a lookalike could then close the wrong
   // hold.
   const auto replace_value = [](std::string_view field, std::string_view with) {
-    auto line = runner::journal_entry_to_line(sample_entry());
+    auto line = without_checksum(runner::journal_entry_to_line(sample_entry()));
     const std::string key = std::string("\"") + std::string(field) + "\":";
     const auto at = line.find(key);
     REQUIRE(at != std::string::npos);
@@ -1014,7 +1031,7 @@ TEST_CASE("a line the writer emits is readable, and unresolvable", "[journal]") 
   // halted a runner over an instruction that had already resolved.
   auto terminal = sample_entry();
   terminal.outcome_ = runner::JournalOutcome::REJECTED;
-  auto damaged = runner::journal_entry_to_line(terminal);
+  auto damaged = without_checksum(runner::journal_entry_to_line(terminal));
   const auto at = damaged.find("\"side\":\"SELL\"");
   REQUIRE(at != std::string::npos);
   damaged.replace(at, std::string("\"side\":\"SELL\"").size(), "\"side\":\"SEL?\"");
@@ -1028,7 +1045,7 @@ TEST_CASE("an absent shape key keeps its documented default", "[journal]") {
   // The other half of the same rule: a line that predates a field has no key
   // for it, and the default is then a fact about what such a line could have
   // recorded. Only a *present* unreadable token is damage.
-  auto line = runner::journal_entry_to_line(sample_entry());
+  auto line = without_checksum(runner::journal_entry_to_line(sample_entry()));
   for (const auto* key : {"time_in_force", "session"}) {
     const std::string needle = std::string(",\"") + key + "\":";
     const auto at = line.find(needle);
@@ -1051,9 +1068,12 @@ TEST_CASE("an unrecognized route is unknown, not a request for no venue", "[jour
   // reached, and recovery confirms a row from any venue against it -- so reading
   // "NX?" as no-preference lets a KRX lookalike clear the hold on an NXT order.
   // Same silence-to-confirmation failure as the missing key, one layer in.
+  //
+  // Modelled on a line with no checksum. On a checksummed one the same change is caught earlier and
+  // harder -- the whole line is unattributable -- which the checksum tests pin.
   auto entry = sample_entry();
   entry.venue_ = Venue::NXT;
-  auto damaged = runner::journal_entry_to_line(entry);
+  auto damaged = without_checksum(runner::journal_entry_to_line(entry));
   const auto at = damaged.find("\"NXT\"");
   REQUIRE(at != std::string::npos);
   damaged.replace(at, 5, "\"NX?\"");
@@ -1081,7 +1101,7 @@ TEST_CASE("a line with no route key is unknown, not unrouted", "[journal]") {
   const auto with_route = runner::journal_entry_to_line(sample_entry());
   REQUIRE(with_route.find("\"route\"") != std::string::npos);
 
-  auto legacy = with_route;
+  auto legacy = without_checksum(with_route);
   const auto at = legacy.find(",\"route\":");
   REQUIRE(at != std::string::npos);
   const auto end = legacy.find(',', at + 1);
@@ -2252,7 +2272,9 @@ TEST_CASE("a damaged trigger makes a line unattributable, and salvage keeps a re
   const auto at = line.find(needle);
   REQUIRE(at != std::string::npos);
 
-  auto damaged = line;
+  // On a pre-checksum line, where the value reader is what catches it; a checksummed line with the
+  // same change is unreadable outright, which the integrity tests pin.
+  auto damaged = without_checksum(line);
   damaged.replace(at, needle.size(), "\"trigger\":\"69?00\"");
   std::optional<runner::JournalEntry> parsed;
   REQUIRE_NOTHROW(parsed = runner::journal_entry_from_line(damaged));
@@ -2266,4 +2288,249 @@ TEST_CASE("a damaged trigger makes a line unattributable, and salvage keeps a re
   REQUIRE(salvaged.has_value());
   REQUIRE(salvaged->requires_operator_);
   REQUIRE(salvaged->trigger_price_ == Decimal64::parse("69500"));
+}
+
+// ---------------------------------------------------------------------------
+// Line integrity
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** A line carrying every field a recovery match reads, so damage anywhere in it has something to change. */
+JournalEntry checked_entry() {
+  auto entry = sample_entry();
+  entry.type_ = OrderType::STOP_LIMIT;
+  entry.trigger_price_ = Decimal64::parse("69500");
+  entry.order_id_ = "0001569139";
+  entry.outcome_ = JournalOutcome::ACCEPTED;
+  return entry;
+}
+
+/** Whether `read` is what damage must become: nothing, or an entry only an operator may resolve. */
+bool reads_as_damage(const std::optional<JournalEntry>& read) {
+  return !read.has_value() || (read->requires_operator_ && read->instrument_.symbol_.empty());
+}
+
+} // namespace
+
+TEST_CASE("a journal line ends in a checksum over every byte before it", "[journal][integrity]") {
+  const auto line = runner::journal_entry_to_line(checked_entry());
+  REQUIRE(runner::journal_detail::ends_in_checksum(line));
+  REQUIRE(runner::journal_detail::checksum_matches(line));
+  const auto parsed = runner::journal_entry_from_line(line);
+  REQUIRE(parsed.has_value());
+  CHECK_FALSE(parsed->requires_operator_);
+  CHECK(parsed->instrument_ == checked_entry().instrument_);
+  CHECK(parsed->order_id_ == "0001569139");
+  CHECK(parsed->trigger_price_ == checked_entry().trigger_price_);
+}
+
+TEST_CASE("no single changed byte reads as an ordinary line", "[journal][integrity]") {
+  // **The property the checksum exists for**, stated over the whole line rather than a few chosen
+  // fields: every position, two replacements each. A value damaged into another valid value --
+  // `005930` into `005931`, a real instrument -- read as ordinary before this branch.
+  const auto line = runner::journal_entry_to_line(checked_entry());
+  std::size_t ordinary = 0;
+  for (std::size_t at = 0; at < line.size(); ++at) {
+    for (const char replacement : {'1', 'x'}) {
+      if (line[at] == replacement) {
+        continue;
+      }
+      auto damaged = line;
+      damaged[at] = replacement;
+      if (!reads_as_damage(runner::journal_entry_from_line(damaged))) {
+        ++ordinary;
+        INFO("position " << at << " -> " << replacement << ": " << damaged);
+        CHECK(false);
+      }
+    }
+  }
+  CHECK(ordinary == 0);
+
+  // And the ones a reader of values alone could never see, by name.
+  const auto changed = [&line](std::string_view from, std::string_view to) {
+    auto damaged = line;
+    const auto at = damaged.find(from);
+    REQUIRE(at != std::string::npos);
+    damaged.replace(at, from.size(), to);
+    return runner::journal_entry_from_line(damaged);
+  };
+  CHECK(reads_as_damage(changed("\"005930\"", "\"005931\"")));
+  CHECK(reads_as_damage(changed("\"0001569139\"", "\"0001569138\"")));
+  CHECK(reads_as_damage(changed("\"crc\"", "\"crd\"")));
+}
+
+TEST_CASE("a line without a checksum reads as it always did", "[journal][integrity]") {
+  const auto legacy = without_checksum(runner::journal_entry_to_line(checked_entry()));
+  const auto parsed = runner::journal_entry_from_line(legacy);
+  REQUIRE(parsed.has_value());
+  CHECK_FALSE(parsed->requires_operator_);
+  CHECK(parsed->instrument_ == checked_entry().instrument_);
+
+  // A key no writer produced is damage even on an old line: it is how a checksummed line that lost
+  // its checksum's *name* would otherwise pass as old.
+  auto annotated = legacy;
+  annotated.insert(1, "\"note\":\"x\",");
+  CHECK(reads_as_damage(runner::journal_entry_from_line(annotated)));
+}
+
+TEST_CASE("a checksum anywhere but last, or not in its canonical form, is damage", "[journal][integrity]") {
+  const auto line = runner::journal_entry_to_line(checked_entry());
+  const auto at = line.rfind(",\"crc\":\"");
+  const auto member = line.substr(at + 1, line.size() - at - 2);
+
+  // Moved to the front: the same bytes, no longer last.
+  auto moved = without_checksum(line);
+  moved.insert(1, member + ",");
+  CHECK(reads_as_damage(runner::journal_entry_from_line(moved)));
+
+  // Upper-case hex is not what this writer produces.
+  auto upper = line;
+  for (auto index = at + 8; index < at + 16; ++index) {
+    upper[index] = static_cast<char>(std::toupper(static_cast<unsigned char>(upper[index])));
+  }
+  if (upper != line) {
+    CHECK(reads_as_damage(runner::journal_entry_from_line(upper)));
+  }
+}
+
+TEST_CASE("a line without a checksum after a checksummed one is damage", "[journal][integrity]") {
+  // This writer never produces one, so it is a protected line that lost its whole checksum member.
+  const auto checked = runner::journal_entry_to_line(checked_entry());
+  auto second = checked_entry();
+  second.id_ = "run-2";
+  const auto stripped = without_checksum(runner::journal_entry_to_line(second));
+
+  runner::JournalBytes after;
+  after.status_ = runner::JournalReadStatus::READ;
+  after.text_ = checked + "\n" + stripped + "\n";
+  const auto replay = runner::parse_journal_bytes(after);
+  CHECK(replay.unreadable_lines_ == 1);
+  CHECK_FALSE(replay.intact());
+
+  // The order an upgrade produces -- old lines, then new ones -- is ordinary.
+  runner::JournalBytes upgraded;
+  upgraded.status_ = runner::JournalReadStatus::READ;
+  upgraded.text_ = stripped + "\n" + checked + "\n";
+  const auto clean = runner::parse_journal_bytes(upgraded);
+  CHECK(clean.unreadable_lines_ == 0);
+  CHECK(clean.entries_.size() == 2);
+}
+
+TEST_CASE("a repaired tail is written back with a checksum", "[journal][integrity][file]") {
+  const TempJournal path("torn-checksum");
+  const auto line = runner::journal_entry_to_line(sample_entry());
+  write_journal(path.str(), line.substr(0, line.size() * 2 / 3));
+  {
+    runner::FileJournal journal(path.str(), "test:account");
+    REQUIRE(journal.open());
+  }
+  const auto bytes = runner::read_journal_bytes(path.str());
+  REQUIRE(bytes.status_ == runner::JournalReadStatus::READ);
+  // The last complete line is the repair's stand-in.
+  const auto end = bytes.text_.rfind('\n');
+  REQUIRE(end != std::string::npos);
+  const auto begin = bytes.text_.rfind('\n', end - 1);
+  const auto repaired =
+    std::string_view(bytes.text_).substr(begin == std::string::npos ? 0 : begin + 1, end - begin - 1);
+  CHECK(runner::journal_detail::ends_in_checksum(repaired));
+  CHECK(runner::journal_detail::checksum_matches(repaired));
+}
+
+TEST_CASE("salvage reads a value with an escaped quote whole", "[journal][integrity]") {
+  // It stopped at the first quote, so `AB\"C` salvaged as `AB` -- another key.
+  const std::string line = R"({"id":"x","symbol":"AB\"C","country":"KR")";
+  CHECK(runner::journal_detail::salvage_string(line, "symbol") == std::optional<std::string>("AB\"C"));
+  // Cut inside an escape: nothing, rather than a shorter symbol.
+  CHECK_FALSE(runner::journal_detail::salvage_string(R"({"id":"x","symbol":"AB\)", "symbol"));
+}
+
+TEST_CASE("a changed terminal line halts recovery rather than being dropped as an orphan", "[journal][integrity]") {
+  // **Codex round 1's first blocker.** Read as a damaged entry, a terminal line carries an id suffixed
+  // `~damaged`, pairs with nothing and is dropped -- leaving its intact pending partner open as an
+  // ordinary instruction a sweep may resolve. A changed line is unreadable instead, and that halts.
+  auto pending = checked_entry();
+  pending.outcome_ = JournalOutcome::PENDING;
+  pending.order_id_.clear();
+  auto terminal = checked_entry();
+  auto changed = runner::journal_entry_to_line(terminal);
+  const auto at = changed.find("\"accepted\"");
+  REQUIRE(at != std::string::npos);
+  changed.replace(at, 10, "\"rejected\"");
+
+  runner::JournalBytes bytes;
+  bytes.status_ = runner::JournalReadStatus::READ;
+  bytes.text_ = runner::journal_entry_to_line(pending) + "\n" + changed + "\n";
+  const auto replay = runner::parse_journal_bytes(bytes);
+  CHECK(replay.unreadable_lines_ == 1);
+  runner::IndeterminacyLedger ledger;
+  const auto recovery = runner::recover_into(replay, ledger);
+  CHECK(recovery.unreadable_lines_ == 1);
+  CHECK_FALSE(recovery.clean());
+
+  // A key no writer produced, on a line whose checksum is *correct* for it: unreadable too.
+  auto body = without_checksum(runner::journal_entry_to_line(terminal));
+  body.insert(body.size() - 1, ",\"note\":\"x\"");
+  const auto crc = runner::journal_detail::checksum_text(runner::journal_detail::line_checksum(body));
+  body.pop_back();
+  const auto annotated = body + ",\"crc\":\"" + crc + "\"}";
+  REQUIRE(runner::journal_detail::checksum_matches(annotated));
+  CHECK_FALSE(runner::journal_entry_from_line(annotated).has_value());
+}
+
+TEST_CASE("a header that declares checksums protects the first entry too", "[journal][integrity]") {
+  // **Codex round 1's third blocker.** In a file begun before checksums, only a checksummed line
+  // *above* can reveal that a line lost its whole checksum member. A file this release begins says so
+  // in its header, so even its first entry cannot pass as an older release's.
+  const auto header = runner::journal_header_line("test:account");
+  CHECK(runner::journal_header_declares_checksums(header));
+  REQUIRE(runner::journal_header_scope(header) == std::optional<std::string>("test:account"));
+
+  const auto stripped = without_checksum(runner::journal_entry_to_line(checked_entry()));
+  runner::JournalBytes declared;
+  declared.status_ = runner::JournalReadStatus::READ;
+  declared.text_ = header + "\n" + stripped + "\n";
+  CHECK(runner::parse_journal_bytes(declared).unreadable_lines_ == 1);
+
+  // An older header says nothing, and its first line is read as the older release wrote it.
+  runner::JournalBytes older;
+  older.status_ = runner::JournalReadStatus::READ;
+  older.text_ = R"({"journal":"algotradelib-order-journal","version":1,"scope":"test:account"})" "\n" +
+    stripped + "\n";
+  const auto legacy = runner::parse_journal_bytes(older);
+  CHECK(legacy.unreadable_lines_ == 0);
+  CHECK(legacy.entries_.size() == 1);
+}
+
+TEST_CASE("an entry overwritten by a newline or by the header is counted, not skipped", "[journal][integrity]") {
+  // **Codex round 2's blocker.** A blank line and a second header were skipped, so an entry replaced by
+  // either vanished from recovery with nothing counted -- and its terminal companion became an orphan.
+  const auto header = runner::journal_header_line("test:account");
+  auto pending = checked_entry();
+  pending.outcome_ = JournalOutcome::PENDING;
+  pending.order_id_.clear();
+  const auto terminal = runner::journal_entry_to_line(checked_entry());
+
+  const auto recovered = [](const std::string& text) {
+    runner::JournalBytes bytes;
+    bytes.status_ = runner::JournalReadStatus::READ;
+    bytes.text_ = text;
+    const auto replay = runner::parse_journal_bytes(bytes);
+    runner::IndeterminacyLedger ledger;
+    return std::make_pair(replay.unreadable_lines_, runner::recover_into(replay, ledger).clean());
+  };
+
+  const auto blanked = recovered(header + "\n\n" + terminal + "\n");
+  CHECK(blanked.first == 1);
+  CHECK_FALSE(blanked.second);
+
+  const auto duplicated = recovered(header + "\n" + header + "\n" + terminal + "\n");
+  CHECK(duplicated.first == 1);
+  CHECK_FALSE(duplicated.second);
+
+  // What this writer does produce is still clean: a header, then a pending and its answer.
+  const auto healthy =
+    recovered(header + "\n" + runner::journal_entry_to_line(pending) + "\n" + terminal + "\n");
+  CHECK(healthy.first == 0);
+  CHECK(healthy.second);
 }

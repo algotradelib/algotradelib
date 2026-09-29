@@ -76,8 +76,8 @@ intended interface:
 
 ```
 $ tail -2 /var/lib/mybot/orders.jsonl
-{"id":"run-a-7","action":"place","outcome":"pending","country":"KR","venue":"COMBINED","symbol":"005930","side":"BUY","type":"LIMIT","quantity":"10","price":"70000","at":1774832400000000,"at_text":"2026-03-30T01:00:00Z"}
-{"id":"run-a-7","action":"place","outcome":"accepted","country":"KR",...,"order_id":"KRX-4412"}
+{"id":"run-a-7","action":"place","outcome":"pending","country":"KR","venue":"COMBINED","symbol":"005930","side":"BUY","type":"LIMIT","quantity":"10","price":"70000","at":1774832400000000,"at_text":"2026-03-30T01:00:00Z","crc":"f9ee1cbf"}
+{"id":"run-a-7","action":"place","outcome":"accepted","country":"KR",...,"order_id":"KRX-4412","crc":"…"}
 ```
 
 Two lines per instruction, never an edit of one. The first is written **before** the send is
@@ -85,6 +85,24 @@ attempted; the second says what happened. A `pending` line with no companion is 
 
 `at` is the record and `at_text` is the caption: the integer is exact on every platform and is what
 matching reads, the text is for you.
+
+`crc` is always last: a CRC-32 over every byte of the line before it. A line whose bytes changed after
+they were written — a bad sector, a partial overwrite, an editor — fails it and is **not read at all**:
+it counts as an unreadable line, and recovery halts the runner outright. That matters for the damage no
+reader of values could see, such as `005930` becoming `005931`, a real instrument. **So do not edit the
+file**: a hand-edited line fails its checksum, and so does a key this library never wrote.
+
+A journal this release begins says so in its header (`"integrity":"crc32"`), so every entry in it must
+carry a checksum. A journal begun by an earlier release keeps its checksum-less lines readable as they
+always were; once a checksummed line appears, a checksum-less one after it is damage. The one line this
+cannot protect is the *first* checksummed line of such a file, which could lose its whole `crc` member
+and pass as an older release's. It is a checksum against corruption, not a signature against someone
+rewriting the file on purpose.
+
+**Rolling back across this release is not supported on a live journal.** An earlier release reads a
+checksummed line (it ignores `crc`) and appends checksum-less ones; this release then halts on them, as
+it should on a line it cannot vouch for. To roll back, or to roll forward again afterwards, first let
+every instruction resolve, then start the other release on a new journal file.
 
 ### Reading it under pressure
 
@@ -96,6 +114,7 @@ matching reads, the text is for you.
 | `pending` then `resolved` | a sweep read the broker's list and closed it. `order_id` says what it saw |
 | `pending` alone, at the end of the file | the process died between the write and the answer |
 | a last line with no newline | the process died *during* the write |
+| the runner halted on an unreadable line | a line changed after it was written — its checksum or an unknown key says so — or a checksum-less line follows a checksummed one |
 
 The last two are the reason the format is line-oriented. A line and its newline are written in one
 call, so the newline is a commit marker: a torn write loses the tail of the buffer, and the missing
