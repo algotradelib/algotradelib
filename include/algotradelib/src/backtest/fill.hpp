@@ -195,6 +195,10 @@ private:
    * A market order takes the open. A limit trades only if the bar's range reached it — a buy needs the
    * low at or below the limit, a sell needs the high at or above it — because a bar that never touched
    * the price is a bar in which the order sat unfilled, however close it came.
+   *
+   * Sets `at_open` when the price is the bar's stated open -- a market order, or a limit under
+   * `AT_OPEN_IF_BETTER` whose open was better -- which is what lets `decide` date the charge from the
+   * open's day. False for a bar with no open, whose close stands in for it.
    */
   std::optional<Decimal64> reference_price(
     const strategy::PlannedOrder& order,
