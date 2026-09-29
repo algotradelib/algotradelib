@@ -2542,6 +2542,33 @@ TEST_CASE("Kiwoom places, amends and reads back a stop-limit order's trigger", "
     CHECK_FALSE(unreadable.order_.trigger_price_);
   }
 
+  SECTION("a positive trigger on a row that is not a stop is recorded, and blocks a modification") {
+    // Kiwoom contradicting its own `trde_tp` is kept where a caller can see it; a reprice then
+    // restates a trigger on a basis that takes none and is refused, while the withdrawal works.
+    const auto row = kiwoom::KiwoomClientTestAccess::open_order(json::parse(
+      R"({"ord_no":"0000072","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
+          "ord_qty":"10","ord_pric":"70000","oso_qty":"10","orig_ord_no":"0000000",
+          "io_tp_nm":"-매도","trde_tp":"보통","tm":"154113","cntr_qty":"0","stex_tp":"1",
+          "stop_pric":"69500"})"
+    ).as_object());
+    REQUIRE(row.order_.type_ == OrderType::LIMIT);
+    REQUIRE(row.order_.trigger_price_ == Decimal64(69500, 0));
+
+    WorkingOrder<kiwoom::Broker> contradicted;
+    contradicted.ref_.primary_ = "0000072";
+    contradicted.ref_.secondary_ = "005930";
+    contradicted.order_ = row.order_;
+    contradicted.order_.venue_ = Venue::KRX;
+    contradicted.amendable_quantity_ = row.amendable_quantity_;
+    const auto modified =
+      Traits::to_replacement(contradicted.ref_, reprice(contradicted, Decimal64(69000, 0)));
+    REQUIRE_FALSE(modified);
+    CHECK(modified.error().broker_code_ == "invalid_trigger_price");
+    const auto canceled = Traits::to_cancellation(contradicted.ref_, cancel_all(contradicted));
+    REQUIRE(canceled);
+    CHECK_FALSE(canceled.value().condition_price_);
+  }
+
   SECTION("the history listing reports the trigger from cond_uv") {
     const auto row = kiwoom::KiwoomClientTestAccess::history_row(
       json::parse(
