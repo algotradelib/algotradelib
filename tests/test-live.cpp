@@ -4205,6 +4205,29 @@ TEST_CASE("the live program journals, recovers clean and places its order", "[li
   CHECK(text.find("fake:demo:1") != std::string::npos);
 }
 
+TEST_CASE("the live program sends and journals its stated route", "[live][program][route]") {
+  // `Settings::default_route_` is how `example-live-program` makes a Kiwoom run placeable; it has to
+  // reach the executor the runner sends through, and the file journal recovery will read.
+  const TempPath journal("atl-test-program-route.jsonl");
+  const TempPath control("atl-test-program-route.stop");
+  ProgramSession session;
+  script_ready(session);
+  runner::StopSource stop;
+  std::ostringstream out;
+  auto settings = program_settings(journal, control);
+  settings.default_route_ = Venue::NXT;
+
+  const auto exit = live_program::trade(
+    session, one_share(), settings, stop, out, runner::ManualClock{program_start()}
+  );
+
+  INFO(out.str());
+  CHECK(exit == live_program::Exit::CLEAN);
+  REQUIRE(session.placed().size() == 1);
+  CHECK(session.placed().front().venue_ == Venue::NXT);
+  CHECK(file_text(journal.str()).find("\"route\":\"NXT\"") != std::string::npos);
+}
+
 TEST_CASE("the live program withholds what a previous run left pending", "[live][program]") {
   const TempPath journal("atl-test-program-pending.jsonl");
   const TempPath control("atl-test-program-pending.stop");

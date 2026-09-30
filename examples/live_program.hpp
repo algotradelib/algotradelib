@@ -65,6 +65,12 @@ struct Settings {
   std::string control_file_;
   /** Iterations before returning; 0 runs until a stop. */
   std::size_t max_iterations_{0};
+  /**
+   * The venue an order is sent to, since a strategy's orders name none; `UNSPECIFIED` takes the
+   * broker's own default. Kiwoom has none, so a Kiwoom run must state one. See
+   * `live::SessionExecutor::default_route`.
+   */
+  atl::Venue default_route_{atl::Venue::UNSPECIFIED};
 };
 
 /** What the program exits with, so a supervisor can tell its endings apart. */
@@ -228,7 +234,10 @@ Exit trade(
     return Exit::JOURNAL_REFUSED;
   }
 
-  auto bound = live::bind_journaled(session, journal, std::move(strategy_instance), settings.limits_);
+  auto bound = live::bind_journaled(
+    session, journal, std::move(strategy_instance), settings.limits_, live::default_series_capacity,
+    settings.default_route_
+  );
 
   const auto recovery = runner::recover_runner(bound, journal);
   print_recovery(recovery, out);
