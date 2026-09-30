@@ -458,8 +458,8 @@ separate rather than one number, and why `closing_complete()` exists.
 target is kept for the next session.** This is the case every daily strategy meets: each shipped
 adapter stamps a daily bar at 00:00 KST, `SessionSource` feeds it once its day has ended (at the next
 midnight), and the strategy decides while the market is shut. A `TargetPosition` whose opening order
-the phase limit refused, or whose exit it admitted and the broker then rejected (a broker not taking
-orders at midnight does), is kept (`Runner::targets_retained_for_phase`) and planned again in the
+the phase limit refused, or whose exit it admitted and the broker (or the binding) then refused (a
+broker not taking orders at midnight does), is kept (`Runner::targets_retained_for_phase`) and planned again in the
 first iteration whose phase the limit admits — against that iteration's holdings, listing and prices.
 That is what a replay does by filling at the next bar's open. The rules around it:
 
