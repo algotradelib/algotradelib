@@ -323,8 +323,6 @@ The [user guide](doxygen/vignettes/guide.md) is eleven pages in the order they a
 
 ## Disclaimer
 
-## Disclaimer
-
 algotradelib is released under the MIT license; see [LICENSE](LICENSE). The software is provided as
 is, without warranty of any kind, and the authors are not liable for any loss, including trading
 losses, arising from its use. Nothing in this repository is investment advice.
