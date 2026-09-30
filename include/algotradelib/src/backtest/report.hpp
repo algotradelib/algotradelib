@@ -127,7 +127,8 @@ struct ReportCaveats {
    *
    * **What a reader has to know when this is non-zero: an order placed from `on_quote`, if it fills
    * at all, fills against a later *bar* and not against the quote.** (If at all: a limit can miss
-   * every bar and end the run in `unfilled_`.) A quote moves the clock, the price and the
+   * the one session it has and expire, counted in `expired_day_orders_`, or still be working when the
+   * run ends, in `unfilled_`.) A quote moves the clock, the price and the
    * phase, and it neither fills nor marks: `NextBarFillModel` prices a market order at a bar's open,
    * so -- **where this engine can establish when a bar's period began** -- the order rests until one
    * that began at or after the decision, because a period that began earlier contains the decision
@@ -301,6 +302,11 @@ struct ReportCaveats {
   std::optional<std::chrono::system_clock::time_point> lowest_cash_at_;
   /** The tax on sales, as stated to the fill model; absent when no tax was modelled. Appended. */
   std::optional<SellTax> sell_tax_;
+  /**
+   * DAY orders withdrawn unfilled at the end of their session; see `ReplayResult`. Non-zero is
+   * ordinary for a limit or stop strategy: live, those orders expired at the close too. Appended.
+   */
+  std::size_t expired_day_orders_{0};
 };
 
 /** What a replay produced, with every figure's absence meaning what `analytics` says it means. */
@@ -482,6 +488,7 @@ inline Report summarize(
   report.caveats_.first_overdrawn_ = result.first_overdrawn_;
   report.caveats_.lowest_cash_ = result.lowest_cash_;
   report.caveats_.lowest_cash_at_ = result.lowest_cash_at_;
+  report.caveats_.expired_day_orders_ = result.expired_day_orders_;
 
   // Costs summed exactly, because they are money -- and **per currency**, because a replay whose
   // instruments span markets would otherwise have won added to dollars to make one scalar.

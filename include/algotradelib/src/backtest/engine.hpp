@@ -95,6 +95,11 @@ struct QueuedOrder {
    * `NextBarFillModel::decide`.
    */
   bool released_{false};
+  /**
+   * The market-local date of the one session a DAY order lives in, once known: the date of the first
+   * bar the order could trade against. `Backtester` withdraws the order when a bar ends that session.
+   */
+  std::optional<Date> session_;
 };
 
 /**
@@ -223,6 +228,16 @@ public:
       }
     }
     return nullptr;
+  }
+
+  /** Records the session date of the queued order `ref`; see `QueuedOrder::session_`. */
+  void assign_session(const OrderRef<BrokerTag>& ref, Date session) {
+    for (auto& entry : queued_) {
+      if (entry.ref_ == ref) {
+        entry.session_ = session;
+        return;
+      }
+    }
   }
 
   /** Drops the order `ref` names, and reports whether there was one. */
@@ -459,6 +474,11 @@ struct ReplayResult {
   std::optional<Money> lowest_cash_;
   /** When `lowest_cash_` was reached: that execution's `Fill::at_`. */
   std::optional<std::chrono::system_clock::time_point> lowest_cash_at_;
+  /**
+   * DAY orders withdrawn unfilled at the end of their session (`Backtester::expire_day_orders`): what
+   * a broker does at the close. Appended last.
+   */
+  std::size_t expired_day_orders_{0};
 };
 
 /** Everything a replay needs beyond the strategy and the bars. */
@@ -471,7 +491,11 @@ struct ReplayConfig {
   std::vector<Instrument> instruments_;
   /** Limits, applied exactly as they would be live. */
   strategy::RiskLimits limits_;
-  /** Session the phases are derived against. */
+  /**
+   * Session the phases are derived against, and whose close a DAY order expires at. One window
+   * serves the whole replay: US minute bars replayed under the KRX default would expire orders at
+   * the KRX close, part way through the US session.
+   */
   strategy::SessionWindow session_{strategy::SessionWindow::krx()};
   /** Trailing bars the context caches, for the indicators a strategy reads. */
   std::size_t series_capacity_{512};
@@ -953,6 +977,29 @@ private:
    * every portfolio installed along the way, and addressable by a cancellation from any callback.
    */
   void settle_queued_against(const strategy::BarEvent& event) {
+    const auto bar_date = clock_.session().local_date(event.bar_.timestamp_);
+    // A session the replay had no closing bar for -- a missing last minute -- still ended: an order
+    // of an earlier date is withdrawn before this bar can fill it.
+    expire_day_orders(event, bar_date, false);
+    // **Which session a DAY order lives in**, fixed at the first bar it is eligible against: that
+    // bar's session is the one the order trades in. A decision the bar cannot fill without looking
+    // ahead -- a quote at 10:00 against the day's bar, or the day's close -- trades in the next
+    // session, as a market order decided there fills at the next open: one session, shifted, never
+    // the several a resting order had before.
+    std::vector<std::pair<OrderRef<Tag>, Date>> sessions;
+    for (const auto& entry : runner_.executor().queued()) {
+      if (!(entry.order_.instrument_ == event.instrument_) || entry.session_ ||
+          entry.order_.time_in_force_ != TimeInForce::DAY) {
+        continue;
+      }
+      if (entry.accepted_on_ < runner_.executor().bar() && may_fill(entry, event)) {
+        sessions.emplace_back(entry.ref_, bar_date);
+      }
+    }
+    for (const auto& [ref, date] : sessions) {
+      runner_.executor().assign_session(ref, date);
+    }
+
     std::vector<OrderRef<Tag>> eligible;
     for (const auto& entry : runner_.executor().queued()) {
       // A different instrument's order waits for that instrument's next bar, which is what makes an
@@ -1054,6 +1101,7 @@ private:
       install_portfolio();
       drain_reports(runner_.feed(decision.execution_->fill_));
     }
+    expire_day_orders(event, bar_date, true);
     // Closes the settlement batch: every withdrawal this bar made is now done, and so is anything
     // an `on_fill` handler placed or cancelled in response to one.
     publish_order_updates();
@@ -1071,6 +1119,40 @@ private:
     if (!result_.lowest_cash_ || decimal_less(*cash, result_.lowest_cash_->amount_)) {
       result_.lowest_cash_ = Money{*cash, execution.currency_};
       result_.lowest_cash_at_ = execution.fill_.at_;
+    }
+  }
+
+  /**
+   * Withdraws every DAY order of `event`'s instrument whose session has ended: before the bar's
+   * fills (`after_fills` false), those of an earlier date; after them, also those of the bar's own
+   * date when the bar ends the session.
+   *
+   * A KRX DAY order expires at the close. Kept queued, a replay's DAY limit or stop was
+   * good-till-cancelled on daily bars -- a limit below the market waited for weeks, and a stop placed
+   * at an entry still rested months later -- where live it was gone that evening. A bar ends a
+   * session when its interval is a day or longer, or when it is a minute bar ending at or after the
+   * session's close; a bar of a later date ends it in any case. Withdrawn inside the settlement batch,
+   * before order updates are published and before the strategy is shown the bar, so nothing reads an
+   * expired order as working. Counted in `ReplayResult::expired_day_orders_`.
+   */
+  void expire_day_orders(const strategy::BarEvent& event, const Date& bar_date, bool after_fills) {
+    const bool daily_or_longer = event.interval_ != BarInterval::ONE_MINUTE;
+    const auto closes = clock_.session().opens_at(event.bar_.timestamp_) - clock_.session().open_ +
+      clock_.session().close_;
+    const bool ends_session = after_fills && (daily_or_longer || !(event.period_end_ < closes));
+    std::vector<OrderRef<Tag>> expired;
+    for (const auto& entry : runner_.executor().queued()) {
+      if (!(entry.order_.instrument_ == event.instrument_) || !entry.session_ ||
+          entry.order_.time_in_force_ != TimeInForce::DAY) {
+        continue;
+      }
+      if (*entry.session_ < bar_date || (*entry.session_ == bar_date && ends_session)) {
+        expired.push_back(entry.ref_);
+      }
+    }
+    for (const auto& ref : expired) {
+      runner_.executor().withdraw(ref);
+      ++result_.expired_day_orders_;
     }
   }
 

@@ -1057,6 +1057,12 @@ strategy::BarEvent moving_bar(
   return strategy::make_bar_event(samsung(), interval, BarStamp::CLOSE, bar);
 }
 
+/**
+ * The close of the one-minute bar ending `minute` minutes past 10:00 KST on 2026-03-10: a single
+ * session of intraday bars, across which a DAY order rests as it does live.
+ */
+Clock::time_point session_minute(int minute) { return utc(2026, 3, 10, 1, minute); }
+
 } // namespace
 
 TEST_CASE("on_quote fires in a replay, which it never did before") {
@@ -2619,11 +2625,11 @@ TEST_CASE("an order resting from an earlier bar is in the portfolio the strategy
   // The defect this branch exists for. The order is placed on bar 1, rests through bars 2 and 3
   // because the market never reaches 50,000, and was invisible on both -- so reconciliation, the
   // position and exposure ceilings and the sellable deduction all read an empty field in a replay
-  // and a full one live.
+  // and a full one live. Minute bars of one session, because a DAY order rests only within one.
   backtest::Backtester<RestsOneLimit> engine(RestsOneLimit{}, replay_config());
-  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
-  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
-  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(session_minute(1), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.feed(moving_bar(session_minute(2), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.feed(moving_bar(session_minute(3), BarInterval::ONE_MINUTE, "70000", "70000"));
   engine.finish();
 
   const auto& seen = engine.strategy().working_seen_;
@@ -2644,6 +2650,118 @@ TEST_CASE("an order resting from an earlier bar is in the portfolio the strategy
   // It never filled, so it is still outstanding at the end.
   REQUIRE(engine.result().unfilled_ == 1);
   REQUIRE(engine.result().executions_.empty());
+  REQUIRE(engine.result().expired_day_orders_ == 0);
+}
+
+TEST_CASE("a DAY order on daily bars lasts one session, not until it fills") {
+  // `labs/FINDINGS.md` F14. Decided at the 10th's close, the limit trades in the 11th's session and
+  // expires at its close, before the strategy is shown the 11th's bar -- as a broker expires it. It
+  // was good-till-cancelled: still working on the 12th, and on any later day the market reached it.
+  backtest::Backtester<RestsOneLimit> engine(RestsOneLimit{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_DAY, "45000", "70000"));
+  engine.finish();
+
+  const auto& seen = engine.strategy().working_seen_;
+  REQUIRE(seen == std::vector<std::size_t>{0, 0, 0, 0});
+  // The 13th's low of 45,000 would have filled it at 50,000; it had expired two days before.
+  REQUIRE(engine.result().executions_.empty());
+  REQUIRE(engine.result().unfilled_ == 0);
+  REQUIRE(engine.result().expired_day_orders_ == 1);
+  REQUIRE(backtest::summarize(engine.result(), engine.fills()).caveats_.expired_day_orders_ == 1);
+}
+
+namespace {
+
+/** Rests one limit buy at 69,000 from its first quote, and nothing from bars. */
+struct LimitFromQuote {
+  bool placed_{false};
+
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {}
+
+  template <class Ctx>
+  void on_quote(Ctx& ctx, const strategy::QuoteEvent& quote) {
+    if (placed_) {
+      return;
+    }
+    placed_ = true;
+    ctx.submit(strategy::OrderIntent::limit(
+      quote.quote_.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")),
+      *strategy::Price::checked(Decimal64::parse("69000"), krx_grid())
+    ));
+  }
+};
+
+} // namespace
+
+TEST_CASE("a limit from a quote inside a daily bar's session gets the next session, and only it") {
+  // Decided at 10:00 on the 11th, the order cannot fill against the 11th's bar, whose range includes
+  // the hours before it. It trades in the 12th's session -- one session, shifted, as a market order
+  // decided there fills at the 12th's open -- and expires with it. The alternative, expiring it at
+  // the 11th's close, would let no quote-placed limit ever fill on daily bars.
+  SECTION("reached in that session: filled") {
+    backtest::Backtester<LimitFromQuote> engine(LimitFromQuote{}, replay_config());
+    engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+    engine.feed(quote_at(utc(2026, 3, 11, 1, 0), "70000"));
+    engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "68000", "70000"));
+    engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "68500", "70000"));
+    engine.finish();
+
+    REQUIRE(engine.result().executions_.size() == 1);
+    // Against the 12th's bar, at the limit.
+    CHECK(engine.result().executions_[0].fill_.price_ == Decimal64::parse("69000"));
+    CHECK(engine.result().executions_[0].fill_.at_ > utc(2026, 3, 11, 6, 30));
+    CHECK(engine.result().expired_day_orders_ == 0);
+  }
+
+  SECTION("reached only in a later one: expired") {
+    backtest::Backtester<LimitFromQuote> engine(LimitFromQuote{}, replay_config());
+    engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+    engine.feed(quote_at(utc(2026, 3, 11, 1, 0), "70000"));
+    engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "68000", "70000"));
+    engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "69500", "70000"));
+    engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_DAY, "68000", "70000"));
+    engine.finish();
+
+    REQUIRE(engine.result().executions_.empty());
+    CHECK(engine.result().expired_day_orders_ == 1);
+  }
+}
+
+TEST_CASE("a DAY order on minute bars rests through its session and expires at the close") {
+  // Both ends of the session rule on intraday bars: later bars of the same session leave it
+  // working, the bar ending at the close withdraws it, and a missing last bar is caught by the
+  // next session's first.
+  SECTION("the bar ending at the close") {
+    backtest::Backtester<RestsOneLimit> engine(RestsOneLimit{}, replay_config());
+    engine.feed(moving_bar(session_minute(1), BarInterval::ONE_MINUTE, "70000", "70000"));
+    engine.feed(moving_bar(session_minute(2), BarInterval::ONE_MINUTE, "70000", "70000"));
+    // 15:29 and 15:30 KST: the second ends at the close.
+    engine.feed(moving_bar(utc(2026, 3, 10, 6, 29), BarInterval::ONE_MINUTE, "70000", "70000"));
+    engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_MINUTE, "70000", "70000"));
+    engine.feed(moving_bar(utc(2026, 3, 11, 0, 1), BarInterval::ONE_MINUTE, "45000", "70000"));
+    engine.finish();
+
+    REQUIRE(engine.strategy().working_seen_ == std::vector<std::size_t>{0, 1, 1, 0, 0});
+    REQUIRE(engine.result().executions_.empty());
+    REQUIRE(engine.result().expired_day_orders_ == 1);
+  }
+
+  SECTION("no bar at the close: the next session's first bar") {
+    backtest::Backtester<RestsOneLimit> engine(RestsOneLimit{}, replay_config());
+    engine.feed(moving_bar(session_minute(1), BarInterval::ONE_MINUTE, "70000", "70000"));
+    engine.feed(moving_bar(session_minute(2), BarInterval::ONE_MINUTE, "70000", "70000"));
+    // 09:01 KST the next day, reaching the limit: withdrawn before it is filled.
+    engine.feed(moving_bar(utc(2026, 3, 11, 0, 1), BarInterval::ONE_MINUTE, "45000", "70000"));
+    engine.finish();
+
+    REQUIRE(engine.strategy().working_seen_ == std::vector<std::size_t>{0, 1, 0});
+    REQUIRE(engine.result().executions_.empty());
+    REQUIRE(engine.result().expired_day_orders_ == 1);
+  }
 }
 
 namespace {
@@ -2801,7 +2919,12 @@ struct BuysThenRestsSells {
 };
 
 /** A flat bar for `instrument` at `close`, for interleaving two instruments in one replay. */
-strategy::BarEvent bar_for(InstrumentId instrument, Clock::time_point at, const char* close) {
+strategy::BarEvent bar_for(
+  InstrumentId instrument,
+  Clock::time_point at,
+  const char* close,
+  BarInterval interval = BarInterval::ONE_DAY
+) {
   Bar bar;
   bar.timestamp_ = at;
   bar.open_ = Decimal64::parse(close);
@@ -2809,9 +2932,7 @@ strategy::BarEvent bar_for(InstrumentId instrument, Clock::time_point at, const 
   bar.low_ = Decimal64::parse(close);
   bar.close_ = Decimal64::parse(close);
   bar.volume_ = Decimal64::parse("1000");
-  return strategy::make_bar_event(
-    std::move(instrument), BarInterval::ONE_DAY, BarStamp::CLOSE, bar
-  );
+  return strategy::make_bar_event(std::move(instrument), interval, BarStamp::CLOSE, bar);
 }
 
 /** A second KRX instrument, so a replay can interleave two of them. */
@@ -2871,9 +2992,23 @@ std::size_t refusals_for(const backtest::ReplayResult& result, strategy::GuardRe
   return count;
 }
 
-/** Replays `bars` flat bars at 70,000 through `engine`. */
+/**
+ * Replays `bars` flat one-minute bars at 70,000 through `engine`, all in one session: an order these
+ * tests rest stays working across them, as a DAY order does live. Across daily bars it would expire.
+ */
 template <typename Engine>
 void replay_flat_bars(Engine& engine, int bars) {
+  for (int minute = 1; minute <= bars; ++minute) {
+    engine.feed(
+      moving_bar(session_minute(minute), BarInterval::ONE_MINUTE, "70000", "70000")
+    );
+  }
+  engine.finish();
+}
+
+/** Replays `bars` flat daily bars at 70,000 through `engine`, one session each. */
+template <typename Engine>
+void replay_flat_days(Engine& engine, int bars) {
   for (int day = 0; day < bars; ++day) {
     engine.feed(
       moving_bar(utc(2026, 3, 10 + day, 6, 30), BarInterval::ONE_DAY, "70000", "70000")
@@ -3027,10 +3162,11 @@ TEST_CASE("buying power is spent by an order that is still resting") {
   backtest::Backtester<RestsABuyInEachInstrument> engine(
     RestsABuyInEachInstrument{}, std::move(config)
   );
-  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
-  engine.feed(bar_for(hynix(), utc(2026, 3, 10, 6, 31), "70000"));
-  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
-  engine.feed(bar_for(hynix(), utc(2026, 3, 11, 6, 31), "70000"));
+  // Minute bars of one session, so the samsung buy is still working when the hynix one is checked.
+  engine.feed(moving_bar(session_minute(1), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.feed(bar_for(hynix(), session_minute(2), "70000", BarInterval::ONE_MINUTE));
+  engine.feed(moving_bar(session_minute(3), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.feed(bar_for(hynix(), session_minute(4), "70000", BarInterval::ONE_MINUTE));
   engine.finish();
 
   REQUIRE(refusals_for(engine.result(), strategy::GuardReason::INSUFFICIENT_BUYING_POWER) > 0);
@@ -3077,6 +3213,18 @@ TEST_CASE("an outstanding buy moves buying power only when the check is on") {
     REQUIRE(engine.strategy().seen_[2] == std::optional<Decimal64>(Decimal64::parse("0")));
   }
 
+  SECTION("on, across daily bars: yesterday's buy has expired and commits nothing") {
+    auto config = replay_config();
+    config.cash_ = Decimal64::parse("1000000");
+    config.limits_.enforce_buying_power_ = true;
+
+    backtest::Backtester<RecordsBuyingPower> engine(RecordsBuyingPower{}, std::move(config));
+    replay_flat_days(engine, 3);
+
+    REQUIRE(engine.strategy().seen_ == std::vector<std::optional<Decimal64>>(3, million));
+    REQUIRE(engine.result().expired_day_orders_ == 2);
+    REQUIRE(engine.result().unfilled_ == 1);
+  }
 }
 
 namespace {
@@ -4943,9 +5091,10 @@ TEST_CASE("a replay's order update carries an identifier") {
 TEST_CASE("an order an update handler places is reported at the next boundary, not within it") {
   // Bounded rather than recursive: the second order enters the queue behind the observation that is
   // running, so it is seen next time. Two updates over the run, never a loop inside one.
+  // Minute bars of one session: on daily bars the second order expires before it can be reported.
   backtest::Backtester<PlacesFromAnUpdate> engine(PlacesFromAnUpdate{}, replay_config());
-  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
-  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
+  engine.feed(moving_bar(session_minute(1), BarInterval::ONE_MINUTE, "69000", "70000"));
+  engine.feed(moving_bar(session_minute(2), BarInterval::ONE_MINUTE, "80000", "81000"));
   engine.finish();
 
   CHECK(engine.strategy().updates_ == 2);
@@ -5142,7 +5291,7 @@ TEST_CASE("a stop released inside the bar fills at its limit, never better", "[t
   }
 }
 
-TEST_CASE("a stop released inside the bar whose limit was not marketable rests", "[trigger]") {
+TEST_CASE("a stop released inside the bar whose limit was not marketable stays working", "[trigger]") {
   const backtest::NextBarFillModel model;
   // A sell stop limited *above* its trigger: at the release the price was 69,500 and the limit wants
   // 69,800. The bar's high came before or after -- it cannot say -- so it does not fill here.
@@ -5267,15 +5416,16 @@ struct StopsThenTargetsFlat {
 TEST_CASE("a queued stop is withdrawn before a flatten in a replay as it is live", "[trigger]") {
   // The parity this slice exists for: the working row a replay shows is a stop row with its trigger,
   // so the target rule refuses exactly as it would against a live listing.
+  // Minute bars of one session: across daily bars the stop would have expired before bar 3.
   backtest::Backtester<StopsThenTargetsFlat> engine(StopsThenTargetsFlat{}, replay_config());
-  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
-  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
-  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(session_minute(1), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.feed(moving_bar(session_minute(2), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.feed(moving_bar(session_minute(3), BarInterval::ONE_MINUTE, "70000", "70000"));
 
   // Bar 3's flatten withdraws the stop and sells nothing beside it; bar 4 restates it against a book
   // with no stop, and bar 5 fills the sale -- the sequence a live run takes.
-  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
-  engine.feed(moving_bar(utc(2026, 3, 16, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(session_minute(4), BarInterval::ONE_MINUTE, "70000", "70000"));
+  engine.feed(moving_bar(session_minute(5), BarInterval::ONE_MINUTE, "70000", "70000"));
   engine.finish();
 
   REQUIRE(engine.result().rejected_.size() == 1);
@@ -5438,34 +5588,60 @@ struct PlacesStopAt {
   }
 };
 
-strategy::BarEvent stop_bar(int day, const char* o, const char* h, const char* l, const char* c) {
+strategy::BarEvent stop_bar(
+  int day,
+  const char* o,
+  const char* h,
+  const char* l,
+  const char* c,
+  BarInterval interval = BarInterval::ONE_DAY
+) {
   Bar bar;
-  bar.timestamp_ = utc(2026, 3, day, 6, 30);
+  // A daily bar of the `day`th, or the one-minute bar ending `day` minutes past 10:00 on the 10th.
+  bar.timestamp_ = interval == BarInterval::ONE_DAY ? utc(2026, 3, day, 6, 30) : session_minute(day);
   bar.open_ = Decimal64::parse(o);
   bar.high_ = Decimal64::parse(h);
   bar.low_ = Decimal64::parse(l);
   bar.close_ = Decimal64::parse(c);
   bar.volume_ = Decimal64::parse("1000");
-  return strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, bar);
+  return strategy::make_bar_event(samsung(), interval, BarStamp::CLOSE, bar);
 }
 
 } // namespace
 
 TEST_CASE("a released stop stays released on the bars after", "[trigger]") {
-  // Released on the 11th -- the low fell through 69,500 -- with a limit above the trigger the close
-  // did not come back to, so it rests. The 12th never reaches the trigger again; as the limit it has
-  // become, its 70,000 high fills it. Treated as dormant again, it would never trade.
+  // Released on bar 2 -- the low fell through 69,500 -- with a limit above the trigger the close
+  // did not come back to, so it rests. Bar 3 never reaches the trigger again; as the limit it has
+  // become, its 70,000 high fills it. Treated as dormant again, it would never trade. Minute bars of
+  // one session, which is the only span a DAY stop rests across.
+  constexpr auto minute = BarInterval::ONE_MINUTE;
   backtest::Backtester<PlacesStopAt> engine(PlacesStopAt{"69500", "69800"}, replay_config());
-  engine.feed(stop_bar(10, "70000", "70000", "70000", "70000"));
-  engine.feed(stop_bar(11, "70000", "70500", "69000", "69200"));
+  engine.feed(stop_bar(1, "70000", "70000", "70000", "70000", minute));
+  engine.feed(stop_bar(2, "70000", "70500", "69000", "69200", minute));
   REQUIRE(engine.result().executions_.empty());
-  engine.feed(stop_bar(12, "69900", "70000", "69700", "69950"));
+  engine.feed(stop_bar(3, "69900", "70000", "69700", "69950", minute));
   engine.finish();
 
   REQUIRE(engine.result().executions_.size() == 1);
   CHECK(engine.result().executions_[0].fill_.price_ == Decimal64::parse("69800"));
   CHECK(engine.result().stop_releases_ == 1);
   CHECK(engine.result().stop_fills_intrabar_ == 0);
+  CHECK(engine.result().expired_day_orders_ == 0);
+}
+
+TEST_CASE("a stop released on a daily bar and not filled expires with that session", "[trigger]") {
+  // The same bars as daily ones. Released on the 11th and unfilled at its close, the stop -- now a
+  // limit -- expires with the session; the 12th's high would have filled it, and live it was gone.
+  backtest::Backtester<PlacesStopAt> engine(PlacesStopAt{"69500", "69800"}, replay_config());
+  engine.feed(stop_bar(10, "70000", "70000", "70000", "70000"));
+  engine.feed(stop_bar(11, "70000", "70500", "69000", "69200"));
+  engine.feed(stop_bar(12, "69900", "70000", "69700", "69950"));
+  engine.finish();
+
+  REQUIRE(engine.result().executions_.empty());
+  CHECK(engine.result().stop_releases_ == 1);
+  CHECK(engine.result().expired_day_orders_ == 1);
+  CHECK(engine.result().unfilled_ == 0);
 }
 
 namespace {
@@ -5506,12 +5682,18 @@ TEST_CASE("a replay's deferred flatten goes the bar its stop is withdrawn", "[tr
   // **Codex round 2's first blocker.** The replay withdraws a stop synchronously, so the flatten the
   // runner deferred behind it is placed in the same bar and fills on the next -- stated once, with no
   // restatement to lean on. Waiting for the next bar's portfolio filled it a bar later than live.
+  // Minute bars of one session, so the stop is still working when bar 3 flattens.
+  constexpr auto minute = BarInterval::ONE_MINUTE;
   backtest::Backtester<FlattensOnce> engine(FlattensOnce{}, replay_config());
-  engine.feed(stop_bar(10, "70000", "70000", "70000", "70000"));
-  engine.feed(stop_bar(11, "70000", "70000", "70000", "70000"));
-  engine.feed(stop_bar(12, "70000", "70000", "70000", "70000"));
+  engine.feed(stop_bar(1, "70000", "70000", "70000", "70000", minute));
+  engine.feed(stop_bar(2, "70000", "70000", "70000", "70000", minute));
+  engine.feed(stop_bar(3, "70000", "70000", "70000", "70000", minute));
   REQUIRE(engine.result().executions_.size() == 1);
-  engine.feed(stop_bar(13, "71000", "71000", "71000", "71000"));
+  // The flatten was deferred behind a stop still working, not placed against an expired one.
+  REQUIRE(engine.result().rejected_.size() == 1);
+  CHECK(engine.result().rejected_[0].reason_ == strategy::RejectReason::STOP_ORDER_RESTING);
+  CHECK(engine.result().expired_day_orders_ == 0);
+  engine.feed(stop_bar(4, "71000", "71000", "71000", "71000", minute));
   engine.finish();
 
   REQUIRE(engine.result().executions_.size() == 2);

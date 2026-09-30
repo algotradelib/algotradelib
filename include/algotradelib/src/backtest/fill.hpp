@@ -160,7 +160,10 @@ public:
   const std::optional<SellTax>& sell_tax() const noexcept { return sell_tax_; }
 
   /**
-   * Returns whether an unfilled order stays queued for a later bar.
+   * Returns whether an unfilled order stays queued for a later bar of its session.
+   *
+   * A DAY order lives one session: `Backtester` withdraws it, unfilled, when a bar ends that session
+   * -- on daily bars, after the one bar it can trade against.
    *
    * Resting is a property of the *condition*, not of the basis: an
    * immediate-or-cancel order that this bar did not fill is gone, and a
@@ -245,8 +248,8 @@ public:
           reference = intrabar_release_price(order, next);
           if (!reference) {
             // Whether the price reached the limit *after* the release is what the bar cannot say --
-            // its extreme on the other side may have come first. Released; rests from the next bar,
-            // which can only defer a fill.
+            // its extreme on the other side may have come first. Released; rests for the rest of its
+            // session -- on daily bars that session ends with this bar, so it expires unfilled.
             decision.still_working_ = true;
             return decision;
           }
@@ -257,8 +260,9 @@ public:
       reference = reference_price(order, next, at_open);
     }
     if (!reference) {
-      // A limit the bar never reached. It stays queued: a resting order does not expire because one
-      // bar passed it by, and discarding it would silently turn every limit into a fill-or-kill.
+      // A limit the bar never reached. It stays queued for the rest of its session: a resting order
+      // does not expire because one bar passed it by, and discarding it would silently turn every
+      // limit into a fill-or-kill. It does expire at the session's close (`Backtester`).
       decision.still_working_ = rests_unfilled(order);
       return decision;
     }

@@ -65,13 +65,30 @@ next bar, and inventing one would be inventing data.
 | Sell limit | fills if the bar's high reached it | the same, mirrored |
 | Limit price | **the limit itself under `AT_LIMIT`** — or, when the limit was marketable through the whole bar, the bar's worst price instead (a buy its high, a sell its low), which is better than the limit but never better than anything the bar traded | see below; a price the bar never showed is not a fill |
 | Slippage on a limit | never carries the fill through its limit or out of its bar | a limit order that could only have traded worse did not trade worse; `caveats_.limit_fills_bounded_` counts both |
-| Missed limit | stays queued | discarding it would turn every limit into fill-or-kill |
+| Missed limit | stays queued **for the rest of its session**, then expires unfilled — on daily bars, after the one bar it can trade against | discarding it at once would turn every limit into fill-or-kill; keeping it past the close would make it good-till-cancelled, which a DAY order is not |
 
 **The limit-price choice is the one to understand.** A bar opening at 69,000 through a buy limit of
 70,000 would often fill better in reality. Claiming that improvement assumes the order was in the book
 before the auction *and* that volume existed at that level — neither of which a bar can tell you.
 Refusing it understates a result; claiming it overstates one, and a backtester that flatters is worse
 than one that disappoints.
+
+**A DAY order lives one session**, as it does at a broker. Its session is that of the first bar it can
+trade against: a decision at a daily bar's close trades in the next session, and so does a decision part
+way through a daily bar — a quote at 10:00 — because that bar's range includes the hours before it. That
+is a one-session shift, the same one a market order decided there takes to the next open. The order
+expires when a bar ends its session: any bar of a day or longer, or a minute bar ending at or after the
+`SessionWindow`'s close; a minute replay missing its last bar expires it before the next session's
+first bar can fill it. `report.caveats_.expired_day_orders_` counts them. **Replays from before this
+rule kept a missed limit or stop queued until it filled**, so a limit strategy on daily bars now fills
+less often and a protective stop has to be restated each session, as it does live. Three limits:
+
+- a weekly or monthly bar still grants an order its whole range, up to five sessions — better than the
+  unlimited rest it had, still optimistic; trust limit fills on those intervals least;
+- one `SessionWindow` serves a whole replay, so a US minute replay under the KRX default expires orders
+  at the KRX close, part way through the US session — give the replay the market's window;
+- an instrument with no bar for some sessions (a suspension, missing data) grants its order the first
+  bar it has, however late.
 
 So `AT_LIMIT`, the default, never credits the better **open**. It is still not "never better than the
 limit": a limit marketable through the whole bar is credited the bar's worst price — a buy limited at
@@ -91,7 +108,7 @@ through the limit, opt-in because the assumption is yours to make. Whichever you
 | Opened through the trigger | priced as a limit against the whole bar, under your `LimitFillPrice`, and dated from the open when the open was marketable | the whole bar followed the release |
 | Any stop fill | credited a price **inside the bar** and never through the limit — a sell no lower than the higher of the low and its limit, a buy no higher than the lower of the high and its limit | an `AT_LIMIT` credit, or slippage, could otherwise name a price the bar never showed |
 | Released inside the bar, limit marketable at the trigger | fills on that bar at **the worst price the bar traded that the limit allows** — a sell the higher of its limit and the low, a buy the lower of its limit and the high | the price at release was the trigger; crediting the limit itself could name a price the bar never reached |
-| Released inside the bar, limit not marketable there | fills at the limit on that bar only if the **close** is at or through it, else rests from the next bar | the close is the one price known to come after the release |
+| Released inside the bar, limit not marketable there | fills at the limit on that bar only if the **close** is at or through it, else rests for the rest of its session — on daily bars it expires with that bar | the close is the one price known to come after the release |
 | A bar with no open | a release is always "inside the bar" | a close cannot stand in for an open the bar did not state |
 | Slippage | never carries a stop fill out of its bar or through its limit — the same bound as a plain limit | a limit order that could only have traded worse did not trade |
 
@@ -116,7 +133,8 @@ engine.feed(quote);    // today 10:30        -> on_quote; an order placed here c
                        //                       against today's bar, whose open was 09:00
 engine.feed(bar);      // today's close      -> on_bar
 engine.feed(bar);      // tomorrow's close   -> a market order from the quote fills here, at
-                       //                       tomorrow's open; a limit may miss and stay queued
+                       //                       tomorrow's open; a limit may miss, and expires
+                       //                       with tomorrow's session
 engine.finish();
 ```
 
