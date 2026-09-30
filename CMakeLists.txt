@@ -9,6 +9,10 @@ endif()
 # build directory, so a consumer who adds include/ to their own build would have no version at all.
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/algotradelib/src/version.hpp" ATL_VERSION_LINES
     REGEX "^#define ATL_VERSION_(MAJOR|MINOR|PATCH|DEV) [0-9]+$")
+# Re-run the configure step when the header changes, or a build directory keeps the old version in the
+# package version file and the documentation stamp.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/algotradelib/src/version.hpp")
 foreach(part MAJOR MINOR PATCH DEV)
     set(ATL_VERSION_${part} "")
     foreach(line IN LISTS ATL_VERSION_LINES)
@@ -60,6 +64,32 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 option(ATL_BUILD_EXAMPLES "Build example C++ programs" OFF)
 option(ATL_BUILD_TESTS "Build test C++ programs" OFF)
 option(ATL_ENABLE_COVERAGE "Enable C++ test coverage" OFF)
+
+# `cmake --build build --target docs` runs doxygen/Doxyfile with PROJECT_NUMBER set to this version, so
+# the version is still written only in version.hpp; `doxygen doxygen/Doxyfile` by hand still works,
+# unstamped. Only in a top-level build: a consumer that adds this directory with add_subdirectory may
+# have its own `docs` target, and CMake refuses two targets of one name. (PROJECT_IS_TOP_LEVEL says
+# this directly, but needs CMake 3.21.)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    find_package(Doxygen QUIET)
+    if(TARGET Doxygen::doxygen)
+        configure_file(
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/Doxyfile.version.in
+            ${CMAKE_CURRENT_BINARY_DIR}/Doxyfile.version
+            @ONLY
+        )
+        # The Doxyfile's paths are relative to the source root, and its output goes to doxygen/docs
+        # there, where a hand run puts it. WARN_AS_ERROR makes a warning fail the target.
+        add_custom_target(docs
+            COMMAND Doxygen::doxygen ${CMAKE_CURRENT_BINARY_DIR}/Doxyfile.version
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            COMMENT "Generating the HTML documentation in doxygen/docs/html"
+            VERBATIM
+        )
+    else()
+        message(STATUS "algotradelib: Doxygen not found, so there is no docs target")
+    endif()
+endif()
 
 # The analytics layer needs a linear algebra backend; quote, order, and market-data
 # behaviour does not. The option is named for the backend rather than for a feature
