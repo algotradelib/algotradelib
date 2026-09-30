@@ -315,14 +315,16 @@ cannot express, and on KRX it is more than ten times a typical online commission
 strategy replayed without it is flattered in proportion to its turnover:
 
 ```cpp
+// The rate in force for the period you replay, stated by you, for the market whose sales pay it.
 const auto fills = backtest::NextBarFillModel(commission, slippage)
-                     .with_sell_tax(Decimal64::parse("0.0020"));   // the rate in force, stated by you
+                     .with_sell_tax(backtest::SellTax{Decimal64::parse("0.0020"), Country::KR});
 ```
 
-It is truncated to whole currency units, charged to the account with the commission, and reported
-apart from it: `Execution::tax_`, `Report::tax_paid_` / `tax_by_currency_`, and
-`ReportCaveats::sell_tax_rate_`. A replay spanning a change in the rate is charged one rate
-throughout.
+It is truncated to whole currency units, charged to the account with the commission (and, like it,
+not in realized profit), and reported apart from it: `Execution::tax_`, `Report::tax_paid_` /
+`tax_by_currency_`, and `ReportCaveats::sell_tax_`. Only sales in the stated market pay it. A replay
+spanning a change in the rate is charged one rate throughout, and instruments exempt in that market —
+Korean ETFs and ETNs pay no transaction tax — need a replay of their own without it.
 
 ## Annualizing, and the trap in it
 

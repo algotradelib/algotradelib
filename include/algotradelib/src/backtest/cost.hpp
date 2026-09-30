@@ -34,7 +34,7 @@ namespace backtest {
  * Deliberately no tax here. Korean securities transaction tax applies on sales, at a rate that has
  * changed repeatedly, and hard-coding a number that moves would silently misprice every backtest run
  * after it changed. This rate is charged on both sides, so it cannot carry a sale-only tax either: a
- * caller states one on the fill model instead, `NextBarFillModel::with_sell_tax(rate)`, and it is
+ * caller states one on the fill model instead, `NextBarFillModel::with_sell_tax(SellTax)`, and it is
  * reported apart from commission.
  */
 struct CommissionModel {

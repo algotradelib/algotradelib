@@ -84,8 +84,9 @@ struct Execution {
    */
   Decimal64 slippage_;
   /**
-   * The tax charged on this execution: on a sale, where `NextBarFillModel::with_sell_tax` stated a
-   * rate; zero otherwise. Leaves the account with the commission, and is reported apart from it.
+   * The tax charged on this execution: on a sale in the market `NextBarFillModel::with_sell_tax`
+   * named; zero otherwise. Leaves cash with the commission and the institution fee, is reported apart
+   * from them, and like them is not in realized profit, which is price alone. Appended last.
    */
   Decimal64 tax_;
 };

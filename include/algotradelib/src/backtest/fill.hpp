@@ -9,6 +9,7 @@
 #include <algotradelib/core>
 
 #include <optional>
+#include <stdexcept>
 #include <utility>
 
 namespace algotradelib {
@@ -67,6 +68,17 @@ struct FillDecision {
 };
 
 /**
+ * A tax charged on sales, stated by the caller: `rate_` of a sale's value, on instruments of
+ * `country_`. See `NextBarFillModel::with_sell_tax`.
+ */
+struct SellTax {
+  /** The fraction of a sale's value charged, e.g. `0.0020` for 0.20 %. */
+  Decimal64 rate_;
+  /** The market whose sales pay it. */
+  Country country_{Country::KR};
+};
+
+/**
  * Fills market orders at the next bar's open and limit orders when the bar's range reaches them.
  *
  * The plain model, and the one whose assumptions are easiest to state — which matters more than
@@ -118,7 +130,7 @@ public:
   LimitFillPrice limit_price() const noexcept { return limit_price_; }
 
   /**
-   * Returns this model with a tax charged on every sale, at `rate` of the sale's value.
+   * Returns this model with `tax` charged on every sale in its market.
    *
    * **The caller states the rate; the library has none of its own.** Korean securities transaction
    * tax is the case it exists for -- charged on sales only, and moved every year since 2023 -- and a
@@ -127,16 +139,24 @@ public:
    * to whole currency units, as the Korean tax is, and kept apart from commission on
    * `Execution::tax_` and `Report::tax_paid_`, because a broker reports the two separately
    * (`OrderExecution::tax_` beside `commission_`) and a figure folding one into the other could not
-   * be compared with a live account's.
+   * be compared with a live account's. Only sales of instruments in `SellTax::country_` pay it, so a
+   * replay mixing markets does not charge one market's tax on another's sales; instruments exempt
+   * within that market (Korean ETFs and ETNs pay none) need a replay of their own without it.
+   *
+   * @throws std::invalid_argument for a rate below zero or not below one: a negative tax would credit
+   * the account, and a rate of one or more would make a sale's proceeds nothing or less.
    */
-  NextBarFillModel with_sell_tax(Decimal64 rate) const {
+  NextBarFillModel with_sell_tax(SellTax tax) const {
+    if (decimal_less(tax.rate_, Decimal64::parse("0")) || !decimal_less(tax.rate_, Decimal64::parse("1"))) {
+      throw std::invalid_argument("a sell tax rate must be at least 0 and below 1");
+    }
     auto model = *this;
-    model.sell_tax_rate_ = std::move(rate);
+    model.sell_tax_ = std::move(tax);
     return model;
   }
 
-  /** Returns the stated tax rate on sales, or nothing when no tax is modelled. */
-  const std::optional<Decimal64>& sell_tax_rate() const noexcept { return sell_tax_rate_; }
+  /** Returns the stated tax on sales, or nothing when no tax is modelled. */
+  const std::optional<SellTax>& sell_tax() const noexcept { return sell_tax_; }
 
   /**
    * Returns whether an unfilled order stays queued for a later bar.
@@ -336,9 +356,9 @@ public:
 
     // The tax on a sale, where a rate was stated: of the sale's value, truncated to whole units.
     std::optional<Decimal64> tax;
-    if (sell_tax_rate_ && order.side_ == OrderSide::SELL) {
+    if (sell_tax_ && order.side_ == OrderSide::SELL && order.instrument_.country_ == sell_tax_->country_) {
       const auto value = decimal_multiply(order.quantity_, slipped->first);
-      const auto charged = value ? decimal_multiply(*value, *sell_tax_rate_) : std::nullopt;
+      const auto charged = value ? decimal_multiply(*value, sell_tax_->rate_) : std::nullopt;
       tax = charged ? decimal_floor_to_multiple(*charged, Decimal64::parse("1")) : std::nullopt;
       if (!tax) {
         // Not a tax of zero: the sale happened and its cost is unknown, which is the same refusal a
@@ -505,7 +525,7 @@ private:
   CommissionPolicy commission_;
   SlippageModel slippage_;
   LimitFillPrice limit_price_;
-  std::optional<Decimal64> sell_tax_rate_;
+  std::optional<SellTax> sell_tax_;
 };
 
 } // namespace backtest
