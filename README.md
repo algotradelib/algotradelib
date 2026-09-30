@@ -205,7 +205,8 @@ const auto report = backtest::summarize(engine.result(), engine.fills(), periods
 **Run it live.** Copy [`examples/example-live-program.cpp`](examples/example-live-program.cpp) and
 [`examples/live_program.hpp`](examples/live_program.hpp), and replace the strategy — `BuyAndHold` of one
 share — with yours. It is the production path, for KIS and Toss (on Kiwoom it observes, and places
-nothing until you state what its holdings inquiry covers):
+nothing until you state what its holdings inquiry covers and lift the market-phase limit, since Kiwoom
+publishes no calendar):
 
 ```sh
 export KIS_APP_KEY=... KIS_APP_SECRET=... KIS_CANO=... KIS_DEMO=1

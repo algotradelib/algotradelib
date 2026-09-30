@@ -1573,6 +1573,29 @@ private:
     }
   }
 
+  /** Returns the venue the executor sends an order asking for `asked` to; `asked` where it does not route. */
+  Venue requested_route(Venue asked) const {
+    if constexpr (runner_detail::resolves_route<Executor>::value) {
+      return executor_.requested_route(asked);
+    } else {
+      return asked;
+    }
+  }
+
+  /**
+   * Returns the reference the broker issued for the order just accepted, where there is one.
+   *
+   * Nothing where the executor has no broker to have been answered by, which is every dry run and
+   * every replay.
+   */
+  std::optional<OrderRef<Tag>> last_ref() const {
+    if constexpr (runner_detail::reports_last_ref<Executor>::value) {
+      return executor_.last_ref();
+    } else {
+      return std::nullopt;
+    }
+  }
+
   /**
    * Carries this pass's reservation into the next one, for a caller that asked for the checks.
    *
@@ -1600,29 +1623,6 @@ private:
    * registered the order replaces the reservation with a picture that does not contain it yet.
    * That is what `closing-state-confirmation.md` is about, and it is not made worse here.
    */
-  /** Returns the venue the executor sends an order asking for `asked` to; `asked` where it does not route. */
-  Venue requested_route(Venue asked) const {
-    if constexpr (runner_detail::resolves_route<Executor>::value) {
-      return executor_.requested_route(asked);
-    } else {
-      return asked;
-    }
-  }
-
-  /**
-   * Returns the reference the broker issued for the order just accepted, where there is one.
-   *
-   * Nothing where the executor has no broker to have been answered by, which is every dry run and
-   * every replay.
-   */
-  std::optional<OrderRef<Tag>> last_ref() const {
-    if constexpr (runner_detail::reports_last_ref<Executor>::value) {
-      return executor_.last_ref();
-    } else {
-      return std::nullopt;
-    }
-  }
-
   void persist_reservation(
     const strategy::PlannedOrder& order,
     const std::optional<Decimal64>& reference_price,

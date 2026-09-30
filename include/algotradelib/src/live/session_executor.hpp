@@ -71,7 +71,7 @@ public:
    * Fixed for the executor's life, so "where did this executor send an unrouted order" has one
    * answer. The runner writes the route into the order before sending it
    * (`runner::Runner` asks `requested_route`), so the journal line, the row it reserves and the
-   * report all name the route that went on the wire rather than the one the strategy left blank.
+   * report all name the route the broker was asked for rather than the blank the strategy left.
    *
    * Whether Kiwoom's order listing reports a SOR order as SOR or as the venue it rested at has not
    * been observed. If it is the latter, recovery reads the listed row as contradicting the recorded
