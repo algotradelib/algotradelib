@@ -839,6 +839,30 @@ strategy::Portfolio<FakeBroker> held_position(const char* held, const char* sell
 
 } // namespace
 
+TEST_CASE("a target restated before any listing poll places once, with no limit set", "[own-orders]") {
+  // A live source feeds its whole history on a cold start -- `SessionSource::poll_bars` hands every
+  // bar of the first read to the runner, one pass each -- and a target strategy restates its target
+  // on every one. The broker's listing is not read again between them. With no limit that reads
+  // what is outstanding, the second pass used to start from that listing, see nothing working, and
+  // send the same order again: one per history bar, all of them filled at the open.
+  FakeSession<WithoutKey> session;
+  LiveRunner live_runner(
+    HoldTen{}, {}, 512, live::SessionExecutor<FakeSession<WithoutKey>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
+
+  for (int hour = 0; hour < 5; ++hour) {
+    live_runner.feed(bar_at(hour, "70000"));
+  }
+
+  REQUIRE(session.placed().size() == 1);
+  CHECK(live_runner.context().portfolio().working_quantity(samsung(), OrderSide::BUY) ==
+        Decimal64::parse("10"));
+}
+
 TEST_CASE("a withdrawal the binding refused says so on its own entry") {
   // The cancellation half of the same rule. Both refusals land in `rejected_cancel_` because the
   // order's fate is the same -- it was not withdrawn -- and the entry says which, because a later
