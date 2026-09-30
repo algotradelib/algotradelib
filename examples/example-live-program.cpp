@@ -12,9 +12,9 @@
  * can leave. With `--live` it trades, through a journal, after recovering whatever a previous run
  * left owed.
  *
- * **Demo or live is the environment's, not this program's.** `KIS_DEMO` and `KIWOOM_DEMO` are
- * required (`1` or `0`) beside the credentials they belong to. **Toss has no paper-trading
- * environment**: `toss --live` trades real money.
+ * **Demo or live is the environment's, not this program's.** KIS and Kiwoom are demo unless
+ * `KIS_DEMO=0` / `KIWOOM_DEMO=0` says live, beside the credentials they belong to. **Toss has no
+ * paper-trading environment**: `toss --live` trades real money.
  *
  * The broker-free part -- the order of journal, recovery, loop and report -- is `live_program.hpp`,
  * which the test suite drives against an in-memory session. This file only chooses a broker and a
@@ -128,10 +128,24 @@ void name_journal(
   settings.control_file_ = arguments.control_ ? *arguments.control_ : stem + ".stop";
 }
 
-/** Prints what is about to happen, before anything is read or sent. */
-void announce(const Arguments& arguments, const live_program::Settings& settings, bool demo) {
-  std::cout << "broker     : " << arguments.broker_ << (demo ? " (demo)" : " (LIVE ACCOUNT)") << '\n'
-            << "instrument : " << arguments.symbol_ << '\n'
+/**
+ * Prints what is about to happen, before anything is read or sent.
+ *
+ * `demo_variable` names the broker's demo switch, or is null for a broker without one.
+ */
+void announce(
+  const Arguments& arguments,
+  const live_program::Settings& settings,
+  bool demo,
+  const char* demo_variable
+) {
+  std::cout << "broker     : " << arguments.broker_ << (demo ? " (demo)" : " (LIVE ACCOUNT)") << '\n';
+  // Demo because nothing said live: say how to say it, since live keys on the demo endpoints fail with
+  // the broker's own authentication error, which does not point here.
+  if (demo && demo_variable != nullptr && std::getenv(demo_variable) == nullptr) {
+    std::cout << "             demo by default; set " << demo_variable << "=0 to trade live\n";
+  }
+  std::cout << "instrument : " << arguments.symbol_ << '\n'
             << "mode       : " << (arguments.live_ ? "TRADE -- orders will be sent" : "observe") << '\n'
             << "limits     : at most " << settings.limits_.max_position_quantity_->str()
             << " share(s), " << settings.limits_.max_order_notional_->str() << " per order\n";
@@ -164,7 +178,7 @@ int run_kis(ssl::context& tls, const Arguments& arguments) {
   const atl::InstrumentId instrument{atl::Country::KR, atl::Venue::COMBINED, arguments.symbol_};
   auto settings = settings_for(instrument);
   name_journal(settings, arguments, "kis", demo, account.account_number_ + '-' + account.product_code_);
-  announce(arguments, settings, demo);
+  announce(arguments, settings, demo, "KIS_DEMO");
 
   atl::BlockingSession<kis::KisBlockingClient> session(
     std::make_shared<kis::KisBlockingClient>(tls, std::move(config)), std::move(account)
@@ -201,7 +215,7 @@ int run_kiwoom(ssl::context& tls, const Arguments& arguments) {
   const atl::InstrumentId instrument{atl::Country::KR, atl::Venue::COMBINED, arguments.symbol_};
   auto settings = settings_for(instrument);
   name_journal(settings, arguments, "kiwoom", demo, accounts.value().front().display_number_);
-  announce(arguments, settings, demo);
+  announce(arguments, settings, demo, "KIWOOM_DEMO");
   // Three reasons nothing is placed on Kiwoom yet, said up front so nobody waits for an order that
   // cannot come. The first two are statements you can make; the third has no setting today.
   //  - Holdings refuse until the scopes above are asserted, so the loop has no portfolio and holds.
@@ -266,7 +280,7 @@ int run_toss(ssl::context& tls, const Arguments& arguments) {
   // Named after the account number, not the sequence: two credential sets can both have a sequence 1,
   // and a journal that one account's run could continue would read its orders as the other's.
   name_journal(settings, arguments, "toss", false, chosen.display_number_);
-  announce(arguments, settings, false);
+  announce(arguments, settings, false, nullptr);
   std::cout << "note       : Toss has no paper-trading environment; --live trades real money\n";
 
   atl::BlockingSession<toss::TossBlockingClient> session(std::move(client), chosen.selector_);
@@ -314,8 +328,8 @@ int main(int argc, char** argv) {
     std::cerr
       << "usage: example-live-program <kis|kiwoom|toss> <symbol> [--live] [--journal PATH]\n"
       << "                            [--control PATH] [--toss-account SEQUENCE]\n\n"
-      << "Without --live it observes: nothing can be sent. KIS_DEMO / KIWOOM_DEMO (1 or 0) choose\n"
-      << "demo or live; Toss has no demo, so toss --live trades real money.\n";
+      << "Without --live it observes: nothing can be sent. KIS and Kiwoom are demo unless\n"
+      << "KIS_DEMO=0 / KIWOOM_DEMO=0; Toss has no demo, so toss --live trades real money.\n";
     return 64;
   }
 

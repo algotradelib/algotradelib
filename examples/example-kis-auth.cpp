@@ -11,7 +11,7 @@ int main() {
   // Load credentials from environment variables:
   // export KIS_APP_KEY=PSxxxxxxxxxxxxxxxx
   // export KIS_APP_SECRET=xxxxxxxx...
-  // export KIS_DEMO=0   (required: 1 = paper trading, 0 = live)
+  // export KIS_DEMO=0   (live; unset or 1 = paper trading)
   algotradelib::kis::KisConfig cfg;
   try {
     cfg.from_env();

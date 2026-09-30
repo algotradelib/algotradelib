@@ -85,13 +85,14 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
   // std::string app_key_; // length = 36
   // std::string app_secret_; // length = 180
   /**
-   * Whether to use KIS's 모의투자 endpoints.
+   * Whether to use KIS's 모의투자 (paper-trading) endpoints. **Demo unless stated otherwise.**
    *
-   * The loaders require it: `from_env` refuses unless `KIS_DEMO` is `1` or `0`, and `from_json`
-   * refuses unless `"demo"` is `true` or `false`. See `network::required_demo_flag`. A config built in
-   * code keeps this default, so such a program states the field in its own source.
+   * Live is the one choice that moves real money, so it is the one that has to be written down:
+   * `KIS_DEMO=0` in the environment, `"demo": false` in a credential file, or `is_demo_ = false` in code.
+   * Anything left unstated is demo -- and live keys sent to the demo endpoints are refused at the first
+   * token request, so a forgotten setting fails instead of trading.
    */
-  bool is_demo_ = false;
+  bool is_demo_ = true;
 
   /**
    * Which book KIS's domestic market-data calls read.
@@ -129,7 +130,7 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
       throw std::runtime_error("Add KIS_APP_KEY and KIS_APP_SECRET environment variables.");
     }
     // Read before anything is assigned, so a refused load leaves this config as it was.
-    const bool demo = network::required_demo_flag("KIS_DEMO");
+    const bool demo = demo_from_env();
     key_ = key;
     secret_ = secret;
     is_demo_ = demo;
@@ -138,8 +139,8 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
   /**
    * Reads credentials from a JSON file.
    *
-   * Expected format: `{ "app_key": "...", "app_secret": "...", "demo": false }`. `"demo"` is
-   * required and must be `true` or `false`.
+   * Expected format: `{ "app_key": "...", "app_secret": "...", "demo": false }`. Without `"demo"` the
+   * config is demo; when present it must be `true` or `false`.
    */
   void from_json_impl(
     const std::string& filename
@@ -169,10 +170,45 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
     }
     // Everything is read and checked before anything is assigned, so a refused file leaves this
     // config -- and the endpoint it already selected -- exactly as it was.
-    const bool demo = network::required_demo_flag(doc, filename);
+    const bool demo = demo_from_json(doc, filename);
     key_ = key->get_string().c_str();
     secret_ = secret->get_string().c_str();
     is_demo_ = demo;
+  }
+
+  /**
+   * Reads `KIS_DEMO`: unset is demo, `1` is demo, `0` is live, anything else refuses.
+   *
+   * No trimming, no `true` or `yes`: a value that has to be interpreted is one somebody could have
+   * meant the other way, and guessing wrong in either direction is worse than refusing.
+   */
+  static bool demo_from_env() {
+    const char* demo = std::getenv("KIS_DEMO");
+    if (!demo || std::string_view(demo) == "1") {
+      return true;
+    }
+    if (std::string_view(demo) == "0") {
+      return false;
+    }
+    throw std::runtime_error(
+      std::string("KIS_DEMO is \"") + demo + "\"; set it to 1 for the demo endpoints or 0 to trade "
+      "live, or leave it unset for demo."
+    );
+  }
+
+  /** Reads a credential file's `"demo"`: absent is demo, otherwise it must be a JSON boolean. */
+  static bool demo_from_json(const json::object& doc, const std::string& filename) {
+    const json::value* demo = doc.if_contains("demo");
+    if (!demo) {
+      return true;
+    }
+    if (!demo->is_bool()) {
+      throw std::runtime_error(
+        "KIS credential file " + filename + " has a \"demo\" that is not true or false; write "
+        "true for the demo endpoints or false to trade live, or leave it out for demo."
+      );
+    }
+    return demo->get_bool();
   }
 
   /** The JSON field KIS expects the application key under. */

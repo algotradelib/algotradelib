@@ -140,13 +140,14 @@ enum class KiwoomSellableScope {
 /** Kiwoom application credentials and live/demo endpoint selection. */
 struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
   /**
-   * Whether to use Kiwoom's 모의투자 endpoints.
+   * Whether to use Kiwoom's 모의투자 (paper-trading) endpoints. **Demo unless stated otherwise.**
    *
-   * The loaders require it: `from_env` refuses unless `KIWOOM_DEMO` is `1` or `0`, and `from_json`
-   * refuses unless `"demo"` is `true` or `false`. See `network::required_demo_flag`. A config built in
-   * code keeps this default, so such a program states the field in its own source.
+   * Live is the one choice that moves real money, so it is the one that has to be written down:
+   * `KIWOOM_DEMO=0` in the environment, `"demo": false` in a credential file, or `is_demo_ = false` in code.
+   * Anything left unstated is demo -- and live keys sent to the demo endpoints are refused at the first
+   * token request, so a forgotten setting fails instead of trading.
    */
-  bool is_demo_ = false;
+  bool is_demo_ = true;
 
   /**
    * Which book Kiwoom's domestic market-data calls read.
@@ -242,7 +243,7 @@ struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
       throw std::runtime_error("Add KIWOOM_APP_KEY and KIWOOM_SECRET_KEY environment variables.");
     }
     // Read before anything is assigned, so a refused load leaves this config as it was.
-    const bool demo = network::required_demo_flag("KIWOOM_DEMO");
+    const bool demo = demo_from_env();
     key_ = key;
     secret_ = secret;
     is_demo_ = demo;
@@ -252,8 +253,8 @@ struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
    * Reads credentials from a JSON file.
    *
    * Expected format: `{ "appkey": "...", "secretkey": "...", "demo": false }`, which is the
-   * spelling Kiwoom's own `au10001` request body uses. `"demo"` is required and must be `true` or
-   * `false`.
+   * spelling Kiwoom's own `au10001` request body uses. Without `"demo"` the config is demo; when
+   * present it must be `true` or `false`.
    */
   void from_json_impl(const std::string& filename) {
     std::ifstream ifs(filename);
@@ -279,10 +280,45 @@ struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
     }
     // Everything is read and checked before anything is assigned, so a refused file leaves this
     // config -- and the endpoint it already selected -- exactly as it was.
-    const bool demo = network::required_demo_flag(doc, filename);
+    const bool demo = demo_from_json(doc, filename);
     key_ = key->get_string().c_str();
     secret_ = secret->get_string().c_str();
     is_demo_ = demo;
+  }
+
+  /**
+   * Reads `KIWOOM_DEMO`: unset is demo, `1` is demo, `0` is live, anything else refuses.
+   *
+   * No trimming, no `true` or `yes`: a value that has to be interpreted is one somebody could have
+   * meant the other way, and guessing wrong in either direction is worse than refusing.
+   */
+  static bool demo_from_env() {
+    const char* demo = std::getenv("KIWOOM_DEMO");
+    if (!demo || std::string_view(demo) == "1") {
+      return true;
+    }
+    if (std::string_view(demo) == "0") {
+      return false;
+    }
+    throw std::runtime_error(
+      std::string("KIWOOM_DEMO is \"") + demo + "\"; set it to 1 for the demo endpoints or 0 to trade "
+      "live, or leave it unset for demo."
+    );
+  }
+
+  /** Reads a credential file's `"demo"`: absent is demo, otherwise it must be a JSON boolean. */
+  static bool demo_from_json(const json::object& doc, const std::string& filename) {
+    const json::value* demo = doc.if_contains("demo");
+    if (!demo) {
+      return true;
+    }
+    if (!demo->is_bool()) {
+      throw std::runtime_error(
+        "Kiwoom credential file " + filename + " has a \"demo\" that is not true or false; write "
+        "true for the demo endpoints or false to trade live, or leave it out for demo."
+      );
+    }
+    return demo->get_bool();
   }
 
   /** The JSON field Kiwoom expects the application key under. */

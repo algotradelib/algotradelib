@@ -27,6 +27,13 @@
 using namespace algotradelib;
 
 namespace algotradelib::kis {
+/** A live config: the default is demo, and these request-shape tests describe the live account. */
+inline KisConfig live_config() {
+  KisConfig config;
+  config.is_demo_ = false;
+  return config;
+}
+
 struct KisClientTestAccess {
   static Result<QuoteSnapshot> parse(
     InstrumentId instrument,
@@ -148,7 +155,7 @@ struct KisClientTestAccess {
   static std::optional<BrokerError> validate_order(
     const OrderRequest& order,
     std::string& division,
-    const KisConfig& config = KisConfig{}
+    const KisConfig& config = live_config()
   ) {
     return KisClient::validate_order(config, order, division);
   }
@@ -160,7 +167,7 @@ struct KisClientTestAccess {
   static std::optional<BrokerError> amendment_division(
     const KisAmendment& amendment,
     std::string& division,
-    const KisConfig& config = KisConfig{}
+    const KisConfig& config = live_config()
   ) {
     // `validate_amendment`, not `order_division`: the submission path's own
     // decision. Calling `order_division` here re-derived the answer from the
@@ -173,7 +180,7 @@ struct KisClientTestAccess {
   static std::optional<BrokerError> cancel_division(
     const KisAmendment& amendment,
     std::string& division,
-    const KisConfig& config = KisConfig{}
+    const KisConfig& config = live_config()
   ) {
     return KisClient::validate_amendment(config, amendment, division, true);
   }
@@ -627,7 +634,7 @@ std::string refusal_of(Load load) {
 }
 
 TEST_CASE(
-  "Loading KIS credentials from the environment requires KIS_DEMO to be 1 or 0",
+  "A KIS config is demo unless KIS_DEMO says 0, and refuses any other value",
   "[broker][kis][config][environment]"
 ) {
   ScopedEnvironmentVariable key("KIS_APP_KEY");
@@ -636,50 +643,49 @@ TEST_CASE(
   key.set("app-key");
   secret.set("app-secret");
 
+  // Built in code, nothing stated: demo.
+  REQUIRE(kis::KisConfig{}.is_demo_);
+
   demo.unset();
   kis::KisConfig unset;
-  const auto unset_message = refusal_of([&] { unset.from_env(); });
-  REQUIRE(unset_message.find("KIS_DEMO is not set") != std::string::npos);
-  REQUIRE(unset_message.find("KIS_DEMO=1") != std::string::npos);
-  REQUIRE(unset_message.find("KIS_DEMO=0") != std::string::npos);
-  // Refused before anything was assigned: no half-loaded config is left to build a client from.
-  REQUIRE(unset.key().empty());
-  REQUIRE_FALSE(unset.is_demo_);
+  unset.is_demo_ = false;
+  unset.from_env();
+  REQUIRE(unset.is_demo_);
+  REQUIRE(std::string_view(unset.rest_host()) == "openapivts.koreainvestment.com");
 
   demo.set("1");
   kis::KisConfig paper;
   paper.from_env();
   REQUIRE(paper.is_demo_);
   REQUIRE(paper.key() == "app-key");
-  REQUIRE(std::string_view(paper.rest_host()) == "openapivts.koreainvestment.com");
 
+  // Live is the one value that has to be written down.
   demo.set("0");
   kis::KisConfig live;
-  live.is_demo_ = true;
   live.from_env();
   REQUIRE_FALSE(live.is_demo_);
   REQUIRE(std::string_view(live.rest_host()) == "openapi.koreainvestment.com");
 
-  // A refused load leaves an already loaded config on the endpoint it selected.
-  demo.unset();
-  key.set("other-key");
-  CHECK_FALSE(refusal_of([&] { paper.from_env(); }).empty());
-  CHECK(paper.is_demo_);
-  CHECK(paper.key() == "app-key");
-  key.set("app-key");
-
-  for (const char* junk : {"true", "yes", "", " 1", "1 ", "01", "2"}) {
+  for (const char* junk : {"true", "false", "yes", "", " 1", "1 ", "01", "2"}) {
     demo.set(junk);
     kis::KisConfig refused;
     const auto message = refusal_of([&] { refused.from_env(); });
     INFO("KIS_DEMO=\"" << junk << "\"");
     REQUIRE(message.find(std::string("KIS_DEMO is \"") + junk + "\"") != std::string::npos);
+    // Refused before anything was assigned: no half-loaded config is left to build a client from.
     REQUIRE(refused.key().empty());
   }
+
+  // A refused load leaves an already loaded config on the endpoint it selected.
+  demo.set("junk");
+  key.set("other-key");
+  CHECK_FALSE(refusal_of([&] { live.from_env(); }).empty());
+  CHECK_FALSE(live.is_demo_);
+  CHECK(live.key() == "app-key");
 }
 
 TEST_CASE(
-  "Loading Kiwoom credentials from the environment requires KIWOOM_DEMO to be 1 or 0",
+  "A Kiwoom config is demo unless KIWOOM_DEMO says 0, and refuses any other value",
   "[broker][kiwoom][config][environment]"
 ) {
   ScopedEnvironmentVariable key("KIWOOM_APP_KEY");
@@ -688,24 +694,22 @@ TEST_CASE(
   key.set("app-key");
   secret.set("secret-key");
 
+  REQUIRE(kiwoom::KiwoomConfig{}.is_demo_);
+
   demo.unset();
   kiwoom::KiwoomConfig unset;
-  const auto unset_message = refusal_of([&] { unset.from_env(); });
-  REQUIRE(unset_message.find("KIWOOM_DEMO is not set") != std::string::npos);
-  REQUIRE(unset_message.find("KIWOOM_DEMO=1") != std::string::npos);
-  REQUIRE(unset_message.find("KIWOOM_DEMO=0") != std::string::npos);
-  REQUIRE(unset.key().empty());
-  REQUIRE_FALSE(unset.is_demo_);
+  unset.is_demo_ = false;
+  unset.from_env();
+  REQUIRE(unset.is_demo_);
+  REQUIRE(std::string_view(unset.rest_host()) == "mockapi.kiwoom.com");
 
   demo.set("1");
   kiwoom::KiwoomConfig paper;
   paper.from_env();
   REQUIRE(paper.is_demo_);
-  REQUIRE(std::string_view(paper.rest_host()) == "mockapi.kiwoom.com");
 
   demo.set("0");
   kiwoom::KiwoomConfig live;
-  live.is_demo_ = true;
   live.from_env();
   REQUIRE_FALSE(live.is_demo_);
   REQUIRE(std::string_view(live.rest_host()) == "api.kiwoom.com");
@@ -721,7 +725,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-  "Loading KIS credentials from a file requires a boolean demo key",
+  "A KIS credential file is demo unless its demo key says false",
   "[broker][kis][config][json]"
 ) {
   const TempCredentialFile paper(
@@ -736,7 +740,6 @@ TEST_CASE(
     "kis-live", R"({"app_key":"app-key","app_secret":"app-secret","demo":false})"
   );
   kis::KisConfig live_config;
-  live_config.is_demo_ = true;
   live_config.from_json(live.str());
   REQUIRE_FALSE(live_config.is_demo_);
 
@@ -744,28 +747,20 @@ TEST_CASE(
     "kis-missing", R"({"app_key":"app-key","app_secret":"app-secret"})"
   );
   kis::KisConfig missing_config;
-  const auto missing_message = refusal_of([&] { missing_config.from_json(missing.str()); });
-  REQUIRE(missing_message.find("has no \"demo\" key") != std::string::npos);
-  REQUIRE(missing_message.find(missing.str()) != std::string::npos);
-  REQUIRE(missing_config.key().empty());
+  missing_config.is_demo_ = false;
+  missing_config.from_json(missing.str());
+  REQUIRE(missing_config.is_demo_);
 
-  // A file refused for any reason leaves an already loaded config as it was: still demo, still the
-  // same key. A refusal that changed half the fields could leave a demo config on a live endpoint.
+  // A file refused for any reason leaves an already loaded config as it was. A refusal that changed
+  // half the fields could leave a live config pointed at the wrong keys, or the reverse.
   const TempCredentialFile malformed_secret(
-    "kis-malformed", R"({"app_key":"other-key","app_secret":7,"demo":false})"
+    "kis-malformed", R"({"app_key":"other-key","app_secret":7,"demo":true})"
   );
-  REQUIRE(paper_config.is_demo_);
-  CHECK_FALSE(refusal_of([&] { paper_config.from_json(malformed_secret.str()); }).empty());
-  CHECK(paper_config.is_demo_);
-  CHECK(paper_config.key() == "app-key");
-  CHECK(paper_config.secret() == "app-secret");
-  CHECK(std::string_view(paper_config.rest_host()) == "openapivts.koreainvestment.com");
-  const TempCredentialFile no_demo(
-    "kis-no-demo", R"({"app_key":"other-key","app_secret":"other-secret"})"
-  );
-  CHECK_FALSE(refusal_of([&] { paper_config.from_json(no_demo.str()); }).empty());
-  CHECK(paper_config.is_demo_);
-  CHECK(paper_config.key() == "app-key");
+  CHECK_FALSE(refusal_of([&] { live_config.from_json(malformed_secret.str()); }).empty());
+  CHECK_FALSE(live_config.is_demo_);
+  CHECK(live_config.key() == "app-key");
+  CHECK(live_config.secret() == "app-secret");
+  CHECK(std::string_view(live_config.rest_host()) == "openapi.koreainvestment.com");
 
   for (const char* demo : {R"("false")", R"("1")", "1", "0", "null"}) {
     const TempCredentialFile junk(
@@ -776,47 +771,39 @@ TEST_CASE(
     const auto message = refusal_of([&] { refused.from_json(junk.str()); });
     INFO("\"demo\": " << demo);
     REQUIRE(message.find("not true or false") != std::string::npos);
+    REQUIRE(message.find(junk.str()) != std::string::npos);
     REQUIRE(refused.key().empty());
   }
 }
 
 TEST_CASE(
-  "Loading Kiwoom credentials from a file requires a boolean demo key",
+  "A Kiwoom credential file is demo unless its demo key says false",
   "[broker][kiwoom][config][json]"
 ) {
-  const TempCredentialFile paper(
-    "kiwoom-paper", R"({"appkey":"app-key","secretkey":"secret-key","demo":true})"
-  );
-  kiwoom::KiwoomConfig paper_config;
-  paper_config.from_json(paper.str());
-  REQUIRE(paper_config.is_demo_);
-  REQUIRE(paper_config.key() == "app-key");
-
   const TempCredentialFile live(
     "kiwoom-live", R"({"appkey":"app-key","secretkey":"secret-key","demo":false})"
   );
   kiwoom::KiwoomConfig live_config;
-  live_config.is_demo_ = true;
   live_config.from_json(live.str());
   REQUIRE_FALSE(live_config.is_demo_);
+  REQUIRE(live_config.key() == "app-key");
 
   const TempCredentialFile missing(
     "kiwoom-missing", R"({"appkey":"app-key","secretkey":"secret-key"})"
   );
   kiwoom::KiwoomConfig missing_config;
-  const auto missing_message = refusal_of([&] { missing_config.from_json(missing.str()); });
-  REQUIRE(missing_message.find("has no \"demo\" key") != std::string::npos);
-  REQUIRE(missing_config.key().empty());
+  missing_config.is_demo_ = false;
+  missing_config.from_json(missing.str());
+  REQUIRE(missing_config.is_demo_);
 
   const TempCredentialFile malformed_secret(
-    "kiwoom-malformed", R"({"appkey":"other-key","secretkey":null,"demo":false})"
+    "kiwoom-malformed", R"({"appkey":"other-key","secretkey":null,"demo":true})"
   );
-  REQUIRE(paper_config.is_demo_);
-  CHECK_FALSE(refusal_of([&] { paper_config.from_json(malformed_secret.str()); }).empty());
-  CHECK(paper_config.is_demo_);
-  CHECK(paper_config.key() == "app-key");
-  CHECK(paper_config.secret() == "secret-key");
-  CHECK(std::string_view(paper_config.rest_host()) == "mockapi.kiwoom.com");
+  CHECK_FALSE(refusal_of([&] { live_config.from_json(malformed_secret.str()); }).empty());
+  CHECK_FALSE(live_config.is_demo_);
+  CHECK(live_config.key() == "app-key");
+  CHECK(live_config.secret() == "secret-key");
+  CHECK(std::string_view(live_config.rest_host()) == "api.kiwoom.com");
 
   for (const char* demo : {R"("true")", "0", "[]"}) {
     const TempCredentialFile junk(
@@ -1125,6 +1112,8 @@ TEST_CASE(
   const kis::KisAccount account{"12345678", "01"};
 
   kis::KisConfig live;
+
+  live.is_demo_ = false;
   const auto initial = kis::KisClientTestAccess::holdings_request(account, live, "", "", false);
   REQUIRE(header_value(initial, "tr_id") == "TTTC8434R");
   REQUIRE(header_value(initial, "tr_cont").empty());
@@ -1725,6 +1714,7 @@ TEST_CASE(
 ) {
   const kis::KisAccount account{"12345678", "01"};
   kis::KisConfig live;
+  live.is_demo_ = false;
   kis::KisConfig demo;
   demo.is_demo_ = true;
 
@@ -2058,6 +2048,7 @@ TEST_CASE(
   // comparing `InstrumentId`s and a holding carries no venue at all.
   const kis::KisAccount account{"12345678", "01"};
   kis::KisConfig live;
+  live.is_demo_ = false;
 
   auto order = korean_limit_buy();
   order.venue_ = Venue::NXT;
@@ -2230,6 +2221,7 @@ TEST_CASE("a KIS demo account trades on KRX and is told so before I/O", "[broker
   kis::KisConfig demo;
   demo.is_demo_ = true;
   kis::KisConfig live;
+  live.is_demo_ = false;
 
   SECTION("the default order names no venue and works on either account") {
     // Routing is opt-in. An order that states no `venue_` omits
@@ -2323,6 +2315,7 @@ TEST_CASE("a KIS demo account trades on KRX and is told so before I/O", "[broker
 TEST_CASE("a KIS conditional-limit order carries its limit price", "[broker][kis][order]") {
   const kis::KisAccount account{"12345678", "01"};
   kis::KisConfig live;
+  live.is_demo_ = false;
 
   SECTION("it is sent as 02 with the stated price, not with zero") {
     auto order = korean_limit_buy();
@@ -2498,6 +2491,7 @@ TEST_CASE(
 TEST_CASE("a KIS amendment restates the shape it is amending", "[broker][kis][order]") {
   const kis::KisAccount account{"12345678", "01"};
   kis::KisConfig live;
+  live.is_demo_ = false;
 
   SECTION("an immediate-or-cancel order amended to a new price stays immediate-or-cancel") {
     kis::KisAmendment amendment;
@@ -2557,6 +2551,7 @@ TEST_CASE(
 ) {
   const kis::KisAccount account{"12345678", "01"};
   kis::KisConfig live;
+  live.is_demo_ = false;
 
   kis::KisAmendment amendment;
   amendment.order_ = kis::KisOrderRef{"06010", "0001569157"};
@@ -3016,6 +3011,7 @@ TEST_CASE(
 ) {
   const kis::KisAccount account{"12345678", "01"};
   kis::KisConfig live;
+  live.is_demo_ = false;
 
   SECTION("the request targets the documented endpoint and transaction id") {
     const auto request =
@@ -3126,6 +3122,7 @@ TEST_CASE(
 
   SECTION("the request carries the inclusive range and environment transaction id") {
     kis::KisConfig live;
+    live.is_demo_ = false;
     const auto request = kis::KisClientTestAccess::order_history_request(
       account, live, kis::KisHistoryRange{Date{2026, 3, 1}, Date{2026, 3, 31}}
     );
@@ -3700,6 +3697,7 @@ TEST_CASE(
 ) {
   const kis::KisAccount account{"12345678", "01"};
   kis::KisConfig live;
+  live.is_demo_ = false;
   auto order_request = kis::KisClientTestAccess::place_order_request(
     account, live, korean_limit_buy(), "00"
   );
@@ -5357,6 +5355,7 @@ TEST_CASE(
 ) {
   const kis::KisAccount account{"12345678", "01"};
   kis::KisConfig live;
+  live.is_demo_ = false;
   kis::KisConfig demo;
   demo.is_demo_ = true;
 

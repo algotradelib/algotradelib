@@ -6,18 +6,22 @@ Nothing has been released. `0.0.0.9000` is the development version before the fi
 carries no git tag. Until a release exists, this file records what changes for a project that already
 builds against an earlier commit.
 
-### Changed: `KIS_DEMO` and `KIWOOM_DEMO` are required
+### Changed: KIS and Kiwoom configs are demo unless live is stated
 
-**A program that loaded credentials before may now refuse to start.** `KisConfig::from_env` and
-`KiwoomConfig::from_env` used to read an unset `KIS_DEMO` / `KIWOOM_DEMO` — or any value but `1` — as
-**live**. They now accept exactly `1` (the 모의투자 / paper-trading endpoints) or `0` (live) and throw
-`std::runtime_error` naming the variable otherwise. `from_json` likewise requires `"demo": true` or
-`"demo": false`; a missing key, a string or a number is refused. A refused load, from either source
-and for any reason, assigns nothing: a config already loaded keeps its endpoint.
+**A program that traded live without saying so will now reach the demo endpoints**, and its live keys
+will be refused at the first token request. `KisConfig` and `KiwoomConfig` used to mean live whenever
+nothing said otherwise: an unset `KIS_DEMO` / `KIWOOM_DEMO`, any value but `1`, a credential file
+without `"demo"`, or a config built in code. Now `is_demo_` defaults to `true` everywhere, and live is
+the one choice that has to be written down: `KIS_DEMO=0` / `KIWOOM_DEMO=0`, `"demo": false`, or
+`is_demo_ = false`.
 
-What to do: add `export KIS_DEMO=0` (or `1`) beside `KIS_APP_KEY`, the same for Kiwoom, and a `"demo"`
-key to each credential file. A config constructed in code keeps `is_demo_ = false` and is unaffected.
-Toss has no paper-trading environment and no such variable.
+A value that is set must be exactly `1` or `0` (the file's `"demo"` a JSON boolean); anything else
+throws `std::runtime_error` naming it. A refused load, from either source and for any reason, assigns
+nothing: a config already loaded keeps its endpoint.
+
+What to do, for a live program: add `export KIS_DEMO=0` (or `KIWOOM_DEMO=0`), `"demo": false` to each
+credential file, or `is_demo_ = false` where a config is built in code. Toss has no paper-trading
+environment and no such setting.
 
 ### Changed: the live loop reads the account before anything that can send
 

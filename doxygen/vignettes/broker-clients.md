@@ -45,9 +45,9 @@ ioc.run();
 ```
 
 [`examples/example-kis-quote.cpp`](../../examples/example-kis-quote.cpp) is the
-complete runnable version. It reads `KIS_APP_KEY`, `KIS_APP_SECRET`, and the
-required `KIS_DEMO` (`1` for the 모의투자 endpoints, `0` for live; anything else,
-unset included, refuses to load) from the environment. The default symbol is Samsung
+complete runnable version. It reads `KIS_APP_KEY`, `KIS_APP_SECRET`, and
+`KIS_DEMO` from the environment: unset or `1` is the 모의투자 endpoints, `0` is live,
+and anything else refuses to load. The default symbol is Samsung
 Electronics (`005930`); pass another Korean equity symbol as the first argument.
 
 ```sh
@@ -72,7 +72,7 @@ HTTP connection between sequential calls.
 
 [`examples/example-kis-account.cpp`](../../examples/example-kis-account.cpp) loads
 KIS credentials from `KIS_APP_KEY` and `KIS_APP_SECRET`, selects the live or
-demo environment with the required `KIS_DEMO` (`1` or `0`), and selects an account using
+demo environment with `KIS_DEMO` (demo unless it is `0`), and selects an account using
 `KIS_CANO` plus optional `KIS_ACNT_PRDT_CD` (default `01`). It requests and
 prints normalized positions and KRW totals without displaying the account
 number.
