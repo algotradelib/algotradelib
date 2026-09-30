@@ -2249,8 +2249,9 @@ private:
    * at midnight and refused by a broker not taking orders then, would otherwise be restated at the
    * next midnight and refused again, and the position would never be protected live. Kept once per
    * instruction (one instruction can produce two refused orders), in the order stated, with the
-   * instrument's holding at this moment, which `retry_retained_targets` checks before releasing it.
-   * **Not** while a stop, an operator's halt or a local failure holds; **not** an intent carrying an
+   * instrument's holding at this moment, which `retry_retained_targets` checks before releasing it;
+   * any intent carrying a trigger, a stop buy as much as a stop sell, is also dropped there when a stop
+   * rests on the instrument. **Not** while a stop, an operator's halt or a local failure holds; **not** an intent carrying an
    * idempotency key that a broker answered, because a second order would reuse the key.
    */
   void keep_intent_for_phase(const Instruction<Tag>& instruction, bool broker_answered) {

@@ -471,8 +471,11 @@ That is what a replay does by filling at the next bar's open. The rules around i
   daily strategy's protective stop, which a broker refuses at midnight; unkept, it was restated and
   refused every midnight and the position was never protected live. But an intent states a quantity
   decided against midnight's book, so at release it goes out only if the instrument's holding is still
-  what it was when it was kept, and a kept stop only if no stop now rests there; otherwise it is dropped
-  and counted (`Runner::kept_intents_dropped`). Each instruction is kept once, intents in the order
+  what it was when it was kept, and a kept intent carrying a trigger -- a stop sell or a breakout stop
+  buy alike -- only if no stop now rests there; otherwise it is dropped and counted
+  (`Runner::kept_intents_dropped`). The check reads the book before the kept targets it follows are
+  placed, so a kept exit and a kept stop on one instrument go out together, as the pass stated them;
+  `enforce_sellable_quantity_` or the broker's own sellable check is what refuses the second sell. Each instruction is kept once, intents in the order
   stated, after the kept targets. An intent withheld for the account is still dropped; so is a keyed
   intent a broker answered (a second order would reuse the key). A weight-sized intent skips the
   holding check, because it is planned again as the position it states. Kept intents are not
