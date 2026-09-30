@@ -154,7 +154,8 @@ Read these before using the order clients.
   `Venue::COMBINED`. It is not the default because a KIS demo account refuses
   SOR: a default that fails on demo would make a demo run stop rehearsing the
   live one. Kiwoom documents its `dmst_stex_tp` as required with no default, so
-  a Kiwoom order must name a venue and is refused before any request otherwise;
+  a Kiwoom order must name a venue and is refused before any request otherwise
+  (a strategy runner names it with the binding's `default_route`);
   whether a Kiwoom demo account accepts SOR has not been observed. Toss offers
   no venue choice at all, and an order naming one is refused.
 - **A demo account trades on KRX.** Both KIS order sheets say so, and a route it

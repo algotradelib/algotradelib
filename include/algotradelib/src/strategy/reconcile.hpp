@@ -161,7 +161,13 @@ struct PlannedOrder {
   TimeInForce time_in_force_{TimeInForce::DAY};
   /** The session to trade in. */
   OrderSession session_{OrderSession::REGULAR};
-  /** Where to route it; see `OrderRequest::venue_`. Not the instrument's venue. */
+  /**
+   * Where to route it; see `OrderRequest::venue_`. Not the instrument's venue.
+   *
+   * Nothing a strategy says sets it. A live runner writes its binding's route in before sending
+   * (`live::SessionExecutor::default_route`), so the journal, the reserved working row and the report
+   * name where the order went.
+   */
   Venue venue_{Venue::UNSPECIFIED};
   /** How much, after any rounding onto the lot that `quantity_rounded_` records. */
   Decimal64 quantity_;

@@ -241,7 +241,16 @@ runner::Runner<
 ```
 
 Swapping to Toss changes `KisBlockingClient` to `TossBlockingClient`. Nothing in the strategy
-changes, and nothing in the loop around it changes. `example-strategy-live` compiles exactly one
+changes, and nothing in the loop around it changes.
+
+**Where orders are routed is the binding's to say, not the strategy's.** A strategy names no venue,
+so every order it plans asks for `UNSPECIFIED`, which takes the broker's own default: KRX at KIS, none
+at Toss — and a refusal at Kiwoom, which documents no default. Pass the route as the executor's second
+argument, `Executor(session, Venue::KRX)`, or as the last argument of `live::bind` and
+`live::bind_journaled` (after `live::default_series_capacity`). An order that names a venue keeps it.
+The runner writes the route into the order before sending it, so the journal line, the working row it
+reserves and its report all name the venue the broker was asked for. At KIS, `Venue::COMBINED` is how
+a runner opts into SOR, which a demo account refuses. `example-strategy-live` compiles exactly one
 `trade()` function template for both.
 
 Fill the context from what the session reads — reference data first, because without a tick grid and
