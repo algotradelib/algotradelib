@@ -305,8 +305,10 @@ is not supported.
 **Order routing across both Korean books is opt-in.** At KIS an order that names no venue routes to
 KRX; `Venue::COMBINED` asks for SOR, and a runner opts in by binding with `Venue::COMBINED` as its
 default route. That is not the default because a KIS demo account refuses SOR, and a default that
-fails on demo would stop a demo run rehearsing the live one. A Kiwoom order must name its venue. Toss
-offers no choice.
+fails on demo would stop a demo run rehearsing the live one. As at Kiwoom, prefer KRX or NXT until SOR
+has been observed: whether KIS lists a SOR order back as SOR or as the venue it rested at is unknown,
+and recovery after a crash depends on it (see `SessionExecutor::default_route`). A Kiwoom order must
+name its venue. Toss offers no choice.
 
 ## Documentation
 
