@@ -136,7 +136,8 @@ public:
    * tax is the case it exists for -- charged on sales only, and moved every year since 2023 -- and a
    * rate baked into the library would silently misprice every replay run after it moved. A replay
    * spanning a change is charged one rate throughout, as it is for commission. The tax is truncated
-   * to whole currency units, as the Korean tax is, and kept apart from commission on
+   * to whole units of the instrument's currency, as the Korean tax is -- which suits a levy of that
+   * kind, and floors a tiny fee on a small sale in dollars to nothing -- and kept apart from commission on
    * `Execution::tax_` and `Report::tax_paid_`, because a broker reports the two separately
    * (`OrderExecution::tax_` beside `commission_`) and a figure folding one into the other could not
    * be compared with a live account's. Only sales of instruments in `SellTax::country_` pay it, so a

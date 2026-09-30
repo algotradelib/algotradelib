@@ -404,11 +404,11 @@ struct Report {
   /**
    * The tax charged on sales, where the fill model stated one (`NextBarFillModel::with_sell_tax`).
    * Absent when none was stated -- which is not a tax of zero, it is no tax modelled -- when nothing
-   * executed, and, like the other cost totals, across more than one currency or when a sum did not
-   * fit. Appended last, as every field added to this aggregate is.
+   * executed in the stated market, and, like the other cost totals, when those executions span more
+   * than one currency or a sum did not fit. Appended last, as every field added to this aggregate is.
    */
   std::optional<Decimal64> tax_paid_;
-  /** The same, per currency, whenever a tax was stated and something executed. */
+  /** The same, per currency, over the executions in the stated market. */
   std::vector<Money> tax_by_currency_;
 };
 
@@ -516,12 +516,15 @@ inline Report summarize(
       entry.executions_ = 1;
       report.caveats_.applied_rates_.push_back(std::move(entry));
     }
+    // The tax, totalled per currency, over the executions in the market it was stated for: another
+    // market's fills pay none by construction, and counting them would add a zero row in their
+    // currency and cost a single-currency total its scalar.
+    if (fills.sell_tax() && execution.fill_.instrument_.country_ == fills.sell_tax()->country_) {
+      accumulate(report.tax_by_currency_, Money{execution.tax_, execution.currency_});
+    }
     // Slippage is a per-share price difference, so its cost is that times the quantity -- and it
     // is totalled per currency like every other cost, because a replay can hold fills in more
     // than one and adding them would produce a figure denominated in nothing.
-    if (fills.sell_tax()) {
-      accumulate(report.tax_by_currency_, Money{execution.tax_, execution.currency_});
-    }
     if (const auto cost = decimal_multiply(execution.slippage_, execution.fill_.quantity_)) {
       accumulate(report.slippage_by_currency_, Money{*cost, execution.currency_});
     } else {

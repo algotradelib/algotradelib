@@ -2223,6 +2223,17 @@ TEST_CASE("a tax stated for one market is not charged on another market's sales"
   CHECK(engine.result().executions_[1].tax_ == Decimal64::parse("0"));
 }
 
+TEST_CASE("the tax is truncated to whole units", "[sell-tax]") {
+  backtest::Backtester<BuysThenSells> engine(BuysThenSells{}, replay_config(), taxed(Country::KR));
+  for (int day = 10; day < 16; ++day) {
+    engine.feed(moving_bar(utc(2026, 3, day, 6, 30), BarInterval::ONE_DAY, "70001", "70001"));
+  }
+  engine.finish();
+  REQUIRE(engine.result().executions_.size() == 2);
+  // Ten at 70,001 is 700,010, and 0.2 % of it is 1,400.02: charged 1,400.
+  CHECK(engine.result().executions_[1].tax_ == Decimal64::parse("1400"));
+}
+
 TEST_CASE("a sell tax rate outside zero to one is refused", "[sell-tax]") {
   const backtest::NextBarFillModel model;
   CHECK_THROWS_AS(model.with_sell_tax(backtest::SellTax{Decimal64::parse("-0.001"), Country::KR}),
