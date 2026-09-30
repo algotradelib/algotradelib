@@ -810,7 +810,9 @@ Plan<Broker> reconcile(
 
 /** What a weight-sized intent turns into: the target position it states, or the reason it cannot. */
 struct WeightTarget {
+  /** The target position the weight states, when it could be sized. */
   std::optional<TargetPosition> target_;
+  /** Why it could not, when it could not. Exactly one of the two is present. */
   std::optional<RejectReason> refused_;
 };
 

@@ -1375,7 +1375,7 @@ private:
             detail = "retained for the next holdings read";
           } else if (*reason == WithheldPlanReason::PORTFOLIO_SUPERSEDED &&
                      std::holds_alternative<strategy::OrderIntent>(instruction)) {
-            detail = "dropped: an order intent states a quantity against the mis-ordered picture";
+            detail = "dropped: an order intent states a size against the mis-ordered picture";
           }
         }
         report.withheld_plans_.push_back(WithheldPlan<Tag>{
