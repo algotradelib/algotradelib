@@ -73,10 +73,12 @@ public:
    * (`runner::Runner` asks `requested_route`), so the journal line, the row it reserves and the
    * report all name the route the broker was asked for rather than the blank the strategy left.
    *
-   * Whether Kiwoom's order listing reports a SOR order as SOR or as the venue it rested at has not
-   * been observed. If it is the latter, recovery reads the listed row as contradicting the recorded
-   * route and keeps the instrument held for reconciliation. `Venue::KRX` or `Venue::NXT` has no such
-   * doubt.
+   * **Prefer `Venue::KRX` or `Venue::NXT` over `Venue::COMBINED` until SOR has been observed.**
+   * Whether Kiwoom's or KIS's order listing reports a SOR order as SOR or as the venue it rested at
+   * has not been established. If it is the latter, recovery reads the listed row as contradicting
+   * the recorded route, so the row cannot be this order: once the match window closes the verdict
+   * is `NOT_PLACED`, the hold is released, and a runner restarted after a crash would send the order
+   * again beside the one resting. A single venue has no such doubt.
    */
   Venue default_route() const noexcept { return default_route_; }
 
