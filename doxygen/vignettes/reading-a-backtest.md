@@ -204,15 +204,17 @@ field**:
   locking — so a sale a live account would have refused is not refused here.
 
 **Under the default limits a replay borrows without limit.** `enforce_buying_power_` is off by
-default, because live the broker is what refuses a buy the account cannot fund; in a replay nothing
-does, so a buy the ledger's cash cannot pay for is filled and the cash goes below zero. A
-fixed-quantity strategy whose price rose is then leveraged without having asked to be, and its return,
-Sharpe and drawdown are a leveraged strategy's. `ReportCaveats::overdrawn_executions_` counts the
-executions that left cash below zero and `lowest_cash_` says how far it went; read them before a
-ranking. Turning the check on refuses such buys, but a market buy is checked at the reference price,
-without commission, and filled at the next bar's open, so a gap up can still overdraw a little. A live
-KRX account is stricter than either: brokers reserve a market buy at the day's upper price limit, so an
-account refuses buys a replay fills even with the check on.
+default, because live the broker is what decides whether a buy is funded; in a replay nothing does, so
+a buy the ledger's cash cannot pay for is filled and the cash goes below zero. A fixed-quantity
+strategy whose price rose is then leveraged without having asked to be, and its return, Sharpe and
+drawdown are a leveraged strategy's. `ReportCaveats::overdrawn_bars_` counts the bars that closed with
+cash below zero, `first_overdrawn_` says when it started and `lowest_cash_` how far it went; read them
+before a ranking. They measure cash in the replay's currency only: a short's proceeds count as cash,
+so leverage through shorts is not in them (see "Borrow availability" above). Turning the check on
+refuses such buys, but a market buy is checked at the reference price, without commission, and filled
+at the next bar's open, so a gap up can still overdraw a little. Live, whether a buy the cash cannot
+cover is refused depends on the account: a Korean account with 미수 (credit) enabled can buy past its
+cash, and the broker's buying-power inquiry is what says how far.
 
 The consequence worth keeping in mind: **a strategy sized against the sellable check passes more
 easily in a replay than live**, because the whole holding is an upper bound on what a broker will

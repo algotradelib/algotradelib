@@ -287,13 +287,15 @@ struct ReportCaveats {
    */
   std::size_t limit_fills_bounded_{0};
   /**
-   * Executions that left the ledger's cash below zero: the replay borrowed. Zero unless a buy was
-   * filled that the cash could not pay for, which the default limits allow; see
-   * `ReplayResult::overdrawn_executions_`. A figure measured against borrowed money is a leveraged
-   * figure, whether or not the strategy meant to be leveraged.
+   * Bars that closed with the ledger's cash below zero in the replay's currency: the replay borrowed,
+   * which the default limits allow; see `ReplayResult::overdrawn_bars_`. A figure measured over
+   * borrowed money is a leveraged figure, whether or not the strategy meant to be leveraged. Cash
+   * only: a short's proceeds count as cash, so leverage through shorts is not measured here.
    */
-  std::size_t overdrawn_executions_{0};
-  /** The lowest cash reached in the replay's currency, when it went below zero. */
+  std::size_t overdrawn_bars_{0};
+  /** The first bar end at which cash was below zero. */
+  std::optional<std::chrono::system_clock::time_point> first_overdrawn_;
+  /** The lowest cash an execution left, when it went below zero. */
   std::optional<Money> lowest_cash_;
   /** When that lowest cash was reached. */
   std::optional<std::chrono::system_clock::time_point> lowest_cash_at_;
@@ -465,7 +467,8 @@ inline Report summarize(
   report.caveats_.unchecked_fill_causality_ = result.unchecked_fill_causality_;
   report.caveats_.unvalued_bars_ = result.unvalued_bars_;
   report.caveats_.first_unvalued_ = result.first_unvalued_;
-  report.caveats_.overdrawn_executions_ = result.overdrawn_executions_;
+  report.caveats_.overdrawn_bars_ = result.overdrawn_bars_;
+  report.caveats_.first_overdrawn_ = result.first_overdrawn_;
   report.caveats_.lowest_cash_ = result.lowest_cash_;
   report.caveats_.lowest_cash_at_ = result.lowest_cash_at_;
 

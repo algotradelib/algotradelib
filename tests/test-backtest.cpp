@@ -1490,7 +1490,9 @@ TEST_CASE("a replay that fills a buy its cash cannot pay for says it borrowed", 
 
   const auto& result = engine.result();
   REQUIRE(result.executions_.size() == 1);
-  CHECK(result.overdrawn_executions_ == 1);
+  // The buy fills against the second bar, whose equity point is the first taken overdrawn.
+  CHECK(result.overdrawn_bars_ == 1);
+  CHECK(result.first_overdrawn_ == result.equity_.back().at_);
   REQUIRE(result.lowest_cash_.has_value());
   // Five hundred thousand less ten shares at seventy thousand.
   CHECK(result.lowest_cash_->amount_ == Decimal64::parse("-200000"));
@@ -1498,7 +1500,7 @@ TEST_CASE("a replay that fills a buy its cash cannot pay for says it borrowed", 
 
 #if defined(ATL_HAS_EIGEN)
   const auto report = backtest::summarize(result, engine.fills());
-  CHECK(report.caveats_.overdrawn_executions_ == 1);
+  CHECK(report.caveats_.overdrawn_bars_ == 1);
   REQUIRE(report.caveats_.lowest_cash_.has_value());
   CHECK(report.caveats_.lowest_cash_->amount_ == Decimal64::parse("-200000"));
 #endif
@@ -1510,8 +1512,25 @@ TEST_CASE("a replay whose cash covers its buys reports no borrowing", "[overdraf
   engine.feed(bar_at(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000"));
   engine.finish();
   REQUIRE(engine.result().executions_.size() == 1);
-  CHECK(engine.result().overdrawn_executions_ == 0);
+  CHECK(engine.result().overdrawn_bars_ == 0);
+  CHECK_FALSE(engine.result().first_overdrawn_.has_value());
   CHECK_FALSE(engine.result().lowest_cash_.has_value());
+}
+
+TEST_CASE("the buying-power check still lets a gap up overdraw", "[overdraft]") {
+  // The check values a market buy at the reference price, the last close, without commission; the
+  // fill is at the next bar's open. Cash for ten at 70,000 exactly, and the next bar opens higher.
+  auto config = replay_config();
+  config.cash_ = Decimal64::parse("700000");
+  config.limits_.enforce_buying_power_ = true;
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, std::move(config));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "72000", "72000"));
+  engine.finish();
+  REQUIRE(engine.result().executions_.size() == 1);
+  REQUIRE(engine.result().lowest_cash_.has_value());
+  CHECK(decimal_less(engine.result().lowest_cash_->amount_, Decimal64::parse("0")));
+  CHECK(engine.result().overdrawn_bars_ == 1);
 }
 
 TEST_CASE("a target already reached stops asking, because the ledger tells it so") {
