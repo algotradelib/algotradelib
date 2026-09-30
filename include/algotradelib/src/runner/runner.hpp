@@ -1747,10 +1747,11 @@ private:
    * `SessionSource` then fed a whole history read one pass per bar before the next listing, so a
    * target strategy under default limits sent one order per history bar (`tests/test-live.cpp`,
    * `[own-orders]`). It now feeds history through `feed_warmup`, which sends nothing; the reservation
-   * still covers every other pass before a listing (a runner fed by hand, two names in one bar poll,
-   * or bar polls that come faster than the listing's). The listing that retires the row is what bounds its life, so the loop holds such
-   * a run while no listing will come -- the source publishes none, no working-order cadence is set,
-   * or the last listing is older than the portfolio age policy (`PollingLoop::gate_for`).
+   * still covers every other pass before a listing (a runner fed by hand, two names in one bar
+   * poll, or bar polls that come faster than the listing's). The listing that retires the row is
+   * what bounds its life, so the loop holds such a run while no listing will come -- the source
+   * publishes none, no working-order cadence is set, or the last listing is older than the portfolio
+   * age policy (`PollingLoop::gate_for`).
    *
    * **Scoped to the limits that read it everywhere else.** A dry run, `live::bind_observer` and a
    * custom executor that reaches no broker write a row with no broker reference: a later target

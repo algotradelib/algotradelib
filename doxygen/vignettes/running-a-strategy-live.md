@@ -522,7 +522,7 @@ newest bar's. Two consequences to design for:
 
 A source of your own must do the same: feed a read's new bars in period-end order across
 instruments, and feed live only each instrument's newest bar whose period ended strictly after every
-other bar of the read; everything else goes through `feed_warmup`.
+bar of the read fed as history; everything else goes through `feed_warmup`.
 
 ## The market phase, and what the loop needs to know it
 

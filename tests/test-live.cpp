@@ -2340,11 +2340,13 @@ TEST_CASE("a name one bar behind waits, whatever order the universe lists it in"
     REQUIRE(rig.session.placed().size() == 1);
     CHECK(rig.session.placed()[0].instrument_ == samsung());
 
-    // The next session, one new bar each, sends both -- and the bar fed as history is not fed again.
+    // The next session: Samsung one new bar, Hynix resumed with two (its missed session and today).
+    // Both send, Hynix's missed session is history, and nothing already fed is fed again.
     rig.session.set_bars_for(samsung().symbol_, history_bars(7));
     rig.session.set_bars_for(hynix().symbol_, history_bars(7));
     rig.loop.run(rig.stop, 1);
     CHECK(rig.session.placed().size() == 3);
+    CHECK(rig.source.bars_fed_as_warmup() == 11);
   }
 }
 
