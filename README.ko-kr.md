@@ -11,7 +11,7 @@
 <!-- badges: end -->
 
 <!--
-  영어 README.md c5d938e 기준. 요약한 절: 첫 소개와 경고, "Brokers and accounts", "Install",
+  영어 README.md 10bce99 기준. 요약한 절: 첫 소개와 경고, "Brokers and accounts", "Install",
   "Using it"의 실행 예시, "Documentation"의 문서 빌드 명령, "Disclaimer". 이 절들이 바뀌면 이 문서도
   함께 고칩니다.
 -->
@@ -36,8 +36,10 @@ C++17 헤더 전용 라이브러리입니다. 전략 코드 하나로 백테스�
   않고 거부합니다. 키움은 장 운영 시간 정보도 제공하지 않아 기본 설정으로는 새로 매수하지 않으며,
   예제 프로그램(`example-live-program`)도 키움에서는 조회만 하고 주문하지 않습니다. 설정 방법은 영어
   README의 "Brokers and accounts"를 참고하세요.
-- SOR(`Venue::COMBINED`)로 낸 주문이 주문 조회에서 어떻게 표시되는지 아직 확인하지 못했습니다.
-  프로그램이 비정상 종료된 뒤 복구할 때 이 부분이 중요하므로, 당분간은 KRX나 NXT를 지정하세요.
+- SOR(`Venue::COMBINED`)은 KIS와 키움 모두 주문에 쓸 수 있습니다(KIS 모의투자는 제외). 키움은 미체결
+  조회에서 SOR 주문을 `sor_yn` 값으로 따로 표시하고 라이브러리도 이 값을 읽지만, 두 증권사 모두 SOR
+  주문이 조회에서 어떻게 보이는지 실제 계좌로 확인하지는 못했습니다. 프로그램이 비정상 종료된 뒤 복구할
+  때 이 부분이 중요하므로, 당분간은 KRX나 NXT를 지정하세요.
 
 ## 지원 증권사
 
