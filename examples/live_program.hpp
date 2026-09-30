@@ -53,7 +53,7 @@ struct Settings {
   atl::BarInterval bar_interval_{atl::BarInterval::ONE_DAY};
   /** How many bars each bar poll asks for. */
   int bar_count_{100};
-  /** How old a holdings snapshot may be before the loop stops sizing against it. */
+  /** How old a holdings snapshot -- and the order listing -- may be before the loop stops sizing against it. */
   std::chrono::nanoseconds maximum_portfolio_age_{std::chrono::minutes(2)};
   /** How old a price band may be before the loop stops clamping to it. */
   std::chrono::nanoseconds maximum_price_limits_age_{std::chrono::minutes(20)};

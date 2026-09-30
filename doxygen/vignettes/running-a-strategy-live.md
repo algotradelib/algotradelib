@@ -203,6 +203,14 @@ adapters stamp `HoldingsSnapshot::received_at_` with the local clock as they par
 figures by however long the request took: a snapshot the broker computed slowly can pass an age
 limit it should have failed. Set the limit with that headroom in mind.
 
+**The order listing is aged against the same policy.** A holdings poll refreshes positions and keeps
+the working orders it had; only a working-order poll replaces them. And an order the runner sends
+stays in `working_` until that listing arrives (below), so a listing nobody refreshes would keep an
+order that expired or was refused "working" for ever, and a target would stop being chased. So on a
+source that publishes working orders, a listing older than `set_maximum_portfolio_age` holds the loop
+with `portfolio_stale` too, and the report says once which cadence to add: poll
+`PollSchedule::working_orders_` at least as often as the age you state.
+
 **A price band is a per-trading-day value, and one nobody has aged is not applied.** `PriceLimits`
 is "the highest price allowed today" and for KRX it moves with the previous close, so a band
 registered once at startup describes the day the process started on. Until slice 29 nothing refreshed
@@ -521,8 +529,16 @@ position, and settlement, pledging and locking are exactly the gap being reporte
 
 **A pass sizes against what it has already sent.** Two sells of sixty against a hundred sellable do
 not both go out, and neither do two buys the budget can only fund once. The reservation outlives the
-pass and is discarded when a poll replaces the listing, so a second bar before the next poll cannot
-re-spend the same money.
+pass and is discarded when a working-order poll replaces the listing, so a second bar before the next
+poll cannot re-spend the same money.
+
+**Every order sent to a broker counts as working until the broker lists it, whatever the limits.** A
+cold start feeds the whole first bar read, one pass per bar, before the next listing, and a target
+strategy restates its target on every one; each pass therefore sees the order the first one sent and
+sends nothing more. Before 2026-09-30 this held only with one of the checks above enabled, and a target
+strategy under default limits sent one order per history bar. A dry run and `live::bind_observer` send
+to no broker, have no listing to retire the row, and keep the old scoping: they report a restated
+target again on every pass.
 
 **Passing is not a promise.** These are readings, and a fill against a resting order moves them
 without telling anyone. The check is the difference between sizing against the broker's last answer

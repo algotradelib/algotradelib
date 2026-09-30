@@ -243,6 +243,12 @@ struct PollSchedule {
    * plan made then is withheld as `PORTFOLIO_SUPERSEDED` (a target is retained and planned again
    * after the next holdings read). Equal cadences put both reads in one iteration, listing first.
    * The loop notes a shorter working-order cadence once per run.
+   *
+   * **Not longer than the portfolio age policy, or placing holds.** On a source that publishes
+   * working orders, a listing older than `PollingLoop::set_maximum_portfolio_age` holds the loop as
+   * `PORTFOLIO_STALE`, because the orders a runner has sent stay in `working_` until a listing
+   * replaces them (`Runner::persist_reservation`). Absent, the listing is read once at startup and
+   * the loop holds once that read is older than the policy; the report says so once.
    */
   std::optional<std::chrono::nanoseconds> working_orders_;
   /**
@@ -1292,7 +1298,12 @@ private:
 
 public:
 
-  /** Sets how stale a holdings snapshot may be before sending is blocked. */
+  /**
+   * Sets how stale a holdings snapshot may be before sending is blocked.
+   *
+   * On a source that publishes working orders the same bound applies to the order listing, which is
+   * the other half of the picture a plan is sized against; see `PollSchedule::working_orders_`.
+   */
   void set_maximum_portfolio_age(std::chrono::nanoseconds age) {
     maximum_portfolio_age_ = age;
     // Pushed down as the **policy**, not as a verdict. The runner re-evaluates it against whatever
@@ -2047,6 +2058,26 @@ private:
         at - as_of > *maximum_portfolio_age_) {
       return strategy::HaltReason::PORTFOLIO_STALE;
     }
+    // **The order listing is half of the portfolio, and it ages too.** A holdings poll refreshes
+    // positions and keeps `working_`; only a working-order poll replaces it. A runner that reaches a
+    // broker keeps the orders it sent in `working_` until that listing arrives
+    // (`Runner::persist_reservation`), so a listing nobody refreshes would keep an order that expired
+    // or was refused "working" forever, and a target would stop being chased. Held against the same
+    // policy as holdings, because it is the same question -- how old a picture may be sized against --
+    // and a run that polls holdings but never the listing is told once what to add.
+    if constexpr (source_provides_working_orders<Source>::value) {
+      if (maximum_portfolio_age_ && working_orders_at_ &&
+          at - *working_orders_at_ > *maximum_portfolio_age_) {
+        if (!said_listing_stale_) {
+          said_listing_stale_ = true;
+          report.notes_.emplace_back(
+            "working-order listing older than the portfolio age policy: poll working orders "
+            "(PollSchedule::working_orders_) at least that often; placing holds until it is read"
+          );
+        }
+        return strategy::HaltReason::PORTFOLIO_STALE;
+      }
+    }
     if (runner_->guard().limits().enforce_buying_power_) {
       // Checked only when the caller asked for the limit. A loop with no buying-power cadence and
       // no check configured is an ordinary loop, and must not be held for a reading nobody wants.
@@ -2632,6 +2663,8 @@ private:
   bool allow_absent_portfolio_{false};
   /** Whether the missing-age-policy note has been reported, so it is said once and not per poll. */
   bool said_no_age_policy_{false};
+  /** Whether the note for a listing older than the age policy was given; see `gate_for`. */
+  bool said_listing_stale_{false};
   std::optional<std::chrono::nanoseconds> maximum_buying_power_age_;
   std::optional<std::chrono::system_clock::time_point> next_due_[poll_kind_count];
   std::size_t consecutive_failures_[poll_kind_count] = {};

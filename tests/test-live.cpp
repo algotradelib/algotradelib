@@ -845,22 +845,31 @@ TEST_CASE("a target restated before any listing poll places once, with no limit 
   // on every one. The broker's listing is not read again between them. With no limit that reads
   // what is outstanding, the second pass used to start from that listing, see nothing working, and
   // send the same order again: one per history bar, all of them filled at the open.
-  FakeSession<WithoutKey> session;
-  LiveRunner live_runner(
-    HoldTen{}, {}, 512, live::SessionExecutor<FakeSession<WithoutKey>>(session)
+  using ListedRunner = runner::Runner<
+    HoldTen, WithWorkingOrders, FakeBroker, live::SessionExecutor<FakeSession<WithWorkingOrders>>
+  >;
+  FakeSession<WithWorkingOrders> session;
+  ListedRunner live_runner(
+    HoldTen{}, {}, 512, live::SessionExecutor<FakeSession<WithWorkingOrders>>(session)
   );
   live_runner.context().set_instrument(samsung_reference());
   live_runner.context().set_phase(strategy::MarketPhase::OPEN);
   live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
-  live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
+  live_runner.context().set_portfolio(held_position<WithWorkingOrders>("0", nullptr));
 
   for (int hour = 0; hour < 5; ++hour) {
     live_runner.feed(bar_at(hour, "70000"));
   }
 
   REQUIRE(session.placed().size() == 1);
+  // The order is working as far as the next pass is concerned, and it is the reservation this runner
+  // wrote, which the broker's next listing replaces.
+  REQUIRE(live_runner.context().portfolio().working_.size() == 1);
+  CHECK(live_runner.context().portfolio().working_[0].reserved_);
   CHECK(live_runner.context().portfolio().working_quantity(samsung(), OrderSide::BUY) ==
         Decimal64::parse("10"));
+  // And its money is not spent from the published figure, because no buying-power check asked for it.
+  CHECK(live_runner.context().portfolio().buying_power_.empty());
 }
 
 TEST_CASE("a withdrawal the binding refused says so on its own entry") {
@@ -1721,6 +1730,137 @@ BarSeries two_bars(const char* first_close, const char* last_close) {
 }
 
 } // namespace
+
+namespace {
+
+/** Fifty closed daily bars, the shape of a cold start's first read. */
+BarSeries history_bars(int count) {
+  BarSeries series;
+  series.interval_ = BarInterval::ONE_DAY;
+  series.stamp_ = BarStamp::CLOSE;
+  for (int at = 0; at < count; ++at) {
+    Bar bar;
+    bar.timestamp_ = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * (100 + at));
+    bar.close_ = Decimal64::parse(std::to_string(70000 + 100 * at));
+    bar.high_ = bar.close_;
+    bar.low_ = bar.close_;
+    series.bars_.push_back(bar);
+  }
+  return series;
+}
+
+/** A holdings answer stamped when it is read, so only the listing can age in these cases. */
+template <typename Session, typename Clock>
+class FreshHoldingsSource {
+public:
+  static constexpr bool provides_working_orders = true;
+
+  FreshHoldingsSource(Session& session, std::vector<InstrumentId> universe, const Clock* clock)
+  : inner_(session, std::move(universe)), session_(&session), clock_(clock) {}
+
+  template <typename Runner>
+  runner::PollOutcome poll(runner::PollKind kind, Runner& runner_instance) {
+    if (kind == runner::PollKind::HOLDINGS) {
+      HoldingsSnapshot snapshot;
+      snapshot.received_at_ = clock_->now();
+      session_->set_holdings(snapshot);
+    }
+    return inner_.poll(kind, runner_instance);
+  }
+
+  template <typename Runner>
+  runner::PollOutcome read_order_list(Runner& runner_instance) {
+    return inner_.read_order_list(runner_instance);
+  }
+
+private:
+  live::SessionSource<Session> inner_;
+  Session* session_;
+  const Clock* clock_;
+};
+
+} // namespace
+
+TEST_CASE("a cold start's history read places one order, not one per bar", "[own-orders]") {
+  // The shipped consumer path end to end: `SessionSource` feeds the first bar read, fifty bars, one
+  // pass each, after the startup listing and holdings reads. Default limits, a target strategy.
+  using LoopRunner = runner::Runner<
+    HoldTen, WithWorkingOrders, FakeBroker, live::SessionExecutor<FakeSession<WithWorkingOrders>>
+  >;
+  using Source = FreshHoldingsSource<FakeSession<WithWorkingOrders>, runner::ManualClock>;
+  FakeSession<WithWorkingOrders> session;
+  session.set_bars(history_bars(50));
+  strategy::RiskLimits any_phase;
+  any_phase.permitted_phases_ = std::nullopt;
+  LoopRunner live_runner(
+    HoldTen{}, any_phase, 512, live::SessionExecutor<FakeSession<WithWorkingOrders>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+
+  const auto start = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 200);
+  runner::PollSchedule schedule;
+  schedule.bars_ = std::chrono::seconds(1);
+  schedule.holdings_ = std::chrono::seconds(1);
+  schedule.working_orders_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  schedule.calendar_.reset();
+  runner::ManualClock* clock = nullptr;
+  Source source(session, {samsung()}, clock);
+  runner::PollingLoop<LoopRunner, Source, runner::ManualClock> loop(
+    live_runner, source, schedule, runner::ManualClock{start});
+  source = Source(session, {samsung()}, &loop.clock());
+  loop.set_maximum_portfolio_age(std::chrono::minutes(1));
+  runner::StopSource stop;
+
+  loop.run(stop, 1);
+  REQUIRE(session.placed().size() == 1);
+  CHECK(session.placed()[0].quantity_ == Decimal64::parse("10"));
+}
+
+TEST_CASE("a listing older than the portfolio age policy holds the loop, and says so once",
+          "[own-orders]") {
+  // The reservation lives until a working-order listing replaces it, so a run that polls holdings
+  // but never the listing would keep an expired or refused order "working" and stop chasing its
+  // target. The listing is aged against the same policy as holdings instead.
+  using LoopRunner = runner::Runner<
+    HoldTen, WithWorkingOrders, FakeBroker, live::SessionExecutor<FakeSession<WithWorkingOrders>>
+  >;
+  using Source = FreshHoldingsSource<FakeSession<WithWorkingOrders>, runner::ManualClock>;
+  FakeSession<WithWorkingOrders> session;
+  strategy::RiskLimits any_phase;
+  any_phase.permitted_phases_ = std::nullopt;
+  LoopRunner live_runner(
+    HoldTen{}, any_phase, 512, live::SessionExecutor<FakeSession<WithWorkingOrders>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+
+  const auto start = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 200);
+  runner::PollSchedule schedule;
+  schedule.holdings_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  schedule.calendar_.reset();
+  // No working-order cadence: the listing is read once, at startup, and never again.
+  Source source(session, {samsung()}, nullptr);
+  runner::PollingLoop<LoopRunner, Source, runner::ManualClock> loop(
+    live_runner, source, schedule, runner::ManualClock{start});
+  source = Source(session, {samsung()}, &loop.clock());
+  loop.set_maximum_portfolio_age(std::chrono::seconds(3));
+  runner::StopSource stop;
+
+  const auto early = loop.run(stop, 2);
+  CHECK_FALSE(early.final_gate_.has_value());
+
+  const auto late = loop.run(stop, 5);
+  REQUIRE(late.final_gate_.has_value());
+  CHECK(*late.final_gate_ == strategy::HaltReason::PORTFOLIO_STALE);
+  std::size_t said = 0;
+  for (const auto& note : late.notes_) {
+    if (note.find("working-order listing older than the portfolio age policy") != std::string::npos) {
+      ++said;
+    }
+  }
+  CHECK(said == 1);
+}
 
 TEST_CASE("a broker refusal reaches a live run's report, with what the broker said") {
   // **The defect this slice exists for, exercised through the real source.** Five direct `feed`

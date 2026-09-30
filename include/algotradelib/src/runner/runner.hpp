@@ -1597,27 +1597,31 @@ private:
   }
 
   /**
-   * Carries this pass's reservation into the next one, for a caller that asked for the checks.
+   * Carries this pass's reservation into the next one.
    *
    * **The in-pass view dies with the pass**, so without this a second pass before the next poll
    * starts from the broker's last word again and can re-spend what the first pass already
-   * committed. The fix needs no matcher, because a poll *replaces* what it refreshes:
-   * `poll_working_orders` assigns `working_` wholesale and `poll_holdings` assigns `positions_`, so
-   * a reservation written here is discarded the moment the broker's own answer arrives. Nothing has
-   * to recognise its own order in a listing -- which is the half of reserve-and-match that carries a
-   * matcher's failure modes.
+   * committed. The fix needs no matcher, because a working-order poll *replaces* what it
+   * refreshes: `poll_working_orders` assigns `working_` wholesale, so a reservation written here is
+   * discarded the moment the broker's own listing arrives. (A holdings poll does not: it refreshes
+   * positions and keeps `working_`.) Nothing has to recognise its own order in a listing -- which is
+   * the half of reserve-and-match that carries a matcher's failure modes.
    *
-   * **Scoped to the limits that read it**, deliberately. The reservation is also visible to
-   * reconciliation, which reads the same portfolio, and an order this runner just sent counting as
-   * working is the right answer there too -- but it is a behaviour change, and it should reach only
-   * callers whose limits actually size against what is outstanding rather than every existing
-   * program on upgrade.
+   * **Always, for a runner that sends to a broker which lists working orders.** Target
+   * reconciliation reads the same portfolio, and an order this runner just sent has to count as
+   * working there, whatever the limits: a target restated on the next pass would otherwise be sent
+   * again. It was scoped to the limits below until 2026-09-30, and the cold start showed the cost --
+   * `SessionSource` feeds a whole history read one pass per bar before the next listing, so a target
+   * strategy under default limits sent one order per history bar (`tests/test-live.cpp`,
+   * `[own-orders]`). The listing that retires the row is what bounds its life, so the loop holds a
+   * run whose listing is older than its portfolio age policy (`PollingLoop::gate_for`).
    *
-   * `max_position_quantity_` is one of those limits, and it is the one that predates this branch:
-   * its ceiling counts same-side working orders, so an accepted order that stopped being visible
-   * at the end of a pass would let the next bar place another of the same size, for as long as no
-   * working-order poll intervened. Review found that omission after the within-pass fix, which had
-   * left the cross-pass half of the same defect open for a caller enabling only the ceiling.
+   * **Scoped to the limits that read it everywhere else.** A dry run, `live::bind_observer` and a
+   * custom executor that reaches no broker have no listing to retire the row, and a broker that
+   * publishes no working-order inquiry has none either; for them the reservation persists only for
+   * the limits that size against what is outstanding, as before. `max_position_quantity_` is one of
+   * those limits: its ceiling counts same-side working orders, so an accepted order that stopped
+   * being visible at the end of a pass would let the next bar place another of the same size.
    *
    * The residual window is the one nothing local can close: a listing fetched before the broker
    * registered the order replaces the reservation with a picture that does not contain it yet.
@@ -1642,7 +1646,11 @@ private:
     // invisible to a target on the next one until a working-order poll listed it -- and "flatten"
     // would then go out beside the stop, both of them sells.
     const bool conditional = carries_trigger_price(order.type_);
-    if (!sells && !buys && !capped && !exposed && !conditional) {
+    // A broker that will list the order back, reached by this runner: the listing retires the row,
+    // so the reservation is always written. See above for why every other runner keeps the scoping.
+    const bool listed =
+      runner_detail::sends_to_a_broker<Executor>::value && CapsType::has_working_orders;
+    if (!listed && !sells && !buys && !capped && !exposed && !conditional) {
       return;
     }
     auto persisted = context_.portfolio();
