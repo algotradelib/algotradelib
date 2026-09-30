@@ -250,7 +250,7 @@ argument, `Executor(session, Venue::KRX)`, or as the last argument of `live::bin
 `live::bind_journaled` (after `live::default_series_capacity`). An order that names a venue keeps it.
 The runner writes the route into the order before sending it, so the journal line, the working row it
 reserves and its report all name the venue the broker was asked for. At KIS, `Venue::COMBINED` is how
-a runner opts into SOR, which a demo account refuses. At either broker, prefer KRX or NXT until SOR has
+a runner opts into SOR, which a demo account refuses. At KIS and Kiwoom alike, prefer KRX or NXT until SOR has
 been observed: how a SOR order is listed back decides whether recovery after a crash recognises it
 (`SessionExecutor::default_route` explains). `example-strategy-live` compiles exactly one
 `trade()` function template for both.
