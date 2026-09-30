@@ -25,6 +25,13 @@ namespace live {
  * unexpressible.
  */
 
+/**
+ * The number of bars a bound runner keeps per instrument unless told otherwise.
+ *
+ * Named so a caller who states a later argument -- a default route -- need not restate the number.
+ */
+inline constexpr std::size_t default_series_capacity = 512;
+
 /** The runner type a session-backed binding produces. */
 template <typename Strategy, typename Session>
 using BoundRunner = runner::Runner<
@@ -50,19 +57,24 @@ using ObservingRunner = runner::Runner<
  *
  * The session is borrowed and must outlive the runner: `SessionExecutor` holds it by pointer, because
  * a runner uses a connection it does not own.
+ *
+ * `default_route` is the venue an order that names none is sent to -- and a strategy's orders name
+ * none. `UNSPECIFIED` takes the broker's own default, which Kiwoom does not have: **a Kiwoom runner
+ * places nothing until a route is stated here.** See `SessionExecutor::default_route`.
  */
 template <typename Strategy, typename Session>
 BoundRunner<Strategy, Session> bind(
   Session& session,
   Strategy strategy,
   strategy::RiskLimits limits = {},
-  std::size_t series_capacity = 512
+  std::size_t series_capacity = default_series_capacity,
+  Venue default_route = Venue::UNSPECIFIED
 ) {
   BoundRunner<Strategy, Session> bound(
     std::move(strategy),
     std::move(limits),
     series_capacity,
-    SessionExecutor<Session>(session)
+    SessionExecutor<Session>(session, default_route)
   );
   // **A runner that can reach a broker requires an account it has actually read** -- and that is not
   // arranged here. It comes from `SessionExecutor::reaches_a_broker`, so a runner assembled by hand
@@ -93,6 +105,8 @@ using JournaledRunner = runner::Runner<
  * Recovery is a separate call, and the order matters: `runner::recover_runner` must run against the
  * journal *before* the loop starts, so the ledger is marked for whatever a previous process left
  * owed. The journal is borrowed and must outlive the runner.
+ *
+ * `default_route` is as for `bind`, and the journal records the route it produces.
  */
 template <typename Strategy, typename Session, typename Journal>
 JournaledRunner<Strategy, Session, Journal> bind_journaled(
@@ -100,14 +114,15 @@ JournaledRunner<Strategy, Session, Journal> bind_journaled(
   Journal& journal,
   Strategy strategy,
   strategy::RiskLimits limits = {},
-  std::size_t series_capacity = 512
+  std::size_t series_capacity = default_series_capacity,
+  Venue default_route = Venue::UNSPECIFIED
 ) {
   JournaledRunner<Strategy, Session, Journal> bound(
     std::move(strategy),
     std::move(limits),
     series_capacity,
     runner::JournalingExecutor<SessionExecutor<Session>, Journal>(
-      SessionExecutor<Session>(session), journal
+      SessionExecutor<Session>(session, default_route), journal
     )
   );
   // As in `bind`: the requirement travels with the executor, not with this factory.
@@ -130,7 +145,7 @@ ObservingRunner<Strategy, Session> bind_observer(
   Session& session,
   Strategy strategy,
   strategy::RiskLimits limits = {},
-  std::size_t series_capacity = 512
+  std::size_t series_capacity = default_series_capacity
 ) {
   (void)session;
   return ObservingRunner<Strategy, Session>(

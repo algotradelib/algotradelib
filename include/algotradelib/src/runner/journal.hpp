@@ -629,10 +629,11 @@ public:
     entry.time_in_force_ = order.time_in_force_;
     entry.session_ = order.session_;
     // **Where the order will actually go, not what the caller asked for.**
-    // Nothing on the strategy path sets `venue_`, so every strategy-placed order
-    // asks for `UNSPECIFIED` -- and at KIS that order still reaches KRX, by the
-    // broker's documented default for an omitted exchange field. Recording the
-    // request would put a positive "no venue was reached" claim in the line, and
+    // Nothing on the strategy path sets `venue_`, so a strategy-placed order
+    // asks for `UNSPECIFIED` unless its binding states a default route -- and at
+    // KIS an unrouted order still reaches KRX, by the broker's documented
+    // default for an omitted exchange field. Recording the request would put a
+    // positive "no venue was reached" claim in the line, and
     // recovery confirms a row from *any* venue against one of those: a lone NXT
     // lookalike could be attributed to an order that went to KRX.
     //
@@ -732,6 +733,13 @@ public:
    * failure from one that has been dealt with.
    */
   std::size_t journal_failures() const noexcept { return failures_; }
+
+  /** Forwards the venue the inner executor sends an unrouted order to, where it routes at all. */
+  template <typename Executor = Inner>
+  auto requested_route(Venue asked) const noexcept
+    -> decltype(std::declval<const Executor&>().requested_route(asked)) {
+    return inner_.requested_route(asked);
+  }
 
   /** Forwards the reference the broker issued for the last accepted order, where the inner has one. */
   template <typename Executor = Inner>

@@ -803,6 +803,71 @@ TEST_CASE("an order naming no venue is refused rather than routed", "[kiwoom][or
   CHECK(kiwoom::kiwoom_effective_route(Venue::UNSPECIFIED) == Venue::UNSPECIFIED);
 }
 
+TEST_CASE("a Kiwoom runner's order passes the venue check once its binding states a route", "[kiwoom][orders][route]") {
+  // **The real adapter, not a model of it.** Every order a strategy plans names no venue, and this
+  // adapter refuses that before any I/O -- so a Kiwoom runner placed nothing at all until its binding
+  // could state a route. The holdings scope is left unasserted, which the adapter checks *after* the
+  // venue: nothing here can reach the network, and a refusal naming the scope instead of the venue
+  // is the proof that the venue check passed.
+  ssl::context tls(ssl::context::tls_client);
+  kiwoom::KiwoomConfig config;
+  config.holdings_venue_ = Venue::KRX;
+  using Session = BlockingSession<kiwoom::KiwoomBlockingClient>;
+  Session session(std::make_shared<kiwoom::KiwoomBlockingClient>(tls, config), kiwoom::KiwoomAccount{});
+
+  strategy::PlannedOrder order;
+  order.instrument_ = samsung();
+  order.side_ = OrderSide::BUY;
+  order.type_ = OrderType::LIMIT;
+  order.quantity_ = Decimal64(1, 0);
+  order.price_ = Decimal64(70000, 0);
+  REQUIRE(order.venue_ == Venue::UNSPECIFIED);
+
+  live::SessionExecutor<Session> unrouted(session);
+  CHECK(unrouted.place(order) == runner::SendOutcome::REFUSED_LOCALLY);
+  REQUIRE(unrouted.last_error());
+  CHECK(unrouted.last_error()->broker_code_ == "venue_required");
+  CHECK_FALSE(unrouted.last_error()->reached_broker_);
+  // The refusal tells a runner's operator where the route is stated, not only a direct caller.
+  CHECK(unrouted.last_error()->message_.find("default route") != std::string::npos);
+
+  live::SessionExecutor<Session> routed(session, Venue::KRX);
+  CHECK(routed.place(order) == runner::SendOutcome::REFUSED_LOCALLY);
+  REQUIRE(routed.last_error());
+  CHECK(routed.last_error()->broker_code_ == "holdings_scope_unestablished");
+  // And the journal would record where it went: Kiwoom's route is what was asked for.
+  CHECK(routed.effective_route(Venue::UNSPECIFIED) == Venue::KRX);
+
+  // What that order would put on the wire.
+  ClientFixture fixture;
+  OrderRequest request;
+  request.instrument_ = order.instrument_;
+  request.side_ = order.side_;
+  request.type_ = order.type_;
+  request.quantity_ = order.quantity_;
+  request.price_ = order.price_;
+  request.venue_ = routed.requested_route(order.venue_);
+  const auto body = body_of(kiwoom::KiwoomClientTestAccess::place_request(*fixture.client_, request, "0"));
+  CHECK(body.at("dmst_stex_tp").as_string() == "KRX");
+}
+
+TEST_CASE("a journaled Kiwoom binding takes a default route", "[kiwoom][route]") {
+  // The factory a live program uses, over the real session type: the parameter reaches the executor
+  // the runner sends through, rather than one built beside it.
+  ssl::context tls(ssl::context::tls_client);
+  using Session = BlockingSession<kiwoom::KiwoomBlockingClient>;
+  Session session(
+    std::make_shared<kiwoom::KiwoomBlockingClient>(tls, kiwoom::KiwoomConfig{}), kiwoom::KiwoomAccount{}
+  );
+  runner::MemoryJournal journal;
+  auto bound = live::bind_journaled(
+    session, journal, CountPhases{}, strategy::RiskLimits{}, live::default_series_capacity, Venue::NXT
+  );
+  CHECK(bound.executor().inner().default_route() == Venue::NXT);
+  CHECK(bound.executor().requested_route(Venue::UNSPECIFIED) == Venue::NXT);
+  CHECK(bound.executor().effective_route_of(strategy::PlannedOrder{}) == Venue::NXT);
+}
+
 TEST_CASE("an order carrying an idempotency key is refused", "[kiwoom][orders]") {
   OrderRequest order;
   order.instrument_ = samsung();
