@@ -989,7 +989,8 @@ public:
    * kept (`targets_retained`) and resubmitted here. `PollingLoop` calls it after each iteration's
    * polls and gate, so the account and the budget it is sized against are that iteration's.
    *
-   * **A target the phase refused waits for a permitted phase** (`targets_retained_for_phase`). A daily
+   * **A target the phase refused waits for a permitted phase** (`targets_retained_for_phase`), and so
+   * does an order intent (`intents_kept_for_phase`), checked against the book at release. A daily
    * strategy decides on a bar fed after its day has ended -- at 00:00 KST for every shipped adapter's
    * daily bars -- while the market is shut: its opening order is refused `PHASE_NOT_PERMITTED`, and an
    * exit the limit admits outside the phase is typically rejected by a broker that is not taking
@@ -1023,8 +1024,9 @@ public:
         ),
         retained_targets_.end()
       );
+      kept_intents_.clear();
     }
-    if (retained_targets_.empty() ||
+    if ((retained_targets_.empty() && kept_intents_.empty()) ||
         context_.portfolio().as_of_ == std::chrono::system_clock::time_point{} ||
         context_.portfolio().listing_newer_than_holdings() || guard_.blocking_reason()) {
       return Report{};
@@ -1041,11 +1043,42 @@ public:
       released = true;
     }
     retained_targets_ = std::move(kept);
+    // Kept intents follow, in the order they were stated, and only once the phase permits. **Each is
+    // checked against the premise that kept it**: it states a quantity decided against the book at
+    // midnight, so it goes out only if the instrument's holding is still what it was then, and a kept
+    // stop only if no stop has come to rest meanwhile. Otherwise it is dropped and counted -- another
+    // client traded the account, or a corporate action moved it, and a quantity nobody re-decided must
+    // not be sent against the new book.
+    if (phase_permits && !kept_intents_.empty()) {
+      auto intents = std::move(kept_intents_);
+      kept_intents_.clear();
+      for (auto& entry : intents) {
+        const auto held = context_.portfolio().net_quantity_of(entry.intent_.instrument());
+        const auto gap = held ? decimal_subtract(*held, entry.held_) : std::nullopt;
+        const bool same_book = gap && gap->coefficient() == 0;
+        const bool stop_now_rests = entry.intent_.trigger() && stop_listed(entry.intent_.instrument());
+        if (!same_book || stop_now_rests) {
+          ++kept_intents_dropped_;
+          continue;
+        }
+        context_.submit(std::move(entry.intent_));
+        released = true;
+      }
+    }
     if (!released) {
       return Report{};
     }
     return settle();
   }
+
+  /** Returns how many order intents wait for a permitted market phase; see `retry_retained_targets`. */
+  std::size_t intents_kept_for_phase() const noexcept { return kept_intents_.size(); }
+
+  /**
+   * Returns how many kept intents were dropped at release because the book they were decided against
+   * had changed; monotone.
+   */
+  std::size_t kept_intents_dropped() const noexcept { return kept_intents_dropped_; }
 
   /** Returns how many targets are retained, for either reason; see `retry_retained_targets`. */
   std::size_t targets_retained() const noexcept { return retained_targets_.size(); }
@@ -1059,7 +1092,10 @@ public:
   }
 
   /** Discards every retained target. `PollingLoop` calls it once a stop is requested. */
-  void clear_retained_targets() noexcept { retained_targets_.clear(); }
+  void clear_retained_targets() noexcept {
+    retained_targets_.clear();
+    kept_intents_.clear();
+  }
 
   /**
    * Releases, and settles, every deferred target whose stops are gone, for a caller whose working
@@ -1311,6 +1347,7 @@ private:
 
     Report report;
     auto instructions = context_.drain();
+    kept_this_pass_.clear();
     drop_superseded_deferred(instructions);
     std::vector<strategy::PlannedOrder> pending;
     // The instruction each pending order came from, aligned with `pending`, so a phase refusal can
@@ -1596,7 +1633,7 @@ private:
           // An exit the phase limit let out of session, refused by a broker not taking orders then:
           // the target waits for the session instead of for its next bar, which may be a day away.
           if (decision.admitted_outside_phase_) {
-            retain_for_phase(source_instruction);
+            retain_for_phase(source_instruction, /*broker_answered=*/true);
           }
           note_broker_refusal(order);
           report.rejected_.push_back(
@@ -2128,12 +2165,21 @@ private:
     if (instrument.symbol_.empty()) {
       return;
     }
-    for (auto at = retained_targets_.begin(); at != retained_targets_.end(); ++at) {
-      if (at->target_.instrument_ == instrument) {
-        retained_targets_.erase(at);
-        return;
-      }
-    }
+    retained_targets_.erase(
+      std::remove_if(
+        retained_targets_.begin(), retained_targets_.end(),
+        [&](const RetainedTarget& kept) { return kept.target_.instrument_ == instrument; }
+      ),
+      retained_targets_.end()
+    );
+    // Every kept intent for the instrument, not the first: a later statement supersedes all of them.
+    kept_intents_.erase(
+      std::remove_if(
+        kept_intents_.begin(), kept_intents_.end(),
+        [&](const KeptIntent& kept) { return kept.intent_.instrument() == instrument; }
+      ),
+      kept_intents_.end()
+    );
   }
 
   /**
@@ -2144,7 +2190,9 @@ private:
    * for `deferred_targets_`. Returns false, retaining nothing:
    *
    * - for anything but a `TargetPosition`. An `OrderIntent` states a quantity against the picture that
-   *   was wrong, and replaying it later would act on a decision nobody re-made.
+   *   was wrong, and replaying it later would act on a decision nobody re-made. (An intent the market
+   *   phase stopped is a different case -- the picture was right, the hour was not -- and is kept by
+   *   `keep_intent_for_phase`, with its holding checked at release.)
    * - while a stop, an operator's halt or a local failure holds. What a strategy says then -- `on_stop`
    *   included -- must not be replayed once the hold lifts.
    */
@@ -2177,12 +2225,52 @@ private:
    * phase and the broker (or the binding) refused it -- which is what a broker not taking orders at
    * midnight does. See `retry_retained_targets`.
    */
-  void retain_for_phase(const Instruction<Tag>& instruction) {
+  void retain_for_phase(const Instruction<Tag>& instruction, bool broker_answered = false) {
     if constexpr (runner_detail::sends_to_a_broker<Executor>::value) {
-      retain_withheld(instruction, /*for_phase=*/true);
+      if (retain_withheld(instruction, /*for_phase=*/true)) {
+        return;
+      }
+      keep_intent_for_phase(instruction, broker_answered);
     } else {
       (void)instruction;
+      (void)broker_answered;
     }
+  }
+
+  /**
+   * Keeps an order intent whose order the market phase stopped, for the first permitted phase.
+   *
+   * The intent half of `retain_for_phase`: a daily strategy's protective stop, decided on the bar fed
+   * at midnight and refused by a broker not taking orders then, would otherwise be restated at the
+   * next midnight and refused again, and the position would never be protected live. Kept once per
+   * instruction (one instruction can produce two refused orders), in the order stated, with the
+   * instrument's holding at this moment, which `retry_retained_targets` checks before releasing it.
+   * **Not** while a stop, an operator's halt or a local failure holds; **not** an intent carrying an
+   * idempotency key that a broker answered, because a second order would reuse the key.
+   */
+  void keep_intent_for_phase(const Instruction<Tag>& instruction, bool broker_answered) {
+    const auto* intent = std::get_if<strategy::OrderIntent>(&instruction);
+    if (intent == nullptr) {
+      return;
+    }
+    if (guard_.halted(strategy::HaltReason::STOPPING) || guard_.halted(strategy::HaltReason::OPERATOR) ||
+        guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
+      return;
+    }
+    if (broker_answered && intent->client_order_id()) {
+      return;
+    }
+    for (const auto* seen : kept_this_pass_) {
+      if (seen == &instruction) {
+        return;
+      }
+    }
+    const auto held = context_.portfolio().net_quantity_of(intent->instrument());
+    if (!held) {
+      return;
+    }
+    kept_this_pass_.push_back(&instruction);
+    kept_intents_.push_back(KeptIntent{*intent, *held});
   }
 
   /** Returns whether the portfolio lists an open stop order on `instrument`. */
@@ -2775,6 +2863,15 @@ private:
     bool for_phase_{false};
   };
   std::vector<RetainedTarget> retained_targets_;
+  /** An order intent kept for the phase, and the instrument's net holding when it was kept. */
+  struct KeptIntent {
+    strategy::OrderIntent intent_;
+    Decimal64 held_;
+  };
+  std::vector<KeptIntent> kept_intents_;
+  std::size_t kept_intents_dropped_{0};
+  /** The instructions kept for the phase in the current pass, so each is kept once. */
+  std::vector<const Instruction<Tag>*> kept_this_pass_;
   /** True only inside a deferred release's settle, which `plan_withhold_reason` exempts. */
   bool releasing_deferred_{false};
   /** How many were ever deferred; see `targets_deferred`. */

@@ -221,8 +221,8 @@ accept that the sizing is then yours. The one exception is a weight: `SizeSpec::
 "hold this fraction", so a weight-sized buy intent is planned as a target and diffed against the
 portfolio (a sell, a trigger, a non-day validity or an idempotency key on one is refused). It needs a
 portfolio value, which a replay supplies and a live runner does not. It stays an intent, though:
-withheld for the account or refused for the market phase, it is dropped rather than kept for later
-as a `TargetPosition` would be.
+withheld for the account it is dropped rather than kept for later as a `TargetPosition` would be, and
+refused for the market phase it is kept as an intent is, with the check an intent gets at release.
 
 ## What the context gives you
 

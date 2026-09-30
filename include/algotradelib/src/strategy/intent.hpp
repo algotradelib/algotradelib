@@ -159,8 +159,8 @@ public:
    * same weight places nothing -- and, as for any target, working orders on the instrument can be
    * withdrawn (see `strategy::weight_target` for which), and the intent's limit prices whichever
    * trade the difference needs. It is planned as a target but stays an intent in the instruction
-   * stream: withheld for the account or refused for the market phase, it is dropped, not retained or
-   * deferred as a `TargetPosition` would be. A sell, a negative weight, a trigger, a non-day validity or an
+   * stream: withheld for the account it is dropped, not retained or deferred as a `TargetPosition`
+   * would be, and refused for the market phase it is kept as any intent is (`Runner::retry_retained_targets`). A sell, a negative weight, a trigger, a non-day validity or an
    * idempotency key is refused (`RejectReason::UNSUPPORTED_WEIGHT`). It needs the portfolio's value:
    * a replay supplies its own equity; a live runner is refused `no_portfolio_value` unless the caller
    * sets `Runner::set_portfolio_value`, because no adapter states an account total the library can

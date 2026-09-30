@@ -2371,6 +2371,169 @@ TEST_CASE("a bar fed as history changes the strategy and no counter or reservati
   CHECK(dry.feed(bar_at(5, "70000")).would_place_.size() == 1);
 }
 
+namespace {
+
+/** Protects whatever it holds with a sell stop-limit, stated on every bar. */
+struct StopsWhatItHolds {
+  std::optional<std::string> key_;
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    const auto held = ctx.portfolio().net_quantity_of(bar.instrument_);
+    if (!held || held->coefficient() <= 0) {
+      return;
+    }
+    const auto trigger = strategy::Price::checked(Decimal64::parse("65000"), PriceRule::krx_equity());
+    const auto limit = strategy::Price::checked(Decimal64::parse("64900"), PriceRule::krx_equity());
+    auto intent = strategy::OrderIntent::stop_limit(
+      bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(*held), *trigger, *limit);
+    if (key_) {
+      intent = intent.with_client_order_id(*key_);
+    }
+    ctx.submit(intent);
+  }
+};
+
+/** A calendar, a listing, and idempotency keys a broker honours. */
+struct WithCalendarAndKeys : WithCalendar {
+  static constexpr bool has_client_order_id = true;
+};
+
+/** A phase rig: a calendar, the listing, fresh holdings, from 00:30 KST on `trading_day`. */
+template <typename Strategy, typename Caps = WithCalendar>
+struct KeptRig {
+  using Runner = runner::Runner<Strategy, Caps, FakeBroker, live::SessionExecutor<FakeSession<Caps>>>;
+  using Source = FreshHoldingsSource<FakeSession<Caps>, runner::ManualClock>;
+  FakeSession<Caps> session;
+  Runner live_runner;
+  Source source;
+  runner::PollingLoop<Runner, Source, runner::ManualClock> loop;
+  runner::StopSource stop;
+
+  explicit KeptRig(Strategy strategy = {})
+  : live_runner(std::move(strategy), {}, 512, live::SessionExecutor<FakeSession<Caps>>(session)),
+    source(session, {samsung()}, nullptr),
+    loop(live_runner, source, half_hourly(),
+         runner::ManualClock{kst_midnight(trading_day) + std::chrono::minutes(30)}) {
+    session.set_bars(kst_daily_before(trading_day));
+    session.set_calendar(trading_around(trading_day));
+    live_runner.context().set_instrument(samsung_reference());
+    source = Source(session, {samsung()}, &loop.clock());
+    loop.set_maximum_portfolio_age(std::chrono::hours(1));
+  }
+
+  void refuse_out_of_hours() {
+    BrokerError closed;
+    closed.category_ = ErrorCategory::INVALID_ARGUMENT;
+    closed.broker_code_ = "40580000";
+    closed.message_ = "not an order-acceptance time";
+    session.fail_place_with(closed);
+  }
+};
+
+} // namespace
+
+TEST_CASE("a protective stop refused out of hours rests at the open, once", "[kept-intents]") {
+  // A daily strategy decides at midnight; its stop reduces the position, so the phase limit lets it
+  // out, and a broker not taking orders refuses it. Kept, it goes out at the open instead of being
+  // restated -- and refused -- every midnight while the position stays unprotected.
+  KeptRig<StopsWhatItHolds> rig;
+  rig.source.held_ = Decimal64::parse("10");
+  rig.refuse_out_of_hours();
+  rig.loop.run(rig.stop, 17);  // 00:30 to 08:30
+  CHECK(rig.session.placed().size() == 1);  // the midnight attempt, refused
+  CHECK(rig.live_runner.intents_kept_for_phase() == 1);
+
+  rig.session.heal_place();
+  rig.loop.run(rig.stop, 6);
+  REQUIRE(rig.session.placed().size() == 2);
+  CHECK(rig.session.placed()[1].type_ == OrderType::STOP_LIMIT);
+  CHECK(rig.session.placed()[1].quantity_ == Decimal64::parse("10"));
+  CHECK(rig.live_runner.intents_kept_for_phase() == 0);
+}
+
+TEST_CASE("an opening order decided at midnight is placed at the open, once", "[kept-intents]") {
+  KeptRig<BuysOne> rig;
+  rig.loop.run(rig.stop, 17);
+  CHECK(rig.session.placed().empty());  // refused for the phase, never sent
+  CHECK(rig.live_runner.intents_kept_for_phase() == 1);
+  rig.loop.run(rig.stop, 6);
+  REQUIRE(rig.session.placed().size() == 1);
+  CHECK(rig.session.placed()[0].side_ == OrderSide::BUY);
+}
+
+TEST_CASE("a kept intent is dropped when the holding changed before the open", "[kept-intents]") {
+  // Another client traded the account overnight: the quantity decided at midnight is no longer one
+  // anybody decided for this book.
+  KeptRig<BuysOne> rig;
+  rig.loop.run(rig.stop, 17);
+  REQUIRE(rig.live_runner.intents_kept_for_phase() == 1);
+  rig.source.held_ = Decimal64::parse("5");
+  rig.loop.run(rig.stop, 6);
+  CHECK(rig.session.placed().empty());
+  CHECK(rig.live_runner.kept_intents_dropped() == 1);
+}
+
+TEST_CASE("a kept stop is dropped when a stop rests at the open", "[kept-intents]") {
+  KeptRig<StopsWhatItHolds> rig;
+  rig.source.held_ = Decimal64::parse("10");
+  rig.refuse_out_of_hours();
+  rig.loop.run(rig.stop, 17);
+  REQUIRE(rig.live_runner.intents_kept_for_phase() == 1);
+  rig.session.heal_place();
+  // The operator placed a stop from another terminal before the open.
+  WorkingOrders<FakeBroker> listing;
+  WorkingOrder<FakeBroker> stop;
+  stop.order_.instrument_ = samsung();
+  stop.order_.side_ = OrderSide::SELL;
+  stop.order_.status_ = OrderStatus::PENDING;
+  stop.order_.type_ = OrderType::STOP_LIMIT;
+  stop.order_.trigger_price_ = Decimal64::parse("64000");
+  stop.order_.price_ = Decimal64::parse("63900");
+  stop.order_.quantity_ = Decimal64::parse("10");
+  stop.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+  stop.amendable_quantity_ = Decimal64::parse("10");
+  stop.ref_ = FakeSession<WithCalendar>::Ref{"9", ""};
+  listing.orders_.push_back(stop);
+  rig.session.set_working_orders(listing);
+  rig.loop.run(rig.stop, 6);
+  CHECK(rig.session.placed().size() == 1);  // only the midnight attempt
+  CHECK(rig.live_runner.kept_intents_dropped() == 1);
+}
+
+TEST_CASE("an operator's halt discards a kept intent", "[kept-intents]") {
+  KeptRig<BuysOne> rig;
+  rig.loop.run(rig.stop, 17);
+  REQUIRE(rig.live_runner.intents_kept_for_phase() == 1);
+  rig.live_runner.guard().halt(strategy::HaltReason::OPERATOR);
+  rig.loop.run(rig.stop, 2);
+  CHECK(rig.live_runner.intents_kept_for_phase() == 0);
+  rig.live_runner.guard().resume(strategy::HaltReason::OPERATOR);
+  rig.loop.run(rig.stop, 4);
+  CHECK(rig.session.placed().empty());
+}
+
+TEST_CASE("a keyed intent a broker answered is not kept", "[kept-intents]") {
+  // A second order at the open would reuse the idempotency key of the one refused at midnight.
+  KeptRig<StopsWhatItHolds, WithCalendarAndKeys> rig(StopsWhatItHolds{std::string("stop-1")});
+  rig.source.held_ = Decimal64::parse("10");
+  rig.refuse_out_of_hours();
+  rig.loop.run(rig.stop, 17);
+  CHECK(rig.live_runner.intents_kept_for_phase() == 0);
+}
+
+TEST_CASE("a dry run keeps no intent the phase refused", "[kept-intents]") {
+  runner::DryRunner<BuysOne> dry;
+  dry.context().set_instrument(samsung_reference());
+  dry.context().set_phase(strategy::MarketPhase::PRE_OPEN);
+  dry.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  strategy::Portfolio<runner::DryTag> flat;
+  flat.as_of_ = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 100);
+  dry.context().set_portfolio(flat);
+  const auto report = dry.feed(bar_at(0, "70000"));
+  REQUIRE(report.refused_.size() == 1);
+  CHECK(dry.intents_kept_for_phase() == 0);
+}
+
 TEST_CASE("a broker refusal reaches a live run's report, with what the broker said") {
   // **The defect this slice exists for, exercised through the real source.** Five direct `feed`
   // cases prove the counters classify correctly and prove nothing about the defect, which lives in
