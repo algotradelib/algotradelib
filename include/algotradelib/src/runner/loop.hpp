@@ -365,6 +365,15 @@ struct runner_keeps_sent_orders<
   Runner, std::void_t<decltype(Runner::keeps_sent_orders_until_listed)>
 > : std::bool_constant<Runner::keeps_sent_orders_until_listed> {};
 
+/** Whether `Runner` counts the instructions it discarded as history (`Runner::feed_warmup`). */
+template <typename Runner, typename = void>
+struct runner_counts_warmup : std::false_type {};
+
+template <typename Runner>
+struct runner_counts_warmup<
+  Runner, std::void_t<decltype(std::declval<const Runner&>().warmup_instructions_discarded())>
+> : std::true_type {};
+
 /**
  * Cost a broker stated against its own orders, as observed on the snapshots a loop happened to poll.
  *
@@ -1474,6 +1483,7 @@ public:
     for (auto& count : consecutive_failures_) {
       count = 0;
     }
+    warmup_discarded_at_start_ = warmup_discarded();
 
     while (max_iterations == 0 || report.iterations_ < max_iterations) {
       const auto iteration = step(stop, report);
@@ -1559,6 +1569,7 @@ public:
     note_unestablished_phase(report);
     note_on_fill_never_fires(report);
     note_listing_outpaces_holdings(report);
+    note_warmup_discarded(report);
     return report;
   }
 
@@ -1586,6 +1597,34 @@ private:
       "broker's sellable figure appears " +
       std::string(strategy::sellable_convention_name(evidence.verdict())) + " (" +
       std::to_string(evidence.net_) + " net, " + std::to_string(evidence.gross_) + " gross)"
+    );
+  }
+
+  /** Returns how many instructions the runner has discarded as history, where it counts them. */
+  std::size_t warmup_discarded() const {
+    if constexpr (runner_counts_warmup<Runner>::value) {
+      return runner_->warmup_instructions_discarded();
+    } else {
+      return 0;
+    }
+  }
+
+  /**
+   * Says, once per run, how many instructions were decided on bars fed as history and not sent.
+   *
+   * Only the newest bar of each instrument's read may send (`Runner::feed_warmup`), so a cold start's
+   * history and a backlog after an outage are shown to the strategy and nothing decided on them goes
+   * out. Worth a line because it is also what a bar cadence slower than the bars' interval costs: a
+   * poll bringing five minute bars acts on the newest one only.
+   */
+  void note_warmup_discarded(LoopReport& report) const {
+    const auto discarded = warmup_discarded() - warmup_discarded_at_start_;
+    if (discarded == 0) {
+      return;
+    }
+    report.notes_.push_back(
+      std::to_string(discarded) + " instruction(s) decided on bars fed as history were not sent: "
+      "only the newest bar of each instrument's read may send (poll bars no slower than their interval)"
     );
   }
 
@@ -2715,6 +2754,8 @@ private:
   bool said_no_age_policy_{false};
   /** Which of `listing_missing`'s notes have been given, so each is said once per loop. */
   unsigned said_listing_{0};
+  /** The runner's discarded-history count when this run began; see `note_warmup_discarded`. */
+  std::size_t warmup_discarded_at_start_{0};
   std::optional<std::chrono::nanoseconds> maximum_buying_power_age_;
   std::optional<std::chrono::system_clock::time_point> next_due_[poll_kind_count];
   std::size_t consecutive_failures_[poll_kind_count] = {};

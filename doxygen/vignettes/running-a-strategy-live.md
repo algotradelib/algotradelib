@@ -488,11 +488,33 @@ That is what a replay does by filling at the next bar's open. The rules around i
   sets it, because a replay's clock visits only bar period ends; live, it sends every daily decision at
   midnight, where a broker rejects it.
 
-A process started during the session behaves differently from one started overnight. Overnight, every
-history bar's target is refused for the phase and only the latest survives, placed at the open.
-In-session, each history bar settles as it is fed, so a target that changed during the history is
-placed and withdrawn at startup, from closes that are days old. That is a known gap in how a cold
-start treats its history.
+### The history a cold start reads
+
+**An instruction reaches a broker only when it was decided on the newest closed bar the source held
+for that instrument at that poll.** A cold start's first read is a history — `live_program::Settings::
+bar_count_` bars per instrument — and `SessionSource` shows all of it to the strategy, in period-end
+order across the universe as a replay would, so indicators and a strategy's own state are warm. But
+everything decided on the older bars is discarded (`Runner::feed_warmup`), counted
+(`Runner::warmup_instructions_discarded`, `SessionSource::bars_fed_as_warmup`) and noted once in the
+run's report; only the newest bar's decision can be sent, or kept for the phase. The same holds for a
+backlog after an outage: two missed daily bars are both shown, and only the newer one acts.
+
+Why it matters: a restarted process used to act on every signal in its history, at today's price. An
+event-triggered strategy — `vanilla::RsiThreshold` enters on "not holding and oversold" — met an
+oversold bar months back against a flat book and bought again a minute after the previous process had
+sold. A level strategy (`SmaCrossover`) was right by accident, because only its last target survived.
+So a process started overnight and one started during the session now take the same decision: the
+newest bar's. Two consequences to design for:
+
+- **State levels, not transitions**, including for cancellations: a transition detected on history is
+  not acted on, and the newest bar's pass must be able to say what to hold without having seen it
+  happen.
+- **Poll bars no slower than their interval.** A poll that brings five minute bars acts on the newest
+  only; for a level strategy that is the position a continuous process would hold, for an event
+  strategy a signal lost (and counted), never a wrong trade.
+
+A source of your own must do the same: feed every new bar of a read but the newest through
+`feed_warmup`, in period-end order across instruments.
 
 ## The market phase, and what the loop needs to know it
 

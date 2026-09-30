@@ -1233,6 +1233,34 @@ public:
     return settle();
   }
 
+  /**
+   * Feeds one bar as history: the strategy sees it, and nothing it decides is sent.
+   *
+   * Exactly `feed`'s bookkeeping -- the bar is recorded in the series, the last price and the decision
+   * instant advance, and `on_bar` runs -- and then whatever the handler asked for is **discarded**,
+   * counted in `warmup_instructions_discarded`, without planning, sending, retaining or deferring any
+   * of it. A strategy's own state therefore evolves over a history exactly as it does in a replay; only
+   * the sending is withheld, and nothing a later pass relies on (deferred and retained targets, the
+   * reservations, the sellable probe, the guard's record) is touched.
+   *
+   * **The rule it serves**: an instruction reaches a broker only when it was decided on the newest
+   * closed bar a source held for that instrument at that poll. `live::SessionSource` feeds every older
+   * bar of a read through here -- a cold start's history, or a backlog after an outage -- so a restart
+   * does not act on a signal from months ago at today's price. A source of your own must do the same.
+   */
+  void feed_warmup(const strategy::BarEvent& event) {
+#if defined(ATL_HAS_EIGEN)
+    context_.record_bar(event);
+#endif
+    context_.set_last_price(event.instrument_, event.bar_.close_);
+    context_.set_now(event.period_end_);
+    dispatch::bar(strategy_, context_, event);
+    warmup_instructions_discarded_ += context_.drain().size();
+  }
+
+  /** Returns how many instructions `feed_warmup` discarded; monotone for the runner's life. */
+  std::size_t warmup_instructions_discarded() const noexcept { return warmup_instructions_discarded_; }
+
   /** Feeds one quote and calls the handler. */
   Report feed(const strategy::QuoteEvent& event) {
     context_.set_last_price(event.quote_.instrument_, event.quote_.last_price_);
@@ -2723,6 +2751,7 @@ private:
   std::size_t cancels_indeterminate_{0};
   /** Plans held back whole, for any of three reasons; see `plans_withheld`. */
   std::size_t plans_withheld_{0};
+  std::size_t warmup_instructions_discarded_{0};
   /** One target waiting for a stop's withdrawal, and when a listing first showed the stop gone. */
   struct DeferredTarget {
     /** The target, exactly as the strategy stated it. */
