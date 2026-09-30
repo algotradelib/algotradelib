@@ -321,8 +321,8 @@ The [user guide](doxygen/vignettes/guide.md) is eleven pages in the order they a
 | 10 | [Talking to a broker directly](doxygen/vignettes/broker-clients.md) | the KIS and Toss clients, and the order-safety rules |
 | 11 | [Transport and request pacing](doxygen/vignettes/transport-and-pacing.md) | the pacer, the traffic classes, how each broker reports a refusal |
 
-The same pages, with the API reference, build into HTML with Doxygen. In a build directory configured
-as above:
+The same pages, with the API reference, build into HTML with Doxygen, in a build directory configured
+as in "Build options":
 
 ```sh
 cmake --build build --target docs      # doxygen/docs/html/index.html, stamped with the version
