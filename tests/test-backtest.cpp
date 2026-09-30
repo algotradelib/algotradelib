@@ -1501,6 +1501,8 @@ TEST_CASE("a replay that fills a buy its cash cannot pay for says it borrowed", 
 #if defined(ATL_HAS_EIGEN)
   const auto report = backtest::summarize(result, engine.fills());
   CHECK(report.caveats_.overdrawn_bars_ == 1);
+  CHECK(report.caveats_.first_overdrawn_ == result.first_overdrawn_);
+  CHECK(report.caveats_.lowest_cash_at_ == result.lowest_cash_at_);
   REQUIRE(report.caveats_.lowest_cash_.has_value());
   CHECK(report.caveats_.lowest_cash_->amount_ == Decimal64::parse("-200000"));
 #endif
@@ -1529,7 +1531,8 @@ TEST_CASE("the buying-power check still lets a gap up overdraw", "[overdraft]") 
   engine.finish();
   REQUIRE(engine.result().executions_.size() == 1);
   REQUIRE(engine.result().lowest_cash_.has_value());
-  CHECK(decimal_less(engine.result().lowest_cash_->amount_, Decimal64::parse("0")));
+  // No commission in this config: the gap alone, 700,000 less ten at 72,000.
+  CHECK(engine.result().lowest_cash_->amount_ == Decimal64::parse("-20000"));
   CHECK(engine.result().overdrawn_bars_ == 1);
 }
 

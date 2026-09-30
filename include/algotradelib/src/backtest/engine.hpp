@@ -432,7 +432,8 @@ struct ReplayResult {
   /** Limit-basis fills whose credit the bound moved; see `ReportCaveats::limit_fills_bounded_`. */
   std::size_t limit_fills_bounded_{0};
   /**
-   * Bars whose equity point was recorded with the ledger's cash below zero, in `currency_`.
+   * Bars that closed with the ledger's cash below zero in `currency_`, in the unit of `bars_` (a
+   * replay of two instruments counts both instruments' bars).
    *
    * A replay fills what a strategy asks for, and nothing refuses a buy the cash cannot pay for
    * unless `RiskLimits::enforce_buying_power_` is on -- which it is not by default, because live the
@@ -446,14 +447,14 @@ struct ReplayResult {
    * shorts shows positive cash here; see the reading-a-backtest vignette on borrow availability. And
    * only the replay's own currency: an instrument in another currency buys from zero cash in that
    * currency by construction, which the same vignette covers. A replay configured with negative
-   * starting cash counts every bar.
+   * starting cash counts every bar, while `lowest_cash_` -- set by executions only -- can stay absent.
    */
   std::size_t overdrawn_bars_{0};
   /** The first bar end at which cash was below zero; absent when it never was. */
   std::optional<std::chrono::system_clock::time_point> first_overdrawn_;
   /**
    * The lowest cash any execution left in `currency_`, checked at every fill so a dip that recovers
-   * within a bar is kept; absent when cash never went below zero.
+   * within a bar is kept; absent when no execution left cash below zero.
    */
   std::optional<Money> lowest_cash_;
   /** When `lowest_cash_` was reached: that execution's `Fill::at_`. */
@@ -1058,7 +1059,6 @@ private:
     publish_order_updates();
   }
 
-  /** Records equity at this bar, and the return since the previous point. */
   /** Keeps the lowest cash an execution left in the replay's currency, when it is below zero. */
   void note_overdraft(const Execution& execution) {
     if (!(execution.currency_ == result_.currency_)) {
@@ -1074,6 +1074,7 @@ private:
     }
   }
 
+  /** Records equity at this bar, and the return since the previous point. */
   void record_equity(const strategy::BarEvent& event) {
     if (const auto cash = ledger_.cash_in(config_.currency_);
         cash && decimal_less(*cash, Decimal64::parse("0"))) {
