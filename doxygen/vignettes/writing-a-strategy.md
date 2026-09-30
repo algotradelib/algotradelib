@@ -201,8 +201,10 @@ namespace scope.
 
 ## Emit a target, not an order
 
-Every strategy this library ships emits `TargetPosition`. Do the same unless you have a reason not
-to, and the reason is this:
+Every strategy this library ships states a position: `TargetPosition`, or — for
+`EqualWeightRebalance` — an `OrderIntent` sized by `SizeSpec::target_weight`, which the runner plans
+as the position the weight states. Do the same unless you have a reason not to, and the reason is
+this:
 
 A strategy that emits orders has to remember whether it already entered. After a restart it does
 not know, so it either misses an exit or re-enters a position it already holds. Worse, it
@@ -215,7 +217,12 @@ Stating the position you want leaves that arithmetic to reconciliation, which ca
 because once the position matches, reconciliation produces nothing.
 
 Use `OrderIntent` when you genuinely mean "trade this much" rather than "hold this much" — and
-accept that the sizing is then yours.
+accept that the sizing is then yours. The one exception is a weight: `SizeSpec::target_weight` means
+"hold this fraction", so a weight-sized buy intent is planned as a target and diffed against the
+portfolio (a sell, a trigger, a non-day validity or an idempotency key on one is refused). It needs a
+portfolio value, which a replay supplies and a live runner does not. It stays an intent, though:
+withheld for the account or refused for the market phase, it is dropped rather than kept for later
+as a `TargetPosition` would be.
 
 ## What the context gives you
 

@@ -1251,6 +1251,14 @@ private:
   }
 
   void install_portfolio() {
+    // The value a weight is sized against: the ledger's equity in the replay's currency at the
+    // latest marks, which is what the equity curve records. Cleared when that total does not fit,
+    // so a weight is refused on such a bar rather than sized against the previous one.
+    if (const auto equity = ledger_.equity_in(config_.currency_)) {
+      runner_.set_portfolio_value(Money{*equity, config_.currency_});
+    } else {
+      runner_.clear_portfolio_value();
+    }
     auto portfolio = ledger_.snapshot<Tag>(clock_.now());
     for (const auto& entry : runner_.executor().queued()) {
       portfolio.working_.push_back(working_row(entry));

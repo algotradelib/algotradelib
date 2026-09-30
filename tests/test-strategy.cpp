@@ -1316,6 +1316,68 @@ TEST_CASE("a weighted intent needs the portfolio's value and says so when it lac
   REQUIRE(with.place_[0].quantity_ == Decimal64::parse("35"));
 }
 
+TEST_CASE("a weight states a holding, and what a holding cannot state is refused", "[weights]") {
+  const auto reference = samsung_reference();
+  ReconcileInputs inputs;
+  inputs.instrument_ = &reference;
+  inputs.reference_price_ = Decimal64::parse("70000");
+  inputs.portfolio_value_ = Decimal64::parse("10000000");
+  const auto quarter = SizeSpec::target_weight(Decimal64::parse("0.25"));
+
+  // A quarter of ten million at 70,000 is 35 shares, as a target.
+  const auto held = strategy::weight_target(OrderIntent::market(samsung(), OrderSide::BUY, quarter), inputs);
+  REQUIRE(held.target_.has_value());
+  CHECK(held.target_->target_quantity_ == Decimal64::parse("35"));
+
+  const auto refused = [&](const OrderIntent& intent) {
+    const auto out = strategy::weight_target(intent, inputs);
+    return !out.target_ && out.refused_ == RejectReason::UNSUPPORTED_WEIGHT;
+  };
+  // A sell would become a buy if its side were discarded.
+  CHECK(refused(OrderIntent::market(samsung(), OrderSide::SELL, quarter)));
+  CHECK(refused(OrderIntent::market(
+    samsung(), OrderSide::BUY, SizeSpec::target_weight(Decimal64::parse("-0.25")))));
+  CHECK(refused(OrderIntent::market(samsung(), OrderSide::BUY, quarter).with_client_order_id("k-1")));
+  const auto trigger = strategy::Price::checked(Decimal64::parse("69000"), krx());
+  const auto limit = strategy::Price::checked(Decimal64::parse("68900"), krx());
+  REQUIRE(trigger);
+  REQUIRE(limit);
+  CHECK(refused(OrderIntent::stop_limit(samsung(), OrderSide::BUY, quarter, *trigger, *limit)));
+
+  CHECK(refused(OrderIntent::limit(samsung(), OrderSide::BUY, quarter, *limit,
+                                   TimeInForce::IMMEDIATE_OR_CANCEL)));
+
+  // A limit prices the size: a quarter of ten million at 68,900 is 36 shares.
+  const auto limited =
+    strategy::weight_target(OrderIntent::limit(samsung(), OrderSide::BUY, quarter, *limit), inputs);
+  REQUIRE(limited.target_.has_value());
+  CHECK(limited.target_->target_quantity_ == Decimal64::parse("36"));
+
+  // A weight of zero is a target of zero: it sells the holding, as a target of zero does.
+  const auto none = strategy::weight_target(
+    OrderIntent::market(samsung(), OrderSide::BUY, SizeSpec::target_weight(Decimal64::parse("0"))),
+    inputs);
+  REQUIRE(none.target_.has_value());
+  CHECK(none.target_->target_quantity_ == Decimal64::parse("0"));
+
+  // A value of zero or less is not one to be a fraction of: refused, never a liquidation or a short.
+  for (const char* value : {"0", "-5000000"}) {
+    auto broke = inputs;
+    broke.portfolio_value_ = Decimal64::parse(value);
+    const auto out = strategy::weight_target(OrderIntent::market(samsung(), OrderSide::BUY, quarter), broke);
+    CHECK_FALSE(out.target_.has_value());
+    CHECK(out.refused_ == RejectReason::NO_PORTFOLIO_VALUE);
+  }
+
+  // A value stated in another currency is not the instrument's value.
+  inputs.portfolio_value_currency_ = Currency{"USD"};
+  const auto crossed = strategy::weight_target(OrderIntent::market(samsung(), OrderSide::BUY, quarter), inputs);
+  CHECK_FALSE(crossed.target_.has_value());
+  CHECK(crossed.refused_ == RejectReason::NO_PORTFOLIO_VALUE);
+  inputs.portfolio_value_currency_ = Currency{"KRW"};
+  CHECK(strategy::weight_target(OrderIntent::market(samsung(), OrderSide::BUY, quarter), inputs).target_);
+}
+
 TEST_CASE("a limit intent uses its own price to size a notional") {
   ProbePortfolio portfolio;
   const auto reference = samsung_reference();
