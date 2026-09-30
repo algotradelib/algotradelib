@@ -512,15 +512,17 @@ newest bar's. Two consequences to design for:
 - **Poll bars no slower than their interval.** A poll that brings five minute bars acts on the newest
   only; for a level strategy that is the position a continuous process would hold, for an event
   strategy a signal lost (and counted) rather than one acted on late.
-- **An instrument whose read ends early waits.** Only the newest bars after the last history bar of
-  the merged read can send, so a name suspended for days — its newest bar older than the others'
-  history — is shown to the strategy as history, and its own decision waits for its next bar.
+- **An instrument whose read ends early waits.** Only a newest bar whose period ended strictly after
+  every history bar of the read can send, so a name suspended today or for days — its newest bar no
+  later than the others' history — is shown to the strategy as history, and its own decision waits
+  for its next bar.
 - **A bar query that fails feeds nothing that poll**, for any instrument: the next poll reads them all
   again. One name that always fails therefore stops bars for the whole universe, and the loop reports
   the failing poll.
 
-A source of your own must do the same: feed every new bar of a read but the newest through
-`feed_warmup`, in period-end order across instruments.
+A source of your own must do the same: feed a read's new bars in period-end order across
+instruments, and feed live only each instrument's newest bar whose period ended strictly after every
+other bar of the read; everything else goes through `feed_warmup`.
 
 ## The market phase, and what the loop needs to know it
 

@@ -1246,7 +1246,9 @@ public:
    * **The rule it serves**: an instruction reaches a broker only when it was decided on the newest
    * closed bar a source held for that instrument at that poll. `live::SessionSource` feeds every older
    * bar of a read through here -- a cold start's history, or a backlog after an outage -- so a restart
-   * does not act on a signal from months ago at today's price. A source of your own must do the same.
+   * does not act on a signal from months ago at today's price. A source of your own must do the same:
+   * feed a read's new bars in period-end order across instruments, and feed live only each
+   * instrument's newest bar whose period ended after every other bar fed as history.
    */
   void feed_warmup(const strategy::BarEvent& event) {
 #if defined(ATL_HAS_EIGEN)
@@ -1745,8 +1747,8 @@ private:
    * `SessionSource` then fed a whole history read one pass per bar before the next listing, so a
    * target strategy under default limits sent one order per history bar (`tests/test-live.cpp`,
    * `[own-orders]`). It now feeds history through `feed_warmup`, which sends nothing; the reservation
-   * still covers every other pass before a listing (a runner fed by hand, two new bars between
-   * listings). The listing that retires the row is what bounds its life, so the loop holds such
+   * still covers every other pass before a listing (a runner fed by hand, two names in one bar poll,
+   * or bar polls that come faster than the listing's). The listing that retires the row is what bounds its life, so the loop holds such
    * a run while no listing will come -- the source publishes none, no working-order cadence is set,
    * or the last listing is older than the portfolio age policy (`PollingLoop::gate_for`).
    *

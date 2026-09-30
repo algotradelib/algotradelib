@@ -184,8 +184,9 @@ public:
   std::size_t bars_not_yet_closed() const noexcept { return bars_not_yet_closed_; }
 
   /**
-   * Returns how many bars were fed as history (`Runner::feed_warmup`): every new bar of a read but the
-   * newest, per instrument. Their decisions were discarded, never sent. Monotone.
+   * Returns how many bars were fed as history (`Runner::feed_warmup`): every new bar of a read but each
+   * instrument's newest, and a newest bar whose period did not end after all of those. Their
+   * decisions were discarded, never sent. Monotone.
    */
   std::size_t bars_fed_as_warmup() const noexcept { return bars_fed_as_warmup_; }
 
@@ -380,15 +381,17 @@ private:
     std::stable_sort(collected.begin(), collected.end(), [](const Collected& a, const Collected& b) {
       return a.event_.period_end_ < b.event_.period_end_;
     });
-    // **And not before another instrument's history.** An instrument whose read ends early -- a
-    // suspended name whose last bar is days old -- sorts its newest bar ahead of the other names'
-    // older ones; sent there, a cross-sectional strategy would act on a stale cross-section at
-    // today's price. So only newest bars after the last history bar in the merged order send; one
-    // before it is history too, and that instrument's decision waits for its next bar.
-    std::size_t live_from = 0;
-    for (std::size_t at = 0; at < collected.size(); ++at) {
-      if (!collected[at].newest_) {
-        live_from = at + 1;
+    // **And not at or before another instrument's history.** An instrument whose read ends early --
+    // a name suspended today, or for days -- has a newest bar no later than the other names' older
+    // ones; sent there, a cross-sectional strategy would act on a stale cross-section at today's
+    // price. So a newest bar sends only when its period ended strictly after every history bar of the
+    // read; one that did not is history too, and that instrument's decision waits for its next bar.
+    // Strictly: a tie with a history bar is the same stale session whichever name the universe lists
+    // first.
+    std::optional<std::chrono::system_clock::time_point> latest_history;
+    for (const auto& item : collected) {
+      if (!item.newest_ && (!latest_history || *latest_history < item.event_.period_end_)) {
+        latest_history = item.event_.period_end_;
       }
     }
     static_assert(
@@ -400,10 +403,9 @@ private:
     if (collected.empty()) {
       outcome = runner::PollOutcome::UNCHANGED;
     }
-    for (std::size_t at = 0; at < collected.size(); ++at) {
-      const auto& item = collected[at];
+    for (const auto& item : collected) {
       const auto& instrument = universe_[item.instrument_];
-      if (!item.newest_ || at < live_from) {
+      if (!item.newest_ || (latest_history && !(*latest_history < item.event_.period_end_))) {
         runner_instance.feed_warmup(item.event_);
         ++bars_fed_as_warmup_;
         last_bar_[instrument.symbol_] = item.event_.bar_.timestamp_;

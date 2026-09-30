@@ -2328,6 +2328,26 @@ TEST_CASE("an instrument whose read ends early does not send before the others' 
   CHECK(rig.source.bars_fed_as_warmup() == 8);
 }
 
+TEST_CASE("a name one bar behind waits, whatever order the universe lists it in", "[warmup]") {
+  // Hynix suspended today: its newest bar ties with Samsung's history bar of the same session, and
+  // it is that stale session whichever name is listed first.
+  for (const bool hynix_first : {false, true}) {
+    WarmupRig<BuysOne> rig(hynix_first ? std::vector<InstrumentId>{hynix(), samsung()}
+                                       : std::vector<InstrumentId>{samsung(), hynix()});
+    rig.session.set_bars_for(samsung().symbol_, history_bars(6));
+    rig.session.set_bars_for(hynix().symbol_, history_bars(5));
+    rig.loop.run(rig.stop, 1);
+    REQUIRE(rig.session.placed().size() == 1);
+    CHECK(rig.session.placed()[0].instrument_ == samsung());
+
+    // The next session, one new bar each, sends both -- and the bar fed as history is not fed again.
+    rig.session.set_bars_for(samsung().symbol_, history_bars(7));
+    rig.session.set_bars_for(hynix().symbol_, history_bars(7));
+    rig.loop.run(rig.stop, 1);
+    CHECK(rig.session.placed().size() == 3);
+  }
+}
+
 TEST_CASE("a bar fed as history changes the strategy and no counter or reservation", "[warmup]") {
   runner::DryRunner<BuysOne> dry;
   dry.context().set_instrument(samsung_reference());
