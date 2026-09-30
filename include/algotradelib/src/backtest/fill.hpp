@@ -118,6 +118,27 @@ public:
   LimitFillPrice limit_price() const noexcept { return limit_price_; }
 
   /**
+   * Returns this model with a tax charged on every sale, at `rate` of the sale's value.
+   *
+   * **The caller states the rate; the library has none of its own.** Korean securities transaction
+   * tax is the case it exists for -- charged on sales only, and moved every year since 2023 -- and a
+   * rate baked into the library would silently misprice every replay run after it moved. A replay
+   * spanning a change is charged one rate throughout, as it is for commission. The tax is truncated
+   * to whole currency units, as the Korean tax is, and kept apart from commission on
+   * `Execution::tax_` and `Report::tax_paid_`, because a broker reports the two separately
+   * (`OrderExecution::tax_` beside `commission_`) and a figure folding one into the other could not
+   * be compared with a live account's.
+   */
+  NextBarFillModel with_sell_tax(Decimal64 rate) const {
+    auto model = *this;
+    model.sell_tax_rate_ = std::move(rate);
+    return model;
+  }
+
+  /** Returns the stated tax rate on sales, or nothing when no tax is modelled. */
+  const std::optional<Decimal64>& sell_tax_rate() const noexcept { return sell_tax_rate_; }
+
+  /**
    * Returns whether an unfilled order stays queued for a later bar.
    *
    * Resting is a property of the *condition*, not of the basis: an
@@ -313,6 +334,25 @@ public:
       return decision;
     }
 
+    // The tax on a sale, where a rate was stated: of the sale's value, truncated to whole units.
+    std::optional<Decimal64> tax;
+    if (sell_tax_rate_ && order.side_ == OrderSide::SELL) {
+      const auto value = decimal_multiply(order.quantity_, slipped->first);
+      const auto charged = value ? decimal_multiply(*value, *sell_tax_rate_) : std::nullopt;
+      tax = charged ? decimal_floor_to_multiple(*charged, Decimal64::parse("1")) : std::nullopt;
+      if (!tax) {
+        // Not a tax of zero: the sale happened and its cost is unknown, which is the same refusal a
+        // commission that does not fit is. The engine halts on it.
+        BrokerError error;
+        error.category_ = ErrorCategory::INVALID_ARGUMENT;
+        error.reached_broker_ = false;
+        error.broker_code_ = "tax_not_representable";
+        error.message_ = "the tax on that sale does not fit an exact decimal";
+        decision.costing_error_ = std::move(error);
+        return decision;
+      }
+    }
+
     Execution execution;
     execution.fill_.instrument_ = order.instrument_;
     execution.fill_.side_ = order.side_;
@@ -324,6 +364,9 @@ public:
     execution.institution_fee_ = charged.value().institution_;
     execution.applied_ = std::move(charged.value().applied_);
     execution.slippage_ = slipped->second;
+    if (tax) {
+      execution.tax_ = *tax;
+    }
     decision.execution_ = std::move(execution);
     return decision;
   }
@@ -462,6 +505,7 @@ private:
   CommissionPolicy commission_;
   SlippageModel slippage_;
   LimitFillPrice limit_price_;
+  std::optional<Decimal64> sell_tax_rate_;
 };
 
 } // namespace backtest

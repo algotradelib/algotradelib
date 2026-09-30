@@ -2132,6 +2132,51 @@ TEST_CASE("a replay sells what it holds with the sellable check enabled") {
   REQUIRE(engine.result().executions_[1].fill_.side_ == OrderSide::SELL);
 }
 
+TEST_CASE("a stated tax is charged on a sale only, and leaves the account", "[sell-tax]") {
+  // The Korean securities transaction tax is charged on sales; a replay could not say so, because a
+  // commission rate has no side. The rate is the caller's, never the library's.
+  const auto fills = backtest::NextBarFillModel().with_sell_tax(Decimal64::parse("0.002"));
+  backtest::Backtester<BuysThenSells> engine(BuysThenSells{}, replay_config(), fills);
+  for (int day = 10; day < 16; ++day) {
+    engine.feed(moving_bar(utc(2026, 3, day, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  }
+  engine.finish();
+
+  const auto& executions = engine.result().executions_;
+  REQUIRE(executions.size() == 2);
+  REQUIRE(executions[0].fill_.side_ == OrderSide::BUY);
+  CHECK(executions[0].tax_ == Decimal64::parse("0"));
+  REQUIRE(executions[1].fill_.side_ == OrderSide::SELL);
+  // Ten at seventy thousand is seven hundred thousand, and 0.2 % of it is 1,400.
+  CHECK(executions[1].tax_ == Decimal64::parse("1400"));
+  // Bought and sold at the same price with no commission: the tax is all the account lost.
+  CHECK(engine.ledger().cash_in(Currency{"KRW"}) == std::optional<Decimal64>(Decimal64::parse("99998600")));
+
+#if defined(ATL_HAS_EIGEN)
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  REQUIRE(report.tax_paid_.has_value());
+  CHECK(*report.tax_paid_ == Decimal64::parse("1400"));
+  REQUIRE(report.caveats_.sell_tax_rate_.has_value());
+  CHECK(*report.caveats_.sell_tax_rate_ == Decimal64::parse("0.002"));
+#endif
+}
+
+TEST_CASE("no stated tax charges none and reports no figure", "[sell-tax]") {
+  backtest::Backtester<BuysThenSells> engine(BuysThenSells{}, replay_config());
+  for (int day = 10; day < 16; ++day) {
+    engine.feed(moving_bar(utc(2026, 3, day, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  }
+  engine.finish();
+  REQUIRE(engine.result().executions_.size() == 2);
+  CHECK(engine.result().executions_[1].tax_ == Decimal64::parse("0"));
+  CHECK(engine.ledger().cash_in(Currency{"KRW"}) == std::optional<Decimal64>(Decimal64::parse("100000000")));
+#if defined(ATL_HAS_EIGEN)
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  CHECK_FALSE(report.tax_paid_.has_value());
+  CHECK_FALSE(report.caveats_.sell_tax_rate_.has_value());
+#endif
+}
+
 TEST_CASE("a replay reports every held share as sellable, and says so") {
   // The modelling assumption itself, pinned where a reader of the ledger would look for it: the
   // snapshot answers the question the guard asks, and answers it with the whole holding.

@@ -286,6 +286,8 @@ struct ReportCaveats {
    * count is a fill whose recorded price the bar, not the configuration, decided. Appended.
    */
   std::size_t limit_fills_bounded_{0};
+  /** The tax rate charged on sales, as stated to the fill model; absent when no tax was modelled. */
+  std::optional<Decimal64> sell_tax_rate_;
 };
 
 /** What a replay produced, with every figure's absence meaning what `analytics` says it means. */
@@ -369,6 +371,14 @@ struct Report {
   std::optional<Decimal64> slippage_paid_;
   /** Slippage given up per currency, which is always stated whatever the scalar above does. */
   std::vector<Money> slippage_by_currency_;
+  /**
+   * The tax charged on sales, where the fill model stated a rate (`NextBarFillModel::with_sell_tax`).
+   * Absent when no rate was stated -- which is not a tax of zero, it is no tax modelled -- and, like
+   * the other cost totals, absent across more than one currency or when a sum did not fit.
+   */
+  std::optional<Decimal64> tax_paid_;
+  /** The same, per currency, whenever a rate was stated. */
+  std::vector<Money> tax_by_currency_;
 
   /** Instructions reconciliation could not build; a replay's executor refuses nothing. */
   std::size_t rejected_{0};
@@ -508,6 +518,9 @@ inline Report summarize(
     // Slippage is a per-share price difference, so its cost is that times the quantity -- and it
     // is totalled per currency like every other cost, because a replay can hold fills in more
     // than one and adding them would produce a figure denominated in nothing.
+    if (fills.sell_tax_rate()) {
+      accumulate(report.tax_by_currency_, Money{execution.tax_, execution.currency_});
+    }
     if (const auto cost = decimal_multiply(execution.slippage_, execution.fill_.quantity_)) {
       accumulate(report.slippage_by_currency_, Money{*cost, execution.currency_});
     } else {
@@ -540,6 +553,14 @@ inline Report summarize(
   }
   if (costs_fit && report.slippage_by_currency_.size() == 1) {
     report.slippage_paid_ = report.slippage_by_currency_.front().amount_;
+  }
+  report.caveats_.sell_tax_rate_ = fills.sell_tax_rate();
+  if (fills.sell_tax_rate() && costs_fit) {
+    if (report.tax_by_currency_.size() == 1) {
+      report.tax_paid_ = report.tax_by_currency_.front().amount_;
+    } else if (report.tax_by_currency_.empty()) {
+      report.tax_paid_ = Decimal64::parse("0");
+    }
   }
   report.caveats_.multiple_instruments_ = seen.size() > 1;
 

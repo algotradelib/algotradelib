@@ -83,6 +83,11 @@ struct Execution {
    * model's assumptions rather than from the strategy.
    */
   Decimal64 slippage_;
+  /**
+   * The tax charged on this execution: on a sale, where `NextBarFillModel::with_sell_tax` stated a
+   * rate; zero otherwise. Leaves the account with the commission, and is reported apart from it.
+   */
+  Decimal64 tax_;
 };
 
 /**
@@ -217,6 +222,10 @@ public:
     if (!after_fees) {
       return false;
     }
+    const auto after_tax = decimal_subtract(*after_fees, execution.tax_);
+    if (!after_tax) {
+      return false;
+    }
 
     // Read, never opened. Opening the lot here is what made an early return leave a trace.
     const auto* existing = find(fill.instrument_);
@@ -292,7 +301,7 @@ public:
     // what the remaining half cost.
 
     const auto cash_total = decimal_add(
-      cash_in(currency).value_or(zero), *after_fees
+      cash_in(currency).value_or(zero), *after_tax
     );
     if (!cash_total) {
       return false;
