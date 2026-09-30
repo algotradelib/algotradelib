@@ -81,7 +81,8 @@ public:
    * again beside the one resting. At Kiwoom the working-order listing documents a separate `sor_yn`
    * flag, which the adapter reads (`kiwoom::listed_venue`), and the history names `SOR`; neither has
    * been seen on an account. At KIS nothing documents how a SOR order is listed back. A single venue
-   * has no such doubt.
+   * has less doubt: at Kiwoom it relies only on a plain order's `sor_yn` reading `N`, as the
+   * specification's example row does.
    */
   Venue default_route() const noexcept { return default_route_; }
 

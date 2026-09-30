@@ -221,7 +221,7 @@ int run_kiwoom(ssl::context& tls, const Arguments& arguments) {
   // none, so the binding states where they go. KRX here; `Venue::NXT` for Nextrade, or
   // `Venue::COMBINED` for Kiwoom's SOR, which its order endpoints document -- whether a demo account
   // accepts SOR, and whether the listing's `sor_yn` flag reads as documented, has not been observed,
-  // so KRX is the route with no open question.
+  // so KRX is the route with the fewest open questions.
   settings.default_route_ = atl::Venue::KRX;
   name_journal(settings, arguments, "kiwoom", demo, accounts.value().front().display_number_);
   announce(arguments, settings, demo, "KIWOOM_DEMO");
