@@ -1344,6 +1344,31 @@ TEST_CASE("a weight states a holding, and what a holding cannot state is refused
   REQUIRE(limit);
   CHECK(refused(OrderIntent::stop_limit(samsung(), OrderSide::BUY, quarter, *trigger, *limit)));
 
+  CHECK(refused(OrderIntent::limit(samsung(), OrderSide::BUY, quarter, *limit,
+                                   TimeInForce::IMMEDIATE_OR_CANCEL)));
+
+  // A limit prices the size: a quarter of ten million at 68,900 is 36 shares.
+  const auto limited =
+    strategy::weight_target(OrderIntent::limit(samsung(), OrderSide::BUY, quarter, *limit), inputs);
+  REQUIRE(limited.target_.has_value());
+  CHECK(limited.target_->target_quantity_ == Decimal64::parse("36"));
+
+  // A weight of zero is a target of zero: it sells the holding, as a target of zero does.
+  const auto none = strategy::weight_target(
+    OrderIntent::market(samsung(), OrderSide::BUY, SizeSpec::target_weight(Decimal64::parse("0"))),
+    inputs);
+  REQUIRE(none.target_.has_value());
+  CHECK(none.target_->target_quantity_ == Decimal64::parse("0"));
+
+  // A value of zero or less is not one to be a fraction of: refused, never a liquidation or a short.
+  for (const char* value : {"0", "-5000000"}) {
+    auto broke = inputs;
+    broke.portfolio_value_ = Decimal64::parse(value);
+    const auto out = strategy::weight_target(OrderIntent::market(samsung(), OrderSide::BUY, quarter), broke);
+    CHECK_FALSE(out.target_.has_value());
+    CHECK(out.refused_ == RejectReason::NO_PORTFOLIO_VALUE);
+  }
+
   // A value stated in another currency is not the instrument's value.
   inputs.portfolio_value_currency_ = Currency{"USD"};
   const auto crossed = strategy::weight_target(OrderIntent::market(samsung(), OrderSide::BUY, quarter), inputs);

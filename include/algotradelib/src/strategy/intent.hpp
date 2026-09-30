@@ -156,7 +156,9 @@ public:
    *
    * **A weight is a holding.** The runner plans a buy `OrderIntent` sized this way as the position it
    * states (`strategy::weight_target`), diffed against what is held and working, so restating the
-   * same weight places nothing. A sell, a negative weight, a trigger, a non-day validity or an
+   * same weight places nothing -- and, as for any target, other working orders on the instrument are
+   * withdrawn (a separate take-profit limit included), and the intent's limit prices whichever trade
+   * the difference needs. A sell, a negative weight, a trigger, a non-day validity or an
    * idempotency key is refused (`RejectReason::UNSUPPORTED_WEIGHT`). It needs the portfolio's value:
    * a replay supplies its own equity; a live runner is refused `no_portfolio_value` unless the caller
    * sets `Runner::set_portfolio_value`, because no adapter states an account total the library can

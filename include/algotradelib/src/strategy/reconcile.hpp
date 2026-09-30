@@ -827,8 +827,14 @@ struct WeightTarget {
  * (`UNSUPPORTED_WEIGHT`): a sell or a negative weight (the side would be discarded, turning a sell
  * into a buy), a trigger (a target carries none, so a stop would become an immediate limit), a
  * validity other than a day order, or an idempotency key (a target carries neither, and a key
- * silently dropped is a retry that looked safe). Refused `NO_PORTFOLIO_VALUE` with no value, or with a
- * value stated in another currency than the instrument's; `NO_PRICE_AVAILABLE` with no price.
+ * silently dropped is a retry that looked safe). Refused `NO_PORTFOLIO_VALUE` with no value, a value
+ * of zero or less, or a value stated in another currency than the instrument's; `NO_PRICE_AVAILABLE`
+ * with no price.
+ *
+ * As a target it behaves as a target does: other working orders on the instrument are withdrawn when
+ * the weight is met, and orders opposing the trade it needs are withdrawn before it; and a buy
+ * intent's limit is the limit of whatever trade the difference needs, so when the holding is above
+ * the weight a passive buy limit becomes the limit of a sell.
  */
 inline WeightTarget weight_target(const OrderIntent& intent, const ReconcileInputs& inputs) {
   WeightTarget out;
@@ -844,7 +850,10 @@ inline WeightTarget weight_target(const OrderIntent& intent, const ReconcileInpu
   if (inputs.instrument_ == nullptr) {
     return refuse(RejectReason::NO_REFERENCE_DATA);
   }
-  if (!inputs.portfolio_value_ ||
+  // A value of zero or less is not one a holding can be a fraction of: sized against it, a weight
+  // would become a liquidation (zero) or a short (negative) -- an account whose read failed and came
+  // back empty, or a replay that borrowed below zero equity, must not sell on that.
+  if (!inputs.portfolio_value_ || inputs.portfolio_value_->coefficient() <= 0 ||
       (inputs.portfolio_value_currency_ &&
        !(*inputs.portfolio_value_currency_ == inputs.instrument_->currency_))) {
     return refuse(RejectReason::NO_PORTFOLIO_VALUE);

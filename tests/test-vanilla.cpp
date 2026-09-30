@@ -564,6 +564,49 @@ TEST_CASE("a weight on an instrument with a resting stop is refused, and the sto
   CHECK(report.would_place_[0].instrument_ == hynix());
 }
 
+TEST_CASE("a cleared portfolio value refuses a weight rather than sizing on the old one", "[weights]") {
+  vanilla::EqualWeightRebalance weighted;
+  weighted.params_.universe_ = {samsung(), hynix()};
+  weighted.params_.weight_scale_ = 1;
+  runner::DryRunner<vanilla::EqualWeightRebalance> dry(weighted);
+  arrange(dry, {samsung(), hynix()});
+  dry.context().set_portfolio(holding("0"));
+  dry.clear_portfolio_value();
+  const auto report = dry.feed(strategy::MarketPhase::OPEN);
+  CHECK(report.would_place_.empty());
+  REQUIRE(report.rejected_.size() == 2);
+  CHECK(report.rejected_[0].reason_ == strategy::RejectReason::NO_PORTFOLIO_VALUE);
+}
+
+TEST_CASE("a stop on a holding already at its weight is left alone, quietly", "[weights]") {
+  vanilla::EqualWeightRebalance weighted;
+  weighted.params_.universe_ = {samsung(), hynix()};
+  weighted.params_.weight_scale_ = 1;
+  runner::DryRunner<vanilla::EqualWeightRebalance> dry(weighted);
+  arrange(dry, {samsung(), hynix()});
+  auto portfolio = holding("714");
+  WorkingOrder<runner::DryTag> stop;
+  stop.order_.instrument_ = samsung();
+  stop.order_.side_ = OrderSide::SELL;
+  stop.order_.status_ = OrderStatus::PENDING;
+  stop.order_.type_ = OrderType::STOP_LIMIT;
+  stop.order_.trigger_price_ = Decimal64::parse("65000");
+  stop.order_.price_ = Decimal64::parse("64900");
+  stop.order_.quantity_ = Decimal64::parse("714");
+  stop.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+  stop.amendable_quantity_ = Decimal64::parse("714");
+  portfolio.working_.push_back(stop);
+  dry.context().set_portfolio(portfolio);
+  const auto report = dry.feed(strategy::MarketPhase::OPEN);
+  CHECK(report.would_cancel_.empty());
+  for (const auto& rejection : report.rejected_) {
+    CHECK_FALSE(rejection.instrument_ == samsung());
+  }
+  for (const auto& order : report.would_place_) {
+    CHECK_FALSE(order.instrument_ == samsung());
+  }
+}
+
 #if defined(ATL_HAS_EIGEN)
 TEST_CASE("a replay sizes a weight against its own equity", "[weights]") {
   // No caller could: `Backtester` keeps its runner private and nothing set the portfolio value, so

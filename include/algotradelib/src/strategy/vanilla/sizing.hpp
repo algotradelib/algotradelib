@@ -124,8 +124,10 @@ struct VolatilityTargetSizing {
  * about once in the whole run, because its clock visits only bar ends -- replay it on intraday bars
  * to rebalance every session. Live, it is refused `no_portfolio_value` until the caller sets
  * `Runner::set_portfolio_value`. On a multi-instrument replay the phase fires while the first
- * instrument's bar is fed, so the others are sized at their previous close. Set a notional
- * `TradeTolerance` so a one-share drift is not chased every rebalance.
+ * instrument's bar is fed, so the others are sized at their previous close; the value is equity in the
+ * replay's currency only, so on a mixed-currency replay it understates the account; and a replay fed
+ * quotes moves prices while the value stays at the last bar's marks. Set a notional `TradeTolerance`
+ * so a one-share drift is not chased every rebalance.
  */
 struct EqualWeightRebalance {
   /** How this strategy is configured. */

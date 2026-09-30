@@ -2393,7 +2393,8 @@ private:
    * resting stop when a trade is needed and waits for the stop's own history before trading, which
    * only a `TargetPosition` in the instruction stream can do (`defer_if_waiting_on_stop`); a weight
    * intent is not one, and an intent has never touched a stop. So a weight on an instrument with a
-   * stop resting is refused `STOP_ORDER_RESTING` and the stop stays.
+   * stop resting is refused `STOP_ORDER_RESTING` and the stop stays -- unless the holding already
+   * meets it, when nothing is traded or withdrawn at all.
    */
   strategy::Plan<Tag> plan_weight(
     const strategy::OrderIntent& intent,
@@ -2408,6 +2409,13 @@ private:
       return plan;
     }
     if (stop_listed(intent.instrument())) {
+      // Met already: nothing to trade, and the stop protects what the weight means to hold, which
+      // is `STOP_ORDER_RESTING`'s own rule for a met target. Unlike a target, nothing else on the
+      // instrument is withdrawn either.
+      const auto held = context_.portfolio().net_quantity_of(intent.instrument());
+      if (held && *held == converted.target_->target_quantity_) {
+        return plan;
+      }
       plan.rejected_.push_back(strategy::Rejection{
         strategy::RejectReason::STOP_ORDER_RESTING, intent.instrument(), intent.tag()});
       return plan;
