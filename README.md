@@ -141,7 +141,7 @@ the only place the version is written; CMake reads it, so the package version al
 
 `ATL_VERSION` encodes the release only, as `BOOST_VERSION` does. `ATL_VERSION_DEV` is 0 for a release
 and otherwise marks unreleased work after it: today's `0.0.0.9000` is the development version before
-any release. What changed is in [CHANGELOG.md](CHANGELOG.md).
+any release.
 
 ### Build options
 
