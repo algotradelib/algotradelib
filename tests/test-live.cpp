@@ -978,8 +978,8 @@ TEST_CASE("a runner's journal, order, reservation and withdrawal all name the de
   // withdrawal built from it, and the report by the operator. A default applied only at the wire
   // would leave the other three naming a venue the order never went to.
   //
-  // The session has no traits, so the journal's route is the binding's answer alone: a third
-  // party's adapter that does not say how it routes an omitted venue still journals the default.
+  // The runner resolves the route before the journal sees the order, so this case does not guard
+  // the executor's own fallback for a session without traits; the case above does.
   FakeSession<SellableInHoldings> session;
   runner::MemoryJournal journal;
   strategy::RiskLimits limits;
@@ -1013,6 +1013,17 @@ TEST_CASE("a runner's journal, order, reservation and withdrawal all name the de
   live_runner.feed(bar_at(2, "70000"));
   REQUIRE(session.canceled().size() == 1);
   CHECK(session.canceled()[0].venue_ == Venue::KRX);
+}
+
+TEST_CASE("an unjournaled binding takes a default route too", "[route]") {
+  // `bind` builds its own executor, so a parameter it forgot to pass on would leave the runner
+  // sending unrouted orders while its caller had stated a route.
+  FakeSession<WithoutKey> session;
+  auto bound = live::bind(
+    session, HoldTen{}, strategy::RiskLimits{}, live::default_series_capacity, Venue::KRX
+  );
+  CHECK(bound.executor().default_route() == Venue::KRX);
+  CHECK(live::bind(session, HoldTen{}).executor().default_route() == Venue::UNSPECIFIED);
 }
 
 TEST_CASE("a binding with no default route sends and records the planned venue", "[route]") {
