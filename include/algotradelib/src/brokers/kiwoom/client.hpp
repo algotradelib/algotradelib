@@ -760,12 +760,14 @@ inline Venue normalized_venue(std::string_view code) noexcept {
 /**
  * Returns the venue a `ka10075` working-order row reports, from its `stex_tp` and `sor_yn`.
  *
- * **`sor_yn` is read because `stex_tp` alone may not say SOR.** Kiwoom documents the two separately
- * -- `stex_tp` 거래소구분 as `0 : 통합, 1 : KRX, 2 : NXT` and `sor_yn` SOR 여부값 as `Y,N` -- which
- * suggests a SOR order is listed under the book it rests on with the flag set. Read from `stex_tp`
- * alone, such a row says KRX while the journal recorded `COMBINED`, recovery reads it as a different
- * order, and a withdrawal would be sent with `KRX` instead of the `SOR` it was placed with. So `Y`
- * means `Venue::COMBINED` whatever `stex_tp` says. Anything else, including an absent or unreadable
+ * **`sor_yn` is read in case `stex_tp` alone does not say SOR.** Kiwoom documents the two
+ * separately -- `stex_tp` 거래소구분 as `0 : 통합, 1 : KRX, 2 : NXT` and `sor_yn` SOR 여부값 as
+ * `Y,N`. Its only example SOR row (`ka10076`'s) reads `stex_tp 0`, `stex_tp_txt SOR`, `sor_yn Y`,
+ * which `stex_tp` already reads as `COMBINED`; but nothing documents how a resting SOR order is listed.
+ * If it came under the book it rests on with the flag set, `stex_tp` alone would say KRX while the
+ * journal recorded `COMBINED`, recovery would read it as a different order, and a withdrawal would be
+ * sent with `KRX` instead of the `SOR` it was placed with. So `Y` means `Venue::COMBINED` whatever
+ * `stex_tp` says. Anything else, including an absent or unreadable
  * flag, leaves `stex_tp` to answer: the flag is informational for every other order, and one odd
  * row must not cost a listing. Documented, not yet observed on an account.
  */
