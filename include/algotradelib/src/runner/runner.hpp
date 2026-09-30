@@ -981,40 +981,80 @@ public:
   }
 
   /**
-   * Plans again the targets withheld for want of a trustworthy account, once there is one.
+   * Plans again the targets withheld for want of a trustworthy account, once there is one, and the
+   * targets the market phase refused, once the phase permits them.
    *
    * A target withheld as `PORTFOLIO_ABSENT`, `PORTFOLIO_STALE` or `PORTFOLIO_SUPERSEDED` -- stated from
    * an `on_order_update` during the listing poll, say, or on a bar after a failed holdings read -- is
    * kept (`targets_retained`) and resubmitted here. `PollingLoop` calls it after each iteration's
    * polls and gate, so the account and the budget it is sized against are that iteration's.
    *
+   * **A target the phase refused waits for a permitted phase** (`targets_retained_for_phase`). A daily
+   * strategy decides on a bar fed after its day has ended -- at 00:00 KST for every shipped adapter's
+   * daily bars -- while the market is shut: its opening order is refused `PHASE_NOT_PERMITTED`, and an
+   * exit the limit admits outside the phase is typically rejected by a broker that is not taking
+   * orders. Either way the target is kept, and planned again in the first iteration whose phase
+   * `RiskLimits::permitted_phases_` admits, which is what a replay does by filling at the next bar's
+   * open. Only for a runner that sends to a broker: a replay and a dry run never call this, and keep
+   * dropping a refused target as before.
+   *
    * **Does nothing, and keeps them, until it can succeed**: while the account was never read or
    * predates the listing, and while any hold is in force. A later target or order intent for the same
    * instrument replaces a retained target; a stop or an abandoned run discards them
    * (`clear_retained_targets`), so retained work lives for one `PollingLoop::run`. `PollingLoop`
-   * retries last in an iteration, after `on_phase`. Within a run, a target retained before an
-   * operator's halt survives it and is planned, against fresh holdings, once the halt is lifted.
+   * retries last in an iteration, after `on_phase`. Within a run, a target retained for the account
+   * before an operator's halt survives it and is planned, against fresh holdings, once the halt is
+   * lifted; **a target retained for the phase does not**: an operator's halt or a local failure
+   * discards it, because it may have been decided hours before and the operator stopped trading since.
    *
    * A program driving a `Runner` without `PollingLoop` retains the same way and must call this
    * itself, or `clear_retained_targets`; nothing else replays or discards them. A replay never stamps
    * `Portfolio::working_as_of_`, so a backtest never withholds as superseded.
    */
   Report retry_retained_targets() {
+    if (guard_.halted(strategy::HaltReason::OPERATOR) ||
+        guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
+      retained_targets_.erase(
+        std::remove_if(
+          retained_targets_.begin(), retained_targets_.end(),
+          [](const RetainedTarget& kept) { return kept.for_phase_; }
+        ),
+        retained_targets_.end()
+      );
+    }
     if (retained_targets_.empty() ||
         context_.portfolio().as_of_ == std::chrono::system_clock::time_point{} ||
         context_.portfolio().listing_newer_than_holdings() || guard_.blocking_reason()) {
       return Report{};
     }
-    auto retained = std::move(retained_targets_);
-    retained_targets_.clear();
-    for (auto& target : retained) {
-      context_.submit(std::move(target));
+    const bool phase_permits = guard_.permits_phase(context_.phase());
+    std::vector<RetainedTarget> kept;
+    bool released = false;
+    for (auto& entry : retained_targets_) {
+      if (entry.for_phase_ && !phase_permits) {
+        kept.push_back(std::move(entry));
+        continue;
+      }
+      context_.submit(std::move(entry.target_));
+      released = true;
+    }
+    retained_targets_ = std::move(kept);
+    if (!released) {
+      return Report{};
     }
     return settle();
   }
 
-  /** Returns how many targets are retained for the next holdings read; see `retry_retained_targets`. */
+  /** Returns how many targets are retained, for either reason; see `retry_retained_targets`. */
   std::size_t targets_retained() const noexcept { return retained_targets_.size(); }
+
+  /** Returns how many of them wait for a permitted market phase; see `retry_retained_targets`. */
+  std::size_t targets_retained_for_phase() const noexcept {
+    return static_cast<std::size_t>(std::count_if(
+      retained_targets_.begin(), retained_targets_.end(),
+      [](const RetainedTarget& kept) { return kept.for_phase_; }
+    ));
+  }
 
   /** Discards every retained target. `PollingLoop` calls it once a stop is requested. */
   void clear_retained_targets() noexcept { retained_targets_.clear(); }
@@ -1221,6 +1261,10 @@ private:
     auto instructions = context_.drain();
     drop_superseded_deferred(instructions);
     std::vector<strategy::PlannedOrder> pending;
+    // The instruction each pending order came from, aligned with `pending`, so a phase refusal can
+    // keep the target that produced it (`retain_for_phase`). Points into `instructions`, which lives
+    // for the whole pass.
+    std::vector<const Instruction<Tag>*> origin;
 
     // **One withdrawal per order per pass.** A strategy that clears what is resting and then states
     // a target asks twice for the same order: the explicit `CancelIntent` goes out, and then
@@ -1337,6 +1381,7 @@ private:
       }
       for (const auto& order : planned.place_) {
         pending.push_back(order);
+        origin.push_back(&instruction);
       }
     }
 
@@ -1366,7 +1411,9 @@ private:
     if (guard_.limits().max_gross_exposure_) {
       inputs.exposure_basis_ = exposure_basis_for(view, pending);
     }
-    for (auto& order : pending) {
+    for (std::size_t at = 0; at < pending.size(); ++at) {
+      auto& order = pending[at];
+      const auto& source_instruction = *origin[at];
       // Checked before the guards, because an unresolved instrument is a safety hold rather than a
       // limit breach: reporting a notional ceiling for an order that was never going to be sent
       // would point an operator at the wrong problem.
@@ -1426,6 +1473,9 @@ private:
           ++unclamped_orders_refused_;
         }
         ++orders_guard_refused_;
+        if (decision.rejection_->reason_ == strategy::GuardReason::PHASE_NOT_PERMITTED) {
+          retain_for_phase(source_instruction);
+        }
         report.refused_.push_back(std::move(*decision.rejection_));
         continue;
       }
@@ -1491,6 +1541,11 @@ private:
           // still consumed a request, which is what the broker will have counted.
           guard_.note_sent(inputs.now_);
           ++orders_broker_refused_;
+          // An exit the phase limit let out of session, refused by a broker not taking orders then:
+          // the target waits for the session instead of for its next bar, which may be a day away.
+          if (decision.admitted_outside_phase_) {
+            retain_for_phase(source_instruction);
+          }
           note_broker_refusal(order);
           report.rejected_.push_back(
             strategy::Rejection{
@@ -1517,6 +1572,9 @@ private:
           // `last_error()`: a later accepted order in the same pass clears that, so a report can
           // outlive the only record of which refusal this was.
           ++orders_binding_refused_;
+          if (decision.admitted_outside_phase_) {
+            retain_for_phase(source_instruction);
+          }
           report.rejected_.push_back(
             strategy::Rejection{
               strategy::RejectReason::BINDING_REFUSED, order.instrument_, order.tag_
@@ -2016,7 +2074,7 @@ private:
       return;
     }
     for (auto at = retained_targets_.begin(); at != retained_targets_.end(); ++at) {
-      if (at->instrument_ == instrument) {
+      if (at->target_.instrument_ == instrument) {
         retained_targets_.erase(at);
         return;
       }
@@ -2035,7 +2093,7 @@ private:
    * - while a stop, an operator's halt or a local failure holds. What a strategy says then -- `on_stop`
    *   included -- must not be replayed once the hold lifts.
    */
-  bool retain_withheld(const Instruction<Tag>& instruction) {
+  bool retain_withheld(const Instruction<Tag>& instruction, bool for_phase = false) {
     const auto* target = std::get_if<strategy::TargetPosition>(&instruction);
     if (target == nullptr) {
       return false;
@@ -2044,14 +2102,32 @@ private:
         guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
       return false;
     }
+    // The latest statement wins, and so does its reason: a target retained for the account and then
+    // restated and refused for the phase waits for the phase.
     for (auto& kept : retained_targets_) {
-      if (kept.instrument_ == target->instrument_) {
-        kept = *target;
+      if (kept.target_.instrument_ == target->instrument_) {
+        kept = RetainedTarget{*target, for_phase};
         return true;
       }
     }
-    retained_targets_.push_back(*target);
+    retained_targets_.push_back(RetainedTarget{*target, for_phase});
     return true;
+  }
+
+  /**
+   * Keeps a target whose order the market phase stopped, for the first permitted phase.
+   *
+   * Two routes reach it, both only for a runner that sends to a broker: the phase limit refused an
+   * order that opens or grows a position, or it admitted one that reduces a position outside the
+   * phase and the broker (or the binding) refused it -- which is what a broker not taking orders at
+   * midnight does. See `retry_retained_targets`.
+   */
+  void retain_for_phase(const Instruction<Tag>& instruction) {
+    if constexpr (runner_detail::sends_to_a_broker<Executor>::value) {
+      retain_withheld(instruction, /*for_phase=*/true);
+    } else {
+      (void)instruction;
+    }
   }
 
   /** Returns whether the portfolio lists an open stop order on `instrument`. */
@@ -2591,7 +2667,12 @@ private:
   /** Targets waiting for a stop's withdrawal; see `deferred_targets`. */
   std::vector<DeferredTarget> deferred_targets_;
   /** Targets withheld for want of a trustworthy account, one per instrument; see `retry_retained_targets`. */
-  std::vector<strategy::TargetPosition> retained_targets_;
+  /** A retained target, and whether it waits for the market phase rather than for the account. */
+  struct RetainedTarget {
+    strategy::TargetPosition target_;
+    bool for_phase_{false};
+  };
+  std::vector<RetainedTarget> retained_targets_;
   /** True only inside a deferred release's settle, which `plan_withhold_reason` exempts. */
   bool releasing_deferred_{false};
   /** How many were ever deferred; see `targets_deferred`. */

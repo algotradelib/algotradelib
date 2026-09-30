@@ -942,6 +942,22 @@ public:
   const RiskLimits& limits() const noexcept { return limits_; }
 
   /**
+   * Returns whether `phase` is one `RiskLimits::permitted_phases_` admits for an order that opens or
+   * grows a position; always true when the limit is absent.
+   */
+  bool permits_phase(MarketPhase phase) const noexcept {
+    if (!limits_.permitted_phases_) {
+      return true;
+    }
+    for (const auto allowed : *limits_.permitted_phases_) {
+      if (allowed == phase) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Stops every order until `resume()`, on the operator's behalf. Takes effect before any other
    * check.
    *
