@@ -286,7 +286,7 @@ struct ReportCaveats {
    * count is a fill whose recorded price the bar, not the configuration, decided. Appended.
    */
   std::size_t limit_fills_bounded_{0};
-  /** The tax on sales, as stated to the fill model; absent when no tax was modelled. */
+  /** The tax on sales, as stated to the fill model; absent when no tax was modelled. Appended. */
   std::optional<SellTax> sell_tax_;
 };
 
