@@ -9,6 +9,10 @@ endif()
 # build directory, so a consumer who adds include/ to their own build would have no version at all.
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/algotradelib/src/version.hpp" ATL_VERSION_LINES
     REGEX "^#define ATL_VERSION_(MAJOR|MINOR|PATCH|DEV) [0-9]+$")
+# Re-run the configure step when the header changes, or a build directory keeps the old version in the
+# package version file and the documentation stamp.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/algotradelib/src/version.hpp")
 foreach(part MAJOR MINOR PATCH DEV)
     set(ATL_VERSION_${part} "")
     foreach(line IN LISTS ATL_VERSION_LINES)
