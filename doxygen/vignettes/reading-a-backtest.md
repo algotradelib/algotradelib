@@ -203,8 +203,8 @@ field**:
 - `sellable_quantity_` is the whole holding. Live, it is routinely smaller — settlement, pledging,
   locking — so a sale a live account would have refused is not refused here.
 
-**Under the default limits a replay borrows without limit.** `enforce_buying_power_` is off by
-default, because live the broker is what decides whether a buy is funded; in a replay nothing does, so
+**With `enforce_buying_power_` off, its default, a replay borrows without limit.** It is off by
+default because live the broker is what decides whether a buy is funded; in a replay nothing does, so
 a buy the ledger's cash cannot pay for is filled and the cash goes below zero. A fixed-quantity
 strategy whose price rose is then leveraged without having asked to be, and its return, Sharpe and
 drawdown are a leveraged strategy's. `ReportCaveats::overdrawn_bars_` counts the bars that closed with
