@@ -190,6 +190,22 @@ prove it from the events it was handed.
 
 If a strategy's edge is small relative to these, the backtest cannot tell you whether the edge is real.
 
+## A replay's clock visits bar ends only
+
+A replay advances its clock to each bar's period end and derives the market phase there. For daily
+bars stamped at local midnight — every shipped adapter's convention — that is the next midnight, which
+is outside the session, so with the default `permitted_phases_ = {OPEN}` a daily replay refuses every
+opening order (`phase_not_permitted`) and trades nothing. Every replay example sets
+`permitted_phases_ = std::nullopt` for this reason: the order is decided at the bar's end and filled
+at the next bar's open, which is what a daily strategy means. **Keep that setting in the replay only.**
+Live, the default limits already carry a daily target to the next session's open (see "Running a
+strategy live"), and `std::nullopt` there sends every decision at midnight.
+
+For the same reason `on_phase` fires on a daily replay only when the phase at one bar end differs from
+the last — in practice once — not once a session as it does live. A strategy that acts in `on_phase`
+(`vanilla::EqualWeightRebalance`, `vanilla::TimedLiquidation`) needs intraday bars to be replayed
+faithfully.
+
 ## What a replay says an account can do
 
 The live path can ask the broker what may be spent and what may be sold. A replay has no broker, so
