@@ -2413,7 +2413,8 @@ private:
       // is `STOP_ORDER_RESTING`'s own rule for a met target. Unlike a target, nothing else on the
       // instrument is withdrawn either.
       const auto held = context_.portfolio().net_quantity_of(intent.instrument());
-      if (held && *held == converted.target_->target_quantity_) {
+      const auto gap = held ? decimal_subtract(*held, converted.target_->target_quantity_) : std::nullopt;
+      if (gap && gap->coefficient() == 0) {
         return plan;
       }
       plan.rejected_.push_back(strategy::Rejection{
