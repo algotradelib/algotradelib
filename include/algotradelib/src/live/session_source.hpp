@@ -156,6 +156,14 @@ public:
    */
   const std::vector<Currency>& buying_power_currencies() const noexcept { return currencies_; }
 
+  /**
+   * Returns how many times a bar poll met a bar whose period had not ended, and left it for later.
+   *
+   * Nonzero is normal for a daily query polled during the session, and it is the evidence that the
+   * broker publishes the session still trading. Monotone across every run against this source.
+   */
+  std::size_t bars_not_yet_closed() const noexcept { return bars_not_yet_closed_; }
+
   /** Sets the bar interval and depth each poll requests. */
   void set_bar_query(BarInterval interval, int count) {
     interval_ = interval;
@@ -277,10 +285,27 @@ private:
       // Only bars newer than the last one fed, and in order. A poll returning the same closed bar
       // again is the normal case between closes, and feeding it twice would double every signal
       // derived from it.
+      //
+      // **And only bars whose period has ended.** Every shipped adapter's daily query runs up to
+      // today, and the broker answers today's row while the session is still trading -- KIS
+      // documents `mod_yn` for "the current business day" on `inquire-daily-itemchartprice`, and
+      // Kiwoom's daily close field is `cur_prc`, the current price. Fed, that bar reached the
+      // strategy with the price so far as its close, `last_bar_` moved past it, and the session's
+      // real close was never fed. So a bar ending after the instant the loop reported is left for
+      // a later poll, which reads it again. Its period end is `bar_period_end`'s, the instant the
+      // runner would have stamped the decision with, so the decision is never dated ahead of the
+      // clock either. Without a reported instant (a source driven by hand, not by `PollingLoop`)
+      // there is nothing to compare against and every bar is fed, as before.
+      const auto instant = runner_instance.observed_at();
+      const bool timed = instant != std::chrono::system_clock::time_point{};
       auto& seen = last_bar_[instrument.symbol_];
       for (const auto& bar : series.bars_) {
         if (seen && bar.timestamp_ <= *seen) {
           continue;
+        }
+        if (timed && instant < strategy::bar_period_end(bar, series.interval_, series.stamp_)) {
+          ++bars_not_yet_closed_;
+          break;
         }
         runner_instance.context().set_last_price(instrument, bar.close_);
         runner_instance.feed(
@@ -973,6 +998,7 @@ private:
   runner::OrderUpdateWatch<BrokerTag> updates_;
   BarInterval interval_{BarInterval::ONE_DAY};
   int count_{100};
+  std::size_t bars_not_yet_closed_{0};
   int history_limit_{100};
   std::map<std::string, std::optional<std::chrono::system_clock::time_point>> last_bar_;
   std::optional<BrokerError> last_error_;

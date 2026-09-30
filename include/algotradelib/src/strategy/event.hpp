@@ -192,7 +192,11 @@ struct BarEvent {
   BarInterval interval_{BarInterval::ONE_DAY};
   /** Which edge of that period `bar_.timestamp_` marks. */
   BarStamp stamp_{BarStamp::CLOSE};
-  /** The bar itself, always closed. A runner never delivers a forming one. */
+  /**
+   * The bar itself, always closed. A runner never delivers a forming one: `live::SessionSource`
+   * holds back a bar whose period end is after the loop's instant, which is how a broker's
+   * current-session row -- every shipped adapter's daily query returns one -- is kept out.
+   */
   Bar bar_;
   /** When the period finished: the earliest moment a strategy could legitimately know this bar. */
   std::chrono::system_clock::time_point period_end_{};

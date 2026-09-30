@@ -505,6 +505,15 @@ public:
   void set_observed_at(std::chrono::system_clock::time_point at) { observed_at_ = at; }
 
   /**
+   * Returns the last instant a driving loop reported through `set_observed_at`, or the epoch when
+   * none has.
+   *
+   * `live::SessionSource` reads it to hold back a bar whose period has not ended yet: a broker's
+   * daily query includes the session still trading, and that bar is not one a strategy may be shown.
+   */
+  std::chrono::system_clock::time_point observed_at() const noexcept { return observed_at_; }
+
+  /**
    * States that this runner may act although it has never read what the account holds.
    *
    * The runner's half of `PollingLoop::allow_absent_portfolio`, which pushes it down. It exists here

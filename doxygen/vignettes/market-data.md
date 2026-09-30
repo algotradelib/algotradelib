@@ -40,6 +40,15 @@ floating-point storage is `market-analytics`'s job, at one documented boundary.
 **`Bar::open_` is optional.** A trading day can produce no execution at all, which
 KIS reports with `mod_yn`. An absent open is neither zero nor the previous close.
 
+**A daily query answers the session still trading.** Every adapter asks for daily bars up to
+today, and the broker includes today's row while the market is open: KIS documents `mod_yn` for
+"the current business day", and Kiwoom's daily close field is `cur_prc`, the current price. That
+row's close is the price so far. A `BarSeries` read directly therefore can end in a bar that is
+not finished; `live::SessionSource` holds such a bar back until its period end
+(`strategy::bar_period_end`) has passed the instant the loop reported, so a strategy is shown only
+finished bars and each exactly once, with its final close. For a daily bar stamped at local midnight
+that is the following midnight.
+
 ## The price grid is the library's own
 
 **Neither broker publishes tick size anywhere in its API.** `PriceRule` is therefore

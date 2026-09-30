@@ -1926,6 +1926,81 @@ TEST_CASE("a listing older than the portfolio age policy holds the loop until on
   CHECK_FALSE(healed.final_gate_.has_value());
 }
 
+namespace {
+
+/** Records every close it is shown, so a test can tell a forming bar from a closed one. */
+struct RecordsCloses {
+  std::vector<std::string> closes_;
+
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent& bar) {
+    closes_.push_back(bar.bar_.close_.str());
+  }
+};
+
+/** Two daily bars stamped at their open, the second the session still trading at `second_close`. */
+BarSeries daily_with_forming(const char* second_close) {
+  BarSeries series;
+  series.interval_ = BarInterval::ONE_DAY;
+  series.stamp_ = BarStamp::OPEN;
+  Bar first;
+  first.timestamp_ = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 300);
+  first.open_ = Decimal64::parse("70000");
+  first.close_ = Decimal64::parse("70500");
+  first.high_ = first.close_;
+  first.low_ = first.open_.value();
+  Bar second = first;
+  second.timestamp_ = first.timestamp_ + std::chrono::hours(24);
+  second.close_ = Decimal64::parse(second_close);
+  second.high_ = second.close_;
+  series.bars_ = {first, second};
+  return series;
+}
+
+} // namespace
+
+TEST_CASE("a bar whose period has not ended is not fed, and its close is fed once it has",
+          "[forming]") {
+  // Every shipped adapter's daily query runs up to today, and the broker answers today's row while
+  // the session trades. Fed, the strategy decided on the price so far as a close, and the real close
+  // never arrived because the bar's timestamp had already been seen.
+  using LoopRunner = runner::Runner<
+    RecordsCloses, WithWorkingOrders, FakeBroker,
+    live::SessionExecutor<FakeSession<WithWorkingOrders>>
+  >;
+  FakeSession<WithWorkingOrders> session;
+  session.set_bars(daily_with_forming("71000"));
+  LoopRunner live_runner(
+    RecordsCloses{}, {}, 512, live::SessionExecutor<FakeSession<WithWorkingOrders>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+
+  live::SessionSource<FakeSession<WithWorkingOrders>> source(session, {samsung()});
+  runner::PollSchedule schedule;
+  schedule.bars_ = std::chrono::minutes(1);
+  schedule.tick_ = std::chrono::minutes(1);
+  schedule.calendar_.reset();
+  // Three hours into the second bar's day: the first bar has ended, the second has not.
+  const auto midday = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 301 + 3);
+  runner::PollingLoop<LoopRunner, decltype(source), runner::ManualClock> loop(
+    live_runner, source, schedule, runner::ManualClock{midday});
+  loop.allow_unbounded_portfolio_age();
+  loop.allow_absent_portfolio();
+  runner::StopSource stop;
+
+  loop.run(stop, 3);
+  REQUIRE(live_runner.strategy().closes_ == std::vector<std::string>{"70500"});
+  CHECK(source.bars_not_yet_closed() >= 1);
+  // The decision instant is the first bar's period end, never ahead of the clock.
+  CHECK_FALSE(midday < live_runner.context().now());
+
+  // The session closes at 72,000 and the day ends; the next poll feeds the bar once, closed.
+  session.set_bars(daily_with_forming("72000"));
+  loop.clock().advance(std::chrono::hours(22));
+  loop.run(stop, 3);
+  REQUIRE(live_runner.strategy().closes_ == std::vector<std::string>{"70500", "72000"});
+}
+
 TEST_CASE("a broker refusal reaches a live run's report, with what the broker said") {
   // **The defect this slice exists for, exercised through the real source.** Five direct `feed`
   // cases prove the counters classify correctly and prove nothing about the defect, which lives in
