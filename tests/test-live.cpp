@@ -241,10 +241,15 @@ public:
     if (error_) {
       return Result<BarSeries>(*error_);
     }
-    BarSeries series = bars_;
+    const auto own = bars_for_.find(query.instrument_.symbol_);
+    BarSeries series = own != bars_for_.end() ? own->second : bars_;
     series.instrument_ = query.instrument_;
     return Result<BarSeries>(std::move(series));
   }
+
+  /** Scripts one instrument's bars, so two instruments' reads can end at different times. */
+  void set_bars_for(const std::string& symbol, BarSeries series) { bars_for_[symbol] = std::move(series); }
+  std::map<std::string, BarSeries> bars_for_;
 
   /** Returns the scripted quote, counting the call. */
   Result<QuoteSnapshot> quote(const InstrumentId& instrument) {
@@ -840,9 +845,9 @@ strategy::Portfolio<FakeBroker> held_position(const char* held, const char* sell
 } // namespace
 
 TEST_CASE("a target restated before any listing poll places once, with no limit set", "[own-orders]") {
-  // A live source feeds its whole history on a cold start -- `SessionSource::poll_bars` hands every
-  // bar of the first read to the runner, one pass each -- and a target strategy restates its target
-  // on every one. The broker's listing is not read again between them. With no limit that reads
+  // A runner fed several bars before a listing -- by hand, as here, or as `SessionSource::poll_bars`
+  // fed a cold start's history before it fed history through `feed_warmup` -- and a target strategy
+  // restates its target on every one. The broker's listing is not read again between them. With no limit that reads
   // what is outstanding, the second pass used to start from that listing, see nothing working, and
   // send the same order again: one per history bar, all of them filled at the open.
   using ListedRunner = runner::Runner<
@@ -2124,20 +2129,21 @@ TEST_CASE("an exit a broker refuses out of session is placed once the session op
   loop.set_maximum_portfolio_age(std::chrono::hours(1));
   runner::StopSource stop;
 
-  // The first poll feeds both history bars, and each exit is sent and refused (the fake records
-  // every attempt). Then nothing more all night: a target kept for the phase is not retried until
-  // the phase admits it, so a closed market is not asked again every half hour.
+  // The first poll feeds both history bars; only the newest may send, and its exit is sent and
+  // refused (the fake records every attempt). Then nothing more all night: a target kept for the
+  // phase is not retried until the phase admits it, so a closed market is not asked again every half
+  // hour.
   const auto night = loop.run(stop, 17);
-  CHECK(night.orders_broker_refused_ == 2);
-  CHECK(session.placed().size() == 2);
+  CHECK(night.orders_broker_refused_ == 1);
+  CHECK(session.placed().size() == 1);
   CHECK(live_runner.targets_retained_for_phase() == 1);
 
   // The broker takes orders again, and the exit goes out once at the open.
   session.heal_place();
   loop.run(stop, 6);
-  REQUIRE(session.placed().size() == 3);
-  CHECK(session.placed()[2].side_ == OrderSide::SELL);
-  CHECK(session.placed()[2].quantity_ == Decimal64::parse("10"));
+  REQUIRE(session.placed().size() == 2);
+  CHECK(session.placed()[1].side_ == OrderSide::SELL);
+  CHECK(session.placed()[1].quantity_ == Decimal64::parse("10"));
   CHECK(live_runner.targets_retained() == 0);
 }
 
@@ -2184,6 +2190,187 @@ TEST_CASE("a replay does not keep a target the phase refused", "[phase-retain]")
   CHECK(dry.targets_retained() == 0);
 }
 
+namespace {
+
+/** Buys ten on the tenth bar it sees and never says anything else: an event, not a level. */
+struct EntersOnTenth {
+  std::size_t bars_{0};
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (++bars_ != 10) {
+      return;
+    }
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = Decimal64::parse("10");
+    ctx.submit(target);
+  }
+};
+
+/** Records the order in which bars of every instrument were shown to it. */
+struct RecordsSequence {
+  std::vector<std::pair<std::string, std::chrono::system_clock::time_point>> seen_;
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent& bar) {
+    seen_.push_back({bar.instrument_.symbol_, bar.bar_.timestamp_});
+  }
+};
+
+/** A plain loop over a real `SessionSource`, placing in any phase and accepting any account age. */
+template <typename Strategy>
+struct WarmupRig {
+  using LoopRunner =
+    runner::Runner<Strategy, WithKey, FakeBroker, live::SessionExecutor<FakeSession<WithKey>>>;
+  FakeSession<WithKey> session;
+  LoopRunner live_runner;
+  live::SessionSource<FakeSession<WithKey>> source;
+  runner::PollingLoop<LoopRunner, live::SessionSource<FakeSession<WithKey>>, runner::ManualClock> loop;
+  runner::StopSource stop;
+
+  static strategy::RiskLimits any_phase() {
+    strategy::RiskLimits limits;
+    limits.permitted_phases_ = std::nullopt;
+    return limits;
+  }
+  static runner::PollSchedule every_second() {
+    runner::PollSchedule schedule;
+    schedule.bars_ = std::chrono::seconds(1);
+    schedule.tick_ = std::chrono::seconds(1);
+    schedule.calendar_.reset();
+    return schedule;
+  }
+
+  explicit WarmupRig(std::vector<InstrumentId> universe)
+  : live_runner(Strategy{}, any_phase(), 512, live::SessionExecutor<FakeSession<WithKey>>(session)),
+    source(session, universe),
+    loop(live_runner, source, every_second(),
+         runner::ManualClock{std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 900)}) {
+    for (const auto& id : universe) {
+      auto reference = samsung_reference();
+      reference.id_ = id;
+      live_runner.context().set_instrument(reference);
+      live_runner.context().set_last_price(id, Decimal64::parse("70000"));
+    }
+    live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
+    loop.allow_unbounded_portfolio_age();
+    loop.allow_absent_portfolio();
+  }
+};
+
+} // namespace
+
+TEST_CASE("a cold start does not act on an event in its history", "[warmup]") {
+  // The history read is fifty bars; the strategy's entry fires on the tenth. A restarted process used
+  // to send it, at today's price, for a signal forty bars old.
+  WarmupRig<EntersOnTenth> rig({samsung()});
+  rig.session.set_bars(history_bars(50));
+  const auto report = rig.loop.run(rig.stop, 1);
+  CHECK(rig.session.placed().empty());
+  CHECK(rig.live_runner.strategy().bars_ == 50);
+  CHECK(rig.live_runner.warmup_instructions_discarded() == 1);
+  CHECK(rig.source.bars_fed_as_warmup() == 49);
+  std::size_t said = 0;
+  for (const auto& note : report.notes_) {
+    said += note.find("decided on bars fed as history were not sent") != std::string::npos;
+  }
+  CHECK(said == 1);
+}
+
+TEST_CASE("only the newest of a backlog of bars sends", "[warmup]") {
+  WarmupRig<BuysOne> rig({samsung()});
+  rig.session.set_bars(history_bars(3));
+  rig.loop.run(rig.stop, 1);
+  REQUIRE(rig.session.placed().size() == 1);
+  // An outage: the next read brings two new bars. Both are shown; only the newest's order goes out.
+  rig.session.set_bars(history_bars(5));
+  rig.loop.run(rig.stop, 1);
+  CHECK(rig.session.placed().size() == 2);
+  CHECK(rig.source.bars_fed_as_warmup() == 3);
+}
+
+TEST_CASE("the newest closed bar sends when the session's own bar is still forming", "[warmup]") {
+  // The read ends in a bar still trading, which is held; the closed bar before it is the newest the
+  // source can feed, and it sends.
+  WarmupRig<BuysOne> rig({samsung()});
+  rig.session.set_bars(daily_with_forming("71000"));
+  rig.loop.clock() = runner::ManualClock{
+    std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 301 + 3)};
+  rig.loop.run(rig.stop, 1);
+  REQUIRE(rig.session.placed().size() == 1);
+  CHECK(rig.source.bars_fed_as_warmup() == 0);
+  CHECK(rig.source.bars_not_yet_closed() == 1);
+}
+
+TEST_CASE("a read of several instruments is fed in time order, as a replay feeds it", "[warmup]") {
+  WarmupRig<RecordsSequence> rig({samsung(), hynix()});
+  rig.session.set_bars(history_bars(4));
+  rig.loop.run(rig.stop, 1);
+  const auto& seen = rig.live_runner.strategy().seen_;
+  REQUIRE(seen.size() == 8);
+  for (std::size_t at = 1; at < seen.size(); ++at) {
+    CHECK_FALSE(seen[at].second < seen[at - 1].second);
+  }
+  // Ties in universe order: Samsung, then Hynix, for every session.
+  CHECK(seen[0].first == samsung().symbol_);
+  CHECK(seen[1].first == hynix().symbol_);
+}
+
+TEST_CASE("an instrument whose read ends early does not send before the others' history", "[warmup]") {
+  // A suspended name's last bar is days old, so it sorts ahead of the other names' older bars. Sent
+  // there, a cross-sectional strategy would act on a stale cross-section at today's price; it is fed
+  // as history, and the one live bar is the newest bar after all the history.
+  WarmupRig<BuysOne> rig({samsung(), hynix()});
+  rig.session.set_bars_for(samsung().symbol_, history_bars(6));
+  rig.session.set_bars_for(hynix().symbol_, history_bars(3));
+  rig.loop.run(rig.stop, 1);
+  REQUIRE(rig.session.placed().size() == 1);
+  CHECK(rig.session.placed()[0].instrument_ == samsung());
+  CHECK(rig.source.bars_fed_as_warmup() == 8);
+}
+
+TEST_CASE("a name one bar behind waits, whatever order the universe lists it in", "[warmup]") {
+  // Hynix suspended today: its newest bar ties with Samsung's history bar of the same session, and
+  // it is that stale session whichever name is listed first.
+  for (const bool hynix_first : {false, true}) {
+    WarmupRig<BuysOne> rig(hynix_first ? std::vector<InstrumentId>{hynix(), samsung()}
+                                       : std::vector<InstrumentId>{samsung(), hynix()});
+    rig.session.set_bars_for(samsung().symbol_, history_bars(6));
+    rig.session.set_bars_for(hynix().symbol_, history_bars(5));
+    rig.loop.run(rig.stop, 1);
+    REQUIRE(rig.session.placed().size() == 1);
+    CHECK(rig.session.placed()[0].instrument_ == samsung());
+
+    // The next session: Samsung one new bar, Hynix resumed with two (its missed session and today).
+    // Both send, Hynix's missed session is history, and nothing already fed is fed again.
+    rig.session.set_bars_for(samsung().symbol_, history_bars(7));
+    rig.session.set_bars_for(hynix().symbol_, history_bars(7));
+    rig.loop.run(rig.stop, 1);
+    CHECK(rig.session.placed().size() == 3);
+    CHECK(rig.source.bars_fed_as_warmup() == 11);
+  }
+}
+
+TEST_CASE("a bar fed as history changes the strategy and no counter or reservation", "[warmup]") {
+  runner::DryRunner<BuysOne> dry;
+  dry.context().set_instrument(samsung_reference());
+  dry.context().set_phase(strategy::MarketPhase::OPEN);
+  for (int hour = 0; hour < 5; ++hour) {
+    dry.feed_warmup(bar_at(hour, "70000"));
+  }
+  CHECK(dry.warmup_instructions_discarded() == 5);
+  CHECK(dry.orders_guard_refused() == 0);
+  CHECK(dry.placements_at_broker() == 0);
+  CHECK(dry.targets_retained() == 0);
+  CHECK(dry.context().portfolio().working_.empty());
+#if defined(ATL_HAS_EIGEN)
+  const auto* series = dry.context().bars(samsung(), BarInterval::ONE_DAY);
+  REQUIRE(series != nullptr);
+  CHECK(series->size() == 5);
+#endif
+  // And the next ordinary bar sends as usual.
+  CHECK(dry.feed(bar_at(5, "70000")).would_place_.size() == 1);
+}
+
 TEST_CASE("a broker refusal reaches a live run's report, with what the broker said") {
   // **The defect this slice exists for, exercised through the real source.** Five direct `feed`
   // cases prove the counters classify correctly and prove nothing about the defect, which lives in
@@ -2227,8 +2414,9 @@ TEST_CASE("a broker refusal reaches a live run's report, with what the broker sa
   // answered with a refusal, which is exactly the case that used to be invisible.
   CHECK(report.attempted(runner::PollKind::BARS) == 1);
   CHECK(report.failed(runner::PollKind::BARS) == 0);
-  // Two, because the scripted series carries two bars and this strategy buys on each of them.
-  CHECK(report.orders_broker_refused_ == 2);
+  // One: the scripted series carries two bars and this strategy buys on each, but only the newest
+  // bar of a read may send; the older one is history (`Runner::feed_warmup`).
+  CHECK(report.orders_broker_refused_ == 1);
   CHECK(report.orders_guard_refused_ == 0);
   CHECK(report.orders_unbuildable_ == 0);
   REQUIRE(report.last_broker_refusal_.has_value());

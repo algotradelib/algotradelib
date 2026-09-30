@@ -488,11 +488,41 @@ That is what a replay does by filling at the next bar's open. The rules around i
   sets it, because a replay's clock visits only bar period ends; live, it sends every daily decision at
   midnight, where a broker rejects it.
 
-A process started during the session behaves differently from one started overnight. Overnight, every
-history bar's target is refused for the phase and only the latest survives, placed at the open.
-In-session, each history bar settles as it is fed, so a target that changed during the history is
-placed and withdrawn at startup, from closes that are days old. That is a known gap in how a cold
-start treats its history.
+### The history a cold start reads
+
+**An instruction reaches a broker only when it was decided on the newest closed bar the source held
+for that instrument at that poll.** A cold start's first read is a history — `live_program::Settings::
+bar_count_` bars per instrument — and `SessionSource` shows all of it to the strategy, in period-end
+order across the universe as a replay would, so indicators and a strategy's own state are warm. But
+everything decided on the older bars is discarded (`Runner::feed_warmup`), counted
+(`Runner::warmup_instructions_discarded`, `SessionSource::bars_fed_as_warmup`) and noted once in the
+run's report; only the newest bar's decision can be sent, or kept for the phase. The same holds for a
+backlog after an outage: two missed daily bars are both shown, and only the newer one acts.
+
+Why it matters: a restarted process used to act on every signal in its history, at today's price. An
+event-triggered strategy — `vanilla::RsiThreshold` enters on "not holding and oversold" — met an
+oversold bar months back against a flat book and bought again a minute after the previous process had
+sold. A level strategy (`SmaCrossover`) was right by accident, because only its last target survived.
+So a process started overnight and one started during the session now take the same decision: the
+newest bar's. Two consequences to design for:
+
+- **State levels, not transitions**, including for cancellations: a transition detected on history is
+  not acted on, and the newest bar's pass must be able to say what to hold without having seen it
+  happen.
+- **Poll bars no slower than their interval.** A poll that brings five minute bars acts on the newest
+  only; for a level strategy that is the position a continuous process would hold, for an event
+  strategy a signal lost (and counted) rather than one acted on late.
+- **An instrument whose read ends early waits.** Only a newest bar whose period ended strictly after
+  every history bar of the read can send, so a name suspended today or for days — its newest bar no
+  later than the others' history — is shown to the strategy as history, and its own decision waits
+  for its next bar.
+- **A bar query that fails feeds nothing that poll**, for any instrument: the next poll reads them all
+  again. One name that always fails therefore stops bars for the whole universe, and the loop reports
+  the failing poll.
+
+A source of your own must do the same: feed a read's new bars in period-end order across
+instruments, and feed live only each instrument's newest bar whose period ended strictly after every
+bar of the read fed as history; everything else goes through `feed_warmup`.
 
 ## The market phase, and what the loop needs to know it
 
@@ -578,11 +608,12 @@ pass and is discarded when a working-order poll replaces the listing, so a secon
 poll cannot re-spend the same money.
 
 **Every order sent to a broker counts as working until the next working-order listing replaces it,
-whatever the limits** — on a broker that lists working orders, which all three shipped ones do. A cold
-start feeds the whole first bar read, one pass per bar, before the next listing, and a target strategy
-restates its target on every one; each pass therefore sees the order the first one sent and sends
-nothing more. Before 2026-09-30 this held only with one of the checks above enabled, and a target
-strategy under default limits sent one order per history bar. A dry run and `live::bind_observer` send
+whatever the limits** — on a broker that lists working orders, which all three shipped ones do. Any
+pass before the next listing therefore sees the order an earlier one sent and does not send it again:
+two bars of a minute strategy between listings, a runner driven by hand, a quote and a bar in one
+iteration. Before 2026-09-30 this held only with one of the checks above enabled, and a target strategy
+under default limits sent one order per bar of a cold start's history (which `SessionSource` now feeds
+as history, below, so only its newest bar can send at all). A dry run and `live::bind_observer` send
 to no broker, so their rows carry no broker reference — a later opposing target would ask to withdraw
 an order identified by nothing — and they keep the old scoping: they report a restated target again on
 every pass.

@@ -277,7 +277,11 @@ Computing a price from an indicator? Cross the boundary once, through
 
 ## Warm-up
 
-State your requirement and honour it:
+Live, a cold start shows your handlers the whole history it reads — every instrument's bars merged in
+time order, as a replay feeds them — and sends only what they decide on the newest bar of each
+instrument; everything before it is warm-up, discarded and counted (see "Running a strategy live").
+So write handlers that can state, on any single bar, what should be held — a level — rather than ones
+that act only on the bar where something crossed. Beyond that, state your requirement and honour it:
 
 ```cpp
 std::size_t warmup_bars() const { return params_.window_ + 1; }

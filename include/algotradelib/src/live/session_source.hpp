@@ -12,6 +12,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -37,6 +38,23 @@ inline runner::PollOutcome poll_outcome_of(const BrokerError& error) noexcept {
     runner::PollOutcome::RATE_LIMITED :
     runner::PollOutcome::FAILED;
 }
+
+namespace session_source_detail {
+
+/**
+ * Whether `Runner` can be fed a bar as history, which every `runner::Runner` can. Required by
+ * `poll_bars`: a runner without it would send what was decided on a cold start's history.
+ */
+template <typename Runner, typename = void>
+struct feeds_warmup : std::false_type {};
+
+template <typename Runner>
+struct feeds_warmup<
+  Runner,
+  std::void_t<decltype(std::declval<Runner&>().feed_warmup(std::declval<const strategy::BarEvent&>()))>
+> : std::true_type {};
+
+} // namespace session_source_detail
 
 /**
  * Polls a bound session and feeds what arrives to a runner.
@@ -165,6 +183,13 @@ public:
    */
   std::size_t bars_not_yet_closed() const noexcept { return bars_not_yet_closed_; }
 
+  /**
+   * Returns how many bars were fed as history (`Runner::feed_warmup`): every new bar of a read but each
+   * instrument's newest, and a newest bar whose period did not end after all of those. Their
+   * decisions were discarded, never sent. Monotone.
+   */
+  std::size_t bars_fed_as_warmup() const noexcept { return bars_fed_as_warmup_; }
+
   /** Sets the bar interval and depth each poll requests. */
   void set_bar_query(BarInterval interval, int count) {
     interval_ = interval;
@@ -263,11 +288,27 @@ public:
   const runner::ChargedCosts& charged_costs() const noexcept { return charged_; }
 
 private:
-  /** Fetches bars for each instrument and feeds only those not seen before. */
+  /**
+   * Fetches bars for each instrument and feeds only those not seen before, in period-end order
+   * across the universe; only each instrument's newest may send (older ones are fed as history, see
+   * `Runner::feed_warmup`).
+   */
   template <typename Runner>
   runner::PollOutcome poll_bars(Runner& runner_instance) {
-    auto outcome = runner::PollOutcome::UNCHANGED;
-    for (const auto& instrument : universe_) {
+    // **Every instrument is read before anything is fed**, and then the new bars of all of them are
+    // fed in period-end order, ties in universe order -- the order a replay feeds them. Fed one
+    // instrument at a time, a cold start handed a cross-sectional strategy all of one name's history
+    // and then the next name's from its beginning, so the decision instant ran backwards between
+    // names and the strategy's state diverged from a replay's. A query that fails feeds nothing this
+    // poll; the next poll reads everything again.
+    struct Collected {
+      std::size_t instrument_{0};
+      strategy::BarEvent event_;
+      bool newest_{false};
+    };
+    std::vector<Collected> collected;
+    for (std::size_t at = 0; at < universe_.size(); ++at) {
+      const auto& instrument = universe_[at];
       BarQuery query;
       query.instrument_ = instrument;
       query.interval_ = interval_;
@@ -309,7 +350,8 @@ private:
       const bool knowable = series.stamp_ == BarStamp::CLOSE ||
         series.interval_ == BarInterval::ONE_DAY || series.interval_ == BarInterval::ONE_MINUTE;
       const bool timed = knowable && instant != std::chrono::system_clock::time_point{};
-      auto& seen = last_bar_[instrument.symbol_];
+      const auto& seen = last_bar_[instrument.symbol_];
+      const auto first = collected.size();
       for (const auto& bar : series.bars_) {
         if (seen && bar.timestamp_ <= *seen) {
           continue;
@@ -323,13 +365,55 @@ private:
           }
           break;
         }
-        runner_instance.context().set_last_price(instrument, bar.close_);
-        runner_instance.feed(
-          strategy::make_bar_event(instrument, series.interval_, series.stamp_, bar)
-        );
-        seen = bar.timestamp_;
-        outcome = runner::PollOutcome::UPDATED;
+        collected.push_back(Collected{
+          at, strategy::make_bar_event(instrument, series.interval_, series.stamp_, bar), false});
       }
+      // **Only the newest bar of an instrument's read may send.** The ones before it -- a cold
+      // start's history, a backlog after an outage -- are history: the strategy is shown them, so its
+      // state evolves as a replay's does, and what it decides on them is discarded
+      // (`Runner::feed_warmup`). Otherwise a restart acts on every signal in its history at today's
+      // price, which for an event-triggered strategy is a trade nobody decided today.
+      if (collected.size() > first) {
+        collected.back().newest_ = true;
+      }
+    }
+
+    std::stable_sort(collected.begin(), collected.end(), [](const Collected& a, const Collected& b) {
+      return a.event_.period_end_ < b.event_.period_end_;
+    });
+    // **And not at or before another instrument's history.** An instrument whose read ends early --
+    // a name suspended today, or for days -- has a newest bar no later than the other names' older
+    // ones; sent there, a cross-sectional strategy would act on a stale cross-section at today's
+    // price. So a newest bar sends only when its period ended strictly after every history bar of the
+    // read; one that did not is history too, and that instrument's decision waits for its next bar.
+    // Strictly: a tie with a history bar is the same stale session whichever name the universe lists
+    // first.
+    std::optional<std::chrono::system_clock::time_point> latest_history;
+    for (const auto& item : collected) {
+      if (!item.newest_ && (!latest_history || *latest_history < item.event_.period_end_)) {
+        latest_history = item.event_.period_end_;
+      }
+    }
+    static_assert(
+      session_source_detail::feeds_warmup<Runner>::value,
+      "SessionSource feeds a read's older bars through Runner::feed_warmup; a runner without it "
+      "would send decisions made on history"
+    );
+    auto outcome = runner::PollOutcome::UPDATED;
+    if (collected.empty()) {
+      outcome = runner::PollOutcome::UNCHANGED;
+    }
+    for (const auto& item : collected) {
+      const auto& instrument = universe_[item.instrument_];
+      if (!item.newest_ || (latest_history && !(*latest_history < item.event_.period_end_))) {
+        runner_instance.feed_warmup(item.event_);
+        ++bars_fed_as_warmup_;
+        last_bar_[instrument.symbol_] = item.event_.bar_.timestamp_;
+        continue;
+      }
+      runner_instance.context().set_last_price(instrument, item.event_.bar_.close_);
+      runner_instance.feed(item.event_);
+      last_bar_[instrument.symbol_] = item.event_.bar_.timestamp_;
     }
     last_error_.reset();
     return outcome;
@@ -1015,6 +1099,7 @@ private:
   BarInterval interval_{BarInterval::ONE_DAY};
   int count_{100};
   std::size_t bars_not_yet_closed_{0};
+  std::size_t bars_fed_as_warmup_{0};
   std::map<std::string, std::optional<std::chrono::system_clock::time_point>> held_bar_;
   int history_limit_{100};
   std::map<std::string, std::optional<std::chrono::system_clock::time_point>> last_bar_;
