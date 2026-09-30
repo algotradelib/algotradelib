@@ -431,6 +431,22 @@ struct ReplayResult {
   std::size_t stop_fills_intrabar_{0};
   /** Limit-basis fills whose credit the bound moved; see `ReportCaveats::limit_fills_bounded_`. */
   std::size_t limit_fills_bounded_{0};
+  /**
+   * Executions after which the ledger held less than zero cash in their currency.
+   *
+   * A replay fills what a strategy asks for, and nothing refuses a buy the cash cannot pay for
+   * unless `RiskLimits::enforce_buying_power_` is on -- which it is not by default, because live the
+   * broker is what refuses. So under the defaults a replay borrows without limit, and a fixed-quantity
+   * strategy whose price rose is leveraged without having asked to be. Counted rather than refused:
+   * a caller modelling a margin account wants exactly this, and a caller who did not now sees it.
+   * Even with the check on, a market buy is checked at the reference price, without commission, and
+   * filled at the next bar's open, so a gap up can still overdraw.
+   */
+  std::size_t overdrawn_executions_{0};
+  /** The lowest cash an overdrawn execution left in `currency_`; absent when it never went below zero. */
+  std::optional<Money> lowest_cash_;
+  /** When `lowest_cash_` was reached: the execution's `Fill::at_`. */
+  std::optional<std::chrono::system_clock::time_point> lowest_cash_at_;
 };
 
 /** Everything a replay needs beyond the strategy and the bars. */
@@ -1015,6 +1031,7 @@ private:
         abort_queue();
         return;
       }
+      note_overdraft(*decision.execution_);
       if (decision.intrabar_release_fill_) {
         ++result_.stop_fills_intrabar_;
       }
@@ -1031,6 +1048,22 @@ private:
   }
 
   /** Records equity at this bar, and the return since the previous point. */
+  /** Counts `execution` if it left its currency's cash below zero, and keeps the lowest level. */
+  void note_overdraft(const Execution& execution) {
+    const auto cash = ledger_.cash_in(execution.currency_);
+    if (!cash || !decimal_less(*cash, Decimal64::parse("0"))) {
+      return;
+    }
+    ++result_.overdrawn_executions_;
+    if (!(execution.currency_ == result_.currency_)) {
+      return;
+    }
+    if (!result_.lowest_cash_ || decimal_less(*cash, result_.lowest_cash_->amount_)) {
+      result_.lowest_cash_ = Money{*cash, execution.currency_};
+      result_.lowest_cash_at_ = execution.fill_.at_;
+    }
+  }
+
   void record_equity(const strategy::BarEvent& event) {
     const auto equity = ledger_.equity_in(config_.currency_);
     if (!equity) {
