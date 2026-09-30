@@ -241,10 +241,15 @@ public:
     if (error_) {
       return Result<BarSeries>(*error_);
     }
-    BarSeries series = bars_;
+    const auto own = bars_for_.find(query.instrument_.symbol_);
+    BarSeries series = own != bars_for_.end() ? own->second : bars_;
     series.instrument_ = query.instrument_;
     return Result<BarSeries>(std::move(series));
   }
+
+  /** Scripts one instrument's bars, so two instruments' reads can end at different times. */
+  void set_bars_for(const std::string& symbol, BarSeries series) { bars_for_[symbol] = std::move(series); }
+  std::map<std::string, BarSeries> bars_for_;
 
   /** Returns the scripted quote, counting the call. */
   Result<QuoteSnapshot> quote(const InstrumentId& instrument) {
@@ -840,9 +845,9 @@ strategy::Portfolio<FakeBroker> held_position(const char* held, const char* sell
 } // namespace
 
 TEST_CASE("a target restated before any listing poll places once, with no limit set", "[own-orders]") {
-  // A live source feeds its whole history on a cold start -- `SessionSource::poll_bars` hands every
-  // bar of the first read to the runner, one pass each -- and a target strategy restates its target
-  // on every one. The broker's listing is not read again between them. With no limit that reads
+  // A runner fed several bars before a listing -- by hand, as here, or as `SessionSource::poll_bars`
+  // fed a cold start's history before it fed history through `feed_warmup` -- and a target strategy
+  // restates its target on every one. The broker's listing is not read again between them. With no limit that reads
   // what is outstanding, the second pass used to start from that listing, see nothing working, and
   // send the same order again: one per history bar, all of them filled at the open.
   using ListedRunner = runner::Runner<
@@ -2310,7 +2315,20 @@ TEST_CASE("a read of several instruments is fed in time order, as a replay feeds
   CHECK(seen[1].first == hynix().symbol_);
 }
 
-TEST_CASE("a bar fed as history changes the strategy and nothing a later pass relies on", "[warmup]") {
+TEST_CASE("an instrument whose read ends early does not send before the others' history", "[warmup]") {
+  // A suspended name's last bar is days old, so it sorts ahead of the other names' older bars. Sent
+  // there, a cross-sectional strategy would act on a stale cross-section at today's price; it is fed
+  // as history, and the one live bar is the newest bar after all the history.
+  WarmupRig<BuysOne> rig({samsung(), hynix()});
+  rig.session.set_bars_for(samsung().symbol_, history_bars(6));
+  rig.session.set_bars_for(hynix().symbol_, history_bars(3));
+  rig.loop.run(rig.stop, 1);
+  REQUIRE(rig.session.placed().size() == 1);
+  CHECK(rig.session.placed()[0].instrument_ == samsung());
+  CHECK(rig.source.bars_fed_as_warmup() == 8);
+}
+
+TEST_CASE("a bar fed as history changes the strategy and no counter or reservation", "[warmup]") {
   runner::DryRunner<BuysOne> dry;
   dry.context().set_instrument(samsung_reference());
   dry.context().set_phase(strategy::MarketPhase::OPEN);

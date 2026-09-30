@@ -511,7 +511,13 @@ newest bar's. Two consequences to design for:
   happen.
 - **Poll bars no slower than their interval.** A poll that brings five minute bars acts on the newest
   only; for a level strategy that is the position a continuous process would hold, for an event
-  strategy a signal lost (and counted), never a wrong trade.
+  strategy a signal lost (and counted) rather than one acted on late.
+- **An instrument whose read ends early waits.** Only the newest bars after the last history bar of
+  the merged read can send, so a name suspended for days — its newest bar older than the others'
+  history — is shown to the strategy as history, and its own decision waits for its next bar.
+- **A bar query that fails feeds nothing that poll**, for any instrument: the next poll reads them all
+  again. One name that always fails therefore stops bars for the whole universe, and the loop reports
+  the failing poll.
 
 A source of your own must do the same: feed every new bar of a read but the newest through
 `feed_warmup`, in period-end order across instruments.
@@ -600,11 +606,12 @@ pass and is discarded when a working-order poll replaces the listing, so a secon
 poll cannot re-spend the same money.
 
 **Every order sent to a broker counts as working until the next working-order listing replaces it,
-whatever the limits** — on a broker that lists working orders, which all three shipped ones do. A cold
-start feeds the whole first bar read, one pass per bar, before the next listing, and a target strategy
-restates its target on every one; each pass therefore sees the order the first one sent and sends
-nothing more. Before 2026-09-30 this held only with one of the checks above enabled, and a target
-strategy under default limits sent one order per history bar. A dry run and `live::bind_observer` send
+whatever the limits** — on a broker that lists working orders, which all three shipped ones do. Any
+pass before the next listing therefore sees the order an earlier one sent and does not send it again:
+two bars of a minute strategy between listings, a runner driven by hand, a quote and a bar in one
+iteration. Before 2026-09-30 this held only with one of the checks above enabled, and a target strategy
+under default limits sent one order per bar of a cold start's history (which `SessionSource` now feeds
+as history, below, so only its newest bar can send at all). A dry run and `live::bind_observer` send
 to no broker, so their rows carry no broker reference — a later opposing target would ask to withdraw
 an order identified by nothing — and they keep the old scoping: they report a restated target again on
 every pass.

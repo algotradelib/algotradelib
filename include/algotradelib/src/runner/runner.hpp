@@ -1742,9 +1742,11 @@ private:
    * reconciliation reads the same portfolio, and an order this runner just sent has to count as
    * working there, whatever the limits: a target restated on the next pass would otherwise be sent
    * again. It was scoped to the limits below until 2026-09-30, and the cold start showed the cost --
-   * `SessionSource` feeds a whole history read one pass per bar before the next listing, so a target
-   * strategy under default limits sent one order per history bar (`tests/test-live.cpp`,
-   * `[own-orders]`). The listing that retires the row is what bounds its life, so the loop holds such
+   * `SessionSource` then fed a whole history read one pass per bar before the next listing, so a
+   * target strategy under default limits sent one order per history bar (`tests/test-live.cpp`,
+   * `[own-orders]`). It now feeds history through `feed_warmup`, which sends nothing; the reservation
+   * still covers every other pass before a listing (a runner fed by hand, two new bars between
+   * listings). The listing that retires the row is what bounds its life, so the loop holds such
    * a run while no listing will come -- the source publishes none, no working-order cadence is set,
    * or the last listing is older than the portfolio age policy (`PollingLoop::gate_for`).
    *

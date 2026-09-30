@@ -41,7 +41,10 @@ inline runner::PollOutcome poll_outcome_of(const BrokerError& error) noexcept {
 
 namespace session_source_detail {
 
-/** Whether `Runner` can be fed a bar as history, which every `runner::Runner` can. */
+/**
+ * Whether `Runner` can be fed a bar as history, which every `runner::Runner` can. Required by
+ * `poll_bars`: a runner without it would send what was decided on a cold start's history.
+ */
 template <typename Runner, typename = void>
 struct feeds_warmup : std::false_type {};
 
@@ -377,19 +380,34 @@ private:
     std::stable_sort(collected.begin(), collected.end(), [](const Collected& a, const Collected& b) {
       return a.event_.period_end_ < b.event_.period_end_;
     });
+    // **And not before another instrument's history.** An instrument whose read ends early -- a
+    // suspended name whose last bar is days old -- sorts its newest bar ahead of the other names'
+    // older ones; sent there, a cross-sectional strategy would act on a stale cross-section at
+    // today's price. So only newest bars after the last history bar in the merged order send; one
+    // before it is history too, and that instrument's decision waits for its next bar.
+    std::size_t live_from = 0;
+    for (std::size_t at = 0; at < collected.size(); ++at) {
+      if (!collected[at].newest_) {
+        live_from = at + 1;
+      }
+    }
+    static_assert(
+      session_source_detail::feeds_warmup<Runner>::value,
+      "SessionSource feeds a read's older bars through Runner::feed_warmup; a runner without it "
+      "would send decisions made on history"
+    );
     auto outcome = runner::PollOutcome::UPDATED;
     if (collected.empty()) {
       outcome = runner::PollOutcome::UNCHANGED;
     }
-    for (const auto& item : collected) {
+    for (std::size_t at = 0; at < collected.size(); ++at) {
+      const auto& item = collected[at];
       const auto& instrument = universe_[item.instrument_];
-      if constexpr (session_source_detail::feeds_warmup<Runner>::value) {
-        if (!item.newest_) {
-          runner_instance.feed_warmup(item.event_);
-          ++bars_fed_as_warmup_;
-          last_bar_[instrument.symbol_] = item.event_.bar_.timestamp_;
-          continue;
-        }
+      if (!item.newest_ || at < live_from) {
+        runner_instance.feed_warmup(item.event_);
+        ++bars_fed_as_warmup_;
+        last_bar_[instrument.symbol_] = item.event_.bar_.timestamp_;
+        continue;
       }
       runner_instance.context().set_last_price(instrument, item.event_.bar_.close_);
       runner_instance.feed(item.event_);
