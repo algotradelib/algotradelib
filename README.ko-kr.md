@@ -165,4 +165,4 @@ export KIS_APP_KEY=... KIS_APP_SECRET=... KIS_CANO=... KIS_DEMO=1
 
 algotradelib은 MIT 라이선스로 배포됩니다([LICENSE](LICENSE) 참고). 이 소프트웨어는 어떠한 보증도 없이
 있는 그대로 제공되며, 저작자는 거래 손실을 포함해 그 사용으로 생긴 어떠한 손실에도 책임지지 않습니다.
-이 저장소의 어떤 내용도 투자 조언이 아닙니다. 법적 효력은 영어 원문과 [LICENSE](LICENSE)에 있습니다.
+이 저장소의 어떤 내용도 투자 조언이 아닙니다.
