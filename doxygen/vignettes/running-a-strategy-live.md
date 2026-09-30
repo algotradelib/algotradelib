@@ -474,9 +474,13 @@ That is what a replay does by filling at the next bar's open. The rules around i
   what it was when it was kept, and a kept stop only if no stop now rests there; otherwise it is dropped
   and counted (`Runner::kept_intents_dropped`). Each instruction is kept once, intents in the order
   stated, after the kept targets. An intent withheld for the account is still dropped; so is a keyed
-  intent a broker answered (a second order would reuse the key). Kept intents are not journalled, so
-  a restart before the open loses them; a `CancelIntent` does not forget them; released together at
-  the open they can meet `max_orders_per_window_`.
+  intent a broker answered (a second order would reuse the key). A weight-sized intent skips the
+  holding check, because it is planned again as the position it states. Kept intents are not
+  journalled: a restart before the open loses those the newest bar does not state again (a stop the
+  strategy restates on every bar comes back from the history the new process reads). A `CancelIntent`
+  does not forget them; released together at the open they can meet `max_orders_per_window_`; and a
+  target and an intent kept by one pass while a stop rests can supersede each other on release (the
+  later statement wins, as always). The run's report notes how many were dropped.
 - It lives for one `PollingLoop::run`. A restarted process re-derives it from the history the source
   feeds on its first poll; a second `run` on the same source does not, because that source has already
   fed those bars, so the decision waits for the next bar.

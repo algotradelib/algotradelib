@@ -2500,6 +2500,67 @@ TEST_CASE("a kept stop is dropped when a stop rests at the open", "[kept-intents
   CHECK(rig.live_runner.kept_intents_dropped() == 1);
 }
 
+namespace {
+
+/** States a target of ten and two orders for the instrument on every bar: the pass that is kept. */
+struct TargetStopAndTakeProfit {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = Decimal64::parse("10");
+    ctx.submit(target);
+    const auto held = ctx.portfolio().net_quantity_of(bar.instrument_);
+    if (!held || held->coefficient() <= 0) {
+      return;
+    }
+    const auto rule = PriceRule::krx_equity();
+    ctx.submit(strategy::OrderIntent::stop_limit(
+      bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("5")),
+      *strategy::Price::checked(Decimal64::parse("65000"), rule),
+      *strategy::Price::checked(Decimal64::parse("64900"), rule)));
+    ctx.submit(strategy::OrderIntent::limit(
+      bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("5")),
+      *strategy::Price::checked(Decimal64::parse("80000"), rule)));
+  }
+};
+
+} // namespace
+
+TEST_CASE("a target, a stop and a take-profit kept together go out once, in order", "[kept-intents]") {
+  KeptRig<TargetStopAndTakeProfit> rig;
+  rig.source.held_ = Decimal64::parse("10");
+  rig.refuse_out_of_hours();
+  rig.loop.run(rig.stop, 17);
+  CHECK(rig.live_runner.intents_kept_for_phase() == 2);
+  rig.session.heal_place();
+  rig.loop.run(rig.stop, 6);
+  // Two midnight attempts (the target needed no trade), then both at the open, in the order stated.
+  REQUIRE(rig.session.placed().size() == 4);
+  CHECK(rig.session.placed()[2].type_ == OrderType::STOP_LIMIT);
+  CHECK(rig.session.placed()[3].type_ == OrderType::LIMIT);
+  CHECK(rig.live_runner.intents_kept_for_phase() == 0);
+}
+
+TEST_CASE("a later bar's statement supersedes every kept intent for the instrument", "[kept-intents]") {
+  KeptRig<TargetStopAndTakeProfit> rig;
+  rig.source.held_ = Decimal64::parse("10");
+  rig.refuse_out_of_hours();
+  rig.loop.run(rig.stop, 17);
+  REQUIRE(rig.live_runner.intents_kept_for_phase() == 2);
+  // The strategy speaks again for the instrument before the open: a direct pass standing for the next
+  // bar. Its target is met (nothing to send), and both kept intents are forgotten rather than
+  // released beside the new pass's own.
+  rig.live_runner.context().submit([] {
+    strategy::TargetPosition target;
+    target.instrument_ = samsung();
+    target.target_quantity_ = Decimal64::parse("10");
+    return target;
+  }());
+  (void)rig.live_runner.feed(strategy::MarketPhase::PRE_OPEN);
+  CHECK(rig.live_runner.intents_kept_for_phase() == 0);
+}
+
 TEST_CASE("an operator's halt discards a kept intent", "[kept-intents]") {
   KeptRig<BuysOne> rig;
   rig.loop.run(rig.stop, 17);

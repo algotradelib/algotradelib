@@ -1055,7 +1055,10 @@ public:
       for (auto& entry : intents) {
         const auto held = context_.portfolio().net_quantity_of(entry.intent_.instrument());
         const auto gap = held ? decimal_subtract(*held, entry.held_) : std::nullopt;
-        const bool same_book = gap && gap->coefficient() == 0;
+        // A weight is planned again as the position it states, against the holding at release, so
+        // the book it was decided against does not bind it.
+        const bool weight = entry.intent_.size().kind() == strategy::SizeKind::TARGET_WEIGHT;
+        const bool same_book = weight || (gap && gap->coefficient() == 0);
         const bool stop_now_rests = entry.intent_.trigger() && stop_listed(entry.intent_.instrument());
         if (!same_book || stop_now_rests) {
           ++kept_intents_dropped_;
@@ -1689,6 +1692,8 @@ private:
       }
     }
 
+    // The pass's instructions die with it; so do the pointers kept to deduplicate them.
+    kept_this_pass_.clear();
     report.log_ = context_.log().take();
     return report;
   }
