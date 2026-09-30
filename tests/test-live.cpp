@@ -1763,6 +1763,12 @@ public:
     if (kind == runner::PollKind::HOLDINGS) {
       HoldingsSnapshot snapshot;
       snapshot.received_at_ = clock_->now();
+      if (held_) {
+        HoldingPosition position;
+        position.instrument_ = samsung();
+        position.quantity_ = *held_;
+        snapshot.positions_.push_back(position);
+      }
       session_->set_holdings(snapshot);
     }
     if (kind == runner::PollKind::WORKING_ORDERS && listing_fails_) {
@@ -1773,6 +1779,8 @@ public:
 
   /** Makes the working-order poll fail, without reaching the session, until told otherwise. */
   bool listing_fails_{false};
+  /** The Samsung position every holdings read reports, or none. */
+  std::optional<Decimal64> held_;
 
   template <typename Runner>
   runner::PollOutcome read_order_list(Runner& runner_instance) {
@@ -1924,6 +1932,256 @@ TEST_CASE("a listing older than the portfolio age policy holds the loop until on
   source.listing_fails_ = false;
   const auto healed = loop.run(stop, 2);
   CHECK_FALSE(healed.final_gate_.has_value());
+}
+
+namespace {
+
+/** Records every close it is shown, so a test can tell a forming bar from a closed one. */
+struct RecordsCloses {
+  std::vector<std::string> closes_;
+
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent& bar) {
+    closes_.push_back(bar.bar_.close_.str());
+  }
+};
+
+/** Two daily bars stamped at their open, the second the session still trading at `second_close`. */
+BarSeries daily_with_forming(const char* second_close) {
+  BarSeries series;
+  series.interval_ = BarInterval::ONE_DAY;
+  series.stamp_ = BarStamp::OPEN;
+  Bar first;
+  first.timestamp_ = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 300);
+  first.open_ = Decimal64::parse("70000");
+  first.close_ = Decimal64::parse("70500");
+  first.high_ = first.close_;
+  first.low_ = first.open_.value();
+  Bar second = first;
+  second.timestamp_ = first.timestamp_ + std::chrono::hours(24);
+  second.close_ = Decimal64::parse(second_close);
+  second.high_ = second.close_;
+  series.bars_ = {first, second};
+  return series;
+}
+
+} // namespace
+
+TEST_CASE("a bar whose period has not ended is not fed, and its close is fed once it has",
+          "[forming]") {
+  // Every shipped adapter's daily query runs up to today, and the broker answers today's row while
+  // the session trades. Fed, the strategy decided on the price so far as a close, and the real close
+  // never arrived because the bar's timestamp had already been seen.
+  using LoopRunner = runner::Runner<
+    RecordsCloses, WithWorkingOrders, FakeBroker,
+    live::SessionExecutor<FakeSession<WithWorkingOrders>>
+  >;
+  FakeSession<WithWorkingOrders> session;
+  session.set_bars(daily_with_forming("71000"));
+  LoopRunner live_runner(
+    RecordsCloses{}, {}, 512, live::SessionExecutor<FakeSession<WithWorkingOrders>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+
+  live::SessionSource<FakeSession<WithWorkingOrders>> source(session, {samsung()});
+  runner::PollSchedule schedule;
+  schedule.bars_ = std::chrono::minutes(1);
+  schedule.tick_ = std::chrono::minutes(1);
+  schedule.calendar_.reset();
+  // Three hours into the second bar's day: the first bar has ended, the second has not.
+  const auto midday = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 301 + 3);
+  runner::PollingLoop<LoopRunner, decltype(source), runner::ManualClock> loop(
+    live_runner, source, schedule, runner::ManualClock{midday});
+  loop.allow_unbounded_portfolio_age();
+  loop.allow_absent_portfolio();
+  runner::StopSource stop;
+
+  loop.run(stop, 3);
+  REQUIRE(live_runner.strategy().closes_ == std::vector<std::string>{"70500"});
+  CHECK(source.bars_not_yet_closed() >= 1);
+  // The decision instant is the first bar's period end, never ahead of the clock.
+  CHECK_FALSE(midday < live_runner.context().now());
+
+  // The session closes at 72,000 and the day ends; the next poll feeds the bar once, closed.
+  session.set_bars(daily_with_forming("72000"));
+  loop.clock().advance(std::chrono::hours(22));
+  loop.run(stop, 3);
+  REQUIRE(live_runner.strategy().closes_ == std::vector<std::string>{"70500", "72000"});
+}
+
+namespace {
+
+/** 00:00 KST on day `day` after the epoch, which is how every shipped adapter stamps a daily bar. */
+std::chrono::system_clock::time_point kst_midnight(int day) {
+  return std::chrono::system_clock::time_point{} + std::chrono::hours(24 * day) - std::chrono::hours(9);
+}
+
+/** Two daily bars, stamped at 00:00 KST on the two days before `day`. */
+BarSeries kst_daily_before(int day) {
+  BarSeries series;
+  series.interval_ = BarInterval::ONE_DAY;
+  series.stamp_ = BarStamp::OPEN;
+  for (int back = 2; back >= 1; --back) {
+    Bar bar;
+    bar.timestamp_ = kst_midnight(day - back);
+    bar.open_ = Decimal64::parse("70000");
+    bar.close_ = Decimal64::parse("70000");
+    bar.high_ = bar.close_;
+    bar.low_ = bar.close_;
+    series.bars_.push_back(bar);
+  }
+  return series;
+}
+
+/** A calendar on which `day` and the days either side of it trade. */
+TradingCalendar trading_around(int day) {
+  TradingCalendar calendar;
+  calendar.country_ = Country::KR;
+  calendar.received_at_ = kst_midnight(day);
+  for (int at = day - 3; at <= day + 1; ++at) {
+    calendar.days_.push_back(
+      TradingDay{strategy::SessionWindow::krx().local_date(kst_midnight(at) + std::chrono::hours(12)), true}
+    );
+  }
+  return calendar;
+}
+
+template <typename Strategy>
+using PhaseRunner = runner::Runner<
+  Strategy, WithCalendar, FakeBroker, live::SessionExecutor<FakeSession<WithCalendar>>
+>;
+using PhaseSource = FreshHoldingsSource<FakeSession<WithCalendar>, runner::ManualClock>;
+
+/** Polls every half hour, the listing too, from 00:30 KST on `day`, with a stated portfolio age. */
+runner::PollSchedule half_hourly() {
+  runner::PollSchedule schedule;
+  schedule.bars_ = std::chrono::minutes(30);
+  schedule.holdings_ = std::chrono::minutes(30);
+  schedule.working_orders_ = std::chrono::minutes(30);
+  schedule.calendar_ = std::chrono::hours(6);
+  schedule.tick_ = std::chrono::minutes(30);
+  return schedule;
+}
+
+constexpr int trading_day = 400;
+
+} // namespace
+
+TEST_CASE("a daily target decided before the open is placed once, at the open", "[phase-retain]") {
+  // Every shipped adapter stamps a daily bar at 00:00 KST, so its period ends at the next midnight
+  // and `SessionSource` feeds it then, while the market is shut. The default phase limit refused the
+  // entry and the target was dropped: a daily strategy under default limits never opened a position.
+  FakeSession<WithCalendar> session;
+  session.set_bars(kst_daily_before(trading_day));
+  session.set_calendar(trading_around(trading_day));
+  PhaseRunner<HoldTen> live_runner(
+    HoldTen{}, {}, 512, live::SessionExecutor<FakeSession<WithCalendar>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+  PhaseSource source(session, {samsung()}, nullptr);
+  runner::PollingLoop<PhaseRunner<HoldTen>, PhaseSource, runner::ManualClock> loop(
+    live_runner, source, half_hourly(),
+    runner::ManualClock{kst_midnight(trading_day) + std::chrono::minutes(30)});
+  source = PhaseSource(session, {samsung()}, &loop.clock());
+  loop.set_maximum_portfolio_age(std::chrono::hours(1));
+  runner::StopSource stop;
+
+  // 00:30 to 08:30 KST: the bar is fed, the entry refused for the phase, and the target kept.
+  loop.run(stop, 17);
+  CHECK(session.placed().empty());
+  CHECK(live_runner.targets_retained_for_phase() == 1);
+
+  // Through the open: placed once, in the first open iteration, and not again.
+  loop.run(stop, 6);
+  REQUIRE(session.placed().size() == 1);
+  CHECK(session.placed()[0].side_ == OrderSide::BUY);
+  CHECK(live_runner.targets_retained() == 0);
+}
+
+TEST_CASE("an exit a broker refuses out of session is placed once the session opens",
+          "[phase-retain]") {
+  // The phase limit admits an order that reduces a position in any phase, and a broker that is not
+  // taking orders at midnight refuses it. Refused, the target used to wait for its next bar -- the
+  // next midnight, refused again -- so a daily strategy could enter and never leave.
+  FakeSession<WithCalendar> session;
+  session.set_bars(kst_daily_before(trading_day));
+  session.set_calendar(trading_around(trading_day));
+  BrokerError closed;
+  closed.category_ = ErrorCategory::INVALID_ARGUMENT;
+  closed.broker_code_ = "40580000";
+  closed.message_ = "not an order-acceptance time";
+  session.fail_place_with(closed);
+  PhaseRunner<SellsAll> live_runner(
+    SellsAll{}, {}, 512, live::SessionExecutor<FakeSession<WithCalendar>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+  PhaseSource source(session, {samsung()}, nullptr);
+  runner::PollingLoop<PhaseRunner<SellsAll>, PhaseSource, runner::ManualClock> loop(
+    live_runner, source, half_hourly(),
+    runner::ManualClock{kst_midnight(trading_day) + std::chrono::minutes(30)});
+  source = PhaseSource(session, {samsung()}, &loop.clock());
+  source.held_ = Decimal64::parse("10");
+  loop.set_maximum_portfolio_age(std::chrono::hours(1));
+  runner::StopSource stop;
+
+  // The first poll feeds both history bars, and each exit is sent and refused (the fake records
+  // every attempt). Then nothing more all night: a target kept for the phase is not retried until
+  // the phase admits it, so a closed market is not asked again every half hour.
+  const auto night = loop.run(stop, 17);
+  CHECK(night.orders_broker_refused_ == 2);
+  CHECK(session.placed().size() == 2);
+  CHECK(live_runner.targets_retained_for_phase() == 1);
+
+  // The broker takes orders again, and the exit goes out once at the open.
+  session.heal_place();
+  loop.run(stop, 6);
+  REQUIRE(session.placed().size() == 3);
+  CHECK(session.placed()[2].side_ == OrderSide::SELL);
+  CHECK(session.placed()[2].quantity_ == Decimal64::parse("10"));
+  CHECK(live_runner.targets_retained() == 0);
+}
+
+TEST_CASE("an operator's halt discards a target kept for the phase", "[phase-retain]") {
+  // Decided at midnight, waiting for the open: an operator who halts at 08:50 and resumes at 10:00
+  // did not ask for a decision made before the halt to go out at 10:00.
+  FakeSession<WithCalendar> session;
+  session.set_bars(kst_daily_before(trading_day));
+  session.set_calendar(trading_around(trading_day));
+  PhaseRunner<HoldTen> live_runner(
+    HoldTen{}, {}, 512, live::SessionExecutor<FakeSession<WithCalendar>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+  PhaseSource source(session, {samsung()}, nullptr);
+  runner::PollingLoop<PhaseRunner<HoldTen>, PhaseSource, runner::ManualClock> loop(
+    live_runner, source, half_hourly(),
+    runner::ManualClock{kst_midnight(trading_day) + std::chrono::minutes(30)});
+  source = PhaseSource(session, {samsung()}, &loop.clock());
+  loop.set_maximum_portfolio_age(std::chrono::hours(1));
+  runner::StopSource stop;
+
+  loop.run(stop, 17);
+  REQUIRE(live_runner.targets_retained_for_phase() == 1);
+  live_runner.guard().halt(strategy::HaltReason::OPERATOR);
+  loop.run(stop, 2);
+  CHECK(live_runner.targets_retained() == 0);
+  live_runner.guard().resume(strategy::HaltReason::OPERATOR);
+  loop.run(stop, 4);
+  CHECK(session.placed().empty());
+}
+
+TEST_CASE("a replay does not keep a target the phase refused", "[phase-retain]") {
+  // A replay never calls `retry_retained_targets`, so a kept target would only pile up.
+  runner::DryRunner<HoldTen> dry;
+  dry.context().set_instrument(samsung_reference());
+  dry.context().set_phase(strategy::MarketPhase::PRE_OPEN);
+  dry.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  strategy::Portfolio<runner::DryTag> flat;
+  flat.as_of_ = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 100);
+  dry.context().set_portfolio(flat);
+  const auto report = dry.feed(bar_at(0, "70000"));
+  REQUIRE(report.refused_.size() == 1);
+  CHECK(report.refused_[0].reason_ == strategy::GuardReason::PHASE_NOT_PERMITTED);
+  CHECK(dry.targets_retained() == 0);
 }
 
 TEST_CASE("a broker refusal reaches a live run's report, with what the broker said") {

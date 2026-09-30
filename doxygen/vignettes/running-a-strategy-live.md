@@ -443,7 +443,10 @@ library's — which is the better answer, since it is the venue's own, and recor
 `live::bind_journaled` does, and a failed terminal append leaves the `PENDING` line with no answer
 beside it. Whether a recorded answer then outlives the process is a property of the journal you handed
 in — a `MemoryJournal` is gone when the process is.
-`LoopReport::sends_outside_permitted_phase_` counts how often that happened.
+`LoopReport::sends_outside_permitted_phase_` counts how often that happened. When that request came
+from a strategy's `TargetPosition` — `vanilla::TimedLiquidation`'s `POST_CLOSE` flatten is one — and the
+broker rejected it, the target is kept and the exit is sent again at the next session's open (below).
+The operator's own `flatten` is an order, not a target, and ends with the rejection.
 
 **Every other limit still applies to that flatten, and each of them is silent in the same way.** A
 sellable check with no broker reading, a per-order ceiling, a position ceiling, a halt: any of these
@@ -451,8 +454,45 @@ refuses the exit, the report says `closing_refused_`, and a note ends "the posit
 An operator who asks to be flat and hears nothing would believe they are. This is why the counts are
 separate rather than one number, and why `closing_complete()` exists.
 
-**An opening order after the close is refused exactly as before.** Nothing here relaxes that, and a
-strategy trying to enter a position at 22:00 gets `PHASE_NOT_PERMITTED`.
+**An opening order after the close is refused exactly as before** — `PHASE_NOT_PERMITTED` — **but a
+target is kept for the next session.** This is the case every daily strategy meets: each shipped
+adapter stamps a daily bar at 00:00 KST, `SessionSource` feeds it once its day has ended (at the next
+midnight), and the strategy decides while the market is shut. A `TargetPosition` whose opening order
+the phase limit refused, or whose exit it admitted and the broker (or the binding) then refused (a
+broker not taking orders at midnight does), is kept (`Runner::targets_retained_for_phase`) and planned again in the
+first iteration whose phase the limit admits — against that iteration's holdings, listing and prices.
+That is what a replay does by filling at the next bar's open. The rules around it:
+
+- One per instrument, the latest statement kept; a later target or order for the instrument replaces
+  it, as does an `on_phase` target at the open.
+- A stop discards it, and so does an operator's halt or a local failure: a decision made hours before
+  a halt must not go out when the halt is lifted.
+- An `OrderIntent` is not kept. It states a quantity, and replaying one would act on a decision nobody
+  re-made.
+- It lives for one `PollingLoop::run`. A restarted process re-derives it from the history the source
+  feeds on its first poll; a second `run` on the same source does not, because that source has already
+  fed those bars, so the decision waits for the next bar.
+- It is placed in the first `OPEN` iteration, after 09:00, so it misses the opening auction the replay's
+  fill at the open stands for. **Do not add `MarketPhase::PRE_OPEN` to `permitted_phases_` to reach
+  the auction**: `PRE_OPEN` begins at 00:00 on a trading day, so the midnight decision would go out at
+  midnight, a broker not taking orders would reject it, and — the phase having permitted it — the
+  target would be dropped.
+- **It helps only while `permitted_phases_` stays inside the hours the broker takes orders.** A target
+  whose order a broker rejects in a permitted phase is not kept: that is a refusal of the order, not of
+  the hour.
+- It is planned against that iteration's holdings and listing, and against the **last price the runner
+  has**: with bars alone that is yesterday's close, because the session's forming bar is not fed, so
+  sizing and the buying-power check do not see the opening gap. Poll quotes (`PollSchedule::quotes_`)
+  for a price from the session.
+- **Do not copy a replay's `permitted_phases_ = std::nullopt` into a live program.** Every replay example
+  sets it, because a replay's clock visits only bar period ends; live, it sends every daily decision at
+  midnight, where a broker rejects it.
+
+A process started during the session behaves differently from one started overnight. Overnight, every
+history bar's target is refused for the phase and only the latest survives, placed at the open.
+In-session, each history bar settles as it is fed, so a target that changed during the history is
+placed and withdrawn at startup, from closes that are days old. That is a known gap in how a cold
+start treats its history.
 
 ## The market phase, and what the loop needs to know it
 
@@ -469,7 +509,8 @@ The loop derives the phase each iteration from two things:
 
 `on_phase` fires on a change, once, with this iteration's prices and portfolio already installed. A
 strategy written on it — `vanilla::TimedLiquidation` is the shipped one — behaves the same live as in a
-replay, which it did not before.
+replay **of intraday bars**. A daily replay's clock visits only bar ends, so there it fires about once
+in the whole run (see "Reading a backtest honestly").
 
 **If you write your own source**, one rule is yours to keep, in two halves: write the trading calendar
 during `PollKind::CALENDAR`, nowhere else, and **do not feed the runner from that poll**. The loop
