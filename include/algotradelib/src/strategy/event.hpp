@@ -193,9 +193,11 @@ struct BarEvent {
   /** Which edge of that period `bar_.timestamp_` marks. */
   BarStamp stamp_{BarStamp::CLOSE};
   /**
-   * The bar itself, always closed. A runner never delivers a forming one: `live::SessionSource`
-   * holds back a bar whose period end is after the loop's instant, which is how a broker's
-   * current-session row -- every shipped adapter's daily query returns one -- is kept out.
+   * The bar itself, closed. `live::SessionSource` holds back a bar whose period end is after the
+   * loop's instant, which is how a broker's current-session row -- every shipped adapter's daily
+   * query returns one -- is kept out of daily and minute bars. Not for a week, a month or a year
+   * stamped at its open (their stamp convention is unobserved and they are fed as read), and not for
+   * a source driven with no instant at all.
    */
   Bar bar_;
   /** When the period finished: the earliest moment a strategy could legitimately know this bar. */

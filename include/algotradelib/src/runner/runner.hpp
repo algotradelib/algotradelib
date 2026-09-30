@@ -1006,6 +1006,8 @@ public:
    * before an operator's halt survives it and is planned, against fresh holdings, once the halt is
    * lifted; **a target retained for the phase does not**: an operator's halt or a local failure
    * discards it, because it may have been decided hours before and the operator stopped trading since.
+   * The discard happens here, so a program driving a runner by hand that halts and resumes without a
+   * call in between keeps it; `PollingLoop` calls this every iteration.
    *
    * A program driving a `Runner` without `PollingLoop` retains the same way and must call this
    * itself, or `clear_retained_targets`; nothing else replays or discards them. A replay never stamps

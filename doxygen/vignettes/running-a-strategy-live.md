@@ -443,7 +443,10 @@ library's — which is the better answer, since it is the venue's own, and recor
 `live::bind_journaled` does, and a failed terminal append leaves the `PENDING` line with no answer
 beside it. Whether a recorded answer then outlives the process is a property of the journal you handed
 in — a `MemoryJournal` is gone when the process is.
-`LoopReport::sends_outside_permitted_phase_` counts how often that happened.
+`LoopReport::sends_outside_permitted_phase_` counts how often that happened. When that request came
+from a strategy's `TargetPosition` — `vanilla::TimedLiquidation`'s `POST_CLOSE` flatten is one — and the
+broker rejected it, the target is kept and the exit is sent again at the next session's open (below).
+The operator's own `flatten` is an order, not a target, and ends with the rejection.
 
 **Every other limit still applies to that flatten, and each of them is silent in the same way.** A
 sellable check with no broker reading, a per-order ceiling, a position ceiling, a halt: any of these
@@ -470,7 +473,17 @@ That is what a replay does by filling at the next bar's open. The rules around i
   feeds on its first poll; a second `run` on the same source does not, because that source has already
   fed those bars, so the decision waits for the next bar.
 - It is placed in the first `OPEN` iteration, after 09:00, so it misses the opening auction the replay's
-  fill at the open stands for. Add `MarketPhase::PRE_OPEN` to `permitted_phases_` to take part in it.
+  fill at the open stands for. **Do not add `MarketPhase::PRE_OPEN` to `permitted_phases_` to reach
+  the auction**: `PRE_OPEN` begins at 00:00 on a trading day, so the midnight decision would go out at
+  midnight, a broker not taking orders would reject it, and — the phase having permitted it — the
+  target would be dropped.
+- **It helps only while `permitted_phases_` stays inside the hours the broker takes orders.** A target
+  whose order a broker rejects in a permitted phase is not kept: that is a refusal of the order, not of
+  the hour.
+- It is planned against that iteration's holdings and listing, and against the **last price the runner
+  has**: with bars alone that is yesterday's close, because the session's forming bar is not fed, so
+  sizing and the buying-power check do not see the opening gap. Poll quotes (`PollSchedule::quotes_`)
+  for a price from the session.
 - **Do not copy a replay's `permitted_phases_ = std::nullopt` into a live program.** Every replay example
   sets it, because a replay's clock visits only bar period ends; live, it sends every daily decision at
   midnight, where a broker rejects it.

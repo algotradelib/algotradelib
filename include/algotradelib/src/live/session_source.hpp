@@ -4,6 +4,7 @@
 #include "../runner/order_updates.hpp"
 #include "../runner/reconcile_orders.hpp"
 
+#include <algorithm>
 #include <algotradelib/broker>
 
 #include <chrono>
@@ -296,17 +297,16 @@ private:
       // runner would have stamped the decision with, so the decision is never dated ahead of the
       // clock either.
       //
-      // The instant is the loop's (`Runner::observed_at`); a source driven by hand, with no loop,
-      // falls back to when this machine received the series (`BarSeries::received_at_`, which every
-      // shipped adapter stamps), and with neither every bar is fed, as before. **Only where the
+      // The instant is the later of the loop's (`Runner::observed_at`) and when this machine
+      // received the series (`BarSeries::received_at_`, which every shipped adapter stamps), so a
+      // source driven by hand still has one; with neither, every bar is fed, as before. **Only where the
       // period end is known**: a close-stamped bar states it, and a day or a minute stamped at its
       // open ends one interval later. A week, a month or a year stamped at its open is fed as
       // before, because no adapter's convention for those stamps has been observed and a wrong
       // guess would hold every closed week back by a week.
-      auto instant = runner_instance.observed_at();
-      if (instant == std::chrono::system_clock::time_point{}) {
-        instant = series.received_at_;
-      }
+      // The later of the two, so an instant a finished `run` left behind cannot hold back bars a
+      // program polling by hand has since received closed.
+      const auto instant = std::max(runner_instance.observed_at(), series.received_at_);
       const bool knowable = series.stamp_ == BarStamp::CLOSE ||
         series.interval_ == BarInterval::ONE_DAY || series.interval_ == BarInterval::ONE_MINUTE;
       const bool timed = knowable && instant != std::chrono::system_clock::time_point{};
