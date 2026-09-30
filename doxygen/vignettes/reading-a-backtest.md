@@ -337,9 +337,23 @@ has no single number for it.
 `institution_fees_paid_` is absent for those three reasons and a fourth: any rate that stated a
 single figure without splitting the components, counted in `inclusive_commission_executions_`.
 
-No tax model, deliberately: Korean securities transaction tax has changed repeatedly, and a hard-coded
-number that moves would silently misprice every run after it changed. State it in the rate for sells if
-you want it.
+No tax rate of the library's own, deliberately: Korean securities transaction tax has changed
+repeatedly, and a hard-coded number that moves would silently misprice every run after it changed.
+**State the rate for the period you replay** — it is charged on sales only, which a commission rate
+cannot express, and on KRX it is more than ten times a typical online commission, so a high-turnover
+strategy replayed without it is flattered in proportion to its turnover:
+
+```cpp
+// The rate in force for the period you replay, stated by you, for the market whose sales pay it.
+const auto fills = backtest::NextBarFillModel(commission, slippage)
+                     .with_sell_tax(backtest::SellTax{Decimal64::parse("0.0020"), Country::KR});
+```
+
+It is truncated to whole currency units, charged to the account with the commission (and, like it,
+not in realized profit), and reported apart from it: `Execution::tax_`, `Report::tax_paid_` /
+`tax_by_currency_`, and `ReportCaveats::sell_tax_`. Only sales in the stated market pay it. A replay
+spanning a change in the rate is charged one rate throughout, and instruments exempt in that market —
+Korean ETFs and ETNs pay no transaction tax — need a replay of their own without it.
 
 ## Annualizing, and the trap in it
 

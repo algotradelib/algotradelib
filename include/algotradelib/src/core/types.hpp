@@ -1293,7 +1293,8 @@ enum class RateApplicability {
  * `startDate` made a future one read as already in force — an unreadable value downgraded to the
  * most permissive reading available, which is the shape Decision 6 exists to forbid.
  *
- * There is no per-order floor and no transaction tax here, because neither broker publishes one.
+ * There is no per-order floor and no transaction tax here, because neither broker publishes one. A
+ * replay states a sale-side tax itself, with `backtest::NextBarFillModel::with_sell_tax`.
  */
 struct CommissionRate {
   /** The market this rate applies to, when the library normalizes it; see `other_` when it does not. */

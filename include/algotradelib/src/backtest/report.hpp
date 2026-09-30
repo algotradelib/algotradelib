@@ -299,6 +299,8 @@ struct ReportCaveats {
   std::optional<Money> lowest_cash_;
   /** When that lowest cash was reached. */
   std::optional<std::chrono::system_clock::time_point> lowest_cash_at_;
+  /** The tax on sales, as stated to the fill model; absent when no tax was modelled. Appended. */
+  std::optional<SellTax> sell_tax_;
 };
 
 /** What a replay produced, with every figure's absence meaning what `analytics` says it means. */
@@ -412,6 +414,15 @@ struct Report {
 
   /** What this run assumed, carried with the figures so a reader need not remember. */
   ReportCaveats caveats_;
+  /**
+   * The tax charged on sales, where the fill model stated one (`NextBarFillModel::with_sell_tax`).
+   * Absent when none was stated -- which is not a tax of zero, it is no tax modelled -- when nothing
+   * executed in the stated market, and, like the other cost totals, when those executions span more
+   * than one currency or a sum did not fit. Appended last, as every field added to this aggregate is.
+   */
+  std::optional<Decimal64> tax_paid_;
+  /** The same, per currency, over the executions in the stated market. */
+  std::vector<Money> tax_by_currency_;
 };
 
 namespace report_detail {
@@ -522,6 +533,12 @@ inline Report summarize(
       entry.executions_ = 1;
       report.caveats_.applied_rates_.push_back(std::move(entry));
     }
+    // The tax, totalled per currency, over the executions in the market it was stated for: another
+    // market's fills pay none by construction, and counting them would add a zero row in their
+    // currency and cost a single-currency total its scalar.
+    if (fills.sell_tax() && execution.fill_.instrument_.country_ == fills.sell_tax()->country_) {
+      accumulate(report.tax_by_currency_, Money{execution.tax_, execution.currency_});
+    }
     // Slippage is a per-share price difference, so its cost is that times the quantity -- and it
     // is totalled per currency like every other cost, because a replay can hold fills in more
     // than one and adding them would produce a figure denominated in nothing.
@@ -557,6 +574,10 @@ inline Report summarize(
   }
   if (costs_fit && report.slippage_by_currency_.size() == 1) {
     report.slippage_paid_ = report.slippage_by_currency_.front().amount_;
+  }
+  report.caveats_.sell_tax_ = fills.sell_tax();
+  if (fills.sell_tax() && costs_fit && report.tax_by_currency_.size() == 1) {
+    report.tax_paid_ = report.tax_by_currency_.front().amount_;
   }
   report.caveats_.multiple_instruments_ = seen.size() > 1;
 

@@ -31,9 +31,11 @@ namespace backtest {
  * Korean online brokerage charges. `minimum_` is the floor some brokers apply per order, and it is the
  * reason a notional trade tolerance exists: a fixed floor is what makes a small trade uneconomic.
  *
- * Deliberately no tax model. Korean securities transaction tax applies on sales, at a rate that has
+ * Deliberately no tax here. Korean securities transaction tax applies on sales, at a rate that has
  * changed repeatedly, and hard-coding a number that moves would silently misprice every backtest run
- * after it changed. A caller who wants it states it as part of `rate_` for sells, knowingly.
+ * after it changed. This rate is charged on both sides, so it cannot carry a sale-only tax either: a
+ * caller states one on the fill model instead, `NextBarFillModel::with_sell_tax(SellTax)`, and it is
+ * reported apart from commission.
  */
 struct CommissionModel {
   /** Fraction of traded value charged, per execution. */
@@ -93,7 +95,8 @@ struct CommissionModel {
  *   so is a `backtest` change rather than this one.
  * - **It adds no tax.** `cost.hpp` refuses to hard-code Korean securities transaction tax for a
  *   reason that has not changed: the rate has moved repeatedly, and a stale constant silently
- *   misprices every run after it moved.
+ *   misprices every run after it moved. State the year's rate with
+ *   `NextBarFillModel::with_sell_tax`.
  * - **It answers for one date.** A replay spanning a rate change charges one rate throughout, which
  *   is honest and still wrong for the half of the period the other rate covered; charging per trade
  *   date needs a signature that takes one, and that is
