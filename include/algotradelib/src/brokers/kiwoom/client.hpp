@@ -758,6 +758,27 @@ inline Venue normalized_venue(std::string_view code) noexcept {
 }
 
 /**
+ * Returns the venue a `ka10075` working-order row reports, from its `stex_tp` and `sor_yn`.
+ *
+ * **`sor_yn` is read in case `stex_tp` alone does not say SOR.** Kiwoom documents the two
+ * separately -- `stex_tp` 거래소구분 as `0 : 통합, 1 : KRX, 2 : NXT` and `sor_yn` SOR 여부값 as
+ * `Y,N`. Its only example SOR row (`ka10076`'s) reads `stex_tp 0`, `stex_tp_txt SOR`, `sor_yn Y`,
+ * which `stex_tp` already reads as `COMBINED`; but nothing documents how a resting SOR order is listed.
+ * If it came under the book it rests on with the flag set, `stex_tp` alone would say KRX while the
+ * journal recorded `COMBINED`, recovery would read it as a different order, and a withdrawal would be
+ * sent with `KRX` instead of the `SOR` it was placed with. So `Y` means `Venue::COMBINED` whatever
+ * `stex_tp` says. Anything else, including an absent or unreadable
+ * flag, leaves `stex_tp` to answer: the flag is informational for every other order, and one odd
+ * row must not cost a listing. Documented, not yet observed on an account.
+ */
+inline Venue listed_venue(std::string_view stex_tp, std::string_view sor_yn) noexcept {
+  if (sor_yn == "Y") {
+    return Venue::COMBINED;
+  }
+  return normalized_venue(stex_tp);
+}
+
+/**
  * Returns the side Kiwoom's `io_tp_nm` names.
  *
  * Kiwoom spells it several ways across its listings — `+매수`, `-매도`, `현금매수`, `현금매도`,
@@ -3373,7 +3394,9 @@ private:
     order.side_ = read_side(detail::text_field(row, "io_tp_nm"));
     apply_shape(open_order.shape_name_, order);
     order.status_ = normalized_order_status(detail::text_field(row, "ord_stt"));
-    order.venue_ = normalized_venue(detail::text_field(row, "stex_tp"));
+    order.venue_ = listed_venue(
+      detail::text_field(row, "stex_tp"), detail::text_field(row, "sor_yn")
+    );
     order.quantity_ = detail::required_magnitude(row, "ord_qty");
     order.price_ = positive(detail::magnitude(row, "ord_pric"));
     order.trigger_price_ = reported_trigger(row, "stop_pric");

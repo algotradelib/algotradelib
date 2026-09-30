@@ -292,9 +292,11 @@ the adapter refuses holdings — and so every sellable and position check — un
 **A Kiwoom strategy runner needs its route stated.** Kiwoom requires every order to name its venue,
 and the orders a strategy produces name none, so bind the runner with a default route —
 `live::bind_journaled(session, journal, strategy, limits, live::default_series_capacity, Venue::KRX)`,
-or `Venue::NXT`, or `Venue::COMBINED` for Kiwoom's SOR — not yet: how a SOR order is listed back is
-unobserved, and recovery after a crash depends on it (see `SessionExecutor::default_route`). Without
-a route the adapter refuses each order before sending it. `example-live-program` states KRX. Kiwoom also publishes no trading calendar, so a
+or `Venue::NXT`, or `Venue::COMBINED` for Kiwoom's SOR, which every Kiwoom order endpoint documents.
+Prefer KRX or NXT for now: Kiwoom's working-order listing marks a SOR order with a separate `sor_yn`
+flag, which the adapter reads so that recovery after a crash recognises the order, but neither that
+flag nor whether a Kiwoom demo account accepts SOR has been seen on an account (see
+`SessionExecutor::default_route`). Without a route the adapter refuses each order before sending it. `example-live-program` states KRX. Kiwoom also publishes no trading calendar, so a
 runner's market phase stays unknown and the default limits open no position.
 
 **KIS: own-account customers only.** The library sends `custtype P` (일반), which covers individual

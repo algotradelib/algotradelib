@@ -449,6 +449,44 @@ TEST_CASE("an unrecognized label leaves the shape unknown and preserves it", "[k
   CHECK(open_order.order_.side_ == OrderSide::BUY);
 }
 
+TEST_CASE("a working-order row flagged sor_yn Y reads as SOR whatever stex_tp says", "[kiwoom][orders][sor]") {
+  // ka10075 documents stex_tp (0 : 통합, 1 : KRX, 2 : NXT) and sor_yn (Y,N) separately, so a SOR
+  // order may be listed under the book it rests on with the flag set.
+  CHECK(kiwoom::listed_venue("1", "Y") == Venue::COMBINED);
+  CHECK(kiwoom::listed_venue("2", "Y") == Venue::COMBINED);
+  CHECK(kiwoom::listed_venue("1", "N") == Venue::KRX);
+  CHECK(kiwoom::listed_venue("2", "") == Venue::NXT);
+  CHECK(kiwoom::listed_venue("0", "N") == Venue::COMBINED);
+  // An unreadable flag is not an error; stex_tp answers.
+  CHECK(kiwoom::listed_venue("1", "y") == Venue::KRX);
+  CHECK(kiwoom::listed_venue("", "") == Venue::UNSPECIFIED);
+
+  auto row = json::parse(
+    R"({"ord_no":"0000071","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
+        "ord_qty":"1","ord_pric":"70000","oso_qty":"1","orig_ord_no":"0000000",
+        "io_tp_nm":"+매수","trde_tp":"보통","tm":"154113","cntr_qty":"0",
+        "stex_tp":"1","stex_tp_txt":"KRX","sor_yn":"Y"})"
+  ).as_object();
+  const auto sor = kiwoom::KiwoomClientTestAccess::open_order(row);
+  CHECK(sor.order_.venue_ == Venue::COMBINED);
+
+  row["sor_yn"] = "N";
+  CHECK(kiwoom::KiwoomClientTestAccess::open_order(row).order_.venue_ == Venue::KRX);
+  row.erase("sor_yn");
+  CHECK(kiwoom::KiwoomClientTestAccess::open_order(row).order_.venue_ == Venue::KRX);
+
+  // What the flag is for: a runner bound with Venue::COMBINED journals COMBINED, and recovery must
+  // recognise the listed row as that order rather than as a different one resting at KRX.
+  runner::OpenInstruction instruction;
+  instruction.entry_.venue_ = Venue::COMBINED;
+  CHECK(runner::route_evidence(instruction, sor.order_) == runner::RouteEvidence::CONFIRMS);
+  row["sor_yn"] = "N";
+  CHECK(
+    runner::route_evidence(instruction, kiwoom::KiwoomClientTestAccess::open_order(row).order_) ==
+    runner::RouteEvidence::CONTRADICTS
+  );
+}
+
 TEST_CASE("a combination Kiwoom has no code for is refused before any I/O", "[kiwoom][orders]") {
   std::string code;
   // Kiwoom publishes no market order in the closing auction.

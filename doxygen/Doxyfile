@@ -525,8 +525,11 @@ LOOKUP_CACHE_SIZE      = 0
 # encounter. Generating dot graphs in parallel is controlled by the
 # DOT_NUM_THREADS setting.
 # Minimum value: 0, maximum value: 512, default value: 1.
+#
+# algotradelib: 1, Doxygen's default. With 0, Doxygen 1.18.0 crashed (bus error) in input
+# preprocessing in 3 of about 18 runs on 2026-09-30, and in none of 20 runs with 1.
 
-NUM_PROC_THREADS       = 0
+NUM_PROC_THREADS       = 1
 
 # If the TIMESTAMP tag is set different from NO then each generated page will
 # contain the date or date and time when the page was generated. Setting this to

@@ -74,11 +74,15 @@ public:
    * report all name the route the broker was asked for rather than the blank the strategy left.
    *
    * **Prefer `Venue::KRX` or `Venue::NXT` over `Venue::COMBINED` until SOR has been observed.**
-   * Whether Kiwoom's or KIS's order listing reports a SOR order as SOR or as the venue it rested at
-   * has not been established. If it is the latter, recovery reads the listed row as contradicting
-   * the recorded route, so the row cannot be this order: once the match window closes the verdict
-   * is `NOT_PLACED`, the hold is released, and a runner restarted after a crash would send the order
-   * again beside the one resting. A single venue has no such doubt.
+   * Recovery needs the broker's order listing to report a SOR order as SOR. If a listing reports it
+   * as the venue it rested at instead, recovery reads the listed row as contradicting the recorded
+   * route, so the row cannot be this order: once the match window closes the verdict is
+   * `NOT_PLACED`, the hold is released, and a runner restarted after a crash would send the order
+   * again beside the one resting. At Kiwoom the working-order listing documents a separate `sor_yn`
+   * flag, which the adapter reads (`kiwoom::listed_venue`), and the history names `SOR`; neither has
+   * been seen on an account. At KIS nothing documents how a SOR order is listed back. A single venue
+   * has less doubt: at Kiwoom it relies only on a plain order's `sor_yn` reading `N`, as the
+   * specification's example row does.
    */
   Venue default_route() const noexcept { return default_route_; }
 
