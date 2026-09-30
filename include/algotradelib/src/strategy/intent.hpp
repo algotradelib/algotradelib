@@ -153,6 +153,16 @@ public:
    * crosses the boundary once through `analytics::to_decimal` and passes the exact result, the
    * same pattern `Price` follows. That keeps this whole layer free of any decimal/scalar crossing
    * and therefore free of a linear-algebra backend.
+   *
+   * **A weight is a holding.** The runner plans a buy `OrderIntent` sized this way as the position it
+   * states (`strategy::weight_target`), diffed against what is held and working, so restating the
+   * same weight places nothing. A sell, a negative weight, a trigger, a non-day validity or an
+   * idempotency key is refused (`RejectReason::UNSUPPORTED_WEIGHT`). It needs the portfolio's value:
+   * a replay supplies its own equity; a live runner is refused `no_portfolio_value` unless the caller
+   * sets `Runner::set_portfolio_value`, because no adapter states an account total the library can
+   * normalize. The target is rounded down onto the lot, so a weight worth less than a share sells a
+   * holding to zero, and without a `TradeTolerance` a price tick can move it by one share per
+   * rebalance.
    */
   static SizeSpec target_weight(Decimal64 fraction) {
     SizeSpec size;

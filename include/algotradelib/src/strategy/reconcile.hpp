@@ -101,6 +101,13 @@ enum class RejectReason {
    * are withdrawn as before.
    */
   STOP_ORDER_RESTING,
+  /**
+   * A weight-sized intent that states something a holding cannot: a sell, a negative weight, a
+   * trigger, a validity other than a day order, or an idempotency key. A weight is planned as the
+   * position it states (`weight_target`), and none of those survive the conversion, so each is
+   * refused by name rather than dropped.
+   */
+  UNSUPPORTED_WEIGHT,
 };
 
 /** Returns a stable lowercase name for `reason`, for logs and structured reporting. */
@@ -128,6 +135,8 @@ inline constexpr std::string_view reject_reason_name(RejectReason reason) noexce
       return "trigger_off_grid";
     case RejectReason::STOP_ORDER_RESTING:
       return "stop_order_resting";
+    case RejectReason::UNSUPPORTED_WEIGHT:
+      return "unsupported_weight";
   }
   return "unknown";
 }
@@ -307,6 +316,12 @@ struct ReconcileInputs {
 
   /** How small a drift is not worth an instruction. Every floor absent means chase every share. */
   TradeTolerance tolerance_;
+  /**
+   * The currency `portfolio_value_` is stated in, where the caller said. A weight on an instrument in
+   * another currency is refused rather than sized across currencies at a rate of one; absent, the
+   * value is taken to be in the instrument's currency, as before. Appended last.
+   */
+  std::optional<Currency> portfolio_value_currency_;
 };
 
 namespace reconcile_detail {
@@ -668,7 +683,10 @@ Plan<Broker> reconcile(
  * Reconciles one order intent into an instruction, without diffing against the portfolio.
  *
  * An intent says "trade this much", not "hold this much", so the portfolio is deliberately not
- * consulted: a strategy that emits intents has taken responsibility for its own sizing. What still
+ * consulted: a strategy that emits intents has taken responsibility for its own sizing. **Except a
+ * weight**, which says "hold this much": the runner plans a weight-sized intent as the target it
+ * states (`weight_target`) and does not call this for one. Called with one directly, this still
+ * sizes the whole allocation as a trade. What still
  * happens here is the part that needs reference data — converting a notional or a weight into a
  * quantity, rounding onto the lot and the tick, and clamping into today's band.
  *
@@ -788,6 +806,71 @@ Plan<Broker> reconcile(
 
   plan.place_.push_back(std::move(order));
   return plan;
+}
+
+/** What a weight-sized intent turns into: the target position it states, or the reason it cannot. */
+struct WeightTarget {
+  std::optional<TargetPosition> target_;
+  std::optional<RejectReason> refused_;
+};
+
+/**
+ * Turns a weight-sized intent into the target position it states.
+ *
+ * **A weight is a holding**, which is what `SizeKind::TARGET_WEIGHT` promises: planned as an order it
+ * would buy the whole allocation again at every rebalance. So the runner plans it as a
+ * `TargetPosition` of `weight x portfolio value / price` shares, rounded down onto the lot, where the
+ * price is the intent's limit if it has one and the reference price otherwise, carrying the limit and
+ * the tag; target reconciliation then diffs it against the position and the working orders.
+ *
+ * Refused by name, and never converted, when the intent states what a holding cannot
+ * (`UNSUPPORTED_WEIGHT`): a sell or a negative weight (the side would be discarded, turning a sell
+ * into a buy), a trigger (a target carries none, so a stop would become an immediate limit), a
+ * validity other than a day order, or an idempotency key (a target carries neither, and a key
+ * silently dropped is a retry that looked safe). Refused `NO_PORTFOLIO_VALUE` with no value, or with a
+ * value stated in another currency than the instrument's; `NO_PRICE_AVAILABLE` with no price.
+ */
+inline WeightTarget weight_target(const OrderIntent& intent, const ReconcileInputs& inputs) {
+  WeightTarget out;
+  const auto refuse = [&](RejectReason reason) {
+    out.refused_ = reason;
+    return out;
+  };
+  const auto& weight = intent.size().as_target_weight();
+  if (intent.side() != OrderSide::BUY || decimal_less(weight, Decimal64::parse("0")) ||
+      intent.trigger() || intent.time_in_force() != TimeInForce::DAY || intent.client_order_id()) {
+    return refuse(RejectReason::UNSUPPORTED_WEIGHT);
+  }
+  if (inputs.instrument_ == nullptr) {
+    return refuse(RejectReason::NO_REFERENCE_DATA);
+  }
+  if (!inputs.portfolio_value_ ||
+      (inputs.portfolio_value_currency_ &&
+       !(*inputs.portfolio_value_currency_ == inputs.instrument_->currency_))) {
+    return refuse(RejectReason::NO_PORTFOLIO_VALUE);
+  }
+  const auto price = intent.limit() ?
+    std::optional<Decimal64>(intent.limit()->value()) :
+    inputs.reference_price_;
+  if (!price || price->coefficient() <= 0) {
+    return refuse(RejectReason::NO_PRICE_AVAILABLE);
+  }
+  const auto allocation = decimal_multiply(*inputs.portfolio_value_, weight);
+  const auto shares = allocation ? decimal_divide(*allocation, *price, 0) : std::nullopt;
+  bool adjusted = false;
+  const auto wanted = shares ?
+    reconcile_detail::round_to_lot(*shares, reconcile_detail::lot_of(*inputs.instrument_), adjusted) :
+    std::nullopt;
+  if (!wanted) {
+    return refuse(RejectReason::NOT_REPRESENTABLE);
+  }
+  TargetPosition target;
+  target.instrument_ = intent.instrument();
+  target.target_quantity_ = *wanted;
+  target.limit_ = intent.limit();
+  target.tag_ = intent.tag();
+  out.target_ = std::move(target);
+  return out;
 }
 
 } // namespace strategy

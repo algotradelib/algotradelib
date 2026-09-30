@@ -1146,7 +1146,27 @@ public:
    * needs an exchange rate this library does not yet carry, and inventing one would silently
    * misprice every weighted order. Absent means a weighted intent is refused by name.
    */
-  void set_portfolio_value(Decimal64 value) { portfolio_value_ = std::move(value); }
+  void set_portfolio_value(Decimal64 value) {
+    portfolio_value_ = std::move(value);
+    portfolio_value_currency_.reset();
+  }
+
+  /**
+   * Records the portfolio's total value and the currency it is in. A weight on an instrument priced
+   * in another currency is then refused rather than sized across currencies at a rate of one.
+   * **Never cleared on its own**: a live caller who sets it once sizes every weight against that
+   * figure until it sets another or calls `clear_portfolio_value`.
+   */
+  void set_portfolio_value(Money value) {
+    portfolio_value_ = std::move(value.amount_);
+    portfolio_value_currency_ = std::move(value.currency_);
+  }
+
+  /** Forgets the portfolio value, so a weighted intent is refused rather than sized against an old one. */
+  void clear_portfolio_value() noexcept {
+    portfolio_value_.reset();
+    portfolio_value_currency_.reset();
+  }
 
   /** Calls `on_start` and drains whatever it asked for. */
   Report start() {
@@ -2367,6 +2387,35 @@ private:
   }
 
   /**
+   * Plans a weight-sized intent as the target position it states (`strategy::weight_target`).
+   *
+   * **A resting stop refuses it, and nothing is withdrawn.** Target reconciliation withdraws a
+   * resting stop when a trade is needed and waits for the stop's own history before trading, which
+   * only a `TargetPosition` in the instruction stream can do (`defer_if_waiting_on_stop`); a weight
+   * intent is not one, and an intent has never touched a stop. So a weight on an instrument with a
+   * stop resting is refused `STOP_ORDER_RESTING` and the stop stays.
+   */
+  strategy::Plan<Tag> plan_weight(
+    const strategy::OrderIntent& intent,
+    const strategy::ReconcileInputs& inputs
+  ) const {
+    strategy::Plan<Tag> plan;
+    const auto converted = strategy::weight_target(intent, inputs);
+    if (!converted.target_) {
+      plan.rejected_.push_back(strategy::Rejection{
+        converted.refused_.value_or(strategy::RejectReason::NOT_REPRESENTABLE), intent.instrument(),
+        intent.tag()});
+      return plan;
+    }
+    if (stop_listed(intent.instrument())) {
+      plan.rejected_.push_back(strategy::Rejection{
+        strategy::RejectReason::STOP_ORDER_RESTING, intent.instrument(), intent.tag()});
+      return plan;
+    }
+    return strategy::reconcile(*converted.target_, context_.portfolio(), inputs);
+  }
+
+  /**
    * Reconciles one queued instruction against the current portfolio.
    *
    * The reference data is held in a local for the duration of the call, because
@@ -2384,6 +2433,7 @@ private:
     inputs.reference_price_ = context_.last_price(id);
     inputs.limits_ = band.applied_;
     inputs.portfolio_value_ = portfolio_value_;
+    inputs.portfolio_value_currency_ = portfolio_value_currency_;
     inputs.tolerance_ = tolerance_;
 
     auto plan = [&] {
@@ -2391,6 +2441,13 @@ private:
         return strategy::reconcile(*target, context_.portfolio(), inputs);
       }
       if (const auto* intent = std::get_if<strategy::OrderIntent>(&instruction)) {
+        // **A weight is a holding, so it is planned as the position it states.** Reconciled as an
+        // order it would buy the whole allocation again at every rebalance, which is what
+        // `SizeKind::TARGET_WEIGHT` promises it does not do; as a target it is diffed against the
+        // position and the working orders, like any target.
+        if (intent->size().kind() == strategy::SizeKind::TARGET_WEIGHT) {
+          return plan_weight(*intent, inputs);
+        }
         return strategy::reconcile(*intent, context_.portfolio(), inputs);
       }
       return strategy::Plan<Tag>{};
@@ -2686,6 +2743,7 @@ private:
   /** What the broker said about the most recent order it refused; see the accessor. */
   std::optional<BrokerRefusal> last_broker_refusal_;
   std::optional<Decimal64> portfolio_value_;
+  std::optional<Currency> portfolio_value_currency_;
   strategy::TradeTolerance tolerance_;
 };
 

@@ -1,3 +1,4 @@
+#include <algotradelib/backtest>
 #include <algotradelib/runner>
 #include <algotradelib/vanilla>
 
@@ -5,6 +6,7 @@
 
 #include <chrono>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace algotradelib;
@@ -459,6 +461,163 @@ TEST_CASE("equal weight over three names truncates rather than overshooting one"
     REQUIRE(order.quantity_ == Decimal64::parse("476"));
   }
 }
+
+namespace {
+
+/** A portfolio holding `held` shares of Samsung, read, so nothing withholds the plan. */
+strategy::Portfolio<runner::DryTag> holding(const char* held) {
+  strategy::Portfolio<runner::DryTag> portfolio;
+  portfolio.as_of_ = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 100);
+  HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = Decimal64::parse(held);
+  portfolio.positions_.push_back(position);
+  return portfolio;
+}
+
+} // namespace
+
+TEST_CASE("a weight is held, not bought again at every rebalance", "[weights]") {
+  // Half of a hundred million at 70,000 is 714 shares. `SizeKind::TARGET_WEIGHT` says the runner
+  // diffs against the position; it used to order 714 again on every rebalance.
+  vanilla::EqualWeightRebalance weighted;
+  weighted.params_.universe_ = {samsung(), hynix()};
+  weighted.params_.weight_scale_ = 1;  // 0.5 each
+
+  const auto placed_against = [&](const char* held) {
+    runner::DryRunner<vanilla::EqualWeightRebalance> dry(weighted);
+    arrange(dry, {samsung(), hynix()});
+    dry.context().set_portfolio(holding(held));
+    const auto report = dry.feed(strategy::MarketPhase::OPEN);
+    for (const auto& order : report.would_place_) {
+      if (order.instrument_ == samsung()) {
+        return std::make_pair(order.side_, order.quantity_.str());
+      }
+    }
+    return std::make_pair(OrderSide::BUY, std::string("none"));
+  };
+
+  CHECK(placed_against("0") == std::make_pair(OrderSide::BUY, std::string("714")));
+  CHECK(placed_against("714").second == "none");
+  CHECK(placed_against("300") == std::make_pair(OrderSide::BUY, std::string("414")));
+  CHECK(placed_against("1000") == std::make_pair(OrderSide::SELL, std::string("286")));
+}
+
+TEST_CASE("a weight with its buy already working places nothing more", "[weights]") {
+  // The double-sizing case a target exists to prevent: half of a hundred million at 70,000 is 714
+  // shares wanted, and 714 are already working.
+  vanilla::EqualWeightRebalance weighted;
+  weighted.params_.universe_ = {samsung(), hynix()};
+  weighted.params_.weight_scale_ = 1;
+  runner::DryRunner<vanilla::EqualWeightRebalance> dry(weighted);
+  arrange(dry, {samsung(), hynix()});
+  auto portfolio = holding("0");
+  WorkingOrder<runner::DryTag> working;
+  working.order_.instrument_ = samsung();
+  working.order_.side_ = OrderSide::BUY;
+  working.order_.status_ = OrderStatus::PENDING;
+  working.order_.type_ = OrderType::MARKET;
+  working.order_.quantity_ = Decimal64::parse("714");
+  working.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+  working.amendable_quantity_ = Decimal64::parse("714");
+  portfolio.working_.push_back(working);
+  dry.context().set_portfolio(portfolio);
+  const auto report = dry.feed(strategy::MarketPhase::OPEN);
+  for (const auto& order : report.would_place_) {
+    CHECK_FALSE(order.instrument_ == samsung());
+  }
+  CHECK(report.would_cancel_.empty());
+}
+
+TEST_CASE("a weight on an instrument with a resting stop is refused, and the stop stays",
+          "[weights]") {
+  // Target reconciliation withdraws a resting stop when a trade is needed; a weight intent cannot
+  // wait for that stop's history the way a target does, so it is refused and nothing is withdrawn.
+  vanilla::EqualWeightRebalance weighted;
+  weighted.params_.universe_ = {samsung(), hynix()};
+  weighted.params_.weight_scale_ = 1;
+  runner::DryRunner<vanilla::EqualWeightRebalance> dry(weighted);
+  arrange(dry, {samsung(), hynix()});
+  auto portfolio = holding("100");
+  WorkingOrder<runner::DryTag> stop;
+  stop.order_.instrument_ = samsung();
+  stop.order_.side_ = OrderSide::SELL;
+  stop.order_.status_ = OrderStatus::PENDING;
+  stop.order_.type_ = OrderType::STOP_LIMIT;
+  stop.order_.trigger_price_ = Decimal64::parse("65000");
+  stop.order_.price_ = Decimal64::parse("64900");
+  stop.order_.quantity_ = Decimal64::parse("100");
+  stop.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+  stop.amendable_quantity_ = Decimal64::parse("100");
+  portfolio.working_.push_back(stop);
+  dry.context().set_portfolio(portfolio);
+  const auto report = dry.feed(strategy::MarketPhase::OPEN);
+  CHECK(report.would_cancel_.empty());
+  bool refused = false;
+  for (const auto& rejection : report.rejected_) {
+    refused = refused || (rejection.instrument_ == samsung() &&
+                          rejection.reason_ == strategy::RejectReason::STOP_ORDER_RESTING);
+  }
+  CHECK(refused);
+  // The other name is unaffected.
+  REQUIRE(report.would_place_.size() == 1);
+  CHECK(report.would_place_[0].instrument_ == hynix());
+}
+
+#if defined(ATL_HAS_EIGEN)
+TEST_CASE("a replay sizes a weight against its own equity", "[weights]") {
+  // No caller could: `Backtester` keeps its runner private and nothing set the portfolio value, so
+  // every weight was refused `no_portfolio_value` and the vanilla never traded in a replay.
+  vanilla::EqualWeightRebalance weighted;
+  weighted.params_.universe_ = {samsung(), hynix()};
+  weighted.params_.weight_scale_ = 1;
+
+  backtest::ReplayConfig config;
+  config.cash_ = Decimal64::parse("100000000");
+  config.instruments_ = {reference_for(samsung()), reference_for(hynix())};
+  config.limits_.permitted_phases_ = std::nullopt;
+  config.calendar_.country_ = Country::KR;
+  const auto day0 = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 20000);
+  for (int day = -1; day < 5; ++day) {
+    config.calendar_.days_.push_back(TradingDay{
+      strategy::SessionWindow::krx().local_date(day0 + std::chrono::hours(24 * day)), true});
+  }
+  backtest::Backtester<vanilla::EqualWeightRebalance> engine(weighted, config);
+
+  // Two close-stamped bars a session, 08:00 and 10:00 KST (23:00 the day before and 01:00 UTC), so
+  // the clock passes from PRE_OPEN to OPEN every day and on_phase fires once a day with both priced.
+  // A post-close bar the evening before the first day gives both instruments a price.
+  std::vector<std::chrono::system_clock::time_point> stamps{
+    day0 - std::chrono::hours(24) + std::chrono::hours(8)};
+  for (int day = 0; day < 3; ++day) {
+    stamps.push_back(day0 + std::chrono::hours(24 * day) - std::chrono::hours(1));
+    stamps.push_back(day0 + std::chrono::hours(24 * day + 1));
+  }
+  for (const auto& at : stamps) {
+    for (const auto& id : {samsung(), hynix()}) {
+      Bar value;
+      value.timestamp_ = at;
+      value.open_ = Decimal64::parse("70000");
+      value.high_ = Decimal64::parse("70000");
+      value.low_ = Decimal64::parse("70000");
+      value.close_ = Decimal64::parse("70000");
+      value.volume_ = Decimal64::parse("1000000");
+      engine.feed(strategy::make_bar_event(id, BarInterval::ONE_DAY, BarStamp::CLOSE, value));
+    }
+  }
+  engine.finish();
+
+  // Three rebalances, one a day: the first buys each weight, and the next two find it held and place
+  // nothing, where a weight reconciled as a trade bought the full allocation again each day.
+  const auto& result = engine.result();
+  CHECK(result.rejected_.empty());
+  REQUIRE(result.executions_.size() == 2);
+  for (const auto& execution : result.executions_) {
+    CHECK(execution.fill_.side_ == OrderSide::BUY);
+    CHECK(execution.fill_.quantity_ == Decimal64::parse("714"));
+  }
+}
+#endif
 
 TEST_CASE("an empty universe asks for nothing rather than dividing by zero") {
   vanilla::EqualWeightRebalance weighted;
