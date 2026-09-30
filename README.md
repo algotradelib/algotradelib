@@ -1,5 +1,10 @@
 # algotradelib
 
+<!-- multilingual: start -->
+[![en](https://img.shields.io/badge/lang-en-red.svg?style=plastic)](README.md)
+[![ko-kr](https://img.shields.io/badge/lang-ko--kr-green.svg?style=plastic)](README.ko-kr.md)
+<!-- multilingual: end -->
+
 <!-- badges: start -->
 ![License](https://img.shields.io/badge/license-MIT-blue.svg?style=plastic)
 [![Lifecycle: experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg?style=plastic)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
