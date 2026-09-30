@@ -912,6 +912,143 @@ TEST_CASE("a reserved order is withdrawn by the reference the broker actually is
   REQUIRE(second.unavailable_cancel_.empty());
 }
 
+namespace {
+
+/** Routes an omitted venue to KRX, as KIS documents, so a test can tell the traits were asked. */
+struct KrxWhenOmitted {
+  static constexpr Venue effective_route(Venue asked) noexcept {
+    return asked == Venue::UNSPECIFIED ? Venue::KRX : asked;
+  }
+};
+
+/** The fake session, with traits that say how it routes -- as every shipped broker's do. */
+template <typename CapsType>
+class RoutedFakeSession : public FakeSession<CapsType> {
+public:
+  using Traits = KrxWhenOmitted;
+};
+
+} // namespace
+
+TEST_CASE("an unrouted order is sent with the binding's default route", "[route]") {
+  FakeSession<WithoutKey> session;
+
+  // No default: the order names no venue and none is sent, which is the broker's own default.
+  live::SessionExecutor<FakeSession<WithoutKey>> unrouted(session);
+  CHECK(unrouted.default_route() == Venue::UNSPECIFIED);
+  REQUIRE(unrouted.place(planned()) == runner::SendOutcome::ACCEPTED);
+  CHECK(session.placed().back().venue_ == Venue::UNSPECIFIED);
+
+  // A default: an order naming no venue is sent there, and one naming a venue keeps it.
+  live::SessionExecutor<FakeSession<WithoutKey>> executor(session, Venue::KRX);
+  CHECK(executor.default_route() == Venue::KRX);
+  REQUIRE(executor.place(planned()) == runner::SendOutcome::ACCEPTED);
+  CHECK(session.placed().back().venue_ == Venue::KRX);
+  auto routed = planned();
+  routed.venue_ = Venue::NXT;
+  REQUIRE(executor.place(routed) == runner::SendOutcome::ACCEPTED);
+  CHECK(session.placed().back().venue_ == Venue::NXT);
+}
+
+TEST_CASE("the route a binding reports applies its default before the broker's", "[route]") {
+  // **Every binding answers.** `effective_route` is optional on a broker's traits and a hand-written
+  // session need have none, so without a fallback a journal over such a binding would record the
+  // strategy's blank while the default went on the wire.
+  FakeSession<WithoutKey> bare;
+  CHECK(live::SessionExecutor<FakeSession<WithoutKey>>(bare).effective_route(Venue::UNSPECIFIED) ==
+    Venue::UNSPECIFIED);
+  CHECK(live::SessionExecutor<FakeSession<WithoutKey>>(bare, Venue::NXT)
+    .effective_route(Venue::UNSPECIFIED) == Venue::NXT);
+
+  // Traits that say how the broker routes an omitted venue are asked about the *requested* one: with
+  // a default, the omission never reaches them.
+  RoutedFakeSession<WithoutKey> routed;
+  CHECK(live::SessionExecutor<RoutedFakeSession<WithoutKey>>(routed)
+    .effective_route(Venue::UNSPECIFIED) == Venue::KRX);
+  CHECK(live::SessionExecutor<RoutedFakeSession<WithoutKey>>(routed, Venue::NXT)
+    .effective_route(Venue::UNSPECIFIED) == Venue::NXT);
+  CHECK(live::SessionExecutor<RoutedFakeSession<WithoutKey>>(routed, Venue::NXT)
+    .effective_route(Venue::COMBINED) == Venue::COMBINED);
+}
+
+TEST_CASE("a runner's journal, order, reservation and withdrawal all name the default route", "[route]") {
+  // The same sell-then-withdraw as the case above, bound with a default route and a journal. Each of
+  // the four places the route is written down is checked, because each is read by something
+  // different: the journal by recovery, the request by the broker, the reserved row by the
+  // withdrawal built from it, and the report by the operator. A default applied only at the wire
+  // would leave the other three naming a venue the order never went to.
+  //
+  // The runner resolves the route before the journal sees the order, so this case does not guard
+  // the executor's own fallback for a session without traits; the case above does.
+  FakeSession<SellableInHoldings> session;
+  runner::MemoryJournal journal;
+  strategy::RiskLimits limits;
+  // Enforced so the sell's reservation persists into the next pass, which is where it is withdrawn.
+  limits.enforce_sellable_quantity_ = true;
+
+  auto live_runner = live::bind_journaled(
+    session, journal, FlipTarget{}, limits, live::default_series_capacity, Venue::KRX
+  );
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  live_runner.context().set_portfolio(held_position<SellableInHoldings>("10", "10"));
+
+  const auto first = live_runner.feed(bar_at(1, "70000"));
+  REQUIRE(session.placed().size() == 1);
+  CHECK(session.placed()[0].venue_ == Venue::KRX);
+  REQUIRE(first.would_place_.size() == 1);
+  CHECK(first.would_place_[0].venue_ == Venue::KRX);
+  REQUIRE_FALSE(journal.records().empty());
+  CHECK(journal.records().front().outcome_ == runner::JournalOutcome::PENDING);
+  CHECK(journal.records().front().venue_ == std::optional<Venue>(Venue::KRX));
+
+  const auto& working = live_runner.context().portfolio().working_;
+  REQUIRE(working.size() == 1);
+  CHECK(working[0].reserved_);
+  CHECK(working[0].order_.venue_ == Venue::KRX);
+
+  // Long from the same ten held: the reserved sell is withdrawn, at the venue it was sent to. At
+  // Kiwoom a withdrawal naming no venue is refused, so a blank here left the order resting.
+  live_runner.feed(bar_at(2, "70000"));
+  REQUIRE(session.canceled().size() == 1);
+  CHECK(session.canceled()[0].venue_ == Venue::KRX);
+}
+
+TEST_CASE("an unjournaled binding takes a default route too", "[route]") {
+  // `bind` builds its own executor, so a parameter it forgot to pass on would leave the runner
+  // sending unrouted orders while its caller had stated a route.
+  FakeSession<WithoutKey> session;
+  auto bound = live::bind(
+    session, HoldTen{}, strategy::RiskLimits{}, live::default_series_capacity, Venue::KRX
+  );
+  CHECK(bound.executor().default_route() == Venue::KRX);
+  CHECK(live::bind(session, HoldTen{}).executor().default_route() == Venue::UNSPECIFIED);
+}
+
+TEST_CASE("a binding with no default route sends and records the planned venue", "[route]") {
+  // The control for the case above, and the promise to every existing caller: nothing changes.
+  FakeSession<SellableInHoldings> session;
+  runner::MemoryJournal journal;
+  strategy::RiskLimits limits;
+  limits.enforce_sellable_quantity_ = true;
+
+  auto live_runner = live::bind_journaled(session, journal, FlipTarget{}, limits);
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  live_runner.context().set_portfolio(held_position<SellableInHoldings>("10", "10"));
+
+  live_runner.feed(bar_at(1, "70000"));
+  REQUIRE(session.placed().size() == 1);
+  CHECK(session.placed()[0].venue_ == Venue::UNSPECIFIED);
+  REQUIRE_FALSE(journal.records().empty());
+  CHECK(journal.records().front().venue_ == std::optional<Venue>(Venue::UNSPECIFIED));
+  live_runner.feed(bar_at(2, "70000"));
+  REQUIRE(session.canceled().size() == 1);
+  CHECK(session.canceled()[0].venue_ == Venue::UNSPECIFIED);
+}
+
 /** Buys one share every bar, plainly. */
 struct BuysOne {
   template <class Ctx>
@@ -4077,6 +4214,29 @@ TEST_CASE("the live program journals, recovers clean and places its order", "[li
   CHECK(text.find("\"outcome\":\"pending\"") != std::string::npos);
   CHECK(text.find("\"outcome\":\"accepted\"") != std::string::npos);
   CHECK(text.find("fake:demo:1") != std::string::npos);
+}
+
+TEST_CASE("the live program sends and journals its stated route", "[live][program][route]") {
+  // `Settings::default_route_` is how `example-live-program` makes a Kiwoom run placeable; it has to
+  // reach the executor the runner sends through, and the file journal recovery will read.
+  const TempPath journal("atl-test-program-route.jsonl");
+  const TempPath control("atl-test-program-route.stop");
+  ProgramSession session;
+  script_ready(session);
+  runner::StopSource stop;
+  std::ostringstream out;
+  auto settings = program_settings(journal, control);
+  settings.default_route_ = Venue::NXT;
+
+  const auto exit = live_program::trade(
+    session, one_share(), settings, stop, out, runner::ManualClock{program_start()}
+  );
+
+  INFO(out.str());
+  CHECK(exit == live_program::Exit::CLEAN);
+  REQUIRE(session.placed().size() == 1);
+  CHECK(session.placed().front().venue_ == Venue::NXT);
+  CHECK(file_text(journal.str()).find("\"route\":\"NXT\"") != std::string::npos);
 }
 
 TEST_CASE("the live program withholds what a previous run left pending", "[live][program]") {

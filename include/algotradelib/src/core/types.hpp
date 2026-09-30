@@ -1809,7 +1809,8 @@ struct OrderRequest {
    * sends no venue at all and takes the broker's documented default.
    *
    * **Routing across both books is opt-in.** At KIS `UNSPECIFIED` routes to
-   * KRX, and `COMBINED` (sent as `SOR`) is the caller's choice. It is not the
+   * KRX, and `COMBINED` (sent as `SOR`) is the caller's choice -- a strategy
+   * runner's through `live::SessionExecutor::default_route`. It is not the
    * default because a KIS demo account refuses SOR, and a default that fails on
    * demo would stop a demo run rehearsing the live one. Kiwoom requires a venue
    * and refuses `UNSPECIFIED` before any request; Toss offers no venue choice

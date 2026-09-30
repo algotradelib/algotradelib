@@ -10,8 +10,8 @@ Investment & Securities (KIS), Kiwoom Securities and Toss Securities.
 
 Header-only, consumed through CMake. A strategy is a plain struct that performs no I/O and names no
 broker, so one source is replayed against history, dry-run with no credentials, and then run live
-without being rewritten — against KIS or Toss today; a Kiwoom strategy runner places nothing yet (see
-"Brokers and accounts"). Selecting a broker is choosing a type parameter.
+without being rewritten — against KIS, Toss or Kiwoom, where a runner needs a few statements from you
+first (see "Brokers and accounts"). Selecting a broker is choosing a type parameter.
 
 > **This library sends real orders to real accounts, and has not yet been run end to end against a
 > broker account**: every broker behaviour it relies on was read from the brokers' specifications. It is
@@ -204,8 +204,9 @@ const auto report = backtest::summarize(engine.result(), engine.fills(), periods
 
 **Run it live.** Copy [`examples/example-live-program.cpp`](examples/example-live-program.cpp) and
 [`examples/live_program.hpp`](examples/live_program.hpp), and replace the strategy — `BuyAndHold` of one
-share — with yours. It is the production path, for KIS and Toss (on Kiwoom it observes and places
-nothing yet):
+share — with yours. It is the production path, for KIS and Toss (on Kiwoom it observes, and places
+nothing until you state what its holdings inquiry covers and lift the market-phase limit, since Kiwoom
+publishes no calendar):
 
 ```sh
 export KIS_APP_KEY=... KIS_APP_SECRET=... KIS_CANO=... KIS_DEMO=1
@@ -220,7 +221,10 @@ With it, `live_program::trade` does what a restartable run needs, in the order i
 runner::FileJournal journal(settings.journal_path_, settings.journal_scope_);  // one per account
 if (!journal.open()) { /* a runner that cannot record what it sends does not send */ }
 
-auto bound = live::bind_journaled(session, journal, std::move(strategy), settings.limits_);
+auto bound = live::bind_journaled(
+  session, journal, std::move(strategy), settings.limits_,
+  live::default_series_capacity, settings.default_route_  // where unrouted orders go; Kiwoom: KRX
+);
 const auto recovery = runner::recover_runner(bound, journal);  // printed; a global halt stops here
 // ... reference data for each instrument, then:
 live::SessionSource<Session, runner::FileJournal> source(session, settings.universe_);
@@ -241,7 +245,7 @@ manual procedure), 4 reference data unreadable, 5 polling abandoned, 6 a local f
 (usually a journal write; read the broker's order list), 7 the account could not be settled (a Toss
 key reaching several accounts needs `--toss-account`). Within an iteration the loop polls the order
 list, then holdings, then bars, of whichever are due, so the strategy decides on the bars read at start against an account already read.
-The buying-power guard is left off, its default. **On Kiwoom it places nothing yet** — see "Brokers and accounts" below.
+The buying-power guard is left off, its default. **On Kiwoom it places nothing as shipped** — see "Brokers and accounts" below.
 [Recovering after a crash](doxygen/vignettes/recovering-after-a-crash.md) explains each step and the
 verdicts `recover_runner` returns.
 
@@ -262,7 +266,7 @@ the environment; the [broker clients](doxygen/vignettes/broker-clients.md) page 
 | Broker | State | Paper trading |
 | --- | --- | --- |
 | KIS | market data, calendar, reference data, holdings, buying power, orders (including stop-limit), order history | default (`KIS_DEMO=0` for live) |
-| Kiwoom | market data, reference data, buying power, orders (including stop-limit) and order history through the session; **no calendar**; **holdings refuse** until you state what its `kt00018` inquiry covers (below); **a strategy runner cannot place yet** (below) | default (`KIWOOM_DEMO=0` for live) |
+| Kiwoom | market data, reference data, buying power, orders (including stop-limit) and order history through the session; **no calendar**; **holdings refuse** until you state what its `kt00018` inquiry covers (below); **a strategy runner needs a stated route** (below) | default (`KIWOOM_DEMO=0` for live) |
 | Toss | market data, calendar, reference data, holdings, buying power, orders (no stop-limit), order history | **none** |
 
 **KIS and Kiwoom are demo unless you say live.** Live — the one choice that moves real money — has
@@ -280,10 +284,13 @@ the adapter refuses holdings — and so every sellable and position check — un
 `KiwoomConfig::holdings_venue_` and `holdings_position_scope_` are set (and
 `holdings_sellable_scope_` for checked sells). The members' documentation explains each choice.
 
-**A strategy runner cannot place on Kiwoom yet.** Kiwoom requires every order to name its venue, and
-the orders a strategy produces name none, so the adapter refuses each one before sending it. Placing
-through the session directly, with `OrderRequest::venue_` set, works. Kiwoom also publishes no trading
-calendar, so a runner's market phase stays unknown and the default limits open no position.
+**A Kiwoom strategy runner needs its route stated.** Kiwoom requires every order to name its venue,
+and the orders a strategy produces name none, so bind the runner with a default route —
+`live::bind_journaled(session, journal, strategy, limits, live::default_series_capacity, Venue::KRX)`,
+or `Venue::NXT`, or `Venue::COMBINED` for Kiwoom's SOR — not yet: how a SOR order is listed back is
+unobserved, and recovery after a crash depends on it (see `SessionExecutor::default_route`). Without
+a route the adapter refuses each order before sending it. `example-live-program` states KRX. Kiwoom also publishes no trading calendar, so a
+runner's market phase stays unknown and the default limits open no position.
 
 **KIS: own-account customers only.** The library sends `custtype P` (일반), which covers individual
 *and* corporate customers trading their own account. KIS's partner program for licensed firms serving
@@ -291,9 +298,10 @@ third parties (`custtype B`, with `personalseckey`, per-member `phone_number` / 
 is not supported.
 
 **Order routing across both Korean books is opt-in.** At KIS an order that names no venue routes to
-KRX; `Venue::COMBINED` asks for SOR. That is not the default because a KIS demo account refuses SOR,
-and a default that fails on demo would stop a demo run rehearsing the live one. A Kiwoom order must
-name its venue. Toss offers no choice.
+KRX; `Venue::COMBINED` asks for SOR, and a runner opts in by binding with `Venue::COMBINED` as its
+default route. That is not the default because a KIS demo account refuses SOR, and a default that
+fails on demo would stop a demo run rehearsing the live one. A Kiwoom order must name its venue. Toss
+offers no choice.
 
 ## Documentation
 

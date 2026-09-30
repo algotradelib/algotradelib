@@ -26,7 +26,7 @@ The whole production path — journal, recovery, loop, stops and the report — 
 
 ```cpp
 runner::FileJournal journal(path, scope);                     // one journal per account
-auto live_runner = live::bind_journaled(session, journal, MyStrategy{}, limits);
+auto live_runner = live::bind_journaled(session, journal, MyStrategy{}, limits);  // Kiwoom: add a route
 const auto recovery = runner::recover_runner(live_runner, journal);
 live::SessionSource<Session, runner::FileJournal> source(session, {samsung()});
 source.set_journal(journal);

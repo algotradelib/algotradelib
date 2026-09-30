@@ -87,6 +87,21 @@ struct reports_last_ref<
 > : std::true_type {};
 
 /**
+ * Whether `Executor` decides which venue an order that names none is sent to.
+ *
+ * Detected rather than required: only a broker binding routes, and a dry runner, an observer and a
+ * replay's queueing executor send the planned venue as it stands. `live::SessionExecutor` answers
+ * with its `default_route()`, and a `JournalingExecutor` forwards its inner executor's answer.
+ */
+template <typename Executor, typename = void>
+struct resolves_route : std::false_type {};
+
+template <typename Executor>
+struct resolves_route<
+  Executor, std::void_t<decltype(std::declval<const Executor&>().requested_route(Venue::UNSPECIFIED))>
+> : std::true_type {};
+
+/**
  * Whether `Executor` can say **why** the last instruction failed.
  *
  * Detected rather than required, on the same terms as the two above: a dry runner refuses nothing
@@ -1392,6 +1407,12 @@ private:
         continue;
       }
 
+      // **The route it is sent with, written into the order before anything records it.** A
+      // strategy names no venue, and a binding may send one anyway (`SessionExecutor::default_route`).
+      // Resolved here rather than only at the wire so the journal line, the row `reserve` keeps --
+      // which `cancel_all` and every other instruction built from it restate -- and the report all
+      // name the venue the broker was asked for, not the blank the strategy left.
+      order.venue_ = requested_route(order.venue_);
       const auto outcome = executor_.place(order);
       // **Counted where the outcome is known, not where the exception was granted.** An admitted
       // order can still be refused by the sellable check, a buying-power limit or either ceiling and
@@ -1552,6 +1573,29 @@ private:
     }
   }
 
+  /** Returns the venue the executor sends an order asking for `asked` to; `asked` where it does not route. */
+  Venue requested_route(Venue asked) const {
+    if constexpr (runner_detail::resolves_route<Executor>::value) {
+      return executor_.requested_route(asked);
+    } else {
+      return asked;
+    }
+  }
+
+  /**
+   * Returns the reference the broker issued for the order just accepted, where there is one.
+   *
+   * Nothing where the executor has no broker to have been answered by, which is every dry run and
+   * every replay.
+   */
+  std::optional<OrderRef<Tag>> last_ref() const {
+    if constexpr (runner_detail::reports_last_ref<Executor>::value) {
+      return executor_.last_ref();
+    } else {
+      return std::nullopt;
+    }
+  }
+
   /**
    * Carries this pass's reservation into the next one, for a caller that asked for the checks.
    *
@@ -1579,20 +1623,6 @@ private:
    * registered the order replaces the reservation with a picture that does not contain it yet.
    * That is what `closing-state-confirmation.md` is about, and it is not made worse here.
    */
-  /**
-   * Returns the reference the broker issued for the order just accepted, where there is one.
-   *
-   * Nothing where the executor has no broker to have been answered by, which is every dry run and
-   * every replay.
-   */
-  std::optional<OrderRef<Tag>> last_ref() const {
-    if constexpr (runner_detail::reports_last_ref<Executor>::value) {
-      return executor_.last_ref();
-    } else {
-      return std::nullopt;
-    }
-  }
-
   void persist_reservation(
     const strategy::PlannedOrder& order,
     const std::optional<Decimal64>& reference_price,
@@ -1790,7 +1820,8 @@ private:
     working.order_.type_ = order.type_;
     working.order_.session_ = order.session_;
     // The venue this runner asked the order to be routed to, which is
-    // `PlannedOrder::venue_` and **not** the instrument's -- the instrument's is
+    // `PlannedOrder::venue_` -- already resolved against the binding's default
+    // route before the send -- and **not** the instrument's: the instrument's is
     // identity, and an order whose identity carried a route would stop matching
     // its own holding. A broker's own listing fills this field from what it
     // routed the order to; until one arrives, this row is what `cancel_all`

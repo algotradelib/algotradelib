@@ -2,9 +2,9 @@
 
 A strategy is a plain struct with template member functions. It receives events and emits intents.
 It performs no I/O, holds no session, names no broker, and therefore runs unchanged in a dry run, in
-a live session against any of the supported brokers, and later in a backtest. (Kiwoom is the
-exception today: a strategy runner there places nothing yet — see the README's "Brokers and
-accounts".)
+a live session against any of the supported brokers, and later in a backtest. It names no venue
+either: where its orders are routed is the binding's `default_route` (Kiwoom requires one — see the
+README's "Brokers and accounts").
 
 ```cpp
 #include <algotradelib/strategy>

@@ -19,8 +19,8 @@
  * The broker-free part -- the order of journal, recovery, loop and report -- is `live_program.hpp`,
  * which the test suite drives against an in-memory session. This file only chooses a broker and a
  * strategy. The strategy is deliberately trivial: `BuyAndHold` of one share. Replace it with yours,
- * and its limits in `settings_for`; on KIS and Toss nothing else has to change. On Kiwoom it places
- * nothing yet (see `run_kiwoom`).
+ * and its limits in `settings_for`; on KIS and Toss nothing else has to change. On Kiwoom two
+ * statements are yours to make before it can place (see `run_kiwoom`).
  */
 
 #include "live_program.hpp"
@@ -149,6 +149,9 @@ void announce(
             << "mode       : " << (arguments.live_ ? "TRADE -- orders will be sent" : "observe") << '\n'
             << "limits     : at most " << settings.limits_.max_position_quantity_->str()
             << " share(s), " << settings.limits_.max_order_notional_->str() << " per order\n";
+  if (settings.default_route_ != atl::Venue::UNSPECIFIED) {
+    std::cout << "route      : " << atl::venue_name(settings.default_route_) << '\n';
+  }
   if (arguments.live_) {
     std::cout << "journal    : " << settings.journal_path_ << " (scope " << settings.journal_scope_ << ")\n";
   }
@@ -214,19 +217,20 @@ int run_kiwoom(ssl::context& tls, const Arguments& arguments) {
 
   const atl::InstrumentId instrument{atl::Country::KR, atl::Venue::COMBINED, arguments.symbol_};
   auto settings = settings_for(instrument);
+  // A Kiwoom order must name its venue (`dmst_stex_tp` has no default), and a strategy's orders name
+  // none, so the binding states where they go. KRX here; `Venue::NXT` for Nextrade, or
+  // `Venue::COMBINED` for Kiwoom's SOR -- whether a demo account accepts SOR, and how its order
+  // listing reports a SOR order, has not been observed, so KRX is the route with no open question.
+  settings.default_route_ = atl::Venue::KRX;
   name_journal(settings, arguments, "kiwoom", demo, accounts.value().front().display_number_);
   announce(arguments, settings, demo, "KIWOOM_DEMO");
-  // Three reasons nothing is placed on Kiwoom yet, said up front so nobody waits for an order that
-  // cannot come. The first two are statements you can make; the third has no setting today.
+  // Two reasons nothing is placed on Kiwoom yet, said up front so nobody waits for an order that
+  // cannot come. Both are statements you can make:
   //  - Holdings refuse until the scopes above are asserted, so the loop has no portfolio and holds.
   //  - Kiwoom publishes no trading calendar, so the market phase stays unknown, and the default
   //    limits open a position only while the market is open.
-  //  - A Kiwoom order must name its venue (`dmst_stex_tp` has no default), and a strategy's orders
-  //    carry none, so the adapter refuses each one before sending it. See
-  //    issues/live-program-kiwoom-strategy-venue.md.
   std::cout << "note       : on Kiwoom this program places nothing yet -- holdings need a stated\n"
-            << "             scope, the market phase is unknown without a calendar, and a strategy's\n"
-            << "             orders name no venue, which Kiwoom requires\n";
+            << "             scope, and the market phase is unknown without a calendar\n";
   return run(session, instrument, settings, arguments.live_);
 }
 

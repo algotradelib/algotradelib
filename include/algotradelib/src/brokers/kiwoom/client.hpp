@@ -2936,7 +2936,8 @@ private:
     error.broker_code_ = "venue_required";
     error.message_ =
       "Kiwoom requires dmst_stex_tp on every order and documents no default; set "
-      "OrderRequest::venue_ to KRX, NXT or COMBINED (Kiwoom's SOR)";
+      "OrderRequest::venue_ to KRX, NXT or COMBINED (Kiwoom's SOR), or, for a strategy runner, "
+      "bind it with a default route (live::bind / bind_journaled, SessionExecutor)";
     return error;
   }
 

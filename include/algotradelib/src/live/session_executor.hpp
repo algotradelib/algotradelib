@@ -51,7 +51,41 @@ public:
    * Held by pointer rather than by value: a session owns a client and an executor, and a runner
    * does not own the connection it borrows.
    */
-  explicit SessionExecutor(Session& session) : session_(&session) {}
+  explicit SessionExecutor(Session& session, Venue default_route = Venue::UNSPECIFIED)
+  : session_(&session), default_route_(default_route) {}
+
+  /**
+   * Returns the venue an order that names none is sent to.
+   *
+   * **The one routing input a strategy runner has.** Nothing on the strategy path names a venue --
+   * routing is a fact about the account and the broker, not about the strategy -- so every order a
+   * runner plans asks for `UNSPECIFIED`, and this is what it is sent with instead. An order that
+   * does name a venue keeps it.
+   *
+   * `UNSPECIFIED`, the default, sends none and takes the broker's own documented default: KRX at KIS,
+   * no choice at Toss, and **a refusal at Kiwoom**, which documents no default and so requires one to
+   * be stated here (`Venue::KRX`, `Venue::NXT`, or `Venue::COMBINED` for Kiwoom's SOR). At KIS,
+   * `Venue::COMBINED` is how a runner opts into SOR, which a KIS demo account refuses. A route the
+   * broker cannot take is refused by its adapter before any request, as for any order.
+   *
+   * Fixed for the executor's life, so "where did this executor send an unrouted order" has one
+   * answer. The runner writes the route into the order before sending it
+   * (`runner::Runner` asks `requested_route`), so the journal line, the row it reserves and the
+   * report all name the route the broker was asked for rather than the blank the strategy left.
+   *
+   * **Prefer `Venue::KRX` or `Venue::NXT` over `Venue::COMBINED` until SOR has been observed.**
+   * Whether Kiwoom's or KIS's order listing reports a SOR order as SOR or as the venue it rested at
+   * has not been established. If it is the latter, recovery reads the listed row as contradicting
+   * the recorded route, so the row cannot be this order: once the match window closes the verdict
+   * is `NOT_PLACED`, the hold is released, and a runner restarted after a crash would send the order
+   * again beside the one resting. A single venue has no such doubt.
+   */
+  Venue default_route() const noexcept { return default_route_; }
+
+  /** Returns `asked`, or `default_route()` where `asked` is `UNSPECIFIED`: the venue this executor sends. */
+  Venue requested_route(Venue asked) const noexcept {
+    return asked == Venue::UNSPECIFIED ? default_route_ : asked;
+  }
 
   /**
    * Returns the venue an order carrying `asked` will actually reach.
@@ -66,11 +100,17 @@ public:
    * Resolving it here rather than in the request builder keeps the write
    * ordering `ai/order-journal` chose: the line is still appended before any
    * network I/O, and this is a pure function of the order.
+   *
+   * **Always answers, with `default_route()` applied first.** A broker's traits
+   * that say how it routes an omitted venue are asked about the requested
+   * route; traits that do not -- `effective_route` is optional, and a
+   * hand-written session need have no traits at all -- get the requested route
+   * itself. Without that fallback a third party's adapter bound with a default
+   * would journal `UNSPECIFIED` while sending the default. With no default the
+   * fallback is `asked`, which is what the journal recorded before.
    */
-  template <typename S = Session>
-  auto effective_route(Venue asked) const noexcept
-    -> decltype(S::Traits::effective_route(asked)) {
-    return S::Traits::effective_route(asked);
+  Venue effective_route(Venue asked) const noexcept {
+    return traits_route<Session>(requested_route(asked), 0);
   }
 
   /**
@@ -105,7 +145,8 @@ public:
     // the order placed is not the order the caller planned -- and it fails
     // silently, because a default is a valid value rather than an empty one.
     request.session_ = order.session_;
-    request.venue_ = order.venue_;
+    // The runner has already written the route in; applied again for an executor driven by hand.
+    request.venue_ = requested_route(order.venue_);
     request.quantity_ = order.quantity_;
     request.price_ = order.price_;
     // A broker that does not declare `has_trigger_price` is refused it by the session before its
@@ -215,7 +256,19 @@ public:
   const std::optional<BrokerError>& last_error() const noexcept { return last_error_; }
 
 private:
+  /** Asks the session's traits where `requested` goes, where they say. */
+  template <typename S>
+  static constexpr auto traits_route(Venue requested, int) noexcept
+    -> decltype(S::Traits::effective_route(requested)) {
+    return S::Traits::effective_route(requested);
+  }
+
+  /** The fallback, for traits that do not say: the requested route is the most that is known. */
+  template <typename S>
+  static constexpr Venue traits_route(Venue requested, long) noexcept { return requested; }
+
   Session* session_;
+  Venue default_route_;
   std::optional<OrderRef<BrokerTag>> last_ref_;
   std::optional<BrokerError> last_error_;
 };
