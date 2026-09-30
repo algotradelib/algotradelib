@@ -321,6 +321,17 @@ The [user guide](doxygen/vignettes/guide.md) is eleven pages in the order they a
 | 10 | [Talking to a broker directly](doxygen/vignettes/broker-clients.md) | the KIS and Toss clients, and the order-safety rules |
 | 11 | [Transport and request pacing](doxygen/vignettes/transport-and-pacing.md) | the pacer, the traffic classes, how each broker reports a refusal |
 
+The same pages, with the API reference, build into HTML with Doxygen. In a build directory configured
+as above:
+
+```sh
+cmake --build build --target docs      # doxygen/docs/html/index.html, stamped with the version
+```
+
+The target exists when CMake finds Doxygen and this library is the top-level project; a project that
+adds it with `add_subdirectory` does not get it. `doxygen doxygen/Doxyfile`, run from the repository
+root, builds the same pages without the version.
+
 ## Disclaimer
 
 algotradelib is released under the MIT license; see [LICENSE](LICENSE). The software is provided as
