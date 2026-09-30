@@ -1765,8 +1765,14 @@ public:
       snapshot.received_at_ = clock_->now();
       session_->set_holdings(snapshot);
     }
+    if (kind == runner::PollKind::WORKING_ORDERS && listing_fails_) {
+      return runner::PollOutcome::FAILED;
+    }
     return inner_.poll(kind, runner_instance);
   }
+
+  /** Makes the working-order poll fail, without reaching the session, until told otherwise. */
+  bool listing_fails_{false};
 
   template <typename Runner>
   runner::PollOutcome read_order_list(Runner& runner_instance) {
@@ -1815,13 +1821,65 @@ TEST_CASE("a cold start's history read places one order, not one per bar", "[own
   loop.run(stop, 1);
   REQUIRE(session.placed().size() == 1);
   CHECK(session.placed()[0].quantity_ == Decimal64::parse("10"));
+  REQUIRE(live_runner.context().portfolio().working_.size() == 1);
+  CHECK(live_runner.context().portfolio().working_[0].reserved_);
+
+  // The next working-order poll replaces the reservation with the broker's own listing -- empty
+  // here -- and nothing is sent again, because no new bar arrived.
+  loop.run(stop, 1);
+  CHECK(live_runner.context().portfolio().working_.empty());
+  CHECK(session.placed().size() == 1);
 }
 
-TEST_CASE("a listing older than the portfolio age policy holds the loop, and says so once",
+TEST_CASE("a run that polls no working-order listing holds, whatever its age policy",
           "[own-orders]") {
-  // The reservation lives until a working-order listing replaces it, so a run that polls holdings
-  // but never the listing would keep an expired or refused order "working" and stop chasing its
-  // target. The listing is aged against the same policy as holdings instead.
+  // The reservation lives until a working-order listing replaces it, so a run that never polls one
+  // would keep an expired or refused order "working" and stop chasing its target. Opting out of a
+  // holdings age is not opting out of a listing, so an unbounded age does not lift this.
+  using LoopRunner = runner::Runner<
+    HoldTen, WithWorkingOrders, FakeBroker, live::SessionExecutor<FakeSession<WithWorkingOrders>>
+  >;
+  using Source = FreshHoldingsSource<FakeSession<WithWorkingOrders>, runner::ManualClock>;
+  static_assert(LoopRunner::keeps_sent_orders_until_listed, "a live binding keeps its orders");
+  FakeSession<WithWorkingOrders> session;
+  session.set_bars(history_bars(3));
+  strategy::RiskLimits any_phase;
+  any_phase.permitted_phases_ = std::nullopt;
+  LoopRunner live_runner(
+    HoldTen{}, any_phase, 512, live::SessionExecutor<FakeSession<WithWorkingOrders>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+
+  const auto start = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 200);
+  runner::PollSchedule schedule;
+  schedule.bars_ = std::chrono::seconds(1);
+  schedule.holdings_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  schedule.calendar_.reset();
+  Source source(session, {samsung()}, nullptr);
+  runner::PollingLoop<LoopRunner, Source, runner::ManualClock> loop(
+    live_runner, source, schedule, runner::ManualClock{start});
+  source = Source(session, {samsung()}, &loop.clock());
+  loop.allow_unbounded_portfolio_age();
+  runner::StopSource stop;
+
+  const auto report = loop.run(stop, 3);
+  CHECK(session.placed().empty());
+  REQUIRE(report.final_gate_.has_value());
+  CHECK(*report.final_gate_ == strategy::HaltReason::PORTFOLIO_STALE);
+  std::size_t said = 0;
+  for (const auto& note : report.notes_) {
+    if (note.find("no working-order cadence") != std::string::npos) {
+      ++said;
+    }
+  }
+  CHECK(said == 1);
+}
+
+TEST_CASE("a listing older than the portfolio age policy holds the loop until one is read",
+          "[own-orders]") {
+  // Polled, but failing: the listing ages past the policy and the loop holds, naming it once; the
+  // next listing that arrives lifts the hold.
   using LoopRunner = runner::Runner<
     HoldTen, WithWorkingOrders, FakeBroker, live::SessionExecutor<FakeSession<WithWorkingOrders>>
   >;
@@ -1837,9 +1895,9 @@ TEST_CASE("a listing older than the portfolio age policy holds the loop, and say
   const auto start = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 200);
   runner::PollSchedule schedule;
   schedule.holdings_ = std::chrono::seconds(1);
+  schedule.working_orders_ = std::chrono::seconds(1);
   schedule.tick_ = std::chrono::seconds(1);
   schedule.calendar_.reset();
-  // No working-order cadence: the listing is read once, at startup, and never again.
   Source source(session, {samsung()}, nullptr);
   runner::PollingLoop<LoopRunner, Source, runner::ManualClock> loop(
     live_runner, source, schedule, runner::ManualClock{start});
@@ -1850,9 +1908,11 @@ TEST_CASE("a listing older than the portfolio age policy holds the loop, and say
   const auto early = loop.run(stop, 2);
   CHECK_FALSE(early.final_gate_.has_value());
 
+  source.listing_fails_ = true;
   const auto late = loop.run(stop, 5);
+  // Held: by the failing poll itself (`poll_failing`, which the gate reports first) and, once the
+  // last good listing is older than the policy, by its age -- which is the one this names.
   REQUIRE(late.final_gate_.has_value());
-  CHECK(*late.final_gate_ == strategy::HaltReason::PORTFOLIO_STALE);
   std::size_t said = 0;
   for (const auto& note : late.notes_) {
     if (note.find("working-order listing older than the portfolio age policy") != std::string::npos) {
@@ -1860,6 +1920,10 @@ TEST_CASE("a listing older than the portfolio age policy holds the loop, and say
     }
   }
   CHECK(said == 1);
+
+  source.listing_fails_ = false;
+  const auto healed = loop.run(stop, 2);
+  CHECK_FALSE(healed.final_gate_.has_value());
 }
 
 TEST_CASE("a broker refusal reaches a live run's report, with what the broker said") {

@@ -384,6 +384,19 @@ public:
     runner_detail::sends_to_a_broker<Executor>::value &&
     strategy::strategy_detail::has_on_fill<Strategy, Context>::value;
 
+  /**
+   * Whether this runner keeps every order it sends in `working_` until a working-order listing
+   * replaces it, whatever the limits (`persist_reservation`).
+   *
+   * True for a runner that sends to a broker publishing a working-order inquiry -- every shipped
+   * binding (`live::SessionExecutor`, and `JournalingExecutor` over it) on KIS, Toss and Kiwoom.
+   * False for a dry run, `live::bind_observer` and a replay, which send nowhere. `PollingLoop` reads
+   * it: a runner that keeps its orders until a listing replaces them is held while no listing will
+   * (see `PollSchedule::working_orders_`).
+   */
+  static constexpr bool keeps_sent_orders_until_listed =
+    runner_detail::sends_to_a_broker<Executor>::value && CapsType::has_working_orders;
+
   /** Constructs a runner with the given strategy, limits, and series warm-up window. */
   explicit Runner(
     Strategy strategy = {},
@@ -1328,13 +1341,14 @@ private:
     // resting order, two sells of sixty both pass and twenty shares are sold that were not there.
     //
     // A copy per pass, mutated as orders are accepted, closes that within one `settle`.
-    // `persist_reservation` closes the same hazard *across* passes, for the limits that read what
-    // is outstanding. Nothing has to recognise its own order in a later listing: a poll assigns
-    // `working_` and `positions_` wholesale, so the broker's own answer replaces the reservation
-    // when it arrives. Between a placement and that poll, the context portfolio is therefore the
-    // broker's last report **plus** what this runner has sent since -- which is what a limit has to
-    // size against, and why the rows are marked so that anything inferring the broker's behaviour
-    // from the listing can tell them apart.
+    // `persist_reservation` closes the same hazard *across* passes: always for a runner that sends to
+    // a broker listing working orders, and otherwise for the limits that read what is outstanding.
+    // Nothing has to recognise its own order in a later listing: a working-order poll assigns
+    // `working_` wholesale (a holdings poll keeps it), so the broker's own answer replaces the
+    // reservation when it arrives. Between a placement and that poll, the context portfolio is
+    // therefore the broker's last report **plus** what this runner has sent since -- which is what a
+    // target and a limit have to size against, and why the rows are marked so that anything inferring
+    // the broker's behaviour from the listing can tell them apart.
     auto view = context_.portfolio();
     // Resolved once for the pass. The currencies and marks do not move as orders are accepted --
     // only quantities do, and the guard reads those from the view -- and resolving per order would
@@ -1617,9 +1631,13 @@ private:
    * run whose listing is older than its portfolio age policy (`PollingLoop::gate_for`).
    *
    * **Scoped to the limits that read it everywhere else.** A dry run, `live::bind_observer` and a
-   * custom executor that reaches no broker have no listing to retire the row, and a broker that
-   * publishes no working-order inquiry has none either; for them the reservation persists only for
-   * the limits that size against what is outstanding, as before. `max_position_quantity_` is one of
+   * custom executor that reaches no broker write a row with no broker reference: a later target
+   * that opposes it would ask to withdraw an order identified by nothing, and a dry run has no
+   * listing to replace the row at all. A broker that publishes no working-order inquiry never
+   * replaces it either. For them the reservation persists only for the limits that size against
+   * what is outstanding, as before. A custom executor that reaches a broker but reports no reference
+   * (`reports_last_ref`) is still counted as keeping its orders: a duplicate order is the worse
+   * failure, and the listing the loop insists on retires the unaddressable row. `max_position_quantity_` is one of
    * those limits: its ceiling counts same-side working orders, so an accepted order that stopped
    * being visible at the end of a pass would let the next bar place another of the same size.
    *
@@ -1648,9 +1666,7 @@ private:
     const bool conditional = carries_trigger_price(order.type_);
     // A broker that will list the order back, reached by this runner: the listing retires the row,
     // so the reservation is always written. See above for why every other runner keeps the scoping.
-    const bool listed =
-      runner_detail::sends_to_a_broker<Executor>::value && CapsType::has_working_orders;
-    if (!listed && !sells && !buys && !capped && !exposed && !conditional) {
+    if (!keeps_sent_orders_until_listed && !sells && !buys && !capped && !exposed && !conditional) {
       return;
     }
     auto persisted = context_.portfolio();

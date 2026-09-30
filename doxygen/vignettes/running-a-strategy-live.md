@@ -203,13 +203,17 @@ adapters stamp `HoldingsSnapshot::received_at_` with the local clock as they par
 figures by however long the request took: a snapshot the broker computed slowly can pass an age
 limit it should have failed. Set the limit with that headroom in mind.
 
-**The order listing is aged against the same policy.** A holdings poll refreshes positions and keeps
-the working orders it had; only a working-order poll replaces them. And an order the runner sends
-stays in `working_` until that listing arrives (below), so a listing nobody refreshes would keep an
-order that expired or was refused "working" for ever, and a target would stop being chased. So on a
-source that publishes working orders, a listing older than `set_maximum_portfolio_age` holds the loop
-with `portfolio_stale` too, and the report says once which cadence to add: poll
-`PollSchedule::working_orders_` at least as often as the age you state.
+**A run that sends to a broker needs the order listing too.** A holdings poll refreshes positions and
+keeps the working orders it had; only a working-order poll replaces them. And an order the runner
+sends stays in `working_` until that listing replaces it (below), so without one an order that expired
+or was refused would stay "working" for ever, a target would stop being chased, and a filled one would
+be cancelled again on every pass. So a runner that sends to a broker
+(`Runner::keeps_sent_orders_until_listed`) holds with `portfolio_stale` while the source publishes no
+listing, while `PollSchedule::working_orders_` is not set, and while the last listing is older than
+`set_maximum_portfolio_age` — whatever the age policy, because opting out of a holdings age is not
+opting out of a listing. The report names the missing piece once. Poll the listing more often than
+the age by at least a tick: a cadence equal to the age reaches the limit a tick before each poll.
+A dry run and an observer are not held.
 
 **A price band is a per-trading-day value, and one nobody has aged is not applied.** `PriceLimits`
 is "the highest price allowed today" and for KRX it moves with the previous close, so a band
@@ -532,13 +536,15 @@ not both go out, and neither do two buys the budget can only fund once. The rese
 pass and is discarded when a working-order poll replaces the listing, so a second bar before the next
 poll cannot re-spend the same money.
 
-**Every order sent to a broker counts as working until the broker lists it, whatever the limits.** A
-cold start feeds the whole first bar read, one pass per bar, before the next listing, and a target
-strategy restates its target on every one; each pass therefore sees the order the first one sent and
-sends nothing more. Before 2026-09-30 this held only with one of the checks above enabled, and a target
+**Every order sent to a broker counts as working until the next working-order listing replaces it,
+whatever the limits** — on a broker that lists working orders, which all three shipped ones do. A cold
+start feeds the whole first bar read, one pass per bar, before the next listing, and a target strategy
+restates its target on every one; each pass therefore sees the order the first one sent and sends
+nothing more. Before 2026-09-30 this held only with one of the checks above enabled, and a target
 strategy under default limits sent one order per history bar. A dry run and `live::bind_observer` send
-to no broker, have no listing to retire the row, and keep the old scoping: they report a restated
-target again on every pass.
+to no broker, so their rows carry no broker reference — a later opposing target would ask to withdraw
+an order identified by nothing — and they keep the old scoping: they report a restated target again on
+every pass.
 
 **Passing is not a promise.** These are readings, and a fill against a resting order moves them
 without telling anyone. The check is the difference between sizing against the broker's last answer
