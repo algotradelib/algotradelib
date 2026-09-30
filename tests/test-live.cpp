@@ -1908,10 +1908,10 @@ TEST_CASE("a listing older than the portfolio age policy holds the loop until on
   const auto early = loop.run(stop, 2);
   CHECK_FALSE(early.final_gate_.has_value());
 
+  // Four failing listings: fewer than the loop's abandonment limit, so the run is held, not given up.
   source.listing_fails_ = true;
-  const auto late = loop.run(stop, 5);
-  // Held: by the failing poll itself (`poll_failing`, which the gate reports first) and, once the
-  // last good listing is older than the policy, by its age -- which is the one this names.
+  const auto late = loop.run(stop, 4);
+  CHECK_FALSE(late.abandoned_);
   REQUIRE(late.final_gate_.has_value());
   std::size_t said = 0;
   for (const auto& note : late.notes_) {

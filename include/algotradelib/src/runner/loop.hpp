@@ -353,7 +353,9 @@ struct source_provides_working_orders<
  * Whether `Runner` keeps the orders it sends until a working-order listing replaces them.
  *
  * Detected, and false when undeclared: a runner that states nothing is assumed to retire its own
- * rows, which is what every runner did before `Runner::keeps_sent_orders_until_listed` existed.
+ * rows, which is what every runner did before `Runner::keeps_sent_orders_until_listed` existed. **A
+ * type that wraps `runner::Runner` for `PollingLoop` must forward the constant**, or its reservations
+ * outlive a missing listing with no hold to say so.
  */
 template <typename Runner, typename = void>
 struct runner_keeps_sent_orders : std::false_type {};
@@ -1334,7 +1336,11 @@ public:
    * The deliberate half of the requirement above. It does not make staleness safe; it records that
    * the operator considered it and chose to proceed, which is the difference between a risk taken
    * and a risk defaulted into. It does **not** suspend the absent-portfolio hold: never read and
-   * unboundedly old are different states, and this answers only the second.
+   * unboundedly old are different states, and this answers only the second. Nor the hold for a
+   * runner whose order listing will never arrive (`PollSchedule::working_orders_`); but with no age
+   * to compare against, a listing poll that is rate-limited without end keeps the orders a runner
+   * sent "working" without end too, because a rate-limited poll does not count towards abandoning
+   * the run.
    */
   void allow_unbounded_portfolio_age() {
     allow_unbounded_portfolio_age_ = true;

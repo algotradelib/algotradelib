@@ -1627,19 +1627,22 @@ private:
    * again. It was scoped to the limits below until 2026-09-30, and the cold start showed the cost --
    * `SessionSource` feeds a whole history read one pass per bar before the next listing, so a target
    * strategy under default limits sent one order per history bar (`tests/test-live.cpp`,
-   * `[own-orders]`). The listing that retires the row is what bounds its life, so the loop holds a
-   * run whose listing is older than its portfolio age policy (`PollingLoop::gate_for`).
+   * `[own-orders]`). The listing that retires the row is what bounds its life, so the loop holds such
+   * a run while no listing will come -- the source publishes none, no working-order cadence is set,
+   * or the last listing is older than the portfolio age policy (`PollingLoop::gate_for`).
    *
    * **Scoped to the limits that read it everywhere else.** A dry run, `live::bind_observer` and a
    * custom executor that reaches no broker write a row with no broker reference: a later target
    * that opposes it would ask to withdraw an order identified by nothing, and a dry run has no
    * listing to replace the row at all. A broker that publishes no working-order inquiry never
    * replaces it either. For them the reservation persists only for the limits that size against
-   * what is outstanding, as before. A custom executor that reaches a broker but reports no reference
-   * (`reports_last_ref`) is still counted as keeping its orders: a duplicate order is the worse
-   * failure, and the listing the loop insists on retires the unaddressable row. `max_position_quantity_` is one of
-   * those limits: its ceiling counts same-side working orders, so an accepted order that stopped
-   * being visible at the end of a pass would let the next bar place another of the same size.
+   * what is outstanding, as before. `max_position_quantity_` is one of those limits: its ceiling
+   * counts same-side working orders, so an accepted order that stopped being visible at the end of a
+   * pass would let the next bar place another of the same size.
+   *
+   * A custom executor that reaches a broker but reports no reference (`reports_last_ref`) is still
+   * counted as keeping its orders: a duplicate order is the worse failure, and the listing the loop
+   * insists on retires the unaddressable row.
    *
    * The residual window is the one nothing local can close: a listing fetched before the broker
    * registered the order replaces the reservation with a picture that does not contain it yet.

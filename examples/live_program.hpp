@@ -47,7 +47,11 @@ struct Settings {
   std::vector<atl::InstrumentId> universe_;
   /** The limits the guard enforces. */
   strategy::RiskLimits limits_;
-  /** How often each kind is polled. */
+  /**
+   * How often each kind is polled. `trade` needs `working_orders_` set, shorter than
+   * `maximum_portfolio_age_`: a runner that sends orders keeps them until the listing replaces them,
+   * and the loop holds (with a note) while no listing will come.
+   */
   runner::PollSchedule schedule_;
   /** Which bars the source asks for, and how many: the history read at start is this many. */
   atl::BarInterval bar_interval_{atl::BarInterval::ONE_DAY};
