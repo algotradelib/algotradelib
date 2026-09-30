@@ -1,5 +1,10 @@
 # algotradelib
 
+<!-- badges: start -->
+![License](https://img.shields.io/badge/license-MIT-blue.svg?style=plastic)
+[![Lifecycle: experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg?style=plastic)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
+<!-- badges: end -->
+
 C++17 building blocks for event-driven trading through Korean broker APIs — currently Korea
 Investment & Securities (KIS), Kiwoom Securities and Toss Securities.
 
@@ -8,11 +13,10 @@ broker, so one source is replayed against history, dry-run with no credentials, 
 without being rewritten — against KIS or Toss today; a Kiwoom strategy runner places nothing yet (see
 "Brokers and accounts"). Selecting a broker is choosing a type parameter.
 
-> **This library sends real orders to real accounts.** It is provided as is, with no warranty of any
-> kind (see the License section at the end), and nothing in it is investment advice. It is in development
-> (`0.0.0.9000`, no release yet) and **has not yet been run end to end against a broker account**:
-> every broker behaviour it relies on was read from the brokers' specifications. Rehearse on a demo
-> account first, and read "Brokers and accounts" below before you do.
+> **This library sends real orders to real accounts, and has not yet been run end to end against a
+> broker account**: every broker behaviour it relies on was read from the brokers' specifications. It is
+> in development (`0.0.0.9000`, no release yet). Rehearse on a demo account first, and read "Brokers and
+> accounts" and the Disclaimer below before you do.
 
 ## Architecture
 
@@ -257,14 +261,15 @@ the environment; the [broker clients](doxygen/vignettes/broker-clients.md) page 
 
 | Broker | State | Paper trading |
 | --- | --- | --- |
-| KIS | market data, calendar, reference data, holdings, buying power, orders (including stop-limit), order history | `KIS_DEMO=1` |
-| Kiwoom | market data, reference data, buying power, orders (including stop-limit) and order history through the session; **no calendar**; **holdings refuse** until you state what its `kt00018` inquiry covers (below); **a strategy runner cannot place yet** (below) | `KIWOOM_DEMO=1` |
+| KIS | market data, calendar, reference data, holdings, buying power, orders (including stop-limit), order history | default (`KIS_DEMO=0` for live) |
+| Kiwoom | market data, reference data, buying power, orders (including stop-limit) and order history through the session; **no calendar**; **holdings refuse** until you state what its `kt00018` inquiry covers (below); **a strategy runner cannot place yet** (below) | default (`KIWOOM_DEMO=0` for live) |
 | Toss | market data, calendar, reference data, holdings, buying power, orders (no stop-limit), order history | **none** |
 
-**`KIS_DEMO` and `KIWOOM_DEMO` are required.** `1` selects the broker's 모의투자 (paper-trading)
-endpoints, `0` selects live, and anything else — unset included — refuses to load, so a forgotten
-`export` cannot mean real money. A JSON credential file needs `"demo": true` or `"demo": false` for
-the same reason.
+**KIS and Kiwoom are demo unless you say live.** Live — the one choice that moves real money — has
+to be written down: `KIS_DEMO=0` / `KIWOOM_DEMO=0`, `"demo": false` in a credential file, or
+`is_demo_ = false` in code. Anything unstated uses the broker's 모의투자 (paper-trading) endpoints, where
+live keys are refused, so a forgotten setting fails instead of trading. A value that is set must be
+exactly `1` or `0`; anything else refuses to load.
 
 **Toss has no paper-trading environment.** A Toss program with credentials trades real money; rehearse
 a strategy with a replay or a dry run, or on a KIS or Kiwoom demo account, first.
@@ -308,8 +313,10 @@ The [user guide](doxygen/vignettes/guide.md) is eleven pages in the order they a
 | 10 | [Talking to a broker directly](doxygen/vignettes/broker-clients.md) | the KIS and Toss clients, and the order-safety rules |
 | 11 | [Transport and request pacing](doxygen/vignettes/transport-and-pacing.md) | the pacer, the traffic classes, how each broker reports a refusal |
 
-## License
+## Disclaimer
 
-MIT; see [LICENSE](LICENSE). The software is provided as is, without warranty of any kind, and the
-authors are not liable for any loss, including trading losses, arising from its use. Nothing in this
-repository is investment advice.
+## Disclaimer
+
+algotradelib is released under the MIT license; see [LICENSE](LICENSE). The software is provided as
+is, without warranty of any kind, and the authors are not liable for any loss, including trading
+losses, arising from its use. Nothing in this repository is investment advice.
