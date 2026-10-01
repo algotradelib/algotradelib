@@ -11,7 +11,7 @@
 <!-- badges: end -->
 
 <!--
-  영어 README.md 10bce99 기준. 요약한 절: 첫 소개와 경고, "Brokers and accounts", "Install",
+  영어 README.md 7eb3d7f 기준. 요약한 절: 첫 소개와 경고, "Brokers and accounts", "Install",
   "Using it"의 실행 예시, "Documentation"의 문서 빌드 명령, "Disclaimer". 이 절들이 바뀌면 이 문서도
   함께 고칩니다.
 -->
@@ -30,6 +30,10 @@ C++17 헤더 전용 라이브러리입니다. 전략 코드 하나로 백테스�
 - KIS와 키움은 기본적으로 모의투자 서버에 연결됩니다. 실전투자는 `KIS_DEMO=0`, `KIWOOM_DEMO=0`처럼
   직접 지정해야 합니다(인증 정보 파일이라면 `"demo": false`). 모의투자 서버는 실전 앱키를 받지
   않으므로, 설정을 빠뜨려도 실전 주문은 나가지 않고 요청이 거부됩니다.
+- KIS 모의투자 서버는 종목 정보와 휴장일 조회를 지원하지 않습니다(`EGW02006`). 그래서 예제
+  프로그램은 모의투자로 주문하면서, 시세와 종목 정보는 실전투자 앱키로 조회합니다. 이 조회용 연결에는
+  계좌를 지정하지 않으므로 주문이 나갈 수 없습니다. `--market-data toss`를 주면 토스증권에서
+  조회합니다.
 - 토스증권은 모의투자를 제공하지 않습니다. 토스 인증 정보로 주문하면 실제 계좌에서 거래되므로,
   전략은 백테스트나 KIS·키움 모의투자로 먼저 확인하세요.
 - 키움은 잔고 조회와 전략 주문에 추가 설정이 필요합니다. 설정하기 전에는 라이브러리가 요청을 보내지
@@ -84,6 +88,14 @@ cmake --build build
 export KIS_APP_KEY=... KIS_APP_SECRET=... KIS_CANO=... KIS_DEMO=1
 ./build/bin/example-live-program kis 005930           # 조회만 하고 주문하지 않음
 ./build/bin/example-live-program kis 005930 --live    # 모의투자 계좌로 주문
+```
+
+앱키와 계좌번호를 계좌별 JSON 파일로 둘 수도 있습니다. 폴더를 `--credentials DIR`(또는
+`ATL_CREDENTIALS_DIR`)로 지정하면 `DIR/kis/demo.json`을 읽고, `KIS_DEMO=0`이면 `DIR/kis/real.json`을
+읽습니다. 파일 권한은 `chmod 600`으로 두세요.
+
+```sh
+./build/bin/example-live-program kis 005930 --credentials DIR
 ```
 
 HTML 문서는 Doxygen이 설치되어 있으면 `cmake --build build --target docs`로 만들 수 있습니다.
