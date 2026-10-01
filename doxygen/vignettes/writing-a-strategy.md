@@ -89,7 +89,7 @@ remediation after the fact, not protection — read the three limits of it befor
   A faster holdings cadence does **not** on its own, because the check runs in `on_bar`: a fresher
   position nobody looks at until the next bar is still not looked at until the next bar.
 
-**A broker-side stop closes the gap by leaving the trigger at the exchange, and it has three costs
+**A broker-side stop closes the gap by leaving the trigger at the exchange, and it has five costs
 worth knowing before reaching for it.** `OrderIntent::stop_limit(instrument, side, size, trigger,
 limit)` places one at KIS (`ORD_DVSN` `22`) and Kiwoom (`trde_tp` `28`); a broker that cannot carry a
 trigger refuses it rather than sending a plain limit.
@@ -115,6 +115,13 @@ trigger refuses it rather than sending a plain limit.
 - **Its trigger is never moved.** A trigger off the instrument's tick grid is refused as
   `TRIGGER_OFF_GRID` rather than rounded, because which direction is cautious depends on whether the
   stop releases on a rise or a fall, and neither broker documents that.
+- **On daily bars it is absent overnight.** It rests as a DAY order — this library has no time in force
+  that outlasts one session (`TimeInForce`) — so it is gone at the close. A strategy that states it on
+  every bar has it sent again after midnight, when the next daily bar is fed: a broker not taking
+  orders refuses it, and it is kept for the first `OPEN` iteration, after 09:00, which needs a trading
+  calendar ("kept for the next session" in [Running a strategy live](running-a-strategy-live.md)). From
+  the close until then, through the opening auction, the position has no stop. A strategy that states
+  it once, on entry, has none after the first close.
 
 **And placing the exit alongside the entry is not the answer either**, which is worth saying because
 it is the next thing anyone tries. The two are independent submissions: there is no linked
