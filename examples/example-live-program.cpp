@@ -81,9 +81,13 @@ live_program::Settings settings_for(const atl::InstrumentId& instrument) {
   settings.limits_.max_position_quantity_ = atl::Decimal64::parse("1");
   settings.limits_.max_orders_per_window_ = 2;
 
-  // Daily bars, `SessionSource`'s default: the strategy decides on the history read at start -- the
-  // loop reads the order list and holdings before it feeds a bar -- and again at each close. Polled
-  // every minute so a close is seen promptly; a minute-bar strategy sets `bar_interval_`.
+  // Daily bars, `SessionSource`'s default. The loop reads the order list and holdings before it feeds
+  // a bar. At start the strategy is shown the history read, but only the newest closed bar's decision
+  // can be sent: at once if the market is open; otherwise an opening order waits for the first `OPEN`
+  // iteration (which needs a calendar), and an exit goes out at once and is kept if the broker refuses
+  // it. After that a day's bar is fed once the day has ended, at the first poll after midnight KST,
+  // and the same rule applies ("kept for the next session" in running-a-strategy-live.md). Polled
+  // every minute so that poll comes promptly; a minute-bar strategy sets `bar_interval_`.
   settings.schedule_.bars_ = std::chrono::minutes(1);
   settings.schedule_.holdings_ = std::chrono::seconds(30);
   settings.schedule_.working_orders_ = std::chrono::seconds(30);

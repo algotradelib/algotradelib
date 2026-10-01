@@ -250,7 +250,12 @@ pass that did not get everything out, 2 journal refused, 3 recovery halted (the 
 manual procedure), 4 reference data unreadable, 5 polling abandoned, 6 a local failure during the run
 (usually a journal write; read the broker's order list), 7 the account could not be settled (a Toss
 key reaching several accounts needs `--toss-account`). Within an iteration the loop polls the order
-list, then holdings, then bars, of whichever are due, so the strategy decides on the bars read at start against an account already read.
+list, then holdings, then bars, of whichever are due, so every bar reaches the strategy against an
+account already read (when that read succeeded; a failed one holds sending, not the bars). At start the
+strategy is shown the history read, but only the newest closed bar's decision can be sent: at once if
+the market is open; otherwise an opening order waits for the first open iteration and an exit is sent,
+and kept if the broker refuses it. After that a daily bar is fed at the first poll after midnight KST,
+its session over, under the same rule.
 The buying-power guard is left off, its default. **On Kiwoom it places nothing as shipped** — see "Brokers and accounts" below.
 [Recovering after a crash](doxygen/vignettes/recovering-after-a-crash.md) explains each step and the
 verdicts `recover_runner` returns.
