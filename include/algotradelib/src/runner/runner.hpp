@@ -1860,7 +1860,8 @@ private:
    * registered the order replaces the reservation with a picture that does not contain it yet; and an
    * order that filled at once is in no listing, so the next listing retires it while a holdings answer
    * that lags the fill does not show it either. Either way the next pass can send the order again
-   * (lab F15; an every-minute strategy with holdings 30 s behind placed six times the orders). Closing
+   * (lab F15, paper broker; an every-minute strategy with holdings 30 s behind placed six times the
+   * orders). Closing
    * it needs the two lags measured at a broker; `running-a-strategy-live.md` says so.
    */
   void persist_reservation(

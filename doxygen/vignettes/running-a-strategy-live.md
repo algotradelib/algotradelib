@@ -761,9 +761,10 @@ with `GuardReason::VALUE_NOT_KNOWN` until you register it.
   strategy whose holdings ran 30 seconds behind its fills placed 295 orders where the replay made 47
   trades, and held up to three times its target with longer lags. (The paper broker fills a market
   order at the next poll's instant, so there any lag outlasts the gap. At a real broker, which fills on
-  receipt, it takes a lag of about one holdings interval.) So the risk grows with how often the
-  strategy decides and polls: an intraday one polling every few seconds meets it at a few seconds of
-  lag. A daily strategy decides once a day and rarely meets it in one process, but a restart inside the
+  receipt, the lag has to outlast the time from the fill to the next holdings read: about one interval
+  when bars, listing and holdings share a cadence, and less when the strategy decides between holdings
+  reads.) So the risk grows with how often the strategy decides and polls: an intraday one polling
+  every few seconds meets it at a few seconds of lag. A daily strategy decides once a day and rarely meets it in one process, but a restart inside the
   lag does, because the new process feeds the newest bar again. Neither lag has been measured at a real
   broker (`plan/todo/demo-acceptance-run.md`). Measure both before an intraday strategy trades real
   money.
@@ -773,7 +774,8 @@ with `GuardReason::VALUE_NOT_KNOWN` until you register it.
   documents it, so the guard subtracts them — safe, and possibly twice. Turn on
   `probe_sellable_convention()` and a run that observes one says so in `report.notes_`.
 
-Surviving a restart is no longer on this list, except for the lag above. Bind a `runner::FileJournal` and the ledger becomes
+Surviving a restart is no longer on this list, except for the lag above. Bind a
+`runner::FileJournal` and the ledger becomes
 durable: every instruction is recorded before it is sent, a restarted runner recovers what its
 predecessor left owed, and the listings this source already reads resolve it. See the
 [recovering after a crash](recovering-after-a-crash.md) vignette — including why `not_placed` and
