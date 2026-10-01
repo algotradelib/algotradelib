@@ -981,26 +981,8 @@ private:
     // A session the replay had no closing bar for -- a missing last minute -- still ended: an order
     // of an earlier date is withdrawn before this bar can fill it.
     expire_day_orders(event, bar_date, false);
-    // **Which session a DAY order lives in**, fixed at the first bar it is eligible against: that
-    // bar's session is the one the order trades in. A decision the bar cannot fill without looking
-    // ahead -- a quote at 10:00 against the day's bar, or the day's close -- trades in the next
-    // session, as a market order decided there fills at the next open: one session, shifted, never
-    // the several a resting order had before.
-    std::vector<std::pair<OrderRef<Tag>, Date>> sessions;
-    for (const auto& entry : runner_.executor().queued()) {
-      if (!(entry.order_.instrument_ == event.instrument_) || entry.session_ ||
-          entry.order_.time_in_force_ != TimeInForce::DAY) {
-        continue;
-      }
-      if (entry.accepted_on_ < runner_.executor().bar() && may_fill(entry, event)) {
-        sessions.emplace_back(entry.ref_, bar_date);
-      }
-    }
-    for (const auto& [ref, date] : sessions) {
-      runner_.executor().assign_session(ref, date);
-    }
-
     std::vector<OrderRef<Tag>> eligible;
+    std::vector<OrderRef<Tag>> first_session;
     for (const auto& entry : runner_.executor().queued()) {
       // A different instrument's order waits for that instrument's next bar, which is what makes an
       // interleaved multi-instrument replay behave. An order accepted during this bar waits for the
@@ -1021,6 +1003,18 @@ private:
         continue;
       }
       eligible.push_back(entry.ref_);
+      // **Which session a DAY order lives in**, fixed at the first bar it is eligible against: that
+      // bar's session is the one the order trades in. A decision the bar cannot fill without looking
+      // ahead -- a quote at 10:00 against the day's bar, or the day's close -- trades in the next
+      // session, as a market order decided there fills at the next open: one session, shifted, never
+      // the several a resting order had before. Recorded here, beside the one `may_fill` call, so
+      // `unchecked_fill_causality_` still counts each order once per bar.
+      if (!entry.session_ && entry.order_.time_in_force_ == TimeInForce::DAY) {
+        first_session.push_back(entry.ref_);
+      }
+    }
+    for (const auto& ref : first_session) {
+      runner_.executor().assign_session(ref, bar_date);
     }
 
     for (const auto& ref : eligible) {
@@ -1136,7 +1130,8 @@ private:
    * expired order as working. Counted in `ReplayResult::expired_day_orders_`.
    */
   void expire_day_orders(const strategy::BarEvent& event, const Date& bar_date, bool after_fills) {
-    const bool daily_or_longer = event.interval_ != BarInterval::ONE_MINUTE;
+    // No fixed duration is what a day or longer has (`interval_duration`); an intraday interval has one.
+    const bool daily_or_longer = !interval_duration(event.interval_);
     const auto closes = clock_.session().opens_at(event.bar_.timestamp_) - clock_.session().open_ +
       clock_.session().close_;
     const bool ends_session = after_fills && (daily_or_longer || !(event.period_end_ < closes));

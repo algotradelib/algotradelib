@@ -83,12 +83,14 @@ first bar can fill it. `report.caveats_.expired_day_orders_` counts them. **Repl
 rule kept a missed limit or stop queued until it filled**, so a limit strategy on daily bars now fills
 less often and a protective stop has to be restated each session, as it does live. Three limits:
 
-- a weekly or monthly bar still grants an order its whole range, up to five sessions — better than the
+- a weekly or monthly bar still grants an order its whole range, every session in it — better than the
   unlimited rest it had, still optimistic; trust limit fills on those intervals least;
 - one `SessionWindow` serves a whole replay, so a US minute replay under the KRX default expires orders
   at the KRX close, part way through the US session — give the replay the market's window;
 - an instrument with no bar for some sessions (a suspension, missing data) grants its order the first
-  bar it has, however late.
+  bar it has, however late; and a minute series with no bar at the close leaves the order in `working_`
+  for the last bar's `on_bar` and for any quote before the next session's first bar, where live it is
+  already gone.
 
 So `AT_LIMIT`, the default, never credits the better **open**. It is still not "never better than the
 limit": a limit marketable through the whole bar is credited the bar's worst price — a buy limited at

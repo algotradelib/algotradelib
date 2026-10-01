@@ -1287,8 +1287,9 @@ TEST_CASE("a nominal period end does not defer a fill by a whole month") {
   REQUIRE(engine.strategy().fill_prices_.size() == 1);
   // March's open, which is the month after the decision -- not April's.
   CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("70000"));
-  // And the engine says it could not prove that, rather than claiming it checked.
-  CHECK(engine.result().unchecked_fill_causality_ > 0);
+  // And the engine says it could not prove that, rather than claiming it checked -- once, for the
+  // one order on the one bar it was considered against.
+  CHECK(engine.result().unchecked_fill_causality_ == 1);
 }
 
 TEST_CASE("an open-stamped week whose successor starts exactly a week later is checked") {
@@ -2729,6 +2730,22 @@ TEST_CASE("a limit from a quote inside a daily bar's session gets the next sessi
     REQUIRE(engine.result().executions_.empty());
     CHECK(engine.result().expired_day_orders_ == 1);
   }
+}
+
+TEST_CASE("a DAY order on open-stamped daily bars lasts one session too") {
+  // The stamp every shipped adapter uses: Seoul midnight, with a nominal period end. The decision at
+  // the 10th's nominal end is the 11th's start, so the order trades in the 11th's session and
+  // expires with it.
+  backtest::Backtester<RestsOneLimit> engine(RestsOneLimit{}, replay_config());
+  engine.feed(open_stamped(utc(2026, 3, 9, 15, 0), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(open_stamped(utc(2026, 3, 10, 15, 0), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(open_stamped(utc(2026, 3, 11, 15, 0), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(open_stamped(utc(2026, 3, 12, 15, 0), BarInterval::ONE_DAY, "45000", "70000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().working_seen_ == std::vector<std::size_t>{0, 0, 0, 0});
+  REQUIRE(engine.result().executions_.empty());
+  REQUIRE(engine.result().expired_day_orders_ == 1);
 }
 
 TEST_CASE("a DAY order on minute bars rests through its session and expires at the close") {
