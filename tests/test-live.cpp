@@ -1429,8 +1429,8 @@ TEST_CASE("a target the broker turned away for its rate limit is planned again o
 }
 
 TEST_CASE("an order intent the broker turned away for its rate limit is kept") {
-  // Kept like a phase refusal the broker answered: with its holding, and only without a key, since a
-  // keyed intent would reuse a key the broker has seen.
+  // Kept like a phase refusal the broker answered, with its holding, and sent once the broker answers.
+  // (A keyed one is not kept: it would reuse a key the broker has seen; `keep_intent_for_phase`.)
   using Runner = runner::Runner<
     BuysOne, WithKey, FakeBroker, live::SessionExecutor<FakeSession<WithKey>>
   >;
