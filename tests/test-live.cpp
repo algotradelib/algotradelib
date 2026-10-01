@@ -4119,6 +4119,67 @@ TEST_CASE("a broker that publishes no calendar is asked for none") {
   CHECK(live_runner.context().calendar().days_.empty());
 }
 
+/** An account-only broker: it publishes neither a calendar nor a band. */
+struct AccountOnlyCaps : strategy::NoCaps {
+  static constexpr bool has_working_orders = true;
+  static constexpr bool has_buying_power = true;
+};
+/** A broker read for market data alone: a calendar and a band. */
+struct MarketDataCaps : strategy::NoCaps {
+  static constexpr bool has_working_orders = true;
+  static constexpr bool has_calendar = true;
+  static constexpr bool has_price_limits = true;
+};
+
+TEST_CASE("a second session serves the market reads and the first the account") {
+  // `example-live-program` on a KIS demo account: the demo host refuses the calendar and reference
+  // data, so they come from a session that cannot trade. Different types, so the calendar and band
+  // polls are gated on the market-data session's capabilities -- the trading one publishes neither.
+  FakeSession<AccountOnlyCaps> trading;
+  FakeSession<MarketDataCaps> market;
+  market.set_bars(two_bars("70000", "71000"));
+  market.set_calendar(one_day_calendar(Date{2026, 3, 10}));
+  market.set_price_limit_upper("91000");
+  auto live_runner = live::bind_observer(trading, CountEvents{});
+  live::SessionSource<FakeSession<AccountOnlyCaps>, runner::MemoryJournal, FakeSession<MarketDataCaps>>
+    source(trading, market, {samsung()});
+  source.set_buying_power_currencies({Currency{"KRW"}});
+
+  // Every market read succeeds while the trading session fails everything, so none reached it.
+  trading.fail_with(ErrorCategory::TRANSPORT);
+  for (const auto kind :
+       {runner::PollKind::BARS, runner::PollKind::QUOTES, runner::PollKind::CALENDAR,
+        runner::PollKind::PRICE_LIMITS}) {
+    INFO(static_cast<int>(kind));
+    CHECK(source.poll(kind, live_runner) == runner::PollOutcome::UPDATED);
+  }
+  CHECK(market.bar_calls() == 1);
+  CHECK(market.quote_calls() == 1);
+  CHECK(market.calendar_calls() == 1);
+  CHECK(market.price_limits_asked().size() == 1);
+  CHECK(trading.bar_calls() == 0);
+  CHECK(trading.quote_calls() == 0);
+  CHECK(trading.calendar_calls() == 0);
+  CHECK(trading.price_limits_asked().empty());
+
+  // And the account reads go to the trading session, never the market one.
+  trading.succeed();
+  market.fail_with(ErrorCategory::TRANSPORT);
+  for (const auto kind :
+       {runner::PollKind::HOLDINGS, runner::PollKind::WORKING_ORDERS,
+        runner::PollKind::BUYING_POWER}) {
+    INFO(static_cast<int>(kind));
+    CHECK(source.poll(kind, live_runner) == runner::PollOutcome::UPDATED);
+  }
+  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+  CHECK(trading.holdings_calls() == 1);
+  CHECK(trading.working_calls() == 2);
+  CHECK(trading.buying_power_asked().size() == 1);
+  CHECK(market.holdings_calls() == 0);
+  CHECK(market.working_calls() == 0);
+  CHECK(market.buying_power_asked().empty());
+}
+
 namespace {
 
 /** A working-order row with an id, a filled quantity, and optionally a stated charge. */
@@ -5366,6 +5427,46 @@ TEST_CASE("the live program journals, recovers clean and places its order", "[li
   CHECK(text.find("\"outcome\":\"pending\"") != std::string::npos);
   CHECK(text.find("\"outcome\":\"accepted\"") != std::string::npos);
   CHECK(text.find("fake:demo:1") != std::string::npos);
+}
+
+TEST_CASE("the live program reads reference data and bars from its market-data session", "[live][program]") {
+  // The trading session has no reference data and no bars, as a KIS demo host has no reference data:
+  // the run gets past both only by reading them from the second session, and still places through
+  // the first.
+  const TempPath journal("atl-test-program-market-data.jsonl");
+  const TempPath control("atl-test-program-market-data.stop");
+  ProgramSession session;
+  HoldingsSnapshot holdings;
+  holdings.received_at_ = program_start();
+  session.set_holdings(holdings);
+  BandSession market;
+  market.set_reference(samsung_reference());
+  market.set_bars(two_bars("70000", "71000"));
+  runner::StopSource stop;
+  std::ostringstream out;
+
+  const auto exit = live_program::trade(
+    session, market, one_share(), program_settings(journal, control), stop, out,
+    runner::ManualClock{program_start()}
+  );
+
+  INFO(out.str());
+  CHECK(exit == live_program::Exit::CLEAN);
+  REQUIRE(session.placed().size() == 1);
+  CHECK(market.placed().empty());
+  CHECK(market.bar_calls() > 0);
+  CHECK(session.bar_calls() == 0);
+  CHECK(market.holdings_calls() == 0);
+
+  // The one-session form is the same program with nothing read from elsewhere: no reference data,
+  // so it stops before trading.
+  const TempPath again("atl-test-program-market-data-own.jsonl");
+  std::ostringstream own;
+  const auto alone = live_program::trade(
+    session, one_share(), program_settings(again, control), stop, own,
+    runner::ManualClock{program_start()}
+  );
+  CHECK(alone == live_program::Exit::REFERENCE_UNREADABLE);
 }
 
 TEST_CASE("the live program sends and journals its stated route", "[live][program][route]") {

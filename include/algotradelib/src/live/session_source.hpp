@@ -79,8 +79,19 @@ struct feeds_warmup<
  * owed, resolving the runner's ledger where the broker's own rows settle the question. Without a
  * journal the class behaves exactly as it did before: the gate still lifts on a clean start, and
  * nothing is matched.
+ *
+ * **Market data may come from a second session.** `MarketData` serves the four market reads (bars,
+ * quotes, price limits, calendar) and `Session` everything about the account. A KIS demo account,
+ * whose host refuses the calendar (`CTCA0903R`, `EGW02006`), reads it through a session built from
+ * the real account's keys and an empty `KisAccount`, which refuses every account request and order
+ * before any I/O. `MarketData` may also be another broker's session. The two-argument constructor
+ * reads both from one session, as before.
  */
-template <typename Session, typename Journal = runner::MemoryJournal>
+template <
+  typename Session,
+  typename Journal = runner::MemoryJournal,
+  typename MarketData = Session
+>
 class SessionSource {
 public:
   /**
@@ -133,7 +144,17 @@ public:
    * neither a runner nor a source owns the connection it uses.
    */
   SessionSource(Session& session, std::vector<InstrumentId> universe)
-  : session_(&session), universe_(std::move(universe)) {}
+  : session_(&session), market_data_(&session), universe_(std::move(universe)) {}
+
+  /**
+   * Binds a trading session, a session for the market reads, and the universe to poll.
+   *
+   * `market_data` is borrowed too. Only bars, quotes, price limits and the calendar are read from it,
+   * gated on its own capabilities. Nothing is sent through either: orders go through the executor
+   * the runner was bound with.
+   */
+  SessionSource(Session& session, MarketData& market_data, std::vector<InstrumentId> universe)
+  : session_(&session), market_data_(&market_data), universe_(std::move(universe)) {}
 
   /**
    * Binds the journal whose unresolved instructions each listing is swept against.
@@ -314,7 +335,7 @@ private:
       query.interval_ = interval_;
       query.count_ = count_;
 
-      auto result = session_->bars(query);
+      auto result = market_data_->bars(query);
       if (!result) {
         last_error_ = result.error();
         return poll_outcome_of(*last_error_);
@@ -424,7 +445,7 @@ private:
   runner::PollOutcome poll_quotes(Runner& runner_instance) {
     auto outcome = runner::PollOutcome::UNCHANGED;
     for (const auto& instrument : universe_) {
-      auto result = session_->quote(instrument);
+      auto result = market_data_->quote(instrument);
       if (!result) {
         last_error_ = result.error();
         return poll_outcome_of(*last_error_);
@@ -576,7 +597,7 @@ private:
    */
   template <typename Runner>
   runner::PollOutcome poll_price_limits(Runner& runner_instance) {
-    if constexpr (!Caps::has_price_limits) {
+    if constexpr (!MarketData::Caps::has_price_limits) {
       // A broker that publishes no band compiles no request, and a loop with this cadence set
       // against one simply never reads a band -- Decision 2b, the capability is absent and absent is
       // not faked.
@@ -590,7 +611,7 @@ private:
       std::optional<BrokerError> outright;
       std::optional<BrokerError> throttled;
       for (const auto& instrument : universe_) {
-        auto result = session_->price_limits(instrument);
+        auto result = market_data_->price_limits(instrument);
         if (!result) {
           if (poll_outcome_of(result.error()) == runner::PollOutcome::FAILED) {
             if (!outright) {
@@ -640,14 +661,14 @@ private:
    */
   template <typename Runner>
   runner::PollOutcome poll_calendar(Runner& runner_instance) {
-    if constexpr (!Caps::has_calendar) {
+    if constexpr (!MarketData::Caps::has_calendar) {
       // A broker that publishes no calendar compiles no request. The loop then never establishes a
       // phase, which it reports rather than guesses at -- Decision 2b: the capability is absent, and
       // absent is not faked.
       static_cast<void>(runner_instance);
       return runner::PollOutcome::UNCHANGED;
     } else {
-      auto result = session_->calendar(calendar_country_);
+      auto result = market_data_->calendar(calendar_country_);
       if (!result) {
         last_error_ = result.error();
         return poll_outcome_of(*last_error_);
@@ -1081,6 +1102,7 @@ private:
   }
 
   Session* session_;
+  MarketData* market_data_;
   std::vector<InstrumentId> universe_;
   std::vector<Currency> currencies_;
   /** What the broker has stated it charged, across every run made against this source. */

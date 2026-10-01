@@ -82,6 +82,23 @@ cmake --build build --target example-kis-account
 ./build/bin/example-kis-account
 ```
 
+### Credentials from files
+
+An account's keys can also live in one JSON file per account, in a directory you choose and pass
+at run time: `--credentials DIR` to the KIS examples, or `ATL_CREDENTIALS_DIR`. They then read
+`DIR/kis/demo.json`, or `DIR/kis/real.json` when `KIS_DEMO=0`, with `KisConfig::from_json` and
+`KisAccount::from_json` (`app_key`, `app_secret`, `account_number`, `account_product_code`,
+`demo`). A file whose `"demo"` contradicts its name is refused, and a directory without the file
+stops the program rather than falling back to the environment. Keep the files `chmod 600`.
+
+A KIS demo host refuses reference data (`CTPF1002R`) and the holiday calendar (`CTCA0903R`) with
+`EGW02006`, "모의투자 TR 이 아닙니다". Both are market data, the same from any account. So
+`live::SessionSource` and `live_program::trade` take a second session for the market reads (bars,
+quotes, price limits, the calendar, reference data), and `example-live-program kis` on demo builds one
+from `DIR/kis/real.json` with an empty `KisAccount`: the KIS client refuses every account request and
+order through it before any I/O (`invalid_account`). `--market-data toss` reads them from Toss instead
+(`DIR/tossinvest/real.json`, no account selected).
+
 [`examples/example-tossinvest-account.cpp`](../../examples/example-tossinvest-account.cpp)
 loads `TOSS_CLIENT_ID` and `TOSS_CLIENT_SECRET`, discovers brokerage accounts,
 prints masked account numbers, and requests holdings for the first account. To

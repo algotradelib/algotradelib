@@ -781,6 +781,41 @@ TEST_CASE(
 }
 
 TEST_CASE(
+  "A KIS credential file also selects the account",
+  "[broker][kis][config][json]"
+) {
+  const TempCredentialFile full(
+    "kis-account",
+    R"({"app_key":"k","app_secret":"s","account_number":"12345678","account_product_code":"22"})"
+  );
+  kis::KisAccount account;
+  account.from_json(full.str());
+  CHECK(account.account_number_ == "12345678");
+  CHECK(account.product_code_ == "22");
+
+  const TempCredentialFile cash("kis-account-cash", R"({"account_number":"12345678"})");
+  kis::KisAccount defaulted;
+  defaulted.from_json(cash.str());
+  CHECK(defaulted.product_code_ == "01");
+
+  // A refusal names the file and the field, and repeats no digit the file holds.
+  for (const char* body :
+       {R"({"account_number":"1234567"})", R"({"account_number":12345678})",
+        R"({"account_number":"98765432","account_product_code":"7"})", R"({"app_key":"k"})"}) {
+    const TempCredentialFile junk("kis-account-junk", body);
+    kis::KisAccount refused;
+    const auto message = refusal_of([&] { refused.from_json(junk.str()); });
+    INFO(body);
+    REQUIRE_FALSE(message.empty());
+    CHECK(message.find(junk.str()) != std::string::npos);
+    for (const char* digits : {"1234567", "98765432"}) {
+      CHECK(message.find(digits) == std::string::npos);
+    }
+    CHECK(refused.account_number_.empty());
+  }
+}
+
+TEST_CASE(
   "A Kiwoom credential file is demo unless its demo key says false",
   "[broker][kiwoom][config][json]"
 ) {

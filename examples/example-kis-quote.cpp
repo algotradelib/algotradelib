@@ -1,3 +1,5 @@
+#include "kis_credentials.hpp"
+
 #include <algotradelib/kis>
 
 #include <boost/asio/io_context.hpp>
@@ -13,11 +15,12 @@ namespace net = boost::asio;
 namespace ssl = net::ssl;
 
 int main(int argc, char* argv[]) {
+  const auto directory = kis_credentials::take_directory(argc, argv);
   const std::string symbol = argc > 1 ? argv[1] : "005930";
 
   try {
     algotradelib::kis::KisConfig config;
-    config.from_env();
+    kis_credentials::load(directory, config, nullptr, std::cout);
 
     std::cout << "environment: " << (config.is_demo_ ? "demo" : "live") << '\n';
     std::cout << "symbol: " << symbol << '\n';

@@ -1,3 +1,5 @@
+#include "kis_credentials.hpp"
+
 #include <algotradelib/kis>
 
 #include <boost/asio/ssl/context.hpp>
@@ -99,14 +101,12 @@ atl::Date today() {
 } // namespace
 
 /** Lists the selected KIS account's modifiable orders and today's history. */
-int main() {
+int main(int argc, char* argv[]) {
   try {
     atl::kis::KisConfig config;
-    config.from_env();
-    const bool demo = config.is_demo_;
-
     atl::kis::KisAccount account;
-    account.from_env();
+    kis_credentials::load(kis_credentials::take_directory(argc, argv), config, &account, std::cout);
+    const bool demo = config.is_demo_;
 
     std::cout << "environment: " << (demo ? "demo" : "live") << '\n';
 

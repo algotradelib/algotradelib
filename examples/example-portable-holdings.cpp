@@ -15,6 +15,8 @@
 // first one unless a sequence is supplied. Credentials come from the same
 // environment variables the other examples document, and no order is ever placed.
 
+#include "kis_credentials.hpp"
+
 #include <algotradelib/kis>
 #include <algotradelib/tossinvest>
 
@@ -134,9 +136,8 @@ int report_kis(ssl::context& tls) {
   namespace kis = algotradelib::kis;
 
   kis::KisConfig config;
-  config.from_env();
   kis::KisAccount account;
-  account.from_env();
+  kis_credentials::load(kis_credentials::environment_directory(), config, &account, std::cout);
 
   std::cout << "environment: " << (config.is_demo_ ? "demo" : "live") << '\n';
 

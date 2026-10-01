@@ -4,7 +4,7 @@
  *
  * ```
  * example-live-program <kis|kiwoom|toss> <symbol> [--live] [--journal PATH] [--control PATH]
- *                      [--toss-account SEQUENCE]
+ *                      [--toss-account SEQUENCE] [--credentials DIR] [--market-data kis|toss]
  * ```
  *
  * Without `--live` it **observes**: real market data, holdings and orders run through the real
@@ -16,6 +16,14 @@
  * `KIS_DEMO=0` / `KIWOOM_DEMO=0` says live, beside the credentials they belong to. **Toss has no
  * paper-trading environment**: `toss --live` trades real money.
  *
+ * **KIS credentials and market data** (`kis_credentials.hpp`). With a credentials directory
+ * (`--credentials DIR`, else `ATL_CREDENTIALS_DIR`) KIS reads `DIR/kis/demo.json` or `real.json`.
+ * A KIS demo host refuses reference data and the calendar (`EGW02006`), so on demo the market reads
+ * go to a second session that cannot trade:
+ * - `--market-data kis`, the default on demo when `DIR/kis/real.json` exists: the real account's keys
+ *   with an empty `KisAccount`;
+ * - `--market-data toss`: Toss from `DIR/tossinvest/real.json`, with no account selected.
+ *
  * The broker-free part -- the order of journal, recovery, loop and report -- is `live_program.hpp`,
  * which the test suite drives against an in-memory session. This file only chooses a broker and a
  * strategy. The strategy is deliberately trivial: `BuyAndHold` of one share. Replace it with yours,
@@ -23,6 +31,7 @@
  * statements are yours to make before it can place (see `run_kiwoom`).
  */
 
+#include "kis_credentials.hpp"
 #include "live_program.hpp"
 
 #include <algotradelib/kis>
@@ -36,6 +45,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -58,6 +68,8 @@ struct Arguments {
   std::optional<std::string> journal_;
   std::optional<std::string> control_;
   std::optional<std::int64_t> toss_account_;
+  std::optional<std::filesystem::path> credentials_;
+  std::optional<std::string> market_data_;
 };
 
 /** The strategy this program runs: one share, held. The line a consumer replaces. */
@@ -162,24 +174,35 @@ void announce(
 }
 
 /** Runs the chosen mode, installing the signal stop for the run's duration. */
-template <typename Session>
-int run(Session& session, const atl::InstrumentId& instrument, const live_program::Settings& settings, bool live) {
+template <typename Session, typename MarketData>
+int run(
+  Session& session,
+  MarketData& market_data,
+  const atl::InstrumentId& instrument,
+  const live_program::Settings& settings,
+  bool live
+) {
   runner::StopSource stop;
   runner::SignalStop::install(stop);
   const auto exit = live ?
-    live_program::trade(session, strategy_for(instrument), settings, stop, std::cout) :
-    live_program::observe(session, strategy_for(instrument), settings, stop, std::cout);
+    live_program::trade(session, market_data, strategy_for(instrument), settings, stop, std::cout) :
+    live_program::observe(session, market_data, strategy_for(instrument), settings, stop, std::cout);
   runner::SignalStop::uninstall();
   return static_cast<int>(exit);
+}
+
+/** Runs the chosen mode with one session for everything. */
+template <typename Session>
+int run(Session& session, const atl::InstrumentId& instrument, const live_program::Settings& settings, bool live) {
+  return run(session, session, instrument, settings, live);
 }
 
 int run_kis(ssl::context& tls, const Arguments& arguments) {
   namespace kis = algotradelib::kis;
 
   kis::KisConfig config;
-  config.from_env();
   kis::KisAccount account;
-  account.from_env();
+  kis_credentials::load(arguments.credentials_, config, &account, std::cout);
   const bool demo = config.is_demo_;
 
   const atl::InstrumentId instrument{atl::Country::KR, atl::Venue::COMBINED, arguments.symbol_};
@@ -190,6 +213,36 @@ int run_kis(ssl::context& tls, const Arguments& arguments) {
   atl::BlockingSession<kis::KisBlockingClient> session(
     std::make_shared<kis::KisBlockingClient>(tls, std::move(config)), std::move(account)
   );
+
+  // Market data from a session with no account, so it cannot trade: swapped by mistake, every order
+  // and account read through it is refused before any I/O.
+  if (arguments.market_data_ == "toss") {
+    if (!arguments.credentials_) {
+      throw std::runtime_error("--market-data toss reads tossinvest/real.json; give --credentials DIR");
+    }
+    const auto path = *arguments.credentials_ / "tossinvest" / "real.json";
+    algotradelib::tossinvest::TossConfig toss_config;
+    toss_config.from_json(path.string());
+    atl::BlockingSession<algotradelib::tossinvest::TossBlockingClient> market_data(
+      std::make_shared<algotradelib::tossinvest::TossBlockingClient>(tls, std::move(toss_config)), 0
+    );
+    std::cout << "market data: toss " << path.string() << " (no account: cannot trade)\n";
+    return run(session, market_data, instrument, settings, arguments.live_);
+  }
+  if (demo) {
+    auto market_config = kis_credentials::market_data_config(arguments.credentials_);
+    if (market_config) {
+      atl::BlockingSession<kis::KisBlockingClient> market_data(
+        std::make_shared<kis::KisBlockingClient>(tls, std::move(*market_config)), kis::KisAccount{}
+      );
+      std::cout << "market data: kis " << (*arguments.credentials_ / "kis" / "real.json").string()
+                << " (no account: cannot trade)\n";
+      return run(session, market_data, instrument, settings, arguments.live_);
+    }
+    if (arguments.market_data_ == "kis") {
+      throw std::runtime_error("--market-data kis reads kis/real.json, and there is none");
+    }
+  }
   return run(session, instrument, settings, arguments.live_);
 }
 
@@ -299,6 +352,7 @@ int run_toss(ssl::context& tls, const Arguments& arguments) {
 /** Parses the command line, or explains it. */
 std::optional<Arguments> parse(int argc, char** argv) {
   Arguments arguments;
+  arguments.credentials_ = kis_credentials::take_directory(argc, argv);
   std::vector<std::string> positional;
   for (int i = 1; i < argc; ++i) {
     const std::string argument = argv[i];
@@ -311,6 +365,11 @@ std::optional<Arguments> parse(int argc, char** argv) {
       arguments.control_ = argv[++i];
     } else if (argument == "--toss-account" && has_value) {
       arguments.toss_account_ = std::strtoll(argv[++i], nullptr, 10);
+    } else if (argument == "--market-data" && has_value) {
+      arguments.market_data_ = argv[++i];
+      if (*arguments.market_data_ != "kis" && *arguments.market_data_ != "toss") {
+        return std::nullopt;
+      }
     } else if (argument.rfind("--", 0) == 0) {
       return std::nullopt;
     } else {
@@ -325,6 +384,9 @@ std::optional<Arguments> parse(int argc, char** argv) {
   if (arguments.broker_ != "kis" && arguments.broker_ != "kiwoom" && arguments.broker_ != "toss") {
     return std::nullopt;
   }
+  if (arguments.market_data_ && arguments.broker_ != "kis") {
+    return std::nullopt;
+  }
   return arguments;
 }
 
@@ -336,7 +398,8 @@ int main(int argc, char** argv) {
   if (!arguments) {
     std::cerr
       << "usage: example-live-program <kis|kiwoom|toss> <symbol> [--live] [--journal PATH]\n"
-      << "                            [--control PATH] [--toss-account SEQUENCE]\n\n"
+      << "                            [--control PATH] [--toss-account SEQUENCE]\n"
+      << "                            [--credentials DIR] [--market-data kis|toss]\n\n"
       << "Without --live it observes: nothing can be sent. KIS and Kiwoom are demo unless\n"
       << "KIS_DEMO=0 / KIWOOM_DEMO=0; Toss has no demo, so toss --live trades real money.\n";
     return 64;
