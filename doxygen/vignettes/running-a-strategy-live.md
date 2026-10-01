@@ -759,10 +759,12 @@ with `GuardReason::VALUE_NOT_KNOWN` until you register it.
   listing does not show yet is sent again the same way, even by a strategy that reads `working_`
   first. In the labs' paper broker, an every-minute strategy whose holdings answer ran 30 seconds
   behind its fills placed 295 orders where the replay placed 47, and held twice its target. It needs a
-  lag longer than the time to the next holdings or listing read, so the risk grows with how often you
-  poll. A daily strategy polling once a minute needs a lag over a minute to meet it; an intraday one
-  polling every few seconds meets it at a few seconds. Neither lag has been measured at a real broker
-  (`plan/todo/demo-acceptance-run.md`). Measure it before an intraday strategy trades real money.
+  lag longer than the time to the next holdings or listing read, and a pass inside that lag that states
+  the target again. So it grows with how often the strategy decides: an intraday one polling every few
+  seconds meets it at a few seconds of lag. A daily strategy decides once a day and rarely meets it in
+  one process, but a restart inside the lag does: the new process feeds the newest bar again. Neither
+  lag has been measured at a real broker (`plan/todo/demo-acceptance-run.md`). Measure both before an
+  intraday strategy trades real money.
 - **Stream.** It polls. `plan/todo/realtime-streaming.md` drops into the same source seam.
 - **Run more than one loop.** One loop, one thread. See `plan/todo/parallel-execution.md`.
 - **Tell you whether the sellable figure already excludes your resting orders.** Neither broker
