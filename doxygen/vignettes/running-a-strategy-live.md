@@ -492,7 +492,9 @@ That is what a replay does by filling at the next bar's open. The rules around i
   offered again only after a holdings read newer than the failure, which is the evidence the broker
   answers again, so a dead connection is not retried every tick. Each failed attempt is reported as a
   `BINDING_REFUSED` rejection while the order waits, and it is counted in the `_for_phase` figures
-  above. Like a phase refusal it has no age limit: one kept near the close and not stated again goes out
+  above. **So is an order the broker turned away for its rate limit** (KIS's `EGW00201` at a busy
+  open): the broker answered and processed nothing, so it is reported as `BROKER_REFUSED` and kept the
+  same way. Like a phase refusal neither has an age limit: one kept near the close and not stated again goes out
   at the next open, if its book is unchanged. An order whose request *was* written and whose reply was
   lost is not this: it may exist, and recovery resolves it from the broker's lists.
 - **An `OrderIntent` is kept the same way** (`Runner::intents_kept_for_phase`) — the commonest is a

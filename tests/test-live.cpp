@@ -1331,6 +1331,11 @@ TEST_CASE("only a refusal for want of a broker is about the connection") {
   error.reached_broker_ = true;
   error.category_ = ErrorCategory::TRANSPORT;
   CHECK_FALSE(runner::broker_unreachable(error));
+  CHECK_FALSE(runner::broker_rate_limited(error));
+  // A rate limit the broker answered is about the moment, not the instruction.
+  error.category_ = ErrorCategory::RATE_LIMIT;
+  CHECK(runner::broker_rate_limited(error));
+  CHECK_FALSE(runner::broker_unreachable(error));
 }
 
 TEST_CASE("a target the broker could not be reached for is planned again once it answers") {
@@ -1378,6 +1383,74 @@ TEST_CASE("a target the broker could not be reached for is planned again once it
   REQUIRE(session.placed().size() == 1);
   CHECK(session.placed().front().quantity_ == Decimal64::parse("10"));
   CHECK(live_runner.targets_retained() == 0);
+}
+
+TEST_CASE("a target the broker turned away for its rate limit is planned again once it answers") {
+  // KIS's `EGW00201` at a busy open: the broker answered and processed nothing. Dropped, a daily
+  // strategy's order waited a day. Kept, and gated on a newer holdings read as an unreachable send is.
+  FakeSession<WithoutKey> session;
+  LiveRunner live_runner(
+    HoldTen{}, {}, 512, live::SessionExecutor<FakeSession<WithoutKey>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  auto portfolio = held_position<WithoutKey>("0", nullptr);
+  live_runner.context().set_portfolio(portfolio);
+
+  session.fail_with(ErrorCategory::RATE_LIMIT);
+  const auto first = live_runner.feed(bar_at(1, "70000"));
+  REQUIRE(first.rejected_.size() == 1);
+  CHECK(first.rejected_[0].reason_ == strategy::RejectReason::BROKER_REFUSED);
+  CHECK(live_runner.targets_retained() == 1);
+  session.succeed();
+
+  CHECK(live_runner.retry_retained_targets().would_place_.empty());
+  CHECK(session.placed().size() == 1);  // the refused request, counted by the fake as made
+
+  portfolio.as_of_ += std::chrono::minutes(1);
+  live_runner.context().set_portfolio(portfolio);
+  CHECK(live_runner.retry_retained_targets().would_place_.size() == 1);
+  CHECK(session.placed().size() == 2);
+  CHECK(live_runner.targets_retained() == 0);
+
+  SECTION("but not a broker's refusal of the instruction itself") {
+    LiveRunner refused_runner(
+      HoldTen{}, {}, 512, live::SessionExecutor<FakeSession<WithoutKey>>(session)
+    );
+    refused_runner.context().set_instrument(samsung_reference());
+    refused_runner.context().set_phase(strategy::MarketPhase::OPEN);
+    refused_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+    refused_runner.context().set_portfolio(portfolio);
+    session.fail_with(ErrorCategory::HTTP, 400);
+    REQUIRE(refused_runner.feed(bar_at(2, "70000")).rejected_.size() == 1);
+    CHECK(refused_runner.targets_retained() == 0);
+  }
+}
+
+TEST_CASE("an order intent the broker turned away for its rate limit is kept") {
+  // Kept like a phase refusal the broker answered, with its holding, and sent once the broker answers.
+  // (A keyed one is not kept: it would reuse a key the broker has seen; `keep_intent_for_phase`.)
+  using Runner = runner::Runner<
+    BuysOne, WithKey, FakeBroker, live::SessionExecutor<FakeSession<WithKey>>
+  >;
+  FakeSession<WithKey> session;
+  Runner live_runner(BuysOne{}, {}, 512, live::SessionExecutor<FakeSession<WithKey>>(session));
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  auto portfolio = held_position<WithKey>("0", nullptr);
+  live_runner.context().set_portfolio(portfolio);
+
+  session.fail_with(ErrorCategory::RATE_LIMIT);
+  REQUIRE(live_runner.feed(bar_at(1, "70000")).rejected_.size() == 1);
+  CHECK(live_runner.intents_kept_for_phase() == 1);
+  session.succeed();
+
+  portfolio.as_of_ += std::chrono::minutes(1);
+  live_runner.context().set_portfolio(portfolio);
+  CHECK(live_runner.retry_retained_targets().would_place_.size() == 1);
+  CHECK(live_runner.intents_kept_for_phase() == 0);
 }
 
 TEST_CASE("a target the binding refuses for good is not kept") {

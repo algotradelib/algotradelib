@@ -999,7 +999,8 @@ public:
    * open. Only for a runner that sends to a broker: a replay and a dry run never call this, and keep
    * dropping a refused target as before.
    *
-   * **An instruction the broker could not be reached for is kept here too** (`broker_unreachable`),
+   * **An instruction the broker could not be reached for, or turned away for its rate limit, is kept
+   * here too** (`broker_unreachable`, `broker_rate_limited`),
    * with the phase-refusal rules, and offered again only once a holdings read newer than the failure
    * has arrived: a retry every iteration into a dead connection would wait out a connect timeout per
    * instruction and hold the loop, and a stop, behind it. The `_for_phase` counts include them. This
@@ -1652,6 +1653,13 @@ private:
           // the target waits for the session instead of for its next bar, which may be a day away.
           if (decision.admitted_outside_phase_) {
             retain_for_phase(source_instruction, /*broker_answered=*/true);
+          } else if (last_error_is(broker_rate_limited)) {
+            // **Turned away for the broker's rate limit, which is about the moment.** Kept as an
+            // unreachable send is, and offered again after a newer holdings read: dropped, a daily
+            // strategy's opening order or protective stop refused once at a busy open waited a day
+            // (lab: one `EGW00201` at 09:00 moved a buy to the next session and left a position
+            // without its stop all day). The broker processed nothing, so a retry cannot double it.
+            retain_for_phase(source_instruction, /*broker_answered=*/true, context_.portfolio().as_of_);
           }
           note_broker_refusal(order);
           report.rejected_.push_back(
@@ -1681,7 +1689,7 @@ private:
           ++orders_binding_refused_;
           if (decision.admitted_outside_phase_) {
             retain_for_phase(source_instruction);
-          } else if (refused_for_want_of_broker()) {
+          } else if (last_error_is(broker_unreachable)) {
             // **The broker could not be reached, so the decision is kept rather than lost.** Dropped,
             // a daily strategy's target or protective stop released at the open into a dropped
             // connection waited for its next bar, a day away (lab: a 30-minute outage at 09:00 moved a
@@ -2276,16 +2284,19 @@ private:
   }
 
   /**
-   * Whether the placement just refused locally failed because the broker could not be reached.
+   * Whether the error behind the placement just refused satisfies `predicate` (`broker_unreachable`,
+   * `broker_rate_limited`).
    *
    * Read immediately after the send, which is the only moment `last_error()` is this order's. An
-   * executor that states no error has said nothing about the connection, so its refusals stay final.
+   * executor that states no error has said nothing about why, so its refusals stay final.
    */
-  bool refused_for_want_of_broker() const {
+  template <typename Predicate>
+  bool last_error_is(Predicate predicate) const {
     if constexpr (runner_detail::states_last_error<Executor>::value) {
       const auto& error = executor_.last_error();
-      return error && broker_unreachable(*error);
+      return error && predicate(*error);
     } else {
+      (void)predicate;
       return false;
     }
   }
