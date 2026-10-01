@@ -169,6 +169,18 @@ inline bool broker_unreachable(const BrokerError& error) noexcept {
 }
 
 /**
+ * Returns whether `error` is a broker turning a request away for its rate limit.
+ *
+ * `SendOutcome::REJECTED`, rightly: the broker answered and processed nothing (KIS's `EGW00201`, "too
+ * many requests per second", and `EGW00215`). But the refusal is about the moment, not the instruction,
+ * so `Runner` keeps the instruction for a later pass, as it keeps one the broker could not be reached
+ * for (`broker_unreachable`).
+ */
+inline bool broker_rate_limited(const BrokerError& error) noexcept {
+  return error.reached_broker_ && error.category_ == ErrorCategory::RATE_LIMIT;
+}
+
+/**
  * Returns whether `outcome` means the broker was asked at all.
  *
  * Two outcomes mean it was not, and they differ in everything except that: `UNAVAILABLE` is the
