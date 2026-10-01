@@ -1310,6 +1310,9 @@ TEST_CASE("a token refresh that failed is not the broker refusing an order it ne
   CHECK(second.refused_.empty());
   CHECK(second.would_place_.size() == 1);
   CHECK(session.placed().size() == 1);
+  // The first intent was kept, the broker having been unreachable; the second bar's statement
+  // superseded it, so it is not sent as well.
+  CHECK(live_runner.intents_kept_for_phase() == 0);
 }
 
 TEST_CASE("only a refusal for want of a broker is about the connection") {
@@ -1356,6 +1359,16 @@ TEST_CASE("a target the broker could not be reached for is planned again once it
   CHECK(quiet.would_place_.empty());
   CHECK(session.placed().empty());
   CHECK(live_runner.targets_retained() == 1);
+
+  // A holdings read arrives, but the broker is gone again by the time the target is sent: kept once
+  // more, and gated on the next read, not offered again on the next pass.
+  portfolio.as_of_ += std::chrono::minutes(1);
+  live_runner.context().set_portfolio(portfolio);
+  session.fail_next_token(ErrorCategory::TRANSPORT);
+  CHECK(live_runner.retry_retained_targets().would_place_.empty());
+  CHECK(live_runner.targets_retained() == 1);
+  CHECK(live_runner.retry_retained_targets().would_place_.empty());
+  CHECK(session.placed().empty());
 
   // The broker answered a holdings read: the target is planned against it and sent.
   portfolio.as_of_ += std::chrono::minutes(1);

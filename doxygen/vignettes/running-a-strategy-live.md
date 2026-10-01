@@ -484,7 +484,8 @@ That is what a replay does by filling at the next bar's open. The rules around i
   it, as does an `on_phase` target at the open.
 - A stop discards it, and so does an operator's halt or a local failure: a decision made hours before
   a halt must not go out when the halt is lifted.
-- **An order the broker could not be reached for is kept the same way**, in any phase: a DNS, connect or
+- **An order the broker could not be reached for is kept the same way**, whatever the phase it failed
+  in (it is still released only in a phase the limits admit): a DNS, connect or
   TLS failure, a closed client, or a failed token request -- anything that never left the process,
   except the client's own validation, which would refuse it again. Dropped, the decision waited for its
   next bar: a day, for a daily strategy, and a protective stop missing for the whole session. It is

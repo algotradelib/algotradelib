@@ -159,7 +159,8 @@ inline SendOutcome outcome_of(const BrokerError& error) {
  * nothing was counted -- and they differ in what comes next. A client's own validation
  * (`INVALID_ARGUMENT`: a price off the grid, a key the broker cannot carry) will refuse the same
  * instruction again, so it is final. Anything else that never left -- a DNS, connect or TLS failure
- * (`TRANSPORT`), a closed client (`CANCELLED`), a token request that failed (`AUTHENTICATION`, or
+ * (`TRANSPORT`), a closed client or a request whose rate-limit admission outlived its deadline
+ * (`CANCELLED`), a token request that failed (`AUTHENTICATION`, or
  * `PROTOCOL` for one that could not be parsed) -- is about the connection, and the same instruction
  * may go once the broker answers again. `Runner` keeps such an instruction for a later pass.
  */

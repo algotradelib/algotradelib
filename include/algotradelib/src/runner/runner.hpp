@@ -1002,7 +1002,10 @@ public:
    * **An instruction the broker could not be reached for is kept here too** (`broker_unreachable`),
    * with the phase-refusal rules, and offered again only once a holdings read newer than the failure
    * has arrived: a retry every iteration into a dead connection would wait out a connect timeout per
-   * instruction and hold the loop, and a stop, behind it. The `_for_phase` counts include them.
+   * instruction and hold the loop, and a stop, behind it. The `_for_phase` counts include them. This
+   * needs a source that advances `Portfolio::as_of_` on every successful holdings read, as
+   * `SessionSource` does; one that does not leaves them waiting until a later statement, a stop or a
+   * halt replaces them, sending nothing.
    *
    * **Does nothing, and keeps them, until it can succeed**: while the account was never read or
    * predates the listing, and while any hold is in force. A later target or order intent for the same
