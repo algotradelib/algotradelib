@@ -66,7 +66,7 @@ int main(int argc, char* argv[]) {
     tls.set_default_verify_paths();
     tls.set_verify_mode(ssl::verify_peer);
 
-    algotradelib::kis::KisBlockingClient client(tls, std::move(config));
+    algotradelib::kis::KisBlockingClient client(tls, std::move(config), kis_credentials::paced_options());
     auto result = client.holdings(std::move(account));
     if (!result) {
       print_error("holdings request", result.error());

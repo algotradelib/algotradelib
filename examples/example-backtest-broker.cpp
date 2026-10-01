@@ -17,6 +17,8 @@
 // bounds what you can test: KIS serves about 5,000 daily bars per request, which is roughly twenty
 // years of KRX trading days, but serves minute bars one trading day at a time.
 
+#include "kis_credentials.hpp"
+
 #include <algotradelib/backtest>
 #include <algotradelib/kis>
 #include <algotradelib/tossinvest>
@@ -234,7 +236,8 @@ int backtest_kis(ssl::context& tls, const std::string& symbol) {
   kis::KisAccount account;
   account.from_env();
 
-  auto client = std::make_shared<kis::KisBlockingClient>(tls, std::move(config));
+  auto client =
+    std::make_shared<kis::KisBlockingClient>(tls, std::move(config), kis_credentials::paced_options());
   BlockingSession<kis::KisBlockingClient> session(std::move(client), std::move(account));
   return backtest_with(session, symbol);
 }

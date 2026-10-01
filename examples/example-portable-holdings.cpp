@@ -141,7 +141,8 @@ int report_kis(ssl::context& tls) {
 
   std::cout << "environment: " << (config.is_demo_ ? "demo" : "live") << '\n';
 
-  auto client = std::make_shared<kis::KisBlockingClient>(tls, std::move(config));
+  auto client =
+    std::make_shared<kis::KisBlockingClient>(tls, std::move(config), kis_credentials::paced_options());
   BlockingSession<kis::KisBlockingClient> session(std::move(client), std::move(account));
   return report(session);
 }

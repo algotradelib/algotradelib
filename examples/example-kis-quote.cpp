@@ -30,7 +30,7 @@ int main(int argc, char* argv[]) {
     tls.set_verify_mode(ssl::verify_peer);
 
     auto client = std::make_shared<algotradelib::kis::KisClient>(
-      ioc.get_executor(), tls, std::move(config)
+      ioc.get_executor(), tls, std::move(config), kis_credentials::paced_options()
     );
     int exit_code = 1;
     client->async_quote(
