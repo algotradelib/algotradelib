@@ -83,7 +83,7 @@ first bar can fill it. `report.caveats_.expired_day_orders_` counts them. **Repl
 rule kept a missed limit or stop queued until it filled**, so a limit strategy on daily bars now fills
 less often and a protective stop has to be restated each session, as it does live. Three limits:
 
-- a weekly or monthly bar still grants an order its whole range, every session in it — better than the
+- a weekly, monthly or yearly bar still grants an order its whole range, every session in it — better than the
   unlimited rest it had, still optimistic; trust limit fills on those intervals least;
 - one `SessionWindow` serves a whole replay, so a US minute replay under the KRX default expires orders
   at the KRX close, part way through the US session — give the replay the market's window;
