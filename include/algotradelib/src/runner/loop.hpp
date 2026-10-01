@@ -365,6 +365,15 @@ struct runner_keeps_sent_orders<
   Runner, std::void_t<decltype(Runner::keeps_sent_orders_until_listed)>
 > : std::bool_constant<Runner::keeps_sent_orders_until_listed> {};
 
+/** Whether `Runner` counts the order intents it kept for the phase and dropped at release. */
+template <typename Runner, typename = void>
+struct runner_counts_kept_drops : std::false_type {};
+
+template <typename Runner>
+struct runner_counts_kept_drops<
+  Runner, std::void_t<decltype(std::declval<const Runner&>().kept_intents_dropped())>
+> : std::true_type {};
+
 /** Whether `Runner` counts the instructions it discarded as history (`Runner::feed_warmup`). */
 template <typename Runner, typename = void>
 struct runner_counts_warmup : std::false_type {};
@@ -1484,6 +1493,9 @@ public:
       count = 0;
     }
     warmup_discarded_at_start_ = warmup_discarded();
+    if constexpr (runner_counts_kept_drops<Runner>::value) {
+      kept_dropped_at_start_ = runner_->kept_intents_dropped();
+    }
 
     while (max_iterations == 0 || report.iterations_ < max_iterations) {
       const auto iteration = step(stop, report);
@@ -1570,6 +1582,7 @@ public:
     note_on_fill_never_fires(report);
     note_listing_outpaces_holdings(report);
     note_warmup_discarded(report);
+    note_kept_intents_dropped(report);
     return report;
   }
 
@@ -1626,6 +1639,21 @@ private:
       std::to_string(discarded) + " instruction(s) decided on bars fed as history were not sent: "
       "only the newest bar of each instrument's read may send (poll bars no slower than their interval)"
     );
+  }
+
+  /** Says, once per run, how many order intents kept for the phase were dropped at release. */
+  void note_kept_intents_dropped(LoopReport& report) const {
+    if constexpr (runner_counts_kept_drops<Runner>::value) {
+      const auto dropped = runner_->kept_intents_dropped() - kept_dropped_at_start_;
+      if (dropped != 0) {
+        report.notes_.push_back(
+          std::to_string(dropped) + " order intent(s) kept for the market phase were not sent at the "
+          "open: the instrument's holding had changed since they were decided, or a stop now rested"
+        );
+      }
+    } else {
+      static_cast<void>(report);
+    }
   }
 
   /**
@@ -2756,6 +2784,8 @@ private:
   unsigned said_listing_{0};
   /** The runner's discarded-history count when this run began; see `note_warmup_discarded`. */
   std::size_t warmup_discarded_at_start_{0};
+  /** The runner's dropped-kept-intent count when this run began; see `note_kept_intents_dropped`. */
+  std::size_t kept_dropped_at_start_{0};
   std::optional<std::chrono::nanoseconds> maximum_buying_power_age_;
   std::optional<std::chrono::system_clock::time_point> next_due_[poll_kind_count];
   std::size_t consecutive_failures_[poll_kind_count] = {};

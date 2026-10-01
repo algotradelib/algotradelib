@@ -455,7 +455,7 @@ An operator who asks to be flat and hears nothing would believe they are. This i
 separate rather than one number, and why `closing_complete()` exists.
 
 **An opening order after the close is refused exactly as before** — `PHASE_NOT_PERMITTED` — **but a
-target is kept for the next session.** This is the case every daily strategy meets: each shipped
+target, or an order, is kept for the next session.** This is the case every daily strategy meets: each shipped
 adapter stamps a daily bar at 00:00 KST, `SessionSource` feeds it once its day has ended (at the next
 midnight), and the strategy decides while the market is shut. A `TargetPosition` whose opening order
 the phase limit refused, or whose exit it admitted and the broker (or the binding) then refused (a
@@ -467,8 +467,23 @@ That is what a replay does by filling at the next bar's open. The rules around i
   it, as does an `on_phase` target at the open.
 - A stop discards it, and so does an operator's halt or a local failure: a decision made hours before
   a halt must not go out when the halt is lifted.
-- An `OrderIntent` is not kept. It states a quantity, and replaying one would act on a decision nobody
-  re-made.
+- **An `OrderIntent` is kept the same way** (`Runner::intents_kept_for_phase`) — the commonest is a
+  daily strategy's protective stop, which a broker refuses at midnight; unkept, it was restated and
+  refused every midnight and the position was never protected live. But an intent states a quantity
+  decided against midnight's book, so at release it goes out only if the instrument's holding is still
+  what it was when it was kept, and a kept intent carrying a trigger -- a stop sell or a breakout stop
+  buy alike -- only if no stop now rests there; otherwise it is dropped and counted
+  (`Runner::kept_intents_dropped`). The check reads the book before the kept targets it follows are
+  placed, so a kept exit and a kept stop on one instrument go out together, as the pass stated them;
+  `enforce_sellable_quantity_` or the broker's own sellable check is what refuses the second sell. Each instruction is kept once, intents in the order
+  stated, after the kept targets. An intent withheld for the account is still dropped; so is a keyed
+  intent a broker answered (a second order would reuse the key). A weight-sized intent skips the
+  holding check, because it is planned again as the position it states. Kept intents are not
+  journalled: a restart before the open loses those the newest bar does not state again (a stop the
+  strategy restates on every bar comes back from the history the new process reads). A `CancelIntent`
+  does not forget them; released together at the open they can meet `max_orders_per_window_`; and a
+  target and an intent kept by one pass while a stop rests can supersede each other on release (the
+  later statement wins, as always). The run's report notes how many were dropped.
 - It lives for one `PollingLoop::run`. A restarted process re-derives it from the history the source
   feeds on its first poll; a second `run` on the same source does not, because that source has already
   fed those bars, so the decision waits for the next bar.
