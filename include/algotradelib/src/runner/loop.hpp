@@ -979,8 +979,8 @@ struct LoopReport {
    * A stop builds its instructions from the holdings snapshot -- working orders for a `WITHDRAW`,
    * positions for a `FLATTEN` -- so a pass that runs before that snapshot exists, or before the
    * broker's own order list has been read once, is working from a picture that may be missing an
-   * order a *predecessor* left resting. A stop requested before the loop's first iteration does
-   * exactly that: `gate_for` reports `STOPPING` and never reaches the startup read.
+   * order a *predecessor* left resting. A `WITHDRAW` or `FLATTEN` requested before the loop's first
+   * iteration attempts the startup read itself (`gate_for`); one whose read failed is exactly this.
    *
    * The pass still sends what it does know about, because withdrawing the orders it can see beats
    * withdrawing none. But it cannot claim to have closed everything, which is why this makes
@@ -2040,6 +2040,34 @@ private:
   }
 
   /**
+   * Attempts the startup order-list read once, and returns whether it succeeded.
+   *
+   * The startup gate's read and a pending stop's both come here, so the two cannot drift apart.
+   */
+  bool read_order_list_once(std::chrono::system_clock::time_point at, LoopReport& report) {
+    // Watched like a poll, because it is the same kind of thing: a call into the source, from which a
+    // source that revised the calendar and sent would reach the identical hazard through a different
+    // door. The phase in force here is the one `step` installed immediately before calling this.
+    const auto watch = PhaseWatch{at, phase_at(at), runner_->guard().total_sent()};
+    // As in `step`, and here the startup read dispatches nothing at all -- but the count is taken
+    // before the call for the same reason, so that the rule holds positionally rather than by an
+    // argument about which reads can send.
+    const auto placements_before_read = runner_->placements_at_broker();
+    const auto outcome = source_->read_order_list(*runner_);
+    note_revised_phase("order-list read", watch, report);
+    if (outcome != PollOutcome::UPDATED && outcome != PollOutcome::UNCHANGED) {
+      return false;
+    }
+    order_list_read_ = true;
+    report.order_list_read_ = true;
+    // The startup read is a working-order read *on a source that has the inquiry*. On one that
+    // does not, it reads order history for the journal and never populates `working_`, so
+    // `note_working_orders_read` deliberately does nothing and a closing pass stays unverified.
+    note_working_orders_read(at, placements_before_read);
+    return true;
+  }
+
+  /**
    * Returns which of the loop's *own* conditions blocks sending, reading the order list if due.
    *
    * Only conditions the loop computes, because a hold is released by whoever took it. `OPERATOR`
@@ -2062,6 +2090,24 @@ private:
     bool may_read
   ) {
     if (stop.requested()) {
+      // **A withdraw or a flatten reads the broker's order list first, if it never has.** Each builds
+      // its instructions from the picture, and a stop pending before the first iteration -- a process
+      // started with `flatten` in its control file -- used to return here before the startup read, so
+      // its closing pass was unverified and a flatten closed nothing, for any position. That also left
+      // no way to flatten a position behind a resting stop: the in-process flatten withdraws the stop
+      // and, rightly, sends nothing beside it, and the restart that should finish the job could not.
+      // The read is the startup gate's own, under its conditions; a quiesce sends nothing and needs no
+      // picture, so it does not spend the request.
+      //
+      // **`STOPPING` on every path, the failed read included.** `ORDER_LIST_UNREAD` lets reducing
+      // orders through (`halt_blocks`), and nothing but the stop's own may go out once one is pending.
+      // Held before the read as well, because the source is a template parameter and may feed.
+      const auto intent = stop.intent();
+      if (intent && *intent != StopIntent::QUIESCE && !order_list_read_ && may_read &&
+          !runner_->guard().halted(strategy::HaltReason::LOCAL_FAILURE)) {
+        hold(strategy::HaltReason::STOPPING);
+        read_order_list_once(at, report);
+      }
       return strategy::HaltReason::STOPPING;
     }
     if (!order_list_read_) {
@@ -2071,24 +2117,7 @@ private:
       if (!may_read || runner_->guard().halted(strategy::HaltReason::LOCAL_FAILURE)) {
         return strategy::HaltReason::ORDER_LIST_UNREAD;
       }
-      // Watched like a poll, because it is the same kind of thing: a call into the source, from which a
-      // source that revised the calendar and sent would reach the identical hazard through a different
-      // door. The phase in force here is the one `step` installed immediately before calling this.
-      const auto watch = PhaseWatch{at, phase_at(at), runner_->guard().total_sent()};
-      // As in `step`, and here the startup read dispatches nothing at all -- but the count is taken
-      // before the call for the same reason, so that the rule holds positionally rather than by an
-      // argument about which reads can send.
-      const auto placements_before_read = runner_->placements_at_broker();
-      const auto outcome = source_->read_order_list(*runner_);
-      note_revised_phase("order-list read", watch, report);
-      if (outcome == PollOutcome::UPDATED || outcome == PollOutcome::UNCHANGED) {
-        order_list_read_ = true;
-        report.order_list_read_ = true;
-        // The startup read is a working-order read *on a source that has the inquiry*. On one that
-        // does not, it reads order history for the journal and never populates `working_`, so
-        // `note_working_orders_read` deliberately does nothing and a closing pass stays unverified.
-        note_working_orders_read(at, placements_before_read);
-      } else {
+      if (!read_order_list_once(at, report)) {
         return strategy::HaltReason::ORDER_LIST_UNREAD;
       }
     }
@@ -2627,7 +2656,8 @@ private:
    * Returns whether the loop knows what a closing pass at `at` would have to send.
    *
    * Two sources, both required. The broker's own order list must have been read once, which is what
-   * the startup gate exists for and what a stop requested before the first iteration skips. And the
+   * the startup gate exists for, and what a stop requested before the first iteration attempts itself
+   * (a failed attempt leaves it unread). And the
    * holdings snapshot -- which is where a `WITHDRAW`'s working orders and a `FLATTEN`'s positions
    * actually come from -- must exist, be within the configured age, and be **no older than the
    * working-order listing**: a fill between the two reads leaves the listing before it reaches the

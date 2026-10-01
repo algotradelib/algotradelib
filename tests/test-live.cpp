@@ -5309,10 +5309,12 @@ TEST_CASE("the live program stops by its control file and reports the closing pa
 
   INFO(out.str());
   CHECK(out.str().find("stopped by      : withdraw") != std::string::npos);
-  // A withdraw before the order list was ever read cannot know what it owed, so it is not complete,
-  // and the program exits saying so.
-  CHECK(out.str().find("closing complete: NO") != std::string::npos);
-  CHECK(exit == live_program::Exit::CLOSING_INCOMPLETE);
+  // Written before the program started, so the stop is pending at its first iteration. It reads the
+  // broker's order list first -- which it used to skip, so it could never be complete and the program
+  // always exited `CLOSING_INCOMPLETE` -- finds nothing resting, and exits clean.
+  CHECK(out.str().find("order list read : yes") != std::string::npos);
+  CHECK(out.str().find("closing complete: yes") != std::string::npos);
+  CHECK(exit == live_program::Exit::CLEAN);
   CHECK(session.placed().empty());
 }
 

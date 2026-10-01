@@ -2283,16 +2283,16 @@ TEST_CASE("a cancellation the broker rejected is not a completed withdrawal", "[
   CHECK(report.notes_.front().find("read the broker's order list") != std::string::npos);
 }
 
-TEST_CASE("a stop before the first order-list read is not a complete stop", "[loop][stop]") {
-  // The sequence that matters: a stop requested before the loop's first iteration. `gate_for`
-  // reports `STOPPING` and never reaches the startup read, so the closing pass is built from
-  // whatever the holdings snapshot happens to hold -- and a predecessor's resting orders are not in
-  // it. With nothing in the snapshot at all, the pass queues nothing, every failure count stays
-  // zero, and before this the stop reported itself complete having established nothing.
+TEST_CASE("a withdraw pending before the first iteration reads the order list first", "[loop][stop]") {
+  // A process started with `withdraw` in its control file. `gate_for` used to report `STOPPING` before
+  // the startup read, so the closing pass was built from a picture that could not contain an order a
+  // *predecessor* left resting, and the stop could never call itself complete. It now makes the read
+  // the startup gate would have made, and then stops.
   InertRunner runner_instance;
   InertSource source;
   runner_instance.context().set_instrument(samsung_reference());
   serve_calendar(runner_instance);
+  runner_instance.context().set_portfolio(portfolio_with(nullptr, "5"));
   InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
   StopSource stop;
   stop.request(StopIntent::WITHDRAW);
@@ -2300,21 +2300,100 @@ TEST_CASE("a stop before the first order-list read is not a complete stop", "[lo
   const auto report = loop.run(stop, 1);
 
   CHECK(report.stopped_by_ == StopIntent::WITHDRAW);
-  CHECK(report.withdrawn_ == 0);
+  CHECK(source.order_list_reads() == 1);
+  CHECK(report.order_list_read_);
+  CHECK_FALSE(report.closing_source_unverified_);
+  CHECK(report.withdrawn_ == 1);
+  CHECK(runner_instance.executor().canceled().size() == 1);
+  CHECK(report.closing_complete());
+}
+
+TEST_CASE("a flatten pending before the first iteration closes the position", "[loop][stop]") {
+  // The case that had no way out: a flatten in the control file at start closed nothing at all, so an
+  // operator could not finish a flatten that a resting stop had contended. Now it reads the list, and
+  // with nothing resting on the closing side it closes what is held.
+  InertRunner runner_instance;
+  InertSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  serve_calendar(runner_instance);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner_instance.context().set_portfolio(portfolio_with("10", nullptr));
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  stop.request(StopIntent::FLATTEN);
+
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.stopped_by_ == StopIntent::FLATTEN);
+  CHECK(report.order_list_read_);
+  CHECK_FALSE(report.closing_source_unverified_);
+  CHECK(report.closing_contended_ == 0);
+  CHECK(report.flattened_ == 1);
+  CHECK(report.closing_complete());
+  REQUIRE(runner_instance.executor().placed().size() == 1);
+  const auto& closing = runner_instance.executor().placed().front();
+  CHECK(closing.side_ == algotradelib::OrderSide::SELL);
+  CHECK(closing.quantity_ == algotradelib::Decimal64::parse("10"));
+}
+
+TEST_CASE("a stop whose first order-list read fails is not a complete stop", "[loop][stop]") {
+  // The read is attempted, not assumed. When it fails the picture cannot contain an order a
+  // predecessor left resting, so the pass closes nothing it could double, and says why. And the gate
+  // is `STOPPING`, never `ORDER_LIST_UNREAD`: that hold lets reducing orders through, and once a stop
+  // is pending nothing but the stop's own instructions may go out.
+  InertRunner runner_instance;
+  InertSource source;
+  source.set_order_list(runner::PollOutcome::FAILED);
+  runner_instance.context().set_instrument(samsung_reference());
+  serve_calendar(runner_instance);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner_instance.context().set_portfolio(portfolio_with("10", nullptr));
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  stop.request(StopIntent::FLATTEN);
+
+  const auto report = loop.run(stop, 1);
+
+  CHECK(source.order_list_reads() == 1);
+  CHECK(report.final_gate_ == strategy::HaltReason::STOPPING);
   CHECK_FALSE(report.order_list_read_);
   CHECK(report.closing_source_unverified_);
+  CHECK(runner_instance.executor().placed().empty());
   CHECK_FALSE(report.closing_complete());
   REQUIRE_FALSE(report.notes_.empty());
-  CHECK(report.notes_.front().find("could not verify what was outstanding") != std::string::npos);
-  CHECK(report.notes_.front().find("order list has not been read") != std::string::npos);
+  bool said = false;
+  for (const auto& note : report.notes_) {
+    said = said || note.find("order list has not been read") != std::string::npos;
+  }
+  CHECK(said);
+}
+
+TEST_CASE("a quiesce pending before the first iteration does not read the order list", "[loop][stop]") {
+  // A quiesce sends nothing, so it needs no picture and does not spend the request.
+  InertRunner runner_instance;
+  InertSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  serve_calendar(runner_instance);
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  StopSource stop;
+  stop.request(StopIntent::QUIESCE);
+
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.stopped_by_ == StopIntent::QUIESCE);
+  CHECK(source.order_list_reads() == 0);
+  CHECK_FALSE(report.order_list_read_);
+  CHECK(report.final_gate_ == strategy::HaltReason::STOPPING);
 }
 
 TEST_CASE("a stop still withdraws what it can see, and says the picture was partial",
           "[loop][stop]") {
   // Sending nothing would be worse: withdrawing the orders the snapshot does hold beats withdrawing
-  // none of them. The pass does both -- it sends, and it refuses to call the result complete.
+  // none of them. The pass does both -- it sends, and it refuses to call the result complete. The
+  // order-list read fails, which is what leaves the picture partial now that a stop attempts it.
   InertRunner runner_instance;
   InertSource source;
+  source.set_order_list(runner::PollOutcome::FAILED);
   runner_instance.context().set_instrument(samsung_reference());
   serve_calendar(runner_instance);
   runner_instance.context().set_portfolio(portfolio_with("10", "5"));
@@ -2849,6 +2928,7 @@ TEST_CASE("a strategy's on_stop cannot place while the closing source is unverif
   runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
   runner_instance.context().set_portfolio(ten_held());
 
+  source.set_order_list(runner::PollOutcome::FAILED);  // so no listing is ever read
   ClosingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
   StopSource stop;
   stop.request(StopIntent::FLATTEN);  // before any listing is read
