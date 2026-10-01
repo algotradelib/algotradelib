@@ -27,9 +27,10 @@
  *   KIS may refuse an order clamped to Toss's band.
  *
  * Without a directory, or without `DIR/kis/real.json`, the demo session reads its own market data,
- * and stops at reference data. With `kis/real.json` the run gets past reference data, but KIS's
- * calendar currently fails with the real keys too (`EGW00201`, `labs/FINDINGS.md` F26), so the
- * market phase stays unknown and no position is opened; `--market-data toss` has a calendar.
+ * and stops at reference data. With `kis/real.json` the run reads reference data and the calendar
+ * through the real keys, so the market phase is known and, with `--live`, the strategy trades.
+ * Every KIS client here is paced at one request a second (`kis_credentials::paced_options`): KIS
+ * refuses faster reads (`EGW00201`), and the calendar's pages take about 20 s at startup.
  * `--credentials` is for KIS only: Kiwoom and Toss read their
  * environment variables, so a directory given to them is refused rather than ignored.
  *

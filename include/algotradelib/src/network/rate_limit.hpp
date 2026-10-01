@@ -106,7 +106,7 @@ inline constexpr std::size_t rate_limit_group_index(RateLimitGroup group) noexce
  *
  * The defaults are a starting point, not a safe figure. KIS's per-key allowance is
  * an account-level portal setting that its documentation does not state, so the
- * library cannot assert a number. Measured on 2026-10-02 (`labs` F26), eight a
+ * library cannot assert a number. Measured on one account on 2026-10-02, eight a
  * second was already too many for KIS's holiday calendar with real keys, and a
  * demo account refused reads closer than about a second apart; the examples pace
  * KIS at one a second (`examples/kis_credentials.hpp`).
