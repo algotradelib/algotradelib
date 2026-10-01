@@ -87,8 +87,13 @@ the number the broker is enforcing; `BrokerError::rate_limit_` carries it. The
 headers are documented *on the refusal* rather than promised, so an absent one
 means waiting rather than guessing.
 
-**KIS** answers HTTP 200 with a message code in the body — no 429, no
-`Retry-After`, no allowance — and meters in two independent layers its
+**KIS** answers with a message code in the body — no 429, no `Retry-After`, no
+allowance. On reads it was observed with HTTP 500 (2026-10-02,
+`{"rt_cd":"1","msg_cd":"EGW00201",…}`), and the adapter reads the code from a
+non-2xx body as well as a 2xx one. **On an order the code is kept but not
+classified:** an HTTP 5xx on an order stays indeterminate, held until the order
+list resolves it, because a rate limit is retried and a retry of an order KIS had
+in fact processed would double it. KIS meters in two independent layers its
 documentation insists not be confused:
 
 | Layer | Code | Scope |
