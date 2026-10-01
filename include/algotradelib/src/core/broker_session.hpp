@@ -414,8 +414,9 @@ public:
    * Retrieves every order still open to modification or cancellation.
    *
    * Whether the broker *offers* this inquiry is `BrokerCaps::has_working_orders`.
-   * Whether the bound configuration may *use* it remains a run-time error: KIS
-   * does not serve it to demo accounts and reports `INVALID_ARGUMENT`.
+   * Whether the bound configuration may *use* it is a run-time matter: KIS does
+   * not serve it to demo accounts, so its adapter answers from today's order
+   * history there.
    */
   template <typename CompletionToken>
   auto async_working_orders(CompletionToken&& token) {
