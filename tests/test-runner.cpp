@@ -1637,6 +1637,9 @@ TEST_CASE("each way an instruction fails is counted apart from the others") {
     const auto report = dry.feed(bar_at(10, "70000"));
     REQUIRE(report.rejected_.size() == 1);
     CHECK(dry.orders_unbuildable() == 1);
+    // And why, which a live source's discarded report would otherwise take with it.
+    REQUIRE(dry.last_unbuildable().has_value());
+    CHECK(dry.last_unbuildable()->reason_ == report.rejected_.front().reason_);
     CHECK(dry.orders_guard_refused() == 0);
     CHECK(dry.orders_broker_refused() == 0);
     CHECK(dry.orders_binding_refused() == 0);

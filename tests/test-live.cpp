@@ -6296,3 +6296,64 @@ TEST_CASE("an abandoned run discards retained targets", "[live][poll-order]") {
   CHECK(bound.targets_retained() == 0);
   CHECK(session.placed().empty());
 }
+
+namespace {
+
+/** Wants half the account in Samsung, which a live runner, holding no portfolio value, cannot size. */
+struct WantsHalf {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ctx.submit(
+      strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::target_weight(Decimal64::parse("0.5"))
+      )
+    );
+  }
+};
+
+} // namespace
+
+TEST_CASE("a live run's report says why reconciliation could not build an instruction") {
+  // Lab: `EqualWeightRebalance` through `live_program` reported "not buildable: 80" and nothing else,
+  // because the source discards each pass's report and its reasons with it. The run now carries the
+  // last one, as it carries the broker's last refusal.
+  using LoopRunner = runner::Runner<
+    WantsHalf, WithKey, FakeBroker, live::SessionExecutor<FakeSession<WithKey>>
+  >;
+  FakeSession<WithKey> session;
+  session.set_bars(two_bars("70000", "71000"));
+  strategy::RiskLimits any_phase;
+  any_phase.permitted_phases_ = std::nullopt;
+  LoopRunner live_runner(
+    WantsHalf{}, any_phase, 512, live::SessionExecutor<FakeSession<WithKey>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
+
+  live::SessionSource<FakeSession<WithKey>> source(session, {samsung()});
+  runner::PollSchedule schedule;
+  schedule.bars_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  schedule.calendar_.reset();
+  runner::PollingLoop<LoopRunner, live::SessionSource<FakeSession<WithKey>>, runner::ManualClock>
+    loop(live_runner, source, schedule, runner::ManualClock{});
+  loop.allow_unbounded_portfolio_age();
+  loop.allow_absent_portfolio();
+  runner::StopSource stop;
+
+  const auto report = loop.run(stop, 1);
+
+  CHECK(report.orders_unbuildable_ == 1);
+  REQUIRE(report.last_unbuildable_.has_value());
+  CHECK(report.last_unbuildable_->reason_ == strategy::RejectReason::NO_PORTFOLIO_VALUE);
+  CHECK(report.last_unbuildable_->instrument_ == samsung());
+  CHECK(session.placed().empty());
+
+  // A run that refuses nothing reports nothing, although the runner still holds the record.
+  session.set_bars({});
+  const auto quiet = loop.run(stop, 1);
+  CHECK(quiet.orders_unbuildable_ == 0);
+  CHECK_FALSE(quiet.last_unbuildable_.has_value());
+  CHECK(live_runner.last_unbuildable().has_value());
+}
