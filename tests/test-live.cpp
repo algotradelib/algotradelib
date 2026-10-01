@@ -1428,6 +1428,31 @@ TEST_CASE("a target the broker turned away for its rate limit is planned again o
   }
 }
 
+TEST_CASE("an order intent the broker turned away for its rate limit is kept") {
+  // Kept like a phase refusal the broker answered: with its holding, and only without a key, since a
+  // keyed intent would reuse a key the broker has seen.
+  using Runner = runner::Runner<
+    BuysOne, WithKey, FakeBroker, live::SessionExecutor<FakeSession<WithKey>>
+  >;
+  FakeSession<WithKey> session;
+  Runner live_runner(BuysOne{}, {}, 512, live::SessionExecutor<FakeSession<WithKey>>(session));
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  auto portfolio = held_position<WithKey>("0", nullptr);
+  live_runner.context().set_portfolio(portfolio);
+
+  session.fail_with(ErrorCategory::RATE_LIMIT);
+  REQUIRE(live_runner.feed(bar_at(1, "70000")).rejected_.size() == 1);
+  CHECK(live_runner.intents_kept_for_phase() == 1);
+  session.succeed();
+
+  portfolio.as_of_ += std::chrono::minutes(1);
+  live_runner.context().set_portfolio(portfolio);
+  CHECK(live_runner.retry_retained_targets().would_place_.size() == 1);
+  CHECK(live_runner.intents_kept_for_phase() == 0);
+}
+
 TEST_CASE("a target the binding refuses for good is not kept") {
   // The client's own validation would refuse it again; keeping it would only repeat the refusal.
   FakeSession<WithoutKey> session;
