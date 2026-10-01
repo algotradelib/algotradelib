@@ -153,6 +153,21 @@ inline SendOutcome outcome_of(const BrokerError& error) {
 }
 
 /**
+ * Returns whether `error` says the broker could not be reached, as opposed to the binding declining.
+ *
+ * Both map to `SendOutcome::REFUSED_LOCALLY` -- the request was never written, so nothing exists and
+ * nothing was counted -- and they differ in what comes next. A client's own validation
+ * (`INVALID_ARGUMENT`: a price off the grid, a key the broker cannot carry) will refuse the same
+ * instruction again, so it is final. Anything else that never left -- a DNS, connect or TLS failure
+ * (`TRANSPORT`), a closed client (`CANCELLED`), a token request that failed (`AUTHENTICATION`, or
+ * `PROTOCOL` for one that could not be parsed) -- is about the connection, and the same instruction
+ * may go once the broker answers again. `Runner` keeps such an instruction for a later pass.
+ */
+inline bool broker_unreachable(const BrokerError& error) noexcept {
+  return !error.reached_broker_ && error.category_ != ErrorCategory::INVALID_ARGUMENT;
+}
+
+/**
  * Returns whether `outcome` means the broker was asked at all.
  *
  * Two outcomes mean it was not, and they differ in everything except that: `UNAVAILABLE` is the

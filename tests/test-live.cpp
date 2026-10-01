@@ -1312,6 +1312,115 @@ TEST_CASE("a token refresh that failed is not the broker refusing an order it ne
   CHECK(session.placed().size() == 1);
 }
 
+TEST_CASE("only a refusal for want of a broker is about the connection") {
+  // The rule `Runner` keeps an unsent instruction by: never written, and not the client's own
+  // validation, which would refuse the same instruction again.
+  BrokerError error;
+  error.reached_broker_ = false;
+  for (const auto category : {ErrorCategory::TRANSPORT, ErrorCategory::CANCELLED,
+                              ErrorCategory::AUTHENTICATION, ErrorCategory::PROTOCOL}) {
+    error.category_ = category;
+    CHECK(runner::broker_unreachable(error));
+  }
+  error.category_ = ErrorCategory::INVALID_ARGUMENT;
+  CHECK_FALSE(runner::broker_unreachable(error));
+  // A request that was written is never this, whatever its category: it may exist.
+  error.reached_broker_ = true;
+  error.category_ = ErrorCategory::TRANSPORT;
+  CHECK_FALSE(runner::broker_unreachable(error));
+}
+
+TEST_CASE("a target the broker could not be reached for is planned again once it answers") {
+  // Lab: a daily strategy's target, released at the open into a dropped connection, used to be
+  // dropped, so the trade waited a day for the next bar. It is kept -- and offered again only after a
+  // holdings read newer than the failure, so a dead connection is not retried every tick.
+  FakeSession<WithoutKey> session;
+  LiveRunner live_runner(
+    HoldTen{}, {}, 512, live::SessionExecutor<FakeSession<WithoutKey>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  auto portfolio = held_position<WithoutKey>("0", nullptr);
+  live_runner.context().set_portfolio(portfolio);
+
+  session.fail_next_token(ErrorCategory::TRANSPORT);
+  const auto first = live_runner.feed(bar_at(1, "70000"));
+  REQUIRE(first.rejected_.size() == 1);
+  CHECK(first.rejected_[0].reason_ == strategy::RejectReason::BINDING_REFUSED);
+  CHECK(session.placed().empty());
+  CHECK(live_runner.targets_retained() == 1);
+
+  // No holdings read since: not offered again.
+  const auto quiet = live_runner.retry_retained_targets();
+  CHECK(quiet.would_place_.empty());
+  CHECK(session.placed().empty());
+  CHECK(live_runner.targets_retained() == 1);
+
+  // The broker answered a holdings read: the target is planned against it and sent.
+  portfolio.as_of_ += std::chrono::minutes(1);
+  live_runner.context().set_portfolio(portfolio);
+  const auto again = live_runner.retry_retained_targets();
+  CHECK(again.would_place_.size() == 1);
+  REQUIRE(session.placed().size() == 1);
+  CHECK(session.placed().front().quantity_ == Decimal64::parse("10"));
+  CHECK(live_runner.targets_retained() == 0);
+}
+
+TEST_CASE("a target the binding refuses for good is not kept") {
+  // The client's own validation would refuse it again; keeping it would only repeat the refusal.
+  FakeSession<WithoutKey> session;
+  LiveRunner live_runner(
+    HoldTen{}, {}, 512, live::SessionExecutor<FakeSession<WithoutKey>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  auto portfolio = held_position<WithoutKey>("0", nullptr);
+  live_runner.context().set_portfolio(portfolio);
+
+  session.refuse_next_locally();
+  const auto first = live_runner.feed(bar_at(1, "70000"));
+  REQUIRE(first.rejected_.size() == 1);
+  CHECK(live_runner.targets_retained() == 0);
+
+  portfolio.as_of_ += std::chrono::minutes(1);
+  live_runner.context().set_portfolio(portfolio);
+  CHECK(live_runner.retry_retained_targets().would_place_.empty());
+  CHECK(session.placed().empty());
+}
+
+TEST_CASE("an order intent the broker could not be reached for is kept and sent once it answers") {
+  // The protective-stop case: a kept intent released at the open into an outage was dropped, and the
+  // position went unprotected for the session. It is kept with its holding, as a phase refusal is.
+  using Runner = runner::Runner<
+    BuysOne, WithKey, FakeBroker, live::SessionExecutor<FakeSession<WithKey>>
+  >;
+  FakeSession<WithKey> session;
+  Runner live_runner(BuysOne{}, {}, 512, live::SessionExecutor<FakeSession<WithKey>>(session));
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  auto portfolio = held_position<WithKey>("0", nullptr);
+  live_runner.context().set_portfolio(portfolio);
+
+  session.fail_next_token();
+  const auto first = live_runner.feed(bar_at(1, "70000"));
+  REQUIRE(first.rejected_.size() == 1);
+  CHECK(session.placed().empty());
+  CHECK(live_runner.intents_kept_for_phase() == 1);
+
+  CHECK(live_runner.retry_retained_targets().would_place_.empty());
+  CHECK(live_runner.intents_kept_for_phase() == 1);
+
+  portfolio.as_of_ += std::chrono::minutes(1);
+  live_runner.context().set_portfolio(portfolio);
+  const auto again = live_runner.retry_retained_targets();
+  CHECK(again.would_place_.size() == 1);
+  CHECK(session.placed().size() == 1);
+  CHECK(live_runner.intents_kept_for_phase() == 0);
+}
+
 TEST_CASE("a token request that failed in transit leaves no doubt about an unsent order") {
   // `TRANSPORT` maps to `INDETERMINATE` -- correctly, for the order's own request, where the bytes
   // may have arrived. On the *token* request it is the wrong answer twice over: the order was never

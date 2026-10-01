@@ -999,6 +999,11 @@ public:
    * open. Only for a runner that sends to a broker: a replay and a dry run never call this, and keep
    * dropping a refused target as before.
    *
+   * **An instruction the broker could not be reached for is kept here too** (`broker_unreachable`),
+   * with the phase-refusal rules, and offered again only once a holdings read newer than the failure
+   * has arrived: a retry every iteration into a dead connection would wait out a connect timeout per
+   * instruction and hold the loop, and a stop, behind it. The `_for_phase` counts include them.
+   *
    * **Does nothing, and keeps them, until it can succeed**: while the account was never read or
    * predates the listing, and while any hold is in force. A later target or order intent for the same
    * instrument replaces a retained target; a stop or an abandoned run discards them
@@ -1034,8 +1039,11 @@ public:
     const bool phase_permits = guard_.permits_phase(context_.phase());
     std::vector<RetainedTarget> kept;
     bool released = false;
+    const auto as_of = context_.portfolio().as_of_;
+    // Kept because the broker could not be reached: not offered again until it has answered since.
+    const auto awaiting_broker = [&](const auto& entry) { return entry.after_ && !(*entry.after_ < as_of); };
     for (auto& entry : retained_targets_) {
-      if (entry.for_phase_ && !phase_permits) {
+      if ((entry.for_phase_ && !phase_permits) || awaiting_broker(entry)) {
         kept.push_back(std::move(entry));
         continue;
       }
@@ -1053,6 +1061,10 @@ public:
       auto intents = std::move(kept_intents_);
       kept_intents_.clear();
       for (auto& entry : intents) {
+        if (awaiting_broker(entry)) {
+          kept_intents_.push_back(std::move(entry));
+          continue;
+        }
         const auto held = context_.portfolio().net_quantity_of(entry.intent_.instrument());
         const auto gap = held ? decimal_subtract(*held, entry.held_) : std::nullopt;
         // A weight is planned again as the position it states, against the holding at release, so
@@ -1666,6 +1678,17 @@ private:
           ++orders_binding_refused_;
           if (decision.admitted_outside_phase_) {
             retain_for_phase(source_instruction);
+          } else if (refused_for_want_of_broker()) {
+            // **The broker could not be reached, so the decision is kept rather than lost.** Dropped,
+            // a daily strategy's target or protective stop released at the open into a dropped
+            // connection waited for its next bar, a day away (lab: a 30-minute outage at 09:00 moved a
+            // buy to the next session and left a position without its stop all day). Kept as a phase
+            // refusal is -- discarded by a stop, an operator's halt or a local failure, replaced by a
+            // later statement, an intent checked against the book -- and offered again only after a
+            // holdings read newer than this one, which is the evidence the broker answers again: a
+            // retry every tick into a dead connection would wait out a connect timeout per instrument
+            // per iteration, and hold up a stop behind it.
+            retain_for_phase(source_instruction, /*broker_answered=*/false, context_.portfolio().as_of_);
           }
           report.rejected_.push_back(
             strategy::Rejection{
@@ -2201,7 +2224,10 @@ private:
    * - while a stop, an operator's halt or a local failure holds. What a strategy says then -- `on_stop`
    *   included -- must not be replayed once the hold lifts.
    */
-  bool retain_withheld(const Instruction<Tag>& instruction, bool for_phase = false) {
+  bool retain_withheld(
+    const Instruction<Tag>& instruction, bool for_phase = false,
+    std::optional<std::chrono::system_clock::time_point> after = std::nullopt
+  ) {
     const auto* target = std::get_if<strategy::TargetPosition>(&instruction);
     if (target == nullptr) {
       return false;
@@ -2214,11 +2240,11 @@ private:
     // restated and refused for the phase waits for the phase.
     for (auto& kept : retained_targets_) {
       if (kept.target_.instrument_ == target->instrument_) {
-        kept = RetainedTarget{*target, for_phase};
+        kept = RetainedTarget{*target, for_phase, after};
         return true;
       }
     }
-    retained_targets_.push_back(RetainedTarget{*target, for_phase});
+    retained_targets_.push_back(RetainedTarget{*target, for_phase, after});
     return true;
   }
 
@@ -2230,15 +2256,34 @@ private:
    * phase and the broker (or the binding) refused it -- which is what a broker not taking orders at
    * midnight does. See `retry_retained_targets`.
    */
-  void retain_for_phase(const Instruction<Tag>& instruction, bool broker_answered = false) {
+  void retain_for_phase(
+    const Instruction<Tag>& instruction, bool broker_answered = false,
+    std::optional<std::chrono::system_clock::time_point> after = std::nullopt
+  ) {
     if constexpr (runner_detail::sends_to_a_broker<Executor>::value) {
-      if (retain_withheld(instruction, /*for_phase=*/true)) {
+      if (retain_withheld(instruction, /*for_phase=*/true, after)) {
         return;
       }
-      keep_intent_for_phase(instruction, broker_answered);
+      keep_intent_for_phase(instruction, broker_answered, after);
     } else {
       (void)instruction;
       (void)broker_answered;
+      (void)after;
+    }
+  }
+
+  /**
+   * Whether the placement just refused locally failed because the broker could not be reached.
+   *
+   * Read immediately after the send, which is the only moment `last_error()` is this order's. An
+   * executor that states no error has said nothing about the connection, so its refusals stay final.
+   */
+  bool refused_for_want_of_broker() const {
+    if constexpr (runner_detail::states_last_error<Executor>::value) {
+      const auto& error = executor_.last_error();
+      return error && broker_unreachable(*error);
+    } else {
+      return false;
     }
   }
 
@@ -2254,7 +2299,10 @@ private:
    * rests on the instrument. **Not** while a stop, an operator's halt or a local failure holds; **not** an intent carrying an
    * idempotency key that a broker answered, because a second order would reuse the key.
    */
-  void keep_intent_for_phase(const Instruction<Tag>& instruction, bool broker_answered) {
+  void keep_intent_for_phase(
+    const Instruction<Tag>& instruction, bool broker_answered,
+    std::optional<std::chrono::system_clock::time_point> after = std::nullopt
+  ) {
     const auto* intent = std::get_if<strategy::OrderIntent>(&instruction);
     if (intent == nullptr) {
       return;
@@ -2276,7 +2324,7 @@ private:
       return;
     }
     kept_this_pass_.push_back(&instruction);
-    kept_intents_.push_back(KeptIntent{*intent, *held});
+    kept_intents_.push_back(KeptIntent{*intent, *held, after});
   }
 
   /** Returns whether the portfolio lists an open stop order on `instrument`. */
@@ -2867,12 +2915,16 @@ private:
   struct RetainedTarget {
     strategy::TargetPosition target_;
     bool for_phase_{false};
+    /** Kept because the broker could not be reached: planned again only after a later holdings read. */
+    std::optional<std::chrono::system_clock::time_point> after_;
   };
   std::vector<RetainedTarget> retained_targets_;
   /** An order intent kept for the phase, and the instrument's net holding when it was kept. */
   struct KeptIntent {
     strategy::OrderIntent intent_;
     Decimal64 held_;
+    /** As for `RetainedTarget::after_`. */
+    std::optional<std::chrono::system_clock::time_point> after_;
   };
   std::vector<KeptIntent> kept_intents_;
   std::size_t kept_intents_dropped_{0};
