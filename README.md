@@ -220,6 +220,12 @@ export KIS_APP_KEY=... KIS_APP_SECRET=... KIS_CANO=... KIS_DEMO=1
 ./build/bin/example-live-program kis 005930 --live    # trade, through a journal
 ```
 
+Or keep each account's keys in its own file and pass the directory: `--credentials DIR` (or
+`ATL_CREDENTIALS_DIR`) reads `DIR/kis/demo.json`, or `real.json` with `KIS_DEMO=0`. On demo, market data
+then comes from `real.json` through a session with no account, because a KIS demo host refuses
+reference data and the calendar; `--market-data toss` reads it from Toss instead. See "Credentials
+from files" in [Talking to a broker directly](doxygen/vignettes/broker-clients.md).
+
 Without `--live` the runner is bound with `live::bind_observer`, which has nothing to send through.
 With it, `live_program::trade` does what a restartable run needs, in the order it needs it:
 
@@ -270,7 +276,8 @@ the fastest way to see each layer work: `example-strategy-dryrun`, `example-back
 `example-backtest-compare`, `example-live-loop`, `example-order-journal`,
 `example-analytics-offline` and `example-rate-limit-stats`. `example-kis-place-order` is offline too
 — it constructs and prints an `OrderRequest` and can send nothing. The rest read credentials from
-the environment; the [broker clients](doxygen/vignettes/broker-clients.md) page lists which.
+the environment, and the KIS ones also from a credentials directory; the
+[broker clients](doxygen/vignettes/broker-clients.md) page lists which.
 
 ## Brokers and accounts
 
@@ -285,6 +292,11 @@ to be written down: `KIS_DEMO=0` / `KIWOOM_DEMO=0`, `"demo": false` in a credent
 `is_demo_ = false` in code. Anything unstated uses the broker's 모의투자 (paper-trading) endpoints, where
 live keys are refused, so a forgotten setting fails instead of trading. A value that is set must be
 exactly `1` or `0`; anything else refuses to load.
+
+**A KIS demo account cannot read reference data or the calendar.** Its host refuses both
+(`EGW02006`). Given a credentials directory with `kis/real.json`, `example-live-program` reads them,
+and all market data, from the real account's keys with no account selected, or from Toss
+(`--market-data toss`), while orders go to demo. Without one, a demo run stops at reference data.
 
 **Toss has no paper-trading environment.** A Toss program with credentials trades real money; rehearse
 a strategy with a replay or a dry run, or on a KIS or Kiwoom demo account, first.

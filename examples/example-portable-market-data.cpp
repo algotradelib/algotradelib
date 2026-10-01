@@ -13,6 +13,8 @@
 // Credentials come from the same environment variables the other examples document.
 // It reads market data only and can place no order.
 
+#include "kis_credentials.hpp"
+
 #include <algotradelib/kis>
 #include <algotradelib/tossinvest>
 
@@ -257,9 +259,8 @@ int report_kis(ssl::context& tls, const std::string& symbol) {
   namespace kis = algotradelib::kis;
 
   kis::KisConfig config;
-  config.from_env();
   kis::KisAccount account;
-  account.from_env();
+  kis_credentials::load(kis_credentials::environment_directory(), config, &account, std::cout);
 
   auto client = std::make_shared<kis::KisBlockingClient>(tls, std::move(config));
   BlockingSession<kis::KisBlockingClient> session(std::move(client), std::move(account));

@@ -1,3 +1,5 @@
+#include "kis_credentials.hpp"
+
 #include <algotradelib/kis>
 #include <iostream>
 #include <string>
@@ -7,14 +9,15 @@ namespace http = boost::beast::http;
 namespace net = boost::asio;
 namespace ssl = net::ssl;
 
-int main() {
-  // Load credentials from environment variables:
+int main(int argc, char* argv[]) {
+  // Credentials from `--credentials DIR` or ATL_CREDENTIALS_DIR (kis_credentials.hpp), else from
+  // environment variables:
   // export KIS_APP_KEY=PSxxxxxxxxxxxxxxxx
   // export KIS_APP_SECRET=xxxxxxxx...
   // export KIS_DEMO=0   (live; unset or 1 = paper trading)
   algotradelib::kis::KisConfig cfg;
   try {
-    cfg.from_env();
+    kis_credentials::load(kis_credentials::take_directory(argc, argv), cfg, nullptr, std::cout);
   } catch (const std::exception& e) {
     std::cerr << "[error] " << e.what() << "\n";
     return 1;

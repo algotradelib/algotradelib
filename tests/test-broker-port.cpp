@@ -1274,3 +1274,45 @@ TEST_CASE("an amendment keeps a stop's trigger only when it keeps the stop", "[p
     CHECK_FALSE(amended_trigger_price(instruction));
   }
 }
+
+TEST_CASE("a live KIS session with an empty account refuses every account path before I/O", "[port][kis][account]") {
+  // The market-data session `example-live-program` builds from the real account's keys. Live, not
+  // demo, because the demo client also refuses the working-order inquiry for its own reason, and a
+  // test on a demo config would pass that path without the account check.
+  ssl::context tls(ssl::context::tls_client);
+  kis::KisConfig config;
+  config.is_demo_ = false;
+  BlockingSession<kis::KisBlockingClient> session(
+    std::make_shared<kis::KisBlockingClient>(tls, std::move(config)), kis::KisAccount{}
+  );
+
+  OrderRequest order;
+  order.instrument_ = samsung();
+  order.side_ = OrderSide::SELL;
+  order.quantity_ = Decimal64::parse("1");
+  order.price_ = Decimal64::parse("70000");
+  const BlockingSession<kis::KisBlockingClient>::Ref ref{"0000123456", "06010"};
+  AmendInstruction amendment;
+  amendment.shape_.type_ = OrderType::LIMIT;
+  amendment.shape_.time_in_force_ = TimeInForce::DAY;
+  amendment.shape_.session_ = OrderSession::REGULAR;
+  amendment.shape_.price_ = Decimal64::parse("71000");
+  amendment.quantity_ = Decimal64::parse("1");
+  OrderHistoryQuery history;
+  history.from_ = Date{2026, 10, 1};
+  history.to_ = Date{2026, 10, 1};
+
+  const auto refused = [](const auto& result, const char* path) {
+    INFO(path);
+    REQUIRE_FALSE(result);
+    CHECK(result.error().broker_code_ == "invalid_account");
+    CHECK_FALSE(result.error().reached_broker_);
+  };
+  refused(session.place(order), "place");
+  refused(session.replace(ref, amendment), "replace");
+  refused(session.cancel(ref, amendment), "cancel");
+  refused(session.holdings(), "holdings");
+  refused(session.buying_power(Currency::krw()), "buying_power");
+  refused(session.working_orders(), "working_orders");
+  refused(session.order_history(history), "order_history");
+}

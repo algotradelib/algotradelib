@@ -27,6 +27,8 @@
 // interrupting a `--live` run, read the broker's order list before running it again. This example
 // places at most one order per run, which bounds what can be in doubt to that one.
 
+#include "kis_credentials.hpp"
+
 #include <algotradelib/kis>
 #include <algotradelib/live>
 #include <algotradelib/vanilla>
@@ -261,9 +263,8 @@ int trade_kis(ssl::context& tls, const std::string& symbol, Mode mode) {
   namespace kis = algotradelib::kis;
 
   kis::KisConfig config;
-  config.from_env();
   kis::KisAccount account;
-  account.from_env();
+  kis_credentials::load(kis_credentials::environment_directory(), config, &account, std::cout);
 
   auto client = std::make_shared<kis::KisBlockingClient>(tls, std::move(config));
   BlockingSession<kis::KisBlockingClient> session(std::move(client), std::move(account));

@@ -225,13 +225,17 @@ void configure(Loop& loop, const Settings& settings) {
 }
 
 /**
- * Trades `strategy` through `session`: journal, recover, loop, report.
+ * Trades `strategy` through `session`, reading market data and reference data from `market_data`.
  *
- * **This places orders.** `observe` is the same loop with nowhere to send.
+ * **This places orders**, through `session` only: the runner is bound to it, and `market_data` is
+ * only read. Use a session that cannot trade for `market_data` (a KIS session with an empty
+ * `KisAccount`, a Toss session with account sequence 0), so that a swapped pair refuses rather than
+ * trades.
  */
-template <typename Strategy, typename Session, typename Clock = runner::SteadyClock>
+template <typename Strategy, typename Session, typename MarketData, typename Clock = runner::SteadyClock>
 Exit trade(
   Session& session,
+  MarketData& market_data,
   Strategy strategy_instance,
   const Settings& settings,
   runner::StopSource& stop,
@@ -266,7 +270,7 @@ Exit trade(
     return Exit::RECOVERY_HALTED;
   }
 
-  if (!load_reference_data(session, bound, settings, out)) {
+  if (!load_reference_data(market_data, bound, settings, out)) {
     return Exit::REFERENCE_UNREADABLE;
   }
   // Said before trading as well as in the report at the end, so it is read before it matters.
@@ -275,7 +279,9 @@ Exit trade(
         << "      does there (a protective stop, say) will not happen. See writing-a-strategy.md.\n";
   }
 
-  live::SessionSource<Session, runner::FileJournal> source(session, settings.universe_);
+  live::SessionSource<Session, runner::FileJournal, MarketData> source(
+    session, market_data, settings.universe_
+  );
   source.set_journal(journal);
   source.set_bar_query(settings.bar_interval_, settings.bar_count_);
 
@@ -303,14 +309,12 @@ Exit trade(
 }
 
 /**
- * Runs `strategy` against `session`'s real data with nothing to send through.
+ * Trades `strategy` through `session`: journal, recover, loop, report.
  *
- * `live::bind_observer` gives the runner the session's real capabilities and tag and no executor that
- * reaches it, so the pipeline, the guard and the gates all run, and no order can leave. No journal
- * is opened, because there is nothing to record.
+ * **This places orders.** `observe` is the same loop with nowhere to send.
  */
 template <typename Strategy, typename Session, typename Clock = runner::SteadyClock>
-Exit observe(
+Exit trade(
   Session& session,
   Strategy strategy_instance,
   const Settings& settings,
@@ -318,12 +322,35 @@ Exit observe(
   std::ostream& out,
   Clock clock = {}
 ) {
+  return trade(session, session, std::move(strategy_instance), settings, stop, out, std::move(clock));
+}
+
+/**
+ * Runs `strategy` against `session`'s account and `market_data`'s market data, with nothing to send
+ * through.
+ *
+ * `live::bind_observer` gives the runner the session's real capabilities and tag and no executor that
+ * reaches it, so the pipeline, the guard and the gates all run, and no order can leave. No journal
+ * is opened, because there is nothing to record.
+ */
+template <typename Strategy, typename Session, typename MarketData, typename Clock = runner::SteadyClock>
+Exit observe(
+  Session& session,
+  MarketData& market_data,
+  Strategy strategy_instance,
+  const Settings& settings,
+  runner::StopSource& stop,
+  std::ostream& out,
+  Clock clock = {}
+) {
   auto bound = live::bind_observer(session, std::move(strategy_instance), settings.limits_);
-  if (!load_reference_data(session, bound, settings, out)) {
+  if (!load_reference_data(market_data, bound, settings, out)) {
     return Exit::REFERENCE_UNREADABLE;
   }
 
-  live::SessionSource<Session> source(session, settings.universe_);
+  live::SessionSource<Session, runner::MemoryJournal, MarketData> source(
+    session, market_data, settings.universe_
+  );
   source.set_bar_query(settings.bar_interval_, settings.bar_count_);
   runner::PollingLoop<decltype(bound), decltype(source), Clock> loop(
     bound, source, settings.schedule_, std::move(clock)
@@ -340,6 +367,19 @@ Exit observe(
   out << "closing         : simulated -- the observer sent nothing, so nothing at the broker was\n"
       << "                  placed or withdrawn by this run\n";
   return report.abandoned_ ? Exit::LOOP_ABANDONED : Exit::CLEAN;
+}
+
+/** Observes `strategy` against `session`'s real data, reading market data from it too. */
+template <typename Strategy, typename Session, typename Clock = runner::SteadyClock>
+Exit observe(
+  Session& session,
+  Strategy strategy_instance,
+  const Settings& settings,
+  runner::StopSource& stop,
+  std::ostream& out,
+  Clock clock = {}
+) {
+  return observe(session, session, std::move(strategy_instance), settings, stop, out, std::move(clock));
 }
 
 } // namespace live_program

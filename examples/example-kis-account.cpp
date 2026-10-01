@@ -1,3 +1,5 @@
+#include "kis_credentials.hpp"
+
 #include <algotradelib/kis>
 
 #include <boost/asio/ssl/context.hpp>
@@ -52,13 +54,11 @@ void print_holdings(const algotradelib::HoldingsSnapshot& snapshot) {
 
 } // namespace
 
-int main() {
+int main(int argc, char* argv[]) {
   try {
     algotradelib::kis::KisConfig config;
-    config.from_env();
-
     algotradelib::kis::KisAccount account;
-    account.from_env();
+    kis_credentials::load(kis_credentials::take_directory(argc, argv), config, &account, std::cout);
 
     std::cout << "environment: " << (config.is_demo_ ? "demo" : "live") << '\n';
 

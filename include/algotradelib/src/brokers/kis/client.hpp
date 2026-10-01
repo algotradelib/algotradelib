@@ -13,6 +13,7 @@
 #include <array>
 #include <cstdlib>
 #include <deque>
+#include <fstream>
 #include <iterator>
 #include <memory>
 #include <optional>
@@ -40,6 +41,48 @@ struct KisAccount {
     const char* product_code = std::getenv("KIS_ACNT_PRDT_CD");
     account_number_ = account_number;
     product_code_ = product_code ? product_code : "01";
+  }
+
+  /**
+   * Loads account selection from a credential file: `account_number` (eight digits) and
+   * `account_product_code` (two digits, `"01"` when absent).
+   *
+   * The same file `KisConfig::from_json` reads. A refusal names the file and the field, never a value
+   * from it.
+   */
+  void from_json(const std::string& filename) {
+    std::ifstream ifs(filename);
+    if (!ifs.is_open()) {
+      throw std::runtime_error("Cannot open KIS credential file: " + filename);
+    }
+    const std::string content(
+      std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>{}
+    );
+    boost::system::error_code ec;
+    const auto document = boost::json::parse(content, ec);
+    if (ec || !document.is_object()) {
+      throw std::runtime_error("Failed to parse KIS credentials file: " + filename);
+    }
+    const auto field = [&](const char* name, std::size_t digits) -> std::optional<std::string> {
+      const auto* value = document.as_object().if_contains(name);
+      if (value == nullptr) {
+        return std::nullopt;
+      }
+      if (!value->is_string() || !broker_detail::decimal_digits(value->get_string(), digits)) {
+        throw std::runtime_error(
+          "KIS credential file " + filename + " has a " + name + " that is not " +
+          std::to_string(digits) + " digits in a string"
+        );
+      }
+      return std::string(value->get_string());
+    };
+    auto number = field("account_number", 8);
+    if (!number) {
+      throw std::runtime_error("KIS credential file " + filename + " has no account_number");
+    }
+    const auto product = field("account_product_code", 2);
+    account_number_ = std::move(*number);
+    product_code_ = product ? *product : "01";
   }
 };
 
