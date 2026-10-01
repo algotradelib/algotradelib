@@ -262,7 +262,8 @@ int report_kis(ssl::context& tls, const std::string& symbol) {
   kis::KisAccount account;
   kis_credentials::load(kis_credentials::environment_directory(), config, &account, std::cout);
 
-  auto client = std::make_shared<kis::KisBlockingClient>(tls, std::move(config));
+  auto client =
+    std::make_shared<kis::KisBlockingClient>(tls, std::move(config), kis_credentials::paced_options());
   BlockingSession<kis::KisBlockingClient> session(std::move(client), std::move(account));
   return report(session, InstrumentId{Country::KR, Venue::COMBINED, symbol});
 }

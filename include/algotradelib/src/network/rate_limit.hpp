@@ -104,9 +104,12 @@ inline constexpr std::size_t rate_limit_group_index(RateLimitGroup group) noexce
  * not be the reason a cancellation waits. A reserve of zero disables the
  * reservation without disabling the pacing.
  *
- * The defaults are deliberately conservative. KIS's per-key allowance is an
- * account-level portal setting that its documentation does not state, so the
- * library cannot assert a number; it can only start low and let a caller raise it.
+ * The defaults are a starting point, not a safe figure. KIS's per-key allowance is
+ * an account-level portal setting that its documentation does not state, so the
+ * library cannot assert a number. Measured on one account on 2026-10-02, eight a
+ * second was already too many for KIS's holiday calendar with real keys, and a
+ * demo account refused reads closer than about a second apart; the examples pace
+ * KIS at one a second (`examples/kis_credentials.hpp`).
  */
 struct RateLimitBudget {
   /** How many requests may be issued back to back from idle. */
