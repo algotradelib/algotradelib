@@ -265,8 +265,10 @@ one on the way out.
 
 ### Not supported yet
 
-Toss amount-based and fractional order *placement* — an amount-based order is
-read back with its amount, and placing one is outstanding. Toss conditional
+Toss amount-based order *placement*, which is also how Toss buys a fraction — an
+amount-based order is read back with its amount, and placing one is outstanding.
+A fractional quantity is placed only where Toss accepts one: a US market sell, to
+six decimal places, during the regular session until an hour before the close. Toss conditional
 orders. KIS credit, reserved and overseas orders. KIS's 시간외 단일가 (`07`):
 the inquiry publishes it, the order sheet does not. KIS history older than
 three months, and real-time execution notifications.

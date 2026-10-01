@@ -317,6 +317,10 @@ struct TossClientTestAccess {
     return TossClient::make_place_order_request(account_sequence, "access-token", order);
   }
 
+  static std::optional<BrokerError> validate_order(const OrderRequest& order) {
+    return TossClient::validate_order(order);
+  }
+
   static network::HttpRequest replace_order_request(
     std::int64_t account_sequence,
     const TossAmendment& amendment
@@ -1622,6 +1626,17 @@ OrderRequest korean_limit_buy() {
   order.time_in_force_ = TimeInForce::DAY;
   order.quantity_ = Decimal64::parse("10");
   order.price_ = Decimal64::parse("70000");
+  return order;
+}
+
+/** Builds a market sell of a fraction of one US share, the one fractional order Toss accepts. */
+OrderRequest us_market_fractional_sell() {
+  OrderRequest order;
+  order.instrument_ = InstrumentId{Country::US, Venue::UNSPECIFIED, "AAPL"};
+  order.side_ = OrderSide::SELL;
+  order.type_ = OrderType::MARKET;
+  order.time_in_force_ = TimeInForce::DAY;
+  order.quantity_ = Decimal64::parse("0.123456");
   return order;
 }
 
@@ -3238,6 +3253,19 @@ TEST_CASE(
     REQUIRE(body.at("confirmHighValueOrder").as_bool());
   }
 
+  SECTION("a fractional US market sell is accepted and sent at its own scale") {
+    const auto order = us_market_fractional_sell();
+    REQUIRE_FALSE(tossinvest::TossClientTestAccess::validate_order(order));
+    const auto body =
+      json::parse(tossinvest::TossClientTestAccess::place_order_request(7, order).body_)
+        .as_object();
+    REQUIRE(body.at("symbol").as_string() == "AAPL");
+    REQUIRE(body.at("side").as_string() == "SELL");
+    REQUIRE(body.at("orderType").as_string() == "MARKET");
+    REQUIRE(body.at("quantity").as_string() == "0.123456");
+    REQUIRE_FALSE(body.contains("price"));
+  }
+
   SECTION("a US closing-auction limit order uses the documented wire code") {
     auto order = korean_limit_buy();
     order.instrument_ = InstrumentId{Country::US, Venue::UNSPECIFIED, "AAPL"};
@@ -3355,6 +3383,55 @@ TEST_CASE(
     auto order = korean_limit_buy();
     order.quantity_ = Decimal64::parse("0.5");
     expect_rejection(std::move(order), "invalid_quantity");
+  }
+
+  SECTION("a fraction is refused everywhere but a US market sell") {
+    // Toss's `fractionalQuantityUsSellOnly`: a US buy, a US limit sell and a Korean market sell
+    // all carry a fraction Toss refuses, so the library refuses them first.
+    auto us_buy = us_market_fractional_sell();
+    us_buy.side_ = OrderSide::BUY;
+    expect_rejection(std::move(us_buy), "invalid_quantity");
+
+    auto us_limit = us_market_fractional_sell();
+    us_limit.type_ = OrderType::LIMIT;
+    us_limit.price_ = Decimal64::parse("400");
+    expect_rejection(std::move(us_limit), "invalid_quantity");
+
+    auto korean = korean_limit_buy();
+    korean.side_ = OrderSide::SELL;
+    korean.type_ = OrderType::MARKET;
+    korean.price_.reset();
+    korean.quantity_ = Decimal64::parse("0.5");
+    expect_rejection(std::move(korean), "invalid_quantity");
+  }
+
+  SECTION("a US market sell is refused past six decimals and at zero") {
+    // Seven places is refused even when the seventh is a zero, because `str()` would send it.
+    for (const auto quantity :
+         {Decimal64::parse("0.1234567"), Decimal64(1234560, 7), Decimal64::parse("0"),
+          Decimal64::parse("-0.5")}) {
+      auto order = us_market_fractional_sell();
+      order.quantity_ = quantity;
+      expect_rejection(std::move(order), "invalid_quantity");
+    }
+  }
+
+  SECTION("an amendment quantity stays whole even for a US market order") {
+    // A US amendment cannot change the quantity at all (`us-modify-quantity-not-supported`), and a
+    // Korean one is whole shares, so the fractional rule never reaches the modify path.
+    bool completed = false;
+    tossinvest::TossAmendment amendment;
+    amendment.order_id_ = "abc";
+    amendment.type_ = OrderType::MARKET;
+    amendment.quantity_ = Decimal64::parse("0.5");
+    client->async_replace_order(7, std::move(amendment), [&](Result<OrderAck> result) {
+      REQUIRE_FALSE(result);
+      REQUIRE(result.error().broker_code_ == "invalid_quantity");
+      completed = true;
+    });
+    ioc.restart();
+    ioc.run();
+    REQUIRE(completed);
   }
 
   SECTION("an execution condition Toss does not publish is refused before I/O") {

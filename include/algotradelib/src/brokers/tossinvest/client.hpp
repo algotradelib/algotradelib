@@ -2587,9 +2587,19 @@ private:
     return error;
   }
 
-  /** Returns an error when a quantity is not a positive whole number of shares. */
-  static std::optional<BrokerError> validate_quantity(const Decimal64& quantity) {
-    if (quantity.coefficient() > 0 && quantity.scale() == 0) {
+  /**
+   * Returns an error when a quantity is not a positive whole number of shares, or, where
+   * `fraction_allowed`, a positive quantity of at most six decimal places.
+   *
+   * The raw scale is checked rather than a normalized one, because the request sends
+   * `quantity.str()`, which keeps it.
+   */
+  static std::optional<BrokerError> validate_quantity(
+    const Decimal64& quantity,
+    bool fraction_allowed = false
+  ) {
+    const auto max_scale = fraction_allowed ? 6 : 0;
+    if (quantity.coefficient() > 0 && quantity.scale() <= max_scale) {
       return std::nullopt;
     }
     BrokerError error;
@@ -2597,8 +2607,8 @@ private:
     error.reached_broker_ = false;
     error.broker_code_ = "invalid_quantity";
     error.message_ =
-      "Toss order quantity must be a positive whole number of shares; "
-      "fractional quantities are not supported yet";
+      "Toss order quantity must be a positive whole number of shares; Toss accepts a fraction, "
+      "to six decimal places, only on a US market sell";
     return error;
   }
 
@@ -2755,7 +2765,11 @@ private:
         )) {
       return error;
     }
-    if (auto error = validate_quantity(order.quantity_)) {
+    // Toss's one fractional shape (`createOrder`, `fractionalQuantityUsSellOnly`). Its other rule,
+    // the regular session until an hour before the close, is left to Toss's own `422`.
+    const bool fraction_allowed = order.instrument_.country_ == Country::US &&
+      order.type_ == OrderType::MARKET && order.side_ == OrderSide::SELL;
+    if (auto error = validate_quantity(order.quantity_, fraction_allowed)) {
       return error;
     }
     if (auto error = validate_price(order.type_, order.price_)) {
