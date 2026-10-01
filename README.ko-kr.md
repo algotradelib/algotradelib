@@ -11,7 +11,7 @@
 <!-- badges: end -->
 
 <!--
-  영어 README.md 7eb3d7f 기준. 요약한 절: 첫 소개와 경고, "Brokers and accounts", "Install",
+  영어 README.md ac1f2d3 기준. 요약한 절: 첫 소개와 경고, "Brokers and accounts", "Install",
   "Using it"의 실행 예시, "Documentation"의 문서 빌드 명령, "Disclaimer". 이 절들이 바뀌면 이 문서도
   함께 고칩니다.
 -->
