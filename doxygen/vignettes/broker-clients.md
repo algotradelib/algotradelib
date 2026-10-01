@@ -102,8 +102,9 @@ the calendar), and `live_program::trade` and `observe` take one for those and fo
 no account selected), and only on demo. Either way the run knows the market phase, so with
 `--live` it trades on demo. The example paces every KIS client at one request a second
 (`kis_credentials::paced_options`): faster, KIS refuses reads with `EGW00201`, and the real keys'
-holiday calendar takes about 20 s of pages at startup. Toss's daily price band can differ from KIS's for the same stock
-(`labs/FINDINGS.md` F27), and the band clamps limit prices, so KIS may refuse an order priced from it.
+holiday calendar takes about 20 s of pages at startup. Toss's daily price band can differ from
+KIS's for the same stock (`labs/FINDINGS.md` F27), and the band clamps limit prices, so KIS may
+refuse an order priced from it.
 Kiwoom and Toss trading still read their environment variables; `example-live-program` refuses
 `--credentials` for them.
 

@@ -42,7 +42,7 @@ refused reads closer than about a second apart (`EGW00201`), and with real keys 
 examples therefore pace at `RateLimitBudget{1, 1, 0}` (`kis_credentials::paced_options`
 in `examples/kis_credentials.hpp`). At a burst of 1 the reserve changes nothing, and
 a blocking client sends one operation at a time, so an order waits behind whatever
-call is running: at startup, up to the calendar's 20 seconds.
+call is running on the same client: at startup, up to the calendar's 20 seconds.
 
 **Leaving `rate_limit_` unset issues requests unpaced**, which is the default. Not
 every endpoint is metered, and one that is not should not be slowed down; an
