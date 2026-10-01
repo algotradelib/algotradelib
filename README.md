@@ -276,7 +276,8 @@ the fastest way to see each layer work: `example-strategy-dryrun`, `example-back
 `example-backtest-compare`, `example-live-loop`, `example-order-journal`,
 `example-analytics-offline` and `example-rate-limit-stats`. `example-kis-place-order` is offline too
 — it constructs and prints an `OrderRequest` and can send nothing. The rest read credentials from
-the environment; the [broker clients](doxygen/vignettes/broker-clients.md) page lists which.
+the environment, and the KIS ones also from a credentials directory; the
+[broker clients](doxygen/vignettes/broker-clients.md) page lists which.
 
 ## Brokers and accounts
 
@@ -293,8 +294,9 @@ live keys are refused, so a forgotten setting fails instead of trading. A value 
 exactly `1` or `0`; anything else refuses to load.
 
 **A KIS demo account cannot read reference data or the calendar.** Its host refuses both
-(`EGW02006`). `example-live-program` reads them, and all market data, from the real account's keys
-with no account selected, or from Toss (`--market-data toss`), while orders go to demo.
+(`EGW02006`). Given a credentials directory with `kis/real.json`, `example-live-program` reads them,
+and all market data, from the real account's keys with no account selected, or from Toss
+(`--market-data toss`), while orders go to demo. Without one, a demo run stops at reference data.
 
 **Toss has no paper-trading environment.** A Toss program with credentials trades real money; rehearse
 a strategy with a replay or a dry run, or on a KIS or Kiwoom demo account, first.

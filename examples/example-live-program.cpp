@@ -22,7 +22,13 @@
  * go to a second session that cannot trade:
  * - `--market-data kis`, the default on demo when `DIR/kis/real.json` exists: the real account's keys
  *   with an empty `KisAccount`;
- * - `--market-data toss`: Toss from `DIR/tossinvest/real.json`, with no account selected.
+ * - `--market-data toss`: Toss from `DIR/tossinvest/real.json`, with no account selected. The price
+ *   band and reference data are then Toss's, which can differ from KIS's (`labs/FINDINGS.md` F27):
+ *   KIS may refuse an order clamped to Toss's band.
+ *
+ * Without a directory, or without `DIR/kis/real.json`, the demo session reads its own market data,
+ * and stops at reference data. `--credentials` is for KIS only: Kiwoom and Toss read their
+ * environment variables, so a directory given to them is refused rather than ignored.
  *
  * The broker-free part -- the order of journal, recovery, loop and report -- is `live_program.hpp`,
  * which the test suite drives against an in-memory session. This file only chooses a broker and a
@@ -69,6 +75,7 @@ struct Arguments {
   std::optional<std::string> control_;
   std::optional<std::int64_t> toss_account_;
   std::optional<std::filesystem::path> credentials_;
+  bool credentials_from_flag_{false};
   std::optional<std::string> market_data_;
 };
 
@@ -229,6 +236,9 @@ int run_kis(ssl::context& tls, const Arguments& arguments) {
     std::cout << "market data: toss " << path.string() << " (no account: cannot trade)\n";
     return run(session, market_data, instrument, settings, arguments.live_);
   }
+  if (!demo && arguments.market_data_ == "kis") {
+    throw std::runtime_error("--market-data kis is for a demo run; a live run reads its own market data");
+  }
   if (demo) {
     auto market_config = kis_credentials::market_data_config(arguments.credentials_);
     if (market_config) {
@@ -240,8 +250,13 @@ int run_kis(ssl::context& tls, const Arguments& arguments) {
       return run(session, market_data, instrument, settings, arguments.live_);
     }
     if (arguments.market_data_ == "kis") {
-      throw std::runtime_error("--market-data kis reads kis/real.json, and there is none");
+      throw std::runtime_error(
+        arguments.credentials_ ? "--market-data kis reads kis/real.json, and there is none" :
+                                 "--market-data kis reads kis/real.json; give --credentials DIR"
+      );
     }
+    std::cout << "market data: the demo account's own (no kis/real.json); a demo host refuses\n"
+              << "             reference data, so this run stops there\n";
   }
   return run(session, instrument, settings, arguments.live_);
 }
@@ -352,7 +367,13 @@ int run_toss(ssl::context& tls, const Arguments& arguments) {
 /** Parses the command line, or explains it. */
 std::optional<Arguments> parse(int argc, char** argv) {
   Arguments arguments;
-  arguments.credentials_ = kis_credentials::take_directory(argc, argv);
+  const int given = argc;
+  try {
+    arguments.credentials_ = kis_credentials::take_directory(argc, argv);
+  } catch (const std::runtime_error&) {
+    return std::nullopt;
+  }
+  arguments.credentials_from_flag_ = argc != given;
   std::vector<std::string> positional;
   for (int i = 1; i < argc; ++i) {
     const std::string argument = argv[i];
@@ -384,7 +405,9 @@ std::optional<Arguments> parse(int argc, char** argv) {
   if (arguments.broker_ != "kis" && arguments.broker_ != "kiwoom" && arguments.broker_ != "toss") {
     return std::nullopt;
   }
-  if (arguments.market_data_ && arguments.broker_ != "kis") {
+  // KIS only. Kiwoom and Toss read their environment variables; a directory they ignored would
+  // trade whichever account the environment names.
+  if ((arguments.market_data_ || arguments.credentials_from_flag_) && arguments.broker_ != "kis") {
     return std::nullopt;
   }
   return arguments;

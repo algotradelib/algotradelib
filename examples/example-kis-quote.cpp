@@ -15,10 +15,9 @@ namespace net = boost::asio;
 namespace ssl = net::ssl;
 
 int main(int argc, char* argv[]) {
-  const auto directory = kis_credentials::take_directory(argc, argv);
-  const std::string symbol = argc > 1 ? argv[1] : "005930";
-
   try {
+    const auto directory = kis_credentials::take_directory(argc, argv);
+    const std::string symbol = argc > 1 ? argv[1] : "005930";
     algotradelib::kis::KisConfig config;
     kis_credentials::load(directory, config, nullptr, std::cout);
 

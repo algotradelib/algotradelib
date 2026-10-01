@@ -85,7 +85,8 @@ cmake --build build --target example-kis-account
 ### Credentials from files
 
 An account's keys can also live in one JSON file per account, in a directory you choose and pass
-at run time: `--credentials DIR` to the KIS examples, or `ATL_CREDENTIALS_DIR`. They then read
+at run time: `--credentials DIR` to `example-live-program kis` and `example-kis-*`, or
+`ATL_CREDENTIALS_DIR`, which `example-portable-*` and `example-strategy-live` also read. They then read
 `DIR/kis/demo.json`, or `DIR/kis/real.json` when `KIS_DEMO=0`, with `KisConfig::from_json` and
 `KisAccount::from_json` (`app_key`, `app_secret`, `account_number`, `account_product_code`,
 `demo`). A file whose `"demo"` contradicts its name is refused, and a directory without the file
@@ -93,11 +94,15 @@ stops the program rather than falling back to the environment. Keep the files `c
 
 A KIS demo host refuses reference data (`CTPF1002R`) and the holiday calendar (`CTCA0903R`) with
 `EGW02006`, "모의투자 TR 이 아닙니다". Both are market data, the same from any account. So
-`live::SessionSource` and `live_program::trade` take a second session for the market reads (bars,
-quotes, price limits, the calendar, reference data), and `example-live-program kis` on demo builds one
-from `DIR/kis/real.json` with an empty `KisAccount`: the KIS client refuses every account request and
-order through it before any I/O (`invalid_account`). `--market-data toss` reads them from Toss instead
-(`DIR/tossinvest/real.json`, no account selected).
+`live::SessionSource` takes a second session for its four market reads (bars, quotes, price limits,
+the calendar), and `live_program::trade` and `observe` take one for those and for reference data.
+`example-live-program kis` on demo builds one when `DIR/kis/real.json` exists, with an empty
+`KisAccount`: the KIS client refuses every account request and order through it before any I/O
+(`invalid_account`). `--market-data toss` reads them from Toss instead (`DIR/tossinvest/real.json`,
+no account selected). Toss's daily price band can differ from KIS's for the same stock
+(`labs/FINDINGS.md` F27), and the band clamps limit prices, so KIS may refuse an order priced from it.
+Kiwoom and Toss trading still read their environment variables; `example-live-program` refuses
+`--credentials` for them.
 
 [`examples/example-tossinvest-account.cpp`](../../examples/example-tossinvest-account.cpp)
 loads `TOSS_CLIENT_ID` and `TOSS_CLIENT_SECRET`, discovers brokerage accounts,

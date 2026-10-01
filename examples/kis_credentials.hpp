@@ -36,13 +36,17 @@ inline std::optional<std::filesystem::path> environment_directory() {
 
 /**
  * Removes `--credentials DIR` from the command line and returns the directory it names, else
- * `ATL_CREDENTIALS_DIR`, else nothing.
+ * `ATL_CREDENTIALS_DIR`, else nothing. Throws when `--credentials` has no value, so a mistyped
+ * command never falls back to another source.
  */
 inline std::optional<std::filesystem::path> take_directory(int& argc, char** argv) {
   std::optional<std::filesystem::path> directory;
   int kept = 1;
   for (int i = 1; i < argc; ++i) {
-    if (std::string_view(argv[i]) == "--credentials" && i + 1 < argc) {
+    if (std::string_view(argv[i]) == "--credentials") {
+      if (i + 1 >= argc || std::string_view(argv[i + 1]).rfind("--", 0) == 0) {
+        throw std::runtime_error("--credentials needs a directory");
+      }
       directory = argv[++i];
     } else {
       argv[kept++] = argv[i];
