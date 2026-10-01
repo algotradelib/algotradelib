@@ -187,6 +187,10 @@ void print(const std::string& title, const backtest::Report& report) {
     std::cout << "  unfilled        " << report.caveats_.unfilled_
               << " (no next bar to fill against)\n";
   }
+  if (report.caveats_.expired_day_orders_ > 0) {
+    std::cout << "  expired         " << report.caveats_.expired_day_orders_
+              << " DAY order(s) unfilled at their session's close, as at a broker\n";
+  }
   if (report.caveats_.multiple_instruments_) {
     std::cout << "  CAVEAT          more than one instrument: this result may carry survivorship\n"
               << "                  bias, because reference data lists what exists now\n";

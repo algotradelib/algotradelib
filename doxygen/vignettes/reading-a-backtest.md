@@ -76,7 +76,10 @@ than one that disappoints.
 **A DAY order lives one session**, as it does at a broker. Its session is that of the first bar it can
 trade against: a decision at a daily bar's close trades in the next session, and so does a decision part
 way through a daily bar — a quote at 10:00 — because that bar's range includes the hours before it. That
-is a one-session shift, the same one a market order decided there takes to the next open. The order
+is a one-session shift, the same one a market order decided there takes to the next open, and the order
+is listed as working until that shifted session ends: a quote handler that places only when nothing is
+working therefore restates every other session on daily bars, where live it would restate every
+session — replay such a strategy on minute bars. The order
 expires when a bar ends its session: any bar of a day or longer, or a minute bar ending at or after the
 `SessionWindow`'s close; a minute replay missing its last bar expires it before the next session's
 first bar can fill it. `report.caveats_.expired_day_orders_` counts them. **Replays from before this
@@ -86,7 +89,9 @@ less often and a protective stop has to be restated each session, as it does liv
 - a weekly, monthly or yearly bar still grants an order its whole range, every session in it — better than the
   unlimited rest it had, still optimistic; trust limit fills on those intervals least;
 - one `SessionWindow` serves a whole replay, so a US minute replay under the KRX default expires orders
-  at the KRX close, part way through the US session — give the replay the market's window;
+  at the KRX close, part way through the US session — give the replay the market's window; it is also
+  fixed at 15:30, so on a day KRX closes late a minute replay expires orders at 15:30 and an order
+  placed after it lives one bar;
 - an instrument with no bar for some sessions (a suspension, missing data) grants its order the first
   bar it has, however late; and a minute series with no bar at the close leaves the order in `working_`
   for the last bar's `on_bar` and for any quote before the next session's first bar, where live it is
