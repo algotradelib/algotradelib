@@ -266,6 +266,7 @@ int run_kiwoom(ssl::context& tls, const Arguments& arguments) {
 
   kiwoom::KiwoomConfig config;
   config.from_env();
+  std::cout << "credentials: environment variables (--credentials is for KIS only)\n";
   // Kiwoom's balance inquiry names one venue and does not say whether that filters the positions or
   // only values them, so the adapter refuses holdings until you state both. Until then the loop has
   // no portfolio and holds: this program runs and places nothing. Run the experiment in
@@ -312,6 +313,7 @@ int run_toss(ssl::context& tls, const Arguments& arguments) {
 
   toss::TossConfig config;
   config.from_env();
+  std::cout << "credentials: environment variables (--credentials is for KIS only)\n";
   auto client = std::make_shared<toss::TossBlockingClient>(tls, std::move(config));
 
   // Toss selects an account by sequence number and publishes the list. With one account that is the
