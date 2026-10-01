@@ -364,7 +364,7 @@ public:
    * Returns the portfolio to present to a strategy.
    *
    * **Working orders are left empty because this class is not who knows, not because none rest.**
-   * A replay does rest orders -- a limit the bar never reached stays queued rather than expiring --
+   * A replay does rest orders -- a limit the bar never reached stays queued for its session --
    * but the queue belongs to `backtest::QueueingExecutor`, and a ledger that held positions, cash
    * and realized profit would need a second subject and a dependency on the executor to report it.
    * `backtest::Backtester` owns both and fills the field in when it installs this portfolio, so the
