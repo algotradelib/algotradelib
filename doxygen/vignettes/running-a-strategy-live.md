@@ -94,7 +94,8 @@ have taken.
 The file is never deleted by the loop, so "did my stop get read?" stays answerable afterwards. **It also
 means a word left in it is carried out at every start**: a process started with `withdraw` or `flatten`
 written reads the broker's order list and holdings, does that to the whole account — every working order
-the account lists, every position it holds, not only this strategy's — and exits without trading.
+the account lists, every position it holds, not only this strategy's — and exits without letting the
+strategy trade.
 Remove the file before you start trading again.
 
 ## The hierarchy that actually matters
@@ -351,15 +352,18 @@ subtract orders the loop can see, so an order sent after the last listing — or
 enumerate orders, like the history fallback — would slip past it and the full-size close would be
 the same double sell by a different route. The withdrawals still go, because cancelling only reduces
 exposure; the position stays, held and reported. A stop pending when the process starts (the control
-file already says `flatten`) makes the startup read itself before it closes anything, so this case is a
-failed read, a source with no working-order inquiry, or an order sent after the last listing.
+file already says `flatten`) makes the startup read itself before it closes anything, so this case is
+one of those listed under `closing_source_unverified_` below: a failed order-list or holdings read, a
+source with no working-order inquiry, or an order sent after the last listing.
 
 **A flatten beside your own protective stop therefore takes two runs.** The first withdraws the stop and
 leaves the position, contended, and the program exits `CLOSING_INCOMPLETE`. Start the program again with
 `flatten` still in the control file: it reads the order list before anything else, sends nothing for the
 strategy (the stop's hold is in force from the first iteration, so the strategy cannot place its stop
-again), and closes what is held once nothing is resting on the closing side. If the cancellation is still
-pending at the broker, that run is contended too and sends nothing; run it again. Then remove the file.
+again), and closes what is held once nothing is resting on the closing side. Between the two runs the
+position has no stop. If the cancellation is still pending at the broker, that run is contended too,
+sends nothing (its second cancellation may be refused, which the report counts) — run it again; the same
+if the first run never saw the stop. Then remove the file.
 
 **An operator's halt refuses cancellations too, including a stop's own.** Note that this is `halt()`
 specifically, and not the uninformed holds described above — those let a withdrawal you named go out,
@@ -421,7 +425,8 @@ instructions from the portfolio snapshot — working orders for a `withdraw`, po
   inquiries are separate polls on separate cadences, and `as_of_` is the *holdings* timestamp — so a
   snapshot stamped a second ago can carry working orders read an hour ago, missing an order this
   runner placed in between.
-- **A listing is older than `set_maximum_portfolio_age`**, or no age policy was stated at all.
+- **A listing is older than `set_maximum_portfolio_age`.** With no age policy stated, no age makes the
+  picture unverified.
 - **The holdings are older than the listing** — a holdings read failed after it. A fill between the two
   would be in neither, so a `flatten` could miss both the order and the shares it bought.
 - **The source does not publish working orders at all.** A broker without the working-order inquiry
@@ -432,7 +437,7 @@ instructions from the portfolio snapshot — working orders for a `withdraw`, po
   reports complete with an order still resting.
 
 The pass still sends what it can see, because withdrawing some beats withdrawing none, but it will
-not call the result complete, and the note says which of the three it was. If you can, let the loop
+not call the result complete, and the note says which of these it was. If you can, let the loop
 complete a working-order poll before stopping it.
 
 **It is not a confirmation of anything at the exchange.** `true` means every instruction the loop

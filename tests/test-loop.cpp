@@ -1438,8 +1438,7 @@ TEST_CASE("a flatten cancels and then closes the position", "[loop][stop]") {
   StopSource stop;
 
   // One ordinary iteration first, so the startup read happens and the closing pass knows what is
-  // outstanding. A stop requested before that runs against an unverified picture, which is its own
-  // test below.
+  // outstanding. A stop requested before that makes the read itself, which is its own test below.
   loop.run(stop, 1);
   stop.request(StopIntent::FLATTEN);
 
