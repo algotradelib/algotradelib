@@ -754,24 +754,26 @@ with `GuardReason::VALUE_NOT_KNOWN` until you register it.
 
 - **Survive a broker whose answers lag its own orders.** A runner keeps each order it sent until a
   working-order listing replaces it. A market order that fills at once is in no listing, so the next
-  listing retires it. If the holdings read after that does not show the fill yet, a `TargetPosition`
-  sends the order again, then sells the excess once holdings catch up. A resting order that a lagging
-  listing does not show yet is sent again the same way, even by a strategy that reads `working_`
-  first. In the labs' paper broker, an every-minute strategy whose holdings answer ran 30 seconds
-  behind its fills placed 295 orders where the replay placed 47, and held twice its target. It needs a
-  lag longer than the time to the next holdings or listing read, and a pass inside that lag that states
-  the target again. So it grows with how often the strategy decides: an intraday one polling every few
-  seconds meets it at a few seconds of lag. A daily strategy decides once a day and rarely meets it in
-  one process, but a restart inside the lag does: the new process feeds the newest bar again. Neither
-  lag has been measured at a real broker (`plan/todo/demo-acceptance-run.md`). Measure both before an
-  intraday strategy trades real money.
+  listing retires it. If the first holdings read after that listing does not show the fill yet, a
+  `TargetPosition` sends the order again; when holdings catch up it sells, against the same lag, so the
+  position oscillates. A resting order that a lagging listing does not show yet is sent again the same
+  way, even by a strategy that reads `working_` first. In the labs' paper broker an every-minute
+  strategy whose holdings ran 30 seconds behind its fills placed 295 orders where the replay made 47
+  trades, and held up to three times its target with longer lags. (The paper broker fills a market
+  order at the next poll's instant, so there any lag outlasts the gap. At a real broker, which fills on
+  receipt, it takes a lag of about one holdings interval.) So the risk grows with how often the
+  strategy decides and polls: an intraday one polling every few seconds meets it at a few seconds of
+  lag. A daily strategy decides once a day and rarely meets it in one process, but a restart inside the
+  lag does, because the new process feeds the newest bar again. Neither lag has been measured at a real
+  broker (`plan/todo/demo-acceptance-run.md`). Measure both before an intraday strategy trades real
+  money.
 - **Stream.** It polls. `plan/todo/realtime-streaming.md` drops into the same source seam.
 - **Run more than one loop.** One loop, one thread. See `plan/todo/parallel-execution.md`.
 - **Tell you whether the sellable figure already excludes your resting orders.** Neither broker
   documents it, so the guard subtracts them — safe, and possibly twice. Turn on
   `probe_sellable_convention()` and a run that observes one says so in `report.notes_`.
 
-Surviving a restart is no longer on this list. Bind a `runner::FileJournal` and the ledger becomes
+Surviving a restart is no longer on this list, except for the lag above. Bind a `runner::FileJournal` and the ledger becomes
 durable: every instruction is recorded before it is sent, a restarted runner recovers what its
 predecessor left owed, and the listings this source already reads resolve it. See the
 [recovering after a crash](recovering-after-a-crash.md) vignette — including why `not_placed` and
