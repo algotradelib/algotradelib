@@ -88,9 +88,9 @@ unsupported verb fails with a `static_assert` naming the verb and the client.
 | `has_history_cursor` | no | yes |
 | `has_history_symbol_filter` | no | yes |
 
-A capability is not an availability: KIS implements the amendable-order inquiry
-but does not serve it to demo accounts, which stays a run-time
-`ErrorCategory::INVALID_ARGUMENT`. Anything the bound broker cannot express —
+A capability is not an availability: KIS does not serve its amendable-order
+inquiry to demo accounts, so on demo the adapter answers it from the daily order
+inquiry instead, a run-time matter. Anything the bound broker cannot express —
 an idempotency key at KIS, a partial cancellation at Toss, an order-history
 filter neither adapter sends — is refused before authentication and before any
 socket write rather than dropped silently.

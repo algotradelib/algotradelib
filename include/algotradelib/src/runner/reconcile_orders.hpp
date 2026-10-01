@@ -300,11 +300,13 @@ inline Evidence trigger_evidence(
  * unique match and clears the hold on the newer one -- which is a real hazard
  * and is why this is worth writing down rather than leaving as an `if`.
  *
- * It is not treated as silence because at KIS **every** working-order row is
- * timestamp-less: `parse_open_orders` sets no `ordered_at_` at all, since the
+ * It is not treated as silence because at KIS **every** live working-order row
+ * is timestamp-less: `parse_open_orders` sets no `ordered_at_` at all, since the
  * inquiry publishes `ord_tmd` as `HHMMSS` with no date and this library refuses
  * to guess the calendar day. Making an absent instant unconfirmable would make
- * every KIS recovery ambiguous and stall the primary path outright.
+ * every KIS recovery ambiguous and stall the primary path outright. (A KIS
+ * *demo* listing comes from the daily inquiry, whose rows carry `ord_dt`, so a
+ * demo reconcile takes the timed branch: it does not rehearse the live one.)
  *
  * **What contains the hazard, and what it does not.** Once an instrument is
  * marked, `IndeterminacyLedger::requires_reconcile` withholds everything for

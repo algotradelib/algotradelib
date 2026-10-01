@@ -250,11 +250,14 @@ struct KisClientTestAccess {
     return KisClient::parse_order_ack(std::move(response));
   }
 
-  static Result<KisOpenOrderPage> parse_open_orders(Result<network::HttpResponse> response) {
+  static Result<KisOpenOrderPage> parse_open_orders(
+    Result<network::HttpResponse> response,
+    bool demo = false
+  ) {
     std::string foreign_cursor;
     std::string domestic_cursor;
     return KisClient::parse_open_orders_page(
-      std::move(response), foreign_cursor, domestic_cursor
+      std::move(response), foreign_cursor, domestic_cursor, demo
     );
   }
 
@@ -2872,27 +2875,88 @@ TEST_CASE(
 }
 
 TEST_CASE(
-  "KIS refuses the modifiable-order inquiry on a demo account",
-  "[broker][kis][order][validation]"
+  "KIS answers the modifiable-order read on demo from today's order history",
+  "[broker][kis][order]"
 ) {
-  net::io_context ioc;
-  ssl::context context(ssl::context::tls_client);
+  // Demo has no `TTTC0084R`. F16: refused, it kept a demo loop's startup gate closed for good.
+  const kis::KisAccount account{"12345678", "01"};
   kis::KisConfig demo;
   demo.is_demo_ = true;
-  auto client = std::make_shared<kis::KisClient>(ioc.get_executor(), context, demo);
 
-  bool completed = false;
-  client->async_open_orders(
-    kis::KisAccount{"12345678", "01"},
-    [&completed](Result<kis::KisOpenOrderPage> result) {
-      REQUIRE_FALSE(result);
-      REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
-      REQUIRE(result.error().broker_code_ == "demo_unsupported");
-      completed = true;
-    }
-  );
-  ioc.run();
-  REQUIRE(completed);
+  SECTION("the request is the daily inquiry, today, unfilled orders only") {
+    const auto request =
+      kis::KisClientTestAccess::open_orders_request(account, demo, "", "", false);
+    REQUIRE(request.target_.find("/uapi/domestic-stock/v1/trading/inquire-daily-ccld") == 0);
+    CHECK(header_of(request, "tr_id") == "VTTC0081R");
+    CHECK(request.target_.find("&CCLD_DVSN=02&") != std::string::npos);
+    const auto day = kis::today_in_seoul();
+    char today[9];
+    std::snprintf(today, sizeof today, "%04d%02u%02u", day.year_, day.month_, day.day_);
+    CHECK(request.target_.find(std::string("INQR_STRT_DT=") + today) != std::string::npos);
+    CHECK(request.target_.find(std::string("INQR_END_DT=") + today) != std::string::npos);
+  }
+
+  SECTION("each row with a remaining quantity is listed, and only those") {
+    // Rows 1-3 are documented shapes. Rows 4 and 5 are hypotheses until a demo session observes an
+    // amendment and a partial cancel: an original whose remnant still rests although `cncl_yn` is
+    // `Y` is listed, because hiding a resting order is the error that sends it twice.
+    auto result = kis::KisClientTestAccess::parse_open_orders(
+      json_response(
+        R"({"rt_cd":"0","output1":[)"
+        R"({"ord_dt":"20261002","ord_gno_brno":"06010","odno":"0000011111","orgn_odno":"",)"
+        R"("pdno":"005930","prdt_name":"Samsung","sll_buy_dvsn_cd":"02","ord_dvsn_cd":"00",)"
+        R"("ord_qty":"1","ord_unpr":"200000","ord_tmd":"090102","tot_ccld_qty":"0",)"
+        R"("tot_ccld_amt":"0","avg_prvs":"0","cncl_yn":"N","rmn_qty":"1","rjct_qty":"0"},)"
+        R"({"ord_dt":"20261002","ord_gno_brno":"06010","odno":"0000011112","orgn_odno":"",)"
+        R"("pdno":"005930","prdt_name":"Samsung","sll_buy_dvsn_cd":"01","ord_dvsn_cd":"01",)"
+        R"("ord_qty":"1","ord_unpr":"0","ord_tmd":"090103","tot_ccld_qty":"1",)"
+        R"("tot_ccld_amt":"274500","avg_prvs":"274500","cncl_yn":"N","rmn_qty":"0","rjct_qty":"0"},)"
+        R"({"ord_dt":"20261002","ord_gno_brno":"06010","odno":"0000011113","orgn_odno":"",)"
+        R"("pdno":"005930","prdt_name":"Samsung","sll_buy_dvsn_cd":"02","ord_dvsn_cd":"00",)"
+        R"("ord_qty":"1","ord_unpr":"200000","ord_tmd":"090104","tot_ccld_qty":"0",)"
+        R"("tot_ccld_amt":"0","avg_prvs":"0","cncl_yn":"Y","rmn_qty":"0","rjct_qty":"0"},)"
+        R"({"ord_dt":"20261002","ord_gno_brno":"06010","odno":"0000011115","orgn_odno":"0000011111",)"
+        R"("pdno":"005930","prdt_name":"Samsung","sll_buy_dvsn_cd":"02","ord_dvsn_cd":"00",)"
+        R"("ord_qty":"1","ord_unpr":"201000","ord_tmd":"090200","tot_ccld_qty":"0",)"
+        R"("tot_ccld_amt":"0","avg_prvs":"0","cncl_yn":"N","rmn_qty":"1","rjct_qty":"0"},)"
+        R"({"ord_dt":"20261002","ord_gno_brno":"06010","odno":"0000011116","orgn_odno":"",)"
+        R"("pdno":"005930","prdt_name":"Samsung","sll_buy_dvsn_cd":"02","ord_dvsn_cd":"00",)"
+        R"("ord_qty":"3","ord_unpr":"200000","ord_tmd":"090300","tot_ccld_qty":"1",)"
+        R"("tot_ccld_amt":"200000","avg_prvs":"200000","cncl_yn":"Y","rmn_qty":"1","rjct_qty":"0"})"
+        R"(]})"
+      ),
+      /*demo=*/true
+    );
+    REQUIRE(result);
+    REQUIRE(result.value().orders_.size() == 3);
+    const auto& resting = result.value().orders_[0];
+    CHECK(resting.order_ref_.branch_number_ == "06010");
+    CHECK(resting.order_ref_.order_number_ == "0000011111");
+    CHECK(resting.amendable_quantity_ == Decimal64::parse("1"));
+    CHECK(resting.order_.side_ == OrderSide::BUY);
+    CHECK(resting.order_.type_ == OrderType::LIMIT);
+    CHECK(resting.order_.price_ == Decimal64::parse("200000"));
+    CHECK(resting.order_.status_ == OrderStatus::PENDING);
+    CHECK(resting.stop_released_.empty());
+
+    const auto& amended = result.value().orders_[1];
+    CHECK(amended.order_ref_.order_number_ == "0000011115");
+    CHECK(amended.original_order_.branch_number_ == "06010");
+    CHECK(amended.original_order_.order_number_ == "0000011111");
+
+    const auto& remnant = result.value().orders_[2];
+    CHECK(remnant.order_ref_.order_number_ == "0000011116");
+    CHECK(remnant.amendable_quantity_ == Decimal64::parse("1"));
+    CHECK(remnant.order_.status_ == OrderStatus::PARTIAL_FILLED);
+  }
+
+  SECTION("a live configuration still asks the modifiable-order inquiry") {
+    kis::KisConfig live;
+    live.is_demo_ = false;
+    const auto request =
+      kis::KisClientTestAccess::open_orders_request(account, live, "", "", false);
+    CHECK(header_of(request, "tr_id") == "TTTC0084R");
+  }
 }
 
 TEST_CASE(

@@ -82,9 +82,9 @@ struct stated_trigger_price<Traits, std::void_t<decltype(Traits::has_trigger_pri
  * defaulted answer would let a new broker silently claim a feature it lacks.
  *
  * Capability is not availability. Whether a *configuration* may call an
- * implemented operation stays a run-time error: KIS implements the
- * modifiable-order inquiry but does not offer it to demo accounts, which is an
- * `ErrorCategory::INVALID_ARGUMENT` at run time. Encoding a per-credential
+ * implemented operation stays a run-time matter: KIS does not offer its
+ * modifiable-order inquiry to demo accounts, so its adapter answers that read
+ * from the daily order inquiry there instead. Encoding a per-credential
  * restriction here would make one binary claim different things for a live and a
  * demo key.
  */
