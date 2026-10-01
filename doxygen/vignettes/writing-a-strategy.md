@@ -230,7 +230,8 @@ portfolio (a sell, a trigger, a non-day validity or an idempotency key on one is
 portfolio value, which a replay supplies and a live runner does not unless you set
 `Runner::set_portfolio_value`. It stays an intent, though:
 withheld for the account it is dropped rather than kept for later as a `TargetPosition` would be, and
-refused for the market phase it is kept as an intent is, with the check an intent gets at release.
+refused for the market phase (or because the broker could not be reached, or turned it away for its
+rate limit) it is kept as an intent is, with the check an intent gets at release.
 
 ## What the context gives you
 

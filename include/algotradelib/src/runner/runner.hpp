@@ -1090,7 +1090,10 @@ public:
     return settle();
   }
 
-  /** Returns how many order intents wait for a permitted market phase; see `retry_retained_targets`. */
+  /**
+   * Returns how many order intents wait for a permitted market phase, or for a broker that could not be
+   * reached or turned them away for its rate limit; see `retry_retained_targets`.
+   */
   std::size_t intents_kept_for_phase() const noexcept { return kept_intents_.size(); }
 
   /**
@@ -1102,7 +1105,10 @@ public:
   /** Returns how many targets are retained, for either reason; see `retry_retained_targets`. */
   std::size_t targets_retained() const noexcept { return retained_targets_.size(); }
 
-  /** Returns how many of them wait for a permitted market phase; see `retry_retained_targets`. */
+  /**
+   * Returns how many of them wait for a permitted market phase, or for a broker that could not be
+   * reached or turned them away for its rate limit; see `retry_retained_targets`.
+   */
   std::size_t targets_retained_for_phase() const noexcept {
     return static_cast<std::size_t>(std::count_if(
       retained_targets_.begin(), retained_targets_.end(),
@@ -1861,8 +1867,8 @@ private:
    * order that filled at once is in no listing, so the next listing retires it while a holdings answer
    * that lags the fill does not show it either. Either way the next pass can send the order again
    * (lab F15, paper broker; an every-minute strategy with holdings 30 s behind placed six times the
-   * orders). Closing
-   * it needs the two lags measured at a broker; `running-a-strategy-live.md` says so.
+   * orders). Closing it is `plan/todo/reservation-until-confirmed.md`; `running-a-strategy-live.md`
+   * says so.
    */
   void persist_reservation(
     const strategy::PlannedOrder& order,

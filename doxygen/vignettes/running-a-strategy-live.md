@@ -285,7 +285,7 @@ refused flatten is reported once rather than twice.
 | `orders_unbuildable_` | reconciliation could not build the instruction: no reference data, no price, an unknown grid — **or a quantity that rounded to zero**, which is a deliberate drop rather than a fault, so a non-zero figure is not by itself a reason to go looking for missing data |
 | `orders_reconcile_withheld_` | the indeterminacy ledger is holding that instrument until a listing settles an unknown outcome |
 | `orders_guard_refused_` | `RiskGuard` refused it — **a hold as well as a limit**, since it checks the active holds first, so a halted run reports every order here. Nothing was sent |
-| `orders_binding_refused_` | the binding would not send it; no request went out |
+| `orders_binding_refused_` | the binding would not send it, or could not reach the broker (a DNS, connect or TLS failure; such an order is kept and retried, see the kept-instructions rules); no request went out |
 | `orders_broker_refused_` | the broker was asked and said no; a request was spent |
 | `orders_indeterminate_` | the request failed in transit, so the order may or may not exist |
 | `cancels_rejected_` | a withdrawal refused outright — **by the broker or by the binding**; `RejectedCancel::by_broker_` distinguishes them and this figure does not |
@@ -501,8 +501,11 @@ That is what a replay does by filling at the next bar's open. The rules around i
   `BINDING_REFUSED` rejection while the order waits, and it is counted in the `_for_phase` figures
   above. **So is an order the broker turned away for its rate limit** (KIS's `EGW00201` at a busy
   open): the broker answered and processed nothing, so it is reported as `BROKER_REFUSED` and kept the
-  same way. Like a phase refusal neither has an age limit: one kept near the close and not stated again goes out
-  at the next open, if its book is unchanged. An order whose request *was* written and whose reply was
+  same way, except an `OrderIntent` carrying an idempotency key, which the broker has seen. Like a
+  phase refusal neither has an age limit: one kept near the close and not stated again goes out at the
+  next open (an intent only if its book is unchanged). A rate-limited retry is a request like any other,
+  so a tight `max_orders_per_window_` can refuse it, and a guard's refusal is final. An order whose
+  request *was* written and whose reply was
   lost is not this: it may exist, and recovery resolves it from the broker's lists.
 - **An `OrderIntent` is kept the same way** (`Runner::intents_kept_for_phase`) — the commonest is a
   daily strategy's protective stop, which a broker refuses at midnight; unkept, it was restated and
@@ -542,7 +545,7 @@ That is what a replay does by filling at the next bar's open. The rules around i
   target would be dropped.
 - **It helps only while `permitted_phases_` stays inside the hours the broker takes orders.** A target
   whose order a broker rejects in a permitted phase is not kept: that is a refusal of the order, not of
-  the hour.
+  the hour. (A rate-limit refusal is the exception, above: it is about the moment, and is kept.)
 - It is planned against that iteration's holdings and listing, and against the **last price the runner
   has**: with bars alone that is yesterday's close, because the session's forming bar is not fed, so
   sizing and the buying-power check do not see the opening gap. Poll quotes (`PollSchedule::quotes_`)
