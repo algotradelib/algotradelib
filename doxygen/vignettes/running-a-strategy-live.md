@@ -484,6 +484,17 @@ That is what a replay does by filling at the next bar's open. The rules around i
   it, as does an `on_phase` target at the open.
 - A stop discards it, and so does an operator's halt or a local failure: a decision made hours before
   a halt must not go out when the halt is lifted.
+- **An order the broker could not be reached for is kept the same way**, whatever the phase it failed
+  in (it is still released only in a phase the limits admit): a DNS, connect or
+  TLS failure, a closed client, or a failed token request -- anything that never left the process,
+  except the client's own validation, which would refuse it again. Dropped, the decision waited for its
+  next bar: a day, for a daily strategy, and a protective stop missing for the whole session. It is
+  offered again only after a holdings read newer than the failure, which is the evidence the broker
+  answers again, so a dead connection is not retried every tick. Each failed attempt is reported as a
+  `BINDING_REFUSED` rejection while the order waits, and it is counted in the `_for_phase` figures
+  above. Like a phase refusal it has no age limit: one kept near the close and not stated again goes out
+  at the next open, if its book is unchanged. An order whose request *was* written and whose reply was
+  lost is not this: it may exist, and recovery resolves it from the broker's lists.
 - **An `OrderIntent` is kept the same way** (`Runner::intents_kept_for_phase`) — the commonest is a
   daily strategy's protective stop, which a broker refuses at midnight; unkept, it was restated and
   refused every midnight and the position was never protected live. But an intent states a quantity
