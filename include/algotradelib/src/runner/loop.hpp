@@ -855,6 +855,12 @@ struct LoopReport {
    */
   std::optional<BrokerRefusal> last_broker_refusal_;
   /**
+   * Why reconciliation could not build the last instruction **this run's** polling counted in
+   * `orders_unbuildable_`, and for which instrument; empty when it counted none. See
+   * `Runner::last_unbuildable`.
+   */
+  std::optional<strategy::Rejection> last_unbuildable_;
+  /**
    * How many phase changes were announced to the strategy.
    *
    * The counter that distinguishes a mechanism that ran from one that was merely configured. A run
@@ -1477,6 +1483,7 @@ public:
     // refusal from the *closing* pass would have replaced it while the count still described a
     // polling one -- a report naming an order none of its figures counted.
     std::optional<BrokerRefusal> refusal_at_boundary;
+    std::optional<strategy::Rejection> unbuildable_at_boundary;
     // Differenced around the run for the same reason, and the reason is sharper here: the source
     // survives `run` returning, so an absolute figure would report the previous run's charges again.
     const auto charged_before = [&]() {
@@ -1513,6 +1520,7 @@ public:
       if (report.abandoned_) {
         outcomes_after = instruction_outcomes();
         refusal_at_boundary = runner_->last_broker_refusal();
+        unbuildable_at_boundary = runner_->last_unbuildable();
         // As for a stop: retained work lives for one run. A run resumed after an outage of unknown
         // length must not place what was decided before it.
         runner_->clear_retained_targets();
@@ -1522,6 +1530,7 @@ public:
         // Sampled here, before the stop runs anything, for the reason stated where this began.
         outcomes_after = instruction_outcomes();
         refusal_at_boundary = runner_->last_broker_refusal();
+        unbuildable_at_boundary = runner_->last_unbuildable();
         honour(*intent, report);
         report.stopped_by_ = intent;
         break;
@@ -1547,6 +1556,7 @@ public:
     if (!report.stopped_by_ && !report.abandoned_) {
       outcomes_after = instruction_outcomes();
       refusal_at_boundary = runner_->last_broker_refusal();
+        unbuildable_at_boundary = runner_->last_unbuildable();
     }
     note_instruction_outcomes(report, outcomes_before, outcomes_after);
     // **Carried only when this run's polling saw one**, which the count already decides: any refusal
@@ -1555,6 +1565,10 @@ public:
     // no reason to have.
     if (report.orders_broker_refused_ != 0) {
       report.last_broker_refusal_ = refusal_at_boundary;
+    }
+    // The same rule for the reconciliation's own refusals.
+    if (report.orders_unbuildable_ != 0) {
+      report.last_unbuildable_ = unbuildable_at_boundary;
     }
     // **Said only when a band was actually held back**, not merely because no policy was stated. A
     // run that registers no band and polls none has nothing to decide, and a note telling it to

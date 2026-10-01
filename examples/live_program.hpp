@@ -184,6 +184,11 @@ inline void print_loop(const runner::LoopReport& report, std::ostream& out) {
       << "refused locally : " << report.orders_binding_refused_ << " (by the adapter, before sending)\n"
       << "refused by broker: " << report.orders_broker_refused_ << '\n'
       << "unknown outcome : " << report.orders_indeterminate_ << " (read the broker's order list)\n";
+  if (report.last_unbuildable_) {
+    out << "last unbuildable: " << strategy::reject_reason_name(report.last_unbuildable_->reason_) << " for "
+        << report.last_unbuildable_->instrument_.symbol_
+        << (report.last_unbuildable_->tag_.empty() ? "" : " (" + report.last_unbuildable_->tag_ + ")") << '\n';
+  }
   if (report.last_broker_refusal_) {
     out << "last refusal    : " << report.last_broker_refusal_->code_ << ' '
         << report.last_broker_refusal_->message_ << '\n';

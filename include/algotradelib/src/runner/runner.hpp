@@ -1173,6 +1173,18 @@ public:
   }
 
   /**
+   * Why reconciliation could not build the **most recent** instruction it refused, and for what.
+   *
+   * The reason behind `orders_unbuildable`, kept as `last_broker_refusal` keeps the broker's: a live
+   * source discards each pass's `Report`, whose `rejected_` carries it per instruction, so without this
+   * a run reports only a count. Overwritten, not accumulated. Empty until reconciliation refuses one.
+   * A live weight-sized intent, for one, is refused `NO_PORTFOLIO_VALUE` on every pass.
+   */
+  const std::optional<strategy::Rejection>& last_unbuildable() const noexcept {
+    return last_unbuildable_;
+  }
+
+  /**
    * Sets how small a drift is not worth an instruction.
    *
    * An execution-cost policy and therefore the operator's, alongside `RiskLimits`. Every floor unset
@@ -1485,6 +1497,7 @@ private:
         // quantity that rounded away on the lot, which is a deliberate drop. The reason is on the
         // entry.
         ++orders_unbuildable_;
+        last_unbuildable_ = rejection;
         report.rejected_.push_back(rejection);
       }
       for (const auto& order : planned.place_) {
@@ -2954,6 +2967,7 @@ private:
   std::size_t instructions_unavailable_{0};
   /** What the broker said about the most recent order it refused; see the accessor. */
   std::optional<BrokerRefusal> last_broker_refusal_;
+  std::optional<strategy::Rejection> last_unbuildable_;
   std::optional<Decimal64> portfolio_value_;
   std::optional<Currency> portfolio_value_currency_;
   strategy::TradeTolerance tolerance_;
