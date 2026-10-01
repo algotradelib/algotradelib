@@ -220,11 +220,15 @@ export KIS_APP_KEY=... KIS_APP_SECRET=... KIS_CANO=... KIS_DEMO=1
 ./build/bin/example-live-program kis 005930 --live    # trade, through a journal
 ```
 
+On demo these two stop at reference data, which a KIS demo host refuses, unless market data comes from
+elsewhere, as below.
+
 Or keep each account's keys in its own file and pass the directory: `--credentials DIR` (or
 `ATL_CREDENTIALS_DIR`) reads `DIR/kis/demo.json`, or `real.json` with `KIS_DEMO=0`. On demo, market data
 then comes from `real.json` through a session with no account, because a KIS demo host refuses
-reference data and the calendar; `--market-data toss` reads it from Toss instead. See "Credentials
-from files" in [Talking to a broker directly](doxygen/vignettes/broker-clients.md).
+reference data and the calendar; `--market-data toss` reads it from Toss instead (demo only). With
+either, a demo run knows the market phase, so `--live` places demo orders. See "Credentials from
+files" in [Talking to a broker directly](doxygen/vignettes/broker-clients.md).
 
 Without `--live` the runner is bound with `live::bind_observer`, which has nothing to send through.
 With it, `live_program::trade` does what a restartable run needs, in the order it needs it:

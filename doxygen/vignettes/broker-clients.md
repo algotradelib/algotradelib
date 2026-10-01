@@ -85,7 +85,8 @@ cmake --build build --target example-kis-account
 ### Credentials from files
 
 An account's keys can also live in one JSON file per account, in a directory you choose and pass
-at run time: `--credentials DIR` to `example-live-program kis` and `example-kis-*`, or
+at run time: `--credentials DIR` to `example-live-program kis` and the `example-kis-*` programs that
+call KIS (not the offline `example-kis-place-order`), or
 `ATL_CREDENTIALS_DIR`, which `example-portable-*` and `example-strategy-live` also read. They then read
 `DIR/kis/demo.json`, or `DIR/kis/real.json` when `KIS_DEMO=0`, with `KisConfig::from_json` and
 `KisAccount::from_json` (`app_key`, `app_secret`, `account_number`, `account_product_code`,

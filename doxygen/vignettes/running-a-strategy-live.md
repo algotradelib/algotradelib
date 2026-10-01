@@ -501,9 +501,9 @@ That is what a replay does by filling at the next bar's open. The rules around i
   `BINDING_REFUSED` rejection while the order waits, and it is counted in the `_for_phase` figures
   above. **So is an order the broker turned away for its rate limit** (KIS's `EGW00201` at a busy
   open, when answered with HTTP 200; KIS's HTTP 500 shape leaves an order indeterminate instead, see
-  [Transport and pacing](transport-and-pacing.md)): the broker answered and processed nothing, so it is
-  reported as `BROKER_REFUSED` and kept the same way, except an `OrderIntent` carrying an idempotency key, which the broker has seen. Like a
-  phase refusal neither has an age limit: one kept near the close and not stated again goes out at the
+  [Transport and pacing](transport-and-pacing.md)): the broker answered and processed nothing, so it
+  is reported as `BROKER_REFUSED` and kept the same way, except an `OrderIntent` carrying an
+  idempotency key, which the broker has seen. Like a phase refusal neither has an age limit: one kept near the close and not stated again goes out at the
   next open (an intent only if its book is unchanged). A rate-limited retry is a request like any other,
   so a tight `max_orders_per_window_` can refuse it, and a guard's refusal is final. An order whose
   request *was* written and whose reply was
