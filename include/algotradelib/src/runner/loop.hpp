@@ -1556,7 +1556,7 @@ public:
     if (!report.stopped_by_ && !report.abandoned_) {
       outcomes_after = instruction_outcomes();
       refusal_at_boundary = runner_->last_broker_refusal();
-        unbuildable_at_boundary = runner_->last_unbuildable();
+      unbuildable_at_boundary = runner_->last_unbuildable();
     }
     note_instruction_outcomes(report, outcomes_before, outcomes_after);
     // **Carried only when this run's polling saw one**, which the count already decides: any refusal

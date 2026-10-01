@@ -1178,7 +1178,8 @@ public:
    * The reason behind `orders_unbuildable`, kept as `last_broker_refusal` keeps the broker's: a live
    * source discards each pass's `Report`, whose `rejected_` carries it per instruction, so without this
    * a run reports only a count. Overwritten, not accumulated. Empty until reconciliation refuses one.
-   * A live weight-sized intent, for one, is refused `NO_PORTFOLIO_VALUE` on every pass.
+   * A live weight-sized intent, for one, is refused `NO_PORTFOLIO_VALUE` on every pass unless the
+   * caller sets `set_portfolio_value`.
    */
   const std::optional<strategy::Rejection>& last_unbuildable() const noexcept {
     return last_unbuildable_;

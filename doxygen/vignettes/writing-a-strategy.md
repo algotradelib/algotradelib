@@ -227,7 +227,8 @@ Use `OrderIntent` when you genuinely mean "trade this much" rather than "hold th
 accept that the sizing is then yours. The one exception is a weight: `SizeSpec::target_weight` means
 "hold this fraction", so a weight-sized buy intent is planned as a target and diffed against the
 portfolio (a sell, a trigger, a non-day validity or an idempotency key on one is refused). It needs a
-portfolio value, which a replay supplies and a live runner does not. It stays an intent, though:
+portfolio value, which a replay supplies and a live runner does not unless you set
+`Runner::set_portfolio_value`. It stays an intent, though:
 withheld for the account it is dropped rather than kept for later as a `TargetPosition` would be, and
 refused for the market phase it is kept as an intent is, with the check an intent gets at release.
 

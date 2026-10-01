@@ -305,10 +305,10 @@ themselves were silent. It is empty on a dry runner and in a replay, which have 
 
 **`last_unbuildable_` does the same for `orders_unbuildable_`**: the reconciliation's reason
 (`RejectReason`), the instrument and your tag, for the last instruction this run's polling could not
-build, and empty when it built them all. `live_program` prints it as `last unbuildable`. The commonest
-live answer is `no_portfolio_value`: a weight-sized instruction (`SizeSpec::target_weight`, which
+build, and empty when it built them all. `live_program` prints it as `last unbuildable`. A common live
+answer is `no_portfolio_value`: a weight-sized instruction (`SizeSpec::target_weight`, which
 `EqualWeightRebalance` states) needs a portfolio value, which a replay supplies and a live runner does
-not, so it is refused on every pass.
+not unless you set `Runner::set_portfolio_value`, so it is refused on every pass.
 
 **An unknown buying power blocks buying.** Only if you asked for the check: set
 `RiskLimits::enforce_buying_power_` and the loop refuses to send while it has no answer from the
