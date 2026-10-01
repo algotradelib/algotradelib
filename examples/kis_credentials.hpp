@@ -28,10 +28,11 @@ namespace kis_credentials {
 
 /** Returns `ATL_CREDENTIALS_DIR`, or nothing. For an example that parses no arguments of its own. */
 inline std::optional<std::filesystem::path> environment_directory() {
-  if (const char* variable = std::getenv("ATL_CREDENTIALS_DIR")) {
-    return std::filesystem::path(variable);
+  const char* variable = std::getenv("ATL_CREDENTIALS_DIR");
+  if (variable != nullptr && *variable == '\0') {
+    throw std::runtime_error("ATL_CREDENTIALS_DIR is set but empty");
   }
-  return std::nullopt;
+  return variable != nullptr ? std::optional<std::filesystem::path>(variable) : std::nullopt;
 }
 
 /**
@@ -44,7 +45,8 @@ inline std::optional<std::filesystem::path> take_directory(int& argc, char** arg
   int kept = 1;
   for (int i = 1; i < argc; ++i) {
     if (std::string_view(argv[i]) == "--credentials") {
-      if (i + 1 >= argc || std::string_view(argv[i + 1]).rfind("--", 0) == 0) {
+      if (i + 1 >= argc || std::string_view(argv[i + 1]).empty() ||
+          std::string_view(argv[i + 1]).rfind("--", 0) == 0) {
         throw std::runtime_error("--credentials needs a directory");
       }
       directory = argv[++i];

@@ -27,7 +27,10 @@
  *   KIS may refuse an order clamped to Toss's band.
  *
  * Without a directory, or without `DIR/kis/real.json`, the demo session reads its own market data,
- * and stops at reference data. `--credentials` is for KIS only: Kiwoom and Toss read their
+ * and stops at reference data. With `kis/real.json` the run gets past reference data, but KIS's
+ * calendar currently fails with the real keys too (`EGW00201`, `labs/FINDINGS.md` F26), so the
+ * market phase stays unknown and no position is opened; `--market-data toss` has a calendar.
+ * `--credentials` is for KIS only: Kiwoom and Toss read their
  * environment variables, so a directory given to them is refused rather than ignored.
  *
  * The broker-free part -- the order of journal, recovery, loop and report -- is `live_program.hpp`,
@@ -224,6 +227,11 @@ int run_kis(ssl::context& tls, const Arguments& arguments) {
   // Market data from a session with no account, so it cannot trade: swapped by mistake, every order
   // and account read through it is refused before any I/O.
   if (arguments.market_data_ == "toss") {
+    if (!demo) {
+      // Toss's band can differ from KIS's (`labs/FINDINGS.md` F27); not for real money until that
+      // is explained.
+      throw std::runtime_error("--market-data toss is for a KIS demo run only");
+    }
     if (!arguments.credentials_) {
       throw std::runtime_error("--market-data toss reads tossinvest/real.json; give --credentials DIR");
     }

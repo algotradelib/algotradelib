@@ -99,7 +99,9 @@ the calendar), and `live_program::trade` and `observe` take one for those and fo
 `example-live-program kis` on demo builds one when `DIR/kis/real.json` exists, with an empty
 `KisAccount`: the KIS client refuses every account request and order through it before any I/O
 (`invalid_account`). `--market-data toss` reads them from Toss instead (`DIR/tossinvest/real.json`,
-no account selected). Toss's daily price band can differ from KIS's for the same stock
+no account selected), and only on demo. For now KIS's calendar fails through the real keys too
+(`EGW00201`, `labs/FINDINGS.md` F26), so a KIS-only demo run has no market phase and opens no
+position; with `--market-data toss` it has one. Toss's daily price band can differ from KIS's for the same stock
 (`labs/FINDINGS.md` F27), and the band clamps limit prices, so KIS may refuse an order priced from it.
 Kiwoom and Toss trading still read their environment variables; `example-live-program` refuses
 `--credentials` for them.
