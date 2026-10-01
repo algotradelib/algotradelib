@@ -151,8 +151,10 @@ inline void print_recovery(const runner::RecoveryReport& recovery, std::ostream&
 inline void print_how_to_stop(const Settings& settings, std::ostream& out) {
   out << "to stop: Ctrl-C or SIGTERM (quiesce), or\n"
       << "  echo quiesce  > " << settings.control_file_ << "   # stop placing, leave orders resting\n"
-      << "  echo withdraw > " << settings.control_file_ << "   # cancel this run's working orders\n"
-      << "  echo flatten  > " << settings.control_file_ << "   # withdraw, then close positions\n"
+      << "  echo withdraw > " << settings.control_file_ << "   # cancel the account's working orders\n"
+      << "  echo flatten  > " << settings.control_file_ << "   # withdraw, then close the account's positions\n"
+      << "the file is not deleted: a word left in it is carried out at the next start; remove it\n"
+      << "before trading again\n"
       << "a supervisor's grace period must exceed one loop iteration plus one request timeout\n";
 }
 

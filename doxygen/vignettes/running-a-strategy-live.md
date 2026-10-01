@@ -91,7 +91,11 @@ The loop reads it once per tick, so the response time is one tick. A word it doe
 mean choosing how much of your position to close on your behalf. Check the notes if a stop seems not to
 have taken.
 
-The file is never deleted by the loop, so "did my stop get read?" stays answerable afterwards.
+The file is never deleted by the loop, so "did my stop get read?" stays answerable afterwards. **It also
+means a word left in it is carried out at every start**: a process started with `withdraw` or `flatten`
+written reads the broker's order list and holdings, does that to the whole account — every working order
+the account lists, every position it holds, not only this strategy's — and exits without trading.
+Remove the file before you start trading again.
 
 ## The hierarchy that actually matters
 
@@ -346,8 +350,16 @@ false, and a later holdings snapshot is what tells you which one you got.
 subtract orders the loop can see, so an order sent after the last listing — or a source that cannot
 enumerate orders, like the history fallback — would slip past it and the full-size close would be
 the same double sell by a different route. The withdrawals still go, because cancelling only reduces
-exposure; the position stays, held and reported. If you need a flatten to actually place, give the
-loop a working-order cadence and let one poll complete before stopping it.
+exposure; the position stays, held and reported. A stop pending when the process starts (the control
+file already says `flatten`) makes the startup read itself before it closes anything, so this case is a
+failed read, a source with no working-order inquiry, or an order sent after the last listing.
+
+**A flatten beside your own protective stop therefore takes two runs.** The first withdraws the stop and
+leaves the position, contended, and the program exits `CLOSING_INCOMPLETE`. Start the program again with
+`flatten` still in the control file: it reads the order list before anything else, sends nothing for the
+strategy (the stop's hold is in force from the first iteration, so the strategy cannot place its stop
+again), and closes what is held once nothing is resting on the closing side. If the cancellation is still
+pending at the broker, that run is contended too and sends nothing; run it again. Then remove the file.
 
 **An operator's halt refuses cancellations too, including a stop's own.** Note that this is `halt()`
 specifically, and not the uninformed holds described above — those let a withdrawal you named go out,
@@ -402,9 +414,9 @@ flatten note above.
 instructions from the portfolio snapshot — working orders for a `withdraw`, positions for a `flatten`
 — so it can only be complete if that picture is current. Five ways it is not:
 
-- **The startup read never happened.** A stop requested before the loop's first iteration reports
-  `STOPPING` and never reaches it, so the picture cannot contain an order a *previous process* left
-  resting.
+- **The startup read failed.** A `withdraw` or `flatten` requested before the loop's first iteration
+  attempts the startup read itself; if that read fails, the picture cannot contain an order a *previous
+  process* left resting. (A `quiesce` does not read: it sends nothing.)
 - **An order was sent after the working orders were last read.** The holdings and working-order
   inquiries are separate polls on separate cadences, and `as_of_` is the *holdings* timestamp — so a
   snapshot stamped a second ago can carry working orders read an hour ago, missing an order this

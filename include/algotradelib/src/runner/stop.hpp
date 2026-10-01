@@ -184,7 +184,9 @@ private:
  * would pick a stop intent on an operator's behalf.
  *
  * **It never deletes the file.** A control file that consumed itself would make "did my stop take
- * effect?" unanswerable after the fact, and the loop exits anyway.
+ * effect?" unanswerable after the fact, and the loop exits anyway. So a word left in it is carried out
+ * by the next process too, from its first iteration: a `withdraw` or `flatten` reads the order list and
+ * acts on the whole account before anything trades. Remove it before trading again.
  */
 class FileStopChannel {
 public:
