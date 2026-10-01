@@ -206,7 +206,9 @@ Read these before using the order clients.
   with that quantity as the amendable one. The listing then lags as the history
   lags, and a runner retires what it reserved against it, so a lag longer than a
   poll can place an order twice (`labs` F15): measure it before a placing loop
-  runs on KIS demo. A released stop cannot be told apart there.
+  runs on KIS demo. A released stop cannot be told apart there, and the rows
+  carry an order time the live listing lacks, so recovery on demo takes a
+  different matching branch than on live.
 - KIS's daily inquiry reports no status column, so an order's status is derived
   from its quantity, fill, remainder, rejection, and cancellation columns.
 

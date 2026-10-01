@@ -341,7 +341,10 @@ struct Capabilities {
   /** KIS publishes its modifiable and cancellable orders; on demo, from today's order history. */
   static constexpr bool has_working_orders = true;
 
-  /** KIS reports `psbl_qty`, the quantity still amendable. */
+  /**
+   * KIS reports `psbl_qty`, the quantity still amendable. On demo it is the daily inquiry's `rmn_qty`,
+   * which can differ while an amendment is pending.
+   */
   static constexpr bool has_amendable_quantity = true;
 
   /**

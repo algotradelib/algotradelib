@@ -229,9 +229,9 @@ Three consequences that come up constantly:
 
 - **Capability is compile time; availability is run time.** Whether a broker *implements* a verb is a
   `BrokerCaps` constant you gate on with `if constexpr`. Whether *this credential* may call it is a
-  run-time `INVALID_ARGUMENT` — KIS implements the amendable-order inquiry and does not serve it to
-  demo accounts, and encoding that as a compile-time capability would make one binary claim different
-  things for a live and a demo key.
+  run-time matter — KIS does not serve its amendable-order inquiry to demo accounts, so there the
+  adapter answers it from the daily order inquiry, and encoding that as a compile-time capability
+  would make one binary claim different things for a live and a demo key.
 - **Order identity is a template parameter, not a stored field.** `OrderRef<Broker>` handed to the
   wrong session fails to compile. No comparison happens on any amendment path.
 - **The escape hatch is visible in the source.** `session.client()` returns the concrete client, so
