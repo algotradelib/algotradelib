@@ -715,9 +715,12 @@ public:
   /**
    * Retrieves every order that is still modifiable or cancellable.
    *
-   * KIS does not offer this inquiry on demo accounts, so a demo configuration
-   * fails with `ErrorCategory::INVALID_ARGUMENT` instead of issuing a request
-   * that cannot succeed.
+   * KIS does not offer this inquiry (`TTTC0084R`) on demo accounts. **On demo it is answered
+   * from today's daily order inquiry** (`VTTC0081R`, unfilled orders only), which demo serves:
+   * every row with a remaining quantity is listed, with that quantity as the amendable one. It
+   * therefore lags as the history lags, cannot tell a released stop (`stop_released_` stays empty),
+   * and leans toward listing too much rather than too little: an extra row costs a cancel KIS
+   * refuses, a missing one would let a runner place the same order again.
    */
   template <typename CompletionToken>
   auto async_open_orders(KisAccount account, CompletionToken&& token) {
@@ -3476,14 +3479,6 @@ private:
   /** Validates and starts a complete modifiable-order inquiry. */
   void start_open_orders(KisAccount account, OpenOrderHandler completion) {
     auto invalid = validate_account(account);
-    if (!invalid && config_.is_demo_) {
-      BrokerError error;
-      error.category_ = ErrorCategory::INVALID_ARGUMENT;
-      error.reached_broker_ = false;
-      error.broker_code_ = "demo_unsupported";
-      error.message_ = "KIS does not offer the modifiable-order inquiry on demo accounts";
-      invalid = std::move(error);
-    }
     if (invalid) {
       complete_open_orders(std::move(completion), Result<KisOpenOrderPage>(std::move(*invalid)));
       return;
@@ -3517,6 +3512,14 @@ private:
     std::string_view domestic_cursor,
     bool continuation
   ) {
+    if (config.is_demo_) {
+      // Demo has no `TTTC0084R`: today's unfilled orders (`CCLD_DVSN=02`) from the daily inquiry.
+      const auto today = today_in_seoul();
+      return make_order_history_request(
+        account, config, access_token, KisHistoryRange{today, today}, foreign_cursor,
+        domestic_cursor, continuation, "02"
+      );
+    }
     network::HttpRequest request;
     // KIS recommends this inquiry before an amendment, but does not require it: a
     // caller tracking its own working orders already holds the amendable quantity,
@@ -3581,7 +3584,9 @@ private:
     const bool has_next = continuation_pending(result.value());
     std::string foreign_cursor;
     std::string domestic_cursor;
-    auto page = parse_open_orders_page(std::move(result), foreign_cursor, domestic_cursor);
+    auto page = parse_open_orders_page(
+      std::move(result), foreign_cursor, domestic_cursor, config_.is_demo_
+    );
     if (!page) {
       complete_open_orders(
         std::move(operation->completion_), Result<KisOpenOrderPage>(std::move(page.error()))
@@ -3621,11 +3626,17 @@ private:
     );
   }
 
-  /** Parses one KIS modifiable-order response page and its cursors. */
+  /**
+   * Parses one KIS modifiable-order response page and its cursors.
+   *
+   * `demo` reads the daily order inquiry's `output1` instead, which is what the request asked for on
+   * demo, and lists each row with a remaining quantity.
+   */
   static Result<KisOpenOrderPage> parse_open_orders_page(
     Result<network::HttpResponse> result,
     std::string& foreign_cursor,
-    std::string& domestic_cursor
+    std::string& domestic_cursor,
+    bool demo = false
   ) {
     if (!result) {
       return Result<KisOpenOrderPage>(std::move(result.error()));
@@ -3641,6 +3652,11 @@ private:
     try {
       if (auto declared = kis_declared_error(*document)) {
         return Result<KisOpenOrderPage>(std::move(*declared));
+      }
+      if (demo) {
+        auto page = open_orders_from_history(*document);
+        read_cursors(*document, foreign_cursor, domestic_cursor);
+        return Result<KisOpenOrderPage>(std::move(page));
       }
       const auto rows = document->if_contains("output");
       if (!rows || !rows->is_array()) {
@@ -3755,7 +3771,8 @@ private:
     const KisHistoryRange& range,
     std::string_view foreign_cursor,
     std::string_view domestic_cursor,
-    bool continuation
+    bool continuation,
+    std::string_view executions = "00"
   ) {
     network::HttpRequest request;
     // Order history is account monitoring, not order submission.
@@ -3766,7 +3783,8 @@ private:
       "?CANO=" +
       account.account_number_ + "&ACNT_PRDT_CD=" + account.product_code_ + "&INQR_STRT_DT=" +
       compact_date(range.from_) + "&INQR_END_DT=" + compact_date(range.to_) +
-      "&SLL_BUY_DVSN_CD=00&PDNO=&ORD_GNO_BRNO=&ODNO=&CCLD_DVSN=00&INQR_DVSN=00"
+      "&SLL_BUY_DVSN_CD=00&PDNO=&ORD_GNO_BRNO=&ODNO=&CCLD_DVSN=" + std::string(executions) +
+      "&INQR_DVSN=00"
       "&INQR_DVSN_1=&INQR_DVSN_3=00&EXCG_ID_DVSN_CD=" +
       (config.is_demo_ ? "KRX" : "ALL") + "&CTX_AREA_FK100=" +
       broker_detail::query_encode(foreign_cursor) + "&CTX_AREA_NK100=" +
@@ -3862,6 +3880,92 @@ private:
     );
   }
 
+  /**
+   * Builds the order one daily-inquiry row describes.
+   *
+   * Shared by the history read and, on demo, the working-order read, so the two cannot describe one
+   * order differently.
+   */
+  static OrderSnapshot history_row_snapshot(const json::object& row) {
+    OrderSnapshot order;
+    order.order_id_ = broker_detail::json_string(row, "odno");
+    // `Venue::COMBINED`, exactly as the holdings path writes it, so an order
+    // and the holding it belongs to remain the same instrument. Where the
+    // order was actually routed is a different fact and goes in `venue_`.
+    order.instrument_ = InstrumentId{
+      Country::KR,
+      instrument_venue(),
+      broker_detail::json_string(row, "pdno"),
+    };
+    order.venue_ = reported_venue(row);
+    order.name_ = broker_detail::json_string(row, "prdt_name");
+    order.side_ = normalized_order_side(
+      broker_detail::json_string(row, "sll_buy_dvsn_cd")
+    );
+    apply_order_shape(broker_detail::json_string(row, "ord_dvsn_cd"), order);
+    order.quantity_ = Decimal64::parse(broker_detail::json_string(row, "ord_qty"));
+    if (carries_caller_price(order.type_)) {
+      order.price_ = Decimal64::parse(broker_detail::json_string(row, "ord_unpr"));
+    }
+    order.trigger_price_ = reported_trigger(row);
+    order.currency_ = Currency::krw();
+    order.ordered_at_ = korea_timestamp(
+      broker_detail::json_string(row, "ord_dt"), broker_detail::json_string(row, "ord_tmd")
+    );
+
+    const auto filled = Decimal64::parse(broker_detail::json_string(row, "tot_ccld_qty"));
+    const auto remaining = Decimal64::parse(broker_detail::json_string(row, "rmn_qty"));
+    const auto rejected = Decimal64::parse(broker_detail::json_string(row, "rjct_qty"));
+    const bool canceled = broker_detail::json_string(row, "cncl_yn") == "Y";
+
+    order.execution_.filled_quantity_ = filled;
+    order.execution_.filled_amount_ = Money{
+      Decimal64::parse(broker_detail::json_string(row, "tot_ccld_amt")), Currency::krw()
+    };
+    if (const auto average = Decimal64::parse(broker_detail::json_string(row, "avg_prvs"));
+        average.coefficient() > 0) {
+      order.execution_.average_filled_price_ = average;
+    }
+    order.status_ =
+      derive_order_status(order.quantity_, filled, remaining, rejected, canceled);
+    return order;
+  }
+
+  /** Lists each daily-inquiry row with a remaining quantity as a working order, for demo. */
+  static KisOpenOrderPage open_orders_from_history(const json::object& document) {
+    const auto rows = document.if_contains("output1");
+    if (!rows || !rows->is_array()) {
+      throw std::runtime_error("missing array field: output1");
+    }
+    KisOpenOrderPage page;
+    for (const auto& value : rows->as_array()) {
+      if (!value.is_object()) {
+        throw std::runtime_error("output1 item is not an object");
+      }
+      const auto& row = value.as_object();
+      // `rmn_qty` alone, deliberately not `cncl_yn`: whether KIS marks a partly cancelled original
+      // `Y` while a remnant still rests has not been observed, and hiding a resting order is the
+      // error that sends it twice.
+      const auto remaining = Decimal64::parse(broker_detail::json_string(row, "rmn_qty"));
+      if (remaining.coefficient() <= 0) {
+        continue;
+      }
+      KisOpenOrder open_order;
+      open_order.order_ref_.branch_number_ = broker_detail::json_string(row, "ord_gno_brno");
+      open_order.order_ref_.order_number_ = broker_detail::json_string(row, "odno");
+      open_order.original_order_.branch_number_ = open_order.order_ref_.branch_number_;
+      open_order.original_order_.order_number_ = broker_detail::json_string(row, "orgn_odno");
+      open_order.amendable_quantity_ = remaining;
+      open_order.order_ = history_row_snapshot(row);
+      // As the live listing states it: a row still resting is pending, or partly filled.
+      open_order.order_.status_ = open_order.order_.execution_.filled_quantity_.coefficient() > 0 ?
+        OrderStatus::PARTIAL_FILLED :
+        OrderStatus::PENDING;
+      page.orders_.push_back(std::move(open_order));
+    }
+    return page;
+  }
+
   /** Parses one KIS daily order-history response page and its cursors. */
   static Result<OrderPage> parse_order_history_page(
     Result<network::HttpResponse> result,
@@ -3893,50 +3997,7 @@ private:
         if (!value.is_object()) {
           throw std::runtime_error("output1 item is not an object");
         }
-        const auto& row = value.as_object();
-
-        OrderSnapshot order;
-        order.order_id_ = broker_detail::json_string(row, "odno");
-        // `Venue::COMBINED`, exactly as the holdings path writes it, so an order
-        // and the holding it belongs to remain the same instrument. Where the
-        // order was actually routed is a different fact and goes in `venue_`.
-        order.instrument_ = InstrumentId{
-          Country::KR,
-          instrument_venue(),
-          broker_detail::json_string(row, "pdno"),
-        };
-        order.venue_ = reported_venue(row);
-        order.name_ = broker_detail::json_string(row, "prdt_name");
-        order.side_ = normalized_order_side(
-          broker_detail::json_string(row, "sll_buy_dvsn_cd")
-        );
-        apply_order_shape(broker_detail::json_string(row, "ord_dvsn_cd"), order);
-        order.quantity_ = Decimal64::parse(broker_detail::json_string(row, "ord_qty"));
-        if (carries_caller_price(order.type_)) {
-          order.price_ = Decimal64::parse(broker_detail::json_string(row, "ord_unpr"));
-        }
-        order.trigger_price_ = reported_trigger(row);
-        order.currency_ = Currency::krw();
-        order.ordered_at_ = korea_timestamp(
-          broker_detail::json_string(row, "ord_dt"), broker_detail::json_string(row, "ord_tmd")
-        );
-
-        const auto filled = Decimal64::parse(broker_detail::json_string(row, "tot_ccld_qty"));
-        const auto remaining = Decimal64::parse(broker_detail::json_string(row, "rmn_qty"));
-        const auto rejected = Decimal64::parse(broker_detail::json_string(row, "rjct_qty"));
-        const bool canceled = broker_detail::json_string(row, "cncl_yn") == "Y";
-
-        order.execution_.filled_quantity_ = filled;
-        order.execution_.filled_amount_ = Money{
-          Decimal64::parse(broker_detail::json_string(row, "tot_ccld_amt")), Currency::krw()
-        };
-        if (const auto average = Decimal64::parse(broker_detail::json_string(row, "avg_prvs"));
-            average.coefficient() > 0) {
-          order.execution_.average_filled_price_ = average;
-        }
-        order.status_ =
-          derive_order_status(order.quantity_, filled, remaining, rejected, canceled);
-        page.orders_.push_back(std::move(order));
+        page.orders_.push_back(history_row_snapshot(value.as_object()));
       }
 
       read_cursors(*document, foreign_cursor, domestic_cursor);

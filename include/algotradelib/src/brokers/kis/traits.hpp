@@ -338,7 +338,7 @@ struct Capabilities {
   /** KIS sends a stop-limit (`22`) order's trigger as `CNDT_PRIC`, on placement and amendment. */
   static constexpr bool has_trigger_price = true;
 
-  /** KIS publishes its modifiable and cancellable orders, except on demo accounts. */
+  /** KIS publishes its modifiable and cancellable orders; on demo, from today's order history. */
   static constexpr bool has_working_orders = true;
 
   /** KIS reports `psbl_qty`, the quantity still amendable. */

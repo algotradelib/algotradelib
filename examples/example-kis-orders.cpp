@@ -116,15 +116,16 @@ int main(int argc, char* argv[]) {
 
     atl::kis::KisBlockingClient client(tls, std::move(config));
 
-    // KIS does not offer the modifiable-order inquiry on demo accounts, so it
-    // is skipped there rather than issuing a request that cannot succeed.
-    if (!demo) {
+    // On demo KIS has no modifiable-order inquiry, and the client answers this read from today's
+    // order history instead.
+    {
       auto open_result = client.open_orders(account);
       if (!open_result) {
         print_error("modifiable-order inquiry", open_result.error());
         return 1;
       }
-      std::cout << "open orders: " << open_result.value().orders_.size() << '\n';
+      std::cout << "open orders" << (demo ? " (from today's history)" : "") << ": "
+                << open_result.value().orders_.size() << '\n';
       for (const auto& open_order : open_result.value().orders_) {
         print_order(open_order.order_);
         std::cout << "  amendable quantity: " << open_order.amendable_quantity_.str()
