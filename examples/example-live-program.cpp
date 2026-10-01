@@ -221,7 +221,8 @@ int run_kis(ssl::context& tls, const Arguments& arguments) {
   announce(arguments, settings, demo, "KIS_DEMO");
 
   atl::BlockingSession<kis::KisBlockingClient> session(
-    std::make_shared<kis::KisBlockingClient>(tls, std::move(config)), std::move(account)
+    std::make_shared<kis::KisBlockingClient>(tls, std::move(config), kis_credentials::paced_options()),
+    std::move(account)
   );
 
   // Market data from a session with no account, so it cannot trade: swapped by mistake, every order
@@ -251,7 +252,10 @@ int run_kis(ssl::context& tls, const Arguments& arguments) {
     auto market_config = kis_credentials::market_data_config(arguments.credentials_);
     if (market_config) {
       atl::BlockingSession<kis::KisBlockingClient> market_data(
-        std::make_shared<kis::KisBlockingClient>(tls, std::move(*market_config)), kis::KisAccount{}
+        std::make_shared<kis::KisBlockingClient>(
+          tls, std::move(*market_config), kis_credentials::paced_options()
+        ),
+        kis::KisAccount{}
       );
       std::cout << "market data: kis " << (*arguments.credentials_ / "kis" / "real.json").string()
                 << " (no account: cannot trade)\n";

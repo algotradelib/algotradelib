@@ -114,7 +114,7 @@ int main(int argc, char* argv[]) {
     tls.set_default_verify_paths();
     tls.set_verify_mode(ssl::verify_peer);
 
-    atl::kis::KisBlockingClient client(tls, std::move(config));
+    atl::kis::KisBlockingClient client(tls, std::move(config), kis_credentials::paced_options());
 
     // On demo KIS has no modifiable-order inquiry, and the client answers this read from today's
     // order history instead.

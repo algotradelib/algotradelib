@@ -58,6 +58,21 @@ inline std::optional<std::filesystem::path> take_directory(int& argc, char** arg
   return directory ? directory : environment_directory();
 }
 
+/**
+ * Returns transport options that pace a KIS client at one request a second.
+ *
+ * Measured on 2026-10-02 (`labs/FINDINGS.md` F26): a KIS demo account refuses reads closer than about
+ * a second apart (`EGW00201`), and with real keys the 20-page holiday calendar is refused at 8 a
+ * second and served at 1. The library paces nothing unless asked (`HttpClientOptions::rate_limit_`),
+ * so these examples ask. A key with a larger allowance may raise it. With a burst of 1 the reserve
+ * makes no difference: every traffic class may spend the one request.
+ */
+inline algotradelib::network::HttpClientOptions paced_options() {
+  algotradelib::network::HttpClientOptions options;
+  options.rate_limit_ = algotradelib::network::RateLimitBudget{1, 1, 0};
+  return options;
+}
+
 /** Returns `DIR/kis/<name>`, or throws when it is missing. */
 inline std::filesystem::path required_file(const std::filesystem::path& directory, const char* name) {
   const auto path = directory / "kis" / name;

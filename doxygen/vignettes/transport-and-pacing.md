@@ -31,10 +31,18 @@ kis::KisBlockingClient client(tls, std::move(config), options);
 
 `burst_` is how many requests may be issued back to back from idle, `per_second_`
 is the sustained rate, and `trading_reserve_` is the part of the burst that only
-order traffic may spend. The defaults are deliberately conservative: KIS's per-key
-allowance is an account-level portal setting its documentation does not state, so
-the library cannot assert a number. KIS does note that demo accounts are metered
-more tightly than live ones, again without stating either figure.
+order traffic may spend. The defaults are a starting point, not a safe figure: KIS's
+per-key allowance is an account-level portal setting its documentation does not
+state, so the library cannot assert a number. KIS does note that demo accounts are
+metered more tightly than live ones, again without stating either figure.
+
+**Measured on one account (2026-10-02, `labs/FINDINGS.md` F26):** a KIS demo account
+refused reads closer than about a second apart (`EGW00201`), and with real keys the
+20-page holiday calendar was refused at eight a second and served at one. The KIS
+examples therefore pace at `RateLimitBudget{1, 1, 0}` (`kis_credentials::paced_options`
+in `examples/kis_credentials.hpp`). At a burst of 1 the reserve changes nothing, and
+a blocking client sends one operation at a time, so an order waits behind whatever
+call is running: at startup, up to the calendar's 20 seconds.
 
 **Leaving `rate_limit_` unset issues requests unpaced**, which is the default. Not
 every endpoint is metered, and one that is not should not be slowed down; an
