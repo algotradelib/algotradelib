@@ -62,7 +62,7 @@ using LoopRunner = runner::DryRunner<CountBars>;
 /**
  * A source that invents a rising price.
  *
- * This is the whole seam. A source owes the loop two things:
+ * This is the whole seam for a dry run. A source owes the loop two things:
  *
  *  - `poll(kind, runner)` -- fetch that kind, feed what is new, and say what happened.
  *  - `read_order_list(runner)` -- read the broker's own order list, which is what lifts the startup
@@ -74,6 +74,12 @@ using LoopRunner = runner::DryRunner<CountBars>;
  *
  * Note what is *not* here: no cadence, no stop handling, no staleness rule, no failure budget. Those
  * belong to the loop, which is why a new broker does not have to reimplement them.
+ *
+ * **Two things are enough only because `LoopRunner` sends nothing.** A source feeding a runner that
+ * sends to a broker also owes a working-order listing (published, polled, replacing `working_`
+ * wholesale), holdings polls that keep `working_`, and bars fed once each, never while still forming,
+ * with a read's older bars through `Runner::feed_warmup`. "Trying it without a broker" in
+ * running-a-strategy-live.md lists them; `live::SessionSource` does each.
  */
 class ScriptedSource {
 public:

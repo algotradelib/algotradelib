@@ -480,10 +480,21 @@ That is what a replay does by filling at the next bar's open. The rules around i
   intent a broker answered (a second order would reuse the key). A weight-sized intent skips the
   holding check, because it is planned again as the position it states. Kept intents are not
   journalled: a restart before the open loses those the newest bar does not state again (a stop the
-  strategy restates on every bar comes back from the history the new process reads). A `CancelIntent`
-  does not forget them; released together at the open they can meet `max_orders_per_window_`; and a
-  target and an intent kept by one pass while a stop rests can supersede each other on release (the
-  later statement wins, as always). The run's report notes how many were dropped.
+  strategy restates on every bar comes back from the history the new process reads). **A restart during
+  the session sends any quantity- or notional-sized `OrderIntent` the newest bar states again**: the new
+  process feeds that bar live, in `OPEN`, and such an intent is planned without reading the book, so
+  nothing sees the copy an earlier process sent this session -- the morning's release, or a process
+  started after the open. Each restart sends it once more; a supervisor restarting a crashing process
+  every minute sends it every minute (`max_orders_per_window_` counts in memory). A second stop sell is
+  likely refused by the broker's sellable check, or by `enforce_sellable_quantity_`, which deducts the
+  resting stop. A limit buy is sent again whenever the strategy states it again (always, while the first
+  copy rests unfilled); of this library's limits only `max_position_quantity_` and
+  `max_gross_exposure_`, which count the resting buy, refuse it. A `TargetPosition` counts what is
+  working and is not affected (nor is a weight-sized intent, planned as one): state one for anything
+  that must survive a restart. A `CancelIntent` does not forget them; released together at the open they
+  can meet `max_orders_per_window_`; and a target and an intent kept by one pass while a stop rests can
+  supersede each other on release (the later statement wins, as always). The run's report notes how many
+  were dropped.
 - It lives for one `PollingLoop::run`. A restarted process re-derives it from the history the source
   feeds on its first poll; a second `run` on the same source does not, because that source has already
   fed those bars, so the decision waits for the next bar.
@@ -519,7 +530,7 @@ event-triggered strategy — `vanilla::RsiThreshold` enters on "not holding and 
 oversold bar months back against a flat book and bought again a minute after the previous process had
 sold. A level strategy (`SmaCrossover`) was right by accident, because only its last target survived.
 So a process started overnight and one started during the session now take the same decision: the
-newest bar's. Two consequences to design for:
+newest bar's. Four consequences to design for:
 
 - **State levels, not transitions**, including for cancellations: a transition detected on history is
   not acted on, and the newest bar's pass must be able to say what to hold without having seen it
@@ -628,7 +639,7 @@ pass before the next listing therefore sees the order an earlier one sent and do
 two bars of a minute strategy between listings, a runner driven by hand, a quote and a bar in one
 iteration. Before 2026-09-30 this held only with one of the checks above enabled, and a target strategy
 under default limits sent one order per bar of a cold start's history (which `SessionSource` now feeds
-as history, below, so only its newest bar can send at all). A dry run and `live::bind_observer` send
+as history, above, so only its newest bar can send at all). A dry run and `live::bind_observer` send
 to no broker, so their rows carry no broker reference — a later opposing target would ask to withdraw
 an order identified by nothing — and they keep the old scoping: they report a restated target again on
 every pass.
@@ -723,3 +734,27 @@ credentials, no network, and it finishes instantly because it uses `ManualClock`
 shortest worked example of writing a source for a broker this library does not support: implement
 `poll` and `read_order_list`, and the cadence, the stop intents, the gates and the failure policy all
 come along unchanged.
+
+**That is enough only because the example's runner sends nothing** (`runner::DryRunner`). A source that
+feeds a runner which sends to a broker owes more, and `live::SessionSource` is the reference for each
+of these:
+
+- **A working-order listing, published (`provides_working_orders`) and polled, that replaces
+  `working_` wholesale** and stamps `working_as_of_`. An order the runner sent counts as working until
+  that listing arrives. A source that merges the listing in leaves an expired or refused order working
+  for ever, and the loop cannot see it: the row silently stands in for the target. A source that
+  publishes or polls no listing is held instead.
+- **A holdings poll that keeps `working_`**, replacing only the positions, their `sellable_basis_` and
+  `as_of_`. Rebuilt from the holdings answer alone, the portfolio drops the order just sent, and the
+  next bar sends it again. Leave `as_of_` unstamped and the run holds as never read; leave
+  `sellable_basis_` undeclared and every checked sell refuses.
+- **Answer a listing poll `UPDATED` or `UNCHANGED` only when the broker answered.** The loop dates the
+  listing by that outcome, so a made-up answer keeps the gate open on a stale listing.
+- **Bars: each closed bar once, none still forming, history through `Runner::feed_warmup`.** Only
+  each instrument's newest bar, by the rule in "The history a cold start reads", goes through `feed`.
+  A bar fed twice sends an `OrderIntent` twice; a broker's daily query includes the session still
+  trading.
+- **A calendar written during `PollKind::CALENDAR` only**, and no bar fed from that poll ("The market
+  phase, and what the loop needs to know it", above).
+- **For a journaling binding, listings handed to the journal's reconciliation**
+  (`SessionSource::set_journal`).
