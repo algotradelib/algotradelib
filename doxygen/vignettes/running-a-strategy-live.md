@@ -775,9 +775,9 @@ with `GuardReason::VALUE_NOT_KNOWN` until you register it.
   `probe_sellable_convention()` and a run that observes one says so in `report.notes_`.
 
 Surviving a restart is no longer on this list, except for the lag above. Bind a
-`runner::FileJournal` and the ledger becomes
-durable: every instruction is recorded before it is sent, a restarted runner recovers what its
-predecessor left owed, and the listings this source already reads resolve it. See the
+`runner::FileJournal` and the ledger becomes durable: every instruction is recorded before it is sent, a
+restarted runner recovers what its predecessor left owed, and the listings this source already reads
+resolve it. See the
 [recovering after a crash](recovering-after-a-crash.md) vignette — including why `not_placed` and
 `undecided` are the pair to get right, and why an `ambiguous` verdict is a stop rather than a retry.
 
