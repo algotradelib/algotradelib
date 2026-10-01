@@ -172,7 +172,8 @@ inline bool broker_unreachable(const BrokerError& error) noexcept {
  * Returns whether `error` is a broker turning a request away for its rate limit.
  *
  * `SendOutcome::REJECTED`, rightly: the broker answered and processed nothing (KIS's `EGW00201`, "too
- * many requests per second", and `EGW00215`). But the refusal is about the moment, not the instruction,
+ * many requests per second", and `EGW00215`, when answered with HTTP 200; the KIS adapter leaves an
+ * order answered with a non-2xx status unclassified, so it stays indeterminate). But the refusal is about the moment, not the instruction,
  * so `Runner` keeps the instruction for a later pass, as it keeps one the broker could not be reached
  * for (`broker_unreachable`).
  */
