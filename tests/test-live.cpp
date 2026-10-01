@@ -1779,13 +1779,20 @@ public:
     if (kind == runner::PollKind::WORKING_ORDERS && listing_fails_) {
       return runner::PollOutcome::FAILED;
     }
-    return inner_.poll(kind, runner_instance);
+    const auto outcome = inner_.poll(kind, runner_instance);
+    if (kind == runner::PollKind::BARS && next_bars_) {
+      session_->set_bars(*next_bars_);
+      next_bars_.reset();
+    }
+    return outcome;
   }
 
   /** Makes the working-order poll fail, without reaching the session, until told otherwise. */
   bool listing_fails_{false};
   /** The Samsung position every holdings read reports, or none. */
   std::optional<Decimal64> held_;
+  /** What the session answers to bar queries after the next bar poll, once. */
+  std::optional<BarSeries> next_bars_;
 
   template <typename Runner>
   runner::PollOutcome read_order_list(Runner& runner_instance) {
@@ -1801,8 +1808,10 @@ private:
 } // namespace
 
 TEST_CASE("a cold start's history read places one order, not one per bar", "[own-orders]") {
-  // The shipped consumer path end to end: `SessionSource` feeds the first bar read, fifty bars, one
-  // pass each, after the startup listing and holdings reads. Default limits, a target strategy.
+  // The shipped consumer path end to end: `SessionSource` feeds the first bar read, fifty bars, after
+  // the startup listing and holdings reads -- forty-nine as history (`Runner::feed_warmup`, which sends
+  // nothing) and the newest live. Default limits, a target strategy. The order the newest bar sent
+  // stays working until a listing replaces it; that a later bar respects it is the next case.
   using LoopRunner = runner::Runner<
     HoldTen, WithWorkingOrders, FakeBroker, live::SessionExecutor<FakeSession<WithWorkingOrders>>
   >;
@@ -1842,6 +1851,56 @@ TEST_CASE("a cold start's history read places one order, not one per bar", "[own
   loop.run(stop, 1);
   CHECK(live_runner.context().portfolio().working_.empty());
   CHECK(session.placed().size() == 1);
+}
+
+TEST_CASE("a bar fed before the next listing sees the order the last one sent", "[own-orders]") {
+  // What the reservation is for on the shipped path: the cold start sends one order, and the next bar
+  // arrives -- a later read bringing one more closed bar -- while the working-order listing is not
+  // due yet. Holdings are polled in between, as a live loop does, and must keep the reserved row: the
+  // target restated on the new bar is already met by the order working.
+  using LoopRunner = runner::Runner<
+    HoldTen, WithWorkingOrders, FakeBroker, live::SessionExecutor<FakeSession<WithWorkingOrders>>
+  >;
+  using Source = FreshHoldingsSource<FakeSession<WithWorkingOrders>, runner::ManualClock>;
+  FakeSession<WithWorkingOrders> session;
+  session.set_bars(history_bars(50));
+  strategy::RiskLimits any_phase;
+  any_phase.permitted_phases_ = std::nullopt;
+  LoopRunner live_runner(
+    HoldTen{}, any_phase, 512, live::SessionExecutor<FakeSession<WithWorkingOrders>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+
+  const auto start = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 200);
+  runner::PollSchedule schedule;
+  schedule.bars_ = std::chrono::seconds(1);
+  schedule.holdings_ = std::chrono::seconds(1);
+  // Bars come faster than the listing, so the second bar is fed with only the reservation to go on.
+  schedule.working_orders_ = std::chrono::seconds(30);
+  schedule.tick_ = std::chrono::seconds(1);
+  schedule.calendar_.reset();
+  Source source(session, {samsung()}, nullptr);
+  runner::PollingLoop<LoopRunner, Source, runner::ManualClock> loop(
+    live_runner, source, schedule, runner::ManualClock{start});
+  source = Source(session, {samsung()}, &loop.clock());
+  // After the first bar poll, the session's next read has one more closed bar.
+  source.next_bars_ = history_bars(51);
+  loop.set_maximum_portfolio_age(std::chrono::minutes(1));
+  runner::StopSource stop;
+
+  // One run, because each run polls the listing first: two iterations a second apart.
+  const auto report = loop.run(stop, 2);
+  // Not vacuous: two bar polls and two holdings polls, one listing; forty-nine bars fed as history,
+  // and the fifty-first fed at all (its close is the last price), so the fiftieth and the fifty-first
+  // were each fed live, on their own pass.
+  REQUIRE(report.attempted(runner::PollKind::BARS) == 2);
+  REQUIRE(report.attempted(runner::PollKind::HOLDINGS) == 2);
+  REQUIRE(report.attempted(runner::PollKind::WORKING_ORDERS) == 1);
+  REQUIRE(live_runner.warmup_instructions_discarded() == 49);
+  REQUIRE(live_runner.context().last_price(samsung()) == Decimal64::parse("75000"));
+  CHECK(session.placed().size() == 1);
+  REQUIRE(live_runner.context().portfolio().working_.size() == 1);
+  CHECK(live_runner.context().portfolio().working_[0].reserved_);
 }
 
 TEST_CASE("a run that polls no working-order listing holds, whatever its age policy",
