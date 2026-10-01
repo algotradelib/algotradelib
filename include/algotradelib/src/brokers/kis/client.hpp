@@ -1106,7 +1106,7 @@ private:
       return std::move(result.error());
     }
     if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-      return broker_detail::http_error(result.value());
+      return kis_http_error(result.value());
     }
     BrokerError parse_error;
     auto document = broker_detail::parse_object(result.value().body(), parse_error);
@@ -1733,7 +1733,7 @@ private:
       return Result<json::object>(std::move(response.error()));
     }
     if (response.value().result_int() < 200 || response.value().result_int() >= 300) {
-      return Result<json::object>(broker_detail::http_error(response.value()));
+      return Result<json::object>(kis_http_error(response.value()));
     }
     BrokerError parse_error;
     auto document = broker_detail::parse_object(response.value().body(), parse_error);
@@ -1946,7 +1946,7 @@ private:
       return Result<DepthSnapshot>(std::move(result.error()));
     }
     if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-      return Result<DepthSnapshot>(broker_detail::http_error(result.value()));
+      return Result<DepthSnapshot>(kis_http_error(result.value()));
     }
     BrokerError parse_error;
     auto document = broker_detail::parse_object(result.value().body(), parse_error);
@@ -2240,7 +2240,7 @@ private:
     if (!result) {
       failure = std::move(result.error());
     } else if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-      failure = broker_detail::http_error(result.value());
+      failure = kis_http_error(result.value());
       failure->category_ = ErrorCategory::AUTHENTICATION;
     } else {
       BrokerError parse_error;
@@ -2503,7 +2503,7 @@ private:
       return Result<QuoteSnapshot>(std::move(result.error()));
     }
     if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-      return Result<QuoteSnapshot>(broker_detail::http_error(result.value()));
+      return Result<QuoteSnapshot>(kis_http_error(result.value()));
     }
     BrokerError parse_error;
     auto document = broker_detail::parse_object(result.value().body(), parse_error);
@@ -2566,7 +2566,7 @@ private:
       return Result<HoldingsSnapshot>(std::move(result.error()));
     }
     if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-      return Result<HoldingsSnapshot>(broker_detail::http_error(result.value()));
+      return Result<HoldingsSnapshot>(kis_http_error(result.value()));
     }
     BrokerError parse_error;
     auto document = broker_detail::parse_object(result.value().body(), parse_error);
@@ -3309,6 +3309,36 @@ private:
     return request;
   }
 
+  /**
+   * Builds the error for a non-2xx KIS response: the generic one, plus KIS's own code from the body.
+   *
+   * KIS answers its per-second limit (`EGW00201`) with HTTP 500 and a JSON body, so the generic error
+   * left `broker_code_` empty and the limit unclassified (observed on reads, 2026-10-02). The code is
+   * read from `msg_cd`, or the token endpoint's `error_code`. `classify_rate` also maps a rate code to
+   * `RATE_LIMIT`, as `kis_declared_error` does for a 2xx body. **The order path passes `false`:** an
+   * HTTP 5xx on an order stays indeterminate, held until the order list resolves it, because a rate
+   * limit is retried and a retry of an order KIS had in fact processed would double it. An order
+   * refused this way has not been observed.
+   */
+  static BrokerError kis_http_error(const network::HttpResponse& response, bool classify_rate = true) {
+    auto error = broker_detail::http_error(response);
+    boost::system::error_code ec;
+    const auto document = json::parse(response.body(), ec);
+    if (ec || !document.is_object()) {
+      return error;
+    }
+    for (const char* field : {"msg_cd", "error_code"}) {
+      if (const auto* code = document.as_object().if_contains(field); code && code->is_string()) {
+        error.broker_code_ = code->as_string().c_str();
+        break;
+      }
+    }
+    if (classify_rate && kis_rate_limit_layer(error.broker_code_) != KisRateLimitLayer::NONE) {
+      error.category_ = ErrorCategory::RATE_LIMIT;
+    }
+    return error;
+  }
+
   /** Returns KIS's declared failure for a response whose `rt_cd` is not `0`. */
   static std::optional<BrokerError> kis_declared_error(const json::object& document) {
     if (broker_detail::json_string(document, "rt_cd") == "0") {
@@ -3338,7 +3368,7 @@ private:
       return Result<KisOrderAck>(std::move(result.error()));
     }
     if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-      return Result<KisOrderAck>(broker_detail::http_error(result.value()));
+      return Result<KisOrderAck>(kis_http_error(result.value(), /*classify_rate=*/false));
     }
     BrokerError parse_error;
     auto document = broker_detail::parse_object(result.value().body(), parse_error);
@@ -3642,7 +3672,7 @@ private:
       return Result<KisOpenOrderPage>(std::move(result.error()));
     }
     if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-      return Result<KisOpenOrderPage>(broker_detail::http_error(result.value()));
+      return Result<KisOpenOrderPage>(kis_http_error(result.value()));
     }
     BrokerError parse_error;
     auto document = broker_detail::parse_object(result.value().body(), parse_error);
@@ -3976,7 +4006,7 @@ private:
       return Result<OrderPage>(std::move(result.error()));
     }
     if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-      return Result<OrderPage>(broker_detail::http_error(result.value()));
+      return Result<OrderPage>(kis_http_error(result.value()));
     }
     BrokerError parse_error;
     auto document = broker_detail::parse_object(result.value().body(), parse_error);

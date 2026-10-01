@@ -3032,6 +3032,61 @@ TEST_CASE(
     REQUIRE(personal.error().category_ == ErrorCategory::RATE_LIMIT);
   }
 
+  SECTION("a rate limit KIS answers with HTTP 500 is one on a read, and stays undecided on an order") {
+    // The shape KIS actually sent on 2026-10-02, on reads: HTTP 500 and a gateway body.
+    const char* body =
+      R"({"rt_cd":"1","msg1":"초당 거래건수를 초과하였습니다.","msg_cd":"EGW00201","message":"EGW00201"})";
+
+    auto read = kis::KisClientTestAccess::parse_order_history(json_response(body, 500));
+    REQUIRE_FALSE(read);
+    CHECK(read.error().category_ == ErrorCategory::RATE_LIMIT);
+    CHECK(read.error().broker_code_ == "EGW00201");
+    CHECK(read.error().http_status_ == 500);
+    CHECK(read.error().message_ == body);
+
+    auto listing = kis::KisClientTestAccess::parse_open_orders(json_response(body, 500));
+    REQUIRE_FALSE(listing);
+    CHECK(listing.error().category_ == ErrorCategory::RATE_LIMIT);
+
+    // An order keeps the code but not the classification: as `HTTP` it is indeterminate and held
+    // for the order list, where a rate limit would be retried -- and doubled, had KIS processed it.
+    auto order = kis::KisClientTestAccess::parse_order_ack(json_response(body, 500));
+    REQUIRE_FALSE(order);
+    CHECK(order.error().category_ == ErrorCategory::HTTP);
+    CHECK(order.error().broker_code_ == "EGW00201");
+    CHECK(runner::outcome_of(order.error()) == runner::SendOutcome::INDETERMINATE);
+    CHECK_FALSE(runner::broker_rate_limited(order.error()));
+    // The read's error, by contrast, is what the rate-limit retry and the loop's pacing read.
+    CHECK(runner::broker_rate_limited(read.error()));
+  }
+
+  SECTION("a non-2xx KIS body keeps its category and gains its code") {
+    // A gateway code that is not a rate limit, on HTTP 500: still `HTTP`, so an order stays
+    // indeterminate rather than refused.
+    auto other = kis::KisClientTestAccess::parse_order_history(
+      json_response(R"({"rt_cd":"1","msg1":"token","msg_cd":"EGW00123"})", 500)
+    );
+    REQUIRE_FALSE(other);
+    CHECK(other.error().category_ == ErrorCategory::HTTP);
+    CHECK(other.error().broker_code_ == "EGW00123");
+
+    // The token endpoint's shape names its code `error_code`.
+    auto token = kis::KisClientTestAccess::parse_order_history(json_response(
+      R"json({"error_code":"EGW00133","error_description":"접근토큰 발급 잠시 후 다시 시도하세요(1분당 1회)"})json",
+      403
+    ));
+    REQUIRE_FALSE(token);
+    CHECK(token.error().category_ == ErrorCategory::HTTP);
+    CHECK(token.error().broker_code_ == "EGW00133");
+
+    // A body that is not JSON is today's error, unchanged.
+    auto gateway = kis::KisClientTestAccess::parse_order_history(json_response("Bad Gateway", 502));
+    REQUIRE_FALSE(gateway);
+    CHECK(gateway.error().category_ == ErrorCategory::HTTP);
+    CHECK(gateway.error().broker_code_.empty());
+    CHECK(gateway.error().message_ == "Bad Gateway");
+  }
+
   SECTION("a scheduled trading-control window is not a rate limit") {
     // EGW00317 reports a window during which the endpoint is unavailable. Backing
     // off would misreport a closed window as congestion.
