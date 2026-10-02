@@ -786,6 +786,37 @@ public:
     return limiter ? &limiter->stats() : nullptr;
   }
 
+  /**
+   * Returns the token this client holds, empty until a request has taken one.
+   *
+   * KIS issues one token per application key per minute (`EGW00133`), and this client takes one in
+   * each process, so a program run once per action -- a CLI, a cron job -- can act once a minute.
+   * Keeping the token between runs is how it acts more often: read it here and hand it to the next
+   * process's `adopt_token`. **It is a bearer credential:** where and how it is kept is the caller's
+   * decision, as the key and secret are.
+   *
+   * The token lives on the client's strand: read it between requests, as `rate_limit_stats` says.
+   */
+  const KisRest& token() const noexcept { return token_; }
+
+  /**
+   * Starts from a token issued earlier for this application key, instead of requesting one.
+   *
+   * Returns false, and adopts nothing, for an empty or expired token. **A token KIS refuses is not
+   * replaced**: this client does not re-authenticate when KIS rejects a token (`EGW00121` invalid,
+   * `EGW00123` expired), so each request fails with that code until the token expires. A caller that
+   * keeps tokens keys them by environment and application key, and drops one KIS has refused.
+   *
+   * Call it before the first request, or between requests.
+   */
+  bool adopt_token(KisRest token) {
+    if (!token.valid()) {
+      return false;
+    }
+    token_ = std::move(token);
+    return true;
+  }
+
   /** Cancels transport work and queued HTTP operations. */
   void close() { http_->close(); }
 
@@ -4543,6 +4574,12 @@ public:
   const network::RateLimitStats* rate_limit_stats() const {
     return client_->rate_limit_stats();
   }
+
+  /** Returns the token the client holds; see `KisClient::token`. */
+  const KisRest& token() const noexcept { return client_->token(); }
+
+  /** Starts from a token issued earlier for this key; see `KisClient::adopt_token`. */
+  bool adopt_token(KisRest token) { return client_->adopt_token(std::move(token)); }
 
 private:
   /** Drives one asynchronous operation to completion on the private loop. */
