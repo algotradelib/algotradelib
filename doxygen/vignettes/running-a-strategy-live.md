@@ -703,8 +703,9 @@ is in memory; and a sweep that resolves another open instruction on the same ins
 counted as `LoopReport::orders_unconfirmed_timed_out_`: a timeout too short costs trading, never a
 second order. Either way the mark waits for a holdings read taken a full timeout after the quantity
 became unexplained (or after the history settled it), so a slow holdings cadence delays it, never makes
-it early. A
-trade made outside the runner on the same instrument never doubles an order either: one in the same
+it early.
+
+A trade made outside the runner on the same instrument never doubles an order either: one in the same
 direction ends the wait early, one in the other direction keeps it until the timeout withholds the
 instrument. A source of your own that reads no history never times one out: the row stays for the rest
 of the run, which under-trades the instrument.

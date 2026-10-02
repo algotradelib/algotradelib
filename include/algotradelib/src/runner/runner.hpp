@@ -1018,8 +1018,8 @@ public:
    *
    * Ten minutes by default. Measured from the first pass at which neither holdings nor a listing
    * account for the quantity, on `set_observed_at`'s clock or the decision instant, whichever is later.
-   * When it passes, the broker's history is read once (`unconfirmed_awaiting_evidence`); if that does
-   * not settle it -- or if it does, and holdings still have not shown the filled quantity one more
+   * When it passes, the broker's history is read once more (`unconfirmed_awaiting_evidence`); if that
+   * does not settle it -- or if it does, and holdings still have not shown the filled quantity one more
    * timeout later -- the entry is dropped and its instrument **marked in the indeterminacy ledger**,
    * which an operator clears after reading the account (a restart drops it, as it drops every ledger
    * entry, and a sweep resolving another instruction on the instrument lifts it). A timeout too short
@@ -1066,8 +1066,9 @@ public:
    * what holdings must still show at its `execution_.filled_quantity_` -- never read from the status,
    * since KIS reports a part-filled order it then cancelled as `CANCELED` -- and an order that ended
    * with nothing filled is forgotten at once, and one that filled gets a fresh timeout for holdings to
-   * show it. An order past the confirmation timeout that this does not settle is dropped, and its
-   * instrument marked in the ledger. Sends nothing.
+   * show it. An order past the confirmation timeout that this does not settle is flagged, and
+   * `confirm_reservations` withholds its instrument once a holdings read taken a timeout after its
+   * quantity became unexplained still lacks it. Sends nothing.
    */
   void confirm_from_history(const std::vector<OrderSnapshot>& evidence) {
     confirm_reservations();
@@ -2055,7 +2056,8 @@ private:
   /** Whether only the broker's history can settle `entry` now; see `unconfirmed_awaiting_evidence`. */
   bool awaits_evidence(const Unconfirmed& entry, std::chrono::system_clock::time_point now) const {
     // A settled entry has had its answer: what it filled is known, and only holdings remain to show it.
-    if (entry.residual_.coefficient() == 0 || entry.settled_) {
+    // One the history had no answer for past the timeout waits on holdings too, without a read per poll.
+    if (entry.residual_.coefficient() == 0 || entry.settled_ || entry.history_missed_) {
       return false;
     }
     if (timed_out(entry, now)) {
@@ -2110,7 +2112,8 @@ private:
       );
 
       std::vector<bool> retire(unconfirmed_.size(), false);
-      // Settled by history and still not in holdings a full timeout later: withheld, not credited.
+      // Settled by history, or past the timeout with no history answer, and still not in a holdings
+      // read taken a full timeout later: withheld, with what holdings did show credited to it.
       std::vector<bool> expired(unconfirmed_.size(), false);
       std::vector<bool> done(unconfirmed_.size(), false);
       for (std::size_t first = 0; first < unconfirmed_.size(); ++first) {
@@ -2209,6 +2212,8 @@ private:
           if (!decimal_less(zero, residual)) {
             entry.residual_ = zero;
             entry.unexplained_since_.reset();
+            // Explained again, so a later gap starts over: a fresh timeout and a fresh history read.
+            entry.history_missed_ = false;
             continue;
           }
           entry.residual_ = residual;
