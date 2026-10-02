@@ -210,9 +210,9 @@ limit it should have failed. Set the limit with that headroom in mind.
 
 **A run that sends to a broker needs the order listing too.** A holdings poll refreshes positions and
 keeps the working orders it had; only a working-order poll replaces them. And an order the runner
-sends stays counted until holdings, a listing or the order history account for it (below), so without
-a listing an order that expired or was refused would stay "working" until the confirmation timeout
-withheld its instrument. So a runner that sends to a broker
+sends stays counted until holdings, a listing or the order history account for it (below), and the
+history is read only after a listing, so without a listing an order that expired or was refused would
+stay "working" for the rest of the run. So a runner that sends to a broker
 (`Runner::keeps_sent_orders_until_listed`) holds with `portfolio_stale` while the source publishes no
 listing, while `PollSchedule::working_orders_` is not set, and while the last listing is older than
 `set_maximum_portfolio_age` — whatever the age policy, because opting out of a holdings age is not
@@ -276,14 +276,15 @@ report. And `bind_journaled` is not itself a promise of durability — it takes 
 it, including a `MemoryJournal` that is gone when the process is, and its *terminal* append can fail
 after the broker has already answered, leaving the `PENDING` line and no outcome.
 
-`LoopReport` now carries twelve figures and one record, all describing **the polling loop** — the
+`LoopReport` now carries thirteen figures and one record, all describing **the polling loop** — the
 stop handler and the closing pass keep their own families, `stop_handler_*` and `closing_*`, so a
 refused flatten is reported once rather than twice.
 
 | Figure | What happened |
 | --- | --- |
 | `orders_unbuildable_` | reconciliation could not build the instruction: no reference data, no price, an unknown grid — **or a quantity that rounded to zero**, which is a deliberate drop rather than a fault, so a non-zero figure is not by itself a reason to go looking for missing data |
-| `orders_reconcile_withheld_` | the indeterminacy ledger is holding that instrument until a listing settles an unknown outcome |
+| `orders_reconcile_withheld_` | the indeterminacy ledger is holding that instrument: until a listing settles an unknown outcome, or, after a confirmation timeout, until you clear it |
+| `orders_unconfirmed_timed_out_` | an order this run sent was not confirmed by holdings, a listing or its history within the confirmation timeout, and its instrument is now withheld until you clear it (below) |
 | `orders_guard_refused_` | `RiskGuard` refused it — **a hold as well as a limit**, since it checks the active holds first, so a halted run reports every order here. Nothing was sent |
 | `orders_binding_refused_` | the binding would not send it, or could not reach the broker (a DNS, connect or TLS failure; such an order is kept and retried, see the kept-instructions rules); no request went out |
 | `orders_broker_refused_` | the broker was asked and said no; a request was spent |
@@ -681,19 +682,26 @@ between listings, a runner driven by hand, a quote and a bar in one iteration.
 A listing alone does not end it (lab F15). A market order that filled at once is in no listing, a
 resting order may not be listed yet, and a listed one can fill and leave; in each case a holdings answer
 that lags the fill does not show it either, and a target used to send the order again (in the labs'
-paper broker, holdings 70 seconds behind turned 47 trades into 295, at up to three times the target).
+paper broker, holdings 70 seconds behind turned 47 trades into 295, at up to twice the target).
 So the runner remembers each accepted order with the instrument's holding when it was sent
 (`Runner::unconfirmed_orders`), and before every pass shows it as a reserved row of whatever nothing
 explains yet: the order's quantity, less what holdings have moved since in its direction, less what a
 listing still shows for it. It ends when holdings show the whole quantity. An order that left the
 listing, or that the runner withdrew, is looked up in the order history after the next listing
 (`SessionSource` reads it on demand), and its filled quantity becomes what holdings must show; one that
-ended with nothing filled is forgotten. A DAY order's history row is taken as final once the session
-closed. An order whose quantity stays unexplained for ten minutes (`set_confirmation_timeout`) is looked
+ended with nothing filled is forgotten. On a loop with a market calendar, a DAY order's history row is
+taken as final once the session closed. An order whose quantity stays unexplained for ten minutes (`set_confirmation_timeout`) is looked
 up once more and then **withholds its instrument in the ledger** until you clear it, counted as
 `LoopReport::orders_unconfirmed_timed_out_`: a timeout too short costs trading, never a second order. A
-trade made outside the runner on the same instrument can delay that, never double an order. A source of
-your own that reads no history never times one out: the row stays, which under-trades the instrument. Before 2026-09-30 this held only with one of the checks above enabled, and a target strategy
+trade made outside the runner on the same instrument never doubles an order either: one in the same
+direction ends the wait early, one in the other direction keeps it until the timeout withholds the
+instrument. A source of your own that reads no history never times one out: the row stays for the rest
+of the run, which under-trades the instrument.
+
+**On Kiwoom, an order the runner withdrew may end in that mark.** Kiwoom gives a cancellation its own
+order number, and whether the original order's history row then reads as ended has not been observed;
+if it does not, its instrument is withheld ten minutes after the withdrawal, until you clear it. KIS's
+was observed and is read as ended. Before 2026-09-30 this held only with one of the checks above enabled, and a target strategy
 under default limits sent one order per bar of a cold start's history (which `SessionSource` now feeds
 as history, above, so only its newest bar can send at all). A dry run and `live::bind_observer` send
 to no broker, so their rows carry no broker reference — a later opposing target would ask to withdraw

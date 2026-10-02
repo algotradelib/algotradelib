@@ -988,7 +988,7 @@ public:
    * at once is in no listing, a resting order may not be listed yet, and a listed order can fill and
    * leave the listing -- and in each case a holdings answer that lags the fill does not show it either.
    * A target then sent the order again: in the lab, holdings 70 s behind turned 47 trades into 295, at
-   * up to three times the target.
+   * up to twice the target.
    *
    * So a runner that keeps sent orders until listed (`keeps_sent_orders_until_listed`) remembers every
    * order the broker accepted with a reference, with the instrument's net holding when it was sent.
@@ -1969,48 +1969,6 @@ private:
     }
   }
 
-  /**
-   * Carries this pass's reservation into the next one.
-   *
-   * **The in-pass view dies with the pass**, so without this a second pass before the next poll
-   * starts from the broker's last word again and can re-spend what the first pass already
-   * committed. The fix needs no matcher, because a working-order poll *replaces* what it
-   * refreshes: `poll_working_orders` assigns `working_` wholesale, so a reservation written here is
-   * discarded the moment the broker's own listing arrives. (A holdings poll does not: it refreshes
-   * positions and keeps `working_`.) Nothing has to recognise its own order in a listing -- which is
-   * the half of reserve-and-match that carries a matcher's failure modes.
-   *
-   * **Always, for a runner that sends to a broker which lists working orders.** Target
-   * reconciliation reads the same portfolio, and an order this runner just sent has to count as
-   * working there, whatever the limits: a target restated on the next pass would otherwise be sent
-   * again. It was scoped to the limits below until 2026-09-30, and the cold start showed the cost --
-   * `SessionSource` then fed a whole history read one pass per bar before the next listing, so a
-   * target strategy under default limits sent one order per history bar (`tests/test-live.cpp`,
-   * `[own-orders]`). It now feeds history through `feed_warmup`, which sends nothing; the reservation
-   * still covers every other pass before a listing (a runner fed by hand, two names in one bar
-   * poll, or bar polls that come faster than the listing's). The listing that retires the row is
-   * what bounds its life, so the loop holds such a run while no listing will come -- the source
-   * publishes none, no working-order cadence is set, or the last listing is older than the portfolio
-   * age policy (`PollingLoop::gate_for`).
-   *
-   * **Scoped to the limits that read it everywhere else.** A dry run, `live::bind_observer` and a
-   * custom executor that reaches no broker write a row with no broker reference: a later target
-   * that opposes it would ask to withdraw an order identified by nothing, and a dry run has no
-   * listing to replace the row at all. A broker that publishes no working-order inquiry never
-   * replaces it either. For them the reservation persists only for the limits that size against
-   * what is outstanding, as before. `max_position_quantity_` is one of those limits: its ceiling
-   * counts same-side working orders, so an accepted order that stopped being visible at the end of a
-   * pass would let the next bar place another of the same size.
-   *
-   * A custom executor that reaches a broker but reports no reference (`reports_last_ref`) is still
-   * counted as keeping its orders: a duplicate order is the worse failure, and the listing the loop
-   * insists on retires the unaddressable row.
-   *
-   * A listing replaces `working_` wholesale, and so used to retire the row whether or not it carried the
-   * order -- a market order that filled at once is in no listing, and holdings lagging the fill did not
-   * show it either (lab F15). For a runner that keeps sent orders until listed, the row is now rebuilt
-   * before every pass from what nothing explains yet (`track_unconfirmed`, `unconfirmed_orders`).
-   */
   /** An order the broker accepted that holdings have not yet shown in full; see `unconfirmed_orders`. */
   struct Unconfirmed {
     OrderRef<Tag> ref_;
@@ -2078,7 +2036,8 @@ private:
   /** Records that the broker accepted this runner's withdrawal of `ref`, if it is a sent order still counted. */
   void note_withdrawal_accepted(const OrderRef<Tag>& ref) {
     for (auto& entry : unconfirmed_) {
-      if (entry.ref_ == ref) {
+      // The primary part alone, as everywhere a broker's own row is matched to the order.
+      if (entry.ref_.primary_ == ref.primary_) {
         entry.withdrawn_ = true;
       }
     }
@@ -2227,7 +2186,10 @@ private:
           for (std::size_t at = 0; at < group.size() && total; ++at) {
             total = decimal_add(*total, signed_in(unconfirmed_[group[at]], fillable[at]));
           }
-          if (total && !decimal_less(*total, *moved) && !decimal_less(*moved, *total)) {
+          // A sum of zero is no evidence: two opposite orders that have not filled at all look like
+          // two that both have. They wait for their history or the timeout instead.
+          if (total && total->coefficient() != 0 && !decimal_less(*total, *moved) &&
+              !decimal_less(*moved, *total)) {
             covered = fillable;
           }
         }
@@ -2278,6 +2240,48 @@ private:
     }
   }
 
+  /**
+   * Carries this pass's reservation into the next one.
+   *
+   * **The in-pass view dies with the pass**, so without this a second pass before the next poll
+   * starts from the broker's last word again and can re-spend what the first pass already
+   * committed. The fix needs no matcher, because a working-order poll *replaces* what it
+   * refreshes: `poll_working_orders` assigns `working_` wholesale, so a reservation written here is
+   * discarded the moment the broker's own listing arrives. (A holdings poll does not: it refreshes
+   * positions and keeps `working_`.) Nothing has to recognise its own order in a listing -- which is
+   * the half of reserve-and-match that carries a matcher's failure modes.
+   *
+   * **Always, for a runner that sends to a broker which lists working orders.** Target
+   * reconciliation reads the same portfolio, and an order this runner just sent has to count as
+   * working there, whatever the limits: a target restated on the next pass would otherwise be sent
+   * again. It was scoped to the limits below until 2026-09-30, and the cold start showed the cost --
+   * `SessionSource` then fed a whole history read one pass per bar before the next listing, so a
+   * target strategy under default limits sent one order per history bar (`tests/test-live.cpp`,
+   * `[own-orders]`). It now feeds history through `feed_warmup`, which sends nothing; the reservation
+   * still covers every other pass before a listing (a runner fed by hand, two names in one bar
+   * poll, or bar polls that come faster than the listing's). A listing and holdings bound its life
+   * (`unconfirmed_orders`), so the loop holds such a run while no listing will come -- the source
+   * publishes none, no working-order cadence is set, or the last listing is older than the portfolio
+   * age policy (`PollingLoop::gate_for`).
+   *
+   * **Scoped to the limits that read it everywhere else.** A dry run, `live::bind_observer` and a
+   * custom executor that reaches no broker write a row with no broker reference: a later target
+   * that opposes it would ask to withdraw an order identified by nothing, and a dry run has no
+   * listing to replace the row at all. A broker that publishes no working-order inquiry never
+   * replaces it either. For them the reservation persists only for the limits that size against
+   * what is outstanding, as before. `max_position_quantity_` is one of those limits: its ceiling
+   * counts same-side working orders, so an accepted order that stopped being visible at the end of a
+   * pass would let the next bar place another of the same size.
+   *
+   * A custom executor that reaches a broker but reports no reference (`reports_last_ref`) is still
+   * counted as keeping its orders: a duplicate order is the worse failure, and the listing the loop
+   * insists on retires the unaddressable row.
+   *
+   * A listing replaces `working_` wholesale, and so used to retire the row whether or not it carried the
+   * order -- a market order that filled at once is in no listing, and holdings lagging the fill did not
+   * show it either (lab F15). For a runner that keeps sent orders until listed, the row is now rebuilt
+   * before every pass from what nothing explains yet (`track_unconfirmed`, `unconfirmed_orders`).
+   */
   void persist_reservation(
     const strategy::PlannedOrder& order,
     const std::optional<Decimal64>& reference_price,
@@ -2297,8 +2301,8 @@ private:
     // invisible to a target on the next one until a working-order poll listed it -- and "flatten"
     // would then go out beside the stop, both of them sells.
     const bool conditional = carries_trigger_price(order.type_);
-    // A broker that will list the order back, reached by this runner: the listing retires the row,
-    // so the reservation is always written. See above for why every other runner keeps the scoping.
+    // A broker that will list the order back, reached by this runner: the listing and holdings
+    // account for the row (`track_unconfirmed`), so the reservation is always written. See above for why every other runner keeps the scoping.
     if (!keeps_sent_orders_until_listed && !sells && !buys && !capped && !exposed && !conditional) {
       return;
     }
