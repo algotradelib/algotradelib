@@ -174,6 +174,13 @@ durations rather than one tolerance because it absorbs three unrelated things:
   answered. Default 60s. Where both lines exist the span is exact and this is unused.
 - `listing_delay_` — how long the broker's listing may lag a write it accepted. Default 30s.
 
+**Which clock says the window has closed.** The runner's decision instant -- the period end of the last
+bar fed -- once a bar has been fed. Before that, as at the startup read after a restart, the loop's own
+clock (the wall clock for a source driven without a loop), so a restart can resolve `not_placed` at its
+first read instead of waiting for a bar. On daily bars the decision instant is the previous session's
+end, so after the first bar a placement left in doubt stays `undecided` until the next bar
+(`labs/FINDINGS.md` F20).
+
 **`ambiguous` is a stop, not a retry.** Two rows that could both be your order stay ambiguous however
 many times you sweep; no heuristic turns them into one answer. Go and look, then clear the ledger
 entry yourself with `ledger().resolve_after_reading_orders(instrument)` — named for what it requires,

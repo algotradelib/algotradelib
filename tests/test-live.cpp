@@ -4014,6 +4014,59 @@ TEST_CASE("a working-order poll sweeps the ledger without a request of its own")
   CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
 }
 
+TEST_CASE("a sweep before any bar stamps its resolution with the loop's clock", "[recovery]") {
+  // Observed on a KIS demo account (2026-10-02, `labs/FINDINGS.md` F29): a process restarted after
+  // `kill -9` resolved its predecessor's order at the startup read, before any bar set the decision
+  // instant. The resolution line was stamped at the epoch, the journal reader takes such a line for
+  // damage, and the next start halted ("lines this library did not write").
+  WorkingSession session;
+  WorkingOrders<FakeBroker> orders;
+  auto listed = working();
+  listed.order_ = listed_order("KRX-1");
+  orders.orders_.push_back(listed);
+  session.set_working_orders(orders);
+
+  const auto resolution_stamp = [](const runner::MemoryJournal& journal) {
+    for (const auto& entry : journal.records()) {
+      if (entry.outcome_ == runner::JournalOutcome::RESOLVED) {
+        return std::optional<std::chrono::system_clock::time_point>(entry.recorded_at_);
+      }
+    }
+    return std::optional<std::chrono::system_clock::time_point>{};
+  };
+
+  SECTION("a loop's reading stands in for the unset decision instant") {
+    runner::MemoryJournal journal;
+    journal.append(journaled_placement());
+    auto live_runner = live::bind_observer(session, CountEvents{});
+    live_runner.set_observed_at(swept_at());
+    live_runner.ledger().mark(samsung(), "an order request failed in transit");
+    live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
+    source.set_journal(journal);
+
+    CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+    CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
+    const auto stamp = resolution_stamp(journal);
+    REQUIRE(stamp.has_value());
+    CHECK(*stamp == swept_at());
+  }
+
+  SECTION("with no loop either, the wall clock") {
+    runner::MemoryJournal journal;
+    journal.append(journaled_placement());
+    auto live_runner = live::bind_observer(session, CountEvents{});
+    live_runner.ledger().mark(samsung(), "an order request failed in transit");
+    live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
+    source.set_journal(journal);
+
+    const auto before = std::chrono::system_clock::now();
+    CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+    const auto stamp = resolution_stamp(journal);
+    REQUIRE(stamp.has_value());
+    CHECK_FALSE(*stamp < before);
+  }
+}
+
 TEST_CASE("the history fallback sweeps against the page it read") {
   // A broker with no working-order inquiry still reconciles, from the wider listing it does offer.
   HistorySession session;
@@ -6789,4 +6842,48 @@ TEST_CASE("a live run's report says why reconciliation could not build an instru
   CHECK(quiet.orders_unbuildable_ == 0);
   CHECK_FALSE(quiet.last_unbuildable_.has_value());
   CHECK(live_runner.last_unbuildable().has_value());
+}
+
+TEST_CASE("a file journal reads back a resolution a startup sweep wrote", "[recovery][file]") {
+  // F29 through the reader that failed: a `RESOLVED` line stamped at the epoch was damage to
+  // `FileJournal`, so the next open counted it as a line this library did not write and recovery halted.
+  const TempPath path("atl-test-startup-sweep.jsonl");
+  const auto sent = std::chrono::system_clock::now() - std::chrono::minutes(5);
+  {
+    runner::FileJournal previous(path.str(), "fake:demo:1");
+    REQUIRE(previous.open());
+    auto entry = journaled_placement();
+    entry.recorded_at_ = sent;
+    REQUIRE(previous.append(entry));
+  }
+
+  WorkingSession session;
+  WorkingOrders<FakeBroker> orders;
+  auto listed = working();
+  listed.order_ = listed_order("KRX-1");
+  listed.order_.ordered_at_ = sent;
+  orders.orders_.push_back(listed);
+  session.set_working_orders(orders);
+
+  {
+    runner::FileJournal journal(path.str(), "fake:demo:1");
+    REQUIRE(journal.open());
+    auto live_runner = live::bind_observer(session, CountEvents{});
+    const auto recovery = runner::recover_runner(live_runner, journal);
+    REQUIRE_FALSE(recovery.clean());
+    live_runner.set_observed_at(std::chrono::system_clock::now());
+    live::SessionSource<WorkingSession, runner::FileJournal> source(session, {samsung()});
+    source.set_journal(journal);
+    CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+    CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
+  }
+
+  // The next start: every line readable, nothing owed.
+  runner::FileJournal next(path.str(), "fake:demo:1");
+  REQUIRE(next.open());
+  const auto replay = next.replay();
+  CHECK(replay.unreadable_lines_ == 0);
+  CHECK(runner::unresolved_instructions(replay).empty());
+  auto restarted = live::bind_observer(session, CountEvents{});
+  CHECK(runner::recover_runner(restarted, next).clean());
 }
