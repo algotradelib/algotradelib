@@ -795,19 +795,23 @@ public:
    * process's `adopt_token`. **It is a bearer credential:** where and how it is kept is the caller's
    * decision, as the key and secret are.
    *
-   * The token lives on the client's strand: read it between requests, as `rate_limit_stats` says.
+   * Returned by value: a later refresh replaces the client's own. The token lives on the client's
+   * strand: read it there, or before any request is started; on the blocking facade, between calls.
    */
-  const KisRest& token() const noexcept { return token_; }
+  KisRest token() const { return token_; }
 
   /**
    * Starts from a token issued earlier for this application key, instead of requesting one.
    *
-   * Returns false, and adopts nothing, for an empty or expired token. **A token KIS refuses is not
-   * replaced**: this client does not re-authenticate when KIS rejects a token (`EGW00121` invalid,
-   * `EGW00123` expired), so each request fails with that code until the token expires. A caller that
-   * keeps tokens keys them by environment and application key, and drops one KIS has refused.
+   * Returns false, and adopts nothing, for an empty token or one within five minutes of expiry (the
+   * margin `valid()` keeps). **A token KIS refuses is not replaced**: this client does not
+   * re-authenticate when KIS rejects a token (KIS's own sample re-authenticates on `EGW00123`,
+   * expired), so each request fails with KIS's code until five minutes before the adopted expiry. The
+   * token carries no key or environment, so this cannot tell a token issued for another key: a caller
+   * that keeps tokens keys them by environment and application key, and drops one KIS has refused.
    *
-   * Call it before the first request, or between requests.
+   * Call it on the client's strand, or before any request is started; on the blocking facade, between
+   * calls.
    */
   bool adopt_token(KisRest token) {
     if (!token.valid()) {
@@ -4576,7 +4580,7 @@ public:
   }
 
   /** Returns the token the client holds; see `KisClient::token`. */
-  const KisRest& token() const noexcept { return client_->token(); }
+  KisRest token() const { return client_->token(); }
 
   /** Starts from a token issued earlier for this key; see `KisClient::adopt_token`. */
   bool adopt_token(KisRest token) { return client_->adopt_token(std::move(token)); }
