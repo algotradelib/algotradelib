@@ -19,6 +19,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <thread>
 #include <stdexcept>
 #include <type_traits>
 #include <string>
@@ -1043,6 +1044,106 @@ TEST_CASE(
     REQUIRE(completed);
     REQUIRE(server.requestCount("/drop-post") == 1);
     REQUIRE(server.connectionCount() == 1);
+  }
+}
+
+TEST_CASE(
+  "A POST after an idle pause is not written into a connection the server closed",
+  "[http][tls][retry][idle]"
+) {
+  // The server closes a kept-alive connection idle for 200 ms, as KIS's hosts do after five seconds.
+  // A POST is never replayed, so written into that connection it failed after its bytes left: an
+  // order nobody received, reported as one that may exist (observed on a KIS demo account).
+  const auto post_after_pause = [](
+    std::chrono::milliseconds limit, std::chrono::milliseconds pause, bool server_closes_idle = true
+  ) {
+    test::LocalHttpsServer server;
+    if (server_closes_idle) {
+      server.set_idle_timeout(std::chrono::milliseconds(200));
+    }
+    net::io_context ioc;
+    ssl::context context(ssl::context::tls_client);
+    test::trustLocalhostCertificate(context);
+    network::HttpClientOptions options;
+    options.unreplayed_idle_limit_ = limit;
+    auto client = std::make_shared<network::AsyncHttpClient>(
+      ioc.get_executor(), context, "localhost", server.port(), options
+    );
+
+    network::HttpRequest read;
+    read.target_ = "/read";
+    bool read_ok = false;
+    client->async_request(std::move(read), [&read_ok](Result<network::HttpResponse> result) {
+      read_ok = static_cast<bool>(result);
+    });
+    ioc.run();
+    REQUIRE(read_ok);
+
+    std::this_thread::sleep_for(pause);
+    network::HttpRequest order;
+    order.method_ = http::verb::post;
+    order.target_ = "/order";
+    order.body_ = "order-like-payload";
+    std::optional<Result<network::HttpResponse>> outcome;
+    client->async_request(std::move(order), [&outcome](Result<network::HttpResponse> result) {
+      outcome.emplace(std::move(result));
+    });
+    ioc.restart();
+    // Bounded, so a client that reconnects for ever fails the test instead of hanging it.
+    ioc.run_for(std::chrono::seconds(10));
+    REQUIRE(outcome.has_value());
+    return std::make_pair(std::move(*outcome), server.connectionCount());
+  };
+
+  SECTION("past the limit, the POST goes out on a fresh connection") {
+    const auto [outcome, connections] = post_after_pause(std::chrono::milliseconds(100), std::chrono::milliseconds(400));
+    REQUIRE(outcome);
+    CHECK(outcome.value().body() == "/order");
+    CHECK(connections == 2);
+  }
+
+  SECTION("within the limit, the POST reuses the connection") {
+    const auto [outcome, connections] =
+      post_after_pause(std::chrono::seconds(5), std::chrono::milliseconds(50), /*server_closes_idle=*/false);
+    REQUIRE(outcome);
+    CHECK(connections == 1);
+  }
+
+  SECTION("a limit of zero or below reconnects once per request, never in a loop") {
+    // A fresh connection starts its own idle clock; without the once-per-request bound it would trip
+    // its own check and the POST would never be written.
+    for (const auto limit : {std::chrono::milliseconds(0), std::chrono::milliseconds(-1)}) {
+      const auto [outcome, connections] =
+        post_after_pause(limit, std::chrono::milliseconds(50), /*server_closes_idle=*/false);
+      REQUIRE(outcome);
+      CHECK(outcome.value().body() == "/order");
+      CHECK(connections <= 2);
+    }
+  }
+
+  SECTION("without the limit it fails as a request that may have reached the broker") {
+    // The control: the case the limit exists for, reproduced.
+    // A second's pause against a 200 ms server timeout, so a slow test thread cannot hide the close.
+    const auto [outcome, connections] = post_after_pause(std::chrono::hours(1), std::chrono::milliseconds(1000));
+    REQUIRE_FALSE(outcome);
+    CHECK(outcome.error().category_ == ErrorCategory::TRANSPORT);
+    CHECK(outcome.error().reached_broker_);
+    CHECK(connections == 1);
+  }
+
+  SECTION("the blocking client reconnects the same way") {
+    test::LocalHttpsServer server;
+    server.set_idle_timeout(std::chrono::milliseconds(200));
+    net::io_context ioc;
+    ssl::context context(ssl::context::tls_client);
+    test::trustLocalhostCertificate(context);
+    network::HttpClientOptions options;
+    options.unreplayed_idle_limit_ = std::chrono::milliseconds(100);
+    network::HttpClient client(ioc, context, "localhost", server.port(), options);
+    REQUIRE(client.get("/read").body() == "/read");
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    CHECK(client.post("/order", "order-like-payload").body() == "/order");
+    CHECK(server.connectionCount() == 2);
   }
 }
 
