@@ -701,9 +701,11 @@ one more timeout (judged by a holdings read taken that much later) to show it. O
 then **withholds its instrument in the ledger** until you clear it (or the process restarts: the ledger
 is in memory; and a sweep that resolves another open instruction on the same instrument lifts it too),
 counted as `LoopReport::orders_unconfirmed_timed_out_`: a timeout too short costs trading, never a
-second order. **Poll holdings faster than the timeout**: an order the history cannot settle is judged on
-the clock, and a slower holdings cadence can mark it one read before holdings would have shown it. A
-trade made outside the runner on the same instrument never doubles an order either: one in the same
+second order. Either way the mark waits for a holdings read taken a full timeout after the quantity
+became unexplained (or after the history settled it), so a slow holdings cadence delays it, never makes
+it early.
+
+A trade made outside the runner on the same instrument never doubles an order either: one in the same
 direction ends the wait early, one in the other direction keeps it until the timeout withholds the
 instrument. A source of your own that reads no history never times one out: the row stays for the rest
 of the run, which under-trades the instrument.
