@@ -300,7 +300,8 @@ private:
  *
  * Requests are serialized on a strand because HTTP pipelining is not used.
  * Idempotent GET requests may be replayed once after transport failure; POST
- * requests are never replayed automatically.
+ * requests are never replayed automatically, and never written on a connection
+ * idle longer than `HttpClientOptions::unreplayed_idle_limit_`.
  */
 class AsyncHttpClient : public std::enable_shared_from_this<AsyncHttpClient> {
 public:
@@ -587,6 +588,8 @@ private:
     if (queue_.front().request_.method_ != http::verb::get && idle_since_ &&
         std::chrono::steady_clock::now() - *idle_since_ > options_.unreplayed_idle_limit_) {
       disconnect();
+      // The handshake is not admission delay; the wait, if any, is measured again from here.
+      waiting_since_.reset();
       start_resolve();
       return;
     }
@@ -717,6 +720,9 @@ private:
           return;
         }
         self->state_ = State::READY;
+        // The idle clock starts here too: a request can wait for admission on a connection that has
+        // carried nothing yet, and the server's idle timeout runs all the same.
+        self->idle_since_ = std::chrono::steady_clock::now();
         self->pump();
       }
     );

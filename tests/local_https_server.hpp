@@ -9,7 +9,11 @@
 #include <boost/beast/http.hpp>
 #include <boost/beast/ssl.hpp>
 
+#ifdef _WIN32
+#include <winsock2.h>
+#else
 #include <poll.h>
+#endif
 
 #include <atomic>
 #include <chrono>
@@ -197,10 +201,16 @@ private:
     beast::flat_buffer buffer;
     bool served = false;
     while (!stopped_) {
-      // Between requests only, and only when nothing is buffered, so a pipelined request is not lost.
+      // Between requests only, and only when nothing is decrypted and waiting: a request already in
+      // the buffer is not lost. This server does not support pipelining.
       if (served && idle_timeout_ms_ > 0 && buffer.size() == 0 && SSL_pending(stream.native_handle()) == 0) {
+#ifdef _WIN32
+        WSAPOLLFD waiting{beast::get_lowest_layer(stream).socket().native_handle(), POLLRDNORM, 0};
+        if (::WSAPoll(&waiting, 1, static_cast<int>(idle_timeout_ms_)) == 0) {
+#else
         pollfd waiting{beast::get_lowest_layer(stream).socket().native_handle(), POLLIN, 0};
         if (::poll(&waiting, 1, static_cast<int>(idle_timeout_ms_)) == 0) {
+#endif
           close(stream);
           return;
         }
