@@ -1090,7 +1090,16 @@ TEST_CASE("an unconfirmed order past the timeout withholds its instrument", "[co
     std::chrono::system_clock::time_point{} + std::chrono::hours(500001) + std::chrono::minutes(2)
   );
   REQUIRE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
+  // The history has no answer, but the holdings in hand predate the deadline: not yet.
   rig.runner_instance.confirm_from_history({});
+  CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+  CHECK(rig.runner_instance.unconfirmed_orders() == 1);
+  // A holdings read taken past it that still does not show the order: withheld.
+  auto late = polled(1, "0", {});
+  late.as_of_ = late.working_as_of_ =
+    std::chrono::system_clock::time_point{} + std::chrono::hours(500001) + std::chrono::minutes(2);
+  install(rig.runner_instance, late);
+  rig.runner_instance.refresh_unconfirmed();
   CHECK(rig.runner_instance.unconfirmed_orders() == 0);
   CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 1);
   CHECK(rig.runner_instance.ledger().requires_reconcile(samsung()));
@@ -1160,6 +1169,25 @@ TEST_CASE("a fill its history reports is not marked when holdings come after the
     CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 1);
     CHECK(rig.runner_instance.unconfirmed_orders() == 0);
   }
+}
+
+TEST_CASE("a fill the history does not return is not marked before the holdings that show it", "[confirm]") {
+  // The unsettled side of the slow-loop race: past the timeout, the listing poll reads a history that
+  // has no row for the order yet; the holdings read of the same iteration shows the fill.
+  ConfirmRig rig;
+  rig.script.push_back(target_of("10"));
+  rig.runner_instance.set_confirmation_timeout(std::chrono::minutes(1));
+  rig.runner_instance.feed(bar_at(1, "70000"));
+  install(rig.runner_instance, polled(1, "0", {}));
+  rig.runner_instance.set_observed_at(std::chrono::system_clock::time_point{} + std::chrono::hours(500002));
+  REQUIRE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
+  rig.runner_instance.confirm_from_history({});
+  CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+  install(rig.runner_instance, polled(2, "10", {}));
+  rig.runner_instance.refresh_unconfirmed();
+  CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+  CHECK(rig.runner_instance.unconfirmed_orders() == 0);
+  CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 0);
 }
 
 TEST_CASE("a fill that confirmed one order is not counted again for the next", "[confirm]") {

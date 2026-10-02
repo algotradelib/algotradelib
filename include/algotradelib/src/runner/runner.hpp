@@ -1023,8 +1023,9 @@ public:
    * timeout later -- the entry is dropped and its instrument **marked in the indeterminacy ledger**,
    * which an operator clears after reading the account (a restart drops it, as it drops every ledger
    * entry, and a sweep resolving another instruction on the instrument lifts it). A timeout too short
-   * therefore costs trading on that instrument, never a duplicate order. For a settled order, "later"
-   * means a holdings answer read a whole timeout after the history settled it.
+   * therefore costs trading on that instrument, never a duplicate order. The mark always waits for a
+   * holdings answer read a whole timeout after the quantity became unexplained (for a settled order,
+   * after the history settled it), so it does not depend on how often the loop polls.
    */
   void set_confirmation_timeout(std::chrono::nanoseconds timeout) { confirmation_timeout_ = timeout; }
 
@@ -1089,27 +1090,17 @@ public:
         }
       }
     }
-    // Retires what the history just settled, before anything is judged timed out: an order the history
-    // shows ended with what holdings already show is confirmed, not late.
-    confirm_reservations();
-    for (auto at = unconfirmed_.begin(); at != unconfirmed_.end();) {
-      // **Only what the history could not account for.** An order whose terminal row says what it
-      // filled is waiting for holdings alone, on a fresh timeout (`confirm_reservations`); a loop
-      // polling slower than the timeout reads the listing (and so this history) before the holdings
-      // that would confirm it, and marked every fill (lab, daily bars, 2026-10-02).
-      if (!at->consulted_ || at->settled_ || !timed_out(*at, now)) {
-        ++at;
-        continue;
+    // Past the timeout and the history had no answer: noted, and judged by `confirm_reservations` against
+    // the next holdings read, as a settled order is. Marking here, on the clock, marked a fill one
+    // holdings read early on a loop polling slower than the timeout (the listing, and so this history,
+    // is read before holdings in each iteration).
+    for (auto& entry : unconfirmed_) {
+      if (entry.consulted_ && !entry.settled_ && timed_out(entry, now)) {
+        entry.history_missed_ = true;
       }
-      ++orders_unconfirmed_timed_out_;
-      ledger_.mark(
-        at->instrument_,
-        "an order this runner sent (" + at->ref_.primary_ +
-          ") was not confirmed by holdings, the order list or the order history in time"
-      );
-      drop_reserved_row(*at);
-      at = unconfirmed_.erase(at);
     }
+    // Retires what the history just settled, and withholds what the holdings in hand already condemn.
+    confirm_reservations();
   }
 
   /**
@@ -2003,6 +1994,8 @@ private:
     bool session_ended_{false};
     /** Whether the current `confirm_from_history` looked for it. */
     bool consulted_{false};
+    /** Whether the history, read past the timeout, had no terminal row for it. */
+    bool history_missed_{false};
     /** The quantity nothing explains, as of the last rebuild, and since when some has been. */
     Decimal64 residual_;
     std::optional<std::chrono::system_clock::time_point> unexplained_since_;
@@ -2075,22 +2068,6 @@ private:
   static bool is_reserved_row_of(const WorkingOrder<Tag>& working, const Unconfirmed& entry) {
     return working.reserved_ && working.ref_.primary_ == entry.ref_.primary_ &&
       working.order_.instrument_ == entry.instrument_ && working.order_.side_ == entry.side_;
-  }
-
-  /** Removes `entry`'s reserved row from the context portfolio. */
-  void drop_reserved_row(const Unconfirmed& entry) {
-    auto portfolio = context_.portfolio();
-    const auto before = portfolio.working_.size();
-    portfolio.working_.erase(
-      std::remove_if(
-        portfolio.working_.begin(), portfolio.working_.end(),
-        [&](const WorkingOrder<Tag>& working) { return is_reserved_row_of(working, entry); }
-      ),
-      portfolio.working_.end()
-    );
-    if (portfolio.working_.size() != before) {
-      context_.set_portfolio(std::move(portfolio));
-    }
   }
 
   /**
@@ -2241,17 +2218,21 @@ private:
           // Judged by the holdings read, not the clock: the listing (and so the history) is polled
           // before holdings in each iteration, and on a loop polling slower than the timeout the
           // clock alone marked a fill one holdings read before it would have shown.
-          if (entry.settled_ && timed_out(entry, now) && entry.unexplained_since_ &&
+          if ((entry.settled_ || entry.history_missed_) && timed_out(entry, now) &&
               portfolio.as_of_ - *entry.unexplained_since_ > confirmation_timeout_) {
-            // The history said what it filled, and a holdings answer read a whole timeout later does
-            // not show it: an outside trade or a disagreement nobody here can settle. Withheld for the
-            // operator, as an order the history could not account for is.
+            // A holdings answer read a whole timeout after the quantity became unexplained (or after the
+            // history settled it) does not show it, and the history either said what it filled or had
+            // nothing to say: an outside trade, a disagreement or an order nobody here can account for.
+            // Withheld for the operator.
             ++orders_unconfirmed_timed_out_;
             ledger_.mark(
               entry.instrument_,
-              "an order this runner sent (" + entry.ref_.primary_ +
-                ") filled by the order history, and holdings did not show it within the confirmation "
-                "timeout"
+              entry.settled_ ?
+                "an order this runner sent (" + entry.ref_.primary_ +
+                  ") filled by the order history, and holdings did not show it within the confirmation "
+                  "timeout" :
+                "an order this runner sent (" + entry.ref_.primary_ +
+                  ") was not confirmed by holdings, the order list or the order history in time"
             );
             expired[group[at]] = true;
             // What holdings did show of it stays credited to it, not to the next order.
