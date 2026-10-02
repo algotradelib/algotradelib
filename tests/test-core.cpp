@@ -2370,6 +2370,36 @@ TEST_CASE("choosing a tape cannot invalidate an order", "[broker][kis][order]") 
   }
 }
 
+TEST_CASE("a KIS client hands its token on and adopts only a live one", "[broker][kis]") {
+  // KIS issues one token per key per minute (EGW00133), so a process run per action keeps its token
+  // for the next. No request is made here: adopting is a local decision.
+  boost::asio::ssl::context tls(boost::asio::ssl::context::tls_client);
+  kis::KisBlockingClient client(tls, kis::KisConfig{});
+  REQUIRE(client.token().access_token_.empty());
+
+  kis::KisRest expired;
+  expired.access_token_ = "expired-token";
+  expired.expires_at_ = std::chrono::system_clock::now() - std::chrono::minutes(1);
+  CHECK_FALSE(client.adopt_token(expired));
+  kis::KisRest empty;
+  empty.expires_at_ = std::chrono::system_clock::now() + std::chrono::hours(20);
+  CHECK_FALSE(client.adopt_token(empty));
+  // Inside the five-minute margin every other validity check uses.
+  kis::KisRest ending;
+  ending.access_token_ = "ending-token";
+  ending.expires_at_ = std::chrono::system_clock::now() + std::chrono::minutes(2);
+  CHECK_FALSE(client.adopt_token(ending));
+  CHECK(client.token().access_token_.empty());
+
+  kis::KisRest live;
+  live.access_token_ = "kept-token";
+  live.expires_at_ = std::chrono::system_clock::now() + std::chrono::hours(20);
+  REQUIRE(client.adopt_token(live));
+  CHECK(client.token().access_token_ == "kept-token");
+  CHECK(client.token().expires_at_ == live.expires_at_);
+  CHECK(client.token().valid());
+}
+
 TEST_CASE("a KIS demo account trades on KRX and is told so before I/O", "[broker][kis][order]") {
   const kis::KisAccount account{"12345678", "01"};
   kis::KisConfig demo;
