@@ -1054,9 +1054,13 @@ TEST_CASE(
   // The server closes a kept-alive connection idle for 200 ms, as KIS's hosts do after five seconds.
   // A POST is never replayed, so written into that connection it failed after its bytes left: an
   // order nobody received, reported as one that may exist (observed on a KIS demo account).
-  const auto post_after_pause = [](std::chrono::milliseconds limit, std::chrono::milliseconds pause) {
+  const auto post_after_pause = [](
+    std::chrono::milliseconds limit, std::chrono::milliseconds pause, bool server_closes_idle = true
+  ) {
     test::LocalHttpsServer server;
-    server.set_idle_timeout(std::chrono::milliseconds(200));
+    if (server_closes_idle) {
+      server.set_idle_timeout(std::chrono::milliseconds(200));
+    }
     net::io_context ioc;
     ssl::context context(ssl::context::tls_client);
     test::trustLocalhostCertificate(context);
@@ -1085,7 +1089,8 @@ TEST_CASE(
       outcome.emplace(std::move(result));
     });
     ioc.restart();
-    ioc.run();
+    // Bounded, so a client that reconnects for ever fails the test instead of hanging it.
+    ioc.run_for(std::chrono::seconds(10));
     REQUIRE(outcome.has_value());
     return std::make_pair(std::move(*outcome), server.connectionCount());
   };
@@ -1098,9 +1103,22 @@ TEST_CASE(
   }
 
   SECTION("within the limit, the POST reuses the connection") {
-    const auto [outcome, connections] = post_after_pause(std::chrono::seconds(5), std::chrono::milliseconds(50));
+    const auto [outcome, connections] =
+      post_after_pause(std::chrono::seconds(5), std::chrono::milliseconds(50), /*server_closes_idle=*/false);
     REQUIRE(outcome);
     CHECK(connections == 1);
+  }
+
+  SECTION("a limit of zero or below reconnects once per request, never in a loop") {
+    // A fresh connection starts its own idle clock; without the once-per-request bound it would trip
+    // its own check and the POST would never be written.
+    for (const auto limit : {std::chrono::milliseconds(0), std::chrono::milliseconds(-1)}) {
+      const auto [outcome, connections] =
+        post_after_pause(limit, std::chrono::milliseconds(50), /*server_closes_idle=*/false);
+      REQUIRE(outcome);
+      CHECK(outcome.value().body() == "/order");
+      CHECK(connections <= 2);
+    }
   }
 
   SECTION("without the limit it fails as a request that may have reached the broker") {

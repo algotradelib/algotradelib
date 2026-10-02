@@ -200,7 +200,12 @@ public:
       // idle; see `HttpClientOptions::unreplayed_idle_limit_`.
       if (method != http::verb::get && idle_since_ &&
           std::chrono::steady_clock::now() - *idle_since_ > options_.unreplayed_idle_limit_) {
-        disconnect();
+        // Dropped without waiting for the peer's close notification: a synchronous TLS shutdown is not
+        // bounded by the stream's deadline, and a live server may never answer one.
+        close_ssl_stream(*stream_);
+        stream_.reset();
+        buffer_.consume(buffer_.size());
+        idle_since_.reset();
       }
       ensure_connected(error);
       if (!error) {
@@ -429,6 +434,12 @@ private:
     CompletionHandler handler_;
     bool retried_{false};
     /**
+     * Whether this request already went to a fresh connection because the last one sat idle. Once is
+     * enough, and it bounds the rule: a fresh connection starts its own idle clock, which with a limit
+     * of zero or below would otherwise send it straight back for another.
+     */
+    bool refreshed_{false};
+    /**
      * Whether any attempt at this request has begun writing it to the socket.
      *
      * The honest record of what a caller may be told about the broker having seen it, and
@@ -585,8 +596,9 @@ private:
     // A request that is never replayed is not written into a connection the server may have closed
     // while it sat idle; see `HttpClientOptions::unreplayed_idle_limit_`. Before admission, so the
     // reconnect spends no rate-limit slot of its own.
-    if (queue_.front().request_.method_ != http::verb::get && idle_since_ &&
+    if (queue_.front().request_.method_ != http::verb::get && !queue_.front().refreshed_ && idle_since_ &&
         std::chrono::steady_clock::now() - *idle_since_ > options_.unreplayed_idle_limit_) {
+      queue_.front().refreshed_ = true;
       disconnect();
       // The handshake is not admission delay; the wait, if any, is measured again from here.
       waiting_since_.reset();
