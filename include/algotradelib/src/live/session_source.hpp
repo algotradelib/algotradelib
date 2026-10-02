@@ -1068,9 +1068,10 @@ private:
    * **Two query shapes, because the brokers that hold stops disagree.** KIS takes a range
    * (`history_requires_range`), so one query covers it. Kiwoom's `kt00007` takes **one** date, which it
    * requires, and refuses a range -- so each day is asked for on its own, from the day before the
-   * deferral to the day after now, both in UTC so the market-local day is always inside; a stop is a
-   * day order, so that is three or four requests at most. A broker taking neither shape is asked each day as well, which
-   * states a date it may ignore rather than omitting one it may need.
+   * deferral (or the send) to the day after now, both in UTC so the market-local day is always inside:
+   * three or four requests within a week, six across a weekend on daily bars, repeated on each listing
+   * poll while an entry waits. A broker taking neither shape is asked each day as well, which states a
+   * date it may ignore rather than omitting one it may need.
    */
   bool read_evidence(
     std::chrono::system_clock::time_point since,

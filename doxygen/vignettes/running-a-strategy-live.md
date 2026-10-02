@@ -283,8 +283,8 @@ refused flatten is reported once rather than twice.
 | Figure | What happened |
 | --- | --- |
 | `orders_unbuildable_` | reconciliation could not build the instruction: no reference data, no price, an unknown grid — **or a quantity that rounded to zero**, which is a deliberate drop rather than a fault, so a non-zero figure is not by itself a reason to go looking for missing data |
-| `orders_reconcile_withheld_` | the indeterminacy ledger is holding that instrument: until a listing settles an unknown outcome, or, after a confirmation timeout, until you clear it |
-| `orders_unconfirmed_timed_out_` | an order this run sent was not confirmed by holdings, a listing or its history within the confirmation timeout, and its instrument is now withheld until you clear it (below) |
+| `orders_reconcile_withheld_` | the indeterminacy ledger is holding that instrument: until a listing settles an unknown outcome, or, after a confirmation timeout, until you clear it (or a restart, below) |
+| `orders_unconfirmed_timed_out_` | an order this run sent was not confirmed by holdings, a listing or its history within the confirmation timeout, and its instrument is now withheld until you clear it or the process restarts (below) |
 | `orders_guard_refused_` | `RiskGuard` refused it — **a hold as well as a limit**, since it checks the active holds first, so a halted run reports every order here. Nothing was sent |
 | `orders_binding_refused_` | the binding would not send it, or could not reach the broker (a DNS, connect or TLS failure; such an order is kept and retried, see the kept-instructions rules); no request went out |
 | `orders_broker_refused_` | the broker was asked and said no; a request was spent |
