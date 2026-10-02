@@ -49,8 +49,8 @@ struct Settings {
   strategy::RiskLimits limits_;
   /**
    * How often each kind is polled. `trade` needs `working_orders_` set, shorter than
-   * `maximum_portfolio_age_`: a runner that sends orders keeps them until the listing replaces them,
-   * and the loop holds (with a note) while no listing will come.
+   * `maximum_portfolio_age_`: a runner that sends orders keeps them until the listing or holdings
+   * account for them, and the loop holds (with a note) while no listing will come.
    */
   runner::PollSchedule schedule_;
   /** Which bars the source asks for, and how many: the history read at start is this many. */
@@ -183,7 +183,9 @@ inline void print_loop(const runner::LoopReport& report, std::ostream& out) {
       << "refused by guard: " << report.orders_guard_refused_ << '\n'
       << "refused locally : " << report.orders_binding_refused_ << " (by the adapter, before sending)\n"
       << "refused by broker: " << report.orders_broker_refused_ << '\n'
-      << "unknown outcome : " << report.orders_indeterminate_ << " (read the broker's order list)\n";
+      << "unknown outcome : " << report.orders_indeterminate_ << " (read the broker's order list)\n"
+      << "unconfirmed     : " << report.orders_unconfirmed_timed_out_
+      << " (sent, and not confirmed in time: the instrument is withheld until you clear it)\n";
   if (report.last_unbuildable_) {
     out << "last unbuildable: " << strategy::reject_reason_name(report.last_unbuildable_->reason_) << " for "
         << report.last_unbuildable_->instrument_.symbol_

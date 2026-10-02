@@ -385,13 +385,13 @@ public:
     strategy::strategy_detail::has_on_fill<Strategy, Context>::value;
 
   /**
-   * Whether this runner keeps every order it sends in `working_` until a working-order listing
-   * replaces it, whatever the limits (`persist_reservation`).
+   * Whether this runner keeps every order it sends in `working_`, whatever the limits, until the
+   * broker shows what became of it (`persist_reservation`, `unconfirmed_orders`).
    *
    * True for a runner that sends to a broker publishing a working-order inquiry -- every shipped
    * binding (`live::SessionExecutor`, and `JournalingExecutor` over it) on KIS, Toss and Kiwoom.
    * False for a dry run, `live::bind_observer` and a replay, which send nowhere. `PollingLoop` reads
-   * it: a runner that keeps its orders until a listing replaces them is held while no listing will
+   * it: a runner that keeps its orders until the broker accounts for them is held while no listing will
    * (see `PollSchedule::working_orders_`).
    */
   static constexpr bool keeps_sent_orders_until_listed =
@@ -981,6 +981,127 @@ public:
   }
 
   /**
+   * How many orders this runner sent are still counted until the broker confirms what became of them.
+   *
+   * **Why a listing alone does not end a reservation** (lab F15). A working-order listing replaces
+   * `working_` wholesale, and used to retire every reserved row with it. But a market order that filled
+   * at once is in no listing, a resting order may not be listed yet, and a listed order can fill and
+   * leave the listing -- and in each case a holdings answer that lags the fill does not show it either.
+   * A target then sent the order again: in the lab, holdings 70 s behind turned 47 trades into 295, at
+   * up to three times the target.
+   *
+   * So a runner that keeps sent orders until listed (`keeps_sent_orders_until_listed`) remembers every
+   * order the broker accepted with a reference, with the instrument's net holding when it was sent.
+   * Before every handler and every pass the reserved row is rebuilt from it, as the order's quantity
+   * that nothing yet explains: less what holdings have moved since in the order's direction, less what
+   * a listing still shows for the same reference. Several orders on one instrument are credited in
+   * the order they were sent; orders on both sides of one instrument are credited only when holdings
+   * account for all of them. The entry ends when **holdings** show the whole quantity, or when the
+   * broker's history shows the order ended with less filled (`confirm_from_history`). A trade outside
+   * this runner on the same instrument can shrink or delay that; it cannot make a target send twice.
+   *
+   * Only orders accepted in this process: a restart starts with none (`running-a-strategy-live.md`).
+   */
+  std::size_t unconfirmed_orders() const noexcept { return unconfirmed_.size(); }
+
+  /**
+   * Rebuilds those orders' reserved rows against the portfolio as it stands now.
+   *
+   * Every pass and every handler does this first. A caller reading `working_` outside one -- the
+   * loop's closing pass sizing a flatten -- calls it before reading.
+   */
+  void refresh_unconfirmed() { confirm_reservations(); }
+
+  /**
+   * Sets how long a sent order's quantity may stay unexplained before its instrument is withheld.
+   *
+   * Ten minutes by default. Measured from the first pass at which neither holdings nor a listing
+   * account for the quantity, on `set_observed_at`'s clock or the decision instant, whichever is later.
+   * When it passes, the broker's history is read once (`unconfirmed_awaiting_evidence`); if that does
+   * not settle it, the entry is dropped and its instrument **marked in the indeterminacy ledger**,
+   * which only an operator clears after reading the account. A timeout too short therefore costs
+   * trading on that instrument, never a duplicate order.
+   */
+  void set_confirmation_timeout(std::chrono::nanoseconds timeout) { confirmation_timeout_ = timeout; }
+
+  /** How many sent orders timed out unconfirmed, each withholding its instrument; see `set_confirmation_timeout`. */
+  std::size_t orders_unconfirmed_timed_out() const noexcept { return orders_unconfirmed_timed_out_; }
+
+  /**
+   * Returns the earliest instant a sent order that only the broker's history can settle was sent, or
+   * nothing when none needs it.
+   *
+   * An order needs it when some of its quantity is unexplained, no listing carries it, and either a
+   * listing once did (it was cancelled, expired or filled since), this runner's withdrawal of it was
+   * accepted (it may have filled before), or it has passed the confirmation timeout. `live::SessionSource`
+   * reads history from the day before this instant after a working-order poll and passes it to
+   * `confirm_from_history`.
+   */
+  std::optional<std::chrono::system_clock::time_point> unconfirmed_awaiting_evidence() {
+    // Against the portfolio as it stands: a listing just installed may carry, or no longer carry, an
+    // order, and no pass has run since.
+    confirm_reservations();
+    std::optional<std::chrono::system_clock::time_point> earliest;
+    const auto now = freshness_instant();
+    for (const auto& entry : unconfirmed_) {
+      if (!awaits_evidence(entry, now)) {
+        continue;
+      }
+      if (!earliest || entry.sent_at_ < *earliest) {
+        earliest = entry.sent_at_;
+      }
+    }
+    return earliest;
+  }
+
+  /**
+   * Settles sent orders against `evidence`, the broker's history rows, and withholds what timed out.
+   *
+   * A terminal row for an order (matched on the reference's primary part, instrument and side) caps
+   * what holdings must still show at its `execution_.filled_quantity_` -- never read from the status,
+   * since KIS reports a part-filled order it then cancelled as `CANCELED` -- and an order that ended
+   * with nothing filled is forgotten at once. An order past the confirmation timeout that this does not
+   * settle is dropped, and its instrument marked in the ledger. Sends nothing.
+   */
+  void confirm_from_history(const std::vector<OrderSnapshot>& evidence) {
+    confirm_reservations();
+    const auto now = freshness_instant();
+    for (auto& entry : unconfirmed_) {
+      entry.consulted_ = awaits_evidence(entry, now);
+      if (!entry.consulted_) {
+        continue;
+      }
+      for (const auto& row : evidence) {
+        if (row.order_id_ == entry.ref_.primary_ && row.instrument_ == entry.instrument_ &&
+            row.side_ == entry.side_ && (entry.session_ended_ || !strategy::order_is_open(row.status_))) {
+          if (decimal_less(row.execution_.filled_quantity_, entry.expected_)) {
+            entry.expected_ = row.execution_.filled_quantity_;
+          }
+          entry.settled_ = true;
+          break;
+        }
+      }
+    }
+    // Retires what the history just settled, before anything is judged timed out: an order the history
+    // shows ended with what holdings already show is confirmed, not late.
+    confirm_reservations();
+    for (auto at = unconfirmed_.begin(); at != unconfirmed_.end();) {
+      if (!at->consulted_ || !timed_out(*at, now)) {
+        ++at;
+        continue;
+      }
+      ++orders_unconfirmed_timed_out_;
+      ledger_.mark(
+        at->instrument_,
+        "an order this runner sent (" + at->ref_.primary_ +
+          ") was not confirmed by holdings, the order list or the order history in time"
+      );
+      drop_reserved_row(*at);
+      at = unconfirmed_.erase(at);
+    }
+  }
+
+  /**
    * Plans again the targets withheld for want of a trustworthy account, once there is one, and the
    * targets the market phase refused, once the phase permits them.
    *
@@ -1024,6 +1145,9 @@ public:
    * `Portfolio::working_as_of_`, so a backtest never withholds as superseded.
    */
   Report retry_retained_targets() {
+    // Once per iteration, so the context shows what this iteration's holdings confirmed even when no
+    // pass runs (`unconfirmed_orders`).
+    confirm_reservations();
     if (guard_.halted(strategy::HaltReason::OPERATOR) ||
         guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
       retained_targets_.erase(
@@ -1303,6 +1427,7 @@ public:
 #endif
     context_.set_last_price(event.instrument_, event.bar_.close_);
     context_.set_now(event.period_end_);
+    confirm_reservations();
     dispatch::bar(strategy_, context_, event);
     return settle();
   }
@@ -1341,18 +1466,21 @@ public:
   Report feed(const strategy::QuoteEvent& event) {
     context_.set_last_price(event.quote_.instrument_, event.quote_.last_price_);
     context_.set_now(event.quote_.received_at_);
+    confirm_reservations();
     dispatch::quote(strategy_, context_, event);
     return settle();
   }
 
   /** Feeds one execution and calls the handler. */
   Report feed(const strategy::Fill& event) {
+    confirm_reservations();
     dispatch::fill(strategy_, context_, event);
     return settle();
   }
 
   /** Feeds one order update and calls the handler. */
   Report feed(const OrderSnapshot& event) {
+    confirm_reservations();
     dispatch::order_update(strategy_, context_, event);
     return settle();
   }
@@ -1360,6 +1488,17 @@ public:
   /** Announces a phase change, setting it on the context first so a handler reads it. */
   Report feed(strategy::MarketPhase phase) {
     context_.set_phase(phase);
+    // A DAY order does not outlive its session, whatever its history row says afterwards: a broker may
+    // leave an expired order's remainder on the row (KIS reads it from `rmn_qty`), so the row's filled
+    // quantity is taken as final once the session has closed (`confirm_from_history`).
+    if (phase == strategy::MarketPhase::CLOSED || phase == strategy::MarketPhase::POST_CLOSE) {
+      for (auto& entry : unconfirmed_) {
+        if (entry.row_.order_.time_in_force_ == TimeInForce::DAY) {
+          entry.session_ended_ = true;
+        }
+      }
+    }
+    confirm_reservations();
     dispatch::phase(strategy_, context_, phase);
     return settle();
   }
@@ -1382,6 +1521,10 @@ private:
     // carry a reservation an *earlier* pass persisted, which is why those rows are marked and why
     // the probe skips them rather than relying on when it is called.
     observe_sellable_convention();
+    // After the probe, which must read the broker's report rather than this runner's rows, and before
+    // anything is planned: whatever replaced `working_` since the last pass, each order this runner
+    // sent is counted again at what nothing yet explains (`unconfirmed_orders`).
+    confirm_reservations();
 
     Report report;
     auto instructions = context_.drain();
@@ -1662,6 +1805,7 @@ private:
             guard_.limits().enforce_buying_power_
           );
           persist_reservation(order, inputs.reference_price_, inputs.order_currency_);
+          track_unconfirmed(order);
           report.would_place_.push_back(std::move(order));
           break;
         case SendOutcome::REJECTED:
@@ -1862,14 +2006,278 @@ private:
    * counted as keeping its orders: a duplicate order is the worse failure, and the listing the loop
    * insists on retires the unaddressable row.
    *
-   * The residual window is the one nothing local can close: a listing fetched before the broker
-   * registered the order replaces the reservation with a picture that does not contain it yet; and an
-   * order that filled at once is in no listing, so the next listing retires it while a holdings answer
-   * that lags the fill does not show it either. Either way the next pass can send the order again
-   * (lab F15, paper broker; an every-minute strategy with holdings 30 s behind placed six times the
-   * orders). Closing it is `plan/todo/reservation-until-confirmed.md`; `running-a-strategy-live.md`
-   * says so.
+   * A listing replaces `working_` wholesale, and so used to retire the row whether or not it carried the
+   * order -- a market order that filled at once is in no listing, and holdings lagging the fill did not
+   * show it either (lab F15). For a runner that keeps sent orders until listed, the row is now rebuilt
+   * before every pass from what nothing explains yet (`track_unconfirmed`, `unconfirmed_orders`).
    */
+  /** An order the broker accepted that holdings have not yet shown in full; see `unconfirmed_orders`. */
+  struct Unconfirmed {
+    OrderRef<Tag> ref_;
+    InstrumentId instrument_;
+    OrderSide side_{OrderSide::BUY};
+    /** What holdings must still show: the order's quantity, or less once its history says so. */
+    Decimal64 expected_;
+    /** The instrument's net holding when it was sent. */
+    Decimal64 baseline_;
+    /** The reserved row as `reserve` wrote it; rebuilt with the residual quantity. */
+    WorkingOrder<Tag> row_;
+    std::chrono::system_clock::time_point sent_at_{};
+    /** Whether any listing has carried it, and whether the latest one does. */
+    bool listed_{false};
+    bool listed_now_{false};
+    /** Whether this runner's withdrawal of it was accepted. */
+    bool withdrawn_{false};
+    /** Whether a terminal history row has capped `expected_`. */
+    bool settled_{false};
+    /** Whether it is a DAY order and the session it was sent in has closed since. */
+    bool session_ended_{false};
+    /** Whether the current `confirm_from_history` looked for it. */
+    bool consulted_{false};
+    /** The quantity nothing explains, as of the last rebuild, and since when some has been. */
+    Decimal64 residual_;
+    std::optional<std::chrono::system_clock::time_point> unexplained_since_;
+  };
+  /**
+   * Remembers an order the broker just accepted, so a listing that lacks it cannot retire its
+   * reservation; see `unconfirmed_orders`. Called right after `persist_reservation` wrote its row.
+   *
+   * Only for a runner that keeps sent orders until listed, an order with a broker reference, and a
+   * portfolio that has been read: without a reference no listing or history row can be matched to it,
+   * and without a read portfolio there is no baseline. Those keep the old behaviour, where the next
+   * listing retires the row.
+   */
+  void track_unconfirmed(const strategy::PlannedOrder& order) {
+    if constexpr (keeps_sent_orders_until_listed) {
+      const auto ref = last_ref();
+      const auto& portfolio = context_.portfolio();
+      if (!ref || ref->primary_.empty() || portfolio.as_of_ == std::chrono::system_clock::time_point{} ||
+          portfolio.working_.empty()) {
+        return;
+      }
+      const auto held = portfolio.net_quantity_of(order.instrument_);
+      if (!held) {
+        return;
+      }
+      Unconfirmed entry;
+      entry.ref_ = *ref;
+      entry.instrument_ = order.instrument_;
+      entry.side_ = order.side_;
+      entry.expected_ = order.quantity_;
+      entry.baseline_ = *held;
+      entry.row_ = portfolio.working_.back();
+      entry.sent_at_ = freshness_instant();
+      entry.residual_ = order.quantity_;
+      entry.unexplained_since_ = entry.sent_at_;
+      unconfirmed_.push_back(std::move(entry));
+    } else {
+      (void)order;
+    }
+  }
+
+  /** Records that the broker accepted this runner's withdrawal of `ref`, if it is a sent order still counted. */
+  void note_withdrawal_accepted(const OrderRef<Tag>& ref) {
+    for (auto& entry : unconfirmed_) {
+      if (entry.ref_ == ref) {
+        entry.withdrawn_ = true;
+      }
+    }
+  }
+
+  /** Whether some of `entry`'s quantity has been unexplained for longer than the confirmation timeout. */
+  bool timed_out(const Unconfirmed& entry, std::chrono::system_clock::time_point now) const {
+    return entry.unexplained_since_ && now - *entry.unexplained_since_ > confirmation_timeout_;
+  }
+
+  /** Whether only the broker's history can settle `entry` now; see `unconfirmed_awaiting_evidence`. */
+  bool awaits_evidence(const Unconfirmed& entry, std::chrono::system_clock::time_point now) const {
+    if (entry.residual_.coefficient() == 0) {
+      return false;
+    }
+    if (timed_out(entry, now)) {
+      return true;
+    }
+    return !entry.settled_ && !entry.listed_now_ && (entry.listed_ || entry.withdrawn_);
+  }
+
+  /** Whether `working` is this runner's reserved row for `entry`. */
+  static bool is_reserved_row_of(const WorkingOrder<Tag>& working, const Unconfirmed& entry) {
+    return working.reserved_ && working.ref_.primary_ == entry.ref_.primary_ &&
+      working.order_.instrument_ == entry.instrument_ && working.order_.side_ == entry.side_;
+  }
+
+  /** Removes `entry`'s reserved row from the context portfolio. */
+  void drop_reserved_row(const Unconfirmed& entry) {
+    auto portfolio = context_.portfolio();
+    const auto before = portfolio.working_.size();
+    portfolio.working_.erase(
+      std::remove_if(
+        portfolio.working_.begin(), portfolio.working_.end(),
+        [&](const WorkingOrder<Tag>& working) { return is_reserved_row_of(working, entry); }
+      ),
+      portfolio.working_.end()
+    );
+    if (portfolio.working_.size() != before) {
+      context_.set_portfolio(std::move(portfolio));
+    }
+  }
+
+  /**
+   * Rebuilds the reserved row of every sent order still counted, and forgets those holdings confirm.
+   *
+   * Run before every handler and every pass, so whatever replaced `working_` since -- a listing, or a
+   * source of the caller's own -- the strategy and the guard see each order's unexplained quantity:
+   *
+   * - **covered**: holdings movement since the first unconfirmed order's baseline on the instrument, in
+   *   the orders' direction, credited in the order they were sent, each up to what it expects. Orders
+   *   on both sides of one instrument are credited only when holdings equal the baseline plus all of
+   *   them, since a movement could be either side's;
+   * - **listed**: what a listing still shows remaining for the same reference, instrument and side;
+   * - the row is put back with `expected - covered - listed`, when that is positive, and **never
+   *   spends buying power again** -- the pass that sent the order already did;
+   * - the entry ends once `covered` reaches what it expects.
+   */
+  void confirm_reservations() {
+    if constexpr (keeps_sent_orders_until_listed) {
+      if (unconfirmed_.empty()) {
+        return;
+      }
+      const auto zero = Decimal64::parse("0");
+      const auto now = freshness_instant();
+      auto portfolio = context_.portfolio();
+      // Every row this list owns comes out first, and the residual goes back in below.
+      portfolio.working_.erase(
+        std::remove_if(
+          portfolio.working_.begin(), portfolio.working_.end(),
+          [&](const WorkingOrder<Tag>& working) {
+            for (const auto& entry : unconfirmed_) {
+              if (is_reserved_row_of(working, entry)) {
+                return true;
+              }
+            }
+            return false;
+          }
+        ),
+        portfolio.working_.end()
+      );
+
+      std::vector<bool> retire(unconfirmed_.size(), false);
+      std::vector<bool> done(unconfirmed_.size(), false);
+      for (std::size_t first = 0; first < unconfirmed_.size(); ++first) {
+        if (done[first]) {
+          continue;
+        }
+        const auto& instrument = unconfirmed_[first].instrument_;
+        const auto direction = unconfirmed_[first].side_;
+        std::vector<std::size_t> group;
+        bool mixed = false;
+        for (std::size_t at = first; at < unconfirmed_.size(); ++at) {
+          if (unconfirmed_[at].instrument_ == instrument) {
+            group.push_back(at);
+            done[at] = true;
+            mixed = mixed || unconfirmed_[at].side_ != direction;
+          }
+        }
+        // `a` signed in the group's direction: what a buy adds to a long holding, a sell takes away.
+        const auto signed_in = [&](const Unconfirmed& entry, const Decimal64& quantity) {
+          return entry.side_ == direction ? quantity : decimal_subtract(zero, quantity).value_or(zero);
+        };
+
+        // What a listing still shows of each order: that part cannot have reached holdings.
+        std::vector<Decimal64> listed(group.size(), zero);
+        std::vector<Decimal64> fillable(group.size(), zero);
+        for (std::size_t at = 0; at < group.size(); ++at) {
+          auto& entry = unconfirmed_[group[at]];
+          entry.listed_now_ = false;
+          for (const auto& working : portfolio.working_) {
+            if (!working.reserved_ && working.ref_.primary_ == entry.ref_.primary_ &&
+                working.order_.instrument_ == entry.instrument_ && working.order_.side_ == entry.side_ &&
+                strategy::order_is_open(working.order_.status_)) {
+              entry.listed_ = true;
+              entry.listed_now_ = true;
+              listed[at] = decimal_subtract(working.order_.quantity_, working.order_.execution_.filled_quantity_)
+                             .value_or(zero);
+              break;
+            }
+          }
+          const auto left = decimal_subtract(entry.expected_, listed[at]).value_or(zero);
+          fillable[at] = decimal_less(zero, left) ? left : zero;
+        }
+
+        // The holdings movement since the group's baseline -- the first entry's, which a retirement
+        // below advances -- in the group's direction.
+        std::optional<Decimal64> moved;
+        if (const auto held = portfolio.net_quantity_of(instrument)) {
+          moved = direction == OrderSide::BUY ? decimal_subtract(*held, unconfirmed_[first].baseline_) :
+                                                decimal_subtract(unconfirmed_[first].baseline_, *held);
+        }
+        std::vector<Decimal64> covered(group.size(), zero);
+        if (moved && !mixed) {
+          // Credited in the order they were sent, each up to the part no listing still shows.
+          auto left = *moved;
+          for (std::size_t at = 0; at < group.size() && decimal_less(zero, left); ++at) {
+            covered[at] = decimal_less(left, fillable[at]) ? left : fillable[at];
+            left = decimal_subtract(left, covered[at]).value_or(zero);
+          }
+        } else if (moved) {
+          // Both sides: a movement could be either side's, so it counts only when it is exactly what
+          // all of them would make. A resting order a listing shows in full adds nothing, so a
+          // protective stop does not hold up the buy beside it.
+          std::optional<Decimal64> total = zero;
+          for (std::size_t at = 0; at < group.size() && total; ++at) {
+            total = decimal_add(*total, signed_in(unconfirmed_[group[at]], fillable[at]));
+          }
+          if (total && !decimal_less(*total, *moved) && !decimal_less(*moved, *total)) {
+            covered = fillable;
+          }
+        }
+
+        // Retired entries advance the baseline the rest are measured from, so the movement that
+        // confirmed one is never counted again for the next.
+        std::optional<Decimal64> advanced = unconfirmed_[first].baseline_;
+        for (std::size_t at = 0; at < group.size(); ++at) {
+          auto& entry = unconfirmed_[group[at]];
+          if (!decimal_less(covered[at], entry.expected_)) {
+            retire[group[at]] = true;
+            if (advanced) {
+              advanced = direction == OrderSide::BUY ?
+                decimal_add(*advanced, signed_in(entry, entry.expected_)) :
+                decimal_subtract(*advanced, signed_in(entry, entry.expected_));
+            }
+            continue;
+          }
+          auto residual = decimal_subtract(entry.expected_, covered[at]).value_or(zero);
+          residual = decimal_subtract(residual, listed[at]).value_or(zero);
+          if (!decimal_less(zero, residual)) {
+            entry.residual_ = zero;
+            entry.unexplained_since_.reset();
+            continue;
+          }
+          entry.residual_ = residual;
+          if (!entry.unexplained_since_) {
+            entry.unexplained_since_ = now;
+          }
+          auto row = entry.row_;
+          row.order_.quantity_ = residual;
+          row.amendable_quantity_ = residual;
+          portfolio.working_.push_back(std::move(row));
+        }
+        for (const auto at : group) {
+          if (!retire[at] && advanced) {
+            unconfirmed_[at].baseline_ = *advanced;
+          }
+        }
+      }
+
+      for (std::size_t at = unconfirmed_.size(); at-- > 0;) {
+        if (retire[at]) {
+          unconfirmed_.erase(unconfirmed_.begin() + static_cast<std::ptrdiff_t>(at));
+        }
+      }
+      context_.set_portfolio(std::move(portfolio));
+    }
+  }
+
   void persist_reservation(
     const strategy::PlannedOrder& order,
     const std::optional<Decimal64>& reference_price,
@@ -2560,6 +2968,8 @@ private:
         // It is still never *refused* by that limit: `send_cancel` calls no `check`, because a rate
         // limit must never be the reason an order cannot be withdrawn.
         guard_.note_sent(context_.now());
+        // A sent order still counted may have filled before the withdrawal; its history decides.
+        note_withdrawal_accepted(ref);
         report.would_cancel_.push_back(ref);
         return;
       case SendOutcome::REJECTED:
@@ -2948,6 +3358,10 @@ private:
   };
   /** Targets waiting for a stop's withdrawal; see `deferred_targets`. */
   std::vector<DeferredTarget> deferred_targets_;
+
+  std::vector<Unconfirmed> unconfirmed_;
+  std::chrono::nanoseconds confirmation_timeout_{std::chrono::minutes(10)};
+  std::size_t orders_unconfirmed_timed_out_{0};
   /** Targets withheld for want of a trustworthy account, one per instrument; see `retry_retained_targets`. */
   /** A retained target, and whether it waits for the market phase rather than for the account. */
   struct RetainedTarget {

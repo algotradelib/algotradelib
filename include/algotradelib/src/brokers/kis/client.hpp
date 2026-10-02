@@ -4073,8 +4073,16 @@ private:
     if (canceled) {
       return OrderStatus::CANCELED;
     }
+    // **Nothing remaining and not all filled is an order that ended.** Observed on demo (2026-10-02):
+    // a cancelled order, and an amended original, drop to `rmn_qty` 0 and keep `cncl_yn` `N` -- the `Y`
+    // is on the cancel request's own row. Read as open, a cancelled order never looked finished to
+    // anything waiting on its history (a deferred target, a sent order's confirmation). What filled is
+    // still read from the fill column.
+    if (remaining.coefficient() == 0 && !(filled == ordered)) {
+      return OrderStatus::CANCELED;
+    }
     if (filled.coefficient() == 0) {
-      return remaining.coefficient() > 0 ? OrderStatus::PENDING : OrderStatus::UNKNOWN;
+      return OrderStatus::PENDING;
     }
     return filled == ordered ? OrderStatus::FILLED : OrderStatus::PARTIAL_FILLED;
   }

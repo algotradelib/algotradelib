@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdio>
+#include <deque>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -146,10 +147,19 @@ public:
       return Result<Placed>(*error_);
     }
     Placed ack;
-    ack.ack_.order_id_ = "0001569139";
-    ack.ref_ = Ref{"0001569139", ""};
+    // The broker's number for this order: the same one every time, unless a test queued its own.
+    std::string id = "0001569139";
+    if (!order_ids_.empty()) {
+      id = order_ids_.front();
+      order_ids_.pop_front();
+    }
+    ack.ack_.order_id_ = id;
+    ack.ref_ = Ref{id, ""};
     return Result<Placed>(std::move(ack));
   }
+
+  /** The numbers the next placements are acknowledged with, in order. */
+  std::deque<std::string> order_ids_;
 
   Result<Placed> cancel(const Ref& ref, const AmendInstruction& instruction) {
     canceled_.push_back(instruction);
@@ -875,6 +885,318 @@ TEST_CASE("a target restated before any listing poll places once, with no limit 
         Decimal64::parse("10"));
   // And its money is not spent from the published figure, because no buying-power check asked for it.
   CHECK(live_runner.context().portfolio().buying_power_.empty());
+}
+
+namespace {
+
+/** States one scripted instruction per bar, then nothing. */
+struct Scripted {
+  std::deque<std::variant<strategy::TargetPosition, strategy::OrderIntent>>* next_{nullptr};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent&) {
+    if (next_ == nullptr || next_->empty()) {
+      return;
+    }
+    std::visit([&](const auto& instruction) { ctx.submit(instruction); }, next_->front());
+    next_->pop_front();
+  }
+};
+
+using ScriptedRunner = runner::Runner<
+  Scripted, WithWorkingOrders, FakeBroker, live::SessionExecutor<FakeSession<WithWorkingOrders>>
+>;
+
+strategy::TargetPosition target_of(const char* quantity) {
+  strategy::TargetPosition target;
+  target.instrument_ = samsung();
+  target.target_quantity_ = Decimal64::parse(quantity);
+  return target;
+}
+
+/** A row as the broker lists it: its own number, unfilled or partly filled. */
+WorkingOrder<FakeBroker> listed_row(
+  const char* id, OrderSide side, const char* quantity, const char* filled, OrderType type = OrderType::MARKET
+) {
+  WorkingOrder<FakeBroker> row;
+  row.ref_ = OrderRef<FakeBroker>{id, ""};
+  row.order_.order_id_ = id;
+  row.order_.instrument_ = samsung();
+  row.order_.side_ = side;
+  row.order_.type_ = type;
+  row.order_.quantity_ = Decimal64::parse(quantity);
+  row.order_.execution_.filled_quantity_ = Decimal64::parse(filled);
+  row.order_.status_ =
+    Decimal64::parse(filled).coefficient() == 0 ? OrderStatus::PENDING : OrderStatus::PARTIAL_FILLED;
+  row.amendable_quantity_ = *decimal_subtract(row.order_.quantity_, row.order_.execution_.filled_quantity_);
+  return row;
+}
+
+/** A history row: the order ended, with `filled` executed. */
+OrderSnapshot ended_row(const char* id, OrderSide side, const char* quantity, const char* filled) {
+  OrderSnapshot row;
+  row.order_id_ = id;
+  row.instrument_ = samsung();
+  row.side_ = side;
+  row.quantity_ = Decimal64::parse(quantity);
+  row.execution_.filled_quantity_ = Decimal64::parse(filled);
+  row.status_ = OrderStatus::CANCELED;
+  return row;
+}
+
+/** What a holdings read and a listing read answered, both at hour `hour`. */
+strategy::Portfolio<FakeBroker> polled(int hour, const char* held, std::vector<WorkingOrder<FakeBroker>> rows) {
+  auto portfolio = held_position<WithWorkingOrders>(held, nullptr);
+  portfolio.as_of_ = std::chrono::system_clock::time_point{} + std::chrono::hours(500000 + hour);
+  portfolio.working_as_of_ = portfolio.as_of_;
+  portfolio.working_ = std::move(rows);
+  return portfolio;
+}
+
+/** Installs a poll's answer as `SessionSource` does: holdings and listing replaced, wholesale. */
+void install(ScriptedRunner& runner_instance, strategy::Portfolio<FakeBroker> portfolio) {
+  runner_instance.context().set_portfolio(std::move(portfolio));
+}
+
+struct ConfirmRig {
+  FakeSession<WithWorkingOrders> session;
+  std::deque<std::variant<strategy::TargetPosition, strategy::OrderIntent>> script;
+  ScriptedRunner runner_instance{
+    Scripted{&script}, {}, 512, live::SessionExecutor<FakeSession<WithWorkingOrders>>(session)
+  };
+
+  ConfirmRig() {
+    runner_instance.context().set_instrument(samsung_reference());
+    runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+    runner_instance.context().set_last_price(samsung(), Decimal64::parse("70000"));
+    install(runner_instance, polled(0, "0", {}));
+  }
+
+  Decimal64 working_buys() const {
+    return runner_instance.context().portfolio().working_quantity(samsung(), OrderSide::BUY);
+  }
+};
+
+} // namespace
+
+TEST_CASE("a filled market order no listing shows stays counted until holdings show it", "[confirm]") {
+  // Lab F15: a market order that filled at once is in no listing, and holdings lag the fill. The
+  // listing used to retire its reservation, and the next bar's target bought again.
+  ConfirmRig rig;
+  for (int at = 0; at < 3; ++at) {
+    rig.script.push_back(target_of("10"));
+  }
+  rig.runner_instance.feed(bar_at(1, "70000"));
+  REQUIRE(rig.session.placed().size() == 1);
+
+  // The listing is empty and holdings still say nothing: the order is still counted.
+  install(rig.runner_instance, polled(2, "0", {}));
+  rig.runner_instance.feed(bar_at(2, "70000"));
+  CHECK(rig.session.placed().size() == 1);
+  CHECK(rig.working_buys() == Decimal64::parse("10"));
+  CHECK(rig.runner_instance.unconfirmed_orders() == 1);
+
+  // Holdings show the ten: confirmed, the row is gone, and nothing more is sent.
+  install(rig.runner_instance, polled(3, "10", {}));
+  rig.runner_instance.feed(bar_at(3, "70000"));
+  CHECK(rig.session.placed().size() == 1);
+  CHECK(rig.runner_instance.unconfirmed_orders() == 0);
+  CHECK(rig.runner_instance.context().portfolio().working_.empty());
+}
+
+TEST_CASE("a listed partial fill is counted once, whatever holdings lag", "[confirm]") {
+  ConfirmRig rig;
+  for (int at = 0; at < 4; ++at) {
+    rig.script.push_back(target_of("10"));
+  }
+  rig.runner_instance.feed(bar_at(1, "70000"));
+  REQUIRE(rig.session.placed().size() == 1);
+
+  // Listed with four filled, holdings not showing them yet: six listed plus four unexplained.
+  install(rig.runner_instance, polled(2, "0", {listed_row("0001569139", OrderSide::BUY, "10", "4")}));
+  rig.runner_instance.feed(bar_at(2, "70000"));
+  CHECK(rig.session.placed().size() == 1);
+  CHECK(rig.working_buys() == Decimal64::parse("10"));
+
+  // Holdings show the four: only the listing's six remain.
+  install(rig.runner_instance, polled(3, "4", {listed_row("0001569139", OrderSide::BUY, "10", "4")}));
+  rig.runner_instance.feed(bar_at(3, "70000"));
+  CHECK(rig.session.placed().size() == 1);
+  CHECK(rig.working_buys() == Decimal64::parse("6"));
+  CHECK(rig.runner_instance.unconfirmed_orders() == 1);
+
+  // Filled and gone from the listing, holdings show all ten.
+  install(rig.runner_instance, polled(4, "10", {}));
+  rig.runner_instance.feed(bar_at(4, "70000"));
+  CHECK(rig.session.placed().size() == 1);
+  CHECK(rig.runner_instance.unconfirmed_orders() == 0);
+}
+
+TEST_CASE("an order that left the listing is settled by its history", "[confirm]") {
+  ConfirmRig rig;
+  for (int at = 0; at < 4; ++at) {
+    rig.script.push_back(target_of("10"));
+  }
+  rig.runner_instance.feed(bar_at(1, "70000"));
+  install(rig.runner_instance, polled(2, "0", {listed_row("0001569139", OrderSide::BUY, "10", "0")}));
+  rig.runner_instance.feed(bar_at(2, "70000"));
+  REQUIRE(rig.session.placed().size() == 1);
+  // A listing carried it, so no history is needed while it does.
+  CHECK_FALSE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
+
+  // Gone from the listing, holdings unchanged: cancelled or filled, only its history says.
+  install(rig.runner_instance, polled(3, "0", {}));
+  REQUIRE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
+
+  SECTION("ended with nothing filled: forgotten, and the target sends again") {
+    rig.runner_instance.confirm_from_history({ended_row("0001569139", OrderSide::BUY, "10", "0")});
+    CHECK(rig.runner_instance.unconfirmed_orders() == 0);
+    rig.runner_instance.feed(bar_at(3, "70000"));
+    CHECK(rig.session.placed().size() == 2);
+  }
+
+  SECTION("ended with three filled: those three wait for holdings, and only seven are sent again") {
+    rig.runner_instance.confirm_from_history({ended_row("0001569139", OrderSide::BUY, "10", "3")});
+    CHECK(rig.runner_instance.unconfirmed_orders() == 1);
+    CHECK(rig.working_buys() == Decimal64::parse("3"));
+    CHECK_FALSE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
+    rig.runner_instance.feed(bar_at(3, "70000"));
+    REQUIRE(rig.session.placed().size() == 2);
+    CHECK(rig.session.placed()[1].quantity_ == Decimal64::parse("7"));
+  }
+
+  SECTION("a history row still open does not settle it") {
+    auto open = ended_row("0001569139", OrderSide::BUY, "10", "0");
+    open.status_ = OrderStatus::PENDING;
+    rig.runner_instance.confirm_from_history({open});
+    CHECK(rig.runner_instance.unconfirmed_orders() == 1);
+    CHECK(rig.working_buys() == Decimal64::parse("10"));
+  }
+}
+
+TEST_CASE("an unconfirmed order past the timeout withholds its instrument", "[confirm]") {
+  // A wrong timeout costs trading on the instrument, never a duplicate: the ledger mark is cleared
+  // only by an operator who has read the account.
+  ConfirmRig rig;
+  rig.script.push_back(target_of("10"));
+  rig.runner_instance.set_confirmation_timeout(std::chrono::minutes(1));
+  rig.runner_instance.feed(bar_at(1, "70000"));
+  install(rig.runner_instance, polled(1, "0", {}));
+  CHECK_FALSE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
+
+  rig.runner_instance.set_observed_at(
+    std::chrono::system_clock::time_point{} + std::chrono::hours(500001) + std::chrono::minutes(2)
+  );
+  REQUIRE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
+  rig.runner_instance.confirm_from_history({});
+  CHECK(rig.runner_instance.unconfirmed_orders() == 0);
+  CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 1);
+  CHECK(rig.runner_instance.ledger().requires_reconcile(samsung()));
+  CHECK(rig.runner_instance.context().portfolio().working_.empty());
+}
+
+TEST_CASE("a fill that confirmed one order is not counted again for the next", "[confirm]") {
+  // Two buys inside the lag, on one instrument. Holdings showing the first must leave the second
+  // counted: measured from its own baseline it would look confirmed too, and the target would buy
+  // its quantity a third time.
+  ConfirmRig rig;
+  rig.session.order_ids_ = {"A", "B"};
+  rig.script.push_back(target_of("10"));
+  rig.script.push_back(target_of("20"));
+  rig.script.push_back(target_of("20"));
+  rig.script.push_back(target_of("20"));
+  rig.runner_instance.feed(bar_at(1, "70000"));
+  rig.runner_instance.feed(bar_at(2, "70000"));
+  REQUIRE(rig.session.placed().size() == 2);
+  CHECK(rig.runner_instance.unconfirmed_orders() == 2);
+
+  install(rig.runner_instance, polled(3, "10", {}));
+  rig.runner_instance.feed(bar_at(3, "70000"));
+  CHECK(rig.runner_instance.unconfirmed_orders() == 1);
+  CHECK(rig.working_buys() == Decimal64::parse("10"));
+  CHECK(rig.session.placed().size() == 2);
+
+  install(rig.runner_instance, polled(4, "10", {}));
+  rig.runner_instance.feed(bar_at(4, "70000"));
+  CHECK(rig.session.placed().size() == 2);
+}
+
+TEST_CASE("a resting sell a listing shows does not hold up the buy beside it", "[confirm]") {
+  // Orders on both sides of one instrument are credited only together; a resting order a listing
+  // shows in full adds nothing, so a protective sell does not keep a filled buy counted forever.
+  ConfirmRig rig;
+  rig.session.order_ids_ = {"S", "B"};
+  install(rig.runner_instance, polled(0, "10", {}));
+  const auto rule = samsung_reference().price_rule_;
+  rig.script.push_back(
+    strategy::OrderIntent::limit(
+      samsung(), OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")),
+      *strategy::Price::checked(Decimal64::parse("90000"), rule)
+    )
+  );
+  rig.script.push_back(
+    strategy::OrderIntent::market(samsung(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("5")))
+  );
+  rig.runner_instance.feed(bar_at(1, "70000"));
+  install(rig.runner_instance, polled(1, "10", {listed_row("S", OrderSide::SELL, "10", "0", OrderType::LIMIT)}));
+  rig.runner_instance.feed(bar_at(2, "70000"));
+  REQUIRE(rig.session.placed().size() == 2);
+  CHECK(rig.runner_instance.unconfirmed_orders() == 2);
+
+  install(rig.runner_instance, polled(3, "15", {listed_row("S", OrderSide::SELL, "10", "0", OrderType::LIMIT)}));
+  rig.runner_instance.feed(bar_at(3, "70000"));
+  // The buy is confirmed; the sell stays, explained by its listing, with no row of its own.
+  CHECK(rig.runner_instance.unconfirmed_orders() == 1);
+  CHECK(rig.working_buys() == Decimal64::parse("0"));
+  CHECK(rig.runner_instance.context().portfolio().working_.size() == 1);
+}
+
+TEST_CASE("a withdrawal of a counted order asks its history what filled", "[confirm]") {
+  // Cancelled before any listing showed it: without this the entry would wait out the timeout.
+  ConfirmRig rig;
+  const auto rule = samsung_reference().price_rule_;
+  rig.script.push_back(
+    strategy::OrderIntent::limit(
+      samsung(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")),
+      *strategy::Price::checked(Decimal64::parse("60000"), rule)
+    )
+  );
+  rig.script.push_back(target_of("0"));
+  rig.runner_instance.feed(bar_at(1, "70000"));
+  REQUIRE(rig.session.placed().size() == 1);
+  // The flat target withdraws the reserved buy.
+  rig.runner_instance.feed(bar_at(2, "70000"));
+  REQUIRE(rig.session.canceled_refs().size() == 1);
+  install(rig.runner_instance, polled(2, "0", {}));
+  REQUIRE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
+  rig.runner_instance.confirm_from_history({ended_row("0001569139", OrderSide::BUY, "10", "0")});
+  CHECK(rig.runner_instance.unconfirmed_orders() == 0);
+  CHECK(rig.runner_instance.context().portfolio().working_.empty());
+}
+
+TEST_CASE("a DAY order's history row is final once its session closed", "[confirm]") {
+  // A broker may leave an expired DAY order's remainder on its history row, which then never reads
+  // as ended.
+  ConfirmRig rig;
+  rig.script.push_back(target_of("10"));
+  rig.runner_instance.feed(bar_at(1, "70000"));
+  install(rig.runner_instance, polled(1, "0", {listed_row("0001569139", OrderSide::BUY, "10", "0")}));
+  rig.runner_instance.feed(strategy::MarketPhase::CLOSED);
+  install(rig.runner_instance, polled(2, "0", {}));
+  auto open = ended_row("0001569139", OrderSide::BUY, "10", "0");
+  open.status_ = OrderStatus::PENDING;
+  REQUIRE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
+  rig.runner_instance.confirm_from_history({open});
+  CHECK(rig.runner_instance.unconfirmed_orders() == 0);
+}
+
+TEST_CASE("a runner that sends to no broker keeps no unconfirmed orders", "[confirm]") {
+  runner::DryRunner<HoldTen, WithWorkingOrders> dry;
+  dry.context().set_instrument(samsung_reference());
+  dry.context().set_phase(strategy::MarketPhase::OPEN);
+  dry.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  dry.feed(bar_at(1, "70000"));
+  CHECK(dry.unconfirmed_orders() == 0);
 }
 
 TEST_CASE("a withdrawal the binding refused says so on its own entry") {
@@ -2041,10 +2363,20 @@ TEST_CASE("a cold start's history read places one order, not one per bar", "[own
   REQUIRE(live_runner.context().portfolio().working_.size() == 1);
   CHECK(live_runner.context().portfolio().working_[0].reserved_);
 
-  // The next working-order poll replaces the reservation with the broker's own listing -- empty
-  // here -- and nothing is sent again, because no new bar arrived.
+  // The next working-order poll lists nothing -- a market order that filled at once is in no listing
+  // -- and holdings do not show the fill yet. The order stays counted, so nothing is sent again (lab
+  // F15: a listing that retired it let a target buy twice).
+  loop.run(stop, 1);
+  REQUIRE(live_runner.context().portfolio().working_.size() == 1);
+  CHECK(live_runner.context().portfolio().working_[0].reserved_);
+  CHECK(live_runner.unconfirmed_orders() == 1);
+  CHECK(session.placed().size() == 1);
+
+  // Holdings show the ten: the order is confirmed, its row is gone, and still nothing more is sent.
+  source.held_ = Decimal64::parse("10");
   loop.run(stop, 1);
   CHECK(live_runner.context().portfolio().working_.empty());
+  CHECK(live_runner.unconfirmed_orders() == 0);
   CHECK(session.placed().size() == 1);
 }
 

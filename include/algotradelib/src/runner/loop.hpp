@@ -245,7 +245,7 @@ struct PollSchedule {
    * The loop notes a shorter working-order cadence once per run.
    *
    * **Required for a runner that sends to a broker, and shorter than the portfolio age policy.** Such
-   * a runner keeps the orders it sent in `working_` until a listing replaces them
+   * a runner keeps the orders it sent in `working_` until the broker accounts for them
    * (`Runner::keeps_sent_orders_until_listed`), so the loop holds it as `PORTFOLIO_STALE` while no
    * cadence is set, and while the last listing is older than `PollingLoop::set_maximum_portfolio_age`
    * -- which a cadence equal to the age reaches for a tick before each poll, so leave a tick of
@@ -350,7 +350,7 @@ struct source_provides_working_orders<
 > : std::bool_constant<Source::provides_working_orders> {};
 
 /**
- * Whether `Runner` keeps the orders it sends until a working-order listing replaces them.
+ * Whether `Runner` keeps the orders it sends until the broker accounts for them.
  *
  * Detected, and false when undeclared: a runner that states nothing is assumed to retire its own
  * rows, which is what every runner did before `Runner::keeps_sent_orders_until_listed` existed. **A
@@ -812,6 +812,12 @@ struct LoopReport {
   std::size_t orders_broker_refused_{0};
   /** @copydoc LoopReport::orders_unbuildable_ */
   std::size_t orders_indeterminate_{0};
+  /**
+   * Orders this run sent that neither holdings, a listing nor the order history confirmed within the
+   * confirmation timeout. Each withheld its instrument in the ledger until an operator clears it. See
+   * `Runner::set_confirmation_timeout`.
+   */
+  std::size_t orders_unconfirmed_timed_out_{0};
   /**
    * Plans this run's polling held back before judging any of their parts.
    *
@@ -1286,6 +1292,7 @@ private:
    */
   struct InstructionOutcomes {
     std::size_t unbuildable_{0};
+    std::size_t unconfirmed_timed_out_{0};
     std::size_t reconcile_withheld_{0};
     std::size_t guard_refused_{0};
     std::size_t binding_refused_{0};
@@ -1303,6 +1310,7 @@ private:
   InstructionOutcomes instruction_outcomes() const {
     InstructionOutcomes at;
     at.unbuildable_ = runner_->orders_unbuildable();
+    at.unconfirmed_timed_out_ = runner_->orders_unconfirmed_timed_out();
     at.reconcile_withheld_ = runner_->orders_reconcile_withheld();
     at.guard_refused_ = runner_->orders_guard_refused();
     at.binding_refused_ = runner_->orders_binding_refused();
@@ -1324,6 +1332,7 @@ private:
     const InstructionOutcomes& after
   ) {
     report.orders_unbuildable_ = after.unbuildable_ - before.unbuildable_;
+    report.orders_unconfirmed_timed_out_ = after.unconfirmed_timed_out_ - before.unconfirmed_timed_out_;
     report.orders_reconcile_withheld_ = after.reconcile_withheld_ - before.reconcile_withheld_;
     report.orders_guard_refused_ = after.guard_refused_ - before.guard_refused_;
     report.orders_binding_refused_ = after.binding_refused_ - before.binding_refused_;
@@ -2189,7 +2198,7 @@ private:
         at - as_of > *maximum_portfolio_age_) {
       return strategy::HaltReason::PORTFOLIO_STALE;
     }
-    // **A runner that keeps its orders until a listing replaces them needs the listing.** A holdings
+    // **A runner that keeps its orders until the broker accounts for them needs the listing.** A holdings
     // poll refreshes positions and keeps `working_`; only a working-order poll replaces it. A runner
     // that sends to a broker keeps each order it sent in `working_` until that listing arrives
     // (`Runner::persist_reservation`), so with no listing -- none published, none polled, or one
@@ -2363,6 +2372,9 @@ private:
     // built from rather than about any instruction in it.
     report.closing_source_unverified_ = !closing_source_verified(clock_.now());
 
+    // Sized from what is working, which counts an order this runner sent and holdings do not show yet
+    // only once that row is rebuilt: a sell that filled while holdings lag is otherwise sold again.
+    runner_->refresh_unconfirmed();
     const auto& portfolio = runner_->context().portfolio();
     if (intent == StopIntent::WITHDRAW) {
       for (const auto& working : portfolio.working_) {
@@ -2635,7 +2647,7 @@ private:
   }
 
   /**
-   * Says what is missing for a runner that keeps its sent orders until a listing replaces them, as a
+   * Says what is missing for a runner that keeps its sent orders until the broker accounts for them, as a
    * note bit and the note, or nothing when the listing is in hand.
    */
   std::optional<std::pair<unsigned, std::string>> listing_missing(
@@ -2644,14 +2656,16 @@ private:
     if constexpr (!source_provides_working_orders<Source>::value) {
       (void)at;
       return std::make_pair(1u, std::string(
-        "this runner keeps the orders it sends until a working-order listing replaces them, and the "
-        "source publishes none: placing holds (declare provides_working_orders and poll the listing)"
+        "this runner keeps the orders it sends until a working-order listing or holdings account for "
+        "them, and the source publishes no listing: placing holds (declare provides_working_orders and "
+        "poll the listing)"
       ));
     } else {
       if (!schedule_.working_orders_) {
         return std::make_pair(2u, std::string(
           "no working-order cadence: this runner keeps the orders it sends until a working-order "
-          "listing replaces them, so placing holds until PollSchedule::working_orders_ is set"
+          "listing or holdings account for them, so placing holds until PollSchedule::working_orders_ "
+          "is set"
         ));
       }
       if (maximum_portfolio_age_ && working_orders_at_ &&

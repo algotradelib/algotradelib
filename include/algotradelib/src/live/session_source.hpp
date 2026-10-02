@@ -863,12 +863,27 @@ private:
       // deferred target's stops are all gone, the broker's own record of them is read here, on demand,
       // and decides it. A failed read leaves the target waiting and reports like any poll failure. See
       // `Runner::deferred_targets`.
-      if (const auto since = runner_instance.deferred_awaiting_evidence()) {
+      //
+      // The same read serves an order this runner sent that only the history can settle now (one a
+      // listing carried and no longer does, one it withdrew, one past the confirmation timeout; see
+      // `Runner::unconfirmed_awaiting_evidence`). Settled first, so a released target is planned against
+      // what the history said became of it.
+      const auto deferred_since = runner_instance.deferred_awaiting_evidence();
+      const auto unconfirmed_since = runner_instance.unconfirmed_awaiting_evidence();
+      if (deferred_since || unconfirmed_since) {
+        const auto since = !deferred_since ? *unconfirmed_since :
+          !unconfirmed_since               ? *deferred_since :
+                                             std::min(*deferred_since, *unconfirmed_since);
         std::vector<OrderSnapshot> evidence;
-        if (!read_evidence(*since, runner_instance.context().now(), evidence)) {
+        if (!read_evidence(since, runner_instance.context().now(), evidence)) {
           return poll_outcome_of(*last_error_);
         }
-        runner_instance.retry_deferred(evidence);
+        if (unconfirmed_since) {
+          runner_instance.confirm_from_history(evidence);
+        }
+        if (deferred_since) {
+          runner_instance.retry_deferred(evidence);
+        }
       }
       return runner::PollOutcome::UPDATED;
     } else {

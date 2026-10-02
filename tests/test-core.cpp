@@ -3212,10 +3212,19 @@ TEST_CASE(
     );
   }
 
-  SECTION("a row that fits no documented combination is UNKNOWN") {
+  SECTION("nothing filled and nothing remaining, with no cancel flag, is CANCELED") {
+    // Observed on demo (2026-10-02): a cancelled order and an amended original both read so; the
+    // cancel flag is on the cancel request's own row.
     REQUIRE(
       derive(quantity("10"), quantity("0"), quantity("0"), quantity("0"), false) ==
-      OrderStatus::UNKNOWN
+      OrderStatus::CANCELED
+    );
+  }
+
+  SECTION("a partial fill with nothing remaining and no cancel flag is CANCELED, its fill kept") {
+    REQUIRE(
+      derive(quantity("10"), quantity("4"), quantity("0"), quantity("0"), false) ==
+      OrderStatus::CANCELED
     );
   }
 }
