@@ -6843,3 +6843,47 @@ TEST_CASE("a live run's report says why reconciliation could not build an instru
   CHECK_FALSE(quiet.last_unbuildable_.has_value());
   CHECK(live_runner.last_unbuildable().has_value());
 }
+
+TEST_CASE("a file journal reads back a resolution a startup sweep wrote", "[recovery][file]") {
+  // F29 through the reader that failed: a `RESOLVED` line stamped at the epoch was damage to
+  // `FileJournal`, so the next open counted it as a line this library did not write and recovery halted.
+  const TempPath path("atl-test-startup-sweep.jsonl");
+  const auto sent = std::chrono::system_clock::now() - std::chrono::minutes(5);
+  {
+    runner::FileJournal previous(path.str(), "fake:demo:1");
+    REQUIRE(previous.open());
+    auto entry = journaled_placement();
+    entry.recorded_at_ = sent;
+    REQUIRE(previous.append(entry));
+  }
+
+  WorkingSession session;
+  WorkingOrders<FakeBroker> orders;
+  auto listed = working();
+  listed.order_ = listed_order("KRX-1");
+  listed.order_.ordered_at_ = sent;
+  orders.orders_.push_back(listed);
+  session.set_working_orders(orders);
+
+  {
+    runner::FileJournal journal(path.str(), "fake:demo:1");
+    REQUIRE(journal.open());
+    auto live_runner = live::bind_observer(session, CountEvents{});
+    const auto recovery = runner::recover_runner(live_runner, journal);
+    REQUIRE_FALSE(recovery.clean());
+    live_runner.set_observed_at(std::chrono::system_clock::now());
+    live::SessionSource<WorkingSession, runner::FileJournal> source(session, {samsung()});
+    source.set_journal(journal);
+    CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+    CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
+  }
+
+  // The next start: every line readable, nothing owed.
+  runner::FileJournal next(path.str(), "fake:demo:1");
+  REQUIRE(next.open());
+  const auto replay = next.replay();
+  CHECK(replay.unreadable_lines_ == 0);
+  CHECK(runner::unresolved_instructions(replay).empty());
+  auto restarted = live::bind_observer(session, CountEvents{});
+  CHECK(runner::recover_runner(restarted, next).clean());
+}
