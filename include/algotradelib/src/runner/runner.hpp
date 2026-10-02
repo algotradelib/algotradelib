@@ -2187,8 +2187,13 @@ private:
             total = decimal_add(*total, signed_in(unconfirmed_[group[at]], fillable[at]));
           }
           // A sum of zero is no evidence: two opposite orders that have not filled at all look like
-          // two that both have. They wait for their history or the timeout instead.
-          if (total && total->coefficient() != 0 && !decimal_less(*total, *moved) &&
+          // two that both have. They wait for their history, and once it has said what each one
+          // filled, holdings that did not move are evidence after all.
+          bool all_settled = true;
+          for (const auto at : group) {
+            all_settled = all_settled && unconfirmed_[at].settled_;
+          }
+          if (total && (total->coefficient() != 0 || all_settled) && !decimal_less(*total, *moved) &&
               !decimal_less(*moved, *total)) {
             covered = fillable;
           }
@@ -2246,8 +2251,8 @@ private:
    * **The in-pass view dies with the pass**, so without this a second pass before the next poll
    * starts from the broker's last word again and can re-spend what the first pass already
    * committed. The fix needs no matcher, because a working-order poll *replaces* what it
-   * refreshes: `poll_working_orders` assigns `working_` wholesale, so a reservation written here is
-   * discarded the moment the broker's own listing arrives. (A holdings poll does not: it refreshes
+   * refreshes: `poll_working_orders` assigns `working_` wholesale, so an untracked reservation
+   * written here is discarded the moment the broker's own listing arrives. (A holdings poll does not: it refreshes
    * positions and keeps `working_`.) Nothing has to recognise its own order in a listing -- which is
    * the half of reserve-and-match that carries a matcher's failure modes.
    *
@@ -2302,7 +2307,8 @@ private:
     // would then go out beside the stop, both of them sells.
     const bool conditional = carries_trigger_price(order.type_);
     // A broker that will list the order back, reached by this runner: the listing and holdings
-    // account for the row (`track_unconfirmed`), so the reservation is always written. See above for why every other runner keeps the scoping.
+    // account for the row (`track_unconfirmed`), so the reservation is always written. See above for
+    // why every other runner keeps the scoping.
     if (!keeps_sent_orders_until_listed && !sells && !buys && !capped && !exposed && !conditional) {
       return;
     }

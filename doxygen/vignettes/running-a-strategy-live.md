@@ -677,7 +677,12 @@ pass, so a second bar before the next poll cannot re-spend the same money.
 **Every order sent to a broker counts as working until the broker shows what became of it, whatever
 the limits** — on a broker that lists working orders, which all three shipped ones do. Any later pass
 therefore sees the order an earlier one sent and does not send it again: two bars of a minute strategy
-between listings, a runner driven by hand, a quote and a bar in one iteration.
+between listings, a runner driven by hand, a quote and a bar in one iteration. Before 2026-09-30 this
+held only with one of the checks above enabled, and a target strategy under default limits sent one
+order per bar of a cold start's history (which `SessionSource` now feeds as history, above, so only its
+newest bar can send at all). A dry run and `live::bind_observer` send to no broker, so their rows carry
+no broker reference — a later opposing target would ask to withdraw an order identified by nothing — and
+they keep the old scoping: they report a restated target again on every pass.
 
 A listing alone does not end it (lab F15). A market order that filled at once is in no listing, a
 resting order may not be listed yet, and a listed one can fill and leave; in each case a holdings answer
@@ -690,8 +695,9 @@ listing still shows for it. It ends when holdings show the whole quantity. An or
 listing, or that the runner withdrew, is looked up in the order history after the next listing
 (`SessionSource` reads it on demand), and its filled quantity becomes what holdings must show; one that
 ended with nothing filled is forgotten. On a loop with a market calendar, a DAY order's history row is
-taken as final once the session closed. An order whose quantity stays unexplained for ten minutes (`set_confirmation_timeout`) is looked
-up once more and then **withholds its instrument in the ledger** until you clear it, counted as
+taken as final once the session closed. An order whose quantity stays unexplained for ten minutes
+(`set_confirmation_timeout`) is looked up once more and then **withholds its instrument in the ledger**
+until you clear it, counted as
 `LoopReport::orders_unconfirmed_timed_out_`: a timeout too short costs trading, never a second order. A
 trade made outside the runner on the same instrument never doubles an order either: one in the same
 direction ends the wait early, one in the other direction keeps it until the timeout withholds the
@@ -701,12 +707,7 @@ of the run, which under-trades the instrument.
 **On Kiwoom, an order the runner withdrew may end in that mark.** Kiwoom gives a cancellation its own
 order number, and whether the original order's history row then reads as ended has not been observed;
 if it does not, its instrument is withheld ten minutes after the withdrawal, until you clear it. KIS's
-was observed and is read as ended. Before 2026-09-30 this held only with one of the checks above enabled, and a target strategy
-under default limits sent one order per bar of a cold start's history (which `SessionSource` now feeds
-as history, above, so only its newest bar can send at all). A dry run and `live::bind_observer` send
-to no broker, so their rows carry no broker reference — a later opposing target would ask to withdraw
-an order identified by nothing — and they keep the old scoping: they report a restated target again on
-every pass.
+was observed and is read as ended.
 
 **Passing is not a promise.** These are readings, and a fill against a resting order moves them
 without telling anyone. The check is the difference between sizing against the broker's last answer
