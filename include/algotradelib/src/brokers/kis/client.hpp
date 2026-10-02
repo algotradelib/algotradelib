@@ -174,7 +174,11 @@ struct KisOpenOrder {
   OrderSnapshot order_;
   /** The reference an amendment must address. */
   KisOrderRef order_ref_;
-  /** KIS's `orgn_odno`: which earlier order this one superseded. Lineage, not an address. */
+  /**
+   * KIS's `orgn_odno`: which earlier order this one superseded. Lineage, not an address. For an order
+   * that supersedes nothing it was all zeros (`0000000000`) on demo, not empty; the live inquiry's form
+   * is unobserved, so do not test `.empty()` to spot an amendment.
+   */
   KisOrderRef original_order_;
   /** How much KIS says may still be amended. */
   Decimal64 amendable_quantity_;
