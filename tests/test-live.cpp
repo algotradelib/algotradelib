@@ -1095,6 +1095,38 @@ TEST_CASE("an unconfirmed order past the timeout withholds its instrument", "[co
   CHECK(rig.runner_instance.context().portfolio().working_.empty());
 }
 
+TEST_CASE("a fill its history reports is not marked when holdings come after the timeout", "[confirm]") {
+  // A loop polling slower than the confirmation timeout reads the listing -- and so the history --
+  // before the holdings that show the fill. The history's answer must stand until holdings arrive.
+  ConfirmRig rig;
+  rig.script.push_back(target_of("10"));
+  rig.script.push_back(target_of("10"));
+  rig.runner_instance.set_confirmation_timeout(std::chrono::minutes(1));
+  rig.runner_instance.feed(bar_at(1, "70000"));
+  // A market order filled at once and never listed; an hour later, the listing (empty) comes before
+  // the holdings poll of that iteration, and the timeout sends the runner to the history.
+  install(rig.runner_instance, polled(1, "0", {}));
+  rig.runner_instance.set_observed_at(
+    std::chrono::system_clock::time_point{} + std::chrono::hours(500002)
+  );
+  REQUIRE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
+  auto filled = ended_row("0001569139", OrderSide::BUY, "10", "10");
+  filled.status_ = OrderStatus::FILLED;
+  rig.runner_instance.confirm_from_history({filled});
+  CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+  CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 0);
+  CHECK(rig.runner_instance.unconfirmed_orders() == 1);
+  CHECK(rig.working_buys() == Decimal64::parse("10"));
+  // Settled, so it asks for no more history while it waits.
+  CHECK_FALSE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
+
+  // The holdings read of the same iteration confirms it; the next bar sends nothing.
+  install(rig.runner_instance, polled(2, "10", {}));
+  rig.runner_instance.feed(bar_at(2, "70000"));
+  CHECK(rig.runner_instance.unconfirmed_orders() == 0);
+  CHECK(rig.session.placed().size() == 1);
+}
+
 TEST_CASE("a fill that confirmed one order is not counted again for the next", "[confirm]") {
   // Two buys inside the lag, on one instrument. Holdings showing the first must leave the second
   // counted: measured from its own baseline it would look confirmed too, and the target would buy

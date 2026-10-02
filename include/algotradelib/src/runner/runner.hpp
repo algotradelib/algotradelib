@@ -1061,8 +1061,9 @@ public:
    * A terminal row for an order (matched on the reference's primary part, instrument and side) caps
    * what holdings must still show at its `execution_.filled_quantity_` -- never read from the status,
    * since KIS reports a part-filled order it then cancelled as `CANCELED` -- and an order that ended
-   * with nothing filled is forgotten at once. An order past the confirmation timeout that this does not
-   * settle is dropped, and its instrument marked in the ledger. Sends nothing.
+   * with nothing filled is forgotten at once, and one that filled waits for holdings with no timeout.
+   * An order past the confirmation timeout that this does not settle is dropped, and its instrument
+   * marked in the ledger. Sends nothing.
    */
   void confirm_from_history(const std::vector<OrderSnapshot>& evidence) {
     confirm_reservations();
@@ -1087,7 +1088,11 @@ public:
     // shows ended with what holdings already show is confirmed, not late.
     confirm_reservations();
     for (auto at = unconfirmed_.begin(); at != unconfirmed_.end();) {
-      if (!at->consulted_ || !timed_out(*at, now)) {
+      // **Only what the history could not account for.** An order whose terminal row says what it
+      // filled is waiting for holdings alone, and its reserved row already keeps it from being sent
+      // again; a loop polling slower than the timeout reads the listing (and so this history) before
+      // the holdings that would confirm it, and marked every fill (lab, daily bars, 2026-10-02).
+      if (!at->consulted_ || at->settled_ || !timed_out(*at, now)) {
         ++at;
         continue;
       }
@@ -2051,13 +2056,14 @@ private:
 
   /** Whether only the broker's history can settle `entry` now; see `unconfirmed_awaiting_evidence`. */
   bool awaits_evidence(const Unconfirmed& entry, std::chrono::system_clock::time_point now) const {
-    if (entry.residual_.coefficient() == 0) {
+    // A settled entry has had its answer: what it filled is known, and only holdings remain to show it.
+    if (entry.residual_.coefficient() == 0 || entry.settled_) {
       return false;
     }
     if (timed_out(entry, now)) {
       return true;
     }
-    return !entry.settled_ && !entry.listed_now_ && (entry.listed_ || entry.withdrawn_);
+    return !entry.listed_now_ && (entry.listed_ || entry.withdrawn_);
   }
 
   /** Whether `working` is this runner's reserved row for `entry`. */
