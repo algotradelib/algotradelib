@@ -964,7 +964,7 @@ private:
       error.message_ = "response carries no result";
       return Result<json::value>(std::move(error));
     }
-    return Result<json::value>(*payload);
+    return Result<json::value>(std::move(*payload));
   }
 
   /**
@@ -2336,7 +2336,7 @@ private:
       error.message_ = "response carries no result field";
       return Result<json::value>(std::move(error));
     }
-    return Result<json::value>(*payload);
+    return Result<json::value>(std::move(*payload));
   }
 
   /** Builds the protocol error an account-capacity parse failure reports. */

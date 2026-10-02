@@ -1755,7 +1755,7 @@ private:
       error.message_ = exception.what();
       return Result<json::object>(std::move(error));
     }
-    return Result<json::object>(*document);
+    return Result<json::object>(std::move(*document));
   }
 
   /**
