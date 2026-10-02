@@ -1553,7 +1553,7 @@ private:
     if (auto declared = kiwoom_declared_error(*parsed)) {
       return Result<json::object>(std::move(*declared));
     }
-    return Result<json::object>(*parsed);
+    return Result<json::object>(std::move(*parsed));
   }
 
   /** Refuses an instrument this adapter's domestic endpoints cannot address. */

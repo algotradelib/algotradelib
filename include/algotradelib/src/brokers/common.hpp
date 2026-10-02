@@ -19,6 +19,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace algotradelib::broker_detail {
 
@@ -67,7 +68,7 @@ inline std::optional<json::object> parse_object(std::string_view body, BrokerErr
     error.message_ = ec ? ec.message() : "JSON response is not an object";
     return std::nullopt;
   }
-  return value.as_object();
+  return std::move(value.as_object());
 }
 
 inline std::string json_string(const json::object& object, std::string_view key) {
