@@ -174,7 +174,11 @@ struct KisOpenOrder {
   OrderSnapshot order_;
   /** The reference an amendment must address. */
   KisOrderRef order_ref_;
-  /** KIS's `orgn_odno`: which earlier order this one superseded. Lineage, not an address. */
+  /**
+   * KIS's `orgn_odno`: which earlier order this one superseded. Lineage, not an address. For an order
+   * that supersedes nothing it was all zeros (`0000000000`) on demo, not empty; the live inquiry's form
+   * is unobserved, so do not test `.empty()` to spot an amendment.
+   */
   KisOrderRef original_order_;
   /** How much KIS says may still be amended. */
   Decimal64 amendable_quantity_;
@@ -3973,9 +3977,10 @@ private:
         throw std::runtime_error("output1 item is not an object");
       }
       const auto& row = value.as_object();
-      // `rmn_qty` alone, deliberately not `cncl_yn`: whether KIS marks a partly cancelled original
-      // `Y` while a remnant still rests has not been observed, and hiding a resting order is the
-      // error that sends it twice.
+      // `rmn_qty` alone, deliberately not `cncl_yn`. Observed on demo (2026-10-02): an amended
+      // original and a cancelled order both drop to `rmn_qty` 0 and keep `cncl_yn` `N`; `Y` marks the
+      // cancel request's own row, which has `rmn_qty` 0 too. A partial cancel has not been seen, and
+      // hiding a resting order is the error that sends it twice.
       const auto remaining = Decimal64::parse(broker_detail::json_string(row, "rmn_qty"));
       if (remaining.coefficient() <= 0) {
         continue;
@@ -3984,6 +3989,7 @@ private:
       open_order.order_ref_.branch_number_ = broker_detail::json_string(row, "ord_gno_brno");
       open_order.order_ref_.order_number_ = broker_detail::json_string(row, "odno");
       open_order.original_order_.branch_number_ = open_order.order_ref_.branch_number_;
+      // All zeros (`0000000000`) for an order that amends nothing, not empty (observed on demo).
       open_order.original_order_.order_number_ = broker_detail::json_string(row, "orgn_odno");
       open_order.amendable_quantity_ = remaining;
       open_order.order_ = history_row_snapshot(row);
