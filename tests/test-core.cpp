@@ -2897,9 +2897,9 @@ TEST_CASE(
   }
 
   SECTION("each row with a remaining quantity is listed, and only those") {
-    // Rows 1-3 are documented shapes. Rows 4 and 5 are hypotheses until a demo session observes an
-    // amendment and a partial cancel: an original whose remnant still rests although `cncl_yn` is
-    // `Y` is listed, because hiding a resting order is the error that sends it twice.
+    // Rows 1-4 have the shapes a demo session showed (see the next section). Row 5 is still a
+    // hypothesis, since a partial cancel has not been observed: a remnant that still rests is listed
+    // whatever `cncl_yn` says, because hiding a resting order is the error that sends it twice.
     auto result = kis::KisClientTestAccess::parse_open_orders(
       json_response(
         R"({"rt_cd":"0","output1":[)"
@@ -2948,6 +2948,50 @@ TEST_CASE(
     CHECK(remnant.order_ref_.order_number_ == "0000011116");
     CHECK(remnant.amendable_quantity_ == Decimal64::parse("1"));
     CHECK(remnant.order_.status_ == OrderStatus::PARTIAL_FILLED);
+  }
+
+  SECTION("the rows a demo session produced: place, amend, cancel") {
+    // Observed on 2026-10-02 at 09:01-09:06 KST on a demo account (`CCLD_DVSN=00`, trimmed to the
+    // fields read). After an amendment the original keeps `cncl_yn` `N` and drops to `rmn_qty` 0; the
+    // cancel is a row of its own (`cncl_yn` `Y`, price 0, `rmn_qty` 0) naming the order it cancels,
+    // which keeps `cncl_yn` `N` with `cncl_cfrm_qty` 1. A new order's `orgn_odno` is all zeros. So
+    // before the cancel exactly one row rests, and after it none.
+    const auto row = [](const char* odno, const char* original, const char* price, const char* remaining,
+                        const char* canceled) {
+      return std::string(R"({"ord_dt":"20261002","ord_gno_brno":"00950","odno":")") + odno +
+        R"(","orgn_odno":")" + original + R"(","pdno":"005930","prdt_name":"Samsung",)"
+        R"("sll_buy_dvsn_cd":"02","ord_dvsn_cd":"00","ord_qty":"1","ord_unpr":")" + price +
+        R"(","ord_tmd":"090351","tot_ccld_qty":"0","tot_ccld_amt":"0","avg_prvs":"0","cncl_yn":")" +
+        canceled + R"(","rmn_qty":")" + remaining + R"(","rjct_qty":"0"})";
+    };
+    const auto page = [](const std::vector<std::string>& rows) {
+      std::string body = R"({"rt_cd":"0","output1":[)";
+      for (std::size_t i = 0; i < rows.size(); ++i) {
+        body += (i == 0 ? "" : ",") + rows[i];
+      }
+      return body + "]}";
+    };
+
+    auto amended = kis::KisClientTestAccess::parse_open_orders(
+      json_response(page({row("0000003493", "0000002391", "221000", "1", "N"),
+                          row("0000002391", "0000000000", "220000", "0", "N")})),
+      /*demo=*/true
+    );
+    REQUIRE(amended);
+    REQUIRE(amended.value().orders_.size() == 1);
+    CHECK(amended.value().orders_[0].order_ref_.branch_number_ == "00950");
+    CHECK(amended.value().orders_[0].order_ref_.order_number_ == "0000003493");
+    CHECK(amended.value().orders_[0].original_order_.order_number_ == "0000002391");
+    CHECK(amended.value().orders_[0].order_.price_ == Decimal64::parse("221000"));
+
+    auto canceled = kis::KisClientTestAccess::parse_open_orders(
+      json_response(page({row("0000004393", "0000003493", "0", "0", "Y"),
+                          row("0000003493", "0000002391", "221000", "0", "N"),
+                          row("0000002391", "0000000000", "220000", "0", "N")})),
+      /*demo=*/true
+    );
+    REQUIRE(canceled);
+    CHECK(canceled.value().orders_.empty());
   }
 
   SECTION("a live configuration still asks the modifiable-order inquiry") {

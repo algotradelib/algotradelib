@@ -3973,9 +3973,10 @@ private:
         throw std::runtime_error("output1 item is not an object");
       }
       const auto& row = value.as_object();
-      // `rmn_qty` alone, deliberately not `cncl_yn`: whether KIS marks a partly cancelled original
-      // `Y` while a remnant still rests has not been observed, and hiding a resting order is the
-      // error that sends it twice.
+      // `rmn_qty` alone, deliberately not `cncl_yn`. Observed on demo (2026-10-02): an amended
+      // original and a cancelled order both drop to `rmn_qty` 0 and keep `cncl_yn` `N`; `Y` marks the
+      // cancel request's own row, which has `rmn_qty` 0 too. A partial cancel has not been seen, and
+      // hiding a resting order is the error that sends it twice.
       const auto remaining = Decimal64::parse(broker_detail::json_string(row, "rmn_qty"));
       if (remaining.coefficient() <= 0) {
         continue;
