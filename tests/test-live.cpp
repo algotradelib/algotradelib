@@ -1090,10 +1090,12 @@ TEST_CASE("an unconfirmed order past the timeout withholds its instrument", "[co
     std::chrono::system_clock::time_point{} + std::chrono::hours(500001) + std::chrono::minutes(2)
   );
   REQUIRE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
-  // The history has no answer, but the holdings in hand predate the deadline: not yet.
+  // The history has no answer, but the holdings in hand predate the deadline: not yet. It waits on
+  // holdings now, without asking for the history again on every listing poll.
   rig.runner_instance.confirm_from_history({});
   CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
   CHECK(rig.runner_instance.unconfirmed_orders() == 1);
+  CHECK_FALSE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
   // A holdings read taken past it that still does not show the order: withheld.
   auto late = polled(1, "0", {});
   late.as_of_ = late.working_as_of_ =
@@ -1188,6 +1190,27 @@ TEST_CASE("a fill the history does not return is not marked before the holdings 
   CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
   CHECK(rig.runner_instance.unconfirmed_orders() == 0);
   CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 0);
+}
+
+TEST_CASE("an order explained again after a history miss starts over", "[confirm]") {
+  // A listing that carries the order again explains it, so a later gap gets a fresh timeout and a
+  // fresh history read, not the earlier miss.
+  ConfirmRig rig;
+  rig.script.push_back(target_of("10"));
+  rig.runner_instance.set_confirmation_timeout(std::chrono::minutes(1));
+  rig.runner_instance.feed(bar_at(1, "70000"));
+  install(rig.runner_instance, polled(1, "0", {}));
+  rig.runner_instance.set_observed_at(std::chrono::system_clock::time_point{} + std::chrono::hours(500002));
+  REQUIRE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
+  rig.runner_instance.confirm_from_history({});
+  REQUIRE_FALSE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
+
+  install(rig.runner_instance, polled(2, "0", {listed_row("0001569139", OrderSide::BUY, "10", "0")}));
+  rig.runner_instance.refresh_unconfirmed();
+  // Gone again: it asks for the history, which it would not while still flagged.
+  install(rig.runner_instance, polled(2, "0", {}));
+  CHECK(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
+  CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
 }
 
 TEST_CASE("a fill that confirmed one order is not counted again for the next", "[confirm]") {

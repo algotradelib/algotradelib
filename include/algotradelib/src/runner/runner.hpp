@@ -1025,7 +1025,9 @@ public:
    * entry, and a sweep resolving another instruction on the instrument lifts it). A timeout too short
    * therefore costs trading on that instrument, never a duplicate order. The mark always waits for a
    * holdings answer read a whole timeout after the quantity became unexplained (for a settled order,
-   * after the history settled it), so it does not depend on how often the loop polls.
+   * after the history settled it), so it does not depend on how often the loop polls. A source of your
+   * own that never advances `Portfolio::as_of_` therefore never marks: the order stays reserved for the
+   * rest of the run, with no ledger entry and no count.
    */
   void set_confirmation_timeout(std::chrono::nanoseconds timeout) { confirmation_timeout_ = timeout; }
 
@@ -1038,7 +1040,8 @@ public:
    *
    * An order needs it when some of its quantity is unexplained, no listing carries it, and either a
    * listing once did (it was cancelled, expired or filled since), this runner's withdrawal of it was
-   * accepted (it may have filled before), or it has passed the confirmation timeout. `live::SessionSource`
+   * accepted (it may have filled before), or it has passed the confirmation timeout and the history has
+   * not yet been read once past it (after that it waits on holdings alone). `live::SessionSource`
    * reads history from the day before this instant after a working-order poll and passes it to
    * `confirm_from_history`.
    */
