@@ -3985,6 +3985,7 @@ private:
       open_order.order_ref_.branch_number_ = broker_detail::json_string(row, "ord_gno_brno");
       open_order.order_ref_.order_number_ = broker_detail::json_string(row, "odno");
       open_order.original_order_.branch_number_ = open_order.order_ref_.branch_number_;
+      // All zeros (`0000000000`) for an order that amends nothing, not empty (observed on demo).
       open_order.original_order_.order_number_ = broker_detail::json_string(row, "orgn_odno");
       open_order.amendable_quantity_ = remaining;
       open_order.order_ = history_row_snapshot(row);

@@ -2897,9 +2897,10 @@ TEST_CASE(
   }
 
   SECTION("each row with a remaining quantity is listed, and only those") {
-    // Rows 1-4 have the shapes a demo session showed (see the next section). Row 5 is still a
-    // hypothesis, since a partial cancel has not been observed: a remnant that still rests is listed
-    // whatever `cncl_yn` says, because hiding a resting order is the error that sends it twice.
+    // Each row is of a kind the filter must handle, not a sequence a demo session produced; the
+    // observed sequence is in the next section. Row 5 is a hypothesis, since a partial cancel has not
+    // been observed: a remnant that still rests is listed whatever `cncl_yn` says, because hiding a
+    // resting order is the error that sends it twice.
     auto result = kis::KisClientTestAccess::parse_open_orders(
       json_response(
         R"({"rt_cd":"0","output1":[)"
@@ -2951,11 +2952,12 @@ TEST_CASE(
   }
 
   SECTION("the rows a demo session produced: place, amend, cancel") {
-    // Observed on 2026-10-02 at 09:01-09:06 KST on a demo account (`CCLD_DVSN=00`, trimmed to the
-    // fields read). After an amendment the original keeps `cncl_yn` `N` and drops to `rmn_qty` 0; the
-    // cancel is a row of its own (`cncl_yn` `Y`, price 0, `rmn_qty` 0) naming the order it cancels,
-    // which keeps `cncl_yn` `N` with `cncl_cfrm_qty` 1. A new order's `orgn_odno` is all zeros. So
-    // before the cancel exactly one row rests, and after it none.
+    // Observed on 2026-10-02 at 09:01-09:06 KST on a demo account: the fields the probe printed from
+    // `CCLD_DVSN=00`, with placeholders for the rest. After an amendment the original keeps `cncl_yn`
+    // `N` and drops to `rmn_qty` 0; the cancel is a row of its own (`cncl_yn` `Y`, price 0, `rmn_qty`
+    // 0) naming the order it cancels, which keeps `cncl_yn` `N` (and `cncl_cfrm_qty` 1, not read). A
+    // new order's `orgn_odno` is all zeros. `CCLD_DVSN=02`, which the client sends, returned one row
+    // after the amendment and none after the cancel, as asserted here on the wider rows.
     const auto row = [](const char* odno, const char* original, const char* price, const char* remaining,
                         const char* canceled) {
       return std::string(R"({"ord_dt":"20261002","ord_gno_brno":"00950","odno":")") + odno +
