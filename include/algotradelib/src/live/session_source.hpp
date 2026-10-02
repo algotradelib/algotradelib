@@ -946,10 +946,19 @@ private:
       }
     }
 
+    // The decision instant, as always -- except before anything was fed, as at the startup read after
+    // a restart, when it is still the epoch. A resolution stamped there reads back as damage and halts
+    // the next start (lab F29), so the loop's last reading stands in, or the wall clock without a loop.
+    auto now = runner_instance.context().now();
+    if (now == std::chrono::system_clock::time_point{}) {
+      now = runner_instance.observed_at() != std::chrono::system_clock::time_point{} ?
+        runner_instance.observed_at() :
+        std::chrono::system_clock::now();
+    }
     reconcile_ = runner::reconcile_against(
       open,
       candidates,
-      runner_instance.context().now(),
+      now,
       runner_instance.ledger(),
       *journal_,
       window_

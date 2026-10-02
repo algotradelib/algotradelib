@@ -4014,6 +4014,59 @@ TEST_CASE("a working-order poll sweeps the ledger without a request of its own")
   CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
 }
 
+TEST_CASE("a sweep before any bar stamps its resolution with the loop's clock", "[recovery]") {
+  // Observed on a KIS demo account (2026-10-02, `labs/FINDINGS.md` F29): a process restarted after
+  // `kill -9` resolved its predecessor's order at the startup read, before any bar set the decision
+  // instant. The resolution line was stamped at the epoch, the journal reader takes such a line for
+  // damage, and the next start halted ("lines this library did not write").
+  WorkingSession session;
+  WorkingOrders<FakeBroker> orders;
+  auto listed = working();
+  listed.order_ = listed_order("KRX-1");
+  orders.orders_.push_back(listed);
+  session.set_working_orders(orders);
+
+  const auto resolution_stamp = [](const runner::MemoryJournal& journal) {
+    for (const auto& entry : journal.records()) {
+      if (entry.outcome_ == runner::JournalOutcome::RESOLVED) {
+        return std::optional<std::chrono::system_clock::time_point>(entry.recorded_at_);
+      }
+    }
+    return std::optional<std::chrono::system_clock::time_point>{};
+  };
+
+  SECTION("a loop's reading stands in for the unset decision instant") {
+    runner::MemoryJournal journal;
+    journal.append(journaled_placement());
+    auto live_runner = live::bind_observer(session, CountEvents{});
+    live_runner.set_observed_at(swept_at());
+    live_runner.ledger().mark(samsung(), "an order request failed in transit");
+    live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
+    source.set_journal(journal);
+
+    CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+    CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
+    const auto stamp = resolution_stamp(journal);
+    REQUIRE(stamp.has_value());
+    CHECK(*stamp == swept_at());
+  }
+
+  SECTION("with no loop either, the wall clock") {
+    runner::MemoryJournal journal;
+    journal.append(journaled_placement());
+    auto live_runner = live::bind_observer(session, CountEvents{});
+    live_runner.ledger().mark(samsung(), "an order request failed in transit");
+    live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
+    source.set_journal(journal);
+
+    const auto before = std::chrono::system_clock::now();
+    CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+    const auto stamp = resolution_stamp(journal);
+    REQUIRE(stamp.has_value());
+    CHECK_FALSE(*stamp < before);
+  }
+}
+
 TEST_CASE("the history fallback sweeps against the page it read") {
   // A broker with no working-order inquiry still reconciles, from the wider listing it does offer.
   HistorySession session;
