@@ -1022,8 +1022,9 @@ public:
    * not settle it -- or if it does, and holdings still have not shown the filled quantity one more
    * timeout later -- the entry is dropped and its instrument **marked in the indeterminacy ledger**,
    * which an operator clears after reading the account (a restart drops it, as it drops every ledger
-   * entry, and a sweep resolving another instruction on the instrument lifts it). A timeout too short therefore costs
-   * trading on that instrument, never a duplicate order.
+   * entry, and a sweep resolving another instruction on the instrument lifts it). A timeout too short
+   * therefore costs trading on that instrument, never a duplicate order. For a settled order, "later"
+   * means a holdings answer read a whole timeout after the history settled it.
    */
   void set_confirmation_timeout(std::chrono::nanoseconds timeout) { confirmation_timeout_ = timeout; }
 
@@ -2237,17 +2238,27 @@ private:
           if (!entry.unexplained_since_) {
             entry.unexplained_since_ = now;
           }
-          if (entry.settled_ && timed_out(entry, now)) {
-            // The history said what it filled, and holdings have not shown it for a whole timeout: an
-            // outside trade or a disagreement nobody here can settle. Withheld for the operator, as an
-            // order the history could not account for is.
+          // Judged by the holdings read, not the clock: the listing (and so the history) is polled
+          // before holdings in each iteration, and on a loop polling slower than the timeout the
+          // clock alone marked a fill one holdings read before it would have shown.
+          if (entry.settled_ && timed_out(entry, now) && entry.unexplained_since_ &&
+              portfolio.as_of_ - *entry.unexplained_since_ > confirmation_timeout_) {
+            // The history said what it filled, and a holdings answer read a whole timeout later does
+            // not show it: an outside trade or a disagreement nobody here can settle. Withheld for the
+            // operator, as an order the history could not account for is.
             ++orders_unconfirmed_timed_out_;
             ledger_.mark(
               entry.instrument_,
               "an order this runner sent (" + entry.ref_.primary_ +
-                ") filled by its history, and holdings did not show it in time"
+                ") filled by the order history, and holdings did not show it within the confirmation "
+                "timeout"
             );
             expired[group[at]] = true;
+            // What holdings did show of it stays credited to it, not to the next order.
+            if (advanced) {
+              advanced = direction == OrderSide::BUY ? decimal_add(*advanced, signed_in(entry, covered[at])) :
+                                                       decimal_subtract(*advanced, signed_in(entry, covered[at]));
+            }
             continue;
           }
           auto row = entry.row_;

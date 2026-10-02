@@ -1129,15 +1129,32 @@ TEST_CASE("a fill its history reports is not marked when holdings come after the
     CHECK(rig.session.placed().size() == 1);
   }
 
-  SECTION("holdings that never show it withhold the instrument one more timeout later") {
-    rig.runner_instance.set_observed_at(
-      std::chrono::system_clock::time_point{} + std::chrono::hours(500002) + std::chrono::seconds(30)
-    );
+  const auto settled_at = std::chrono::system_clock::time_point{} + std::chrono::hours(500002);
+  const auto holdings_at = [&](std::chrono::seconds after, const char* held) {
+    auto portfolio = polled(2, held, {});
+    portfolio.as_of_ = portfolio.working_as_of_ = settled_at + after;
+    return portfolio;
+  };
+
+  SECTION("an hour of clock with no newer holdings read is not a timeout") {
+    // The next iteration's listing poll: the clock is past the timeout, holdings are not yet read.
+    rig.runner_instance.set_observed_at(settled_at + std::chrono::hours(1));
     rig.runner_instance.refresh_unconfirmed();
     CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
-    rig.runner_instance.set_observed_at(
-      std::chrono::system_clock::time_point{} + std::chrono::hours(500002) + std::chrono::minutes(2)
-    );
+    CHECK(rig.runner_instance.unconfirmed_orders() == 1);
+    // Then that iteration's holdings show the fill.
+    install(rig.runner_instance, holdings_at(std::chrono::hours(1), "10"));
+    rig.runner_instance.refresh_unconfirmed();
+    CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+    CHECK(rig.runner_instance.unconfirmed_orders() == 0);
+  }
+
+  SECTION("a holdings read a timeout after settling that still lacks the fill withholds the instrument") {
+    rig.runner_instance.set_observed_at(settled_at + std::chrono::minutes(2));
+    install(rig.runner_instance, holdings_at(std::chrono::seconds(30), "0"));
+    rig.runner_instance.refresh_unconfirmed();
+    CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+    install(rig.runner_instance, holdings_at(std::chrono::minutes(2), "0"));
     rig.runner_instance.refresh_unconfirmed();
     CHECK(rig.runner_instance.ledger().requires_reconcile(samsung()));
     CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 1);
