@@ -966,6 +966,8 @@ struct ConfirmRig {
   };
 
   ConfirmRig() {
+    // The bars here are an hour apart; the cases that are about the timeout set their own.
+    runner_instance.set_confirmation_timeout(std::chrono::hours(24));
     runner_instance.context().set_instrument(samsung_reference());
     runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
     runner_instance.context().set_last_price(samsung(), Decimal64::parse("70000"));
@@ -1120,11 +1122,27 @@ TEST_CASE("a fill its history reports is not marked when holdings come after the
   // Settled, so it asks for no more history while it waits.
   CHECK_FALSE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
 
-  // The holdings read of the same iteration confirms it; the next bar sends nothing.
-  install(rig.runner_instance, polled(2, "10", {}));
-  rig.runner_instance.feed(bar_at(2, "70000"));
-  CHECK(rig.runner_instance.unconfirmed_orders() == 0);
-  CHECK(rig.session.placed().size() == 1);
+  SECTION("the holdings read of the same iteration confirms it; the next bar sends nothing") {
+    install(rig.runner_instance, polled(2, "10", {}));
+    rig.runner_instance.feed(bar_at(2, "70000"));
+    CHECK(rig.runner_instance.unconfirmed_orders() == 0);
+    CHECK(rig.session.placed().size() == 1);
+  }
+
+  SECTION("holdings that never show it withhold the instrument one more timeout later") {
+    rig.runner_instance.set_observed_at(
+      std::chrono::system_clock::time_point{} + std::chrono::hours(500002) + std::chrono::seconds(30)
+    );
+    rig.runner_instance.refresh_unconfirmed();
+    CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+    rig.runner_instance.set_observed_at(
+      std::chrono::system_clock::time_point{} + std::chrono::hours(500002) + std::chrono::minutes(2)
+    );
+    rig.runner_instance.refresh_unconfirmed();
+    CHECK(rig.runner_instance.ledger().requires_reconcile(samsung()));
+    CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 1);
+    CHECK(rig.runner_instance.unconfirmed_orders() == 0);
+  }
 }
 
 TEST_CASE("a fill that confirmed one order is not counted again for the next", "[confirm]") {

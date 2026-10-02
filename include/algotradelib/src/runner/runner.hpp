@@ -998,7 +998,8 @@ public:
    * the order they were sent; orders on both sides of one instrument are credited only when holdings
    * account for all of them. The entry ends when **holdings** show the whole quantity, or when the
    * broker's history shows the order ended with less filled (`confirm_from_history`). A trade outside
-   * this runner on the same instrument can shrink or delay that; it cannot make a target send twice.
+   * this runner on the same instrument can shrink or delay that, until the timeout withholds the
+   * instrument; it cannot make a target send twice.
    *
    * Only orders accepted in this process: a restart starts with none (`running-a-strategy-live.md`).
    */
@@ -1018,7 +1019,8 @@ public:
    * Ten minutes by default. Measured from the first pass at which neither holdings nor a listing
    * account for the quantity, on `set_observed_at`'s clock or the decision instant, whichever is later.
    * When it passes, the broker's history is read once (`unconfirmed_awaiting_evidence`); if that does
-   * not settle it, the entry is dropped and its instrument **marked in the indeterminacy ledger**,
+   * not settle it -- or if it does, and holdings still have not shown the filled quantity one more
+   * timeout later -- the entry is dropped and its instrument **marked in the indeterminacy ledger**,
    * which an operator clears after reading the account (a restart drops it, as it drops every ledger
    * entry, and a sweep resolving another instruction on the instrument lifts it). A timeout too short therefore costs
    * trading on that instrument, never a duplicate order.
@@ -1061,9 +1063,9 @@ public:
    * A terminal row for an order (matched on the reference's primary part, instrument and side) caps
    * what holdings must still show at its `execution_.filled_quantity_` -- never read from the status,
    * since KIS reports a part-filled order it then cancelled as `CANCELED` -- and an order that ended
-   * with nothing filled is forgotten at once, and one that filled waits for holdings with no timeout.
-   * An order past the confirmation timeout that this does not settle is dropped, and its instrument
-   * marked in the ledger. Sends nothing.
+   * with nothing filled is forgotten at once, and one that filled gets a fresh timeout for holdings to
+   * show it. An order past the confirmation timeout that this does not settle is dropped, and its
+   * instrument marked in the ledger. Sends nothing.
    */
   void confirm_from_history(const std::vector<OrderSnapshot>& evidence) {
     confirm_reservations();
@@ -1080,6 +1082,8 @@ public:
             entry.expected_ = row.execution_.filled_quantity_;
           }
           entry.settled_ = true;
+          // Holdings get a full timeout from here to show it (`confirm_reservations`).
+          entry.unexplained_since_ = now;
           break;
         }
       }
@@ -1089,9 +1093,9 @@ public:
     confirm_reservations();
     for (auto at = unconfirmed_.begin(); at != unconfirmed_.end();) {
       // **Only what the history could not account for.** An order whose terminal row says what it
-      // filled is waiting for holdings alone, and its reserved row already keeps it from being sent
-      // again; a loop polling slower than the timeout reads the listing (and so this history) before
-      // the holdings that would confirm it, and marked every fill (lab, daily bars, 2026-10-02).
+      // filled is waiting for holdings alone, on a fresh timeout (`confirm_reservations`); a loop
+      // polling slower than the timeout reads the listing (and so this history) before the holdings
+      // that would confirm it, and marked every fill (lab, daily bars, 2026-10-02).
       if (!at->consulted_ || at->settled_ || !timed_out(*at, now)) {
         ++at;
         continue;
@@ -2128,6 +2132,8 @@ private:
       );
 
       std::vector<bool> retire(unconfirmed_.size(), false);
+      // Settled by history and still not in holdings a full timeout later: withheld, not credited.
+      std::vector<bool> expired(unconfirmed_.size(), false);
       std::vector<bool> done(unconfirmed_.size(), false);
       for (std::size_t first = 0; first < unconfirmed_.size(); ++first) {
         if (done[first]) {
@@ -2231,6 +2237,19 @@ private:
           if (!entry.unexplained_since_) {
             entry.unexplained_since_ = now;
           }
+          if (entry.settled_ && timed_out(entry, now)) {
+            // The history said what it filled, and holdings have not shown it for a whole timeout: an
+            // outside trade or a disagreement nobody here can settle. Withheld for the operator, as an
+            // order the history could not account for is.
+            ++orders_unconfirmed_timed_out_;
+            ledger_.mark(
+              entry.instrument_,
+              "an order this runner sent (" + entry.ref_.primary_ +
+                ") filled by its history, and holdings did not show it in time"
+            );
+            expired[group[at]] = true;
+            continue;
+          }
           auto row = entry.row_;
           row.order_.quantity_ = residual;
           row.amendable_quantity_ = residual;
@@ -2244,7 +2263,7 @@ private:
       }
 
       for (std::size_t at = unconfirmed_.size(); at-- > 0;) {
-        if (retire[at]) {
+        if (retire[at] || expired[at]) {
           unconfirmed_.erase(unconfirmed_.begin() + static_cast<std::ptrdiff_t>(at));
         }
       }
