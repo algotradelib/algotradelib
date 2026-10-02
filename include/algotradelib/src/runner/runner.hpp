@@ -1019,7 +1019,8 @@ public:
    * account for the quantity, on `set_observed_at`'s clock or the decision instant, whichever is later.
    * When it passes, the broker's history is read once (`unconfirmed_awaiting_evidence`); if that does
    * not settle it, the entry is dropped and its instrument **marked in the indeterminacy ledger**,
-   * which only an operator clears after reading the account. A timeout too short therefore costs
+   * which an operator clears after reading the account (a restart drops it, as it drops every ledger
+   * entry, and a sweep resolving another instruction on the instrument lifts it). A timeout too short therefore costs
    * trading on that instrument, never a duplicate order.
    */
   void set_confirmation_timeout(std::chrono::nanoseconds timeout) { confirmation_timeout_ = timeout; }

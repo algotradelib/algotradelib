@@ -875,7 +875,12 @@ private:
           !unconfirmed_since               ? *deferred_since :
                                              std::min(*deferred_since, *unconfirmed_since);
         std::vector<OrderSnapshot> evidence;
-        if (!read_evidence(since, runner_instance.context().now(), evidence)) {
+        // Read through the later of the decision instant and the loop's clock, and never before
+        // `since`: a sent order's `since` is the loop's clock, and on daily bars the decision instant
+        // is the last session's end -- after a weekend that ended the range before the day the order
+        // was sent, and the order could never be found.
+        const auto until = std::max({runner_instance.context().now(), runner_instance.observed_at(), since});
+        if (!read_evidence(since, until, evidence)) {
           return poll_outcome_of(*last_error_);
         }
         if (unconfirmed_since) {

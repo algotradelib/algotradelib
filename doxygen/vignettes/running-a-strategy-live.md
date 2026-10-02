@@ -697,7 +697,8 @@ listing, or that the runner withdrew, is looked up in the order history after th
 ended with nothing filled is forgotten. On a loop with a market calendar, a DAY order's history row is
 taken as final once the session closed. An order whose quantity stays unexplained for ten minutes
 (`set_confirmation_timeout`) is looked up once more and then **withholds its instrument in the ledger**
-until you clear it, counted as
+until you clear it (or the process restarts: the ledger is in memory; and a sweep that resolves another
+open instruction on the same instrument lifts it too), counted as
 `LoopReport::orders_unconfirmed_timed_out_`: a timeout too short costs trading, never a second order. A
 trade made outside the runner on the same instrument never doubles an order either: one in the same
 direction ends the wait early, one in the other direction keeps it until the timeout withholds the

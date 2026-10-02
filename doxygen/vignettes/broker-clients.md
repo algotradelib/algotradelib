@@ -207,9 +207,12 @@ Read these before using the order clients.
   adapter answers it from today's daily order inquiry, unfilled orders only
   (`VTTC0081R`, `CCLD_DVSN=02`): each row with a remaining quantity is listed,
   with that quantity as the amendable one. The listing then lags as the history
-  lags, and a runner retires what it reserved against it, so a lag longer than a
-  poll can place an order twice (`labs` F15): measure it before a placing loop
-  runs on KIS demo. A released stop cannot be told apart there, and the rows
+  lags; on the demo (2026-10-02) both showed a new order within one paced poll.
+  A runner keeps what it sent counted until holdings or the history account for
+  it, so the lag no longer places an order twice in one process; across a restart
+  it still can (`running-a-strategy-live.md`, "What this does not do yet"). On demo
+  the listing also keeps a DAY order that expired at the close, until the date
+  changes. A released stop cannot be told apart there, and the rows
   carry an order time the live listing lacks, so recovery on demo takes a
   different matching branch than on live.
 - KIS's daily inquiry reports no status column, so an order's status is derived

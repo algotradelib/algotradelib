@@ -4416,6 +4416,67 @@ TEST_CASE("a placement sweep builds a history query KIS actually accepts") {
   CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
 }
 
+namespace {
+
+/** The KIS-contract session, able to place and withdraw, so a live runner can track its orders. */
+class KisContractTradingSession : public KisContractSession {
+public:
+  using Placed = PlacedOrder<FakeBroker>;
+
+  Result<Placed> place(OrderRequest) {
+    Placed ack;
+    ack.ack_.order_id_ = "KIS-1";
+    ack.ref_ = Ref{"KIS-1", ""};
+    return Result<Placed>(std::move(ack));
+  }
+
+  Result<Placed> cancel(const Ref& ref, const AmendInstruction&) {
+    Placed ack;
+    ack.ref_ = ref;
+    return Result<Placed>(std::move(ack));
+  }
+};
+
+} // namespace
+
+TEST_CASE("a sent order's history is read from the day it was sent, whatever bar was last fed", "[confirm]") {
+  // Combined review of the 2026-10-02 run: the read's start is when the order was sent (the loop's
+  // clock), its end was the decision instant (the last bar's period end). A daily strategy sending on
+  // a Monday with Friday's bar fed asked KIS for an inverted range, which KIS's conversion refuses, so
+  // every working-order poll failed and the loop gave up.
+  using KisRunner = runner::Runner<
+    Scripted, KisLikeCaps, FakeBroker, live::SessionExecutor<KisContractTradingSession>
+  >;
+  KisContractTradingSession session;
+  std::deque<std::variant<strategy::TargetPosition, strategy::OrderIntent>> script;
+  script.push_back(target_of("10"));
+  KisRunner live_runner(Scripted{&script}, {}, 512, live::SessionExecutor<KisContractTradingSession>(session));
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  live_runner.context().set_portfolio(polled(0, "0", {}));
+
+  // Friday's bar, decided on Monday morning: three days between the decision instant and the clock.
+  const auto friday = bar_at(1, "70000");
+  live_runner.set_observed_at(friday.period_end_ + std::chrono::hours(72));
+  live_runner.feed(friday);
+  REQUIRE(live_runner.unconfirmed_orders() == 1);
+
+  // A listing carried it, and the next one does not: only its history can say what became of it.
+  auto listed = polled(1, "0", {listed_row("KIS-1", OrderSide::BUY, "10", "0")});
+  listed.working_as_of_ = listed.as_of_ = friday.period_end_ + std::chrono::hours(72);
+  live_runner.context().set_portfolio(listed);
+  live_runner.refresh_unconfirmed();
+
+  live::SessionSource<KisContractTradingSession, runner::MemoryJournal> source(session, {samsung()});
+  CHECK(source.poll(runner::PollKind::WORKING_ORDERS, live_runner) == runner::PollOutcome::UPDATED);
+  CHECK_FALSE(session.rejection().has_value());
+  REQUIRE(session.last_query().has_value());
+  REQUIRE(session.last_query()->to_.has_value());
+  const auto sent_day = runner::date_of(friday.period_end_ + std::chrono::hours(72));
+  CHECK_FALSE(*session.last_query()->to_ < sent_day);
+}
+
 TEST_CASE("the history-limit capability says what each broker does") {
   STATIC_REQUIRE_FALSE(BrokerCaps<kis::KisClient>::has_history_limit);
   STATIC_REQUIRE(BrokerCaps<tossinvest::TossClient>::has_history_limit);

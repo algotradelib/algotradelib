@@ -9,7 +9,12 @@ it, and an opt-in pacer that decides what goes out and in what order.
   bounded queue.
 - DNS, connect, TLS, write, and read operations have deadlines.
 - A failed GET may be replayed once after reconnect. POST requests are never
-  replayed automatically.
+  replayed automatically, and never written on a connection idle longer than
+  `HttpClientOptions::unreplayed_idle_limit_` (one second): both KIS hosts close
+  an idle connection after five seconds, and an order written into one failed
+  as an unknown outcome KIS never received (`labs` F28). Such a request goes out
+  on a fresh connection, at the cost of a TLS handshake; Kiwoom sends its reads
+  as POSTs, so most paced Kiwoom reads pay it.
 - Rate-limit refusals surface as `ErrorCategory::RATE_LIMIT` with whatever hints
   the broker published, and requests are paced against the budget described below.
 - TLS performs SNI and certificate hostname verification.
