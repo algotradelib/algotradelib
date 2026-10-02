@@ -9,6 +9,8 @@
 #include <boost/beast/http.hpp>
 #include <boost/beast/ssl.hpp>
 
+#include <poll.h>
+
 #include <atomic>
 #include <chrono>
 #include <map>
@@ -133,6 +135,12 @@ public:
 
   std::size_t connectionCount() const noexcept { return connection_count_; }
 
+  /**
+   * Closes a kept-alive connection that waits longer than `timeout` for its next request, as the
+   * KIS hosts do after five seconds (`Keep-Alive: timeout=5`). Zero, the default, waits forever.
+   */
+  void set_idle_timeout(std::chrono::milliseconds timeout) noexcept { idle_timeout_ms_ = timeout.count(); }
+
   std::size_t requestCount(
     std::string_view target
   ) const {
@@ -147,6 +155,7 @@ private:
   tcp::acceptor acceptor_;
   std::atomic<bool> stopped_{false};
   std::atomic<std::size_t> connection_count_{0};
+  std::atomic<long long> idle_timeout_ms_{0};
   mutable std::mutex mutex_;
   std::map<std::string, std::size_t> request_counts_;
   std::thread thread_;
@@ -186,7 +195,17 @@ private:
     }
 
     beast::flat_buffer buffer;
+    bool served = false;
     while (!stopped_) {
+      // Between requests only, and only when nothing is buffered, so a pipelined request is not lost.
+      if (served && idle_timeout_ms_ > 0 && buffer.size() == 0 && SSL_pending(stream.native_handle()) == 0) {
+        pollfd waiting{beast::get_lowest_layer(stream).socket().native_handle(), POLLIN, 0};
+        if (::poll(&waiting, 1, static_cast<int>(idle_timeout_ms_)) == 0) {
+          close(stream);
+          return;
+        }
+      }
+      served = true;
       http::request<http::string_body> request;
       http::read(stream, buffer, request, ec);
       if (ec) {

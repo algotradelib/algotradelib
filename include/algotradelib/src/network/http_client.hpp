@@ -93,6 +93,25 @@ struct HttpClientOptions {
    * transport user inherits with a number the library guessed.
    */
   std::optional<RateLimitBudget> rate_limit_;
+
+  /**
+   * How long a kept-alive connection may sit idle and still carry a request that is never replayed.
+   *
+   * **Why a POST is not written on a connection that has been idle.** A server closes an idle
+   * kept-alive connection on its own schedule -- the KIS hosts advertise `Keep-Alive: timeout=5`
+   * and close after five seconds -- and the client only learns of it by writing. A GET written into
+   * that closed connection is replayed once and nobody notices. A POST is never replayed, because it
+   * may be an order, so it failed as a transport error *after* its bytes were written: an order the
+   * broker never saw reported as one whose outcome is unknown, withholding the instrument until a
+   * reconciliation says it does not exist (observed on a KIS demo account, 2026-10-02: a live loop
+   * polling every ten seconds sent a market sell into a connection idle past the five).
+   *
+   * So a request that will not be replayed is sent on a fresh connection when the current one has
+   * been idle longer than this. One second by default, well inside any keep-alive timeout seen, at
+   * the cost of a TLS handshake for an order sent after a pause. A failure on a fresh connection is
+   * still reported as before: that one may genuinely have reached the broker.
+   */
+  std::chrono::milliseconds unreplayed_idle_limit_{1000};
 };
 
 /** Converts a Boost transport error into a broker-neutral error. */
@@ -177,6 +196,12 @@ public:
   ) {
     for (int attempt = 0;; ++attempt) {
       beast::error_code error;
+      // Never replayed, so never written into a connection the server may have closed while it was
+      // idle; see `HttpClientOptions::unreplayed_idle_limit_`.
+      if (method != http::verb::get && idle_since_ &&
+          std::chrono::steady_clock::now() - *idle_since_ > options_.unreplayed_idle_limit_) {
+        disconnect();
+      }
       ensure_connected(error);
       if (!error) {
         http::request<http::string_body> request_value{method, target, 11};
@@ -205,6 +230,8 @@ public:
         auto response = parser.release();
         if (!response.keep_alive() || response.need_eof()) {
           disconnect();
+        } else {
+          idle_since_ = std::chrono::steady_clock::now();
         }
         return response;
       }
@@ -227,6 +254,8 @@ private:
   HttpClientOptions options_;
   std::unique_ptr<beast::ssl_stream<beast::tcp_stream>> stream_;
   beast::flat_buffer buffer_;
+  /** When the connection last finished a response and was kept alive; empty while there is none. */
+  std::optional<std::chrono::steady_clock::time_point> idle_since_;
 
   void ensure_connected(beast::error_code& error) {
     if (stream_ && beast::get_lowest_layer(*stream_).socket().is_open()) {
@@ -262,6 +291,7 @@ private:
     shutdown_ssl_stream(*stream_, std::chrono::seconds(1));
     stream_.reset();
     buffer_.consume(buffer_.size());
+    idle_since_.reset();
   }
 };
 
@@ -479,6 +509,8 @@ private:
   std::optional<std::chrono::steady_clock::time_point> waiting_since_;
   std::optional<http::request<http::string_body>> active_request_;
   std::optional<http::response_parser<http::string_body>> parser_;
+  /** When the connection last finished a response and was kept alive; empty while there is none. */
+  std::optional<std::chrono::steady_clock::time_point> idle_since_;
 
   void enqueue(Pending pending) {
     if (stopped_) {
@@ -547,6 +579,15 @@ private:
       return;
     }
     if (state_ != State::READY) {
+      return;
+    }
+    // A request that is never replayed is not written into a connection the server may have closed
+    // while it sat idle; see `HttpClientOptions::unreplayed_idle_limit_`. Before admission, so the
+    // reconnect spends no rate-limit slot of its own.
+    if (queue_.front().request_.method_ != http::verb::get && idle_since_ &&
+        std::chrono::steady_clock::now() - *idle_since_ > options_.unreplayed_idle_limit_) {
+      disconnect();
+      start_resolve();
       return;
     }
     if (!limiter_) {
@@ -736,6 +777,7 @@ private:
         self->queue_.pop_front();
         if (keep_alive) {
           self->state_ = State::READY;
+          self->idle_since_ = std::chrono::steady_clock::now();
         } else {
           self->disconnect();
         }
@@ -783,6 +825,7 @@ private:
     parser_.reset();
     active_request_.reset();
     state_ = State::DISCONNECTED;
+    idle_since_.reset();
   }
 
   std::string host_header() const { return make_host_header(host_, port_); }
