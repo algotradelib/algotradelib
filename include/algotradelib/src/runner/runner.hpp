@@ -10,6 +10,7 @@
 
 #include <algotradelib/core>
 
+#include <algorithm>
 #include <cstddef>
 #include <map>
 #include <optional>
@@ -991,7 +992,9 @@ public:
    * up to twice the target.
    *
    * So a runner that keeps sent orders until listed (`keeps_sent_orders_until_listed`) remembers every
-   * order the broker accepted with a reference, with the instrument's net holding when it was sent.
+   * order the broker accepted with a reference, with the instrument's net holding when it was sent --
+   * and every order whose request failed in transit, from the send, with no reference until a sweep
+   * names it (`resolve_indeterminate_placement`).
    * Before every handler and every pass the reserved row is rebuilt from it, as the order's quantity
    * that nothing yet explains: less what holdings have moved since in the order's direction, less what
    * a listing still shows for the same reference. Several orders on one instrument are credited in
@@ -1012,6 +1015,66 @@ public:
    * loop's closing pass sizing a flatten -- calls it before reading.
    */
   void refresh_unconfirmed() { confirm_reservations(); }
+
+  /**
+   * Hands a sweep's answer to an order whose request failed in transit (`SendOutcome::INDETERMINATE`).
+   *
+   * Such an order is counted from its send like an accepted one, with no reference (lab F35): once a
+   * sweep finds it in the broker's listing the ledger lets the instrument trade again, and a market
+   * order that filled is then in no listing while holdings may not show it yet. With `order_id` (the
+   * sweep matched it) the order is counted on as an accepted one is -- a listing covers what it still
+   * shows, holdings what filled, its history what it ended with. Without (the sweep concluded it was
+   * never placed) it is forgotten, and its reserved row goes with it. An instrument with no such order
+   * here -- a predecessor's instruction resolved after a restart, a runner that does not keep its
+   * orders -- is left alone.
+   *
+   * At most one exists per instrument: the ledger withholds every placement on an instrument while one
+   * is unknown. `live::SessionSource` calls this for every recorded `MATCHED` or `NOT_PLACED` placement;
+   * a source of the caller's own that reconciles by hand should too, and so should an operator clearing
+   * the ledger by hand. Otherwise, once the hold is lifted, the order shows as a reserved row with no
+   * reference, waits for holdings, and past the confirmation timeout withholds its instrument again.
+   */
+  void resolve_indeterminate_placement(
+    const InstrumentId& instrument, OrderSide side, const std::optional<std::string>& order_id
+  ) {
+    if constexpr (keeps_sent_orders_until_listed) {
+      const auto found = std::find_if(unconfirmed_.begin(), unconfirmed_.end(), [&](const Unconfirmed& entry) {
+        return entry.ref_.primary_.empty() && entry.instrument_ == instrument && entry.side_ == side;
+      });
+      if (found == unconfirmed_.end() || (order_id && order_id->empty())) {
+        return;
+      }
+      // The row first: it is recognized by the reference about to change, and left behind it would be
+      // counted beside the rebuilt one.
+      auto portfolio = context_.portfolio();
+      portfolio.working_.erase(
+        std::remove_if(
+          portfolio.working_.begin(), portfolio.working_.end(),
+          [&](const WorkingOrder<Tag>& working) { return is_reserved_row_of(working, *found); }
+        ),
+        portfolio.working_.end()
+      );
+      context_.set_portfolio(std::move(portfolio));
+      if (order_id) {
+        // The primary part only: a broker's row is matched on it everywhere, and the listing that
+        // carries the order supplies the rest of the reference.
+        found->ref_.primary_ = *order_id;
+        found->row_.ref_.primary_ = *order_id;
+        // Named now, so a fresh start: a hand-cleared hold may have let it miss its history meanwhile.
+        found->history_missed_ = false;
+        if (found->unexplained_since_) {
+          found->unexplained_since_ = freshness_instant();
+        }
+      } else {
+        unconfirmed_.erase(found);
+      }
+      confirm_reservations();
+    } else {
+      (void)instrument;
+      (void)side;
+      (void)order_id;
+    }
+  }
 
   /**
    * Sets how long a sent order's quantity may stay unexplained before its instrument is withheld.
@@ -1082,7 +1145,8 @@ public:
         continue;
       }
       for (const auto& row : evidence) {
-        if (row.order_id_ == entry.ref_.primary_ && row.instrument_ == entry.instrument_ &&
+        // An entry not yet named matches no row: a row whose number is missing would read as equal.
+        if (!entry.ref_.primary_.empty() && row.order_id_ == entry.ref_.primary_ && row.instrument_ == entry.instrument_ &&
             row.side_ == entry.side_ && (entry.session_ended_ || !strategy::order_is_open(row.status_))) {
           if (decimal_less(row.execution_.filled_quantity_, entry.expected_)) {
             entry.expected_ = row.execution_.filled_quantity_;
@@ -1804,14 +1868,13 @@ private:
           guard_.note_sent(inputs.now_);
           ++placements_at_broker_;
           // And it is working now, as far as anything later in this pass is concerned, and its
-          // money is spent. An `INDETERMINATE` send needs no entry here: it marks the ledger, and
-          // the next instruction for that instrument is withheld before it reaches a guard at all.
+          // money is spent. An `INDETERMINATE` send is counted the same way below, with no reference.
           reserve(
             view, order, inputs.reference_price_, inputs.order_currency_, last_ref(),
             guard_.limits().enforce_buying_power_
           );
-          persist_reservation(order, inputs.reference_price_, inputs.order_currency_);
-          track_unconfirmed(order);
+          persist_reservation(order, inputs.reference_price_, inputs.order_currency_, last_ref());
+          track_unconfirmed(order, last_ref());
           report.would_place_.push_back(std::move(order));
           break;
         case SendOutcome::REJECTED:
@@ -1845,6 +1908,22 @@ private:
           ++placements_at_broker_;
           ledger_.mark(order.instrument_, "an order request failed in transit");
           ++orders_indeterminate_;
+          // **Counted as if accepted, until the sweep says what became of it** (lab F35). The ledger
+          // withholds the instrument meanwhile; but once a sweep finds the order in the broker's
+          // listing it clears the ledger, and a market order that filled is then in no listing while
+          // holdings may not show it yet, so a target sent it again (twice the target, in one
+          // process). Reserved and tracked here with the holding at send as the baseline, and handed
+          // its reference by `resolve_indeterminate_placement`. **No reference** is passed on purpose:
+          // `last_ref()` still names the previous accepted order, and a row carrying it could be
+          // withdrawn in that order's place.
+          if constexpr (keeps_sent_orders_until_listed && runner_detail::reports_last_ref<Executor>::value) {
+            reserve(
+              view, order, inputs.reference_price_, inputs.order_currency_, std::nullopt,
+              guard_.limits().enforce_buying_power_
+            );
+            persist_reservation(order, inputs.reference_price_, inputs.order_currency_, std::nullopt);
+            track_unconfirmed(order, std::nullopt, /*indeterminate=*/true);
+          }
           report.indeterminate_.push_back(std::move(order));
           break;
         case SendOutcome::REFUSED_LOCALLY:
@@ -1975,8 +2054,12 @@ private:
     }
   }
 
-  /** An order the broker accepted that holdings have not yet shown in full; see `unconfirmed_orders`. */
+  /**
+   * An order the broker accepted, or one whose request failed in transit, that holdings have not yet
+   * shown in full; see `unconfirmed_orders`.
+   */
   struct Unconfirmed {
+    /** Empty while the order's outcome is unknown; see `resolve_indeterminate_placement`. */
     OrderRef<Tag> ref_;
     InstrumentId instrument_;
     OrderSide side_{OrderSide::BUY};
@@ -2012,13 +2095,19 @@ private:
    * portfolio that has been read: without a reference no listing or history row can be matched to it,
    * and without a read portfolio there is no baseline. Those keep the old behaviour, where the next
    * listing retires the row.
+   *
+   * `indeterminate`: an order whose request failed in transit, tracked with no reference until a sweep
+   * names it (`resolve_indeterminate_placement`). While the indeterminacy ledger withholds its instrument
+   * it shows no row (nothing can be placed there anyway, and a resting order's own listed row would be
+   * counted twice) and does not time out; only holdings can cover it.
    */
-  void track_unconfirmed(const strategy::PlannedOrder& order) {
+  void track_unconfirmed(
+    const strategy::PlannedOrder& order, const std::optional<OrderRef<Tag>>& ref, bool indeterminate = false
+  ) {
     if constexpr (keeps_sent_orders_until_listed) {
-      const auto ref = last_ref();
       const auto& portfolio = context_.portfolio();
-      if (!ref || ref->primary_.empty() || portfolio.as_of_ == std::chrono::system_clock::time_point{} ||
-          portfolio.working_.empty()) {
+      if ((!indeterminate && (!ref || ref->primary_.empty())) ||
+          portfolio.as_of_ == std::chrono::system_clock::time_point{} || portfolio.working_.empty()) {
         return;
       }
       const auto held = portfolio.net_quantity_of(order.instrument_);
@@ -2026,7 +2115,9 @@ private:
         return;
       }
       Unconfirmed entry;
-      entry.ref_ = *ref;
+      if (ref) {
+        entry.ref_ = *ref;
+      }
       entry.instrument_ = order.instrument_;
       entry.side_ = order.side_;
       entry.expected_ = order.quantity_;
@@ -2038,6 +2129,8 @@ private:
       unconfirmed_.push_back(std::move(entry));
     } else {
       (void)order;
+      (void)ref;
+      (void)indeterminate;
     }
   }
 
@@ -2045,7 +2138,7 @@ private:
   void note_withdrawal_accepted(const OrderRef<Tag>& ref) {
     for (auto& entry : unconfirmed_) {
       // The primary part alone, as everywhere a broker's own row is matched to the order.
-      if (entry.ref_.primary_ == ref.primary_) {
+      if (!entry.ref_.primary_.empty() && entry.ref_.primary_ == ref.primary_) {
         entry.withdrawn_ = true;
       }
     }
@@ -2060,7 +2153,13 @@ private:
   bool awaits_evidence(const Unconfirmed& entry, std::chrono::system_clock::time_point now) const {
     // A settled entry has had its answer: what it filled is known, and only holdings remain to show it.
     // One the history had no answer for past the timeout waits on holdings too, without a read per poll.
-    if (entry.residual_.coefficient() == 0 || entry.settled_ || entry.history_missed_) {
+    // One with no reference yet never times out *while the ledger holds its instrument*: a sweep will
+    // name the order or forget it (`resolve_indeterminate_placement`). Once something else lifted the
+    // hold -- an operator clearing an `ambiguous` sweep by hand -- it is an ordinary entry again: its
+    // history read finds no row, and a holdings read a timeout on withholds the instrument, counted,
+    // rather than leaving an order that may never have existed reserved for the rest of the run.
+    if (entry.residual_.coefficient() == 0 || entry.settled_ || entry.history_missed_ ||
+        (entry.ref_.primary_.empty() && ledger_.requires_reconcile(entry.instrument_))) {
       return false;
     }
     if (timed_out(entry, now)) {
@@ -2239,8 +2338,10 @@ private:
                 "an order this runner sent (" + entry.ref_.primary_ +
                   ") filled by the order history, and holdings did not show it within the confirmation "
                   "timeout" :
-                "an order this runner sent (" + entry.ref_.primary_ +
-                  ") was not confirmed by holdings, the order list or the order history in time"
+                std::string("an order this runner sent") +
+                  (entry.ref_.primary_.empty() ? " (its reply lost, never named by a sweep)" :
+                                                 " (" + entry.ref_.primary_ + ")") +
+                  " was not confirmed by holdings, the order list or the order history in time"
             );
             expired[group[at]] = true;
             // What holdings did show of it stays credited to it, not to the next order.
@@ -2248,6 +2349,12 @@ private:
               advanced = direction == OrderSide::BUY ? decimal_add(*advanced, signed_in(entry, covered[at])) :
                                                        decimal_subtract(*advanced, signed_in(entry, covered[at]));
             }
+            continue;
+          }
+          // Not shown while the ledger holds an order not yet named: no placement on the instrument can
+          // go out then, and beside the broker's own row for the same order a resting one would count
+          // twice, so a target would withdraw the real one. The sweep that lifts the hold names it.
+          if (entry.ref_.primary_.empty() && ledger_.requires_reconcile(entry.instrument_)) {
             continue;
           }
           auto row = entry.row_;
@@ -2316,7 +2423,8 @@ private:
   void persist_reservation(
     const strategy::PlannedOrder& order,
     const std::optional<Decimal64>& reference_price,
-    const std::optional<Currency>& currency
+    const std::optional<Currency>& currency,
+    const std::optional<OrderRef<Tag>>& ref
   ) {
     const bool sells = guard_.limits().enforce_sellable_quantity_ && order.side_ == OrderSide::SELL;
     const bool buys = guard_.limits().enforce_buying_power_ && order.side_ == OrderSide::BUY;
@@ -2340,7 +2448,7 @@ private:
     }
     auto persisted = context_.portfolio();
     reserve(
-      persisted, order, reference_price, currency, last_ref(),
+      persisted, order, reference_price, currency, ref,
       guard_.limits().enforce_buying_power_
     );
     context_.set_portfolio(std::move(persisted));
@@ -2486,9 +2594,10 @@ private:
    * the same reason -- `cancel_all` builds the instruction from them, and a broker that requires a
    * quantity would be sent zero. An order just accepted and unfilled is amendable in full.
    *
-   * Where the executor could not supply a reference -- a dry run, a replay, or a custom executor
-   * that does not report one -- the row is still written, because a limit that ignored the order
-   * would be the worse failure. Whether such a row can still be withdrawn is the executor's
+   * Where the executor could not supply a reference -- a dry run, a replay, a custom executor
+   * that does not report one, or an order whose reply was lost (passed no reference on purpose: the
+   * executor's last one belongs to an earlier order) -- the row is still written, because a limit
+   * that ignored the order would be the worse failure. Whether such a row can still be withdrawn is the executor's
    * question, not this one's: a replay's engine matches a cancellation on instrument and side and
    * needs no reference at all, while `live::SessionExecutor` refuses to send one to a broker.
    *

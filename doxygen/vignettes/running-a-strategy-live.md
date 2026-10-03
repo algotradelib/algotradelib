@@ -705,6 +705,21 @@ second order. Either way the mark waits for a holdings read taken a full timeout
 became unexplained (or after the history settled it), so a slow holdings cadence delays it, never makes
 it early.
 
+**An order whose reply was lost is counted the same way, from the send** (lab F35). Its instrument is
+withheld in the ledger until a sweep of the broker's lists says what became of it, and meanwhile the
+order is tracked but not shown: no placement on the instrument can go out, and a listing that already
+carries the order would otherwise count it twice and have a target withdraw the real one. It does not
+time out while the ledger holds the instrument. When the sweep finds it (`MATCHED`), the ledger lets the
+instrument trade again and the order is counted on, by the number the sweep found, until holdings show
+it: before, a market order that had filled was in no listing, holdings lagging the fill did not show it,
+and the next bar's target bought it again (the labs' paper broker held twice the target). When the sweep
+concludes it was never placed (`NOT_PLACED`), it is forgotten. `SessionSource` does this for every
+recorded resolution; a source of your own that calls `reconcile_against` should call
+`Runner::resolve_indeterminate_placement` the same way, and so must you after clearing the ledger by
+hand: an order nothing names once the ledger is clear shows as a reserved row with no broker reference
+(a resting one is then counted beside its own listed row), waits for holdings, and past the confirmation
+timeout withholds its instrument again, counted.
+
 A trade made outside the runner on the same instrument never doubles an order either: one in the same
 direction ends the wait early, one in the other direction keeps it until the timeout withholds the
 instrument. A source of your own that reads no history never times one out: the row stays for the rest
@@ -789,8 +804,8 @@ with `GuardReason::VALUE_NOT_KNOWN` until you register it.
 - **Remember an unconfirmed order across a restart.** The in-process rule above
   (`unconfirmed_orders`) lives in memory. A process started inside the lag of its predecessor's last
   order does not know it, feeds the newest bar again, and a target can send the order twice (lab F15).
-  The same holds for an order whose acknowledgement was lost and that the sweep later finds in the
-  broker's history: it is resolved and not handed to that rule. Until the journal carries it
+  The same holds for a predecessor's order whose acknowledgement was lost and that the new process's
+  sweep finds: in process such an order is counted (above), across a restart it is not. Until the journal carries it
   (`plan/todo/reservation-until-confirmed.md`, the second branch), let a restarted daily strategy start
   after holdings have caught up: at the KIS demo both lags were below one second-paced poll.
 - **Stream.** It polls. `plan/todo/realtime-streaming.md` drops into the same source seam.
