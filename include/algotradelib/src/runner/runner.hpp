@@ -2284,10 +2284,12 @@ private:
           }
           // A sum of zero is no evidence: two opposite orders that have not filled at all look like
           // two that both have. They wait for their history, and once it has said what each one
-          // filled, holdings that did not move are evidence after all.
+          // filled, holdings that did not move are evidence after all. An order a listing shows in full
+          // has filled nothing and waits for no history: a resting stop beside them would otherwise
+          // hold them up until they timed out (lab, partial fills and a turn behind a stop).
           bool all_settled = true;
-          for (const auto at : group) {
-            all_settled = all_settled && unconfirmed_[at].settled_;
+          for (std::size_t at = 0; at < group.size(); ++at) {
+            all_settled = all_settled && (unconfirmed_[group[at]].settled_ || fillable[at].coefficient() == 0);
           }
           if (total && (total->coefficient() != 0 || all_settled) && !decimal_less(*total, *moved) &&
               !decimal_less(*moved, *total)) {

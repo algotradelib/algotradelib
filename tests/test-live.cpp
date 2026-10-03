@@ -1261,6 +1261,56 @@ TEST_CASE("an order whose reply was lost times out once the ledger is cleared by
   CHECK(rig.session.placed().size() == 1);
 }
 
+TEST_CASE("a protective stop listed in full does not hold up the orders beside it", "[confirm]") {
+  // Lab (chaos sweep, partial fills): a market sell filled 6 of 10, the strategy turned, the 4 left were
+  // withdrawn and 6 bought back, and a stop for the 10 held rested in full. Holdings ended where they
+  // began, which is evidence only once every order's history has said what it filled -- and a resting
+  // stop has no ending to report, so the sell and the buy timed out and withheld the instrument.
+  ConfirmRig rig;
+  rig.runner_instance.set_confirmation_timeout(std::chrono::minutes(10));
+  install(rig.runner_instance, polled(0, "10", {}));
+  rig.session.order_ids_ = {"S", "B", "C"};
+
+  rig.script.push_back(target_of("0"));
+  rig.runner_instance.feed(bar_at(1, "70000"));
+  REQUIRE(rig.session.placed().size() == 1);
+
+  // Six of the sell filled: holdings show them, the listing shows the four left.
+  install(rig.runner_instance, polled(2, "4", {listed_row("S", OrderSide::SELL, "10", "6")}));
+  rig.script.push_back(target_of("10"));
+  rig.runner_instance.feed(bar_at(2, "70000"));
+  REQUIRE(rig.session.canceled().size() == 1);
+  REQUIRE(rig.session.placed().size() == 2);
+  REQUIRE(rig.session.placed()[1].quantity_ == Decimal64::parse("6"));
+
+  // Holdings show the buy; the protective stop for the ten goes out and rests.
+  install(rig.runner_instance, polled(3, "10", {}));
+  const auto trigger = strategy::Price::checked(Decimal64::parse("65000"), PriceRule::krx_equity());
+  const auto limit = strategy::Price::checked(Decimal64::parse("64900"), PriceRule::krx_equity());
+  rig.script.push_back(strategy::OrderIntent::stop_limit(
+    samsung(), OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")), *trigger, *limit));
+  rig.runner_instance.feed(bar_at(3, "70000"));
+  REQUIRE(rig.session.placed().size() == 3);
+
+  // Past the timeout: the histories of the sell (6 filled) and the buy (6 filled) arrive; the stop rests.
+  auto stop_row = listed_row("C", OrderSide::SELL, "10", "0", OrderType::STOP_LIMIT);
+  auto late = polled(30, "10", {stop_row});
+  rig.runner_instance.set_observed_at(late.as_of_);
+  install(rig.runner_instance, std::move(late));
+  auto bought = ended_row("B", OrderSide::BUY, "6", "6");
+  bought.status_ = OrderStatus::FILLED;
+  rig.runner_instance.confirm_from_history({ended_row("S", OrderSide::SELL, "10", "6"), bought});
+
+  // A holdings read a further timeout on, still 10: the sell and the buy are confirmed, the stop counted.
+  auto later = polled(31, "10", {stop_row});
+  rig.runner_instance.set_observed_at(later.as_of_);
+  install(rig.runner_instance, std::move(later));
+  rig.runner_instance.refresh_unconfirmed();
+  CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 0);
+  CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+  CHECK(rig.runner_instance.unconfirmed_orders() == 1);
+}
+
 TEST_CASE("an unconfirmed order past the timeout withholds its instrument", "[confirm]") {
   // A wrong timeout costs trading on the instrument, never a duplicate: the ledger mark is cleared
   // only by an operator who has read the account.
