@@ -11,7 +11,7 @@
 <!-- badges: end -->
 
 <!--
-  영어 README.md 50d3211 기준. 요약한 절: 첫 소개와 경고, "Brokers and accounts", "Install",
+  영어 README.md 1cff976 기준. 요약한 절: 첫 소개와 경고, "Brokers and accounts", "Install",
   "Using it"의 실행 예시, "Documentation"의 문서 빌드 명령, "Disclaimer". 이 절들이 바뀌면 이 문서도
   함께 고칩니다.
 -->
@@ -101,6 +101,14 @@ export KIS_APP_KEY=... KIS_APP_SECRET=... KIS_CANO=... KIS_DEMO=1
 ```sh
 ./build/bin/example-live-program kis 005930 --credentials DIR          # 조회만 하고 주문하지 않음
 ./build/bin/example-live-program kis 005930 --credentials DIR --live   # 모의투자 계좌로 주문
+```
+
+키움증권은 계좌마다 앱키를 따로 발급합니다. 같은 폴더에 `kiwoom/demo-kr.json`처럼 계좌별 파일을 두고
+`--kiwoom-account`로 고릅니다(기본값 `kr`). 실전투자는 `KIWOOM_DEMO=0`이며 `real-kr.json`을 읽습니다.
+폴더를 지정하면 환경 변수의 앱키는 읽지 않습니다.
+
+```sh
+./build/bin/example-live-program kiwoom 005930 --credentials DIR --kiwoom-account kr
 ```
 
 HTML 문서는 Doxygen이 설치되어 있으면 `cmake --build build --target docs`로 만들 수 있습니다.
