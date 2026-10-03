@@ -2095,8 +2095,9 @@ private:
    * listing retires the row.
    *
    * `indeterminate`: an order whose request failed in transit, tracked with no reference until a sweep
-   * names it (`resolve_indeterminate_placement`). Until then only holdings can cover it, and it does
-   * not time out while the indeterminacy ledger withholds its instrument.
+   * names it (`resolve_indeterminate_placement`). While the indeterminacy ledger withholds its instrument
+   * it shows no row (nothing can be placed there anyway, and a resting order's own listed row would be
+   * counted twice) and does not time out; only holdings can cover it.
    */
   void track_unconfirmed(
     const strategy::PlannedOrder& order, const std::optional<OrderRef<Tag>>& ref, bool indeterminate = false
@@ -2346,6 +2347,12 @@ private:
               advanced = direction == OrderSide::BUY ? decimal_add(*advanced, signed_in(entry, covered[at])) :
                                                        decimal_subtract(*advanced, signed_in(entry, covered[at]));
             }
+            continue;
+          }
+          // Not shown while the ledger holds an order not yet named: no placement on the instrument can
+          // go out then, and beside the broker's own row for the same order a resting one would count
+          // twice, so a target would withdraw the real one. The sweep that lifts the hold names it.
+          if (entry.ref_.primary_.empty() && ledger_.requires_reconcile(entry.instrument_)) {
             continue;
           }
           auto row = entry.row_;

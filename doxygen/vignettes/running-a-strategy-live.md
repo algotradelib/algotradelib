@@ -706,17 +706,19 @@ became unexplained (or after the history settled it), so a slow holdings cadence
 it early.
 
 **An order whose reply was lost is counted the same way, from the send** (lab F35). Its instrument is
-withheld in the ledger until a sweep of the broker's lists says what became of it; meanwhile it shows as
-a reserved row with no broker reference (a target opposing it withdraws nothing at the broker: the row
-names no order), and it does not time out while the ledger holds the instrument. When the sweep finds it
-(`MATCHED`), the ledger lets the instrument trade again and the order is counted on, by the number the
-sweep found, until holdings show it: before, a market order that had filled was in no listing, holdings
-lagging the fill did not show it, and the next bar's target bought it again (the labs' paper broker held
-twice the target). When the sweep concludes it was never placed (`NOT_PLACED`), it is forgotten.
-`SessionSource` does this for every recorded resolution; a source of your own that calls
-`reconcile_against` should call `Runner::resolve_indeterminate_placement` the same way, and so should
-you after clearing the ledger by hand. An order nothing names once the ledger is clear waits for
-holdings, and past the confirmation timeout withholds its instrument again, counted.
+withheld in the ledger until a sweep of the broker's lists says what became of it, and meanwhile the
+order is tracked but not shown: no placement on the instrument can go out, and a listing that already
+carries the order would otherwise count it twice and have a target withdraw the real one. It does not
+time out while the ledger holds the instrument. When the sweep finds it (`MATCHED`), the ledger lets the
+instrument trade again and the order is counted on, by the number the sweep found, until holdings show
+it: before, a market order that had filled was in no listing, holdings lagging the fill did not show it,
+and the next bar's target bought it again (the labs' paper broker held twice the target). When the sweep
+concludes it was never placed (`NOT_PLACED`), it is forgotten. `SessionSource` does this for every
+recorded resolution; a source of your own that calls `reconcile_against` should call
+`Runner::resolve_indeterminate_placement` the same way, and so must you after clearing the ledger by
+hand: an order nothing names once the ledger is clear shows as a reserved row with no broker reference
+(a resting one is then counted beside its own listed row), waits for holdings, and past the confirmation
+timeout withholds its instrument again, counted.
 
 A trade made outside the runner on the same instrument never doubles an order either: one in the same
 direction ends the wait early, one in the other direction keeps it until the timeout withholds the

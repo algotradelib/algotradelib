@@ -1098,9 +1098,11 @@ TEST_CASE("an order whose reply was lost is counted until holdings show it, once
   rig.session.heal_place();
   REQUIRE(rig.session.placed().size() == 1);
   REQUIRE(rig.runner_instance.ledger().requires_reconcile(samsung()));
-  // Counted from the send, with no reference, while the ledger holds the question.
+  // Counted from the send, with no reference. While the ledger holds the question the row is not shown:
+  // nothing can be placed on the instrument, and a listing may already carry the order itself.
   CHECK(rig.runner_instance.unconfirmed_orders() == 1);
-  CHECK(rig.working_buys() == Decimal64::parse("10"));
+  rig.runner_instance.refresh_unconfirmed();
+  CHECK(rig.working_buys() == Decimal64::parse("0"));
 
   SECTION("matched: counted on until holdings show it") {
     rig.runner_instance.ledger().resolve_after_reading_orders(samsung());
@@ -1177,10 +1179,35 @@ TEST_CASE("an order whose reply was lost carries no reference, not the previous 
   REQUIRE(working.size() == 1);
   CHECK(working.front().ref_.primary_.empty());
 
-  // A target opposing the row withdraws nothing at the broker: the row names no order.
+  // From the next pass the row is not shown while the ledger holds the question, and a target opposing
+  // it withdraws nothing at the broker.
   rig.runner_instance.feed(bar_at(3, "70000"));
   CHECK(rig.session.canceled().empty());
   CHECK(rig.session.placed().size() == 2);
+}
+
+TEST_CASE("a resting order whose reply was lost is not counted twice beside its own listed row", "[confirm]") {
+  // Fable's merge check: a listing carries the order before any sweep names it (a failed history read,
+  // an ambiguous sweep, no journal). Its reserved row beside the broker's own made 20 working for a
+  // target of 10, and the target withdrew the real order -- cancels are not held by the ledger.
+  ConfirmRig rig;
+  auto limit_target = target_of("10");
+  limit_target.limit_ = strategy::Price::checked(Decimal64::parse("69000"), samsung_reference().price_rule_);
+  rig.script.push_back(limit_target);
+  rig.script.push_back(limit_target);
+  rig.session.fail_place_with(reply_lost());
+  rig.runner_instance.feed(bar_at(1, "70000"));
+  rig.session.heal_place();
+  REQUIRE(rig.session.placed().size() == 1);
+  REQUIRE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+
+  auto resting = listed_row("0001569139", OrderSide::BUY, "10", "0", OrderType::LIMIT);
+  resting.order_.price_ = Decimal64::parse("69000");
+  install(rig.runner_instance, polled(2, "0", {resting}));
+  rig.runner_instance.feed(bar_at(2, "70000"));
+  CHECK(rig.session.canceled().empty());
+  CHECK(rig.session.placed().size() == 1);
+  CHECK(rig.working_buys() == Decimal64::parse("10"));
 }
 
 TEST_CASE("an order whose reply was lost does not time out on its own", "[confirm]") {
@@ -1200,7 +1227,7 @@ TEST_CASE("an order whose reply was lost does not time out on its own", "[confir
   rig.runner_instance.confirm_from_history({});
   rig.runner_instance.refresh_unconfirmed();
   CHECK(rig.runner_instance.unconfirmed_orders() == 1);
-  CHECK(rig.working_buys() == Decimal64::parse("10"));
+  CHECK(rig.working_buys() == Decimal64::parse("0"));
   CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 0);
 }
 
@@ -4341,14 +4368,13 @@ TEST_CASE("a sweep that finds an order whose reply was lost hands it to the runn
     source.read_order_list(rig.runner_instance);
     CHECK(rig.runner_instance.local_failure().has_value());
     CHECK(rig.runner_instance.unconfirmed_orders() == 1);
-    // Not named: the resolution that would have named it was never written down, so the hold stands.
+    // Not named: the resolution that would have named it was never written down, so the hold stands,
+    // and the broker's own row is the only one shown for the order.
     CHECK(rig.runner_instance.ledger().requires_reconcile(samsung()));
     rig.runner_instance.refresh_unconfirmed();
-    bool unnamed = false;
-    for (const auto& row : rig.runner_instance.context().portfolio().working_) {
-      unnamed = unnamed || (row.reserved_ && row.ref_.primary_.empty());
-    }
-    CHECK(unnamed);
+    const auto& rows = rig.runner_instance.context().portfolio().working_;
+    REQUIRE(rows.size() == 1);
+    CHECK(rows.front().ref_.primary_ == "KRX-1");
   }
 }
 
