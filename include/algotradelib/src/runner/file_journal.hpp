@@ -21,7 +21,11 @@
 #if defined(_WIN32)
 #include <io.h>
 #else
+#include <fcntl.h>
+#include <sys/file.h>
 #include <unistd.h>
+
+#include <cstring>
 #endif
 
 namespace algotradelib {
@@ -1190,9 +1194,20 @@ inline JournalReplay read_journal_file(const std::string& path) {
  * nothing to the build, and an operator can read the file with `tail` during an incident — which is
  * the interface that matters at the moment it matters.
  *
- * **One journal, one writer.** Two processes appending to one file is not supported and is a larger
+ * **One journal, one writer, enforced on POSIX.** Two processes appending to one file is a larger
  * problem than a journal: two runners on one account will double positions regardless of what they
- * write down.
+ * write down. So opening takes an exclusive `flock` on the file and holds it while the journal is
+ * open; a second `FileJournal` on the path -- in another process or this one -- is refused
+ * (`rejection()`), and a program built on it starts nothing. The lock dies with the process, so a
+ * `kill -9` leaves none behind.
+ *   - `flock`, not `fcntl`/`lockf`: a POSIX record lock is released when the process closes *any*
+ *     descriptor on the file, and reading the journal (`replay()`) opens and closes one.
+ *   - Local filesystems. Linux emulates `flock` on NFS with record locks, which brings that release
+ *     back; keep the journal on a local disk, as `fsync`'s promise already asks.
+ *   - Windows takes no lock: its byte-range locks are mandatory and would refuse the journal's own
+ *     reads through a second handle. There the rule is still yours.
+ *   - Two journals on *different* paths for one account are not caught: that is the account, not the
+ *     file.
  *
  * **An append that fails is reported, not swallowed.** `append` returns whether the line is durable,
  * and `JournalingExecutor` refuses to send when it is not. A journal that silently lost a line
@@ -1215,11 +1230,34 @@ public:
       rejection_ = "an order journal must name the broker and account it belongs to";
       return;
     }
+#if defined(_WIN32)
     if (!claim_file()) {
       return;
     }
     repair_torn_tail();
     handle_.reset(std::fopen(path_.c_str(), "ab"));
+#else
+    // Locked before anything reads or repairs the file, and on the descriptor that becomes the
+    // write handle: the lock lives exactly as long as `open()` is true, every refusal below closes
+    // it, and moving the journal moves it with the handle.
+    const int descriptor = ::open(path_.c_str(), O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0666);
+    if (descriptor < 0) {
+      return;
+    }
+    if (!lock(descriptor)) {
+      ::close(descriptor);
+      return;
+    }
+    if (!claim_file()) {
+      ::close(descriptor);
+      return;
+    }
+    repair_torn_tail();
+    handle_.reset(::fdopen(descriptor, "ab"));
+    if (!open()) {
+      ::close(descriptor);
+    }
+#endif
     if (!open()) {
       return;
     }
@@ -1254,12 +1292,20 @@ public:
   /**
    * Returns why the journal refused to open, or an empty view when it did not refuse.
    *
-   * There is one reason: the file already holds records for a different account. Reusing a path
-   * across accounts is an easy mistake -- a copied config, a renamed environment -- and it is not a
-   * harmless one. The symbol, side, quantity and price of an order can all agree across two
-   * accounts trading the same instrument, so a sweep would reconcile one account's unresolved
-   * instruction against the other's rows and clear a hold for an order that is still resting.
-   * Refusing to open is the only response that cannot be ignored.
+   * - **The file already holds records for a different account**, or has no header naming one, or
+   *   cannot be read. Reusing a path across accounts is an easy mistake -- a copied config, a
+   *   renamed environment -- and it is not a harmless one. The symbol, side, quantity and price of an
+   *   order can all agree across two accounts trading the same instrument, so a sweep would reconcile
+   *   one account's unresolved instruction against the other's rows and clear a hold for an order
+   *   that is still resting.
+   * - **Another writer has the file open** (POSIX): the same program started twice, or a supervisor
+   *   starting a new copy while the old one still runs. Two runners on one account both send.
+   * - **The file could not be locked at all** (a filesystem without `flock`): refused, because the
+   *   rule above could not be enforced, with the system's reason.
+   * - **The scope is empty.**
+   *
+   * Refusing to open is the only response that cannot be ignored. A file that could not be opened
+   * at all (a missing directory) leaves this empty and `open()` false.
    */
   const std::string& rejection() const noexcept { return rejection_; }
 
@@ -1407,6 +1453,22 @@ private:
     }
     pending_repair_.clear();
   }
+
+#if !defined(_WIN32)
+  /** Takes the writer's lock on `descriptor`, or says in `rejection_` why it could not. */
+  bool lock(int descriptor) {
+    if (::flock(descriptor, LOCK_EX | LOCK_NB) == 0) {
+      return true;
+    }
+    const int error = errno;
+    rejection_ = error == EWOULDBLOCK ?
+      "the journal at " + path_ + " is already open for writing, in another process or another "
+      "FileJournal (one journal, one writer)" :
+      "the journal at " + path_ + " could not be locked (" + std::strerror(error) +
+      "), so a second writer could not be refused";
+    return false;
+  }
+#endif
 
   /** Returns the text after the file's last newline, which is the fragment a kill left behind. */
   static std::string read_torn_tail(const std::string& path) {
