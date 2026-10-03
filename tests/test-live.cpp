@@ -4341,7 +4341,8 @@ TEST_CASE("a sweep that finds an order whose reply was lost hands it to the runn
     source.read_order_list(rig.runner_instance);
     CHECK(rig.runner_instance.local_failure().has_value());
     CHECK(rig.runner_instance.unconfirmed_orders() == 1);
-    // Not named: the resolution that would have named it was never written down.
+    // Not named: the resolution that would have named it was never written down, so the hold stands.
+    CHECK(rig.runner_instance.ledger().requires_reconcile(samsung()));
     rig.runner_instance.refresh_unconfirmed();
     bool unnamed = false;
     for (const auto& row : rig.runner_instance.context().portfolio().working_) {
