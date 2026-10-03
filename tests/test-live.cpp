@@ -1292,8 +1292,21 @@ TEST_CASE("a protective stop listed in full does not hold up the orders beside i
   rig.runner_instance.feed(bar_at(3, "70000"));
   REQUIRE(rig.session.placed().size() == 3);
 
-  // Past the timeout: the histories of the sell (6 filled) and the buy (6 filled) arrive; the stop rests.
   auto stop_row = listed_row("C", OrderSide::SELL, "10", "0", OrderType::STOP_LIMIT);
+
+  SECTION("before the buy's history has said what it filled, nothing is credited") {
+    // Unchanged holdings with an opposite pair unsettled are no evidence, stop or no stop. (Within the
+    // timeout: the bars here are an hour apart.)
+    rig.runner_instance.set_confirmation_timeout(std::chrono::hours(24));
+    install(rig.runner_instance, polled(4, "10", {stop_row}));
+    rig.runner_instance.confirm_from_history({ended_row("S", OrderSide::SELL, "10", "6")});
+    rig.runner_instance.refresh_unconfirmed();
+    CHECK(rig.runner_instance.unconfirmed_orders() == 3);
+    CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+    return;
+  }
+
+  // Past the timeout: the histories of the sell (6 filled) and the buy (6 filled) arrive; the stop rests.
   auto late = polled(30, "10", {stop_row});
   rig.runner_instance.set_observed_at(late.as_of_);
   install(rig.runner_instance, std::move(late));
