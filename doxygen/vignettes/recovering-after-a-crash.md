@@ -188,7 +188,8 @@ because calling it without having read that list defeats the entire mechanism. I
 run's own, also tell the runner what you found: `Runner::resolve_indeterminate_placement(instrument,
 side, order_id)` with the broker's number, or with no number if it was never placed. Otherwise the run
 keeps counting it as a reserved row until holdings show it, and if they never do, it withholds the
-instrument again a confirmation timeout later (`orders_unconfirmed_timed_out_`).
+instrument again once it is past the confirmation timeout from its send, at the next holdings read
+(counted in `orders_unconfirmed_timed_out()`).
 
 ## What matching can and cannot do
 

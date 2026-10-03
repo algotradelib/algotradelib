@@ -1219,11 +1219,19 @@ TEST_CASE("an order whose reply was lost times out once the ledger is cleared by
   rig.runner_instance.set_observed_at(late.as_of_);
   install(rig.runner_instance, std::move(late));
   REQUIRE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
-  rig.runner_instance.confirm_from_history({});
+
+  SECTION("its history has nothing for it") {
+    rig.runner_instance.confirm_from_history({});
+  }
+  SECTION("a history row whose number is missing is not taken for it") {
+    // An empty `odno`/`ord_no` reads as an empty string; it must not equal a reference not yet named.
+    rig.runner_instance.confirm_from_history({ended_row("", OrderSide::BUY, "10", "0")});
+  }
   rig.runner_instance.refresh_unconfirmed();
   CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 1);
   CHECK(rig.runner_instance.unconfirmed_orders() == 0);
   CHECK(rig.runner_instance.ledger().requires_reconcile(samsung()));
+  CHECK(rig.session.placed().size() == 1);
 }
 
 TEST_CASE("an unconfirmed order past the timeout withholds its instrument", "[confirm]") {
@@ -4333,6 +4341,13 @@ TEST_CASE("a sweep that finds an order whose reply was lost hands it to the runn
     source.read_order_list(rig.runner_instance);
     CHECK(rig.runner_instance.local_failure().has_value());
     CHECK(rig.runner_instance.unconfirmed_orders() == 1);
+    // Not named: the resolution that would have named it was never written down.
+    rig.runner_instance.refresh_unconfirmed();
+    bool unnamed = false;
+    for (const auto& row : rig.runner_instance.context().portfolio().working_) {
+      unnamed = unnamed || (row.reserved_ && row.ref_.primary_.empty());
+    }
+    CHECK(unnamed);
   }
 }
 

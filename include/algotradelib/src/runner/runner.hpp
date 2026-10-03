@@ -1058,6 +1058,11 @@ public:
         // carries the order supplies the rest of the reference.
         found->ref_.primary_ = *order_id;
         found->row_.ref_.primary_ = *order_id;
+        // Named now, so a fresh start: a hand-cleared hold may have let it miss its history meanwhile.
+        found->history_missed_ = false;
+        if (found->unexplained_since_) {
+          found->unexplained_since_ = freshness_instant();
+        }
       } else {
         unconfirmed_.erase(found);
       }
@@ -1138,7 +1143,8 @@ public:
         continue;
       }
       for (const auto& row : evidence) {
-        if (row.order_id_ == entry.ref_.primary_ && row.instrument_ == entry.instrument_ &&
+        // An entry not yet named matches no row: a row whose number is missing would read as equal.
+        if (!entry.ref_.primary_.empty() && row.order_id_ == entry.ref_.primary_ && row.instrument_ == entry.instrument_ &&
             row.side_ == entry.side_ && (entry.session_ended_ || !strategy::order_is_open(row.status_))) {
           if (decimal_less(row.execution_.filled_quantity_, entry.expected_)) {
             entry.expected_ = row.execution_.filled_quantity_;
@@ -2329,8 +2335,10 @@ private:
                 "an order this runner sent (" + entry.ref_.primary_ +
                   ") filled by the order history, and holdings did not show it within the confirmation "
                   "timeout" :
-                "an order this runner sent (" + entry.ref_.primary_ +
-                  ") was not confirmed by holdings, the order list or the order history in time"
+                std::string("an order this runner sent") +
+                  (entry.ref_.primary_.empty() ? " (its reply lost, never named by a sweep)" :
+                                                 " (" + entry.ref_.primary_ + ")") +
+                  " was not confirmed by holdings, the order list or the order history in time"
             );
             expired[group[at]] = true;
             // What holdings did show of it stays credited to it, not to the next order.
