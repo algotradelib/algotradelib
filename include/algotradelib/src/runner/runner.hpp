@@ -2089,8 +2089,8 @@ private:
    * listing retires the row.
    *
    * `indeterminate`: an order whose request failed in transit, tracked with no reference until a sweep
-   * names it (`resolve_indeterminate_placement`). Until then only holdings can cover it, and it never
-   * times out on its own: the indeterminacy ledger already withholds its instrument.
+   * names it (`resolve_indeterminate_placement`). Until then only holdings can cover it, and it does
+   * not time out while the indeterminacy ledger withholds its instrument.
    */
   void track_unconfirmed(
     const strategy::PlannedOrder& order, const std::optional<OrderRef<Tag>>& ref, bool indeterminate = false
@@ -2144,10 +2144,13 @@ private:
   bool awaits_evidence(const Unconfirmed& entry, std::chrono::system_clock::time_point now) const {
     // A settled entry has had its answer: what it filled is known, and only holdings remain to show it.
     // One the history had no answer for past the timeout waits on holdings too, without a read per poll.
-    // One with no reference yet has no row to find, and never times out: the ledger holds its
-    // instrument until a sweep names the order (`resolve_indeterminate_placement`).
+    // One with no reference yet never times out *while the ledger holds its instrument*: a sweep will
+    // name the order or forget it (`resolve_indeterminate_placement`). Once something else lifted the
+    // hold -- an operator clearing an `ambiguous` sweep by hand -- it is an ordinary entry again: its
+    // history read finds no row, and a holdings read a timeout on withholds the instrument, counted,
+    // rather than leaving an order that may never have existed reserved for the rest of the run.
     if (entry.residual_.coefficient() == 0 || entry.settled_ || entry.history_missed_ ||
-        entry.ref_.primary_.empty()) {
+        (entry.ref_.primary_.empty() && ledger_.requires_reconcile(entry.instrument_))) {
       return false;
     }
     if (timed_out(entry, now)) {

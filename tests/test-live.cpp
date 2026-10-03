@@ -1204,6 +1204,28 @@ TEST_CASE("an order whose reply was lost does not time out on its own", "[confir
   CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 0);
 }
 
+TEST_CASE("an order whose reply was lost times out once the ledger is cleared by hand", "[confirm]") {
+  // An operator clearing an `ambiguous` sweep by hand lifts the hold without naming the order. If it
+  // never existed, nothing would ever cover it: it times out instead, visibly, and withholds again.
+  ConfirmRig rig;
+  rig.runner_instance.set_confirmation_timeout(std::chrono::minutes(10));
+  rig.script.push_back(target_of("10"));
+  rig.session.fail_place_with(reply_lost());
+  rig.runner_instance.feed(bar_at(1, "70000"));
+  rig.session.heal_place();
+  rig.runner_instance.ledger().resolve_after_reading_orders(samsung());
+
+  auto late = polled(30, "0", {});
+  rig.runner_instance.set_observed_at(late.as_of_);
+  install(rig.runner_instance, std::move(late));
+  REQUIRE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
+  rig.runner_instance.confirm_from_history({});
+  rig.runner_instance.refresh_unconfirmed();
+  CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 1);
+  CHECK(rig.runner_instance.unconfirmed_orders() == 0);
+  CHECK(rig.runner_instance.ledger().requires_reconcile(samsung()));
+}
+
 TEST_CASE("an unconfirmed order past the timeout withholds its instrument", "[confirm]") {
   // A wrong timeout costs trading on the instrument, never a duplicate: the ledger mark is cleared
   // only by an operator who has read the account.
@@ -4258,6 +4280,60 @@ TEST_CASE("a working-order poll sweeps the ledger without a request of its own")
   CHECK(source.poll(runner::PollKind::WORKING_ORDERS, live_runner) == runner::PollOutcome::UPDATED);
   CHECK(session.working_calls() == 1);
   CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
+}
+
+namespace {
+/** A journal whose every write fails, so a sweep's resolution cannot be recorded. */
+struct UnwritableJournal : runner::MemoryJournal {
+  bool append(const runner::JournalEntry&) { return false; }
+};
+} // namespace
+
+TEST_CASE("a sweep that finds an order whose reply was lost hands it to the runner", "[confirm]") {
+  // `SessionSource::reconcile` is the one place a sweep resolves in process; the runner must hear of it.
+  ConfirmRig rig;
+  rig.script.push_back(target_of("10"));
+  rig.script.push_back(target_of("10"));
+  rig.session.fail_place_with(reply_lost());
+  rig.runner_instance.feed(bar_at(1, "70000"));
+  rig.session.heal_place();
+  REQUIRE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+  REQUIRE(rig.runner_instance.unconfirmed_orders() == 1);
+
+  // The broker lists it, resting, and the journal holds the instruction the sweep answers.
+  WorkingOrders<FakeBroker> orders;
+  auto listed = working();
+  listed.order_ = listed_order("KRX-1");
+  listed.ref_ = OrderRef<FakeBroker>{"KRX-1", ""};
+  orders.orders_.push_back(listed);
+  rig.session.set_working_orders(orders);
+  rig.runner_instance.context().set_now(swept_at());
+
+  SECTION("recorded: named by the listing's number, and counted on") {
+    runner::MemoryJournal journal;
+    journal.append(journaled_placement());
+    live::SessionSource<WorkingSession, runner::MemoryJournal> source(rig.session, {samsung()});
+    source.set_journal(journal);
+    CHECK(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
+    CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+    CHECK(rig.runner_instance.unconfirmed_orders() == 1);
+    // The listing covers it now: one row, the broker's, and no reference-less one beside it.
+    rig.runner_instance.refresh_unconfirmed();
+    const auto& working_rows = rig.runner_instance.context().portfolio().working_;
+    REQUIRE(working_rows.size() == 1);
+    CHECK(working_rows.front().ref_.primary_ == "KRX-1");
+    CHECK_FALSE(working_rows.front().reserved_);
+  }
+
+  SECTION("not recorded: the runner halts and the order stays as it was") {
+    UnwritableJournal journal;
+    journal.MemoryJournal::append(journaled_placement());
+    live::SessionSource<WorkingSession, UnwritableJournal> source(rig.session, {samsung()});
+    source.set_journal(journal);
+    source.read_order_list(rig.runner_instance);
+    CHECK(rig.runner_instance.local_failure().has_value());
+    CHECK(rig.runner_instance.unconfirmed_orders() == 1);
+  }
 }
 
 TEST_CASE("a sweep before any bar stamps its resolution with the loop's clock", "[recovery]") {

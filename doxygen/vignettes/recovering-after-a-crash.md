@@ -184,7 +184,11 @@ end, so after the first bar a placement left in doubt stays `undecided` until th
 **`ambiguous` is a stop, not a retry.** Two rows that could both be your order stay ambiguous however
 many times you sweep; no heuristic turns them into one answer. Go and look, then clear the ledger
 entry yourself with `ledger().resolve_after_reading_orders(instrument)` — named for what it requires,
-because calling it without having read that list defeats the entire mechanism.
+because calling it without having read that list defeats the entire mechanism. If the order was this
+run's own, also tell the runner what you found: `Runner::resolve_indeterminate_placement(instrument,
+side, order_id)` with the broker's number, or with no number if it was never placed. Otherwise the run
+keeps counting it as a reserved row until holdings show it, and if they never do, it withholds the
+instrument again a confirmation timeout later (`orders_unconfirmed_timed_out_`).
 
 ## What matching can and cannot do
 
