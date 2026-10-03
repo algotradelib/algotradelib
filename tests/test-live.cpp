@@ -1348,6 +1348,7 @@ TEST_CASE("a target does not re-place an order it only reserved while holdings l
   // not yet shown), and turned back. Seven reserved on the buy side met a need of three, so the side was
   // withdrawn -- refused, the order was done -- and three sent beside it, every bar.
   ConfirmRig rig;
+  rig.runner_instance.set_confirmation_timeout(std::chrono::minutes(10));
   rig.session.order_ids_ = {"B", "S", "B2", "B3"};
   rig.script.push_back(target_of("10"));
   rig.runner_instance.feed(bar_at(1, "70000"));
@@ -1365,10 +1366,26 @@ TEST_CASE("a target does not re-place an order it only reserved while holdings l
     rig.runner_instance.feed(bar_at(bar, "70000"));
   }
   CHECK(rig.session.placed().size() == 2);
+  CHECK(rig.session.canceled().size() > 1);  // still withdrawing, only not replacing
   // A refused withdrawal of a finished order neither halts the runner nor withholds the instrument
   // (the reservation plan's unwritten test 7).
   CHECK_FALSE(rig.runner_instance.local_failure().has_value());
   CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+
+  // Holdings catch up (7 bought, 7 sold: none held). Unchanged holdings settle an opposite pair only once
+  // each history has said what it filled -- for the sell, never listed, past the confirmation timeout.
+  auto caught_up = polled(6, "0", {});
+  rig.runner_instance.set_observed_at(caught_up.as_of_);
+  install(rig.runner_instance, std::move(caught_up));
+  auto sold = ended_row("S", OrderSide::SELL, "7", "7");
+  sold.status_ = OrderStatus::FILLED;
+  rig.runner_instance.confirm_from_history({ended_row("B", OrderSide::BUY, "10", "7"), sold});
+  CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 0);
+  rig.script.push_back(target_of("10"));
+  rig.runner_instance.feed(bar_at(6, "70000"));
+  REQUIRE(rig.session.placed().size() == 3);
+  CHECK(rig.session.placed()[2].side_ == OrderSide::BUY);
+  CHECK(rig.session.placed()[2].quantity_ == Decimal64::parse("10"));
 }
 
 TEST_CASE("a resting order not yet listed is withdrawn for a lower target, and not replaced beside it", "[confirm]") {
@@ -1387,6 +1404,14 @@ TEST_CASE("a resting order not yet listed is withdrawn for a lower target, and n
   rig.runner_instance.feed(bar_at(2, "70000"));
   CHECK(rig.session.canceled().size() == 1);
   CHECK(rig.session.placed().size() == 1);
+
+  // Its history: withdrawn with nothing filled. The next pass places the five.
+  rig.runner_instance.confirm_from_history({ended_row("0001569139", OrderSide::BUY, "10", "0")});
+  install(rig.runner_instance, polled(3, "0", {}));
+  rig.script.push_back(limit_target("5"));
+  rig.runner_instance.feed(bar_at(3, "70000"));
+  REQUIRE(rig.session.placed().size() == 2);
+  CHECK(rig.session.placed()[1].quantity_ == Decimal64::parse("5"));
 }
 
 TEST_CASE("an unconfirmed order past the timeout withholds its instrument", "[confirm]") {

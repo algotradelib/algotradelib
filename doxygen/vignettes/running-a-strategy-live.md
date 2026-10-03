@@ -725,7 +725,7 @@ so when a target finds more working on its side than it wants, it still withdraw
 sizes the replacement net of the reserved ones: withdrawing a finished order is refused, and a whole
 remainder sent beside it bought again every bar while holdings lagged (the labs' paper broker held 210
 for a target of 100). A reserved order that was still resting is withdrawn all the same, and the rest is
-placed once its history says what it filled. A replay or a dry run is unchanged.
+placed once its history says what it filled, or holdings show it. A replay or a dry run is unchanged.
 
 A trade made outside the runner on the same instrument never doubles an order either: one in the same
 direction ends the wait early, one in the other direction keeps it until the timeout withholds the

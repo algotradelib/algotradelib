@@ -646,9 +646,17 @@ Plan<Broker> reconcile(
           working.order_.side_ == side && order_is_open(working.order_.status_)) {
         plan.cancel_.push_back(working.ref_);
         if (inputs.reserved_rows_are_unconfirmed_ && working.reserved_) {
+          // A sum that will not compute refuses: undercounted, it would size the replacement larger.
           const auto left = decimal_subtract(working.order_.quantity_, working.order_.execution_.filled_quantity_);
-          if (left && decimal_less(zero, *left)) {
-            reserved = decimal_add(reserved, *left).value_or(reserved);
+          if (!left) {
+            return reject(RejectReason::NOT_REPRESENTABLE);
+          }
+          if (decimal_less(zero, *left)) {
+            const auto sum = decimal_add(reserved, *left);
+            if (!sum) {
+              return reject(RejectReason::NOT_REPRESENTABLE);
+            }
+            reserved = *sum;
           }
         }
       }

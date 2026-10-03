@@ -1092,6 +1092,17 @@ TEST_CASE("over-ordering through reserved rows that may have filled re-sends onl
     CHECK(plan.place_[0].quantity_ == Decimal64::parse("80"));
   }
 
+  SECTION("a reserved surplus on the sell side, the same") {
+    ProbePortfolio portfolio;
+    portfolio.positions_.push_back(holding("100"));
+    auto reserved = working("80", "0", OrderStatus::PENDING, OrderSide::SELL);
+    reserved.reserved_ = true;
+    portfolio.working_.push_back(reserved);
+    const auto plan = strategy::reconcile(target("40"), portfolio, inputs);
+    CHECK(plan.cancel_.size() == 1);
+    CHECK(plan.place_.empty());
+  }
+
   SECTION("off, as for a replay, the whole remainder is sent as before") {
     inputs.reserved_rows_are_unconfirmed_ = false;
     ProbePortfolio portfolio;
