@@ -1030,7 +1030,9 @@ public:
    *
    * At most one exists per instrument: the ledger withholds every placement on an instrument while one
    * is unknown. `live::SessionSource` calls this for every recorded `MATCHED` or `NOT_PLACED` placement;
-   * a source of the caller's own that reconciles by hand should too, or the order waits for holdings.
+   * a source of the caller's own that reconciles by hand should too, and so should an operator clearing
+   * the ledger by hand. Otherwise, once the hold is lifted, the order shows as a reserved row with no
+   * reference, waits for holdings, and past the confirmation timeout withholds its instrument again.
    */
   void resolve_indeterminate_placement(
     const InstrumentId& instrument, OrderSide side, const std::optional<std::string>& order_id
