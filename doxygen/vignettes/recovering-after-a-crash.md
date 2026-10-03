@@ -182,9 +182,15 @@ end, so after the first bar a placement left in doubt stays `undecided` until th
 (`labs/FINDINGS.md` F20).
 
 **`ambiguous` is a stop, not a retry.** Two rows that could both be your order stay ambiguous however
-many times you sweep; no heuristic turns them into one answer. Go and look, then clear the ledger
-entry yourself with `ledger().resolve_after_reading_orders(instrument)` — named for what it requires,
-because calling it without having read that list defeats the entire mechanism.
+many times you sweep; no heuristic turns them into one answer. Go and look, then clear the ledger entry
+yourself with `ledger().resolve_after_reading_orders(instrument)` — named for what it requires, because
+calling it without having read that list defeats the entire mechanism. If the order was this run's own,
+you must also tell the runner what you found: `Runner::resolve_indeterminate_placement(instrument, side,
+order_id)` with the broker's number, or with no number if it was never placed. Otherwise the run keeps
+counting it as a reserved row with no reference until holdings show it (a resting order is then counted
+beside its own listed row, and a target may withdraw it), and if they never do, it withholds the
+instrument again once it is past the confirmation timeout from its send, at the next holdings read
+(counted in `orders_unconfirmed_timed_out()`).
 
 ## What matching can and cannot do
 
@@ -231,8 +237,15 @@ the first is unresolved.
 - **Compaction or rotation.** The file is append-only and grows. One trading day is small; a year is
   not. Rotate it yourself between sessions, and note that recovery reads what it is given — a journal
   rotated away is a journal that remembers nothing.
-- **More than one writer.** One journal, one process. Two runners on one account is a larger problem
-  than a journal. The journal does check the *account*: it is opened with a scope such as
+- **More than one writer, beyond one file.** A second writer on the same file is refused on POSIX:
+  opening takes an exclusive `flock` and holds it while the journal is open, so the same program
+  started twice, or a supervisor starting a new copy while the old one still runs, stops at the
+  journal with the reason in `rejection()` (`example-live-program` exits 2, nothing bound). The lock
+  dies with its process (a child forked without `exec` shares it while it lives), and belongs to the file, not the path: rotating or deleting the journal while
+  a runner still has it open leaves a new file the next process takes. Two runners on one account through *different* journal paths are not caught
+  -- that is the account, not the file -- and Windows takes no lock. Keep the journal on a local disk:
+  on NFS, Linux turns `flock` into a lock the journal's own reads release. The journal does check the
+  *account*: it is opened with a scope such as
   `"kis:live:12345678-01"`, written into a header before the first order, and a file whose header
   names a different account refuses to open — because symbol, side, quantity and price can all agree
   across two accounts trading the same instrument. A non-empty file with no header is refused too:

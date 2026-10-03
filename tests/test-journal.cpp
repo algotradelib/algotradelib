@@ -11,6 +11,11 @@
 #include <string>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 using namespace algotradelib;
 
 namespace runner = algotradelib::runner;
@@ -1882,6 +1887,87 @@ TEST_CASE("a journal must name an account", "[journal][file]") {
   REQUIRE_FALSE(journal.open());
   REQUIRE_FALSE(journal.rejection().empty());
 }
+
+TEST_CASE("one journal has one writer: a second opener is refused while the first is open", "[journal][file]") {
+  const TempJournal path("one-writer");
+  {
+    runner::FileJournal first(path.str(), "test:account");
+    REQUIRE(first.open());
+    runner::FileJournal second(path.str(), "test:account");
+    REQUIRE_FALSE(second.open());
+    REQUIRE(second.rejection().find("one journal, one writer") != std::string::npos);
+    REQUIRE(first.append(sample_entry()));
+  }
+  runner::FileJournal third(path.str(), "test:account");
+  REQUIRE(third.open());
+  REQUIRE(third.replay().entries_.size() == 1);
+}
+
+TEST_CASE("a moved journal keeps its writer's lock", "[journal][file]") {
+  const TempJournal path("one-writer-moved");
+  std::optional<runner::FileJournal> first;
+  first.emplace(path.str(), "test:account");
+  runner::FileJournal moved(std::move(*first));
+  // The moved-from journal is gone before anyone else tries: a lock it still held would hide a move
+  // that dropped it.
+  first.reset();
+  REQUIRE(moved.open());
+  runner::FileJournal second(path.str(), "test:account");
+  REQUIRE_FALSE(second.open());
+  REQUIRE(moved.append(sample_entry()));
+}
+
+#if !defined(_WIN32)
+TEST_CASE("a journal another process holds is refused", "[journal][file]") {
+  const TempJournal path("one-writer-process");
+  int ready[2];
+  int release[2];
+  REQUIRE(::pipe(ready) == 0);
+  REQUIRE(::pipe(release) == 0);
+  const pid_t child = ::fork();
+  REQUIRE(child >= 0);
+  if (child == 0) {
+    // The child holds the journal until the parent has tried, then leaves without unwinding into
+    // Catch2. Each side closes the ends it does not use, so either one dying is an end of file.
+    ::close(ready[0]);
+    ::close(release[1]);
+    try {
+      runner::FileJournal holder(path.str(), "test:account");
+      const char held = holder.open() ? 'y' : 'n';
+      (void)!::write(ready[1], &held, 1);
+      char done = 0;
+      (void)!::read(release[0], &done, 1);
+    } catch (...) {
+      ::_exit(1);
+    }
+    ::_exit(0);
+  }
+  ::close(ready[1]);
+  ::close(release[0]);
+  char held = 0;
+  const auto got = ::read(ready[0], &held, 1);
+  bool refused = false;
+  std::string why;
+  {
+    runner::FileJournal parent(path.str(), "test:account");
+    refused = !parent.open();
+    why = parent.rejection();
+  }
+  const char done = 'x';
+  (void)!::write(release[1], &done, 1);
+  int status = 0;
+  ::waitpid(child, &status, 0);
+  ::close(ready[0]);
+  ::close(release[1]);
+  REQUIRE(got == 1);
+  REQUIRE(held == 'y');
+  REQUIRE(refused);
+  REQUIRE(why.find("one journal, one writer") != std::string::npos);
+  // The child is gone, and its lock with it.
+  runner::FileJournal after(path.str(), "test:account");
+  REQUIRE(after.open());
+}
+#endif
 
 TEST_CASE("a file with no header is not ours to write to", "[journal][file]") {
   // Ownership cannot be established, and that is not a question to guess at while holding a file

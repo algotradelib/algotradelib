@@ -322,6 +322,15 @@ struct ReconcileInputs {
    * value is taken to be in the instrument's currency, as before. Appended last.
    */
   std::optional<Currency> portfolio_value_currency_;
+  /**
+   * Whether the portfolio's reserved rows (`WorkingOrder::reserved_`) are the part of orders this runner
+   * sent that holdings have not shown yet -- which may already have filled. Set by a runner that keeps
+   * its sent orders until the broker accounts for them (lab F38). A target that finds more working than
+   * it wants still withdraws every row on that side, but sizes its replacement net of the reserved rows,
+   * because withdrawing an order that filled is refused and a replacement beside it would trade twice.
+   * Off (a replay, a dry run), the replacement is the whole remainder, as before. Appended last.
+   */
+  bool reserved_rows_are_unconfirmed_{false};
 };
 
 namespace reconcile_detail {
@@ -625,15 +634,40 @@ Plan<Broker> reconcile(
     }
   }
 
-  // Step 4: more working than wanted, so withdraw the side and send the whole remainder.
+  // Step 4: more working than wanted, so withdraw the side and send the whole remainder -- net of what
+  // this runner reserved for its own orders not yet shown by holdings, when those may have filled
+  // (`ReconcileInputs::reserved_rows_are_unconfirmed_`): their withdrawal is refused if they did, and a
+  // whole remainder beside them traded twice (lab F38). One genuinely resting is withdrawn all the same;
+  // its history settles what it filled, and a later pass places the rest.
   if (decimal_less(*remaining, zero)) {
+    Decimal64 reserved = zero;
     for (const auto& working : portfolio.working_) {
       if (working.order_.instrument_ == target.instrument_ &&
           working.order_.side_ == side && order_is_open(working.order_.status_)) {
         plan.cancel_.push_back(working.ref_);
+        if (inputs.reserved_rows_are_unconfirmed_ && working.reserved_) {
+          // A sum that will not compute refuses: undercounted, it would size the replacement larger.
+          const auto left = decimal_subtract(working.order_.quantity_, working.order_.execution_.filled_quantity_);
+          if (!left) {
+            return reject(RejectReason::NOT_REPRESENTABLE);
+          }
+          if (decimal_less(zero, *left)) {
+            const auto sum = decimal_add(reserved, *left);
+            if (!sum) {
+              return reject(RejectReason::NOT_REPRESENTABLE);
+            }
+            reserved = *sum;
+          }
+        }
       }
     }
-    remaining = magnitude;
+    remaining = decimal_subtract(magnitude, reserved);
+    if (!remaining) {
+      return reject(RejectReason::NOT_REPRESENTABLE);
+    }
+    if (!decimal_less(zero, *remaining)) {
+      return plan;
+    }
   }
   if (remaining->coefficient() == 0) {
     return plan;

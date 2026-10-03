@@ -122,7 +122,7 @@ int main() {
   {
     runner::FileJournal journal(path, "example:demo-account");
     if (!journal.open()) {
-      std::cout << "could not open " << path << " for appending\n";
+      std::cout << "could not open " << path << " for appending: " << journal.rejection() << "\n";
       return 1;
     }
     runner::JournalingExecutor<KilledExecutor<runner::DryTag>, runner::FileJournal,
