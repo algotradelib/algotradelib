@@ -975,6 +975,26 @@ private:
       runner_instance.halt_locally(
         "the order journal could not record a reconciliation, so the hold stands"
       );
+      return;
+    }
+    // **A placement whose reply was lost, now answered** (lab F35): the runner has counted it since the
+    // send, and keeps counting a matched one until holdings show it -- the ledger, just cleared, no
+    // longer withholds the instrument, and a filled market order is in no listing.
+    for (const auto& match : reconcile_.matches_) {
+      if (match.verdict_ != runner::MatchVerdict::MATCHED && match.verdict_ != runner::MatchVerdict::NOT_PLACED) {
+        continue;
+      }
+      for (const auto& instruction : open) {
+        if (instruction.entry_.id_ != match.entry_id_ || instruction.entry_.action_ != runner::JournalAction::PLACE) {
+          continue;
+        }
+        runner_instance.resolve_indeterminate_placement(
+          instruction.entry_.instrument_, instruction.entry_.side_,
+          match.verdict_ == runner::MatchVerdict::MATCHED ? std::optional<std::string>(match.order_id_) :
+                                                            std::nullopt
+        );
+        break;
+      }
     }
   }
 

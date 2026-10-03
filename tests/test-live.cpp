@@ -1076,6 +1076,134 @@ TEST_CASE("an order that left the listing is settled by its history", "[confirm]
   }
 }
 
+namespace {
+/** A placement whose request was written and whose reply never came. */
+BrokerError reply_lost() {
+  BrokerError error;
+  error.category_ = ErrorCategory::TRANSPORT;
+  error.message_ = "the reply was lost";
+  return error;
+}
+} // namespace
+
+TEST_CASE("an order whose reply was lost is counted until holdings show it, once a sweep finds it", "[confirm]") {
+  // Lab F35: the sweep found the filled order in the listing and cleared the ledger; holdings lagged
+  // the fill, no listing carried it, and the next bar's target bought again -- twice the target.
+  ConfirmRig rig;
+  for (int at = 0; at < 4; ++at) {
+    rig.script.push_back(target_of("10"));
+  }
+  rig.session.fail_place_with(reply_lost());
+  rig.runner_instance.feed(bar_at(1, "70000"));
+  rig.session.heal_place();
+  REQUIRE(rig.session.placed().size() == 1);
+  REQUIRE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+  // Counted from the send, with no reference, while the ledger holds the question.
+  CHECK(rig.runner_instance.unconfirmed_orders() == 1);
+  CHECK(rig.working_buys() == Decimal64::parse("10"));
+
+  SECTION("matched: counted on until holdings show it") {
+    rig.runner_instance.ledger().resolve_after_reading_orders(samsung());
+    rig.runner_instance.resolve_indeterminate_placement(samsung(), OrderSide::BUY, std::string("0001569139"));
+    CHECK(rig.runner_instance.unconfirmed_orders() == 1);
+    CHECK(rig.working_buys() == Decimal64::parse("10"));
+
+    install(rig.runner_instance, polled(2, "0", {}));
+    rig.runner_instance.feed(bar_at(2, "70000"));
+    CHECK(rig.session.placed().size() == 1);
+    CHECK(rig.working_buys() == Decimal64::parse("10"));
+
+    install(rig.runner_instance, polled(3, "10", {}));
+    rig.runner_instance.feed(bar_at(3, "70000"));
+    CHECK(rig.session.placed().size() == 1);
+    CHECK(rig.runner_instance.unconfirmed_orders() == 0);
+    CHECK(rig.runner_instance.context().portfolio().working_.empty());
+  }
+
+  SECTION("matched while resting: the listing covers it, by the reference the sweep named") {
+    rig.runner_instance.ledger().resolve_after_reading_orders(samsung());
+    rig.runner_instance.resolve_indeterminate_placement(samsung(), OrderSide::BUY, std::string("0001569139"));
+    install(rig.runner_instance, polled(2, "0", {listed_row("0001569139", OrderSide::BUY, "10", "0")}));
+    rig.runner_instance.feed(bar_at(2, "70000"));
+    CHECK(rig.session.placed().size() == 1);
+    CHECK(rig.working_buys() == Decimal64::parse("10"));
+  }
+
+  SECTION("resolved after a listing replaced the book: no row is left behind twice") {
+    install(rig.runner_instance, polled(2, "0", {}));
+    rig.runner_instance.ledger().resolve_after_reading_orders(samsung());
+    rig.runner_instance.resolve_indeterminate_placement(samsung(), OrderSide::BUY, std::string("0001569139"));
+    CHECK(rig.working_buys() == Decimal64::parse("10"));
+  }
+
+  SECTION("never placed: forgotten, and the target sends again") {
+    rig.runner_instance.ledger().resolve_after_reading_orders(samsung());
+    rig.runner_instance.resolve_indeterminate_placement(samsung(), OrderSide::BUY, std::nullopt);
+    CHECK(rig.runner_instance.unconfirmed_orders() == 0);
+    CHECK(rig.runner_instance.context().portfolio().working_.empty());
+    install(rig.runner_instance, polled(2, "0", {}));
+    rig.runner_instance.feed(bar_at(2, "70000"));
+    CHECK(rig.session.placed().size() == 2);
+  }
+
+  SECTION("another instrument's answer, or the other side's, leaves it alone") {
+    rig.runner_instance.resolve_indeterminate_placement(samsung(), OrderSide::SELL, std::nullopt);
+    rig.runner_instance.resolve_indeterminate_placement(
+      InstrumentId{Country::KR, Venue::COMBINED, "000660"}, OrderSide::BUY, std::nullopt
+    );
+    CHECK(rig.runner_instance.unconfirmed_orders() == 1);
+  }
+}
+
+TEST_CASE("an order whose reply was lost carries no reference, not the previous order's", "[confirm]") {
+  // `last_ref()` still names the last accepted order after a failed send. A row carrying it could be
+  // withdrawn in that order's place.
+  ConfirmRig rig;
+  rig.script.push_back(target_of("10"));
+  rig.script.push_back(target_of("0"));
+  rig.script.push_back(target_of("10"));
+  rig.runner_instance.feed(bar_at(1, "70000"));
+  REQUIRE(rig.session.placed().size() == 1);
+  install(rig.runner_instance, polled(2, "10", {}));
+  rig.runner_instance.refresh_unconfirmed();
+  REQUIRE(rig.runner_instance.unconfirmed_orders() == 0);
+
+  rig.session.fail_place_with(reply_lost());
+  rig.runner_instance.feed(bar_at(2, "70000"));
+  rig.session.heal_place();
+  REQUIRE(rig.session.placed().size() == 2);
+  REQUIRE(rig.session.placed()[1].side_ == OrderSide::SELL);
+  const auto& working = rig.runner_instance.context().portfolio().working_;
+  REQUIRE(working.size() == 1);
+  CHECK(working.front().ref_.primary_.empty());
+
+  // A target opposing the row withdraws nothing at the broker: the row names no order.
+  rig.runner_instance.feed(bar_at(3, "70000"));
+  CHECK(rig.session.canceled().empty());
+  CHECK(rig.session.placed().size() == 2);
+}
+
+TEST_CASE("an order whose reply was lost does not time out on its own", "[confirm]") {
+  // Its instrument is already withheld; a timeout's mark would change nothing, and dropping the entry
+  // would lose the count while the question is still open.
+  ConfirmRig rig;
+  rig.runner_instance.set_confirmation_timeout(std::chrono::minutes(10));
+  rig.script.push_back(target_of("10"));
+  rig.session.fail_place_with(reply_lost());
+  rig.runner_instance.feed(bar_at(1, "70000"));
+  rig.session.heal_place();
+  // Twenty-nine hours on, by the loop's clock and by a holdings read, with an empty history answer.
+  auto late = polled(30, "0", {});
+  rig.runner_instance.set_observed_at(late.as_of_);
+  install(rig.runner_instance, std::move(late));
+  CHECK_FALSE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
+  rig.runner_instance.confirm_from_history({});
+  rig.runner_instance.refresh_unconfirmed();
+  CHECK(rig.runner_instance.unconfirmed_orders() == 1);
+  CHECK(rig.working_buys() == Decimal64::parse("10"));
+  CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 0);
+}
+
 TEST_CASE("an unconfirmed order past the timeout withholds its instrument", "[confirm]") {
   // A wrong timeout costs trading on the instrument, never a duplicate: the ledger mark is cleared
   // only by an operator who has read the account.
