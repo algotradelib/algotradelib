@@ -27,6 +27,7 @@ int main(int argc, char** argv) {
     // `--credentials DIR [--kiwoom-account LABEL]`, else the environment (kiwoom_credentials.hpp).
     const auto directory = kis_credentials::take_directory(argc, argv);
     const auto label = kiwoom_credentials::take_label(argc, argv);
+    kiwoom_credentials::refuse_unknown_flags(argc, argv);
     algotradelib::kiwoom::KiwoomConfig config;
     kiwoom_credentials::load(directory, label, config, std::cout);
     // Kiwoom's balance inquiry names one venue and publishes no combined value, and whether that

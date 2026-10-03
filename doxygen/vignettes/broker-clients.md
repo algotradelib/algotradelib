@@ -106,6 +106,7 @@ no account selected), and only on demo. Either way the run knows the market phas
 holiday calendar takes about 20 s of pages at startup. Toss's daily price band can differ from
 KIS's for the same stock (`labs/FINDINGS.md` F27), and the band clamps limit prices, so KIS may
 refuse an order priced from it.
+
 **Kiwoom issues one key per account**: a Korean-stock and a US-stock account each have a key, and no
 request carries an account number. So the Kiwoom examples (`example-kiwoom-*` and
 `example-live-program kiwoom`) read one file per key: `DIR/kiwoom/demo-<label>.json`, or
@@ -114,8 +115,8 @@ request carries an account number. So the Kiwoom examples (`example-kiwoom-*` an
 for KIS, a directory without the file stops the program, a file whose `"demo"` contradicts its name is
 refused, and **with a directory the `KIWOOM_*` variables are not read**, so setting
 `ATL_CREDENTIALS_DIR` for KIS also moves Kiwoom to its files. Without a directory `--kiwoom-account` is
-refused. The adapter calls domestic-stock endpoints only, so a US account's key authenticates but
-serves nothing the adapter reads. Toss trading still reads its environment variables, and
+refused. The adapter calls domestic-stock endpoints only, so a US account's key authenticates, and its
+requests answer as Kiwoom answers them for that account. Toss trading still reads its environment variables, and
 `example-live-program` refuses `--credentials` for it.
 
 [`examples/example-tossinvest-account.cpp`](../../examples/example-tossinvest-account.cpp)

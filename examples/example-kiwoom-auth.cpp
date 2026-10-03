@@ -17,6 +17,7 @@ int main(int argc, char** argv) {
   try {
     const auto directory = kis_credentials::take_directory(argc, argv);
     const auto label = kiwoom_credentials::take_label(argc, argv);
+    kiwoom_credentials::refuse_unknown_flags(argc, argv);
     kiwoom_credentials::load(directory, label, cfg, std::cout);
   } catch (const std::exception& e) {
     std::cerr << "[error] " << e.what() << "\n";

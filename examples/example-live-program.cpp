@@ -394,7 +394,8 @@ std::optional<Arguments> parse(int argc, char** argv) {
     arguments.credentials_ = kis_credentials::take_directory(argc, argv);
     arguments.credentials_from_flag_ = argc != given;
     arguments.kiwoom_account_ = kiwoom_credentials::take_label(argc, argv);
-  } catch (const std::runtime_error&) {
+  } catch (const std::runtime_error& error) {
+    std::cerr << "example-live-program: " << error.what() << '\n';
     return std::nullopt;
   }
   std::vector<std::string> positional;

@@ -73,6 +73,18 @@ inline std::optional<std::string> take_label(int& argc, char** argv) {
   return label;
 }
 
+/**
+ * Throws when a flag is left on the command line after the credential flags were taken, so a
+ * mistyped `--kiwoom-acount us` stops instead of loading the default label's key.
+ */
+inline void refuse_unknown_flags(int argc, char** argv) {
+  for (int i = 1; i < argc; ++i) {
+    if (std::string_view(argv[i]).rfind("--", 0) == 0) {
+      throw std::runtime_error(std::string("unknown option ") + argv[i]);
+    }
+  }
+}
+
 /** Loads `config` from the directory's file for `label`, or from the environment without a directory. */
 inline void load(
   const std::optional<std::filesystem::path>& directory,
