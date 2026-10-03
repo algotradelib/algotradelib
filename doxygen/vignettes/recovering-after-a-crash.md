@@ -241,7 +241,7 @@ the first is unresolved.
   opening takes an exclusive `flock` and holds it while the journal is open, so the same program
   started twice, or a supervisor starting a new copy while the old one still runs, stops at the
   journal with the reason in `rejection()` (`example-live-program` exits 2, nothing bound). The lock
-  dies with its process, and belongs to the file, not the path: rotating or deleting the journal while
+  dies with its process (a child forked without `exec` shares it while it lives), and belongs to the file, not the path: rotating or deleting the journal while
   a runner still has it open leaves a new file the next process takes. Two runners on one account through *different* journal paths are not caught
   -- that is the account, not the file -- and Windows takes no lock. Keep the journal on a local disk:
   on NFS, Linux turns `flock` into a lock the journal's own reads release. The journal does check the

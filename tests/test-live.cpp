@@ -1164,6 +1164,32 @@ TEST_CASE("an order whose reply was lost is counted until holdings show it, once
   }
 }
 
+TEST_CASE("a sweep's answer names the newest order whose reply was lost", "[confirm]") {
+  // Combined review N1: after a hold cleared by hand without naming its order, a second lost reply on the
+  // same instrument and side leaves two unnamed entries. The sweep answers the one just sent.
+  ConfirmRig rig;
+  rig.script.push_back(target_of("10"));
+  rig.script.push_back(target_of("25"));
+  rig.session.fail_place_with(reply_lost());
+  rig.runner_instance.feed(bar_at(1, "70000"));
+  rig.runner_instance.ledger().resolve_after_reading_orders(samsung());
+  install(rig.runner_instance, polled(2, "0", {}));
+  rig.runner_instance.feed(bar_at(2, "70000"));
+  rig.session.heal_place();
+  REQUIRE(rig.session.placed().size() == 2);
+  REQUIRE(rig.runner_instance.unconfirmed_orders() == 2);
+
+  rig.runner_instance.ledger().resolve_after_reading_orders(samsung());
+  rig.runner_instance.resolve_indeterminate_placement(samsung(), OrderSide::BUY, std::string("NEW"));
+  rig.runner_instance.refresh_unconfirmed();
+  bool named_newest = false;
+  for (const auto& row : rig.runner_instance.context().portfolio().working_) {
+    named_newest = named_newest || (row.ref_.primary_ == "NEW" &&
+                                    row.order_.quantity_ == rig.session.placed()[1].quantity_);
+  }
+  CHECK(named_newest);
+}
+
 TEST_CASE("an order whose reply was lost carries no reference, not the previous order's", "[confirm]") {
   // `last_ref()` still names the last accepted order after a failed send. A row carrying it could be
   // withdrawn in that order's place.

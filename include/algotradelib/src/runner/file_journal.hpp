@@ -1199,7 +1199,7 @@ inline JournalReplay read_journal_file(const std::string& path) {
  * write down. So opening takes an exclusive `flock` on the file and holds it while the journal is
  * open; a second `FileJournal` on the same file -- in another process or this one -- is refused
  * (`rejection()`), and a program built on it starts nothing. The lock dies with the process, so a
- * `kill -9` leaves none behind. It belongs to the file, not the path: a journal deleted or rotated
+ * `kill -9` leaves none behind (a child forked without `exec` shares it, and keeps it while it lives). It belongs to the file, not the path: a journal deleted or rotated
  * away while a runner still has it open leaves a new file at the path, which the next opener takes.
  *   - `flock`, not `fcntl`/`lockf`: a POSIX record lock is released when the process closes *any*
  *     descriptor on the file, and reading the journal (`replay()`) opens and closes one.
@@ -1263,6 +1263,7 @@ public:
     }
     handle_.reset(::fdopen(descriptor, "ab"));
     if (!open()) {
+      rejection_ = "the journal at " + path_ + " could not be opened for appending (" + std::strerror(errno) + ")";
       ::close(descriptor);
     }
 #endif
@@ -1310,10 +1311,9 @@ public:
    *   starting a new copy while the old one still runs. Two runners on one account both send.
    * - **The file could not be locked at all** (a filesystem without `flock`): refused, because the
    *   rule above could not be enforced, with the system's reason.
-   * - **The scope is empty.**
-   *
    * - **The file could not be opened at all** (a missing directory, no permission), with the
    *   system's reason; on Windows this stays empty.
+   * - **The scope is empty.**
    *
    * Refusing to open is the only response that cannot be ignored.
    */

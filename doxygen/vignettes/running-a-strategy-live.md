@@ -709,16 +709,16 @@ it early.
 withheld in the ledger until a sweep of the broker's lists says what became of it, and meanwhile the
 order is tracked but not shown: no placement on the instrument can go out, and a listing that already
 carries the order would otherwise count it twice and have a target withdraw the real one. It does not
-time out while the ledger holds the instrument. When the sweep finds it (`MATCHED`), the ledger lets the
-instrument trade again and the order is counted on, by the number the sweep found, until holdings show
-it: before, a market order that had filled was in no listing, holdings lagging the fill did not show it,
-and the next bar's target bought it again (the labs' paper broker held twice the target). When the sweep
-concludes it was never placed (`NOT_PLACED`), it is forgotten. `SessionSource` does this for every
-recorded resolution; a source of your own that calls `reconcile_against` should call
-`Runner::resolve_indeterminate_placement` the same way, and so must you after clearing the ledger by
-hand: an order nothing names once the ledger is clear shows as a reserved row with no broker reference
-(a resting one is then counted beside its own listed row), waits for holdings, and past the confirmation
-timeout withholds its instrument again, counted.
+time out while the ledger holds the instrument. When the sweep finds it (`MATCHED`), the order is
+counted on, by the number the sweep found, until holdings show it, and the ledger lets the instrument
+trade again once the sweep has decided everything open on it: before, a market order that had filled was
+in no listing, holdings lagging the fill did not show it, and the next bar's target bought it again (the
+labs' paper broker held twice the target). When the sweep concludes it was never placed (`NOT_PLACED`),
+it is forgotten. `SessionSource` does this for every recorded resolution; a source of your own that
+calls `reconcile_against` should call `Runner::resolve_indeterminate_placement` the same way, and so
+must you after clearing the ledger by hand: an order nothing names once the ledger is clear shows as a
+reserved row with no broker reference (a resting one is then counted beside its own listed row), waits
+for holdings, and past the confirmation timeout withholds its instrument again, counted.
 
 **A target never re-places what it only reserved** (lab F38). A reserved row has often filled already,
 so when a target finds more working on its side than it wants, it still withdraws every row there, but

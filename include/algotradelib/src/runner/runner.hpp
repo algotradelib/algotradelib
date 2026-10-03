@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <string>
@@ -1028,8 +1029,8 @@ public:
    * here -- a predecessor's instruction resolved after a restart, a runner that does not keep its
    * orders -- is left alone.
    *
-   * At most one exists per instrument: the ledger withholds every placement on an instrument while one
-   * is unknown. `live::SessionSource` calls this for every recorded `MATCHED` or `NOT_PLACED` placement;
+   * At most one exists per instrument while the ledger holds it (it withholds every placement there);
+   * after a hold cleared by hand without naming its order there can be two, and the newest is answered. `live::SessionSource` calls this for every recorded `MATCHED` or `NOT_PLACED` placement;
    * a source of the caller's own that reconciles by hand should too, and so should an operator clearing
    * the ledger by hand. Otherwise, once the hold is lifted, the order shows as a reserved row with no
    * reference, waits for holdings, and past the confirmation timeout withholds its instrument again.
@@ -1038,12 +1039,15 @@ public:
     const InstrumentId& instrument, OrderSide side, const std::optional<std::string>& order_id
   ) {
     if constexpr (keeps_sent_orders_until_listed) {
-      const auto found = std::find_if(unconfirmed_.begin(), unconfirmed_.end(), [&](const Unconfirmed& entry) {
+      // The newest: the sweep answers the order just sent, and an older one still unnamed is left over
+      // from a hold cleared by hand without naming it.
+      const auto newest = std::find_if(unconfirmed_.rbegin(), unconfirmed_.rend(), [&](const Unconfirmed& entry) {
         return entry.ref_.primary_.empty() && entry.instrument_ == instrument && entry.side_ == side;
       });
-      if (found == unconfirmed_.end() || (order_id && order_id->empty())) {
+      if (newest == unconfirmed_.rend() || (order_id && order_id->empty())) {
         return;
       }
+      const auto found = std::prev(newest.base());
       // The row first: it is recognized by the reference about to change, and left behind it would be
       // counted beside the rebuilt one.
       auto portfolio = context_.portfolio();
@@ -2245,7 +2249,7 @@ private:
           auto& entry = unconfirmed_[group[at]];
           entry.listed_now_ = false;
           for (const auto& working : portfolio.working_) {
-            if (!working.reserved_ && working.ref_.primary_ == entry.ref_.primary_ &&
+            if (!working.reserved_ && !entry.ref_.primary_.empty() && working.ref_.primary_ == entry.ref_.primary_ &&
                 working.order_.instrument_ == entry.instrument_ && working.order_.side_ == entry.side_ &&
                 strategy::order_is_open(working.order_.status_)) {
               entry.listed_ = true;
