@@ -1905,8 +1905,12 @@ TEST_CASE("one journal has one writer: a second opener is refused while the firs
 
 TEST_CASE("a moved journal keeps its writer's lock", "[journal][file]") {
   const TempJournal path("one-writer-moved");
-  runner::FileJournal first(path.str(), "test:account");
-  runner::FileJournal moved(std::move(first));
+  std::optional<runner::FileJournal> first;
+  first.emplace(path.str(), "test:account");
+  runner::FileJournal moved(std::move(*first));
+  // The moved-from journal is gone before anyone else tries: a lock it still held would hide a move
+  // that dropped it.
+  first.reset();
   REQUIRE(moved.open());
   runner::FileJournal second(path.str(), "test:account");
   REQUIRE_FALSE(second.open());
@@ -1923,14 +1927,23 @@ TEST_CASE("a journal another process holds is refused", "[journal][file]") {
   const pid_t child = ::fork();
   REQUIRE(child >= 0);
   if (child == 0) {
-    // The child holds the journal until the parent has tried, then leaves without unwinding.
-    runner::FileJournal holder(path.str(), "test:account");
-    const char held = holder.open() ? 'y' : 'n';
-    (void)!::write(ready[1], &held, 1);
-    char done = 0;
-    (void)!::read(release[0], &done, 1);
+    // The child holds the journal until the parent has tried, then leaves without unwinding into
+    // Catch2. Each side closes the ends it does not use, so either one dying is an end of file.
+    ::close(ready[0]);
+    ::close(release[1]);
+    try {
+      runner::FileJournal holder(path.str(), "test:account");
+      const char held = holder.open() ? 'y' : 'n';
+      (void)!::write(ready[1], &held, 1);
+      char done = 0;
+      (void)!::read(release[0], &done, 1);
+    } catch (...) {
+      ::_exit(1);
+    }
     ::_exit(0);
   }
+  ::close(ready[1]);
+  ::close(release[0]);
   char held = 0;
   const auto got = ::read(ready[0], &held, 1);
   bool refused = false;
@@ -1944,9 +1957,8 @@ TEST_CASE("a journal another process holds is refused", "[journal][file]") {
   (void)!::write(release[1], &done, 1);
   int status = 0;
   ::waitpid(child, &status, 0);
-  for (const int descriptor : {ready[0], ready[1], release[0], release[1]}) {
-    ::close(descriptor);
-  }
+  ::close(ready[0]);
+  ::close(release[1]);
   REQUIRE(got == 1);
   REQUIRE(held == 'y');
   REQUIRE(refused);

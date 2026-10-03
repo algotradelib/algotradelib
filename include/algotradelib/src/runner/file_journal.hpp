@@ -1197,9 +1197,10 @@ inline JournalReplay read_journal_file(const std::string& path) {
  * **One journal, one writer, enforced on POSIX.** Two processes appending to one file is a larger
  * problem than a journal: two runners on one account will double positions regardless of what they
  * write down. So opening takes an exclusive `flock` on the file and holds it while the journal is
- * open; a second `FileJournal` on the path -- in another process or this one -- is refused
+ * open; a second `FileJournal` on the same file -- in another process or this one -- is refused
  * (`rejection()`), and a program built on it starts nothing. The lock dies with the process, so a
- * `kill -9` leaves none behind.
+ * `kill -9` leaves none behind. It belongs to the file, not the path: a journal deleted or rotated
+ * away while a runner still has it open leaves a new file at the path, which the next opener takes.
  *   - `flock`, not `fcntl`/`lockf`: a POSIX record lock is released when the process closes *any*
  *     descriptor on the file, and reading the journal (`replay()`) opens and closes one.
  *   - Local filesystems. Linux emulates `flock` on NFS with record locks, which brings that release
@@ -1242,17 +1243,24 @@ public:
     // it, and moving the journal moves it with the handle.
     const int descriptor = ::open(path_.c_str(), O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0666);
     if (descriptor < 0) {
+      rejection_ = "the journal at " + path_ + " could not be opened (" + std::strerror(errno) + ")";
       return;
     }
     if (!lock(descriptor)) {
       ::close(descriptor);
       return;
     }
-    if (!claim_file()) {
+    try {
+      if (!claim_file()) {
+        ::close(descriptor);
+        return;
+      }
+      repair_torn_tail();
+    } catch (...) {
+      // A held lock outliving a failed open would refuse this program's own retry.
       ::close(descriptor);
-      return;
+      throw;
     }
-    repair_torn_tail();
     handle_.reset(::fdopen(descriptor, "ab"));
     if (!open()) {
       ::close(descriptor);
@@ -1304,8 +1312,10 @@ public:
    *   rule above could not be enforced, with the system's reason.
    * - **The scope is empty.**
    *
-   * Refusing to open is the only response that cannot be ignored. A file that could not be opened
-   * at all (a missing directory) leaves this empty and `open()` false.
+   * - **The file could not be opened at all** (a missing directory, no permission), with the
+   *   system's reason; on Windows this stays empty.
+   *
+   * Refusing to open is the only response that cannot be ignored.
    */
   const std::string& rejection() const noexcept { return rejection_; }
 
