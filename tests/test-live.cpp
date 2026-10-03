@@ -167,6 +167,9 @@ public:
     if (error_) {
       return Result<Placed>(*error_);
     }
+    if (cancel_error_) {
+      return Result<Placed>(*cancel_error_);
+    }
     Placed ack;
     ack.ref_ = ref;
     return Result<Placed>(std::move(ack));
@@ -192,6 +195,9 @@ public:
 
   /** Lets placements succeed again. */
   void heal_place() { place_error_.reset(); }
+
+  /** Makes every later **withdrawal** fail with `error`, as a broker refuses to cancel a finished order. */
+  void fail_cancel_with(BrokerError error) { cancel_error_ = std::move(error); }
 
   /** Makes every later call fail with `category` and `status`. */
   void fail_with(ErrorCategory category, int status = 0) {
@@ -538,6 +544,7 @@ private:
   std::vector<Ref> canceled_refs_;
   std::optional<BrokerError> error_;
   std::optional<BrokerError> place_error_;
+  std::optional<BrokerError> cancel_error_;
   std::optional<BrokerError> local_refusal_;
 };
 
@@ -1322,6 +1329,64 @@ TEST_CASE("a protective stop listed in full does not hold up the orders beside i
   CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 0);
   CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
   CHECK(rig.runner_instance.unconfirmed_orders() == 1);
+}
+
+namespace {
+/** What a broker answers when asked to withdraw an order that has already filled. */
+BrokerError already_finished() {
+  BrokerError error;
+  error.category_ = ErrorCategory::INVALID_ARGUMENT;
+  error.reached_broker_ = true;
+  error.broker_code_ = "cancel_refused";
+  error.message_ = "the order has already been executed";
+  return error;
+}
+} // namespace
+
+TEST_CASE("a target does not re-place an order it only reserved while holdings lag", "[confirm]") {
+  // Lab F38: a buy filled 7 of 10 (holdings show them), the signal turned (the 3 left withdrawn, 7 sold,
+  // not yet shown), and turned back. Seven reserved on the buy side met a need of three, so the side was
+  // withdrawn -- refused, the order was done -- and three sent beside it, every bar.
+  ConfirmRig rig;
+  rig.session.order_ids_ = {"B", "S", "B2", "B3"};
+  rig.script.push_back(target_of("10"));
+  rig.runner_instance.feed(bar_at(1, "70000"));
+  install(rig.runner_instance, polled(2, "7", {listed_row("B", OrderSide::BUY, "10", "7")}));
+  rig.script.push_back(target_of("0"));
+  rig.runner_instance.feed(bar_at(2, "70000"));
+  REQUIRE(rig.session.placed().size() == 2);
+  REQUIRE(rig.session.placed()[1].side_ == OrderSide::SELL);
+
+  // From here a withdrawal is refused: both orders are finished. Holdings still show only the buy's 7.
+  rig.session.fail_cancel_with(already_finished());
+  for (int bar = 3; bar <= 5; ++bar) {
+    install(rig.runner_instance, polled(bar, "7", {}));
+    rig.script.push_back(target_of("10"));
+    rig.runner_instance.feed(bar_at(bar, "70000"));
+  }
+  CHECK(rig.session.placed().size() == 2);
+  // A refused withdrawal of a finished order neither halts the runner nor withholds the instrument
+  // (the reservation plan's unwritten test 7).
+  CHECK_FALSE(rig.runner_instance.local_failure().has_value());
+  CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+}
+
+TEST_CASE("a resting order not yet listed is withdrawn for a lower target, and not replaced beside it", "[confirm]") {
+  // Round 0's B1: a reserved row may also be a resting order the listing does not show yet. Withdrawn as
+  // before; the rest is placed once its history says what it filled.
+  ConfirmRig rig;
+  auto limit_target = [](const char* quantity) {
+    auto target = target_of(quantity);
+    target.limit_ = strategy::Price::checked(Decimal64::parse("69000"), samsung_reference().price_rule_);
+    return target;
+  };
+  rig.script.push_back(limit_target("10"));
+  rig.script.push_back(limit_target("5"));
+  rig.runner_instance.feed(bar_at(1, "70000"));
+  install(rig.runner_instance, polled(2, "0", {}));
+  rig.runner_instance.feed(bar_at(2, "70000"));
+  CHECK(rig.session.canceled().size() == 1);
+  CHECK(rig.session.placed().size() == 1);
 }
 
 TEST_CASE("an unconfirmed order past the timeout withholds its instrument", "[confirm]") {

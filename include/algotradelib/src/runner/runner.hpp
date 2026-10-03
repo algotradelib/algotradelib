@@ -3213,6 +3213,7 @@ private:
     inputs.portfolio_value_ = portfolio_value_;
     inputs.portfolio_value_currency_ = portfolio_value_currency_;
     inputs.tolerance_ = tolerance_;
+    inputs.reserved_rows_are_unconfirmed_ = keeps_sent_orders_until_listed;
 
     auto plan = [&] {
       if (const auto* target = std::get_if<strategy::TargetPosition>(&instruction)) {

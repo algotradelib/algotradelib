@@ -1061,6 +1061,50 @@ TEST_CASE("over-ordering withdraws the side and sends the remainder fresh") {
   REQUIRE(plan.place_[0].quantity_ == Decimal64::parse("100"));
 }
 
+TEST_CASE("over-ordering through reserved rows that may have filled re-sends only what they do not cover") {
+  // Lab F38: a reserved row is the part of an order holdings have not shown, and it has often filled.
+  // Its withdrawal is then refused, so a whole remainder sent beside it traded twice.
+  const auto reference = samsung_reference();
+  ReconcileInputs inputs;
+  inputs.instrument_ = &reference;
+  inputs.reserved_rows_are_unconfirmed_ = true;
+
+  SECTION("a reserved surplus is withdrawn and nothing is sent beside it") {
+    ProbePortfolio portfolio;
+    portfolio.positions_.push_back(holding("70"));
+    auto reserved = working("70", "0", OrderStatus::PENDING);
+    reserved.reserved_ = true;
+    portfolio.working_.push_back(reserved);
+    const auto plan = strategy::reconcile(target("100"), portfolio, inputs);
+    CHECK(plan.cancel_.size() == 1);
+    CHECK(plan.place_.empty());
+  }
+
+  SECTION("a listed surplus beside a smaller reserved row is re-sent net of the reserved one") {
+    ProbePortfolio portfolio;
+    auto reserved = working("20", "0", OrderStatus::PENDING);
+    reserved.reserved_ = true;
+    portfolio.working_.push_back(reserved);
+    portfolio.working_.push_back(working("130", "0", OrderStatus::PENDING));
+    const auto plan = strategy::reconcile(target("100"), portfolio, inputs);
+    CHECK(plan.cancel_.size() == 2);
+    REQUIRE(plan.place_.size() == 1);
+    CHECK(plan.place_[0].quantity_ == Decimal64::parse("80"));
+  }
+
+  SECTION("off, as for a replay, the whole remainder is sent as before") {
+    inputs.reserved_rows_are_unconfirmed_ = false;
+    ProbePortfolio portfolio;
+    auto reserved = working("150", "0", OrderStatus::PENDING);
+    reserved.reserved_ = true;
+    portfolio.working_.push_back(reserved);
+    const auto plan = strategy::reconcile(target("100"), portfolio, inputs);
+    CHECK(plan.cancel_.size() == 1);
+    REQUIRE(plan.place_.size() == 1);
+    CHECK(plan.place_[0].quantity_ == Decimal64::parse("100"));
+  }
+}
+
 TEST_CASE("reducing a position sells the difference") {
   ProbePortfolio portfolio;
   portfolio.positions_.push_back(holding("100"));
