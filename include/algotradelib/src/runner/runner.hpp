@@ -1030,7 +1030,8 @@ public:
    * orders -- is left alone.
    *
    * At most one exists per instrument while the ledger holds it (it withholds every placement there);
-   * after a hold cleared by hand without naming its order there can be two, and the newest is answered. `live::SessionSource` calls this for every recorded `MATCHED` or `NOT_PLACED` placement;
+   * after a hold cleared by hand without naming its order there can be two, and the newest is answered.
+   * `live::SessionSource` calls this for every recorded `MATCHED` or `NOT_PLACED` placement;
    * a source of the caller's own that reconciles by hand should too, and so should an operator clearing
    * the ledger by hand. Otherwise, once the hold is lifted, the order shows as a reserved row with no
    * reference, waits for holdings, and past the confirmation timeout withholds its instrument again.
