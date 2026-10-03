@@ -227,8 +227,10 @@ Or keep each account's keys in its own file and pass the directory: `--credentia
 `ATL_CREDENTIALS_DIR`) reads `DIR/kis/demo.json`, or `real.json` with `KIS_DEMO=0`. On demo, market data
 then comes from `real.json` through a session with no account, because a KIS demo host refuses
 reference data and the calendar; `--market-data toss` reads it from Toss instead (demo only). With
-either, a demo run knows the market phase, so `--live` places demo orders. See "Credentials from
-files" in [Talking to a broker directly](doxygen/vignettes/broker-clients.md).
+either, a demo run knows the market phase, so `--live` places demo orders. Kiwoom issues one key per
+account, so it reads `DIR/kiwoom/demo-<label>.json` (`real-` with `KIWOOM_DEMO=0`), the label chosen
+with `--kiwoom-account` (default `kr`). With a directory, neither broker reads its environment keys. See
+"Credentials from files" in [Talking to a broker directly](doxygen/vignettes/broker-clients.md).
 
 Without `--live` the runner is bound with `live::bind_observer`, which has nothing to send through.
 With it, `live_program::trade` does what a restartable run needs, in the order it needs it:
@@ -280,7 +282,7 @@ the fastest way to see each layer work: `example-strategy-dryrun`, `example-back
 `example-backtest-compare`, `example-live-loop`, `example-order-journal`,
 `example-analytics-offline` and `example-rate-limit-stats`. `example-kis-place-order` is offline too
 — it constructs and prints an `OrderRequest` and can send nothing. The rest read credentials from
-the environment, and the KIS ones also from a credentials directory; the
+the environment, and the KIS and Kiwoom ones also from a credentials directory; the
 [broker clients](doxygen/vignettes/broker-clients.md) page lists which.
 
 ## Brokers and accounts

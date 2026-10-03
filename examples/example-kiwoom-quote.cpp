@@ -2,6 +2,8 @@
 //
 // All three come from one `ka10007` response, so this costs one request rather than three.
 
+#include "kiwoom_credentials.hpp"
+
 #include <algotradelib/kiwoom>
 
 #include <boost/asio/io_context.hpp>
@@ -17,11 +19,13 @@ namespace net = boost::asio;
 namespace ssl = net::ssl;
 
 int main(int argc, char* argv[]) {
-  const std::string symbol = argc > 1 ? argv[1] : "005930";
-
   try {
+    // `--credentials DIR [--kiwoom-account LABEL]`, else the environment (kiwoom_credentials.hpp).
+    const auto directory = kis_credentials::take_directory(argc, argv);
+    const auto label = kiwoom_credentials::take_label(argc, argv);
+    const std::string symbol = argc > 1 ? argv[1] : "005930";
     algotradelib::kiwoom::KiwoomConfig config;
-    config.from_env();
+    kiwoom_credentials::load(directory, label, config, std::cout);
 
     std::cout << "environment: " << (config.is_demo_ ? "demo" : "live") << '\n';
     std::cout << "symbol: " << symbol << '\n';

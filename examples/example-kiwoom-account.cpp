@@ -4,6 +4,8 @@
 // `ka00001` is the only way to check the credential points where you meant. The session binds an
 // empty selector for the same reason.
 
+#include "kiwoom_credentials.hpp"
+
 #include <algotradelib/kiwoom>
 
 #include <boost/asio/ssl/context.hpp>
@@ -16,14 +18,17 @@
 namespace net = boost::asio;
 namespace ssl = net::ssl;
 
-int main() {
+int main(int argc, char** argv) {
   using algotradelib::BlockingSession;
   using algotradelib::BrokerCaps;
   using algotradelib::kiwoom::KiwoomBlockingClient;
 
   try {
+    // `--credentials DIR [--kiwoom-account LABEL]`, else the environment (kiwoom_credentials.hpp).
+    const auto directory = kis_credentials::take_directory(argc, argv);
+    const auto label = kiwoom_credentials::take_label(argc, argv);
     algotradelib::kiwoom::KiwoomConfig config;
-    config.from_env();
+    kiwoom_credentials::load(directory, label, config, std::cout);
     // Kiwoom's balance inquiry names one venue and publishes no combined value, and whether that
     // selects which positions are listed or only how they are valued is not stated anywhere. So
     // there is no default and a caller states the venue deliberately.

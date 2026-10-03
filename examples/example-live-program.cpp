@@ -5,6 +5,7 @@
  * ```
  * example-live-program <kis|kiwoom|toss> <symbol> [--live] [--journal PATH] [--control PATH]
  *                      [--toss-account SEQUENCE] [--credentials DIR] [--market-data kis|toss]
+ *                      [--kiwoom-account LABEL]
  * ```
  *
  * Without `--live` it **observes**: real market data, holdings and orders run through the real
@@ -31,8 +32,13 @@
  * through the real keys, so the market phase is known and, with `--live`, the strategy trades.
  * Every KIS client here is paced at one request a second (`kis_credentials::paced_options`): KIS
  * refuses faster reads (`EGW00201`), and the calendar's pages take about 20 s at startup.
- * `--credentials` is for KIS only: Kiwoom and Toss read their
- * environment variables, so a directory given to them is refused rather than ignored.
+ *
+ * **Kiwoom credentials** (`kiwoom_credentials.hpp`). Kiwoom issues one key per account, so with a
+ * directory Kiwoom reads `DIR/kiwoom/demo-<label>.json` (or `real-<label>.json` with `KIWOOM_DEMO=0`),
+ * the label from `--kiwoom-account` (default `kr`). With a directory, the `KIWOOM_*` variables are not
+ * read; without one they are, and `--kiwoom-account` is refused.
+ *
+ * Toss reads its environment variables, so `--credentials` given to it is refused rather than ignored.
  *
  * The broker-free part -- the order of journal, recovery, loop and report -- is `live_program.hpp`,
  * which the test suite drives against an in-memory session. This file only chooses a broker and a
@@ -42,6 +48,7 @@
  */
 
 #include "kis_credentials.hpp"
+#include "kiwoom_credentials.hpp"
 #include "live_program.hpp"
 
 #include <algotradelib/kis>
@@ -81,6 +88,7 @@ struct Arguments {
   std::optional<std::filesystem::path> credentials_;
   bool credentials_from_flag_{false};
   std::optional<std::string> market_data_;
+  std::optional<std::string> kiwoom_account_;
 };
 
 /** The strategy this program runs: one share, held. The line a consumer replaces. */
@@ -278,8 +286,7 @@ int run_kiwoom(ssl::context& tls, const Arguments& arguments) {
   namespace kiwoom = algotradelib::kiwoom;
 
   kiwoom::KiwoomConfig config;
-  config.from_env();
-  std::cout << "credentials: environment variables (--credentials is for KIS only)\n";
+  kiwoom_credentials::load(arguments.credentials_, arguments.kiwoom_account_, config, std::cout);
   // Kiwoom's balance inquiry names one venue and does not say whether that filters the positions or
   // only values them, so the adapter refuses holdings until you state both. Until then the loop has
   // no portfolio and holds: this program runs and places nothing. Run the experiment in
@@ -326,7 +333,7 @@ int run_toss(ssl::context& tls, const Arguments& arguments) {
 
   toss::TossConfig config;
   config.from_env();
-  std::cout << "credentials: environment variables (--credentials is for KIS only)\n";
+  std::cout << "credentials: environment variables (Toss reads no credentials directory)\n";
   auto client = std::make_shared<toss::TossBlockingClient>(tls, std::move(config));
 
   // Toss selects an account by sequence number and publishes the list. With one account that is the
@@ -385,10 +392,11 @@ std::optional<Arguments> parse(int argc, char** argv) {
   const int given = argc;
   try {
     arguments.credentials_ = kis_credentials::take_directory(argc, argv);
+    arguments.credentials_from_flag_ = argc != given;
+    arguments.kiwoom_account_ = kiwoom_credentials::take_label(argc, argv);
   } catch (const std::runtime_error&) {
     return std::nullopt;
   }
-  arguments.credentials_from_flag_ = argc != given;
   std::vector<std::string> positional;
   for (int i = 1; i < argc; ++i) {
     const std::string argument = argv[i];
@@ -420,9 +428,16 @@ std::optional<Arguments> parse(int argc, char** argv) {
   if (arguments.broker_ != "kis" && arguments.broker_ != "kiwoom" && arguments.broker_ != "toss") {
     return std::nullopt;
   }
-  // KIS only. Kiwoom and Toss read their environment variables; a directory they ignored would
-  // trade whichever account the environment names.
-  if ((arguments.market_data_ || arguments.credentials_from_flag_) && arguments.broker_ != "kis") {
+  // A setting the chosen broker would ignore is refused: ignored, it would trade whichever account
+  // the environment names. Market data is KIS's; Toss reads only its environment variables; the
+  // label selects a Kiwoom file.
+  if (arguments.market_data_ && arguments.broker_ != "kis") {
+    return std::nullopt;
+  }
+  if (arguments.credentials_from_flag_ && arguments.broker_ == "toss") {
+    return std::nullopt;
+  }
+  if (arguments.kiwoom_account_ && arguments.broker_ != "kiwoom") {
     return std::nullopt;
   }
   return arguments;
@@ -437,7 +452,8 @@ int main(int argc, char** argv) {
     std::cerr
       << "usage: example-live-program <kis|kiwoom|toss> <symbol> [--live] [--journal PATH]\n"
       << "                            [--control PATH] [--toss-account SEQUENCE]\n"
-      << "                            [--credentials DIR] [--market-data kis|toss]\n\n"
+      << "                            [--credentials DIR] [--market-data kis|toss]\n"
+      << "                            [--kiwoom-account LABEL]\n\n"
       << "Without --live it observes: nothing can be sent. KIS and Kiwoom are demo unless\n"
       << "KIS_DEMO=0 / KIWOOM_DEMO=0; Toss has no demo, so toss --live trades real money.\n";
     return 64;
