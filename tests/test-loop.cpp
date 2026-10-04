@@ -314,7 +314,7 @@ public:
    * advances a day per poll while a `ManualClock` advances by the tick, so a rule reading either one
    * passes. Codex round 1 found exactly that in the band-ageing test below.
    *
-   * A second rather than nothing at all, because the context's rolling window refuses an observation
+   * A second rather than nothing at all, because the context's `SeriesBuffer` refuses an observation
    * that is not later than the last -- so the instant has to move, and what matters is that it moves
    * by far less than the policy under test.
    */

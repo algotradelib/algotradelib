@@ -348,7 +348,7 @@ inline math::Vector wma(math::SeriesView values, std::size_t window) {
  *
  * **Not vectorized, and it cannot be.** Each level depends on the one before it, so there is no
  * reduction to hand a backend — unlike every other function here. The same dependence is why
- * running it over a trailing `RollingWindow` view does *not* reproduce what a live loop computes:
+ * running it over a trailing `SeriesBuffer` view does *not* reproduce what a live loop computes:
  * the window's oldest row becomes a fresh seed each time it advances. For a live strategy keep a
  * `RunningEma`, which runs this exact recurrence once per bar. The finite windows above have no
  * such problem — window and full series agree exactly.

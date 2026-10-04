@@ -29,7 +29,7 @@ with it. Quote, order, and market-data headers do not require one, and neither d
 #include "src/analytics/panel.hpp"
 #include "src/analytics/returns.hpp"
 #include "src/analytics/rolling.hpp"
-#include "src/analytics/rolling_window.hpp"
+#include "src/analytics/series_buffer.hpp"
 #include "src/analytics/time_index.hpp"
 
 #endif

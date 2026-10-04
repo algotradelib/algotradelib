@@ -175,14 +175,14 @@ public:
    * Returns the trailing bars of one instrument at one interval, or nothing when none are cached.
    *
    * A view into the runner's own cache: contiguous, not copied, and safe to hand straight to an
-   * indicator. `analytics::RollingWindow::full()` says whether there are enough for a window.
+   * indicator. `analytics::SeriesBuffer::full()` says whether there are enough for a window.
    *
    * **Available only when the library is built with a linear-algebra backend.** The series type is
    * an analytics type, and the strategy surface itself requires no backend so that a strategy
    * trading on prices and positions alone does not have to acquire one. A strategy that reads
    * series is, by definition, one that computes on them.
    */
-  const analytics::RollingWindow* bars(
+  const analytics::SeriesBuffer* bars(
     const InstrumentId& id,
     BarInterval interval = BarInterval::ONE_DAY
   ) const {
@@ -270,7 +270,7 @@ public:
     const SeriesKey key{event.instrument_, event.interval_};
     auto found = series_.find(key);
     if (found == series_.end()) {
-      found = series_.emplace(key, analytics::RollingWindow(series_capacity_)).first;
+      found = series_.emplace(key, analytics::SeriesBuffer(series_capacity_)).first;
     }
     found->second.push(event.bar_);
   }
@@ -288,7 +288,7 @@ private:
   std::map<SeriesKey, Instrument> instruments_;
   std::map<SeriesKey, Decimal64> prices_;
 #if defined(ATL_HAS_EIGEN)
-  std::map<SeriesKey, analytics::RollingWindow> series_;
+  std::map<SeriesKey, analytics::SeriesBuffer> series_;
 #endif
   std::vector<Instruction<BrokerTag>> queued_;
   Log log_;

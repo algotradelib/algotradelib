@@ -410,56 +410,56 @@ TEST_CASE("aligning a panel walks both indices and stops at their edges") {
   }
 }
 
-TEST_CASE("a rolling window keeps the last observations in one contiguous run") {
-  analytics::RollingWindow window(4, 1);
-  REQUIRE(window.capacity() == 4);
-  REQUIRE(window.fields() == 1);
-  REQUIRE(window.empty());
-  REQUIRE_FALSE(window.full());
+TEST_CASE("a series buffer keeps the last observations in one contiguous run") {
+  analytics::SeriesBuffer buffer(4, 1);
+  REQUIRE(buffer.capacity() == 4);
+  REQUIRE(buffer.fields() == 1);
+  REQUIRE(buffer.empty());
+  REQUIRE_FALSE(buffer.full());
 
   for (int value = 1; value <= 4; ++value) {
-    window.push(day_of(value), std::vector<math::Scalar>{double(value)});
+    buffer.push(day_of(value), std::vector<math::Scalar>{double(value)});
   }
-  REQUIRE(window.size() == 4);
-  REQUIRE(window.full());
+  REQUIRE(buffer.size() == 4);
+  REQUIRE(buffer.full());
 
-  const auto series = window.column(std::size_t{0});
+  const auto series = buffer.column(std::size_t{0});
   REQUIRE(series.size() == 4);
   REQUIRE(series(0) == 1.0);
   REQUIRE(series(3) == 4.0);
 
   // Oldest first, and one span with no stride, which is what a computation needs.
   REQUIRE(series.innerStride() == 1);
-  REQUIRE(window.instant(0) == day_of(1));
-  REQUIRE(window.newest_instant() == day_of(4));
+  REQUIRE(buffer.instant(0) == day_of(1));
+  REQUIRE(buffer.newest_instant() == day_of(4));
 
   // Past capacity the oldest is dropped rather than the newest refused.
-  window.push(day_of(5), std::vector<math::Scalar>{5.0});
-  REQUIRE(window.size() == 4);
-  REQUIRE(window.column(std::size_t{0})(0) == 2.0);
-  REQUIRE(window.column(std::size_t{0})(3) == 5.0);
-  REQUIRE(window.instant(0) == day_of(2));
+  buffer.push(day_of(5), std::vector<math::Scalar>{5.0});
+  REQUIRE(buffer.size() == 4);
+  REQUIRE(buffer.column(std::size_t{0})(0) == 2.0);
+  REQUIRE(buffer.column(std::size_t{0})(3) == 5.0);
+  REQUIRE(buffer.instant(0) == day_of(2));
 }
 
-TEST_CASE("a rolling window compacts at its amortized bound and never allocates for it") {
+TEST_CASE("a series buffer compacts at its amortized bound and never allocates for it") {
   constexpr std::size_t capacity = 8;
-  analytics::RollingWindow window(capacity, 2);
+  analytics::SeriesBuffer buffer(capacity, 2);
 
   // Storage holds twice the capacity, so a compaction can only happen once per capacity
   // pushes. Asserting the count is what makes the amortized bound a fact rather than a
   // claim in a comment.
   constexpr std::size_t pushes = 800;
   for (std::size_t step = 0; step < pushes; ++step) {
-    window.push(day_of(static_cast<int>(step)), std::vector<math::Scalar>{double(step), 0.0});
+    buffer.push(day_of(static_cast<int>(step)), std::vector<math::Scalar>{double(step), 0.0});
   }
 
-  REQUIRE(window.size() == capacity);
-  REQUIRE(window.compactions() <= pushes / capacity + 1);
-  REQUIRE(window.compactions() >= pushes / (capacity * 2));
+  REQUIRE(buffer.size() == capacity);
+  REQUIRE(buffer.compactions() <= pushes / capacity + 1);
+  REQUIRE(buffer.compactions() >= pushes / (capacity * 2));
 
-  // The contents survive every compaction: the window still holds exactly the last
+  // The contents survive every compaction: the buffer still holds exactly the last
   // `capacity` observations, oldest first.
-  const auto series = window.column(std::size_t{0});
+  const auto series = buffer.column(std::size_t{0});
   REQUIRE(series.size() == static_cast<math::Index>(capacity));
   for (std::size_t position = 0; position < capacity; ++position) {
     REQUIRE(series(static_cast<math::Index>(position)) == double(pushes - capacity + position));
@@ -468,73 +468,73 @@ TEST_CASE("a rolling window compacts at its amortized bound and never allocates 
 
   // And a view is still one contiguous run after all of that, which is the property the
   // compaction exists to preserve and a ring buffer would have lost.
-  REQUIRE(window.at(0, 0) == double(pushes - capacity));
-  REQUIRE(window.newest_instant() == day_of(static_cast<int>(pushes - 1)));
+  REQUIRE(buffer.at(0, 0) == double(pushes - capacity));
+  REQUIRE(buffer.newest_instant() == day_of(static_cast<int>(pushes - 1)));
 }
 
-TEST_CASE("a rolling window refuses an observation that would break its ordering") {
-  analytics::RollingWindow window(3, 1);
-  window.push(day_of(5), std::vector<math::Scalar>{1.0});
+TEST_CASE("a series buffer refuses an observation that would break its ordering") {
+  analytics::SeriesBuffer buffer(3, 1);
+  buffer.push(day_of(5), std::vector<math::Scalar>{1.0});
 
-  // Out of order, and repeated, both make a trailing computation over the window
+  // Out of order, and repeated, both make a trailing computation over the buffer
   // meaningless, so neither is accepted.
   REQUIRE_THROWS_AS(
-    window.push(day_of(4), std::vector<math::Scalar>{2.0}), std::invalid_argument
+    buffer.push(day_of(4), std::vector<math::Scalar>{2.0}), std::invalid_argument
   );
   REQUIRE_THROWS_AS(
-    window.push(day_of(5), std::vector<math::Scalar>{2.0}), std::invalid_argument
+    buffer.push(day_of(5), std::vector<math::Scalar>{2.0}), std::invalid_argument
   );
-  REQUIRE_NOTHROW(window.push(day_of(6), std::vector<math::Scalar>{2.0}));
+  REQUIRE_NOTHROW(buffer.push(day_of(6), std::vector<math::Scalar>{2.0}));
 
   // A row that does not carry every field is refused rather than padded.
   REQUIRE_THROWS_AS(
-    window.push(day_of(7), std::vector<math::Scalar>{1.0, 2.0}), std::invalid_argument
+    buffer.push(day_of(7), std::vector<math::Scalar>{1.0, 2.0}), std::invalid_argument
   );
 
-  REQUIRE_THROWS_AS(analytics::RollingWindow(0, 1), std::invalid_argument);
-  REQUIRE_THROWS_AS(analytics::RollingWindow(4, 0), std::invalid_argument);
+  REQUIRE_THROWS_AS(analytics::SeriesBuffer(0, 1), std::invalid_argument);
+  REQUIRE_THROWS_AS(analytics::SeriesBuffer(4, 0), std::invalid_argument);
 }
 
-TEST_CASE("a rolling window takes a bar the way a live loop receives one") {
-  analytics::RollingWindow window(2);
-  REQUIRE(window.fields() == analytics::bar_field_count);
+TEST_CASE("a series buffer takes a bar the way a live loop receives one") {
+  analytics::SeriesBuffer buffer(2);
+  REQUIRE(buffer.fields() == analytics::bar_field_count);
 
   auto first = day_bar(1, "70000");
   auto second = day_bar(2, "71000");
   // A trading day on which nothing traded has no open, and that stays unobserved here too.
   second.open_.reset();
 
-  window.push(first);
-  window.push(second);
+  buffer.push(first);
+  buffer.push(second);
 
-  REQUIRE(window.size() == 2);
-  REQUIRE(window.column(BarField::CLOSE)(0) == 70000.0);
-  REQUIRE(window.column(BarField::CLOSE)(1) == 71000.0);
-  REQUIRE(observed(window.column(BarField::OPEN)(0)));
-  REQUIRE_FALSE(observed(window.column(BarField::OPEN)(1)));
+  REQUIRE(buffer.size() == 2);
+  REQUIRE(buffer.column(BarField::CLOSE)(0) == 70000.0);
+  REQUIRE(buffer.column(BarField::CLOSE)(1) == 71000.0);
+  REQUIRE(observed(buffer.column(BarField::OPEN)(0)));
+  REQUIRE_FALSE(observed(buffer.column(BarField::OPEN)(1)));
 
   // A field neither bar reported is unobserved rather than zero.
-  REQUIRE_FALSE(observed(window.column(BarField::TRADED_VALUE)(0)));
+  REQUIRE_FALSE(observed(buffer.column(BarField::TRADED_VALUE)(0)));
 
-  window.clear();
-  REQUIRE(window.empty());
-  REQUIRE(window.capacity() == 2);
+  buffer.clear();
+  REQUIRE(buffer.empty());
+  REQUIRE(buffer.capacity() == 2);
 }
 
-TEST_CASE("a rolling window's storage is taken once and never grows") {
+TEST_CASE("a series buffer's storage is taken once and never grows") {
   // The claim is that a live loop does not allocate on the path that runs every tick.
   // Storage is one matrix taken at construction, so its base address never moves; the
   // only thing that moves is where the held run starts inside it, and that is bounded by
   // the capacity. If the buffer were regrowing, the observed addresses would wander by
   // arbitrary amounts instead of within that bound.
   constexpr std::size_t capacity = 16;
-  analytics::RollingWindow window(capacity, 1);
+  analytics::SeriesBuffer buffer(capacity, 1);
 
   const char* lowest = nullptr;
   const char* highest = nullptr;
   for (std::size_t step = 0; step < 5000; ++step) {
-    window.push(day_of(static_cast<int>(step)), std::vector<math::Scalar>{double(step)});
-    const auto* address = reinterpret_cast<const char*>(window.column(std::size_t{0}).data());
+    buffer.push(day_of(static_cast<int>(step)), std::vector<math::Scalar>{double(step)});
+    const auto* address = reinterpret_cast<const char*>(buffer.column(std::size_t{0}).data());
     if (!lowest || address < lowest) {
       lowest = address;
     }
@@ -551,9 +551,9 @@ TEST_CASE("a rolling window's storage is taken once and never grows") {
   const auto span = static_cast<std::size_t>(highest - lowest);
   REQUIRE(span <= capacity * sizeof(math::Scalar));
 
-  // And after five thousand pushes the window still holds exactly its capacity.
-  REQUIRE(window.size() == capacity);
-  REQUIRE(window.compactions() > 0);
+  // And after five thousand pushes the buffer still holds exactly its capacity.
+  REQUIRE(buffer.size() == capacity);
+  REQUIRE(buffer.compactions() > 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -809,28 +809,28 @@ TEST_CASE("an impossible window is refused rather than answered with nothing") {
   REQUIRE_THROWS_AS(analytics::ema(values, 0), std::invalid_argument);
 }
 
-TEST_CASE("an indicator reads a frame column and a rolling window the same way") {
+TEST_CASE("an indicator reads a frame column and a series buffer the same way") {
   // The point of one contiguous series per column: the same function serves a completed
-  // frame and a live window, so a backtest and a live loop cannot diverge here.
+  // frame and a live buffer, so a backtest and a live loop cannot diverge here.
   using namespace std::chrono_literals;
   const auto base = std::chrono::system_clock::time_point{} + 24h;
 
-  analytics::RollingWindow window(3);
+  analytics::SeriesBuffer buffer(3);
   const std::vector<Scalar> rows[] = {
     {0, 0, 0, 10.0, 0, 0},
     {0, 0, 0, 20.0, 0, 0},
     {0, 0, 0, 30.0, 0, 0},
   };
   for (std::size_t at = 0; at < 3; ++at) {
-    window.push(base + std::chrono::hours(24 * static_cast<int>(at)), rows[at]);
+    buffer.push(base + std::chrono::hours(24 * static_cast<int>(at)), rows[at]);
   }
 
-  const math::Vector from_window =
-    analytics::sma(window.column(analytics::BarField::CLOSE), 3);
-  REQUIRE(from_window[2] == Catch::Approx(20.0));
+  const math::Vector from_buffer =
+    analytics::sma(buffer.column(analytics::BarField::CLOSE), 3);
+  REQUIRE(from_buffer[2] == Catch::Approx(20.0));
 
   const math::Vector direct = analytics::sma(series({10.0, 20.0, 30.0}), 3);
-  REQUIRE(direct[2] == from_window[2]);
+  REQUIRE(direct[2] == from_buffer[2]);
 }
 
 // ---------------------------------------------------------------------------

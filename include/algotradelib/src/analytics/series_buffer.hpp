@@ -21,6 +21,11 @@ namespace analytics {
  * side, fed one observation at a time as bars arrive and asked for a trailing window.
  * A strategy reading a moving average on every bar reads it from here.
  *
+ * **A buffer, not a window.** It holds the trailing span an indicator reads and computes
+ * nothing; the trailing statistics are the functions in `rolling.hpp`. "Rolling window" is
+ * left to the `rolling_*` statistics there, and "rolling" and "expanding" windows to the
+ * training spans of a walk-forward evaluation.
+ *
  * **No allocation happens in steady state.** Storage for twice the capacity is taken once
  * at construction and never grown, so a live loop does not allocate on the path that runs
  * on every tick.
@@ -37,78 +42,78 @@ namespace analytics {
  * `capacity` rows. That is one row moved per push, amortized, and `compactions()` exposes
  * the count so the bound can be asserted rather than asserted *about*.
  *
- * **It expands, then it rolls.** Until `capacity` observations have arrived the window
+ * **It fills, then drops the oldest.** Until `capacity` observations have arrived the buffer
  * holds everything it has been given and `size()` grows; from then on each push drops the
  * oldest. That is the shape a trailing indicator needs, and it is also why `full()` exists:
  * an indicator must not report a value computed from fewer observations than its window,
- * and asking whether the window is full is how it knows.
+ * and asking whether the buffer is full is how it knows.
  *
- * It is deliberately *not* an unbounded expanding window. A statistic over all history —
+ * It deliberately never grows past its capacity. A statistic over all history —
  * a cumulative return, an all-time high, a maximum drawdown — does not need the history
  * stored to be computed, only an accumulator updated, so a growing buffer would spend
  * `O(n)` memory answering questions that need `O(1)`. Where the values themselves are
  * genuinely required, a `SeriesFrame` is the container that holds a whole series.
  *
- * **Not synchronized, and owned by one caller.** A window belongs to one strategy, which
+ * **Not synchronized, and owned by one caller.** A buffer belongs to one strategy, which
  * belongs to one runner, which runs on one strand — the ownership model every stateful
  * type in this library follows, from `AsyncHttpClient` to `RateLimitController`. Pushing
  * from one thread while reading from another is a data race, and a mutex here would not
  * fix the real problem: reading a trailing window and then acting on it is a *sequence*
  * that has to be atomic with respect to the next push, which no lock inside this class can
- * provide. Parallelism over *many* windows, each owned by one worker, is the arrangement
+ * provide. Parallelism over *many* buffers, each owned by one worker, is the arrangement
  * that works, and it needs nothing from this class.
  */
-class RollingWindow {
+class SeriesBuffer {
 public:
   /** Instant type observations are stamped with. */
   using Instant = TimeIndex::Instant;
 
   /**
-   * Constructs a window holding `capacity` observations of `fields` values each.
+   * Constructs a buffer holding `capacity` observations of `fields` values each.
    *
    * @throws std::invalid_argument if either is zero.
    */
-  RollingWindow(std::size_t capacity, std::size_t fields = bar_field_count)
+  SeriesBuffer(std::size_t capacity, std::size_t fields = bar_field_count)
   : capacity_(capacity), fields_(fields) {
     if (capacity == 0 || fields == 0) {
-      throw std::invalid_argument("a rolling window needs a capacity and at least one field");
+      throw std::invalid_argument("a series buffer needs a capacity and at least one field");
     }
     // Twice the capacity is what makes the amortized bound hold; see the class comment.
     values_ = math::unobserved(capacity * 2, fields);
     stamps_.resize(capacity * 2);
   }
 
-  /** Returns how many observations the window can hold. */
+  /** Returns how many observations the buffer can hold. */
   std::size_t capacity() const noexcept { return capacity_; }
 
   /** Returns how many values each observation carries. */
   std::size_t fields() const noexcept { return fields_; }
 
-  /** Returns how many observations the window currently holds. */
+  /** Returns how many observations the buffer currently holds. */
   std::size_t size() const noexcept { return count_; }
 
-  /** Returns whether the window holds no observations. */
+  /** Returns whether the buffer holds no observations. */
   bool empty() const noexcept { return count_ == 0; }
 
-  /** Returns whether the window holds as many observations as it can. */
+  /** Returns whether the buffer holds as many observations as it can. */
   bool full() const noexcept { return count_ == capacity_; }
 
   /** Returns how many times the buffer has been compacted. */
   std::size_t compactions() const noexcept { return compactions_; }
 
   /**
-   * Appends one observation, dropping the oldest when the window is already full.
+   * Appends one observation, dropping the oldest when the buffer is already full.
    *
    * @throws std::invalid_argument if `row` does not carry exactly `fields()` values, or if
-   * `when` is not later than the newest observation held — a window whose instants were
+   * `when` is not later than the newest observation held — a buffer whose instants were
    * not ascending would make every trailing computation over it meaningless.
    */
   void push(Instant when, math::SeriesView row) {
     if (static_cast<std::size_t>(row.size()) != fields_) {
-      throw std::invalid_argument("a rolling window observation must carry every field");
+      throw std::invalid_argument("a series buffer observation must carry every field");
     }
     if (count_ > 0 && !(newest_instant() < when)) {
-      throw std::invalid_argument("a rolling window observation must be later than the last");
+      throw std::invalid_argument("a series buffer observation must be later than the last");
     }
 
     if (count_ == capacity_) {
@@ -131,7 +136,7 @@ public:
   /** Appends one observation from a plain sequence of values. */
   void push(Instant when, const std::vector<Scalar>& row) {
     if (row.size() != fields_) {
-      throw std::invalid_argument("a rolling window observation must carry every field");
+      throw std::invalid_argument("a series buffer observation must carry every field");
     }
     const math::Vector values = math::Vector::Map(row.data(), static_cast<math::Index>(row.size()));
     push(when, values);
@@ -140,7 +145,7 @@ public:
   /** Appends one bar's fields, in the order `BarField` enumerates them. */
   void push(const Bar& bar) {
     if (fields_ != bar_field_count) {
-      throw std::invalid_argument("pushing a bar needs a window over every bar field");
+      throw std::invalid_argument("pushing a bar needs a buffer over every bar field");
     }
     math::Vector row = math::unobserved(bar_field_count);
     if (bar.open_) {
@@ -160,12 +165,12 @@ public:
   /**
    * Returns one field's trailing values, oldest first, as a contiguous reference.
    *
-   * References the window's own storage: nothing is copied to read a series, and the span
+   * References the buffer's own storage: nothing is copied to read a series, and the span
    * has no stride, which is what the compaction buys.
    */
   math::SeriesView column(std::size_t field) const {
     if (field >= fields_) {
-      throw std::out_of_range("rolling window field is past the end");
+      throw std::out_of_range("series buffer field is past the end");
     }
     return values_.col(static_cast<math::Index>(field))
       .segment(static_cast<math::Index>(begin_), static_cast<math::Index>(count_));
@@ -177,7 +182,7 @@ public:
   /** Returns one value, counting from the oldest observation held. */
   Scalar at(std::size_t position, std::size_t field) const {
     if (position >= count_ || field >= fields_) {
-      throw std::out_of_range("rolling window position is past the end");
+      throw std::out_of_range("series buffer position is past the end");
     }
     return values_(
       static_cast<math::Index>(begin_ + position), static_cast<math::Index>(field)
@@ -187,7 +192,7 @@ public:
   /** Returns the instant of one observation, counting from the oldest held. */
   Instant instant(std::size_t position) const {
     if (position >= count_) {
-      throw std::out_of_range("rolling window position is past the end");
+      throw std::out_of_range("series buffer position is past the end");
     }
     return stamps_[begin_ + position];
   }
@@ -195,7 +200,7 @@ public:
   /** Returns the instant of the newest observation. */
   Instant newest_instant() const {
     if (count_ == 0) {
-      throw std::out_of_range("an empty rolling window has no newest observation");
+      throw std::out_of_range("an empty series buffer has no newest observation");
     }
     return stamps_[begin_ + count_ - 1];
   }

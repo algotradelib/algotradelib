@@ -13,11 +13,11 @@ namespace analytics {
  * Statistics whose window is all of history, kept in constant space.
  *
  * These are the counterpart to `rolling.hpp`, and the division between them is the point.
- * A trailing statistic needs the last `n` values, so `RollingWindow` stores them. A
+ * A trailing statistic needs the last `n` values, so `SeriesBuffer` stores them. A
  * statistic over *all* history — a cumulative return, an all-time high, the worst drawdown
  * so far — does not need the history stored at all, only a few numbers updated, so storing
  * it would spend `O(n)` memory answering a question that needs `O(1)`. That is why this
- * library offers no unbounded expanding window: these are what it would have been for.
+ * library offers no unbounded buffer: these are what it would have been for.
  *
  * Each accumulator takes one observation at a time through `update`, which is exactly what a
  * live runner has to give it, and each reports the same number an evaluation pass over a
@@ -228,7 +228,7 @@ private:
  * every observation that fed it, so recomputing it over a trailing window does *not*
  * reproduce what a live loop would have produced — the window's oldest row becomes a fresh
  * seed each time it advances. A strategy that fits an EMA in a backtest over frames and then
- * trades it from a rolling window is trading a slightly different indicator, and the
+ * trades it from a `SeriesBuffer` is trading a slightly different indicator, and the
  * difference does not announce itself. Keeping the level in an accumulator removes the
  * question: the same recurrence runs in both places.
  *

@@ -290,31 +290,33 @@ that way it would also delete `macd`, `bollinger`, `atr`, `wma`, `sharpe`, `one_
 | `TimeIndex` | the instants rows correspond to | one `Instant` per row |
 | `SeriesFrame` | one instrument, every bar field | column-major, rows are time |
 | `Panel` | one field, many instruments, aligned | column-major, one column per instrument |
-| `RollingWindow` | the trailing `n` observations a live loop feeds | `2n` rows, compacted amortized |
+| `SeriesBuffer` | the trailing `n` observations a live loop feeds | `2n` rows, compacted amortized |
 
 Column-major with time on the rows is load-bearing rather than a default taken: one series is
 then contiguous, so `column()` hands out a `math::SeriesView` referencing the frame's own
 memory and an indicator never walks a strided view of its input. It is also why the same
-`sma` call serves a completed frame and a live window — both are one contiguous series, which
+`sma` call serves a completed frame and a live buffer — both are one contiguous series, which
 is what keeps a backtest and a live loop from computing different things.
 
-`RollingWindow` expands until it is full and rolls afterwards, in storage taken once: `2n` rows,
-compacted at an amortized one row moved per push, with `compactions()` exposing the bound. There is
-deliberately **no unbounded expanding window**, because the statistics that would want one — a
+`SeriesBuffer` fills until it holds `n` observations and from then on drops the oldest with each
+push, in storage taken once: `2n` rows, compacted at an amortized one row moved per push, with
+`compactions()` exposing the bound. It is a buffer and computes nothing: the trailing statistics are
+the functions in `rolling.hpp`. "Rolling window" keeps the meaning the `rolling_*` functions give it,
+and "rolling" and "expanding" windows the one they have in walk-forward evaluation. There is deliberately **no unbounded buffer**, because the statistics that would want one — a
 cumulative return, an all-time high, the worst drawdown so far — are answered in constant space by
 the running accumulators: `RunningSum`, `RunningMoments`, `RunningExtremes`, `RunningDrawdown` and
 `RunningEma`.
 
 `RunningEma` is the one worth a sentence of its own. An exponential average depends on all of its
 history, so recomputing one over a trailing window does not reproduce what a live loop would have
-produced. A strategy fitted over frames and then traded from a window would be trading a slightly
+produced. A strategy fitted over frames and then traded from a `SeriesBuffer` would be trading a slightly
 different indicator from the one it was fitted on, and the difference does not announce itself.
 
 ## What is single-owner, and where parallelism goes
 
-Every stateful type here — `SeriesFrame`, `Panel`, `RollingWindow`, every accumulator — is
+Every stateful type here — `SeriesFrame`, `Panel`, `SeriesBuffer`, every accumulator — is
 owned by one caller and is not synchronized, the model the rest of the library follows. A
-mutex inside `RollingWindow` would not help with the real problem anyway: reading a trailing
+mutex inside `SeriesBuffer` would not help with the real problem anyway: reading a trailing
 window and then acting on it is a *sequence* that has to be atomic with respect to the next
 push, and no lock inside the class can provide that.
 
