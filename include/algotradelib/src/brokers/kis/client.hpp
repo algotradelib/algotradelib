@@ -1134,6 +1134,16 @@ private:
    *
    * Takes the accumulation by reference rather than an operation, so the
    * normalization is a pure function of a response and can be tested as one.
+   *
+   * **A row not strictly older than the oldest already accumulated is dropped.** Pages arrive newest
+   * first and each is bounded just before the previous page's oldest bar, but KIS's minute bound does not
+   * always exclude that bar: a read of 005930 before 2026-09-01 13:22 KST (주식일별분봉조회, 120 a page)
+   * returned the bar at each page join twice, identical, at 11:23 and 09:24, while reads starting at other
+   * minutes repeated nothing (`labs/FINDINGS.md` F43). A series with a repeated timestamp is not a series:
+   * the runner's bar cache refuses a bar that is not later than the last (`SeriesBuffer::push` throws), so
+   * a backtest fed it stopped on the first repeat. Dropping the repeat is safe whatever the bound's rule
+   * is, and a page that brings nothing older counts as empty, which ends the request rather than asking
+   * for the same page again.
    */
   static std::optional<BrokerError> parse_bars_page(
     Result<network::HttpResponse> result,
@@ -1169,7 +1179,11 @@ private:
         if (broker_detail::json_string(row, "stck_bsop_date").empty()) {
           continue;
         }
-        into.push_back(parse_bar(row, query, minutes));
+        auto bar = parse_bar(row, query, minutes);
+        if (!into.empty() && !(bar.timestamp_ < into.back().timestamp_)) {
+          continue;
+        }
+        into.push_back(std::move(bar));
       }
       return std::nullopt;
     } catch (const std::exception& exception) {
