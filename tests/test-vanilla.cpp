@@ -2,9 +2,13 @@
 #include <algotradelib/runner>
 #include <algotradelib/vanilla>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
+#include <cmath>
+#include <initializer_list>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -226,6 +230,229 @@ TEST_CASE("an exponential crossover states and honours its own warm-up") {
   arrange(dry);
 
   REQUIRE(first_order_bar(dry, 20) == crossing.warmup_bars() - 1);
+}
+
+namespace {
+
+/** A column from plain values, for the line helpers. */
+math::Vector column_of(std::initializer_list<math::Scalar> values) {
+  math::Vector column(static_cast<math::Index>(values.size()));
+  math::Index row = 0;
+  for (const auto value : values) {
+    column[row++] = value;
+  }
+  return column;
+}
+
+/** `count` closes on a path that rises, falls and rises again, so no two lines coincide. */
+math::Vector wandering(std::size_t count) {
+  math::Vector column(static_cast<math::Index>(count));
+  for (math::Index row = 0; row < column.size(); ++row) {
+    column[row] = 60000.0 + 900.0 * std::sin(0.4 * static_cast<double>(row)) + 35.0 * row;
+  }
+  return column;
+}
+
+} // namespace
+
+TEST_CASE("the adjusted average is pandas' adjust=True") {
+  // pandas 3.0.6: Series([100, 160, 150, NaN, 155]).ewm(alpha=0.5, adjust=True, ignore_na=True).mean()
+  // is 100, 140, 145.71428571428572, (145.71..., carried), 150.66666666666666.
+  const math::Vector values = column_of({100.0, 160.0, 150.0, math::missing(), 155.0});
+  const math::Vector levels = vanilla::adjusted_ema(values, 0.5);
+
+  REQUIRE(levels[0] == 100.0);
+  REQUIRE(levels[1] == Catch::Approx(140.0).epsilon(1e-14));
+  REQUIRE(levels[2] == Catch::Approx(145.71428571428572).epsilon(1e-14));
+  // pandas reports the carried level on the missing row; the library's convention leaves it unobserved.
+  REQUIRE_FALSE(math::observed(levels[3]));
+  REQUIRE(levels[4] == Catch::Approx(150.66666666666666).epsilon(1e-14));
+}
+
+TEST_CASE("the adjusted average of one observation is it, and alpha 1 keeps each value exactly") {
+  REQUIRE(vanilla::adjusted_ema(column_of({123.0}), 0.2)[0] == 123.0);
+
+  const math::Vector values = column_of({0.1, 0.7, 0.30000000000000004});
+  const math::Vector unsmoothed = vanilla::adjusted_ema(values, 1.0);
+  for (math::Index row = 0; row < values.size(); ++row) {
+    REQUIRE(unsmoothed[row] == values[row]);
+  }
+}
+
+TEST_CASE("the adjusted average stays accurate for a smoothing factor too small to normalize") {
+  // Converting a plain-seeded average divides by `1 - (1 - alpha)^k`, which is 0 once `1 - alpha`
+  // rounds to 1, and is only a few ulps before that: 164 for 150, then NaN. The running weighted mean
+  // becomes the plain mean instead.
+  for (const math::Scalar alpha : {1e-16, 1e-20}) {
+    const math::Vector levels = vanilla::adjusted_ema(column_of({100.0, 200.0}), alpha);
+    REQUIRE(levels[0] == 100.0);
+    REQUIRE(levels[1] == Catch::Approx(150.0).epsilon(1e-12));
+    REQUIRE(vanilla::adjusted_ema(column_of({100.0}), alpha)[0] == 100.0);
+  }
+  REQUIRE_THROWS_AS(vanilla::adjusted_ema(column_of({1.0}), 0.0), std::invalid_argument);
+  REQUIRE_THROWS_AS(vanilla::adjusted_ema(column_of({1.0}), 0.5, 0), std::invalid_argument);
+}
+
+TEST_CASE("a listing day's spike weighs an ordinary bar's weight in a short exponential line") {
+  // The new-listing case: no history before the first print, and that print far from the rest. A
+  // plain seed keeps 0.8^9 = 13.4% of the line on it after nine more bars; compensated, about 3%.
+  const math::Vector closes = column_of({200.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0});
+  const math::Scalar alpha = analytics::alpha_from_span(9);
+  REQUIRE(alpha == 0.2);
+  const math::Index last = closes.size() - 1;
+
+  REQUIRE(analytics::ema(closes, alpha)[last] == Catch::Approx(113.4217728).epsilon(1e-9));
+  REQUIRE(vanilla::exponential_line(closes, 9)[last] == Catch::Approx(103.0).epsilon(1e-2));
+}
+
+TEST_CASE("an exponential line is the plain average from three spans of rows, compensated below") {
+  const std::size_t span = 8;
+  const math::Scalar alpha = analytics::alpha_from_span(span);
+
+  // Three spans exactly: the plain average over every row, bit for bit.
+  const math::Vector enough = wandering(3 * span);
+  const math::Vector plain = analytics::ema(enough, alpha, span);
+  const math::Vector line = vanilla::exponential_line(enough, span);
+  for (math::Index row = 0; row < enough.size(); ++row) {
+    REQUIRE(math::observed(line[row]) == math::observed(plain[row]));
+    if (math::observed(plain[row])) {
+      REQUIRE(line[row] == plain[row]);
+    }
+  }
+
+  // One row fewer: compensated, and visibly not the plain average.
+  const math::Vector short_of = wandering(3 * span - 1);
+  const math::Vector compensated = vanilla::adjusted_ema(short_of, alpha, span);
+  const math::Vector short_line = vanilla::exponential_line(short_of, span);
+  const math::Index last = short_of.size() - 1;
+  REQUIRE(short_line[last] == compensated[last]);
+  REQUIRE(short_line[last] != analytics::ema(short_of, alpha, span)[last]);
+}
+
+TEST_CASE("an exponential line reads the whole series, not the last slow window") {
+  // The defect this replaced: recomputed over the last `slow + 1` closes, the slow line is reseeded
+  // every bar and differs from the average over the whole history by `(1 - alpha)^slow` of a raw close.
+  const std::size_t slow = 8;
+  const math::Vector closes = wandering(60);
+  const math::Index last = closes.size() - 1;
+  const math::Vector whole = vanilla::exponential_line(closes, slow);
+  const math::Vector sliced = analytics::ema(closes.tail(slow + 1), analytics::alpha_from_span(slow), slow);
+
+  REQUIRE(whole[last] == analytics::ema(closes, analytics::alpha_from_span(slow), slow)[last]);
+  REQUIRE(whole[last] != Catch::Approx(sliced[sliced.size() - 1]).epsilon(1e-6));
+}
+
+namespace {
+
+/** pandas' `ewm(alpha, adjust=True, ignore_na=True)` at the last row, computed directly. */
+math::Scalar adjusted_last(const math::Vector& values, math::Scalar alpha) {
+  math::Scalar weighted{0};
+  math::Scalar total{0};
+  math::Scalar weight{1};
+  for (math::Index row = values.size() - 1; row >= 0; --row) {
+    if (!math::observed(values[row])) {
+      continue;
+    }
+    weighted += weight * values[row];
+    total += weight;
+    weight *= 1.0 - alpha;
+  }
+  return weighted / total;
+}
+
+} // namespace
+
+TEST_CASE("the adjusted average holds across leading and inner gaps and a warm-up") {
+  const math::Scalar nan = math::missing();
+  const math::Vector values = column_of({nan, nan, 100.0, 104.0, nan, 98.0, 101.0, nan, 103.0});
+  const math::Scalar alpha = 0.3;
+  const math::Vector levels = vanilla::adjusted_ema(values, alpha, 3);
+
+  // Unobserved inputs, and rows the warm-up suppressed, stay unobserved.
+  for (const math::Index row : {0, 1, 2, 3, 4, 7}) {
+    REQUIRE_FALSE(math::observed(levels[row]));
+  }
+  // Every other row is the adjusted average of the observations up to it -- counting the two the
+  // warm-up suppressed.
+  for (const math::Index row : {5, 6, 8}) {
+    REQUIRE(levels[row] == Catch::Approx(adjusted_last(values.head(row + 1), alpha)).epsilon(1e-13));
+  }
+
+  // Nothing to compensate: an empty column and an all-missing one come back as they were.
+  const math::Vector empty(0);
+  REQUIRE(vanilla::adjusted_ema(empty, alpha).size() == 0);
+  REQUIRE(vanilla::exponential_line(empty, 3).size() == 0);
+  const math::Vector absent = column_of({nan, nan, nan});
+  const math::Vector line = vanilla::exponential_line(absent, 2);
+  for (math::Index row = 0; row < absent.size(); ++row) {
+    REQUIRE_FALSE(math::observed(line[row]));
+  }
+}
+
+TEST_CASE("a flat market leaves both exponential lines exactly flat, either side of each switch") {
+  // `(S - d * y0) / (1 - d)` gives 99.999999999999986 for fifty-one closes of 100, and a crossover
+  // comparing with `<` would buy a flat market. Every row count around the warm-up and the two
+  // three-span boundaries (60 for span 20, 150 for span 50).
+  for (const std::size_t rows : {51u, 59u, 60u, 61u, 149u, 150u, 151u}) {
+    const math::Vector closes = math::Vector::Constant(static_cast<math::Index>(rows), 100.0);
+    const math::Index last = closes.size() - 1;
+    REQUIRE(vanilla::exponential_line(closes, 20)[last] == 100.0);
+    REQUIRE(vanilla::exponential_line(closes, 50)[last] == 100.0);
+  }
+}
+
+TEST_CASE("the three-span switch counts observed closes, not rows") {
+  // 150 rows but 51 closes: the plain seed would still weigh about 13%, so the line is compensated.
+  math::Vector closes = math::Vector::Constant(150, 120.0);
+  closes[0] = 100.0;
+  for (math::Index row = 1; row < 100; ++row) {
+    closes[row] = math::missing();
+  }
+  const math::Index last = closes.size() - 1;
+  REQUIRE(vanilla::exponential_line(closes, 50)[last] == Catch::Approx(119.87802735708622).epsilon(1e-12));
+  REQUIRE(analytics::ema(closes, analytics::alpha_from_span(50), 50)[last] ==
+          Catch::Approx(117.2940162004476).epsilon(1e-12));
+}
+
+TEST_CASE("one line switching method can change the signal on an unchanged close") {
+  // Documented, not a defect: compensation leans away from the first close, so when the fast line
+  // turns plain at three spans and the slow one does not, the two can swap on a close equal to the
+  // last. Spans 3/5: long at eight closes, flat at nine.
+  const math::Vector eight = column_of({95.0, 100.0, 105.0, 100.0, 100.0, 95.0, 105.0, 100.0});
+  const math::Vector nine = column_of({95.0, 100.0, 105.0, 100.0, 100.0, 95.0, 105.0, 100.0, 100.0});
+  REQUIRE(vanilla::exponential_line(eight, 5)[7] < vanilla::exponential_line(eight, 3)[7]);
+  REQUIRE_FALSE(vanilla::exponential_line(nine, 5)[8] < vanilla::exponential_line(nine, 3)[8]);
+}
+
+TEST_CASE("a simple crossover averages the slow window's slice, whose sums the result depends on") {
+  // Eigen reduces a window in an order that depends on where it starts in the masked copy, so the
+  // same window over a shorter slice can differ in the last bit: here the fast mean over `tail(4)`
+  // exceeds the slow one, over `tail(5)` it equals it. The strategy reads `tail(slow + 1)`, as it
+  // always has, and stays flat.
+  vanilla::MovingAverageCrossover::Params params;
+  params.instrument_ = samsung();
+  params.fast_ = 3;
+  params.slow_ = 4;
+  params.quantity_ = Decimal64::parse("10");
+  vanilla::SmaCrossover crossing(params);
+  runner::DryRunner<vanilla::SmaCrossover> dry(crossing);
+  arrange(dry);
+
+  const char* closes[] = {"99.29", "99.89", "99.12", "100.58", "99.97"};
+  runner::DryRunner<vanilla::SmaCrossover>::Report last;
+  for (std::size_t at = 0; at < 5; ++at) {
+    last = dry.feed(bar(at, closes[at]));
+  }
+
+  // The fixture still shows the hazard with these closes as the cache holds them.
+  const auto cached = dry.context().bars(samsung())->column(analytics::BarField::CLOSE);
+  const math::Scalar slow = analytics::sma(cached.tail(5), 4)[4];
+  const math::Scalar fast_slow_slice = analytics::sma(cached.tail(5), 3)[4];
+  const math::Scalar fast_own_slice = analytics::sma(cached.tail(4), 3)[3];
+  REQUIRE(fast_slow_slice == slow);
+  REQUIRE(slow < fast_own_slice);
+
+  REQUIRE(last.would_place_.empty());
 }
 
 TEST_CASE("a crossover whose fast window is not faster refuses to act") {
