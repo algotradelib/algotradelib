@@ -5,6 +5,7 @@
 #include <algotradelib/network>
 
 #include <boost/asio/associated_executor.hpp>
+#include <boost/asio/bind_executor.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/system_executor.hpp>
 
@@ -54,7 +55,13 @@ inline BrokerError refusal() {
 /// \cond ATL_DATA_ONLY_DETAIL
 namespace detail {
 
-/** Whether work can be posted to `Executor`: false for one that only runs work inline. */
+/**
+ * Whether work can be posted to `Executor`.
+ *
+ * False for an executor that only runs work inline, and also for a type-erased completion executor
+ * (`any_completion_executor`) whose erased properties do not include `blocking.never`, even when it wraps
+ * an `io_context` or a strand. So false says "not a posting target", never "no execution context".
+ */
 template <typename Executor, typename = void>
 struct postable : std::false_type {};
 
@@ -67,17 +74,20 @@ struct postable<
 /// \endcond
 
 /**
- * Completes an asynchronous call with `refusal()`, posted to the handler's associated executor.
+ * Completes an asynchronous call with `refusal()`, posted, through the handler's associated executor.
  *
- * Posted, not invoked inline, so the refusal never completes before the initiating call returns -- the
- * guarantee `BrokerSession` gives for its own pre-flight refusals. The handler is moved once and called
- * once, so a move-only one works.
+ * Posted, never invoked inside the initiating call -- not inline, not re-entrantly -- as `BrokerSession`
+ * does for its own pre-flight refusals. (Posting does not order the completion after the initiating call
+ * returns: another thread of the executor may run it first.) The handler is moved once and called once,
+ * so a move-only one works.
  *
- * **Where it runs when the handler names no executor that takes posted work.** `BrokerSession` binds the
- * handler it gives a thunk to `get_associated_executor(handler)`, and for a plain callback that is the
- * library's default: `system_executor` up to Boost 1.91, `inline_executor` from 1.92, which runs work only
- * inline and cannot be posted to. Such a refusal is posted to the system executor, the same fallback
- * `BrokerSession::complete_error` uses for its own refusals.
+ * **When the associated executor takes no posted work.** `BrokerSession` binds the handler it gives a
+ * thunk to `get_associated_executor(handler)`. For a plain callback that is Asio's default candidate:
+ * `system_executor` before Asio 1.37 (Boost 1.90), `inline_executor` from it, which cannot be posted to. A
+ * type-erased completion executor wrapping a strand cannot be posted to either, and there the strand still
+ * matters. So the system executor is only the trampoline: what is posted to it is the completion **bound
+ * to the associated executor**, and Asio dispatches it through that executor -- inline for the inline
+ * default, onto the strand for a strand.
  */
 template <typename Out, typename Handler>
 void post_refusal(Handler&& handler) {
@@ -88,7 +98,7 @@ void post_refusal(Handler&& handler) {
   if constexpr (detail::postable<decltype(executor)>::value) {
     net::post(executor, std::move(complete));
   } else {
-    net::post(net::system_executor(), std::move(complete));
+    net::post(net::system_executor(), net::bind_executor(executor, std::move(complete)));
   }
 }
 
@@ -134,13 +144,18 @@ void post_refusal(Handler&& handler) {
  * - **As a backtest source, or as the `MarketData` of a `live::SessionSource`** beside a broker's trading
  *   session, a data-only session is complete: those read only `bars`, `quote` and the capabilities the
  *   vendor declares.
- * - **Bound as the trading session** it compiles, and trades nothing: every order refuses locally, the
- *   startup listing (`SessionSource::read_order_list`) fails so the gate stays held, and holdings polls
- *   fail until the loop's failure budget gives up. That is the intended answer, not something to work
- *   around.
+ * - **Bound as the trading session** it compiles, and trades nothing: every order refuses locally and the
+ *   startup listing (`SessionSource::read_order_list`) fails, so the order-list gate stays held. Scheduled
+ *   holdings polls fail and exhaust the loop's failure budget; without them nothing ends the run, and a
+ *   bounded run can finish `CLEAN` with the gate still held (the report's `order_list_read_` says so).
+ *   That is the intended answer, not something to work around.
  * - `live_program::trade` and `observe` in `examples/live_program.hpp` read reference data from the
  *   market-data session, so they need a vendor that serves it (`has_reference_data`); `SessionSource` does
  *   not.
+ *
+ * **A member declared in the specialization hides every base member of that name**, overloads included:
+ * declaring a blocking `holdings` hides the inherited asynchronous one too. Re-expose what is still wanted
+ * with `using DataOnlyTraits<Tag>::holdings;`. A capability constant declared there hides the base's `false`.
  *
  * Do not use it as a base for a trading adapter with members still to write: a broker that trades must
  * answer every one of these itself.

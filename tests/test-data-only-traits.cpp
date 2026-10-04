@@ -2,7 +2,10 @@
 #include <algotradelib/live>
 #include <algotradelib/runner>
 
+#include <boost/asio/any_completion_executor.hpp>
+#include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/strand.hpp>
 #include <boost/asio/use_future.hpp>
 
 #include <catch2/catch_test_macros.hpp>
@@ -401,8 +404,8 @@ TEST_CASE("a data-only session serves a source whose trading session is another 
 
 TEST_CASE("a refusal to a callback naming no executor still completes once", "[data-only]") {
   // `BrokerSession` binds the sink it gives a thunk to the callback's associated executor: the system
-  // executor before Boost 1.92 and the inline executor from it, which cannot take posted work. Either way
-  // the refusal completes, once, off the initiating call.
+  // executor before Asio 1.37 (Boost 1.90) and the inline executor from it, which cannot take posted work.
+  // Either way the refusal completes, once, and not inside the initiating call.
   net::io_context io;
   BrokerSession<vendor::AsyncClient> session(
     std::make_shared<vendor::AsyncClient>(io.get_executor()), data_only::NoAccount{}
@@ -418,4 +421,81 @@ TEST_CASE("a refusal to a callback naming no executor still completes once", "[d
   REQUIRE(future.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
   check_refused_locally(future.get());
   CHECK(calls->load() == 1);
+}
+
+TEST_CASE("a refusal through an erased strand executor completes on that strand", "[data-only]") {
+  // An `any_completion_executor` cannot be posted to even when it wraps a strand, so the refusal takes the
+  // fallback path; the strand must still be where it completes, or a callback races state the caller
+  // confined to it.
+  net::io_context io;
+  auto guard = net::make_work_guard(io);
+  auto strand = net::make_strand(io);
+  const net::any_completion_executor erased(strand);
+  vendor::AsyncClient client(io.get_executor());
+  data_only::NoAccount account;
+  BrokerSession<vendor::AsyncClient> session(
+    std::make_shared<vendor::AsyncClient>(io.get_executor()), data_only::NoAccount{}
+  );
+  int completions = 0;
+  bool on_strand = true;
+  const auto record = [&](auto result) {
+    ++completions;
+    on_strand = on_strand && strand.running_in_this_thread();
+    CHECK_FALSE(result);
+  };
+  BrokerTraits<vendor::AsyncClient>::holdings(client, account, net::bind_executor(erased, record));
+  session.async_holdings(net::bind_executor(erased, record));
+  auto moved = std::make_shared<std::optional<BrokerError>>();
+  BrokerTraits<vendor::AsyncClient>::holdings(
+    client, account, net::bind_executor(erased, MoveOnlyRecorder(moved))
+  );
+  // Only this thread runs the io_context, so nothing bound to the strand can have run yet.
+  CHECK(completions == 0);
+  CHECK_FALSE(moved->has_value());
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while ((completions < 2 || !moved->has_value()) && std::chrono::steady_clock::now() < deadline) {
+    io.run_one_for(std::chrono::milliseconds(100));
+  }
+  CHECK(completions == 2);
+  CHECK(on_strand);
+  REQUIRE(moved->has_value());
+  check_refused_locally(**moved);
+}
+
+TEST_CASE("a polling loop over a data-only trading session stays at the order-list gate", "[data-only]") {
+  using Session = BlockingSession<vendor::BlockingClient>;
+  Session session(std::make_shared<vendor::BlockingClient>(), data_only::NoAccount{});
+  auto observing = live::bind_observer(session, CountsBars{});
+  live::SessionSource<Session, runner::MemoryJournal> source(session, {kInstrument});
+  source.set_bar_query(BarInterval::ONE_DAY, 10);
+  runner::StopSource stop;
+
+  SECTION("bars only: the run ends on its bound, the gate still held") {
+    runner::PollSchedule schedule;
+    schedule.bars_ = std::chrono::seconds(1);
+    runner::PollingLoop<decltype(observing), decltype(source), runner::ManualClock> loop(
+      observing, source, schedule, runner::ManualClock(std::chrono::system_clock::now())
+    );
+    loop.allow_unbounded_portfolio_age();
+    const auto report = loop.run(stop, 6);
+    CHECK_FALSE(report.order_list_read_);
+    REQUIRE(report.final_gate_.has_value());
+    CHECK(*report.final_gate_ == strategy::HaltReason::ORDER_LIST_UNREAD);
+    CHECK_FALSE(report.abandoned_);
+  }
+
+  SECTION("holdings scheduled: their failures exhaust the budget") {
+    runner::PollSchedule schedule;
+    schedule.bars_ = std::chrono::seconds(1);
+    schedule.holdings_ = std::chrono::seconds(1);
+    runner::PollingLoop<decltype(observing), decltype(source), runner::ManualClock> loop(
+      observing, source, schedule, runner::ManualClock(std::chrono::system_clock::now())
+    );
+    loop.allow_unbounded_portfolio_age();
+    const auto report = loop.run(stop, 20);
+    CHECK_FALSE(report.order_list_read_);
+    CHECK(report.abandoned_);
+    REQUIRE(report.abandoned_kind_.has_value());
+    CHECK(*report.abandoned_kind_ == runner::PollKind::HOLDINGS);
+  }
 }

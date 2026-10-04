@@ -164,9 +164,14 @@ A vendor that serves more (a calendar, reference data) declares that capability
 `true` in its own specialization and adds the thunk; the conformance assertions
 check it as they check any adapter.
 
+A member the specialization declares hides every base member of that name,
+overloads included; re-expose one with `using DataOnlyTraits<Tag>::holdings;`.
+
 What a data-only session is not: bound as the *trading* session it compiles, and
-trades nothing. Every order refuses locally, the startup listing fails so the
-order-list gate stays held, and holdings polls fail until the loop gives up.
+trades nothing. Every order refuses locally and the startup listing fails, so the
+order-list gate stays held. Scheduled holdings polls fail and exhaust the loop's
+failure budget; without them the run does not end on its own, and a bounded run
+can finish `CLEAN` with the gate still held (`order_list_read_` in its report).
 `live_program::trade` and `observe` in `examples/live_program.hpp` read reference
 data from the market-data session, so they need a vendor that declares
 `has_reference_data`.
