@@ -4339,6 +4339,49 @@ TEST_CASE(
   }
 }
 
+TEST_CASE("a KIS minute page repeating the previous page's oldest bar adds it once", "[broker][kis][bars]") {
+  // Observed 2026-10-04 (labs F43): a read before 2026-09-01 13:22 KST returned the bar at each page join
+  // twice, identical. The runner's bar cache throws on a repeated timestamp, so the series must not carry one.
+  BarQuery query;
+  query.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+  query.interval_ = BarInterval::ONE_MINUTE;
+  const auto row = [](const char* time, const char* close) {
+    return std::string(R"({"stck_bsop_date":"20260901","stck_cntg_hour":")") + time +
+      R"(","stck_prpr":")" + close + R"(","stck_oprc":")" + close + R"(","stck_hgpr":")" + close +
+      R"(","stck_lwpr":")" + close + R"(","cntg_vol":"100"})";
+  };
+  const auto page = [&](std::initializer_list<std::string> rows) {
+    std::string body = R"({"rt_cd":"0","output2":[)";
+    bool first = true;
+    for (const auto& r : rows) {
+      body += (first ? "" : ",") + r;
+      first = false;
+    }
+    return json_response(body + "]}");
+  };
+  std::vector<Bar> descending;
+  REQUIRE_FALSE(kis::KisClientTestAccess::parse_bars_page(
+    page({row("112500", "254500"), row("112400", "254400"), row("112300", "254300")}), query, true, descending
+  ));
+  REQUIRE(descending.size() == 3);
+
+  // The next page starts with the bar the last one ended on.
+  REQUIRE_FALSE(kis::KisClientTestAccess::parse_bars_page(
+    page({row("112300", "254300"), row("112200", "254200"), row("112100", "254100")}), query, true, descending
+  ));
+  REQUIRE(descending.size() == 5);
+  BarSeries series;
+  series.bars_.assign(descending.rbegin(), descending.rend());
+  CHECK(series.ascending());
+  CHECK(series.bars_[2].close_ == Decimal64::parse("254300"));
+
+  // A page with nothing older adds nothing, which the request reads as an empty page and ends on.
+  REQUIRE_FALSE(kis::KisClientTestAccess::parse_bars_page(
+    page({row("112200", "254200"), row("112100", "254100")}), query, true, descending
+  ));
+  CHECK(descending.size() == 5);
+}
+
 TEST_CASE(
   "a KIS period page spans enough calendar days to hold a page of bars",
   "[broker][kis][bars]"
