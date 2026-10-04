@@ -162,7 +162,7 @@ decorating them:
 
 | Function | Convention, and the other one |
 | --- | --- |
-| `ema` | `alpha = 2 / (span + 1)`, seeded on the first observed value |
+| `ema`, `ema_step` | take the smoothing factor `alpha`; `alpha_from_span(n)` is the span convention `2 / (n + 1)`; seeded on the first observed value; on observed rows, `pandas` `ewm(alpha=..., adjust=False, ignore_na=True)`, which also fills a missing row with the carried level |
 | `rsi`, `atr` | Wilder's `1 / n` with Wilder's seed, not `2 / (n + 1)` |
 | `rolling_stdev`, `rolling_cov` | sample divisor `count - 1`, not the population `count` |
 | `sortino` | shortfalls divided by **all** observations, not by the losing ones |
@@ -190,8 +190,6 @@ where they break:
   of 2 where the answer is 1 — wrong by 41% with no diagnostic — because the two terms agree
   to more digits than a `double` has. It can even come out negative and become a `NaN` at the
   square root, with nothing to say arithmetic rather than data produced it.
-- **Running variance.** `RunningMoments` uses Welford's method, because an accumulator cannot
-  take the second pass. It never forms a sum of squares at all.
 - **Masking is paid for once per series, not once per window.** Every trailing function splits its
   input through `math::observed_parts` into values-with-absences-zeroed plus a 0/1 presence mask.
   A window's sum is then `values_.segment(...).sum()` and its divisor `present_.segment(...).sum()`
@@ -223,10 +221,6 @@ where they break:
   `Eigen::Matrix` than this library's own translation units — an ODR violation with no diagnostic.
   Appropriate for an application that owns its whole build; not for a header-only library other
   people include.
-
-- **Running sums.** `RunningSum` uses Neumaier compensation. A live total grows far larger
-  than the returns being added to it, and a naive `total += value` loses roughly a digit per
-  factor of ten between them.
 
 And two places where the honest answer is a flag rather than a number:
 
@@ -280,7 +274,7 @@ what it needs — see `plan/todo/covariance-estimation.md` and `plan/todo/factor
 
 Note that this is not the same rule as "remove anything the next branch does not use". Applied
 that way it would also delete `macd`, `bollinger`, `atr`, `wma`, `sharpe`, `one_way_turnover`,
-`max_drawdown`, and every accumulator, since the first set of vanilla strategies needs only `sma`,
+and `max_drawdown`, since the first set of vanilla strategies needs only `sma`,
 `ema`, `rolling_min`/`rolling_max`, `zscore`, `rsi`, `rolling_stdev`, and `Panel`.
 
 ## Where the numbers live
@@ -302,19 +296,22 @@ is what keeps a backtest and a live loop from computing different things.
 push, in storage taken once: `2n` rows, compacted at an amortized one row moved per push, with
 `compactions()` exposing the bound. It is a buffer and computes nothing: the trailing statistics are
 the functions in `rolling.hpp`. "Rolling window" keeps the meaning the `rolling_*` functions give it,
-and "rolling" and "expanding" windows the one they have in walk-forward evaluation. There is deliberately **no unbounded buffer**, because the statistics that would want one — a
-cumulative return, an all-time high, the worst drawdown so far — are answered in constant space by
-the running accumulators: `RunningSum`, `RunningMoments`, `RunningExtremes`, `RunningDrawdown` and
-`RunningEma`.
+and "rolling" and "expanding" windows the one they have in walk-forward evaluation. There is
+deliberately **no unbounded buffer**: the statistics that would want one — a cumulative return, an
+all-time high, the worst drawdown so far — need a running value the strategy keeps, such as a peak or a
+sum, not the history.
 
-`RunningEma` is the one worth a sentence of its own. An exponential average depends on all of its
-history, so recomputing one over a trailing window does not reproduce what a live loop would have
-produced. A strategy fitted over frames and then traded from a `SeriesBuffer` would be trading a slightly
-different indicator from the one it was fitted on, and the difference does not announce itself.
+The exponential average is the one worth a sentence of its own. It depends on all of its history, so
+recomputing one over a trailing `SeriesBuffer` reseeds it every bar and does not reproduce what a live
+loop would have produced; a strategy fitted over frames and traded that way would be trading a slightly
+different indicator, and the difference does not announce itself. A live strategy keeps the level
+instead: `level = ema_step(level, close, alpha)` once per bar makes the same update `ema` makes over a
+series, bit for bit unless the arithmetic itself produces a `NaN` (an infinity, an overflow), after
+which `ema` stays unobserved and a kept level reseeds.
 
 ## What is single-owner, and where parallelism goes
 
-Every stateful type here — `SeriesFrame`, `Panel`, `SeriesBuffer`, every accumulator — is
+Every stateful type here — `SeriesFrame`, `Panel`, `SeriesBuffer` — is
 owned by one caller and is not synchronized, the model the rest of the library follows. A
 mutex inside `SeriesBuffer` would not help with the real problem anyway: reading a trailing
 window and then acting on it is a *sequence* that has to be atomic with respect to the next

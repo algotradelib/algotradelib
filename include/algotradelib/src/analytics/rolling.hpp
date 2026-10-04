@@ -332,35 +332,92 @@ inline math::Vector wma(math::SeriesView values, std::size_t window) {
 }
 
 /**
- * Returns the exponentially weighted moving average with a decay set by `span`.
+ * Returns the smoothing factor `2 / (span + 1)` of a `span`-period exponential average.
  *
- * The smoothing factor is `alpha = 2 / (span + 1)` — the *span* convention, the one every
- * charting package and `pandas.ewm(span=...)` use, so `ema(closes, 12)` here matches a 12-period
- * EMA drawn elsewhere. Wilder's smoothing is `span = 2n - 1`; `rsi` and `atr` apply it internally
- * rather than making a caller remember that.
+ * The *span* convention, the one charting packages and `pandas.ewm(span=...)` quote: it gives the
+ * exponential average the same average lag as a `span`-period simple one, `(1 - alpha) / alpha =
+ * (span - 1) / 2`. So `ema(closes, alpha_from_span(12))` is what a "12-period EMA" means. Wilder's
+ * smoothing, `alpha = 1 / n`, is span `2n - 1`; `rsi` and `atr` apply it themselves.
  *
- * The recursion is seeded with the first observed value rather than an average of the first
- * `span` rows, so the result depends only on rows at or before each row. Pass `min_observed` to
- * suppress the region where the seed still dominates.
+ * @throws std::invalid_argument if `span` is zero.
+ */
+inline Scalar alpha_from_span(std::size_t span) {
+  if (span == 0) {
+    throw std::invalid_argument("an ema span must be at least one row");
+  }
+  return Scalar{2} / (static_cast<Scalar>(span) + Scalar{1});
+}
+
+namespace rolling_detail {
+
+/** Refuses a smoothing factor outside `(0, 1]`, including `NaN`. */
+inline void check_alpha(Scalar alpha) {
+  if (!(Scalar{0} < alpha && alpha <= Scalar{1})) {
+    throw std::invalid_argument("an ema smoothing factor must be in (0, 1]");
+  }
+}
+
+} // namespace rolling_detail
+
+/**
+ * Returns one exponential-average update: `alpha * value + (1 - alpha) * level`.
  *
- * An unobserved input is skipped: the level carries across it, and that row's output is
- * unobserved, because a row with no observation is one the indicator has nothing to say about.
+ * `level` is the previous result, and unobserved before the first observation: the first observed
+ * `value` then seeds it. An unobserved `value` leaves `level` as it was. The arithmetic is `ema`'s,
+ * written in the same order, so a live strategy that keeps `level` from bar to bar computes exactly
+ * what a replay over the same bars does:
+ *
+ *     Scalar level = missing();
+ *     level = ema_step(level, close, alpha);   // once per bar
+ *
+ * One difference, once the arithmetic itself produces `NaN` -- an infinity met by its opposite, or an
+ * overflow such as `DBL_MAX` followed by `-DBL_MAX`: `ema` keeps that `NaN` for the rest of the series,
+ * while a level kept with this function counts as "no level yet" and is reseeded by the next
+ * observation. A `NaN` level cannot say which it is.
+ *
+ * @throws std::invalid_argument unless `0 < alpha <= 1`.
+ */
+inline Scalar ema_step(Scalar level, Scalar value, Scalar alpha) {
+  rolling_detail::check_alpha(alpha);
+  if (!observed(value)) {
+    return level;
+  }
+  return observed(level) ? level + alpha * (value - level) : value;
+}
+
+/**
+ * Refused: an integer here is a span. Write `alpha_from_span(span)`. A `long double` smoothing
+ * factor is ambiguous between the two overloads; cast it to `Scalar`.
+ */
+Scalar ema_step(Scalar level, Scalar value, std::size_t span) = delete;
+
+/**
+ * Returns the exponentially weighted moving average with smoothing factor `alpha`.
+ *
+ * Seeded with the first observed value; an unobserved value is skipped (the level carries across
+ * it and that row's output is unobserved); otherwise `alpha * value + (1 - alpha) * level`, the
+ * update `ema_step` makes. For a span, pass `alpha_from_span(span)`. On observed rows the levels are
+ * those of `pandas.Series.ewm(alpha=alpha, adjust=False, ignore_na=True).mean()`, to rounding (with
+ * `min_periods` for `min_observed`); pandas also reports the carried level on a missing row, which
+ * this leaves unobserved. pandas' default `adjust=True` weighs the first rows differently, and a
+ * package that seeds with the simple mean of the first rows differs until that seed has decayed. Pass `min_observed` to suppress the region where
+ * the seed still dominates.
  *
  * **Not vectorized, and it cannot be.** Each level depends on the one before it, so there is no
  * reduction to hand a backend — unlike every other function here. The same dependence is why
  * running it over a trailing `SeriesBuffer` view does *not* reproduce what a live loop computes:
- * the window's oldest row becomes a fresh seed each time it advances. For a live strategy keep a
- * `RunningEma`, which runs this exact recurrence once per bar. The finite windows above have no
- * such problem — window and full series agree exactly.
+ * the buffer's oldest row becomes a fresh seed each time it advances. A live strategy keeps the level
+ * itself and calls `ema_step` once per bar. The finite windows above have no such problem — window and
+ * full series agree exactly.
+ *
+ * @throws std::invalid_argument unless `0 < alpha <= 1`, or if `min_observed` is zero. Checked
+ * before anything is read, so an empty series refuses too.
  */
-inline math::Vector ema(math::SeriesView values, std::size_t span, std::size_t min_observed) {
-  if (span == 0) {
-    throw std::invalid_argument("ema span must be at least one row");
-  }
+inline math::Vector ema(math::SeriesView values, Scalar alpha, std::size_t min_observed = 1) {
+  rolling_detail::check_alpha(alpha);
   if (min_observed == 0) {
     throw std::invalid_argument("ema must require at least one observation");
   }
-  const Scalar alpha = Scalar{2} / (static_cast<Scalar>(span) + Scalar{1});
   math::Vector result = math::unobserved(static_cast<std::size_t>(values.size()));
   Scalar level{0};
   std::size_t count = 0;
@@ -369,6 +426,8 @@ inline math::Vector ema(math::SeriesView values, std::size_t span, std::size_t m
     if (!observed(value)) {
       continue;
     }
+    // Seeded by count rather than by an unobserved level, so a level an infinity turned into `NaN`
+    // stays `NaN` instead of being mistaken for "no level yet".
     level = count == 0 ? value : level + alpha * (value - level);
     ++count;
     if (count >= min_observed) {
@@ -378,10 +437,11 @@ inline math::Vector ema(math::SeriesView values, std::size_t span, std::size_t m
   return result;
 }
 
-/** Returns the exponential moving average, reporting from its first observed row. */
-inline math::Vector ema(math::SeriesView values, std::size_t span) {
-  return ema(values, span, 1);
-}
+/**
+ * Refused: an integer here is a span. Write `ema(values, alpha_from_span(span))`. A `long double`
+ * smoothing factor is ambiguous between the two overloads; cast it to `Scalar`.
+ */
+math::Vector ema(math::SeriesView values, std::size_t span, std::size_t min_observed = 1) = delete;
 
 } // namespace analytics
 } // namespace algotradelib

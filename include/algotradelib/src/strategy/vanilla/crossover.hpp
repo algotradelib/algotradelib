@@ -103,7 +103,7 @@ private:
   /** Returns the chosen average over `window`. */
   math::Vector line(math::SeriesView window, std::size_t span) const {
     if (params_.kind_ == AverageKind::EXPONENTIAL) {
-      return analytics::ema(window, span, span);
+      return analytics::ema(window, analytics::alpha_from_span(span), span);
     }
     return analytics::sma(window, span);
   }

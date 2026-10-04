@@ -10,6 +10,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -758,21 +759,20 @@ TEST_CASE("the simple moving average is the trailing mean, and stays that way") 
   }
 }
 
-TEST_CASE("an exponential average uses the span convention and seeds on its first value") {
+TEST_CASE("an exponential average takes its smoothing factor and seeds on its first value") {
   const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0});
 
-  // span 3 is alpha = 2 / (3 + 1) = 0.5, so each level is the midpoint of the previous
-  // level and the new value.
-  const math::Vector smoothed = analytics::ema(values, 3);
+  // alpha = 0.5 -- span 3 in the span convention -- so each level is the midpoint of the
+  // previous level and the new value.
+  const math::Vector smoothed = analytics::ema(values, 0.5);
   REQUIRE(smoothed[0] == Catch::Approx(1.0));
   REQUIRE(smoothed[1] == Catch::Approx(1.5));
   REQUIRE(smoothed[2] == Catch::Approx(2.25));
   REQUIRE(smoothed[3] == Catch::Approx(3.125));
   REQUIRE(smoothed[4] == Catch::Approx(4.0625));
 
-  // span 1 is alpha = 1, which is no smoothing at all. A degenerate span should give
-  // the series back rather than divide by something.
-  const math::Vector unsmoothed = analytics::ema(values, 1);
+  // alpha = 1 is no smoothing at all, and gives the series back.
+  const math::Vector unsmoothed = analytics::ema(values, 1.0);
   for (math::Index row = 0; row < values.size(); ++row) {
     REQUIRE(unsmoothed[row] == values[row]);
   }
@@ -780,7 +780,7 @@ TEST_CASE("an exponential average uses the span convention and seeds on its firs
 
 TEST_CASE("an exponential average carries its level across a gap without reporting one") {
   const math::Vector values = series({1.0, missing(), 3.0});
-  const math::Vector smoothed = analytics::ema(values, 3);
+  const math::Vector smoothed = analytics::ema(values, 0.5);
 
   REQUIRE(smoothed[0] == Catch::Approx(1.0));
   // The row itself has no observation, so the indicator says nothing about it.
@@ -791,7 +791,7 @@ TEST_CASE("an exponential average carries its level across a gap without reporti
 
 TEST_CASE("an exponential average can suppress the region its seed still dominates") {
   const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0});
-  const math::Vector smoothed = analytics::ema(values, 3, 3);
+  const math::Vector smoothed = analytics::ema(values, 0.5, 3);
 
   REQUIRE_FALSE(observed(smoothed[0]));
   REQUIRE_FALSE(observed(smoothed[1]));
@@ -806,7 +806,117 @@ TEST_CASE("an impossible window is refused rather than answered with nothing") {
   // identical to a series that simply had no data.
   REQUIRE_THROWS_AS(analytics::rolling_mean(values, 0), std::invalid_argument);
   REQUIRE_THROWS_AS(analytics::rolling_mean(values, 3, 4), std::invalid_argument);
-  REQUIRE_THROWS_AS(analytics::ema(values, 0), std::invalid_argument);
+}
+
+namespace {
+
+/** Whether `ema(view, smoothing)` is a well-formed call. */
+template <typename Smoothing, typename = void>
+struct ema_accepts : std::false_type {};
+template <typename Smoothing>
+struct ema_accepts<
+  Smoothing,
+  std::void_t<decltype(analytics::ema(std::declval<math::SeriesView>(), std::declval<Smoothing>()))>
+> : std::true_type {};
+
+/** Whether `ema_step(level, value, smoothing)` is a well-formed call. */
+template <typename Smoothing, typename = void>
+struct ema_step_accepts : std::false_type {};
+template <typename Smoothing>
+struct ema_step_accepts<
+  Smoothing,
+  std::void_t<decltype(analytics::ema_step(Scalar{}, Scalar{}, std::declval<Smoothing>()))>
+> : std::true_type {};
+
+} // namespace
+
+// An integer where the smoothing factor goes is an old span. It must not compile as alpha = 12,
+// which would only be refused when the call first runs -- possibly inside a live loop.
+static_assert(ema_accepts<Scalar>::value, "ema takes a smoothing factor");
+static_assert(ema_accepts<float>::value, "a float is promoted, not ambiguous");
+static_assert(!ema_accepts<int>::value, "an int is a span: alpha_from_span");
+static_assert(!ema_accepts<std::size_t>::value, "a size_t is a span: alpha_from_span");
+static_assert(ema_step_accepts<Scalar>::value, "ema_step takes a smoothing factor");
+static_assert(!ema_step_accepts<int>::value, "an int is a span: alpha_from_span");
+static_assert(!ema_step_accepts<std::size_t>::value, "a size_t is a span: alpha_from_span");
+
+TEST_CASE("the span convention is 2 / (span + 1), and a zero span is refused") {
+  REQUIRE(analytics::alpha_from_span(12) == 2.0 / 13.0);
+  REQUIRE(analytics::alpha_from_span(3) == 0.5);
+  REQUIRE(analytics::alpha_from_span(1) == 1.0);
+  REQUIRE_THROWS_AS(analytics::alpha_from_span(0), std::invalid_argument);
+}
+
+TEST_CASE("an exponential average takes a smoothing factor no span reaches") {
+  // RiskMetrics' lambda = 0.94 is alpha = 0.06, which is span 32.33: unreachable through a span.
+  const math::Vector values = series({100.0, 102.0, 101.0, 105.0, 104.0});
+  const math::Vector smoothed = analytics::ema(values, 0.06);
+  Scalar level = 100.0;
+  REQUIRE(smoothed[0] == level);
+  for (math::Index row = 1; row < values.size(); ++row) {
+    level = 0.06 * values[row] + 0.94 * level;
+    REQUIRE(smoothed[row] == Catch::Approx(level).epsilon(1e-12));
+  }
+}
+
+TEST_CASE("an exponential average refuses a smoothing factor outside (0, 1]") {
+  const math::Vector values = series({1.0, 2.0, 3.0});
+  const math::Vector empty = series({});
+  for (const Scalar alpha : {0.0, -0.5, 1.5, std::numeric_limits<Scalar>::quiet_NaN()}) {
+    REQUIRE_THROWS_AS(analytics::ema(values, alpha), std::invalid_argument);
+    // Before anything is read: an empty series refuses too.
+    REQUIRE_THROWS_AS(analytics::ema(empty, alpha), std::invalid_argument);
+    REQUIRE_THROWS_AS(analytics::ema_step(1.0, 2.0, alpha), std::invalid_argument);
+  }
+}
+
+TEST_CASE("one exponential-average step seeds, skips an absence, and updates") {
+  // No level yet: the first observation is the level.
+  REQUIRE(analytics::ema_step(missing(), 10.0, 0.5) == 10.0);
+  // An absent value leaves the level as it was, and an absent level stays absent.
+  REQUIRE(analytics::ema_step(10.0, missing(), 0.5) == 10.0);
+  REQUIRE_FALSE(observed(analytics::ema_step(missing(), missing(), 0.5)));
+  // Otherwise alpha * value + (1 - alpha) * level.
+  REQUIRE(analytics::ema_step(10.0, 20.0, 0.25) == Catch::Approx(12.5));
+}
+
+TEST_CASE("the exponential average keeps its arithmetic, digit for digit") {
+  // `level + alpha * (value - level)`, in that order. The algebraically equal
+  // `alpha * value + (1 - alpha) * level` rounds differently on values like these, and would move
+  // every EMA, MACD and crossover line in the last place.
+  const math::Vector values = series({54.689, 897.428});
+  REQUIRE(analytics::ema(values, analytics::alpha_from_span(3))[1] == 476.05850000000004);
+  REQUIRE(analytics::ema_step(54.689, 897.428, analytics::alpha_from_span(3)) == 476.05850000000004);
+  REQUIRE(analytics::macd(values).macd_[1] == 67.227042735042758);
+}
+
+TEST_CASE("an infinity leaves the exponential average unobserved from then on") {
+  // The update meets +inf - inf and the level becomes NaN. `ema` keeps it, rather than taking
+  // the NaN for "no level yet" and reseeding on the next value.
+  const Scalar infinity = std::numeric_limits<Scalar>::infinity();
+  const math::Vector smoothed = analytics::ema(series({infinity, -infinity, 7.0}), 0.5);
+  REQUIRE(smoothed[0] == infinity);
+  REQUIRE_FALSE(observed(smoothed[1]));
+  REQUIRE_FALSE(observed(smoothed[2]));
+}
+
+TEST_CASE("a live level folded with ema_step is the vectorized average, bit for bit") {
+  // The property a live strategy depends on: keeping one number per bar computes exactly what
+  // a replay over the same bars computes, gaps included.
+  const math::Vector values = series({1.0, 2.0, 3.0, missing(), 5.0, 6.0});
+  const Scalar alpha = analytics::alpha_from_span(3);
+  const math::Vector vectorized = analytics::ema(values, alpha);
+
+  Scalar level = missing();
+  for (math::Index row = 0; row < values.size(); ++row) {
+    level = analytics::ema_step(level, values[row], alpha);
+    if (observed(values[row])) {
+      REQUIRE(level == vectorized[row]);
+    } else {
+      // The row itself says nothing, but the level carried across it in both.
+      REQUIRE_FALSE(observed(vectorized[row]));
+    }
+  }
 }
 
 TEST_CASE("an indicator reads a frame column and a series buffer the same way") {
@@ -962,14 +1072,14 @@ TEST_CASE("MACD is the difference of two exponential averages and its own averag
   const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0});
   const auto lines = analytics::macd(values, 2, 4, 3);
 
-  const math::Vector quick = analytics::ema(values, 2);
-  const math::Vector slower = analytics::ema(values, 4);
+  const math::Vector quick = analytics::ema(values, analytics::alpha_from_span(2));
+  const math::Vector slower = analytics::ema(values, analytics::alpha_from_span(4));
   for (math::Index row = 0; row < values.size(); ++row) {
     REQUIRE(lines.macd_[row] == Catch::Approx(quick[row] - slower[row]));
   }
   // The signal line is the exponential average of the MACD itself, and the histogram is
   // the gap between them.
-  const math::Vector signal = analytics::ema(lines.macd_, 3);
+  const math::Vector signal = analytics::ema(lines.macd_, analytics::alpha_from_span(3));
   for (math::Index row = 0; row < values.size(); ++row) {
     REQUIRE(lines.signal_[row] == Catch::Approx(signal[row]));
     REQUIRE(lines.histogram_[row] == Catch::Approx(lines.macd_[row] - signal[row]));
@@ -1046,162 +1156,6 @@ TEST_CASE("beta is the covariance over the market's own variance") {
 
   // And an asset that is exactly the market has a beta of one, whatever the market did.
   REQUIRE(analytics::beta(market, market, 3)[3] == Catch::Approx(1.0));
-}
-
-// ---------------------------------------------------------------------------
-// Running accumulators
-// ---------------------------------------------------------------------------
-
-TEST_CASE("a running sum keeps the small terms a naive total would lose") {
-  // The classic demonstration. Added in this order, a naive `total += value` returns 0:
-  // adding 1 to 1e100 rounds straight back to 1e100, twice, and the two huge terms then
-  // cancel exactly. Neumaier carries the discarded parts and gives the right answer.
-  analytics::RunningSum sum;
-  for (const Scalar value : {1.0, 1.0e100, 1.0, -1.0e100}) {
-    sum.update(value);
-  }
-
-  REQUIRE(sum.count() == 4);
-  REQUIRE(sum.total() == 2.0);
-}
-
-TEST_CASE("a running sum reports nothing before its first observation") {
-  analytics::RunningSum sum;
-  REQUIRE_FALSE(observed(sum.total()));
-
-  sum.update(missing());
-  // An unobserved value is skipped, not counted as a zero contribution.
-  REQUIRE(sum.count() == 0);
-  REQUIRE_FALSE(observed(sum.total()));
-
-  sum.update(3.0);
-  REQUIRE(sum.total() == Catch::Approx(3.0));
-}
-
-TEST_CASE("running moments agree with the trailing statistics over a whole series") {
-  const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0});
-  analytics::RunningMoments moments;
-  for (math::Index row = 0; row < values.size(); ++row) {
-    moments.update(values[row]);
-  }
-
-  REQUIRE(moments.count() == 5);
-  REQUIRE(moments.mean() == Catch::Approx(3.0));
-  REQUIRE(moments.variance() == Catch::Approx(2.5));
-  // Which is what a trailing window covering the whole series reports, because both use
-  // the sample divisor. That agreement is the reason the divisor is stated in both places.
-  REQUIRE(moments.stdev() == Catch::Approx(analytics::rolling_stdev(values, 5)[4]));
-}
-
-TEST_CASE("Welford's method survives the price levels that break a sum of squares") {
-  // The same trap `rolling_stdev` avoids by taking two passes -- which an accumulator
-  // cannot do, because it never sees a value twice. Welford never forms a sum of squares
-  // at all, so the answer is exact here too.
-  analytics::RunningMoments moments;
-  for (const Scalar value : {1.0e8, 1.0e8 + 1.0, 1.0e8 + 2.0}) {
-    moments.update(value);
-  }
-
-  REQUIRE(moments.mean() == Catch::Approx(1.0e8 + 1.0));
-  REQUIRE(moments.variance() == 1.0);
-  REQUIRE(moments.stdev() == 1.0);
-}
-
-TEST_CASE("running moments report nothing until they can") {
-  analytics::RunningMoments moments;
-  REQUIRE_FALSE(observed(moments.mean()));
-  REQUIRE_FALSE(observed(moments.variance()));
-
-  moments.update(7.0);
-  REQUIRE(moments.mean() == Catch::Approx(7.0));
-  // One point has no dispersion, and `count - 1` would be a division by zero.
-  REQUIRE_FALSE(observed(moments.variance()));
-  REQUIRE_FALSE(observed(moments.stdev()));
-
-  moments.update(9.0);
-  REQUIRE(moments.variance() == Catch::Approx(2.0));
-}
-
-TEST_CASE("running extremes track both ends and start unobserved") {
-  analytics::RunningExtremes extremes;
-  REQUIRE_FALSE(observed(extremes.smallest()));
-  REQUIRE_FALSE(observed(extremes.largest()));
-
-  for (const Scalar value : {3.0, -1.0, 8.0, missing(), 2.0}) {
-    extremes.update(value);
-  }
-
-  REQUIRE(extremes.count() == 4);
-  REQUIRE(extremes.smallest() == Catch::Approx(-1.0));
-  REQUIRE(extremes.largest() == Catch::Approx(8.0));
-}
-
-TEST_CASE("a running drawdown measures from the high-water mark it has seen") {
-  analytics::RunningDrawdown drawdown;
-  for (const Scalar level : {100.0, 120.0, 90.0, 150.0, 100.0}) {
-    drawdown.update(level);
-  }
-
-  REQUIRE(drawdown.peak() == Catch::Approx(150.0));
-  // A third below the peak of 150, reported as a non-negative fraction.
-  REQUIRE(drawdown.drawdown() == Catch::Approx(1.0 / 3.0));
-  // And the worst so far is that same third, deeper than the 25% seen at 90 under 120.
-  REQUIRE(drawdown.max_drawdown() == Catch::Approx(1.0 / 3.0));
-}
-
-TEST_CASE("a running drawdown at a new high is flat, not negative") {
-  analytics::RunningDrawdown drawdown;
-  drawdown.update(100.0);
-  REQUIRE(drawdown.drawdown() == Catch::Approx(0.0));
-
-  drawdown.update(200.0);
-  REQUIRE(drawdown.peak() == Catch::Approx(200.0));
-  REQUIRE(drawdown.drawdown() == Catch::Approx(0.0));
-  REQUIRE(drawdown.max_drawdown() == Catch::Approx(0.0));
-}
-
-TEST_CASE("a running drawdown refuses to express a ratio of a non-positive peak") {
-  // An equity curve that reaches zero has not drawn down by some percentage; it is gone.
-  analytics::RunningDrawdown drawdown;
-  drawdown.update(0.0);
-
-  REQUIRE(drawdown.peak() == Catch::Approx(0.0));
-  REQUIRE_FALSE(observed(drawdown.drawdown()));
-  REQUIRE_FALSE(observed(drawdown.max_drawdown()));
-}
-
-TEST_CASE("a running exponential average reproduces the vectorized one exactly") {
-  // The whole reason this class exists. A strategy fitted on frames and traded from a
-  // live loop has to be running the same recurrence, and this is the assertion that says
-  // so -- bit for bit, not approximately.
-  const math::Vector values = series({1.0, 2.0, 3.0, missing(), 5.0, 6.0});
-  const math::Vector vectorized = analytics::ema(values, 3);
-
-  analytics::RunningEma running(3);
-  for (math::Index row = 0; row < values.size(); ++row) {
-    running.update(values[row]);
-    if (observed(values[row])) {
-      REQUIRE(running.value() == vectorized[row]);
-    } else {
-      // The row itself says nothing, but the level carried across it in both.
-      REQUIRE_FALSE(observed(vectorized[row]));
-    }
-  }
-}
-
-TEST_CASE("a running exponential average honours its warm-up and rejects a zero span") {
-  analytics::RunningEma running(3, 3);
-  REQUIRE(running.alpha() == Catch::Approx(0.5));
-  REQUIRE_FALSE(observed(running.value()));
-
-  running.update(1.0);
-  running.update(2.0);
-  REQUIRE_FALSE(observed(running.value()));
-
-  running.update(3.0);
-  REQUIRE(running.value() == Catch::Approx(2.25));
-
-  REQUIRE_THROWS_AS(analytics::RunningEma(0), std::invalid_argument);
 }
 
 // ---------------------------------------------------------------------------
@@ -1321,18 +1275,6 @@ TEST_CASE("a drawdown over nothing observable reports nothing rather than zero")
   REQUIRE_FALSE(observed(worst.magnitude_));
   REQUIRE(worst.peak_row_ == -1);
   REQUIRE(worst.trough_row_ == -1);
-}
-
-TEST_CASE("the running drawdown and the whole-series one report the same worst decline") {
-  // The same number from the accumulator a live loop updates and from the pass an
-  // evaluation makes. If these disagreed, one of the two would be lying about the same run.
-  const math::Vector levels = series({100.0, 120.0, 90.0, 150.0, 100.0, 75.0});
-  analytics::RunningDrawdown running;
-  for (math::Index row = 0; row < levels.size(); ++row) {
-    running.update(levels[row]);
-  }
-
-  REQUIRE(running.max_drawdown() == Catch::Approx(analytics::max_drawdown(levels).magnitude_));
 }
 
 TEST_CASE("a Sharpe ratio is per period and the excess is over a per-period rate") {
@@ -1484,9 +1426,6 @@ TEST_CASE("a statistic that cannot exist says so, distinctly from having no data
   REQUIRE(math::is_undefined(analytics::beta(moving, still, 3)[3]));
 
   // An equity curve at zero has not declined by a percentage; it is gone.
-  analytics::RunningDrawdown drawdown;
-  drawdown.update(0.0);
-  REQUIRE(math::is_undefined(drawdown.max_drawdown()));
   REQUIRE(math::is_undefined(analytics::max_drawdown(series({0.0, 0.0})).magnitude_));
 }
 
@@ -1568,7 +1507,7 @@ TEST_CASE("the window overloads say what the three-argument form spells out") {
   // And zero observations is now refused rather than meaning "all".
   REQUIRE_THROWS_AS(analytics::rolling_mean(values, 3, 0), std::invalid_argument);
   REQUIRE_THROWS_AS(analytics::rolling_stdev(values, 3, 0), std::invalid_argument);
-  REQUIRE_THROWS_AS(analytics::ema(values, 3, 0), std::invalid_argument);
+  REQUIRE_THROWS_AS(analytics::ema(values, 0.5, 0), std::invalid_argument);
 }
 
 TEST_CASE("turnover names its convention, and both start policies are available") {

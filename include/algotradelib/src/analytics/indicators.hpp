@@ -359,9 +359,9 @@ struct MacdLines {
 /**
  * Returns the moving-average convergence/divergence lines.
  *
- * `macd = ema(fast) - ema(slow)`, `signal = ema(macd, signal_span)`, and the histogram is
- * their difference. `12, 26, 9` are the conventional spans, and the averages use the span
- * convention `ema` documents.
+ * `macd = ema(fast) - ema(slow)`, `signal = ema(macd, alpha_from_span(signal_span))`, and
+ * the histogram is their difference. `12, 26, 9` are the conventional spans; each is turned into a smoothing
+ * factor by `alpha_from_span`, the convention MACD is quoted in.
  *
  * The signal line is an exponential average *of an exponential average*, so the caution in
  * `ema` applies doubly here: a MACD recomputed over a trailing window is not the MACD a
@@ -380,8 +380,8 @@ inline MacdLines macd(
   if (fast >= slow) {
     throw std::invalid_argument("macd fast span must be shorter than the slow span");
   }
-  const math::Vector quick = ema(values, fast);
-  const math::Vector slower = ema(values, slow);
+  const math::Vector quick = ema(values, alpha_from_span(fast));
+  const math::Vector slower = ema(values, alpha_from_span(slow));
 
   const auto rows = static_cast<std::size_t>(values.size());
   MacdLines lines{math::unobserved(rows), math::unobserved(rows), math::unobserved(rows)};
@@ -390,7 +390,7 @@ inline MacdLines macd(
       lines.macd_[row] = quick[row] - slower[row];
     }
   }
-  lines.signal_ = ema(lines.macd_, signal_span);
+  lines.signal_ = ema(lines.macd_, alpha_from_span(signal_span));
   for (math::Index row = 0; row < values.size(); ++row) {
     if (observed(lines.macd_[row]) && observed(lines.signal_[row])) {
       lines.histogram_[row] = lines.macd_[row] - lines.signal_[row];

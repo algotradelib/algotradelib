@@ -66,10 +66,10 @@ struct MaxDrawdown {
  * Returns the worst peak-to-trough decline of a level series.
  *
  * Takes a **level** -- an equity curve, a cumulative growth factor, a price -- not a series
- * of period returns, the same as `RunningDrawdown`. Feeding it returns measures the drawdown
+ * of period returns. Feeding it returns measures the drawdown
  * of the return series, which is a different quantity and rarely the one wanted.
  *
- * Reported as a non-negative fraction of the peak, matching `RunningDrawdown`, and the rows
+ * Reported as a non-negative fraction of the peak, and the rows
  * come back so a report can say *when* rather than only how much. A series whose running peak
  * is at or below zero contributes nothing: a curve that reached zero has not declined by a
  * percentage, and a ratio there would be a fabrication.
@@ -114,7 +114,7 @@ inline MaxDrawdown max_drawdown(math::SeriesView levels) {
  * Returns the **per-period** Sharpe ratio of a return series.
  *
  * `(mean(returns) - risk_free) / stdev(returns)`, with the sample deviation, matching
- * `rolling_stdev` and `RunningMoments`. `risk_free` is per period, in the same units as the
+ * `rolling_stdev`. `risk_free` is per period, in the same units as the
  * returns: a daily series wants a daily rate, and passing an annual one is a mistake that
  * produces a plausible number rather than an error.
  *

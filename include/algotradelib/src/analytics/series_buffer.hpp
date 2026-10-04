@@ -50,8 +50,8 @@ namespace analytics {
  *
  * It deliberately never grows past its capacity. A statistic over all history —
  * a cumulative return, an all-time high, a maximum drawdown — does not need the history
- * stored to be computed, only an accumulator updated, so a growing buffer would spend
- * `O(n)` memory answering questions that need `O(1)`. Where the values themselves are
+ * stored to be computed, only a running value the caller keeps (a peak, a sum, an `ema_step`
+ * level), so a growing buffer would spend `O(n)` memory answering questions that need `O(1)`. Where the values themselves are
  * genuinely required, a `SeriesFrame` is the container that holds a whole series.
  *
  * **Not synchronized, and owned by one caller.** A buffer belongs to one strategy, which

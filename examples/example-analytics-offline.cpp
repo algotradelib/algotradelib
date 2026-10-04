@@ -119,7 +119,7 @@ int main() {
   const math::SeriesView close = frame.close();
   const math::SeriesView open = frame.open();
   const math::Vector average = analytics::sma(close, 5);
-  const math::Vector smoothed = analytics::ema(close, 5);
+  const math::Vector smoothed = analytics::ema(close, analytics::alpha_from_span(5));
   const math::Vector strength = analytics::rsi(close, 5);
   const math::Vector score = analytics::zscore(close, 5);
   const auto bands = analytics::bollinger(close, 5, 2.0);
@@ -145,37 +145,37 @@ int main() {
   std::cout << "\nThe dashes are the point. A window reports nothing until it holds "
             << "enough\nobservations, and row 3 has no open at all.\n";
 
-  // What a live loop keeps instead of a growing buffer: one number per statistic.
-  analytics::RunningMoments moments;
-  analytics::RunningDrawdown drawdown;
-  analytics::RunningEma running(5);
-  for (math::Index row = 0; row < close.size(); ++row) {
-    moments.update(period_returns[row]);
-    drawdown.update(close[row]);
-    running.update(close[row]);
-  }
-
-  std::cout << "\nOver the whole series, in constant space:\n"
+  // A window as long as the series is the whole series. Row 0 has no return, so one fewer
+  // observation is demanded than there are rows.
+  const auto rows = static_cast<std::size_t>(close.size());
+  const auto last = close.size() - 1;
+  std::cout << "\nOver the whole series:\n"
             << "  mean daily return     " << std::fixed << std::setprecision(4)
-            << moments.mean() * 100.0 << " %\n"
-            << "  daily volatility      " << moments.stdev() * 100.0 << " %\n"
+            << analytics::rolling_mean(period_returns, rows, rows - 1)[last] * 100.0 << " %\n"
+            << "  daily volatility      "
+            << analytics::rolling_stdev(period_returns, rows, rows - 1)[last] * 100.0 << " %\n"
             << "  per-period Sharpe     " << analytics::sharpe(period_returns) << "\n"
             << "  annualized Sharpe     "
             << analytics::annualize_ratio(analytics::sharpe(period_returns), 245.0) << "\n"
             << "  worst drawdown        "
             << analytics::max_drawdown(close).magnitude_ * 100.0 << " %\n";
 
-  // And the accumulator agrees with the vectorized indicator exactly, which is the
-  // property that keeps a backtest and a live loop computing the same thing.
-  std::cout << "  running ema == ema    "
-            << (running.value() == smoothed[close.size() - 1] ? "yes" : "no") << "\n";
+  // What a live loop keeps for an exponential average: one number, updated once per bar. It
+  // agrees with the vectorized `ema` exactly, which is the property that keeps a backtest and a
+  // live loop computing the same thing.
+  const math::Scalar alpha = analytics::alpha_from_span(5);
+  math::Scalar level = math::missing();
+  for (math::Index row = 0; row < close.size(); ++row) {
+    level = analytics::ema_step(level, close[row], alpha);
+  }
+  std::cout << "  ema_step == ema       " << (level == smoothed[last] ? "yes" : "no") << "\n";
 
   // The one sanctioned route back to something a broker will accept. The upper band is a
   // computed scalar; an order needs an exact decimal on the instrument's own tick grid.
   const auto rule =
     algotradelib::price_rule_for(bars.instrument_.country_, SecurityType::STOCK);
   const auto limit = analytics::round_scalar_to_tick(
-    bands.upper_[close.size() - 1], rule, OrderSide::SELL
+    bands.upper_[last], rule, OrderSide::SELL
   );
   std::cout << "\nA sell limit at the upper band, rounded onto the KRX tick grid: "
             << (limit ? limit->str() : std::string("refused")) << "\n";
