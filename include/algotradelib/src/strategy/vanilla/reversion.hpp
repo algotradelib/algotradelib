@@ -110,6 +110,26 @@ struct ZScoreReversion {
  * his smoothing and his seed, which `analytics::rsi` documents — an index smoothed the other
  * conventional way produces different numbers from the chart a threshold was chosen against.
  *
+ * **It reads every cached bar.** Wilder's smoothing is a recursion: it seeds on the mean of the first
+ * `period` changes, then `avg = (avg (n - 1) + change) / n`. Over only the last `period + 1` closes it
+ * would seed on the last bar and never advance, and the index would be the simple average of the last
+ * `period` changes instead of Wilder's. Over the whole cache (up to `series_capacity`), the seed's
+ * weight in each average after `k` observed changes *beyond the seed* is `(1 - 1/n)^k`: for `n = 14`,
+ * 84 such changes (99 closes) leave about 0.2%. That bounds the seed's weight in the gain and loss
+ * averages, not the index's error, and promises no agreement with a chart that seeded elsewhere. With
+ * less history the index is still Wilder's, its seed weighing more; a new listing needs no special
+ * case, because the seed is already a mean of `period` changes, not one print.
+ *
+ * History changes readings the slice could not see. A flat or rising *tail* no longer reads 50 or 100
+ * when earlier changes moved: period 3, `100, 90, 90, 90, 90` reads 0 (the slice read 50) and
+ * `110, 100, 101, 102, 103` reads 25.9 (the slice, 100), so the strategy can buy, or keep a holding,
+ * where it did nothing before -- and `100, 110, 109, 108, 107` reads 74.1 (the slice, 0), so it can
+ * exit instead. Once the cache is full, each bar evicts the oldest close and the seed moves with it:
+ * the residual weight is tiny (about `1e-16` at period 14 with 512 bars), but evicting a cache's only
+ * move still changes the index (a full cache of 99s after one 100 reads 0, then 50). A replay, whose
+ * cache keeps growing, can differ from a live start that read fewer bars until the live cache catches
+ * up. Closes reach the cache from bars, which always carry one, so the cache itself has no gaps.
+ *
  * Long only, for the reason `ZScoreReversion` gives.
  */
 struct RsiThreshold {
@@ -136,7 +156,8 @@ struct RsiThreshold {
    * Bars needed before the index reports.
    *
    * Row zero has no price change at all and the smoothing needs `period_` changes before it has a
-   * seed, so the first value appears on row `period_` — hence one more than the period.
+   * seed, so the first value appears on row `period_` — hence one more than the period. Before that
+   * Wilder's index does not exist; from then on it does, and further bars only weaken its seed.
    */
   std::size_t warmup_bars() const { return params_.period_ + 1; }
 
@@ -154,11 +175,11 @@ struct RsiThreshold {
       return;
     }
     const auto closes = series->column(analytics::BarField::CLOSE);
-    const auto window = trailing(closes, params_.period_);
-    if (!window) {
+    if (static_cast<std::size_t>(closes.size()) < warmup_bars()) {
       return;
     }
-    const auto index = analytics::rsi(*window, params_.period_);
+    // The whole cache, not a slice: see the struct comment.
+    const auto index = analytics::rsi(closes, params_.period_);
     const auto level = index[index.size() - 1];
     if (!math::observed(level)) {
       return;

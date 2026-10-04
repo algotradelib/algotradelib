@@ -605,6 +605,34 @@ TEST_CASE("an RSI threshold emits nothing before its period has produced an inde
   REQUIRE(first == indexed.warmup_bars() - 1);
 }
 
+TEST_CASE("an RSI threshold reads Wilder's index over the whole history, not the last period") {
+  // Over only the last `period + 1` closes, Wilder's smoothing seeds on the last bar and never steps,
+  // which is the simple-average RSI. These closes keep the whole-history index above 32 until the last
+  // bar, where it is 23.69 and the strategy buys; over the old slice it would be 36.36, and it would not.
+  vanilla::RsiThreshold indexed;
+  indexed.params_.instrument_ = samsung();
+  indexed.params_.period_ = 3;
+  indexed.params_.oversold_ = 30.0;
+  indexed.params_.overbought_ = 70.0;
+  indexed.params_.quantity_ = Decimal64::parse("10");
+  runner::DryRunner<vanilla::RsiThreshold> dry(indexed);
+  arrange(dry);
+
+  const char* closes[] = {"100", "106", "101", "95", "94", "95", "94", "98", "97", "91"};
+  const std::size_t count = sizeof(closes) / sizeof(closes[0]);
+  for (std::size_t at = 0; at < count; ++at) {
+    const auto report = dry.feed(bar(at, closes[at]));
+    REQUIRE(report.would_place_.empty() == (at + 1 < count));
+  }
+
+  // The fixture still separates the two indices, as the cache holds these closes.
+  const auto cached = dry.context().bars(samsung())->column(analytics::BarField::CLOSE);
+  const math::Vector whole = analytics::rsi(cached, 3);
+  const math::Vector sliced = analytics::rsi(cached.tail(4), 3);
+  REQUIRE(whole[whole.size() - 1] == Catch::Approx(23.688311688311686).epsilon(1e-12));
+  REQUIRE(sliced[sliced.size() - 1] == Catch::Approx(36.36363636363636).epsilon(1e-12));
+}
+
 TEST_CASE("a Donchian breakout measures the channel excluding the current bar") {
   // A channel including today could never be broken: today's high is always inside a range that
   // contains it. Getting that wrong produces a strategy that silently does nothing.
