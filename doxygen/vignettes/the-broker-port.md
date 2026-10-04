@@ -126,6 +126,51 @@ It prints normalized holdings and working orders through the port only, reads
 credentials from the same environment variables as the other examples, and places
 no order. Without a broker argument it prints usage and exits.
 
+## A market-data source that cannot trade
+
+A data vendor — EODHD, Twelve Data, Yahoo — can sit behind the port too, so that a
+backtest reads its bars through `BlockingSession::bars`, and a `live::SessionSource`
+reads bars and quotes from it while orders go to a broker
+(`SessionSource<Trading, Journal, MarketData>`). The port has no read-only form,
+though: every session calls `holdings`, `place`, `replace`, `cancel` and
+`order_history`. Inherit `DataOnlyTraits<Tag>` and declare only what the vendor
+serves:
+
+```cpp
+template <>
+struct algotradelib::BrokerTraits<my::Client> : algotradelib::DataOnlyTraits<my::Tag> {
+  using Client = my::Client;
+  using Config = my::Config;
+  static constexpr std::string_view name = my::Tag::name;
+  static constexpr bool blocking = true;
+  static constexpr bool supports_interval(BarInterval interval);
+  static std::optional<BrokerError> validate_bars(const BarQuery& query);
+  static Result<QuoteSnapshot> quote(Client& client, InstrumentId instrument);
+  static Result<BarSeries> bars(Client& client, BarQuery query);
+};
+```
+
+The base declares the account-side types, every capability `false`, and every
+account-side member as a refusal **before any I/O**: `INVALID_ARGUMENT` with
+`reached_broker_ = false`, which the runner reads as "refused locally, nothing
+exists". Writing those refusals by hand is where it goes wrong: a default
+`BrokerError{}` has category `PROTOCOL` and `reached_broker_ = true`, which the
+runner reads as an order of **unknown** outcome and holds the instrument for a
+reconciliation a vendor can never give. No member of the base answers success —
+no empty holdings, no empty history — because both would be claims about an
+account the vendor does not have.
+
+A vendor that serves more (a calendar, reference data) declares that capability
+`true` in its own specialization and adds the thunk; the conformance assertions
+check it as they check any adapter.
+
+What a data-only session is not: bound as the *trading* session it compiles, and
+trades nothing. Every order refuses locally, the startup listing fails so the
+order-list gate stays held, and holdings polls fail until the loop gives up.
+`live_program::trade` and `observe` in `examples/live_program.hpp` read reference
+data from the market-data session, so they need a vendor that declares
+`has_reference_data`.
+
 
 
 ## Where to go next
