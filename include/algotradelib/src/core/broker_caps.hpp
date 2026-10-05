@@ -71,6 +71,17 @@ struct stated_trigger_price<Traits, std::void_t<decltype(Traits::has_trigger_pri
   static constexpr bool value = Traits::has_trigger_price;
 };
 
+/** Reads `T::data_only` where it is declared, false where it is not; see `BrokerCaps::data_only`. */
+template <typename T, typename = void>
+struct stated_data_only {
+  static constexpr bool value = false;
+};
+
+template <typename T>
+struct stated_data_only<T, std::void_t<decltype(T::data_only)>> {
+  static constexpr bool value = T::data_only;
+};
+
 }  // namespace caps_detail
 
 /**
@@ -141,6 +152,18 @@ struct BrokerCaps {
    * `true` at KIS and Kiwoom, `false` at Toss, which publishes no stop basis.
    */
   static constexpr bool has_trigger_price = caps_detail::stated_trigger_price<Traits>::value;
+
+  /**
+   * Whether the client is a market-data source that takes no order: true for a traits type built on
+   * `DataOnlyTraits`.
+   *
+   * **Read at compile time by everything that sends or reads an account.** `live::SessionExecutor` and
+   * the trading session of `live::SessionSource` refuse such a client with a `static_assert`, so a data
+   * vendor wired where orders go does not build. Defaulted to `false` for a traits type that does not
+   * declare it, so every broker adapter, in tree or out, compiles as before. A data client written by
+   * hand without the base is therefore not caught here; its refusals still stop every order at run time.
+   */
+  static constexpr bool data_only = caps_detail::stated_data_only<Traits>::value;
 
   /** Whether the broker retrieves one order by its identifier. */
   static constexpr bool has_order_by_id = Traits::has_order_by_id;
@@ -264,5 +287,14 @@ struct BrokerCaps {
     return Traits::supports_interval(interval);
   }
 };
+
+/**
+ * Whether a session's capability set says its client is a market-data source that takes no order.
+ *
+ * Takes the capability type a session publishes (`Session::Caps`), which a test double may define
+ * without the member; such a set reads false.
+ */
+template <typename Caps>
+inline constexpr bool is_data_only_caps = caps_detail::stated_data_only<Caps>::value;
 
 } // namespace algotradelib

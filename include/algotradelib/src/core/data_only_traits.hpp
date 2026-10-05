@@ -144,11 +144,13 @@ void post_refusal(Handler&& handler) {
  * - **As a backtest source, or as the `MarketData` of a `live::SessionSource`** beside a broker's trading
  *   session, a data-only session is complete: those read only `bars`, `quote` and the capabilities the
  *   vendor declares.
- * - **Bound as the trading session** it compiles, and trades nothing: every order refuses locally and the
- *   startup listing (`SessionSource::read_order_list`) fails, so the order-list gate stays held. Scheduled
- *   holdings polls fail and exhaust the loop's failure budget; without them nothing ends the run, and a
- *   bounded run can finish `CLEAN` with the gate still held (the report's `order_list_read_` says so).
- *   That is the intended answer, not something to work around.
+ * - **Where orders go, it does not compile.** `live::SessionExecutor` over a data-only session, and a
+ *   `live::SessionSource` whose *trading* session is one, fail a `static_assert` naming the mistake:
+ *   a program that would run and quietly trade nothing is not built. (`live::bind` and
+ *   `live::bind_journaled` build a `SessionExecutor`, so they are refused the same way.)
+ * - **Called directly, it refuses at run time.** A caller holding the session can still call `place` or
+ *   `holdings` on it; each refuses before any I/O, as above. That is also all a data client written by
+ *   hand without this base gets, since the compiler cannot recognize one.
  * - `live_program::trade` and `observe` in `examples/live_program.hpp` read reference data from the
  *   market-data session, so they need a vendor that serves it (`has_reference_data`); `SessionSource` does
  *   not.
@@ -174,6 +176,12 @@ struct DataOnlyTraits {
   using HistoryQuery = data_only::NoHistoryQuery;
   /** Never produced: the listing is not claimed. */
   using WorkingOrdersResult = data_only::NoWorkingOrders;
+
+  /**
+   * Marks the client as a market-data source, which `BrokerCaps::data_only` reads. `live::SessionExecutor`
+   * and the trading session of `live::SessionSource` refuse it at compile time.
+   */
+  static constexpr bool data_only = true;
 
   /// \cond ATL_DATA_ONLY_CAPABILITIES
   // Every capability answered, and every one false: a data vendor claims none of the account side, and

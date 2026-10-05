@@ -161,6 +161,31 @@ set_tests_properties(conformance-names-an-unbacked-capability PROPERTIES
     TIMEOUT 300
 )
 
+# A market-data source (DataOnlyTraits) wired where orders go must not build, and the failure must be the
+# assertion that says so: as the executor's session, and as SessionSource's trading session.
+add_library(algotradelib-data-only-probe-executor OBJECT EXCLUDE_FROM_ALL data-only-probe-executor.cpp)
+target_link_libraries(algotradelib-data-only-probe-executor PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME data-only-refused-as-executor
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-data-only-probe-executor
+            --config "$<CONFIG>"
+)
+set_tests_properties(data-only-refused-as-executor PROPERTIES
+    PASS_REGULAR_EXPRESSION "SessionExecutor sends orders, and this session's client is a market-data source"
+    TIMEOUT 300
+)
+add_library(algotradelib-data-only-probe-source OBJECT EXCLUDE_FROM_ALL data-only-probe-source.cpp)
+target_link_libraries(algotradelib-data-only-probe-source PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME data-only-refused-as-trading-session
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-data-only-probe-source
+            --config "$<CONFIG>"
+)
+set_tests_properties(data-only-refused-as-trading-session PROPERTIES
+    PASS_REGULAR_EXPRESSION "SessionSource's first session is the trading session"
+    TIMEOUT 300
+)
+
 # And the stronger check: an asynchronous thunk with the wrong signature passes `ATL_ASSERT_BROKER`,
 # which detects it by name, and must fail `ATL_ASSERT_BROKER_VERBS`, which calls it.
 add_library(algotradelib-conformance-probe-verbs OBJECT EXCLUDE_FROM_ALL conformance-probe-verbs.cpp)

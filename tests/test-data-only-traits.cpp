@@ -1,3 +1,5 @@
+#include "data_only_vendor.hpp"
+
 #include <algotradelib/broker>
 #include <algotradelib/live>
 #include <algotradelib/runner>
@@ -15,159 +17,6 @@
 #include <memory>
 #include <optional>
 
-using namespace algotradelib;
-
-namespace vendor {
-
-/** A market-data vendor's identity, as an out-of-tree adapter declares one. */
-struct Tag {
-  /** Normalized name. */
-  static constexpr std::string_view name = "vendor";
-};
-
-/** What the vendor needs to connect; nothing here. */
-struct Config {};
-
-/** One scripted series, as a vendor would answer any bar query. */
-inline BarSeries scripted_bars(const InstrumentId& instrument) {
-  BarSeries series;
-  series.instrument_ = instrument;
-  series.interval_ = BarInterval::ONE_DAY;
-  series.stamp_ = BarStamp::OPEN;
-  for (int day = 0; day < 3; ++day) {
-    Bar bar;
-    bar.timestamp_ = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * (20000 + day));
-    bar.open_ = Decimal64::parse("100");
-    bar.high_ = Decimal64::parse("101");
-    bar.low_ = Decimal64::parse("99");
-    bar.close_ = Decimal64::parse("100.5");
-    bar.volume_ = Decimal64::parse("1000");
-    series.bars_.push_back(bar);
-  }
-  return series;
-}
-
-/** A blocking vendor client: bars and quotes, nothing about any account. */
-struct BlockingClient {
-  /** How many bar requests reached the client. */
-  int bar_calls_{0};
-};
-
-/** An asynchronous vendor client: completes on its own executor, as a real client completes on its strand. */
-class AsyncClient {
-public:
-  /** Constructs a client whose completions run on `executor`. */
-  explicit AsyncClient(net::any_io_executor executor) : executor_(std::move(executor)) {}
-
-  /** Answers a bar request with the scripted series. */
-  template <typename Token>
-  auto async_bars(BarQuery query, Token&& token) {
-    return net::async_initiate<Token, void(Result<BarSeries>)>(
-      [this, query = std::move(query)](auto&& handler) mutable {
-        net::post(executor_, [handler = std::forward<decltype(handler)>(handler), query]() mutable {
-          std::move(handler)(Result<BarSeries>(scripted_bars(query.instrument_)));
-        });
-      },
-      token
-    );
-  }
-
-  /** Answers a quote request. */
-  template <typename Token>
-  auto async_quote(InstrumentId instrument, Token&& token) {
-    return net::async_initiate<Token, void(Result<QuoteSnapshot>)>(
-      [this, instrument = std::move(instrument)](auto&& handler) mutable {
-        net::post(executor_, [handler = std::forward<decltype(handler)>(handler), instrument]() mutable {
-          QuoteSnapshot quote;
-          quote.instrument_ = instrument;
-          quote.last_price_ = Decimal64::parse("100.5");
-          std::move(handler)(Result<QuoteSnapshot>(quote));
-        });
-      },
-      token
-    );
-  }
-
-private:
-  net::any_io_executor executor_;
-};
-
-} // namespace vendor
-
-/** The blocking vendor's traits: what it serves, and the account side from the base. */
-template <>
-struct algotradelib::BrokerTraits<vendor::BlockingClient> : algotradelib::DataOnlyTraits<vendor::Tag> {
-  /** The adapted client. */
-  using Client = vendor::BlockingClient;
-  /** The vendor's configuration. */
-  using Config = vendor::Config;
-  /** Normalized name. */
-  static constexpr std::string_view name = vendor::Tag::name;
-  /** A blocking facade. */
-  static constexpr bool blocking = true;
-
-  /** Daily bars only. */
-  static constexpr bool supports_interval(BarInterval interval) { return interval == BarInterval::ONE_DAY; }
-
-  /** Refuses an interval it does not serve. */
-  static std::optional<BrokerError> validate_bars(const BarQuery& query) {
-    if (supports_interval(query.interval_)) {
-      return std::nullopt;
-    }
-    return data_only::refusal();
-  }
-
-  /** Answers a quote. */
-  static Result<QuoteSnapshot> quote(Client&, InstrumentId instrument) {
-    QuoteSnapshot quote;
-    quote.instrument_ = std::move(instrument);
-    quote.last_price_ = Decimal64::parse("100.5");
-    return Result<QuoteSnapshot>(quote);
-  }
-
-  /** Answers bars. */
-  static Result<BarSeries> bars(Client& client, BarQuery query) {
-    ++client.bar_calls_;
-    return Result<BarSeries>(vendor::scripted_bars(query.instrument_));
-  }
-};
-
-/** The asynchronous vendor's traits. */
-template <>
-struct algotradelib::BrokerTraits<vendor::AsyncClient> : algotradelib::DataOnlyTraits<vendor::Tag> {
-  /** The adapted client. */
-  using Client = vendor::AsyncClient;
-  /** The vendor's configuration. */
-  using Config = vendor::Config;
-  /** Normalized name. */
-  static constexpr std::string_view name = vendor::Tag::name;
-  /** Completes through a token. */
-  static constexpr bool blocking = false;
-
-  /** Daily bars only. */
-  static constexpr bool supports_interval(BarInterval interval) { return interval == BarInterval::ONE_DAY; }
-
-  /** Refuses an interval it does not serve. */
-  static std::optional<BrokerError> validate_bars(const BarQuery& query) {
-    if (supports_interval(query.interval_)) {
-      return std::nullopt;
-    }
-    return data_only::refusal();
-  }
-
-  /** Forwards a quote request. */
-  template <typename Token>
-  static auto quote(Client& client, InstrumentId instrument, Token&& token) {
-    return client.async_quote(std::move(instrument), std::forward<Token>(token));
-  }
-
-  /** Forwards a bar request. */
-  template <typename Token>
-  static auto bars(Client& client, BarQuery query, Token&& token) {
-    return client.async_bars(std::move(query), std::forward<Token>(token));
-  }
-};
-
 // The two checks an out-of-tree adapter asserts once: members found through the base count.
 ATL_ASSERT_BROKER(vendor::BlockingClient);
 ATL_ASSERT_BROKER(vendor::AsyncClient);
@@ -175,6 +24,10 @@ ATL_ASSERT_BROKER_VERBS(vendor::BlockingClient);
 ATL_ASSERT_BROKER_VERBS(vendor::AsyncClient);
 
 static_assert(!BrokerCaps<vendor::BlockingClient>::has_working_orders, "a data vendor lists no orders");
+static_assert(BrokerCaps<vendor::BlockingClient>::data_only, "the base marks the client as a data source");
+static_assert(BrokerCaps<vendor::AsyncClient>::data_only, "in either shape");
+static_assert(!BrokerCaps<vendor::TradingStandIn>::data_only, "a declaration in the specialization hides the base's");
+static_assert(!is_data_only_caps<strategy::NoCaps>, "a capability set without the member is not data-only");
 static_assert(BrokerCaps<vendor::BlockingClient>::sellable_source == SellableSource::NONE, "nor holdings");
 
 namespace {
@@ -342,58 +195,17 @@ TEST_CASE("every asynchronous session order verb refuses locally", "[data-only]"
   check_refused_locally(holdings.get().error());
 }
 
-TEST_CASE("an executor bound to a data-only session reports a local refusal", "[data-only]") {
-  BlockingSession<vendor::BlockingClient> session(
-    std::make_shared<vendor::BlockingClient>(), data_only::NoAccount{}
-  );
-  live::SessionExecutor<BlockingSession<vendor::BlockingClient>> executor(session);
-  strategy::PlannedOrder planned;
-  planned.instrument_ = kInstrument;
-  planned.side_ = OrderSide::BUY;
-  planned.quantity_ = Decimal64::parse("1");
-  const auto sent = executor.place(planned);
-  CHECK(sent == runner::SendOutcome::REFUSED_LOCALLY);
-}
-
-TEST_CASE("a data-only trading session keeps the startup gate and a recovered hold", "[data-only]") {
-  // Bound as the trading session by mistake: the listing fails rather than reading as empty, so the gate
-  // stays held, and a hold recovered from the journal is not released by it.
-  using Session = BlockingSession<vendor::BlockingClient>;
-  Session session(std::make_shared<vendor::BlockingClient>(), data_only::NoAccount{});
-  runner::MemoryJournal journal;
-  runner::JournalEntry entry;
-  entry.id_ = "run-1";
-  entry.action_ = runner::JournalAction::PLACE;
-  entry.outcome_ = runner::JournalOutcome::PENDING;
-  entry.recorded_at_ = std::chrono::system_clock::now() - std::chrono::minutes(5);
-  entry.instrument_ = kInstrument;
-  entry.side_ = OrderSide::BUY;
-  entry.type_ = OrderType::LIMIT;
-  entry.quantity_ = Decimal64::parse("1");
-  entry.price_ = Decimal64::parse("100");
-  REQUIRE(journal.append(entry));
-
-  auto observing = live::bind_observer(session, CountsBars{});
-  REQUIRE_FALSE(runner::recover_runner(observing, journal).clean());
-  REQUIRE(observing.ledger().requires_reconcile(kInstrument));
-
-  live::SessionSource<Session, runner::MemoryJournal> source(session, {kInstrument});
-  source.set_journal(journal);
-  CHECK(source.read_order_list(observing) == runner::PollOutcome::FAILED);
-  CHECK(observing.ledger().requires_reconcile(kInstrument));
-  CHECK(source.poll(runner::PollKind::HOLDINGS, observing) == runner::PollOutcome::FAILED);
-}
-
 TEST_CASE("a data-only session serves a source whose trading session is another broker", "[data-only]") {
-  // The use the helper is for: the account through one session, bars from the vendor. The trading side
-  // here is the vendor too, for want of a broker without a network; what matters is that the bars come
-  // from the `MarketData` session.
-  using Session = BlockingSession<vendor::BlockingClient>;
-  auto trading_client = std::make_shared<vendor::BlockingClient>();
+  // The use the helper is for: the account through one session, bars from the vendor. The trading side is
+  // a stand-in that declares itself not data-only (`TradingStandIn`, below); only its type matters, and
+  // the bars must come from the `MarketData` session.
+  using Trading = BlockingSession<vendor::TradingStandIn>;
+  using Data = BlockingSession<vendor::BlockingClient>;
+  auto trading_client = std::make_shared<vendor::TradingStandIn>();
   auto data_client = std::make_shared<vendor::BlockingClient>();
-  Session trading(trading_client, data_only::NoAccount{});
-  Session data(data_client, data_only::NoAccount{});
-  live::SessionSource<Session, runner::MemoryJournal, Session> source(trading, data, {kInstrument});
+  Trading trading(trading_client, data_only::NoAccount{});
+  Data data(data_client, data_only::NoAccount{});
+  live::SessionSource<Trading, runner::MemoryJournal, Data> source(trading, data, {kInstrument});
   source.set_bar_query(BarInterval::ONE_DAY, 10);
   auto observing = live::bind_observer(trading, CountsBars{});
   CHECK(source.poll(runner::PollKind::BARS, observing) == runner::PollOutcome::UPDATED);
@@ -462,40 +274,3 @@ TEST_CASE("a refusal through an erased strand executor completes on that strand"
   check_refused_locally(**moved);
 }
 
-TEST_CASE("a polling loop over a data-only trading session stays at the order-list gate", "[data-only]") {
-  using Session = BlockingSession<vendor::BlockingClient>;
-  Session session(std::make_shared<vendor::BlockingClient>(), data_only::NoAccount{});
-  auto observing = live::bind_observer(session, CountsBars{});
-  live::SessionSource<Session, runner::MemoryJournal> source(session, {kInstrument});
-  source.set_bar_query(BarInterval::ONE_DAY, 10);
-  runner::StopSource stop;
-
-  SECTION("bars only: the run ends on its bound, the gate still held") {
-    runner::PollSchedule schedule;
-    schedule.bars_ = std::chrono::seconds(1);
-    runner::PollingLoop<decltype(observing), decltype(source), runner::ManualClock> loop(
-      observing, source, schedule, runner::ManualClock(std::chrono::system_clock::now())
-    );
-    loop.allow_unbounded_portfolio_age();
-    const auto report = loop.run(stop, 6);
-    CHECK_FALSE(report.order_list_read_);
-    REQUIRE(report.final_gate_.has_value());
-    CHECK(*report.final_gate_ == strategy::HaltReason::ORDER_LIST_UNREAD);
-    CHECK_FALSE(report.abandoned_);
-  }
-
-  SECTION("holdings scheduled: their failures exhaust the budget") {
-    runner::PollSchedule schedule;
-    schedule.bars_ = std::chrono::seconds(1);
-    schedule.holdings_ = std::chrono::seconds(1);
-    runner::PollingLoop<decltype(observing), decltype(source), runner::ManualClock> loop(
-      observing, source, schedule, runner::ManualClock(std::chrono::system_clock::now())
-    );
-    loop.allow_unbounded_portfolio_age();
-    const auto report = loop.run(stop, 20);
-    CHECK_FALSE(report.order_list_read_);
-    CHECK(report.abandoned_);
-    REQUIRE(report.abandoned_kind_.has_value());
-    CHECK(*report.abandoned_kind_ == runner::PollKind::HOLDINGS);
-  }
-}

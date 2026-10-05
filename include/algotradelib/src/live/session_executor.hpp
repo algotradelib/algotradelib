@@ -45,6 +45,13 @@ public:
   /** The bound broker's tag, forwarded from the session. */
   using BrokerTag = typename Session::BrokerTag;
 
+  static_assert(
+    !is_data_only_caps<Caps>,
+    "SessionExecutor sends orders, and this session's client is a market-data source (DataOnlyTraits) "
+    "that takes none: bind a broker's session here, and give the data source to SessionSource as its "
+    "market-data session"
+  );
+
   /**
    * Binds a session.
    *

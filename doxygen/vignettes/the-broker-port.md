@@ -167,11 +167,15 @@ check it as they check any adapter.
 A member the specialization declares hides every base member of that name,
 overloads included; re-expose one with `using DataOnlyTraits<Tag>::holdings;`.
 
-What a data-only session is not: bound as the *trading* session it compiles, and
-trades nothing. Every order refuses locally and the startup listing fails, so the
-order-list gate stays held. Scheduled holdings polls fail and exhaust the loop's
-failure budget; without them the run does not end on its own, and a bounded run
-can finish `CLEAN` with the gate still held (`order_list_read_` in its report).
+What a data-only session is not: a trading session. The base marks the client
+(`BrokerCaps<Client>::data_only`), and `live::SessionExecutor`, which sends orders,
+and the first (trading) session of a `live::SessionSource` refuse it with a
+`static_assert`, so a program wiring a data vendor where orders go does not
+build. It is accepted as the market-data session,
+`SessionSource<Trading, Journal, MarketData>`. Called directly, the session still
+refuses every order at run time, which is all a data client written by hand
+without the base gets.
+
 `live_program::trade` and `observe` in `examples/live_program.hpp` read reference
 data from the market-data session, so they need a vendor that declares
 `has_reference_data`.

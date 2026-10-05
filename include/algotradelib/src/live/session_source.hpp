@@ -125,6 +125,15 @@ public:
   /** The bound broker's tag, forwarded from the session. */
   using BrokerTag = typename Session::BrokerTag;
 
+  // The trading session is read for holdings, the order listing and history, which a market-data source
+  // does not have; it belongs in `MarketData`, which this does not check.
+  static_assert(
+    !is_data_only_caps<Caps>,
+    "SessionSource's first session is the trading session (holdings, orders), and this one's client is a "
+    "market-data source (DataOnlyTraits): pass a broker's session first and the data source as the "
+    "market-data session, SessionSource<Trading, Journal, MarketData>"
+  );
+
   /**
    * Whether a successful order-list read leaves the broker's outstanding orders in the portfolio.
    *
