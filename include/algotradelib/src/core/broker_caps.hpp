@@ -49,7 +49,8 @@ constexpr SellableBasis inquiry_basis() {
  * every broker. Every specialization must answer every question explicitly, and
  * none has a default: a `false` is not always the safe answer (one for
  * `has_history_cursor` says the adapter returns the whole history in one answer,
- * which an adapter that pages cannot honour; one for `has_working_orders` stops a
+ * which an adapter that exposes another page cannot honour (one that walks the
+ * pages itself and returns them all can); one for `has_working_orders` stops a
  * runner keeping the orders it sent), so a missing
  * answer does not compile rather than being chosen for the adapter. Two questions
  * are asked only of a broker that makes the inquiry they are about, and only that
