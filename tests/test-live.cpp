@@ -7707,3 +7707,41 @@ TEST_CASE("the startup read sends no limit to a broker that does not honour one"
   REQUIRE_FALSE(session.history_queries().empty());
   CHECK_FALSE(session.history_queries().front().limit_);
 }
+
+TEST_CASE("a deferred stop's evidence that runs past the page limit releases nothing", "[history][trigger]") {
+  // The evidence path reports `*last_error_` when its read fails; running out of pages used to fail with no
+  // error set. Every page here holds the stop's cancelled row and says there is more.
+  FakeSession<WorkingWithCursor> session;
+  auto bound = live::bind(session, FlattensOnPhase{}, {});
+  live::SessionSource<FakeSession<WorkingWithCursor>> source(session, {samsung()});
+  bound.context().set_instrument(samsung_reference());
+  bound.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  auto portfolio = held_position<WorkingWithCursor>("10", nullptr);
+  portfolio.working_.push_back(resting_stop());
+  bound.context().set_portfolio(portfolio);
+  bound.feed(strategy::MarketPhase::POST_CLOSE);
+  REQUIRE(bound.deferred_targets().size() == 1);
+
+  session.history_by_query_ = [](const OrderHistoryQuery&) {
+    OrderSnapshot row;
+    row.order_id_ = "STOP-1";
+    row.instrument_ = samsung();
+    row.side_ = OrderSide::SELL;
+    row.type_ = OrderType::STOP_LIMIT;
+    row.status_ = OrderStatus::CANCELED;
+    row.quantity_ = Decimal64::parse("10");
+    row.execution_.filled_quantity_ = Decimal64::parse("0");
+    OrderPage page;
+    page.orders_.push_back(row);
+    return saying_more(page);
+  };
+  WorkingOrders<FakeBroker> listing;
+  listing.received_at_ = live_hour(1);
+  session.set_working_orders(listing);
+
+  CHECK(source.poll(runner::PollKind::WORKING_ORDERS, bound) == runner::PollOutcome::FAILED);
+  REQUIRE(source.last_error());
+  CHECK(source.last_error()->broker_code_ == "history_page_limit");
+  CHECK(session.placed().empty());
+  CHECK(bound.deferred_targets().size() == 1);
+}
