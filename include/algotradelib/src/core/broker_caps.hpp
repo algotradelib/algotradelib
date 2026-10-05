@@ -48,8 +48,9 @@ constexpr SellableBasis inquiry_basis() {
  * strategy gates on with `if constexpr` so one source file compiles against
  * every broker. Every specialization must answer every question explicitly, and
  * none has a default: a `false` is not always the safe answer (one for
- * `has_history_cursor` reads a first page as the whole history; one for
- * `has_working_orders` stops a runner keeping the orders it sent), so a missing
+ * `has_history_cursor` says the adapter returns the whole history in one answer,
+ * which an adapter that pages cannot honour; one for `has_working_orders` stops a
+ * runner keeping the orders it sent), so a missing
  * answer does not compile rather than being chosen for the adapter. Two questions
  * are asked only of a broker that makes the inquiry they are about, and only that
  * broker answers them: `working_orders_state_terminal` and `sellable_inquiry_basis`.

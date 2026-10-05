@@ -382,6 +382,19 @@ set_tests_properties(strategy-refuses-a-runner-context-by-value PROPERTIES
     TIMEOUT 300
 )
 
+# A final strategy cannot be checked for handlers the runner would skip, so it is refused.
+add_library(algotradelib-strategy-probe-final OBJECT EXCLUDE_FROM_ALL strategy-probe-final.cpp)
+target_link_libraries(algotradelib-strategy-probe-final PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME strategy-refuses-a-final-strategy
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-final
+            --config "$<CONFIG>"
+)
+set_tests_properties(strategy-refuses-a-final-strategy PROPERTIES
+    PASS_REGULAR_EXPRESSION "a final strategy cannot be checked for a handler the runner would skip"
+    TIMEOUT 300
+)
+
 # The same guarantee for the dry runner: a dry run links no transport, so a dry-run binary has no
 # code path that could place an order.
 add_executable(algotradelib-runner-isolation test-runner-isolation.cpp)

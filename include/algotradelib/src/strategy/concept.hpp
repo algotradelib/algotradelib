@@ -82,8 +82,8 @@ ATL_DETECT_HANDLER_2(has_on_phase, on_phase, MarketPhase);
  * call". Looking NAME up in a class that derives from `S` and from one declaring `int NAME` is ambiguous
  * exactly when `S` declares it, which works for a member template, where `&S::NAME` cannot name one.
  *
- * **A `final` class cannot be derived from, so it reads "not declared"**, and a non-class type does too:
- * a malformed handler on a `final` strategy is still skipped. `plan/todo/strategy-final-handlers.md`.
+ * **A `final` class cannot be derived from, so it reads "not declared"**, and a non-class type does too.
+ * That is why `StrategyConformance` refuses a `final` strategy outright rather than check it this way.
  */
 #define ATL_DETECT_DECLARED(NAME)                                                        \
   struct NAME##_fallback {                                                               \
@@ -414,6 +414,13 @@ struct StrategyConformance {
     "the context by reference as its first parameter. A handler with a different signature is "
     "not detected, so check the parameter types: on_bar takes (Ctx&, const BarEvent&)"
   );
+  // A strategy's handler names are looked up through a class derived from it, which a `final` class does
+  // not allow; checked any other way, a handler the runner cannot call would be skipped in silence.
+  static_assert(
+    !std::is_final_v<S>,
+    "a final strategy cannot be checked for a handler the runner would skip, because its member names "
+    "cannot be looked up; remove `final` from the strategy class"
+  );
   // A handler the runner cannot call is skipped by dispatch, so one that is declared must be callable.
   static_assert(
     !strategy_detail::declares_on_start<S> || strategy_detail::has_on_start<S, Ctx>::value,
@@ -471,7 +478,7 @@ struct StrategyConformance {
  * - at least one handler is callable as this runner calls it;
  * - **every handler `S` declares is callable as this runner calls it**, because one that is not is
  *   skipped by the runner in silence: an `on_fill(Ctx&, Fill&)` taking a non-const event never hears a
- *   fill. Not checked for a `final` strategy, whose names cannot be looked up this way. A handler
+ *   fill. A `final` strategy is refused, because its names cannot be looked up this way. A handler
  *   constrained away for some contexts (`enable_if`, or a trailing `decltype`) is rejected: declare it
  *   unconditionally and gate inside it with `if constexpr`. A wrapper forwarding to an inner strategy
  *   that may lack the handler does the same, gating on whether the inner call compiles;
@@ -481,8 +488,8 @@ struct StrategyConformance {
  *   body is compiled where its runner calls it.
  *
  * A handler that takes its context **by value** is not callable, because neither the runner's context
- * nor a probe context can be copied; on a strategy that is not `final` it is reported as declared and not
- * callable, and with a copyable context of a caller's own, as not generic. (Were it called, what it
+ * nor a probe context can be copied; it is reported as declared and not callable, and with a copyable
+ * context of a caller's own, as not generic. (Were it called, what it
  * submitted would go to the copy and be lost.)
  *
  * Usable at namespace, class, and block scope.

@@ -554,7 +554,6 @@ struct PhaseByConstRef {
 
 ATL_ASSERT_STRATEGY(InheritsBarOnly, MinimalContext);
 ATL_ASSERT_STRATEGY(OverloadedFill, MinimalContext);
-ATL_ASSERT_STRATEGY(FinalNonConstFill, MinimalContext);
 ATL_ASSERT_STRATEGY(EventsByValue, MinimalContext);
 ATL_ASSERT_STRATEGY(PhaseByConstRef, MinimalContext);
 
@@ -623,9 +622,10 @@ static_assert(!std::is_copy_constructible_v<MinimalContext>);
 static_assert(!std::is_copy_assignable_v<FullContext>);
 static_assert(std::is_move_constructible_v<MinimalContext>);
 
-TEST_CASE("a final strategy's uncallable handler is still skipped") {
-  // Pinned so that closing the gap shows up here: this strategy passes ATL_ASSERT_STRATEGY above, and
-  // its fill handler, taking a non-const event, is never called. plan/todo/strategy-final-handlers.md.
+TEST_CASE("dispatch alone skips a final strategy's uncallable handlers") {
+  // Why ATL_ASSERT_STRATEGY refuses a `final` strategy (tests/strategy-probe-final.cpp): its handler names
+  // cannot be looked up, so dispatch would skip these two in silence -- a non-const event, and a context
+  // taken by value, which on `main` was called with a copy.
   MinimalContext ctx;
   FinalNonConstFill strategy_instance;
   runner::dispatch::fill(strategy_instance, ctx, strategy::Fill{});

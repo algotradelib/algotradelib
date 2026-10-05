@@ -40,7 +40,8 @@ adapter's own (a test is the natural place):
   signature, a thunk that copies its token or an unanswered capability fails the
   build there, with the compiler's own diagnostic naming the traits and the member.
 - No capability has a default. A `false` is not always the safe answer: one for
-  `has_history_cursor` reads a first page as the whole history, and one for
+  `has_history_cursor` says the adapter returns the whole history in one answer (a
+  page that still offers more is then refused as incomplete), and one for
   `has_working_orders` stops a runner keeping the orders it sent. So an unanswered
   constant does not compile rather than being chosen for the adapter.
   `working_orders_state_terminal` and `sellable_inquiry_basis` are asked only of a

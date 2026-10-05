@@ -204,14 +204,14 @@ where an operator's stop exists.
   so on. The runner calls a handler only when that call compiles, so an `on_fill(Ctx&, Fill&)` with a
   non-const event, or an `on_phase(Ctx&)` with no event, would otherwise be skipped in silence and never
   hear a fill or a phase change. An event taken by value is fine; a context taken by value is not, since
-  no context can be copied (what the handler submitted would go to the copy). This is not checked for a `final`
-  strategy, so do not mark a strategy `final`. A handler disabled for some contexts with `enable_if` is
+  no context can be copied (what the handler submitted would go to the copy). A `final` strategy is refused, since its handlers cannot be checked; do not mark a strategy `final`. A handler disabled for some contexts with `enable_if` is
   rejected: declare it plainly and gate inside it with `if constexpr`;
 - every handler callable for `Ctx` is also callable for two unrelated probe contexts. That catches a
   handler written against one concrete context type, which compiles for that runner and silently
   excludes every other, so the strategy could not be dry-run or backtested without being rewritten.
 
-These read declarations, not bodies: a handler's body is compiled when a runner calls it.
+These read declarations, not bodies, except that a handler with a deduced return type (`auto`) has its
+body compiled for each context; any other handler's body is compiled when a runner calls it.
 
 A consequence worth knowing before it bites: a strategy declared *inside* a function cannot have
 template members at all, because C++ forbids templates in local classes. Declare strategies at
@@ -351,8 +351,8 @@ void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
 
 Run the handler once on `strategy::FullContext` and once on `strategy::MinimalContext` in a test to
 type-check **both** branches: one has every capability present and the other none.
-`ATL_ASSERT_STRATEGY` reads declarations, so it does not compile a body. A key attached for a broker that accepts none is refused
-rather than dropped: dropping it would make a retry look safe on a broker offering no such
+`ATL_ASSERT_STRATEGY` reads declarations, so it does not compile a body (unless the handler's return type
+is deduced). A key attached for a broker that accepts none is refused rather than dropped: dropping it would make a retry look safe on a broker offering no such
 guarantee.
 
 ## What you do not have to handle

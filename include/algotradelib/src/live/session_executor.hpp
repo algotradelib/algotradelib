@@ -160,8 +160,8 @@ public:
     request.venue_ = requested_route(order.venue_);
     request.quantity_ = order.quantity_;
     request.price_ = order.price_;
-    // A broker that does not declare `has_trigger_price` is refused it by the session before its
-    // adapter runs, which `outcome_of` reports as a local refusal: nothing was sent.
+    // A broker whose `has_trigger_price` is false is refused it by the session before its adapter runs,
+    // which `outcome_of` reports as a local refusal: nothing was sent.
     request.trigger_price_ = order.trigger_price_;
     if constexpr (Caps::has_client_order_id) {
       request.client_order_id_ = order.client_order_id_;
