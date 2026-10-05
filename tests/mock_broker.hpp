@@ -313,44 +313,14 @@ struct Broker {
 
 namespace algotradelib {
 
+namespace mock_port {
+
 /**
- * Broker port adaptation for the in-memory client.
- *
- * Nothing outside this test header is touched to add it, which is the property
- * being demonstrated.
+ * The capabilities the in-memory broker answers, apart from its other members so a probe can build an
+ * adapter that omits one. `data_only` and `working_orders_state_terminal` are declared in the
+ * specialization instead, so a probe inheriting this omits exactly the one it does not restate.
  */
-template <>
-struct BrokerTraits<mock::MockClient> {
-  /** Concrete client this specialization adapts. */
-  using Client = mock::MockClient;
-
-  /** Configuration type. */
-  using Config = mock::MockConfig;
-
-  /** Account selector type. */
-  using Account = mock::MockAccount;
-
-  /** Compile-time identity of the in-memory broker. */
-  using BrokerTag = mock::Broker;
-
-  /** Acknowledgement type. */
-  using PlaceAck = mock::MockAck;
-
-  /** Amendment type. */
-  using Amendment = mock::MockAmendment;
-
-  /** History selector type. */
-  using HistoryQuery = mock::MockHistorySelector;
-
-  /** Amendable-order result type. */
-  using WorkingOrdersResult = mock::MockLiveOrders;
-
-  /** Normalized broker name. */
-  static constexpr std::string_view name = mock::Broker::name;
-
-  /** This client completes through a completion token. */
-  static constexpr bool blocking = false;
-
+struct Capabilities {
   /** No account listing. */
   static constexpr bool has_account_discovery = false;
 
@@ -363,15 +333,8 @@ struct BrokerTraits<mock::MockClient> {
   /** Reports the quantity still open. */
   static constexpr bool has_amendable_quantity = true;
 
-  /**
-   * Set so the `true` answer is compiled through the public capability, not only detected.
-   *
-   * Every shipped adapter answers `false`, so without a fixture stating `true` the constant's
-   * other branch would never be instantiated -- which `plan/README.md` records as the way a
-   * capability constant goes unchecked. Nothing in the library reads it yet; it is a statement
-   * a caller gates on.
-   */
-  static constexpr bool working_orders_state_terminal = true;
+  /** Reads no trigger price, so the session refuses one. */
+  static constexpr bool has_trigger_price = false;
 
   /** No single-order inquiry. */
   static constexpr bool has_order_by_id = false;
@@ -411,6 +374,44 @@ struct BrokerTraits<mock::MockClient> {
   static constexpr bool has_calendar = false;
   static constexpr bool has_calendar_range = false;
   static constexpr bool has_calendar_sessions = false;
+};
+
+/**
+ * Broker port adaptation for the in-memory client, apart from its capabilities.
+ *
+ * Nothing outside this test header is touched to add it, which is the property
+ * being demonstrated.
+ */
+struct Members {
+  /** Concrete client this specialization adapts. */
+  using Client = mock::MockClient;
+
+  /** Configuration type. */
+  using Config = mock::MockConfig;
+
+  /** Account selector type. */
+  using Account = mock::MockAccount;
+
+  /** Compile-time identity of the in-memory broker. */
+  using BrokerTag = mock::Broker;
+
+  /** Acknowledgement type. */
+  using PlaceAck = mock::MockAck;
+
+  /** Amendment type. */
+  using Amendment = mock::MockAmendment;
+
+  /** History selector type. */
+  using HistoryQuery = mock::MockHistorySelector;
+
+  /** Amendable-order result type. */
+  using WorkingOrdersResult = mock::MockLiveOrders;
+
+  /** Normalized broker name. */
+  static constexpr std::string_view name = mock::Broker::name;
+
+  /** This client completes through a completion token. */
+  static constexpr bool blocking = false;
 
   /**
    * The in-memory broker publishes minute and daily bars, like both real ones, and
@@ -573,6 +574,25 @@ struct BrokerTraits<mock::MockClient> {
     static_cast<void>(account);
     return client.async_history(std::move(query), std::forward<Token>(token));
   }
+};
+
+} // namespace mock_port
+
+/** The in-memory client's adaptation: its members and its capabilities. */
+template <>
+struct BrokerTraits<mock::MockClient> : mock_port::Members, mock_port::Capabilities {
+  /** Takes orders. */
+  static constexpr bool data_only = false;
+
+  /**
+   * Set so the `true` answer is compiled through the public capability, not only detected.
+   *
+   * Every shipped adapter answers `false`, so without a fixture stating `true` the constant's
+   * other branch would never be instantiated -- which `plan/README.md` records as the way a
+   * capability constant goes unchecked. Nothing in the library reads it yet; it is a statement
+   * a caller gates on.
+   */
+  static constexpr bool working_orders_state_terminal = true;
 };
 
 } // namespace algotradelib

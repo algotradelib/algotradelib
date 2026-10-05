@@ -1,7 +1,6 @@
 // Deliberately does not compile. `conformance-verbs-reject-unwalkable-account-rows` builds this file
-// and passes only on the failed comparison inside `to_account_info`'s range-for. The adapter passes
-// `ATL_ASSERT_BROKER`, which checks only that a blocking listing answers a `Result`; the rows are
-// `ATL_ASSERT_BROKER_VERBS`' to check, because it calls the real `list_accounts`.
+// and passes only on the failed comparison inside `to_account_info`'s range-for, which
+// `ATL_ASSERT_BROKER` reaches because it calls the real `list_accounts`.
 #include <algotradelib/broker>
 #include <algotradelib/kiwoom>
 
@@ -47,4 +46,3 @@ struct BrokerTraits<probe::Client> : BrokerTraits<kiwoom::KiwoomBlockingClient> 
 } // namespace algotradelib
 
 ATL_ASSERT_BROKER(probe::Client);
-ATL_ASSERT_BROKER_VERBS(probe::Client);

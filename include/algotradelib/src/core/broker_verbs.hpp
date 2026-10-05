@@ -12,31 +12,33 @@
 namespace algotradelib {
 
 /**
- * Compiles every port verb a client's capabilities claim.
+ * The conformance check an adapter author runs: `ATL_ASSERT_BROKER(Client)`.
  *
- * `ATL_ASSERT_BROKER` checks a traits specialization when a session is built, and it checks an
- * asynchronous thunk **by name only**: the handler a session hands a thunk is built around the
- * caller's own handler, whose executor type is the caller's choice and which may be move-only, so no
- * stand-in handler can probe a call without misjudging some thunk that works. That leaves a thunk
- * with the wrong signature undetected until its verb is first called -- which, for a capability no
- * caller happens to use yet, can be never. `BrokerTraits<kis::KisClient>` claimed reference data for
- * eight slices with no thunk behind it for exactly that reason.
+ * It does what a caller would. It calls every verb the client's capabilities claim, through the real
+ * session, with a plain callback, a move-only callback and `use_future` (or directly, for a blocking
+ * client), and it reads every capability constant once. The functions are compiled and never run. A
+ * missing member, a thunk with the wrong signature, a thunk that copies its token, or an unanswered
+ * capability fails the build here, with the compiler's own diagnostic.
  *
- * This closes the gap by doing what a caller would: it calls every claimed verb, through the real
- * session, with a plain callback, a move-only callback and `use_future`, and discards nothing but the
- * calls themselves -- the functions are compiled and never run. A capability whose verb does not
- * compile for one of those tokens fails the build here, with the compiler's own diagnostic at the
- * thunk.
+ * **Why calling and not detecting.** A thunk is handed whatever the session builds around the caller's
+ * own handler, whose executor type is the caller's choice and which may be move-only. A trait that
+ * models those calls has to model every rule C++ applies to them, and an earlier version that tried
+ * kept missing one. Nothing checks a traits specialization when a session is built: a verb nobody
+ * calls is compiled only here.
  *
- * **An adapter author asserts it once, in any one source file of their own** -- a test is the natural
- * place, since it instantiates the whole broker:
+ * **Assert it once, in any one source file** -- a test is the natural place, since it instantiates the
+ * whole broker:
  *
  * @code
- * ATL_ASSERT_BROKER_VERBS(my::Client);
- * ATL_ASSERT_BROKER_VERBS(my::BlockingClient);
+ * ATL_ASSERT_BROKER(my::Client);
+ * ATL_ASSERT_BROKER(my::BlockingClient);
  * @endcode
  *
  * The library asserts it for every shipped client in `tests/test-capability-conformance.cpp`.
+ *
+ * **What it does not prove**: that an asynchronous thunk completes exactly once, or on the right
+ * executor; that a capability the traits claim is true of the broker; or that a thunk whose body does
+ * nothing does anything. Those take run-time tests.
  */
 namespace conformance {
 
@@ -175,7 +177,7 @@ void call_claimed_blocking_verbs(
 /**
  * Instantiates the verb callers for `Client` by taking their addresses, which compiles them.
  *
- * `constexpr` so `ATL_ASSERT_BROKER_VERBS` can read it in a `static_assert` at any scope; the value
+ * `constexpr` so `ATL_ASSERT_BROKER` can read it in a `static_assert` at any scope; the value
  * is always true, and what matters is the instantiation it forces.
  */
 template <typename Client>
@@ -193,17 +195,19 @@ constexpr bool claimed_verbs_compile() {
 } // namespace conformance
 
 /**
- * Compiles every port verb `Client`'s capabilities claim, through the real session, and fails the
- * build if one does not compile. See `algotradelib::conformance`.
+ * Fails the build unless `Client` is a conforming broker: every port verb its capabilities claim
+ * compiles through the real session, and every capability constant is answered. See
+ * `algotradelib::conformance`.
  *
- * Usable at namespace, class and block scope. Stronger than `ATL_ASSERT_BROKER`, which it does not
- * replace: that one names a missing member in its own words, this one reports a wrong signature in
- * the compiler's.
+ * Usable at namespace, class and block scope. Meant for one translation unit per client, since it
+ * compiles every claimed verb with three completion tokens.
  */
-#define ATL_ASSERT_BROKER_VERBS(Client)                                                  \
+#define ATL_ASSERT_BROKER(Client)                                                        \
   static_assert(                                                                         \
-    ::algotradelib::conformance::claimed_verbs_compile<Client>(),                        \
-    "every port verb this client's capabilities claim must compile"                       \
+    ::algotradelib::conformance::claimed_verbs_compile<Client>() &&                      \
+      ::algotradelib::answers_every_capability<Client>(),                                \
+    "every port verb this client's capabilities claim must compile, and every capability " \
+    "must be answered"                                                                   \
   )
 
 } // namespace algotradelib

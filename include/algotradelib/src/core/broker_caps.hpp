@@ -12,75 +12,32 @@ namespace algotradelib {
 namespace caps_detail {
 
 /**
- * Whether a traits specialization states what its sellable *inquiry* answer is evidence of.
- *
- * **Detected with a default rather than required**, which is the opposite of the rule every other
- * constant here follows, and deliberately. Requiring it would make a traits specialization written
- * against an earlier release fail to compile on a member its author never heard of; detecting it
- * makes that adapter's checked sells *refuse*, at run time, with a message naming the declaration to
- * add. Both are discoverable and only the second leaves the rest of the adapter working -- and
- * neither one lets an unstated basis be enforced against, which is what matters.
+ * Reads `T::working_orders_state_terminal` where `T::has_working_orders` is true, and answers false where
+ * it is not: the question is asked only of a broker that lists working orders, so only that broker must
+ * answer it. `T` is a traits specialization or a hand-written capability set.
  */
-template <typename Traits, typename = void>
-struct stated_inquiry_basis {
-  static constexpr SellableBasis value{};
-};
-
-template <typename Traits>
-struct stated_inquiry_basis<Traits, std::void_t<decltype(Traits::sellable_inquiry_basis)>> {
-  static constexpr SellableBasis value = Traits::sellable_inquiry_basis;
-};
-
-/**
- * Whether a traits specialization says its working-order listing can state a terminal status.
- *
- * **Detected with a default of `false`, for the same reason as `stated_inquiry_basis` above and
- * with the safe direction pointing the other way.** An adapter written against an earlier release
- * says nothing, and an unstated answer must be the one that cannot mislead: a caller told `false`
- * polls for an order's outcome, while a caller told a wrong `true` waits for an event that never
- * arrives. Those two mistakes are not symmetrical, and only the first is recoverable by the caller.
- */
-template <typename Traits, typename = void>
-struct stated_terminal_working_state {
-  static constexpr bool value = false;
-};
-
-template <typename Traits>
-struct stated_terminal_working_state<
-  Traits, std::void_t<decltype(Traits::working_orders_state_terminal)>
-> {
-  static constexpr bool value = Traits::working_orders_state_terminal;
-};
-
-/**
- * Whether a traits specialization says its adapter transmits a stop order's trigger price.
- *
- * **Detected with a default of `false`**, because the harm is all on one side. An adapter written
- * before `OrderRequest::trigger_price_` existed never reads it, so forwarding a trigger to one sends
- * a stop order without its releasing condition, or a limit order with its trigger silently gone.
- * `BrokerSession` refuses a trigger to a broker that does not say `true`, and an adapter that
- * never offers stops needs to declare nothing.
- */
-template <typename Traits, typename = void>
-struct stated_trigger_price {
-  static constexpr bool value = false;
-};
-
-template <typename Traits>
-struct stated_trigger_price<Traits, std::void_t<decltype(Traits::has_trigger_price)>> {
-  static constexpr bool value = Traits::has_trigger_price;
-};
-
-/** Reads `T::data_only` where it is declared, false where it is not; see `BrokerCaps::data_only`. */
-template <typename T, typename = void>
-struct stated_data_only {
-  static constexpr bool value = false;
-};
-
 template <typename T>
-struct stated_data_only<T, std::void_t<decltype(T::data_only)>> {
-  static constexpr bool value = T::data_only;
-};
+constexpr bool terminal_working_state() {
+  if constexpr (T::has_working_orders) {
+    return T::working_orders_state_terminal;
+  } else {
+    return false;
+  }
+}
+
+/**
+ * Reads `T::sellable_inquiry_basis` where `T::sellable_source` is `INQUIRY`, and answers an unestablished
+ * basis where it is not: no inquiry is made there, so no figure needs one. `T` is a traits
+ * specialization or a hand-written capability set.
+ */
+template <typename T>
+constexpr SellableBasis inquiry_basis() {
+  if constexpr (T::sellable_source == SellableSource::INQUIRY) {
+    return T::sellable_inquiry_basis;
+  } else {
+    return SellableBasis{};
+  }
+}
 
 }  // namespace caps_detail
 
@@ -89,8 +46,14 @@ struct stated_data_only<T, std::void_t<decltype(T::data_only)>> {
  *
  * Each constant answers whether the broker *implements* an operation, which a
  * strategy gates on with `if constexpr` so one source file compiles against
- * every broker. Every specialization must answer every question explicitly; a
- * defaulted answer would let a new broker silently claim a feature it lacks.
+ * every broker. Every specialization must answer every question explicitly, and
+ * none has a default: a `false` is not always the safe answer (one for
+ * `has_history_cursor` reads a first page as the whole history; one for
+ * `has_working_orders` stops a runner keeping the orders it sent), so a missing
+ * answer does not compile rather than being chosen for the adapter. Two questions
+ * are asked only of a broker that makes the inquiry they are about, and only that
+ * broker answers them: `working_orders_state_terminal` and `sellable_inquiry_basis`.
+ * `ATL_ASSERT_BROKER` reads every one, so an adapter's own test finds an omission.
  *
  * Capability is not availability. Whether a *configuration* may call an
  * implemented operation stays a run-time matter: KIS does not offer its
@@ -136,22 +99,22 @@ struct BrokerCaps {
    * This is a statement about the *inquiry*, not about the adapter's parser. A parser able to
    * represent a terminal status proves only what it would do with such a row, never that the
    * endpoint supplies one, and answering `true` on that evidence would strand a caller waiting.
+   *
+   * Required where `has_working_orders` is true, and `false` here where it is not.
    */
-  static constexpr bool working_orders_state_terminal =
-    caps_detail::stated_terminal_working_state<Traits>::value;
+  static constexpr bool working_orders_state_terminal = caps_detail::terminal_working_state<Traits>();
 
   /**
    * Whether the adapter transmits `OrderRequest::trigger_price_` and `OrderShape::trigger_price_`.
    *
-   * **Defaulted to `false` for a traits type that does not declare it**, rather than required, so an
-   * adapter written against an earlier release keeps compiling and is treated as the adapter it is:
-   * one that has never read a trigger. `BrokerSession` refuses a placement or a modification
-   * carrying a trigger to such a broker with `unsupported_trigger_price`, before the adapter runs.
-   * A cancellation is never refused for one -- see `BrokerSession::cancel`.
+   * An adapter that does not read `trigger_price_` declares `false`. `BrokerSession` then refuses a
+   * placement or a modification carrying a trigger with `unsupported_trigger_price`, before the
+   * adapter runs, rather than sending a stop order without its releasing condition. A cancellation
+   * is never refused for one -- see `BrokerSession::cancel`.
    *
    * `true` at KIS and Kiwoom, `false` at Toss, which publishes no stop basis.
    */
-  static constexpr bool has_trigger_price = caps_detail::stated_trigger_price<Traits>::value;
+  static constexpr bool has_trigger_price = Traits::has_trigger_price;
 
   /**
    * Whether the client is a market-data source that takes no order: true for a traits type built on
@@ -163,11 +126,11 @@ struct BrokerCaps {
    * `live_program` reach both). A caller's direct `place` or `holdings` on the session is not checked; it
    * refuses at run time.
    *
-   * Declared as `static constexpr bool data_only`. Defaulted to `false` for a traits type that does not
-   * declare it, so every broker adapter compiles as before. A hand-written data client that declares
-   * `data_only = true` is caught too; one that does not is caught only by its own run-time refusals.
+   * Declared as `static constexpr bool data_only` by every traits specialization: `false` for a broker,
+   * `true` through `DataOnlyTraits`. A hand-written capability set a session publishes (`Session::Caps`)
+   * declares it too, since both binding checks read it directly; an unstated one does not build.
    */
-  static constexpr bool data_only = caps_detail::stated_data_only<Traits>::value;
+  static constexpr bool data_only = Traits::data_only;
 
   /** Whether the broker retrieves one order by its identifier. */
   static constexpr bool has_order_by_id = Traits::has_order_by_id;
@@ -234,12 +197,12 @@ struct BrokerCaps {
    * What a sellable figure obtained through the *inquiry* answers about.
    *
    * Only meaningful where `sellable_source` is `INQUIRY`: the figure arrives on its own, outside any
-   * holdings read, so nothing else can say what it covers. Unestablished unless the traits state it,
-   * so an adapter that answers an inquiry and characterizes nothing has its checked sells refused
+   * holdings read, so nothing else can say what it covers. Required where `sellable_source` is
+   * `INQUIRY`, and unestablished here where it is not. An adapter that makes the inquiry and has not
+   * established what the figure covers states `SellableBasis{}`, and its checked sells are refused
    * rather than enforced against a number of unknown meaning.
    */
-  static constexpr SellableBasis sellable_inquiry_basis =
-    caps_detail::stated_inquiry_basis<Traits>::value;
+  static constexpr SellableBasis sellable_inquiry_basis = caps_detail::inquiry_basis<Traits>();
 
   /** Whether the broker publishes the commission rates it charges the account. */
   static constexpr bool has_commission_schedule = Traits::has_commission_schedule;
@@ -293,12 +256,49 @@ struct BrokerCaps {
 };
 
 /**
- * Whether a session's capability set says its client is a market-data source that takes no order.
+ * Reads every `BrokerCaps<Client>` constant once, so a missing one fails here rather than where a caller
+ * first reads it. Always true; `ATL_ASSERT_BROKER` reads it.
  *
- * Takes the capability type a session publishes (`Session::Caps`), which a test double may define
- * without the member; such a set reads false.
+ * Needed because instantiating `BrokerCaps<Client>` does not evaluate its constants: each is evaluated
+ * where it is read, and a constant nothing in the adapter's own test reads would otherwise surface in a
+ * consumer's build. A constant added to `BrokerCaps` is added here.
  */
-template <typename Caps>
-inline constexpr bool is_data_only_caps = caps_detail::stated_data_only<Caps>::value;
+template <typename Client>
+constexpr bool answers_every_capability() {
+  using Caps = BrokerCaps<Client>;
+  constexpr bool read[] = {
+    Caps::has_account_discovery,
+    Caps::has_client_order_id,
+    Caps::has_working_orders,
+    Caps::has_amendable_quantity,
+    Caps::working_orders_state_terminal,
+    Caps::has_trigger_price,
+    Caps::data_only,
+    Caps::has_order_by_id,
+    Caps::has_partial_cancel,
+    Caps::history_requires_range,
+    Caps::has_history_cursor,
+    Caps::has_history_limit,
+    Caps::has_history_symbol_filter,
+    Caps::has_depth,
+    Caps::has_price_limits,
+    Caps::has_trade_prints,
+    Caps::has_batch_prices,
+    Caps::has_buying_power,
+    Caps::has_buying_power_quantity,
+    Caps::sellable_source == SellableSource::INQUIRY,
+    Caps::sellable_inquiry_basis.coverage_ == SellableBasis::Coverage::UNESTABLISHED,
+    Caps::has_commission_schedule,
+    Caps::has_reference_data,
+    Caps::has_batch_reference_data,
+    Caps::has_calendar,
+    Caps::has_calendar_range,
+    Caps::has_calendar_sessions,
+  };
+  static_cast<void>(read);
+  // Named, not called: the predicate need not be usable in a constant expression to be conforming.
+  static_cast<void>(&Caps::supports_interval);
+  return true;
+}
 
 } // namespace algotradelib

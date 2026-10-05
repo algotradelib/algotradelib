@@ -221,9 +221,10 @@ graph TD
 
 Core headers include no broker header, and adding a broker edits no shared file:
 `tests/mock_broker.hpp` adds a third broker entirely within itself, which is the only evidence worth
-having for that claim. `ATL_ASSERT_BROKER(Client)` reports a missing trait member by name instead of
-a template backtrace, and `ATL_ASSERT_BROKER_VERBS(Client)` compiles every verb the capabilities claim
-(see [the broker port](the-broker-port.md)).
+having for that claim. `ATL_ASSERT_BROKER(Client)`, asserted once in the adapter's own tests, compiles
+every verb the capabilities claim and reads every capability constant (see
+[the broker port](the-broker-port.md)). These checks are for safety at build time, not for speed: they
+generate no code, and what is fast at run time is the static dispatch they check.
 
 Three consequences that come up constantly:
 

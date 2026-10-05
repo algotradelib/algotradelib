@@ -145,10 +145,10 @@ add_executable(algotradelib-strategy-isolation test-strategy-isolation.cpp)
 target_link_libraries(algotradelib-strategy-isolation PRIVATE algotradelib::algotradelib)
 add_test(NAME strategy-surface-stays-isolated COMMAND algotradelib-strategy-isolation)
 
-# A traits specialization that claims a capability with no verb behind it must fail to compile, and
-# the failure must name what is missing. Built by the test rather than by `all`, because it is meant
-# not to build; the regular expression is the assertion text, so a deleted assertion -- or one that
-# no longer fires -- fails this test rather than passing it silently.
+# A traits specialization that claims a capability with no verb behind it must fail `ATL_ASSERT_BROKER`,
+# and the failure must name what is missing. Built by the test rather than by `all`, because it is meant
+# not to build; the regular expression is the diagnostic, so a check that no longer fires fails this test
+# rather than passing it silently. Each expression covers Clang's and GCC's wording.
 add_library(algotradelib-conformance-probe OBJECT EXCLUDE_FROM_ALL conformance-probe.cpp)
 target_link_libraries(algotradelib-conformance-probe PRIVATE algotradelib::algotradelib)
 add_test(
@@ -157,7 +157,7 @@ add_test(
             --config "$<CONFIG>"
 )
 set_tests_properties(conformance-names-an-unbacked-capability PROPERTIES
-    PASS_REGULAR_EXPRESSION "has_reference_data is true but instrument\\(client, instrument"
+    PASS_REGULAR_EXPRESSION "no member named 'instrument' in [^\n]*ClaimsReferenceData|'instrument' is not a member of [^\n]*ClaimsReferenceData"
     TIMEOUT 300
 )
 
@@ -186,8 +186,8 @@ set_tests_properties(data-only-refused-as-trading-session PROPERTIES
     TIMEOUT 300
 )
 
-# And the stronger check: an asynchronous thunk with the wrong signature passes `ATL_ASSERT_BROKER`,
-# which detects it by name, and must fail `ATL_ASSERT_BROKER_VERBS`, which calls it.
+# An asynchronous thunk under the right name with the wrong signature must fail `ATL_ASSERT_BROKER`, which
+# calls it.
 add_library(algotradelib-conformance-probe-verbs OBJECT EXCLUDE_FROM_ALL conformance-probe-verbs.cpp)
 target_link_libraries(algotradelib-conformance-probe-verbs PRIVATE algotradelib::algotradelib)
 add_test(
@@ -201,7 +201,7 @@ set_tests_properties(conformance-verbs-reject-a-wrong-signature PROPERTIES
 )
 
 # A thunk that copies its token works for every copyable token and not for a move-only one, which
-# a caller may pass; `ATL_ASSERT_BROKER_VERBS` calls every verb with one, so it must fail here.
+# a caller may pass; `ATL_ASSERT_BROKER` calls every verb with one, so it must fail here.
 add_library(algotradelib-conformance-probe-move-only OBJECT EXCLUDE_FROM_ALL conformance-probe-move-only.cpp)
 target_link_libraries(algotradelib-conformance-probe-move-only PRIVATE algotradelib::algotradelib)
 add_test(
@@ -214,8 +214,8 @@ set_tests_properties(conformance-verbs-reject-a-token-copy PROPERTIES
     TIMEOUT 300
 )
 
-# A blocking account listing whose rows a range-for cannot walk passes `ATL_ASSERT_BROKER`, which
-# checks only that it answers a `Result`, and must fail `ATL_ASSERT_BROKER_VERBS`, which calls it.
+# A blocking account listing whose rows a range-for cannot walk must fail `ATL_ASSERT_BROKER`, which calls
+# the real `list_accounts`.
 add_library(algotradelib-conformance-probe-verbs-accounts OBJECT EXCLUDE_FROM_ALL conformance-probe-verbs-accounts.cpp)
 target_link_libraries(algotradelib-conformance-probe-verbs-accounts PRIVATE algotradelib::algotradelib)
 add_test(
@@ -225,6 +225,89 @@ add_test(
 )
 set_tests_properties(conformance-verbs-reject-unwalkable-account-rows PROPERTIES
     PASS_REGULAR_EXPRESSION "broker_session.hpp:[0-9]+:[0-9]+: error: (invalid operands to binary expression|no match for .operator!=)"
+    TIMEOUT 300
+)
+
+# An adapter that leaves one capability unanswered must fail `ATL_ASSERT_BROKER`, naming it, even when no
+# verb is gated on it: there is no default.
+add_library(algotradelib-conformance-probe-constant OBJECT EXCLUDE_FROM_ALL conformance-probe-constant.cpp)
+target_link_libraries(algotradelib-conformance-probe-constant PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME conformance-requires-every-capability
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-conformance-probe-constant
+            --config "$<CONFIG>"
+)
+set_tests_properties(conformance-requires-every-capability PROPERTIES
+    PASS_REGULAR_EXPRESSION "no member named 'has_history_cursor'|'has_history_cursor' is not a member"
+    TIMEOUT 300
+)
+
+# A call to a verb the broker does not claim, made without a capability gate, must not compile, and the
+# failure must be the session's assertion naming the capability to gate on.
+add_library(algotradelib-conformance-probe-ungated OBJECT EXCLUDE_FROM_ALL conformance-probe-ungated.cpp)
+target_link_libraries(algotradelib-conformance-probe-ungated PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME conformance-refuses-an-ungated-call
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-conformance-probe-ungated
+            --config "$<CONFIG>"
+)
+set_tests_properties(conformance-refuses-an-ungated-call PROPERTIES
+    PASS_REGULAR_EXPRESSION "gate the call with BrokerCaps<Client>::has_depth"
+    TIMEOUT 300
+)
+
+# A hand-written capability set that does not say whether its client takes orders must not be admitted
+# as the executor's session: the binding check reads `data_only` directly.
+add_library(algotradelib-conformance-probe-caps-data-only OBJECT EXCLUDE_FROM_ALL conformance-probe-caps-data-only.cpp)
+target_link_libraries(algotradelib-conformance-probe-caps-data-only PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME conformance-caps-must-state-data-only
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-conformance-probe-caps-data-only
+            --config "$<CONFIG>"
+)
+set_tests_properties(conformance-caps-must-state-data-only PROPERTIES
+    PASS_REGULAR_EXPRESSION "no member named 'data_only' in [^\n]*SilentCaps|'data_only' is not a member of [^\n]*SilentCaps"
+    TIMEOUT 300
+)
+
+# The same for an adapter's traits, read through `BrokerCaps`: one that does not say whether its client
+# takes orders must not be admitted as the executor's session.
+add_library(algotradelib-conformance-probe-traits-data-only OBJECT EXCLUDE_FROM_ALL conformance-probe-traits-data-only.cpp)
+target_link_libraries(algotradelib-conformance-probe-traits-data-only PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME conformance-traits-must-state-data-only
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-conformance-probe-traits-data-only
+            --config "$<CONFIG>"
+)
+set_tests_properties(conformance-traits-must-state-data-only PROPERTIES
+    PASS_REGULAR_EXPRESSION "no member named 'data_only' in [^\n]*SilentAboutDataOnly|'data_only' is not a member of [^\n]*SilentAboutDataOnly"
+    TIMEOUT 300
+)
+
+# A constant asked only of some brokers is required of those: an adapter that lists working orders must
+# say whether a row can state a terminal status.
+add_library(algotradelib-conformance-probe-asked-terminal OBJECT EXCLUDE_FROM_ALL conformance-probe-asked-terminal.cpp)
+target_link_libraries(algotradelib-conformance-probe-asked-terminal PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME conformance-requires-an-asked-capability
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-conformance-probe-asked-terminal
+            --config "$<CONFIG>"
+)
+set_tests_properties(conformance-requires-an-asked-capability PROPERTIES
+    PASS_REGULAR_EXPRESSION "no member named 'working_orders_state_terminal' in [^\n]*SilentAboutTerminal|'working_orders_state_terminal' is not a member of [^\n]*SilentAboutTerminal"
+    TIMEOUT 300
+)
+
+# And a capability set that makes the sellable inquiry must say what the figure covers.
+add_library(algotradelib-conformance-probe-asked-basis OBJECT EXCLUDE_FROM_ALL conformance-probe-asked-basis.cpp)
+target_link_libraries(algotradelib-conformance-probe-asked-basis PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME conformance-requires-an-asked-basis
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-conformance-probe-asked-basis
+            --config "$<CONFIG>"
+)
+set_tests_properties(conformance-requires-an-asked-basis PROPERTIES
+    PASS_REGULAR_EXPRESSION "no member named 'sellable_inquiry_basis' in [^\n]*InquiresWithoutBasis|'sellable_inquiry_basis' is not a member of [^\n]*InquiresWithoutBasis"
     TIMEOUT 300
 )
 

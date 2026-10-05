@@ -131,8 +131,6 @@ public:
   /** Amendable orders of this broker. */
   using WorkingSet = WorkingOrders<BrokerTag>;
 
-  ATL_ASSERT_BROKER(Client);
-
   static_assert(
     !Traits::blocking,
     "BrokerSession requires an asynchronous client; use BlockingSession for a blocking facade"
@@ -772,8 +770,6 @@ public:
 
   /** Amendable orders of this broker. */
   using WorkingSet = WorkingOrders<BrokerTag>;
-
-  ATL_ASSERT_BROKER(Client);
 
   static_assert(
     Traits::blocking,

@@ -86,15 +86,6 @@ struct can_cancel<
 
 } // namespace
 
-TEST_CASE("every supported client satisfies the broker port") {
-  ATL_ASSERT_BROKER(kis::KisClient);
-  ATL_ASSERT_BROKER(kis::KisBlockingClient);
-  ATL_ASSERT_BROKER(tossinvest::TossClient);
-  ATL_ASSERT_BROKER(tossinvest::TossBlockingClient);
-  ATL_ASSERT_BROKER(mock::MockClient);
-  SUCCEED("conformance is checked at compile time");
-}
-
 TEST_CASE("capabilities record each broker's real differences") {
   static_assert(!BrokerCaps<kis::KisClient>::has_account_discovery);
   static_assert(BrokerCaps<tossinvest::TossClient>::has_account_discovery);
@@ -1050,81 +1041,46 @@ TEST_CASE("reference data is answered one instrument at a time by both brokers")
 
 namespace {
 
-/** A client whose traits say nothing about the working-order listing's terminal states. */
-struct SilentAboutTerminal {};
+/** A capability set that lists no working orders and says nothing about their terminal states. */
+struct ListsNoWorkingOrders {
+  static constexpr bool has_working_orders = false;
+};
 
-/** A client whose traits say its working-order listing does state them. */
-struct StatesTerminal {};
+/** A capability set whose sellable figure comes with the holdings and that states no inquiry basis. */
+struct SellableWithHoldings {
+  static constexpr SellableSource sellable_source = SellableSource::HOLDINGS;
+};
 
 } // namespace
 
-namespace algotradelib {
-
-/** Deliberately empty: this is an adapter written before the constant existed. */
-template <>
-struct BrokerTraits<SilentAboutTerminal> {};
-
-template <>
-struct BrokerTraits<StatesTerminal> {
-  static constexpr bool working_orders_state_terminal = true;
-};
-
-} // namespace algotradelib
-
-TEST_CASE("an unstated terminal-state answer defaults to the one that cannot strand a caller") {
-  // **Both sides of this constant are instantiated here on purpose.** Every shipped adapter answers
-  // `false`, so without these two the `true` branch would never be compiled and the default would
-  // never be exercised -- which is the shape `plan/README.md` records as *a capability constant that
-  // nothing instantiates is not checked*.
-  //
-  // The default is `false` rather than required, so an adapter written against an earlier release
-  // still compiles. `false` is the safe direction and the two mistakes are not symmetrical: a caller
-  // told `false` polls for an order's outcome, while a caller told a wrong `true` waits for an event
-  // that never arrives.
-  static_assert(!caps_detail::stated_terminal_working_state<BrokerTraits<SilentAboutTerminal>>::value);
-  static_assert(caps_detail::stated_terminal_working_state<BrokerTraits<StatesTerminal>>::value);
-
-  // **And through the public member, not only the detector.** Asserting on `caps_detail` alone
-  // would leave `BrokerCaps<...>::working_orders_state_terminal` -- the thing a caller actually
-  // gates on -- uninstantiated for the `true` answer.
+TEST_CASE("the terminal-state answer is read only where working orders are listed") {
+  // **Both answers are instantiated here on purpose.** Every shipped adapter answers `false`, so
+  // without the mock's `true` that branch of the public member would never be compiled -- the shape
+  // `plan/README.md` records as *a capability constant that nothing instantiates is not checked*.
   static_assert(BrokerCaps<mock::MockClient>::working_orders_state_terminal);
-
-  // And what the shipped adapters actually answer, which is the same for all three: none of their
-  // working-order inquiries states a terminal status.
+  // None of the shipped working-order inquiries states a terminal status.
   static_assert(!BrokerCaps<kis::KisClient>::working_orders_state_terminal);
   static_assert(!BrokerCaps<tossinvest::TossClient>::working_orders_state_terminal);
+
+  // A broker with no listing is not asked, so it need not answer, and reads `false`.
+  static_assert(!caps_detail::terminal_working_state<ListsNoWorkingOrders>());
+  // And an inquiry basis is asked only of a broker that makes the inquiry.
+  static_assert(!caps_detail::inquiry_basis<SellableWithHoldings>().is_enforceable());
+  // Where it is asked, the stated basis is what the session reads: Toss's, all three fields.
+  constexpr SellableBasis toss = BrokerCaps<tossinvest::TossClient>::sellable_inquiry_basis;
+  static_assert(toss.coverage_ == SellableBasis::Coverage::WHOLE_HOLDING);
+  static_assert(toss.resting_ == SellableBasis::RestingTreatment::DEDUCT);
+  static_assert(!toss.verified_);
+  static_assert(
+    BrokerCaps<tossinvest::TossBlockingClient>::sellable_inquiry_basis.coverage_ ==
+    SellableBasis::Coverage::WHOLE_HOLDING
+  );
   SUCCEED("the capability is read at compile time");
 }
 
-namespace {
-
-/** A client whose traits say nothing about triggers: an adapter written before they existed. */
-struct SilentAboutTrigger {};
-
-/** A client whose traits say it transmits one. */
-struct StatesTrigger {};
-
-} // namespace
-
-namespace algotradelib {
-
-/** Deliberately empty, for the reason `BrokerTraits<SilentAboutTerminal>` is. */
-template <>
-struct BrokerTraits<SilentAboutTrigger> {};
-
-template <>
-struct BrokerTraits<StatesTrigger> {
-  static constexpr bool has_trigger_price = true;
-};
-
-} // namespace algotradelib
-
-TEST_CASE("an unstated trigger capability defaults to refusing a trigger", "[port][trigger]") {
-  // Both answers are instantiated, as for the terminal-state constant above: every adapter this
-  // library ships states the constant, so without these the default would never be compiled.
-  static_assert(!caps_detail::stated_trigger_price<BrokerTraits<SilentAboutTrigger>>::value);
-  static_assert(caps_detail::stated_trigger_price<BrokerTraits<StatesTrigger>>::value);
-  // The mock states nothing, so it is the adapter written before the field existed.
+TEST_CASE("every adapter states whether it transmits a trigger", "[port][trigger]") {
+  // Required on every traits specialization: an adapter that never reads a trigger says `false`, and
+  // the session refuses a trigger to it before the adapter runs.
   static_assert(!BrokerCaps<mock::MockClient>::has_trigger_price);
   static_assert(BrokerCaps<kis::KisClient>::has_trigger_price);
   static_assert(BrokerCaps<kis::KisBlockingClient>::has_trigger_price);

@@ -351,6 +351,9 @@ struct Capabilities {
    */
   static constexpr bool has_trigger_price = false;
 
+  /** A broker that takes orders, not a market-data source; see `BrokerCaps::data_only`. */
+  static constexpr bool data_only = false;
+
   /** Toss returns every pending order in its `OPEN` listing. */
   static constexpr bool has_working_orders = true;
 

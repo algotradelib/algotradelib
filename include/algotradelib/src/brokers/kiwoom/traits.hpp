@@ -568,6 +568,9 @@ struct Capabilities {
   /** Kiwoom sends a stop-limit (`28`) order's trigger as `cond_uv`, and a modified one as `mdfy_cond_uv`. */
   static constexpr bool has_trigger_price = true;
 
+  /** A broker that takes orders, not a market-data source; see `BrokerCaps::data_only`. */
+  static constexpr bool data_only = false;
+
   /** Kiwoom publishes its unfilled orders, through `ka10075`. */
   static constexpr bool has_working_orders = true;
 

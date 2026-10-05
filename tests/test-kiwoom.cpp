@@ -1458,9 +1458,8 @@ TEST_CASE("Kiwoom's capability answers are what the adapter can back", "[kiwoom]
   STATIC_REQUIRE(BrokerCaps<tossinvest::TossClient>::has_calendar);
 }
 
-TEST_CASE("both Kiwoom clients satisfy the broker port", "[kiwoom][port]") {
-  ATL_ASSERT_BROKER(kiwoom::KiwoomClient);
-  ATL_ASSERT_BROKER(kiwoom::KiwoomBlockingClient);
+TEST_CASE("both Kiwoom clients share one broker tag", "[kiwoom][port]") {
+  // Conformance itself is asserted in test-capability-conformance.cpp, once per client.
   // One tag, so a reference read through the blocking facade is usable with the asynchronous
   // client and is a different *type* from another broker's.
   STATIC_REQUIRE(

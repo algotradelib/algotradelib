@@ -46,7 +46,7 @@ public:
   using BrokerTag = typename Session::BrokerTag;
 
   static_assert(
-    !is_data_only_caps<Caps>,
+    !Caps::data_only,
     "SessionExecutor sends orders, and this session's client is a market-data source (DataOnlyTraits) "
     "that takes none: bind a broker's session here, and give the data source to SessionSource as its "
     "market-data session"
@@ -253,11 +253,9 @@ public:
    * number it never reported.
    */
   static constexpr SellableBasis sellable_inquiry_basis() {
-    // Detected on `Caps` rather than read off it, because `Caps` is a caller's type parameter and
-    // need not be `BrokerCaps`: a hand-written capability set states the constants it cares about.
-    // One that says nothing about a basis has established nothing, so the guard refuses -- the same
-    // fail-closed default a third-party adapter's traits get.
-    return caps_detail::stated_inquiry_basis<Caps>::value;
+    // Read through the same gate as `BrokerCaps`, because `Caps` is a caller's type parameter and need
+    // not be `BrokerCaps`: a hand-written capability set that makes the inquiry states its basis.
+    return caps_detail::inquiry_basis<Caps>();
   }
 
   /** Returns the reference the broker issued for the last accepted order. */

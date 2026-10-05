@@ -1,7 +1,6 @@
-// Deliberately does not compile. `conformance-names-an-unbacked-capability` builds this file and
-// passes only when the diagnostic names the capability and the thunk, which is what proves
-// `ATL_ASSERT_BROKER` checks a claimed capability at all -- the detector tests in
-// test-capability-conformance.cpp would still pass with the assertion deleted.
+// Deliberately does not compile. `conformance-names-an-unbacked-capability` builds this file and passes
+// only when the diagnostic names the missing thunk and this adapter: a capability claimed with no verb
+// behind it is what `ATL_ASSERT_BROKER` exists to find before a caller does.
 #include "mock_broker.hpp"
 
 namespace probe {

@@ -128,7 +128,7 @@ public:
   // The trading session is read for holdings, the order listing and history, which a market-data source
   // does not have; it belongs in `MarketData`, which this does not check.
   static_assert(
-    !is_data_only_caps<Caps>,
+    !Caps::data_only,
     "SessionSource's first session is the trading session (holdings, orders), and this one's client is a "
     "market-data source (DataOnlyTraits): pass a broker's session first and the data source as the "
     "market-data session, SessionSource<Trading, Journal, MarketData>"

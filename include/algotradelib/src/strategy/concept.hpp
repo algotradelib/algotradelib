@@ -99,14 +99,25 @@ constexpr bool handlers_are_generic =
 
 } // namespace strategy_detail
 
-/** Capability set in which the broker implements nothing optional. */
+/**
+ * Capability set in which the broker implements nothing optional.
+ *
+ * Answers every `BrokerCaps` question, so a test's hand-written capability set can inherit it and state
+ * only what differs.
+ */
 struct NoCaps {
   /** @copydoc BrokerCaps::has_account_discovery */
   static constexpr bool has_account_discovery = false;
   /** @copydoc BrokerCaps::has_client_order_id */
   static constexpr bool has_client_order_id = false;
+  /** @copydoc BrokerCaps::has_trigger_price */
+  static constexpr bool has_trigger_price = false;
+  /** @copydoc BrokerCaps::data_only */
+  static constexpr bool data_only = false;
   /** @copydoc BrokerCaps::has_working_orders */
   static constexpr bool has_working_orders = false;
+  /** @copydoc BrokerCaps::working_orders_state_terminal */
+  static constexpr bool working_orders_state_terminal = false;
   /** @copydoc BrokerCaps::has_amendable_quantity */
   static constexpr bool has_amendable_quantity = false;
   /** @copydoc BrokerCaps::has_order_by_id */
@@ -152,6 +163,8 @@ struct NoCaps {
    * would have a runner skip the inquiry and then find nothing there.
    */
   static constexpr SellableSource sellable_source = SellableSource::NONE;
+  /** Unestablished; a capability set that makes the inquiry states its own. */
+  static constexpr SellableBasis sellable_inquiry_basis{};
   /** @copydoc BrokerCaps::supports_interval(BarInterval) */
   static constexpr bool supports_interval(BarInterval) { return false; }
 };
@@ -162,8 +175,14 @@ struct AllCaps {
   static constexpr bool has_account_discovery = true;
   /** @copydoc BrokerCaps::has_client_order_id */
   static constexpr bool has_client_order_id = true;
+  /** @copydoc BrokerCaps::has_trigger_price */
+  static constexpr bool has_trigger_price = true;
+  /** A broker that takes orders; a market-data source is not "everything". */
+  static constexpr bool data_only = false;
   /** @copydoc BrokerCaps::has_working_orders */
   static constexpr bool has_working_orders = true;
+  /** @copydoc BrokerCaps::working_orders_state_terminal */
+  static constexpr bool working_orders_state_terminal = true;
   /** @copydoc BrokerCaps::has_amendable_quantity */
   static constexpr bool has_amendable_quantity = true;
   /** @copydoc BrokerCaps::has_order_by_id */
@@ -196,6 +215,20 @@ struct AllCaps {
   static constexpr bool has_calendar_range = true;
   /** @copydoc BrokerCaps::has_calendar_sessions */
   static constexpr bool has_calendar_sessions = true;
+  /** @copydoc BrokerCaps::has_buying_power */
+  static constexpr bool has_buying_power = true;
+  /** @copydoc BrokerCaps::has_buying_power_quantity */
+  static constexpr bool has_buying_power_quantity = true;
+  /** @copydoc BrokerCaps::has_commission_schedule */
+  static constexpr bool has_commission_schedule = true;
+  /** By inquiry, the source that has a verb behind it. */
+  static constexpr SellableSource sellable_source = SellableSource::INQUIRY;
+  /** The basis Toss states: the whole holding, resting sells deducted, not measured. */
+  static constexpr SellableBasis sellable_inquiry_basis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
   /** @copydoc BrokerCaps::supports_interval(BarInterval) */
   static constexpr bool supports_interval(BarInterval) { return true; }
 };
@@ -320,9 +353,9 @@ using FullContext = ProbeContextT<AllCaps>;
 /**
  * Reports what is wrong with a strategy, by name.
  *
- * Instantiating this type produces the diagnostic, the same arrangement `BrokerConformance` uses
- * and for the same reason: a C++17 `static_assert` message must be a string literal, so the
- * client type has to arrive through the instantiation context rather than the message.
+ * Instantiating this type produces the diagnostic: a C++17 `static_assert` message must be a string
+ * literal, so the strategy type has to arrive through the instantiation context rather than the
+ * message.
  */
 template <typename S, typename Ctx>
 struct StrategyConformance {

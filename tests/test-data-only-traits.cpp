@@ -17,18 +17,23 @@
 #include <memory>
 #include <optional>
 
-// The two checks an out-of-tree adapter asserts once: members found through the base count.
+// The check an out-of-tree adapter asserts once: members found through the base count.
 ATL_ASSERT_BROKER(vendor::BlockingClient);
 ATL_ASSERT_BROKER(vendor::AsyncClient);
-ATL_ASSERT_BROKER_VERBS(vendor::BlockingClient);
-ATL_ASSERT_BROKER_VERBS(vendor::AsyncClient);
 
 static_assert(!BrokerCaps<vendor::BlockingClient>::has_working_orders, "a data vendor lists no orders");
 static_assert(BrokerCaps<vendor::BlockingClient>::data_only, "the base marks the client as a data source");
 static_assert(BrokerCaps<vendor::AsyncClient>::data_only, "in either shape");
 static_assert(!BrokerCaps<vendor::TradingStandIn>::data_only, "a declaration in the specialization hides the base's");
-static_assert(!is_data_only_caps<strategy::NoCaps>, "a capability set without the member is not data-only");
+static_assert(!strategy::NoCaps::data_only, "the library's own capability sets state the flag");
+static_assert(!strategy::AllCaps::data_only, "a source that takes no order is not \"everything\"");
 static_assert(BrokerCaps<vendor::BlockingClient>::sellable_source == SellableSource::NONE, "nor holdings");
+// Neither question is asked of a vendor, which answers neither, and both read as the answer that cannot mislead.
+static_assert(!BrokerCaps<vendor::BlockingClient>::working_orders_state_terminal, "no listing, no terminal rows");
+static_assert(
+  BrokerCaps<vendor::BlockingClient>::sellable_inquiry_basis.coverage_ == SellableBasis::Coverage::UNESTABLISHED,
+  "no inquiry, no basis"
+);
 
 namespace {
 

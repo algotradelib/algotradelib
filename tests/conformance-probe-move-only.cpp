@@ -1,7 +1,7 @@
 // Deliberately does not compile. `conformance-verbs-reject-a-token-copy` builds this file and passes
 // only when the diagnostic is the deleted copy of a completion handler. The thunk below works for
 // every copyable token -- a plain callback, `use_future` -- and fails for a move-only one, which a
-// caller is entitled to pass; `ATL_ASSERT_BROKER_VERBS` calls every verb with one so it is found here.
+// caller is entitled to pass; `ATL_ASSERT_BROKER` calls every verb with one so it is found here.
 #include "mock_broker.hpp"
 
 namespace probe {
@@ -24,4 +24,4 @@ struct BrokerTraits<probe::CopiesItsToken> : BrokerTraits<mock::MockClient> {
 
 } // namespace algotradelib
 
-ATL_ASSERT_BROKER_VERBS(probe::CopiesItsToken);
+ATL_ASSERT_BROKER(probe::CopiesItsToken);

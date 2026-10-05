@@ -107,8 +107,8 @@ void post_refusal(Handler&& handler) {
 /**
  * A base for the `BrokerTraits` of a client that reads market data and cannot trade.
  *
- * The broker port has no read-only form: `BrokerConformance` requires the order-side types, and every
- * session calls `holdings`, `place`, `replace`, `cancel` and `order_history` without a capability gate.
+ * The broker port has no read-only form: every traits specialization declares the order-side types, and
+ * every session calls `holdings`, `place`, `replace`, `cancel` and `order_history` without a capability gate.
  * A market-data vendor (EODHD, Twelve Data, Yahoo, ...) therefore had to write about sixty lines of
  * refusals to be used through the port, and the obvious way to write one -- `BrokerError{}` -- is the one
  * the runner reads as an order of unknown outcome (see `data_only::refusal`). This base writes them once.
@@ -127,8 +127,7 @@ void post_refusal(Handler&& handler) {
  *   static Result<QuoteSnapshot> quote(Client& client, InstrumentId instrument);
  *   static Result<BarSeries> bars(Client& client, BarQuery query);
  * };
- * ATL_ASSERT_BROKER(my::Client);
- * ATL_ASSERT_BROKER_VERBS(my::Client);  // in one source file, as for any adapter
+ * ATL_ASSERT_BROKER(my::Client);  // in one source file, as for any adapter
  * @endcode
  *
  * An asynchronous client takes the completion token as its last argument, as any adapter does. A vendor
@@ -150,7 +149,8 @@ void post_refusal(Handler&& handler) {
  *   `live::bind_journaled` build a `SessionExecutor`, so they are refused the same way.)
  * - **Called directly, it refuses at run time.** A caller holding the session can still call `place` or
  *   `holdings` on it; each refuses before any I/O, as above. A data client written by hand without this
- *   base is caught at compile time only if it declares `static constexpr bool data_only = true` itself.
+ *   base declares `static constexpr bool data_only = true` itself, as every traits specialization
+ *   declares the flag.
  * - `live_program::trade` and `observe` in `examples/live_program.hpp` read reference data from the
  *   market-data session, so they need a vendor that serves it (`has_reference_data`); `SessionSource` does
  *   not.
@@ -188,6 +188,7 @@ struct DataOnlyTraits {
   // none of the optional market data until its own specialization says so.
   static constexpr bool has_account_discovery = false;
   static constexpr bool has_client_order_id = false;
+  static constexpr bool has_trigger_price = false;
   static constexpr bool has_working_orders = false;
   static constexpr bool has_amendable_quantity = false;
   static constexpr bool has_order_by_id = false;
