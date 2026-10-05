@@ -7491,3 +7491,219 @@ TEST_CASE("a file journal reads back a resolution a startup sweep wrote", "[reco
   auto restarted = live::bind_observer(session, CountEvents{});
   CHECK(runner::recover_runner(restarted, next).clean());
 }
+
+// ---------------------------------------------------------------------------
+// A history page that says there is more is never read as the whole history
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** A broker with a working-order listing whose history pages through a cursor. */
+struct WorkingWithCursor : strategy::NoCaps {
+  static constexpr bool has_working_orders = true;
+  static constexpr bool has_history_cursor = true;
+};
+
+/** A broker with no working-order listing whose history pages through a cursor. */
+struct HistoryWithCursor : strategy::NoCaps {
+  static constexpr bool has_working_orders = false;
+  static constexpr bool has_history_cursor = true;
+};
+
+/** `page` saying there is another page after it. */
+OrderPage saying_more(OrderPage page, const char* cursor = "more") {
+  page.next_cursor_ = std::string(cursor);
+  return page;
+}
+
+/** A journaled cancellation of `order_id`, unanswered. */
+runner::JournalEntry journaled_cancellation(const char* order_id) {
+  auto entry = journaled_placement();
+  entry.action_ = runner::JournalAction::CANCEL;
+  entry.order_id_ = order_id;
+  return entry;
+}
+
+} // namespace
+
+TEST_CASE("a history page saying more, from a broker with no cursor, concludes nothing", "[history]") {
+  // Page one does not hold the journaled order and says there is another page this adapter cannot ask
+  // for. Read as the whole history, the absence would conclude the order was never placed and clear its
+  // hold -- for an order that may be on page two.
+  WorkingSession session;
+  session.set_working_orders(WorkingOrders<FakeBroker>{});
+  session.set_history(saying_more(OrderPage{}));
+
+  runner::MemoryJournal journal;
+  journal.append(journaled_placement());
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live_runner.context().set_now(swept_at());
+  live_runner.ledger().mark(samsung(), "an order request failed in transit");
+  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
+  source.set_journal(journal);
+
+  // The listing itself arrived, so the poll reports it; the history read failed and decided nothing.
+  CHECK(source.poll(runner::PollKind::WORKING_ORDERS, live_runner) == runner::PollOutcome::UPDATED);
+  REQUIRE(source.last_reconcile().matches_.size() == 1);
+  CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::UNDECIDED);
+  CHECK(source.last_reconcile().recorded_ == 0);
+  CHECK(live_runner.ledger().requires_reconcile(samsung()));
+  REQUIRE(source.last_error());
+  CHECK(source.last_error()->broker_code_ == "history_not_continued");
+  CHECK(source.last_error()->category_ == ErrorCategory::PROTOCOL);
+}
+
+TEST_CASE("a page that says no more, or says nothing, is the whole history", "[history]") {
+  for (const char* cursor : {"", "absent"}) {
+    WorkingSession session;
+    session.set_working_orders(WorkingOrders<FakeBroker>{});
+    OrderPage page;
+    if (std::string(cursor) != "absent") {
+      page.next_cursor_ = std::string(cursor);
+    }
+    session.set_history(page);
+
+    runner::MemoryJournal journal;
+    journal.append(journaled_placement());
+    auto live_runner = live::bind_observer(session, CountEvents{});
+    live_runner.context().set_now(swept_at());
+    live_runner.ledger().mark(samsung(), "an order request failed in transit");
+    live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
+    source.set_journal(journal);
+
+    source.poll(runner::PollKind::WORKING_ORDERS, live_runner);
+    CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::NOT_PLACED);
+    CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
+  }
+}
+
+TEST_CASE("a deferred stop's row on a page saying more does not release the target", "[history][trigger]") {
+  // The stop's own row says cancelled, unfilled -- which releases the flatten -- but the page says there
+  // is more history this adapter cannot read. Released on it, the flatten would sell against a picture
+  // the broker said was incomplete.
+  WorkingSession session;
+  auto bound = live::bind(session, FlattensOnPhase{}, {});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  leave_behind_a_stop(bound, session);
+
+  record_stop(session, OrderStatus::CANCELED, "0");
+  OrderPage page = session.order_history(OrderHistoryQuery{}).value();
+  session.set_history(saying_more(page));
+  WorkingOrders<FakeBroker> listing;
+  listing.received_at_ = live_hour(1);
+  session.set_working_orders(listing);
+
+  CHECK(source.poll(runner::PollKind::WORKING_ORDERS, bound) == runner::PollOutcome::FAILED);
+  REQUIRE(source.last_error());
+  CHECK(source.last_error()->broker_code_ == "history_not_continued");
+  CHECK(session.placed().empty());
+  CHECK(bound.deferred_targets().size() == 1);
+}
+
+TEST_CASE("a history that runs past the page limit fails with a reason", "[history]") {
+  // Every page says there is another. The read gives up at the limit, and the failure names itself, so
+  // a caller that reports the error has one to report.
+  FakeSession<WorkingWithCursor> session;
+  session.set_working_orders(WorkingOrders<FakeBroker>{});
+  session.history_by_query_ = [](const OrderHistoryQuery&) { return saying_more(OrderPage{}); };
+
+  runner::MemoryJournal journal;
+  journal.append(journaled_placement());
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live_runner.context().set_now(swept_at());
+  live_runner.ledger().mark(samsung(), "an order request failed in transit");
+  live::SessionSource<FakeSession<WorkingWithCursor>, runner::MemoryJournal> source(session, {samsung()});
+  source.set_journal(journal);
+
+  source.poll(runner::PollKind::WORKING_ORDERS, live_runner);
+  CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::UNDECIDED);
+  CHECK(live_runner.ledger().requires_reconcile(samsung()));
+  REQUIRE(source.last_error());
+  CHECK(source.last_error()->broker_code_ == "history_page_limit");
+}
+
+TEST_CASE("the startup read refuses a page saying more from a broker with no cursor", "[history]") {
+  // No working-order listing, so the gate reads history. A page saying more, with no way to ask for it,
+  // is not the broker's record; the gate stays unread.
+  HistorySession session;
+  session.set_history(saying_more(OrderPage{}));
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<HistorySession> source(session, {samsung()});
+
+  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::FAILED);
+  REQUIRE(source.last_error());
+  CHECK(source.last_error()->broker_code_ == "history_not_continued");
+}
+
+TEST_CASE("the startup read follows a declared cursor", "[history]") {
+  // The order a journaled cancellation names is on page two. Read as one page, the cancellation is
+  // matched against a history that does not hold it.
+  FakeSession<HistoryWithCursor> session;
+  session.history_by_query_ = [](const OrderHistoryQuery& query) {
+    OrderPage page;
+    if (!query.cursor_) {
+      return saying_more(page, "p2");
+    }
+    page.orders_.push_back(listed_order("KRX-1"));
+    return page;
+  };
+  runner::MemoryJournal journal;
+  journal.append(journaled_cancellation("KRX-1"));
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live_runner.context().set_now(swept_at());
+  live_runner.ledger().mark(samsung(), "a cancellation request failed in transit");
+  live::SessionSource<FakeSession<HistoryWithCursor>, runner::MemoryJournal> source(session, {samsung()});
+  source.set_journal(journal);
+
+  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+  REQUIRE(session.history_queries().size() >= 2);
+  REQUIRE(session.history_queries()[1].cursor_);
+  CHECK(*session.history_queries()[1].cursor_ == "p2");
+  REQUIRE(source.last_reconcile().matches_.size() == 1);
+  CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::MATCHED);
+}
+
+TEST_CASE("the startup read keeps two orders that share a number", "[history]") {
+  // The startup listing is undated, and two days' orders can share a number. Both rows are candidates
+  // for a cancellation naming that number, so it stays ambiguous and held -- on one page or across two.
+  for (const bool across_pages : {false, true}) {
+    FakeSession<HistoryWithCursor> session;
+    auto earlier = listed_order("X");
+    auto later = listed_order("X");
+    later.ordered_at_ = journaled_at() - std::chrono::hours(24);
+    session.history_by_query_ = [=](const OrderHistoryQuery& query) {
+      OrderPage page;
+      if (!across_pages) {
+        page.orders_ = {earlier, later};
+      } else if (!query.cursor_) {
+        page.orders_ = {earlier};
+        page.next_cursor_ = std::string("p2");
+      } else {
+        page.orders_ = {later};
+      }
+      return page;
+    };
+    runner::MemoryJournal journal;
+    journal.append(journaled_cancellation("X"));
+    auto live_runner = live::bind_observer(session, CountEvents{});
+    live_runner.context().set_now(swept_at());
+    live_runner.ledger().mark(samsung(), "a cancellation request failed in transit");
+    live::SessionSource<FakeSession<HistoryWithCursor>, runner::MemoryJournal> source(session, {samsung()});
+    source.set_journal(journal);
+
+    CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+    CHECK(source.last_reconcile().ambiguous_);
+    CHECK(live_runner.ledger().requires_reconcile(samsung()));
+  }
+}
+
+TEST_CASE("the startup read sends no limit to a broker that does not honour one", "[history]") {
+  // `HistorySession` declares `has_history_limit = false`, as KIS does; KIS refuses a query carrying one.
+  HistorySession session;
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<HistorySession> source(session, {samsung()});
+
+  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
+  REQUIRE_FALSE(session.history_queries().empty());
+  CHECK_FALSE(session.history_queries().front().limit_);
+}

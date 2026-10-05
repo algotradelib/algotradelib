@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <string>
@@ -37,6 +38,40 @@ inline runner::PollOutcome poll_outcome_of(const BrokerError& error) noexcept {
   return error.category_ == ErrorCategory::RATE_LIMIT ?
     runner::PollOutcome::RATE_LIMITED :
     runner::PollOutcome::FAILED;
+}
+
+/**
+ * The error an order-history read reports when the broker's answer is not the whole history: a page said
+ * there is more and it was not read.
+ *
+ * `PROTOCOL` and `reached_broker_ = true`: the read reached the broker, and no instruction is involved.
+ * Every caller treats it as a failed history read, so nothing is concluded from the part that was read.
+ */
+inline BrokerError incomplete_history(std::string code, std::string message) {
+  BrokerError error;
+  error.category_ = ErrorCategory::PROTOCOL;
+  error.reached_broker_ = true;
+  error.broker_code_ = std::move(code);
+  error.message_ = std::move(message);
+  return error;
+}
+
+/** A page said there is more, and the adapter declares no cursor to read it. */
+inline BrokerError history_not_continued() {
+  return incomplete_history(
+    "history_not_continued",
+    "the broker returned another history page, and this adapter declares no cursor to read it "
+    "(has_history_cursor is false): the history is incomplete"
+  );
+}
+
+/** Every page allowed was read and the last still said there is more. */
+inline BrokerError history_page_limit(int pages) {
+  return incomplete_history(
+    "history_page_limit",
+    "the order history ran past " + std::to_string(pages) + " pages and the last still said there is more: "
+    "the history is incomplete"
+  );
 }
 
 namespace session_source_detail {
@@ -293,16 +328,41 @@ public:
       return poll_working_orders(runner_instance, /*publish=*/false);
     } else {
       OrderHistoryQuery query;
-      query.limit_ = history_limit_;
-      auto result = session_->order_history(query);
-      if (!result) {
-        last_error_ = result.error();
+      if constexpr (Caps::has_history_limit) {
+        // Gated as `read_history_in` gates it: a broker that cannot honour a limit may refuse the query.
+        query.limit_ = history_limit_;
+      }
+      // Rows are kept as listed, page after page, with no de-duplication: this listing is undated, and
+      // two orders on different days can share a number. Nothing reaches `reconcile` unless the whole
+      // history was read.
+      std::vector<OrderSnapshot> rows;
+      bool complete = false;
+      for (int page = 0; page < maximum_history_pages_ && !complete; ++page) {
+        auto result = session_->order_history(query);
+        if (!result) {
+          last_error_ = result.error();
+          return poll_outcome_of(*last_error_);
+        }
+        auto& listed = result.value().orders_;
+        rows.insert(rows.end(), std::make_move_iterator(listed.begin()), std::make_move_iterator(listed.end()));
+        const bool more = result.value().next_cursor_ && !result.value().next_cursor_->empty();
+        if (!more) {
+          complete = true;
+        } else if constexpr (Caps::has_history_cursor) {
+          query.cursor_ = result.value().next_cursor_;
+        } else {
+          last_error_ = history_not_continued();
+          return poll_outcome_of(*last_error_);
+        }
+      }
+      if (!complete) {
+        last_error_ = history_page_limit(maximum_history_pages_);
         return poll_outcome_of(*last_error_);
       }
       last_error_.reset();
       // What this call establishes, with or without a journal, is the thing the gate actually needs:
       // that this process has looked at the broker's own record before sending.
-      reconcile(runner_instance, result.value().orders_);
+      reconcile(runner_instance, rows);
       return runner::PollOutcome::UPDATED;
     }
   }
@@ -1148,15 +1208,21 @@ private:
         return false;
       }
       runner::merge_rows(into, result.value().orders_);
-      if constexpr (Caps::has_history_cursor) {
-        if (!result.value().next_cursor_ || result.value().next_cursor_->empty()) {
-          return true;
-        }
-        query.cursor_ = result.value().next_cursor_;
-      } else {
+      const bool more = result.value().next_cursor_ && !result.value().next_cursor_->empty();
+      if (!more) {
         return true;
       }
+      if constexpr (Caps::has_history_cursor) {
+        query.cursor_ = result.value().next_cursor_;
+      } else {
+        // The page says there is more and this adapter cannot ask for it. Reading what arrived as the
+        // whole history would conclude an order absent that may be on the next page.
+        last_error_ = history_not_continued();
+        return false;
+      }
     }
+    // Every `false` carries an error about this read: a caller reports `*last_error_`.
+    last_error_ = history_page_limit(maximum_history_pages_);
     return false;
   }
 
