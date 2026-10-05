@@ -461,10 +461,13 @@ struct StrategyConformance {
  * - **every handler `S` declares is callable as this runner calls it**, because one that is not is
  *   skipped by the runner in silence: an `on_fill(Ctx&, Fill&)` taking a non-const event never hears a
  *   fill. Not checked for a `final` strategy, whose names cannot be looked up this way. A handler
- *   constrained away for some contexts (`enable_if`) is rejected: gate inside it with `if constexpr`;
+ *   constrained away for some contexts (`enable_if`, or a trailing `decltype`) is rejected: declare it
+ *   unconditionally and gate inside it with `if constexpr`. A wrapper forwarding to an inner strategy
+ *   that may lack the handler does the same, gating on whether the inner call compiles;
  * - every handler callable for `Ctx` is callable for two unrelated probe contexts too, which catches one
- *   written against a single concrete context type. This reads declarations only: a handler's body is
- *   compiled where its runner calls it.
+ *   written against a single concrete context type. This reads declarations, except that a handler
+ *   with a deduced return type (`auto`) has its body compiled for each context; any other handler's
+ *   body is compiled where its runner calls it.
  *
  * Not checked: a handler that takes its context **by value** is called, and what it submits goes to a
  * copy (`plan/todo/strategy-context-by-value.md`).

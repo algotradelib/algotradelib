@@ -516,6 +516,23 @@ struct FinalNonConstFill final {
   int fills_{0};
 };
 
+/** One malformed handler of each kind, declared and not callable as the runner calls it. */
+struct MalformedEach {
+  template <class Ctx> void on_start(Ctx&, int) {}
+  template <class Ctx> void on_stop() {}
+  template <class Ctx> void on_bar(Ctx&, strategy::BarEvent&) {}
+  template <class Ctx> void on_quote(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx> void on_fill(Ctx&, strategy::Fill&) {}
+  template <class Ctx> void on_order_update(Ctx&, const strategy::QuoteEvent&) {}
+  template <class Ctx> void on_phase(Ctx&) {}
+};
+
+/** A handler constrained away for a context without client order ids: declared, and not callable there. */
+struct ConstrainedFill {
+  template <class Ctx, typename = std::enable_if_t<Ctx::caps::has_client_order_id>>
+  void on_fill(Ctx&, const strategy::Fill&) {}
+};
+
 /** Events by value: callable, since a copy of a `const` event is a valid argument. */
 struct EventsByValue {
   template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
@@ -547,10 +564,15 @@ TEST_CASE("a declared handler is found by name, whatever its signature") {
   STATIC_REQUIRE(detail::declares_on_bar<InheritsBarOnly>);
   STATIC_REQUIRE(detail::declares_on_fill<OverloadedFill>);
   STATIC_REQUIRE(detail::declares_on_fill<PrivateFill>);
-  // A member of that name of any other kind is declared too, and so fails as not callable.
+  // A member of that name of any other kind is declared too, and is not callable, so the assertion
+  // rejects it -- the two inputs it reads, pinned here, since the assertion itself cannot fire in a test.
   STATIC_REQUIRE(detail::declares_on_fill<FillDataMember>);
   STATIC_REQUIRE(detail::declares_on_fill<FillStatic>);
   STATIC_REQUIRE(detail::declares_on_fill<FillAlias>);
+  STATIC_REQUIRE_FALSE(detail::has_on_fill<FillDataMember, MinimalContext>::value);
+  STATIC_REQUIRE_FALSE(detail::has_on_fill<FillStatic, MinimalContext>::value);
+  STATIC_REQUIRE_FALSE(detail::has_on_fill<FillAlias, MinimalContext>::value);
+  STATIC_REQUIRE_FALSE(detail::has_on_fill<PrivateFill, MinimalContext>::value);
   // Absent, and every handler of a strategy that names none.
   STATIC_REQUIRE_FALSE(detail::declares_on_fill<BarOnly>);
   STATIC_REQUIRE_FALSE(detail::declares_on_start<EventsByValue>);
@@ -558,6 +580,24 @@ TEST_CASE("a declared handler is found by name, whatever its signature") {
   // **The stated gap**: a `final` class cannot be looked up this way and reads as declaring nothing.
   STATIC_REQUIRE_FALSE(detail::declares_on_fill<FinalNonConstFill>);
   STATIC_REQUIRE_FALSE(detail::declares_on_bar<FinalNonConstFill>);
+}
+
+TEST_CASE("each of the seven assertions reads its own handler's two inputs") {
+  // `StrategyConformance` rejects a handler that is declared and not callable. A strategy that trips it
+  // cannot be compiled in a test, so the two inputs are pinned per handler instead; each probe in
+  // tests/strategy-probe-*.cpp shows one assertion firing.
+  namespace detail = strategy::strategy_detail;
+  STATIC_REQUIRE((detail::declares_on_start<MalformedEach> && !detail::has_on_start<MalformedEach, MinimalContext>::value));
+  STATIC_REQUIRE((detail::declares_on_stop<MalformedEach> && !detail::has_on_stop<MalformedEach, MinimalContext>::value));
+  STATIC_REQUIRE((detail::declares_on_bar<MalformedEach> && !detail::has_on_bar<MalformedEach, MinimalContext>::value));
+  STATIC_REQUIRE((detail::declares_on_quote<MalformedEach> && !detail::has_on_quote<MalformedEach, MinimalContext>::value));
+  STATIC_REQUIRE((detail::declares_on_fill<MalformedEach> && !detail::has_on_fill<MalformedEach, MinimalContext>::value));
+  STATIC_REQUIRE((detail::declares_on_order_update<MalformedEach> &&
+                  !detail::has_on_order_update<MalformedEach, MinimalContext>::value));
+  STATIC_REQUIRE((detail::declares_on_phase<MalformedEach> && !detail::has_on_phase<MalformedEach, MinimalContext>::value));
+  // The stated restriction: a handler constrained away for a context is declared and not callable there.
+  STATIC_REQUIRE((detail::declares_on_fill<ConstrainedFill> && !detail::has_on_fill<ConstrainedFill, MinimalContext>::value));
+  STATIC_REQUIRE(detail::has_on_fill<ConstrainedFill, FullContext>::value);
 }
 
 TEST_CASE("a handler taking its event by value, or the phase by const reference, is called") {
