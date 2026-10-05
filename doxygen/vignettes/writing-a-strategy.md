@@ -196,11 +196,21 @@ A runner driven directly, without the loop, still gets the old behaviour from `R
 `on_stop` runs and what it asks for is settled. The difference is the loop, because the loop is
 where an operator's stop exists.
 
-**Declare each as a template on the context.** A handler written against one concrete context type
-compiles for that runner and silently excludes every other, so the strategy could not be dry-run or
-backtested without being rewritten. `ATL_ASSERT_STRATEGY(MyStrategy, Ctx)` catches that: it checks
-that at least one handler is detected, and that every handler detected is also detected for two
-unrelated probe contexts, which is what proves it is generic.
+**Declare each as a template on the context, taking it by reference and the event as `const&`.**
+`ATL_ASSERT_STRATEGY(MyStrategy, Ctx)`, which every runner asserts, checks three things:
+
+- at least one handler is callable as the runner calls it;
+- **every handler you declare is callable as the runner calls it**: `on_fill(Ctx&, const Fill&)`, and
+  so on. The runner calls a handler only when that call compiles, so an `on_fill(Ctx&, Fill&)` with a
+  non-const event, or an `on_phase(Ctx&)` with no event, would otherwise be skipped in silence and never
+  hear a fill or a phase change. An event taken by value is fine. This is not checked for a `final`
+  strategy, so do not mark a strategy `final`. A handler disabled for some contexts with `enable_if` is
+  rejected: declare it plainly and gate inside it with `if constexpr`;
+- every handler callable for `Ctx` is also callable for two unrelated probe contexts. That catches a
+  handler written against one concrete context type, which compiles for that runner and silently
+  excludes every other, so the strategy could not be dry-run or backtested without being rewritten.
+
+These read declarations, not bodies: a handler's body is compiled when a runner calls it.
 
 A consequence worth knowing before it bites: a strategy declared *inside* a function cannot have
 template members at all, because C++ forbids templates in local classes. Declare strategies at
@@ -338,8 +348,9 @@ void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
 }
 ```
 
-`ATL_ASSERT_STRATEGY` type-checks **both** branches, because it asserts against a probe context with
-every capability present and one with none. A key attached for a broker that accepts none is refused
+Run the handler once on `strategy::FullContext` and once on `strategy::MinimalContext` in a test to
+type-check **both** branches: one has every capability present and the other none.
+`ATL_ASSERT_STRATEGY` reads declarations, so it does not compile a body. A key attached for a broker that accepts none is refused
 rather than dropped: dropping it would make a retry look safe on a broker offering no such
 guarantee.
 
