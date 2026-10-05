@@ -11,6 +11,11 @@
 
 using namespace algotradelib;
 
+// A strategy handler cannot take the runner's context by value: what it submitted would go to the copy.
+static_assert(!std::is_copy_constructible_v<runner::Context<strategy::ProbeBroker, strategy::NoCaps>>);
+static_assert(!std::is_copy_assignable_v<runner::Context<strategy::ProbeBroker, strategy::NoCaps>>);
+static_assert(std::is_move_constructible_v<runner::Context<strategy::ProbeBroker, strategy::NoCaps>>);
+
 namespace strategy = algotradelib::strategy;
 namespace runner = algotradelib::runner;
 

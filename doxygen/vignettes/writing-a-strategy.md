@@ -203,7 +203,8 @@ where an operator's stop exists.
 - **every handler you declare is callable as the runner calls it**: `on_fill(Ctx&, const Fill&)`, and
   so on. The runner calls a handler only when that call compiles, so an `on_fill(Ctx&, Fill&)` with a
   non-const event, or an `on_phase(Ctx&)` with no event, would otherwise be skipped in silence and never
-  hear a fill or a phase change. An event taken by value is fine. This is not checked for a `final`
+  hear a fill or a phase change. An event taken by value is fine; a context taken by value is not, since
+  no context can be copied (what the handler submitted would go to the copy). This is not checked for a `final`
   strategy, so do not mark a strategy `final`. A handler disabled for some contexts with `enable_if` is
   rejected: declare it plainly and gate inside it with `if constexpr`;
 - every handler callable for `Ctx` is also callable for two unrelated probe contexts. That catches a

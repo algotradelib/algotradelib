@@ -358,6 +358,30 @@ set_tests_properties(strategy-refuses-a-mutable-phase PROPERTIES
     TIMEOUT 300
 )
 
+# A handler taking its context by value is not callable, because no context can be copied.
+add_library(algotradelib-strategy-probe-context-by-value OBJECT EXCLUDE_FROM_ALL strategy-probe-context-by-value.cpp)
+target_link_libraries(algotradelib-strategy-probe-context-by-value PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME strategy-refuses-a-context-by-value
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-context-by-value
+            --config "$<CONFIG>"
+)
+set_tests_properties(strategy-refuses-a-context-by-value PROPERTIES
+    PASS_REGULAR_EXPRESSION "on_fill is declared but its parameters do not accept this runner's call"
+    TIMEOUT 300
+)
+add_library(algotradelib-strategy-probe-runner-context-by-value OBJECT EXCLUDE_FROM_ALL strategy-probe-runner-context-by-value.cpp)
+target_link_libraries(algotradelib-strategy-probe-runner-context-by-value PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME strategy-refuses-a-runner-context-by-value
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-runner-context-by-value
+            --config "$<CONFIG>"
+)
+set_tests_properties(strategy-refuses-a-runner-context-by-value PROPERTIES
+    PASS_REGULAR_EXPRESSION "on_fill is declared but its parameters do not accept this runner's call"
+    TIMEOUT 300
+)
+
 # The same guarantee for the dry runner: a dry run links no transport, so a dry-run binary has no
 # code path that could place an order.
 add_executable(algotradelib-runner-isolation test-runner-isolation.cpp)

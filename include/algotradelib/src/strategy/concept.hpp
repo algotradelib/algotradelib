@@ -302,6 +302,17 @@ public:
   /** The capability set being probed against. */
   using caps = CapsType;
 
+  /** Constructs an empty probe. */
+  ProbeContextT() = default;
+  /** Not copyable, like the runner's context, so a probe rejects a by-value handler as a runner would. */
+  ProbeContextT(const ProbeContextT&) = delete;
+  /** Not copyable; see the copy constructor. */
+  ProbeContextT& operator=(const ProbeContextT&) = delete;
+  /** Movable. */
+  ProbeContextT(ProbeContextT&&) = default;
+  /** Movable. */
+  ProbeContextT& operator=(ProbeContextT&&) = default;
+
   /** A log that records rather than writes, so a test can assert on what a strategy said. */
   class Log {
   public:
@@ -469,8 +480,10 @@ struct StrategyConformance {
  *   with a deduced return type (`auto`) has its body compiled for each context; any other handler's
  *   body is compiled where its runner calls it.
  *
- * Not checked: a handler that takes its context **by value** is called, and what it submits goes to a
- * copy (`plan/todo/strategy-context-by-value.md`).
+ * A handler that takes its context **by value** is not callable, because neither the runner's context
+ * nor a probe context can be copied; on a strategy that is not `final` it is reported as declared and not
+ * callable, and with a copyable context of a caller's own, as not generic. (Were it called, what it
+ * submitted would go to the copy and be lost.)
  *
  * Usable at namespace, class, and block scope.
  */
