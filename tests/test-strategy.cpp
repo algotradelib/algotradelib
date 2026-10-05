@@ -1,4 +1,5 @@
 #include <algotradelib/strategy>
+#include <algotradelib/src/runner/dispatch.hpp>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -470,12 +471,118 @@ TEST_CASE("a handler with the wrong event type is not detected as that handler")
   // therefore names the expected signatures instead of claiming the handler is missing.
   namespace detail = strategy::strategy_detail;
   // `on_bar` taking a QuoteEvent is neither: not `on_bar`, because the event type is wrong, and
-  // not `on_quote`, because the name is. So the strategy reads as having no handler at all,
-  // which is exactly what the assertion reports -- and why its message lists the expected
-  // signatures rather than claiming a handler is absent.
+  // not `on_quote`, because the name is. So the strategy reads as having no callable handler, and
+  // the assertion reports both that and, by name, that `on_bar` is declared and cannot be called.
   STATIC_REQUIRE_FALSE(detail::has_on_bar<WrongEventType, MinimalContext>::value);
   STATIC_REQUIRE_FALSE(detail::has_on_quote<WrongEventType, MinimalContext>::value);
   STATIC_REQUIRE_FALSE(detail::has_any_handler<WrongEventType, MinimalContext>);
+  STATIC_REQUIRE(detail::declares_on_bar<WrongEventType>);
+}
+
+namespace {
+
+/** Inherits its handler. */
+struct InheritsBarOnly : BarOnly {};
+
+/** One callable `on_fill` beside one the runner cannot call: one callable overload is enough. */
+struct OverloadedFill {
+  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx> void on_fill(Ctx&, const strategy::Fill&) { ++fills_; }
+  template <class Ctx> void on_fill(Ctx&, strategy::Fill&) {}
+  int fills_{0};
+};
+
+/** Names `on_fill` as something other than a public handler. */
+struct PrivateFill {
+  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
+
+private:
+  template <class Ctx> void on_fill(Ctx&, const strategy::Fill&) {}
+};
+struct FillDataMember {
+  int on_fill{0};
+};
+struct FillStatic {
+  static void on_fill() {}
+};
+struct FillAlias {
+  using on_fill = int;
+};
+
+/** The reproduction, marked `final`: the declared-name lookup cannot reach it. */
+struct FinalNonConstFill final {
+  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx> void on_fill(Ctx&, strategy::Fill&) { ++fills_; }
+  int fills_{0};
+};
+
+/** Events by value: callable, since a copy of a `const` event is a valid argument. */
+struct EventsByValue {
+  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx> void on_order_update(Ctx&, OrderSnapshot) { ++updates_; }
+  template <class Ctx> void on_phase(Ctx&, strategy::MarketPhase) { ++phases_; }
+  int updates_{0};
+  int phases_{0};
+};
+
+/** The phase as a `const` reference, which is the call the runner makes. */
+struct PhaseByConstRef {
+  template <class Ctx> void on_phase(Ctx&, const strategy::MarketPhase&) { ++phases_; }
+  int phases_{0};
+};
+
+} // namespace
+
+ATL_ASSERT_STRATEGY(InheritsBarOnly, MinimalContext);
+ATL_ASSERT_STRATEGY(OverloadedFill, MinimalContext);
+ATL_ASSERT_STRATEGY(FinalNonConstFill, MinimalContext);
+ATL_ASSERT_STRATEGY(EventsByValue, MinimalContext);
+ATL_ASSERT_STRATEGY(PhaseByConstRef, MinimalContext);
+
+TEST_CASE("a declared handler is found by name, whatever its signature") {
+  namespace detail = strategy::strategy_detail;
+  // A template, a concrete one, an inherited one, an overload set, a private one.
+  STATIC_REQUIRE(detail::declares_on_bar<BarOnly>);
+  STATIC_REQUIRE(detail::declares_on_bar<BoundToOneContext>);
+  STATIC_REQUIRE(detail::declares_on_bar<InheritsBarOnly>);
+  STATIC_REQUIRE(detail::declares_on_fill<OverloadedFill>);
+  STATIC_REQUIRE(detail::declares_on_fill<PrivateFill>);
+  // A member of that name of any other kind is declared too, and so fails as not callable.
+  STATIC_REQUIRE(detail::declares_on_fill<FillDataMember>);
+  STATIC_REQUIRE(detail::declares_on_fill<FillStatic>);
+  STATIC_REQUIRE(detail::declares_on_fill<FillAlias>);
+  // Absent, and every handler of a strategy that names none.
+  STATIC_REQUIRE_FALSE(detail::declares_on_fill<BarOnly>);
+  STATIC_REQUIRE_FALSE(detail::declares_on_start<EventsByValue>);
+  STATIC_REQUIRE_FALSE(detail::declares_on_fill<int>);
+  // **The stated gap**: a `final` class cannot be looked up this way and reads as declaring nothing.
+  STATIC_REQUIRE_FALSE(detail::declares_on_fill<FinalNonConstFill>);
+  STATIC_REQUIRE_FALSE(detail::declares_on_bar<FinalNonConstFill>);
+}
+
+TEST_CASE("a handler taking its event by value, or the phase by const reference, is called") {
+  MinimalContext ctx;
+  EventsByValue by_value;
+  runner::dispatch::order_update(by_value, ctx, OrderSnapshot{});
+  runner::dispatch::phase(by_value, ctx, strategy::MarketPhase::OPEN);
+  CHECK(by_value.updates_ == 1);
+  CHECK(by_value.phases_ == 1);
+  PhaseByConstRef by_reference;
+  runner::dispatch::phase(by_reference, ctx, strategy::MarketPhase::OPEN);
+  CHECK(by_reference.phases_ == 1);
+  // An overload set is called through its callable overload.
+  OverloadedFill overloaded;
+  runner::dispatch::fill(overloaded, ctx, strategy::Fill{});
+  CHECK(overloaded.fills_ == 1);
+}
+
+TEST_CASE("a final strategy's uncallable handler is still skipped") {
+  // Pinned so that closing the gap shows up here: this strategy passes ATL_ASSERT_STRATEGY above, and
+  // its fill handler, taking a non-const event, is never called. plan/todo/strategy-final-handlers.md.
+  MinimalContext ctx;
+  FinalNonConstFill strategy_instance;
+  runner::dispatch::fill(strategy_instance, ctx, strategy::Fill{});
+  CHECK(strategy_instance.fills_ == 0);
 }
 
 TEST_CASE("a probe context records what a strategy asked for") {

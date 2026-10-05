@@ -73,6 +73,44 @@ ATL_DETECT_HANDLER_2(has_on_phase, on_phase, MarketPhase);
 #undef ATL_DETECT_HANDLER_1
 #undef ATL_DETECT_HANDLER_2
 
+/**
+ * Detects that `S` declares a member named NAME: of any kind, signature or access, inherited included.
+ *
+ * The detectors above ask whether the runner's call compiles, and a handler whose parameters do not
+ * accept it reads as absent -- so the runner skips it, in silence. This asks only whether the name is
+ * there, which is what lets `StrategyConformance` tell "no `on_fill`" from "an `on_fill` the runner cannot
+ * call". Looking NAME up in a class that derives from `S` and from one declaring `int NAME` is ambiguous
+ * exactly when `S` declares it, which works for a member template, where `&S::NAME` cannot name one.
+ *
+ * **A `final` class cannot be derived from, so it reads "not declared"**, and a non-class type does too:
+ * a malformed handler on a `final` strategy is still skipped. `plan/todo/strategy-final-handlers.md`.
+ */
+#define ATL_DETECT_DECLARED(NAME)                                                        \
+  struct NAME##_fallback {                                                               \
+    int NAME;                                                                            \
+  };                                                                                     \
+  template <typename S>                                                                  \
+  struct NAME##_probe : S, NAME##_fallback {};                                           \
+  template <typename S, typename = void>                                                 \
+  struct NAME##_is_ambiguous : std::true_type {};                                        \
+  template <typename S>                                                                  \
+  struct NAME##_is_ambiguous<S, std::void_t<decltype(&NAME##_probe<S>::NAME)>>           \
+  : std::false_type {};                                                                  \
+  template <typename S>                                                                  \
+  constexpr bool declares_##NAME = std::conjunction_v<                                   \
+    std::is_class<S>, std::negation<std::is_final<S>>, NAME##_is_ambiguous<S>            \
+  >
+
+ATL_DETECT_DECLARED(on_start);
+ATL_DETECT_DECLARED(on_stop);
+ATL_DETECT_DECLARED(on_bar);
+ATL_DETECT_DECLARED(on_quote);
+ATL_DETECT_DECLARED(on_fill);
+ATL_DETECT_DECLARED(on_order_update);
+ATL_DETECT_DECLARED(on_phase);
+
+#undef ATL_DETECT_DECLARED
+
 /** Whether `S` defines any handler at all for `Ctx`. */
 template <typename S, typename Ctx>
 constexpr bool has_any_handler =
@@ -242,15 +280,14 @@ struct ProbeBroker {
 /**
  * A complete context that does nothing, for checking a strategy compiles.
  *
- * Two uses, and the second is the interesting one. It is a usable stub for tests — intents land
- * in `submitted_` where a test can read them. And it is the reference context
- * `ATL_ASSERT_STRATEGY` compares against to prove a strategy's handlers are generic.
+ * Two uses. It is a usable stub for tests — intents land in `submitted_` where a test can read them.
+ * And it is one of the two reference contexts `ATL_ASSERT_STRATEGY` detects each handler against, to
+ * catch a handler written for one concrete context type; detection reads declarations, not bodies.
  *
- * Parameterized on the capability set so both branches of a capability gate get type-checked.
- * `MinimalContext` has every capability absent and `FullContext` has every one present, so a
- * strategy asserted against both has compiled the `if constexpr` branch it takes for a broker
- * that offers everything *and* the one it takes for a broker that offers nothing. Probing one
- * setting alone would leave the other branch unchecked until a broker bound to it.
+ * Parameterized on the capability set: `MinimalContext` has every capability absent and
+ * `FullContext` every one present, so a test that runs a strategy's handlers on both compiles the
+ * `if constexpr` branch it takes for a broker that offers everything *and* the one it takes for a
+ * broker that offers nothing.
  *
  * It deliberately does not provide the series accessors a real runner has — `bars`, `frame`,
  * `panel`. Those return analytics types and therefore need a linear-algebra backend, which this
@@ -366,6 +403,42 @@ struct StrategyConformance {
     "the context by reference as its first parameter. A handler with a different signature is "
     "not detected, so check the parameter types: on_bar takes (Ctx&, const BarEvent&)"
   );
+  // A handler the runner cannot call is skipped by dispatch, so one that is declared must be callable.
+  static_assert(
+    !strategy_detail::declares_on_start<S> || strategy_detail::has_on_start<S, Ctx>::value,
+    "on_start is declared but its parameters do not accept this runner's call on_start(Ctx&); the "
+    "runner would skip it"
+  );
+  static_assert(
+    !strategy_detail::declares_on_stop<S> || strategy_detail::has_on_stop<S, Ctx>::value,
+    "on_stop is declared but its parameters do not accept this runner's call on_stop(Ctx&); the "
+    "runner would skip it"
+  );
+  static_assert(
+    !strategy_detail::declares_on_bar<S> || strategy_detail::has_on_bar<S, Ctx>::value,
+    "on_bar is declared but its parameters do not accept this runner's call "
+    "on_bar(Ctx&, const BarEvent&); the runner would skip it"
+  );
+  static_assert(
+    !strategy_detail::declares_on_quote<S> || strategy_detail::has_on_quote<S, Ctx>::value,
+    "on_quote is declared but its parameters do not accept this runner's call "
+    "on_quote(Ctx&, const QuoteEvent&); the runner would skip it"
+  );
+  static_assert(
+    !strategy_detail::declares_on_fill<S> || strategy_detail::has_on_fill<S, Ctx>::value,
+    "on_fill is declared but its parameters do not accept this runner's call "
+    "on_fill(Ctx&, const Fill&); the runner would skip it"
+  );
+  static_assert(
+    !strategy_detail::declares_on_order_update<S> || strategy_detail::has_on_order_update<S, Ctx>::value,
+    "on_order_update is declared but its parameters do not accept this runner's call "
+    "on_order_update(Ctx&, const OrderSnapshot&); the runner would skip it"
+  );
+  static_assert(
+    !strategy_detail::declares_on_phase<S> || strategy_detail::has_on_phase<S, Ctx>::value,
+    "on_phase is declared but its parameters do not accept this runner's call "
+    "on_phase(Ctx&, const MarketPhase&); the runner would skip it"
+  );
   static_assert(
     strategy_detail::handlers_are_generic<S, Ctx, MinimalContext> &&
       strategy_detail::handlers_are_generic<S, Ctx, FullContext>,
@@ -382,9 +455,19 @@ struct StrategyConformance {
 /**
  * Asserts that `S` is a strategy the runner for `Ctx` can drive.
  *
- * Checks two things a misspelling or a stray concrete type would otherwise hide until much later:
- * that at least one handler is detected, and that every handler detected is also detected for two
- * unrelated probe contexts, which is what proves it is a template and therefore portable.
+ * Checks three things a misspelling, a wrong parameter or a stray concrete type would otherwise hide:
+ *
+ * - at least one handler is callable as this runner calls it;
+ * - **every handler `S` declares is callable as this runner calls it**, because one that is not is
+ *   skipped by the runner in silence: an `on_fill(Ctx&, Fill&)` taking a non-const event never hears a
+ *   fill. Not checked for a `final` strategy, whose names cannot be looked up this way. A handler
+ *   constrained away for some contexts (`enable_if`) is rejected: gate inside it with `if constexpr`;
+ * - every handler callable for `Ctx` is callable for two unrelated probe contexts too, which catches one
+ *   written against a single concrete context type. This reads declarations only: a handler's body is
+ *   compiled where its runner calls it.
+ *
+ * Not checked: a handler that takes its context **by value** is called, and what it submits goes to a
+ * copy (`plan/todo/strategy-context-by-value.md`).
  *
  * Usable at namespace, class, and block scope.
  */

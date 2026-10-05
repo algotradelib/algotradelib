@@ -311,6 +311,53 @@ set_tests_properties(conformance-requires-an-asked-basis PROPERTIES
     TIMEOUT 300
 )
 
+# A strategy handler that is declared and that the runner cannot call must not build: the runner would skip
+# it in silence. One probe per shape, each with a valid `on_bar`, each failing for one reason only.
+add_library(algotradelib-strategy-probe-nonconst-fill OBJECT EXCLUDE_FROM_ALL strategy-probe-nonconst-fill.cpp)
+target_link_libraries(algotradelib-strategy-probe-nonconst-fill PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME strategy-refuses-a-nonconst-fill
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-nonconst-fill
+            --config "$<CONFIG>"
+)
+set_tests_properties(strategy-refuses-a-nonconst-fill PROPERTIES
+    PASS_REGULAR_EXPRESSION "on_fill is declared but its parameters do not accept this runner's call"
+    TIMEOUT 300
+)
+add_library(algotradelib-strategy-probe-wrong-update-event OBJECT EXCLUDE_FROM_ALL strategy-probe-wrong-update-event.cpp)
+target_link_libraries(algotradelib-strategy-probe-wrong-update-event PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME strategy-refuses-a-wrong-update-event
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-wrong-update-event
+            --config "$<CONFIG>"
+)
+set_tests_properties(strategy-refuses-a-wrong-update-event PROPERTIES
+    PASS_REGULAR_EXPRESSION "on_order_update is declared but its parameters do not accept this runner's call"
+    TIMEOUT 300
+)
+add_library(algotradelib-strategy-probe-missing-phase-event OBJECT EXCLUDE_FROM_ALL strategy-probe-missing-phase-event.cpp)
+target_link_libraries(algotradelib-strategy-probe-missing-phase-event PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME strategy-refuses-a-missing-phase-event
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-missing-phase-event
+            --config "$<CONFIG>"
+)
+set_tests_properties(strategy-refuses-a-missing-phase-event PROPERTIES
+    PASS_REGULAR_EXPRESSION "on_phase is declared but its parameters do not accept this runner's call"
+    TIMEOUT 300
+)
+add_library(algotradelib-strategy-probe-mutable-phase OBJECT EXCLUDE_FROM_ALL strategy-probe-mutable-phase.cpp)
+target_link_libraries(algotradelib-strategy-probe-mutable-phase PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME strategy-refuses-a-mutable-phase
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-mutable-phase
+            --config "$<CONFIG>"
+)
+set_tests_properties(strategy-refuses-a-mutable-phase PROPERTIES
+    PASS_REGULAR_EXPRESSION "on_phase is declared but its parameters do not accept this runner's call"
+    TIMEOUT 300
+)
+
 # The same guarantee for the dry runner: a dry run links no transport, so a dry-run binary has no
 # code path that could place an order.
 add_executable(algotradelib-runner-isolation test-runner-isolation.cpp)

@@ -92,7 +92,7 @@ void order_update(S& strategy, Ctx& context, const OrderSnapshot& event) {
 
 /** Calls `on_phase` if `strategy` defines one. */
 template <typename S, typename Ctx>
-void phase(S& strategy, Ctx& context, strategy::MarketPhase event) {
+void phase(S& strategy, Ctx& context, const strategy::MarketPhase& event) {
   if constexpr (strategy::strategy_detail::has_on_phase<S, Ctx>::value) {
     strategy.on_phase(context, event);
   } else {
