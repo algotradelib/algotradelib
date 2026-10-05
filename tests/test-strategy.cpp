@@ -513,7 +513,9 @@ struct FillAlias {
 struct FinalNonConstFill final {
   template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
   template <class Ctx> void on_fill(Ctx&, strategy::Fill&) { ++fills_; }
+  template <class Ctx> void on_order_update(Ctx, const OrderSnapshot&) { ++updates_; }  // context by value
   int fills_{0};
+  int updates_{0};
 };
 
 /** One malformed handler of each kind, declared and not callable as the runner calls it. */
@@ -628,6 +630,9 @@ TEST_CASE("a final strategy's uncallable handler is still skipped") {
   FinalNonConstFill strategy_instance;
   runner::dispatch::fill(strategy_instance, ctx, strategy::Fill{});
   CHECK(strategy_instance.fills_ == 0);
+  // And a handler taking the (non-copyable) context by value is skipped, not called with a copy.
+  runner::dispatch::order_update(strategy_instance, ctx, OrderSnapshot{});
+  CHECK(strategy_instance.updates_ == 0);
 }
 
 TEST_CASE("a probe context records what a strategy asked for") {

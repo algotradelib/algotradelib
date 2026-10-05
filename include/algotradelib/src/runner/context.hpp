@@ -98,7 +98,8 @@ public:
 
   /**
    * Not copyable, so a handler cannot take it by value: what such a handler submitted would go to the copy
-   * and be lost. `ATL_ASSERT_STRATEGY` then reports the handler as declared and not callable.
+   * and be lost. `ATL_ASSERT_STRATEGY` then reports the handler, on a strategy that is not `final`, as
+   * declared and not callable; on a `final` one the runner skips it.
    */
   Context(const Context&) = delete;
   /** Not copyable; see the copy constructor. */

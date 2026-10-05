@@ -481,7 +481,8 @@ struct StrategyConformance {
  *   body is compiled where its runner calls it.
  *
  * A handler that takes its context **by value** is not callable, because neither the runner's context
- * nor a probe context can be copied; it is reported as declared and not callable. (Were it called, what it
+ * nor a probe context can be copied; on a strategy that is not `final` it is reported as declared and not
+ * callable, and with a copyable context of a caller's own, as not generic. (Were it called, what it
  * submitted would go to the copy and be lost.)
  *
  * Usable at namespace, class, and block scope.
