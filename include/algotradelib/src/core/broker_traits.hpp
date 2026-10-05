@@ -44,13 +44,15 @@ namespace algotradelib {
  * **The contract.** Nothing checks a specialization when a session is built: a
  * missing member is reported by the compiler, naming this specialization and the
  * member, where it is first used. `ATL_ASSERT_BROKER(Client)` (`broker_verbs.hpp`)
- * uses all of it at once, and an adapter author asserts it in one source file.
+ * compiles every claimed operation verb and reads every capability at once, and an
+ * adapter author asserts it in one source file. It calls neither `broker_name()`
+ * nor `rate_limit_stats()`, which are compiled where they are first called.
  *
  * | Member | Required |
  * |---|---|
  * | `Account`, `BrokerTag`, `Config`, `PlaceAck`, `Amendment`, `HistoryQuery`, `WorkingOrdersResult` | always |
  * | `name`, `blocking`, `data_only`, `has_trigger_price`, `supports_interval(BarInterval)` | always |
- * | every other `BrokerCaps` constant, answered `true` or `false` | always; none has a default |
+ * | every other `BrokerCaps` constant: `true` or `false`, and `sellable_source` | always; none has a default |
  * | `working_orders_state_terminal` | where `has_working_orders` |
  * | `sellable_inquiry_basis` | where `sellable_source` is `INQUIRY` |
  * | `quote`, `bars`, `validate_bars`, `holdings`, `validate_place`, `place_order`, `replace_order`, `cancel_order`, `order_history`, `normalize_place`, `to_replacement`, `to_cancellation`, `to_history_query`, `rate_limit_stats` | always: every session calls them |

@@ -27,6 +27,9 @@ static_assert(BrokerCaps<vendor::AsyncClient>::data_only, "in either shape");
 static_assert(!BrokerCaps<vendor::TradingStandIn>::data_only, "a declaration in the specialization hides the base's");
 static_assert(!strategy::NoCaps::data_only, "the library's own capability sets state the flag");
 static_assert(!strategy::AllCaps::data_only, "a source that takes no order is not \"everything\"");
+// The library's own capability sets answer every question, so a test session inheriting one is complete.
+static_assert(reads_every_capability<strategy::NoCaps>(), "NoCaps answers every capability");
+static_assert(reads_every_capability<strategy::AllCaps>(), "AllCaps answers every capability");
 static_assert(BrokerCaps<vendor::BlockingClient>::sellable_source == SellableSource::NONE, "nor holdings");
 // Neither question is asked of a vendor, which answers neither, and both read as the answer that cannot mislead.
 static_assert(!BrokerCaps<vendor::BlockingClient>::working_orders_state_terminal, "no listing, no terminal rows");

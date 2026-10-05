@@ -179,7 +179,8 @@ and the first (trading) session of a `live::SessionSource` refuse it with a
 build. It is accepted as the market-data session,
 `SessionSource<Trading, Journal, MarketData>`. Called directly, the session still
 refuses every order at run time. A data client written by hand without the base
-gets the compile-time check only by declaring `static constexpr bool data_only = true`.
+declares `static constexpr bool data_only = true` itself; omitting the flag fails
+compilation at either binding, as it does for every traits specialization.
 
 `live_program::trade` and `observe` in `examples/live_program.hpp` read reference
 data from the market-data session, so they need a vendor that declares

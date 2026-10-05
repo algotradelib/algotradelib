@@ -256,16 +256,16 @@ struct BrokerCaps {
 };
 
 /**
- * Reads every `BrokerCaps<Client>` constant once, so a missing one fails here rather than where a caller
- * first reads it. Always true; `ATL_ASSERT_BROKER` reads it.
+ * Reads every capability constant of `Caps` once -- `BrokerCaps<Client>`, or a capability set written by
+ * hand such as `strategy::NoCaps` -- so a missing one fails here rather than where a caller first reads
+ * it. Always true, whatever the answers are.
  *
  * Needed because instantiating `BrokerCaps<Client>` does not evaluate its constants: each is evaluated
  * where it is read, and a constant nothing in the adapter's own test reads would otherwise surface in a
  * consumer's build. A constant added to `BrokerCaps` is added here.
  */
-template <typename Client>
-constexpr bool answers_every_capability() {
-  using Caps = BrokerCaps<Client>;
+template <typename Caps>
+constexpr bool reads_every_capability() {
   constexpr bool read[] = {
     Caps::has_account_discovery,
     Caps::has_client_order_id,
@@ -299,6 +299,12 @@ constexpr bool answers_every_capability() {
   // Named, not called: the predicate need not be usable in a constant expression to be conforming.
   static_cast<void>(&Caps::supports_interval);
   return true;
+}
+
+/** Whether `Client`'s traits answer every capability question; `ATL_ASSERT_BROKER` reads it. */
+template <typename Client>
+constexpr bool answers_every_capability() {
+  return reads_every_capability<BrokerCaps<Client>>();
 }
 
 } // namespace algotradelib
