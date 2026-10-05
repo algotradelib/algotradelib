@@ -96,6 +96,18 @@ public:
   /** The capability set a strategy gates on with `if constexpr`. */
   using caps = CapsType;
 
+  /**
+   * Not copyable, so a handler cannot take it by value: what such a handler submitted would go to the copy
+   * and be lost. `ATL_ASSERT_STRATEGY` then reports the handler as declared and not callable.
+   */
+  Context(const Context&) = delete;
+  /** Not copyable; see the copy constructor. */
+  Context& operator=(const Context&) = delete;
+  /** Movable. */
+  Context(Context&&) = default;
+  /** Movable. */
+  Context& operator=(Context&&) = default;
+
   /** A structured, non-blocking log. Lines are kept for the runner to emit or a test to read. */
   class Log {
   public:

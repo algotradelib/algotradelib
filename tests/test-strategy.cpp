@@ -616,6 +616,11 @@ TEST_CASE("a handler taking its event by value, or the phase by const reference,
   CHECK(overloaded.fills_ == 1);
 }
 
+// The probe contexts are not copyable either, so a by-value handler is rejected as the runner rejects it.
+static_assert(!std::is_copy_constructible_v<MinimalContext>);
+static_assert(!std::is_copy_assignable_v<FullContext>);
+static_assert(std::is_move_constructible_v<MinimalContext>);
+
 TEST_CASE("a final strategy's uncallable handler is still skipped") {
   // Pinned so that closing the gap shows up here: this strategy passes ATL_ASSERT_STRATEGY above, and
   // its fill handler, taking a non-const event, is never called. plan/todo/strategy-final-handlers.md.
