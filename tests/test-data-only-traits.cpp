@@ -273,4 +273,3 @@ TEST_CASE("a refusal through an erased strand executor completes on that strand"
   REQUIRE(moved->has_value());
   check_refused_locally(**moved);
 }
-

@@ -149,8 +149,8 @@ void post_refusal(Handler&& handler) {
  *   a program that would run and quietly trade nothing is not built. (`live::bind` and
  *   `live::bind_journaled` build a `SessionExecutor`, so they are refused the same way.)
  * - **Called directly, it refuses at run time.** A caller holding the session can still call `place` or
- *   `holdings` on it; each refuses before any I/O, as above. That is also all a data client written by
- *   hand without this base gets, since the compiler cannot recognize one.
+ *   `holdings` on it; each refuses before any I/O, as above. A data client written by hand without this
+ *   base is caught at compile time only if it declares `static constexpr bool data_only = true` itself.
  * - `live_program::trade` and `observe` in `examples/live_program.hpp` read reference data from the
  *   market-data session, so they need a vendor that serves it (`has_reference_data`); `SessionSource` does
  *   not.

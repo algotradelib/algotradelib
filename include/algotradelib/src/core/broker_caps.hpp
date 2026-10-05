@@ -157,11 +157,15 @@ struct BrokerCaps {
    * Whether the client is a market-data source that takes no order: true for a traits type built on
    * `DataOnlyTraits`.
    *
-   * **Read at compile time by everything that sends or reads an account.** `live::SessionExecutor` and
-   * the trading session of `live::SessionSource` refuse such a client with a `static_assert`, so a data
-   * vendor wired where orders go does not build. Defaulted to `false` for a traits type that does not
-   * declare it, so every broker adapter, in tree or out, compiles as before. A data client written by
-   * hand without the base is therefore not caught here; its refusals still stop every order at run time.
+   * **Read at compile time where the library binds a session to send or to read an account:**
+   * `live::SessionExecutor` and the trading (first) session of `live::SessionSource` refuse such a client
+   * with a `static_assert`, so a data vendor wired there does not build (`live::bind`, `bind_journaled` and
+   * `live_program` reach both). A caller's direct `place` or `holdings` on the session is not checked; it
+   * refuses at run time.
+   *
+   * Declared as `static constexpr bool data_only`. Defaulted to `false` for a traits type that does not
+   * declare it, so every broker adapter compiles as before. A hand-written data client that declares
+   * `data_only = true` is caught too; one that does not is caught only by its own run-time refusals.
    */
   static constexpr bool data_only = caps_detail::stated_data_only<Traits>::value;
 

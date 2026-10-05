@@ -173,8 +173,8 @@ and the first (trading) session of a `live::SessionSource` refuse it with a
 `static_assert`, so a program wiring a data vendor where orders go does not
 build. It is accepted as the market-data session,
 `SessionSource<Trading, Journal, MarketData>`. Called directly, the session still
-refuses every order at run time, which is all a data client written by hand
-without the base gets.
+refuses every order at run time. A data client written by hand without the base
+gets the compile-time check only by declaring `static constexpr bool data_only = true`.
 
 `live_program::trade` and `observe` in `examples/live_program.hpp` read reference
 data from the market-data session, so they need a vendor that declares
