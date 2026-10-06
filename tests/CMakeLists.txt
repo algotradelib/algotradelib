@@ -465,6 +465,19 @@ set_tests_properties(strategy-refuses-a-copyable-context PROPERTIES
     TIMEOUT 300
 )
 
+# And one whose copy constructor takes a mutable reference, which is what dispatch passes.
+add_library(algotradelib-strategy-probe-mutable-copy-context OBJECT EXCLUDE_FROM_ALL strategy-probe-mutable-copy-context.cpp)
+target_link_libraries(algotradelib-strategy-probe-mutable-copy-context PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME strategy-refuses-a-mutable-copy-context
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-mutable-copy-context
+            --config "$<CONFIG>"
+)
+set_tests_properties(strategy-refuses-a-mutable-copy-context PROPERTIES
+    PASS_REGULAR_EXPRESSION "a strategy context must not be copyable"
+    TIMEOUT 300
+)
+
 # The same guarantee for the dry runner: a dry run links no transport, so a dry-run binary has no
 # code path that could place an order.
 add_executable(algotradelib-runner-isolation test-runner-isolation.cpp)

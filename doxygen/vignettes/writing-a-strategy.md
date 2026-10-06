@@ -208,7 +208,8 @@ An event taken by value is fine. `ATL_ASSERT_STRATEGY(MyStrategy, Ctx)`, which e
 that check early:
 - the strategy is a class and not `final` (its handler names could not be looked up otherwise; do not mark a
   strategy `final`);
-- `Ctx` cannot be copied;
+- `Ctx` cannot be copied, from a `const` or a mutable reference (a context of your own must not derive from a
+  copyable base either: a handler taking that base by value would get a sliced copy);
 - it declares at least one handler;
 - **every declared handler's call and body compile for `Ctx`**, including one for an event the program never
   feeds.

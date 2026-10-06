@@ -514,9 +514,10 @@ struct StrategyConformance {
     "cannot be looked up; remove `final` from the strategy class"
   );
   // A handler taking its context by value would submit to a copy, and what it submitted would be lost.
-  // Every context this library hands a strategy is move-only; a caller's own must be too.
+  // Every context this library hands a strategy is move-only; a caller's own must be too -- from the
+  // mutable lvalue `dispatch` passes as well as from a `const` one, since a copy constructor may take either.
   static_assert(
-    !std::is_copy_constructible_v<Ctx>,
+    !std::is_copy_constructible_v<Ctx> && !std::is_constructible_v<Ctx, Ctx&>,
     "a strategy context must not be copyable, so that a handler taking it by value does not compile "
     "(what it submitted would go to the copy and be lost); delete the context's copy constructor"
   );
@@ -537,8 +538,11 @@ struct StrategyConformance {
  * Asserts that `S` is a strategy the runner for `Ctx` can drive.
  *
  * - `S` is a class and not `final` (its handler names could not be looked up otherwise);
- * - `Ctx` cannot be copied, so a handler taking it by value does not compile (its submissions would go to
- *   a copy); the runner's contexts and the probe contexts are move-only;
+ * - `Ctx` cannot be copied (from a `const` or a mutable lvalue), so a handler taking it by value does not
+ *   compile (its submissions would go to a copy); the runner's contexts and the probe contexts are
+ *   move-only. **Not caught**: a handler taking by value some *other* type the context converts to -- a
+ *   copyable base class it derives from, which slices it. The library's contexts derive from nothing and
+ *   convert to nothing; a caller's own context should not either;
  * - it declares at least one handler;
  * - **every handler it declares can be called as the runner calls it with `Ctx`**: the assertion compiles
  *   each call, and each handler template's body, for `Ctx`. A handler the call does not fit is the
