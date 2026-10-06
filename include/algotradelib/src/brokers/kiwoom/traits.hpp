@@ -199,8 +199,7 @@ struct Normalizers {
       "that is what it is: set KiwoomConfig::holdings_position_scope_ to "
       "KiwoomPositionScope::VALUATION_ONLY to assert it, and "
       "KiwoomConfig::holdings_sellable_scope_ separately for trde_able_qty. Until then read the rows "
-      "through session.client().holdings(). Both assertions are unverified; the experiment that "
-      "settles them is in issues/kiwoom-api-holdings-venue-scope.md";
+      "through session.client(). Both assertions are unverified; see KiwoomConfig's documentation";
     return Result<HoldingsSnapshot>(std::move(error));
   }
 
