@@ -12,13 +12,12 @@ namespace algotradelib {
 namespace strategy {
 
 /**
- * Returns whether a status describes an order that can still trade.
+ * @brief Tests whether an order in a given status may still trade.
  *
- * Listed explicitly rather than as "not terminal", so a status this library gains later does not
- * silently start counting as live. `UNKNOWN` counts as open: an order whose state is unrecognized
- * may still be working, and the two consequences of being wrong are not symmetric. Under-counting
- * a working quantity causes double-sizing; over-counting merely holds an order back. Treating an
- * unrecognized state as closed would also mean never trying to cancel it.
+ * @param status The order status.
+ * @return `true` for `PENDING`, `PENDING_CANCEL`, `PENDING_REPLACE`, `PARTIAL_FILLED` and
+ *   `UNKNOWN` (an unrecognized state is assumed to be still working); `false` for the terminal
+ *   statuses.
  */
 inline bool order_is_open(OrderStatus status) {
   switch (status) {
@@ -40,115 +39,87 @@ inline bool order_is_open(OrderStatus status) {
 }
 
 /**
- * What a strategy is currently holding, and what it has already asked for.
+ * @brief What the account holds and which orders are still working, as a strategy sees it.
  *
- * Templated on the broker because a working order carries an `OrderRef<Broker>`, which is only
- * meaningful to the broker that issued it. A strategy never spells the parameter: it reads
- * `ctx.portfolio()` with `auto` and names no broker.
+ * Read it with `ctx.portfolio()`. Size orders against positions **and** working orders
+ * (`net_quantity_of`, `working_quantity`), or emit a `TargetPosition` and let the runner do it;
+ * sizing from positions alone buys twice after a partial fill.
  *
- * **`working_` is the half most easily forgotten, and the reason it is here.** A strategy that
- * sizes from positions alone double-sizes after a partial fill: the signal still says "hold 100",
- * 40 are filled and 60 are still working, and sizing against the position asks for 60 more on top
- * of the 60 already in the market. `working_quantity` exists so that arithmetic is available
- * rather than re-derived, and `TargetPosition` exists so most strategies never have to do it.
+ * @tparam Broker The broker tag of the working orders' references; read the portfolio with `auto`
+ *   so a strategy never names it.
  */
 template <typename Broker>
 struct Portfolio {
   /**
-   * Every position row the broker reported.
+   * @brief Every position row the broker reported.
    *
-   * One instrument may appear in more than one row, so size a holding with `net_quantity_of`
-   * rather than reading the first match.
+   * One instrument may appear in more than one row; size a holding with `net_quantity_of`.
    */
   std::vector<HoldingPosition> positions_;
   /**
-   * Spendable cash per currency, unconverted — no implicit foreign exchange.
+   * @brief Cash per currency, in a backtest only.
    *
-   * **Replay-only, and a strategy reading it behaves differently in the two modes.**
-   * `backtest::ReplayLedger::snapshot` is the one thing in this library that writes it; a live
-   * `poll_holdings` sets positions and a timestamp and never touches it. So `cash_in(krw)` answers
-   * a number in a backtest and `std::nullopt` live, for the same strategy and the same account.
-   *
-   * Nothing shipped reads it — no guard, no vanilla strategy, no example — which is why this is a
-   * documented trap rather than a defect. A strategy sizing against available money should read
-   * `buying_power_`, which both adapters fill live and the replay models and discloses.
-   *
-   * Whether the field should be filled live at all is open: both brokers publish several deposit
-   * figures that mean different things, and `plan/todo/deposit-balances.md` argues the honest
-   * outcome may be to say so rather than to pick one. This comment is that saying-so, at the point
-   * where a strategy author reads the field.
+   * @warning Only the backtest ledger fills this; live it stays empty, so `cash_in` returns a
+   *   number in a backtest and `std::nullopt` live for the same strategy. To size against money,
+   *   read `buying_power_` instead.
    */
   std::vector<Money> cash_;
   /**
-   * What the broker said may be spent, per currency.
+   * @brief What may be spent, per currency.
    *
-   * Separate from `cash_`, which is this library's own accounting and is filled by the backtest
-   * ledger. Live this is the broker's answer; in a replay it is the ledger's modelled cash, which
-   * the report states as modelled. The two fields are different quantities either way: see
-   * `BuyingPower`. Empty means nobody has asked, which is not the same as an answer of zero — a
-   * caller enforcing a buying-power limit must treat the empty case as unknown rather than as no
-   * money.
+   * Live, the broker's figure; in a backtest, the ledger's modelled cash (the backtest report says
+   * so). Empty means no figure was read, which is not the same as zero; see `BuyingPower`.
    */
   std::vector<BuyingPower> buying_power_;
   /**
-   * Orders still outstanding at the broker.
+   * @brief Orders still outstanding at the broker.
    *
-   * The half most easily forgotten: sizing from `positions_` alone double-sizes after a partial
-   * fill. `working_quantity` does that arithmetic.
+   * Use `working_quantity` to sum what is still to fill.
    */
   std::vector<WorkingOrder<Broker>> working_;
   /**
-   * When the holdings behind this portfolio arrived, and what a staleness gate measures against.
+   * @brief When the holdings were received, on this machine's clock.
    *
-   * **The local clock, not the broker's.** It is copied from `HoldingsSnapshot::received_at_`, which
-   * both adapters set to `system_clock::now()` as they parse the reply, because neither broker
-   * timestamps a holdings answer -- the same reason `BuyingPower::received_at_` gives. So this is
-   * when the figures *arrived*, not when they were true, and the gate understates their age by
-   * however long the request took.
+   * Brokers do not timestamp holdings, so this is when the reply arrived, not when the figures
+   * were true. Staleness checks measure against it.
    */
   std::chrono::system_clock::time_point as_of_{};
   /**
-   * When the working-order listing behind `working_` arrived, on the same local clock as `as_of_`.
+   * @brief When the working-order listing was received, on the same clock as `as_of_`.
    *
-   * Stamped by a live source from `WorkingOrders::received_at_`; a replay never sets it, and the epoch
-   * means "no stamped listing". It exists for one comparison, `listing_newer_than_holdings`.
+   * Set by a live source; the epoch (the default) means no stamped listing, as in a backtest.
    */
   std::chrono::system_clock::time_point working_as_of_{};
 
   /**
-   * Whether the working-order listing arrived after the holdings it would be reconciled with.
+   * @brief Tests whether the working-order listing is newer than the holdings.
    *
-   * **Then the picture can under-count a position.** A resting buy that fills between the two reads
-   * has left the listing and is not yet in the holdings: the account reads as though the order never
-   * existed, and a target strategy buys again. The opposite order -- holdings newer than the listing
-   * -- over-counts, which at worst cancels an order that has already filled. So a plan sized against
-   * this portfolio is withheld while this is true (`WithheldPlanReason::PORTFOLIO_SUPERSEDED`).
+   * Then a resting buy that filled between the two reads appears in neither, and the portfolio
+   * under-counts the position. The runner withholds a plan sized against such a portfolio
+   * (`WithheldPlanReason::PORTFOLIO_SUPERSEDED`).
    *
-   * False when either stamp is the epoch: absence has its own rule, and an unstamped listing is one
-   * nothing can be compared against.
+   * @return `true` if both are stamped and the listing arrived after the holdings.
    */
   bool listing_newer_than_holdings() const noexcept {
     const std::chrono::system_clock::time_point epoch{};
     return as_of_ != epoch && working_as_of_ != epoch && working_as_of_ > as_of_;
   }
   /**
-   * What the `sellable_quantity_` figures on `positions_` are evidence of.
+   * @brief What the `sellable_quantity_` figures on `positions_` cover.
    *
-   * Copied from `HoldingsSnapshot::sellable_basis_` by whoever filled the positions -- the live
-   * poll, a replay's ledger, or a consumer's own source. `RiskGuard` consults it before measuring a
-   * sell against those figures, and refuses when it says nobody established what they cover.
-   *
-   * Defaults to unestablished. A `Portfolio` built by hand, or by a source that has never heard of
-   * this field, therefore refuses a checked sell rather than permitting one against a figure whose
-   * meaning is unknown.
+   * Set by whatever filled the positions. `RiskGuard` refuses to measure a sell against a figure
+   * whose basis is unestablished, which is the default, so a hand-built portfolio refuses checked
+   * sells until this is set.
    */
   SellableBasis sellable_basis_;
 
   /**
-   * Returns the quantity held of `instrument`, or nothing when there is no position.
+   * @brief Returns the quantity of the first position row for an instrument.
    *
-   * Nothing rather than zero, because "no position reported" and "a position of zero" are
-   * different claims, and a broker that omits a closed position is making the first.
+   * @param instrument The instrument.
+   * @return The first matching row's quantity, or `std::nullopt` if no row matches.
+   * @warning A holding can be split across rows. To size an order, or to ask whether anything is
+   *   held, use `net_quantity_of`.
    */
   std::optional<Decimal64> quantity_of(const InstrumentId& instrument) const {
     for (const auto& position : positions_) {
@@ -160,25 +131,13 @@ struct Portfolio {
   }
 
   /**
-   * Returns the **net** quantity held of `instrument` across every row, or nothing when the
-   * arithmetic will not fit.
+   * @brief Returns the net quantity held of an instrument, summed over every row.
    *
-   * **This is the one to size an order against; `quantity_of` is not.** That one returns the *first*
-   * matching row, and nothing dedupes what an adapter appends -- a broker reporting one instrument
-   * as two lots is ordinary, and `backtest::ReplayLedger` keeps a lot after it returns to flat. Two
-   * rows of 60 and 40 are a holding of 100, and reading 60 understates it. Anything computing "how
-   * much do I have" from the first row is wrong by however much the other rows hold.
+   * Use this to size an order: a holding reported as two rows of 60 and 40 is 100.
    *
-   * **Zero when nothing is reported, unlike `quantity_of`.** The distinction that one preserves --
-   * no row versus a row of zero -- is real, and a caller that genuinely wants it should keep using
-   * it. It is not a distinction an *amount* can carry, and every caller of this one goes on to do
-   * arithmetic with the result, so folding both to zero here is what stops each of them inventing
-   * the same fold. Note that "am I holding anything" is **not** such a caller: a spent lot of zero
-   * listed beside a live one makes `quantity_of` answer flat, which is how `vanilla::Reversion`
-   * came to re-enter a position it already held.
-   *
-   * `std::nullopt` means the sum overflowed or would not be representable, which is a broken
-   * snapshot rather than a quantity of zero, and is the one case a caller must not treat as flat.
+   * @param instrument The instrument.
+   * @return The sum, which is zero when no row matches; `std::nullopt` only if the sum overflowed
+   *   (a broken snapshot, which must not be treated as flat).
    */
   std::optional<Decimal64> net_quantity_of(const InstrumentId& instrument) const {
     auto total = Decimal64::parse("0");
@@ -196,12 +155,14 @@ struct Portfolio {
   }
 
   /**
-   * Returns the quantity still working on `side` for `instrument`.
+   * @brief Returns the quantity still to fill on open orders for an instrument and side.
    *
-   * The remaining quantity of each open order — ordered minus filled — summed. Orders in a
-   * terminal state contribute nothing, and an order whose filled quantity exceeds its ordered
-   * quantity contributes zero rather than a negative, because a broker reporting that is
-   * describing something this arithmetic should not amplify.
+   * Sums ordered minus filled over the orders `order_is_open` accepts. An order reporting more
+   * filled than ordered contributes zero.
+   *
+   * @param instrument The instrument.
+   * @param side The side.
+   * @return The remaining quantity, zero if there is none.
    */
   Decimal64 working_quantity(const InstrumentId& instrument, OrderSide side) const {
     Decimal64 total = Decimal64::parse("0");
@@ -228,32 +189,24 @@ struct Portfolio {
   }
 
  public:
-  /** A sellable figure together with what it is evidence of, read from one row. */
+  /** @brief A sellable quantity together with what it covers, read from the same row. */
   struct SellableReading {
-    /** The figure, or nothing when no row of the instrument reported one. */
+    /** @brief The figure, or `std::nullopt` if no row of the instrument reported one. */
     std::optional<Decimal64> quantity_;
-    /** What that figure is evidence of. Unestablished refuses, and so does a disagreement. */
+    /** @brief What the figure covers; unestablished if the rows disagree. */
     SellableBasis basis_;
   };
 
   /**
-   * Returns the sellable figure for `instrument` **and its basis, from the same row**.
+   * @brief Returns an instrument's sellable quantity and its basis, taken from the same row.
    *
-   * **The pairing is the whole point, and reading them separately was a defect.** An earlier revision
-   * offered the figure and the basis as two accessors, each walking the rows independently and each
-   * returning the first match on its own criterion -- the figure from the first row of the instrument,
-   * the basis from the first row carrying an override. For a holding split across two lots those are
-   * different rows: the first lot's unestablished figure of 100 paired with the second lot's declared
-   * basis authorizes a sell of 100 when the declaration answered 30. This repository has paid for that
-   * shape before, in `quantity_of` versus `net_quantity_of`, and this is the same mistake one level up.
+   * A row's own basis is used if it has one, otherwise the portfolio's `sellable_basis_`. When an
+   * instrument has several rows, figures are not summed; if the rows' bases differ, or their
+   * figures differ under the same basis, the reading's basis is unestablished and `RiskGuard`
+   * refuses a checked sell.
    *
-   * A row carrying its own basis keeps it -- a per-instrument inquiry answers for the instrument it was
-   * asked about and says nothing about any other. A row without one is described by the snapshot's.
-   *
-   * **Two lots described differently refuse**, rather than one of them winning. Whether two rows of one
-   * instrument can be reconciled is a statement about what the broker meant, which is not this
-   * library's to make -- the same argument `plan/todo/split-position-rows.md` records for their
-   * quantities. The reading comes back unestablished and the guard refuses, naming the gap.
+   * @param instrument The instrument.
+   * @return The figure and its basis.
    */
   SellableReading sellable_reading_for(const InstrumentId& instrument) const {
     SellableReading reading;
@@ -270,28 +223,20 @@ struct Portfolio {
         seen = true;
         continue;
       }
-      // A second row of the same instrument. Its figure is never summed -- that is the open question
-      // in `split-position-rows.md` -- and two kinds of disagreement make even the first row's figure
-      // uninterpretable, because nothing says which lot a sale draws from.
-      //
-      // **A basis that disagrees**, first: one lot declared and another not, or declared differently.
+      // A second row of the same instrument. Figures are never summed, and a disagreement makes even
+      // the first row's figure uninterpretable, since nothing says which lot a sale draws from.
+      // First, a basis that disagrees.
       if (basis.coverage_ != reading.basis_.coverage_ ||
           basis.resting_ != reading.basis_.resting_) {
         return SellableReading{reading.quantity_, SellableBasis{}};
       }
-      // **And figures that disagree while the bases agree**, which is the subtler one. If both rows
-      // say `WHOLE_HOLDING`, both are claiming to state the limit for the *same* shares -- so two
-      // different numbers are a contradiction, not two facts. Taking the first row's would put a sell
-      // above the real limit on the wire whenever the larger row happens to come first, and taking the
-      // smaller would be inventing a reconciliation nobody stated. This is reachable from the shipped
-      // KIS parser, which concatenates every `output1` row across pages without checking for a
-      // repeated `pdno`.
+      // Then figures that disagree under one basis: two rows claiming the limit for the same shares
+      // with different numbers contradict each other. (KIS pages can repeat a `pdno`.)
       if (reading.quantity_ && position.sellable_quantity_ &&
           !(*position.sellable_quantity_ == *reading.quantity_)) {
         return SellableReading{reading.quantity_, SellableBasis{}};
       }
-      // A later row carrying a figure where the first carried none is not a conflict; it is the only
-      // figure anyone stated, so it is the reading.
+      // A later row's figure where the first had none is the only figure stated.
       if (!reading.quantity_) {
         reading.quantity_ = position.sellable_quantity_;
       }
@@ -299,7 +244,11 @@ struct Portfolio {
     return reading;
   }
 
-  /** Returns the cash held in `currency`, or nothing when the broker reported none. */
+  /**
+   * @brief Returns the cash held in a currency (backtest only; see `cash_`).
+   * @param currency The currency.
+   * @return The amount, or `std::nullopt` if none is recorded (always, live).
+   */
   std::optional<Decimal64> cash_in(const Currency& currency) const {
     for (const auto& amount : cash_) {
       if (amount.currency_ == currency) {
@@ -310,15 +259,13 @@ struct Portfolio {
   }
 
   /**
-   * Returns the buying power the broker reported in `currency`, or nothing when it reported none.
+   * @brief Returns the buying power in a currency.
    *
-   * Nothing means *unknown*, and the distinction from zero is the reason this returns an optional
-   * rather than a default. Nobody has asked, or the broker refused — neither of which is a
-   * statement that the account cannot buy.
+   * Live, the broker's figure; in a backtest, the ledger's modelled cash.
    *
-   * Live the figure is the broker's; in a replay it is the ledger's modelled cash. A caller cannot
-   * tell them apart from here, which is deliberate — the guard should read one field in both
-   * environments — and it is why the backtest report is where the modelling is disclosed.
+   * @param currency The currency.
+   * @return The amount, or `std::nullopt` if unknown (not read, or the broker refused), which is
+   *   not the same as zero.
    */
   std::optional<Decimal64> buying_power_in(const Currency& currency) const {
     for (const auto& amount : buying_power_) {
@@ -330,16 +277,15 @@ struct Portfolio {
   }
 
   /**
-   * Returns what the broker said is sellable of `instrument`, or nothing when it did not say.
+   * @brief Returns the sellable quantity the broker reported for an instrument (first row).
    *
-   * **Nothing is not zero and it is not the held quantity.** A broker that publishes the figure at
-   * all publishes it per position — KIS carries it on every holdings snapshot — and a broker that
-   * does not leaves it absent, as Toss does. A caller that substitutes `quantity_of` when this is
-   * absent has answered a different question: T+2 settlement, pledged and locked quantity all make
-   * a held position less than fully sellable, and that gap is exactly what this reports.
+   * Sellable can be less than held (unsettled, pledged or locked shares). A broker that does not
+   * publish it leaves this absent; do not substitute the held quantity. To check a sell, prefer
+   * `sellable_reading_for`, which also says what the figure covers.
    *
-   * Absent also covers "there is no such position", which `quantity_of` distinguishes for a caller
-   * that needs to tell the two apart.
+   * @param instrument The instrument.
+   * @return The first matching row's figure, or `std::nullopt` if the broker gave none or there is
+   *   no position.
    */
   std::optional<Decimal64> sellable_quantity_of(const InstrumentId& instrument) const {
     for (const auto& position : positions_) {
@@ -350,7 +296,11 @@ struct Portfolio {
     return std::nullopt;
   }
 
-  /** Returns the working order addressed by `ref`, or nothing when it is no longer open. */
+  /**
+   * @brief Finds a working order by its reference.
+   * @param ref The order reference.
+   * @return A pointer into `working_`, or `nullptr` if no working order has that reference.
+   */
   const WorkingOrder<Broker>* find_working(const OrderRef<Broker>& ref) const {
     for (const auto& order : working_) {
       if (order.ref_ == ref) {

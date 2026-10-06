@@ -20,123 +20,83 @@ namespace algotradelib {
 namespace strategy {
 
 /**
- * Who or what is holding trading stopped.
+ * @brief Who or what is holding trading stopped.
  *
- * A halt used to be one `bool`, which was exactly right when the only caller was a person deciding
- * to stop trading: one holder, one bool. It stopped being right once machinery held it too — a
- * polling loop's gate, a journal that cannot be written — because two holders of one bool cannot
- * tell each other apart, and the one that clears it clears the other's intent with it.
- *
- * So a hold names itself, and trading resumes only when every hold is released. The enumerators are
- * ordered **most fundamental first**, and `RiskGuard::blocking_reason` relies on that order: an
- * operator reading a refusal sees the reason that most needs their attention rather than whichever
- * condition happens to be checked first. A new reason goes where its gravity puts it, not at the end.
+ * Several holds can be in force at once; trading resumes only when every one is released. The
+ * enumerators are ordered most fundamental first, and `RiskGuard::blocking_reason` reports the
+ * first one held. Whether a hold also stops cancellations is `halt_blocks`.
  */
 enum class HaltReason {
-  /** A person stopped trading, through `halt()` with no argument. Cleared only by a person. */
+  /** @brief A person stopped trading with `RiskGuard::halt()`; only `RiskGuard::resume()` clears it. */
   OPERATOR,
   /**
-   * Local machinery cannot be trusted, so nothing may be sent through it.
+   * @brief Local machinery failed, such as the order journal not being writable; nothing is sent.
    *
-   * The order journal is the motivating case: a runner that cannot record what it is about to do
-   * must not do it, because every later order would fail the same way and produce a refusal per bar
-   * that reads like the broker declining -- when in fact nothing left the process. Sticky, carries
-   * the reason as its detail, and released only by `runner::Runner::resume_after_local_failure`.
+   * Sticky; released only by `runner::Runner::resume_after_local_failure`. The detail names the
+   * failure.
    */
   LOCAL_FAILURE,
-  /** A stop intent is being honoured and the run is on its way out. */
+  /** @brief A stop was requested and the run is shutting down. */
   STOPPING,
   /**
-   * The broker's order list has not been read since this process started.
+   * @brief The broker's order list has not been read since this process started.
    *
-   * The cheapest and most valuable half of order-journal reconciliation, and it needs no
-   * persistence at all. A runner that has just started cannot know whether a *previous* process
-   * died mid-POST, and an empty `runner::IndeterminacyLedger` does not mean nothing is owed -- it
-   * means nothing is remembered. Until the list has been read once, sending could double a position
-   * left by a predecessor.
+   * Until it is, the runner cannot know whether a previous process left orders working, so it
+   * places nothing.
    */
   ORDER_LIST_UNREAD,
   /**
-   * No holdings snapshot has ever been read, so what the account holds is not merely old but
-   * unknown.
+   * @brief No holdings snapshot has been read yet, so what the account holds is unknown.
    *
-   * Distinct from `PORTFOLIO_STALE`, and more fundamental than it, because the two need different
-   * answers from an operator: too old says the age limit or the cadence is wrong, never read says
-   * the inquiry has not worked once. Reported as staleness, they are indistinguishable.
-   *
-   * It is the dangerous one. An empty `Portfolio` is the *permissive* answer to every question the
-   * send path asks it -- a position ceiling measured against zero held passes, a stated target has
-   * nothing subtracted from it, and the sellable deduction has no row to read -- so a run that has
-   * never established what it holds sizes an entry as though the account were flat.
+   * An empty portfolio would pass every check as if the account were flat, so placements wait.
    */
   PORTFOLIO_ABSENT,
   /**
-   * The holdings snapshot is older than the configured maximum.
+   * @brief The holdings snapshot is older than the configured maximum age.
    *
-   * Reconciling a target against a stale portfolio is how a position gets double-sized by a route
-   * that `working_quantity` does not close: the runner subtracts a position it no longer holds, or
-   * fails to subtract one it acquired since.
+   * Sizing against old holdings can double a position or miss one acquired since.
    */
   PORTFOLIO_STALE,
   /**
-   * The broker has not said what may be spent, and a check needs it.
+   * @brief A buying-power limit is enforced, but there is no current reading to check it against.
    *
-   * Held only by a loop that was asked to enforce a buying-power limit and has no reading to
-   * enforce it against -- because the poll is not configured, or has not returned yet, or its
-   * answer has aged out. Sizing a buy against an unknown budget is the thing that check exists to
-   * stop, so the hold stands rather than the order going out on an estimate.
+   * The reading was never polled, has not returned yet, or has aged out.
    */
   BUYING_POWER_UNREAD,
-  /**
-   * A poll kept failing, so the loop gave up rather than spinning.
-   *
-   * Distinct from `STOPPING` because nobody asked for it: the loop decided, and an operator reading
-   * the report needs to know which of the two happened.
-   */
+  /** @brief A poll kept failing and the loop gave up, as opposed to `STOPPING` on request. */
   POLL_FAILING,
 };
 
-/** How many `HaltReason` enumerators there are, for the guard's fixed-capacity storage. */
+/** @brief The number of `HaltReason` values. */
 inline constexpr std::size_t halt_reason_count = 8;
 
 /**
- * What an instruction can do to a position, which is what decides whether a hold reaches it.
+ * @brief What an instruction can do to a position, which decides which holds stop it.
  *
- * A hold used to stop every instruction, which was right while every hold meant "somebody says
- * stop". It stopped being right once holds also meant "this library does not know something":
- * refusing to *withdraw* a resting order because the holdings poll failed is worse than the exposure
- * that refusal guards, since the order keeps resting and can fill.
- *
- * So the question a hold is asked is no longer "is trading stopped" but "is trading stopped *for
- * this*". Two classes, because two is what the send path actually has -- and note which side a
- * replacement falls on: `reconcile` emits one as a withdrawal plus a placement, and the placement is
- * an `OPENING`, so repricing a resting buy into a fillable price cannot slip through as an
- * amendment.
+ * A replacement is sent as a withdrawal plus a placement, and the placement is `OPENING`.
  */
 enum class InstructionClass {
-  /** A placement: it can open a position, or enlarge one. */
+  /** @brief A placement, which can open or enlarge a position. Every hold stops it. */
   OPENING,
   /**
-   * A cancellation of a row the caller named.
+   * @brief A cancellation of an order the caller named.
    *
-   * **Named** is the operative word and it is not the same as "a cancellation". A withdrawal the
-   * caller states refers to an order it chose; a cancellation `reconcile` derived from the portfolio
-   * refers to whatever an unknown account made look opposed, which is not safe under the same holds.
-   * That distinction is enforced in `runner::Runner::settle`, before a derived plan sends anything.
+   * Not a cancellation the runner derived from the portfolio; `runner::Runner` holds those to the
+   * same holds as a placement.
    */
   WITHDRAWAL,
 };
 
 /**
- * Returns whether `reason` stops an instruction of `klass`.
+ * @brief Tests whether a hold stops an instruction of a given class.
  *
- * The division is by *why* the hold is in force, not by how serious it is. A hold that says somebody
- * or something stopped this runner reaches every instruction: an operator's kill switch a control
- * file could otherwise partly bypass, a journal that cannot record what is about to be sent, and a
- * stop already in progress. A hold that says this library does not know something reaches only what
- * it could get wrong, and withdrawing an order the caller named is not that -- `Runner::send_cancel`
- * resolves it through `Portfolio::find_working` and reports `unresolved_cancel_` when the row is not
- * there, so an uninformed withdrawal is already visible rather than blind.
+ * Every hold stops a placement. A named cancellation is stopped only by holds that mean someone
+ * stopped the runner (`OPERATOR`, `LOCAL_FAILURE`, `STOPPING`), not by holds that mean data is
+ * missing or stale, so a resting order can still be withdrawn when polling fails.
+ *
+ * @param reason The hold.
+ * @param klass The instruction class.
+ * @return `true` if `reason` stops `klass`.
  */
 inline constexpr bool halt_blocks(HaltReason reason, InstructionClass klass) noexcept {
   if (klass == InstructionClass::OPENING) {
@@ -147,23 +107,24 @@ inline constexpr bool halt_blocks(HaltReason reason, InstructionClass klass) noe
     case HaltReason::LOCAL_FAILURE:
     case HaltReason::STOPPING:
       return true;
-    // Its argument is about an *opening* order duplicating one a predecessor left resting. A named
-    // withdrawal cannot duplicate anything, and an unread list leaves `working_` empty, so there is
-    // no row for it to be wrong about.
+    // Guards against an opening order duplicating a predecessor's; a named withdrawal duplicates nothing.
     case HaltReason::ORDER_LIST_UNREAD:
-    // None of these four says anything about a row the caller already named.
+    // None of these says anything about a row the caller already named.
     case HaltReason::PORTFOLIO_ABSENT:
     case HaltReason::PORTFOLIO_STALE:
     case HaltReason::BUYING_POWER_UNREAD:
-    // Polling was abandoned; a known resting order did not thereby become unsafe to withdraw, and
-    // getting out is the one thing a failing run most wants to be able to do.
+    // A known resting order is still safe to withdraw when polling is abandoned.
     case HaltReason::POLL_FAILING:
       return false;
   }
   return true;
 }
 
-/** Returns a stable lowercase name for `reason`, for logs and structured reporting. */
+/**
+ * @brief Returns a lowercase name for a hold, such as `"portfolio_stale"`, for logs.
+ * @param reason The hold.
+ * @return The name.
+ */
 inline constexpr std::string_view halt_reason_name(HaltReason reason) noexcept {
   switch (reason) {
     case HaltReason::OPERATOR:
@@ -186,64 +147,51 @@ inline constexpr std::string_view halt_reason_name(HaltReason reason) noexcept {
   return "unknown";
 }
 
-/**
- * The limits an operator imposes, checked before anything is sent.
- *
- * Separate from reconciliation, and the separation is the point. Reconciliation answers "what
- * instruction expresses this decision"; a guard answers "is this instruction permitted". The
- * failures read differently in a log — `RejectReason` means the order was not placed, most often
- * because the library could not build one, `GuardReason` means the operator forbade one — and
- * conflating them would make a configuration mistake look like a data problem.
- *
- * **A guard rejects; it never resizes.** Halving an order that exceeded a notional limit would
- * place a position the strategy never sized, against a signal it never gave, and the strategy
- * would then reconcile against that position and compound the error. Refusing leaves the strategy
- * to decide, which is where the decision belongs.
+/*
+ * Operator limits, checked before anything is sent. A guard refuses an order; it never resizes one.
  */
 
-/** Which limit refused an order. */
+/** @brief Which check refused an order. */
 enum class GuardReason {
-  /** The kill switch is on. */
+  /** @brief A hold is in force; `GuardRejection::halt_reason_` names it. */
   TRADING_HALTED,
-  /** The instrument is outside the permitted universe. */
+  /** @brief The instrument is not in `RiskLimits::permitted_universe_`. */
   INSTRUMENT_NOT_PERMITTED,
-  /** The market is not in a phase the operator permits trading in. */
+  /** @brief The market phase is not in `RiskLimits::permitted_phases_`. */
   PHASE_NOT_PERMITTED,
-  /** The order's value exceeds the per-order ceiling. */
+  /** @brief The order's value exceeds `RiskLimits::max_order_notional_`. */
   ORDER_NOTIONAL_TOO_LARGE,
-  /** The resulting position would exceed the per-instrument ceiling. */
+  /** @brief The position could exceed `RiskLimits::max_position_quantity_`. */
   POSITION_LIMIT_EXCEEDED,
-  /** The resulting gross exposure would exceed the portfolio ceiling. */
+  /** @brief The gross exposure could exceed `RiskLimits::max_gross_exposure_`. */
   GROSS_EXPOSURE_EXCEEDED,
-  /** Too many orders have been sent in the current window. */
+  /** @brief `RiskLimits::max_orders_per_window_` orders were already sent in the window. */
   ORDER_RATE_EXCEEDED,
   /**
-   * A limit needed a value and could not be given one.
+   * @brief A limit needed a value that is not known.
    *
-   * Three ways: no price to value the order with, no resolved currency for a limit that is
-   * per-currency, or a `GuardInputs::exposure_basis_` that does not describe every instrument the
-   * portfolio holds or has working. All three are Decision 6 -- a limit the caller stated is
-   * honored or refused, never evaluated against a figure the library made up.
+   * No price to value the order, no currency for a per-currency limit, or a
+   * `GuardInputs::exposure_basis_` that does not cover every instrument held or working.
    */
   VALUE_NOT_KNOWN,
-  /** The sell exceeds what the broker says is sellable, or the broker did not say. */
+  /** @brief The sell exceeds the broker's sellable quantity, or the broker gave none. */
   QUANTITY_NOT_SELLABLE,
   /**
-   * A sellable figure is present, and nobody established what it is evidence of.
+   * @brief A sellable quantity is present, but what it covers is not established.
    *
-   * Distinct from `QUANTITY_NOT_SELLABLE` because the remedy is different and the caller cannot guess
-   * it: that one means the number was too small or absent, and this one means the number is there and
-   * uninterpretable. A caller resizes for the first and **declares a `SellableBasis`** for the second,
-   * so reporting both under one name sends a third party writing an adapter looking at their
-   * quantities instead of at their declaration. `SellableBasis::Coverage::PARTIAL` reports here too:
-   * somebody looked and found a figure that cannot bound a sale of the whole holding.
+   * Unlike `QUANTITY_NOT_SELLABLE`, the fix is to declare a `SellableBasis` for the figure, not to
+   * resize. A `SellableBasis::Coverage::PARTIAL` basis reports here too.
    */
   SELLABLE_BASIS_UNESTABLISHED,
-  /** The buy costs more than the broker says may be spent, or the broker did not say. */
+  /** @brief The buy costs more than the broker's buying power, or the broker gave none. */
   INSUFFICIENT_BUYING_POWER,
 };
 
-/** Returns a stable lowercase name for `reason`, for logs and structured reporting. */
+/**
+ * @brief Returns a lowercase name for a refusal reason, such as `"order_rate_exceeded"`, for logs.
+ * @param reason The reason.
+ * @return The name.
+ */
 inline constexpr std::string_view guard_reason_name(GuardReason reason) noexcept {
   switch (reason) {
     case GuardReason::TRADING_HALTED:
@@ -272,156 +220,85 @@ inline constexpr std::string_view guard_reason_name(GuardReason reason) noexcept
   return "unknown";
 }
 
-/**
- * One order a guard refused, with enough to act on rather than only to read.
- *
- * `limit_` and `attempted_` are carried so an operator can see how far over the order was without
- * reconstructing the arithmetic, and so a strategy can adapt rather than retry the same size.
- */
+/** @brief One order a guard refused, with the limit and the value that exceeded it. */
 struct GuardRejection {
-  /** Which limit refused the order. */
+  /** @brief Which check refused the order. */
   GuardReason reason_{GuardReason::TRADING_HALTED};
-  /** The instrument the refused order was for. */
+  /** @brief The instrument of the refused order. */
   InstrumentId instrument_;
-  /** The strategy's own label on the intent it came from. */
+  /** @brief The tag of the intent the order came from. */
   std::string tag_;
-  /**
-   * Which hold stopped the order, when `reason_` is `TRADING_HALTED`.
-   *
-   * Present for that reason and absent for every other, because a halt is the one refusal whose
-   * *cause* lives outside the limits — an operator, a loop's gate, a journal that failed — and
-   * "trading is halted" without saying by what is the diagnostic this type exists to avoid.
-   */
+  /** @brief The hold that stopped the order, when `reason_` is `TRADING_HALTED`; otherwise empty. */
   std::optional<HaltReason> halt_reason_;
-  /** The ceiling that was exceeded, where the reason has one. */
+  /** @brief The limit that was exceeded, where the reason has one. */
   std::optional<Decimal64> limit_;
-  /** What the order would have reached, where the reason has one. */
+  /** @brief The value the order would have reached, where the reason has one. */
   std::optional<Decimal64> attempted_;
 };
 
 /**
- * What the operator permits.
+ * @brief The limits the operator sets for `RiskGuard`.
  *
- * Every limit is optional, and absent means unlimited — except the two where an unlimited default
- * would be unsafe rather than merely permissive, which is why they are shaped differently:
- *
- * - `permitted_phases_` defaults to trading only while the market is `OPEN`. An absent value
- *   explicitly means any phase, which an operator has to ask for. `MarketPhase::UNKNOWN` is
- *   therefore refused by default, which is the point: an uncovered calendar date must not become
- *   an order placed into a holiday. It refuses what an order *opens*, never what it closes; see the
- *   member.
- * - Nothing is halted to begin with, but `halt()` is one call and takes effect before every other
- *   check. A halt is not a limit and does not live here: it is held on the guard itself, by
- *   `HaltReason`, so that the operator's hold and the machinery's cannot clear one another.
+ * Every limit is optional and absent means unlimited, except `permitted_phases_`, which by
+ * default permits opening positions only while the market is `OPEN`. Holds (halts) are not limits;
+ * they are taken on the guard itself.
  */
 struct RiskLimits {
-  /** Largest value a single order may have, in the currency it is priced in. */
+  /** @brief The largest value one order may have, in its own currency. */
   std::optional<Decimal64> max_order_notional_;
   /**
-   * Largest absolute position, in shares, any one instrument may reach.
+   * @brief The largest absolute position, in shares, any instrument may reach.
    *
-   * Measured against the position that would exist if the order **and everything already working
-   * on its side** filled, not against the last poll's holding: a ceiling that only looked at what
-   * was held would pass two orders that each fit and together do not.
-   *
-   * **Held is the net of every position row**, via `Portfolio::net_quantity_of`. It used to be the
-   * first row, which understated a holding a broker reported as two lots -- so the ceiling passed
-   * orders that breached it, and, once reconciliation began sizing against the net, refused an exit
-   * that reached flat because it measured the order against one lot of the position it was closing.
+   * Checked against the net held quantity (all rows) plus everything working on the order's side
+   * plus the order, as if all of it filled.
    */
   std::optional<Decimal64> max_position_quantity_;
   /**
-   * Largest total exposure the portfolio may reach, **in the currency the order is priced in**.
+   * @brief The largest gross exposure the portfolio may reach, in the order's currency.
    *
-   * Measured as the exposure that would exist if this order and everything already outstanding
-   * filled, valued at the most expensive price that could apply -- see `projected_gross_exposure`,
-   * which does the arithmetic and is testable on its own.
+   * Checked against the exposure if this order and every outstanding order filled, each valued at
+   * the highest price that could apply (see `projected_gross_exposure`). The ceiling applies to each
+   * currency separately; there is no account-wide converted cap.
    *
-   * **A ceiling per currency, not an account-wide one.** The same number is applied independently to
-   * each currency, which is `max_order_notional_`'s reading and `holdings-core`'s refusal to add
-   * currencies without a rate the caller can see. So an account holding ten million of exposure in
-   * each of two currencies passes a fifteen-million ceiling. `plan/todo/exchange-rates.md` is where
-   * that changes; until then a converted account-wide cap is not something this expresses.
-   *
-   * **This limit did nothing before `ai/guard-inputs`.** Nothing in the library ever supplied the
-   * current exposure, so it was compared against the value of the single order in front of it -- a
-   * second `max_order_notional_` under another name, silently permitting the accumulation it exists
-   * to stop. Two consequences of fixing it, both worth reading before turning it on:
-   *
-   * - It now **refuses** orders it used to pass, which is the point.
-   * - It now **permits** one shape it used to refuse. An order that does not raise reachable
-   *   exposure is allowed at any size, however far over the ceiling the account already is -- which
-   *   is what makes an exit expressible. A sell against a long **up to flat** is the ordinary case.
-   *   It is not every order opposing a position: selling 300 against a long of 100 reaches a short
-   *   of 200, which is more reachable exposure than the 100 it started from, and is refused on the
-   *   same rule. A caller who was relying on this limit to cap a single order wants
-   *   `max_order_notional_`, which is unchanged.
-   *
-   * An order that cannot be valued, or a portfolio `GuardInputs::exposure_basis_` does not fully
-   * describe, is refused with `GuardReason::VALUE_NOT_KNOWN`.
+   * An order that does not raise this projection is permitted at any size, so an exit (a sell up
+   * to flat against a long) is allowed even when the account is over the ceiling. A sell that goes
+   * through flat into a short raises it and can be refused. To cap one order's size, use
+   * `max_order_notional_`. An order that cannot be valued, or an incomplete
+   * `GuardInputs::exposure_basis_`, is refused with `GuardReason::VALUE_NOT_KNOWN`.
    */
   std::optional<Decimal64> max_gross_exposure_;
-  /** Most orders that may be sent within `rate_window_`. */
+  /** @brief The most orders that may be sent within `rate_window_`. */
   std::optional<std::size_t> max_orders_per_window_;
-  /** The window `max_orders_per_window_` counts over. */
+  /** @brief The window `max_orders_per_window_` counts over. */
   std::chrono::seconds rate_window_{60};
   /**
-   * Whether a sell is checked against what the broker says is sellable.
+   * @brief Whether to refuse a sell larger than the broker's sellable quantity.
    *
-   * Off by default, because it changes what an existing program does: a broker that does not
-   * publish the figure leaves it absent, and this check refuses rather than assuming the held
-   * quantity is sellable. A caller that has always sized from positions keeps doing so until it
-   * asks for this.
-   *
-   * Unlike every other member here it is not a number the operator chose. It is a switch, because
-   * the *limit* is the broker's answer rather than the operator's policy — which is the whole point
-   * of asking the broker.
+   * Off by default. When on, a sell is refused if the broker gave no sellable figure (the held
+   * quantity is not assumed sellable) or the figure's basis is not established.
    */
   bool enforce_sellable_quantity_{false};
   /**
-   * Whether a buy is checked against what the broker says may be spent.
+   * @brief Whether to refuse a buy that costs more than the broker's buying power.
    *
-   * Off by default, and a switch rather than a number for the same reason as the sellable check: the
-   * ceiling is the broker's answer, not the operator's policy.
-   *
-   * **It is a reading, with a reading's freshness.** The figure was true when the broker answered,
-   * and a fill against a resting order moves it without telling anyone. Passing this check is
-   * therefore not a guarantee the broker will accept the order; it is the difference between sizing
-   * against the broker's last answer and sizing against nothing, which is what the live path did
-   * before.
+   * Off by default. The figure is a reading: a fill since the broker answered can change it, so
+   * passing this check does not guarantee the broker accepts the order.
    */
   bool enforce_buying_power_{false};
-  /** Instruments that may be traded; absent means any. */
+  /** @brief The instruments that may be traded; absent means any. */
   std::optional<std::vector<InstrumentId>> permitted_universe_;
   /**
-   * Phases in which a position may be **opened or increased**; absent means any.
+   * @brief The market phases in which a position may be opened or increased; absent means any.
    *
-   * **It governs what an order opens, not what it closes.** An order reducing a held position toward
-   * flat is permitted whatever the phase. That is the answer `max_gross_exposure_` already gives one
-   * paragraph up -- an order that does not raise reachable exposure is allowed however far over the
-   * ceiling the account is -- and it applies here with more force, because a phase restriction that
-   * cannot express an exit turns "the market is shut" into "you may not reduce risk". Without it the
-   * default refuses an operator's flatten after the close, and `vanilla::TimedLiquidation` cannot
-   * place the order it exists to place without the limit being switched off in all but spelling.
+   * The default permits only `OPEN`, so `UNKNOWN` (an uncovered calendar date) is refused.
    *
-   * **The exception is `closes_toward_flat`, and not the exposure rule.** "Does not raise the
-   * projection" is broader: with nothing held and a buy resting, a sell of the same size leaves the
-   * projection unchanged while opening a short if it alone fills. This admits an order only when it
-   * opposes the instrument's *net* held quantity and cannot carry it through flat, counting what is
-   * already working on the closing side. Anything it cannot establish is refused.
-   *
-   * **Everything else still applies to that exit.** The phase is checked third; the sellable check,
-   * a buying-power limit, a position ceiling and the exposure ceiling all come after it and can each
-   * refuse an order this admitted. Permission here is not permission to send.
-   *
-   * **What it costs, decided rather than discovered.** The order goes to a broker that will very
-   * likely reject it outside its session, so a nightly flatten becomes a rejection rather than a
-   * refusal -- the venue's answer instead of this library's guess, and journalled. A strategy that
-   * restates a close on every pass will therefore send one per pass; `max_orders_per_window_` is the
-   * lever, and `runner::Runner::sends_outside_permitted_phase` is how an operator sees it happening.
-   *
-   * A cancellation is not checked against this at all. `Runner::send_cancel` consults no limit but a
-   * halt, because withdrawing only ever reduces exposure.
+   * An order that only closes toward flat (it opposes the net held quantity and, with what is
+   * already working on the closing side, cannot carry it through flat) is permitted in any phase,
+   * so a flatten after the close can still be sent. The later checks (sellable, buying power,
+   * position and exposure ceilings) still apply to it, and the broker will likely reject it outside
+   * its session; `max_orders_per_window_` limits how often such an order is resent, and
+   * `runner::Runner::sends_outside_permitted_phase` counts them. Cancellations are never checked
+   * against this.
    */
   std::optional<std::vector<MarketPhase>> permitted_phases_{
     std::vector<MarketPhase>{MarketPhase::OPEN}
@@ -429,63 +306,41 @@ struct RiskLimits {
 };
 
 /**
- * What one instrument is denominated in, and the price to value it at.
- *
- * The two facts a portfolio does not carry for itself. `HoldingPosition` carries both, but a working
- * order on an instrument with no position carries neither, and an exposure ceiling has to value
- * exactly those -- an opening buy is the ordinary case.
+ * @brief An instrument's currency and the price to value it at, for the exposure ceiling.
  */
 struct InstrumentBasis {
-  /** The instrument this basis is for. */
+  /** @brief The instrument. */
   InstrumentId instrument_;
-  /** What it is denominated in. A ceiling is per currency and never converts. */
+  /** @brief The currency it trades in. */
   Currency currency_;
   /**
-   * The mark to value the position at.
+   * @brief The mark to value it at.
    *
-   * A starting point rather than the final say: `projected_gross_exposure` raises it to any limit
-   * price that could apply to the same instrument, because a limit order can fill above the last
-   * quote and a ceiling valued at the quote would under-report.
+   * `projected_gross_exposure` raises it to any higher limit price of an order on the instrument.
    */
   Decimal64 price_;
 };
 
-/** What a guard needs about the world that is not the order or the portfolio. */
+/** @brief What `RiskGuard::check` needs besides the order and the portfolio. */
 struct GuardInputs {
-  /** The instant the guard should judge against, which is what `rate_window_` counts from. */
+  /** @brief The current instant; `RiskLimits::rate_window_` counts back from it. */
   std::chrono::system_clock::time_point now_{};
-  /** The market phase the order would go out in, which `permitted_phases_` is checked against. */
+  /** @brief The market phase the order would be sent in. */
   MarketPhase phase_{MarketPhase::UNKNOWN};
-  /** A price to value a market order with, since it carries none of its own. */
+  /** @brief A price to value a market order, which carries none. */
   std::optional<Decimal64> reference_price_;
   /**
-   * What every instrument in the portfolio is denominated in and marked at.
+   * @brief The currency and mark of every instrument held or working, plus the order's.
    *
-   * **Replaces a `gross_exposure_` total that nothing ever supplied.** That field was an
-   * `std::optional<Decimal64>` the caller was expected to fill, and no path in the library filled
-   * it, so `max_gross_exposure_` defaulted its current exposure to zero and compared the ceiling
-   * against the single order in front of it. Accepting a total from outside would leave that silent
-   * zero reachable; the guard computes the exposure itself now, and this is the only thing it cannot
-   * work out on its own.
-   *
-   * A position states its own currency and mark, but a working order on an instrument with no
-   * position states neither, which is why resolution is the caller's job -- the runner reads it from
-   * the reference data it already consults for `order_currency_`.
-   *
-   * **Incomplete is refused, never skipped.** One entry per instrument the portfolio holds or has
-   * working, plus the order being checked; a missing entry, or two entries for one instrument,
-   * refuses with `GuardReason::VALUE_NOT_KNOWN`. An instrument omitted from the sum could have
-   * belonged to the currency being checked, and under-reporting is the one direction a ceiling must
-   * not err in.
+   * Needed only by `RiskLimits::max_gross_exposure_`. A missing entry, or two entries for one
+   * instrument, refuses with `GuardReason::VALUE_NOT_KNOWN`. The runner fills it from reference
+   * data.
    */
   std::vector<InstrumentBasis> exposure_basis_;
   /**
-   * The currency the order is priced in, which a `PlannedOrder` does not carry.
+   * @brief The currency the order is priced in, from its reference data.
    *
-   * Needed only by the buying-power check, because that limit is per currency and the portfolio may
-   * hold several. It comes from the instrument's reference data, which the runner already reads to
-   * plan the order. Absent means the runner could not resolve the instrument, and an unresolvable
-   * currency refuses rather than picking whichever reading happens to be first.
+   * Needed only by the buying-power check; if absent, that check refuses.
    */
   std::optional<Currency> order_currency_;
 };
@@ -509,80 +364,39 @@ inline std::optional<Decimal64> decimal_magnitude(const Decimal64& value) {
 } // namespace risk_detail
 
 /**
- * What a candidate order contributes to a projection.
+ * @brief What a candidate order adds to `projected_gross_exposure`.
  *
- * Exists so that "the exposure with this order" and "the exposure without it" can be compared
- * **like for like**. The valuation takes the most expensive price that could apply to an instrument,
- * and the candidate's own limit is one of those prices — so a version of this that simply omitted
- * the candidate entirely would value the two cases at different prices and report a difference that
- * is the *price*, not the order. A sell of 10 limited above the mark then looks like it adds
- * exposure to a position it can only reduce, and the ceiling refuses the exit.
+ * Compare `QUANTITY_AND_PRICE` with `PRICE_ONLY` to see what the order's quantity alone adds; both
+ * value instruments at the same prices.
  */
 enum class CandidateContribution {
-  /** The candidate's quantity and its price, which is the exposure if the order goes. */
+  /** @brief The candidate's quantity and price: the exposure if the order is sent. */
   QUANTITY_AND_PRICE,
-  /**
-   * The candidate's price only, which is the exposure if it does not.
-   *
-   * Not "the portfolio as it stands": it is the portfolio valued on the same envelope the other
-   * case uses, so that comparing the two isolates what the order's *quantity* does.
-   */
+  /** @brief The candidate's price only: the exposure without the order, valued at the same prices. */
   PRICE_ONLY,
 };
 
 /**
- * Returns the gross exposure in `currency` that would exist if `candidate` and everything already
- * outstanding filled, or nothing when it cannot be computed honestly.
+ * @brief Computes the gross exposure in one currency if every outstanding order (and a candidate)
+ *   filled.
  *
- * **Pure, so it is testable without a runner**, which is why the resolution it needs arrives as
- * `basis` rather than being looked up here. Nothing about a broker, a session or a clock enters.
+ * Per instrument, the exposure is `max(|held + working buys|, |held - working sells|)` times a
+ * price, summed over instruments in `currency`. Opposite-side orders do not offset each other.
+ * The price is the highest that could apply: the basis mark and the limit price of every open order
+ * on the instrument, the candidate's included. The candidate joins its own instrument on its own
+ * side, so a sell against a long never raises the figure (and does not lower it either until it
+ * fills).
  *
- * ## What it measures
- *
- * Per instrument, the largest absolute position reachable from here:
- *
- * ```
- * projected = max( |held + working_buys| , |held - working_sells| )
- * ```
- *
- * No relief is assumed from the opposing side. A resting sell does not offset a resting buy, because
- * treating it as relief assumes a fill that may never come, and a ceiling exists for what happens
- * when everything outstanding *does* fill. This is `max_position_quantity_`'s rule
- * (`RiskLimits::max_position_quantity_`), valued and summed instead of compared per instrument, and
- * it reduces to `|held|` when nothing is working.
- *
- * **`candidate` joins its own instrument's projection on its own side; it is not added to the
- * total.** Adding it would report a sell against a long position as *increasing* exposure, so the
- * ceiling would refuse the order that reduces it -- a limit that blocks de-risking is worse than one
- * that does nothing.
- *
- * Folding it in does **not** make a sell reduce the figure, and that is not an oversight. Hold 100
- * with a sell of 100 resting and `max(|100|, |0|)` is 100: the position is 100 until that sell fills,
- * and a ceiling that assumed the fill would be assuming exactly what a ceiling exists to survive
- * being wrong about. What folding buys is that a sell does not *raise* the figure, which is what
- * makes an exit expressible at all. `RiskGuard::check` is where the remaining half lives -- it
- * compares the projection with and without the candidate, so an order that adds nothing is permitted
- * however far over the ceiling the account already is.
- *
- * ## The price is the conservative one
- *
- * An instrument is valued at the highest price that could apply to it: its mark, and the limit price
- * of every open order on it, `candidate` included. A basis carrying only the last quote values a
- * limit buy of 100 at 100 against a cached mark of 70 as 7,000, so it passes an 8,000 ceiling and
- * may fill at 10,000. Taking the maximum over-states exposure for a limit order that fills better
- * than its limit -- refusing an order that would have been allowed -- and never the reverse. A market
- * order contributes the mark, which is an estimate and is one whatever this does.
- *
- * ## Nothing is silently omitted
- *
- * Nothing is returned when the basis does not describe the portfolio, rather than a total computed
- * over the part of it that could be resolved: a missing entry for an instrument held or working, two
- * entries for one instrument, or any decimal arithmetic that will not fit. `Portfolio::working_quantity`
- * is deliberately not used -- it skips a row whose arithmetic fails, which is right for a figure a
- * strategy reads and wrong for a limit, since a skipped row under-reports.
- *
- * Instruments in another currency contribute nothing and are not an error. `max_gross_exposure_` is
- * a ceiling *per currency*; see its documentation.
+ * @tparam Broker The portfolio's broker tag.
+ * @param portfolio The positions (summed over every row) and working orders.
+ * @param basis The currency and mark of every instrument held, working or ordered.
+ * @param currency The currency to total; instruments in other currencies contribute nothing.
+ * @param candidate The order being checked, or `nullptr`.
+ * @param candidate_price The price to value the candidate at if it has no limit (a market order).
+ * @param contribution Whether the candidate's quantity counts, or only its price.
+ * @return The exposure, or `std::nullopt` if it cannot be computed exactly: an instrument missing
+ *   from `basis` or listed twice, a mark or price that is not positive, a working order filled
+ *   beyond its quantity, or arithmetic that does not fit.
  */
 template <typename Broker>
 std::optional<Decimal64> projected_gross_exposure(
@@ -607,11 +421,8 @@ std::optional<Decimal64> projected_gross_exposure(
     instruments.push_back(id);
   };
   for (const auto& position : portfolio.positions_) {
-    // **A flat row is not exposure and must not be a reason to refuse.** `ReplayLedger` keeps a lot
-    // after it returns to flat, and a broker may list a closed position, so requiring a basis for
-    // one would have an instrument nobody holds any more refuse orders in an unrelated instrument.
-    // Zero quantity valued at any price is zero. An instrument that is flat *and* has a working
-    // order is still collected, by the loop below.
+    // A flat row (a closed position a broker or the replay ledger still lists) is not exposure and
+    // needs no basis; if it also has a working order, the loop below collects it.
     if (position.quantity_.coefficient() == 0) {
       continue;
     }
@@ -646,19 +457,13 @@ std::optional<Decimal64> projected_gross_exposure(
     if (!(resolved->currency_ == currency)) {
       continue;
     }
-    // **A mark has to be positive to value anything.** Zero values a position at nothing, which is
-    // the silent omission this function refuses elsewhere; a negative one is worse, because it makes
-    // an instrument's exposure *negative* and lets a malformed quote offset real holdings until the
-    // ceiling passes anything. `Context::set_last_price` stores whatever a bar or quote carried, so
-    // this is reachable from bad market data rather than only from a caller mistake.
+    // A mark must be positive: zero would omit the position, and a negative one (from bad market
+    // data) would offset real holdings.
     if (!decimal_less(zero, resolved->price_)) {
       return std::nullopt;
     }
 
-    // **Summed over every row, not read from the first.** `Portfolio::quantity_of` returns the first
-    // matching position, and nothing dedupes what an adapter appends -- a broker reporting one
-    // instrument as two lots is ordinary. Reading the first would under-report the ceiling by
-    // whatever the other rows hold, which is the direction a risk limit must not err in.
+    // Summed over every row: a holding can be split across lots.
     auto held = zero;
     for (const auto& position : portfolio.positions_) {
       if (!(position.instrument_ == id)) {
@@ -683,11 +488,8 @@ std::optional<Decimal64> projected_gross_exposure(
       if (!remaining) {
         return std::nullopt;
       }
-      // **A row filled beyond what it ordered refuses, where `working_quantity` skips it.** That
-      // skip is right for a figure a strategy reads -- it declines to amplify a broker's
-      // contradiction -- and wrong for a limit, because dropping the row takes its limit price out
-      // of the valuation envelope with it while the row is still `PENDING`. The snapshot is
-      // inconsistent, and a ceiling cannot infer from it that nothing is outstanding.
+      // A row filled beyond its quantity refuses (`working_quantity` skips it): a limit cannot infer
+      // from an inconsistent snapshot that nothing is outstanding.
       if (decimal_less(*remaining, zero)) {
         return std::nullopt;
       }
@@ -699,9 +501,7 @@ std::optional<Decimal64> projected_gross_exposure(
       }
       (working.order_.side_ == OrderSide::BUY ? buys : sells) = *sum;
       if (working.order_.price_) {
-        // A present price that is not a price. `max` would simply not pick it, which is the quiet
-        // outcome: the row's own valuation would vanish into the mark and nothing would say the
-        // listing was malformed.
+        // A non-positive price would silently lose to the mark in `max`; refuse instead.
         if (!decimal_less(zero, *working.order_.price_)) {
           return std::nullopt;
         }
@@ -710,18 +510,12 @@ std::optional<Decimal64> projected_gross_exposure(
     }
 
     if (candidate != nullptr && candidate->instrument_ == id) {
-      // **The price applies under both contributions, the quantity only under one.** That asymmetry
-      // is the whole reason `CandidateContribution` exists: raising the envelope in one case and not
-      // the other would make the comparison report the price difference as though the order had
-      // caused it.
+      // The candidate's price applies under both contributions, its quantity only under one, so the
+      // two projections differ only by the quantity.
       const auto stated = candidate->price_ ? candidate->price_ : candidate_price;
       if (stated) {
-        // **The candidate's own price is validated, not merely offered to `max`.** A negative one
-        // loses the maximum to the positive basis and disappears, so the ceiling would value the
-        // order at a mark nobody quoted while `max_order_notional_` valued it at a negative number
-        // that no ceiling exceeds. `Price::checked` will build a negative limit under an
-        // unconstrained rule, and `Context::set_last_price` stores whatever a bar carried, so
-        // neither source rules this out upstream.
+        // Validated, not just offered to `max`: a negative price would vanish into the mark here and
+        // pass `max_order_notional_` as a negative value. Nothing upstream rules it out.
         if (!decimal_less(zero, *stated)) {
           return std::nullopt;
         }
@@ -764,57 +558,24 @@ std::optional<Decimal64> projected_gross_exposure(
 }
 
 /**
- * Returns whether `order` reduces a held position toward flat without carrying it past flat, or
- * nothing when that cannot be established.
+ * @brief Tests whether an order only reduces a held position toward flat, without passing through it.
  *
- * **Pure, so it is testable without a runner or a guard**, for the reason `projected_gross_exposure`
- * is: the rule is arithmetic over a portfolio snapshot and an order, and nothing about a broker, a
- * session or a clock belongs in it.
- *
- * ## What it answers, exactly
+ * With `held` the net quantity over every position row, the closing side SELL for a long and BUY
+ * for a short, and `resting` the remaining quantity of open orders on the closing side:
  *
  * ```
- * held      = the sum of every position row for the order's instrument
- * closing   = SELL when held > 0, BUY when held < 0
- * resting   = the remaining quantity of every open working order on `closing`
- * committed = resting + order.quantity_
- *
- * true  ⟺  held ≠ 0  ∧  order.side_ == closing  ∧  committed ≤ |held|
+ * true  ⟺  held ≠ 0  ∧  order.side_ is the closing side  ∧  order.quantity_ > 0
+ *          ∧  resting + order.quantity_ ≤ |held|
  * ```
  *
- * `std::nullopt` means the arithmetic could not be done honestly -- a sum that will not fit, a
- * working row reporting more filled than it ordered. A caller must treat it as "no", because every
- * caller of this is deciding whether to *relax* a restriction.
+ * `RiskGuard` uses this to let a closing order through `RiskLimits::permitted_phases_`.
  *
- * ## Why it is not `max_gross_exposure_`'s rule
- *
- * `RiskGuard::check` permits an order that does not raise `projected_gross_exposure`, and it is
- * tempting to reuse that here. It is **broader than this question and would admit an order that
- * opens a position**: hold nothing with a buy of 100 resting, and the projection is
- * `max(|0+100|, |0-0|) = 100`; add a candidate sell of 100 and it is `max(|0+100|, |0-100|) = 100`,
- * unchanged. So that rule reads the sell as costless while it opens a short of 100 if it alone
- * fills. The ceiling can afford this because it is a *ceiling*: the projection already counts the
- * resting buy, so the account cannot exceed the limit either way. A phase restriction cannot,
- * because it is asking a different question -- not "how big can this get" but "is this order
- * closing something". `held != 0` is what separates them.
- *
- * ## Why the sums are written out rather than taken from `Portfolio`
- *
- * Both of the obvious accessors are wrong here, in opposite directions, and both would fail
- * quietly:
- *
- * - `Portfolio::quantity_of` returns the **first** matching position row and nothing dedupes what an
- *   adapter appends -- a broker reporting one instrument as two lots is ordinary. It under-reports
- *   `held`, which refuses an exit the operator chose to allow, for a reason no report would show.
- * - `Portfolio::working_quantity` **skips** a row whose remaining quantity will not compute or comes
- *   out negative. That is right for a figure a strategy reads and wrong for a limit: it
- *   under-reports `resting`, which *admits* an order that can carry the position through flat and
- *   open the opposite one. This refuses such a snapshot instead, which is the rule
- *   `projected_gross_exposure` already states for the same reason.
- *
- * A flat position row contributes zero and is not an error, matching the projection's treatment of
- * one: a broker may list a closed position, and `ReplayLedger` keeps a lot after it returns to flat.
- * Rows of opposing signs for one instrument net, because the question is about the net holding.
+ * @tparam Broker The portfolio's broker tag.
+ * @param portfolio The positions and working orders.
+ * @param order The planned order.
+ * @return Whether the order closes toward flat, or `std::nullopt` if that cannot be established
+ *   (arithmetic that does not fit, or a working order filled beyond its quantity); treat
+ *   `std::nullopt` as `false`.
  */
 template <typename Broker>
 std::optional<bool> closes_toward_flat(
@@ -822,29 +583,18 @@ std::optional<bool> closes_toward_flat(
 ) {
   const auto zero = Decimal64::parse("0");
 
-  // **Net across every row, which is what `net_quantity_of` exists for.** `quantity_of` returns the
-  // first, and reading it here would understate a split holding and refuse an exit the operator
-  // chose to allow -- silently, since no report carries a figure this rule never computed.
+  // Net across every row; a split holding must not understate `held`.
   const auto net = portfolio.net_quantity_of(order.instrument_);
   if (!net) {
     return std::nullopt;
   }
   const auto held = *net;
-  // **No row at all and a row of zero are different claims, and this rule gives them the same
-  // answer.** `Portfolio::quantity_of` keeps them apart -- nothing versus zero -- because a broker
-  // omitting a closed position is saying something. Here neither is a holding to close, so both are
-  // `false`, and distinguishing them would produce two paths to one answer.
+  // No row and a row of zero both mean nothing to close.
   if (held.coefficient() == 0) {
     return false;
   }
 
-  // **A quantity that is not positive cannot close anything, and must not be arithmetic here.**
-  // `PlannedOrder::quantity_` is a public field, and a negative one is constructible through the
-  // ordinary path: `SizeSpec::quantity` accepts any decimal and `reconcile(OrderIntent)` rejects a
-  // size only once it *rounds to zero*. Without this, a sell of -1 against a long of 100 satisfies
-  // `committed <= |held|` and would be granted the exception -- an inconsistent order relaxing a
-  // restriction, which is the one direction this rule must never fail in. Zero is excluded with it:
-  // an order that closes nothing is not a close.
+  // A non-positive quantity closes nothing; a negative one would otherwise satisfy the bound below.
   if (!decimal_less(zero, order.quantity_)) {
     return false;
   }
@@ -865,9 +615,7 @@ std::optional<bool> closes_toward_flat(
     const auto remaining = decimal_subtract(
       working.order_.quantity_, working.order_.execution_.filled_quantity_
     );
-    // A row filled beyond what it ordered refuses rather than counting zero. The snapshot is
-    // inconsistent about an order on the very side this rule is measuring, and a rule that relaxes a
-    // restriction must not infer "nothing outstanding" from a contradiction.
+    // A row filled beyond its quantity is a contradiction; refuse rather than count zero.
     if (!remaining || decimal_less(*remaining, zero)) {
       return std::nullopt;
     }
@@ -886,64 +634,53 @@ std::optional<bool> closes_toward_flat(
   if (!magnitude) {
     return std::nullopt;
   }
-  // `<=`, so an order that reaches flat exactly is a close. That is the ordinary case and the one
-  // `vanilla::TimedLiquidation` produces: reconciliation targets zero, so the order is the whole
-  // holding.
+  // `<=`: an order that reaches flat exactly is a close (the usual liquidation case).
   return !decimal_less(*magnitude, *committed);
 }
 
 /**
- * What a guard decided about one order, and on what terms.
+ * @brief What `RiskGuard::evaluate` concluded about one order.
  *
- * `check` returns the first member and is what almost every caller wants. This exists for the one
- * caller that has to *count* what it sent: `admitted_outside_phase_` is the only fact about a
- * permitted order that cannot be recovered afterwards from the order, the portfolio or the report.
- *
- * **`admitted_outside_phase_` is never true beside a rejection**, so it means what its name says:
- * this order got past every limit, and the phase limit is one it would not have got past without
- * the closing exception. The phase check is third in the ordering and the sellable check, a
- * buying-power limit and both ceilings come after it, so an order can use the exception and still
- * be refused -- in which case nothing was admitted and nothing is flagged.
- *
- * **It still does not mean the order was sent.** A permitted order can be rejected by the broker,
- * refused by the binding, or fail in transit. A caller counting what actually left the process must
- * therefore read this at the *send*, which is why `Runner` increments where it learns the outcome
- * rather than here. Counting at the admission would report a proxy for the harm instead of the harm.
+ * `admitted_outside_phase_` is `true` only for a permitted order that got past
+ * `RiskLimits::permitted_phases_` by closing toward flat. It does not mean the order was sent: the
+ * broker can still reject it.
  */
 struct GuardDecision {
-  /** The reason the order was refused, or nothing when it was permitted. */
+  /** @brief Why the order was refused, or `std::nullopt` if it was permitted. */
   std::optional<GuardRejection> rejection_;
   /**
-   * Whether `permitted_phases_` did not admit this order's phase and only its closing exception did.
-   *
-   * False whenever the phase was permitted outright, whenever the limit is absent, and on every
-   * refusal.
+   * @brief Whether the order was permitted only because it closes toward flat in a phase the
+   *   limits do not permit. Always `false` for a refusal.
    */
   bool admitted_outside_phase_{false};
 };
 
 /**
- * Checks planned orders against the operator's limits, and remembers what was sent.
+ * @brief Checks planned orders against `RiskLimits`, holds trading stopped, and counts orders sent.
  *
- * Stateful, unlike reconciliation, because a rate limit is a statement about history. The state is
- * only the timestamps of orders actually sent, which is why `note_sent` is separate from `check`:
- * an order that was checked and then refused by a later guard, or never reached the broker, must
- * not consume rate budget. Recording at the point of sending rather than of checking is what keeps
- * the count honest.
+ * The rate limit counts only orders recorded with `note_sent`, which the runner calls after the
+ * broker accepts an order, so a refused or failed order uses no budget.
  *
- * Owned by one runner and not synchronized, the model every stateful type in this library follows.
+ * @note Not thread-safe; one guard belongs to one runner.
  */
 class RiskGuard {
 public:
-  /** Constructs a guard enforcing `limits`. */
+  /**
+   * @brief Constructs a guard.
+   * @param limits The limits to enforce.
+   */
   explicit RiskGuard(RiskLimits limits = {}) : limits_(std::move(limits)) {}
 
-  /** Returns the limits in force. */
+  /**
+   * @brief Returns the limits.
+   * @return The limits in force.
+   */
   const RiskLimits& limits() const noexcept { return limits_; }
 
   /**
-   * Returns whether `phase` is one `RiskLimits::permitted_phases_` admits for an order that opens or
-   * grows a position; always true when the limit is absent.
+   * @brief Tests whether a phase permits opening or increasing a position.
+   * @param phase The market phase.
+   * @return `true` if `RiskLimits::permitted_phases_` is absent or contains `phase`.
    */
   bool permits_phase(MarketPhase phase) const noexcept {
     if (!limits_.permitted_phases_) {
@@ -958,67 +695,52 @@ public:
   }
 
   /**
-   * Stops every order until `resume()`, on the operator's behalf. Takes effect before any other
-   * check.
+   * @brief Takes the operator's hold (`HaltReason::OPERATOR`): no order or cancellation is sent
+   *   until `resume()`.
    *
-   * **The no-argument call is the operator's hold**, `HaltReason::OPERATOR`, and that is not merely
-   * source compatibility: a bare `halt()` in a program or at a prompt is a person deciding to stop,
-   * and a person's intent is exactly the one that must not be cleared by machinery that happens to
-   * be holding the same switch. Every other holder names itself.
-   *
-   * **This is *quiesce*, and only that**: it stops this runner from *sending*. Three things an
-   * operator might mean by "stop" are worth keeping apart, because each asks the broker for
-   * something different:
-   *
-   * - *quiesce* -- send nothing further. Positions and working orders are left exactly as they are,
-   *   and this is the only one of the three whose effect is entirely local and therefore certain.
-   *   This.
-   * - *withdraw* -- quiesce, then *ask* the broker to cancel the working orders.
-   * - *flatten* -- withdraw, then *ask* it to close the positions with market orders.
-   *
-   * The second and third are requests, not outcomes. A cancellation the broker accepts can still be
-   * rejected afterwards and leave the order working, and a closing order that is accepted has not
-   * necessarily filled. Only the broker's own order list and holdings say what is true;
-   * `runner::LoopReport::closing_complete()` says only whether every request was accepted.
-   *
-   * Flattening is a strategy's decision, which is what `vanilla::TimedLiquidation` exists for, or an
-   * operator's through the broker's own tools. It is deliberately not something a risk limit does.
-   * `runner::StopIntent` names all three for a long-running session, and `runner::PollingLoop`
-   * honours them; this switch is the primitive underneath the first of them.
-   *
-   * In-process and in-memory: nothing reaches this from outside the program, and it does not survive
-   * the process. `runner::FileStopChannel` and `runner::SignalStop` are the out-of-band channels.
+   * This only stops sending ("quiesce"): working orders and positions are left as they are. To
+   * also cancel working orders or close positions, use `runner::StopIntent` with
+   * `runner::PollingLoop`, or a strategy such as `vanilla::TimedLiquidation`. The hold is in memory;
+   * `runner::FileStopChannel` and `runner::SignalStop` stop a running process from outside.
    */
   void halt() noexcept { held_[index_of(HaltReason::OPERATOR)] = true; }
 
   /**
-   * Takes the hold named by `reason`, with an operator-readable `detail`.
+   * @brief Takes a hold, with a description.
    *
-   * **Idempotent, and a set rather than a count.** Taking a hold that is already held replaces its
-   * detail and nothing else, and one `resume(reason)` releases it however many times it was taken.
-   * That is deliberate: the holders are distinct *conditions*, not distinct callers, so a loop that
-   * recomputes `PORTFOLIO_STALE` on every iteration must not build a hold that as many refreshes are
-   * needed to clear. A counter would get exactly that wrong, in the opposite direction from the
-   * single bool this replaces.
+   * Taking a hold that is already held replaces its detail; one `resume(reason)` releases it however
+   * many times it was taken.
+   *
+   * @param reason The hold.
+   * @param detail A description for the operator, returned by `hold_detail`.
    */
   void halt(HaltReason reason, std::string detail) {
     held_[index_of(reason)] = true;
     details_[index_of(reason)] = std::move(detail);
   }
 
-  /** Takes the hold named by `reason`, with no detail. */
+  /**
+   * @brief Takes a hold, with no description.
+   * @param reason The hold.
+   */
   void halt(HaltReason reason) { halt(reason, std::string()); }
 
-  /** Releases the operator's hold. Other holds, if any, still stop trading. */
+  /** @brief Releases the operator's hold; other holds, if any, still stop trading. */
   void resume() noexcept { resume(HaltReason::OPERATOR); }
 
-  /** Releases the hold named by `reason`. Releasing one that is not held does nothing. */
+  /**
+   * @brief Releases a hold; releasing one that is not held does nothing.
+   * @param reason The hold.
+   */
   void resume(HaltReason reason) noexcept {
     held_[index_of(reason)] = false;
     details_[index_of(reason)].clear();
   }
 
-  /** Returns whether anything at all is stopping trading. */
+  /**
+   * @brief Tests whether any hold is in force.
+   * @return `true` if at least one hold is held.
+   */
   bool halted() const noexcept {
     for (const auto held : held_) {
       if (held) {
@@ -1028,26 +750,25 @@ public:
     return false;
   }
 
-  /** Returns whether `reason` in particular is holding. */
+  /**
+   * @brief Tests whether one hold is in force.
+   * @param reason The hold.
+   * @return `true` if it is held.
+   */
   bool halted(HaltReason reason) const noexcept { return held_[index_of(reason)]; }
 
   /**
-   * Returns the most fundamental hold in force, or nothing when trading is permitted.
-   *
-   * "Most fundamental" is the declaration order of `HaltReason`, which is why that order is part of
-   * the enum's contract. This is what a refusal reports, and it follows the rule `check` already
-   * applies to limits: say the reason that most needs attention, not an incidental one.
+   * @brief Returns the hold that stops placements, the most fundamental first.
+   * @return The first held reason in `HaltReason` order, or `std::nullopt` if none.
    */
   std::optional<HaltReason> blocking_reason() const noexcept {
     return blocking_reason_for(InstructionClass::OPENING);
   }
 
   /**
-   * Returns the most fundamental hold that stops an instruction of `klass`, or nothing.
-   *
-   * Same order and same contract as `blocking_reason`, asked of a narrower question. A hold that
-   * does not reach `klass` is skipped rather than reported, so a withdrawal permitted under an
-   * uninformed hold is not refused with a reason that was never about it.
+   * @brief Returns the hold that stops an instruction class, the most fundamental first.
+   * @param klass The instruction class; see `halt_blocks`.
+   * @return The first held reason that stops `klass`, or `std::nullopt` if none.
    */
   std::optional<HaltReason> blocking_reason_for(InstructionClass klass) const noexcept {
     for (std::size_t index = 0; index < halt_reason_count; ++index) {
@@ -1059,17 +780,18 @@ public:
     return std::nullopt;
   }
 
-  /** Returns the detail recorded with `reason`'s hold, or an empty string when there is none. */
+  /**
+   * @brief Returns the description given with a hold.
+   * @param reason The hold.
+   * @return The detail, or an empty string if there is none or the hold is not held.
+   */
   const std::string& hold_detail(HaltReason reason) const noexcept {
     return details_[index_of(reason)];
   }
 
   /**
-   * Returns every hold in force, most fundamental first.
-   *
-   * For diagnosis — an operator asking why trading is stopped when more than one thing is stopping
-   * it, which is precisely the case the single bool could not answer. `blocking_reason` is what the
-   * send path uses.
+   * @brief Returns every hold in force.
+   * @return The held reasons, most fundamental first.
    */
   std::vector<HaltReason> holds() const {
     std::vector<HaltReason> held;
@@ -1082,9 +804,11 @@ public:
   }
 
   /**
-   * Records that an order was sent at `when`, for the rate limit.
+   * @brief Records that an order was sent, for the rate limit.
    *
-   * Called by the runner after the broker accepted the instruction, not when it was checked.
+   * The runner calls it after the broker accepts an order.
+   *
+   * @param when When the order was sent.
    */
   void note_sent(std::chrono::system_clock::time_point when) {
     sent_.push_back(when);
@@ -1092,21 +816,20 @@ public:
   }
 
   /**
-   * Returns how many orders this guard has ever seen sent.
+   * @brief Returns how many orders have been recorded with `note_sent` over the guard's life.
    *
-   * Distinct from `recent_orders`, which is the rate limit's question and prunes: `forget_before` drops
-   * timestamps that can no longer matter, so `sent_.size()` can fall and cannot be differenced across a
-   * call. This only ever rises, which is what a caller asking "did anything go out while I was not
-   * looking" needs -- `runner::PollingLoop` asks exactly that around every call it makes into a source
-   * or a strategy handler, to tell a poll that revised the trading calendar harmlessly from one that
-   * revised it and then sent an order against the answer it had just replaced.
+   * Unlike `recent_orders`, it never decreases, so a caller can difference it across a call to
+   * learn whether anything was sent in between.
    *
-   * An observable on the component that performs the accounting rather than a seam added for a test,
-   * which is the rule `ai/wall-clock-test-assertions` settled.
+   * @return The total count.
    */
   std::size_t total_sent() const noexcept { return total_sent_; }
 
-  /** Returns how many orders were sent within `rate_window_` of `now`. */
+  /**
+   * @brief Returns how many orders were sent within `RiskLimits::rate_window_` before an instant.
+   * @param now The instant to count back from.
+   * @return The count.
+   */
   std::size_t recent_orders(std::chrono::system_clock::time_point now) const {
     std::size_t count = 0;
     for (const auto when : sent_) {
@@ -1117,7 +840,10 @@ public:
     return count;
   }
 
-  /** Drops recorded sends that can no longer affect the rate limit. */
+  /**
+   * @brief Forgets sends recorded before an instant, to bound memory.
+   * @param cutoff Sends earlier than this are dropped; pass a time at least `rate_window_` ago.
+   */
   void forget_before(std::chrono::system_clock::time_point cutoff) {
     while (!sent_.empty() && sent_.front() < cutoff) {
       sent_.pop_front();
@@ -1125,11 +851,14 @@ public:
   }
 
   /**
-   * Returns the reason `order` is not permitted, or nothing when it is.
+   * @brief Checks one planned order against the limits and holds.
    *
-   * The narrow answer, and the one almost every caller wants. `evaluate` is the same check with the
-   * one extra fact a caller has to know if it is going to *count* what it sends; see
-   * `GuardDecision`.
+   * @tparam Broker The portfolio's broker tag.
+   * @param order The order to check.
+   * @param portfolio The current positions and working orders.
+   * @param inputs The instant, phase, prices and currencies the checks need.
+   * @return Why the order is refused, or `std::nullopt` if it is permitted.
+   * @see evaluate, which also reports whether the order was admitted by the closing exception.
    */
   template <typename Broker>
   std::optional<GuardRejection> check(
@@ -1141,12 +870,17 @@ public:
   }
 
   /**
-   * Returns whether `order` is permitted, and on what terms.
+   * @brief Checks one planned order, and reports whether only the closing exception admitted it.
    *
-   * Checked in order of cost and of bluntness: the kill switch, then what the operator has
-   * forbidden outright, then the arithmetic ones. That order means an operator reading a log sees
-   * the most fundamental reason rather than an incidental one — a halted system reports the halt,
-   * not a notional ceiling it also happened to exceed.
+   * Checks run in this order and the first failure is reported: holds, permitted universe,
+   * permitted phases (with the closing-toward-flat exception), order rate, order notional,
+   * sellable quantity, buying power, position ceiling, gross exposure ceiling.
+   *
+   * @tparam Broker The portfolio's broker tag.
+   * @param order The order to check.
+   * @param portfolio The current positions and working orders.
+   * @param inputs The instant, phase, prices and currencies the checks need.
+   * @return The decision.
    */
   template <typename Broker>
   GuardDecision evaluate(
@@ -1204,27 +938,11 @@ public:
         }
       }
       if (!permitted) {
-        // **The phase governs what an order opens, not what it closes.** A restriction that cannot
-        // express an exit turns "the market is shut" into "you may not reduce risk", and this
-        // library already answered that question once: `max_gross_exposure_` permits an order that
-        // does not raise reachable exposure however far over the ceiling the account is, because a
-        // limit that cannot be de-risked past is worse than one that does nothing. The same
-        // argument applies here with more force, since the account did not choose to be holding
-        // when the session ended.
-        //
-        // **A different predicate, though, and deliberately so.** `closes_toward_flat` carries why:
-        // "does not raise the projection" admits a sell against a flat book with a buy resting,
-        // which opens a short. See its documentation before reusing either rule for the other.
-        //
-        // What this costs, and it was chosen with the cost known: the order goes to a broker that
-        // will very likely reject it outside its session, so a nightly flatten becomes a rejection
-        // rather than a refusal. That is the broker's own answer rather than this library's guess,
-        // it is journalled, and `max_orders_per_window_` is the lever for a strategy that restates
-        // a close on every pass.
+        // The phase restricts what an order opens, not what it closes: an exit must stay expressible
+        // after the session. `closes_toward_flat` is narrower than the exposure rule, which would
+        // admit a sell that opens a short against a resting buy.
         const auto closing = closes_toward_flat(portfolio, order);
-        // Unknown refuses, because this branch only ever *relaxes* a restriction the operator
-        // stated. A snapshot whose arithmetic does not work cannot establish that an order closes
-        // anything, and Decision 6 does not permit approximating it.
+        // Unknown refuses: this branch only relaxes a restriction.
         if (!closing || !*closing) {
           return refuse(GuardReason::PHASE_NOT_PERMITTED);
         }
@@ -1268,33 +986,21 @@ public:
     }
 
     if (limits_.enforce_sellable_quantity_ && order.side_ == OrderSide::SELL) {
-      // **One read, so the figure and its authority cannot come from different rows.** See
-      // `Portfolio::sellable_reading_for`: taking them separately let a split holding pair the first
-      // lot's unestablished quantity with a later lot's declaration.
+      // One read, so the figure and its basis come from the same row.
       const auto reading = portfolio.sellable_reading_for(order.instrument_);
       const auto& sellable = reading.quantity_;
       if (!sellable) {
-        // Absent is unknown, and unknown refuses. The broker did not publish the figure, or there
-        // is no such position; neither is permission to sell, and substituting the held quantity
-        // here would answer a question nobody asked. Decision 6: a condition the caller stated is
-        // honored or refused, never quietly approximated.
+        // Absent is unknown, and unknown refuses; the held quantity is not substituted.
         return refuse(GuardReason::QUANTITY_NOT_SELLABLE);
       }
-      // **A figure whose meaning nobody established refuses, even though it is present.** A number
-      // is not evidence on its own: `SellableBasis` says what this one covers and how resting
-      // orders relate to it, and an adapter that states neither has handed over a quantity that
-      // cannot answer the question being asked of it. Defaulting to enforceable here is what let a
-      // venue-scoped figure bound a whole-holding sell, which is the defect this branch exists to
-      // close, and it fails closed so that a broker adapter this library has never seen is refused
-      // rather than trusted.
+      // A figure whose basis is not established refuses even though present; this fails closed for
+      // an adapter the library has never seen.
       if (!reading.basis_.is_enforceable()) {
         return refuse(GuardReason::SELLABLE_BASIS_UNESTABLISHED);
       }
-      // Resting sells count against the same figure -- **every** open sell, the broker's own rows and
-      // this library's reservations alike. That over-refuses where the broker had already deducted
-      // them, and never under-refuses, which is the only asymmetry available: `SellableBasis::DEDUCT`
-      // documents why no other treatment can be served. `ai/halt-provenance` spent two review rounds
-      // on that asymmetry and reconciliation's same-side offset exists for the same reason.
+      // Every open sell (the broker's rows and this library's reservations) counts against the
+      // figure. That over-refuses where the broker already deducted them and never under-refuses;
+      // see `SellableBasis::DEDUCT`.
       const auto resting = portfolio.working_quantity(order.instrument_, OrderSide::SELL);
       const auto committed = decimal_add(resting, order.quantity_);
       if (!committed) {
@@ -1307,9 +1013,7 @@ public:
 
     if (limits_.enforce_buying_power_ && order.side_ == OrderSide::BUY) {
       if (!value) {
-        // A buy whose cost cannot be computed cannot be checked against a budget. `needs_value`
-        // already forces a price when this limit is on, so reaching here means the multiplication
-        // itself failed.
+        // A price is present (`needs_value`), so the multiplication itself failed.
         return refuse(GuardReason::VALUE_NOT_KNOWN);
       }
       if (!inputs.order_currency_) {
@@ -1317,9 +1021,7 @@ public:
       }
       const auto available = portfolio.buying_power_in(*inputs.order_currency_);
       if (!available) {
-        // Absent is unknown, and unknown refuses -- the same rule as the sellable check. Falling
-        // back to `cash_in` would be worse than useless here: live it is empty, so the fallback
-        // would refuse anyway while looking like an answer.
+        // Absent is unknown, and unknown refuses. (`cash_in` is empty live, so no fallback.)
         return refuse(GuardReason::INSUFFICIENT_BUYING_POWER);
       }
       if (decimal_less(*available, *value)) {
@@ -1329,30 +1031,15 @@ public:
 
     if (limits_.max_position_quantity_) {
       const auto zero = Decimal64::parse("0");
-      // **Net across every position row, the same reading reconciliation sizes against.** This read
-      // `quantity_of` -- the first row -- and the two disagreeing is worse than either being wrong
-      // alone: reconciliation plans a sell of the whole net holding, and a ceiling measuring from
-      // one lot of it computes a resulting position that never existed. Rows of 60 and 40 with a
-      // ceiling of 30 refused the sell of 100 that reaches flat, because it read 60 - 100 = -40 and
-      // called that a short of 40. The exit was refused for breaching a ceiling it was on its way
-      // *under*, and the account kept the position.
-      //
-      // So this moves in both directions, deliberately. It refuses a buy that two lots together put
-      // over the ceiling, which is the limit doing its job and what it silently permitted before.
-      // And it permits an exit that reaches flat from a split holding, which no operator setting a
-      // ceiling meant to forbid.
+      // Net across every position row, as reconciliation sizes: a split holding read from its first
+      // row would refuse an exit to flat and pass a buy that both lots together put over the ceiling.
       const auto net = portfolio.net_quantity_of(order.instrument_);
       if (!net) {
         return refuse(GuardReason::POSITION_LIMIT_EXCEEDED);
       }
       const auto held = *net;
-      // **Orders already working on this side count, because the ceiling is on the position this
-      // order could produce, not on the one the last poll reported.** Without this, two buys of 60
-      // against a ceiling of 100 both pass -- each is checked against an unchanged holding -- and
-      // the pair builds 120. Same-side only: a resting sell is not counted as relief for a buy,
-      // because treating it as relief assumes a fill that may never come, and the whole point of a
-      // ceiling is what happens when everything outstanding does fill. This is the same asymmetry
-      // the sellable check above resolves the same way.
+      // Orders already working on this side count, so two buys that each fit cannot together exceed
+      // the ceiling. A resting opposite-side order is not counted as relief.
       const auto pending = portfolio.working_quantity(order.instrument_, order.side_);
       const auto committed = decimal_add(pending, order.quantity_);
       if (!committed) {
@@ -1383,9 +1070,7 @@ public:
     }
 
     if (limits_.max_gross_exposure_) {
-      // Per currency, so which one the order is priced in decides what this compares. An
-      // unresolved instrument leaves it absent, and a ceiling that cannot tell which budget it is
-      // spending must refuse rather than pick the first.
+      // Per currency: an unresolved order currency refuses.
       if (!inputs.order_currency_) {
         return refuse(GuardReason::VALUE_NOT_KNOWN);
       }
@@ -1394,31 +1079,13 @@ public:
         CandidateContribution::QUANTITY_AND_PRICE
       );
       if (!resulting) {
-        // The basis does not describe the portfolio, or the arithmetic did not fit. Refusing is the
-        // point: the previous code defaulted the current exposure to zero and compared the ceiling
-        // against this order alone, which is how a portfolio limit came to permit everything it
-        // exists to refuse.
+        // The basis does not describe the portfolio, or the arithmetic did not fit.
         return refuse(GuardReason::VALUE_NOT_KNOWN);
       }
       if (decimal_less(*limits_.max_gross_exposure_, *resulting)) {
-        // **Over the ceiling is not on its own a reason to refuse: taking it further is.**
-        //
-        // The projection is the largest position still reachable, so a resting sell does not lower
-        // it -- hold 100 with a sell of 100 resting and the exposure is 100 until that sell fills.
-        // Correct, and on its own it would trap an account that is *already* over the ceiling: a
-        // ceiling lowered by its operator, or exposure carried up by a mark, would refuse every
-        // order including the ones selling out of it. A limit that cannot be de-risked past is the
-        // failure this branch's own issue document set out to avoid, one step further along than
-        // the version it argued against.
-        //
-        // So the ceiling governs what an order *adds*. An order that leaves the projection where it
-        // was -- any sell against a long, any buy covering a short -- is permitted however far over
-        // the account already is, and an order that moves it up while over is refused.
-        // **`PRICE_ONLY`, not `nullptr`.** Dropping the candidate entirely would value this case at
-        // the mark while the other used the candidate's limit, so the two would differ by a price
-        // rather than by the order: a sell of ten limited above the mark would read as *adding*
-        // exposure to a position it can only reduce, and the exit this branch exists to protect
-        // would be refused. Same envelope, different quantity, so the comparison isolates the order.
+        // Over the ceiling, refuse only an order that raises the projection, so an account already
+        // over it can still sell out. Compare against `PRICE_ONLY` (same prices, no quantity), not
+        // `nullptr`, so the difference is the order's quantity and not its limit price.
         const auto without = projected_gross_exposure(
           portfolio, inputs.exposure_basis_, *inputs.order_currency_, &order, price,
           CandidateContribution::PRICE_ONLY
@@ -1438,28 +1105,17 @@ public:
   }
 
 private:
-  /** Returns `reason`'s slot in the fixed-capacity hold arrays. */
+  // `reason`'s slot in the hold arrays.
   static constexpr std::size_t index_of(HaltReason reason) noexcept {
     return static_cast<std::size_t>(reason);
   }
 
   RiskLimits limits_;
-  /**
-   * Which holds are in force, indexed by `HaltReason`.
-   *
-   * A fixed array rather than a set or a vector because the reasons are a closed enum and there are
-   * six of them: no allocation, no ordering to maintain, and declaration order is the priority order
-   * `blocking_reason` needs for free.
-   */
+  // Which holds are in force, indexed by `HaltReason`; declaration order is priority order.
   std::array<bool, halt_reason_count> held_{};
-  /** Each hold's operator-readable detail, empty where a hold carries none or is not held. */
+  // Each hold's detail, empty where none or not held.
   std::array<std::string, halt_reason_count> details_;
-  /**
-   * Timestamps of orders actually sent, oldest first.
-   *
-   * A deque rather than a counter because the window slides: a counter reset on a boundary would
-   * let twice the limit through across one, which is the classic way a rate limit is wrong.
-   */
+  // Timestamps of orders sent, oldest first; a sliding window, not a counter reset on a boundary.
   std::deque<std::chrono::system_clock::time_point> sent_;
   std::size_t total_sent_{0};
 };

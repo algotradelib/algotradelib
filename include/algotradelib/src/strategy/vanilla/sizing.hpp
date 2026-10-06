@@ -14,46 +14,42 @@ namespace strategy {
 namespace vanilla {
 
 /**
- * Holds a position sized so its recent volatility contributes a stated risk budget.
+ * @brief Holds a long position sized so its daily value volatility matches a risk budget.
  *
- * A *sizing policy*, not a signal: it decides how much, and something else decides whether. Compose
- * it by running both — the signal states a direction and this states the size — or use it alone, as
- * here, where the direction is simply "long".
- *
- * The arithmetic is the standard one. A position of `q` shares at price `p` whose daily return
- * deviation is `s` has a daily value deviation of `q * p * s`, so a budget of `b` currency units per
- * day gives `q = b / (p * s)`. Stated in currency rather than as a fraction of equity because a
- * fraction needs a portfolio total, which spans currencies and would need an exchange rate this
- * library does not carry.
- *
- * **Volatility is measured on returns, not on prices.** A deviation of prices is in currency and
- * scales with the price level, so the same formula would size a 700,000-won instrument and a
- * 7,000-won one identically wrongly. That mistake produces plausible numbers, which is why it is
- * worth stating rather than only doing.
+ * The target is `q = budget / (price * s)`, where `s` is the sample standard deviation of the last
+ * `window_` bar returns, capped at `max_quantity_`. Nothing is stated while the window is
+ * incomplete or flat. The budget is in currency, not a fraction of equity.
  */
 struct VolatilityTargetSizing {
-  /** How this strategy is configured. */
+  /** @brief The strategy's settings. */
   struct Params {
-    /** Which instrument to size. Bars for anything else are ignored. */
+    /** @brief The instrument to hold; bars for any other instrument are ignored. */
     InstrumentId instrument_;
-    /** Window the return deviation is measured over. */
+    /** @brief The number of returns the volatility is measured over; below 2, nothing is traded. */
     std::size_t window_{20};
-    /** Currency of value deviation per bar the position should contribute. */
+    /** @brief The value volatility per bar the position should have, in the instrument's currency. */
     Decimal64 risk_budget_;
-    /** Largest position to hold whatever the arithmetic says, as a last guard against a tiny
-     *  measured volatility producing an enormous size. */
+    /** @brief The largest position to hold, whatever the arithmetic gives. */
     Decimal64 max_quantity_;
-    /** Label carried onto the orders, for attribution. */
+    /** @brief The tag on the targets. */
     std::string tag_{"volatility-target"};
   };
 
-  /** The configuration this instance runs under. */
+  /** @brief The settings. */
   Params params_;
 
-  /** The window plus two: one row is lost to the first return, and one to reading a previous value. */
+  /**
+   * @brief Returns how many bars to load before the first live bar.
+   * @return `window_ + 2`.
+   */
   std::size_t warmup_bars() const { return params_.window_ + 2; }
 
-  /** Reads the latest bar and, when the signal says so, states a target position. */
+  /**
+   * @brief States the volatility-sized target position on each bar of the instrument.
+   * @tparam Ctx The runner's context type.
+   * @param ctx The context.
+   * @param bar The new bar.
+   */
   template <class Ctx>
   void on_bar(Ctx& ctx, const BarEvent& bar) {
     if (!(bar.instrument_ == params_.instrument_)) {
@@ -81,8 +77,7 @@ struct VolatilityTargetSizing {
     if (!math::observed(deviation) || !math::observed(close)) {
       return;
     }
-    // A flat window has no volatility to budget against. Sizing from it would divide by zero, and
-    // clamping to the maximum would take the largest possible position on the least information.
+    // A flat window has no volatility to size against; do not fall back to the maximum.
     if (deviation <= math::Scalar{0} || close <= math::Scalar{0}) {
       return;
     }
@@ -106,49 +101,46 @@ struct VolatilityTargetSizing {
 };
 
 /**
- * Holds an equal fraction of the portfolio in each instrument of a universe.
+ * @brief Holds an equal fraction of portfolio value in each instrument of a universe.
  *
- * The cross-sectional one, and the reason `Panel` exists: it acts on many instruments from one
- * decision rather than on each in isolation.
+ * Rebalances only when the market enters `rebalance_at_` (via `on_phase`), not on every bar. Each
+ * weight is `1 / n` truncated at `weight_scale_` decimal places (three names get `0.3333`); the
+ * residual stays unallocated. Each weight is a holding (`SizeSpec::target_weight`), so a rebalance
+ * trades only the drift; set a notional `TradeTolerance` to skip one-share drifts.
  *
- * It rebalances only when told to by `on_phase`, not on every bar. A weight-based strategy asked to
- * rebalance per bar would trade every instrument every bar, because a price move changes every
- * weight — and the turnover of chasing that costs more than the drift it corrects.
- *
- * Weights are exact decimals at a stated scale, so an equal split of three names is `0.3333` rather
- * than a double nobody chose the precision of. The residual is left unallocated: distributing it
- * would make one arbitrary name larger than the others.
- *
- * Each weight is held, not bought again (`SizeSpec::target_weight`): a rebalance trades only the
- * drift. Where it runs: a replay supplies the portfolio value, but a **daily** replay fires `on_phase`
- * about once in the whole run, because its clock visits only bar ends -- replay it on intraday bars
- * to rebalance every session. Live, it is refused `no_portfolio_value` until the caller sets
- * `Runner::set_portfolio_value`. On a multi-instrument replay the phase fires while the first
- * instrument's bar is fed, so the others are sized at their previous close; the value is equity in the
- * replay's currency only, so on a mixed-currency replay it understates the account; and a replay fed
- * quotes moves prices while the value stays at the last bar's marks. Set a notional `TradeTolerance`
- * so a one-share drift is not chased every rebalance.
+ * @note Live, the runner refuses weights (`no_portfolio_value`) until you call
+ *   `Runner::set_portfolio_value`.
+ * @note In a backtest on **daily** bars, `on_phase` fires about once in the whole run, because the
+ *   replay clock visits only bar ends; replay intraday bars to rebalance each session. In a
+ *   multi-instrument replay the other instruments are sized at their previous close; on a
+ *   mixed-currency replay the portfolio value counts one currency only; and quotes move prices while
+ *   the value stays at the last bar's marks.
  */
 struct EqualWeightRebalance {
-  /** How this strategy is configured. */
+  /** @brief The strategy's settings. */
   struct Params {
-    /** The instruments to hold. An empty universe holds nothing. */
+    /** @brief The instruments to hold; an empty universe does nothing. */
     std::vector<InstrumentId> universe_;
-    /** Scale the weight is expressed at; four places is a hundredth of a percent. */
+    /** @brief Decimal places of each weight; 4 is a hundredth of a percent. */
     std::uint8_t weight_scale_{4};
-    /** Phase that triggers a rebalance. */
+    /** @brief The phase whose start triggers a rebalance. */
     MarketPhase rebalance_at_{MarketPhase::OPEN};
-    /** Label carried onto the orders, for attribution. */
+    /** @brief The tag on the orders. */
     std::string tag_{"equal-weight"};
   };
 
-  /** The configuration this instance runs under. */
+  /** @brief The settings. */
   Params params_;
 
-  /** No warm-up: a weight needs no history, only a price to size against. */
+  /** @brief No history is needed before the first live bar. */
   static constexpr std::size_t warmup_bars = 0;
 
-  /** Restates an equal-weight target for the universe when `rebalance_at_` arrives. */
+  /**
+   * @brief Submits an equal-weight buy intent for every instrument when `phase` is `rebalance_at_`.
+   * @tparam Ctx The runner's context type.
+   * @param ctx The context.
+   * @param phase The new market phase.
+   */
   template <class Ctx>
   void on_phase(Ctx& ctx, MarketPhase phase) {
     if (phase != params_.rebalance_at_ || params_.universe_.empty()) {

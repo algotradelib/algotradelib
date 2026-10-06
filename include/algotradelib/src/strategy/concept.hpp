@@ -16,24 +16,32 @@ namespace algotradelib {
 namespace strategy {
 
 /**
- * What makes something a strategy, and how that is checked.
+ * @file
+ * @brief What a strategy is, how a runner calls its handlers, and `ATL_ASSERT_STRATEGY`.
  *
- * A strategy is a plain struct with **template** member functions. Every handler is optional, so
- * a strategy that only reacts to bars writes only `on_bar` and costs nothing for the rest:
+ * A strategy is a plain struct whose handlers are member **templates** on the context type. Every
+ * handler is optional; declare only the ones you need:
  *
  * ```cpp
  * struct MyStrategy {
  *   struct Params { std::size_t window_{20}; };
  *   Params params_;
  *
- *   template <class Ctx> void on_bar(Ctx& ctx, const BarEvent& bar) { ... }
+ *   template <class Ctx> void on_start(Ctx& ctx);
+ *   template <class Ctx> void on_bar(Ctx& ctx, const BarEvent& bar);
+ *   template <class Ctx> void on_quote(Ctx& ctx, const QuoteEvent& quote);
+ *   template <class Ctx> void on_fill(Ctx& ctx, const Fill& fill);
+ *   template <class Ctx> void on_order_update(Ctx& ctx, const OrderSnapshot& order);
+ *   template <class Ctx> void on_phase(Ctx& ctx, const MarketPhase& phase);
+ *   template <class Ctx> void on_stop(Ctx& ctx);
  * };
  * ```
  *
- * The handlers are templates rather than concrete because that is what makes one source run under
- * every runner — dry-run, live against either broker, and a backtest. A handler written against one
- * concrete context type compiles for that runner and fails to compile for the others, where each is
- * built.
+ * Because the handlers are templates, the same strategy runs under every runner: a dry run, a
+ * live session with any broker, and a backtest. Take the context by reference; a context cannot
+ * be copied, so a handler that takes it by value does not compile.
+ *
+ * @warning `on_fill` is called in a backtest but never by the shipped live loop; see `Fill`.
  */
 
 namespace strategy_detail {
@@ -100,22 +108,23 @@ void require_readable_names() {
 } // namespace strategy_detail
 
 /**
- * Calls a strategy's handler when it declares one, and costs nothing when it does not.
+ * @brief Calls a strategy's handlers, skipping the ones it does not declare.
  *
- * Every handler is optional, so a runner cannot simply call them: a strategy that reacts only to bars
- * must not be required to write five empty functions. Each function below is the `if constexpr` that
- * resolves that, in one place: **a handler whose name the strategy declares is called**, and one it does
- * not declare compiles to nothing. A declared handler the call does not fit -- a non-const event, a wrong
- * or missing event, a context taken by value -- is therefore the compiler's error at the call, naming the
- * candidate, not a handler skipped in silence. A wrapper that forwards to an inner strategy through these
- * functions gets the same check on the inner one.
- *
- * These take the strategy by reference and mutate it, because a strategy holds its own state.
- * `runner::dispatch` names this namespace.
+ * A handler the strategy declares is always called; if its signature does not fit the call (a
+ * non-const event, a missing event, a context taken by value), compilation fails here rather than
+ * the handler being skipped. A wrapper strategy that forwards to an inner strategy through these
+ * functions gets the same check for the inner one.
  */
 namespace dispatch {
 
-/** Calls `on_start` if `strategy` declares one. */
+/**
+ * @brief Calls `strategy.on_start(context)` if the strategy declares `on_start`; otherwise does nothing.
+ *
+ * @tparam S The strategy type; a class that is not `final`.
+ * @tparam Ctx The context type.
+ * @param strategy The strategy.
+ * @param context The context passed to the handler.
+ */
 template <typename S, typename Ctx>
 void start(S& strategy, Ctx& context) {
   strategy_detail::require_readable_names<S>();
@@ -127,7 +136,14 @@ void start(S& strategy, Ctx& context) {
   }
 }
 
-/** Calls `on_stop` if `strategy` declares one. */
+/**
+ * @brief Calls `strategy.on_stop(context)` if the strategy declares `on_stop`; otherwise does nothing.
+ *
+ * @tparam S The strategy type; a class that is not `final`.
+ * @tparam Ctx The context type.
+ * @param strategy The strategy.
+ * @param context The context passed to the handler.
+ */
 template <typename S, typename Ctx>
 void stop(S& strategy, Ctx& context) {
   strategy_detail::require_readable_names<S>();
@@ -139,7 +155,15 @@ void stop(S& strategy, Ctx& context) {
   }
 }
 
-/** Calls `on_bar` if `strategy` declares one. */
+/**
+ * @brief Calls `strategy.on_bar(context, event)` if the strategy declares `on_bar`; otherwise does nothing.
+ *
+ * @tparam S The strategy type; a class that is not `final`.
+ * @tparam Ctx The context type.
+ * @param strategy The strategy.
+ * @param context The context passed to the handler.
+ * @param event The event passed to the handler.
+ */
 template <typename S, typename Ctx>
 void bar(S& strategy, Ctx& context, const BarEvent& event) {
   strategy_detail::require_readable_names<S>();
@@ -152,7 +176,15 @@ void bar(S& strategy, Ctx& context, const BarEvent& event) {
   }
 }
 
-/** Calls `on_quote` if `strategy` declares one. */
+/**
+ * @brief Calls `strategy.on_quote(context, event)` if the strategy declares `on_quote`; otherwise does nothing.
+ *
+ * @tparam S The strategy type; a class that is not `final`.
+ * @tparam Ctx The context type.
+ * @param strategy The strategy.
+ * @param context The context passed to the handler.
+ * @param event The event passed to the handler.
+ */
 template <typename S, typename Ctx>
 void quote(S& strategy, Ctx& context, const QuoteEvent& event) {
   strategy_detail::require_readable_names<S>();
@@ -165,7 +197,15 @@ void quote(S& strategy, Ctx& context, const QuoteEvent& event) {
   }
 }
 
-/** Calls `on_fill` if `strategy` declares one. */
+/**
+ * @brief Calls `strategy.on_fill(context, event)` if the strategy declares `on_fill`; otherwise does nothing.
+ *
+ * @tparam S The strategy type; a class that is not `final`.
+ * @tparam Ctx The context type.
+ * @param strategy The strategy.
+ * @param context The context passed to the handler.
+ * @param event The event passed to the handler.
+ */
 template <typename S, typename Ctx>
 void fill(S& strategy, Ctx& context, const Fill& event) {
   strategy_detail::require_readable_names<S>();
@@ -178,7 +218,15 @@ void fill(S& strategy, Ctx& context, const Fill& event) {
   }
 }
 
-/** Calls `on_order_update` if `strategy` declares one. */
+/**
+ * @brief Calls `strategy.on_order_update(context, event)` if the strategy declares `on_order_update`; otherwise does nothing.
+ *
+ * @tparam S The strategy type; a class that is not `final`.
+ * @tparam Ctx The context type.
+ * @param strategy The strategy.
+ * @param context The context passed to the handler.
+ * @param event The event passed to the handler.
+ */
 template <typename S, typename Ctx>
 void order_update(S& strategy, Ctx& context, const OrderSnapshot& event) {
   strategy_detail::require_readable_names<S>();
@@ -191,7 +239,16 @@ void order_update(S& strategy, Ctx& context, const OrderSnapshot& event) {
   }
 }
 
-/** Calls `on_phase` if `strategy` declares one, with the phase as a `const` reference. */
+/**
+ * @brief Calls `strategy.on_phase(context, event)` if the strategy declares `on_phase`; otherwise
+ *   does nothing.
+ *
+ * @tparam S The strategy type; a class that is not `final`.
+ * @tparam Ctx The context type.
+ * @param strategy The strategy.
+ * @param context The context passed to the handler.
+ * @param event The new phase, passed as a `const` reference.
+ */
 template <typename S, typename Ctx>
 void phase(S& strategy, Ctx& context, const MarketPhase& event) {
   strategy_detail::require_readable_names<S>();
@@ -238,10 +295,9 @@ constexpr bool compiles_every_handler_call() {
 } // namespace strategy_detail
 
 /**
- * Capability set in which the broker implements nothing optional.
+ * @brief A capability set in which the broker implements nothing optional.
  *
- * Answers every `BrokerCaps` question, so a test's hand-written capability set can inherit it and state
- * only what differs.
+ * Inherit it in a test's capability set and override only what differs.
  */
 struct NoCaps {
   /** @copydoc BrokerCaps::has_account_discovery */
@@ -294,20 +350,18 @@ struct NoCaps {
   static constexpr bool has_buying_power_quantity = false;
   /** @copydoc BrokerCaps::has_commission_schedule */
   static constexpr bool has_commission_schedule = false;
-  /**
-   * Nowhere, which is the honest answer for a broker this type stands in for.
-   *
-   * `NONE` rather than `HOLDINGS`: a stand-in that claimed the figure arrives with the positions
-   * would have a runner skip the inquiry and then find nothing there.
-   */
+  /** @brief No sellable-quantity figure is available. */
   static constexpr SellableSource sellable_source = SellableSource::NONE;
-  /** Unestablished; a capability set that makes the inquiry states its own. */
+  /** @brief Unestablished, since there is no inquiry. */
   static constexpr SellableBasis sellable_inquiry_basis{};
-  /** @copydoc BrokerCaps::supports_interval(BarInterval) */
+  /**
+   * @brief Tests whether the broker serves bars of an interval.
+   * @return `false` for every interval.
+   */
   static constexpr bool supports_interval(BarInterval) { return false; }
 };
 
-/** Capability set in which the broker implements everything optional. */
+/** @brief A capability set in which the broker implements everything optional. */
 struct AllCaps {
   /** @copydoc BrokerCaps::has_account_discovery */
   static constexpr bool has_account_discovery = true;
@@ -315,7 +369,7 @@ struct AllCaps {
   static constexpr bool has_client_order_id = true;
   /** @copydoc BrokerCaps::has_trigger_price */
   static constexpr bool has_trigger_price = true;
-  /** A broker that takes orders; a market-data source is not "everything". */
+  /** @brief `false`: this broker takes orders. */
   static constexpr bool data_only = false;
   /** @copydoc BrokerCaps::has_working_orders */
   static constexpr bool has_working_orders = true;
@@ -359,89 +413,112 @@ struct AllCaps {
   static constexpr bool has_buying_power_quantity = true;
   /** @copydoc BrokerCaps::has_commission_schedule */
   static constexpr bool has_commission_schedule = true;
-  /** By inquiry, the source that has a verb behind it. */
+  /** @brief The sellable quantity comes from an inquiry. */
   static constexpr SellableSource sellable_source = SellableSource::INQUIRY;
-  /** The basis Toss states: the whole holding, resting sells deducted, not measured. */
+  /** @brief The whole holding, with resting sells deducted (the basis Toss states). */
   static constexpr SellableBasis sellable_inquiry_basis{
     SellableBasis::Coverage::WHOLE_HOLDING,
     SellableBasis::RestingTreatment::DEDUCT,
     false,
   };
-  /** @copydoc BrokerCaps::supports_interval(BarInterval) */
+  /**
+   * @brief Tests whether the broker serves bars of an interval.
+   * @return `true` for every interval.
+   */
   static constexpr bool supports_interval(BarInterval) { return true; }
 };
 
-/** Compile-time tag standing in for a broker in a probe context. */
+/** @brief The broker tag of a probe context; nothing it issues reaches a market. */
 struct ProbeBroker {
-  /** The tag's normalized name, which is what an order reference prints. */
+  /** @brief The broker name an order reference prints. */
   static constexpr std::string_view name = "probe";
 };
 
 /**
- * A complete context that does nothing, for checking a strategy compiles.
+ * @brief A context for testing a strategy without a runner: it records what the strategy asks for.
  *
- * A stub for tests: intents land in `submitted_` where a test can read them, and
+ * Set the public fields (`now_`, `phase_`, `calendar_`, `portfolio_`, `instruments_`), call a
+ * handler, then read `submitted()`, `targets()`, `canceled()` and `log().lines()`.
  * `ATL_ASSERT_STRATEGY(S, MinimalContext)` compiles a strategy's handlers against it.
  *
- * Parameterized on the capability set: `MinimalContext` has every capability absent and
- * `FullContext` every one present, so a test that runs a strategy's handlers on both compiles the
- * `if constexpr` branch it takes for a broker that offers everything *and* the one it takes for a
- * broker that offers nothing.
+ * It has no series accessors (`bars`, `frame`, `panel`), so it needs no linear algebra backend;
+ * a strategy that reads series is checked by the runner it is bound to.
  *
- * It deliberately does not provide the series accessors a real runner has — `bars`, `frame`,
- * `panel`. Those return analytics types and therefore need a linear-algebra backend, which this
- * layer does not require: a strategy trading on prices and positions alone should not have to
- * acquire one. A strategy that reads series is checked when its runner instantiates it.
+ * @tparam CapsType The broker capabilities the strategy sees as `Ctx::caps`; see `NoCaps` and
+ *   `AllCaps`.
  */
 template <typename CapsType>
 class ProbeContextT {
 public:
-  /** The stand-in broker tag; nothing a probe issues reaches a market. */
+  /** @brief The broker tag; see `ProbeBroker`. */
   using Broker = ProbeBroker;
-  /** The capability set being probed against. */
+  /** @brief The broker capabilities the strategy sees. */
   using caps = CapsType;
 
-  /** Constructs an empty probe. */
+  /** @brief Constructs an empty probe. */
   ProbeContextT() = default;
-  /** Not copyable, like the runner's context, so a probe rejects a by-value handler as a runner would. */
+  /** @brief Deleted: like a runner's context, a probe cannot be copied. */
   ProbeContextT(const ProbeContextT&) = delete;
-  /** Not copyable; see the copy constructor. */
+  /**
+   * @brief Deleted: a probe cannot be copied.
+   * @return Not callable.
+   */
   ProbeContextT& operator=(const ProbeContextT&) = delete;
-  /** Movable. */
+  /** @brief Move constructor. */
   ProbeContextT(ProbeContextT&&) = default;
-  /** Movable. */
+  /**
+   * @brief Move assignment.
+   * @return `*this`.
+   */
   ProbeContextT& operator=(ProbeContextT&&) = default;
 
-  /** A log that records rather than writes, so a test can assert on what a strategy said. */
+  /** @brief A log that keeps each line in memory for a test to read. */
   class Log {
   public:
-    /** Records one line. */
+    /**
+     * @brief Records one line.
+     * @param message The line.
+     */
     void note(std::string_view message) { lines_.emplace_back(message); }
-    /** Returns everything recorded, in order. */
+    /**
+     * @brief Returns the recorded lines.
+     * @return The lines, in order.
+     */
     const std::vector<std::string>& lines() const noexcept { return lines_; }
 
   private:
     std::vector<std::string> lines_;
   };
 
-  /** Returns the current instant as the test set it. */
+  /**
+   * @brief Returns the current instant.
+   * @return `now_`.
+   */
   std::chrono::system_clock::time_point now() const noexcept { return now_; }
 
-  /** Returns the market phase as the test set it. */
+  /**
+   * @brief Returns the market phase.
+   * @return `phase_`.
+   */
   MarketPhase phase() const noexcept { return phase_; }
 
-  /** Returns the trading calendar as the test set it. */
+  /**
+   * @brief Returns the trading calendar.
+   * @return `calendar_`.
+   */
   const TradingCalendar& calendar() const noexcept { return calendar_; }
 
-  /** Returns the portfolio as the test set it. */
+  /**
+   * @brief Returns the portfolio.
+   * @return `portfolio_`.
+   */
   const Portfolio<ProbeBroker>& portfolio() const noexcept { return portfolio_; }
 
   /**
-   * Returns reference data for `id`, or nothing when the test provided none.
+   * @brief Looks up an instrument's reference data in `instruments_`.
    *
-   * Nothing rather than a default, because the `PriceRule` on it is what a strategy needs to
-   * build a limit price, and a defaulted rule would be an `UNKNOWN` grid that silently refused
-   * every price. Absent says "ask the runner to load it"; a default would say "there is no grid".
+   * @param id The instrument.
+   * @return Its reference data, or `std::nullopt` if the test provided none.
    */
   std::optional<Instrument> instrument(const InstrumentId& id) const {
     for (const auto& known : instruments_) {
@@ -452,36 +529,57 @@ public:
     return std::nullopt;
   }
 
-  /** Records an order the strategy asked for. */
+  /**
+   * @brief Records an order intent.
+   * @param intent The intent, appended to `submitted()`.
+   */
   void submit(OrderIntent intent) { submitted_.push_back(std::move(intent)); }
 
-  /** Records a target position the strategy asked for. */
+  /**
+   * @brief Records a target position.
+   * @param target The target, appended to `targets()`.
+   */
   void submit(TargetPosition target) { targets_.push_back(std::move(target)); }
 
-  /** Records a cancellation the strategy asked for. */
+  /**
+   * @brief Records a cancellation.
+   * @param ref The order to cancel, appended to `canceled()`.
+   */
   void cancel(const OrderRef<ProbeBroker>& ref) {
     canceled_.push_back(CancelIntent<ProbeBroker>{ref, {}});
   }
 
-  /** Returns the recording log. */
+  /**
+   * @brief Returns the log.
+   * @return The recording log.
+   */
   Log& log() noexcept { return log_; }
 
-  /** What the strategy asked for, in order. */
+  /**
+   * @brief Returns the order intents submitted.
+   * @return The intents, in order.
+   */
   const std::vector<OrderIntent>& submitted() const noexcept { return submitted_; }
-  /** Returns the targets the strategy stated, in order. */
+  /**
+   * @brief Returns the target positions submitted.
+   * @return The targets, in order.
+   */
   const std::vector<TargetPosition>& targets() const noexcept { return targets_; }
-  /** Returns the cancellations the strategy asked for, in order. */
+  /**
+   * @brief Returns the cancellations requested.
+   * @return The cancellations, in order.
+   */
   const std::vector<CancelIntent<ProbeBroker>>& canceled() const noexcept { return canceled_; }
 
-  /** Mutable state a test arranges before invoking a handler. */
+  /** @brief The instant `now()` returns. */
   std::chrono::system_clock::time_point now_{};
-  /** The phase a handler will see. */
+  /** @brief The phase `phase()` returns. */
   MarketPhase phase_{MarketPhase::OPEN};
-  /** The calendar a handler will see. */
+  /** @brief The calendar `calendar()` returns. */
   TradingCalendar calendar_;
-  /** The portfolio a handler will see. */
+  /** @brief The portfolio `portfolio()` returns. */
   Portfolio<ProbeBroker> portfolio_;
-  /** Reference data a handler can look an instrument up in. */
+  /** @brief The reference data `instrument()` searches. */
   std::vector<Instrument> instruments_;
 
 private:
@@ -491,18 +589,17 @@ private:
   Log log_;
 };
 
-/** A probe context in which the broker implements nothing optional. */
+/** @brief A probe context whose broker implements nothing optional. */
 using MinimalContext = ProbeContextT<NoCaps>;
 
-/** A probe context in which the broker implements everything optional. */
+/** @brief A probe context whose broker implements everything optional. */
 using FullContext = ProbeContextT<AllCaps>;
 
 /**
- * Reports what is wrong with a strategy, by name.
+ * @brief The checks behind `ATL_ASSERT_STRATEGY`; instantiating it reports what is wrong with `S`.
  *
- * Instantiating this type produces the diagnostic: a C++17 `static_assert` message must be a string
- * literal, so the strategy type has to arrive through the instantiation context rather than the
- * message.
+ * @tparam S The strategy type.
+ * @tparam Ctx The context type the runner passes.
  */
 template <typename S, typename Ctx>
 struct StrategyConformance {
@@ -527,36 +624,27 @@ struct StrategyConformance {
     "on_fill, on_order_update, on_phase, or on_stop"
   );
 
-  /**
-   * Always true. Reading it compiles every handler call the runner makes with `Ctx`: a declared handler
-   * the call does not fit fails here, in the compiler's words, at `dispatch`.
-   */
+  /** @brief Always `true`; reading it compiles every handler call the runner makes with `Ctx`. */
   static constexpr bool value = strategy_detail::compiles_every_handler_call<S, Ctx>();
 };
 
 /**
- * Asserts that `S` is a strategy the runner for `Ctx` can drive.
+ * @brief Asserts at compile time that `S` is a strategy a runner with context `Ctx` can drive.
  *
- * - `S` is a class and not `final` (its handler names could not be looked up otherwise);
- * - `Ctx` cannot be copied (from a `const` or a mutable lvalue), so a handler taking it by value does not
- *   compile (its submissions would go to a copy); the runner's contexts and the probe contexts are
- *   move-only. **Not caught**: a handler taking by value some *other* type the context converts to -- a
- *   copyable base class it derives from, which slices it. The library's contexts derive from nothing and
- *   convert to nothing; a caller's own context should not either;
- * - it declares at least one handler;
- * - **every handler it declares can be called as the runner calls it with `Ctx`**: the assertion compiles
- *   each call, and each handler template's body, for `Ctx`. A handler the call does not fit is the
- *   compiler's error at `dispatch`, naming the candidate: an `on_fill(Ctx&, Fill&)` with a non-const event,
- *   an `on_phase(Ctx&)` with no event, a context taken by value, a private member or a non-callable one of
- *   a handler's name, or a handler disabled with `enable_if` for this context. **Every declared handler's
- *   body is compiled for `Ctx` here**, including one for an event the program never feeds: a runner
- *   asserts this when it is instantiated.
+ * Checks that:
+ * - `S` is a class and not `final`;
+ * - `Ctx` cannot be copied, so a handler taking it by value does not compile;
+ * - `S` declares at least one handler;
+ * - every handler `S` declares can be called the way a runner calls it with `Ctx`. Each handler's
+ *   body is compiled for `Ctx`, including handlers for events the program never feeds.
  *
- * Asserted against `MinimalContext` or `FullContext`, it compiles the handlers against that stub, which
- * offers no series accessors: a strategy that reads `bars()` is checked by its runner instead. A strategy
- * is checked with the context each runner it is bound to passes; nothing here claims it runs on every one.
+ * With `MinimalContext` or `FullContext` it checks handlers against a probe without series
+ * accessors; a strategy that reads `bars()` is checked by its runner instead. Usable at
+ * namespace, class and block scope.
  *
- * Usable at namespace, class, and block scope.
+ * @param S The strategy type.
+ * @param Ctx The context type.
+ * @note Not detected: a handler that takes by value a copyable base class of the context.
  */
 #define ATL_ASSERT_STRATEGY(S, Ctx)                                                      \
   static_assert(                                                                         \
