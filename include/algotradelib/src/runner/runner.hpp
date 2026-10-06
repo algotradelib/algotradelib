@@ -197,8 +197,8 @@ struct DryRunReport {
    */
   std::vector<WithheldPlan<BrokerTag>> withheld_plans_;
   /**
-   * @brief Orders whose outcome is unknown (`SendOutcome::INDETERMINATE`, which at KIS and Toss
-   *   includes the broker's own refusals); the instrument now needs reconciling.
+   * @brief Orders whose outcome is unknown (`SendOutcome::INDETERMINATE`, which at KIS, Toss and
+   *   Kiwoom includes most of the broker's own refusals); the instrument now needs reconciling.
    */
   std::vector<strategy::PlannedOrder> indeterminate_;
   /**
@@ -626,13 +626,14 @@ public:
   std::size_t orders_binding_refused() const noexcept { return orders_binding_refused_; }
   /**
    * @brief Returns how many orders the broker refused (`SendOutcome::REJECTED`; a request was spent);
-   *   see `last_broker_refusal`. At KIS and Toss most refusals count as unknown outcomes instead.
+   *   see `last_broker_refusal`. At KIS, Toss and Kiwoom most refusals count as unknown outcomes
+   *   instead.
    * @return The count.
    */
   std::size_t orders_broker_refused() const noexcept { return orders_broker_refused_; }
   /**
-   * @brief Returns how many orders had an unknown outcome (`SendOutcome::INDETERMINATE`, which at KIS
-   *   and Toss includes the broker's own refusals).
+   * @brief Returns how many orders had an unknown outcome (`SendOutcome::INDETERMINATE`, which at
+   *   KIS, Toss and Kiwoom includes most of the broker's own refusals).
    * @return The count.
    */
   std::size_t orders_indeterminate() const noexcept { return orders_indeterminate_; }
@@ -1072,8 +1073,8 @@ public:
 
   /**
    * @brief Returns the broker's code and message for the most recent order it refused
-   *   (`SendOutcome::REJECTED`; at KIS and Toss most refusals are `INDETERMINATE` and not recorded
-   *   here).
+   *   (`SendOutcome::REJECTED`; at KIS, Toss and Kiwoom most refusals are `INDETERMINATE` and not
+   *   recorded here).
    * @return The refusal, or `std::nullopt` if none (or the executor cannot report errors, as in a dry
    *   run or replay). A refusal with no detail clears it, so a nonzero `orders_broker_refused` can
    *   sit beside an empty value.
