@@ -590,7 +590,9 @@ public:
   /**
    * @brief Places a cash order.
    *
-   * The request is never resent. After a `TRANSPORT` error the outcome is unknown: read
+   * The request is never resent. After an error with `BrokerError::reached_broker_` set that is
+   * not a refusal (one `runner::outcome_of` calls `INDETERMINATE`: a transport failure, a
+   * cancellation, an unreadable reply, or an HTTP status of 500 or more), the outcome is unknown: read
    * `async_open_orders` or `async_order_history` before placing again, since KIS has no
    * idempotency key.
    *
@@ -628,7 +630,7 @@ public:
   /**
    * @brief Amends an order's price or quantity.
    *
-   * After a `TRANSPORT` error the outcome is unknown, as for `async_place_order`.
+   * After an error of unknown outcome (see `async_place_order`) the amendment may have been made.
    *
    * @tparam CompletionToken An Asio completion token.
    * @param account The account.
@@ -666,7 +668,7 @@ public:
   /**
    * @brief Cancels an order (all or part of it, as `amendment` says).
    *
-   * After a `TRANSPORT` error the outcome is unknown: the order may still rest.
+   * After an error of unknown outcome (see `async_place_order`) the order may still rest.
    *
    * @tparam CompletionToken An Asio completion token.
    * @param account The account.
@@ -4491,8 +4493,8 @@ public:
   /**
    * @brief Places a cash order; see `KisClient::async_place_order`.
    *
-   * Never resent. After a `TRANSPORT` error the outcome is unknown: read `open_orders()` or
-   * `order_history()` before placing again.
+   * Never resent. After an error of unknown outcome (see `KisClient::async_place_order`), read
+   * `open_orders()` or `order_history()` before placing again.
    *
    * @param account The account.
    * @param order The order.
@@ -4508,8 +4510,8 @@ public:
   }
 
   /**
-   * @brief Amends an order's price or quantity; after a `TRANSPORT` error the outcome is unknown
-   *   (see `KisClient::async_replace_order`).
+   * @brief Amends an order's price or quantity; the outcome can be unknown after an error (see
+   *   `KisClient::async_replace_order`).
    * @param account The account.
    * @param amendment The amendment.
    * @return The acknowledgement or an error.
@@ -4524,8 +4526,8 @@ public:
   }
 
   /**
-   * @brief Cancels an order; after a `TRANSPORT` error the outcome is unknown, and the order may
-   *   still rest (see `KisClient::async_cancel_order`).
+   * @brief Cancels an order; the outcome can be unknown after an error, and the order may still
+   *   rest (see `KisClient::async_cancel_order`).
    * @param account The account.
    * @param amendment The order and quantity.
    * @return The acknowledgement or an error.
