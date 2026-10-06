@@ -12,38 +12,19 @@ namespace algotradelib {
 namespace analytics {
 
 /**
- * Trailing statistics over a series.
+ * @file
+ * @brief Trailing-window statistics: sums, means, deviations, extremes and moving averages.
  *
- * Every function here keeps the two conventions `returns.hpp` states — the result is as long as
- * the input, and a value that cannot be computed is `missing()` — and adds a third, specific to
- * windows.
+ * Every function returns a series as long as its input: row `i` of the result describes the
+ * window ending at row `i` of the input. A row that cannot be computed is `missing()`.
  *
- * **Two numbers describe a window, and they answer different questions.**
+ * Two numbers describe a window:
+ * - `window` is how many trailing rows are looked at, whether or not they carry a value;
+ * - `min_observed` is how many of those rows must carry a value before a result is reported.
  *
- * - `window` is **how many rows are looked at**: the trailing span, in rows of the input,
- *   whether or not those rows carry observations.
- * - `min_observed` is **how many of those rows must actually carry a value** before a result is
- *   reported. It is a count of observations, never a span.
- *
- * They differ exactly when a series has gaps. `rolling_mean(closes, 20, 15)` looks at twenty
- * rows and reports as soon as fifteen of them are observed, dividing by however many it
- * actually saw. The two-argument overload demands all twenty, which is the safe default and
- * therefore the one you get without asking.
- *
- * The check exists because masking makes it necessary. Unobserved values inside a window are
- * skipped rather than propagated — one absent print must not blank a whole column — so a
- * window's divisor is the count of values it saw. Without `min_observed`, a twenty-row mean
- * computed from three observations would be reported as though it were a twenty-observation
- * mean, and nothing in the result would say otherwise. That is the second most common source of
- * lookahead bias after bar stamping, so relaxing it is an explicit request at the call site
- * rather than a default.
- *
- * **On speed.** Each function pays for the `NaN` test once per series, through
- * `math::observed_parts`, and every window is then a plain contiguous reduction. That is around
- * seven times faster than testing inside each window, and identical to the last bit apart from
- * summation order. The remaining `O(rows x window)` structure is deliberate: a prefix-sum would
- * make it linear and would lose the significant digits `rolling_stdev` takes two passes to
- * protect.
+ * Unobserved values inside a window are skipped, and the statistic is computed over the values
+ * that are there. `rolling_mean(closes, 20, 15)` reports as soon as 15 of the 20 rows are
+ * observed. The overloads without `min_observed` require every row of the window.
  */
 
 namespace rolling_detail {
@@ -135,7 +116,15 @@ inline math::Index window_start(math::Index row, std::size_t window) {
 
 } // namespace rolling_detail
 
-/** Returns the trailing sum over `window` rows, reporting once `min_observed` are present. */
+/**
+ * @brief Computes the trailing sum of the observed values.
+ *
+ * @param values The series; `NaN` entries are unobserved and skipped.
+ * @param window The number of trailing rows each result looks at, observed or not.
+ * @param min_observed How many of those rows must be observed for a result to be reported.
+ * @return The sums, one per row; `missing()` where fewer than `min_observed` rows are observed.
+ * @throws std::invalid_argument if `window` or `min_observed` is zero, or `min_observed > window`.
+ */
 inline math::Vector rolling_sum(
   math::SeriesView values,
   std::size_t window,
@@ -154,12 +143,29 @@ inline math::Vector rolling_sum(
   return result;
 }
 
-/** Returns the trailing sum over `window` rows, requiring every row to be observed. */
+/**
+ * @brief Computes the trailing sum, requiring every row of the window.
+ *
+ * @param values The series; `NaN` entries are unobserved.
+ * @param window The number of trailing rows each result looks at; all must be observed.
+ * @return The sums, one per row; `missing()` where any row of the window is unobserved.
+ * @throws std::invalid_argument if `window` is zero.
+ */
 inline math::Vector rolling_sum(math::SeriesView values, std::size_t window) {
   return rolling_sum(values, window, window);
 }
 
-/** Returns the trailing mean over `window` rows, reporting once `min_observed` are present. */
+/**
+ * @brief Computes the trailing mean of the observed values.
+ *
+ * Divides by the number of observed values in the window, not by `window`.
+ *
+ * @param values The series; `NaN` entries are unobserved and skipped.
+ * @param window The number of trailing rows each result looks at, observed or not.
+ * @param min_observed How many of those rows must be observed for a result to be reported.
+ * @return The means, one per row; `missing()` where fewer than `min_observed` rows are observed.
+ * @throws std::invalid_argument if `window` or `min_observed` is zero, or `min_observed > window`.
+ */
 inline math::Vector rolling_mean(
   math::SeriesView values,
   std::size_t window,
@@ -178,19 +184,29 @@ inline math::Vector rolling_mean(
   return result;
 }
 
-/** Returns the trailing mean over `window` rows, requiring every row to be observed. */
+/**
+ * @brief Computes the trailing mean, requiring every row of the window.
+ *
+ * @param values The series; `NaN` entries are unobserved.
+ * @param window The number of trailing rows each result looks at; all must be observed.
+ * @return The means, one per row; `missing()` where any row of the window is unobserved.
+ * @throws std::invalid_argument if `window` is zero.
+ */
 inline math::Vector rolling_mean(math::SeriesView values, std::size_t window) {
   return rolling_mean(values, window, window);
 }
 
 /**
- * Returns the trailing **sample** standard deviation, dividing by `count - 1`.
+ * @brief Computes the trailing sample standard deviation (divisor `count - 1`).
  *
- * The sample divisor rather than the population one, because a trailing window is a sample of a
- * process that continues. A window holding fewer than two observations is unobserved whatever
- * `min_observed` says: one point has no dispersion to report.
+ * A window with fewer than two observed values reports `missing()`, whatever `min_observed` says.
  *
- * See `rolling_detail::dispersion` for why each window is computed in two passes.
+ * @param values The series; `NaN` entries are unobserved and skipped.
+ * @param window The number of trailing rows each result looks at, observed or not.
+ * @param min_observed How many of those rows must be observed for a result to be reported.
+ * @return The deviations, one per row; `missing()` where fewer than `max(min_observed, 2)` rows
+ *   are observed.
+ * @throws std::invalid_argument if `window` or `min_observed` is zero, or `min_observed > window`.
  */
 inline math::Vector rolling_stdev(
   math::SeriesView values,
@@ -211,12 +227,28 @@ inline math::Vector rolling_stdev(
   return result;
 }
 
-/** Returns the trailing sample deviation, requiring every row to be observed. */
+/**
+ * @brief Computes the trailing sample standard deviation, requiring every row of the window.
+ *
+ * @param values The series; `NaN` entries are unobserved.
+ * @param window The number of trailing rows each result looks at; all must be observed.
+ * @return The deviations, one per row; `missing()` where any row of the window is unobserved,
+ *   and everywhere if `window` is `1`.
+ * @throws std::invalid_argument if `window` is zero.
+ */
 inline math::Vector rolling_stdev(math::SeriesView values, std::size_t window) {
   return rolling_stdev(values, window, window);
 }
 
-/** Returns the smallest observed value in each trailing window of `window` rows. */
+/**
+ * @brief Computes the trailing minimum of the observed values.
+ *
+ * @param values The series; `NaN` entries are unobserved and skipped.
+ * @param window The number of trailing rows each result looks at, observed or not.
+ * @param min_observed How many of those rows must be observed for a result to be reported.
+ * @return The minima, one per row; `missing()` where fewer than `min_observed` rows are observed.
+ * @throws std::invalid_argument if `window` or `min_observed` is zero, or `min_observed > window`.
+ */
 inline math::Vector rolling_min(
   math::SeriesView values,
   std::size_t window,
@@ -239,12 +271,27 @@ inline math::Vector rolling_min(
   return result;
 }
 
-/** Returns the smallest observed value, requiring every row to be observed. */
+/**
+ * @brief Computes the trailing minimum, requiring every row of the window.
+ *
+ * @param values The series; `NaN` entries are unobserved.
+ * @param window The number of trailing rows each result looks at; all must be observed.
+ * @return The minima, one per row; `missing()` where any row of the window is unobserved.
+ * @throws std::invalid_argument if `window` is zero.
+ */
 inline math::Vector rolling_min(math::SeriesView values, std::size_t window) {
   return rolling_min(values, window, window);
 }
 
-/** Returns the largest observed value in each trailing window of `window` rows. */
+/**
+ * @brief Computes the trailing maximum of the observed values.
+ *
+ * @param values The series; `NaN` entries are unobserved and skipped.
+ * @param window The number of trailing rows each result looks at, observed or not.
+ * @param min_observed How many of those rows must be observed for a result to be reported.
+ * @return The maxima, one per row; `missing()` where fewer than `min_observed` rows are observed.
+ * @throws std::invalid_argument if `window` or `min_observed` is zero, or `min_observed > window`.
+ */
 inline math::Vector rolling_max(
   math::SeriesView values,
   std::size_t window,
@@ -265,38 +312,54 @@ inline math::Vector rolling_max(
   return result;
 }
 
-/** Returns the largest observed value, requiring every row to be observed. */
+/**
+ * @brief Computes the trailing maximum, requiring every row of the window.
+ *
+ * @param values The series; `NaN` entries are unobserved.
+ * @param window The number of trailing rows each result looks at; all must be observed.
+ * @return The maxima, one per row; `missing()` where any row of the window is unobserved.
+ * @throws std::invalid_argument if `window` is zero.
+ */
 inline math::Vector rolling_max(math::SeriesView values, std::size_t window) {
   return rolling_max(values, window, window);
 }
 
 /**
- * Returns the simple moving average over `window` rows.
+ * @brief Computes the simple moving average; identical to `rolling_mean`.
  *
- * Exactly `rolling_mean` with the same arguments, kept as a separate name because the trading
- * vocabulary has one and a reader should not have to wonder whether the two differ. They do not,
- * and this is the line that guarantees it.
+ * @param values The series; `NaN` entries are unobserved and skipped.
+ * @param window The number of trailing rows each result looks at, observed or not.
+ * @param min_observed How many of those rows must be observed for a result to be reported.
+ * @return The averages, one per row; `missing()` where fewer than `min_observed` rows are observed.
+ * @throws std::invalid_argument if `window` or `min_observed` is zero, or `min_observed > window`.
  */
 inline math::Vector sma(math::SeriesView values, std::size_t window, std::size_t min_observed) {
   return rolling_mean(values, window, min_observed);
 }
 
-/** Returns the simple moving average, requiring every row to be observed. */
+/**
+ * @brief Computes the simple moving average, requiring every row of the window.
+ *
+ * @param values The series; `NaN` entries are unobserved.
+ * @param window The number of trailing rows each result looks at; all must be observed.
+ * @return The averages, one per row; `missing()` where any row of the window is unobserved.
+ * @throws std::invalid_argument if `window` is zero.
+ */
 inline math::Vector sma(math::SeriesView values, std::size_t window) {
   return rolling_mean(values, window, window);
 }
 
 /**
- * Returns the linearly weighted moving average over `window` rows.
+ * @brief Computes the linearly weighted moving average.
  *
- * Weights ascend `1, 2, ... n` across the window with the most recent row heaviest, and the
- * result is divided by the sum of the weights **actually used**. Dropping an unobserved row
- * without also dropping its weight would bias every affected window toward zero — the kind of
- * error that shows up as a strategy performing slightly worse than it should and is never traced
- * back here.
+ * Weights rise `1, 2, ..., n` across the window, the most recent row heaviest. The result is
+ * divided by the sum of the weights of the observed rows only.
  *
- * Both sums are dot products against the same precomputed weight vector, so the masking costs
- * nothing per window.
+ * @param values The series; `NaN` entries are unobserved and skipped.
+ * @param window The number of trailing rows each result looks at, observed or not.
+ * @param min_observed How many of those rows must be observed for a result to be reported.
+ * @return The averages, one per row; `missing()` where fewer than `min_observed` rows are observed.
+ * @throws std::invalid_argument if `window` or `min_observed` is zero, or `min_observed > window`.
  */
 inline math::Vector wma(
   math::SeriesView values,
@@ -326,19 +389,27 @@ inline math::Vector wma(
   return result;
 }
 
-/** Returns the linearly weighted moving average, requiring every row to be observed. */
+/**
+ * @brief Computes the linearly weighted moving average, requiring every row of the window.
+ *
+ * @param values The series; `NaN` entries are unobserved.
+ * @param window The number of trailing rows each result looks at; all must be observed.
+ * @return The averages, one per row; `missing()` where any row of the window is unobserved.
+ * @throws std::invalid_argument if `window` is zero.
+ */
 inline math::Vector wma(math::SeriesView values, std::size_t window) {
   return wma(values, window, window);
 }
 
 /**
- * Returns the smoothing factor `2 / (span + 1)` of a `span`-period exponential average.
+ * @brief Converts an EMA span to its smoothing factor, `2 / (span + 1)`.
  *
- * The *span* convention, the one charting packages and `pandas.ewm(span=...)` quote: it gives the
- * exponential average the same average lag as a `span`-period simple one, `(1 - alpha) / alpha =
- * (span - 1) / 2`. So `ema(closes, alpha_from_span(12))` is what a "12-period EMA" means. Wilder's
- * smoothing, `alpha = 1 / n`, is span `2n - 1`; `rsi` and `atr` apply it themselves.
+ * This is the convention charting packages and `pandas.ewm(span=...)` use:
+ * `ema(closes, alpha_from_span(12))` is a "12-period EMA". Wilder's smoothing (`alpha = 1 / n`)
+ * is span `2n - 1`.
  *
+ * @param span The EMA period, at least `1`.
+ * @return The smoothing factor, in `(0, 1]`.
  * @throws std::invalid_argument if `span` is zero.
  */
 inline Scalar alpha_from_span(std::size_t span) {
@@ -360,22 +431,21 @@ inline void check_alpha(Scalar alpha) {
 } // namespace rolling_detail
 
 /**
- * Returns one exponential-average update: `alpha * value + (1 - alpha) * level`.
+ * @brief Advances an exponential moving average by one value.
  *
- * `level` is the previous result, and unobserved before the first observation: the first observed
- * `value` then seeds it. An unobserved `value` leaves `level` as it was. The arithmetic is `ema`'s,
- * written in the same order, so a live strategy that keeps `level` from bar to bar computes exactly
- * what a replay over the same bars does:
+ * Use it in a live strategy that keeps its own level from bar to bar; it computes the same levels
+ * as `ema` over the same bars:
  *
  *     Scalar level = missing();
  *     level = ema_step(level, close, alpha);   // once per bar
  *
- * One difference, once the arithmetic itself produces `NaN` -- an infinity met by its opposite, or an
- * overflow such as `DBL_MAX` followed by `-DBL_MAX`: `ema` keeps that `NaN` for the rest of the series,
- * while a level kept with this function counts as "no level yet" and is reseeded by the next
- * observation. A `NaN` level cannot say which it is.
- *
+ * @param level The previous level, or `missing()` before the first observation.
+ * @param value The new value; if unobserved, `level` is returned unchanged.
+ * @param alpha The smoothing factor, in `(0, 1]`; see `alpha_from_span`.
+ * @return `alpha * value + (1 - alpha) * level`, or `value` itself if `level` is unobserved.
  * @throws std::invalid_argument unless `0 < alpha <= 1`.
+ * @note If the arithmetic itself overflows to `NaN` (infinities of opposite sign), the next
+ *   observed value reseeds the level, whereas `ema` keeps the `NaN`.
  */
 inline Scalar ema_step(Scalar level, Scalar value, Scalar alpha) {
   rolling_detail::check_alpha(alpha);
@@ -386,32 +456,29 @@ inline Scalar ema_step(Scalar level, Scalar value, Scalar alpha) {
 }
 
 /**
- * Refused: an integer here is a span. Write `alpha_from_span(span)`. A `long double` smoothing
- * factor is ambiguous between the two overloads; cast it to `Scalar`.
+ * @brief Deleted: an integer here would be a span. Pass `alpha_from_span(span)` instead.
+ *
+ * A `long double` smoothing factor is ambiguous between the overloads; cast it to `Scalar`.
  */
 Scalar ema_step(Scalar level, Scalar value, std::size_t span) = delete;
 
 /**
- * Returns the exponentially weighted moving average with smoothing factor `alpha`.
+ * @brief Computes the exponentially weighted moving average of a series.
  *
- * Seeded with the first observed value; an unobserved value is skipped (the level carries across
- * it and that row's output is unobserved); otherwise `alpha * value + (1 - alpha) * level`, the
- * update `ema_step` makes. For a span, pass `alpha_from_span(span)`. On observed rows the levels are
- * those of `pandas.Series.ewm(alpha=alpha, adjust=False, ignore_na=True).mean()`, to rounding (with
- * `min_periods` for `min_observed`); pandas also reports the carried level on a missing row, which
- * this leaves unobserved. pandas' default `adjust=True` weighs the first rows differently, and a
- * package that seeds with the simple mean of the first rows differs until that seed has decayed. Pass `min_observed` to suppress the region where
- * the seed still dominates.
+ * The level is seeded with the first observed value and then updated as
+ * `alpha * value + (1 - alpha) * level` (the update `ema_step` makes). An unobserved value is
+ * skipped: the level carries over it and that row is `missing()`. On observed rows the result
+ * equals `pandas.Series.ewm(alpha=alpha, adjust=False, ignore_na=True).mean()` up to rounding.
  *
- * **Not vectorized, and it cannot be.** Each level depends on the one before it, so there is no
- * reduction to hand a backend — unlike every other function here. The same dependence is why
- * running it over a trailing `SeriesBuffer` view does *not* reproduce what a live loop computes:
- * the buffer's oldest row becomes a fresh seed each time it advances. A live strategy keeps the level
- * itself and calls `ema_step` once per bar. The finite windows above have no such problem — window and
- * full series agree exactly.
- *
- * @throws std::invalid_argument unless `0 < alpha <= 1`, or if `min_observed` is zero. Checked
- * before anything is read, so an empty series refuses too.
+ * @param values The series; `NaN` entries are unobserved.
+ * @param alpha The smoothing factor, in `(0, 1]`; for a period, pass `alpha_from_span(span)`.
+ * @param min_observed How many values must have been observed before a level is reported; raise it
+ *   to hide the rows where the seed still dominates.
+ * @return The levels, one per row.
+ * @throws std::invalid_argument unless `0 < alpha <= 1`, or if `min_observed` is zero (even for an
+ *   empty series).
+ * @warning In a live loop, keep the level yourself with `ema_step`. Running `ema` over a trailing
+ *   `SeriesBuffer` view reseeds from the oldest row each time and gives different levels.
  */
 inline math::Vector ema(math::SeriesView values, Scalar alpha, std::size_t min_observed = 1) {
   rolling_detail::check_alpha(alpha);
@@ -438,8 +505,9 @@ inline math::Vector ema(math::SeriesView values, Scalar alpha, std::size_t min_o
 }
 
 /**
- * Refused: an integer here is a span. Write `ema(values, alpha_from_span(span))`. A `long double`
- * smoothing factor is ambiguous between the two overloads; cast it to `Scalar`.
+ * @brief Deleted: an integer here would be a span. Write `ema(values, alpha_from_span(span))`.
+ *
+ * A `long double` smoothing factor is ambiguous between the overloads; cast it to `Scalar`.
  */
 math::Vector ema(math::SeriesView values, std::size_t span, std::size_t min_observed = 1) = delete;
 

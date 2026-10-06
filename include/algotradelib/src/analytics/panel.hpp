@@ -19,45 +19,40 @@ namespace algotradelib {
 namespace analytics {
 
 /**
- * How to reconcile several instruments whose bars do not line up.
+ * @brief How `Panel::from_bars` lines up instruments whose bars fall on different instants.
  *
- * There is no default, and the argument is required, because every choice here answers
- * a different question and the wrong one produces numbers that look entirely plausible.
- * A cross-sectional covariance computed over forward-filled holidays is not the same
- * quantity as one computed over days every instrument traded, and nothing in the output
- * says which you got.
+ * There is no default: each choice changes what a cross-sectional statistic means.
  */
 enum class Alignment {
   /**
-   * Every instant any instrument reported, with gaps left unobserved.
+   * @brief Every instant any instrument reported; an instrument with no bar there is `missing()`.
    *
-   * The honest default to reach for: no value is invented, and a reduction that masks
-   * unobserved values simply sees fewer observations for the instruments that were not
-   * trading. Use it when you would rather have a smaller sample than a fabricated one.
+   * No value is invented; reductions see fewer observations for instruments that did not trade.
    */
   UNION_UNOBSERVED,
   /**
-   * Only instants every instrument reported.
+   * @brief Only the instants every instrument reported.
    *
-   * The right choice for a cross-sectional statistic that needs a complete row —
-   * covariance, ranking, portfolio weights — because it removes the rows that would
-   * otherwise be partly masked. It can discard a great deal of data when one
-   * instrument's history is short.
+   * Gives complete rows for cross-sectional work (covariance, ranking, weights), but drops much
+   * data when one instrument's history is short.
    */
   INTERSECTION,
   /**
-   * Every instant any instrument reported, gaps carried forward from the last
-   * observation.
+   * @brief Every instant any instrument reported; a gap repeats the instrument's last value.
    *
-   * Convenient and the easiest to misuse. A carried-forward price is a real price that
-   * is no longer current, so a return computed across a filled gap is zero when nothing
-   * was traded and then jumps when trading resumes. Never fills before an instrument's
-   * first observation, which stays unobserved because there is nothing to carry.
+   * Rows before an instrument's first bar stay `missing()`.
+   *
+   * @warning A carried value is stale: a return across a filled gap is zero, then jumps when
+   *   trading resumes.
    */
   FORWARD_FILL,
 };
 
-/** Returns a stable lowercase name for `alignment`, for display. */
+/**
+ * @brief Returns a lowercase display name for an alignment, such as `"intersection"`.
+ * @param alignment The alignment.
+ * @return The name.
+ */
 inline constexpr std::string_view alignment_name(Alignment alignment) noexcept {
   switch (alignment) {
     case Alignment::UNION_UNOBSERVED:
@@ -71,41 +66,58 @@ inline constexpr std::string_view alignment_name(Alignment alignment) noexcept {
 }
 
 /**
- * One field across many instruments: rows are time, columns are instruments.
+ * @brief One bar field across many instruments: one row per instant, one column per instrument.
  *
- * A different layout from `SeriesFrame` on purpose, not one matrix used two ways.
- * Cross-sectional work — ranking a universe, a covariance matrix, portfolio weights —
- * reads a *row* across instruments, and gets it from a layout built for that, while
- * per-instrument work reads a contiguous column of a frame. Choosing one layout for
- * both would make half the work strided.
- *
- * The panel records the alignment it was built with, because the number a reduction
- * produces is not interpretable without it.
+ * Build one with `from_bars()`. A row is a cross-section (all instruments at one instant), which
+ * is what ranking, covariance and portfolio weights read. The panel records the field and the
+ * `Alignment` it was built with.
  */
 class Panel {
 public:
-  /** Constructs an empty panel. */
+  /** @brief Constructs an empty panel. */
   Panel() = default;
 
-  /** Returns how many rows, and therefore instants, the panel holds. */
+  /**
+   * @brief Returns the number of rows.
+   * @return The number of instants.
+   */
   std::size_t rows() const noexcept { return index_.size(); }
 
-  /** Returns how many instrument columns the panel holds. */
+  /**
+   * @brief Returns the number of columns.
+   * @return The number of instruments.
+   */
   std::size_t columns() const noexcept { return instruments_.size(); }
 
-  /** Returns the instants the rows correspond to. */
+  /**
+   * @brief Returns the instants of the rows.
+   * @return The panel's time index.
+   */
   const TimeIndex& time() const noexcept { return index_; }
 
-  /** Returns the instruments the columns correspond to, in column order. */
+  /**
+   * @brief Returns the instruments of the columns.
+   * @return The instruments, in column order.
+   */
   const std::vector<InstrumentId>& instruments() const noexcept { return instruments_; }
 
-  /** Returns which field the panel holds. */
+  /**
+   * @brief Returns the bar field the panel holds.
+   * @return The field passed to `from_bars`.
+   */
   BarField field() const noexcept { return field_; }
 
-  /** Returns how the panel reconciled its instruments. */
+  /**
+   * @brief Returns how the panel lined up its instruments.
+   * @return The alignment passed to `from_bars`.
+   */
   Alignment alignment() const noexcept { return alignment_; }
 
-  /** Returns the column index of `instrument`, or nothing when it is absent. */
+  /**
+   * @brief Finds an instrument's column.
+   * @param instrument The instrument, compared with `InstrumentId::operator==`.
+   * @return Its column position, or `std::nullopt` if it is not in the panel.
+   */
   std::optional<std::size_t> find(const InstrumentId& instrument) const {
     for (std::size_t column = 0; column < instruments_.size(); ++column) {
       if (instruments_[column] == instrument) {
@@ -115,7 +127,12 @@ public:
     return std::nullopt;
   }
 
-  /** Returns one instrument's series as a reference into the panel's own storage. */
+  /**
+   * @brief Returns one instrument's column.
+   * @param position The column position.
+   * @return A view into the panel's storage; valid while the panel is alive and unmoved.
+   * @throws std::out_of_range if `position` is past the end.
+   */
   math::SeriesView column(std::size_t position) const {
     if (position >= instruments_.size()) {
       throw std::out_of_range("panel column is past the end");
@@ -123,7 +140,13 @@ public:
     return values_.col(static_cast<math::Index>(position));
   }
 
-  /** Returns one value. */
+  /**
+   * @brief Reads one value.
+   * @param row The row position.
+   * @param column The column position.
+   * @return The value, or `missing()`.
+   * @throws std::out_of_range if `row` or `column` is past the end.
+   */
   Scalar at(std::size_t row, std::size_t column) const {
     if (row >= rows() || column >= columns()) {
       throw std::out_of_range("panel position is past the end");
@@ -131,14 +154,19 @@ public:
     return values_(static_cast<math::Index>(row), static_cast<math::Index>(column));
   }
 
-  /** Returns the whole storage as a reference, for a cross-sectional computation. */
+  /**
+   * @brief Returns all values.
+   * @return A view of the rows-by-instruments storage.
+   */
   math::MatrixView values() const { return values_; }
 
   /**
-   * Builds a panel from several bar series.
+   * @brief Builds a panel of one bar field from several bar series.
    *
-   * `alignment` has no default on purpose; see `Alignment`.
-   *
+   * @param series The series, one per column, each strictly ascending in time.
+   * @param field The bar field to take from each series.
+   * @param alignment How to line up instants the series do not share.
+   * @return The panel; empty (with `field` and `alignment` recorded) if `series` is empty.
    * @throws std::invalid_argument if any series is not strictly ascending in time.
    */
   static Panel from_bars(
@@ -178,14 +206,7 @@ public:
   }
 
 private:
-  /**
-   * Returns every instant any frame reported, ascending and deduplicated.
-   *
-   * Collected into one contiguous buffer and then sorted, rather than accumulated in an
-   * ordered set. A set would cost a node allocation and two pointers per instant — about
-   * six times the memory — and scatter them across the heap, to produce the same
-   * sequence this does in one pass over reserved storage.
-   */
+  // Every instant any frame reported, ascending and deduplicated.
   static std::vector<TimeIndex::Instant> combined_instants(const std::vector<SeriesFrame>& frames) {
     std::size_t total = 0;
     for (const auto& frame : frames) {
@@ -202,12 +223,7 @@ private:
     return all;
   }
 
-  /**
-   * Returns only the instants every frame reported.
-   *
-   * Two buffers are reused across the fold rather than one allocated per instrument,
-   * since an intersection only ever shrinks and the capacity already held is enough.
-   */
+  // Only the instants every frame reported.
   static std::vector<TimeIndex::Instant> shared_instants(const std::vector<SeriesFrame>& frames) {
     std::vector<TimeIndex::Instant> shared = frames.front().time().stamps();
     std::vector<TimeIndex::Instant> narrowed;
@@ -223,18 +239,8 @@ private:
     return shared;
   }
 
-  /**
-   * Writes one instrument's column under the chosen alignment.
-   *
-   * Both indices are ascending, so this walks them together in one pass rather than
-   * searching the source index once per row. The position into the source only ever moves
-   * forward, which makes the whole column `O(rows + observations)` instead of
-   * `O(rows · log observations)` — for a panel of a million minute bars across a hundred
-   * instruments that is the difference between a hundred million steps and two billion.
-   *
-   * The column is bound once outside the loop, so each cell is a direct read rather than
-   * a bounds-checked lookup.
-   */
+  // Writes one instrument's column under the chosen alignment, walking both ascending indices
+  // together in one pass.
   static void fill_column(
     Panel& panel,
     std::size_t column,

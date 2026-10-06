@@ -14,43 +14,23 @@ namespace algotradelib {
 namespace analytics {
 
 /**
- * The instants a frame's rows correspond to, strictly ascending.
+ * @brief The instants a frame's rows correspond to, strictly ascending.
  *
- * Strictly ascending is checked on construction rather than assumed. Two frames are
- * only alignable if their indices mean the same thing, and a repeated or out-of-order
- * instant makes every lookup below ambiguous — which is exactly the failure that
- * produces plausible, wrong cross-sectional numbers. `BarSeries::ascending()` checks
- * the same invariant one layer down, so a series that passed it converts here without
- * incident.
- *
- * **What this costs, and why it is not competing with the backend's indexing.** The two
- * answer different questions. The backend indexes a row you already know, in constant
- * time; this maps an *instant* to that row, which the backend cannot do at all. So there
- * is no version of this layer without something like it, and once a row is known every
- * access is the backend's.
- *
- * Storage is one contiguous eight-byte instant per row — about a sixth of the frame it
- * indexes, which carries six scalar fields per row — and lookup is a binary search over
- * that contiguous run. Nothing cheaper exists for an arbitrary instant: the instants are
- * irregular in practice, because holidays and halts put gaps in them, so a row cannot be
- * computed from an offset.
- *
- * What matters more than the per-lookup cost is not paying it per row. Building a frame
- * walks its own bars once, and aligning a panel walks two ascending indices together,
- * so neither does a search per row. `find` and `asof` are for a caller asking about one
- * instant, which is what a strategy does — not for bulk work.
+ * Maps an instant to a row position. Lookups (`find`, `asof`) are binary searches, meant
+ * for asking about one instant at a time.
  */
 class TimeIndex {
 public:
-  /** Instant type the index is expressed in. */
+  /** @brief The instant type of the index. */
   using Instant = std::chrono::system_clock::time_point;
 
-  /** Constructs an empty index. */
+  /** @brief Constructs an empty index. */
   TimeIndex() = default;
 
   /**
-   * Constructs an index over `stamps`.
+   * @brief Constructs an index over a sequence of instants.
    *
+   * @param stamps The instants, one per row, strictly ascending.
    * @throws std::invalid_argument if `stamps` is not strictly ascending.
    */
   explicit TimeIndex(std::vector<Instant> stamps) : stamps_(std::move(stamps)) {
@@ -61,15 +41,23 @@ public:
     }
   }
 
-  /** Returns how many instants the index holds. */
+  /**
+   * @brief Returns the number of instants.
+   * @return The number of rows the index covers.
+   */
   std::size_t size() const noexcept { return stamps_.size(); }
 
-  /** Returns whether the index holds no instants. */
+  /**
+   * @brief Tests whether the index is empty.
+   * @return `true` if it holds no instants.
+   */
   bool empty() const noexcept { return stamps_.empty(); }
 
   /**
-   * Returns the instant at `position`.
+   * @brief Returns the instant of one row.
    *
+   * @param position The row position.
+   * @return The instant at `position`.
    * @throws std::out_of_range if `position` is past the end.
    */
   const Instant& at(std::size_t position) const {
@@ -79,10 +67,18 @@ public:
     return stamps_[position];
   }
 
-  /** Returns the instants, for a caller that needs the whole sequence. */
+  /**
+   * @brief Returns all instants.
+   * @return The instants, ascending.
+   */
   const std::vector<Instant>& stamps() const noexcept { return stamps_; }
 
-  /** Returns the position of `when`, or nothing when it is not in the index. */
+  /**
+   * @brief Finds the row of an exact instant.
+   *
+   * @param when The instant to find.
+   * @return Its position, or `std::nullopt` if `when` is not in the index.
+   */
   std::optional<std::size_t> find(const Instant& when) const {
     const auto found = std::lower_bound(stamps_.begin(), stamps_.end(), when);
     if (found == stamps_.end() || *found != when) {
@@ -92,13 +88,13 @@ public:
   }
 
   /**
-   * Returns the latest position at or before `when`, or nothing if none exists.
+   * @brief Finds the latest row at or before an instant ("as of" lookup).
    *
-   * This is the lookup a strategy needs: "what did I know as of this instant". It
-   * never looks forward, which is the property that makes it safe to use in a
-   * backtest, and it returns nothing rather than position zero when `when` precedes
-   * the whole index — there is no observation to report, and reporting the first one
-   * would be a lookahead of the worst kind.
+   * Never looks forward, so it is safe to use in a backtest.
+   *
+   * @param when The instant to look up.
+   * @return The position of the latest instant not after `when`, or `std::nullopt` if
+   *   `when` precedes every instant in the index.
    */
   std::optional<std::size_t> asof(const Instant& when) const {
     const auto above = std::upper_bound(stamps_.begin(), stamps_.end(), when);
@@ -108,12 +104,22 @@ public:
     return static_cast<std::size_t>((above - 1) - stamps_.begin());
   }
 
-  /** Compares two indices instant by instant. */
+  /**
+   * @brief Compares two indices instant by instant.
+   * @param lhs The first index.
+   * @param rhs The second index.
+   * @return `true` if both hold the same instants.
+   */
   friend bool operator==(const TimeIndex& lhs, const TimeIndex& rhs) {
     return lhs.stamps_ == rhs.stamps_;
   }
 
-  /** Compares two indices for inequality. */
+  /**
+   * @brief Compares two indices for inequality.
+   * @param lhs The first index.
+   * @param rhs The second index.
+   * @return `true` if they differ in any instant.
+   */
   friend bool operator!=(const TimeIndex& lhs, const TimeIndex& rhs) { return !(lhs == rhs); }
 
 private:

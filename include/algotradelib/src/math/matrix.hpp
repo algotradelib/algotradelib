@@ -3,17 +3,15 @@
 #include "./scalar.hpp"
 
 /**
- * Selects the linear algebra backend the `math` module is built on.
+ * @file
+ * @brief The linear algebra types of the `math` module: `Matrix`, `Vector`, `SeriesView`,
+ *   `MutableSeriesView`, `MatrixView` and `Index`.
  *
- * One backend is supported today and the selection exists because that is expected to
- * change: a consumer may prefer another library, or this one may carry its own
- * implementation. A new backend is a sibling header defining the same vocabulary —
- * `Matrix`, `Vector`, `SeriesView`, `MutableSeriesView`, `MatrixView`, `Index` — and one
- * more branch here. Nothing above this header changes.
- *
- * `math/scalar.hpp` needs no backend at all, so `Scalar`, `missing()`, and `observed()`
- * are available whether one is configured or not.
+ * They come from Eigen, which needs a build configured with `ATL_USE_EIGEN=ON`; without it,
+ * including this header is a compile error. `math/scalar.hpp` (`Scalar`, `missing()`,
+ * `observed()`) needs no backend.
  */
+// A new backend is a sibling header defining the same six names, plus one branch here.
 #if defined(ATL_HAS_EIGEN)
 #include "./eigen.hpp"
 #else

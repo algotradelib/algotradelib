@@ -16,7 +16,7 @@
 namespace algotradelib {
 namespace analytics {
 
-/** A column a bar series contributes to a frame. */
+/** @brief A bar field, used as a column of a `SeriesFrame`. */
 enum class BarField {
   OPEN,
   HIGH,
@@ -26,15 +26,23 @@ enum class BarField {
   TRADED_VALUE,
 };
 
-/** How many columns a bar series contributes. */
+/** @brief The number of `BarField` values, and so of columns in a `SeriesFrame`. */
 inline constexpr std::size_t bar_field_count = 6;
 
-/** Returns a dense column index for `field`. */
+/**
+ * @brief Returns the column position of a field in a `SeriesFrame`.
+ * @param field The field.
+ * @return Its column index, from `0` to `bar_field_count - 1`.
+ */
 inline constexpr std::size_t bar_field_index(BarField field) noexcept {
   return static_cast<std::size_t>(field);
 }
 
-/** Returns a stable lowercase name for `field`, for display. */
+/**
+ * @brief Returns a lowercase display name for a field, such as `"close"`.
+ * @param field The field.
+ * @return The name.
+ */
 inline constexpr std::string_view bar_field_name(BarField field) noexcept {
   switch (field) {
     case BarField::OPEN:
@@ -54,30 +62,24 @@ inline constexpr std::string_view bar_field_name(BarField field) noexcept {
 }
 
 /**
- * One instrument's bars as numeric columns: rows are time, columns are fields.
+ * @brief One instrument's bars as numeric columns: one row per bar, one column per `BarField`.
  *
- * This is where a `BarSeries` stops being a value to send and becomes something to
- * compute on. The conversion happens once, here, and it is the only place a bar's
- * exact decimals become `Scalar`.
+ * Build one with `from_bars()`. `column()` and the named accessors return views into the
+ * frame's own storage, without copying.
  *
- * Column-major storage with time on the rows means one field is contiguous, so
- * `column()` hands out a `math::SeriesView` that references the frame's own memory. Nothing
- * is copied to read a series, and an indicator never walks a strided view of its input.
- *
- * A field a broker did not report — an open on a day with no trade, a traded value a
- * broker omits — is `missing()` for that row rather than zero. Every reduction in this
- * layer masks it.
+ * A field the broker did not report (an open on a day with no trade, an omitted traded
+ * value) is `missing()` in that row, not zero.
  */
 class SeriesFrame {
 public:
-  /** Constructs an empty frame. */
+  /** @brief Constructs an empty frame. */
   SeriesFrame() = default;
 
   /**
-   * Constructs a frame over `index` with room for every bar field.
+   * @brief Constructs a frame with one row per instant, every value `missing()`.
    *
-   * Values start unobserved, so a field never written reads as absent rather than as
-   * zero.
+   * @param index The instants of the rows.
+   * @param instrument The instrument the frame describes.
    */
   explicit SeriesFrame(TimeIndex index, InstrumentId instrument = {})
   : instrument_(std::move(instrument)), index_(std::move(index)) {
@@ -88,41 +90,75 @@ public:
     );
   }
 
-  /** Returns how many rows, and therefore instants, the frame holds. */
+  /**
+   * @brief Returns the number of rows.
+   * @return The number of instants (bars) in the frame.
+   */
   std::size_t rows() const noexcept { return index_.size(); }
 
-  /** Returns how many field columns the frame holds. */
+  /**
+   * @brief Returns the number of columns.
+   * @return `bar_field_count`.
+   */
   std::size_t columns() const noexcept { return bar_field_count; }
 
-  /** Returns the instants the rows correspond to. */
+  /**
+   * @brief Returns the instants of the rows.
+   * @return The frame's time index.
+   */
   const TimeIndex& time() const noexcept { return index_; }
 
-  /** Returns which instrument the frame describes. */
+  /**
+   * @brief Returns the instrument the frame describes.
+   * @return The instrument.
+   */
   const InstrumentId& instrument() const noexcept { return instrument_; }
 
-  /** Returns one field as a reference into the frame's own storage. */
+  /**
+   * @brief Returns one field's column.
+   * @param field The field.
+   * @return A view into the frame's storage; valid while the frame is alive and unmoved.
+   */
   math::SeriesView column(BarField field) const {
     return values_.col(static_cast<math::Index>(bar_field_index(field)));
   }
 
-  /** Returns the close column, the series most work starts from. */
+  /**
+   * @brief Returns the close column.
+   * @return A view of `BarField::CLOSE`.
+   */
   math::SeriesView close() const { return column(BarField::CLOSE); }
 
-  /** Returns the open column. */
+  /**
+   * @brief Returns the open column.
+   * @return A view of `BarField::OPEN`.
+   */
   math::SeriesView open() const { return column(BarField::OPEN); }
 
-  /** Returns the high column. */
+  /**
+   * @brief Returns the high column.
+   * @return A view of `BarField::HIGH`.
+   */
   math::SeriesView high() const { return column(BarField::HIGH); }
 
-  /** Returns the low column. */
+  /**
+   * @brief Returns the low column.
+   * @return A view of `BarField::LOW`.
+   */
   math::SeriesView low() const { return column(BarField::LOW); }
 
-  /** Returns the volume column. */
+  /**
+   * @brief Returns the volume column.
+   * @return A view of `BarField::VOLUME`.
+   */
   math::SeriesView volume() const { return column(BarField::VOLUME); }
 
   /**
-   * Returns one value.
+   * @brief Reads one value.
    *
+   * @param row The row position.
+   * @param field The field.
+   * @return The value, or `missing()` if it was not reported.
    * @throws std::out_of_range if `row` is past the end.
    */
   Scalar at(std::size_t row, BarField field) const {
@@ -135,8 +171,11 @@ public:
   }
 
   /**
-   * Writes one value.
+   * @brief Writes one value.
    *
+   * @param row The row position.
+   * @param field The field.
+   * @param value The value to store.
    * @throws std::out_of_range if `row` is past the end.
    */
   void set(std::size_t row, BarField field, Scalar value) {
@@ -148,7 +187,10 @@ public:
     ) = value;
   }
 
-  /** Returns the whole storage as a reference, for a computation over every field. */
+  /**
+   * @brief Returns all values.
+   * @return A view of the rows-by-`bar_field_count` storage, columns in `BarField` order.
+   */
   math::MatrixView values() const { return values_; }
 
 private:
@@ -158,14 +200,14 @@ private:
 };
 
 /**
- * Converts one bar series into a frame.
+ * @brief Converts a bar series into a frame of `Scalar` columns.
  *
- * The **only** place a bar's exact decimals become scalars. A caller that wants to
- * compute on bars comes through here, which is what keeps the conversion auditable.
+ * A bar with no open or no traded value leaves that cell `missing()`.
  *
- * @throws std::invalid_argument if the series is not strictly ascending in time, which
- * `BarSeries::ascending()` reports without throwing. An out-of-order series would make
- * every `asof` lookup on the result ambiguous, so it is refused rather than indexed.
+ * @param series The bars, strictly ascending in time.
+ * @return A frame with one row per bar.
+ * @throws std::invalid_argument if `series` is not strictly ascending in time; check
+ *   `BarSeries::ascending()` first to avoid the exception.
  */
 inline SeriesFrame from_bars(const BarSeries& series) {
   std::vector<TimeIndex::Instant> stamps;

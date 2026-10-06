@@ -15,98 +15,83 @@ namespace algotradelib {
 namespace analytics {
 
 /**
- * The last `capacity` observations of a few fields, for a live loop.
+ * @brief The most recent observations of a few fields, for a strategy fed one bar at a time.
  *
- * A frame is built once from a completed series; this is its counterpart on the other
- * side, fed one observation at a time as bars arrive and asked for a trailing window.
- * A strategy reading a moving average on every bar reads it from here.
+ * Holds up to `capacity()` observations. Until it is full, each `push` adds one; after that,
+ * each `push` also drops the oldest. Check `full()` before computing an indicator whose window
+ * is the capacity, so it is never computed from fewer observations than its window.
  *
- * **A buffer, not a window.** It holds the trailing span an indicator reads and computes
- * nothing; the trailing statistics are the functions in `rolling.hpp`. "Rolling window" is
- * left to the `rolling_*` statistics there, and "rolling" and "expanding" windows to the
- * training spans of a walk-forward evaluation.
+ * `column()` returns the trailing values of one field, oldest first, as one contiguous view
+ * of the buffer's own storage. Storage is allocated once at construction and never grows.
+ * The trailing statistics themselves are the `rolling_*` functions in `rolling.hpp`.
  *
- * **No allocation happens in steady state.** Storage for twice the capacity is taken once
- * at construction and never grown, so a live loop does not allocate on the path that runs
- * on every tick.
- *
- * **A view is always one contiguous span**, which is the reason this is a linear buffer
- * that occasionally compacts rather than a ring. A ring never moves anything, but its
- * contents wrap, so every reader would face two pieces — and the whole point of
- * column-major storage is that a series is one run a computation can walk without a
- * stride. Paying an amortized single row move per push to keep that property is the better
- * trade.
- *
- * The amortized bound is exact rather than approximate: storage holds twice the capacity,
- * so a compaction can only happen once per `capacity` pushes, and each moves at most
- * `capacity` rows. That is one row moved per push, amortized, and `compactions()` exposes
- * the count so the bound can be asserted rather than asserted *about*.
- *
- * **It fills, then drops the oldest.** Until `capacity` observations have arrived the buffer
- * holds everything it has been given and `size()` grows; from then on each push drops the
- * oldest. That is the shape a trailing indicator needs, and it is also why `full()` exists:
- * an indicator must not report a value computed from fewer observations than its window,
- * and asking whether the buffer is full is how it knows.
- *
- * It deliberately never grows past its capacity. A statistic over all history —
- * a cumulative return, an all-time high, a maximum drawdown — does not need the history
- * stored to be computed, only a running value the caller keeps (a peak, a sum, an `ema_step`
- * level), so a growing buffer would spend `O(n)` memory answering questions that need `O(1)`. Where the values themselves are
- * genuinely required, a `SeriesFrame` is the container that holds a whole series.
- *
- * **Not synchronized, and owned by one caller.** A buffer belongs to one strategy, which
- * belongs to one runner, which runs on one strand — the ownership model every stateful
- * type in this library follows, from `AsyncHttpClient` to `RateLimitController`. Pushing
- * from one thread while reading from another is a data race, and a mutex here would not
- * fix the real problem: reading a trailing window and then acting on it is a *sequence*
- * that has to be atomic with respect to the next push, which no lock inside this class can
- * provide. Parallelism over *many* buffers, each owned by one worker, is the arrangement
- * that works, and it needs nothing from this class.
+ * @note Not thread-safe: use one buffer from one strategy (one strand).
  */
 class SeriesBuffer {
 public:
-  /** Instant type observations are stamped with. */
+  /** @brief The instant type observations are stamped with. */
   using Instant = TimeIndex::Instant;
 
   /**
-   * Constructs a buffer holding `capacity` observations of `fields` values each.
+   * @brief Constructs an empty buffer.
    *
-   * @throws std::invalid_argument if either is zero.
+   * @param capacity The most observations the buffer holds.
+   * @param fields The number of values per observation; the default holds every `BarField`.
+   * @throws std::invalid_argument if `capacity` or `fields` is zero.
    */
   SeriesBuffer(std::size_t capacity, std::size_t fields = bar_field_count)
   : capacity_(capacity), fields_(fields) {
     if (capacity == 0 || fields == 0) {
       throw std::invalid_argument("a series buffer needs a capacity and at least one field");
     }
-    // Twice the capacity is what makes the amortized bound hold; see the class comment.
+    // Twice the capacity bounds compaction to one row move per push, amortized.
     values_ = math::unobserved(capacity * 2, fields);
     stamps_.resize(capacity * 2);
   }
 
-  /** Returns how many observations the buffer can hold. */
+  /**
+   * @brief Returns the most observations the buffer holds.
+   * @return The capacity given at construction.
+   */
   std::size_t capacity() const noexcept { return capacity_; }
 
-  /** Returns how many values each observation carries. */
+  /**
+   * @brief Returns the number of values per observation.
+   * @return The field count given at construction.
+   */
   std::size_t fields() const noexcept { return fields_; }
 
-  /** Returns how many observations the buffer currently holds. */
+  /**
+   * @brief Returns the number of observations held.
+   * @return A number from `0` to `capacity()`.
+   */
   std::size_t size() const noexcept { return count_; }
 
-  /** Returns whether the buffer holds no observations. */
+  /**
+   * @brief Tests whether the buffer is empty.
+   * @return `true` if it holds no observations.
+   */
   bool empty() const noexcept { return count_ == 0; }
 
-  /** Returns whether the buffer holds as many observations as it can. */
+  /**
+   * @brief Tests whether the buffer holds `capacity()` observations.
+   * @return `true` once it is full.
+   */
   bool full() const noexcept { return count_ == capacity_; }
 
-  /** Returns how many times the buffer has been compacted. */
+  /**
+   * @brief Returns how many times the buffer moved its contents to the front of its storage.
+   * @return The compaction count; at most one per `capacity()` pushes.
+   */
   std::size_t compactions() const noexcept { return compactions_; }
 
   /**
-   * Appends one observation, dropping the oldest when the buffer is already full.
+   * @brief Appends one observation, dropping the oldest if the buffer is full.
    *
-   * @throws std::invalid_argument if `row` does not carry exactly `fields()` values, or if
-   * `when` is not later than the newest observation held — a buffer whose instants were
-   * not ascending would make every trailing computation over it meaningless.
+   * @param when The observation's instant; must be later than the newest one held.
+   * @param row The observation's values, exactly `fields()` of them.
+   * @throws std::invalid_argument if `row` has the wrong size or `when` is not later than
+   *   the newest observation.
    */
   void push(Instant when, math::SeriesView row) {
     if (static_cast<std::size_t>(row.size()) != fields_) {
@@ -133,7 +118,14 @@ public:
     ++count_;
   }
 
-  /** Appends one observation from a plain sequence of values. */
+  /**
+   * @brief Appends one observation, dropping the oldest if the buffer is full.
+   *
+   * @param when The observation's instant; must be later than the newest one held.
+   * @param row The observation's values, exactly `fields()` of them.
+   * @throws std::invalid_argument if `row` has the wrong size or `when` is not later than
+   *   the newest observation.
+   */
   void push(Instant when, const std::vector<Scalar>& row) {
     if (row.size() != fields_) {
       throw std::invalid_argument("a series buffer observation must carry every field");
@@ -142,7 +134,16 @@ public:
     push(when, values);
   }
 
-  /** Appends one bar's fields, in the order `BarField` enumerates them. */
+  /**
+   * @brief Appends one bar, dropping the oldest observation if the buffer is full.
+   *
+   * The bar's fields go to the columns in `BarField` order; a bar with no open or traded
+   * value stores `missing()` there.
+   *
+   * @param bar The bar; its `timestamp_` must be later than the newest observation.
+   * @throws std::invalid_argument if the buffer was not built with `bar_field_count` fields,
+   *   or the bar is not later than the newest observation.
+   */
   void push(const Bar& bar) {
     if (fields_ != bar_field_count) {
       throw std::invalid_argument("pushing a bar needs a buffer over every bar field");
@@ -163,10 +164,12 @@ public:
   }
 
   /**
-   * Returns one field's trailing values, oldest first, as a contiguous reference.
+   * @brief Returns one field's values, oldest first.
    *
-   * References the buffer's own storage: nothing is copied to read a series, and the span
-   * has no stride, which is what the compaction buys.
+   * @param field The field's column position.
+   * @return A view of `size()` values in the buffer's storage, valid until the next `push`
+   *   or `clear`.
+   * @throws std::out_of_range if `field` is not below `fields()`.
    */
   math::SeriesView column(std::size_t field) const {
     if (field >= fields_) {
@@ -176,10 +179,23 @@ public:
       .segment(static_cast<math::Index>(begin_), static_cast<math::Index>(count_));
   }
 
-  /** Returns one bar field's trailing values. */
+  /**
+   * @brief Returns one bar field's values, oldest first.
+   *
+   * @param field The field.
+   * @return A view of `size()` values, valid until the next `push` or `clear`.
+   * @throws std::out_of_range if the buffer has fewer columns than `field` needs.
+   */
   math::SeriesView column(BarField field) const { return column(bar_field_index(field)); }
 
-  /** Returns one value, counting from the oldest observation held. */
+  /**
+   * @brief Reads one value.
+   *
+   * @param position The observation, counting from `0` for the oldest held.
+   * @param field The field's column position.
+   * @return The value.
+   * @throws std::out_of_range if `position` or `field` is past the end.
+   */
   Scalar at(std::size_t position, std::size_t field) const {
     if (position >= count_ || field >= fields_) {
       throw std::out_of_range("series buffer position is past the end");
@@ -189,7 +205,13 @@ public:
     );
   }
 
-  /** Returns the instant of one observation, counting from the oldest held. */
+  /**
+   * @brief Returns the instant of one observation.
+   *
+   * @param position The observation, counting from `0` for the oldest held.
+   * @return Its instant.
+   * @throws std::out_of_range if `position` is past the end.
+   */
   Instant instant(std::size_t position) const {
     if (position >= count_) {
       throw std::out_of_range("series buffer position is past the end");
@@ -197,7 +219,11 @@ public:
     return stamps_[begin_ + position];
   }
 
-  /** Returns the instant of the newest observation. */
+  /**
+   * @brief Returns the instant of the newest observation.
+   * @return The instant of the last `push`.
+   * @throws std::out_of_range if the buffer is empty.
+   */
   Instant newest_instant() const {
     if (count_ == 0) {
       throw std::out_of_range("an empty series buffer has no newest observation");
@@ -205,21 +231,15 @@ public:
     return stamps_[begin_ + count_ - 1];
   }
 
-  /** Discards every observation, keeping the storage already taken. */
+  /** @brief Discards every observation; the storage is kept. */
   void clear() noexcept {
     begin_ = 0;
     count_ = 0;
   }
 
 private:
-  /**
-   * Moves the held observations to the front of the storage.
-   *
-   * The source and destination never overlap. Compaction happens only when the held run
-   * reaches the end of storage, so `begin_` is then `2 · capacity − count_`, and since
-   * `count_` never exceeds `capacity_` that leaves `begin_ >= count_` — the destination
-   * ends at or before where the source starts.
-   */
+  // Moves the held observations to the front. Source and destination never overlap: this runs
+  // only when the held run reaches the end of storage, so begin_ = 2 * capacity - count_ >= count_.
   void compact() {
     const auto rows = static_cast<math::Index>(count_);
     const auto from = static_cast<math::Index>(begin_);
