@@ -424,59 +424,36 @@ ATL_ASSERT_STRATEGY(EveryHandler, MinimalContext);
 ATL_ASSERT_STRATEGY(CapabilityGated, MinimalContext);
 ATL_ASSERT_STRATEGY(CapabilityGated, FullContext);
 
-TEST_CASE("a templated handler is detected for every context") {
+TEST_CASE("a handler is found by the name it is declared under") {
   namespace detail = strategy::strategy_detail;
-  STATIC_REQUIRE(detail::has_on_bar<BarOnly, MinimalContext>::value);
-  STATIC_REQUIRE(detail::has_on_bar<BarOnly, FullContext>::value);
-  // And the handlers it does not define are absent, which is what makes them optional.
-  STATIC_REQUIRE_FALSE(detail::has_on_quote<BarOnly, MinimalContext>::value);
-  STATIC_REQUIRE_FALSE(detail::has_on_start<BarOnly, MinimalContext>::value);
-}
-
-TEST_CASE("every handler in the surface is detectable") {
-  namespace detail = strategy::strategy_detail;
-  STATIC_REQUIRE(detail::has_on_start<EveryHandler, MinimalContext>::value);
-  STATIC_REQUIRE(detail::has_on_stop<EveryHandler, MinimalContext>::value);
-  STATIC_REQUIRE(detail::has_on_bar<EveryHandler, MinimalContext>::value);
-  STATIC_REQUIRE(detail::has_on_quote<EveryHandler, MinimalContext>::value);
-  STATIC_REQUIRE(detail::has_on_fill<EveryHandler, MinimalContext>::value);
-  STATIC_REQUIRE(detail::has_on_order_update<EveryHandler, MinimalContext>::value);
-  STATIC_REQUIRE(detail::has_on_phase<EveryHandler, MinimalContext>::value);
+  STATIC_REQUIRE(detail::declares_on_bar<BarOnly>);
+  // And the handlers it does not declare are absent, which is what makes them optional.
+  STATIC_REQUIRE_FALSE(detail::declares_on_quote<BarOnly>);
+  STATIC_REQUIRE_FALSE(detail::declares_on_start<BarOnly>);
+  STATIC_REQUIRE(detail::declares_on_start<EveryHandler>);
+  STATIC_REQUIRE(detail::declares_on_stop<EveryHandler>);
+  STATIC_REQUIRE(detail::declares_on_bar<EveryHandler>);
+  STATIC_REQUIRE(detail::declares_on_quote<EveryHandler>);
+  STATIC_REQUIRE(detail::declares_on_fill<EveryHandler>);
+  STATIC_REQUIRE(detail::declares_on_order_update<EveryHandler>);
+  STATIC_REQUIRE(detail::declares_on_phase<EveryHandler>);
 }
 
 TEST_CASE("a type with no handler is rejected") {
   namespace detail = strategy::strategy_detail;
-  STATIC_REQUIRE_FALSE(detail::has_any_handler<NoHandlers, MinimalContext>);
+  STATIC_REQUIRE_FALSE(detail::declares_any_handler<NoHandlers>);
   // Which is what ATL_ASSERT_STRATEGY reports on, naming the handlers it looked for.
 }
 
-TEST_CASE("a handler bound to one concrete context fails the genericity test") {
-  // The failure this check exists for. It compiles for the runner it was written against and
-  // silently excludes every other, so the strategy could not be dry-run or backtested without
-  // being rewritten -- and nothing would say so until someone tried.
+TEST_CASE("a handler with the wrong event type is still the handler its name says") {
+  // `on_bar` taking a QuoteEvent is declared as `on_bar`, so the runner calls it, and the call does not
+  // compile: ATL_ASSERT_STRATEGY reports it in the compiler's words at `dispatch::bar`, rather than the
+  // strategy reading as having no handler. (A concrete-context handler is the same: declared, and a
+  // compile error under any runner whose context it does not take.)
   namespace detail = strategy::strategy_detail;
-  STATIC_REQUIRE(detail::has_on_bar<BoundToOneContext, FullContext>::value);
-  STATIC_REQUIRE_FALSE(detail::has_on_bar<BoundToOneContext, MinimalContext>::value);
-  STATIC_REQUIRE_FALSE(
-    detail::handlers_are_generic<BoundToOneContext, FullContext, MinimalContext>
-  );
-  // A properly templated one passes against both probes.
-  STATIC_REQUIRE(detail::handlers_are_generic<BarOnly, FullContext, MinimalContext>);
-  STATIC_REQUIRE(detail::handlers_are_generic<BarOnly, MinimalContext, FullContext>);
-}
-
-TEST_CASE("a handler with the wrong event type is not detected as that handler") {
-  // An honest limitation, worth pinning: detection matches a signature, so a misspelled
-  // parameter type reads as an absent handler rather than as a wrong one. The assertion message
-  // therefore names the expected signatures instead of claiming the handler is missing.
-  namespace detail = strategy::strategy_detail;
-  // `on_bar` taking a QuoteEvent is neither: not `on_bar`, because the event type is wrong, and
-  // not `on_quote`, because the name is. So the strategy reads as having no callable handler, and
-  // the assertion reports both that and, by name, that `on_bar` is declared and cannot be called.
-  STATIC_REQUIRE_FALSE(detail::has_on_bar<WrongEventType, MinimalContext>::value);
-  STATIC_REQUIRE_FALSE(detail::has_on_quote<WrongEventType, MinimalContext>::value);
-  STATIC_REQUIRE_FALSE(detail::has_any_handler<WrongEventType, MinimalContext>);
   STATIC_REQUIRE(detail::declares_on_bar<WrongEventType>);
+  STATIC_REQUIRE(detail::declares_any_handler<WrongEventType>);
+  STATIC_REQUIRE(detail::declares_on_bar<BoundToOneContext>);
 }
 
 namespace {
@@ -518,7 +495,7 @@ struct FinalNonConstFill final {
   int updates_{0};
 };
 
-/** One malformed handler of each kind, declared and not callable as the runner calls it. */
+/** One malformed handler of each kind: each declared, and each a compile error when the runner calls it. */
 struct MalformedEach {
   template <class Ctx> void on_start(Ctx&, int) {}
   template <class Ctx> void on_stop() {}
@@ -527,12 +504,6 @@ struct MalformedEach {
   template <class Ctx> void on_fill(Ctx&, strategy::Fill&) {}
   template <class Ctx> void on_order_update(Ctx&, const strategy::QuoteEvent&) {}
   template <class Ctx> void on_phase(Ctx&) {}
-};
-
-/** A handler constrained away for a context without client order ids: declared, and not callable there. */
-struct ConstrainedFill {
-  template <class Ctx, typename = std::enable_if_t<Ctx::caps::has_client_order_id>>
-  void on_fill(Ctx&, const strategy::Fill&) {}
 };
 
 /** Events by value: callable, since a copy of a `const` event is a valid argument. */
@@ -565,15 +536,11 @@ TEST_CASE("a declared handler is found by name, whatever its signature") {
   STATIC_REQUIRE(detail::declares_on_bar<InheritsBarOnly>);
   STATIC_REQUIRE(detail::declares_on_fill<OverloadedFill>);
   STATIC_REQUIRE(detail::declares_on_fill<PrivateFill>);
-  // A member of that name of any other kind is declared too, and is not callable, so the assertion
-  // rejects it -- the two inputs it reads, pinned here, since the assertion itself cannot fire in a test.
+  // A member of that name of any other kind is declared too, so the runner calls it and the call does
+  // not compile.
   STATIC_REQUIRE(detail::declares_on_fill<FillDataMember>);
   STATIC_REQUIRE(detail::declares_on_fill<FillStatic>);
   STATIC_REQUIRE(detail::declares_on_fill<FillAlias>);
-  STATIC_REQUIRE_FALSE(detail::has_on_fill<FillDataMember, MinimalContext>::value);
-  STATIC_REQUIRE_FALSE(detail::has_on_fill<FillStatic, MinimalContext>::value);
-  STATIC_REQUIRE_FALSE(detail::has_on_fill<FillAlias, MinimalContext>::value);
-  STATIC_REQUIRE_FALSE(detail::has_on_fill<PrivateFill, MinimalContext>::value);
   // Absent, and every handler of a strategy that names none.
   STATIC_REQUIRE_FALSE(detail::declares_on_fill<BarOnly>);
   STATIC_REQUIRE_FALSE(detail::declares_on_start<EventsByValue>);
@@ -583,22 +550,17 @@ TEST_CASE("a declared handler is found by name, whatever its signature") {
   STATIC_REQUIRE_FALSE(detail::declares_on_bar<FinalNonConstFill>);
 }
 
-TEST_CASE("each of the seven assertions reads its own handler's two inputs") {
-  // `StrategyConformance` rejects a handler that is declared and not callable. A strategy that trips it
-  // cannot be compiled in a test, so the two inputs are pinned per handler instead; each probe in
-  // tests/strategy-probe-*.cpp shows one assertion firing.
+TEST_CASE("each malformed handler is still declared, so the runner calls it") {
+  // A strategy whose handler the call does not fit cannot be compiled in a test; the probes in
+  // tests/strategy-probe-*.cpp show the compiler refusing it. Pinned here: none of these reads as absent.
   namespace detail = strategy::strategy_detail;
-  STATIC_REQUIRE((detail::declares_on_start<MalformedEach> && !detail::has_on_start<MalformedEach, MinimalContext>::value));
-  STATIC_REQUIRE((detail::declares_on_stop<MalformedEach> && !detail::has_on_stop<MalformedEach, MinimalContext>::value));
-  STATIC_REQUIRE((detail::declares_on_bar<MalformedEach> && !detail::has_on_bar<MalformedEach, MinimalContext>::value));
-  STATIC_REQUIRE((detail::declares_on_quote<MalformedEach> && !detail::has_on_quote<MalformedEach, MinimalContext>::value));
-  STATIC_REQUIRE((detail::declares_on_fill<MalformedEach> && !detail::has_on_fill<MalformedEach, MinimalContext>::value));
-  STATIC_REQUIRE((detail::declares_on_order_update<MalformedEach> &&
-                  !detail::has_on_order_update<MalformedEach, MinimalContext>::value));
-  STATIC_REQUIRE((detail::declares_on_phase<MalformedEach> && !detail::has_on_phase<MalformedEach, MinimalContext>::value));
-  // The stated restriction: a handler constrained away for a context is declared and not callable there.
-  STATIC_REQUIRE((detail::declares_on_fill<ConstrainedFill> && !detail::has_on_fill<ConstrainedFill, MinimalContext>::value));
-  STATIC_REQUIRE(detail::has_on_fill<ConstrainedFill, FullContext>::value);
+  STATIC_REQUIRE(detail::declares_on_start<MalformedEach>);
+  STATIC_REQUIRE(detail::declares_on_stop<MalformedEach>);
+  STATIC_REQUIRE(detail::declares_on_bar<MalformedEach>);
+  STATIC_REQUIRE(detail::declares_on_quote<MalformedEach>);
+  STATIC_REQUIRE(detail::declares_on_fill<MalformedEach>);
+  STATIC_REQUIRE(detail::declares_on_order_update<MalformedEach>);
+  STATIC_REQUIRE(detail::declares_on_phase<MalformedEach>);
 }
 
 TEST_CASE("a handler taking its event by value, or the phase by const reference, is called") {
@@ -621,19 +583,6 @@ TEST_CASE("a handler taking its event by value, or the phase by const reference,
 static_assert(!std::is_copy_constructible_v<MinimalContext>);
 static_assert(!std::is_copy_assignable_v<FullContext>);
 static_assert(std::is_move_constructible_v<MinimalContext>);
-
-TEST_CASE("dispatch alone skips a final strategy's uncallable handlers") {
-  // Why ATL_ASSERT_STRATEGY refuses a `final` strategy (tests/strategy-probe-final.cpp): its handler names
-  // cannot be looked up, so dispatch would skip these two in silence -- a non-const event, and a context
-  // taken by value, which on `main` was called with a copy.
-  MinimalContext ctx;
-  FinalNonConstFill strategy_instance;
-  runner::dispatch::fill(strategy_instance, ctx, strategy::Fill{});
-  CHECK(strategy_instance.fills_ == 0);
-  // And a handler taking the (non-copyable) context by value is skipped, not called with a copy.
-  runner::dispatch::order_update(strategy_instance, ctx, OrderSnapshot{});
-  CHECK(strategy_instance.updates_ == 0);
-}
 
 TEST_CASE("a probe context records what a strategy asked for") {
   MinimalContext ctx;

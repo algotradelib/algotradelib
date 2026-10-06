@@ -311,8 +311,9 @@ set_tests_properties(conformance-requires-an-asked-basis PROPERTIES
     TIMEOUT 300
 )
 
-# A strategy handler that is declared and that the runner cannot call must not build: the runner would skip
-# it in silence. One probe per shape, each with a valid `on_bar`, each failing for one reason only.
+# A strategy handler that is declared and that the runner's call does not fit must not build: `dispatch` calls
+# every declared handler, so the compiler refuses the call. One probe per shape, each with a valid `on_bar`,
+# each failing for one reason only, in the compiler's words (Clang's and GCC's).
 add_library(algotradelib-strategy-probe-nonconst-fill OBJECT EXCLUDE_FROM_ALL strategy-probe-nonconst-fill.cpp)
 target_link_libraries(algotradelib-strategy-probe-nonconst-fill PRIVATE algotradelib::algotradelib)
 add_test(
@@ -321,7 +322,7 @@ add_test(
             --config "$<CONFIG>"
 )
 set_tests_properties(strategy-refuses-a-nonconst-fill PROPERTIES
-    PASS_REGULAR_EXPRESSION "on_fill is declared but its parameters do not accept this runner's call"
+    PASS_REGULAR_EXPRESSION "no matching (member )?function for call to[^\n]*on_fill"
     TIMEOUT 300
 )
 add_library(algotradelib-strategy-probe-wrong-update-event OBJECT EXCLUDE_FROM_ALL strategy-probe-wrong-update-event.cpp)
@@ -332,7 +333,7 @@ add_test(
             --config "$<CONFIG>"
 )
 set_tests_properties(strategy-refuses-a-wrong-update-event PROPERTIES
-    PASS_REGULAR_EXPRESSION "on_order_update is declared but its parameters do not accept this runner's call"
+    PASS_REGULAR_EXPRESSION "no matching (member )?function for call to[^\n]*on_order_update"
     TIMEOUT 300
 )
 add_library(algotradelib-strategy-probe-missing-phase-event OBJECT EXCLUDE_FROM_ALL strategy-probe-missing-phase-event.cpp)
@@ -343,7 +344,7 @@ add_test(
             --config "$<CONFIG>"
 )
 set_tests_properties(strategy-refuses-a-missing-phase-event PROPERTIES
-    PASS_REGULAR_EXPRESSION "on_phase is declared but its parameters do not accept this runner's call"
+    PASS_REGULAR_EXPRESSION "no matching (member )?function for call to[^\n]*on_phase"
     TIMEOUT 300
 )
 add_library(algotradelib-strategy-probe-mutable-phase OBJECT EXCLUDE_FROM_ALL strategy-probe-mutable-phase.cpp)
@@ -354,11 +355,11 @@ add_test(
             --config "$<CONFIG>"
 )
 set_tests_properties(strategy-refuses-a-mutable-phase PROPERTIES
-    PASS_REGULAR_EXPRESSION "on_phase is declared but its parameters do not accept this runner's call"
+    PASS_REGULAR_EXPRESSION "no matching (member )?function for call to[^\n]*on_phase"
     TIMEOUT 300
 )
 
-# A handler taking its context by value is not callable, because no context can be copied.
+# A handler taking its context by value cannot be called, because no context can be copied.
 add_library(algotradelib-strategy-probe-context-by-value OBJECT EXCLUDE_FROM_ALL strategy-probe-context-by-value.cpp)
 target_link_libraries(algotradelib-strategy-probe-context-by-value PRIVATE algotradelib::algotradelib)
 add_test(
@@ -367,7 +368,7 @@ add_test(
             --config "$<CONFIG>"
 )
 set_tests_properties(strategy-refuses-a-context-by-value PROPERTIES
-    PASS_REGULAR_EXPRESSION "on_fill is declared but its parameters do not accept this runner's call"
+    PASS_REGULAR_EXPRESSION "call to deleted constructor of[^\n]*ProbeContextT|use of deleted function[^\n]*ProbeContextT"
     TIMEOUT 300
 )
 add_library(algotradelib-strategy-probe-runner-context-by-value OBJECT EXCLUDE_FROM_ALL strategy-probe-runner-context-by-value.cpp)
@@ -378,7 +379,7 @@ add_test(
             --config "$<CONFIG>"
 )
 set_tests_properties(strategy-refuses-a-runner-context-by-value PROPERTIES
-    PASS_REGULAR_EXPRESSION "on_fill is declared but its parameters do not accept this runner's call"
+    PASS_REGULAR_EXPRESSION "call to deleted constructor of[^\n]*Context<|use of deleted function[^\n]*Context<"
     TIMEOUT 300
 )
 
@@ -392,6 +393,88 @@ add_test(
 )
 set_tests_properties(strategy-refuses-a-final-strategy PROPERTIES
     PASS_REGULAR_EXPRESSION "a final strategy cannot be checked for a handler the runner would skip"
+    TIMEOUT 300
+)
+
+# A wrapper forwarding through runner::dispatch gets its inner strategy checked too.
+add_library(algotradelib-strategy-probe-wrapped-malformed OBJECT EXCLUDE_FROM_ALL strategy-probe-wrapped-malformed.cpp)
+target_link_libraries(algotradelib-strategy-probe-wrapped-malformed PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME strategy-refuses-a-wrapped-malformed-handler
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-wrapped-malformed
+            --config "$<CONFIG>"
+)
+set_tests_properties(strategy-refuses-a-wrapped-malformed-handler PROPERTIES
+    PASS_REGULAR_EXPRESSION "no matching (member )?function for call to[^\n]*on_phase"
+    TIMEOUT 300
+)
+
+# And a final inner strategy is refused inside dispatch, not read as declaring nothing.
+add_library(algotradelib-strategy-probe-wrapped-final OBJECT EXCLUDE_FROM_ALL strategy-probe-wrapped-final.cpp)
+target_link_libraries(algotradelib-strategy-probe-wrapped-final PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME strategy-refuses-a-wrapped-final-strategy
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-wrapped-final
+            --config "$<CONFIG>"
+)
+set_tests_properties(strategy-refuses-a-wrapped-final-strategy PROPERTIES
+    PASS_REGULAR_EXPRESSION "a final strategy cannot be checked for a handler the runner would skip"
+    TIMEOUT 300
+)
+
+# A handler with the wrong event that nothing calls yet fails at the assertion, which compiles every call.
+add_library(algotradelib-strategy-probe-unreached-handler OBJECT EXCLUDE_FROM_ALL strategy-probe-unreached-handler.cpp)
+target_link_libraries(algotradelib-strategy-probe-unreached-handler PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME strategy-refuses-an-unreached-handler
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-unreached-handler
+            --config "$<CONFIG>"
+)
+set_tests_properties(strategy-refuses-an-unreached-handler PROPERTIES
+    PASS_REGULAR_EXPRESSION "no matching (member )?function for call to[^\n]*on_quote"
+    TIMEOUT 300
+)
+
+# Every declared handler's body is compiled by the assertion, even for an event nothing feeds: one probe per
+# handler, the error in that handler's body alone.
+foreach(handler RANGE 1 7)
+    add_library(algotradelib-strategy-probe-handler-body-${handler} OBJECT EXCLUDE_FROM_ALL strategy-probe-handler-body.cpp)
+    target_link_libraries(algotradelib-strategy-probe-handler-body-${handler} PRIVATE algotradelib::algotradelib)
+    target_compile_definitions(algotradelib-strategy-probe-handler-body-${handler} PRIVATE ATL_PROBE_HANDLER=${handler})
+    add_test(
+        NAME strategy-compiles-handler-body-${handler}
+        COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-handler-body-${handler}
+                --config "$<CONFIG>"
+    )
+    set_tests_properties(strategy-compiles-handler-body-${handler} PROPERTIES
+        PASS_REGULAR_EXPRESSION "no member named 'no_such_member'"
+        TIMEOUT 300
+    )
+endforeach()
+
+# A context a caller can copy is refused: a by-value handler would submit to a copy.
+add_library(algotradelib-strategy-probe-copyable-context OBJECT EXCLUDE_FROM_ALL strategy-probe-copyable-context.cpp)
+target_link_libraries(algotradelib-strategy-probe-copyable-context PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME strategy-refuses-a-copyable-context
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-copyable-context
+            --config "$<CONFIG>"
+)
+set_tests_properties(strategy-refuses-a-copyable-context PROPERTIES
+    PASS_REGULAR_EXPRESSION "a strategy context must not be copyable"
+    TIMEOUT 300
+)
+
+# And one whose copy constructor takes a mutable reference, which is what dispatch passes.
+add_library(algotradelib-strategy-probe-mutable-copy-context OBJECT EXCLUDE_FROM_ALL strategy-probe-mutable-copy-context.cpp)
+target_link_libraries(algotradelib-strategy-probe-mutable-copy-context PRIVATE algotradelib::algotradelib)
+add_test(
+    NAME strategy-refuses-a-mutable-copy-context
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-mutable-copy-context
+            --config "$<CONFIG>"
+)
+set_tests_properties(strategy-refuses-a-mutable-copy-context PROPERTIES
+    PASS_REGULAR_EXPRESSION "a strategy context must not be copyable"
     TIMEOUT 300
 )
 
