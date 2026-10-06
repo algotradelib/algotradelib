@@ -16,90 +16,62 @@ namespace algotradelib {
 namespace backtest {
 
 /**
- * Deciding whether a queued order trades, and at what price.
+ * @file
+ * @brief The backtest fill model: whether a queued order trades against the next bar, and at what
+ *   price and cost.
  *
- * **The lookahead discipline is structural here rather than a rule to remember.** A fill is always
- * computed against the bar *after* the one that produced the order, because the function has no way to
- * see any other: it takes the next bar and nothing else. An engine that passed the signal's own bar
- * would have to do so deliberately, and the test suite asserts that it does not.
- *
- * That is why `Runner`'s executor accepts an order without filling it. Filling at the moment of
- * submission would mean filling from a bar the strategy has just been shown, which is reading the
- * future — the most common defect in backtesting code and the reason `BarStamp` and
- * `BarEvent::period_end_` exist at all.
+ * An order is always filled against the bar **after** the one that produced it, so a backtest
+ * cannot fill from a bar the strategy has just seen.
  */
 
-/** What a fill model decided, and what it assumed. */
+/** @brief What `NextBarFillModel::decide` concluded about one order and one bar. */
 struct FillDecision {
-  /** The execution, absent when the order did not trade against this bar. */
+  /** @brief The execution, if the order traded against this bar. */
   std::optional<Execution> execution_;
-  /** Whether the order should stay queued for a later bar rather than being discarded. */
+  /** @brief Whether the order stays queued for a later bar (it did not trade but may still). */
   bool still_working_{false};
   /**
-   * Why the fill could not be **costed**, as distinct from not having traded.
+   * @brief Why a fill could not be costed (no commission rate, or a tax that does not fit).
    *
-   * The two were one answer until this field existed, and conflating them is the failure it exists
-   * to prevent: a date the schedule does not cover produced a decision with no execution, which the
-   * engine read as an order that simply did not fill, and the replay continued with a trade silently
-   * missing from a path every performance figure is derived from. Present here, the engine halts.
+   * Set instead of an execution; the backtest halts rather than dropping the trade.
    */
   std::optional<BrokerError> costing_error_;
-  /**
-   * Whether this bar released a dormant stop-limit order.
-   *
-   * Set whether or not it also filled, so the engine can mark a stop that released and still rests;
-   * the next bar evaluates it as the limit it has become. See `NextBarFillModel::decide`.
-   */
+  /** @brief Whether this bar released a dormant stop-limit order (whether or not it also filled). */
   bool released_{false};
   /**
-   * Whether the fill depended on a release **inside** the bar -- the case a bar with no path between
-   * its open and its extremes could have ordered differently. Counted by the report.
+   * @brief Whether the fill depended on a stop released inside the bar, where the bar cannot show
+   *   the order of prices; counted by the report.
    */
   bool intrabar_release_fill_{false};
   /**
-   * Whether a limit-basis fill's credit was moved by the bound in `decide` -- onto its bar, back to its
-   * limit, or back from the bar's opposite extreme that negative slippage reached. Counted by the
-   * report, so a reader sees how often the model declined to credit a price the bar never showed.
-   *
-   * A stop released inside its bar is credited by `intrabar_release_price`, which chooses a price
-   * inside the bar and the limit to begin with; only a later move counts here.
+   * @brief Whether a limit-type fill price was moved to stay within the bar's range and the limit;
+   *   counted by the report.
    */
   bool bounded_{false};
 };
 
-/**
- * A tax charged on sales, stated by the caller: `rate_` of a sale's value, on instruments of
- * `country_`. See `NextBarFillModel::with_sell_tax`.
- */
+/** @brief A tax on sales, stated by the caller; see `NextBarFillModel::with_sell_tax`. */
 struct SellTax {
-  /** The fraction of a sale's value charged, e.g. `0.0020` for 0.20 %. */
+  /** @brief The fraction of a sale's value charged, such as `0.0020` for 0.20%. */
   Decimal64 rate_;
-  /** The market whose sales pay it. */
+  /** @brief The market whose sales pay it. */
   Country country_{Country::KR};
 };
 
 /**
- * Fills market orders at the next bar's open and limit orders when the bar's range reaches them.
+ * @brief The fill model: market orders at the next bar's open, limit orders when the next bar's
+ *   range reaches them, stop-limit orders once released.
  *
- * The plain model, and the one whose assumptions are easiest to state — which matters more than
- * sophistication in a component whose output somebody will act on.
- *
- * **Interval-agnostic.** "The next bar's open" is the same sentence for a minute bar and a daily one,
- * which is the whole reason the rule is expressed that way rather than as "the next day's open".
- *
- * **Volume is not consulted**, so a fill is never partial and never capped by what traded. A bar's
- * volume says how much changed hands in total, not how much would have been available to *this* order
- * at *its* price, and inventing a participation rate would be inventing a number with no data behind
- * it. The report states this rather than leaving a reader to assume otherwise.
+ * Works the same for any bar interval. Volume is not consulted: a fill is never partial or capped
+ * by what traded (the report states this).
  */
 class NextBarFillModel {
 public:
   /**
-   * Constructs a model with the given costs and limit-price assumption.
-   *
-   * The `CommissionModel` spelling is preserved so every existing caller keeps compiling and keeps
-   * charging exactly what it charged; it becomes a `CommissionPolicy` that resolves the same number
-   * on every date and at every venue.
+   * @brief Constructs a model with a flat commission.
+   * @param commission The commission model, charged on every execution.
+   * @param slippage The slippage model.
+   * @param limit_price Which price a filled limit order is credited.
    */
   explicit NextBarFillModel(
     CommissionModel commission = CommissionModel::none(),
@@ -110,7 +82,12 @@ public:
     slippage_(std::move(slippage)),
     limit_price_(limit_price) {}
 
-  /** Constructs a model costing each execution through `commission`, which may resolve a schedule. */
+  /**
+   * @brief Constructs a model with a commission policy, which may resolve a schedule per execution.
+   * @param commission The commission policy.
+   * @param slippage The slippage model.
+   * @param limit_price Which price a filled limit order is credited.
+   */
   explicit NextBarFillModel(
     CommissionPolicy commission,
     SlippageModel slippage = SlippageModel::none(),
@@ -120,32 +97,35 @@ public:
     slippage_(std::move(slippage)),
     limit_price_(limit_price) {}
 
-  /** Returns the cost policy in force, so a report can state what it applied. */
+  /**
+   * @brief Returns the commission policy.
+   * @return The policy in force.
+   */
   const CommissionPolicy& commission() const noexcept { return commission_; }
 
-  /** Returns the slippage model in force. */
+  /**
+   * @brief Returns the slippage model.
+   * @return The model in force.
+   */
   const SlippageModel& slippage() const noexcept { return slippage_; }
 
-  /** Returns what a limit order is credited with. */
+  /**
+   * @brief Returns which price a filled limit order is credited.
+   * @return The choice.
+   */
   LimitFillPrice limit_price() const noexcept { return limit_price_; }
 
   /**
-   * Returns this model with `tax` charged on every sale in its market.
+   * @brief Returns a copy of this model that charges a tax on sales.
    *
-   * **The caller states the rate; the library has none of its own.** Korean securities transaction
-   * tax is the case it exists for -- charged on sales only, and moved every year since 2023 -- and a
-   * rate baked into the library would silently misprice every replay run after it moved. A replay
-   * spanning a change is charged one rate throughout, as it is for commission. The tax is truncated
-   * to whole units of the instrument's currency, as the Korean tax is -- which suits a levy of that
-   * kind, and floors a tiny fee on a small sale in dollars to nothing -- and kept apart from commission on
-   * `Execution::tax_` and `Report::tax_paid_`, because a broker reports the two separately
-   * (`OrderExecution::tax_` beside `commission_`) and a figure folding one into the other could not
-   * be compared with a live account's. Only sales of instruments in `SellTax::country_` pay it, so a
-   * replay mixing markets does not charge one market's tax on another's sales; instruments exempt
-   * within that market (Korean ETFs and ETNs pay none) need a replay of their own without it.
+   * The library has no tax rate of its own (Korean securities transaction tax changes yearly); one
+   * rate applies to the whole replay. The tax is truncated to whole currency units and reported apart
+   * from commission (`Execution::tax_`, `Report::tax_paid_`). Only sales of instruments in
+   * `tax.country_` pay it; exempt instruments (Korean ETFs and ETNs) need a replay without it.
    *
-   * @throws std::invalid_argument for a rate below zero or not below one: a negative tax would credit
-   * the account, and a rate of one or more would make a sale's proceeds nothing or less.
+   * @param tax The rate and market.
+   * @return The new model.
+   * @throws std::invalid_argument if the rate is below 0 or not below 1.
    */
   NextBarFillModel with_sell_tax(SellTax tax) const {
     if (decimal_less(tax.rate_, Decimal64::parse("0")) || !decimal_less(tax.rate_, Decimal64::parse("1"))) {
@@ -156,58 +136,57 @@ public:
     return model;
   }
 
-  /** Returns the stated tax on sales, or nothing when no tax is modelled. */
+  /**
+   * @brief Returns the tax on sales.
+   * @return The tax, or `std::nullopt` if none is modelled.
+   */
   const std::optional<SellTax>& sell_tax() const noexcept { return sell_tax_; }
 
   /**
-   * Returns whether an unfilled order stays queued for a later bar of its session.
+   * @brief Tests whether an order that did not fill stays queued for a later bar of its session.
    *
-   * A DAY order lives one session: `Backtester` withdraws it, unfilled, when a bar ends that session
-   * -- on daily bars, after the one bar it can trade against.
+   * Only `DAY` limit and stop-limit orders rest; immediate-or-cancel, fill-or-kill and market orders
+   * do not. `Backtester` withdraws a resting `DAY` order when its session ends (on daily bars, after
+   * one bar).
    *
-   * Resting is a property of the *condition*, not of the basis: an
-   * immediate-or-cancel order that this bar did not fill is gone, and a
-   * best-limit day order that this bar did not fill is still there. This read
-   * `type_ == OrderType::LIMIT`, which was the same answer while every order
-   * was a day order and is not now.
-   *
-   * A market order still does not rest, because `reference_price` always prices
-   * one -- an unfilled market order is a fill the model refused for another
-   * reason, and queueing it would retry it on the next bar against a price it
-   * was never offered.
-   *
-   * Fill-or-kill and immediate-or-cancel behave identically here, and that is
-   * the model rather than a simplification: this model never fills partially,
-   * so "cancel the remainder" and "cancel the lot" describe the same outcome.
+   * @param order The order.
+   * @return `true` if it rests.
    */
   static bool rests_unfilled(const strategy::PlannedOrder& order) noexcept {
     if (order.time_in_force_ != TimeInForce::DAY) {
       return false;
     }
-    // A stop rests while it is dormant and, once released, as the limit it has become.
+    // A stop rests while dormant and, once released, as the limit it has become.
     return order.type_ == OrderType::LIMIT || order.type_ == OrderType::STOP_LIMIT;
   }
 
   /**
-   * Decides `order` against `next`, the bar after the one that produced it.
+   * @brief Decides whether an order trades against a bar, and at what price and cost.
    *
-   * @param order the queued instruction
-   * @param next the bar to fill against; never the bar the order was decided on
-   * @param rule the instrument's price grid, for the tick component of slippage
-   * @param date the **market-local** calendar day the fill happens on, which is what a published
-   * rate window is written in. `SessionWindow::local_date` converts the replay clock's instant, and
-   * a bar either side of UTC midnight is what distinguishes the two.
-   * @param open_date the market-local day the bar's **open** belongs to, where the caller knows it;
-   * used instead of `date` when the fill is priced at the open -- a market order, or a limit under
-   * `AT_OPEN_IF_BETTER` whose open was better. `Backtester` supplies it for an `OPEN`-stamped bar,
-   * whose stamp is its period's start: `date` there comes from a *nominal* period end, one day late
-   * for a daily bar and up to five days into the next month for a monthly one, and a rate that
-   * changed in between was charged a fill it did not apply to. Absent, every fill uses `date`, as
-   * before. **A partial correction**: a fill priced inside a multi-day bar has no known day and still
-   * uses `date` (`plan/todo/nominal-period-end-dates-a-fill.md`).
-   * @param released whether an earlier bar already released this order, when it is a stop-limit
-   * order; the engine records it on the queued order. A released stop is priced as the limit it has
-   * become. Ignored for every other basis.
+   * - **Market**: the bar's open (its close if it has no open).
+   * - **Limit**: only if the bar reached the limit (low at or below a buy limit, high at or above a
+   *   sell limit). Credited the limit, or under `AT_OPEN_IF_BETTER` the open if better; the credit is
+   *   kept within the bar's range and never through the limit, even after slippage.
+   * - **Stop-limit**: dormant until the bar reaches the trigger (a sell stop when the low reaches it,
+   *   a buy stop when the high does). Released at the open, it is priced as a limit. Released inside
+   *   the bar, it fills only when the bar proves a price after the release: at the worst bar price the
+   *   limit allows if the limit was marketable at the trigger, at the limit if the close is through
+   *   the limit; otherwise it rests. No favourable slippage applies after an intrabar release.
+   *
+   * Slippage, then commission and any sale tax, are applied to a fill. The execution is stamped at
+   * `next.period_end_`.
+   *
+   * @param order The queued order.
+   * @param next The bar after the one the order was decided on.
+   * @param rule The instrument's price grid, for tick slippage.
+   * @param date The market-local trading date of the fill, for the commission rate (see
+   *   `SessionWindow::local_date`).
+   * @param open_date The market-local date of the bar's open, if known; used instead of `date` for a
+   *   fill priced at the open. For a fill inside a multi-day bar `date` is used, which can be a later
+   *   day than the fill.
+   * @param released Whether an earlier bar already released this stop-limit order.
+   * @return The decision. A stop-limit order not yet released without both a trigger and a limit
+   *   price neither trades nor rests (a released stop must still have its limit price).
    */
   FillDecision decide(
     const strategy::PlannedOrder& order,
@@ -222,8 +201,7 @@ public:
     std::optional<Decimal64> reference;
     if (order.type_ == OrderType::STOP_LIMIT && !released) {
       if (!order.trigger_price_ || !order.price_) {
-        // Not a stop this model can release; `ReplayExecutor::can_model` refuses one before it is
-        // queued, so this is a caller driving the model directly. It does not trade and does not rest.
+        // Not a stop this model can release (a caller driving the model directly).
         return decision;
       }
       switch (release_of(order, next)) {
@@ -235,10 +213,7 @@ public:
           // The whole bar is after the release, so it is priced as the limit it now is.
           decision.released_ = true;
           reference = reference_price(order, next, at_open);
-          // **Dated from the open whatever the price policy credits.** A stop released at the open
-          // and marketable there traded at the open; `AT_LIMIT` crediting the limit rather than the
-          // open is a statement about price, not about when, and dating it from the period end
-          // charged a multi-day bar's fill on a day it did not happen.
+          // Dated from the open whatever the price policy credits: it traded at the open.
           if (reference && limit_marketable_at(order, *next.bar_.open_)) {
             at_open = true;
           }
@@ -247,9 +222,8 @@ public:
           decision.released_ = true;
           reference = intrabar_release_price(order, next);
           if (!reference) {
-            // Whether the price reached the limit *after* the release is what the bar cannot say --
-            // its extreme on the other side may have come first. Released; rests for the rest of its
-            // session -- on daily bars that session ends with this bar, so it expires unfilled.
+            // The bar cannot show the price reached the limit after the release. Rests for the rest of
+            // its session (on daily bars, it expires unfilled).
             decision.still_working_ = true;
             return decision;
           }
@@ -260,19 +234,13 @@ public:
       reference = reference_price(order, next, at_open);
     }
     if (!reference) {
-      // A limit the bar never reached. It stays queued for the rest of its session: a resting order
-      // does not expire because one bar passed it by, and discarding it would silently turn every
-      // limit into a fill-or-kill. It does expire at the session's close (`Backtester`).
+      // A limit the bar never reached stays queued for the rest of its session.
       decision.still_working_ = rests_unfilled(order);
       return decision;
     }
 
-    // **A limit fill is credited a price its bar traded, and never one through its limit.** The
-    // bound is the worst such price: a sell the higher of the bar's low and its limit, a buy the lower
-    // of the bar's high and its limit. Applied to the reference before slippage -- `AT_LIMIT` credits
-    // the limit, which sits outside the bar whenever the limit was marketable through the whole bar --
-    // and to the slipped price after, since slippage can carry an in-range price out of the bar or
-    // through the limit. Every limit basis: a plain limit and a released stop alike.
+    // A limit fill is credited a price its bar traded and never one through the limit: the bound is a
+    // sell's max(low, limit) or a buy's min(high, limit), applied before and after slippage.
     std::optional<Decimal64> bound;
     const bool limit_basis = order.type_ == OrderType::LIMIT || order.type_ == OrderType::STOP_LIMIT;
     if (limit_basis && order.price_) {
@@ -293,11 +261,7 @@ public:
     }
     auto slipped = slippage_.apply(*reference, order.side_, rule);
     if (slipped && decision.intrabar_release_fill_) {
-      // **No favourable slippage after an intrabar release.** Favourable slippage lifts a sell (lowers
-      // a buy) towards the bar's other extreme -- which, for a stop released inside the bar, may have
-      // come *before* the release, a price the order could never have met. The only prices known to
-      // follow the release are the trigger, the extreme it fell or rose to, and the close; rather than
-      // model which of those favourable slippage may reach, it is not applied here at all.
+      // No favourable slippage after an intrabar release: the bar's other extreme may have come first.
       const bool favourable = order.side_ == OrderSide::SELL ?
         decimal_less(*reference, slipped->first) :
         decimal_less(slipped->first, *reference);
@@ -307,9 +271,7 @@ public:
       }
     }
     if (slipped && bound) {
-      // **The other side too.** `SlippageModel` accepts a negative figure, which moves a fill in the
-      // order's favour -- and past the bar's opposite extreme it is a price the bar never showed, the
-      // same as one pushed past the limit. Held at that extreme, with the move recorded as it was.
+      // Negative slippage cannot carry a fill past the bar's opposite extreme either.
       const auto& ceiling = order.side_ == OrderSide::SELL ? next.bar_.high_ : next.bar_.low_;
       const bool past = order.side_ == OrderSide::SELL ?
         decimal_less(ceiling, slipped->first) :
@@ -352,9 +314,7 @@ public:
     auto charged =
       commission_.charge(order.quantity_, slipped->first, charged_on, order.instrument_.country_);
     if (!charged) {
-      // **Not `still_working_`, and not silence.** A cost that cannot be resolved is not a bar that
-      // did not reach a limit: leaving the order queued would retry it on the next bar and leaving
-      // it quiet would drop a trade out of the path the report describes. The engine halts on this.
+      // A cost that cannot be resolved halts the engine; it is neither a non-fill nor silent.
       decision.costing_error_ = std::move(charged.error());
       return decision;
     }
@@ -366,8 +326,7 @@ public:
       const auto charged = value ? decimal_multiply(*value, sell_tax_->rate_) : std::nullopt;
       tax = charged ? decimal_floor_to_multiple(*charged, Decimal64::parse("1")) : std::nullopt;
       if (!tax) {
-        // Not a tax of zero: the sale happened and its cost is unknown, which is the same refusal a
-        // commission that does not fit is. The engine halts on it.
+        // Not a tax of zero: the cost is unknown, so the engine halts.
         BrokerError error;
         error.category_ = ErrorCategory::INVALID_ARGUMENT;
         error.reached_broker_ = false;
@@ -397,26 +356,24 @@ public:
   }
 
 private:
-  /** Where in a bar a dormant stop released, if it did. */
+  // Where in a bar a dormant stop released, if it did.
   enum class Release {
-    /** The bar never reached the trigger. */
+    // The bar never reached the trigger.
     NONE,
-    /** The open was already through the trigger, so the whole bar followed the release. */
+    // The open was already through the trigger, so the whole bar followed the release.
     AT_OPEN,
-    /** The bar's extreme reached the trigger and its open did not. */
+    // The bar's extreme reached the trigger and its open did not.
     INTRABAR,
   };
 
-  /**
-   * Returns whether, and where, `next` released a dormant stop.
-   *
-   * **A sell stop releases when the price falls to its trigger and a buy stop when it rises to it.**
-   * That is an assumption about the broker -- neither KIS nor Kiwoom documents the direction -- and
-   * it is the universal convention. `ReportCaveats::stop_releases_` counts how often it was used.
-   *
-   * A bar with no open cannot establish a release *at* the open, so a release there is intrabar,
-   * which is the answer that credits less.
-   */
+  // Returns whether, and where, `next` released a dormant stop.
+  //
+  // **A sell stop releases when the price falls to its trigger and a buy stop when it rises to it.**
+  // That is an assumption about the broker -- neither KIS nor Kiwoom documents the direction -- and
+  // it is the universal convention. `ReportCaveats::stop_releases_` counts how often it was used.
+  //
+  // A bar with no open cannot establish a release *at* the open, so a release there is intrabar,
+  // which is the answer that credits less.
   static Release release_of(const strategy::PlannedOrder& order, const strategy::BarEvent& next) {
     const auto& trigger = *order.trigger_price_;
     const bool sell = order.side_ == OrderSide::SELL;
@@ -436,28 +393,26 @@ private:
     return Release::INTRABAR;
   }
 
-  /** Returns whether the order's limit would trade at `price` -- a sell at or above it, a buy at or below. */
+  // Returns whether the order's limit would trade at `price` -- a sell at or above it, a buy at or below.
   static bool limit_marketable_at(const strategy::PlannedOrder& order, const Decimal64& price) {
     const auto& limit = *order.price_;
     return order.side_ == OrderSide::SELL ? !decimal_less(price, limit) : !decimal_less(limit, price);
   }
 
-  /**
-   * Returns what a stop released inside `next` is credited with, or nothing when the bar cannot show
-   * it traded after the release.
-   *
-   * At the release the price *was* the trigger. Two cases, using only prices the bar proves came after
-   * it -- the trigger itself and the close, which is always last:
-   *
-   * - **Marketable at the trigger** (a sell limited at or below it, a buy at or above): it trades. It is
-   *   credited the **worst price the bar traded that the limit allows** -- a sell the higher of its
-   *   limit and the bar's low, a buy the lower of its limit and the bar's high -- so the price is inside
-   *   the bar and never through the limit. Crediting the limit itself could name a price the bar never
-   *   reached; crediting the trigger would assume the book was there.
-   * - **Not marketable at the trigger** (a sell limited above it): it trades only if the price came back
-   *   to the limit after the release. The close proves that when it is at or through the limit; then it
-   *   is credited the limit. Otherwise the bar's other extreme may have come first, and nothing is.
-   */
+  // Returns what a stop released inside `next` is credited with, or nothing when the bar cannot show
+  // it traded after the release.
+  //
+  // At the release the price *was* the trigger. Two cases, using only prices the bar proves came after
+  // it -- the trigger itself and the close, which is always last:
+  //
+  // - **Marketable at the trigger** (a sell limited at or below it, a buy at or above): it trades. It is
+  //   credited the **worst price the bar traded that the limit allows** -- a sell the higher of its
+  //   limit and the bar's low, a buy the lower of its limit and the bar's high -- so the price is inside
+  //   the bar and never through the limit. Crediting the limit itself could name a price the bar never
+  //   reached; crediting the trigger would assume the book was there.
+  // - **Not marketable at the trigger** (a sell limited above it): it trades only if the price came back
+  //   to the limit after the release. The close proves that when it is at or through the limit; then it
+  //   is credited the limit. Otherwise the bar's other extreme may have come first, and nothing is.
   static std::optional<Decimal64> intrabar_release_price(
     const strategy::PlannedOrder& order,
     const strategy::BarEvent& next
@@ -477,17 +432,15 @@ private:
     return std::nullopt;
   }
 
-  /**
-   * Returns the price before slippage, or nothing when the order does not trade against this bar.
-   *
-   * A market order takes the open. A limit trades only if the bar's range reached it — a buy needs the
-   * low at or below the limit, a sell needs the high at or above it — because a bar that never touched
-   * the price is a bar in which the order sat unfilled, however close it came.
-   *
-   * Sets `at_open` when the price is the bar's stated open -- a market order, or a limit under
-   * `AT_OPEN_IF_BETTER` whose open was better -- which is what lets `decide` date the charge from the
-   * open's day. False for a bar with no open, whose close stands in for it.
-   */
+  // Returns the price before slippage, or nothing when the order does not trade against this bar.
+  //
+  // A market order takes the open. A limit trades only if the bar's range reached it — a buy needs the
+  // low at or below the limit, a sell needs the high at or above it — because a bar that never touched
+  // the price is a bar in which the order sat unfilled, however close it came.
+  //
+  // Sets `at_open` when the price is the bar's stated open -- a market order, or a limit under
+  // `AT_OPEN_IF_BETTER` whose open was better -- which is what lets `decide` date the charge from the
+  // open's day. False for a bar with no open, whose close stands in for it.
   std::optional<Decimal64> reference_price(
     const strategy::PlannedOrder& order,
     const strategy::BarEvent& next,
