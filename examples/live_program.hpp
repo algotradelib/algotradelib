@@ -274,7 +274,8 @@ void configure(Loop& loop, const Settings& settings) {
  * @param stop The stop source the loop polls.
  * @param out Where the program prints.
  * @param clock The clock.
- * @return The exit code.
+ * @return `CLEAN`, `CLOSING_INCOMPLETE`, `JOURNAL_REFUSED`, `RECOVERY_HALTED`,
+ *   `REFERENCE_UNREADABLE`, `LOOP_ABANDONED` or `LOCAL_FAILURE`.
  */
 template <typename Strategy, typename Session, typename MarketData, typename Clock = runner::SteadyClock>
 Exit trade(
@@ -366,7 +367,8 @@ Exit trade(
  * @param stop The stop source the loop polls.
  * @param out Where the program prints.
  * @param clock The clock.
- * @return The exit code.
+ * @return `CLEAN`, `CLOSING_INCOMPLETE`, `JOURNAL_REFUSED`, `RECOVERY_HALTED`,
+ *   `REFERENCE_UNREADABLE`, `LOOP_ABANDONED` or `LOCAL_FAILURE`.
  */
 template <typename Strategy, typename Session, typename Clock = runner::SteadyClock>
 Exit trade(
@@ -399,7 +401,7 @@ Exit trade(
  * @param stop The stop source the loop polls.
  * @param out Where the program prints.
  * @param clock The clock.
- * @return The exit code.
+ * @return `CLEAN`, `REFERENCE_UNREADABLE` or `LOOP_ABANDONED`.
  */
 template <typename Strategy, typename Session, typename MarketData, typename Clock = runner::SteadyClock>
 Exit observe(
@@ -448,7 +450,7 @@ Exit observe(
  * @param stop The stop source the loop polls.
  * @param out Where the program prints.
  * @param clock The clock.
- * @return The exit code.
+ * @return `CLEAN`, `REFERENCE_UNREADABLE` or `LOOP_ABANDONED`.
  */
 template <typename Strategy, typename Session, typename Clock = runner::SteadyClock>
 Exit observe(

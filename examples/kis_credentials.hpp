@@ -45,8 +45,9 @@ inline std::optional<std::filesystem::path> environment_directory() {
  * @param argc The argument count; reduced by the arguments removed.
  * @param argv The arguments; the rest are moved down.
  * @return The directory, or `std::nullopt` if neither names one.
- * @throws std::runtime_error if `--credentials` has no value, so a mistyped command never falls back
- *   to another source.
+ * @throws std::runtime_error if `--credentials` has no usable value (missing, empty, or another
+ *   flag), so a mistyped command never falls back to another source, or if `ATL_CREDENTIALS_DIR` is
+ *   set but empty.
  */
 inline std::optional<std::filesystem::path> take_directory(int& argc, char** argv) {
   std::optional<std::filesystem::path> directory;
@@ -70,7 +71,9 @@ inline std::optional<std::filesystem::path> take_directory(int& argc, char** arg
  * @brief Returns transport options that pace a KIS client at one request a second.
  *
  * A KIS demo account refuses reads closer than about a second apart (`EGW00201`), and with real keys
- * the holiday calendar was refused at eight a second. A key with a larger allowance may raise it.
+ * the holiday calendar was refused at eight a second. The library paces nothing unless asked
+ * (`HttpClientOptions::rate_limit_`), so these examples ask. A key with a larger allowance may raise
+ * it.
  *
  * @return The options.
  */

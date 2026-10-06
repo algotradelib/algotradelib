@@ -101,8 +101,8 @@ single requests behind the caller's back, which would wear one signature over
 several times the request cost.
 
 KIS's per-bar corporate-action columns, its after-hours depth totals, and Toss's
-intraday session windows are not normalized at all — only one broker publishes each,
-so they stay on the concrete client, reachable through `session.client()`.
+intraday session windows are not normalized — only one broker publishes each — and
+the library does not expose them yet.
 
 ## Two broker-specific behaviours worth knowing
 

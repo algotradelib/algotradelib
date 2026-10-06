@@ -450,7 +450,8 @@ std::optional<Arguments> parse(int argc, char** argv) {
  * @brief Chooses a broker from the command line and observes or trades through it.
  * @param argc The argument count.
  * @param argv The arguments.
- * @return The program's exit code (`live_program::Exit`).
+ * @return A `live_program::Exit` value, 64 for a usage error, or 70 if an exception escaped (what was
+ *   in flight is then unknown).
  */
 int main(int argc, char** argv) {
   const auto arguments = parse(argc, argv);
