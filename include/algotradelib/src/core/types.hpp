@@ -620,9 +620,8 @@ inline std::optional<Decimal64> decimal_divide(
  * @param value The value.
  * @param step The step, such as a lot size; must be positive.
  * @return The largest multiple of `step` not above `value`, or `std::nullopt` if `step` is not
- *   positive or the operands rescaled to a common scale do not fit.
- * @warning A negative `value` whose rounded result is below the smallest `int64` coefficient is
- *   undefined behaviour (unchecked overflow), such as `Decimal64(INT64_MIN, 0)` with step 3.
+ *   positive, the operands rescaled to a common scale do not fit, or the result does not fit (a
+ *   negative `value` near the smallest `int64` coefficient).
  */
 inline std::optional<Decimal64> decimal_floor_to_multiple(
   const Decimal64& value,
@@ -638,6 +637,9 @@ inline std::optional<Decimal64> decimal_floor_to_multiple(
   if (rest < 0) {
     rest += right;
   }
+  if (left < std::numeric_limits<std::int64_t>::min() + rest) {
+    return std::nullopt;
+  }
   return decimal_normalized(Decimal64(left - rest, scale));
 }
 
@@ -646,8 +648,6 @@ inline std::optional<Decimal64> decimal_floor_to_multiple(
  * @param lhs The first value.
  * @param rhs The second value.
  * @return `true` if `lhs < rhs`.
- * @warning Wrong for two negative values when rescaling one to the other's scale overflows `int64`
- *   (for example `-9e18` against `-0.01`). Values of ordinary prices and quantities are unaffected.
  */
 inline bool decimal_less(const Decimal64& lhs, const Decimal64& rhs) {
   std::int64_t left = 0;
@@ -657,9 +657,13 @@ inline bool decimal_less(const Decimal64& lhs, const Decimal64& rhs) {
     return left < right;
   }
   // Rescaling overflowed, so the values differ by more than any shared scale can
-  // express; the one with the larger magnitude and its sign decides.
+  // express: the one with the smaller scale has the larger magnitude. Between two
+  // negatives the larger magnitude is the smaller value.
   const bool left_negative = lhs.coefficient() < 0;
-  return left_negative != (rhs.coefficient() < 0) ? left_negative : lhs.scale() > rhs.scale();
+  if (left_negative != (rhs.coefficient() < 0)) {
+    return left_negative;
+  }
+  return left_negative ? lhs.scale() < rhs.scale() : lhs.scale() > rhs.scale();
 }
 
 /** @brief The kind of failure a `BrokerError` reports. */
@@ -2214,19 +2218,33 @@ inline std::string format_iso8601_utc(std::chrono::system_clock::time_point valu
 }
 
 /**
- * @brief Parses an ISO 8601 timestamp with a `Z` or a `+hh:mm`/`-hh:mm` offset.
+ * @brief Parses an ISO 8601 timestamp, `YYYY-MM-DDTHH:MM:SS[.fraction]` followed by `Z` or a
+ *   `+hh:mm`/`-hh:mm` offset.
  *
  * Fractional seconds are truncated to the millisecond.
  *
  * @param value The text, such as `2026-10-06T09:30:00.250+09:00`.
- * @return The instant, or `std::nullopt` if the date-time part does not parse, the date or time is
- *   invalid, or there is no zone designator.
- * @warning Not a strict validator: it does not check the offset's range, trailing text after the
- *   zone, or characters after the third fractional digit (`+99:99` and `Zgarbage` are accepted).
+ * @return The instant, or `std::nullopt` if the text is not exactly that form (a non-digit in the
+ *   fraction, an offset outside `-23:59`..`+23:59`, or anything after the zone included), or the
+ *   date or time is invalid.
  */
 inline std::optional<std::chrono::system_clock::time_point> parse_iso8601_timestamp(
   std::string_view value
 ) {
+  // The fixed layout first: `sscanf`'s `%d` would accept signs, spaces and short fields.
+  const auto digits = [value](std::size_t from, std::size_t count) {
+    for (std::size_t index = from; index < from + count; ++index) {
+      if (value[index] < '0' || value[index] > '9') {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (value.size() < 20 || !digits(0, 4) || value[4] != '-' || !digits(5, 2) || value[7] != '-' ||
+      !digits(8, 2) || value[10] != 'T' || !digits(11, 2) || value[13] != ':' || !digits(14, 2) ||
+      value[16] != ':' || !digits(17, 2)) {
+    return std::nullopt;
+  }
   int year, month, day, hour, minute, second;
   if (
     std::sscanf(
@@ -2240,8 +2258,32 @@ inline std::optional<std::chrono::system_clock::time_point> parse_iso8601_timest
     return std::nullopt;
   }
 
-  const auto timezone_position = value.find_first_of("Z+-", 19);
-  if (timezone_position == std::string_view::npos) {
+  // An optional fraction of digits only, then the zone, then nothing.
+  std::size_t timezone_position = 19;
+  if (value[19] == '.') {
+    timezone_position = 20;
+    while (timezone_position < value.size() && value[timezone_position] >= '0' &&
+           value[timezone_position] <= '9') {
+      ++timezone_position;
+    }
+    if (timezone_position == 20) {
+      return std::nullopt;
+    }
+  }
+  if (timezone_position >= value.size()) {
+    return std::nullopt;
+  }
+  const char zone = value[timezone_position];
+  if (zone == 'Z') {
+    if (timezone_position + 1 != value.size()) {
+      return std::nullopt;
+    }
+  } else if (zone == '+' || zone == '-') {
+    if (value.size() != timezone_position + 6 || !digits(timezone_position + 1, 2) ||
+        value[timezone_position + 3] != ':' || !digits(timezone_position + 4, 2)) {
+      return std::nullopt;
+    }
+  } else {
     return std::nullopt;
   }
 
@@ -2272,6 +2314,9 @@ inline std::optional<std::chrono::system_clock::time_point> parse_iso8601_timest
         &offset_minute
       ) != 2
     ) {
+      return std::nullopt;
+    }
+    if (offset_hour > 23 || offset_minute > 59) {
       return std::nullopt;
     }
     const int offset = offset_hour * 3600 + offset_minute * 60;

@@ -4,6 +4,7 @@
 
 #include <algotradelib/core>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -75,13 +76,12 @@ inline std::optional<Decimal64> to_decimal(Scalar value, std::uint8_t scale) {
 /**
  * @brief Converts a computed value into a price an order can carry.
  *
- * The value is first rounded to the nearest decimal at `scale` with `to_decimal`, and that decimal
- * is then rounded onto the tick grid in the order's favour (a buy down, a sell up).
- *
- * @warning The first step rounds to nearest whatever the side, so the result can be above a
- *   computed buy limit or below a computed sell limit: with the KRX grid and `scale = 0`, a buy at
- *   `1999.8` gives `2000` and a sell at `2000.2` gives `2000`. Round the value in the order's
- *   favour yourself first (for example `std::floor` for a buy) if that matters.
+ * The value is rounded to a decimal at `scale` in the order's favour (a buy down, a sell up), then
+ * onto the tick grid the same way, so a buy is never above the computed value and a sell never below
+ * it: with the KRX grid and `scale = 0`, a buy at `1999.8` gives `1999` and a sell at `2000.2` gives
+ * `2005`. A value within a few units of floating-point
+ * precision of a decimal counts as that decimal, so a price converted from a `Decimal64` comes back
+ * unchanged.
  *
  * @param value The computed price.
  * @param rule The instrument's tick rule.
@@ -97,11 +97,33 @@ inline std::optional<Decimal64> round_scalar_to_tick(
   OrderSide side,
   std::uint8_t scale = 0
 ) {
-  const auto exact = to_decimal(value, scale);
-  if (!exact) {
+  const auto nearest = to_decimal(value, scale);
+  if (!nearest) {
     return std::nullopt;
   }
-  return rule.round_to_tick(*exact, side);
+  // `to_decimal` rounds to nearest, which can cross the computed value against the order. Step one
+  // unit back when it did by more than floating-point noise (a few units in the last place).
+  Scalar scaled = value;
+  for (std::uint8_t step = 0; step < scale; ++step) {
+    scaled *= Scalar(10);
+  }
+  const Scalar noise =
+    std::max(Scalar(1e-9), std::abs(scaled) * Scalar(4) * std::numeric_limits<Scalar>::epsilon());
+  const auto coefficient = nearest->coefficient();
+  const Scalar crossed = static_cast<Scalar>(coefficient) - scaled;
+  auto exact = *nearest;
+  if (side == OrderSide::BUY && crossed > noise) {
+    if (coefficient == std::numeric_limits<std::int64_t>::min()) {
+      return std::nullopt;
+    }
+    exact = Decimal64(coefficient - 1, scale);
+  } else if (side == OrderSide::SELL && -crossed > noise) {
+    if (coefficient == std::numeric_limits<std::int64_t>::max()) {
+      return std::nullopt;
+    }
+    exact = Decimal64(coefficient + 1, scale);
+  }
+  return rule.round_to_tick(exact, side);
 }
 
 } // namespace analytics
