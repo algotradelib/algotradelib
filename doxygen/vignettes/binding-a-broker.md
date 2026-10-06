@@ -79,7 +79,7 @@ The report says everything that happened, and the distinctions matter:
 | `rejected_` | it was not placed, with the `RejectReason` saying why: reconciliation could not build it, the broker refused it (`BROKER_REFUSED`), or the binding refused to send it (`BINDING_REFUSED`) |
 | `refused_` | a guard forbade it (`GuardReason`), with the limit and what was attempted |
 | `withheld_` | the instrument's order state is unresolved; reported, never retried |
-| `indeterminate_` | the outcome is unknown (see the rule below: a failure in transit, an unreadable reply, or a broker refusal reported as `PROTOCOL`) |
+| `indeterminate_` | the outcome is unknown (see the rule below: a failure in transit, an unreadable reply, an HTTP 5xx, or a broker refusal reported as `PROTOCOL`) |
 | `unavailable_` | local machinery could not send it; no broker was asked |
 
 A cancellation has the same outcomes and its own bucket for each, because only `would_cancel_` means
