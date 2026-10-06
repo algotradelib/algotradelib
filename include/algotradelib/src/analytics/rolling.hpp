@@ -468,7 +468,8 @@ Scalar ema_step(Scalar level, Scalar value, std::size_t span) = delete;
  * The level is seeded with the first observed value and then updated as
  * `alpha * value + (1 - alpha) * level` (the update `ema_step` makes). An unobserved value is
  * skipped: the level carries over it and that row is `missing()`. On observed rows the result
- * equals `pandas.Series.ewm(alpha=alpha, adjust=False, ignore_na=True).mean()` up to rounding.
+ * equals `pandas.Series.ewm(alpha=alpha, adjust=False, ignore_na=True, min_periods=min_observed)
+ * .mean()` up to rounding.
  *
  * @param values The series; `NaN` entries are unobserved.
  * @param alpha The smoothing factor, in `(0, 1]`; for a period, pass `alpha_from_span(span)`.
