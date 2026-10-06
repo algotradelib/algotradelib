@@ -79,7 +79,7 @@ The report says everything that happened, and the distinctions matter:
 | `rejected_` | it was not placed, with the `RejectReason` saying why: reconciliation could not build it, the broker refused it (`BROKER_REFUSED`), or the binding refused to send it (`BINDING_REFUSED`) |
 | `refused_` | a guard forbade it (`GuardReason`), with the limit and what was attempted |
 | `withheld_` | the instrument's order state is unresolved; reported, never retried |
-| `indeterminate_` | the send failed in transit and the outcome is unknown |
+| `indeterminate_` | the outcome is unknown (see the rule below: a failure in transit, an unreadable reply, or a broker refusal reported as `PROTOCOL`) |
 | `unavailable_` | local machinery could not send it; no broker was asked |
 
 A cancellation has the same outcomes and its own bucket for each, because only `would_cancel_` means
@@ -89,7 +89,7 @@ the broker accepted the request:
 | --- | --- |
 | `rejected_cancel_` | the broker refused the request, or the binding refused to send it; `by_broker_` says which |
 | `refused_cancel_` | a hold on the guard refused it, with the `HaltReason` |
-| `indeterminate_cancel_` | the send failed in transit; whether the broker got it is unknown |
+| `indeterminate_cancel_` | the outcome is unknown, as for `indeterminate_`; the order may or may not have been withdrawn |
 | `unavailable_cancel_` | local machinery could not send it; no broker was asked |
 | `unresolved_cancel_` | it named an order the snapshot does not hold |
 
@@ -323,12 +323,12 @@ So a failure is classified by whether the order might exist, and four categories
 | --- | --- |
 | `TRANSPORT` | the connection failed; did the bytes arrive? |
 | `CANCELLED` | a *local* deadline or a closing session says nothing about what was already sent |
-| `PROTOCOL` | the answer could not be parsed — it may have been an ack — or the broker declared a failure the client does not classify (at KIS a reply with `rt_cd` not `0`, such as insufficient balance; at Toss any refusal but a rate limit) |
+| `PROTOCOL` | the answer could not be parsed — it may have been an ack — or the broker declared a failure the client does not classify (at KIS a reply with `rt_cd` not `0`, such as insufficient balance; at Toss any refusal but a rate limit; at Kiwoom a `return_code` outside its documented error list) |
 | `HTTP` 5xx | the broker's own infrastructure failing, possibly after the engine took the order |
 
 An HTTP 4xx, an authentication failure, an invalid argument and a rate-limit refusal are *answers*:
-the order does not exist, so nothing needs reconciling. At KIS and Toss most refusals arrive as
-`PROTOCOL` instead, so they are treated as unknown and the instrument is reconciled.
+the order does not exist, so nothing needs reconciling. At KIS, Toss and Kiwoom most refusals arrive
+as `PROTOCOL` instead, so they are treated as unknown and the instrument is reconciled.
 
 When the outcome is unknown, the runner marks the instrument and **withholds everything further for
 it**. Not retried — a retry is exactly what doubles a position. Nothing clears the mark except

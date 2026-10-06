@@ -152,7 +152,8 @@ Read these before using the order clients.
   authentication and before any socket write. Accepting it and dropping it would
   leave a caller believing a resubmission is safe when it would place a second
   live order. The library never generates a key on its own either, so its absence
-  stays a visible caller decision.
+  stays a visible caller decision. Kiwoom refuses one the same way
+  (`client_order_id_unsupported`).
 - **Acceptance is not execution.** An `OrderAck` means the broker recorded the
   instruction. Read the resulting state back through an order inquiry.
 - **Unsupported instructions are rejected, never downgraded.** An order shape a
