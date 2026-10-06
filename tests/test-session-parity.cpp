@@ -99,10 +99,12 @@ WorkingOrder<mock::Broker> resting_limit() {
   return working;
 }
 
-/** Scripts the mock to accept every order instruction. */
+/** Scripts the mock to accept every order instruction, and zeroes the adapter-hook counters. */
 template <typename Driver>
 void accept_orders(Driver& driver) {
   driver.mock().ack_ = mock::MockAck{"ticket-1", std::chrono::system_clock::now()};
+  mock_port::Normalizers::validate_place_calls_ = 0;
+  mock_port::Normalizers::to_replacement_calls_ = 0;
 }
 
 } // namespace
@@ -119,6 +121,8 @@ TEMPLATE_TEST_CASE("both sessions refuse a trigger the broker cannot send, befor
   CHECK(placed.error().broker_code_ == "unsupported_trigger_price");
   CHECK_FALSE(placed.error().reached_broker_);
   CHECK(driver.mock().place_calls_ == 0);
+  // Refused by the session: the adapter was never asked.
+  CHECK(mock_port::Normalizers::validate_place_calls_ == 0);
 }
 
 TEMPLATE_TEST_CASE("both sessions run the adapter's own placement check", "[port][parity]",
@@ -132,6 +136,7 @@ TEMPLATE_TEST_CASE("both sessions run the adapter's own placement check", "[port
   REQUIRE_FALSE(placed);
   CHECK(placed.error().broker_code_ == "idempotency_key_unsupported");
   CHECK(driver.mock().place_calls_ == 0);
+  CHECK(mock_port::Normalizers::validate_place_calls_ == 1);
 }
 
 TEMPLATE_TEST_CASE("both sessions check the trigger before the adapter's placement check", "[port][parity]",
@@ -159,6 +164,9 @@ TEMPLATE_TEST_CASE("both sessions send a valid order once and normalize the answ
   CHECK(placed.value().ack_.order_id_ == "ticket-1");
   CHECK(placed.value().ref_.primary_ == "ticket-1");
   CHECK(driver.mock().place_calls_ == 1);
+  // And again on the same session: a blocking client restarts its loop for each call.
+  REQUIRE(driver.place(limit_order()));
+  CHECK(driver.mock().place_calls_ == 2);
 }
 
 TEMPLATE_TEST_CASE("both sessions pass a broker's own refusal through unchanged", "[port][parity]",
@@ -190,6 +198,22 @@ TEMPLATE_TEST_CASE("both sessions refuse a modification that would carry a trigg
     REQUIRE_FALSE(replaced);
     CHECK(replaced.error().broker_code_ == "unsupported_trigger_price");
   }
+  CHECK(driver.mock().replace_calls_ == 0);
+  CHECK(mock_port::Normalizers::to_replacement_calls_ == 0);
+}
+
+TEMPLATE_TEST_CASE("both sessions pass on the adapter's own refusal of a modification", "[port][parity]",
+                   AsyncDriver, BlockingDriver) {
+  TestType driver;
+  accept_orders(driver);
+  const auto limit = resting_limit();
+  auto instruction = reprice(limit, Decimal64::parse("68000"));
+  instruction.quantity_ = Decimal64::parse("0");
+
+  const auto replaced = driver.replace(limit.ref_, instruction);
+  REQUIRE_FALSE(replaced);
+  CHECK(replaced.error().broker_code_ == "zero_quantity");
+  CHECK(mock_port::Normalizers::to_replacement_calls_ == 1);
   CHECK(driver.mock().replace_calls_ == 0);
 }
 

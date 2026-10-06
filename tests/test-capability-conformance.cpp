@@ -29,6 +29,7 @@ ATL_ASSERT_BROKER(tossinvest::TossBlockingClient);
 ATL_ASSERT_BROKER(kiwoom::KiwoomClient);
 ATL_ASSERT_BROKER(kiwoom::KiwoomBlockingClient);
 ATL_ASSERT_BROKER(mock::MockClient);
+ATL_ASSERT_BROKER(mock::MockBlockingClient);
 
 // An adapter whose traits specialization is `final` and inherits no shipped broker's: nothing in the
 // check derives from the traits, so it conforms like any other.

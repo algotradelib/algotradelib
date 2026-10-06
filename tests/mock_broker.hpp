@@ -435,8 +435,17 @@ struct Normalizers {
     return ref;
   }
 
+  /**
+   * How often the session asked the adapter to validate a placement or convert a modification, so a test
+   * can show a session refusal never reached the adapter (`tests/test-session-parity.cpp`).
+   */
+  static inline int validate_place_calls_ = 0;
+  /** See `validate_place_calls_`. */
+  static inline int to_replacement_calls_ = 0;
+
   /** Refuses an idempotency key this broker does not honor. */
   static std::optional<BrokerError> validate_place(const OrderRequest& order) {
+    ++validate_place_calls_;
     if (!order.client_order_id_) {
       return std::nullopt;
     }
@@ -479,11 +488,20 @@ struct Normalizers {
     return Result<WorkingOrders<mock::Broker>>(std::move(orders));
   }
 
-  /** Converts a normalized modification. */
+  /** Converts a normalized modification, refusing a stated quantity of zero. */
   static Result<Amendment> to_replacement(
     const OrderRef<mock::Broker>& ref,
     const AmendInstruction& instruction
   ) {
+    ++to_replacement_calls_;
+    if (instruction.quantity_ && *instruction.quantity_ == Decimal64::parse("0")) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
+      error.broker_code_ = "zero_quantity";
+      error.message_ = "the in-memory broker takes no modification to a quantity of zero";
+      return Result<Amendment>(std::move(error));
+    }
     Amendment amendment;
     amendment.ticket_ = ref.primary_;
     amendment.whole_ = instruction.all_remaining_;
