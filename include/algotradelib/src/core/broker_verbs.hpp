@@ -44,7 +44,7 @@ struct PlainCallback {
 struct MoveOnlyCallback {
   /** @brief Constructs the callback. */
   MoveOnlyCallback() = default;
-  /** @brief Move constructor. */
+  /** @brief Move constructor (the callback has no state). */
   MoveOnlyCallback(MoveOnlyCallback&&) = default;
   /**
    * @brief Move assignment.

@@ -107,6 +107,8 @@ struct InstrumentId {
 /**
  * @brief A short uppercase code (letters, digits, `_`), stored inline without allocation.
  *
+ * The length is stored in one byte, so `N` must be at most 255.
+ *
  * Holds a broker code the library may not recognize (a market segment, an exchange id) exactly as
  * sent, so it can be carried, compared and displayed.
  *
@@ -276,7 +278,8 @@ private:
  * @brief An exact signed decimal: an `int64` coefficient times `10^-scale`.
  *
  * Prices, quantities and money are `Decimal64` wherever they come from or go to a broker. The
- * arithmetic is the `decimal_*` free functions, which return `std::nullopt` instead of overflowing.
+ * arithmetic is the `decimal_*` free functions, which return `std::nullopt` when a coefficient,
+ * scale or intermediate value does not fit (a result whose final value would fit can still fail).
  */
 class Decimal64 {
 public:
@@ -301,7 +304,8 @@ public:
    * @return The value.
    * @throws std::invalid_argument if `input` is empty, has no digits, has more than one `.`, or
    *   contains any other character.
-   * @throws std::out_of_range if the value or its scale does not fit.
+   * @throws std::out_of_range if the digits as written (before trailing zeros are removed) or the
+   *   scale do not fit.
    */
   static Decimal64 parse(std::string_view input) {
     if (input.empty()) {
@@ -486,7 +490,8 @@ inline bool align(
  * @brief Adds two decimals exactly.
  * @param lhs The first addend.
  * @param rhs The second addend.
- * @return The normalized sum, or `std::nullopt` if it does not fit in a `Decimal64`.
+ * @return The normalized sum, or `std::nullopt` if it, or either operand rescaled to the larger
+ *   scale, does not fit.
  */
 inline std::optional<Decimal64> decimal_add(const Decimal64& lhs, const Decimal64& rhs) {
   std::int64_t left = 0;
@@ -506,7 +511,8 @@ inline std::optional<Decimal64> decimal_add(const Decimal64& lhs, const Decimal6
  * @brief Subtracts two decimals exactly.
  * @param lhs The minuend.
  * @param rhs The subtrahend.
- * @return The normalized difference, or `std::nullopt` if it does not fit.
+ * @return The normalized difference, or `std::nullopt` if it, or either operand rescaled to the
+ *   larger scale, does not fit.
  */
 inline std::optional<Decimal64> decimal_subtract(const Decimal64& lhs, const Decimal64& rhs) {
   std::int64_t left = 0;
@@ -546,7 +552,8 @@ inline std::optional<Decimal64> decimal_halve(const Decimal64& value) {
  * @brief Multiplies two decimals exactly; the scales add.
  * @param lhs The first factor.
  * @param rhs The second factor.
- * @return The normalized product, or `std::nullopt` if it does not fit.
+ * @return The normalized product, or `std::nullopt` if the product of the coefficients or the sum of
+ *   the scales does not fit (checked before trailing zeros are removed).
  */
 inline std::optional<Decimal64> decimal_multiply(const Decimal64& lhs, const Decimal64& rhs) {
   const auto left = lhs.coefficient();
@@ -576,7 +583,8 @@ inline std::optional<Decimal64> decimal_multiply(const Decimal64& lhs, const Dec
  * @param lhs The dividend.
  * @param rhs The divisor.
  * @param scale The number of fractional digits to keep.
- * @return The normalized quotient, or `std::nullopt` if `rhs` is zero or the result does not fit.
+ * @return The normalized quotient, or `std::nullopt` if `rhs` is zero, or the rescaled operands or
+ *   the dividend multiplied by `10^scale` do not fit.
  */
 inline std::optional<Decimal64> decimal_divide(
   const Decimal64& lhs,
@@ -612,7 +620,9 @@ inline std::optional<Decimal64> decimal_divide(
  * @param value The value.
  * @param step The step, such as a lot size; must be positive.
  * @return The largest multiple of `step` not above `value`, or `std::nullopt` if `step` is not
- *   positive or the arithmetic does not fit.
+ *   positive or the operands rescaled to a common scale do not fit.
+ * @warning A negative `value` whose rounded result is below the smallest `int64` coefficient is
+ *   undefined behaviour (unchecked overflow), such as `Decimal64(INT64_MIN, 0)` with step 3.
  */
 inline std::optional<Decimal64> decimal_floor_to_multiple(
   const Decimal64& value,
@@ -636,6 +646,8 @@ inline std::optional<Decimal64> decimal_floor_to_multiple(
  * @param lhs The first value.
  * @param rhs The second value.
  * @return `true` if `lhs < rhs`.
+ * @warning Wrong for two negative values when rescaling one to the other's scale overflows `int64`
+ *   (for example `-9e18` against `-0.01`). Values of ordinary prices and quantities are unaffected.
  */
 inline bool decimal_less(const Decimal64& lhs, const Decimal64& rhs) {
   std::int64_t left = 0;
@@ -1074,8 +1086,8 @@ struct Date {
 /**
  * @brief Converts a day count since 1970-01-01 to a Gregorian date.
  *
- * Exact for every day count (Howard Hinnant's `civil_from_days`). The result is not checked
- * against `is_valid_date`'s year range.
+ * Howard Hinnant's `civil_from_days`, exact for any day count whose year fits an `int` (far beyond
+ * years 1 to 9999). The result is not checked against `is_valid_date`'s year range.
  *
  * @param days Days after 1970-01-01; negative counts go backwards.
  * @return The date.
@@ -1722,6 +1734,9 @@ struct OrderRequest {
  * @warning Test whether an order filled with `filled_quantity_`, never with whether an amount is
  *   present: KIS reports a zero `filled_amount_` on unfilled orders, and Toss leaves amounts empty
  *   when the broker sent `null`.
+ *
+ * At Toss, an amount sent as `null` is empty, but a missing field fails the listing as a protocol
+ * error.
  */
 struct OrderExecution {
   /** @brief The quantity filled so far; zero if nothing has filled. Always present. */
@@ -1906,8 +1921,9 @@ struct PlacedOrder {
 /**
  * @brief An order's type, price, trigger, time in force and session, as an amendment states them.
  *
- * Write `OrderShape{OrderType::LIMIT, price}` to change the price: the time in force, session and
- * trigger left unset mean "keep what the order has" (see `replace_with`).
+ * In an amendment, an unset time in force or session keeps the order's own. An unset trigger keeps
+ * the resting trigger only when both the new and the resting type are `STOP_LIMIT`; turning a stop
+ * into a plain `LIMIT` drops its trigger. To change only the price, use `reprice`.
  */
 struct OrderShape {
   /** @brief Constructs a limit shape with nothing else stated. */
@@ -1918,7 +1934,8 @@ struct OrderShape {
    * @param price The price, for a basis that takes one.
    * @param time_in_force The time in force, or unset to keep the resting order's.
    * @param session The session, or unset to keep the resting order's.
-   * @param trigger_price The trigger, or unset to keep a resting stop's.
+   * @param trigger_price The trigger; unset keeps a resting stop's trigger only if `type` is also
+   *   `STOP_LIMIT`.
    */
   OrderShape(
     OrderType type,
@@ -2131,8 +2148,10 @@ inline AmendInstruction cancel_quantity(const WorkingOrder<Broker>& order, Decim
 /**
  * @brief Makes an instruction changing a working order to a new shape.
  *
- * What `shape` leaves unset (time in force, session, trigger) stays as the order has it. A set
- * value is a deliberate change, made where the broker can and refused where it cannot.
+ * An unset time in force or session stays as the order has it; an unset trigger stays only if both
+ * `shape` and the order are `STOP_LIMIT` (see `amended_trigger_price`). A set value is a deliberate
+ * change, made where the broker can and refused where it cannot. To change only the price, use
+ * `reprice`.
  *
  * @tparam Broker The broker tag.
  * @param order The working order.
@@ -2197,11 +2216,13 @@ inline std::string format_iso8601_utc(std::chrono::system_clock::time_point valu
 /**
  * @brief Parses an ISO 8601 timestamp with a `Z` or a `+hh:mm`/`-hh:mm` offset.
  *
- * Fractional seconds are kept to the millisecond.
+ * Fractional seconds are truncated to the millisecond.
  *
  * @param value The text, such as `2026-10-06T09:30:00.250+09:00`.
- * @return The instant, or `std::nullopt` if the text is malformed, the date or time is invalid, or
- *   there is no zone designator.
+ * @return The instant, or `std::nullopt` if the date-time part does not parse, the date or time is
+ *   invalid, or there is no zone designator.
+ * @warning Not a strict validator: it does not check the offset's range, trailing text after the
+ *   zone, or characters after the third fractional digit (`+99:99` and `Zgarbage` are accepted).
  */
 inline std::optional<std::chrono::system_clock::time_point> parse_iso8601_timestamp(
   std::string_view value

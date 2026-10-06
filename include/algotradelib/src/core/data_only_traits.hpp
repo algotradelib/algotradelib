@@ -75,8 +75,9 @@ struct postable<
  * @brief Completes an asynchronous call with `refusal()`, posted through the handler's associated
  *   executor.
  *
- * Never invoked inside the initiating call; the handler is moved once and called once, so it may be
- * move-only. A handler bound to a strand completes on that strand.
+ * Never invoked inside the initiating call (though on a multi-threaded executor it may run before
+ * that call returns); the handler is moved once and called once, so it may be move-only. A handler
+ * bound to a strand completes on that strand.
  *
  * @tparam Out The result type of the call.
  * @tparam Handler The completion handler type.
@@ -129,6 +130,9 @@ void post_refusal(Handler&& handler) {
  * - `place` or `holdings` called directly on its session fail at run time;
  * - `live_program::trade` and `observe` (`examples/live_program.hpp`) also need reference data
  *   (`has_reference_data`).
+ *
+ * The account-side members ignore their client, account, request, reference and instruction
+ * arguments, which are unnamed.
  *
  * @note A member you declare hides every inherited member of that name, overloads included
  *   (declaring a blocking `holdings` hides the asynchronous one); re-expose with

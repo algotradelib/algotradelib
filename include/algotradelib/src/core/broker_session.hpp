@@ -209,8 +209,11 @@ public:
    * @brief Returns the client's request-pacing counters.
    *
    * A rising `delayed_` on a polling group while `TRADING` stays undelayed means trading capacity
-   * is being kept free; a rising `shed_` means the queue is full. Read them from a completion
-   * handler, since they live on the client's strand.
+   * is being kept free; a rising `shed_` means the queue is full.
+   *
+   * @warning The counters are plain integers the client updates on its own strand. Read them only
+   *   when no request is in flight, or from code running on that strand; a completion handler bound
+   *   to another executor can race with other requests.
    *
    * @return The counters, or `nullptr` if the client is not paced.
    */
@@ -439,8 +442,10 @@ public:
    *   `boost::asio::use_future`.
    * @param ref The order. A reference from another broker does not compile.
    * @param instruction Build it with `cancel_all` or `cancel_quantity`; a partial cancellation at
-   *   a broker that cancels only in full is refused before any I/O. A trigger price in it is never
-   *   refused, so a stop order can always be withdrawn.
+   *   a broker that cancels only in full is refused before any I/O. The session's
+   *   `has_trigger_price` check does not apply to cancellations, so restating a stop's trigger (as
+   *   `cancel_all` does) does not block its withdrawal; the adapter still validates the instruction
+   *   (Kiwoom refuses a trigger that differs from the resting one).
    * @param token The completion token; the handler runs once, on its associated executor.
    * @return Whatever `token` produces (nothing for a callback, a future for `use_future`).
    */
@@ -1152,8 +1157,8 @@ public:
    *   The request is never resent automatically. Check working orders or order history before
    *   sending it again.
    * @param ref The order.
-   * @param instruction Build it with `cancel_all` or `cancel_quantity`; a trigger in it is never
-   *   refused.
+   * @param instruction Build it with `cancel_all` or `cancel_quantity`; the session's
+   *   `has_trigger_price` check does not apply, though the adapter still validates it.
    * @return The acknowledgement and reference, or an error.
    */
   Result<Placed> cancel(const Ref& ref, const AmendInstruction& instruction) {

@@ -145,7 +145,8 @@ struct TickBand {
  *
  * No broker publishes tick sizes, so the library maintains these tables (`source_` names the
  * table and its revision); replace a rule if the exchange revises its grid. A rule of kind
- * `UNKNOWN` refuses to check or round a price.
+ * `UNKNOWN` refuses to check or round a price. A custom table needs positive ticks and bands
+ * sorted by `from_`.
  */
 struct PriceRule {
   /** @brief Whether the rule states a grid, imposes none, or does not know it. */
@@ -188,8 +189,9 @@ struct PriceRule {
   /**
    * @brief Tests whether a price is on the grid.
    * @param price The price.
-   * @return `true` or `false`; `std::nullopt` if the grid is unknown (kind `UNKNOWN`) or the
-   *   arithmetic does not fit. Without a band at `price` (an unconstrained rule), `true`.
+   * @return `std::nullopt` if the grid is unknown (kind `UNKNOWN`); `true` if `price` is on its
+   *   band's tick, or there is no band at `price` (an unconstrained rule); otherwise `false`, which
+   *   also covers a remainder that does not fit a `Decimal64`.
    */
   std::optional<bool> on_tick(const Decimal64& price) const {
     if (kind_ == Kind::UNKNOWN) {
@@ -204,7 +206,12 @@ struct PriceRule {
   }
 
   /**
-   * @brief Rounds a price onto the grid in the order's favour: a buy rounds down, a sell up.
+   * @brief Rounds a price to its band's tick in the order's favour: a buy rounds down, a sell up.
+   *
+   * The tick is the one at `price`; a rounded price that crosses into the next band is not
+   * re-rounded. That is correct for the KRX table; with a custom table whose band boundaries are not
+   * multiples of both ticks, check the result with `on_tick`.
+   *
    * @param price The price.
    * @param side The side of the order.
    * @return The rounded price (unchanged if already on the grid or there is no band at `price`),

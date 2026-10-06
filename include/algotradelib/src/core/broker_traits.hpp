@@ -36,7 +36,7 @@ namespace algotradelib {
  * |---|---|
  * | `Account`, `BrokerTag`, `Config`, `PlaceAck`, `Amendment`, `HistoryQuery`, `WorkingOrdersResult` | always |
  * | `name`, `blocking`, `data_only`, `has_trigger_price`, `supports_interval(BarInterval)` | always |
- * | every other `BrokerCaps` constant: `true` or `false`, and `sellable_source` | always; none has a default |
+ * | every other `BrokerCaps` constant (`true` or `false`), and `sellable_source`, except the two below | always; none has a default |
  * | `working_orders_state_terminal` | where `has_working_orders` |
  * | `sellable_inquiry_basis` | where `sellable_source` is `INQUIRY` |
  * | `quote`, `bars`, `validate_bars`, `holdings`, `validate_place`, `place_order`, `replace_order`, `cancel_order`, `order_history`, `normalize_place`, `to_replacement`, `to_cancellation`, `to_history_query`, `rate_limit_stats` | always: every session calls them |
