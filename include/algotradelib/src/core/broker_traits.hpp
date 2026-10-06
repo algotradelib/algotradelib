@@ -16,37 +16,21 @@
 namespace algotradelib {
 
 /**
- * Adaptation point between one concrete broker client and the broker port.
+ * @brief Describes one broker client to the library: its types, capabilities, call thunks and
+ *   normalizers.
  *
- * The template is declared and never defined. Each supported client specializes
- * it in that broker's own directory, so this header never depends on a broker
- * and adding a broker edits no shared file. The dependency therefore points from
- * the port to the adapter, which is the direction the architecture requires.
+ * Declared but never defined. To add a broker, specialize it for your client type in your own
+ * code; no library file changes. A specialization holds only:
  *
- * A specialization is deliberately *external* rather than a base class the
- * client inherits. Static inheritance (CRTP) shares an implementation downward
- * and cannot translate a vendor acknowledgement type into a normalized one;
- * every hook would still need the mapping layer that lives here.
+ * - associated types and constants: `Client`, `Config`, `Account`, `BrokerTag`, `PlaceAck`,
+ *   `Amendment`, `HistoryQuery`, `WorkingOrdersResult`, `name`, and the capability constants that
+ *   `BrokerCaps` reads;
+ * - call thunks that forward to the client's own functions, with the broker's own argument types;
+ * - normalizers and converters, which hold no state and perform no I/O.
  *
- * A specialization contributes exactly three kinds of member and nothing else:
- *
- * - associated types and constants: `Client`, `Config`, `Account`, `BrokerTag`,
- *   `PlaceAck`, `Amendment`, `HistoryQuery`, `WorkingOrdersResult`, `name`, and
- *   the capability constants read by `BrokerCaps`;
- * - raw call thunks forwarding to the client's own entry points, taking the
- *   broker's own argument types;
- * - pure normalizers and converters, which hold no state and perform no I/O.
- *
- * Normalizers are pure so that the asynchronous and blocking ports share them
- * verbatim. Completion-signature translation and executor propagation are
- * written once in `BrokerSession`, not per broker.
- *
- * **The contract.** Nothing checks a specialization when a session is built: a
- * missing member is reported by the compiler, naming this specialization and the
- * member, where it is first used. `ATL_ASSERT_BROKER(Client)` (`broker_verbs.hpp`)
- * compiles every claimed operation verb and reads every capability at once, and an
- * adapter author asserts it in one source file. It calls neither `broker_name()`
- * nor `rate_limit_stats()`, which are compiled where they are first called.
+ * A missing member is a compile error where it is first used. Assert
+ * `ATL_ASSERT_BROKER(Client)` (`broker_verbs.hpp`) in one source file to compile every operation and
+ * read every capability at once; it does not call `broker_name()` or `rate_limit_stats()`.
  *
  * | Member | Required |
  * |---|---|
@@ -58,27 +42,27 @@ namespace algotradelib {
  * | `quote`, `bars`, `validate_bars`, `holdings`, `validate_place`, `place_order`, `replace_order`, `cancel_order`, `order_history`, `normalize_place`, `to_replacement`, `to_cancellation`, `to_history_query`, `rate_limit_stats` | always: every session calls them |
  * | `buying_power`, `sellable_quantity`, `commissions`, `working_orders` and `normalize_working_orders`, `instrument`, `calendar` and `validate_calendar`, `price_limits`, `trades`, `prices`, `depth`, `order_by_id`, `accounts` with `selector_of`, `display_of` and `type_of` | where the capability that gates it is claimed |
  *
- * A blocking client (`blocking = true`) answers each call with a result; an
- * asynchronous one takes a completion handler as its last argument. A market-data
- * vendor inherits `DataOnlyTraits<Tag>`, which answers the account side.
+ * A blocking client (`blocking = true`) returns each result; an asynchronous one takes a
+ * completion handler as its last argument. A market-data vendor can inherit `DataOnlyTraits<Tag>`,
+ * which answers the account side.
+ *
+ * @tparam Client The broker client type.
  */
 template <typename Client>
 struct BrokerTraits;
 
 /**
- * One brokerage account discovered through a broker that publishes a list.
+ * @brief One account from a broker's account list.
  *
- * `selector_` is the value a `BrokerSession` binds; its type is broker-specific
- * because account selection is. `display_number_` and `type_` are for display
- * and are preserved as the broker reported them.
+ * @tparam Client The broker client type.
  */
 template <typename Client>
 struct AccountInfo {
-  /** The account number as the broker displays it, usually masked. For display only. */
+  /** @brief The account number as the broker displays it (usually masked); for display only. */
   std::string display_number_;
-  /** The account type as the broker reported it. For display only. */
+  /** @brief The account type as the broker reported it; for display only. */
   std::string type_;
-  /** The value a `BrokerSession` binds. Its type is broker-specific, because selection is. */
+  /** @brief The value to bind a `BrokerSession` to this account with; its type is broker-specific. */
   typename BrokerTraits<Client>::Account selector_;
 };
 

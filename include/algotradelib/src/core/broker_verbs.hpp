@@ -12,65 +12,68 @@
 namespace algotradelib {
 
 /**
- * The conformance check an adapter author runs: `ATL_ASSERT_BROKER(Client)`.
+ * @brief The compile-time check behind `ATL_ASSERT_BROKER(Client)`.
  *
- * It does what a caller would. It calls every verb the client's capabilities claim, through the real
- * session, with a plain callback, a move-only callback and `use_future` (or directly, for a blocking
- * client), and it reads every capability constant once. The functions are compiled and never run. A
- * missing member, a thunk with the wrong signature, a thunk that copies its token, or an unanswered
- * capability fails the build here, with the compiler's own diagnostic.
- *
- * **Why calling and not detecting.** A thunk is handed whatever the session builds around the caller's
- * own handler, whose executor type is the caller's choice and which may be move-only. A trait that
- * models those calls has to model every rule C++ applies to them, and an earlier version that tried
- * kept missing one. Nothing checks a traits specialization when a session is built: a verb nobody
- * calls is compiled only here.
- *
- * **Assert it once, in any one source file** -- a test is the natural place, since it instantiates the
- * whole broker:
+ * It calls every operation the client's capabilities claim, through a real session, with a plain
+ * callback, a move-only callback and `use_future` (or directly, for a blocking client), and reads
+ * every capability constant. Nothing runs. A missing member, a thunk with the wrong signature or
+ * one that copies its completion token, or an unanswered capability fails the build with the
+ * compiler's own message. Assert it once, in any one source file (a test is a good place):
  *
  * @code
  * ATL_ASSERT_BROKER(my::Client);
  * ATL_ASSERT_BROKER(my::BlockingClient);
  * @endcode
  *
- * The library asserts it for every shipped client in `tests/test-capability-conformance.cpp`.
- *
- * **What it does not prove**: that an asynchronous thunk completes exactly once, or on the right
- * executor; that a capability the traits claim is true of the broker; or that a thunk whose body does
- * nothing does anything. Those take run-time tests.
+ * It cannot prove run-time behaviour: that an asynchronous call completes exactly once and on the
+ * right executor, or that a claimed capability is true of the broker.
  */
 namespace conformance {
 
-/** A completion handler naming no executor, which is what a plain callback is. */
+/** @brief A completion handler with no associated executor (a plain callback). */
 struct PlainCallback {
-  /** Accepts and discards any completion argument. */
+  /**
+   * @brief Accepts and discards any completion argument.
+   * @tparam T The argument type.
+   */
   template <typename T>
   void operator()(T) const {}
 };
 
-/** A plain callback that cannot be copied, which a thunk that copies its token would not accept. */
+/** @brief A plain callback that cannot be copied. */
 struct MoveOnlyCallback {
-  /** Constructs an empty callback. */
+  /** @brief Constructs the callback. */
   MoveOnlyCallback() = default;
-  /** Moves a callback. */
+  /** @brief Move constructor. */
   MoveOnlyCallback(MoveOnlyCallback&&) = default;
-  /** Moves a callback. */
+  /**
+   * @brief Move assignment.
+   * @return `*this`.
+   */
   MoveOnlyCallback& operator=(MoveOnlyCallback&&) = default;
   MoveOnlyCallback(const MoveOnlyCallback&) = delete;
   MoveOnlyCallback& operator=(const MoveOnlyCallback&) = delete;
 
-  /** Accepts and discards any completion argument. */
+  /**
+   * @brief Accepts and discards any completion argument.
+   * @tparam T The argument type.
+   */
   template <typename T>
   void operator()(T) {}
 };
 
-/** The instrument every verb is called with; its value is irrelevant, since nothing runs. */
+/**
+ * @brief Returns the placeholder instrument the checks call operations with.
+ * @return An arbitrary instrument; nothing runs.
+ */
 inline InstrumentId probe_instrument() { return InstrumentId{Country::KR, Venue::COMBINED, "000000"}; }
 
 /**
- * Calls every verb an asynchronous session's capabilities claim, with a fresh `Token` each time so
- * a move-only one is moved into each verb rather than copied. Compiled, never run.
+ * @brief Calls every operation an asynchronous session's capabilities claim; compiled, never run.
+ * @tparam Client The broker client type.
+ * @tparam Token The completion token type; a fresh one is moved into each call.
+ * @param session The session.
+ * @param ref An order reference.
  */
 template <typename Client, typename Token>
 void call_claimed_async_verbs(
@@ -122,7 +125,12 @@ void call_claimed_async_verbs(
   }
 }
 
-/** The blocking counterpart: every verb a blocking session's capabilities claim. Compiled, never run. */
+/**
+ * @brief Calls every operation a blocking session's capabilities claim; compiled, never run.
+ * @tparam Client The broker client type.
+ * @param session The session.
+ * @param ref An order reference.
+ */
 template <typename Client>
 void call_claimed_blocking_verbs(
   BlockingSession<Client>& session, const typename BlockingSession<Client>::Ref& ref
@@ -175,10 +183,9 @@ void call_claimed_blocking_verbs(
 }
 
 /**
- * Instantiates the verb callers for `Client` by taking their addresses, which compiles them.
- *
- * `constexpr` so `ATL_ASSERT_BROKER` can read it in a `static_assert` at any scope; the value
- * is always true, and what matters is the instantiation it forces.
+ * @brief Compiles the operation checks for a client.
+ * @tparam Client The broker client type.
+ * @return Always `true`; a failing check is a compile error.
  */
 template <typename Client>
 constexpr bool claimed_verbs_compile() {
@@ -195,12 +202,13 @@ constexpr bool claimed_verbs_compile() {
 } // namespace conformance
 
 /**
- * Fails the build unless `Client` is a conforming broker: every port verb its capabilities claim
- * compiles through the real session, and every capability constant is answered. See
- * `algotradelib::conformance`.
+ * @brief Fails the build unless a broker client conforms: every operation its capabilities claim
+ *   compiles through a real session, and every capability is answered.
  *
- * Usable at namespace, class and block scope. Meant for one translation unit per client, since it
- * compiles every claimed verb with three completion tokens.
+ * Usable at namespace, class and block scope. Use it in one source file per client, since it
+ * compiles every claimed operation three times. See `algotradelib::conformance`.
+ *
+ * @param Client The broker client type.
  */
 #define ATL_ASSERT_BROKER(Client)                                                        \
   static_assert(                                                                         \

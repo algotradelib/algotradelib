@@ -13,16 +13,10 @@
 namespace algotradelib {
 
 /**
- * Aggregation period of one bar.
+ * @brief The period one bar covers.
  *
- * The set is closed and holds only periods a supported broker actually publishes.
- * An interval a broker does not publish is refused rather than produced by
- * aggregating a shorter one: resampling silently answers a different question from
- * the one asked, and a caller who wants it should ask for it deliberately.
- *
- * The enumerators are spelled `ONE_DAY` rather than `DAY_1` because POSIX
- * `<langinfo.h>` defines `DAY_1` through `DAY_7` and `MON_1` through `MON_12` as
- * macros, which a header cannot defend against once it is included.
+ * Only periods a broker publishes; an interval a broker does not publish is refused, not built by
+ * aggregating shorter bars.
  */
 enum class BarInterval {
   ONE_MINUTE,
@@ -32,7 +26,11 @@ enum class BarInterval {
   ONE_YEAR,
 };
 
-/** Returns a stable lowercase name for `interval`, for logs and display. */
+/**
+ * @brief Returns a short name for an interval, such as `"1m"` or `"1d"`.
+ * @param interval The interval.
+ * @return The name.
+ */
 inline constexpr std::string_view bar_interval_name(BarInterval interval) noexcept {
   switch (interval) {
     case BarInterval::ONE_MINUTE:
@@ -50,104 +48,77 @@ inline constexpr std::string_view bar_interval_name(BarInterval interval) noexce
 }
 
 /**
- * Which edge of its period a bar's timestamp marks.
+ * @brief Which edge of its period a bar's timestamp marks.
  *
- * Brokers disagree, and the disagreement is invisible until a backtest reads a
- * bar it could not have known yet. Toss stamps a minute bar at its **close** and
- * aggregates `[t - 1m, t)`, while stamping a daily bar at local midnight — its
- * **open**. KIS reports a daily bar by its trading date.
- *
- * Carrying the convention in the value rather than in a comment is deliberate:
- * an off-by-one-bar lookahead is the single most common defect in backtesting
- * code, and it cannot be diagnosed from a timestamp alone.
+ * Brokers differ: Toss stamps a minute bar at its close (covering `[t - 1m, t)`) and a daily bar
+ * at local midnight, its open; KIS reports a daily bar by its trading date. Reading an
+ * open-stamped bar as close-stamped looks ahead by one bar.
  */
 enum class BarStamp {
-  /** `timestamp_` is the first instant of the period. */
+  /** @brief The timestamp is the first instant of the period. */
   OPEN,
-  /** `timestamp_` is the instant the period ended, exclusive of the next. */
+  /** @brief The timestamp is the instant the period ended. */
   CLOSE,
 };
 
 /**
- * One aggregated period of trading.
+ * @brief One bar: the prices and volume of one period, as exact decimals.
  *
- * Prices and volume stay exact decimals: a bar is a broker-reported value that a
- * caller may compare, display, or send back, so it is not converted to floating
- * point here. The analytics layer converts at its own documented boundary.
- *
- * `open_` is optional because a trading day can produce no trade at all, which
- * KIS reports with `mod_yn`. An absent open means the broker stated none, never
- * zero, and never the previous close.
- *
- * A bar carries no interval, stamp convention, or currency of its own. All three are
- * constant across a series — an instrument does not change currency between bars,
- * and a series has one period and one stamping rule — so they live on `BarSeries`.
- * Repeating them per bar would cost sixteen bytes each and, worse, allow a series
- * whose bars disagreed with it.
+ * The interval, stamp convention and currency are on the `BarSeries`.
  */
 struct Bar {
-  /** The instant marking this period. Which edge it marks is `BarSeries::stamp_`, not this field. */
+  /** @brief The instant marking the period; `BarSeries::stamp_` says which edge. */
   std::chrono::system_clock::time_point timestamp_;
-  /** The first trade of the period. Empty when the period produced no trade at all. */
+  /** @brief The first trade's price; empty if nothing traded in the period (never zero or the previous close). */
   std::optional<Decimal64> open_;
-  /** The highest trade of the period. */
+  /** @brief The highest trade price. */
   Decimal64 high_;
-  /** The lowest trade of the period. */
+  /** @brief The lowest trade price. */
   Decimal64 low_;
-  /** The last trade of the period. */
+  /** @brief The last trade price. */
   Decimal64 close_;
-  /** Shares traded in the period. */
+  /** @brief The shares traded. */
   Decimal64 volume_;
-  /** Cash traded in the period, where the broker publishes it. */
+  /** @brief The value traded, if the broker publishes it. */
   std::optional<Decimal64> traded_value_;
 };
 
 /**
- * Bars for one instrument and interval, oldest first.
+ * @brief The bars of one instrument and interval, oldest first.
  *
- * Both brokers return newest first; the adapter reverses once, at the boundary, so
- * that everything above it can assume ascending time. `adjusted_` records whether
- * the prices account for corporate actions, because the two brokers spell that
- * request differently and a caller cannot otherwise tell what it received.
- *
- * `interval_`, `stamp_`, and `currency_` are stated once here rather than on every
- * bar, because they are properties of the series and not of its individual periods.
+ * Adapters reverse the brokers' newest-first order, so bars are ascending in time.
  */
 struct BarSeries {
-  /** What the bars are for. */
+  /** @brief The instrument. */
   InstrumentId instrument_;
-  /** The period each bar covers. Constant across the series. */
+  /** @brief The period each bar covers. */
   BarInterval interval_{BarInterval::ONE_DAY};
-  /**
-   * Which edge of its period a bar's timestamp marks.
-   *
-   * The convention travels in the value because a timestamp alone cannot reveal it, and reading an
-   * open-stamped series as a close-stamped one is a lookahead.
-   */
+  /** @brief Which edge of its period each bar's timestamp marks. */
   BarStamp stamp_{BarStamp::CLOSE};
-  /** The currency the prices are in. */
+  /** @brief The currency of the prices. */
   Currency currency_;
-  /** Whether the prices account for corporate actions. */
+  /** @brief Whether the prices are adjusted for corporate actions. */
   bool adjusted_{true};
   /**
-   * The bars, oldest first.
+   * @brief The bars, oldest first.
    *
-   * This is what you actually got, which can be fewer than `BarQuery::count_` asked for: paging
-   * stops when the count is satisfied, when a page comes back empty, or when the page budget is
-   * spent. Read its size rather than assuming the count.
+   * There can be fewer than `BarQuery::count_`: paging stops on an empty page or when the page
+   * budget is spent. Use the size.
    */
   std::vector<Bar> bars_;
   /**
-   * A cursor to continue from, where one exists.
+   * @brief A cursor to continue from, if the broker has more.
    *
-   * A short series **may** carry one and you have to check: an empty result carries none, and
-   * neither does a series whose broker cursor is exhausted, because there is nothing to continue to.
+   * A short series may still carry one; an empty or exhausted one carries none.
    */
   std::optional<std::string> next_cursor_;
-  /** When the series arrived, on this machine's clock. */
+  /** @brief When the series was received, on this machine's clock. */
   std::chrono::system_clock::time_point received_at_;
 
-  /** Returns whether the bars are in ascending time order with no duplicates. */
+  /**
+   * @brief Tests whether the bars are strictly ascending in time.
+   * @return `true` if each timestamp is later than the one before.
+   */
   bool ascending() const {
     for (std::size_t index = 1; index < bars_.size(); ++index) {
       if (!(bars_[index - 1].timestamp_ < bars_[index].timestamp_)) {
@@ -158,57 +129,53 @@ struct BarSeries {
   }
 };
 
-/** One resting price level and the quantity available at it. */
+/** @brief One price level of an order book. */
 struct DepthLevel {
-  /** The price of this level. */
+  /** @brief The price. */
   Decimal64 price_;
-  /** The quantity resting at it. */
+  /** @brief The quantity resting at it. */
   Decimal64 quantity_;
 };
 
 /**
- * Resting orders on both sides of one instrument's book.
+ * @brief An instrument's order book: resting bids and offers.
  *
- * `bids_` descend by price and `asks_` ascend, so index zero is the best level on
- * either side. A side may be empty, which is why every accessor returns an
- * optional rather than a zero a caller could mistake for a real price.
- *
- * Adapters establish that ordering themselves rather than trusting the broker to
- * have sent it. Toss's specification contradicts itself — it documents `asks` as
- * ascending and its own worked example lists them descending — and reading the best
- * offer off the wrong end of the book would make the spread negative and the
- * midpoint meaningless. Sorting a book of ten levels costs nothing next to being
- * wrong about which price is best.
+ * Index zero is the best level on each side (bids descending, asks ascending); adapters sort the
+ * levels themselves. A side may be empty.
  */
 struct DepthSnapshot {
-  /** Whose book this is. */
+  /** @brief The instrument. */
   InstrumentId instrument_;
-  /** Resting bids, descending by price, so index zero is the best. May be empty. */
+  /** @brief The bids, descending by price. */
   std::vector<DepthLevel> bids_;
-  /** Resting offers, ascending by price, so index zero is the best. May be empty. */
+  /** @brief The offers, ascending by price. */
   std::vector<DepthLevel> asks_;
-  /** The currency the prices are in. */
+  /** @brief The currency of the prices. */
   Currency currency_;
-  /** When the exchange says the book was true, where the broker published a timestamp. */
+  /** @brief When the exchange says the book was true, if the broker gave a time. */
   std::optional<std::chrono::system_clock::time_point> exchange_time_;
-  /** When the snapshot arrived, on this machine's clock. */
+  /** @brief When the book was received, on this machine's clock. */
   std::chrono::system_clock::time_point received_at_;
 
-  /** Returns the highest bid, or nothing when no bid rests. */
+  /**
+   * @brief Returns the best bid.
+   * @return The highest bid level, or `std::nullopt` if no bid rests.
+   */
   std::optional<DepthLevel> best_bid() const {
     return bids_.empty() ? std::nullopt : std::optional<DepthLevel>(bids_.front());
   }
 
-  /** Returns the lowest offer, or nothing when no offer rests. */
+  /**
+   * @brief Returns the best offer.
+   * @return The lowest offer level, or `std::nullopt` if no offer rests.
+   */
   std::optional<DepthLevel> best_ask() const {
     return asks_.empty() ? std::nullopt : std::optional<DepthLevel>(asks_.front());
   }
 
   /**
-   * Returns the difference between the best offer and the best bid.
-   *
-   * Both sides must rest for a spread to exist. The subtraction is exact: the two
-   * prices are rescaled to their common scale rather than converted to a double.
+   * @brief Returns the spread, best offer minus best bid, exactly.
+   * @return The spread, or `std::nullopt` if a side is empty or the arithmetic does not fit.
    */
   std::optional<Decimal64> spread() const {
     const auto bid = best_bid();
@@ -220,12 +187,11 @@ struct DepthSnapshot {
   }
 
   /**
-   * Returns the midpoint of the best bid and offer, when both rest.
+   * @brief Returns the midpoint of the best bid and offer, exactly (one more decimal place if needed).
    *
-   * A midpoint halves an odd sum, so it needs one more decimal place than its
-   * inputs. That place is added rather than rounded away, because rounding a
-   * midpoint to the tick grid is a decision for whoever is about to place an
-   * order, not for the value that reports it.
+   * Not rounded to the tick grid; round it yourself before using it as an order price.
+   *
+   * @return The midpoint, or `std::nullopt` if a side is empty or the arithmetic does not fit.
    */
   std::optional<Decimal64> mid() const {
     const auto bid = best_bid();
@@ -243,9 +209,8 @@ struct DepthSnapshot {
 
 
 /**
- * Puts a book's levels in the order `DepthSnapshot` promises.
- *
- * Best first on both sides: bids descending, asks ascending.
+ * @brief Sorts a book's levels best first: bids descending, asks ascending.
+ * @param book The book to sort in place.
  */
 inline void order_depth(DepthSnapshot& book) {
   const auto by_price = [](const DepthLevel& lhs, const DepthLevel& rhs) {
@@ -258,78 +223,55 @@ inline void order_depth(DepthSnapshot& book) {
 }
 
 /**
- * One executed trade as the broker reported it.
+ * @brief One executed trade, as the broker reported it.
  *
- * There is deliberately no aggressor side. Neither supported broker publishes one —
- * KIS's recent-execution endpoint reports time, price, and quantity, and Toss's
- * reports the same three with a currency — so a member for it would be empty on
- * every path in the library. A field that is always absent tells a reader the
- * information might arrive one day, which is worse than not offering it.
+ * No broker publishes which side was the aggressor, so there is no such field.
  */
 struct TradePrint {
-  /** The price the trade executed at. */
+  /** @brief The trade price. */
   Decimal64 price_;
-  /** The quantity that executed. */
+  /** @brief The quantity traded. */
   Decimal64 quantity_;
-  /** The currency `price_` is in. */
+  /** @brief The currency of `price_`. */
   Currency currency_;
-  /** When the exchange says it executed, where the broker published a timestamp. */
+  /** @brief When the exchange says it executed, if the broker gave a time. */
   std::optional<std::chrono::system_clock::time_point> exchange_time_;
 };
 
-/**
- * Highest and lowest price an instrument may trade at today.
- *
- * Both are optional because markets without a price limit — United States
- * equities among them — report none, and an absent limit must not become a bound
- * of zero.
- */
+/** @brief The highest and lowest price an instrument may trade at today. */
 struct PriceLimits {
   /**
-   * The highest price allowed today, where there is one and the broker published it.
+   * @brief The highest price allowed today.
    *
-   * **Empty has two meanings and the value cannot tell them apart.** A market that imposes no
-   * limit -- United States equities among them -- reports none. But the KIS adapter also reports
-   * empty for a blank or zero `stck_mxpr`, where KRX does set a limit on every listed equity and
-   * the figure was simply not available. So empty is never a bound of zero, and it is not evidence
-   * that the market is unlimited either.
+   * Empty does not mean unlimited: it is empty for a market with no limit (US equities), but also
+   * when KIS sent a blank or zero figure for a KRX stock, which always has a limit. Never a bound
+   * of zero.
    */
   std::optional<Decimal64> upper_;
-  /** The lowest price allowed today. Empty carries the same two meanings as `upper_`. */
+  /** @brief The lowest price allowed today; empty means the same as for `upper_`. */
   std::optional<Decimal64> lower_;
-  /** The currency the bounds are in. */
+  /** @brief The currency of the bounds. */
   Currency currency_;
-  /** When the exchange says the bounds were set, where the broker published a timestamp. */
+  /** @brief When the exchange set the bounds, if the broker gave a time. */
   std::optional<std::chrono::system_clock::time_point> exchange_time_;
 };
 
 /**
- * What bars to fetch.
+ * @brief What bars to fetch.
  *
- * `count_` is how many bars the caller wants, not how many one request returns.
- * Every broker caps a page well below a useful window — 200 at Toss, 100 for KIS
- * daily bars, 30 or 120 for KIS minute bars — so satisfying `count_` is the port's
- * job, bounded by the same paging guards the holdings and order slices established.
- *
- * `before_` bounds the newest bar returned, so a caller can page backwards through
- * history by passing the oldest timestamp it has already seen. It is inclusive,
- * matching Toss's `before`; the KIS adapter walks its date and time inputs to the
- * same effect.
- *
- * `adjusted_` asks for prices that account for corporate actions. It is spelled
- * once here because the brokers disagree about how to ask: Toss takes a boolean,
- * and KIS takes `FID_ORG_ADJ_PRC` where `0` means adjusted and `1` means raw.
+ * The client pages until `count_` bars are read (brokers cap a page at 30 to 200 bars), within its
+ * paging limits.
  */
 struct BarQuery {
-  /** What to fetch bars for. */
+  /** @brief The instrument. */
   InstrumentId instrument_;
-  /** The period each bar should cover. An interval a broker does not publish is refused. */
+  /** @brief The period of each bar; an interval the broker does not publish is refused. */
   BarInterval interval_{BarInterval::ONE_DAY};
-  /** How many bars the caller wants, not how many one page holds. */
+  /** @brief How many bars to return in total, across pages. */
   int count_{100};
-  /** The newest bar to return, inclusive. Page backwards by passing the oldest timestamp seen. */
+  /** @brief The newest bar time to return, inclusive; pass the oldest timestamp seen to page backwards. */
   std::optional<std::chrono::system_clock::time_point> before_;
-  /** Whether to ask for prices adjusted for corporate actions. */
+  /** @brief Whether to ask for prices adjusted for corporate actions. */
   bool adjusted_{true};
 };
 
