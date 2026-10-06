@@ -48,10 +48,15 @@ inline KiwoomRateLimitLayer kiwoom_rate_limit_layer(std::string_view code) noexc
 /**
  * @brief Classifies a Kiwoom `return_code`.
  *
- * The `80xx` codes (key, token, terminal, registered IP) are `AUTHENTICATION`, so an expired token
- * is refreshed, except `8104` (not offered on demo) and `8200` (not offered to corporate customers),
- * which are `INVALID_ARGUMENT`. Rate-limit codes (`1700`-`1702`, `1687`) are `RATE_LIMIT`. An
- * undocumented code is `PROTOCOL`.
+ * - `AUTHENTICATION`: `1512`-`1516`, and any four-digit code starting with `8` (key, token, terminal,
+ *   registered IP) except `8104` and `8200`;
+ * - `INVALID_ARGUMENT`: `8104` (not offered on demo), `8200` (not offered to corporate customers),
+ *   `1501`, `1504`, `1505`, `1511`, `1517` and `1901`-`1903`;
+ * - `RATE_LIMIT`: `1700`-`1702` and `1687`;
+ * - `PROTOCOL`: any other code.
+ *
+ * The client does not discard a token Kiwoom refuses: requests keep failing until five minutes
+ * before the token's stated expiry.
  *
  * @param code The code, as text.
  * @return The category.

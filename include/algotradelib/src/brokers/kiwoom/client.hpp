@@ -34,7 +34,8 @@ namespace algotradelib::kiwoom {
  */
 struct KiwoomAccount {
   /**
-   * @brief Compares two selectors; always equal, since a Kiwoom credential drives exactly one account.
+   * @brief Compares two selectors (the arguments are not used); always equal, since a Kiwoom
+   *   credential drives exactly one account.
    * @return `true`.
    */
   friend bool operator==(const KiwoomAccount&, const KiwoomAccount&) { return true; }
@@ -69,14 +70,17 @@ struct KiwoomOrderRef {
 struct KiwoomAmendment {
   /** @brief The order to amend, which carries the symbol Kiwoom requires beside the order number. */
   KiwoomOrderRef order_;
-  /** @brief Where the order lives; Kiwoom's `dmst_stex_tp`. */
+  /**
+   * @brief The venue the order rests on, as listed (Kiwoom's `dmst_stex_tp`): `KRX`, `NXT` or
+   *   `COMBINED` (SOR). Required: `UNSPECIFIED` is refused before sending, for a cancellation too.
+   */
   Venue venue_{Venue::UNSPECIFIED};
   /**
    * @brief The quantity affected, or zero for everything still resting (Kiwoom evaluates `0` when it
    *   processes the instruction, so it cannot overshoot a partial fill).
    */
   Decimal64 quantity_;
-  /** @brief The new price, on a modification. Absent on a cancellation and on an unpriced basis. */
+  /** @brief The new price, on a modification; absent on an unpriced basis, and refused on a cancellation. */
   std::optional<Decimal64> price_;
   /**
    * @brief The new trigger price (`mdfy_cond_uv`), for amending a stop-limit (`28`) order; must be
@@ -96,7 +100,7 @@ struct KiwoomOrderAck {
   OrderAck ack_;
   /** @brief The reference a later amendment must address. */
   KiwoomOrderRef order_;
-  /** @brief Kiwoom's `base_orig_ord_no` on an amendment: the order this instruction acted on. */
+  /** @brief Kiwoom's `base_orig_ord_no` (모주문번호) on an amendment: the order the amendment chain began with, not necessarily the one addressed. */
   std::string base_order_number_;
   /** @brief The quantity Kiwoom echoed on an amendment, `mdfy_qty` or `cncl_qty`. Empty on a placement. */
   std::optional<Decimal64> amended_quantity_;
@@ -694,8 +698,8 @@ inline Venue listed_venue(std::string_view stex_tp, std::string_view sor_yn) noe
  * @brief Reads the side from Kiwoom's free-text `io_tp_nm` (such as `+매수`, `현금매도`,
  *   `매수정정`), by whether it contains 매수 or 매도.
  * @param text The text.
- * @return The side, or `std::nullopt` if neither (callers then reject the row rather than default
- *   to `BUY`).
+ * @return The side, or `std::nullopt` if neither (the listing being read then fails rather than
+ *   default to `BUY`).
  */
 inline std::optional<OrderSide> normalized_order_side(std::string_view text) noexcept {
   if (text.find("매수") != std::string_view::npos) {
@@ -708,10 +712,10 @@ inline std::optional<OrderSide> normalized_order_side(std::string_view text) noe
 }
 
 /**
- * @brief Reads an order status from Kiwoom's Korean word (`접수` received, `확인` confirmed, `체결`
- *   filled).
+ * @brief Reads an order status from Kiwoom's Korean word.
  * @param text The word (`ord_stt` or `acpt_tp`).
- * @return The status, or `UNKNOWN` for any other word.
+ * @return `PENDING` for `접수` (received) and `확인` (confirmed), `FILLED` for `체결`, `CANCELED` for
+ *   `취소`, and `UNKNOWN` for any other word.
  */
 inline OrderStatus normalized_order_status(std::string_view text) noexcept {
   if (text == "접수") {
@@ -1041,10 +1045,18 @@ public:
   }
 
   /**
-   * @brief Requests bars, paging Kiwoom's `base_dt` backwards until `count_` is satisfied.
+   * @brief Requests bars, following Kiwoom's continuation pages from `before_`'s Korean date (or today).
+   *
+   * `before_` applies by day only: minute bars later than it on the same date are returned. A short
+   * series comes back only when Kiwoom has no more; `next_cursor_` is set then only when Kiwoom said
+   * there is more, and never for minute bars. If Kiwoom offers more but its continuation key is blank,
+   * a page adds nothing, or 50 pages were read, the request fails (`PROTOCOL`, `incomplete_listing`)
+   * instead of returning a partial series. Refused before sending: `count_` of zero or less, or a
+   * symbol that is not Korean or malformed.
+   *
    * @tparam CompletionToken An Asio completion token.
    * @param query The query.
-   * @param token The completion token.
+   * @param token The completion token, called with `Result<BarSeries>`.
    * @return Whatever the completion token returns.
    */
   template <typename CompletionToken>
@@ -1076,10 +1088,16 @@ public:
   net::strand<net::any_io_executor> get_executor() const noexcept { return strand_; }
 
   /**
-   * @brief Requests every holding, paging `kt00018` 계좌평가잔고내역요청.
+   * @brief Requests the holdings `kt00018` lists for `KiwoomConfig::holdings_venue_` (refused before
+   *   sending until it is `KRX` or `NXT`); whether that is every holding is what
+   *   `KiwoomConfig::holdings_position_scope_` asserts, which this call does not check.
+   *
+   * The snapshot fails if one symbol appears on two rows or paging stops while Kiwoom offers more. Its
+   * `sellable_basis_` follows `KiwoomConfig::holdings_sellable_scope_`.
+   *
    * @tparam CompletionToken An Asio completion token.
-   * @param account The bound account.
-   * @param token The completion token.
+   * @param account The account (empty).
+   * @param token The completion token, called with `Result<HoldingsSnapshot>`.
    * @return Whatever the completion token returns.
    */
   template <typename CompletionToken>
@@ -1101,7 +1119,7 @@ public:
   /**
    * @brief Requests what the account may spend, from `kt00001` 예수금상세현황요청.
    * @tparam CompletionToken An Asio completion token.
-   * @param currency The currency.
+   * @param currency The currency; anything but KRW is refused before sending.
    * @param account The bound account.
    * @param token The completion token.
    * @return Whatever the completion token returns.
@@ -1207,9 +1225,17 @@ public:
   /**
    * @brief Places an order (`kt10000` buy, `kt10001` sell).
    *
-   * The request is never resent. After a `TRANSPORT` error the outcome is unknown: read
-   * `async_open_orders` or `async_order_history` before placing again, since Kiwoom has no idempotency
-   * key. Refused before sending: an order with a client order id, with no venue, or while
+   * The request is never resent. After an error with `BrokerError::reached_broker_` set that is not a refusal (one `runner::outcome_of`
+   * calls `INDETERMINATE`: a transport failure, a cancellation, an unreadable reply such as one with
+   * no order number, or an HTTP status of 500 or more),
+   * the order may exist: read `async_open_orders` or `async_order_history` before placing again,
+   * since Kiwoom has no idempotency key.
+   *
+   * Refused before sending, among others: an instrument that is not Korean or whose `venue_` is not
+   * `COMBINED` (route with `OrderRequest::venue_`); no venue on the order; a client order id; a
+   * quantity that is not a positive whole number; a missing, non-positive or fractional price on a
+   * priced type, or a price on an unpriced one; a trigger price missing or invalid on `STOP_LIMIT`,
+   * or present on another type; a shape Kiwoom has no code for; and any order while
    * `KiwoomConfig::holdings_position_scope_` is not stated.
    *
    * @tparam CompletionToken An Asio completion token.
@@ -1238,7 +1264,11 @@ public:
   /**
    * @brief Amends an order's quantity, price or trigger price (`kt10002`).
    *
-   * After a `TRANSPORT` error the outcome is unknown. Refused before sending while
+   * After an error with `BrokerError::reached_broker_` set that is not a refusal (one `runner::outcome_of`
+   * calls `INDETERMINATE`: a transport failure, a cancellation, an unreadable reply such as one with
+   * no order number, or an HTTP status of 500 or more),
+   * the outcome is unknown. Refused before sending: an amendment without a venue, an order number
+   * or a symbol, with a fractional or negative quantity, or while
    * `KiwoomConfig::holdings_position_scope_` is not stated.
    *
    * @tparam CompletionToken An Asio completion token.
@@ -1273,7 +1303,11 @@ public:
   /**
    * @brief Cancels an order, all or part of it (`kt10003`).
    *
-   * After a `TRANSPORT` error the outcome is unknown: the order may still rest.
+   * After an error with `BrokerError::reached_broker_` set that is not a refusal (one `runner::outcome_of`
+   * calls `INDETERMINATE`: a transport failure, a cancellation, an unreadable reply such as one with
+   * no order number, or an HTTP status of 500 or more),
+   * the outcome is unknown: the order may still rest. Refused before sending: a cancellation without
+   * a venue, an order number or a symbol, or carrying a price or trigger price.
    *
    * @tparam CompletionToken An Asio completion token.
    * @param account The account (empty).
@@ -1367,7 +1401,10 @@ public:
     return limiter ? &limiter->stats() : nullptr;
   }
 
-  /** @brief Cancels transport work and queued operations. */
+  /**
+   * @brief Closes the client for good: pending and later requests complete with `CANCELLED`. A
+   *   request already being sent has `reached_broker_` set and an unknown outcome.
+   */
   void close() { http_->close(); }
 
 private:
@@ -3604,6 +3641,9 @@ private:
 /**
  * @brief A blocking Kiwoom client: each call runs a `KiwoomClient` request on a private event loop
  *   and returns its result. Not thread-safe. Order references work with either client.
+ *
+ * A call whose loop stops before the request completes returns a `TRANSPORT` error
+ * (`event_loop_stopped`).
  */
 class KiwoomBlockingClient {
 public:
@@ -3684,7 +3724,7 @@ public:
   }
 
   /**
-   * @brief Returns bars, paging inside the client.
+   * @brief Returns bars; see `KiwoomClient::async_bars`.
    * @param query The query.
    * @return The result, or an error.
    */
@@ -3702,8 +3742,8 @@ public:
   const KiwoomConfig& config() const noexcept { return client_->config(); }
 
   /**
-   * @brief Returns every holding for the bound credential.
-   * @param account The bound account.
+   * @brief Returns the holdings for `KiwoomConfig::holdings_venue_`; see `KiwoomClient::async_holdings`.
+   * @param account The account (empty).
    * @return The result, or an error.
    */
   Result<HoldingsSnapshot> holdings(KiwoomAccount account) {
@@ -3715,7 +3755,7 @@ public:
 
   /**
    * @brief Returns what the bound credential's account may spend.
-   * @param currency The currency.
+   * @param currency The currency; anything but KRW is refused before sending.
    * @param account The bound account.
    * @return The result, or an error.
    */
@@ -3771,7 +3811,8 @@ public:
   }
 
   /**
-   * @brief Submits a new order.
+   * @brief Submits a new order. The outcome can be unknown after
+   *   an error; see `KiwoomClient::async_place_order`.
    * @param account The bound account.
    * @param order The order.
    * @return The result, or an error.
@@ -3786,7 +3827,8 @@ public:
   }
 
   /**
-   * @brief Modifies an existing order.
+   * @brief Modifies an existing order. The outcome can be unknown after
+   *   an error; see `KiwoomClient::async_replace_order`.
    * @param account The bound account.
    * @param amendment The amendment.
    * @return The result, or an error.
@@ -3801,7 +3843,8 @@ public:
   }
 
   /**
-   * @brief Cancels an existing order.
+   * @brief Cancels an existing order. The outcome can be unknown after
+   *   an error; see `KiwoomClient::async_cancel_order`.
    * @param account The bound account.
    * @param amendment The amendment.
    * @return The result, or an error.
@@ -3842,7 +3885,7 @@ public:
     );
   }
 
-  /** @brief Cancels transport work and queued operations. */
+  /** @brief Closes the client for good; see `KiwoomClient::close`. */
   void close() { client_->close(); }
 
   /**

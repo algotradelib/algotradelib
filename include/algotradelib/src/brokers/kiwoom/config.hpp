@@ -59,7 +59,8 @@ inline constexpr const char* tape_suffix(MarketTape tape) noexcept {
 /**
  * @brief Reads Kiwoom's token expiry, `yyyyMMddHHmmss` in Korean time.
  * @param text The text.
- * @return The instant, or the epoch if it is not fourteen digits of a valid time.
+ * @return The instant, or the epoch if the text is not fourteen digits (out-of-range fields are not
+ *   checked: they normalize into some instant).
  */
 inline std::chrono::system_clock::time_point parse_compact_expiry(std::string_view text) {
   if (text.size() != 14) {

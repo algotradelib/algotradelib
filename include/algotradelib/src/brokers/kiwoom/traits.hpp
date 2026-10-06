@@ -64,8 +64,8 @@ struct Normalizers {
   static constexpr bool has_buying_power_quantity = true;
 
   /**
-   * @brief `NONE`: the session provides no sellable quantity, since the holdings it would come from
-   *   cannot yet be shown to cover the whole account (see `KiwoomConfig::holdings_venue_`).
+   * @brief `NONE`: there is no per-instrument sellable inquiry. The holdings rows carry
+   *   `trde_able_qty`, enforced only as far as `KiwoomConfig::holdings_sellable_scope_` asserts.
    */
   static constexpr SellableSource sellable_source = SellableSource::NONE;
 
@@ -110,7 +110,11 @@ struct Normalizers {
     return error;
   }
 
-  /** @brief Kiwoom publishes minute, daily, weekly, monthly and yearly bars. */
+  /**
+   * @brief Tests whether Kiwoom publishes bars at an interval.
+   * @param interval The interval.
+   * @return `true`: Kiwoom publishes every interval.
+   */
   static constexpr bool supports_interval(BarInterval interval) {
     static_cast<void>(interval);
     return true;
@@ -243,8 +247,10 @@ struct Normalizers {
    *
    * Kiwoom cannot change an order's type, condition or session, so an instruction asking to is
    * refused (a stated value equal to the resting one is not a change; see `refuse_shape_change`).
-   * "All remaining" is sent as quantity `0`, which Kiwoom evaluates when it processes the
-   * instruction. `confirm_high_value_` is ignored.
+   * Also refused: no `quantity_` and not `all_remaining_` (`quantity_required`), and on a
+   * modification a trigger price that does not fit the type (`invalid_trigger`). "All remaining" is
+   * sent as quantity `0`, which Kiwoom evaluates when it processes the instruction.
+   * `confirm_high_value_` is ignored.
    *
    * @param ref The order's reference.
    * @param instruction The instruction.
@@ -296,10 +302,11 @@ struct Normalizers {
 
   /**
    * @brief Refuses an instruction that asks to change what a Kiwoom amendment cannot carry (type,
-   *   condition, session, or a trigger price on a cancellation).
+   *   condition, session, or a price or trigger price on a cancellation).
    *
-   * An unset field means "unchanged". A set field is a change if it differs from the resting shape,
-   * and is refused if the resting shape is unknown.
+   * An unset field means "unchanged"; a set field is a change if it differs from the resting shape.
+   * A modification without `resting_` is refused (`incomplete_shape`) even if it sets no shape
+   * field; `reprice()` and `replace_with()` supply it.
    *
    * @param instruction The instruction.
    * @param cancel Whether it is a cancellation.
@@ -436,8 +443,9 @@ struct Normalizers {
   /**
    * @brief Converts an order-history query into Kiwoom's single-date inquiry (`kt00007`).
    *
-   * A query spanning more than one day is refused, not answered with one day; ask once per day.
-   * `symbol_` is passed to Kiwoom as its `stk_cd` filter.
+   * Refused: no `from_` (`date_required`), a range of more than one day (ask once per day), a
+   * `cursor_`, or a `limit_`. `symbol_` is passed to Kiwoom as its `stk_cd` filter. The account
+   * argument is not used.
    *
    * @param query The query.
    * @return The inquiry, or an `INVALID_ARGUMENT` error.
@@ -481,7 +489,7 @@ struct Normalizers {
 
   /**
    * @brief Returns the account selector a session binds, which is empty (the credential is the
-   *   account; see `KiwoomAccount`).
+   *   account; see `KiwoomAccount`). The argument is not used.
    * @return An empty selector.
    */
   static KiwoomAccount selector_of(const KiwoomAccountInfo&) { return KiwoomAccount{}; }
@@ -496,7 +504,7 @@ struct Normalizers {
   }
 
   /**
-   * @brief Returns the account type, which Kiwoom does not publish.
+   * @brief Returns the account type, which Kiwoom does not publish (the argument is not used).
    * @return An empty string.
    */
   static std::string type_of(const KiwoomAccountInfo&) { return {}; }
@@ -534,7 +542,7 @@ struct Capabilities {
   /** @brief Kiwoom cancels a stated quantity through `kt10003`'s `cncl_qty`. */
   static constexpr bool has_partial_cancel = true;
 
-  /** @brief Kiwoom's order-history inquiry takes one date, not a range. */
+  /** @brief `false`: no range, but one date (`from_`) is required; see `to_history_query`. */
   static constexpr bool history_requires_range = false;
 
   /** @brief Kiwoom follows its own `cont-yn` / `next-key` continuation and exposes none. */
@@ -707,7 +715,7 @@ struct BrokerTraits<kiwoom::KiwoomClient>
    * @tparam Token An Asio completion token.
    * @param client The client.
    * @param account The bound account.
-   * @param currency The currency.
+   * @param currency The currency (only KRW is answered).
    * @param token The completion token.
    * @return Whatever the completion token returns.
    */
@@ -992,7 +1000,7 @@ struct BrokerTraits<kiwoom::KiwoomBlockingClient>
    * @brief Returns what the bound account may spend in `currency`.
    * @param client The client.
    * @param account The bound account.
-   * @param currency The currency.
+   * @param currency The currency (only KRW is answered).
    * @return The result, or an error.
    */
   static Result<BuyingPower> buying_power(
