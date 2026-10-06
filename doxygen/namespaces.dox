@@ -25,7 +25,7 @@
 
 /**
  * @namespace algotradelib::strategy::vanilla
- * @brief Ready-made example strategies (buy and hold, crossovers, mean reversion, sizing, liquidation).
+ * @brief The strategies this library ships (buy and hold, crossovers, mean reversion, sizing, liquidation).
  */
 
 /**
