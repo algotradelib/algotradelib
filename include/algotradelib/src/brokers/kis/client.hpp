@@ -277,8 +277,9 @@ inline std::optional<BrokerError> unsupported_bar_interval(BarInterval) { return
  *
  * It requests an access token when first needed and shares one refresh among concurrent requests.
  * Supports ordinary customers (`custtype P`: individuals and corporations trading their own account),
- * not the partner program (`custtype B`). Create it with `std::make_shared`; completion handlers run
- * on its strand. A blocking wrapper is `KisBlockingClient`.
+ * not the partner program (`custtype B`). Create it with `std::make_shared`. Each completion runs on
+ * the handler's associated executor, or on the client's strand if it has none. A blocking wrapper is
+ * `KisBlockingClient`.
  */
 class KisClient : public std::enable_shared_from_this<KisClient> {
 public:
@@ -764,8 +765,8 @@ public:
   /**
    * @brief Returns the rate limiter's statistics.
    *
-   * Read them on the client's strand (in a completion handler), or between calls on the blocking
-   * client.
+   * Read them on the client's strand or while no request is in progress (between calls on the
+   * blocking client).
    *
    * @return The statistics, or null if the client has no rate-limit budget.
    */
