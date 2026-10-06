@@ -1,14 +1,9 @@
 #pragma once
 
 /**
- * Declares that this translation unit has reached the transport layer.
+ * @brief Defined as 1 once a transport (network) header is included.
  *
- * Read by `tests/test-strategy-isolation.cpp` to assert that the strategy surface does not. A
- * strategy must name no broker and perform no I/O, and that property degrades silently: one
- * convenience include in a strategy header would couple every strategy to a vendor, and nothing
- * would fail until someone built the same source against the other broker. Declaring the layer
- * here makes the assertion an architectural statement rather than a search for a third-party
- * macro that happens to come along for the ride.
+ * The library's tests use it to check that the strategy headers include no transport.
  */
 #define ATL_TRANSPORT_LAYER_PRESENT 1
 
@@ -24,32 +19,30 @@ namespace algotradelib {
 namespace network {
 
 /**
- * Traffic class of one request, for admission and for queue priority.
- *
- * The class is a property of the *operation*, assigned by the broker adapter that
- * builds the request, never by the caller: a strategy cannot label its own chart
- * polling as trading traffic.
+ * @brief The traffic class of a request, for rate limiting and queue priority. The broker adapter
+ *   that builds a request sets it.
  */
 enum class RateLimitGroup {
-  /** Order placement, modification, and cancellation. */
+  /** @brief Order placement, amendment and cancellation. */
   TRADING,
-  /** Access-token issue and refresh. */
+  /** @brief Access-token issue and refresh. */
   AUTH,
-  /** Holdings, working orders, buying power. */
+  /** @brief Holdings, working orders, order history and buying power. */
   ACCOUNT,
-  /** Quotes, candles, order book, trade prints. */
+  /** @brief Quotes, bars, order book and trades. */
   MARKET_DATA,
-  /** Instrument reference data and trading calendars. */
+  /** @brief Instrument reference data and trading calendars. */
   REFERENCE,
 };
 
 /**
- * Returns the admission priority of `group`; a larger value is served first.
+ * @brief Returns a traffic class's queue priority.
  *
- * `AUTH` ranks above `TRADING` because every other request waits behind a token
- * refresh, so delaying the refresh delays a cancellation too. It cannot starve
- * trading traffic: both adapters coalesce refreshes, so at most one is ever in
- * flight.
+ * From highest: `AUTH` (every other request waits for a token), `TRADING`, `ACCOUNT`, `MARKET_DATA`,
+ * `REFERENCE`.
+ *
+ * @param group The class.
+ * @return The priority; larger is served first.
  */
 inline constexpr int rate_limit_priority(RateLimitGroup group) noexcept {
   switch (group) {
@@ -67,7 +60,11 @@ inline constexpr int rate_limit_priority(RateLimitGroup group) noexcept {
   return 0;
 }
 
-/** Returns a stable lowercase name for `group`, for statistics and logs. */
+/**
+ * @brief Returns a lowercase name for a traffic class, such as `"market_data"`, for logs.
+ * @param group The class.
+ * @return The name.
+ */
 inline constexpr std::string_view rate_limit_group_name(RateLimitGroup group) noexcept {
   switch (group) {
     case RateLimitGroup::AUTH:
@@ -84,47 +81,43 @@ inline constexpr std::string_view rate_limit_group_name(RateLimitGroup group) no
   return "unknown";
 }
 
-/** Number of distinct rate-limit groups, for fixed-size per-group storage. */
+/** @brief The number of traffic classes. */
 inline constexpr std::size_t rate_limit_group_count = 5;
 
-/** Returns a dense index for `group`, for fixed-size per-group arrays. */
+/**
+ * @brief Returns a traffic class's index, for per-class arrays.
+ * @param group The class.
+ * @return An index below `rate_limit_group_count`.
+ */
 inline constexpr std::size_t rate_limit_group_index(RateLimitGroup group) noexcept {
   return static_cast<std::size_t>(group);
 }
 
 /**
- * How much request capacity one broker connection may spend.
+ * @brief The request rate a connection may use.
  *
- * `burst_` is how many requests may be issued back to back from idle and
- * `per_second_` is the sustained rate. Both brokers state their limits per
- * second, so both are whole numbers and the pacing arithmetic stays integral.
- *
- * `trading_reserve_` is the part of `burst_` that only `TRADING` and `AUTH` may
- * spend. It is the whole point of grouping traffic: a saturated polling loop must
- * not be the reason a cancellation waits. A reserve of zero disables the
- * reservation without disabling the pacing.
- *
- * The defaults are a starting point, not a safe figure. KIS's per-key allowance is
- * an account-level portal setting that its documentation does not state, so the
- * library cannot assert a number. Measured on one account on 2026-10-02, eight a
- * second was already too many for KIS's holiday calendar with real keys, and a
- * demo account refused reads closer than about a second apart; the examples pace
- * KIS at one a second (`examples/kis_credentials.hpp`).
+ * The defaults are a starting point, not a safe figure: a broker's real limit may be lower. KIS
+ * states no per-key figure; on one account, eight a second was too many for its holiday calendar,
+ * and a demo account refused reads less than about a second apart. The examples pace KIS at one a
+ * second.
  */
 struct RateLimitBudget {
-  /** How many requests may be issued back to back from idle. */
+  /** @brief How many requests may be sent back to back after an idle period; at least 1. */
   int burst_{8};
-  /** The sustained rate the bucket refills at. */
+  /** @brief The sustained rate, in requests per second; at least 1. */
   int per_second_{8};
-  /** The part of `burst_` only `AUTH` and `TRADING` traffic may spend. */
+  /**
+   * @brief The part of `burst_` only `AUTH` and `TRADING` requests may use, so polling cannot delay
+   *   an order; zero disables the reservation.
+   */
   int trading_reserve_{2};
 };
 
 /**
- * Returns how much of the burst allowance `group` may spend under `budget`.
- *
- * `TRADING` and `AUTH` may spend all of it; every other group stops at the
- * reserve, which is what keeps capacity available for an order or a cancellation.
+ * @brief Returns how much of the burst a traffic class may use.
+ * @param budget The budget.
+ * @param group The class.
+ * @return `burst_` for `TRADING` and `AUTH`; otherwise `burst_ - trading_reserve_`, at least 1.
  */
 inline constexpr int usable_burst(const RateLimitBudget& budget, RateLimitGroup group) noexcept {
   if (group == RateLimitGroup::TRADING || group == RateLimitGroup::AUTH) {
@@ -135,51 +128,48 @@ inline constexpr int usable_burst(const RateLimitBudget& budget, RateLimitGroup 
 }
 
 /**
- * Paces requests by the generic cell rate algorithm, using integer arithmetic.
+ * @brief A rate limiter (the generic cell rate algorithm) that computes when a request may go; it
+ *   neither waits nor reads the clock itself.
  *
- * The bucket stores one virtual schedule rather than a token count, so admission
- * is two integer comparisons and an addition with no floating point and no
- * periodic refill task. A request is admitted when the schedule has advanced to
- * within the caller's burst tolerance of now; admitting one pushes the schedule
- * forward by exactly one interval.
+ * Each call passes the current instant and an allowance: how much of the burst the caller may use
+ * (see `usable_burst`). A caller with a smaller allowance reaches its limit earlier, so one schedule
+ * can keep a reserve for trading.
  *
- * `usable_burst` is supplied per call rather than fixed per bucket, which is how
- * one shared schedule implements a reservation: a caller allowed less of the
- * burst reaches its limit earlier while trading traffic can still draw on all of
- * it.
- *
- * The clock is a template parameter so tests drive time directly instead of
- * sleeping. The bucket performs no I/O and owns no timer; waiting belongs to the
- * caller.
+ * @tparam Clock The clock whose instants are passed in.
  */
 template <typename Clock = std::chrono::steady_clock>
 class BasicRateLimitBucket {
 public:
-  /** Clock this bucket measures time with. */
+  /** @brief The clock type. */
   using ClockType = Clock;
 
-  /** Instant type of `ClockType`. */
+  /** @brief The clock's instant type. */
   using TimePoint = typename Clock::time_point;
 
-  /** Duration used for all pacing arithmetic. */
+  /** @brief The duration type of all results. */
   using Duration = std::chrono::nanoseconds;
 
   /**
-   * Constructs a bucket allowing `burst` requests from idle and `per_second`
-   * sustained.
-   *
-   * @throws std::invalid_argument if either value is below one.
+   * @brief Constructs a bucket.
+   * @param burst How many requests may go back to back after an idle period.
+   * @param per_second The sustained rate.
+   * @throws std::invalid_argument if either is below 1.
    */
   BasicRateLimitBucket(int burst, int per_second) { resize(burst, per_second); }
 
-  /** Constructs a bucket from a budget's burst and rate. */
+  /**
+   * @brief Constructs a bucket from a budget's burst and rate.
+   * @param budget The budget.
+   * @throws std::invalid_argument if either is below 1.
+   */
   explicit BasicRateLimitBucket(const RateLimitBudget& budget)
   : BasicRateLimitBucket(budget.burst_, budget.per_second_) {}
 
   /**
-   * Changes the allowance without discarding the schedule already accumulated.
-   *
-   * @throws std::invalid_argument if either value is below one.
+   * @brief Changes the burst and rate, keeping the current schedule.
+   * @param burst The burst.
+   * @param per_second The sustained rate.
+   * @throws std::invalid_argument if either is below 1.
    */
   void resize(int burst, int per_second) {
     if (burst < 1) {
@@ -193,7 +183,12 @@ public:
     interval_ = Duration(std::chrono::nanoseconds(std::chrono::seconds(1)).count() / per_second);
   }
 
-  /** Returns how long a request of `allowance` burst must wait, zero if none. */
+  /**
+   * @brief Returns how long a request must wait.
+   * @param now The current instant.
+   * @param allowance How much of the burst the caller may use (clamped to 1..`burst()`).
+   * @return The wait, zero if it may go now.
+   */
   Duration delay_until(TimePoint now, int allowance) const {
     if (!started_) {
       return Duration::zero();
@@ -205,15 +200,22 @@ public:
     return std::chrono::duration_cast<Duration>(earliest - now);
   }
 
-  /** Returns whether a request of `allowance` burst may be issued now. */
+  /**
+   * @brief Tests whether a request may go now.
+   * @param now The current instant.
+   * @param allowance How much of the burst the caller may use.
+   * @return `true` if it need not wait.
+   */
   bool ready(TimePoint now, int allowance) const {
     return delay_until(now, allowance) == Duration::zero();
   }
 
   /**
-   * Admits one request of `allowance` burst, advancing the schedule.
-   *
-   * Returns false and changes nothing when the request must wait.
+   * @brief Admits one request if it may go now.
+   * @param now The current instant.
+   * @param allowance How much of the burst the caller may use.
+   * @return `true` if admitted (the schedule advances one interval); `false` if it must wait, with
+   *   nothing changed.
    */
   bool try_acquire(TimePoint now, int allowance) {
     if (!ready(now, allowance)) {
@@ -229,15 +231,13 @@ public:
   }
 
   /**
-   * Holds admission for at least `duration`, measured for full burst allowance.
-   *
-   * Used for a rejection the client's own pacing cannot prevent — a broker's
-   * per-endpoint ledger cap, shared with every other customer — where the remedy
-   * is to wait rather than to shrink this client's budget. A group spending less
-   * of the burst waits correspondingly longer, so the reservation still favours
-   * trading traffic while the hold is in force.
+   * @brief Holds every request for at least a duration (for a broker refusal that is not this
+   *   client's pacing fault). A caller with a smaller allowance waits correspondingly longer.
    *
    * A hold never shortens an existing one.
+   *
+   * @param now The current instant.
+   * @param duration The hold; a negative one counts as zero.
    */
   void cool_down(TimePoint now, Duration duration) {
     if (duration < Duration::zero()) {
@@ -251,19 +251,24 @@ public:
   }
 
   /**
-   * Applies a broker-reported allowance and holds admission until it refills.
-   *
-   * This is the correction path for a rejection that *is* this client's own
-   * fault: the configured budget was larger than the broker's, so the budget
-   * shrinks and admission pauses. `refill` may be zero when the broker reported
-   * no hint, in which case one interval is used.
+   * @brief Adopts a burst and rate the broker reported, then holds requests until it refills.
+   * @param now The current instant.
+   * @param burst The broker's burst.
+   * @param per_second The broker's rate.
+   * @param refill How long to hold; zero or less holds for one interval.
+   * @throws std::invalid_argument if `burst` or `per_second` is below 1.
    */
   void observe_limit(TimePoint now, int burst, int per_second, Duration refill) {
     resize(burst, per_second);
     cool_down(now, refill > Duration::zero() ? refill : interval_);
   }
 
-  /** Returns how many requests of `allowance` burst could be issued right now. */
+  /**
+   * @brief Returns how many requests could go back to back now.
+   * @param now The current instant.
+   * @param allowance How much of the burst the caller may use.
+   * @return The count, at most `allowance`.
+   */
   int available(TimePoint now, int allowance) const {
     if (!started_) {
       return allowance;
@@ -277,17 +282,26 @@ public:
     return slots > allowance ? allowance : static_cast<int>(slots);
   }
 
-  /** Returns the configured burst allowance. */
+  /**
+   * @brief Returns the burst.
+   * @return The burst.
+   */
   int burst() const noexcept { return burst_; }
 
-  /** Returns the configured sustained rate in requests per second. */
+  /**
+   * @brief Returns the sustained rate.
+   * @return Requests per second.
+   */
   int per_second() const noexcept { return per_second_; }
 
-  /** Returns the minimum spacing between two admitted requests. */
+  /**
+   * @brief Returns the spacing of the sustained rate.
+   * @return One second divided by the rate.
+   */
   Duration interval() const noexcept { return interval_; }
 
 private:
-  /** Returns how far ahead of now the schedule may run for `allowance`. */
+  // Returns how far ahead of now the schedule may run for `allowance`.
   Duration tolerance(int allowance) const noexcept {
     const int slots = allowance < 1 ? 1 : (allowance > burst_ ? burst_ : allowance);
     return interval_ * (slots - 1);
@@ -300,84 +314,92 @@ private:
   bool started_{false};
 };
 
-/** Request pacing on the steady clock. */
+/** @brief A rate-limit bucket on the steady clock. */
 using RateLimitBucket = BasicRateLimitBucket<>;
 
-/** Counters and current pacing state for one traffic group. */
+/** @brief A rate limiter's counters for one traffic class. */
 struct RateLimitGroupStats {
-  /** Requests the pacer let through. */
+  /** @brief Requests admitted. */
   std::uint64_t admitted_{0};
-  /** Requests it held before letting through. Rising here on a polling class is the reserve working. */
+  /** @brief Admitted requests that had to wait first (on a polling class, often the trading reserve at work). */
   std::uint64_t delayed_{0};
-  /** Requests it refused because the queue was full, which is not the same as being slow. */
+  /** @brief Requests refused locally: the queue was full, or the wait would have exceeded the timeout. */
   std::uint64_t shed_{0};
-  /** Total time spent waiting, accumulated on the timer so no path waits uncounted. */
+  /** @brief Total time admitted requests waited. */
   std::chrono::nanoseconds waited_{0};
 };
 
 /**
- * What the pacer has done, per group, plus what the broker last reported.
- *
- * A polling strategy needs this to know whether it is asking for more capacity
- * than it has, and it is how a human confirms the trading reserve is working.
+ * @brief A rate limiter's counters per traffic class, its current budget, and the broker's refusals
+ *   (from `RateLimitController::stats`).
  */
 struct RateLimitStats {
-  /** One counter set per traffic class; read them through `group()`. */
+  /** @brief The counters per traffic class; read them with `group()`. */
   RateLimitGroupStats groups_[rate_limit_group_count];
-  /** The burst allowance currently in force. */
+  /** @brief The burst in force. */
   int burst_{0};
-  /** The sustained rate currently in force. */
+  /** @brief The sustained rate in force. */
   int per_second_{0};
-  /** How much of the burst is unspent right now. */
+  /** @brief How much of the burst was unspent just after the last admitted request (for that request's class); not updated otherwise. */
   int available_{0};
-  /** How many refusals the broker itself has sent. Rising here is the signal to lower the budget. */
+  /** @brief How many rate-limit refusals the broker sent; if it keeps rising, lower the budget. */
   std::uint64_t broker_rejections_{0};
 
-  /** Returns the counters for one group. */
+  /**
+   * @brief Returns the counters for one traffic class.
+   * @param value The class.
+   * @return The counters.
+   */
   RateLimitGroupStats& group(RateLimitGroup value) {
     return groups_[rate_limit_group_index(value)];
   }
 
-  /** Returns the counters for one group. */
+  /**
+   * @brief Returns the counters for one traffic class.
+   * @param value The class.
+   * @return The counters.
+   */
   const RateLimitGroupStats& group(RateLimitGroup value) const {
     return groups_[rate_limit_group_index(value)];
   }
 };
 
 /**
- * Paces one broker connection and records what it did.
+ * @brief The rate limiter of one connection (one app key): a `RateLimitBucket` on the steady clock,
+ *   plus counters.
  *
- * The controller is the stateful, real-time half of the pacer: it owns the
- * schedule for one application key, reads the steady clock, and keeps the
- * per-group counters. All pacing arithmetic stays in `RateLimitBucket`, which
- * takes its instants as arguments and is therefore tested exactly; the controller
- * is exercised end to end against the local TLS fixture instead.
- *
- * It is not synchronized. Every caller is the owning transport's strand, which is
- * also what serializes the requests being paced.
+ * Not synchronized: use it only from the owning client's strand (see
+ * `AsyncHttpClient::rate_limits`).
  */
 class RateLimitController {
 public:
-  /** Duration used for all pacing arithmetic. */
+  /** @brief The duration type. */
   using Duration = RateLimitBucket::Duration;
 
-  /** Constructs a controller for one application key's allowance. */
+  /**
+   * @brief Constructs a controller.
+   * @param budget The budget.
+   * @throws std::invalid_argument if its burst or rate is below 1.
+   */
   explicit RateLimitController(RateLimitBudget budget = {})
   : budget_(budget), bucket_(budget) {
     stats_.burst_ = budget.burst_;
     stats_.per_second_ = budget.per_second_;
   }
 
-  /** Returns how long a request of `group` must wait, zero if it may go now. */
+  /**
+   * @brief Returns how long a request of a class must wait.
+   * @param group The class.
+   * @return The wait, zero if it may go now.
+   */
   Duration delay_until(RateLimitGroup group) const {
     return bucket_.delay_until(RateLimitBucket::ClockType::now(), usable_burst(budget_, group));
   }
 
   /**
-   * Admits one request of `group`, advancing the schedule.
-   *
-   * Returns false when the request must still wait, in which case nothing is
-   * consumed and nothing is recorded as admitted.
+   * @brief Admits one request of a class if it may go now, and counts it.
+   * @param group The class.
+   * @return `true` if admitted; `false` if it must wait, with nothing changed.
    */
   bool acquire(RateLimitGroup group) {
     const auto now = RateLimitBucket::ClockType::now();
@@ -389,29 +411,30 @@ public:
     return true;
   }
 
-  /** Records that a request of `group` had to wait `waited`. */
+  /**
+   * @brief Records that a request waited before admission.
+   * @param group The class.
+   * @param waited How long.
+   */
   void record_delay(RateLimitGroup group, Duration waited) {
     auto& counters = stats_.group(group);
     ++counters.delayed_;
     counters.waited_ += waited;
   }
 
-  /** Records that a request of `group` was refused admission locally. */
+  /**
+   * @brief Records that a request was refused unsent.
+   * @param group The class.
+   */
   void record_shed(RateLimitGroup group) { ++stats_.group(group).shed_; }
 
   /**
-   * Holds admission for `duration` without changing the configured allowance.
+   * @brief Counts a broker refusal and holds every request for a duration, keeping the budget.
    *
-   * For a broker refusal this client's own pacing could not have prevented,
-   * where the capacity is shared with other customers and the remedy is to wait.
-   * Shrinking the budget here would be wrong: the allowance was never the
-   * problem, so the client would pace itself slower for no benefit.
+   * For a refusal this client's pacing could not have prevented (capacity shared with other
+   * customers). The refusal is counted in `RateLimitStats::broker_rejections_`, not per class.
    *
-   * A refusal is counted globally rather than per group. At the point a broker
-   * refusal is recognized the request's group is no longer in hand, and
-   * inventing an attribution would be worse than not reporting one; the per-group
-   * counters that matter for pacing — admitted, delayed, and shed — are recorded
-   * where the group *is* known.
+   * @param duration The hold.
    */
   void hold(Duration duration) {
     ++stats_.broker_rejections_;
@@ -419,12 +442,14 @@ public:
   }
 
   /**
-   * Shrinks the allowance to what the broker reported and then holds.
+   * @brief Counts a broker refusal, adopts the burst and rate the broker reported, and holds.
    *
-   * Only ever called with a number a broker actually stated. This module applies
-   * allowances; it does not invent them. A broker that reports no allowance is
-   * handled by `hold()`, and deciding what to do about a budget that keeps being
-   * refused belongs to whoever configured it, not to the transport.
+   * The trading reserve is reduced if it would not be smaller than the new burst.
+   *
+   * @param burst The broker's burst.
+   * @param per_second The broker's rate.
+   * @param retry How long to hold; zero or less holds for one interval.
+   * @throws std::invalid_argument if `burst` or `per_second` is below 1.
    */
   void shrink(int burst, int per_second, Duration retry) {
     ++stats_.broker_rejections_;
@@ -432,14 +457,20 @@ public:
     bucket_.observe_limit(RateLimitBucket::ClockType::now(), burst, per_second, retry);
   }
 
-  /** Returns the allowance currently in force. */
+  /**
+   * @brief Returns the budget in force.
+   * @return The budget.
+   */
   const RateLimitBudget& budget() const noexcept { return budget_; }
 
-  /** Returns what the pacer has admitted, delayed, shed, and been refused. */
+  /**
+   * @brief Returns the counters.
+   * @return The statistics.
+   */
   const RateLimitStats& stats() const noexcept { return stats_; }
 
 private:
-  /** Records a new allowance, keeping the reserve smaller than the burst. */
+  // Records a new allowance, keeping the reserve smaller than the burst.
   void apply_budget(int burst, int per_second) {
     budget_.burst_ = burst;
     budget_.per_second_ = per_second;

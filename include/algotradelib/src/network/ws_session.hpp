@@ -4,10 +4,21 @@
 
 namespace algotradelib::network {
 
-/** Plain TCP WebSocket client session. */
+/**
+ * @brief A WebSocket client over plain TCP (no TLS); derive from it and override `on_message`.
+ *
+ * See `WebSocketSessionBase` for its use.
+ */
 class WsSession : public WebSocketSessionBase<WsSession, websocket::stream<beast::tcp_stream>> {
 public:
-  /** Constructs a plain WebSocket session for one endpoint. */
+  /**
+   * @brief Constructs a session.
+   * @param ioc The I/O context.
+   * @param host The host.
+   * @param port The port.
+   * @param target The path of the upgrade request.
+   * @param headers Extra headers sent with the upgrade request.
+   */
   WsSession(
     net::io_context& ioc,
     std::string host,

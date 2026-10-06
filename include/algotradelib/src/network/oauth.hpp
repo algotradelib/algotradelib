@@ -1,14 +1,9 @@
 #pragma once
 
 /**
- * Declares that this translation unit has reached the transport layer.
+ * @brief Defined as 1 once a transport (network) header is included.
  *
- * Read by `tests/test-strategy-isolation.cpp` to assert that the strategy surface does not. A
- * strategy must name no broker and perform no I/O, and that property degrades silently: one
- * convenience include in a strategy header would couple every strategy to a vendor, and nothing
- * would fail until someone built the same source against the other broker. Declaring the layer
- * here makes the assertion an architectural statement rather than a search for a third-party
- * macro that happens to come along for the ride.
+ * The library's tests use it to check that the strategy headers include no transport.
  */
 #define ATL_TRANSPORT_LAYER_PRESENT 1
 
@@ -28,28 +23,54 @@ namespace json = boost::json;
 
 namespace network {
 
-/** CRTP storage and serialization for OAuth client credentials. */
+/**
+ * @brief OAuth client credentials (an app key and secret), the base of each broker's credentials
+ *   class.
+ *
+ * The broker class derives from it (CRTP) and provides `from_env_impl()`, `from_json_impl(filename)`,
+ * and the static `key_field()` and `secret_field()` naming the token request's JSON fields.
+ *
+ * @tparam BrokerType The derived broker credentials class.
+ */
 template <typename BrokerType>
 class ClientCredentials {
 public:
-  /** OAuth grant used by the supported broker machine clients. */
+  /** @brief The OAuth grant type sent in a token request. */
   static constexpr std::string_view grant_type = "client_credentials";
 
-  /** Loads credentials using the broker-specific environment mapping. */
+  /**
+   * @brief Loads the credentials from the broker's environment variables.
+   * @throws std::runtime_error (from the broker's implementation) if a variable is missing.
+   */
   void from_env() { static_cast<BrokerType*>(this)->from_env_impl(); }
 
-  /** Loads credentials using the broker-specific JSON mapping. */
+  /**
+   * @brief Loads the credentials from a JSON file, in the broker's format.
+   * @param filename The file.
+   * @throws std::runtime_error (from the broker's implementation) if the file cannot be read or a
+   *   field is missing.
+   */
   void from_json(const std::string& filename) {
     static_cast<BrokerType*>(this)->from_json_impl(filename);
   }
 
-  /** Returns the public application or client identifier. */
+  /**
+   * @brief Returns the app key (client id).
+   * @return The key.
+   */
   const std::string& key() const noexcept { return key_; }
 
-  /** Returns the application or client secret. */
+  /**
+   * @brief Returns the app secret.
+   * @return The secret; do not log it.
+   */
   const std::string& secret() const noexcept { return secret_; }
 
-  /** Serializes credentials as a JSON OAuth token request. */
+  /**
+   * @brief Builds a JSON token-request body (grant type, key and secret under the broker's field
+   *   names).
+   * @return The body.
+   */
   std::string to_jsonbody() const {
     json::object value;
     value["grant_type"] = grant_type;
@@ -58,25 +79,26 @@ public:
     return json::serialize(value);
   }
 
-  /** Serializes credentials as an application/x-www-form-urlencoded request. */
+  /**
+   * @brief Builds a form-encoded token-request body (`grant_type`, `client_id`, `client_secret`).
+   * @return The body, values percent-encoded.
+   */
   std::string to_form_urlencoded_body() const {
     return "grant_type=client_credentials&client_id=" + form_encode(key_) +
       "&client_secret=" + form_encode(secret_);
   }
 
 protected:
-  /** The application key or client id. Never logged. */
+  /** @brief The app key (client id). */
   std::string key_;
-  /** The application secret. Never logged. */
+  /** @brief The app secret. */
   std::string secret_;
 
 private:
-  /**
-   * Percent-encodes one form value using the RFC 3986 unreserved character set.
-   *
-   * Encoding reserved characters such as `&`, `=`, `+`, and `%` prevents a
-   * credential value from changing the surrounding form-field structure.
-   */
+  // Percent-encodes one form value using the RFC 3986 unreserved character set.
+  //
+  // Encoding reserved characters such as `&`, `=`, `+`, and `%` prevents a
+  // credential value from changing the surrounding form-field structure.
   static std::string form_encode(std::string_view value) {
     static constexpr char hex[] = "0123456789ABCDEF";
     std::string result;
@@ -97,35 +119,29 @@ private:
 };
 
 /**
- * CRTP storage and parsing for an OAuth access-token response.
+ * @brief An OAuth access token and its expiry, the base of each broker's token-response class.
  *
- * **The base names no wire field of its own**, which is the whole reason it is a template. It used
- * to read the literal `"access_token"` and to fall back to a twenty-four hour lifetime, and both
- * were properties of the two brokers that existed rather than of OAuth: Kiwoom's `au10001` returns
- * the token under `token` and states its expiry as an absolute `expires_dt`, with no relative field
- * at all. A broker declares its own spelling through `token_field()`, exactly as it already declares
- * the request side through `ClientCredentials<BrokerType>::key_field()`.
+ * The broker class derives from it (CRTP) and provides the static `token_field()` naming the token's
+ * JSON field, and `from_json_impl(document)` to read anything else (such as an absolute expiry).
  *
- * `token_field()` is required rather than defaulted on purpose. A default would let a new broker
- * inherit KIS's spelling in silence and discover it on the first live token.
+ * @tparam BrokerType The derived broker token class.
  */
 template <typename BrokerType>
 struct AuthBody {
-  /** The bearer token itself. Never logged. */
+  /** @brief The bearer token; do not log it. */
   std::string access_token_;
-  /** When it stops being usable, absolute rather than relative. */
+  /** @brief When the token expires. */
   std::chrono::system_clock::time_point expires_at_{};
 
   /**
-   * Parses the token and any relative expiry, then hands over to broker-specific parsing.
+   * @brief Reads a token response.
    *
-   * **A response that states no expiry is refused rather than given one.** The relative
-   * `expires_in` is read when the broker sends it; a broker that states its expiry absolutely sets
-   * `expires_at_` in its own `from_json_impl`, as `KisRest` does for `access_token_token_expired`
-   * and `KiwoomRest` does for `expires_dt`. If neither happened, `expires_at_` is still unset and
-   * this throws, because the alternative -- the invented day this code used to supply -- is a
-   * guessed lifetime presented as a stated one, and every caller treats it as stated. Decision 6:
-   * never silently downgrade.
+   * Reads the token, a relative `expires_in` (number or numeric string) if present, then calls the
+   * broker's `from_json_impl`, which may set an absolute expiry.
+   *
+   * @param document The response.
+   * @throws std::runtime_error if the token field is missing or not a string, or the response states
+   *   no expiry (no lifetime is assumed); or whatever the broker's `from_json_impl` throws.
    */
   void from_json(const json::object& document) {
     const std::string_view field = BrokerType::token_field();
@@ -157,18 +173,19 @@ struct AuthBody {
     }
   }
 
-  /** Returns whether the token remains valid beyond the requested margin. */
+  /**
+   * @brief Tests whether the token is set and stays valid for at least a margin.
+   * @param margin How long it must still be valid.
+   * @return `true` if the token is nonempty and expires later than now plus `margin`.
+   */
   bool valid(std::chrono::seconds margin = std::chrono::minutes(5)) const noexcept {
     return !access_token_.empty() && std::chrono::system_clock::now() + margin < expires_at_;
   }
 
 private:
-  /**
-   * Reads a whole number of seconds, or nothing when the text is not one.
-   *
-   * A malformed `expires_in` leaves `expires_at_` unset, so it reaches the refusal above rather
-   * than throwing an exception whose message names neither the broker nor the field.
-   */
+  // Reads a whole number of seconds, or nothing when the text is not one. A malformed `expires_in`
+  // leaves `expires_at_` unset, so it reaches the no-expiry refusal rather than throwing an
+  // exception that names neither the broker nor the field.
   static std::optional<std::int64_t> parse_seconds(std::string_view text) {
     std::int64_t seconds{0};
     const auto parsed = std::from_chars(text.data(), text.data() + text.size(), seconds);

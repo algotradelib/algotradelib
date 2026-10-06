@@ -11,13 +11,25 @@ namespace ssl = net::ssl;
 
 namespace network {
 
-/** Options accepted by a TLS WebSocket session. */
+/** @brief Options for a `WssSession`. */
 using WssSessionOptions = WebSocketSessionOptions;
 
-/** WebSocket client session over TLS. */
+/**
+ * @brief A WebSocket client over TLS (with SNI and host-name verification); derive from it and
+ *   override `on_message`.
+ *
+ * See `WebSocketSessionBase` for its use.
+ */
 class WssSession : public WebSocketSessionBase<WssSession, websocket::stream<ssl::stream<beast::tcp_stream>>> {
 public:
-  /** Constructs a TLS WebSocket session from structured options. */
+  /**
+   * @brief Constructs a session.
+   * @param ioc The I/O context.
+   * @param context The TLS context; borrowed, and must outlive the session.
+   * @param host The host.
+   * @param port The port.
+   * @param options The options.
+   */
   WssSession(
     net::io_context& ioc,
     ssl::context& context,
@@ -28,7 +40,15 @@ public:
   : WebSocketSessionBase(ioc, std::move(host), std::move(port), std::move(options)),
     context_(context) {}
 
-  /** Constructs a TLS WebSocket session from a target and headers. */
+  /**
+   * @brief Constructs a session with default options except the target and headers.
+   * @param ioc The I/O context.
+   * @param context The TLS context; borrowed, and must outlive the session.
+   * @param host The host.
+   * @param port The port.
+   * @param target The path of the upgrade request.
+   * @param headers Extra headers sent with the upgrade request.
+   */
   WssSession(
     net::io_context& ioc,
     ssl::context& context,

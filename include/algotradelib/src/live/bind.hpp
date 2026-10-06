@@ -13,26 +13,22 @@ namespace algotradelib {
 namespace live {
 
 /**
- * Binding a strategy to a session in one call.
+ * @file
+ * @brief Factories that bind a strategy to a broker session in one call: `bind`, `bind_journaled`
+ *   and `bind_observer`.
  *
- * `Runner` takes four template parameters because each is a genuine axis: the strategy, the broker's
- * capabilities, its compile-time tag, and where instructions are sent. Three of those are determined
- * by the session, though, so writing them out at a call site is repetition rather than expression —
- * and repetition that can be got subtly wrong, since nothing stops a caller pairing one broker's tag
- * with another's capabilities.
- *
- * These two factories read all three off the session, so a binding is one line and the mismatch is
- * unexpressible.
+ * Each reads the capabilities and broker tag off the session, so a runner cannot pair one broker's
+ * tag with another's capabilities.
  */
 
-/**
- * The number of bars a bound runner keeps per instrument unless told otherwise.
- *
- * Named so a caller who states a later argument -- a default route -- need not restate the number.
- */
+/** @brief The number of trailing bars per instrument a bound runner keeps by default. */
 inline constexpr std::size_t default_series_capacity = 512;
 
-/** The runner type a session-backed binding produces. */
+/**
+ * @brief The runner type `bind` returns.
+ * @tparam Strategy The strategy type.
+ * @tparam Session The broker session type.
+ */
 template <typename Strategy, typename Session>
 using BoundRunner = runner::Runner<
   Strategy,
@@ -41,7 +37,11 @@ using BoundRunner = runner::Runner<
   SessionExecutor<Session>
 >;
 
-/** The runner type an observing binding produces: the same, sending nowhere. */
+/**
+ * @brief The runner type `bind_observer` returns: the same capabilities and tag, sending nowhere.
+ * @tparam Strategy The strategy type.
+ * @tparam Session The broker session type.
+ */
 template <typename Strategy, typename Session>
 using ObservingRunner = runner::Runner<
   Strategy,
@@ -51,16 +51,22 @@ using ObservingRunner = runner::Runner<
 >;
 
 /**
- * Binds `strategy` to `session`, so instructions reach the broker.
+ * @brief Binds a strategy to a broker session, so its instructions are sent to the broker.
  *
- * **This can place orders.** `bind_observer` is the same pipeline with nowhere to send.
+ * **This can place orders.** `bind_observer` is the same pipeline with nowhere to send. The runner
+ * requires holdings to have been read before it places (see `Runner::allow_absent_portfolio` for a
+ * run that reads none).
  *
- * The session is borrowed and must outlive the runner: `SessionExecutor` holds it by pointer, because
- * a runner uses a connection it does not own.
- *
- * `default_route` is the venue an order that names none is sent to -- and a strategy's orders name
- * none. `UNSPECIFIED` takes the broker's own default, which Kiwoom does not have: **a Kiwoom runner
- * places nothing until a route is stated here.** See `SessionExecutor::default_route`.
+ * @tparam Strategy The strategy type.
+ * @tparam Session The broker session type.
+ * @param session The session; borrowed, and must outlive the runner.
+ * @param strategy The strategy.
+ * @param limits The risk limits.
+ * @param series_capacity How many trailing bars each cached series keeps.
+ * @param default_route The venue for an order that names none, which is every order a strategy plans.
+ *   `UNSPECIFIED` takes the broker's own default; Kiwoom has none, so **a Kiwoom runner places
+ *   nothing until a route is given here**. See `SessionExecutor::default_route`.
+ * @return The runner.
  */
 template <typename Strategy, typename Session>
 BoundRunner<Strategy, Session> bind(
@@ -84,7 +90,12 @@ BoundRunner<Strategy, Session> bind(
   return bound;
 }
 
-/** The runner type a journaled binding produces: the same pipeline, recording before it sends. */
+/**
+ * @brief The runner type `bind_journaled` returns: the same pipeline, journaling before it sends.
+ * @tparam Strategy The strategy type.
+ * @tparam Session The broker session type.
+ * @tparam Journal The journal type (such as `runner::FileJournal`).
+ */
 template <typename Strategy, typename Session, typename Journal>
 using JournaledRunner = runner::Runner<
   Strategy,
@@ -94,19 +105,26 @@ using JournaledRunner = runner::Runner<
 >;
 
 /**
- * Binds `strategy` to `session` so that every instruction is recorded before it is sent.
+ * @brief Binds a strategy to a broker session, recording every instruction in a journal before it
+ *   is sent.
  *
- * **Use this rather than wrapping an executor yourself.** `bind` constructs its own
- * `SessionExecutor` internally, so a `JournalingExecutor` built beside the runner it was meant for
- * is simply an unused variable: the runner goes on sending through the plain executor, the journal
- * stays empty, and nothing anywhere reports a problem. That failure is silent and total, which is
- * exactly the kind this factory exists to make unexpressible.
+ * Use this rather than building a `runner::JournalingExecutor` yourself: `bind` makes its own
+ * executor, so a journaling executor built beside it would never be used, and nothing would report
+ * it.
  *
- * Recovery is a separate call, and the order matters: `runner::recover_runner` must run against the
- * journal *before* the loop starts, so the ledger is marked for whatever a previous process left
- * owed. The journal is borrowed and must outlive the runner.
+ * After a restart, call `runner::recover_runner` with the journal **before** the loop starts, so
+ * instruments a previous process left unresolved are held.
  *
- * `default_route` is as for `bind`, and the journal records the route it produces.
+ * @tparam Strategy The strategy type.
+ * @tparam Session The broker session type.
+ * @tparam Journal The journal type.
+ * @param session The session; borrowed, and must outlive the runner.
+ * @param journal The journal; borrowed, and must outlive the runner.
+ * @param strategy The strategy.
+ * @param limits The risk limits.
+ * @param series_capacity How many trailing bars each cached series keeps.
+ * @param default_route As for `bind`; the journal records the route actually requested.
+ * @return The runner.
  */
 template <typename Strategy, typename Session, typename Journal>
 JournaledRunner<Strategy, Session, Journal> bind_journaled(
@@ -130,15 +148,20 @@ JournaledRunner<Strategy, Session, Journal> bind_journaled(
 }
 
 /**
- * Binds `strategy` for observation: real capabilities, real broker tag, and no session to send to.
+ * @brief Binds a strategy for observation: the session's capabilities and broker tag, and nothing
+ *   to send through.
  *
- * The session is taken only to read its types, which is the point — an observing runner is
- * instantiated with the *same* `Caps` and `BrokerTag` as the live one, so a capability-gated strategy
- * compiles the same branch in both and observing cannot diverge from trading.
+ * A capability-gated strategy compiles the same branch as it would live. Nothing can be sent
+ * because the runner has no executor that reaches a broker; its reports list what would have been
+ * sent.
  *
- * Nothing can be sent because there is nothing to send *through*, rather than because a check
- * declines to. That is a stronger arrangement than halting the guard, which would leave the send path
- * present and report every decision as a refusal.
+ * @tparam Strategy The strategy type.
+ * @tparam Session The broker session type.
+ * @param session The session; only its type is used.
+ * @param strategy The strategy.
+ * @param limits The risk limits.
+ * @param series_capacity How many trailing bars each cached series keeps.
+ * @return The runner.
  */
 template <typename Strategy, typename Session>
 ObservingRunner<Strategy, Session> bind_observer(

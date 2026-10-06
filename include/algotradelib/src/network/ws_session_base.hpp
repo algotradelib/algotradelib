@@ -1,14 +1,9 @@
 #pragma once
 
 /**
- * Declares that this translation unit has reached the transport layer.
+ * @brief Defined as 1 once a transport (network) header is included.
  *
- * Read by `tests/test-strategy-isolation.cpp` to assert that the strategy surface does not. A
- * strategy must name no broker and perform no I/O, and that property degrades silently: one
- * convenience include in a strategy header would couple every strategy to a vendor, and nothing
- * would fail until someone built the same source against the other broker. Declaring the layer
- * here makes the assertion an architectural statement rather than a search for a third-party
- * macro that happens to come along for the ride.
+ * The library's tests use it to check that the strategy headers include no transport.
  */
 #define ATL_TRANSPORT_LAYER_PRESENT 1
 
@@ -36,37 +31,45 @@ namespace beast = boost::beast;
 namespace http = beast::http;
 namespace websocket = beast::websocket;
 namespace net = boost::asio;
+/** @brief Short for `boost::asio::ip::tcp`. */
 using tcp = net::ip::tcp;
 
 namespace network {
 
-/** Runtime options shared by plain and TLS WebSocket sessions. */
+/** @brief Options for a WebSocket session (`WsSession`, `WssSession`). */
 struct WebSocketSessionOptions {
-  /** The path the upgrade request targets. */
+  /** @brief The path of the upgrade request. */
   std::string target_{"/"};
-  /** Extra headers to send with the handshake. */
+  /** @brief Extra headers sent with the upgrade request. */
   std::map<std::string, std::string> headers_;
-  /** The deadline applied to resolve, connect and handshake. */
+  /** @brief The deadline for the DNS lookup, connect and TLS handshake. */
   std::chrono::seconds operation_timeout_{30};
-  /** Whether to reconnect after an unrequested close, with bounded exponential backoff and jitter. */
+  /** @brief Whether to reconnect after a failure or a close not requested with `close()`. */
   bool automatic_reconnect_{false};
-  /** The first backoff delay. */
+  /** @brief The first reconnect delay; it doubles on each attempt, plus up to 20% random jitter. */
   std::chrono::seconds reconnect_initial_{1};
-  /** The ceiling the backoff grows to. */
+  /** @brief The longest reconnect delay (before jitter). */
   std::chrono::seconds reconnect_max_{30};
 };
 
 /**
- * Shared CRTP state machine for plain and TLS WebSocket clients.
+ * @brief The base of the WebSocket clients `WsSession` and `WssSession`: connecting, sending,
+ *   receiving, closing and reconnecting.
  *
- * `Derived` supplies transport-specific connection setup through `do_connect`
- * and `on_connect`. This base owns serialized writes, reads, graceful close,
- * and reconnect backoff.
+ * To use a session, derive from `WsSession` or `WssSession`, override `on_message` (and optionally
+ * `on_open`, `on_error`, `on_closed`), create it with `std::make_shared`, and call `connect()`. All
+ * handlers run on the session's strand.
+ *
+ * @tparam Derived The transport class (`WsSession` or `WssSession`).
+ * @tparam Stream The WebSocket stream type.
  */
 template <typename Derived, typename Stream>
 class WebSocketSessionBase : public std::enable_shared_from_this<Derived> {
 public:
-  /** Starts or restarts the transport connection asynchronously. */
+  /**
+   * @brief Connects asynchronously (does nothing if connected, connecting or closing), and re-enables
+   *   reconnection after a `close()`.
+   */
   void connect() {
     net::post(strand_, [self = shared_derived()] {
       self->stop_requested_ = false;
@@ -74,7 +77,13 @@ public:
     });
   }
 
-  /** Queues one complete WebSocket message for serialized transmission. */
+  /**
+   * @brief Queues a message; messages are sent in order once connected.
+   *
+   * A message whose write failed stays queued and is sent again after a reconnect.
+   *
+   * @param message The message.
+   */
   void send(std::string message) {
     net::post(strand_, [self = shared_derived(), message = std::move(message)]() mutable {
       self->write_queue_.push_back(std::move(message));
@@ -84,7 +93,10 @@ public:
     });
   }
 
-  /** Requests an asynchronous graceful close and disables reconnection. */
+  /**
+   * @brief Closes the session asynchronously after any write in progress, and disables
+   *   reconnection; `on_closed` is called when done.
+   */
   void close() {
     net::post(strand_, [self = shared_derived()] {
       self->stop_requested_ = true;
@@ -111,7 +123,13 @@ public:
   }
 
 protected:
-  /** Constructs the shared state. Derived classes own creating `ws_` and any transport setup. */
+  /**
+   * @brief Constructs the session; nothing connects until `connect()`.
+   * @param ioc The I/O context.
+   * @param host The host.
+   * @param port The port.
+   * @param options The options.
+   */
   WebSocketSessionBase(
     net::io_context& ioc,
     std::string host,
@@ -124,66 +142,72 @@ protected:
 
   virtual ~WebSocketSessionBase() = default;
 
-  /** Receives one complete WebSocket message. */
+  /**
+   * @brief Called with each complete message received.
+   * @param message The message; valid only during the call.
+   */
   virtual void on_message(std::string_view message) = 0;
 
-  /** Called after a successful WebSocket upgrade. */
+  /** @brief Called when the session is connected (after each successful upgrade, reconnects included). */
   virtual void on_open() {}
 
-  /** Called when a transport stage fails. */
+  /**
+   * @brief Called when a stage fails; the session is then torn down, and reconnects if
+   *   `automatic_reconnect_` is set.
+   * @param stage The stage, such as `"connect"`, `"handshake"`, `"read"` or `"write"`.
+   * @param error The error.
+   */
   virtual void on_error(std::string_view stage, beast::error_code error) {
     boost::ignore_unused(stage, error);
   }
 
-  /** Called after the session closes. */
+  /** @brief Called when the session has closed (by `close()` or by the server). */
   virtual void on_closed() {}
 
-  /** The strand every handler runs on, so the session needs no lock. */
+  /** @brief The strand every handler runs on. */
   net::strand<net::io_context::executor_type> strand_;
-  /** Resolves `host_` and `port_`. */
+  /** @brief The resolver. */
   tcp::resolver resolver_;
-  /** Times the backoff between reconnect attempts. */
+  /** @brief The reconnect timer. */
   net::steady_timer reconnect_timer_;
-  /** The stream, created by the derived class once its transport is ready. */
+  /** @brief The stream, created by the transport class on each connect. */
   std::unique_ptr<Stream> ws_;
-  /** Where an incoming message is read into. */
+  /** @brief The read buffer. */
   beast::flat_buffer buffer_;
-  /** Messages waiting to go out; writes are serialized, so only the front is on the wire. */
+  /** @brief Messages waiting to be sent; the front one may be being written. */
   std::deque<std::string> write_queue_;
-  /** The host to connect to. */
+  /** @brief The host. */
   std::string host_;
-  /** The port to connect to. */
+  /** @brief The port. */
   std::string port_;
-  /** The value sent as the `Host` header, which SNI and certificate verification use. */
+  /** @brief The `Host` header value (`host:port`), set on connect. */
   std::string host_header_;
-  /** The options this session was constructed with. */
+  /** @brief The options. */
   WebSocketSessionOptions options_;
-  /** Whether the handshake has completed and the session is usable. */
+  /** @brief Whether the session is connected. */
   bool connected_{false};
-  /** Whether a connect attempt is in flight. */
+  /** @brief Whether a connect is in progress. */
   bool connecting_{false};
-  /** Whether a close was initiated and is not yet complete. */
+  /** @brief Whether a close is in progress. */
   bool closing_{false};
-  /** Whether a write is on the wire, which is what serializes `write_queue_`. */
+  /** @brief Whether a write is in progress. */
   bool writing_{false};
-  /** Whether a caller asked to stop, which suppresses reconnection. */
+  /** @brief Whether `close()` was called (no reconnection). */
   bool stop_requested_{false};
-  /** How many reconnects have been attempted, which sets the backoff. */
+  /** @brief Reconnect attempts since the last successful connect. */
   unsigned int reconnect_attempt_{0};
-  /** Jitter source for the backoff, so many sessions do not reconnect in lockstep. */
+  /** @brief The random source for reconnect jitter. */
   std::minstd_rand reconnect_rng_;
 
-  /** Returns `this` as the derived type, for a handler that must keep the session alive. */
+  /**
+   * @brief Returns a shared pointer to this session as the transport type.
+   * @return The pointer.
+   */
   std::shared_ptr<Derived> shared_derived() {
     return std::static_pointer_cast<Derived>(this->shared_from_this());
   }
 
-  /**
-   * Begins resolving the host.
-   *
-   * Called by `Derived::do_connect()` once `ws_` — and any transport-level setup such as SNI — is
-   * ready.
-   */
+  /** @brief Starts the DNS lookup; called by the transport class's `do_connect()` once `ws_` is ready. */
   void start_resolve() {
     connecting_ = true;
     resolver_.async_resolve(
@@ -191,12 +215,7 @@ protected:
     );
   }
 
-  /**
-   * Sends the WebSocket upgrade request.
-   *
-   * Called by `Derived::on_connect()`, directly or after a TLS handshake, once `host_header_` is set
-   * and the transport is ready.
-   */
+  /** @brief Sends the upgrade request; called by the transport class's `on_connect()` once connected. */
   void start_ws_handshake() {
     beast::get_lowest_layer(*ws_).expires_never();
     auto timeout = websocket::stream_base::timeout::suggested(beast::role_type::client);
@@ -215,7 +234,12 @@ protected:
     );
   }
 
-  /** Records a failure at `stage`, tears the session down, and reconnects if that is configured. */
+  /**
+   * @brief Tears the session down after a failure, calls `on_error` (and `on_closed` if closing),
+   *   and schedules a reconnect if configured.
+   * @param stage The stage that failed.
+   * @param error The error.
+   */
   void fail(std::string_view stage, beast::error_code error) {
     connected_ = false;
     connecting_ = false;
