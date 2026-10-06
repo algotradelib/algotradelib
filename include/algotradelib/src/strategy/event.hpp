@@ -158,10 +158,11 @@ private:
 };
 
 /**
- * @brief One completed bar, delivered to `on_bar`.
+ * @brief One bar, delivered to `on_bar`.
  *
- * A runner delivers only closed bars. `interval_` and `stamp_` say which period the bar covers;
- * `period_end_` is the instant that period ended, the earliest moment the bar could be known.
+ * `interval_` and `stamp_` say which period the bar covers; `period_end_` is the instant that
+ * period ended, the earliest moment the bar could be known. See `bar_` for which bars a live
+ * source may deliver while still forming.
  */
 struct BarEvent {
   /** @brief The instrument the bar is for. */

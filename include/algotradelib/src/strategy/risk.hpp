@@ -340,7 +340,8 @@ struct GuardInputs {
   /**
    * @brief The currency the order is priced in, from its reference data.
    *
-   * Needed only by the buying-power check; if absent, that check refuses.
+   * Needed by the buying-power check (absent refuses with `INSUFFICIENT_BUYING_POWER`) and by the
+   * gross-exposure ceiling (absent refuses with `VALUE_NOT_KNOWN`).
    */
   std::optional<Currency> order_currency_;
 };
@@ -384,8 +385,9 @@ enum class CandidateContribution {
  * price, summed over instruments in `currency`. Opposite-side orders do not offset each other.
  * The price is the highest that could apply: the basis mark and the limit price of every open order
  * on the instrument, the candidate's included. The candidate joins its own instrument on its own
- * side, so a sell against a long never raises the figure (and does not lower it either until it
- * fills).
+ * side, so a sell that exits a long up to flat (counting sells already working) does not raise
+ * the figure, though it does not lower it either until it fills. A sell larger than the long
+ * reaches a short and can raise it.
  *
  * @tparam Broker The portfolio's broker tag.
  * @param portfolio The positions (summed over every row) and working orders.
@@ -658,8 +660,10 @@ struct GuardDecision {
 /**
  * @brief Checks planned orders against `RiskLimits`, holds trading stopped, and counts orders sent.
  *
- * The rate limit counts only orders recorded with `note_sent`, which the runner calls after the
- * broker accepts an order, so a refused or failed order uses no budget.
+ * The rate limit counts what was recorded with `note_sent`. The runner records every placement or
+ * cancellation that was sent or may have been sent: accepted, rejected by the broker, or of unknown
+ * outcome. A request refused before sending (by this guard, the binding or the adapter) is not
+ * recorded, so it uses no budget.
  *
  * @note Not thread-safe; one guard belongs to one runner.
  */
@@ -804,9 +808,10 @@ public:
   }
 
   /**
-   * @brief Records that an order was sent, for the rate limit.
+   * @brief Records that a request was sent, for the rate limit.
    *
-   * The runner calls it after the broker accepts an order.
+   * The runner calls it for each placement or cancellation the broker accepted, rejected, or may
+   * have received (unknown outcome).
    *
    * @param when When the order was sent.
    */

@@ -92,8 +92,11 @@ struct SellableEvidence {
  * polls, an instrument's holding is unchanged, the resting sell quantity the broker reported grew,
  * and the gap between held and sellable moved by exactly that amount (`NET_OF_RESTING`) or not
  * at all (`GROSS_OF_RESTING`); anything else is discarded. Positions whose sellable basis is not
- * enforceable, or which carry no sellable figure, are skipped, so in a backtest or with a broker
- * that does not publish the figure the verdict stays `UNDETERMINED`.
+ * enforceable, or which carry no sellable figure, are skipped, so with a broker that does not
+ * publish the figure the verdict stays `UNDETERMINED`.
+ *
+ * @warning Fed a backtest's portfolios, it learns the replay ledger's model (which reports
+ *   sellable as held), not a broker's behaviour.
  *
  * @tparam Broker The broker tag of the portfolio.
  */

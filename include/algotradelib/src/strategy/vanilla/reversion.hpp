@@ -110,8 +110,9 @@ struct ZScoreReversion {
  * period 14.
  *
  * @note A backtest, whose cache keeps growing, can differ from a live run that loaded fewer bars,
- *   until the live cache catches up. Once the cache is full, evicting old closes can still move the
- *   index slightly.
+ *   until the live cache catches up. Once the cache is full, each bar evicts the oldest close, which
+ *   can change the index a lot: a full cache of unchanged closes after one fall reads 0, and 50 once
+ *   that fall is evicted. So the signal can change on an unchanged close.
  */
 struct RsiThreshold {
   /** @brief The strategy's settings. */

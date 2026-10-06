@@ -120,7 +120,7 @@ enum class SizeKind {
  */
 class SizeSpec {
 public:
-  /** @brief Constructs a quantity of zero, which the runner ignores. */
+  /** @brief Constructs a quantity of zero (reconciling it reports `QUANTITY_ROUNDS_TO_ZERO`). */
   SizeSpec() = default;
 
   /**

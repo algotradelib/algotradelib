@@ -355,7 +355,7 @@ struct NoCaps {
   /** @brief Unestablished, since there is no inquiry. */
   static constexpr SellableBasis sellable_inquiry_basis{};
   /**
-   * @brief Tests whether the broker serves bars of an interval.
+   * @brief Tests whether the broker serves bars of an interval (the unnamed argument).
    * @return `false` for every interval.
    */
   static constexpr bool supports_interval(BarInterval) { return false; }
@@ -422,7 +422,7 @@ struct AllCaps {
     false,
   };
   /**
-   * @brief Tests whether the broker serves bars of an interval.
+   * @brief Tests whether the broker serves bars of an interval (the unnamed argument).
    * @return `true` for every interval.
    */
   static constexpr bool supports_interval(BarInterval) { return true; }
@@ -464,10 +464,10 @@ public:
    * @return Not callable.
    */
   ProbeContextT& operator=(const ProbeContextT&) = delete;
-  /** @brief Move constructor. */
+  /** @brief Move constructor: takes the other probe's state. */
   ProbeContextT(ProbeContextT&&) = default;
   /**
-   * @brief Move assignment.
+   * @brief Move assignment: takes the other probe's state.
    * @return `*this`.
    */
   ProbeContextT& operator=(ProbeContextT&&) = default;

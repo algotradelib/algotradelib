@@ -72,7 +72,11 @@ inline std::optional<Crossing> last_two(const math::Vector& line) {
  * ...` (newest first, `q = 1 - alpha`) normalized to sum to one. On finite observed rows it equals
  * pandas' `ewm(alpha=alpha, adjust=True, ignore_na=True).mean()`. Unlike `analytics::ema`, the first
  * observation never weighs more than its exponential share, so use it on a short series with no
- * history before its first row. A constant series gives exactly that constant.
+ * history before its first row. A finite constant series gives exactly that constant.
+ *
+ * @warning An infinity counts as an observation: the average becomes infinite, then `NaN` from the
+ *   next finite value on, for the rest of the series (except at `alpha = 1`, which keeps only the
+ *   newest value).
  *
  * @param values The series; `NaN` entries are skipped and their rows left `missing()`.
  * @param alpha The smoothing factor, in `(0, 1]`.

@@ -428,15 +428,21 @@ inline bool is_stop_order(const OrderSnapshot& order) {
  * 5. The order is rounded down onto the lot, and its limit (if the target has one) clamped and
  *    rounded; without a limit it is a market order.
  *
- * If a stop order rests on the instrument and a trade is needed, the plan only cancels the stop and
- * reports `RejectReason::STOP_ORDER_RESTING`. A drift below `ReconcileInputs::tolerance_` yields an
- * empty plan. A met target yields an empty plan apart from those cancellations.
+ * When a stop order rests on the instrument, the steps above do not apply:
+ * - if a trade is needed, the plan cancels the stop (unless its cancellation is already pending)
+ *   and also carries a `RejectReason::STOP_ORDER_RESTING` rejection, with nothing placed;
+ * - if the target is already met, the stop is kept and only the other open orders are cancelled.
+ *
+ * A drift below `ReconcileInputs::tolerance_` yields an empty plan, but only when nothing has to be
+ * cancelled; an order working against the target is still cancelled.
  *
  * @tparam Broker The broker tag.
  * @param target The target position.
  * @param portfolio The positions and working orders.
  * @param inputs Reference data, prices, band and tolerance.
- * @return The plan; a refusal clears the cancellations and placements and carries one `Rejection`.
+ * @return The plan. A refusal for any reason other than `STOP_ORDER_RESTING` clears the
+ *   cancellations and placements and carries one `Rejection`; with `STOP_ORDER_RESTING` the
+ *   cancellations stay, and the caller should send them.
  */
 template <typename Broker>
 Plan<Broker> reconcile(

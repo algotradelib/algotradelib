@@ -14,11 +14,13 @@ namespace strategy {
 namespace vanilla {
 
 /**
- * @brief Holds a long position sized so its daily value volatility matches a risk budget.
+ * @brief Holds a long position sized so its value volatility per bar matches a risk budget.
  *
  * The target is `q = budget / (price * s)`, where `s` is the sample standard deviation of the last
- * `window_` bar returns, capped at `max_quantity_`. Nothing is stated while the window is
- * incomplete or flat. The budget is in currency, not a fraction of equity.
+ * `window_` returns of the bars it is fed, capped at `max_quantity_`. The volatility is per bar of
+ * whatever interval arrives (a minute bar gives per-minute volatility); nothing converts it to a
+ * daily figure. Nothing is stated while the window is incomplete or flat. The budget is in
+ * currency, not a fraction of equity.
  */
 struct VolatilityTargetSizing {
   /** @brief The strategy's settings. */
