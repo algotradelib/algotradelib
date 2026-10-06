@@ -78,6 +78,10 @@ TEST_CASE("a value too large for an exact decimal is refused, not wrapped") {
   // Scaling is what overflows first for a large value at a fine scale.
   REQUIRE_FALSE(to_decimal(1e18, 4).has_value());
   REQUIRE(to_decimal(1e15, 0).has_value());
+
+  // 2^63 is the double `INT64_MAX` converts to, and does not fit.
+  REQUIRE_FALSE(to_decimal(9223372036854775808.0, 0).has_value());
+  REQUIRE(to_decimal(-9223372036854775808.0, 0).has_value());
 }
 
 TEST_CASE("the route from a computed value to an order price is narrow") {
@@ -112,13 +116,14 @@ TEST_CASE("a computed price never crosses its value on the way to the grid") {
   REQUIRE(round_scalar_to_tick(1999.8, rule, OrderSide::BUY)->str() == "1999");
   REQUIRE(round_scalar_to_tick(2000.2, rule, OrderSide::SELL)->str() == "2005");
 
-  // A decimal that went through a scalar comes back as itself, not one unit off.
+  // A decimal that went through a scalar comes back as itself, not one unit off, at any scale a
+  // market quotes in.
   const auto free = PriceRule::unconstrained();
-  for (const char* text : {"185.71", "0.29", "70100", "1234.57"}) {
+  for (const char* text : {"185.71", "0.29", "70100", "1234.57", "98765.43219", "1234567.891234"}) {
     const auto decimal = Decimal64::parse(text);
     const auto scalar = analytics::to_scalar(decimal);
     for (const auto side : {OrderSide::BUY, OrderSide::SELL}) {
-      const auto price = round_scalar_to_tick(scalar, free, side, 2);
+      const auto price = round_scalar_to_tick(scalar, free, side, decimal.scale());
       REQUIRE(price);
       REQUIRE_FALSE(decimal_less(*price, decimal));
       REQUIRE_FALSE(decimal_less(decimal, *price));

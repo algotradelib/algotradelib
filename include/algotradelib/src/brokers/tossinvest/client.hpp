@@ -1837,7 +1837,8 @@ private:
     network::HttpRequest request;
     request.group_ = network::RateLimitGroup::ACCOUNT;
     request.method_ = http::verb::get;
-    request.target_ = "/api/v1/sellable-quantity?symbol=" + broker_detail::query_encode(instrument.symbol_);
+    request.target_ =
+      "/api/v1/sellable-quantity?symbol=" + broker_detail::query_encode(instrument.symbol_);
     request.headers_ = {
       {"Authorization", "Bearer " + token_.access_token_},
       {"X-Tossinvest-Account", std::to_string(account_sequence)},

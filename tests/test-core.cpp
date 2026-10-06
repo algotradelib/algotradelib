@@ -538,9 +538,9 @@ TEST_CASE("decimal arithmetic at the edges of the coefficient", "[core][decimal]
   REQUIRE(decimal_less(huge, Decimal64(1, 2)));
 
   // Flooring the most negative coefficient would go below it: refused rather than overflowing.
-  REQUIRE_FALSE(decimal_floor_to_multiple(Decimal64(std::numeric_limits<std::int64_t>::min(), 0), Decimal64(3, 0)));
-  REQUIRE(decimal_floor_to_multiple(Decimal64(std::numeric_limits<std::int64_t>::min(), 0), Decimal64(2, 0)) ==
-          Decimal64(std::numeric_limits<std::int64_t>::min(), 0));
+  const Decimal64 lowest(std::numeric_limits<std::int64_t>::min(), 0);
+  REQUIRE_FALSE(decimal_floor_to_multiple(lowest, Decimal64(3, 0)));
+  REQUIRE(decimal_floor_to_multiple(lowest, Decimal64(2, 0)) == lowest);
 
   // A remainder that does not fit says "cannot tell", as `round_to_tick` does, not "off the grid".
   const Decimal64 unrepresentable(std::numeric_limits<std::int64_t>::max(), 19);

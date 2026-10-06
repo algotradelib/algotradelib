@@ -64,8 +64,9 @@ inline std::optional<Decimal64> to_decimal(Scalar value, std::uint8_t scale) {
     scaled *= Scalar(10);
   }
   const Scalar rounded = scaled < 0 ? std::ceil(scaled - Scalar(0.5)) : std::floor(scaled + Scalar(0.5));
+  // `INT64_MAX` is not a double: it converts to 2^63, which does not fit, so that bound is exclusive.
   if (
-    rounded > static_cast<Scalar>(std::numeric_limits<std::int64_t>::max()) ||
+    rounded >= static_cast<Scalar>(std::numeric_limits<std::int64_t>::max()) ||
     rounded < static_cast<Scalar>(std::numeric_limits<std::int64_t>::min())
   ) {
     return std::nullopt;
@@ -77,11 +78,10 @@ inline std::optional<Decimal64> to_decimal(Scalar value, std::uint8_t scale) {
  * @brief Converts a computed value into a price an order can carry.
  *
  * The value is rounded to a decimal at `scale` in the order's favour (a buy down, a sell up), then
- * onto the tick grid the same way, so a buy is never above the computed value and a sell never below
- * it: with the KRX grid and `scale = 0`, a buy at `1999.8` gives `1999` and a sell at `2000.2` gives
- * `2005`. A value within a few units of floating-point
- * precision of a decimal counts as that decimal, so a price converted from a `Decimal64` comes back
- * unchanged.
+ * onto the tick grid the same way, so a buy is never above the computed value (by more than
+ * floating-point noise) and a sell never below it: with the KRX grid and `scale = 0`, a buy at
+ * `1999.8` gives `1999` and a sell at `2000.2` gives `2005`. A value within floating-point noise of a
+ * decimal counts as that decimal, so a price converted from a `Decimal64` comes back unchanged.
  *
  * @param value The computed price.
  * @param rule The instrument's tick rule.
@@ -107,8 +107,12 @@ inline std::optional<Decimal64> round_scalar_to_tick(
   for (std::uint8_t step = 0; step < scale; ++step) {
     scaled *= Scalar(10);
   }
-  const Scalar noise =
-    std::max(Scalar(1e-9), std::abs(scaled) * Scalar(4) * std::numeric_limits<Scalar>::epsilon());
+  // Each of the `scale` multiplications here, and the divisions of a `to_scalar` before them, can
+  // add half a unit in the last place.
+  const Scalar noise = std::max(
+    Scalar(1e-9),
+    std::abs(scaled) * Scalar(2 * scale + 4) * std::numeric_limits<Scalar>::epsilon()
+  );
   const auto coefficient = nearest->coefficient();
   const Scalar crossed = static_cast<Scalar>(coefficient) - scaled;
   auto exact = *nearest;
