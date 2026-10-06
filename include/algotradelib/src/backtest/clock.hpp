@@ -16,17 +16,19 @@ namespace algotradelib {
 namespace backtest {
 
 /**
- * Turning a bar interval into the numbers a backtest needs, without assuming a bar is a day.
+ * @file
+ * @brief Bar-interval arithmetic and the replay clock.
  *
- * **The rule this whole engine is built on.** Neither supported broker makes intraday history easy —
- * KIS serves minute bars one trading day at a time — but that is a limitation of two adapters, not a
- * property of backtesting. A broker that serves minute history, or a caller with their own bar files,
- * must be able to run an intraday backtest without the engine being rewritten. So nothing here
- * multiplies by 245 or divides by 24 hours; everything is derived from the interval, the session, and
- * a trading-day count the caller states.
+ * Nothing here assumes a bar is a day: period counts come from the interval, the session window
+ * and a trading-day count the caller states.
  */
 
-/** Returns the nominal duration of one `interval`, or nothing for a calendar interval. */
+/**
+ * @brief Returns the fixed duration of an interval.
+ * @param interval The interval.
+ * @return 60 seconds for `ONE_MINUTE`; `std::nullopt` for a day or longer, which has no fixed
+ *   trading duration.
+ */
 inline std::optional<std::chrono::seconds> interval_duration(BarInterval interval) {
   switch (interval) {
     case BarInterval::ONE_MINUTE:
@@ -35,28 +37,23 @@ inline std::optional<std::chrono::seconds> interval_duration(BarInterval interva
     case BarInterval::ONE_WEEK:
     case BarInterval::ONE_MONTH:
     case BarInterval::ONE_YEAR:
-      // Nothing, deliberately. A day is not 24 hours of *trading*, and a month has no fixed length at
-      // all. A caller wanting a period count for these states the trading-day count instead, which is
-      // a calendar fact rather than an arithmetic one.
+      // A trading day is not 24 hours and a month has no fixed length; see `periods_per_year`.
       return std::nullopt;
   }
   return std::nullopt;
 }
 
 /**
- * Returns how many bars of `interval` a year contains, given a session and a trading-day count.
+ * @brief Returns how many bars of an interval a year contains, for `analytics::annualize_ratio`.
  *
- * What `analytics::annualize_ratio` needs, and the reason that function takes the period count rather
- * than defaulting to one: the answer is `245` for daily bars on KRX and `95,550` for minute bars over
- * the same year, and no default serves both.
+ * Daily bars: `trading_days`. Minute bars: session minutes per day times `trading_days` (KRX's
+ * 390-minute session and 245 days give 95,550).
  *
- * `trading_days` is a calendar fact the caller supplies — about 245 for KRX, 252 for US markets — and
- * deliberately has no default here, because a library guessing a market's calendar is how a Sharpe
- * ratio ends up silently scaled by the wrong constant.
- *
- * Returns nothing when the interval does not divide the session evenly enough to answer: a weekly bar
- * over a five-day week is `trading_days / 5`, which this does not attempt, because the right divisor
- * depends on the market's week and not on arithmetic.
+ * @param interval The bar interval.
+ * @param session The session window (used for minute bars).
+ * @param trading_days Trading days per year, such as about 245 for KRX or 252 for US markets.
+ * @return The count, or `std::nullopt` for weekly, monthly or yearly bars, a non-positive
+ *   `trading_days`, or a session whose close is not after its open.
  */
 inline std::optional<math::Scalar> periods_per_year(
   BarInterval interval,
@@ -84,53 +81,60 @@ inline std::optional<math::Scalar> periods_per_year(
 }
 
 /**
- * Where a backtest's clock stands, derived from the bars it has replayed.
+ * @brief A backtest's clock: the current instant and market phase, moved by the replayed events.
  *
- * Holds no wall-clock time at all. A backtest's "now" is the instant of the last bar's period end —
- * the earliest moment that bar could legitimately have been known — and reading a real clock would
- * make a replay depend on when it was run.
+ * It never reads the wall clock. "Now" is the period end of the last bar (the earliest moment it
+ * could be known), or the instant of a quote.
  */
 class ReplayClock {
 public:
-  /** Constructs a clock reading the session `session`. */
+  /**
+   * @brief Constructs a clock.
+   * @param session The session window phases are derived from.
+   */
   explicit ReplayClock(strategy::SessionWindow session = strategy::SessionWindow::krx())
   : session_(std::move(session)) {}
 
-  /** Returns the session window phases are derived against. */
+  /**
+   * @brief Returns the session window.
+   * @return The window phases are derived from.
+   */
   const strategy::SessionWindow& session() const noexcept { return session_; }
 
-  /** Returns the instant the replay has reached. */
+  /**
+   * @brief Returns the instant the replay has reached.
+   * @return The current instant; the epoch before the first event.
+   */
   std::chrono::system_clock::time_point now() const noexcept { return now_; }
 
-  /** Returns the phase at the current instant. */
+  /**
+   * @brief Returns the market phase at the current instant.
+   * @return The phase; `UNKNOWN` before the first event.
+   */
   strategy::MarketPhase phase() const noexcept { return phase_; }
 
   /**
-   * Advances to `event`'s period end and recomputes the phase.
+   * @brief Moves the clock to a bar's period end and recomputes the phase.
    *
-   * Returns whether the phase changed, so a caller knows to fire `on_phase`. A daily replay sees one
-   * transition per bar at most; a minute replay sees the real intraday sequence. Neither is special
-   * cased, which is the whole point.
-   *
-   * `trading_day` is what the calendar said about the bar's date, including its emptiness: an
-   * uncovered date yields `UNKNOWN`, which the risk guards refuse to trade in by default.
+   * @param event The bar.
+   * @param trading_day Whether the bar's date trades, as the calendar said; empty gives `UNKNOWN`,
+   *   in which the default risk limits refuse to open positions.
+   * @return `true` if the phase changed (so the caller fires `on_phase`).
    */
   bool advance(const strategy::BarEvent& event, std::optional<bool> trading_day) {
     return advance_to(event.period_end_, trading_day);
   }
 
   /**
-   * Advances to `at` and recomputes the phase, for an event that is not a bar.
+   * @brief Moves the clock to an instant and recomputes the phase, for an event that is not a bar
+   *   (such as a quote).
    *
-   * A quote carries an instant of its own and arrives between bars, so a replay that only moved this
-   * clock on a bar would show `on_quote` the phase as it stood at the **previous close** -- and the
-   * default `RiskLimits::permitted_phases_` refuses an opening order in every phase but `OPEN`. A
-   * live loop does not behave that way: `PollingLoop` re-derives the phase before each due poll,
-   * including the quote poll. Found by Codex at this branch's round 0.
+   * The clock goes wherever it is told, even backwards; feeding events in time order is the
+   * caller's job (see `Backtester::feed`).
    *
-   * `advance` is this function with a bar's period end, and both leave `now_` wherever the caller's
-   * event says -- including backwards, if a caller interleaves out of order. That obligation is the
-   * caller's and is stated on `Backtester::feed`.
+   * @param at The instant.
+   * @param trading_day Whether that date trades; empty gives `UNKNOWN`.
+   * @return `true` if the phase changed.
    */
   bool advance_to(
     std::chrono::system_clock::time_point at,
@@ -144,12 +148,12 @@ public:
   }
 
   /**
-   * Returns whether `event` follows `previous` without an intervening gap.
+   * @brief Tests whether a bar follows the previous one with no gap.
    *
-   * A minute replay crossing a session boundary has hours between two consecutive bars, and that gap
-   * is not a bar: nothing happened in it that a strategy should be told about. Reported rather than
-   * hidden so the engine can decline to interpolate, which is the only honest thing to do with a
-   * period no data covers.
+   * @param previous The earlier bar.
+   * @param event The later bar.
+   * @return `false` if both are minute bars more than a minute apart (such as across sessions);
+   *   `true` otherwise, including for daily and longer bars, where gaps are not decided here.
    */
   static bool contiguous(
     const strategy::BarEvent& previous,
@@ -157,9 +161,7 @@ public:
   ) {
     const auto duration = interval_duration(event.interval_);
     if (!duration || previous.interval_ != event.interval_) {
-      // Calendar intervals have no fixed length, so contiguity is not decidable here. Saying "yes"
-      // would let a gap pass unremarked; saying "no" would flag every daily bar. Undecidable is
-      // reported as contiguous and left to the calendar, which is the component that knows.
+      // Undecidable for intervals with no fixed length; reported as contiguous.
       return true;
     }
     return event.period_end_ - previous.period_end_ <= *duration;

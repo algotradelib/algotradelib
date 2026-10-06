@@ -17,417 +17,267 @@ namespace algotradelib {
 namespace backtest {
 
 /**
- * Summarizing a replay, including what it could not tell you.
+ * @file
+ * @brief The backtest report: performance figures, costs, and every assumption and limitation of
+ *   the run as a field (`ReportCaveats`).
  *
- * Needs a linear-algebra backend, because the metrics do. The engine itself does not, so a replay can
- * run in a build without one and be summarized by a caller's own arithmetic.
- *
- * **Every caveat is a field rather than a footnote.** A backtester is the easiest place in a library to
- * produce confident, wrong numbers, and a reader who has to know which paragraph of documentation
- * applied to their run will eventually not know. So what the fill model assumed, what it did not model,
- * and whether a universe could have suffered survivorship bias all travel with the figures.
- *
- * This is also the first consumer of `analytics`'s evaluation layer. `sortino` and the turnover pair had
- * no caller at all before it, and writing this is the test of whether the conventions chosen there were
- * the right ones.
+ * Needs a linear algebra backend (`ATL_USE_EIGEN=ON`); the engine itself does not.
  */
 
-/** What a replay's numbers do and do not account for. */
+/** @brief What a replay's figures assumed and did not account for. */
 struct ReportCaveats {
-  /** What a limit order was credited with. */
+  /** @brief Which price a filled limit order was credited. */
   LimitFillPrice limit_fill_{LimitFillPrice::AT_LIMIT};
   /**
-   * Every rate that actually charged an execution, with how many it charged.
+   * @brief Every commission rate that charged an execution, with how many it charged.
    *
-   * **This replaced a single `commission_rate_`, and the reason is that one number could not tell
-   * the truth about two.** A replay spanning a rate change charges each rate on its own dates, and a
-   * replay costing by venue charges a KRX fill and an NXT fill differently; a scalar could state
-   * only one of them, and which one was an accident of construction order.
-   *
-   * **These are the rates *used*, not the rates *available*.** A schedule row that covered dates the
-   * replay never traded on, or a venue it never asserted, does not appear -- and neither does one
-   * whose execution the ledger could not apply. A reader comparing this table against a broker's
-   * schedule is comparing what was charged against what was published, which is the comparison worth
-   * making.
-   *
-   * Empty on a zero-cost run, which is stated rather than implied: `AppliedRate::rate_` is zero and
-   * the entry is present, so a reader sees that nothing was charged rather than that nothing is known.
+   * Only rates actually used, not every rate in the schedule. A zero-cost run that traded lists a
+   * zero rate.
    */
   std::vector<AppliedRate> applied_rates_;
   /**
-   * How many executions were charged by a rate that did **not** distinguish an institution component.
+   * @brief How many executions were charged a single combined rate (no institution fee split).
    *
-   * Nonzero means `Report::commission_paid_` is *inclusive* for those executions -- the source stated
-   * one figure and said nothing about its composition, which is every rate Toss publishes -- and it
-   * is why `Report::institution_fees_paid_` is absent whenever this is nonzero. A zero there would
-   * claim an institution charge was levied and came to nothing.
+   * Nonzero means `Report::commission_paid_` includes the institution fee for those executions and
+   * `Report::institution_fees_paid_` is absent.
    */
   std::size_t inclusive_commission_executions_{0};
   /**
-   * The venue every scheduled cost was computed at, and it was **asserted rather than observed**.
+   * @brief The venue costs were computed at, as the caller asserted it (a replay cannot observe where
+   *   a fill executed).
    *
-   * A replay cannot know where a fill executed: a bar does not say, `PlannedOrder::venue_` is routing
-   * intent, and the KIS response fields that would say are undocumented. So a caller states the venue
-   * and this records that they did, in the same shape as `bar_tape_unverified` -- the figure is as
-   * good as the assertion and a reader can see the assertion.
-   *
-   * Empty when no scheduled policy was used, which is a run that cost nothing by venue at all.
+   * Empty when no scheduled commission policy was used.
    */
   std::optional<VenueKey> asserted_venue_;
-  /** Which tariff the schedule named, empty on a caller-stated flat model. */
+  /** @brief The tariff the commission schedule named; empty for a flat model. */
   std::string commission_tariff_;
   /**
-   * Whether a cost total could not be summed exactly, so the figures above are **incomplete**.
+   * @brief Whether some cost could not be summed exactly, so the cost totals are incomplete.
    *
-   * True means at least one exact-decimal step was refused -- an addition of two representable
-   * amounts whose sum does not fit, or a slippage multiplication that does not -- and the amount
-   * was left out rather than approximated. Every scalar cost total goes absent when it is set, and
-   * the per-currency vectors hold only what could be accumulated. It takes figures far larger than
-   * any real account to reach; it is reported because a money total that is quietly short is worse
-   * than one that says it is short.
+   * When set, every scalar cost total is absent and the per-currency totals hold only what could be
+   * added. It takes amounts far beyond any real account.
    */
   bool cost_totals_incomplete_{false};
-  /** Basis points of slippage applied. */
+  /** @brief The basis points of slippage applied. */
   Decimal64 slippage_basis_points_;
-  /** Tick steps of slippage applied. */
+  /** @brief The ticks of slippage applied. */
   int slippage_ticks_{0};
 
   /**
-   * Whether more than one instrument traded, which is a **caution rather than a finding**.
+   * @brief Whether more than one instrument traded: a caution about survivorship bias.
    *
-   * Survivorship bias comes from how a universe was *assembled*, not from how many instruments are in
-   * it. Broker reference data lists what exists **now**, so a universe built by asking a broker what it
-   * trades silently excludes everything delisted during the period — and what gets delisted is
-   * disproportionately what did badly, which flatters the result by an amount nothing here can measure.
-   *
-   * The engine cannot observe how the universe was chosen, so this flag is a proxy, and it has false
-   * positives by design: a hand-picked pair you know was listed throughout the period carries no
-   * survivorship problem at all and still sets it.
-   *
-   * That asymmetry is why the report **flags and still computes** rather than refusing. Refusing would
-   * block a legitimate replay in order to prevent a mistake the engine cannot actually detect, and a
-   * library that declines to answer a well-formed question teaches its users to work around it.
+   * A universe built from a broker's current listings omits instruments delisted during the period,
+   * which tends to flatter the result. The engine cannot see how the universe was chosen, so this is
+   * a proxy that is also set for a hand-picked universe with no such problem. Figures are still
+   * computed.
    */
   bool multiple_instruments_{false};
 
-  /** Bars that did not follow their predecessor; a replay does not interpolate across a gap. */
+  /** @brief Bars that did not follow their predecessor (see `ReplayClock::contiguous`); gaps are not interpolated. */
   std::size_t gaps_{0};
 
-  /** Orders still queued when the replay ended, never filled. */
+  /** @brief Orders still queued, unfilled, when the replay ended. */
   std::size_t unfilled_{0};
 
   /**
-   * Quotes this replay was fed, and therefore whether any reached the dispatcher at all.
+   * @brief How many quotes the replay was fed (zero for a bars-only replay).
    *
-   * **Zero and non-zero say different things and both are worth saying.** Zero is a replay of bars
-   * alone, which is every replay written before quotes could be fed and the ordinary case; non-zero
-   * means quotes were fed and dispatched, and carries the caveat below with it. It does **not** say
-   * a strategy handled one -- `on_quote` is optional -- or that anything was placed or filled
-   * because of one.
-   *
-   * **What a reader has to know when this is non-zero: an order placed from `on_quote`, if it fills
-   * at all, fills against a later *bar* and not against the quote.** (If at all: a limit can miss
-   * the one session it has and expire, counted in `expired_day_orders_`, or still be working when the
-   * run ends, in `unfilled_`.) A quote moves the clock, the price and the
-   * phase, and it neither fills nor marks: `NextBarFillModel` prices a market order at a bar's open,
-   * so -- **where this engine can establish when a bar's period began** -- the order rests until one
-   * that began at or after the decision, because a period that began earlier contains the decision
-   * and its open is a price from before the strategy decided anything. For a quote part-way through
-   * a session that is not that session's bar but the next one; for a quote between a close and the
-   * next open it is the very next bar. Where it **cannot** establish it -- a close-stamped weekly,
-   * monthly or yearly bar -- no such rule applies and the fill can happen at a price from before the
-   * quote, which is what `unchecked_fill_causality_` exists to say. Live, the same order reaches the
-   * broker immediately and can trade at once.
-   *
-   * So a quote-driven strategy's replayed fills **can be** later, and at a different price, than the
-   * same strategy's live ones -- by a bar where the quote fell inside a period, and by whatever a
-   * bar's open differs from the quote otherwise. Can be, rather than are: a replay knows nothing
-   * about when a live order would have executed, or whether it would have at all. That is the place a quote-driven backtest and a quote-driven live run
-   * are known to differ, and it is stated here rather than in prose a reader has to remember applied
-   * to their run. A fill model that executes against a quote would close it, and is a different
-   * design with its own argument.
+   * @note An order placed from `on_quote` does not fill against the quote: it fills against a later
+   *   bar (a market order at that bar's open), at the earliest the first bar whose period began at or
+   *   after the decision, where the engine can tell when a period began. Live, the same order reaches
+   *   the broker at once. So a quote-driven strategy's replayed fills can be later, and at a
+   *   different price, than its live ones.
    */
   std::size_t quotes_{0};
 
   /**
-   * How many times this replay allowed a fill it could **not** check for causality, because one of
-   * the two instants the check compares was a calendar boundary it cannot establish: the bar's
-   * period start, or the decision's own instant.
+   * @brief How many times a fill was allowed without the engine being able to prove its price came
+   *   after the decision.
    *
-   * **Eligibility decisions, not fills**: one per queued order per bar it was considered against, and
-   * the fill model may decline it afterwards.
+   * Counted once per queued order per bar considered (the fill model may still decline). It happens
+   * when a bar's period start or end is not known exactly: a close-stamped weekly, monthly or yearly
+   * bar, or an open-stamped bar of a day or longer, whose end is nominal (every shipped adapter
+   * produces those). A regular weekly series counts nothing.
    *
-   * **A calendar period boundary the engine cannot establish, on either side of the comparison.** A
-   * close-stamped weekly, monthly or yearly bar does not state where its period *began* -- three
-   * attempts to infer that from a previous bar were each falsified in review. And an open-stamped bar
-   * of any calendar interval does not state where its period *ended*: that is `bar_period_end`'s
-   * nominal 24 hours, 7, 31 or 366 days, which is what **every shipped adapter produces for every
-   * non-minute bar**, so an adapter-fetched monthly or yearly replay carries this on most of its
-   * fills. **Not on all of them**: a nominal end is an upper bound, so whenever the next period's
-   * start reaches it the check still passes -- which is every Monday-to-Monday week, and is why a
-   * clean weekly series counts nothing at all. The figure rises when a candidate start falls
-   * *before* that bound.
-   *
-   * **What non-zero tells a reader**: for those, the fill price is not guaranteed to come from after
-   * the decision. **Any dated order can be one**, and a quote is only the obvious way in -- a
-   * bars-only replay reaches it too. **A reader can discharge it**: with no quotes, one interval per
-   * instrument, and series whose periods do not overlap, the fills were causal whatever this figure
-   * says -- the engine simply could not prove it from the events it was handed. See
-   * `ReplayResult::unchecked_fill_causality_`.
+   * With no quotes, one interval per instrument and non-overlapping periods, the fills were causal
+   * whatever this says. See `ReplayResult::unchecked_fill_causality_`.
    */
   std::size_t unchecked_fill_causality_{0};
 
   /**
-   * Always true, and present so a reader is told rather than left to assume.
-   *
-   * No fill is capped by what traded: a bar's volume says how much changed hands in total, not how much
-   * was available to this order at its price. Queue position, market impact and borrow availability are
-   * likewise unmodelled.
+   * @brief Always `true`: fills are never capped by traded volume, and queue position, market
+   *   impact and borrow availability are not modelled.
    */
   static constexpr bool volume_ignored = true;
 
   /**
-   * Always true, and the honest value: **a replay cannot know which book its bars describe.**
+   * @brief Always `true`: the replay cannot know which venue's tape its bars came from.
    *
-   * A KRX-listed equity trades on two venues, and KIS publishes market data for KRX alone, for NXT
-   * alone, or for the consolidated tape over both. `KisConfig::market_tape_` chooses which a live run
-   * reads, and it is consolidated by default; a dataset recorded before that setting existed came from
-   * KRX alone on every verb but the quote.
-   *
-   * Nothing carries that provenance. `BarSeries`, `strategy::BarEvent`, `SeriesKey` and
-   * `analytics::SeriesFrame` all name an instrument and an interval and nothing about a venue, and
-   * `summarize` is handed neither the config nor the bar source -- so a KRX dataset and a consolidated
-   * one produce identical inputs here. **This says unverified rather than naming a tape, because
-   * naming one would be a claim this code cannot support**, and a wrong claim would conceal exactly
-   * the backtest-versus-live mismatch a caveat exists to expose.
-   *
-   * The consequence for a reader: two bars for one instrument at one timestamp can legitimately differ
-   * between a replay and a live run, and the difference is which venues were included rather than an
-   * error in either.
+   * A KRX-listed stock trades on KRX and NXT, and KIS serves either tape or the consolidated one
+   * (`KisConfig::market_tape_`, consolidated by default; older datasets may be KRX only). Bars
+   * carry no venue, so a replay's bars and a live run's can legitimately differ.
    */
   static constexpr bool bar_tape_unverified = true;
 
   /**
-   * Always true, and present for the same reason: a replay reports every held share as sellable.
+   * @brief Always `true`: a replay reports every held share as sellable.
    *
-   * Live, that figure comes from the broker and is routinely smaller than the holding — settlement,
-   * pledging and locking all reduce it, which is what `RiskLimits::enforce_sellable_quantity_`
-   * exists to respect. A replay has no broker to ask and models no settlement schedule, so it
-   * reports the whole position, and a strategy that would have been refused a sale live is not
-   * refused one here.
-   *
-   * This is a constant rather than a field because there is nothing yet to vary it: a ledger that
-   * models settlement would make it one, and that is the point at which this becomes a number
-   * rather than a disclosure.
+   * Live, the broker's figure can be smaller (unsettled, pledged or locked shares), so a sale a
+   * replay allows can be refused live under `RiskLimits::enforce_sellable_quantity_`.
    */
   static constexpr bool sellable_is_whole_holding = true;
 
   /**
-   * Always true: a replay's buying power is modelled from this ledger's own cash, never a broker's
-   * answer.
+   * @brief Always `true`: a replay's buying power is the ledger's own cash, not a broker's figure.
    *
-   * The two are different quantities. The ledger credits a sale on the fill and models no
-   * settlement schedule; a broker prices buying power on its own terms, including or excluding
-   * amounts this ledger does not model at all. **Which way a particular account differs is not
-   * something a replay can know**, so this states the model rather than claiming the replay is the
-   * more permissive of the two.
-   *
-   * **With `RiskLimits::enforce_buying_power_` enabled, the figure is that cash less what this
-   * replay's own outstanding buys have committed**, valued at each order's limit price or the last
-   * close. Ledger cash alone has not paid for anything still resting, so two resting buys of a
-   * hundred would each pass against a hundred of cash and both could still fill. The commitment is
-   * this library's arithmetic rather than a broker's reservation, which is why it is disclosed here
-   * and why it applies only when the check is on: `buying_power_in()` is a figure a strategy may
-   * size from, and lowering it for a caller who never asked for the check would change how their
-   * strategy behaves.
-   *
-   * A strategy sized against a buying-power limit therefore passes or fails here on modelled money,
-   * and the live account is the only place the broker's own answer applies.
+   * The ledger models no settlement; a broker computes buying power on its own terms, and which way
+   * an account differs cannot be known here. With `RiskLimits::enforce_buying_power_` on, the cash
+   * is reduced by what the replay's own resting buys commit (at their limit price or the last close).
    */
   static constexpr bool buying_power_is_ledger_cash = true;
 
   /**
-   * Bars whose equity total could not be computed exactly, copied from
-   * `ReplayResult::unvalued_bars_`: each has no point on the curve, and the point after it carries
-   * no return, so the return series is **shorter than the bar count** by at least this much. Only
-   * the curve is affected: the strategy and its guards decided on those bars from per-lot and
-   * per-currency figures, none of which is the missing total (see the result's field).
-   * Appended, so a positional initializer of this struct is unaffected.
+   * @brief Bars whose equity total could not be computed exactly (`ReplayResult::unvalued_bars_`).
+   *
+   * Each has no point on the equity curve and the point after it no return, so the return series is
+   * shorter than the bar count by at least this much. The strategy's own decisions were unaffected.
    */
   std::size_t unvalued_bars_{0};
-  /** The first such bar's period end; empty when there was none. */
+  /** @brief The period end of the first unvalued bar, if any. */
   std::optional<std::chrono::system_clock::time_point> first_unvalued_;
   /**
-   * Stop-limit orders a bar released, which is how often the model's **direction assumption** was
-   * used: a sell stop releases when the price falls to its trigger and a buy stop when it rises to it.
-   * Neither KIS nor Kiwoom documents that; it is the universal convention.
+   * @brief How many stop-limit orders a bar released, each using the assumed direction (a sell stop
+   *   releases when the price falls to the trigger, a buy stop when it rises; brokers do not document
+   *   it).
    */
   std::size_t stop_releases_{0};
   /**
-   * Fills that depended on a stop releasing **inside** a bar and filling on it.
+   * @brief Fills of stops released inside a bar, which assume the price moved continuously through
+   *   the trigger.
    *
-   * A bar has no path between its open and its extremes, so the model assumes the price moved
-   * continuously through the trigger. A stop whose limit was marketable at the trigger is credited the
-   * worst price the bar traded that its limit allows; one whose limit was not is filled only when the
-   * close proves the price came back to it, at the limit. A price that jumped inside the bar past both
-   * trigger and limit (a halt reopening, a thin book) would have released the stop and left it resting,
-   * so each of these is a fill that rests on that continuity. Every stop fill, intrabar or not, is
-   * credited a price inside its bar and never through its limit, slippage included.
+   * A price that jumped past both trigger and limit (a halt reopening, a thin book) would instead
+   * have left the stop resting.
    */
   std::size_t stop_fills_intrabar_{0};
   /**
-   * Limit-basis fills whose credit the bound moved: onto the bar, back to the limit, or back from the
-   * bar's opposite extreme. (A stop released inside its bar is *chosen* inside both, and counts only
-   * if a later step moved it.)
-   *
-   * A limit is credited the worst price its bar traded that the limit allows: a buy no higher than the
-   * lesser of the bar's high and its limit, a sell no lower than the greater of the low and its limit.
-   * `AT_LIMIT` credits the limit itself, which lies outside the bar whenever the limit was marketable
-   * through all of it, and slippage can carry any credit out of the bar or through the limit. Each
-   * count is a fill whose recorded price the bar, not the configuration, decided. Appended.
+   * @brief Limit-type fills whose price was moved to stay within the bar's range and the limit
+   *   (see `LimitFillPrice::AT_LIMIT`).
    */
   std::size_t limit_fills_bounded_{0};
   /**
-   * Bars that closed with the ledger's cash below zero in the replay's currency: the replay borrowed,
-   * which the default limits allow; see `ReplayResult::overdrawn_bars_`. A figure measured over
-   * borrowed money is a leveraged figure, whether or not the strategy meant to be leveraged. Cash
-   * only: a short's proceeds count as cash, so leverage through shorts is not measured here.
+   * @brief Bars that closed with cash below zero in the replay's currency: the replay borrowed, which
+   *   the default limits allow.
+   *
+   * Figures measured over borrowed money are leveraged. Short sale proceeds count as cash, so
+   * leverage through shorts is not counted here. See `ReplayResult::overdrawn_bars_`.
    */
   std::size_t overdrawn_bars_{0};
-  /** The first bar end at which cash was below zero. */
+  /** @brief The first bar end at which cash was below zero. */
   std::optional<std::chrono::system_clock::time_point> first_overdrawn_;
-  /** The lowest cash an execution left, when it went below zero. */
+  /** @brief The lowest cash an execution left, if it went below zero. */
   std::optional<Money> lowest_cash_;
-  /** When that lowest cash was reached. */
+  /** @brief When the lowest cash was reached. */
   std::optional<std::chrono::system_clock::time_point> lowest_cash_at_;
-  /** The tax on sales, as stated to the fill model; absent when no tax was modelled. Appended. */
+  /** @brief The sale tax given to the fill model; absent if none was modelled. */
   std::optional<SellTax> sell_tax_;
-  /**
-   * DAY orders withdrawn unfilled at the end of their session; see `ReplayResult`. Non-zero is
-   * ordinary for a limit or stop strategy: live, those orders expired at the close too. Appended.
-   */
+  /** @brief `DAY` orders withdrawn unfilled when their session ended, as they would expire live. */
   std::size_t expired_day_orders_{0};
 };
 
-/** What a replay produced, with every figure's absence meaning what `analytics` says it means. */
+/**
+ * @brief The summary of a replay; read `halted_` and `caveats_` before the figures.
+ *
+ * Unobserved figures follow the `analytics` conventions (`missing()`, `math::undefined()`).
+ */
 struct Report {
-  /** Bars replayed. */
+  /** @brief The bars replayed. */
   std::size_t bars_{0};
-  /** Executions the fill model produced. */
+  /** @brief The executions. */
   std::size_t executions_{0};
 
-  /** Equity at the first and last recorded points. */
+  /** @brief Equity at the first recorded point. */
   Decimal64 opening_equity_;
-  /** @copydoc Report::opening_equity_ */
+  /** @brief Equity at the last recorded point. */
   Decimal64 closing_equity_;
-  /** Total return over the replay, as a fraction. */
+  /** @brief The total return over the replay, as a fraction. */
   math::Scalar total_return_{0};
 
-  /** Per-period Sharpe ratio, or unobserved when it does not exist. */
+  /** @brief The per-period Sharpe ratio; see `analytics::sharpe`. */
   math::Scalar sharpe_{0};
-  /** Annualized Sharpe, present only when a period count was supplied. */
+  /** @brief The annualized Sharpe ratio; `missing()` unless a period count was given to `summarize`. */
   math::Scalar annualized_sharpe_{0};
-  /** Per-period Sortino ratio; `undefined()` when nothing fell below the target. */
+  /** @brief The per-period Sortino ratio; see `analytics::sortino`. */
   math::Scalar sortino_{0};
-  /** Worst peak-to-trough decline, as a non-negative fraction. */
+  /** @brief The worst peak-to-trough decline of equity, as a non-negative fraction. */
   math::Scalar max_drawdown_{0};
   /**
-   * One-way turnover summed over the replay, as a fraction of equity traded.
+   * @brief One-way turnover summed over the replay, as a fraction of equity.
    *
-   * **Unobserved when any execution was in a currency the equity curve is not**, because the
-   * numerator and the denominator would then be different money. A replay holding a won fill and
-   * a dollar fill produced a perfectly ordinary-looking ratio that added two hundred dollars to
-   * seven hundred thousand won; a whole-portfolio turnover across currencies needs an exchange
-   * rate this library does not carry, and inventing one would misprice the figure rather than
-   * withhold it.
+   * `missing()` when any execution was in a currency other than the equity curve's.
    */
   math::Scalar total_turnover_{0};
 
   /**
-   * Commission paid, so a reader can see what the model cost.
+   * @brief Commission paid.
    *
-   * **Inclusive of any institution charge for executions whose rate did not distinguish one** --
-   * `ReportCaveats::inclusive_commission_executions_` counts those. Where every rate did distinguish
-   * one, this is the broker's component alone and `institution_fees_paid_` carries the other.
-   *
-   * **Absent on a replay whose executions span currencies**, rather than a sum of unlike ones:
-   * `commission_by_currency_` is the answer there, and a scalar could only have been produced by
-   * adding won to dollars. Absent also on a replay that executed nothing, which is not a charge of
-   * zero -- a zero-cost run that *traded* states a zero here, with a zero rate in `applied_rates_`.
+   * Includes the institution fee for executions charged a combined rate
+   * (`ReportCaveats::inclusive_commission_executions_`). Absent when nothing executed, when the
+   * executions span currencies (see `commission_by_currency_`), or when a sum did not fit.
    */
   std::optional<Decimal64> commission_paid_;
-  /** Commission paid per currency, which is always stated whatever the scalar above does. */
+  /** @brief Commission paid per currency. */
   std::vector<Money> commission_by_currency_;
   /**
-   * Korea's 유관기관제비용, totalled separately because a different party charges it.
+   * @brief Institution fees (유관기관제비용) paid.
    *
-   * **Absent rather than zero when any charged rate stated a single figure**, because the component
-   * is then inside `commission_paid_` and nobody said how much. Present only when every execution was
-   * charged by a rate that split the two, which makes the total complete rather than partial -- and
-   * subject to the same currency rule as `commission_paid_`.
+   * Absent unless every execution's rate split the fee out; also under the same currency rule as
+   * `commission_paid_`.
    */
   std::optional<Decimal64> institution_fees_paid_;
   /**
-   * The institution component per currency, on the same terms as `commission_by_currency_`.
+   * @brief Institution fees per currency.
    *
-   * **Partial when `ReportCaveats::inclusive_commission_executions_` is nonzero.** It then holds the
-   * component for the executions whose rate distinguished one and nothing for the rest, whose
-   * institution charge is inside `commission_by_currency_` in an amount nobody stated. The scalar
-   * above goes absent in that case; this vector does not, because a known subset is worth having
-   * and the count beside it says the subset is not the whole.
+   * Partial when `ReportCaveats::inclusive_commission_executions_` is nonzero: it covers only the
+   * executions whose rate split the fee.
    */
   std::vector<Money> institution_by_currency_;
   /**
-   * Slippage given up, on the same terms as `commission_paid_`.
+   * @brief Slippage given up, in money.
    *
-   * **Absent for the same three reasons**: nothing executed, the executions spanned currencies, or
-   * an exact-decimal step was refused. It used to be a bare scalar summed across every execution
-   * regardless of currency, so a replay holding one won fill and one dollar fill reported a number
-   * that was neither -- the one arithmetic every monetary type here exists to prevent, left in the
-   * one cost figure that had not been given a currency. `slippage_by_currency_` is the answer
-   * whenever a scalar cannot be.
+   * Absent when nothing executed, the executions span currencies, or a sum did not fit; see
+   * `slippage_by_currency_`.
    */
   std::optional<Decimal64> slippage_paid_;
-  /** Slippage given up per currency, which is always stated whatever the scalar above does. */
+  /** @brief Slippage given up per currency. */
   std::vector<Money> slippage_by_currency_;
 
-  /** Instructions reconciliation could not build; a replay's executor refuses nothing. */
+  /** @brief Instructions not placed: reconciliation could not build them, or the replay cannot model them (`BINDING_REFUSED`). */
   std::size_t rejected_{0};
-  /** Instructions a guard refused. */
+  /** @brief Instructions a risk guard refused. */
   std::size_t refused_{0};
 
   /**
-   * Why the replay stopped early, when it did — **read this before any figure above it**.
+   * @brief Why the replay stopped early, if it did; read this before any figure.
    *
-   * Present means the replay stopped early, and there are three origins: an execution whose cost
-   * could not be resolved, one the ledger could not record, and a book that could not be marked at a
-   * bar's close (`mark_not_representable`). The first two mean a trade the model produced did not
-   * reach the books; the third means the strategy would have decided on a position one bar behind
-   * its price. Either way continuing would describe a path that did not happen.
-   *
-   * Every number in this report describes the bars **up to** that point. The bar the halt happened
-   * on is counted in `bars_`, because it was fed, and **what ran on it depends on where the refusal
-   * fell**. Each bar settles resting orders first: settlement ahead of a refused fill may already have
-   * filled other orders on that bar, with their `on_fill` and order updates, and a mark refusal comes
-   * after the whole of that bar's settlement, so every fill due on it is in these figures. After the
-   * refusal nothing ran -- no further fill, no mark, no equity point, no `on_phase`, no `on_bar`.
-   * The strategy was not stopped normally either: `on_stop` never ran, because whatever it placed
-   * would go into a replay that has stopped being able to describe the path honestly.
+   * Set when an execution could not be costed, the ledger could not record one, or positions could
+   * not be marked at a bar's close (`mark_not_representable`). The figures cover the bars up to that
+   * point; the halting bar is counted in `bars_`, and fills settled on it before the refusal are
+   * included. Nothing ran after the refusal, and `on_stop` was not called.
    */
   std::optional<BrokerError> halted_;
-  /** Orders cleared from the queue by a halt, as distinct from `ReportCaveats::unfilled_`. */
+  /** @brief Orders cleared from the queue by a halt (unlike `ReportCaveats::unfilled_`). */
   std::size_t aborted_{0};
 
-  /** What this run assumed, carried with the figures so a reader need not remember. */
+  /** @brief What this run assumed and did not model. */
   ReportCaveats caveats_;
   /**
-   * The tax charged on sales, where the fill model stated one (`NextBarFillModel::with_sell_tax`).
-   * Absent when none was stated -- which is not a tax of zero, it is no tax modelled -- when nothing
-   * executed in the stated market, and, like the other cost totals, when those executions span more
-   * than one currency or a sum did not fit. Appended last, as every field added to this aggregate is.
+   * @brief Sale tax paid.
+   *
+   * Absent when no tax was modelled (which is not a tax of zero), nothing executed in the taxed
+   * market, the executions span currencies, or a sum did not fit.
    */
   std::optional<Decimal64> tax_paid_;
-  /** The same, per currency, over the executions in the stated market. */
+  /** @brief Sale tax paid per currency, over executions in the taxed market. */
   std::vector<Money> tax_by_currency_;
 };
 
@@ -445,14 +295,14 @@ inline math::Scalar to_scalar(const Decimal64& value) {
 } // namespace report_detail
 
 /**
- * Summarizes a replay.
+ * @brief Summarizes a replay into a `Report`.
  *
- * `periods_per_year` is optional and has no default, for the reason `analytics::annualize_ratio` takes
- * it rather than assuming: the answer is 245 for daily bars on KRX and 95,550 for minute bars over the
- * same year. Absent leaves the annualized figure unobserved rather than scaled by a guess —
- * `backtest::periods_per_year` derives it from an interval, a session and a trading-day count.
- *
- * `risk_free` is per period, in the same units as the returns, matching `analytics::sharpe`.
+ * @param result The replay's result.
+ * @param fills The fill model the replay used, so the report states its costs and assumptions.
+ * @param periods_per_year Periods in a year, for the annualized Sharpe ratio (see
+ *   `backtest::periods_per_year`); absent leaves it `missing()`.
+ * @param risk_free The risk-free rate per period, in the units of the returns.
+ * @return The report.
  */
 inline Report summarize(
   const ReplayResult& result,

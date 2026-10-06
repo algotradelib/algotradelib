@@ -23,129 +23,76 @@ namespace algotradelib {
 namespace backtest {
 
 /**
- * Replaying bars through the same runner a live session uses.
+ * @file
+ * @brief The backtest engine: `Backtester` replays bars (and quotes) through the same `Runner` a
+ *   live session uses.
  *
- * The third configuration of `Runner`, after `DryRunner` and the session-backed one. A strategy's
- * source is identical in all three — and if it were not, the surface settled in `strategy-core` would
- * have been wrong.
- *
- * **The bar a strategy is shown is never the bar it trades on.** An order decided on bar *n* is queued
- * and filled against bar *n+1*, which is what `QueueingExecutor` and `NextBarFillModel` enforce between
- * them. That is the one discipline a backtester exists to keep, and it is structural here rather than a
- * rule somebody has to remember.
- *
- * **Nothing assumes a bar is a day.** The clock advances by each bar's own period end, phases come from
- * a session window, and an annualized figure takes its period count from the caller. The same engine
- * replays minute bars and daily ones, which the tests assert with the same strategy and the same
- * assertions at both intervals.
+ * An order decided on bar *n* is queued and filled against bar *n+1* or later, never the bar it
+ * was decided on. Nothing assumes a bar is a day: the same engine replays minute and daily bars.
  */
 
 /**
- * One order the replay has accepted and not yet resolved.
+ * @brief One order a replay accepted and has not yet filled or withdrawn.
  *
- * `accepted_on_` is the bar the order was placed during, and it is what keeps the no-lookahead rule
- * a property of the data rather than of which list an order is sitting in: an order accepted during
- * bar *n* is not eligible to fill against bar *n*, whoever asks and from wherever.
+ * @tparam BrokerTag The order-reference tag.
  */
 template <typename BrokerTag>
 struct QueuedOrder {
-  /** The order as reconciliation planned it. */
+  /** @brief The order as reconciliation planned it. */
   strategy::PlannedOrder order_;
-  /** The reference the replay issued for it; it reaches no broker but has the live type. */
+  /** @brief The reference the replay issued for it. */
   OrderRef<BrokerTag> ref_;
-  /** The bar it was accepted during. It cannot fill against that bar, which is the lookahead rule. */
+  /** @brief The bar it was accepted during; it cannot fill against that bar. */
   std::uint64_t accepted_on_{0};
   /**
-   * The instant the strategy decided it, which is the **other** half of the lookahead rule.
+   * @brief When the strategy decided the order, if known.
    *
-   * A bar counter alone was enough while only bars could place an order and no two of an
-   * instrument's periods overlapped: an order decided at bar *n*'s period end then waits for bar
-   * *n+1*, which began at or after that instant. A quote breaks it, because it arrives **inside** a
-   * bar's period without opening a new one -- so an order decided at 10:30 was eligible for the
-   * daily bar stamped 15:30 that day, and
-   * `NextBarFillModel` credits a market order with that bar's *open*, which was 09:00. The replay
-   * would then have filled a 10:30 decision at a 09:00 price: not lookahead, but its mirror image,
-   * and just as false.
-   *
-   * **`decision_is_exact_` is the other half, and leaving it out was this branch's last defect.** An
-   * instant is exact when the event states it: a quote's `received_at_`, a close-stamped bar's period
-   * end (which *is* its timestamp), and an open-stamped minute bar's timestamp plus a minute. It is
-   * **nominal** for every other open-stamped bar, because `strategy::bar_period_end` adds 24 hours, 7
-   * days, 31 days or 366 days to a period whose real length is none of those -- and that function's
-   * own comment warns that a caller comparing the result to a precise instant is relying on more than
-   * it can promise. This class became that caller. A nominal instant is an **upper bound** on the
-   * true one, which is exactly enough to keep the rule sound: see `may_fill`.
-   *
-   * **Empty means undated**, which is every order placed by a caller driving this executor directly,
-   * and is treated as eligible -- the rule can only ever defer a fill, never invent one. An
-   * `optional` rather than a zero sentinel because the epoch is a perfectly good instant for a
-   * replay to reach: a quote stamped 1970-01-01 placed an order that then took the *undated* branch
-   * and filled at a price from before it, which is the defect this field exists to prevent, wearing
-   * the field's own sentinel.
+   * Where the engine knows when a bar's period began, the order may fill only against a bar whose
+   * period began at or after this instant (so a decision at 10:30 is not filled at that day's 09:00
+   * open). Empty (an order placed by a caller driving the executor directly) is always eligible.
    */
   std::optional<std::chrono::system_clock::time_point> decided_at_;
-  /** Whether `decided_at_` is the instant itself or an upper bound on it; see above. */
+  /**
+   * @brief Whether `decided_at_` is exact, or only an upper bound (the nominal period end of an
+   *   open-stamped daily or longer bar).
+   */
   bool decision_is_exact_{true};
   /**
-   * Whether a stop-limit order's trigger has been reached, so it now rests as its limit.
+   * @brief Whether a stop-limit order has been released, so it now rests as its limit.
    *
-   * Kept here rather than by rewriting the order's basis, because `order_` is also what the
-   * strategy's working row is built from, and a live listing reports a released stop as the stop it
-   * was -- Kiwoom says nothing about release and KIS's flag is undocumented. See
-   * `NextBarFillModel::decide`.
+   * The order itself (and the strategy's working row) still reads as a stop, as a live listing does.
    */
   bool released_{false};
   /**
-   * The market-local date of the one session a DAY order lives in, once known: the date of the first
-   * bar the order could trade against. `Backtester` withdraws the order when a bar ends that session.
+   * @brief The market-local date of the session a `DAY` order lives in, once known (the date of the
+   *   first bar it could trade against); `Backtester` withdraws it when that session ends.
    */
   std::optional<Date> session_;
 };
 
 /**
- * An executor that accepts orders and holds them until they fill or are withdrawn.
+ * @brief The replay's executor: accepts orders and holds them until they fill or are withdrawn.
  *
- * **It is never drained.** An earlier version handed its whole queue to the engine for the length of
- * a fill loop, which left the executor empty at exactly the moments the engine showed a strategy a
- * portfolio and called back into it: an order the loop had not reached yet was outstanding and
- * invisible, and a cancellation from that callback had nothing to find. Holding everything in one
- * place makes `queued()` the complete set of outstanding orders at every instant, which is what the
- * engine projects into `strategy::Portfolio::working_`.
+ * `queued()` is always the complete set of outstanding orders; the engine shows them to the strategy
+ * as working orders.
+ *
+ * @tparam BrokerTag The order-reference tag.
  */
 template <typename BrokerTag>
 class QueueingExecutor {
 public:
 
-  /**
-   * A replay reaches no broker, and stamps its own portfolio besides.
-   *
-   * Stated rather than left to a default, because `runner::runner_detail::sends_to_a_broker` defaults
-   * to `true` so that an unmarked executor fails closed.
-   */
+  /** @brief `false`: a replay reaches no broker. */
   static constexpr bool reaches_a_broker = false;
   /**
-   * Accepts an order, queues it, and issues it a reference.
+   * @brief Accepts and queues an order, issuing it a reference.
    *
-   * `ACCEPTED` for every shape this model can price, and no transport failure is ever invented: a
-   * replay has none, and inventing one would be inventing data. A caller wanting to study behaviour
-   * under transport failure has `Runner`'s executor seam and the scripted executor the
-   * `strategy-core` tests use.
+   * A replay invents no transport failure.
    *
-   * **A shape the model cannot price is `REFUSED_LOCALLY`**, which is the same answer the live
-   * executor gives for an order a broker will not take, and it reaches the strategy by the same
-   * route. A bar carries an open, a high, a low and a close; it carries no book and no spread, so a
-   * best-limit, primary-limit or mid-price order has no price here, a conditional limit has no close
-   * transition, and a closing-price order has no session close. A **stop-limit** is modelled --
-   * `NextBarFillModel::decide` releases it against a bar's range -- but only as a day order carrying
-   * both prices, which is the only stop either broker publishes.
-   * Filling those at the bar's open -- which is what this did, because `reference_price` returns the
-   * open for every non-limit basis -- reports a fill at a price the order would never have had, and
-   * a backtest that invents a fill price is worse than one that refuses to model the order.
-   * Likewise a session other than the regular one: a bar series is the regular session.
-   *
-   * The reference is this replay's own, monotonic, and stable for as long as the order is
-   * outstanding. It exists because a strategy that can *see* two resting orders must be able to
-   * withdraw the one it means.
+   * @param order The order.
+   * @return `ACCEPTED`, or `REFUSED_LOCALLY` for an order the replay cannot price from bars (see
+   *   `can_model`); a refused order reaches the strategy as a rejection, as a live binding's refusal
+   *   does.
    */
   runner::SendOutcome place(const strategy::PlannedOrder& order) {
     if (!can_model(order)) {
@@ -163,41 +110,35 @@ public:
   }
 
   /**
-   * Returns whether this replay can price `order` without inventing a number.
+   * @brief Tests whether a replay can price an order from bars.
    *
-   * See `place` for why each exclusion is an exclusion. Stated as an allow-list
-   * so a price basis added later is refused until somebody decides how a bar
-   * would fill it, rather than being silently filled at the open.
+   * Only regular-session limit and market orders without a trigger, and `DAY` stop-limit orders
+   * with both a trigger and a limit price. Best-limit, primary-limit, mid-price,
+   * conditional-limit and closing-price orders need a book or a session close that bars do not
+   * carry.
+   *
+   * @param order The order.
+   * @return `true` if the replay can model it.
    */
   static bool can_model(const strategy::PlannedOrder& order) noexcept {
     if (order.session_ != OrderSession::REGULAR) {
       return false;
     }
-    // A stop the model can release: both prices, and a day order, which is the only condition KIS's
-    // `22` and Kiwoom's `28` publish -- nothing live can place an immediate-or-cancel stop.
+    // A stop the model can release: both prices, and a day order (the only stop KIS and Kiwoom offer).
     if (order.type_ == OrderType::STOP_LIMIT) {
       return order.trigger_price_.has_value() && order.price_.has_value() &&
         order.time_in_force_ == TimeInForce::DAY;
     }
     const bool priceable = order.type_ == OrderType::LIMIT || order.type_ == OrderType::MARKET;
-    // A trigger on either would be ignored and the order filled as a plain limit or market order,
-    // which is the invented fill this function exists to refuse. `reconcile` never builds one, but
-    // `PlannedOrder` is a public struct.
+    // A trigger on a limit or market order would be ignored; refuse it.
     return priceable && !order.trigger_price_;
   }
 
   /**
-   * Withdraws the order the reference names, and refuses a reference that names nothing.
-   *
-   * **Matched on the reference, never on instrument and side.** Those identify a *kind* of order and
-   * not an order: with two resting buys of one instrument, withdrawing the second by attributes
-   * removes the first, and the strategy is told its request succeeded. The reference is the only
-   * thing that distinguishes them, which is why the executor issues one.
-   *
-   * A reference that matches nothing is `REJECTED` rather than `ACCEPTED`, because the order is not
-   * there to withdraw — it filled, or it was already withdrawn. `ACCEPTED` would claim a withdrawal
-   * that did not happen, and `Runner` routes this answer to `rejected_cancel_`, which is where a
-   * broker's refusal of a withdrawal belongs.
+   * @brief Withdraws the order a working row names, matched by reference.
+   * @param working The working row.
+   * @return `ACCEPTED` if it was queued; `REJECTED` if nothing matches (it filled or was already
+   *   withdrawn).
    */
   runner::SendOutcome cancel(const WorkingOrder<BrokerTag>& working) {
     for (auto at = queued_.begin(); at != queued_.end(); ++at) {
@@ -210,17 +151,22 @@ public:
   }
 
   /**
-   * Returns the reference issued to the order just accepted.
-   *
-   * Detected by `Runner`, which uses it to mark its own reservation rows. A replay is the one
-   * executor that can honestly answer this without a broker, because it *is* the broker.
+   * @brief Returns the reference issued to the most recently accepted order.
+   * @return The reference, or `std::nullopt` before any.
    */
   std::optional<OrderRef<BrokerTag>> last_ref() const { return last_ref_; }
 
-  /** Returns every outstanding order, oldest first. */
+  /**
+   * @brief Returns every outstanding order.
+   * @return The orders, oldest first.
+   */
   const std::vector<QueuedOrder<BrokerTag>>& queued() const noexcept { return queued_; }
 
-  /** Returns the outstanding order `ref` names, or nothing. */
+  /**
+   * @brief Finds an outstanding order.
+   * @param ref The reference.
+   * @return A pointer into the queue (valid until the queue changes), or `nullptr`.
+   */
   const QueuedOrder<BrokerTag>* find(const OrderRef<BrokerTag>& ref) const {
     for (const auto& entry : queued_) {
       if (entry.ref_ == ref) {
@@ -230,7 +176,11 @@ public:
     return nullptr;
   }
 
-  /** Records the session date of the queued order `ref`; see `QueuedOrder::session_`. */
+  /**
+   * @brief Records the session date of a queued order; see `QueuedOrder::session_`.
+   * @param ref The order.
+   * @param session The session's market-local date.
+   */
   void assign_session(const OrderRef<BrokerTag>& ref, Date session) {
     for (auto& entry : queued_) {
       if (entry.ref_ == ref) {
@@ -240,7 +190,11 @@ public:
     }
   }
 
-  /** Drops the order `ref` names, and reports whether there was one. */
+  /**
+   * @brief Removes an order from the queue.
+   * @param ref The order.
+   * @return `true` if it was queued.
+   */
   bool withdraw(const OrderRef<BrokerTag>& ref) {
     for (auto at = queued_.begin(); at != queued_.end(); ++at) {
       if (at->ref_ == ref) {
@@ -251,7 +205,11 @@ public:
     return false;
   }
 
-  /** Marks the stop `ref` names as released, and reports whether there was one. */
+  /**
+   * @brief Marks a queued stop-limit order as released.
+   * @param ref The order.
+   * @return `true` if it was queued.
+   */
   bool release(const OrderRef<BrokerTag>& ref) {
     for (auto& entry : queued_) {
       if (entry.ref_ == ref) {
@@ -263,22 +221,20 @@ public:
   }
 
   /**
-   * Opens the next bar, after which everything already queued counts as resting from an earlier one.
-   *
-   * Called by the engine before anything is filled against the new bar, so that the orders a
-   * strategy places *during* it carry a later stamp and cannot fill against it.
+   * @brief Starts the next bar; orders accepted from now on cannot fill against it.
    */
   void open_bar() noexcept { ++bar_; }
 
-  /** Returns the bar being replayed, counting from one. */
+  /**
+   * @brief Returns the bar being replayed.
+   * @return The bar number, counting from one.
+   */
   std::uint64_t bar() const noexcept { return bar_; }
 
   /**
-   * States the instant any order accepted from here on was decided at.
-   *
-   * Set by the engine before every dispatch that can place one, because the executor has no clock
-   * of its own and the context's belongs to the runner. See `QueuedOrder::decided_at_` for what it
-   * is for.
+   * @brief Sets the decision instant stamped on orders accepted from now on.
+   * @param at The instant.
+   * @param exact Whether `at` is exact or only an upper bound; see `QueuedOrder::decision_is_exact_`.
    */
   void deciding_at(std::chrono::system_clock::time_point at, bool exact = true) {
     deciding_at_ = at;
@@ -294,248 +250,160 @@ private:
   bool decision_is_exact_{true};
 };
 
-/** One point on the equity curve, recorded per bar. */
+/** @brief One point on a replay's equity curve, recorded per bar. */
 struct EquityPoint {
-  /** The bar's close this point was taken at. */
+  /** @brief The bar's period end. */
   std::chrono::system_clock::time_point at_{};
-  /** Cash plus positions at that bar's close. */
+  /** @brief Cash plus positions marked at the bar's close, in the replay's currency. */
   Decimal64 equity_;
-  /** Return over the previous point, or `missing()` on the first. */
+  /** @brief The return since the previous point; `missing()` on the first point and after an unvalued bar. */
   math::Scalar period_return_{0};
 };
 
-/** What a replay did, for a report to summarize. */
+/** @brief Everything a replay produced; `summarize` turns it into a `Report`. */
 struct ReplayResult {
-  /** One point per bar that could be valued, in order. */
+  /** @brief One point per bar that could be valued, in order. */
   std::vector<EquityPoint> equity_;
-  /** Every execution the fill model produced, in order. */
+  /** @brief Every execution, in order. */
   std::vector<Execution> executions_;
   /**
-   * Instructions reconciliation could not build.
-   *
-   * Only reconciliation's own reasons reach here, unlike a live run: `QueueingExecutor` accepts
-   * everything it is handed, so no replay entry can be a broker's refusal or a binding's.
+   * @brief Instructions not placed: reconciliation could not build them, or the replay cannot model
+   *   them (`BINDING_REFUSED`; see `QueueingExecutor::can_model`).
    */
   std::vector<strategy::Rejection> rejected_;
-  /** Instructions a guard refused. */
+  /** @brief Instructions a risk guard refused. */
   std::vector<strategy::GuardRejection> refused_;
-  /** Bars that did not follow their predecessor, which a replay does not interpolate across. */
+  /** @brief Bars that did not follow their predecessor; gaps are not interpolated. */
   std::size_t gaps_{0};
-  /** Bars replayed. */
+  /** @brief The bars fed. */
   std::size_t bars_{0};
-  /** Orders still queued when the replay ended, never filled. */
+  /** @brief Orders still queued when `finish` ran. */
   std::size_t unfilled_{0};
-  /**
-   * The currency the equity curve is denominated in, which is the replay's accounting currency.
-   *
-   * Carried so a report can tell whether a figure derived from *both* the curve and the executions
-   * is comparing like with like. It is not, whenever an execution happened in another currency --
-   * and a ratio of one currency's notional to another's equity looks entirely ordinary.
-   *
-   * **Appended rather than placed with the other currency-ish members**, deliberately: this struct
-   * is public, and a caller aggregate-initializing it positionally would have had every field
-   * shift underneath them. A new member at the end is additive; one at the front is a source break
-   * dressed as a field.
-   */
+  /** @brief The currency of the equity curve (the replay's accounting currency). */
   Currency currency_{Currency{"KRW"}};
   /**
-   * Why the replay stopped early, when it did.
+   * @brief Why the replay stopped early, if it did.
    *
-   * Three origins. An execution that could not be **costed** -- a date the schedule does not cover,
-   * a venue it states no rate for, a market whose trading day this replay cannot compute -- and one
-   * the ledger could not **record** mean the same thing to a reader: a trade the model produced did
-   * not reach the books. The third, `mark_not_representable`, is a book that could not be **marked**
-   * at a bar's close: no trade is missing, but the strategy would have decided on that bar with a
-   * position one bar behind its price, and what it placed from there would have changed the run.
-   *
-   * Present means every figure in this result and in the report derived from it describes the bars
-   * **up to** the halt and not the run the caller asked for. The bar it happened on is counted in
-   * `bars_`, because it was fed, but nothing downstream of the refusal ran on it.
-   *
-   * **Why a halt rather than skipping on.** A refused trade would have changed the position the
-   * strategy carried, the orders it placed afterwards, and therefore the equity curve, the return,
-   * the drawdown, the Sharpe and the turnover; a refused mark would have had the strategy place those
-   * orders from a position one bar behind its price. Continuing would have produced a complete-looking
-   * report describing a path that never happened, which is a more expensive failure than stopping.
+   * Set when an execution could not be costed (no rate for the date or venue, or a market whose
+   * trading day the replay cannot compute), the ledger could not record one, or a position could not
+   * be marked at a bar's close (`mark_not_representable`). Every figure then covers the bars up to
+   * the halt; the halting bar is counted in `bars_`, but nothing after the refusal ran on it.
    */
   std::optional<BrokerError> halted_;
-  /**
-   * Orders cleared from the queue by a halt, rather than left unfilled by the end of the data.
-   *
-   * Counted apart from `unfilled_` because they mean different things: an unfilled order is a replay
-   * that ran to the end of its bars with something still resting, and an aborted one was still
-   * working when the replay halted -- on a trade it could not cost or record, or a book it could not
-   * mark.
-   */
+  /** @brief Orders still working when the replay halted, cleared from the queue (unlike `unfilled_`). */
   std::size_t aborted_{0};
-  /**
-   * Quotes replayed, which is the figure that says whether any were **fed and dispatched** at all.
-   *
-   * Separate from `bars_` rather than added to it: a run of one bar and four hundred quotes is not a
-   * run of four hundred and one somethings, and every per-bar statistic the report derives -- the
-   * return series, the drawdown, the turnover -- is about bars. The counter exists because a handler
-   * that is wired and never fed looks exactly like one that is not wired at all, which is the defect
-   * this slice is for. It counts what reached the dispatcher and not what a strategy did with it:
-   * `on_quote` is optional, and a strategy defining none is counted here just the same.
-   *
-   * **Appended**, for the reason stated on `currency_` above: this struct is public and a caller
-   * aggregate-initializing it positionally would have every later field shift underneath them.
-   */
+  /** @brief The quotes fed; see `ReportCaveats::quotes_` for what quote-driven orders mean in a replay. */
   std::size_t quotes_{0};
   /**
-   * How many times an order was allowed to fill against a bar whose period start this engine could
-   * not derive -- so it could **not** check that the decision preceded the period.
+   * @brief How many fill decisions could not be checked for causality; see
+   *   `ReportCaveats::unchecked_fill_causality_`.
    *
-   * **Eligibility decisions, not fills**: one per queued order per bar it was considered against, and
-   * the fill model may then decline it anyway. The name says `fill` because that is what the check
-   * guards; the unit is stated here because no name carries it.
-   *
-   * **A calendar period boundary this engine cannot establish, on either side of the comparison.**
-   * Two shapes reach it. A close-stamped weekly, monthly or yearly bar does not state where its
-   * period began. And an open-stamped bar of any calendar interval carries a period *end* that is
-   * only an upper bound -- which is what every shipped adapter produces for every non-minute bar, so
-   * **an adapter-fetched monthly or yearly replay will carry this on most of its fills**. Not on all
-   * of them: the nominal end is an upper *bound*, so wherever the next period's start reaches it the
-   * check still passes -- every Monday-to-Monday week does, which is why a clean weekly series counts
-   * nothing. The figure rises when a candidate start falls *before* that bound.
-   *
-   * **A reader can discharge it**: with no quotes, one interval per instrument, and series whose
-   * periods do not overlap, the fills were causal whatever this figure says -- the engine simply
-   * could not prove it from the events it was handed.
-   *
-   * **And one thing it does not cover**, noted in review and older than this branch: a nominal
-   * `period_end_` is also the replay's clock, its equity timestamp, its execution timestamp and the
-   * date a commission schedule is read at. A February open-stamped monthly bar can be priced at its
-   * February open and have its fill dated in March. This flag keeps that nominal value out of the
-   * *causal* comparison and changes none of those other uses; see
-   * `plan/todo/nominal-period-end-dates-a-fill.md`.
-   *
-   * **What non-zero tells a reader:** for those, the engine cannot promise the fill price came from
-   * after the decision. **Any dated order can be one of them**, not only an order a quote placed.
-   * The obvious case is a quote falling part-way through such a bar's period; the less obvious one
-   * needs no quote at all -- a decision made on Tuesday's *daily* bar, against Friday's *weekly* bar
-   * of the same instrument, whose period began on Monday. The bar-counter rule does not catch that,
-   * because those are two different bars, and the period check cannot run on the weekly one.
-   *
-   * **Appended**, for the reason `currency_` above states.
+   * Besides quotes, an order decided on one interval's bar and filled against another interval's
+   * bar of the same instrument (a Tuesday daily bar against that week's weekly bar) can be one.
+   * Separately, the nominal period end of an open-stamped monthly or yearly bar also dates its fills
+   * and equity points, so a February fill can be dated in March.
    */
   std::size_t unchecked_fill_causality_{0};
   /**
-   * Bars whose equity total could not be computed exactly, and therefore have no point.
+   * @brief Bars whose equity total did not fit an exact decimal, so they have no curve point.
    *
-   * Every lot was marked -- a mark that will not fit halts the replay instead -- but cash and the
-   * marked lots together do not fit an exact decimal. The curve skips the bar, and the next point
-   * carries no return rather than one spanning the gap. It takes totals far beyond any real account.
-   *
-   * **The replay goes on, and the strategy still decides on that bar -- on nothing that failed.** The
-   * portfolio it is handed holds figures per lot and per currency: cash; buying power, which is that
-   * cash less what outstanding buys commit when `RiskLimits::enforce_buying_power_` is on
-   * (`commit_open_buy`); each position's quantity, mark and value; and each working order. None of
-   * them is this total, which only the equity curve reads. The one portfolio-wide sum `strategy::RiskGuard`
-   * takes, the gross exposure, leaves cash out and is its own checked arithmetic: if that does not
-   * fit either, the guard refuses with `VALUE_NOT_KNOWN` rather than reading it as absent.
-   *
-   * **Appended**, for the reason stated on `currency_` above.
+   * The next point carries no return. The replay continues, and the strategy still decides on such
+   * a bar; only the equity curve uses the total.
    */
   std::size_t unvalued_bars_{0};
-  /** The first such bar's period end, so a reader has a date to look up; empty when there was none. */
+  /** @brief The period end of the first unvalued bar, if any. */
   std::optional<std::chrono::system_clock::time_point> first_unvalued_;
-  /** Stop-limit orders a bar released; see `ReportCaveats::stop_releases_`. */
+  /** @brief Stop-limit orders a bar released; see `ReportCaveats::stop_releases_`. */
   std::size_t stop_releases_{0};
-  /** Fills that depended on a release inside the bar; see `ReportCaveats::stop_fills_intrabar_`. */
+  /** @brief Fills of stops released inside a bar; see `ReportCaveats::stop_fills_intrabar_`. */
   std::size_t stop_fills_intrabar_{0};
-  /** Limit-basis fills whose credit the bound moved; see `ReportCaveats::limit_fills_bounded_`. */
+  /** @brief Limit-type fills moved to stay in range; see `ReportCaveats::limit_fills_bounded_`. */
   std::size_t limit_fills_bounded_{0};
   /**
-   * Bars that closed with the ledger's cash below zero in `currency_`, in the unit of `bars_` (a
-   * replay of two instruments counts both instruments' bars).
+   * @brief Bars that closed with cash below zero in `currency_` (counted per bar fed, so two
+   *   instruments count both).
    *
-   * A replay fills what a strategy asks for, and nothing refuses a buy the cash cannot pay for
-   * unless `RiskLimits::enforce_buying_power_` is on -- which it is not by default, because live the
-   * broker is what refuses. So under the defaults a replay borrows without limit, and a fixed-quantity
-   * strategy whose price rose is leveraged without having asked to be; this counts for how long.
-   * Counted rather than refused: a caller modelling a margin account wants exactly this, and a caller
-   * who did not now sees it. Even with the check on, a market buy is checked at the reference price,
-   * without commission, and filled at the next bar's open, so a gap up can still overdraw.
-   *
-   * **Cash, not leverage.** A short's proceeds are credited to cash, so a strategy leveraged through
-   * shorts shows positive cash here; see the reading-a-backtest vignette on borrow availability. And
-   * only the replay's own currency: an instrument in another currency buys from zero cash in that
-   * currency by construction, which the same vignette covers. A replay configured with negative
-   * starting cash counts every bar, while `lowest_cash_` -- set by executions only -- can stay absent.
+   * Under the default limits a replay borrows without limit: nothing refuses an unaffordable buy
+   * unless `RiskLimits::enforce_buying_power_` is on, and even then a market buy is checked at the
+   * reference price without commission and can overdraw on a gap. Short proceeds count as cash.
+   * With negative starting cash every bar counts, while `lowest_cash_` (set by executions) may stay
+   * empty.
    */
   std::size_t overdrawn_bars_{0};
-  /** The first bar end at which cash was below zero; absent when it never was. */
+  /** @brief The first bar end at which cash was below zero, if any. */
   std::optional<std::chrono::system_clock::time_point> first_overdrawn_;
-  /**
-   * The lowest cash any execution left in `currency_`, checked at every fill so a dip that recovers
-   * within a bar is kept; absent when no execution left cash below zero.
-   */
+  /** @brief The lowest cash any execution left in `currency_`, if below zero (checked at every fill). */
   std::optional<Money> lowest_cash_;
-  /** When `lowest_cash_` was reached: that execution's `Fill::at_`. */
+  /** @brief When `lowest_cash_` was reached (that execution's `Fill::at_`). */
   std::optional<std::chrono::system_clock::time_point> lowest_cash_at_;
-  /**
-   * DAY orders withdrawn unfilled at the end of their session (`Backtester::expire_day_orders`): what
-   * a broker does at the close. Appended last.
-   */
+  /** @brief `DAY` orders withdrawn unfilled when their session ended, as a broker does at the close. */
   std::size_t expired_day_orders_{0};
 };
 
-/** Everything a replay needs beyond the strategy and the bars. */
+/** @brief A replay's settings, besides the strategy and the bars. */
 struct ReplayConfig {
-  /** Starting cash, in `currency_`. */
+  /** @brief The starting cash, in `currency_`. */
   Decimal64 cash_{Decimal64::parse("10000000")};
-  /** The currency the replay accounts in. An equity curve is one currency's. */
+  /** @brief The accounting currency; the equity curve is in this currency only. */
   Currency currency_{Currency{"KRW"}};
-  /** Reference data for every instrument replayed; without it nothing can be built. */
+  /** @brief Reference data for every instrument replayed; orders on an instrument without it are refused. */
   std::vector<Instrument> instruments_;
-  /** Limits, applied exactly as they would be live. */
+  /** @brief The risk limits, applied as they are live. */
   strategy::RiskLimits limits_;
   /**
-   * Session the phases are derived against, and whose close a DAY order expires at. One window
-   * serves the whole replay: US minute bars replayed under the KRX default would expire orders at
-   * the KRX close, part way through the US session.
+   * @brief The session window phases are derived from and `DAY` orders expire at; one for the whole
+   *   replay.
+   *
+   * Set it to the replayed market's session: US bars under the KRX default would expire orders at
+   * the KRX close.
    */
   strategy::SessionWindow session_{strategy::SessionWindow::krx()};
-  /** Trailing bars the context caches, for the indicators a strategy reads. */
+  /** @brief How many trailing bars the context caches per series, for indicators. */
   std::size_t series_capacity_{512};
   /**
-   * The trading calendar a replayed strategy reads, installed on the context.
+   * @brief The calendar `ctx.calendar()` returns, for a strategy asking about dates it has no bar
+   *   for (such as whether tomorrow trades).
    *
-   * Empty by default, and empty is the honest answer: a replay's trading-day question is answered
-   * per bar by `feed`'s own argument, because a bar exists and therefore its date traded. This is for
-   * the *other* question -- `Context::calendar()`, which a strategy can ask about a date it has no bar
-   * for, such as whether tomorrow trades.
-   *
-   * Here because the live loop now fills that field from a polled calendar. Leaving the replay side
-   * empty would mean a strategy reading `ctx.calendar()` behaved differently in the two worlds, which
-   * is the divergence this whole slice is about.
-   *
-   * It deliberately does **not** change what `feed` derives the phase from. Doing so would turn every
-   * date a supplied calendar does not cover into `UNKNOWN` and refuse every order in replays that work
-   * today, which is a decision for whoever wants it, with its own report caveat.
+   * Empty by default. It does not change the phase of a fed bar, which comes from `feed`'s
+   * `trading_day` argument.
    */
   TradingCalendar calendar_;
 };
 
 /**
- * Replays a bar series through one strategy.
+ * @brief Replays bars (and quotes) through one strategy, with a ledger and a fill model.
  *
- * Driven by `feed`, one bar at a time, so a caller can interleave bars from several instruments in
- * timestamp order — which is what a cross-sectional replay needs and what a single-series convenience
- * wrapper would have foreclosed.
+ * Feed bars with `feed`, in timestamp order across instruments, then call `finish` and `summarize`
+ * the `result()`.
+ *
+ * @code
+ * backtest::Backtester<MyStrategy> replay(MyStrategy{}, config);
+ * for (const auto& bar : bars) {
+ *   replay.feed(strategy::make_bar_event(id, BarInterval::ONE_DAY, BarStamp::CLOSE, bar));
+ * }
+ * replay.finish();
+ * const auto report = backtest::summarize(replay.result(), replay.fills());
+ * @endcode
+ *
+ * @tparam Strategy The strategy type.
+ * @tparam CapsType The broker capabilities the strategy sees as `Ctx::caps`.
  */
 template <typename Strategy, typename CapsType = strategy::NoCaps>
 class Backtester {
 public:
-  /** The broker tag a replay's order references carry. */
+  /** @brief The order-reference tag. */
   using Tag = BacktestTag;
-  /** The executor this configuration of `Runner` sends through. */
+  /** @brief The executor type. */
   using Executor = QueueingExecutor<Tag>;
-  /** The `Runner` specialization a replay drives; the same engine a live session uses. */
+  /** @brief The `runner::Runner` the replay drives, the same type a live session uses. */
   using Runner = runner::Runner<Strategy, CapsType, Tag, Executor>;
 
-  /** Constructs a replay of `strategy` under `config`, filling through `fills`. */
+  /**
+   * @brief Constructs a replay.
+   * @param strategy The strategy.
+   * @param config The settings.
+   * @param fills The fill model (commission, slippage, limit pricing, sale tax).
+   */
   Backtester(
     Strategy strategy = {},
     ReplayConfig config = {},
@@ -550,36 +418,44 @@ public:
       runner_.context().set_instrument(reference);
     }
     runner_.context().set_calendar(config_.calendar_);
-    // Stated on the result so a report can compare an execution's currency against the curve's.
+    // So a report can compare an execution's currency with the curve's.
     result_.currency_ = config_.currency_;
   }
 
-  /** Returns the strategy, so a caller can read the state it kept. */
+  /**
+   * @brief Returns the strategy, to read the state it kept.
+   * @return The strategy.
+   */
   const Strategy& strategy() const noexcept { return runner_.strategy(); }
 
-  /** Returns the ledger, for positions, cash and realized profit. */
+  /**
+   * @brief Returns the ledger: positions, cash and realized profit.
+   * @return The ledger.
+   */
   const ReplayLedger& ledger() const noexcept { return ledger_; }
 
-  /** Returns the fill model, so a report can state what it assumed. */
+  /**
+   * @brief Returns the fill model, for `summarize`.
+   * @return The fill model.
+   */
   const NextBarFillModel& fills() const noexcept { return fills_; }
 
-  /** Returns what the replay has done so far. */
+  /**
+   * @brief Returns what the replay has produced so far.
+   * @return The result.
+   */
   const ReplayResult& result() const noexcept { return result_; }
 
   /**
-   * Replays one bar.
+   * @brief Replays one bar.
    *
-   * In this order, and the order is the whole correctness argument:
+   * In order: fill orders resting from earlier bars against this bar (and call `on_fill`), mark
+   * positions at the close and record an equity point, advance the clock to the bar's period end
+   * (calling `on_phase` on a change), then call `on_bar`, whose orders wait for a later bar. After a
+   * halt it does nothing.
    *
-   * 1. **Fill what bar *n-1* asked for, against this bar.** Before the strategy sees it, so a fill can
-   *    never use information the order did not have.
-   * 2. **Apply the fills** to the ledger and tell the strategy about them.
-   * 3. **Mark positions** to this bar's close and record the equity point.
-   * 4. **Advance the clock** to this bar's period end and fire a phase change if there was one.
-   * 5. **Show the strategy the bar**, which may queue orders for the *next* one.
-   *
-   * Reversing steps 1 and 5 is exactly the lookahead defect, and doing 3 before 2 would value a
-   * portfolio that had not yet been updated by its own fills.
+   * @param event The bar; feed bars in timestamp order across instruments.
+   * @param trading_day Whether the bar's date trades, for the phase; empty gives `UNKNOWN`.
    */
   void feed(const strategy::BarEvent& event, std::optional<bool> trading_day = true) {
     // **A halted replay consumes nothing further.** `feed` keeps returning `void` so no caller has to
@@ -679,75 +555,18 @@ public:
   }
 
   /**
-   * Replays one quote, so a strategy that acts between bars can be evaluated against history.
+   * @brief Replays one quote: moves the price and the clock to it, re-derives the phase (calling
+   *   `on_phase` on a change), calls `on_quote`, and publishes order updates.
    *
-   * `on_quote` fired live and in no replay before this existed: `QuoteEvent` appeared nowhere in
-   * `backtest/`, so `PollKind::QUOTES` was a supported live cadence with no counterpart, and a
-   * strategy written on it ran against real money having been evaluated against nothing. That is
-   * `issues/live-parity-audit.md`'s finding 2.
+   * A quote does not mark the ledger, record an equity point or fill anything. An order placed from
+   * `on_quote` fills against a later bar, not the quote (see `ReportCaveats::quotes_`). Compared
+   * with a live loop, `on_phase` fires before `on_quote` here (live, after the iteration's polls),
+   * and order updates are always published here (live, only when the working-order poll runs).
+   * A quote before the first bar is fine; its orders wait for a bar.
    *
-   * **Interleaved by the caller, in timestamp order**, exactly as bars across several instruments
-   * already are. `feed(const BarEvent&)` is caller-driven for that reason and a quote series in
-   * `ReplayConfig` would have had to invent an interleaving rule this class deliberately leaves out.
-   *
-   * ## What a quote does, and why this function is so short
-   *
-   * **Almost all of it is `Runner::feed(const strategy::QuoteEvent&)`, which both modes already
-   * share.** That function sets `Context::last_price` from the quote, advances the context clock to
-   * the quote's `received_at_`, dispatches `on_quote` and settles. Live,
-   * `live::SessionSource::poll_quotes` calls exactly that and does nothing else. So parity here is
-   * structural rather than maintained by agreement, and the only question this function answers is
-   * what a *replay* must add around it:
-   *
-   * | | Live | Here |
-   * | --- | --- | --- |
-   * | Updates the price a market order is valued at | yes, in `Runner::feed` | the same call |
-   * | Advances the decision clock to the quote's instant | yes, in `Runner::feed` | the same call |
-   * | Re-derives the market phase at that instant | yes, `PollingLoop` before each due poll | **yes**, here |
-   * | Announces a phase change | yes, once per iteration | **yes**, before `on_quote` |
-   * | Publishes order updates | **when** the working-order poll is due and the broker offers one | **yes**, always |
-   * | Marks the book, records an equity point, fills anything | no ledger exists live | **no** |
-   *
-   * The last three rows are approximations rather than identities, and saying which way each one
-   * errs is more useful than claiming they match:
-   *
-   * - **The announcement is earlier here than live.** A live loop announces after all its polls, so
-   *   `on_phase` sees the quote *and* that iteration's other polls; this announces before `on_quote`,
-   *   which is what `feed(const BarEvent&)` has always done for a bar. Following the bar path keeps
-   *   one replay internally consistent, which matters more to a replay than matching the loop's
-   *   interleaving; the cost is that an order placed from `on_phase` is visible to `on_quote` here
-   *   and would not yet exist live.
-   * - **The update is unconditional here and conditional live**, on the working-order cadence being
-   *   set, the broker publishing the inquiry, and the listing arriving. So a replay announces an
-   *   order a live run might see later or, between two polls, not at all.
-   * - **The last row is where live has nothing to differ with**: an equity curve is a replay's own
-   *   artefact, recorded per bar.
-   *
-   * **Two drafts of this comment were wrong in opposite directions, and both are worth knowing.**
-   * The first claimed a quote left the price and the clock alone, having read
-   * `live::SessionSource::poll_quotes` and not the runner beneath it. The second claimed a quote
-   * should publish no order update, because that one call does not -- true of the call and false of
-   * the live *iteration*, where `WORKING_ORDERS` follows `QUOTES` and can list the order moments
-   * later. Parity is a property of the whole loop, not of the function with the matching name.
-   *
-   * ## The consequence a strategy author has to know
-   *
-   * **An order placed from `on_quote`, if it fills, fills against a later *bar* and not against the
-   * quote.** That is
-   * `NextBarFillModel`, unchanged by this slice, and `ReportCaveats::quotes_` states it on every
-   * report of a run that fed one. A fill model that executes against a quote is a different design
-   * with its own argument, and this deliberately does not smuggle one in.
-   *
-   * A quote fed **before the first bar** is accepted and counted, and it is not a special case: the
-   * clock and the phase both come from the quote itself, so a strategy decides at the quote's
-   * instant under the quote's phase. Refusing it would be a rule the live path does not have, since
-   * a quote poll can and does run before the first bar arrives. What such an order cannot do is
-   * fill, until a bar exists to fill it against.
-   *
-   * **The caller's obligation is timestamp order**, and it is load-bearing rather than tidy. This
-   * clock follows whatever instant it is handed, so a quote stamped before the previous bar's period
-   * end moves the replay backwards, and everything derived from an instant -- the phase, the rate
-   * window, which bar an order may fill against -- follows it there.
+   * @param event The quote; feed it in timestamp order with the bars, since the clock follows
+   *   whatever instant it is given, even backwards.
+   * @param trading_day Whether the quote's date trades; empty gives `UNKNOWN`.
    */
   void feed(const strategy::QuoteEvent& event, std::optional<bool> trading_day = true) {
     // The same rule `feed(const BarEvent&)` opens with: a halted replay consumes nothing further,
@@ -797,13 +616,10 @@ public:
   }
 
   /**
-   * Ends the replay, counting whatever never filled.
+   * @brief Ends the replay: calls `on_stop` (with the current portfolio, including orders from the
+   *   last bar), settles what it asked for, and counts the orders still queued.
    *
-   * The portfolio is installed first because `Runner::stop` calls `on_stop` and settles what it
-   * asks for, and a shutdown handler withdrawing or flattening has to see the orders placed during
-   * the final bar. Without this it sees them only when a limit happened to be enabled -- a
-   * reservation covering the gap by accident, since `persist_reservation` writes nothing when no
-   * limit needs it.
+   * After a halt it does nothing; `on_stop` is not called.
    */
   void finish() {
     if (result_.halted_) {
@@ -823,14 +639,12 @@ public:
   }
 
 private:
-  /**
-   * Clears every order still queued after a halt, counting them.
-   *
-   * They are withdrawn rather than left outstanding so that nothing downstream reads a terminal
-   * replay as one with live working orders, and counted in `aborted_` rather than `unfilled_`
-   * because "the data ran out with this resting" and "the replay stopped while this was resting"
-   * are different facts about a run.
-   */
+  // Clears every order still queued after a halt, counting them.
+  //
+  // They are withdrawn rather than left outstanding so that nothing downstream reads a terminal
+  // replay as one with live working orders, and counted in `aborted_` rather than `unfilled_`
+  // because "the data ran out with this resting" and "the replay stopped while this was resting"
+  // are different facts about a run.
   void abort_queue() {
     std::vector<OrderRef<Tag>> remaining;
     remaining.reserve(runner_.executor().queued().size());
@@ -843,46 +657,42 @@ private:
     result_.aborted_ = remaining.size();
   }
 
-  /**
-   * Returns whether `event`'s period end is the instant itself rather than an upper bound on it.
-   *
-   * A close-stamped bar carries its period end as its timestamp, so the broker stated it. An
-   * open-stamped bar's end is derived by adding the interval's nominal length, which is right for a
-   * minute and an approximation for every calendar interval -- 24 hours is not a trading day, 31 days
-   * is not a month, and 366 is not a year. The approximation always runs **long**, which is what
-   * makes it usable: an upper bound on the decision instant still proves causality whenever a bar's
-   * start is at or after it.
-   */
+  // Returns whether `event`'s period end is the instant itself rather than an upper bound on it.
+  //
+  // A close-stamped bar carries its period end as its timestamp, so the broker stated it. An
+  // open-stamped bar's end is derived by adding the interval's nominal length, which is right for a
+  // minute and an approximation for every calendar interval -- 24 hours is not a trading day, 31 days
+  // is not a month, and 366 is not a year. The approximation always runs **long**, which is what
+  // makes it usable: an upper bound on the decision instant still proves causality whenever a bar's
+  // start is at or after it.
   static bool period_end_is_exact(const strategy::BarEvent& event) noexcept {
     return event.stamp_ == BarStamp::CLOSE || event.interval_ == BarInterval::ONE_MINUTE;
   }
 
-  /**
-   * Returns when `event`'s period began, where that is answerable **from the event itself**.
-   *
-   * Three cases, in the order they are decided, and the ordering is the correction Codex round 1
-   * forced:
-   *
-   * 1. **An open-stamped bar states it.** `BarStamp::OPEN` means `bar_.timestamp_` *is* the first
-   *    instant of the period, for every interval. Nothing has to be derived.
-   * 2. **An intraday interval has a fixed length**, so a close-stamped one began that long before it
-   *    ended.
-   * 3. **A close-stamped daily bar** began at the session open on its own local date, which is the
-   *    date its period end falls on and where its open price comes from. **That assumes the stamp
-   *    falls on the session's own date**, which is true of a bar stamped at the close and false of
-   *    one stamped at the following local midnight; such a series gets a start a day late.
-   *
-   * **Everything else is unanswerable and says so.** A close-stamped weekly bar ends on Friday and
-   * began on Monday; taking the session open on the *period end's* date would have called Friday
-   * 09:00 its start, which is four days too late -- so a Tuesday quote would have passed the check
-   * and filled at Monday's open, a price from two days before the decision. An earlier version of
-   * this function did exactly that and called it conservative; it was the opposite. The same was
-   * true of an open-stamped daily bar, whose period end is 24 hours after its start.
-   *
-   * What an empty answer means to the caller is in `may_fill`: not "no constraint", and not a bound
-   * to be inferred from somewhere else either, but "this check cannot run -- allow the fill and
-   * record that it was not checked".
-   */
+  // Returns when `event`'s period began, where that is answerable **from the event itself**.
+  //
+  // Three cases, in the order they are decided, and the ordering is the correction Codex round 1
+  // forced:
+  //
+  // 1. **An open-stamped bar states it.** `BarStamp::OPEN` means `bar_.timestamp_` *is* the first
+  //    instant of the period, for every interval. Nothing has to be derived.
+  // 2. **An intraday interval has a fixed length**, so a close-stamped one began that long before it
+  //    ended.
+  // 3. **A close-stamped daily bar** began at the session open on its own local date, which is the
+  //    date its period end falls on and where its open price comes from. **That assumes the stamp
+  //    falls on the session's own date**, which is true of a bar stamped at the close and false of
+  //    one stamped at the following local midnight; such a series gets a start a day late.
+  //
+  // **Everything else is unanswerable and says so.** A close-stamped weekly bar ends on Friday and
+  // began on Monday; taking the session open on the *period end's* date would have called Friday
+  // 09:00 its start, which is four days too late -- so a Tuesday quote would have passed the check
+  // and filled at Monday's open, a price from two days before the decision. An earlier version of
+  // this function did exactly that and called it conservative; it was the opposite. The same was
+  // true of an open-stamped daily bar, whose period end is 24 hours after its start.
+  //
+  // What an empty answer means to the caller is in `may_fill`: not "no constraint", and not a bound
+  // to be inferred from somewhere else either, but "this check cannot run -- allow the fill and
+  // record that it was not checked".
   std::optional<std::chrono::system_clock::time_point> period_start_of(
     const strategy::BarEvent& event
   ) const {
@@ -898,47 +708,45 @@ private:
     return std::nullopt;
   }
 
-  /**
-   * Returns whether `entry` may fill against `event`, and records where the question *could this be
-   * credited a price from before it was decided* could not be answered at all.
-   *
-   * Three answers, and the third one is what four review rounds cost:
-   *
-   * 1. **An undated order is eligible.** That is every order placed by a caller driving
-   *    `QueueingExecutor` directly, and this rule exists to defer fills rather than to invent them.
-   *    **No test can reach this branch through `Backtester`**, because the engine stamps the instant
-   *    before every dispatch that can place -- so a mutation removing it is not caught, and that is
-   *    a property of the branch rather than a weakness in the tests. It is kept because
-   *    `QueuedOrder::decided_at_` is an optional on a public type, and an undated one is a state the
-   *    type admits; nothing outside this class calls this function, so no caller exercises it today.
-   * 2. **Where `period_start_of` answers, the comparison is exact**: the bar's period must have begun
-   *    **at or after** the decision. A period that began before it contains the decision, and its
-   *    open price -- which is what `NextBarFillModel` credits a market order with -- is from before
-   *    the strategy decided anything. This is every bar shape this library produces: intraday,
-   *    open-stamped, and close-stamped daily.
-   * 3. **Where either side of that comparison is a calendar boundary this engine cannot establish,
-   *    it makes no inference at all.** Two ways in, and the second was found last: the bar's start is
-   *    underivable (a close-stamped weekly, monthly or yearly bar), or the decision instant is only
-   *    an upper bound (an open-stamped bar of any calendar interval, which is what every shipped
-   *    adapter produces) and the bar's start falls before it. Either way the fill is allowed, on the
-   *    bar-counter rule that governed every fill before this branch, and **counted** in
-   *    `ReplayResult::unchecked_fill_causality_` so the report can say the check did not happen.
-   *
-   * **Three successive versions of this function tried to infer that period instead, and a reviewer
-   * falsified all three.** The previous bar of the instrument: wrong, because two intervals of one
-   * instrument overlap. The previous bar of the same instrument *and* interval: wrong, because
-   * nothing in `feed`'s contract requires one stamp convention or anchor for a series, so two
-   * same-interval weekly bars can overlap too. Each inference rested on an invariant that is usually
-   * true and is not guaranteed -- and the repository's own rule covers exactly this: *a conservative
-   * refusal beats a narrow test you cannot justify.* There is no refusal available here either,
-   * because deferring an unprovable fill would stop a close-stamped weekly replay filling **anything**
-   * -- every order in one is decided at a boundary this engine equally cannot place. That is a
-   * statement about the shape rather than about every interval in it: a sound lower bound of *period
-   * end minus seven days* does exist for a week and would let a full-week series fill on time, but it
-   * defers a week after every holiday-shortened one, and the 31-day and 366-day bounds defer nearly
-   * every monthly and yearly order. So the honest third answer is to check nothing, claim nothing,
-   * and report the gap.
-   */
+  // Returns whether `entry` may fill against `event`, and records where the question *could this be
+  // credited a price from before it was decided* could not be answered at all.
+  //
+  // Three answers, and the third one is what four review rounds cost:
+  //
+  // 1. **An undated order is eligible.** That is every order placed by a caller driving
+  //    `QueueingExecutor` directly, and this rule exists to defer fills rather than to invent them.
+  //    **No test can reach this branch through `Backtester`**, because the engine stamps the instant
+  //    before every dispatch that can place -- so a mutation removing it is not caught, and that is
+  //    a property of the branch rather than a weakness in the tests. It is kept because
+  //    `QueuedOrder::decided_at_` is an optional on a public type, and an undated one is a state the
+  //    type admits; nothing outside this class calls this function, so no caller exercises it today.
+  // 2. **Where `period_start_of` answers, the comparison is exact**: the bar's period must have begun
+  //    **at or after** the decision. A period that began before it contains the decision, and its
+  //    open price -- which is what `NextBarFillModel` credits a market order with -- is from before
+  //    the strategy decided anything. This is every bar shape this library produces: intraday,
+  //    open-stamped, and close-stamped daily.
+  // 3. **Where either side of that comparison is a calendar boundary this engine cannot establish,
+  //    it makes no inference at all.** Two ways in, and the second was found last: the bar's start is
+  //    underivable (a close-stamped weekly, monthly or yearly bar), or the decision instant is only
+  //    an upper bound (an open-stamped bar of any calendar interval, which is what every shipped
+  //    adapter produces) and the bar's start falls before it. Either way the fill is allowed, on the
+  //    bar-counter rule that governed every fill before this branch, and **counted** in
+  //    `ReplayResult::unchecked_fill_causality_` so the report can say the check did not happen.
+  //
+  // **Three successive versions of this function tried to infer that period instead, and a reviewer
+  // falsified all three.** The previous bar of the instrument: wrong, because two intervals of one
+  // instrument overlap. The previous bar of the same instrument *and* interval: wrong, because
+  // nothing in `feed`'s contract requires one stamp convention or anchor for a series, so two
+  // same-interval weekly bars can overlap too. Each inference rested on an invariant that is usually
+  // true and is not guaranteed -- and the repository's own rule covers exactly this: *a conservative
+  // refusal beats a narrow test you cannot justify.* There is no refusal available here either,
+  // because deferring an unprovable fill would stop a close-stamped weekly replay filling **anything**
+  // -- every order in one is decided at a boundary this engine equally cannot place. That is a
+  // statement about the shape rather than about every interval in it: a sound lower bound of *period
+  // end minus seven days* does exist for a week and would let a full-week series fill on time, but it
+  // defers a week after every holiday-shortened one, and the 31-day and 366-day bounds defer nearly
+  // every monthly and yearly order. So the honest third answer is to check nothing, claim nothing,
+  // and report the gap.
   bool may_fill(
     const QueuedOrder<Tag>& entry,
     const strategy::BarEvent& event
@@ -965,17 +773,15 @@ private:
     return true;
   }
 
-  /**
-   * Fills orders resting from an earlier bar against `event`, and tells the strategy.
-   *
-   * **Walked by reference rather than by iterator or index.** Applying a fill calls `on_fill`, which
-   * may place or withdraw orders, so any position into the queue is invalid the moment the strategy
-   * is told anything. The eligible references are collected first and each is looked up again when
-   * its turn comes; one the callback withdrew is simply no longer there.
-   *
-   * The queue is never emptied, so an order this loop has not reached yet is outstanding, visible in
-   * every portfolio installed along the way, and addressable by a cancellation from any callback.
-   */
+  // Fills orders resting from an earlier bar against `event`, and tells the strategy.
+  //
+  // **Walked by reference rather than by iterator or index.** Applying a fill calls `on_fill`, which
+  // may place or withdraw orders, so any position into the queue is invalid the moment the strategy
+  // is told anything. The eligible references are collected first and each is looked up again when
+  // its turn comes; one the callback withdrew is simply no longer there.
+  //
+  // The queue is never emptied, so an order this loop has not reached yet is outstanding, visible in
+  // every portfolio installed along the way, and addressable by a cancellation from any callback.
   void settle_queued_against(const strategy::BarEvent& event) {
     const auto bar_date = clock_.session().local_date(event.bar_.timestamp_);
     // A session the replay had no closing bar for -- a missing last minute -- still ended: an order
@@ -1101,7 +907,7 @@ private:
     publish_order_updates();
   }
 
-  /** Keeps the lowest cash an execution left in the replay's currency, when it is below zero. */
+  // Keeps the lowest cash an execution left in the replay's currency, when it is below zero.
   void note_overdraft(const Execution& execution) {
     if (!(execution.currency_ == result_.currency_)) {
       return;
@@ -1116,19 +922,17 @@ private:
     }
   }
 
-  /**
-   * Withdraws every DAY order of `event`'s instrument whose session has ended: before the bar's
-   * fills (`after_fills` false), those of an earlier date; after them, also those of the bar's own
-   * date when the bar ends the session.
-   *
-   * A KRX DAY order expires at the close. Kept queued, a replay's DAY limit or stop was
-   * good-till-cancelled on daily bars -- a limit below the market waited for weeks, and a stop placed
-   * at an entry still rested months later -- where live it was gone that evening. A bar ends a
-   * session when its interval is a day or longer, or when it is a minute bar ending at or after the
-   * session's close; a bar of a later date ends it in any case. Withdrawn inside the settlement batch,
-   * before order updates are published and before the strategy is shown the bar, so nothing reads an
-   * expired order as working. Counted in `ReplayResult::expired_day_orders_`.
-   */
+  // Withdraws every DAY order of `event`'s instrument whose session has ended: before the bar's
+  // fills (`after_fills` false), those of an earlier date; after them, also those of the bar's own
+  // date when the bar ends the session.
+  //
+  // A KRX DAY order expires at the close. Kept queued, a replay's DAY limit or stop was
+  // good-till-cancelled on daily bars -- a limit below the market waited for weeks, and a stop placed
+  // at an entry still rested months later -- where live it was gone that evening. A bar ends a
+  // session when its interval is a day or longer, or when it is a minute bar ending at or after the
+  // session's close; a bar of a later date ends it in any case. Withdrawn inside the settlement batch,
+  // before order updates are published and before the strategy is shown the bar, so nothing reads an
+  // expired order as working. Counted in `ReplayResult::expired_day_orders_`.
   void expire_day_orders(const strategy::BarEvent& event, const Date& bar_date, bool after_fills) {
     // No fixed duration is what a day or longer has (`interval_duration`); an intraday interval has one.
     const bool daily_or_longer = !interval_duration(event.interval_);
@@ -1151,7 +955,7 @@ private:
     }
   }
 
-  /** Records equity at this bar, and the return since the previous point. */
+  // Records equity at this bar, and the return since the previous point.
   void record_equity(const strategy::BarEvent& event) {
     if (const auto cash = ledger_.cash_in(config_.currency_);
         cash && decimal_less(*cash, Decimal64::parse("0"))) {
@@ -1196,13 +1000,11 @@ private:
     result_.equity_.push_back(point);
   }
 
-  /**
-   * Converts an exact ratio to the scalar the metrics compute in.
-   *
-   * The one crossing of the decimal boundary in this engine, and it goes outward: a return is an input
-   * to `sharpe` and the rest, which are defined on `Scalar`. Nothing converts back, because no figure
-   * a report produces is ever sent to a broker.
-   */
+  // Converts an exact ratio to the scalar the metrics compute in.
+  //
+  // The one crossing of the decimal boundary in this engine, and it goes outward: a return is an input
+  // to `sharpe` and the rest, which are defined on `Scalar`. Nothing converts back, because no figure
+  // a report produces is ever sent to a broker.
   static math::Scalar analytics_to_scalar(const Decimal64& value) {
     auto scaled = static_cast<math::Scalar>(value.coefficient());
     for (std::uint8_t at = 0; at < value.scale(); ++at) {
@@ -1211,66 +1013,60 @@ private:
     return scaled;
   }
 
-  /** Returns the grid for `instrument`, unknown when no reference data was supplied. */
-  /**
-   * Returns the currency `instrument` trades in, from the reference data the replay was given.
-   *
-   * **Every fill used to be booked in `config_.currency_`**, which is documented as the currency the
-   * *starting cash* is in. A replay of a dollar-quoted instrument therefore banked dollars as won at
-   * a rate of one -- the implicit conversion Decision 6 forbids and `holdings-core` exists to refuse.
-   *
-   * The fallback is defensive rather than a policy: `reconcile` refuses an instrument with no
-   * reference data before a `PlannedOrder` exists (`strategy/reconcile.hpp`), so nothing can reach
-   * the fill model unregistered. It is written the conservative way round anyway -- an unregistered
-   * instrument books in the currency the ledger was opened in, which is the behaviour every existing
-   * replay already had.
-   */
-  /**
-   * Installs the portfolio a strategy and its guards decide on.
-   *
-   * The single place the replay answers "what does this account look like", so that every callback
-   * boundary is answered the same way.
-   *
-   * **It has to be a complete answer, because it overwrites one.**
-   * `Runner::persist_reservation` writes an accepted order into the context portfolio and relies on
-   * a wholesale replacement carrying what the reservation was standing in for
-   * (`runner/runner.hpp:628-634`). Live that replacement is a broker's listing. Here it is this
-   * function, and a partial answer is therefore not a smaller improvement -- it is a *loss*, because
-   * the reservation it erased was carrying the part it left out.
-   *
-   * The reservation carried two things, so this carries both: the outstanding orders themselves,
-   * and the money an outstanding buy has committed.
-   */
-  /**
-   * Reports every queued order whose state has changed since the last observation.
-   *
-   * ## Where this is called from, and why not simply beside `install_portfolio`
-   *
-   * At the three points where a *batch* of changes to the queue has finished: the end of
-   * settlement, the end of `feed`, and the end of `finish`. The queue changes in exactly three
-   * ways -- `place` and `cancel` from a strategy dispatch, and `withdraw` from settlement -- and
-   * each of those three boundaries closes one batch of them.
-   *
-   * The obvious alternative, publishing from `install_portfolio`, is wrong and quietly so: the
-   * last install of a bar runs *before* `feed(BarEvent)` dispatches `on_bar`, so an order placed
-   * there enters the queue after it, and the next bar's settlement withdraws the order before that
-   * bar's first install. An order placed on one bar and filled on the next -- which is every market
-   * order -- would be present at no install at all and would be reported nowhere.
-   *
-   * ## The portfolio is installed before each dispatch, not once for the batch
-   *
-   * A handler told about an order has to be able to find it. With every optional limit disabled
-   * `Runner::persist_reservation` writes no working row, so nothing else would put the order in
-   * the view, and a strategy would be told about an order it could neither see nor withdraw.
-   * Installing once for the batch is not enough either, because a handler answering the first
-   * update may place or cancel, which invalidates the picture the second one reads.
-   *
-   * ## What a handler's own order does
-   *
-   * It enters the queue behind this observation and is reported at the *next* boundary, never
-   * within this one, so a strategy cannot drive itself round a loop here. An order placed by
-   * `on_order_update` during `finish` has no later boundary and is not reported at all.
-   */
+  // Returns the grid for `instrument`, unknown when no reference data was supplied.
+  // Returns the currency `instrument` trades in, from the reference data the replay was given.
+  //
+  // **Every fill used to be booked in `config_.currency_`**, which is documented as the currency the
+  // *starting cash* is in. A replay of a dollar-quoted instrument therefore banked dollars as won at
+  // a rate of one -- the implicit conversion Decision 6 forbids and `holdings-core` exists to refuse.
+  //
+  // The fallback is defensive rather than a policy: `reconcile` refuses an instrument with no
+  // reference data before a `PlannedOrder` exists (`strategy/reconcile.hpp`), so nothing can reach
+  // the fill model unregistered. It is written the conservative way round anyway -- an unregistered
+  // instrument books in the currency the ledger was opened in, which is the behaviour every existing
+  // replay already had.
+  // Installs the portfolio a strategy and its guards decide on.
+  //
+  // The single place the replay answers "what does this account look like", so that every callback
+  // boundary is answered the same way.
+  //
+  // **It has to be a complete answer, because it overwrites one.**
+  // `Runner::persist_reservation` writes an accepted order into the context portfolio and relies on
+  // a wholesale replacement carrying what the reservation was standing in for
+  // (`runner/runner.hpp:628-634`). Live that replacement is a broker's listing. Here it is this
+  // function, and a partial answer is therefore not a smaller improvement -- it is a *loss*, because
+  // the reservation it erased was carrying the part it left out.
+  //
+  // The reservation carried two things, so this carries both: the outstanding orders themselves,
+  // and the money an outstanding buy has committed.
+  // Reports every queued order whose state has changed since the last observation.
+  //
+  // ## Where this is called from, and why not simply beside `install_portfolio`
+  //
+  // At the three points where a *batch* of changes to the queue has finished: the end of
+  // settlement, the end of `feed`, and the end of `finish`. The queue changes in exactly three
+  // ways -- `place` and `cancel` from a strategy dispatch, and `withdraw` from settlement -- and
+  // each of those three boundaries closes one batch of them.
+  //
+  // The obvious alternative, publishing from `install_portfolio`, is wrong and quietly so: the
+  // last install of a bar runs *before* `feed(BarEvent)` dispatches `on_bar`, so an order placed
+  // there enters the queue after it, and the next bar's settlement withdraws the order before that
+  // bar's first install. An order placed on one bar and filled on the next -- which is every market
+  // order -- would be present at no install at all and would be reported nowhere.
+  //
+  // ## The portfolio is installed before each dispatch, not once for the batch
+  //
+  // A handler told about an order has to be able to find it. With every optional limit disabled
+  // `Runner::persist_reservation` writes no working row, so nothing else would put the order in
+  // the view, and a strategy would be told about an order it could neither see nor withdraw.
+  // Installing once for the batch is not enough either, because a handler answering the first
+  // update may place or cancel, which invalidates the picture the second one reads.
+  //
+  // ## What a handler's own order does
+  //
+  // It enters the queue behind this observation and is reported at the *next* boundary, never
+  // within this one, so a strategy cannot drive itself round a loop here. An order placed by
+  // `on_order_update` during `finish` has no later boundary and is not reported at all.
   void publish_order_updates() {
     if (result_.halted_) {
       // Nothing runs after a refusal, for the reason `feed` documents: a handler called here would
@@ -1308,12 +1104,10 @@ private:
     settle_deferred();
   }
 
-  /**
-   * Returns the queued order `update` describes, if it is still outstanding in that same state.
-   *
-   * Matched on the reference and then on the observable state, so an order withdrawn or amended
-   * since the batch was observed is not announced as it stood.
-   */
+  // Returns the queued order `update` describes, if it is still outstanding in that same state.
+  //
+  // Matched on the reference and then on the observable state, so an order withdrawn or amended
+  // since the batch was observed is not announced as it stood.
   const QueuedOrder<Tag>* find_queued(const OrderSnapshot& update) const {
     for (const auto& entry : runner_.executor().queued()) {
       if (entry.ref_.primary_ != update.order_id_) {
@@ -1344,16 +1138,14 @@ private:
     runner_.context().set_portfolio(std::move(portfolio));
   }
 
-  /**
-   * Returns the working-order row for an outstanding replay order.
-   *
-   * `reserved_` stays false, unlike a runner's own reservation. The flag distinguishes this
-   * library's arithmetic from what a broker reported, and in a replay the engine *is* the broker:
-   * this row is the listing. The one consequence worth stating is that
-   * `strategy::SellableConventionProbe`, which reads unreserved rows as evidence about a broker's
-   * convention, will read these -- and a replay's sellable figure is a model that never moves, so
-   * the probe reports what the simulator does rather than what a broker does.
-   */
+  // Returns the working-order row for an outstanding replay order.
+  //
+  // `reserved_` stays false, unlike a runner's own reservation. The flag distinguishes this
+  // library's arithmetic from what a broker reported, and in a replay the engine *is* the broker:
+  // this row is the listing. The one consequence worth stating is that
+  // `strategy::SellableConventionProbe`, which reads unreserved rows as evidence about a broker's
+  // convention, will read these -- and a replay's sellable figure is a model that never moves, so
+  // the probe reports what the simulator does rather than what a broker does.
   WorkingOrder<Tag> working_row(const QueuedOrder<Tag>& entry) const {
     WorkingOrder<Tag> row;
     row.ref_ = entry.ref_;
@@ -1383,28 +1175,26 @@ private:
     return row;
   }
 
-  /**
-   * Takes what an outstanding buy has committed out of the buying power the replay models.
-   *
-   * **Rows alone do not fix `enforce_buying_power_`**, which reads the scalar and not the orders.
-   * `ReplayLedger::snapshot` builds buying power from ledger cash, and that cash has not paid for
-   * anything still resting -- so with a hundred of cash, a resting buy costing a hundred, and a
-   * second buy costing a hundred in another instrument, the second passes and both can still fill.
-   *
-   * Valued at the order's own price, else the last close, which is the same estimate the guard
-   * checked the order against — and it is an **estimate**, not a bound. A limit buy cannot fill
-   * above its limit, so for those the commitment is at least the eventual spend before costs. A
-   * market order has no stated price at all: it fills where the next bar opens, and slippage and
-   * commission are both outside this figure, so the real spend can exceed what was committed. An
-   * order that can be valued by neither route is left uncommitted rather than guessed at.
-   *
-   * **Scoped to the limit, exactly as `Runner::reserve` is** (`runner/runner.hpp:700-705`).
-   * `buying_power_in()` is a public figure a strategy is free to size its next order from, so
-   * lowering it for a caller who never enabled the check would change how their strategy sizes --
-   * a behaviour change well past enforcing a ceiling, and the reason the runner passes `spends`
-   * rather than always debiting. It also keeps `ReportCaveats::buying_power_is_ledger_cash` true
-   * for every replay that does not ask for the check.
-   */
+  // Takes what an outstanding buy has committed out of the buying power the replay models.
+  //
+  // **Rows alone do not fix `enforce_buying_power_`**, which reads the scalar and not the orders.
+  // `ReplayLedger::snapshot` builds buying power from ledger cash, and that cash has not paid for
+  // anything still resting -- so with a hundred of cash, a resting buy costing a hundred, and a
+  // second buy costing a hundred in another instrument, the second passes and both can still fill.
+  //
+  // Valued at the order's own price, else the last close, which is the same estimate the guard
+  // checked the order against — and it is an **estimate**, not a bound. A limit buy cannot fill
+  // above its limit, so for those the commitment is at least the eventual spend before costs. A
+  // market order has no stated price at all: it fills where the next bar opens, and slippage and
+  // commission are both outside this figure, so the real spend can exceed what was committed. An
+  // order that can be valued by neither route is left uncommitted rather than guessed at.
+  //
+  // **Scoped to the limit, exactly as `Runner::reserve` is** (`runner/runner.hpp:700-705`).
+  // `buying_power_in()` is a public figure a strategy is free to size its next order from, so
+  // lowering it for a caller who never enabled the check would change how their strategy sizes --
+  // a behaviour change well past enforcing a ceiling, and the reason the runner passes `spends`
+  // rather than always debiting. It also keeps `ReportCaveats::buying_power_is_ledger_cash` true
+  // for every replay that does not ask for the check.
   void commit_open_buy(strategy::Portfolio<Tag>& portfolio, const QueuedOrder<Tag>& entry) const {
     if (!config_.limits_.enforce_buying_power_ || entry.order_.side_ != OrderSide::BUY) {
       return;
@@ -1447,13 +1237,13 @@ private:
     return reference->price_rule_;
   }
 
-  /** Collects what a runner pass reported, so a replay ends with the whole picture. */
+  // Collects what a runner pass reported, so a replay ends with the whole picture.
   template <typename Report>
   void drain_reports(const Report& report) {
     collect(report);
   }
 
-  /** Adds a pass's refusals to the result. */
+  // Adds a pass's refusals to the result.
   template <typename Report>
   void collect(const Report& report) {
     for (const auto& rejection : report.rejected_) {
@@ -1464,19 +1254,17 @@ private:
     }
   }
 
-  /**
-   * Settles a target the runner deferred behind a stop, once this replay has withdrawn the stop and
-   * the strategy has answered every update of the batch. Called only from `publish_order_updates`.
-   *
-   * **A replay's withdrawal is synchronous**: `QueueingExecutor::cancel` removes the stop from the
-   * queue before the pass that asked for it returns. Waiting for the next bar's portfolio to show that
-   * would place the flatten a bar late and fill it two bars late -- a delay the live path, whose
-   * cancellation can be confirmed between bars, does not have. So after every pass the replay shows
-   * the runner its book as it now stands and lets it release from that one snapshot: this ledger is the
-   * broker, so the stop's absence and the holding after it are known together. See
-   * `Runner::retry_deferred_on_one_snapshot`. An order placed here waits for the next bar like any
-   * other, which is the lookahead rule.
-   */
+  // Settles a target the runner deferred behind a stop, once this replay has withdrawn the stop and
+  // the strategy has answered every update of the batch. Called only from `publish_order_updates`.
+  //
+  // **A replay's withdrawal is synchronous**: `QueueingExecutor::cancel` removes the stop from the
+  // queue before the pass that asked for it returns. Waiting for the next bar's portfolio to show that
+  // would place the flatten a bar late and fill it two bars late -- a delay the live path, whose
+  // cancellation can be confirmed between bars, does not have. So after every pass the replay shows
+  // the runner its book as it now stands and lets it release from that one snapshot: this ledger is the
+  // broker, so the stop's absence and the holding after it are known together. See
+  // `Runner::retry_deferred_on_one_snapshot`. An order placed here waits for the next bar like any
+  // other, which is the lookahead rule.
   void settle_deferred() {
     if (runner_.deferred_targets().empty()) {
       return;
@@ -1490,10 +1278,10 @@ private:
   ReplayLedger ledger_;
   ReplayClock clock_;
   Runner runner_;
-  /** Turns this replay's own working listing into `on_order_update` events. */
+  // Turns this replay's own working listing into `on_order_update` events.
   runner::OrderUpdateWatch<Tag> updates_;
   ReplayResult result_;
-  /** Whether a bar since the last equity point went unvalued, so the next point carries no return. */
+  // Whether a bar since the last equity point went unvalued, so the next point carries no return.
   bool equity_gap_{false};
   std::optional<strategy::BarEvent> previous_;
 };
