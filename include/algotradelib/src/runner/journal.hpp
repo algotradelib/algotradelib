@@ -141,8 +141,9 @@ inline std::optional<JournalOutcome> journal_outcome_from(std::string_view text)
  * @brief Maps a send outcome to the journal outcome that records it.
  * @param outcome The send outcome.
  * @return `ACCEPTED`, `INDETERMINATE`, or `REJECTED` for `REJECTED`, `UNAVAILABLE` and
- *   `REFUSED_LOCALLY` (for a placement, the order does not exist; for a cancellation, the order
- *   it named is as it was).
+ *   `REFUSED_LOCALLY`. For a placement, `REJECTED` means the order does not exist; for a
+ *   cancellation, only that the request was refused or not sent, which says nothing about the
+ *   named order's state (it may have filled).
  */
 inline constexpr JournalOutcome journal_outcome_of(SendOutcome outcome) noexcept {
   switch (outcome) {

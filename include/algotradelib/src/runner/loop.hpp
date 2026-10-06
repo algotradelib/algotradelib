@@ -889,10 +889,12 @@ private:
  * order; announce a phase change; retry retained targets.
  *
  * Placements are held through holds on the runner's `strategy::RiskGuard`: `ORDER_LIST_UNREAD`,
- * `PORTFOLIO_ABSENT`, `PORTFOLIO_STALE`, `BUYING_POWER_UNREAD`, `STOPPING`, `POLL_FAILING`. These are
- * data holds: named cancellations still go (see `strategy::halt_blocks`), so a stop can withdraw
- * known orders even when the order list could not be read. The loop never takes or releases
- * `OPERATOR` or `LOCAL_FAILURE`, which block cancellations too.
+ * `PORTFOLIO_ABSENT`, `PORTFOLIO_STALE`, `BUYING_POWER_UNREAD` and `POLL_FAILING` are data holds,
+ * under which named cancellations still go (see `strategy::halt_blocks`), so a stop can withdraw
+ * known orders even when the order list could not be read. `STOPPING`, taken while a stop is
+ * honoured and left in place after it, blocks cancellations too; the loop lifts it only for its own
+ * closing instructions. The loop never takes or releases `OPERATOR` or `LOCAL_FAILURE`, which also
+ * block cancellations.
  *
  * **State a holdings age policy** (`set_maximum_portfolio_age` or `allow_unbounded_portfolio_age`):
  * without one, every placement is held as `PORTFOLIO_STALE`.

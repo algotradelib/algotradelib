@@ -942,9 +942,9 @@ inline bool salvage_damaged(std::string_view line, std::string_view key) {
  * @brief Salvages a torn final line into an entry nothing can resolve automatically.
  *
  * The entry's id is suffixed so it pairs with no `PENDING` line, its outcome is `PENDING` whatever
- * the text said, and it is operator-only. An instrument, side or type field that was written in full
- * but cannot be read leaves no instrument; a number or route that cannot be read is left absent or
- * unknown, and the instrument is kept.
+ * the text said, and it is operator-only. An instrument, side, type, condition or session field that
+ * was written in full but cannot be read leaves no instrument; a number that cannot be read is left
+ * absent (the quantity at its default) and a route unknown, and the instrument is kept.
  *
  * @param line The torn line.
  * @return The entry, or `std::nullopt` if the line does not even name a symbol.
