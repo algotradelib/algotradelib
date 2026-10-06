@@ -38,8 +38,8 @@ struct TradingDay {
  *
  * Keep `days_` ascending if you fill it yourself.
  *
- * Intraday session hours are not part of this type; a broker that publishes them
- * exposes them through its own client.
+ * Intraday session hours are not part of this type, and the library does not expose them yet
+ * (Toss publishes them).
  */
 struct TradingCalendar {
   /** @brief The market this calendar is for. */

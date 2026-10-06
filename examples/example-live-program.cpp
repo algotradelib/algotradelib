@@ -446,7 +446,12 @@ std::optional<Arguments> parse(int argc, char** argv) {
 
 } // namespace
 
-/** Chooses a broker from the command line and observes or trades through it. */
+/**
+ * @brief Chooses a broker from the command line and observes or trades through it.
+ * @param argc The argument count.
+ * @param argv The arguments.
+ * @return The program's exit code (`live_program::Exit`).
+ */
 int main(int argc, char** argv) {
   const auto arguments = parse(argc, argv);
   if (!arguments) {

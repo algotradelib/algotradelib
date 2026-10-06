@@ -36,7 +36,11 @@
 
 namespace kiwoom_credentials {
 
-/** Whether `label` names a file inside the directory: lowercase letters, digits and `-`. */
+/**
+ * @brief Tests whether a label can name a file in the credentials directory.
+ * @param label The label.
+ * @return `true` if it is lowercase letters, digits and `-`, not starting with `-`.
+ */
 inline bool valid_label(std::string_view label) {
   if (label.empty() || label.front() == '-') {
     return false;
@@ -50,8 +54,11 @@ inline bool valid_label(std::string_view label) {
 }
 
 /**
- * Removes `--kiwoom-account LABEL` from the command line and returns the label, or nothing. Throws
- * when the flag has no value or the value is not a valid label.
+ * @brief Removes `--kiwoom-account LABEL` from the command line and returns the label.
+ * @param argc The argument count; reduced by the arguments removed.
+ * @param argv The arguments; the rest are moved down.
+ * @return The label, or `std::nullopt` if the flag is absent.
+ * @throws std::runtime_error if the flag has no value or the value is not a valid label.
  */
 inline std::optional<std::string> take_label(int& argc, char** argv) {
   std::optional<std::string> label;
@@ -74,8 +81,11 @@ inline std::optional<std::string> take_label(int& argc, char** argv) {
 }
 
 /**
- * Throws when a flag is left on the command line after the credential flags were taken, so a
- * mistyped `--kiwoom-acount us` stops instead of loading the default label's key.
+ * @brief Refuses any flag left on the command line after the credential flags were taken, so a
+ *   mistyped `--kiwoom-acount us` stops instead of loading the default label's key.
+ * @param argc The argument count.
+ * @param argv The arguments.
+ * @throws std::runtime_error naming the first unknown flag.
  */
 inline void refuse_unknown_flags(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
@@ -85,7 +95,16 @@ inline void refuse_unknown_flags(int argc, char** argv) {
   }
 }
 
-/** Loads `config` from the directory's file for `label`, or from the environment without a directory. */
+/**
+ * @brief Loads the credentials from `DIR/kiwoom/{demo,real}-LABEL.json` (as `KIWOOM_DEMO` chooses;
+ *   label `kr` by default), or from the environment without a directory, and prints where from.
+ * @param directory The credentials directory, or `std::nullopt` to read the environment.
+ * @param label The label, or `std::nullopt` for `kr`.
+ * @param config The configuration to load into.
+ * @param out Where to print the source.
+ * @throws std::runtime_error if a label is given without a directory, or the file or variables are
+ *   missing, invalid, or contradict the demo setting.
+ */
 inline void load(
   const std::optional<std::filesystem::path>& directory,
   const std::optional<std::string>& label,

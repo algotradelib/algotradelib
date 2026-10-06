@@ -190,7 +190,10 @@ Clock::time_point start_time() {
 
 } // namespace
 
-/** Runs the polling loop end to end with no broker, no credentials and no network. */
+/**
+ * @brief Runs the polling loop end to end with no broker, no credentials and no network.
+ * @return 0 on success.
+ */
 int main() {
   std::cout << "a live loop with no broker attached\n\n";
 

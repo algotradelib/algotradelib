@@ -101,10 +101,15 @@ enum class Exit : int {
 };
 
 /**
- * Reads each instrument's reference data onto the runner.
- *
- * The loop polls bars, holdings, orders and bands, but not reference data: that is read once, here,
- * because without a lot size and a price grid no order can be built at all.
+ * @brief Reads each instrument's reference data (lot size, price grid) onto the runner, once; the loop
+ *   does not poll it, and no order can be built without it.
+ * @tparam Session The session type.
+ * @tparam Runner The runner type.
+ * @param session The session to read from.
+ * @param bound The runner.
+ * @param settings The settings (its universe).
+ * @param out Where to print a failure.
+ * @return `true` if every instrument was read; otherwise prints why and returns `false`.
  */
 template <typename Session, typename Runner>
 bool load_reference_data(Session& session, Runner& bound, const Settings& settings, std::ostream& out) {
@@ -120,7 +125,11 @@ bool load_reference_data(Session& session, Runner& bound, const Settings& settin
   return true;
 }
 
-/** Prints what recovery found, in the words an operator acts on. */
+/**
+ * @brief Prints what recovery found, in the words an operator acts on.
+ * @param recovery The recovery report.
+ * @param out Where to print.
+ */
 inline void print_recovery(const runner::RecoveryReport& recovery, std::ostream& out) {
   if (recovery.clean()) {
     out << "recovery: clean -- the journal owes nothing\n";
@@ -147,7 +156,11 @@ inline void print_recovery(const runner::RecoveryReport& recovery, std::ostream&
   }
 }
 
-/** Prints how to stop the run, before it starts, so nobody reaches for `kill -9`. */
+/**
+ * @brief Prints how to stop the run, before it starts, so nobody reaches for `kill -9`.
+ * @param settings The settings (its control file).
+ * @param out Where to print.
+ */
 inline void print_how_to_stop(const Settings& settings, std::ostream& out) {
   out << "to stop: Ctrl-C or SIGTERM (quiesce), or\n"
       << "  echo quiesce  > " << settings.control_file_ << "   # stop placing, leave orders resting\n"
@@ -158,7 +171,11 @@ inline void print_how_to_stop(const Settings& settings, std::ostream& out) {
       << "a supervisor's grace period must exceed one loop iteration plus one request timeout\n";
 }
 
-/** Prints the loop's own figures and notes, which read the same in both modes. */
+/**
+ * @brief Prints the loop's own figures and notes, which read the same in both modes.
+ * @param report The loop report.
+ * @param out Where to print.
+ */
 inline void print_loop(const runner::LoopReport& report, std::ostream& out) {
   out << "\niterations      : " << report.iterations_ << '\n'
       << "order list read : " << (report.order_list_read_ ? "yes" : "no") << '\n'
@@ -205,7 +222,11 @@ inline void print_loop(const runner::LoopReport& report, std::ostream& out) {
   }
 }
 
-/** Prints the loop report and what `closing_complete()` does and does not mean. */
+/**
+ * @brief Prints the loop report and what `closing_complete()` does and does not mean.
+ * @param report The loop report.
+ * @param out Where to print.
+ */
 inline void print_report(const runner::LoopReport& report, std::ostream& out) {
   print_loop(report, out);
   out << "closing complete: " << (report.closing_complete() ? "yes" : "NO")
@@ -213,12 +234,21 @@ inline void print_report(const runner::LoopReport& report, std::ostream& out) {
       << "                  read the broker's order list and holdings to learn that\n";
 }
 
-/** Returns whether `report` ended with a stop that sends closing instructions. */
+/**
+ * @brief Tests whether a run ended with a stop that sends closing instructions.
+ * @param report The loop report.
+ * @return `true` for a `WITHDRAW` or `FLATTEN` stop.
+ */
 inline bool stop_closes(const runner::LoopReport& report) noexcept {
   return report.stopped_by_ && *report.stopped_by_ != runner::StopIntent::QUIESCE;
 }
 
-/** Configures the loop the same way for both modes: every age stated, the control file installed. */
+/**
+ * @brief Configures the loop the same way for both modes: every age stated, the control file installed.
+ * @tparam Loop The loop type.
+ * @param loop The loop.
+ * @param settings The settings.
+ */
 template <typename Loop>
 void configure(Loop& loop, const Settings& settings) {
   loop.set_maximum_portfolio_age(settings.maximum_portfolio_age_);
@@ -227,12 +257,24 @@ void configure(Loop& loop, const Settings& settings) {
 }
 
 /**
- * Trades `strategy` through `session`, reading market data and reference data from `market_data`.
+ * @brief Trades a strategy through a session, reading market data and reference data from another.
  *
- * **This places orders**, through `session` only: the runner is bound to it, and `market_data` is
- * only read. Use a session that cannot trade for `market_data` (a KIS session with an empty
- * `KisAccount`, a Toss session with account sequence 0), so that a swapped pair refuses rather than
- * trades.
+ * **This places orders**, through `session` only; `market_data` is only read. Use a session that
+ * cannot trade for `market_data` (a KIS session with an empty `KisAccount`, a Toss session with
+ * account sequence 0), so that a swapped pair refuses rather than trades.
+ *
+ * @tparam Strategy The strategy type.
+ * @tparam Session The trading session type.
+ * @tparam MarketData The market-data session type.
+ * @tparam Clock The clock type.
+ * @param session The session orders go through.
+ * @param market_data The session market data is read from.
+ * @param strategy_instance The strategy.
+ * @param settings The settings.
+ * @param stop The stop source the loop polls.
+ * @param out Where the program prints.
+ * @param clock The clock.
+ * @return The exit code.
  */
 template <typename Strategy, typename Session, typename MarketData, typename Clock = runner::SteadyClock>
 Exit trade(
@@ -311,9 +353,20 @@ Exit trade(
 }
 
 /**
- * Trades `strategy` through `session`: journal, recover, loop, report.
+ * @brief Trades a strategy through a session: journal, recover, loop, report.
  *
  * **This places orders.** `observe` is the same loop with nowhere to send.
+ *
+ * @tparam Strategy The strategy type.
+ * @tparam Session The session type.
+ * @tparam Clock The clock type.
+ * @param session The session (orders and market data).
+ * @param strategy_instance The strategy.
+ * @param settings The settings.
+ * @param stop The stop source the loop polls.
+ * @param out Where the program prints.
+ * @param clock The clock.
+ * @return The exit code.
  */
 template <typename Strategy, typename Session, typename Clock = runner::SteadyClock>
 Exit trade(
@@ -328,12 +381,25 @@ Exit trade(
 }
 
 /**
- * Runs `strategy` against `session`'s account and `market_data`'s market data, with nothing to send
- * through.
+ * @brief Runs a strategy against a session's account and another's market data, with nothing to send
+ *   through.
  *
- * `live::bind_observer` gives the runner the session's real capabilities and tag and no executor that
- * reaches it, so the pipeline, the guard and the gates all run, and no order can leave. No journal
- * is opened, because there is nothing to record.
+ * `live::bind_observer` gives the runner the session's real capabilities and no executor that reaches
+ * the broker, so the pipeline, the guard and the gates all run, and no order can leave. No journal is
+ * opened.
+ *
+ * @tparam Strategy The strategy type.
+ * @tparam Session The account session type.
+ * @tparam MarketData The market-data session type.
+ * @tparam Clock The clock type.
+ * @param session The account session.
+ * @param market_data The session market data is read from.
+ * @param strategy_instance The strategy.
+ * @param settings The settings.
+ * @param stop The stop source the loop polls.
+ * @param out Where the program prints.
+ * @param clock The clock.
+ * @return The exit code.
  */
 template <typename Strategy, typename Session, typename MarketData, typename Clock = runner::SteadyClock>
 Exit observe(
@@ -371,7 +437,19 @@ Exit observe(
   return report.abandoned_ ? Exit::LOOP_ABANDONED : Exit::CLEAN;
 }
 
-/** Observes `strategy` against `session`'s real data, reading market data from it too. */
+/**
+ * @brief Observes a strategy against a session's real data, reading market data from it too.
+ * @tparam Strategy The strategy type.
+ * @tparam Session The session type.
+ * @tparam Clock The clock type.
+ * @param session The session.
+ * @param strategy_instance The strategy.
+ * @param settings The settings.
+ * @param stop The stop source the loop polls.
+ * @param out Where the program prints.
+ * @param clock The clock.
+ * @return The exit code.
+ */
 template <typename Strategy, typename Session, typename Clock = runner::SteadyClock>
 Exit observe(
   Session& session,

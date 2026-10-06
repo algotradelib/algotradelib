@@ -187,7 +187,8 @@ struct BrokerCaps {
   static constexpr bool has_calendar_range = Traits::has_calendar_range;
 
   /**
-   * @brief Whether the broker publishes intraday session hours (only Toss), through its own client.
+   * @brief Whether the broker publishes intraday session hours (only Toss); the library does not
+   *   expose them yet.
    */
   static constexpr bool has_calendar_sessions = Traits::has_calendar_sessions;
 
