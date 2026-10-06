@@ -223,8 +223,7 @@ A dry run and an observer are not held.
 **A price band is a per-trading-day value, and one nobody has aged is not applied.** `PriceLimits`
 is "the highest price allowed today" and for KRX it moves with the previous close, so a band
 registered once at startup (`Runner::set_price_limits`) describes the day the process started on, and
-would otherwise be clamped
-into every limit price for as long as the process lived. So:
+would otherwise be clamped into every limit price for as long as the process lived. So:
 
 - `PollSchedule::price_limits_` refreshes it, one request per instrument in the source's universe, at
   market-data priority. Absent by default like every cadence but the calendar's.

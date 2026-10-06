@@ -124,7 +124,7 @@ graph LR
 
   PL --> E1["RecordingExecutor<br/><b>DryRunner</b>"]
   PL --> E2["QueueingExecutor + ReplayLedger<br/><b>Backtester</b>"]
-  PL --> E3["SessionExecutor<br/><b>LiveRunner</b>"]
+  PL --> E3["SessionExecutor<br/><b>live::bind</b>"]
 
   E1 --> O1["a list of what it would have sent"]
   E2 --> O2["fills, an equity curve,<br/>a Report with its caveats"]
