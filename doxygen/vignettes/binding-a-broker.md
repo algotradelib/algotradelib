@@ -290,13 +290,14 @@ ask before you write the call, so one strategy source compiles against all three
 | --- | --- | --- | --- |
 | `has_buying_power` | yes | yes | yes |
 | `has_buying_power_quantity` | no — an amount only | yes — also how many shares | yes — per margin tier, through `session.client()` |
-| `sellable_source` | `INQUIRY` — one request per instrument | `HOLDINGS` — free, on every snapshot | `NONE` — the holdings rows carry it, as far as `KiwoomConfig::holdings_sellable_scope_` asserts |
+| `sellable_source` | `INQUIRY` — one request per instrument | `HOLDINGS` — free, on every snapshot | `NONE` — not yet: the session's holdings are refused until you assert `KiwoomConfig::holdings_position_scope_`; the rows then carry `trde_able_qty`, which `RiskGuard` uses only if `holdings_sellable_scope_` is `WHOLE_HOLDING` |
 | `has_commission_schedule` | yes | no | no |
 
 `sellable_source` names a **source** rather than asking `has_*`, and the distinction is deliberate:
 KIS does publish a dedicated 매도가능수량조회, and this library does not use it, because the same
 field arrives on the holdings snapshot for nothing and on a demo account too. The constant says where
-the figure comes from, not what the vendor offers.
+the figure comes from, not what the vendor offers; for Kiwoom, `NONE` means no source this library stands
+behind yet.
 
 Calling a verb a broker cannot serve is a compile error naming the broker and what to do instead:
 
@@ -308,8 +309,8 @@ session.sellable_quantity(i); // on KIS: "read HoldingPosition::sellable_quantit
 ```
 
 Buying power is per currency and the broker prices it that way, so ask for the one you trade in. Toss
-answers KRW and USD; the KIS domestic inquiry answers won, and any other currency is refused before
-the request is built rather than answered in the wrong unit.
+answers KRW and USD; the KIS and Kiwoom domestic inquiries answer won, and any other currency is
+refused before the request is built rather than answered in the wrong unit.
 
 ## The rule that matters most
 
