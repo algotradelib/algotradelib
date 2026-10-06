@@ -10,97 +10,106 @@ namespace algotradelib {
 namespace math {
 
 /**
- * The linear algebra vocabulary, implemented by Eigen.
+ * @file
+ * @brief The `math` types and decompositions, implemented with Eigen.
  *
- * This is the only header in the library that names Eigen. Everything above is written
- * against the aliases below, so a caller writes `math::SeriesView` rather than an
- * `Eigen::` type, and a second backend is a sibling of this header — `math/armadillo.hpp`,
- * or an implementation of our own — selected by `math/matrix.hpp` rather than a second
- * public surface.
+ * Include `math/matrix.hpp` rather than this header. Write against the `math::` names
+ * (`math::SeriesView`, `math::ColPivQr`, ...) rather than the Eigen types behind them.
  *
- * `Eigen::` may appear inside an implementation, but not in a signature a caller writes
- * against.
+ * The decompositions are Eigen's own classes under `math::` names; use their Eigen interfaces
+ * directly:
+ *
+ * ```cpp
+ * // One factorization, many right-hand sides; `b` may be a vector or a matrix.
+ * const math::ColPivQr qr(a);
+ * const math::Matrix coefficients = qr.solve(b);
+ * if (qr.rank() < a.cols()) { ... }  // the columns were not independent
+ *
+ * // LLT for a symmetric positive-definite system, LDLT when it is only semi-definite,
+ * // Svd for the minimum-norm solution, HouseholderQr when pivoting is not needed.
+ * const math::Llt chol(normal);
+ * if (chol.info() == math::SUCCESS) { x = chol.solve(b); }
+ * ```
+ *
+ * `Matrix::ldlt()`, `Matrix::colPivHouseholderQr()` and the other member forms work too, as
+ * does `A.fullPivLu().solve(b)` for a square system where no structure is known.
  */
+// The only header that names Eigen in a public signature; a second backend is a sibling header.
 
 /**
- * Dense two-dimensional storage, **column-major**.
+ * @brief A dense, column-major matrix of `Scalar`.
  *
- * Column-major is load-bearing rather than a default taken. Every frame puts time on the
- * rows and a series on a column, so one series is contiguous and binds to `SeriesView`
- * with no copy and no stride. Row-major would make every computation walk a strided view
- * of its own input.
+ * Frames put time on the rows and one series per column, so a column binds to `SeriesView`
+ * without a copy.
  */
 using Matrix = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor>;
 
-/** Dense one-dimensional storage. */
+/** @brief A dense column vector of `Scalar`. */
 using Vector = Eigen::Matrix<Scalar, Eigen::Dynamic, 1>;
 
 /**
- * A read-only reference to one series, without copying it.
+ * @brief A read-only reference to one series.
  *
- * Binds to a `Vector`, to a column of a `Matrix`, and to an expression. This is the
- * parameter type a computation over one series should accept — it is a reference, not an
- * adopter of foreign storage, which is what `Eigen::Map` is for.
+ * Binds without copying to a `Vector` or a column of a `Matrix`, and to an expression
+ * (which is evaluated into a temporary). Functions over one series take this type.
  */
 using SeriesView = Eigen::Ref<const Vector>;
 
-/** A writable reference to one series, without copying it. */
+/** @brief A writable reference to one series, such as a `Vector` or a column of a `Matrix`. */
 using MutableSeriesView = Eigen::Ref<Vector>;
 
-/** A read-only reference to whole two-dimensional storage, without copying it. */
+/** @brief A read-only reference to a whole matrix. */
 using MatrixView = Eigen::Ref<const Matrix>;
 
-/** Index type the backend addresses storage with. */
+/** @brief The signed index type of rows and columns. */
 using Index = Eigen::Index;
 
-/** Returns a vector of `count` values, every one of them unobserved. */
+/**
+ * @brief Makes a vector filled with `missing()`.
+ *
+ * @param count The number of entries.
+ * @return A vector of `count` unobserved values.
+ */
 inline Vector unobserved(std::size_t count) {
   return Vector::Constant(static_cast<Index>(count), missing());
 }
 
-/** Returns storage of `rows` by `columns`, every value unobserved. */
+/**
+ * @brief Makes a matrix filled with `missing()`.
+ *
+ * @param rows The number of rows.
+ * @param columns The number of columns.
+ * @return A `rows` by `columns` matrix of unobserved values.
+ */
 inline Matrix unobserved(std::size_t rows, std::size_t columns) {
   return Matrix::Constant(static_cast<Index>(rows), static_cast<Index>(columns), missing());
 }
 
 /**
- * A series split so that masked reductions become plain vectorized sums.
+ * @brief A series split into zero-filled values and a presence mask, for sums that skip gaps.
  *
- * This is the piece that lets the layers above compute over series with gaps at full speed
- * without any of them naming a backend operation. The idea is to pay for the `NaN` test **once
- * per series** rather than once per window:
- *
- * - `values_` is the input with every absent entry replaced by exactly `0`.
- * - `present_` is `1` where the input carried an observation and `0` where it did not.
- *
- * A trailing sum is then `values_.segment(first, length).sum()` and the divisor is
- * `present_.segment(first, length).sum()` — two reductions over contiguous memory, with no
- * branch, no `select` expression, and nothing per-element for the backend to reason about.
- * Adding zero for an absent entry is exact, so the result is the same as a masked loop's; only
- * the summation order differs, and Eigen's is the more accurate of the two.
- *
- * Measured on 200k rows with a 200-row window and a gap every 97th row, this is **7x faster**
- * than the equivalent scalar loop and about 5x faster than masking inside each window. The
- * structure is still `O(rows x window)`: a prefix-sum would make it `O(rows)`, and is
- * deliberately not used, because differencing two large partial sums loses precisely the
- * significant digits that `rolling_stdev`'s two-pass form exists to protect.
- *
- * Deviations from a mean vectorize through the same pair, which is the non-obvious part:
+ * Made by `observed_parts()`. Over any range, `values_.segment(first, length).sum()` is the sum
+ * of the observed entries and `present_.segment(first, length).sum()` is how many there are.
+ * Deviations from a mean work the same way, because an absent entry contributes exactly zero:
  *
  * ```cpp
- * // Absent entries contribute exactly zero, because values_ is 0 and present_ is 0 there.
  * const Scalar squared = (parts.values_.segment(first, length) -
  *                         mean * parts.present_.segment(first, length)).squaredNorm();
  * ```
  */
 struct Observed {
-  /** The input with every absent entry replaced by zero, so a plain sum ignores them. */
+  /** @brief The input, with every unobserved entry replaced by `0`. */
   Vector values_;
-  /** One for an observed entry and zero for an absent one, so a plain sum counts them. */
+  /** @brief `1` where the input is observed and `0` where it is not. */
   Vector present_;
 };
 
-/** Splits `values` into zeroed values and a presence mask, in one pass. */
+/**
+ * @brief Splits a series into zero-filled values and a presence mask.
+ *
+ * @param values The series; any `NaN` counts as unobserved.
+ * @return The two parts; see `Observed`.
+ */
 inline Observed observed_parts(SeriesView values) {
   // `x == x` is false exactly for NaN, and vectorizes to a single compare.
   const auto present = (values.array() == values.array());
@@ -110,104 +119,73 @@ inline Observed observed_parts(SeriesView values) {
   return parts;
 }
 
-/** Returns `values` with every absent entry replaced by `filler`. */
+/**
+ * @brief Replaces every unobserved entry of a series.
+ *
+ * @param values The series; any `NaN` counts as unobserved.
+ * @param filler The value to put in place of each unobserved entry.
+ * @return A copy of `values` with each `NaN` replaced by `filler` (so it has no `NaN` unless
+ *   `filler` is one).
+ */
 inline Vector observed_or(SeriesView values, Scalar filler) {
   return (values.array() == values.array()).select(values, filler);
 }
 
 /**
- * Returns the elementwise product of two presence masks: `1` only where both are observed.
+ * @brief Combines two presence masks: `1` only where both series are observed.
  *
- * What a co-moment needs. A covariance computed over the rows where both series are present,
- * divided by deviations each taken over its own rows, is not a correlation -- the three numbers
- * describe different samples and the quotient can leave `[-1, 1]`.
+ * Use it to restrict a co-moment (covariance, correlation) and both series' deviations to the
+ * same rows; otherwise a correlation can fall outside `[-1, 1]`.
+ *
+ * @param left The first series' `Observed::present_`.
+ * @param right The second series' `Observed::present_`, of the same length.
+ * @return The elementwise product of the two masks.
  */
 inline Vector both_present(const Vector& left, const Vector& right) {
   return left.cwiseProduct(right);
 }
 
 /**
- * Triangular and self-adjoint view modes.
+ * @brief Selects the lower triangle, as in `matrix.selfadjointView<math::LOWER>()`.
  *
- * Aliased as plain constants so a caller writes `matrix.selfadjointView<math::LOWER>()`
- * without naming Eigen. A self-adjoint view is worth reaching for: it tells a decomposition
- * to read one triangle and assume the other, which halves the traffic and removes any
- * question of what a not-quite-symmetric input meant.
+ * A self-adjoint view tells a decomposition to read one triangle and assume the other.
  */
 inline constexpr unsigned int LOWER = Eigen::Lower;
+/** @brief Selects the upper triangle. */
 inline constexpr unsigned int UPPER = Eigen::Upper;
+/** @brief Selects the lower triangle with an implicit unit diagonal. */
 inline constexpr unsigned int UNIT_LOWER = Eigen::UnitLower;
+/** @brief Selects the upper triangle with an implicit unit diagonal. */
 inline constexpr unsigned int UNIT_UPPER = Eigen::UnitUpper;
 
-/**
- * The decompositions, as aliases rather than as wrappers.
- *
- * These are Eigen's own decomposition classes, named through this header so that callers
- * still write `math::` and a different backend could alias its own equivalents. That is the
- * honest extent of the seam here: for the numeric *vocabulary* the aliases really are
- * portable, because every backend has a dense matrix and a vector; for decompositions they
- * are a naming convention, because no two libraries agree on what a factorization object
- * exposes. Pretending otherwise by wrapping each one in a result struct would cost more than
- * it bought -- it would copy the factors out, discard the rank, the permutation, and the
- * conditioning the decomposition already knows, and allow only one right-hand side per
- * factorization.
- *
- * So callers use them directly, and get everything Eigen offers:
- *
- * ```cpp
- * // One factorization, many right-hand sides. `b` may be a vector or a matrix, and the
- * // solution comes back with the matching shape -- which is what a multivariate regression
- * // or a whole panel of targets needs.
- * const math::ColPivQr qr(a);
- * const math::Matrix coefficients = qr.solve(b);
- * if (qr.rank() < a.cols()) { ... }  // the columns were not independent
- *
- * // Or pick a different trade-off without a new function: LLT for a symmetric positive
- * // definite system, LDLT when it is only semi-definite, SVD when the answer must be the
- * // minimum-norm one, HouseholderQr when pivoting is not needed.
- * const math::Llt chol(normal);
- * if (chol.info() == math::SUCCESS) { x = chol.solve(b); }
- * ```
- *
- * `Matrix::ldlt()`, `Matrix::colPivHouseholderQr()` and the other member forms work too, as
- * does `A.fullPivLu().solve(b)` for a square system where no structure is known.
- */
-
-/** Cholesky, for a symmetric positive-definite matrix. Check `info()`. */
+/** @brief Cholesky decomposition of a symmetric positive-definite matrix. Check `info()`. */
 using Llt = Eigen::LLT<Matrix>;
 
-/** Cholesky with pivoting, for a symmetric matrix that may only be semi-definite. */
+/** @brief Pivoting Cholesky (LDLT) decomposition of a symmetric, possibly semi-definite matrix. */
 using Ldlt = Eigen::LDLT<Matrix>;
 
-/** Householder QR. Fastest of the QRs, and gives no rank information. */
+/** @brief Householder QR decomposition: the fastest QR, with no rank information. */
 using HouseholderQr = Eigen::HouseholderQR<Matrix>;
 
 /**
- * Column-pivoting Householder QR: a rank and a least-squares solution.
+ * @brief Column-pivoting Householder QR: a least-squares solution and a rank.
  *
- * The default choice for a design matrix of market data, where two nearly collinear columns
- * are the normal case rather than a pathology. The normal equations square the condition
- * number, which for such a matrix is the difference between a usable answer and noise, and
- * they cannot report a rank at all.
+ * A good default for a regression on market data, where nearly collinear columns are common;
+ * check `rank()` against the number of columns.
  */
 using ColPivQr = Eigen::ColPivHouseholderQR<Matrix>;
 
-/** Full-pivoting QR. Slower than `ColPivQr` and the most reliable rank of the three. */
+/** @brief Full-pivoting Householder QR: slower than `ColPivQr`, with the most reliable rank. */
 using FullPivQr = Eigen::FullPivHouseholderQR<Matrix>;
 
-/** LU with full pivoting, for a square system with no exploitable structure. */
+/** @brief LU decomposition with full pivoting, for a square system with no known structure. */
 using FullPivLu = Eigen::FullPivLU<Matrix>;
 
 /**
- * Divide-and-conquer SVD: the minimum-norm least-squares solution, and singular values.
+ * @brief Divide-and-conquer SVD: minimum-norm least-squares solutions and singular values.
  *
- * An SVD needs its thin factors computed before it can solve, and *how* they are requested
- * changed between the supported Eigen releases: 3.4 takes runtime flags the current release
- * deprecates in favour of a class template argument. `thin_svd` picks the right one, which is
- * the only reason a factory exists here at all.
- *
- * Reach for it when the answer must be the minimum-norm solution of a rank-deficient system,
- * or when the conditioning is itself the question -- `singularValues()` answers it.
+ * Construct it with `thin_svd()`, which requests the thin factors `solve()` needs on every
+ * supported Eigen release.
  */
 #if EIGEN_VERSION_AT_LEAST(3, 4, 90)
 using Svd = Eigen::BDCSVD<Matrix, Eigen::ComputeThinU | Eigen::ComputeThinV>;
@@ -215,7 +193,12 @@ using Svd = Eigen::BDCSVD<Matrix, Eigen::ComputeThinU | Eigen::ComputeThinV>;
 using Svd = Eigen::BDCSVD<Matrix>;
 #endif
 
-/** Returns a thin SVD of `a`, ready to `solve()`, on either supported Eigen release. */
+/**
+ * @brief Computes a thin SVD, ready to `solve()`.
+ *
+ * @param a The matrix to decompose.
+ * @return The decomposition of `a`.
+ */
 inline Svd thin_svd(const Matrix& a) {
 #if EIGEN_VERSION_AT_LEAST(3, 4, 90)
   return Svd(a);
@@ -224,10 +207,10 @@ inline Svd thin_svd(const Matrix& a) {
 #endif
 }
 
-/** Eigenvalues and eigenvectors of a symmetric matrix, ascending. Check `info()`. */
+/** @brief Eigenvalues (ascending) and eigenvectors of a symmetric matrix. Check `info()`. */
 using SelfAdjointEigen = Eigen::SelfAdjointEigenSolver<Matrix>;
 
-/** The value a decomposition's `info()` returns when it succeeded. */
+/** @brief The value a decomposition's `info()` returns on success. */
 inline constexpr auto SUCCESS = Eigen::Success;
 
 } // namespace math

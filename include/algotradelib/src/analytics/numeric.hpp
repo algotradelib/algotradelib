@@ -6,22 +6,25 @@ namespace algotradelib {
 namespace analytics {
 
 /**
- * The numeric vocabulary, re-exported into this namespace.
- *
- * Kept apart from `conversion.hpp` on purpose. The conversion header is the bridge to the
- * trading domain and therefore needs `<algotradelib/core>`; a numeric kernel over a series
- * of scalars needs nothing from the trading domain at all, and pulling `Decimal64`,
- * `InstrumentId`, and the order types into every indicator header to reach three
- * using-declarations would be paying for a dependency none of them has.
+ * @file
+ * @brief Re-exports `math::Scalar`, `math::missing` and `math::observed` into `analytics`.
  */
+// Kept apart from conversion.hpp so indicator headers do not include the trading types.
 
-/** The numeric type this layer computes in, from the math module. */
+/** @brief The floating-point type analytics computes in; see `math::Scalar`. */
 using math::Scalar;
 
-/** The value standing for "no observation". */
+/**
+ * @brief Returns the value that stands for "no observation"; see `math::missing`.
+ * @return A quiet `NaN`.
+ */
 using math::missing;
 
-/** Returns whether a value carries an observation. */
+/**
+ * @brief Tests whether a value is an observation; see `math::observed`.
+ * @param value The value to test.
+ * @return `false` for any `NaN`; `true` otherwise.
+ */
 using math::observed;
 
 } // namespace analytics

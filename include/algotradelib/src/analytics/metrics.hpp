@@ -10,14 +10,11 @@ namespace algotradelib {
 namespace analytics {
 
 /**
- * The figures a backtest or a live review is judged on.
+ * @file
+ * @brief Performance metrics: maximum drawdown, Sharpe and Sortino ratios, annualization, turnover.
  *
- * Every one of these has more than one convention in circulation, and the differences are
- * large enough to change a decision: a Sortino ratio computed over the downside count rather
- * than the whole sample can be half again as flattering, and a turnover figure can be off by
- * exactly a factor of two. So each function here states which convention it implements, and
- * none of them takes a parameter whose default silently picks one -- annualization in
- * particular is a separate, named step rather than an argument with a plausible default.
+ * Each function states the convention it implements. Ratios are per period; annualize them
+ * explicitly with `annualize_ratio`.
  */
 
 namespace metric_detail {
@@ -52,30 +49,27 @@ inline Summary summarize(math::SeriesView values) {
 
 } // namespace metric_detail
 
-/** The worst peak-to-trough decline of a level series, and where it happened. */
+/** @brief The worst peak-to-trough decline of a level series, and where it happened. */
 struct MaxDrawdown {
-  /** The decline as a non-negative fraction of the peak: `0.2` is a fifth below it. */
+  /** @brief The decline as a non-negative fraction of the peak (`0.2` is 20% below it). */
   Scalar magnitude_{0};
-  /** Row of the high-water mark the decline fell from, or `-1` if there is none. */
+  /** @brief The row of the peak the decline fell from, or `-1` if there is none. */
   math::Index peak_row_{-1};
-  /** Row of the low the decline reached, or `-1` if there is none. */
+  /** @brief The row of the low the decline reached, or `-1` if there is none. */
   math::Index trough_row_{-1};
 };
 
 /**
- * Returns the worst peak-to-trough decline of a level series.
+ * @brief Finds the worst peak-to-trough decline of a level series.
  *
- * Takes a **level** -- an equity curve, a cumulative growth factor, a price -- not a series
- * of period returns. Feeding it returns measures the drawdown
- * of the return series, which is a different quantity and rarely the one wanted.
+ * Rows where the running peak is at or below zero are not measured, since no percentage
+ * decline exists there.
  *
- * Reported as a non-negative fraction of the peak, and the rows
- * come back so a report can say *when* rather than only how much. A series whose running peak
- * is at or below zero contributes nothing: a curve that reached zero has not declined by a
- * percentage, and a ratio there would be a fabrication.
- *
- * Unobserved levels are skipped, and a series with none leaves the magnitude unobserved and
- * both rows at `-1`.
+ * @param levels A **level** series (an equity curve, a growth factor, a price), not returns.
+ *   `NaN` entries are skipped.
+ * @return The decline and its rows. With no observed level, `magnitude_` is `missing()` and both
+ *   rows are `-1`; if levels exist but every running peak is at or below zero, `magnitude_` is
+ *   `math::undefined()`. A series that never declines gives `0`.
  */
 inline MaxDrawdown max_drawdown(math::SeriesView levels) {
   MaxDrawdown result;
@@ -111,20 +105,15 @@ inline MaxDrawdown max_drawdown(math::SeriesView levels) {
 }
 
 /**
- * Returns the **per-period** Sharpe ratio of a return series.
+ * @brief Computes the per-period Sharpe ratio, `(mean(returns) - risk_free) / stdev(returns)`.
  *
- * `(mean(returns) - risk_free) / stdev(returns)`, with the sample deviation, matching
- * `rolling_stdev`. `risk_free` is per period, in the same units as the
- * returns: a daily series wants a daily rate, and passing an annual one is a mistake that
- * produces a plausible number rather than an error.
+ * Uses the sample standard deviation. The result is not annualized; use `annualize_ratio`.
  *
- * **Not annualized.** Annualizing is `annualize_ratio`, a separate call, deliberately.
- * The factor is `sqrt(periods_per_year)` rather than `periods_per_year`, and the number of
- * periods is a calendar question -- 252 or 245 trading days, 12 months, 52 weeks -- that a
- * default here would answer wrongly for someone. Two named steps make both choices visible.
- *
- * Fewer than two observations gives `missing()`. Returns that never varied give `undefined()` --
- * the data was there and the ratio does not exist for it, which `is_undefined()` distinguishes.
+ * @param period_returns The period returns; `NaN` entries are skipped.
+ * @param risk_free The risk-free rate **per period**, in the units of the returns (a daily rate
+ *   for daily returns).
+ * @return The ratio; `missing()` with fewer than two observations, and `math::undefined()` if the
+ *   returns never vary.
  */
 inline Scalar sharpe(math::SeriesView period_returns, Scalar risk_free = Scalar{0}) {
   const auto summary = metric_detail::summarize(period_returns);
@@ -142,21 +131,15 @@ inline Scalar sharpe(math::SeriesView period_returns, Scalar risk_free = Scalar{
 }
 
 /**
- * Returns the **per-period** Sortino ratio of a return series.
+ * @brief Computes the per-period Sortino ratio, `(mean(returns) - target) / downside_deviation`.
  *
- * `(mean(returns) - target) / downside_deviation`, where the downside deviation is the root
- * mean squared shortfall below `target`.
+ * The downside deviation is `sqrt(sum(min(r - target, 0)^2) / n)`, where `n` counts **every**
+ * observation, not only those below `target` (Sortino's definition). Not annualized.
  *
- * **Two details decide the number, and both are the ones usually got wrong.** The shortfalls
- * are measured from `target`, not from the mean of the series. And the mean is taken over
- * *every* observation, not only the ones that fell short -- that is Sortino's own definition,
- * and dividing by the downside count instead inflates the ratio for a strategy whose losses
- * are rare, which is exactly the strategy an investor most wants a truthful number for.
- *
- * A series with no observation below `target` gives `undefined()` rather than an infinity: an
- * infinity would survive every later comparison as the best strategy ever measured. It is
- * distinguishable from `missing()` through `is_undefined()`, because "no losses" and "not enough
- * history" are answers a caller ranking strategies should be allowed to treat differently.
+ * @param period_returns The period returns; `NaN` entries are skipped.
+ * @param target The minimum acceptable return per period.
+ * @return The ratio; `missing()` with fewer than two observations, and `math::undefined()` if no
+ *   return falls below `target`.
  */
 inline Scalar sortino(math::SeriesView period_returns, Scalar target = Scalar{0}) {
   std::size_t count = 0;
@@ -196,17 +179,13 @@ inline Scalar sortino(math::SeriesView period_returns, Scalar target = Scalar{0}
 }
 
 /**
- * Scales a per-period ratio to an annual one.
+ * @brief Annualizes a per-period ratio by multiplying it by `sqrt(periods_per_year)`.
  *
- * Multiplies by `sqrt(periods_per_year)`, not by `periods_per_year`. The mean scales with the
- * number of periods and the deviation with its square root, so their ratio scales with the
- * square root -- which is why annualizing by the period count overstates a Sharpe ratio by a
- * factor of about sixteen on daily data.
+ * The square-root rule assumes serially uncorrelated returns.
  *
- * This assumes the returns are serially uncorrelated, which is the assumption the square-root
- * rule rests on and which trending strategies violate. It is stated because the number is
- * reported as though it were a fact.
- *
+ * @param ratio A per-period ratio from `sharpe` or `sortino`.
+ * @param periods_per_year Periods in a year, such as 252 for trading days or 12 for months.
+ * @return The annualized ratio; `ratio` unchanged if it is not observed.
  * @throws std::invalid_argument if `periods_per_year` is not positive.
  */
 inline Scalar annualize_ratio(Scalar ratio, Scalar periods_per_year) {
@@ -216,39 +195,24 @@ inline Scalar annualize_ratio(Scalar ratio, Scalar periods_per_year) {
   return observed(ratio) ? ratio * std::sqrt(periods_per_year) : ratio;
 }
 
-/** Whether the first period's trading counts, and against what. */
+/** @brief How turnover treats the first period. */
 enum class TurnoverStart {
-  /**
-   * Row 0 is measured against an all-cash portfolio.
-   *
-   * Building the first position is real trading with real cost, so it counts. The right choice
-   * for costing a single strategy end to end.
-   */
+  /** @brief Row 0 measures the first positions against an all-cash start. Use it to cost one strategy. */
   FROM_CASH,
-  /**
-   * Row 0 is unobserved.
-   *
-   * The right choice when comparing strategies whose histories begin on different dates, where
-   * one initial build would otherwise show up as a difference in trading behaviour.
-   */
+  /** @brief Row 0 is `missing()`. Use it to compare strategies whose histories start on different dates. */
   SKIP,
 };
 
 /**
- * Returns the **one-way** fraction of the portfolio traded in each period.
+ * @brief Computes the one-way turnover of each period, `0.5 * sum(|w[i] - w[i - 1]|)`.
  *
- * `weights` has rows for periods and columns for instruments, matching every other frame in this
- * layer. Row `i` is `0.5 * sum(|w[i] - w[i - 1]|)`.
+ * One-way: moving the whole portfolio from one instrument to another is `1`.
  *
- * One-way means the result is the fraction of portfolio *value* that changed hands: moving a
- * portfolio entirely from one instrument to another is `1`, not `2`. That is what the halving is
- * for, and it is in the function's name rather than only in this paragraph because turnover is
- * usually multiplied by a cost per unit traded, and a silent factor of two there separates a
- * profitable strategy from a losing one. `two_way_turnover` is the other convention.
- *
- * An unobserved weight is treated as no position in that instrument for that period. A weight is
- * a decision, and an absent decision is an absent position — unlike a price, where absence means
- * the value is unknown.
+ * @param weights Portfolio weights, one row per period and one column per instrument. A `NaN`
+ *   weight counts as no position.
+ * @param start How row 0 is treated.
+ * @return The turnover, one value per row.
+ * @see two_way_turnover for the convention that counts both sides (twice this).
  */
 inline math::Vector one_way_turnover(
   math::MatrixView weights,
@@ -272,12 +236,14 @@ inline math::Vector one_way_turnover(
 }
 
 /**
- * Returns the **two-way** fraction traded in each period: exactly twice `one_way_turnover`.
+ * @brief Computes the two-way turnover of each period, `sum(|w[i] - w[i - 1]|)`.
  *
- * `sum(|w[i] - w[i - 1]|)`, counting each side of a rotation separately, so moving a portfolio
- * entirely from one instrument to another is `2`. Both conventions are in use and neither is
- * wrong; what is wrong is not knowing which one a number came from, which is why both are named
- * rather than selected by a flag.
+ * Exactly twice `one_way_turnover`: moving the whole portfolio from one instrument to another is `2`.
+ *
+ * @param weights Portfolio weights, one row per period and one column per instrument. A `NaN`
+ *   weight counts as no position.
+ * @param start How row 0 is treated.
+ * @return The turnover, one value per row.
  */
 inline math::Vector two_way_turnover(
   math::MatrixView weights,

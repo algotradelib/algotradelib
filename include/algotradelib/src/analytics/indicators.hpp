@@ -11,17 +11,14 @@ namespace algotradelib {
 namespace analytics {
 
 /**
- * The named indicators a strategy signals on.
+ * @file
+ * @brief Named technical indicators: z-score, Bollinger bands, RSI, ATR, MACD, and trailing
+ *   covariance, correlation and beta.
  *
- * Built on `rolling.hpp` and keeping its three conventions: the result is as long as the
- * input, a value that cannot be computed is `missing()`, and nothing is reported before its
- * window holds enough observations.
- *
- * Each indicator that has a *conventional* parameterization says which one it follows, in
- * its own documentation, next to the arithmetic. This is not decoration. An RSI smoothed
- * with `2 / (n + 1)` rather than Wilder's `1 / n` produces different numbers from every
- * charting package, and a strategy tuned against a chart and traded against this library
- * would be trading a different indicator than the one it was fitted on.
+ * They follow the conventions of `rolling.hpp`: the result is as long as the input, a value that
+ * cannot be computed is `missing()`, and nothing is reported before the window holds enough
+ * observations. Where an indicator has a conventional parameterization (Wilder's smoothing for
+ * RSI and ATR, spans for MACD), its documentation says which one it follows.
  */
 
 namespace indicator_detail {
@@ -143,14 +140,16 @@ inline void require_same_rows(math::SeriesView left, math::SeriesView right) {
 } // namespace indicator_detail
 
 /**
- * Returns how many trailing standard deviations each value sits from its trailing mean.
+ * @brief Computes how many trailing sample standard deviations each value lies from its
+ *   trailing mean.
  *
- * A window with no dispersion -- every observation identical -- is unobserved rather than
- * zero or an infinity. The z-score is genuinely undefined there, and a flat window is
- * common in real data: a halted instrument, or a tick-constrained price that did not move.
- *
- * Both the mean and the deviation come from a single pass over each window, which is why
- * this is not written as `(values - rolling_mean(...)) / rolling_stdev(...)`.
+ * @param values The series; `NaN` entries are unobserved.
+ * @param window The number of trailing rows each result looks at, observed or not.
+ * @param min_observed How many of those rows must be observed for a result to be reported.
+ * @return The z-scores, one per row. A row is `missing()` if its own value is unobserved or the
+ *   window has fewer than `max(min_observed, 2)` observations, and `math::undefined()` if every
+ *   observation in the window is equal (no dispersion; common for a halted instrument).
+ * @throws std::invalid_argument if `window` or `min_observed` is zero, or `min_observed > window`.
  */
 inline math::Vector zscore(
   math::SeriesView values,
@@ -180,33 +179,43 @@ inline math::Vector zscore(
   return result;
 }
 
-/** Returns the trailing z-score, requiring every row of the window to be observed. */
+/**
+ * @brief Computes the trailing z-score, requiring every row of the window.
+ *
+ * @param values The series; `NaN` entries are unobserved.
+ * @param window The number of trailing rows; all must be observed.
+ * @return The z-scores, one per row; see the overload with `min_observed`.
+ * @throws std::invalid_argument if `window` is zero.
+ */
 inline math::Vector zscore(math::SeriesView values, std::size_t window) {
   return zscore(values, window, window);
 }
 
-/** The three lines of a Bollinger band, all on the same rows as the input. */
+/** @brief The three lines of Bollinger bands, each as long as the input. */
 struct BollingerBands {
-  /** The trailing mean. */
+  /** @brief The trailing mean. */
   math::Vector middle_;
-  /** `middle_` plus `multiplier` sample deviations. */
+  /** @brief `middle_` plus `multiplier` trailing sample standard deviations. */
   math::Vector upper_;
-  /** `middle_` minus `multiplier` sample deviations. */
+  /** @brief `middle_` minus `multiplier` trailing sample standard deviations. */
   math::Vector lower_;
 };
 
 /**
- * Returns the trailing mean and the bands `multiplier` sample deviations either side of it.
+ * @brief Computes Bollinger bands: the trailing mean and bands `multiplier` sample standard
+ *   deviations either side of it.
  *
- * `window = 20` and `multiplier = 2` are Bollinger's own parameters and the ones every
- * charting package defaults to. The deviation is the sample one, matching `rolling_stdev`;
- * some packages use the population divisor, which makes their bands narrower on short
- * windows by a factor of `sqrt(n / (n - 1))` -- about 2.6% at 20 rows.
+ * Uses the sample deviation (as `rolling_stdev`); packages that use the population deviation draw
+ * bands narrower by `sqrt((n - 1) / n)` (about 2.6% at 20 rows). A window with no dispersion gives
+ * three equal lines.
  *
- * A window with no dispersion collapses all three lines onto the mean, and that is the
- * right answer rather than an omission: a flat window's band genuinely has zero width, and
- * nothing here divides by the deviation. That is the difference from `zscore`, which is
- * unobserved on the same window because it does divide by it.
+ * @param values The series; `NaN` entries are unobserved.
+ * @param window The number of trailing rows each result looks at, observed or not.
+ * @param min_observed How many of those rows must be observed for a result to be reported.
+ * @param multiplier The band width in standard deviations.
+ * @return The three lines; each row is `missing()` where fewer than `max(min_observed, 2)` rows
+ *   are observed.
+ * @throws std::invalid_argument if `window` or `min_observed` is zero, or `min_observed > window`.
  */
 inline BollingerBands bollinger(
   math::SeriesView values,
@@ -231,7 +240,17 @@ inline BollingerBands bollinger(
   return bands;
 }
 
-/** Returns Bollinger bands, requiring every row of the window to be observed. */
+/**
+ * @brief Computes Bollinger bands, requiring every row of the window.
+ *
+ * The defaults, 20 rows and 2 deviations, are Bollinger's own.
+ *
+ * @param values The series; `NaN` entries are unobserved.
+ * @param window The number of trailing rows; all must be observed.
+ * @param multiplier The band width in standard deviations.
+ * @return The three lines; see the overload with `min_observed`.
+ * @throws std::invalid_argument if `window` is zero.
+ */
 inline BollingerBands bollinger(
   math::SeriesView values,
   std::size_t window = 20,
@@ -241,20 +260,17 @@ inline BollingerBands bollinger(
 }
 
 /**
- * Returns Wilder's relative strength index over `period` price changes.
+ * @brief Computes Wilder's relative strength index.
  *
- * `period = 14` is Wilder's own. The average gain and average loss are smoothed by
- * `indicator_detail::wilder`, and the index is `100 - 100 / (1 + gain / loss)`.
+ * Average gains and losses use Wilder's smoothing (`alpha = 1 / period`, seeded with the simple
+ * mean of the first `period` changes), and the index is `100 - 100 / (1 + gain / loss)`. Only
+ * gains gives 100, only losses gives 0, and no movement at all gives 50.
  *
- * The three degenerate cases are decided rather than left to the arithmetic. A zero average
- * loss with a non-zero average gain -- an unbroken run of up moves -- gives exactly 100,
- * which is the limit the ratio approaches rather than a division by zero; a zero average
- * gain against a non-zero average loss gives 0 by the same reasoning; and both zero, a price
- * that has not moved at all, gives 50, because a flat series shows neither strength nor
- * weakness and any other answer would read as a signal.
- *
- * The first `period` rows are unobserved: row 0 has no price change at all, and the
- * smoothing needs `period` changes before it has a seed.
+ * @param prices The price series; `NaN` entries are unobserved, and a change needs both prices.
+ * @param period The number of price changes averaged; 14 is Wilder's.
+ * @return The index, in `[0, 100]`, one per row; the first `period` rows (and more after gaps)
+ *   are `missing()`.
+ * @throws std::invalid_argument if `period` is zero.
  */
 inline math::Vector rsi(math::SeriesView prices, std::size_t period = 14) {
   if (period == 0) {
@@ -291,15 +307,16 @@ inline math::Vector rsi(math::SeriesView prices, std::size_t period = 14) {
 }
 
 /**
- * Returns the true range of each bar: the widest of the three spans that can gap.
+ * @brief Computes each bar's true range, `max(high - low, |high - prev close|, |low - prev close|)`.
  *
- * `max(high - low, |high - previous close|, |low - previous close|)`. The two terms
- * involving the previous close are what make this a *true* range rather than a bar's own
- * height: an instrument that gaps overnight and then trades in a narrow band moved further
- * than its bar is tall, and a volatility measure that missed that would understate the risk
- * of holding it.
+ * Where the previous close is unavailable (row 0, or an unobserved close), the range is
+ * `high - low`.
  *
- * Row 0 has no previous close, so it is the bar's own height.
+ * @param highs The bar highs.
+ * @param lows The bar lows, as many rows as `highs`.
+ * @param closes The bar closes, as many rows as `highs`.
+ * @return The true ranges, one per row; `missing()` where the high or low is unobserved.
+ * @throws std::invalid_argument if the three series differ in length.
  */
 inline math::Vector true_range(
   math::SeriesView highs,
@@ -326,13 +343,17 @@ inline math::Vector true_range(
 }
 
 /**
- * Returns the average true range over `period` bars, smoothed Wilder's way.
+ * @brief Computes the average true range with Wilder's smoothing.
  *
- * `period = 14` is Wilder's own, and the smoothing is his: the seed is the simple mean of
- * the first `period` true ranges and each later value is `(previous * 13 + range) / 14`.
+ * The first value is the simple mean of the first `period` true ranges; each later value is
+ * `(previous * (period - 1) + range) / period`. The result is in price units.
  *
- * In the same units as the price, not a ratio, which is what makes it usable directly as a
- * stop distance or a position-size divisor.
+ * @param highs The bar highs.
+ * @param lows The bar lows, as many rows as `highs`.
+ * @param closes The bar closes, as many rows as `highs`.
+ * @param period The number of bars averaged; 14 is Wilder's.
+ * @return The average true range, one per row; `missing()` until `period` true ranges are observed.
+ * @throws std::invalid_argument if `period` is zero or the series differ in length.
  */
 inline math::Vector atr(
   math::SeriesView highs,
@@ -346,30 +367,30 @@ inline math::Vector atr(
   return indicator_detail::wilder(true_range(highs, lows, closes), period);
 }
 
-/** The three series of a MACD, all on the same rows as the input. */
+/** @brief The three lines of a MACD, each as long as the input. */
 struct MacdLines {
-  /** The fast average less the slow one. */
+  /** @brief The fast EMA minus the slow EMA. */
   math::Vector macd_;
-  /** The exponential average of `macd_`. */
+  /** @brief The EMA of `macd_`. */
   math::Vector signal_;
-  /** `macd_` less `signal_`. */
+  /** @brief `macd_` minus `signal_`. */
   math::Vector histogram_;
 };
 
 /**
- * Returns the moving-average convergence/divergence lines.
+ * @brief Computes the MACD (moving-average convergence/divergence) lines.
  *
- * `macd = ema(fast) - ema(slow)`, `signal = ema(macd, alpha_from_span(signal_span))`, and
- * the histogram is their difference. `12, 26, 9` are the conventional spans; each is turned into a smoothing
- * factor by `alpha_from_span`, the convention MACD is quoted in.
+ * `macd = ema(fast) - ema(slow)`, `signal = ema(macd)`, and `histogram = macd - signal`, each EMA
+ * with the smoothing factor `alpha_from_span(span)`.
  *
- * The signal line is an exponential average *of an exponential average*, so the caution in
- * `ema` applies doubly here: a MACD recomputed over a trailing window is not the MACD a
- * live loop would have produced from the same prices.
- *
- * @throws std::invalid_argument if the fast span is not shorter than the slow one. A MACD
- * with the two reversed is the negation of the intended one, which is a sign error that
- * survives every test of magnitude and shows up only as a strategy that trades backwards.
+ * @param values The series; `NaN` entries are unobserved.
+ * @param fast The fast EMA span.
+ * @param slow The slow EMA span; must be greater than `fast`.
+ * @param signal_span The signal EMA span.
+ * @return The three lines.
+ * @throws std::invalid_argument if `fast >= slow`, or a span is zero.
+ * @warning As with `ema`, recomputing a MACD over a trailing window gives different values from
+ *   one kept bar by bar over the whole history.
  */
 inline MacdLines macd(
   math::SeriesView values,
@@ -400,11 +421,18 @@ inline MacdLines macd(
 }
 
 /**
- * Returns the trailing **sample** covariance of two series, over their paired rows.
+ * @brief Computes the trailing sample covariance of two series (divisor `count - 1`).
  *
- * Divides by `count - 1`, matching `rolling_stdev`, so a correlation formed from these
- * pieces is consistent. Only rows on which both series are observed take part; see
- * `indicator_detail::pair` for why that is not negotiable.
+ * Only rows on which both series are observed take part.
+ *
+ * @param left The first series.
+ * @param right The second series, with as many rows as `left`.
+ * @param window The number of trailing rows each result looks at, observed or not.
+ * @param min_observed How many of those rows must be observed for a result to be reported. Counts rows where both are observed.
+ * @return The covariances, one per row; `missing()` where fewer than `max(min_observed, 2)` rows
+ *   are paired.
+ * @throws std::invalid_argument if the series differ in length, `window` or `min_observed` is
+ *   zero, or `min_observed > window`.
  */
 inline math::Vector rolling_cov(
   math::SeriesView left,
@@ -434,7 +462,15 @@ inline math::Vector rolling_cov(
   return result;
 }
 
-/** Returns the trailing sample covariance, requiring every row of the window to be paired. */
+/**
+ * @brief Computes the trailing sample covariance, requiring both series on every row of the window.
+ *
+ * @param left The first series.
+ * @param right The second series, with as many rows as `left`.
+ * @param window The number of trailing rows.
+ * @return The covariances, one per row.
+ * @throws std::invalid_argument if the series differ in length or `window` is zero.
+ */
 inline math::Vector rolling_cov(
   math::SeriesView left,
   math::SeriesView right,
@@ -444,15 +480,19 @@ inline math::Vector rolling_cov(
 }
 
 /**
- * Returns the trailing Pearson correlation of two series, over their paired rows.
+ * @brief Computes the trailing Pearson correlation of two series.
  *
- * Computed from one pass over each window so that the covariance and both deviations
- * describe the same sample. That is what bounds the result to `[-1, 1]`; the same three
- * numbers taken from independent calls are not so bounded when the two series have
- * different gaps.
+ * Only rows on which both series are observed take part, so the result stays in `[-1, 1]`
+ * when the series have different gaps.
  *
- * A window in which either series has no dispersion is unobserved. Correlation with a
- * constant is undefined, not zero.
+ * @param left The first series.
+ * @param right The second series, with as many rows as `left`.
+ * @param window The number of trailing rows each result looks at, observed or not.
+ * @param min_observed How many of those rows must be observed for a result to be reported. Counts rows where both are observed.
+ * @return The correlations, one per row; `missing()` where fewer than `max(min_observed, 2)` rows
+ *   are paired, and `math::undefined()` where either series is constant over the window.
+ * @throws std::invalid_argument if the series differ in length, `window` or `min_observed` is
+ *   zero, or `min_observed > window`.
  */
 inline math::Vector rolling_corr(
   math::SeriesView left,
@@ -489,7 +529,15 @@ inline math::Vector rolling_corr(
   return result;
 }
 
-/** Returns the trailing correlation, requiring every row of the window to be paired. */
+/**
+ * @brief Computes the trailing correlation, requiring both series on every row of the window.
+ *
+ * @param left The first series.
+ * @param right The second series, with as many rows as `left`.
+ * @param window The number of trailing rows.
+ * @return The correlations, one per row.
+ * @throws std::invalid_argument if the series differ in length or `window` is zero.
+ */
 inline math::Vector rolling_corr(
   math::SeriesView left,
   math::SeriesView right,
@@ -499,14 +547,18 @@ inline math::Vector rolling_corr(
 }
 
 /**
- * Returns the trailing beta of `asset` against `market`: `cov(asset, market) / var(market)`.
+ * @brief Computes the trailing beta of an asset against a market, `cov(asset, market) / var(market)`.
  *
- * Takes **returns**, not prices. A beta computed on price levels measures the ratio of two
- * trends and is close to meaningless; the mistake is easy to make because it produces a
- * plausible-looking number rather than an error, so it is worth saying here.
+ * Only rows on which both series are observed take part.
  *
- * A window in which the market has no variance is unobserved: with no market movement to
- * attribute the asset's movement to, beta is undefined rather than zero or infinite.
+ * @param asset The asset's **returns** (not prices; a beta of price levels is meaningless).
+ * @param market The market's returns, as many rows as `asset`.
+ * @param window The number of trailing rows each result looks at, observed or not.
+ * @param min_observed How many of those rows must be observed for a result to be reported. Counts rows where both are observed.
+ * @return The betas, one per row; `missing()` where fewer than `max(min_observed, 2)` rows are
+ *   paired, and `math::undefined()` where the market does not move over the window.
+ * @throws std::invalid_argument if the series differ in length, `window` or `min_observed` is
+ *   zero, or `min_observed > window`.
  */
 inline math::Vector beta(
   math::SeriesView asset,
@@ -542,7 +594,15 @@ inline math::Vector beta(
   return result;
 }
 
-/** Returns the trailing beta, requiring every row of the window to be paired. */
+/**
+ * @brief Computes the trailing beta, requiring both series on every row of the window.
+ *
+ * @param asset The asset's returns.
+ * @param market The market's returns, as many rows as `asset`.
+ * @param window The number of trailing rows.
+ * @return The betas, one per row.
+ * @throws std::invalid_argument if the series differ in length or `window` is zero.
+ */
 inline math::Vector beta(
   math::SeriesView asset,
   math::SeriesView market,

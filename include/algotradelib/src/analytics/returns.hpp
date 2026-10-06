@@ -9,28 +9,20 @@ namespace algotradelib {
 namespace analytics {
 
 /**
- * Returns computed from a price series.
+ * @file
+ * @brief Simple, log and cumulative returns of a price series.
  *
- * Two conventions that every function in these layers keeps, because together they are
- * what stops an indicator from quietly looking ahead:
- *
- * 1. **The result has the same length as the input.** Row `i` of the output describes row
- *    `i` of the input, so a result binds to the same `TimeIndex` with no shifting. A
- *    function that returned a shorter series would make the caller do the alignment, and
- *    an off-by-one there is a lookahead bug that no test of the function itself can catch.
- * 2. **A value that cannot be computed is `missing()`, never zero and never carried
- *    forward.** The first row of a return series has no prior price, so it is unobserved.
- *    Zero would be a claim the price did not move.
+ * Like every series function in `analytics`, each result is as long as its input (row `i`
+ * describes row `i`, so it shares the input's `TimeIndex`), and a value that cannot be computed
+ * is `missing()`, never zero.
  */
 
 /**
- * Returns the simple period-over-period return, `p[i] / p[i - 1] - 1`.
+ * @brief Computes simple period returns, `p[i] / p[i - 1] - 1`.
  *
- * Row 0 is unobserved, as is any row whose own price or prior price is unobserved.
- *
- * A prior price of exactly zero yields an unobserved return rather than an infinity: the
- * return is undefined there, and propagating an infinity would survive every later
- * reduction that masks `NaN` but not `inf`.
+ * @param prices The price series; `NaN` entries are unobserved.
+ * @return The returns, one per row. Row 0 is `missing()`, as is any row whose price or previous
+ *   price is unobserved, or whose previous price is zero.
  */
 inline math::Vector returns(math::SeriesView prices) {
   const auto rows = prices.size();
@@ -49,15 +41,14 @@ inline math::Vector returns(math::SeriesView prices) {
 }
 
 /**
- * Returns the continuously compounded return, `log(p[i] / p[i - 1])`.
+ * @brief Computes log (continuously compounded) returns, `log(p[i] / p[i - 1])`.
  *
- * Preferred over `returns` wherever returns are summed — over time, or across a
- * portfolio's rebalancing periods — because log returns add where simple returns compound.
- * The cost is that they do not aggregate across *instruments* at a point in time.
+ * Log returns add over time; simple returns, unlike log returns, add across instruments at one
+ * instant.
  *
- * A non-positive price on either side yields an unobserved return. A price series should
- * not contain one, but an adjusted series with a data error can, and a `log` of it would
- * produce a `NaN` from the standard library with no indication of why.
+ * @param prices The price series; `NaN` entries are unobserved.
+ * @return The returns, one per row. Row 0 is `missing()`, as is any row where either price is
+ *   unobserved or not positive.
  */
 inline math::Vector log_returns(math::SeriesView prices) {
   const auto rows = prices.size();
@@ -75,18 +66,12 @@ inline math::Vector log_returns(math::SeriesView prices) {
 }
 
 /**
- * Returns the cumulative simple return implied by a series of period returns.
+ * @brief Compounds simple period returns into the cumulative return, `prod(1 + r[0..i]) - 1`.
  *
- * Row `i` is `prod(1 + r[0..i]) - 1`, the total return an investment held from the start
- * of the series through row `i` would have earned.
- *
- * An unobserved period return is **skipped** — treated as a period the series does not
- * describe, not as a period of zero return — which is the masking convention `missing()`
- * documents. A row before the first observed return is itself unobserved, because no
- * capital has been at risk yet.
- *
- * Takes simple returns, not log returns. Feeding it log returns compounds them twice; the
- * cumulative log return is `sum`, which needs no function of its own.
+ * @param period_returns **Simple** returns (as from `returns`), not log returns; the cumulative
+ *   log return is their plain sum. `NaN` entries are skipped.
+ * @return The cumulative return through each row. Rows before the first observed return are
+ *   `missing()`; a later unobserved row repeats the running total.
  */
 inline math::Vector cumulative_returns(math::SeriesView period_returns) {
   math::Vector result = math::unobserved(static_cast<std::size_t>(period_returns.size()));
