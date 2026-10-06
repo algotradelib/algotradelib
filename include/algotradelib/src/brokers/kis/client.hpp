@@ -1959,7 +1959,7 @@ private:
   //
   // The after-hours totals KIS also reports (`ovtm_total_askp_rsqn` and its
   // siblings) and its expected-execution columns are deliberately not normalized:
-  // Toss publishes no counterpart, so they stay reachable on this client.
+  // Toss publishes no counterpart. They are dropped here, not exposed.
   static Result<DepthSnapshot> parse_depth(
     InstrumentId instrument,
     Result<network::HttpResponse> result
