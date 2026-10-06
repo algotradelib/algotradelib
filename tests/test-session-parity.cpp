@@ -28,7 +28,6 @@ using Ref = OrderRef<mock::Broker>;
 
 /** The asynchronous session, each verb run to completion on its own loop. */
 struct AsyncDriver {
-  static constexpr const char* name = "BrokerSession";
   net::io_context ioc_;
   std::shared_ptr<mock::MockClient> client_ = std::make_shared<mock::MockClient>(ioc_.get_executor());
   BrokerSession<mock::MockClient> session_{client_, kAccount};
@@ -55,7 +54,6 @@ struct AsyncDriver {
 
 /** The blocking session over the blocking mock, which drives the same in-memory client. */
 struct BlockingDriver {
-  static constexpr const char* name = "BlockingSession";
   std::shared_ptr<mock::MockBlockingClient> client_ = std::make_shared<mock::MockBlockingClient>();
   BlockingSession<mock::MockBlockingClient> session_{client_, kAccount};
 
@@ -135,6 +133,8 @@ TEMPLATE_TEST_CASE("both sessions run the adapter's own placement check", "[port
   const auto placed = driver.place(order);
   REQUIRE_FALSE(placed);
   CHECK(placed.error().broker_code_ == "idempotency_key_unsupported");
+  // The adapter's own error, passed through as the adapter stated it (the mock leaves the default, true).
+  CHECK(placed.error().reached_broker_);
   CHECK(driver.mock().place_calls_ == 0);
   CHECK(mock_port::Normalizers::validate_place_calls_ == 1);
 }
@@ -177,6 +177,7 @@ TEMPLATE_TEST_CASE("both sessions pass a broker's own refusal through unchanged"
   REQUIRE_FALSE(placed);
   CHECK(placed.error().reached_broker_);
   CHECK(placed.error().message_ == "no acknowledgement scripted");
+  CHECK(placed.error().category_ == ErrorCategory::PROTOCOL);
   CHECK(driver.mock().place_calls_ == 1);
 }
 
@@ -213,6 +214,7 @@ TEMPLATE_TEST_CASE("both sessions pass on the adapter's own refusal of a modific
   const auto replaced = driver.replace(limit.ref_, instruction);
   REQUIRE_FALSE(replaced);
   CHECK(replaced.error().broker_code_ == "zero_quantity");
+  CHECK_FALSE(replaced.error().reached_broker_);
   CHECK(mock_port::Normalizers::to_replacement_calls_ == 1);
   CHECK(driver.mock().replace_calls_ == 0);
 }
