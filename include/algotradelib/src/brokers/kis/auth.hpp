@@ -10,16 +10,33 @@ namespace kis {
 
 class KisAuth;
 
-/** Blocking, mutex-protected compatibility wrapper for KIS authentication. */
+/**
+ * @brief Obtains and caches KIS access tokens and WebSocket approval keys with blocking requests;
+ *   thread-safe.
+ *
+ * `KisClient` manages its own token; this is for code that calls KIS directly.
+ */
 class KisAuth {
 public:
-  /** Constructs an authentication wrapper with copied credentials. */
+  /**
+   * @brief Constructs the wrapper.
+   * @param ioc The I/O context the requests run on.
+   * @param ctx The TLS context; borrowed, and must outlive the wrapper.
+   * @param config The credentials (copied).
+   */
   KisAuth(net::io_context& ioc, ssl::context& ctx, const KisConfig& config)
   : ioc_(ioc), ctx_(ctx), req_(config) {}
 
+  /** @brief Destroys the wrapper. */
   virtual ~KisAuth() = default;
 
-  /** Returns a cached REST token, refreshing it synchronously when required. */
+  /**
+   * @brief Returns a REST access token, requesting a new one if none is held or it expires within
+   *   five minutes.
+   * @return The token.
+   * @throws std::runtime_error if the token request fails or its response cannot be read.
+   * @throws boost::system::system_error on a transport failure.
+   */
   std::string accessToken() {
     std::lock_guard<std::mutex> lock(mtx_);
     if (!rest_resp_.valid()) {
@@ -28,7 +45,12 @@ public:
     return rest_resp_.access_token_;
   }
 
-  /** Returns a cached WebSocket key, refreshing it synchronously when required. */
+  /**
+   * @brief Returns a WebSocket approval key, requesting a new one if none is held or it is a day old.
+   * @return The key.
+   * @throws std::runtime_error if the request fails or its response cannot be read.
+   * @throws boost::system::system_error on a transport failure.
+   */
   std::string accessWebsocket() {
     std::lock_guard<std::mutex> lock(mtx_);
     if (!ws_resp_.valid()) {

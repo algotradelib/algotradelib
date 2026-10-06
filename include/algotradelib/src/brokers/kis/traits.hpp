@@ -1,10 +1,9 @@
 #pragma once
 
 /**
- * Declares that this translation unit has reached a broker adapter.
+ * @brief Defined as 1 once a broker adapter header is included.
  *
- * Read by `tests/test-strategy-isolation.cpp`; see `ATL_TRANSPORT_LAYER_PRESENT` for why the
- * layers announce themselves rather than being inferred.
+ * The library's tests use it to check that the strategy headers include no broker.
  */
 #define ATL_BROKER_ADAPTER_PRESENT 1
 
@@ -22,90 +21,71 @@ namespace algotradelib {
 namespace kis {
 
 /**
- * Compile-time identity of KIS, shared by its asynchronous and blocking clients.
- *
- * Sharing one tag is what makes a reference obtained from `KisBlockingClient`
- * usable with `KisClient`, while keeping it distinct from another broker's.
+ * @brief The KIS broker tag: order references are typed by it, so a KIS reference works with both
+ *   KIS clients and with no other broker.
  */
 struct Broker {
-  /** Normalized broker name. */
+  /** @brief The broker's name, `"kis"`. */
   static constexpr std::string_view name = "kis";
 };
 
 namespace traits_detail {
 
-/** Opaque order reference issued by the KIS adapter. */
+/** @brief A KIS order reference (`primary_` is the order number, `secondary_` the branch number). */
 using Ref = OrderRef<kis::Broker>;
 
-/**
- * Pure conversions shared by the asynchronous and blocking KIS traits.
- *
- * Holding them in one place is what keeps `BrokerSession<KisClient>` and
- * `BlockingSession<KisBlockingClient>` from drifting apart in how they normalize
- * the same KIS response.
- */
+/** @brief The capabilities and conversions shared by KIS's asynchronous and blocking traits. */
 struct Normalizers {
-  /** Both brokers publish resting orders on both sides of the book. */
+  /** @brief `true`: KIS publishes the order book. */
   static constexpr bool has_depth = true;
 
-  /** Both brokers publish today's price bounds. */
+  /** @brief `true`: KIS publishes today's price band. */
   static constexpr bool has_price_limits = true;
 
-  /** Both brokers publish recent executions. */
+  /** @brief `true`: KIS publishes recent trades. */
   static constexpr bool has_trade_prints = true;
 
-  /** Only Toss quotes several instruments in one request. */
+  /** @brief `false`: one quote per request. */
   static constexpr bool has_batch_prices = false;
 
-  /** KIS answers what may be spent, in won, from its 매수가능조회 inquiry. */
+  /** @brief `true`: KIS answers buying power, in won (매수가능조회). */
   static constexpr bool has_buying_power = true;
 
   /**
-   * KIS answers how many shares are affordable as well as how much money there is.
-   *
-   * The port asks only for the amount, because Toss reports no quantity; a caller wanting KIS's
-   * per-instrument quantity gates on this and reaches it through `session.client()`.
+   * @brief `true`: KIS also answers how many shares are affordable; reach it through
+   *   `session.client()`, since the session asks only for the amount.
    */
   static constexpr bool has_buying_power_quantity = true;
 
-  /**
-   * The sellable quantity arrives on every holdings row as `ord_psbl_qty`, so it costs no request.
-   *
-   * KIS also publishes a dedicated 매도가능수량조회 (`TTTC8408R`), which this library deliberately
-   * does not implement: it returns the same field for one instrument, on an endpoint a demo account
-   * cannot call. That is a statement about this library's surface, not about KIS's catalogue.
-   */
+  /** @brief The sellable quantity comes with each holdings row (`ord_psbl_qty`), at no extra request. */
   static constexpr SellableSource sellable_source = SellableSource::HOLDINGS;
 
   /**
-   * KIS publishes no commission schedule for domestic stock.
-   *
-   * Not "shaped differently" -- absent. The one commission sheet in its API workbook is
-   * 선물옵션기간약정수수료일별, which is futures and options. A backtest against a KIS account keeps
-   * the commission the caller stated, and the report says so.
+   * @brief `false`: KIS publishes no commission schedule for domestic stocks; a backtest uses the
+   *   commission you state.
    */
   static constexpr bool has_commission_schedule = false;
 
-  /** Both brokers publish static reference data for an instrument. */
+  /** @brief `true`: KIS publishes instrument reference data. */
   static constexpr bool has_reference_data = true;
 
-  /** Only Toss answers for several instruments in one reference-data request. */
+  /** @brief `false`: one instrument per reference-data request. */
   static constexpr bool has_batch_reference_data = false;
 
-  /** KIS publishes the trading calendar, from a base date onwards. */
+  /** @brief `true`: KIS publishes the trading calendar from a date on. */
   static constexpr bool has_calendar = true;
 
-  /** One KIS calendar request covers a span of dates. */
+  /** @brief `true`: one calendar request covers a span of dates. */
   static constexpr bool has_calendar_range = true;
 
-  /** KIS publishes no intraday session windows. */
+  /** @brief `false`: KIS publishes no session hours. */
   static constexpr bool has_calendar_sessions = false;
 
   /**
-   * Refuses a calendar request KIS cannot answer.
-   *
-   * KIS's holiday inquiry is the domestic market's, so another country is refused
-   * rather than answered with Korea's dates.
+   * @brief Refuses a calendar request for a market other than Korea's.
+   * @param country The market.
+   * @param from The first date.
+   * @return An error if refused (nothing is sent), otherwise `std::nullopt`.
    */
   static std::optional<BrokerError> validate_calendar(Country country, std::optional<Date> from) {
     BrokerError error;
@@ -124,18 +104,26 @@ struct Normalizers {
     return std::nullopt;
   }
 
-  /** Returns whether this broker publishes bars at `interval`. */
+  /** @brief Returns whether this broker publishes bars at `interval`. */
   static constexpr bool supports_interval(BarInterval interval) {
     static_cast<void>(interval);
     return true;
   }
 
-  /** Refuses a bar request this broker cannot answer, before any I/O. */
+  /**
+   * @brief Refuses a bar request this broker cannot answer, before any I/O.
+   * @param query The query.
+   * @return An error if refused (nothing is sent), otherwise `std::nullopt`.
+   */
   static std::optional<BrokerError> validate_bars(const BarQuery& query) {
     return kis::unsupported_bar_interval(query.interval_);
   }
 
-  /** Returns an opaque reference carrying KIS's order number and branch code. */
+  /**
+   * @brief Makes an order reference from KIS's.
+   * @param order KIS's reference.
+   * @return The reference.
+   */
   static Ref make_ref(const KisOrderRef& order) {
     Ref ref;
     ref.primary_ = order.order_number_;
@@ -143,7 +131,11 @@ struct Normalizers {
     return ref;
   }
 
-  /** Returns KIS's own reference form from an opaque reference. */
+  /**
+   * @brief Returns KIS's reference from an order reference.
+   * @param ref The reference.
+   * @return KIS's reference.
+   */
   static KisOrderRef from_ref(const Ref& ref) {
     KisOrderRef order;
     order.order_number_ = ref.primary_;
@@ -152,18 +144,20 @@ struct Normalizers {
   }
 
   /**
-   * Rejects an order KIS cannot carry out as described.
-   *
-   * The rule itself lives in `kis::unsupported_client_order_id`, which the client
-   * also applies, so the port cannot drift from the client it fronts. The port
-   * refuses earlier — before a client is even asked — and the client refuses
-   * regardless of whether a caller came through the port at all.
+   * @brief Refuses an order KIS cannot place as described (one with a client order id; see
+   *   `kis::unsupported_client_order_id`).
+   * @param order The order.
+   * @return An error if refused (nothing is sent), otherwise `std::nullopt`.
    */
   static std::optional<BrokerError> validate_place(const OrderRequest& order) {
     return kis::unsupported_client_order_id(order);
   }
 
-  /** Normalizes a KIS acknowledgement into an acknowledgement and a reference. */
+  /**
+   * @brief Normalizes a KIS acknowledgement into an acknowledgement and a reference.
+   * @param raw The client's result.
+   * @return The result, or an error.
+   */
   static Result<PlacedOrder<kis::Broker>> normalize_place(Result<KisOrderAck> raw) {
     if (!raw) {
       return Result<PlacedOrder<kis::Broker>>(std::move(raw.error()));
@@ -175,19 +169,13 @@ struct Normalizers {
   }
 
   /**
-   * Normalizes one page of KIS amendable orders.
+   * @brief Converts KIS's amendable-order list into working orders.
    *
-   * The reference is the row's own `odno`, which KIS documents as "주문시 한국투자
-   * 증권 시스템에서 채번된 주문번호" and which is the value `order-rvsecncl` carries
-   * in `ORGN_ODNO`.
+   * Each reference is the row's own order number (`odno`), not `orgn_odno` (the order an amendment
+   * replaced; see `KisOpenOrder::original_order_`).
    *
-   * `orgn_odno` is deliberately *not* used. KIS documents it as "정정/취소주문 인경우
-   * 원주문번호": it is populated only when the row is itself a correction, and it
-   * names the order that correction replaced. The inquiry's own response example
-   * shows a row with `odno` `0001569139`, `orgn_odno` `0001569136`, and
-   * `rvse_cncl_dvsn_name` `BUY AMEND*` — amending `0001569136` would address an
-   * order that is no longer live. The field is lineage, not an address, and stays
-   * reachable through `KisOpenOrder::original_order_` on the concrete client.
+   * @param raw The client's result.
+   * @return The working orders, or the error.
    */
   static Result<WorkingOrders<kis::Broker>> normalize_working_orders(
     Result<KisOpenOrderPage> raw
@@ -209,16 +197,15 @@ struct Normalizers {
   }
 
   /**
-   * Converts a normalized amendment into KIS's own amendment.
+   * @brief Converts an amendment or cancellation into KIS's form.
    *
-   * KIS validates a positive whole quantity on every modification and
-   * cancellation, including a full cancellation, because its
-   * `order-rvsecncl` endpoint carries one request shape for both. An instruction
-   * with no quantity is therefore refused rather than completed with an invented
-   * one; `cancel_all()` fills it from the amendable quantity KIS reports.
+   * KIS requires a positive whole quantity even for a full cancellation, so an instruction without a
+   * quantity is refused (`cancel_all()` fills it from the amendable quantity).
+   * `confirm_high_value_` is ignored.
    *
-   * `AmendInstruction::confirm_high_value_` has no KIS counterpart and is
-   * ignored, for the reason given on `validate_place`.
+   * @param ref The order's reference.
+   * @param instruction The instruction.
+   * @return KIS's amendment, or an `INVALID_ARGUMENT` error.
    */
   static Result<KisAmendment> to_amendment(
     const Ref& ref,
@@ -270,7 +257,12 @@ struct Normalizers {
     return Result<KisAmendment>(std::move(amendment));
   }
 
-  /** Converts a normalized modification into KIS's own amendment. */
+  /**
+   * @brief Converts a normalized modification into KIS's own amendment.
+   * @param ref The order's reference.
+   * @param instruction The amendment or cancellation.
+   * @return The result, or an error.
+   */
   static Result<KisAmendment> to_replacement(
     const Ref& ref,
     const AmendInstruction& instruction
@@ -278,7 +270,12 @@ struct Normalizers {
     return to_amendment(ref, instruction);
   }
 
-  /** Converts a normalized cancellation into KIS's own amendment. */
+  /**
+   * @brief Converts a normalized cancellation into KIS's own amendment.
+   * @param ref The order's reference.
+   * @param instruction The amendment or cancellation.
+   * @return The result, or an error.
+   */
   static Result<KisAmendment> to_cancellation(
     const Ref& ref,
     const AmendInstruction& instruction
@@ -287,12 +284,13 @@ struct Normalizers {
   }
 
   /**
-   * Converts a normalized history query into KIS's inclusive calendar range.
+   * @brief Converts an order-history query into KIS's date range.
    *
-   * KIS requires both dates, pages internally, returns every page, and this
-   * adapter sends an empty `PDNO`. Each filter KIS cannot honor is refused
-   * rather than dropped, so a listing never answers a different question from
-   * the one asked.
+   * KIS requires both dates and returns every page; a filter it cannot apply (a row limit, a cursor,
+   * an instrument) is refused rather than ignored.
+   *
+   * @param query The query.
+   * @return The range, or an `INVALID_ARGUMENT` error.
    */
   static Result<KisHistoryRange> to_history_query(
     const KisAccount&,
@@ -327,60 +325,54 @@ struct Normalizers {
   }
 };
 
-/** Capability answers shared by the asynchronous and blocking KIS traits. */
+/** @brief The order-related capabilities shared by KIS's asynchronous and blocking traits. */
 struct Capabilities {
-  /** KIS selects an account from configuration rather than listing accounts. */
+  /** @brief `false`: the account comes from configuration, not a listing. */
   static constexpr bool has_account_discovery = false;
 
-  /** KIS documents no client-supplied idempotency key for individual customers. */
+  /** @brief `false`: no idempotency key for individual customers. */
   static constexpr bool has_client_order_id = false;
 
-  /** KIS sends a stop-limit (`22`) order's trigger as `CNDT_PRIC`, on placement and amendment. */
+  /** @brief `true`: a stop-limit order's trigger is sent as `CNDT_PRIC`, on placement and amendment. */
   static constexpr bool has_trigger_price = true;
 
-  /** A broker that takes orders, not a market-data source; see `BrokerCaps::data_only`. */
+  /** @brief `false`: a broker that takes orders; see `BrokerCaps::data_only`. */
   static constexpr bool data_only = false;
 
-  /** KIS publishes its modifiable and cancellable orders; on demo, from today's order history. */
+  /** @brief `true`: KIS lists amendable orders (on demo, from today's order history). */
   static constexpr bool has_working_orders = true;
 
   /**
-   * KIS reports `psbl_qty`, the quantity still amendable. On demo it is the daily inquiry's `rmn_qty`,
-   * which can differ while an amendment is pending.
+   * @brief `true`: KIS reports the amendable quantity (`psbl_qty`; on demo the remaining quantity,
+   *   which can differ while an amendment is pending).
    */
   static constexpr bool has_amendable_quantity = true;
 
   /**
-   * 정정취소가능주문조회 states no terminal status.
-   *
-   * The parser derives the status from the filled quantity and can produce only `PENDING` or
-   * `PARTIAL_FILLED`, and the inquiry lists what is still open to amendment. An order's outcome
-   * is therefore not observable here, and a caller must read it from holdings or the history.
+   * @brief `false`: the amendable-order list shows only open orders (`PENDING` or `PARTIAL_FILLED`);
+   *   read an order's outcome from holdings or the order history.
    */
   static constexpr bool working_orders_state_terminal = false;
 
-  /** KIS has no single-order inquiry by order number. */
+  /** @brief `false`: no inquiry of one order by number. */
   static constexpr bool has_order_by_id = false;
 
-  /** KIS cancels a stated quantity through `QTY_ALL_ORD_YN`. */
+  /** @brief `true`: part of an order can be cancelled. */
   static constexpr bool has_partial_cancel = true;
 
-  /** KIS requires an inclusive calendar range on an order-history inquiry. */
+  /** @brief `true`: an order-history query must give a date range. */
   static constexpr bool history_requires_range = true;
 
-  /** KIS follows its own continuation cursors and exposes none. */
+  /** @brief `false`: the client reads every page itself and exposes no cursor. */
   static constexpr bool has_history_cursor = false;
 
   /**
-   * KIS returns every page of an order history and refuses a row limit.
-   *
-   * `to_history_query` rejects `OrderHistoryQuery::limit_` outright with `limit_unsupported`, so a
-   * caller that sets one gets an `INVALID_ARGUMENT` before any network I/O rather than a silently
-   * ignored ceiling. Anything building a history query generically has to ask this first.
+   * @brief `false`: an order-history query with a row limit is refused (`limit_unsupported`) before
+   *   sending; KIS returns every page.
    */
   static constexpr bool has_history_limit = false;
 
-  /** This adapter sends an empty `PDNO` and exposes no instrument filter. */
+  /** @brief `false`: an order-history query cannot filter by instrument. */
   static constexpr bool has_history_symbol_filter = false;
 };
 
@@ -388,78 +380,87 @@ struct Capabilities {
 } // namespace kis
 
 /**
- * Returns the venue a KIS order with `asked` actually reaches.
- *
- * KIS documents an omitted `EXCG_ID_DVSN_CD` as proceeding at the Korea
- * Exchange, so an order that names no venue is not an order that goes nowhere --
- * it goes to KRX. Recovery has to record *that*, because `UNSPECIFIED` in a
- * journal line is a positive assertion that no particular venue was reached, and
- * it confirms a row from any venue. An NXT lookalike could then be attributed to
- * an order that went to KRX.
- *
- * Shared by both KIS clients' traits, and applied where the planned order is
- * resolved rather than where the request is built, so the durable journal line
- * written *before* the send already names the venue the order will reach.
+ * @brief Returns the venue a KIS order actually reaches.
+ * @param asked The order's venue.
+ * @return `KRX` if `asked` is `UNSPECIFIED` (KIS's documented default), otherwise `asked`.
  */
 inline constexpr Venue kis_effective_route(Venue asked) noexcept {
   return asked == Venue::UNSPECIFIED ? Venue::KRX : asked;
 }
 
-/** Broker port adaptation for the asynchronous KIS client. */
+/** @brief The `BrokerSession` adapter for `kis::KisClient`. */
 template <>
 struct BrokerTraits<kis::KisClient>
 : kis::traits_detail::Normalizers, kis::traits_detail::Capabilities {
-  /** Where an order carrying `asked` actually goes; see `kis_effective_route`. */
+  /**
+   * @brief Where an order carrying `asked` actually goes; see `kis_effective_route`.
+   * @param asked The order's venue.
+   * @return The venue.
+   */
   static constexpr Venue effective_route(Venue asked) noexcept {
     return kis_effective_route(asked);
   }
 
-  /** Concrete client this specialization adapts. */
+  /** @brief The client type. */
   using Client = kis::KisClient;
 
-  /** KIS application credentials and environment selection. */
+  /** @brief The configuration type. */
   using Config = kis::KisConfig;
 
-  /** KIS account selector. */
+  /** @brief The account type. */
   using Account = kis::KisAccount;
 
-  /** Compile-time identity of KIS. */
+  /** @brief The broker tag. */
   using BrokerTag = kis::Broker;
 
-  /** Acknowledgement KIS returns for an order instruction. */
+  /** @brief The order acknowledgement type. */
   using PlaceAck = kis::KisOrderAck;
 
-  /** KIS modification and cancellation instruction. */
+  /** @brief The amendment type. */
   using Amendment = kis::KisAmendment;
 
-  /** KIS order-history selector. */
+  /** @brief The order-history query type. */
   using HistoryQuery = kis::KisHistoryRange;
 
-  /** KIS amendable-order result. */
+  /** @brief The working-order result type. */
   using WorkingOrdersResult = kis::KisOpenOrderPage;
 
-  /** Normalized broker name. */
+  /** @brief The broker's name. */
   static constexpr std::string_view name = kis::Broker::name;
 
-  /** This client completes through a completion token. */
+  /** @brief `false`: requests complete through a completion token. */
   static constexpr bool blocking = false;
 
-  /** Returns this client's pacing statistics, or null when it is unpaced. */
+  /**
+   * @brief Returns this client's pacing statistics, or null when it is unpaced.
+   * @param client The client.
+   * @return The statistics, or null if the client has no rate-limit budget.
+   */
   static const network::RateLimitStats* rate_limit_stats(const Client& client) {
     return client.rate_limit_stats();
   }
 
-  /** Forwards a reference-data request for one instrument. */
+  /**
+   * @brief Forwards a reference-data request for one instrument.
+   * @tparam Token An Asio completion token.
+   * @param client The client.
+   * @param subject The instrument.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename Token>
   static auto instrument(Client& client, InstrumentId subject, Token&& token) {
     return client.async_instrument(std::move(subject), std::forward<Token>(token));
   }
 
   /**
-   * Forwards a calendar request, supplying today when no date was given.
-   *
-   * KIS requires a base date, so an absent one becomes today in Seoul rather than
-   * being passed through as a blank the broker would reject.
+   * @brief Forwards a calendar request (the market argument is ignored; `validate_calendar` checks
+   *   it).
+   * @tparam Token An Asio completion token.
+   * @param client The client.
+   * @param from The first date (today in Korea if empty).
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
    */
   template <typename Token>
   static auto calendar(Client& client, Country, std::optional<Date> from, Token&& token) {
@@ -468,55 +469,122 @@ struct BrokerTraits<kis::KisClient>
     );
   }
 
-  /** Forwards a price-bound request. */
+  /**
+   * @brief Forwards a price-bound request.
+   * @tparam Token An Asio completion token.
+   * @param client The client.
+   * @param instrument The instrument.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename Token>
   static auto price_limits(Client& client, InstrumentId instrument, Token&& token) {
     return client.async_price_limits(std::move(instrument), std::forward<Token>(token));
   }
 
-  /** Forwards a recent-execution request. */
+  /**
+   * @brief Forwards a recent-execution request.
+   * @tparam Token An Asio completion token.
+   * @param client The client.
+   * @param instrument The instrument.
+   * @param count The most trades to return.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename Token>
   static auto trades(Client& client, InstrumentId instrument, int count, Token&& token) {
     return client.async_trades(std::move(instrument), count, std::forward<Token>(token));
   }
 
-  /** Forwards an order book request. */
+  /**
+   * @brief Forwards an order book request.
+   * @tparam Token An Asio completion token.
+   * @param client The client.
+   * @param instrument The instrument.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename Token>
   static auto depth(Client& client, InstrumentId instrument, Token&& token) {
     return client.async_depth(std::move(instrument), std::forward<Token>(token));
   }
 
-  /** Forwards a bar request. */
+  /**
+   * @brief Forwards a bar request.
+   * @tparam Token An Asio completion token.
+   * @param client The client.
+   * @param query The query.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename Token>
   static auto bars(Client& client, BarQuery query, Token&& token) {
     return client.async_bars(std::move(query), std::forward<Token>(token));
   }
 
-  /** Forwards a quote request. */
+  /**
+   * @brief Forwards a quote request.
+   * @tparam Token An Asio completion token.
+   * @param client The client.
+   * @param instrument The instrument.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename Token>
   static auto quote(Client& client, InstrumentId instrument, Token&& token) {
     return client.async_quote(std::move(instrument), std::forward<Token>(token));
   }
 
-  /** Forwards a buying-power request for the bound account. */
+  /**
+   * @brief Forwards a buying-power request for the bound account.
+   * @tparam Token An Asio completion token.
+   * @param client The client.
+   * @param account The bound account.
+   * @param currency The currency.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename Token>
   static auto buying_power(Client& client, const Account& account, Currency currency, Token&& token) {
     return client.async_buying_power(currency, account, std::forward<Token>(token));
   }
 
-  /** Forwards a holdings request for the bound account. */
+  /**
+   * @brief Forwards a holdings request for the bound account.
+   * @tparam Token An Asio completion token.
+   * @param client The client.
+   * @param account The bound account.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename Token>
   static auto holdings(Client& client, const Account& account, Token&& token) {
     return client.async_holdings(account, std::forward<Token>(token));
   }
 
-  /** Forwards an order submission for the bound account. */
+  /**
+   * @brief Forwards an order submission for the bound account.
+   * @tparam Token An Asio completion token.
+   * @param client The client.
+   * @param account The bound account.
+   * @param order The order.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename Token>
   static auto place_order(Client& client, const Account& account, OrderRequest order, Token&& token) {
     return client.async_place_order(account, std::move(order), std::forward<Token>(token));
   }
 
-  /** Forwards an order modification for the bound account. */
+  /**
+   * @brief Forwards an order modification for the bound account.
+   * @tparam Token An Asio completion token.
+   * @param client The client.
+   * @param account The bound account.
+   * @param amendment The amendment.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename Token>
   static auto replace_order(
     Client& client,
@@ -527,7 +595,15 @@ struct BrokerTraits<kis::KisClient>
     return client.async_replace_order(account, std::move(amendment), std::forward<Token>(token));
   }
 
-  /** Forwards an order cancellation for the bound account. */
+  /**
+   * @brief Forwards an order cancellation for the bound account.
+   * @tparam Token An Asio completion token.
+   * @param client The client.
+   * @param account The bound account.
+   * @param amendment The amendment.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename Token>
   static auto cancel_order(
     Client& client,
@@ -538,13 +614,28 @@ struct BrokerTraits<kis::KisClient>
     return client.async_cancel_order(account, std::move(amendment), std::forward<Token>(token));
   }
 
-  /** Forwards an amendable-order inquiry for the bound account. */
+  /**
+   * @brief Forwards an amendable-order inquiry for the bound account.
+   * @tparam Token An Asio completion token.
+   * @param client The client.
+   * @param account The bound account.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename Token>
   static auto working_orders(Client& client, const Account& account, Token&& token) {
     return client.async_open_orders(account, std::forward<Token>(token));
   }
 
-  /** Forwards an order-history inquiry for the bound account. */
+  /**
+   * @brief Forwards an order-history inquiry for the bound account.
+   * @tparam Token An Asio completion token.
+   * @param client The client.
+   * @param account The bound account.
+   * @param query The query.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename Token>
   static auto order_history(
     Client& client,
@@ -556,66 +647,95 @@ struct BrokerTraits<kis::KisClient>
   }
 };
 
-/** Broker port adaptation for the blocking KIS client facade. */
+/** @brief The `BlockingSession` adapter for `kis::KisBlockingClient`. */
 template <>
 struct BrokerTraits<kis::KisBlockingClient>
 : kis::traits_detail::Normalizers, kis::traits_detail::Capabilities {
-  /** Where an order carrying `asked` actually goes; see `kis_effective_route`. */
+  /**
+   * @brief Where an order carrying `asked` actually goes; see `kis_effective_route`.
+   * @param asked The order's venue.
+   * @return The venue.
+   */
   static constexpr Venue effective_route(Venue asked) noexcept {
     return kis_effective_route(asked);
   }
 
-  /** Concrete client this specialization adapts. */
+  /** @brief The client type. */
   using Client = kis::KisBlockingClient;
 
-  /** KIS application credentials and environment selection. */
+  /** @brief The configuration type. */
   using Config = kis::KisConfig;
 
-  /** KIS account selector. */
+  /** @brief The account type. */
   using Account = kis::KisAccount;
 
-  /** Compile-time identity of KIS. */
+  /** @brief The broker tag. */
   using BrokerTag = kis::Broker;
 
-  /** Acknowledgement KIS returns for an order instruction. */
+  /** @brief The order acknowledgement type. */
   using PlaceAck = kis::KisOrderAck;
 
-  /** KIS modification and cancellation instruction. */
+  /** @brief The amendment type. */
   using Amendment = kis::KisAmendment;
 
-  /** KIS order-history selector. */
+  /** @brief The order-history query type. */
   using HistoryQuery = kis::KisHistoryRange;
 
-  /** KIS amendable-order result. */
+  /** @brief The working-order result type. */
   using WorkingOrdersResult = kis::KisOpenOrderPage;
 
-  /** Normalized broker name. */
+  /** @brief The broker's name. */
   static constexpr std::string_view name = kis::Broker::name;
 
-  /** This client drives its own event loop and returns a result directly. */
+  /** @brief `true`: requests return their result directly. */
   static constexpr bool blocking = true;
 
-  /** Returns this client's pacing statistics, or null when it is unpaced. */
+  /**
+   * @brief Returns this client's pacing statistics, or null when it is unpaced.
+   * @param client The client.
+   * @return The statistics, or null if the client has no rate-limit budget.
+   */
   static const network::RateLimitStats* rate_limit_stats(const Client& client) {
     return client.rate_limit_stats();
   }
 
-  /** Returns static reference data for one instrument. */
+  /**
+   * @brief Returns static reference data for one instrument.
+   * @param client The client.
+   * @param subject The instrument.
+   * @return The result, or an error.
+   */
   static Result<Instrument> instrument(Client& client, InstrumentId subject) {
     return client.instrument(std::move(subject));
   }
 
-  /** Returns the calendar, supplying today when no date was given. */
+  /**
+   * @brief Returns the calendar, supplying today when no date was given.
+   * @param client The client.
+   * @param from The first date (today in Korea if empty).
+   * @return The result, or an error.
+   */
   static Result<TradingCalendar> calendar(Client& client, Country, std::optional<Date> from) {
     return client.calendar(from ? *from : kis::today_in_seoul());
   }
 
-  /** Returns today's price bounds. */
+  /**
+   * @brief Returns today's price bounds.
+   * @param client The client.
+   * @param instrument The instrument.
+   * @return The result, or an error.
+   */
   static Result<PriceLimits> price_limits(Client& client, InstrumentId instrument) {
     return client.price_limits(std::move(instrument));
   }
 
-  /** Returns recent executions. */
+  /**
+   * @brief Returns recent executions.
+   * @param client The client.
+   * @param instrument The instrument.
+   * @param count The most trades to return.
+   * @return The result, or an error.
+   */
   static Result<std::vector<TradePrint>> trades(
     Client& client,
     InstrumentId instrument,
@@ -624,27 +744,53 @@ struct BrokerTraits<kis::KisBlockingClient>
     return client.trades(std::move(instrument), count);
   }
 
-  /** Returns the order book. */
+  /**
+   * @brief Returns the order book.
+   * @param client The client.
+   * @param instrument The instrument.
+   * @return The result, or an error.
+   */
   static Result<DepthSnapshot> depth(Client& client, InstrumentId instrument) {
     return client.depth(std::move(instrument));
   }
 
-  /** Returns bars, paging inside the client. */
+  /**
+   * @brief Returns bars, paging inside the client.
+   * @param client The client.
+   * @param query The query.
+   * @return The result, or an error.
+   */
   static Result<BarSeries> bars(Client& client, BarQuery query) {
     return client.bars(std::move(query));
   }
 
-  /** Returns a quote. */
+  /**
+   * @brief Returns a quote.
+   * @param client The client.
+   * @param instrument The instrument.
+   * @return The result, or an error.
+   */
   static Result<QuoteSnapshot> quote(Client& client, InstrumentId instrument) {
     return client.quote(std::move(instrument));
   }
 
-  /** Returns holdings for the bound account. */
+  /**
+   * @brief Returns holdings for the bound account.
+   * @param client The client.
+   * @param account The bound account.
+   * @return The result, or an error.
+   */
   static Result<HoldingsSnapshot> holdings(Client& client, const Account& account) {
     return client.holdings(account);
   }
 
-  /** Returns what the bound account may spend in `currency`. */
+  /**
+   * @brief Returns what the bound account may spend in `currency`.
+   * @param client The client.
+   * @param account The bound account.
+   * @param currency The currency.
+   * @return The result, or an error.
+   */
   static Result<BuyingPower> buying_power(
     Client& client,
     const Account& account,
@@ -653,12 +799,24 @@ struct BrokerTraits<kis::KisBlockingClient>
     return client.buying_power(currency, account);
   }
 
-  /** Submits an order for the bound account. */
+  /**
+   * @brief Submits an order for the bound account.
+   * @param client The client.
+   * @param account The bound account.
+   * @param order The order.
+   * @return The result, or an error.
+   */
   static Result<PlaceAck> place_order(Client& client, const Account& account, OrderRequest order) {
     return client.place_order(account, std::move(order));
   }
 
-  /** Modifies an order for the bound account. */
+  /**
+   * @brief Modifies an order for the bound account.
+   * @param client The client.
+   * @param account The bound account.
+   * @param amendment The amendment.
+   * @return The result, or an error.
+   */
   static Result<PlaceAck> replace_order(
     Client& client,
     const Account& account,
@@ -667,7 +825,13 @@ struct BrokerTraits<kis::KisBlockingClient>
     return client.replace_order(account, std::move(amendment));
   }
 
-  /** Cancels an order for the bound account. */
+  /**
+   * @brief Cancels an order for the bound account.
+   * @param client The client.
+   * @param account The bound account.
+   * @param amendment The amendment.
+   * @return The result, or an error.
+   */
   static Result<PlaceAck> cancel_order(
     Client& client,
     const Account& account,
@@ -676,12 +840,23 @@ struct BrokerTraits<kis::KisBlockingClient>
     return client.cancel_order(account, std::move(amendment));
   }
 
-  /** Returns the amendable orders for the bound account. */
+  /**
+   * @brief Returns the amendable orders for the bound account.
+   * @param client The client.
+   * @param account The bound account.
+   * @return The result, or an error.
+   */
   static Result<WorkingOrdersResult> working_orders(Client& client, const Account& account) {
     return client.open_orders(account);
   }
 
-  /** Returns order history for the bound account. */
+  /**
+   * @brief Returns order history for the bound account.
+   * @param client The client.
+   * @param account The bound account.
+   * @param query The query.
+   * @return The result, or an error.
+   */
   static Result<OrderPage> order_history(
     Client& client,
     const Account& account,

@@ -5,7 +5,7 @@
 namespace algotradelib {
 namespace kis {
 
-/** Blocking HTTP transport retained for the compatibility authentication API. */
+/** @brief The blocking HTTP client `KisAuth` uses. */
 using KisHttpClient = network::HttpClient;
 
 } // namespace kis

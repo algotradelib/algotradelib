@@ -21,23 +21,21 @@ namespace kis {
 // https://github.com/koreainvestment/open-trading-api/blob/main/examples_user/auth/auth_functions.py
 struct KisConfig;
 
-/**
- * Which venue's book a KIS domestic market-data call reads.
- *
- * KIS-private on purpose. A tape is Korean market structure -- two venues trading
- * one listing, plus the consolidated feed over them -- and broker-neutral `core/`
- * has nothing to normalize it to. See `KisConfig::market_tape_`.
- */
+/** @brief Which venue's prices KIS market-data requests read (see `KisConfig::market_tape_`). */
 enum class MarketTape {
-  /** The consolidated KRX+NXT tape (`UN`). */
+  /** @brief KRX and NXT combined (`UN`). */
   CONSOLIDATED,
-  /** KRX alone (`J`). */
+  /** @brief KRX alone (`J`). */
   KRX,
-  /** NXT alone (`NX`). */
+  /** @brief NXT alone (`NX`). */
   NXT,
 };
 
-/** Returns the `FID_COND_MRKT_DIV_CODE` value for `tape`. */
+/**
+ * @brief Returns KIS's `FID_COND_MRKT_DIV_CODE` for a tape.
+ * @param tape The tape.
+ * @return `"UN"`, `"J"` or `"NX"`.
+ */
 inline constexpr const char* market_division_code(MarketTape tape) noexcept {
   switch (tape) {
     case MarketTape::KRX:
@@ -52,6 +50,11 @@ inline constexpr const char* market_division_code(MarketTape tape) noexcept {
 struct KisRest;
 struct KisWebsocket;
 
+/**
+ * @brief Reads KIS's token expiry, `YYYY-MM-DD HH:MM:SS` in Korean time.
+ * @param s The text.
+ * @return The instant, or the epoch if the text does not have that form.
+ */
 static inline std::chrono::system_clock::time_point parse_expiry(const char* s) {
   std::tm tm{};
   if (
@@ -79,50 +82,37 @@ static inline std::chrono::system_clock::time_point parse_expiry(const char* s) 
   return std::chrono::system_clock::from_time_t(utc);
 }
 
-/** KIS application credentials and live/demo endpoint selection. */
+/**
+ * @brief KIS credentials (app key and secret), demo or real account, and the market-data tape.
+ *
+ * Load with `from_env()` (`KIS_APP_KEY`, `KIS_APP_SECRET`, `KIS_DEMO`) or `from_json(filename)`.
+ */
 struct KisConfig : public network::ClientCredentials<KisConfig> {
   // std::string grant_type = "client_credentials"; // length = 18
   // std::string app_key_; // length = 36
   // std::string app_secret_; // length = 180
   /**
-   * Whether to use KIS's 모의투자 (paper-trading) endpoints. **Demo unless stated otherwise.**
+   * @brief Whether to use KIS's demo (모의투자) endpoints; **`true` unless stated otherwise**.
    *
-   * Live is the one choice that moves real money, so it is the one that has to be written down:
-   * `KIS_DEMO=0` in the environment, `"demo": false` in a credential file, or `is_demo_ = false` in code.
-   * Anything left unstated is demo -- and live keys sent to the demo endpoints are refused at the first
-   * token request, so a forgotten setting fails instead of trading.
+   * Real trading must be stated: `KIS_DEMO=0`, `"demo": false` in the credential file, or
+   * `is_demo_ = false`. Real-account keys sent to the demo endpoints are refused at the first token
+   * request, so a forgotten setting fails rather than trades.
    */
   bool is_demo_ = true;
 
   /**
-   * Which book KIS's domestic market-data calls read.
+   * @brief Which venue's prices every KIS market-data request reads (quotes, bars, depth, price
+   *   bands, trades); KRX and NXT combined by default, as Toss reports.
    *
-   * KRX-listed equities trade on two venues since Nextrade opened (2025-03-04),
-   * and `FID_COND_MRKT_DIV_CODE` selects which one a quote, a bar, the depth, the
-   * price limits or the recent prints describe: `J` is KRX alone, `NX` is NXT
-   * alone, `UN` is the consolidated tape.
-   *
-   * **It is one setting for every market-data verb, and that is the point.** Five
-   * of the seven verbs used to send `J` unconditionally while the quote derived its
-   * code from the instrument, so a caller's last price came from the consolidated
-   * tape and their bars from KRX -- and `Context::last_price`, which the exposure
-   * ceiling is measured against, is written from both.
-   *
-   * **It is deliberately not read from `InstrumentId::venue_`.** That field is an
-   * identity: `validate_order` refuses an order whose instrument names anything but
-   * the combined venue, because a holding carries no venue and a mismatch makes
-   * `Portfolio::working_quantity` read zero. A tape is a question about data, not
-   * about which instrument this is, so it lives here where changing it cannot
-   * invalidate an order.
-   *
-   * Consolidated by default, which is what a Korean equity's price means when
-   * nobody says otherwise, and what Toss reports -- its market data takes no tape
-   * parameter at all and its trading hours are stated on the 통합 (KRX+NXT) basis.
-   * So the default makes the two brokers answer the same question.
+   * It does not change the instrument's identity or where orders go.
    */
   MarketTape market_tape_ = MarketTape::CONSOLIDATED;
 
-  /** Reads KIS credentials and environment selection from process variables. */
+  /**
+   * @brief Reads the credentials from `KIS_APP_KEY` and `KIS_APP_SECRET`, and the environment from
+   *   `KIS_DEMO` (see `demo_from_env`); called by `from_env()`. Nothing changes if it throws.
+   * @throws std::runtime_error if a key variable is missing or `KIS_DEMO` is invalid.
+   */
   void from_env_impl() {
     const char* key = std::getenv("KIS_APP_KEY");
     const char* secret = std::getenv("KIS_APP_SECRET");
@@ -137,10 +127,15 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
   }
 
   /**
-   * Reads credentials from a JSON file.
+   * @brief Reads the credentials from a JSON file; called by `from_json(filename)`. Nothing changes
+   *   if it throws.
    *
-   * Expected format: `{ "app_key": "...", "app_secret": "...", "demo": false }`. Without `"demo"` the
-   * config is demo; when present it must be `true` or `false`.
+   * Format: `{ "app_key": "...", "app_secret": "...", "demo": false }`; without `"demo"` the config
+   * is demo.
+   *
+   * @param filename The file.
+   * @throws std::runtime_error if the file cannot be read or parsed, a key is missing or not a
+   *   string, or `"demo"` is not a boolean.
    */
   void from_json_impl(
     const std::string& filename
@@ -177,10 +172,9 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
   }
 
   /**
-   * Reads `KIS_DEMO`: unset is demo, `1` is demo, `0` is live, anything else refuses.
-   *
-   * No trimming, no `true` or `yes`: a value that has to be interpreted is one somebody could have
-   * meant the other way, and guessing wrong in either direction is worse than refusing.
+   * @brief Reads `KIS_DEMO`.
+   * @return `true` (demo) if unset or `1`, `false` (real) if `0`.
+   * @throws std::runtime_error for any other value.
    */
   static bool demo_from_env() {
     const char* demo = std::getenv("KIS_DEMO");
@@ -196,7 +190,13 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
     );
   }
 
-  /** Reads a credential file's `"demo"`: absent is demo, otherwise it must be a JSON boolean. */
+  /**
+   * @brief Reads a credential file's `"demo"`.
+   * @param doc The file's contents.
+   * @param filename The file, for the error message.
+   * @return `true` if absent, otherwise its value.
+   * @throws std::runtime_error if it is not a boolean.
+   */
   static bool demo_from_json(const json::object& doc, const std::string& filename) {
     const json::value* demo = doc.if_contains("demo");
     if (!demo) {
@@ -211,47 +211,75 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
     return demo->get_bool();
   }
 
-  /** The JSON field KIS expects the application key under. */
+  /**
+   * @brief Returns the token request's field for the app key.
+   * @return `"appkey"`.
+   */
   static constexpr std::string_view key_field() noexcept { return "appkey"; }
 
-  /** The JSON field KIS expects the application secret under. */
+  /**
+   * @brief Returns the token request's field for the app secret.
+   * @return `"appsecret"`.
+   */
   static constexpr std::string_view secret_field() noexcept { return "appsecret"; }
 
-  /** The REST host for the selected environment. */
+  /**
+   * @brief Returns the REST host for the environment.
+   * @return The host name.
+   */
   const char* rest_host() const noexcept {
     return is_demo_ ? "openapivts.koreainvestment.com" : "openapi.koreainvestment.com";
   }
 
-  /** The REST port for the selected environment. */
+  /**
+   * @brief Returns the REST port for the environment.
+   * @return `"29443"` (demo) or `"9443"`.
+   */
   const char* rest_port() const noexcept { return is_demo_ ? "29443" : "9443"; }
 
-  /** The WebSocket host, which is the same for both environments. */
+  /**
+   * @brief Returns the WebSocket host (the same for both environments).
+   * @return The host name.
+   */
   const char* ws_host() const noexcept { return "ops.koreainvestment.com"; }
 
-  /** The WebSocket port for the selected environment. */
+  /**
+   * @brief Returns the WebSocket port for the environment.
+   * @return `"31000"` (demo) or `"21000"`.
+   */
   const char* ws_port() const noexcept { return is_demo_ ? "31000" : "21000"; }
 
-  /** Returns the approval-key request body, which spells the secret `secretkey` rather than `appsecret`. */
+  /**
+   * @brief Builds the WebSocket approval-key request body (the secret under `secretkey`).
+   * @return The JSON body.
+   */
   std::string ws_to_jsonbody() const {
     return R"({"grant_type":"client_credentials","appkey":")" + key_ + R"(","secretkey":")" +
       secret_ + R"("})";
   }
 };
 
-/** Parsed KIS REST OAuth token and absolute expiry time. */
+/** @brief A KIS REST access token and its expiry. */
 struct KisRest : public network::AuthBody<KisRest> {
   // std::string access_token_; // length = 350
   // // std::string token_type; // length = 20, Bearer
   // int64_t expires_in_; // 10-digits
-  /** KIS's own stated expiry, which overrides the relative `expires_in` when present. */
+  /** @brief KIS's stated expiry (`access_token_token_expired`), which takes precedence over `expires_in`. */
   std::chrono::system_clock::time_point access_token_expired_; // length = 50, format: "2022-08-30 08:10:10"
 
+  /** @brief Constructs an empty token. */
   KisRest() {}
 
-  /** The field KIS returns the bearer token under. */
+  /**
+   * @brief Returns the token response's field for the token.
+   * @return `"access_token"`.
+   */
   static constexpr std::string_view token_field() noexcept { return "access_token"; }
 
-  /** Reads KIS's absolute expiry out of the token response. */
+  /**
+   * @brief Reads KIS's stated expiry from a token response; called by `from_json`.
+   * @param doc The response.
+   */
   void from_json_impl(
     const json::object& doc
   ) {
@@ -270,20 +298,28 @@ struct KisRest : public network::AuthBody<KisRest> {
     }
   }
 
-  /** Returns whether the token is present and not yet expired. */
+  /**
+   * @brief Tests whether the token is set and stays valid for at least five more minutes.
+   * @return `true` if so.
+   */
   bool valid() const noexcept { return network::AuthBody<KisRest>::valid(); }
 };
 
-/** Parsed KIS WebSocket approval key and refresh timestamp. */
+/** @brief A KIS WebSocket approval key and when it was issued. */
 struct KisWebsocket {
-  /** The approval key KIS issued for a WebSocket session. */
+  /** @brief The approval key. */
   std::string approval_key_; // length = 286
-  /** When it was issued, which is what the refresh window is measured from. */
+  /** @brief When it was received. */
   std::chrono::system_clock::time_point last_auth_time_;
 
+  /** @brief Constructs an empty key. */
   KisWebsocket() {}
 
-  /** Reads the approval key out of the response, throwing when it is absent. */
+  /**
+   * @brief Reads an approval-key response.
+   * @param doc The response.
+   * @throws std::runtime_error if it has no `approval_key`.
+   */
   void from_json(
     const json::object& doc
   ) {
@@ -294,7 +330,10 @@ struct KisWebsocket {
     last_auth_time_ = std::chrono::system_clock::now();
   }
 
-  /** Returns whether the key is present and still inside KIS's refresh window. */
+  /**
+   * @brief Tests whether the key is set and was received less than a day ago.
+   * @return `true` if so.
+   */
   bool valid() const noexcept {
     // https://github.com/koreainvestment/open-trading-api/blob/33e0e1e65cd1c8c8b639531483ec0b327087bab1/examples_user/kis_auth.py#L507
     const auto now = std::chrono::system_clock::now();
