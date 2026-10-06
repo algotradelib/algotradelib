@@ -49,8 +49,7 @@ inline bool same_number(
  *
  * The fields compared are the ones a broker moves while an order is outstanding. Everything else
  * on an `OrderSnapshot` identifies the order or describes money attached to a fill, and both are
- * excluded deliberately -- see `OrderUpdateWatch` for the argument, which is a design decision
- * rather than an implementation detail.
+ * excluded, so a change to them alone produces no update.
  */
 inline bool same_observable_state(const OrderSnapshot& lhs, const OrderSnapshot& rhs) {
   return lhs.status_ == rhs.status_ &&

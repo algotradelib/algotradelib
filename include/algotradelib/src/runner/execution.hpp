@@ -31,10 +31,13 @@ enum class SendOutcome {
   /** @brief The broker refused the instruction (for a placement, the order does not exist); nothing needs reconciling. */
   REJECTED,
   /**
-   * @brief The outcome is unknown (the request failed in transit, or the reply could not be read).
+   * @brief The outcome is unknown (see `outcome_of`): the request failed in transit, the reply could
+   *   not be read, or the broker's answer is reported as `PROTOCOL`.
    *
-   * Nothing more is placed for that instrument until the broker's order list has been read and the
-   * instrument resolved.
+   * At KIS (a reply with `rt_cd` not `0`, such as insufficient balance) and Toss (any refusal but a
+   * rate limit) the broker's own refusals are reported as `PROTOCOL`, so they land here, not in
+   * `REJECTED`. Nothing more is placed for that instrument until the broker's order list has been
+   * read and the instrument resolved.
    */
   INDETERMINATE,
   /**
@@ -80,8 +83,9 @@ inline constexpr std::string_view send_outcome_name(SendOutcome outcome) noexcep
  *
  * - `REFUSED_LOCALLY` when `reached_broker_` is `false` (nothing was sent), whatever the category;
  * - `INDETERMINATE` for `TRANSPORT`, `CANCELLED` (a local timeout says nothing about whether the
- *   request went out), `PROTOCOL` (the unreadable reply may have been an acknowledgement), an HTTP
- *   status of 500 or more, and any unknown category;
+ *   request went out), `PROTOCOL` (an unreadable reply may have been an acknowledgement; at KIS and
+ *   Toss this also covers the broker's own refusals), an HTTP status of 500 or more, and any unknown
+ *   category;
  * - `REJECTED` for an HTTP status below 500, `AUTHENTICATION`, `RATE_LIMIT` and `INVALID_ARGUMENT`.
  *
  * Doubtful cases are classified as unknown, which costs a reconciliation, rather than as refused,
@@ -132,8 +136,8 @@ inline bool broker_unreachable(const BrokerError& error) noexcept {
  * @brief Tests whether an error is the broker's rate-limit refusal (such as KIS `EGW00201`).
  *
  * It is `REJECTED`, but the refusal is about the moment, so `Runner` keeps the instruction for a
- * later pass. (A KIS order refused with a non-2xx status stays unclassified, so it is
- * `INDETERMINATE`.)
+ * later pass. (A KIS rate-limit refusal sent with an HTTP status of 500 or more is `HTTP`, so it
+ * is `INDETERMINATE`.)
  *
  * @param error The error.
  * @return `true` if the request reached the broker and the category is `RATE_LIMIT`.
