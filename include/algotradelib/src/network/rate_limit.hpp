@@ -107,8 +107,9 @@ struct RateLimitBudget {
   /** @brief The sustained rate, in requests per second; at least 1. */
   int per_second_{8};
   /**
-   * @brief The part of `burst_` only `AUTH` and `TRADING` requests may use, so polling cannot delay
-   *   an order; zero disables the reservation.
+   * @brief The part of `burst_` only `AUTH` and `TRADING` requests may use, so polling cannot use up
+   *   the capacity an order needs (a request already on the wire still goes first); zero disables
+   *   the reservation.
    */
   int trading_reserve_{2};
 };

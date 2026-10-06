@@ -40,15 +40,16 @@ public:
 
   /**
    * @brief Loads the credentials from the broker's environment variables.
-   * @throws std::runtime_error (from the broker's implementation) if a variable is missing.
+   * @throws std::runtime_error (from the broker's implementation) if a variable is missing or
+   *   invalid (such as a demo setting that is neither `0` nor `1`).
    */
   void from_env() { static_cast<BrokerType*>(this)->from_env_impl(); }
 
   /**
    * @brief Loads the credentials from a JSON file, in the broker's format.
    * @param filename The file.
-   * @throws std::runtime_error (from the broker's implementation) if the file cannot be read or a
-   *   field is missing.
+   * @throws std::runtime_error (from the broker's implementation) if the file cannot be read or is
+   *   not valid JSON, or a field is missing, of the wrong type or invalid.
    */
   void from_json(const std::string& filename) {
     static_cast<BrokerType*>(this)->from_json_impl(filename);

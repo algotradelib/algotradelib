@@ -76,7 +76,10 @@ struct HttpRequest {
 
 /** @brief Deadlines, size limits and pacing for an HTTP client. */
 struct HttpClientOptions {
-  /** @brief The deadline applied to each of DNS lookup, connect, TLS handshake, write and read. */
+  /**
+   * @brief The deadline for each of DNS lookup, connect, TLS handshake, write and read, in
+   *   `AsyncHttpClient`; `HttpClient`'s blocking operations are not bounded by it.
+   */
   std::chrono::seconds timeout_{30};
   /** @brief The largest response body accepted, in bytes. */
   std::size_t body_limit_{8 * 1024 * 1024};
@@ -129,9 +132,13 @@ inline std::string make_host_header(const std::string& host, const std::string& 
 }
 
 /**
- * @brief Shuts a TLS stream down (best effort, bounded by a deadline) and closes its socket.
+ * @brief Shuts a TLS stream down (best effort) and closes its socket.
+ *
+ * The TLS shutdown is a blocking call that `timeout` does not bound, so it can wait for an
+ * unresponsive peer.
+ *
  * @param stream The stream.
- * @param timeout The deadline for the TLS shutdown.
+ * @param timeout Set as the stream's expiry, which does not bound the blocking shutdown.
  */
 inline void shutdown_ssl_stream(beast::ssl_stream<beast::tcp_stream>& stream, std::chrono::seconds timeout) noexcept {
   beast::error_code ignored;
@@ -156,14 +163,17 @@ inline void close_ssl_stream(beast::ssl_stream<beast::tcp_stream>& stream) noexc
 /**
  * @brief A blocking HTTP/1.1 client over TLS that keeps one connection to one host.
  *
- * Not paced and not thread-safe. Broker clients use `AsyncHttpClient`.
+ * Not paced, not thread-safe, and with no enforced deadlines: a blocking DNS lookup, connect, TLS
+ * handshake, write or read can wait indefinitely. Broker clients use `AsyncHttpClient`.
  */
 class HttpClient {
 public:
   /**
    * @brief Constructs a client; it connects on the first request.
    * @param ioc The I/O context.
-   * @param context The TLS context; borrowed, and must outlive the client.
+   * @param context The TLS context; borrowed, and must outlive the client. The client installs SNI
+   *   and a host-name check; for the peer to be verified, the context must enable
+   *   `ssl::verify_peer` and hold trusted roots.
    * @param host The host name (also used for SNI and certificate verification).
    * @param port The port.
    * @param options The options; `rate_limit_` and `queue_limit_` are not used.
@@ -334,11 +344,20 @@ private:
  *   broker clients.
  *
  * Requests are queued by priority (`HttpRequest::group_`, then arrival) and sent one at a time on a
- * strand. A GET that fails on the connection is sent once more; any other request never is, and is
- * not written on a connection idle longer than `HttpClientOptions::unreplayed_idle_limit_`. With a
- * rate-limit budget, a request waits for admission, and fails unsent (`admission_deadline`) if the
- * wait would exceed the timeout. A failed request's `BrokerError::reached_broker_` says whether any
- * of its bytes were written.
+ * strand. Each completion runs on the handler's associated executor, or on the client's strand if it
+ * has none.
+ *
+ * A GET that fails on the connection is sent once more; any other request never is. Before a request
+ * other than a GET is admitted, a connection idle longer than
+ * `HttpClientOptions::unreplayed_idle_limit_` is replaced by a fresh one, once per request: if the
+ * request then waits for rate-limit admission longer than that limit, it is still written on the
+ * fresh connection. With a rate-limit budget, a request waits for admission, and fails with
+ * `admission_deadline` if the wait would exceed the timeout.
+ *
+ * A failed request's `BrokerError::reached_broker_` is `false` only if no attempt at it began
+ * writing (a failure while resolving, connecting or handshaking, or a refusal in the queue). `true`
+ * means a write was begun, by this attempt or an earlier one (a retried GET), so the broker may have
+ * received it; it does not prove it did.
  *
  * Create it with `std::make_shared`: it uses `shared_from_this`.
  */
@@ -350,10 +369,13 @@ public:
   /**
    * @brief Constructs a client; it connects on the first request.
    * @param executor The executor its strand runs on.
-   * @param context The TLS context; borrowed, and must outlive the client.
+   * @param context The TLS context; borrowed, and must outlive the client. The client installs SNI
+   *   and a host-name check; for the peer to be verified, the context must enable
+   *   `ssl::verify_peer` and hold trusted roots.
    * @param host The host name (also used for SNI and certificate verification).
    * @param port The port.
    * @param options The options.
+   * @throws std::invalid_argument if `options.rate_limit_` has a burst or rate below 1.
    */
   AsyncHttpClient(
     net::any_io_executor executor,
@@ -373,7 +395,8 @@ public:
   /**
    * @brief Returns the connection's rate limiter.
    *
-   * Use it only on the client's strand (where response handlers run).
+   * It is not synchronized: use it on the client's strand, or while no request is in progress. A
+   * completion handler bound to another executor is not on the strand.
    *
    * @return The limiter, or null if the client has no budget.
    */
@@ -382,7 +405,10 @@ public:
   }
 
   /**
-   * @brief Returns the connection's rate limiter.
+   * @brief Returns the connection's rate limiter (read-only).
+   *
+   * Not synchronized: read it on the client's strand, or while no request is in progress.
+   *
    * @return The limiter, or null if the client has no budget.
    */
   const RateLimitController* rate_limits() const noexcept {
@@ -404,8 +430,9 @@ public:
    * @brief Queues a request; completes with the response (any status) or an error.
    *
    * Errors: `queue_full` (unsent) when the queue is full; `CANCELLED` if the client is closed or the
-   * admission wait would exceed the timeout; `TRANSPORT` or `CANCELLED` from the connection, with
-   * `reached_broker_` saying whether the request was written.
+   * admission wait would exceed the timeout (`admission_deadline`); `TRANSPORT` or `CANCELLED` from
+   * the connection. See the class description for `reached_broker_`. The handler runs on its
+   * associated executor, or on the client's strand if it has none.
    *
    * @tparam CompletionToken An Asio completion token.
    * @param request_value The request.

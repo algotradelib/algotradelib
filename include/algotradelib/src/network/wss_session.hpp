@@ -15,8 +15,10 @@ namespace network {
 using WssSessionOptions = WebSocketSessionOptions;
 
 /**
- * @brief A WebSocket client over TLS (with SNI and host-name verification); derive from it and
- *   override `on_message`.
+ * @brief A WebSocket client over TLS; derive from it and override `on_message`.
+ *
+ * It installs SNI and a host-name check. For the peer to be verified, the TLS context must enable
+ * `ssl::verify_peer` and hold trusted roots.
  *
  * See `WebSocketSessionBase` for its use.
  */
@@ -25,7 +27,8 @@ public:
   /**
    * @brief Constructs a session.
    * @param ioc The I/O context.
-   * @param context The TLS context; borrowed, and must outlive the session.
+   * @param context The TLS context; borrowed, and must outlive the session (see the class
+   *   description on peer verification).
    * @param host The host.
    * @param port The port.
    * @param options The options.
@@ -43,7 +46,8 @@ public:
   /**
    * @brief Constructs a session with default options except the target and headers.
    * @param ioc The I/O context.
-   * @param context The TLS context; borrowed, and must outlive the session.
+   * @param context The TLS context; borrowed, and must outlive the session (see the class
+   *   description on peer verification).
    * @param host The host.
    * @param port The port.
    * @param target The path of the upgrade request.

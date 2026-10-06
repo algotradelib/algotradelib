@@ -42,7 +42,10 @@ struct WebSocketSessionOptions {
   std::string target_{"/"};
   /** @brief Extra headers sent with the upgrade request. */
   std::map<std::string, std::string> headers_;
-  /** @brief The deadline for the DNS lookup, connect and TLS handshake. */
+  /**
+   * @brief The deadline for the TCP connect and (for `WssSession`) the TLS handshake. The DNS lookup
+   *   has no deadline, and the WebSocket upgrade uses Beast's suggested client timeouts.
+   */
   std::chrono::seconds operation_timeout_{30};
   /** @brief Whether to reconnect after a failure or a close not requested with `close()`. */
   bool automatic_reconnect_{false};
@@ -80,7 +83,8 @@ public:
   /**
    * @brief Queues a message; messages are sent in order once connected.
    *
-   * A message whose write failed stays queued and is sent again after a reconnect.
+   * A message whose write failed stays queued and is sent again after a reconnect, so the server may
+   * receive it twice. `close()` does not clear the queue.
    *
    * @param message The message.
    */
@@ -140,6 +144,7 @@ protected:
     host_(std::move(host)), port_(std::move(port)), options_(std::move(options)),
     reconnect_rng_(std::random_device{}()) {}
 
+  /** @brief Destroys the session. */
   virtual ~WebSocketSessionBase() = default;
 
   /**
@@ -153,7 +158,7 @@ protected:
 
   /**
    * @brief Called when a stage fails; the session is then torn down, and reconnects if
-   *   `automatic_reconnect_` is set.
+   *   `automatic_reconnect_` is set and `close()` was not called.
    * @param stage The stage, such as `"connect"`, `"handshake"`, `"read"` or `"write"`.
    * @param error The error.
    */

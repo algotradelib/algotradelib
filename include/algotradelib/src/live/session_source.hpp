@@ -24,7 +24,7 @@ namespace live {
  * @brief Classifies a failed inquiry for a poll.
  *
  * A rate-limit refusal is not a failure: it does not count toward `runner::FailurePolicy`'s budget.
- * Nothing was sent, so no failed read needs reconciling.
+ * No order instruction was sent, so no failed read needs reconciling.
  *
  * @param error The error.
  * @return `RATE_LIMITED` for `ErrorCategory::RATE_LIMIT`, otherwise `FAILED`.
@@ -100,10 +100,15 @@ struct feeds_warmup<
  * @brief The source a `runner::PollingLoop` polls: reads a broker session and feeds bars, quotes,
  *   holdings, orders, buying power, price bands and the calendar to a runner.
  *
- * Bars: each poll reads every instrument, then feeds the new bars in period-end order across
- * instruments. Only bars whose period has ended are fed (a daily bar read during the session waits).
- * Only each instrument's newest bar is fed live, and only if it ended strictly after every older bar
- * of the read; the rest go through `Runner::feed_warmup`, so a restart does not act on old signals.
+ * Bars: each poll reads every instrument, then feeds the bars not fed before in period-end order
+ * across instruments. A bar whose period has not ended by the later of `Runner::observed_at()` and
+ * the series' receipt time is left for a later poll (a daily bar read during the session waits); this
+ * check applies to close-stamped bars and to daily and minute bars, and only once either instant is
+ * known (open-stamped weekly, monthly and yearly bars are fed unchecked). Of the bars collected, only
+ * each instrument's newest (which may be yesterday's, if today's is still forming) is fed live, and
+ * only if it ended strictly after every other collected bar; the rest go through
+ * `Runner::feed_warmup`, so a restart does not act on the history it reads. This does not make the
+ * newest bar recent.
  *
  * Requests are tagged by kind, and the rate limiter keeps capacity for orders, so polling cannot
  * starve an order. A kind the broker does not offer compiles to no request and returns `UNCHANGED`.
@@ -181,7 +186,7 @@ public:
    * @brief Constructs a source that reads market data from a second session.
    * @param session The account session; borrowed, and must outlive the source.
    * @param market_data The session bars, quotes, price bands and the calendar are read from (as its
-   *   own capabilities allow); borrowed. Nothing is sent through either session.
+   *   own capabilities allow); borrowed. No order or cancellation is sent through either session.
    * @param universe The instruments to poll.
    */
   SessionSource(Session& session, MarketData& market_data, std::vector<InstrumentId> universe)
@@ -272,17 +277,26 @@ public:
   Country calendar_country() const noexcept { return calendar_country_; }
 
   /**
-   * @brief Returns why the last poll failed.
-   * @return The error, or empty if the last poll succeeded.
+   * @brief Returns the error recorded by the most recent failing read.
+   *
+   * A diagnostic, not the outcome of the last poll: a poll that does nothing (a kind the broker does
+   * not offer, or nothing configured) leaves it as it was, and a working-order poll can return
+   * `UPDATED` while recording a failed journal-reconciliation history read here.
+   *
+   * @return The error, or empty if cleared by a later successful read.
    */
   const std::optional<BrokerError>& last_error() const noexcept { return last_error_; }
 
   /**
    * @brief Polls one kind of data and feeds or installs what arrived in the runner.
    *
-   * Buying power and price bands ask for every currency or instrument even after one fails: the
-   * answers that arrived are installed, and the poll returns the failure (a failure outranks a
-   * rate-limit refusal). A bar poll that fails feeds nothing; a quote poll stops at the first failure.
+   * A poll is not atomic. Buying power and price bands ask for every currency or instrument even
+   * after one fails: the answers that arrived are installed, and the poll returns the failure (a
+   * failure outranks a rate-limit refusal). A quote poll stops at the first failure, with the quotes
+   * before it already fed. A bar poll that fails feeds nothing. A working-order poll installs the
+   * listing, feeds order updates and reconciles before it reads any history the runner needs; if
+   * that read fails it returns the failure with those effects kept. `UPDATED` does not mean journal
+   * reconciliation succeeded (see `last_reconcile()` and `last_error()`).
    *
    * @tparam Runner The runner type.
    * @param kind The kind to poll.
