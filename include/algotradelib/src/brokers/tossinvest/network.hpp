@@ -5,7 +5,7 @@
 namespace algotradelib {
 namespace tossinvest {
 
-/** Blocking HTTP transport retained for the compatibility authentication API. */
+/** @brief The blocking HTTP client `TossAuth` uses. */
 using TossHttpClient = network::HttpClient;
 
 } // namespace tossinvest

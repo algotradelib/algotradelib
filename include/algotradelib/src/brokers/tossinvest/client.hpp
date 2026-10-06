@@ -25,23 +25,19 @@
 
 namespace algotradelib::tossinvest {
 
-/** Toss brokerage account returned by account discovery. */
+/** @brief A Toss account, as account discovery (`async_accounts`) returns it. */
 struct TossAccount {
-  /** The account number as Toss displays it, usually masked. */
+  /** @brief The account number as Toss displays it, usually masked. */
   std::string account_number_;
-  /** Toss's own account sequence, which every subsequent request selects the account by. */
+  /** @brief Toss's account sequence, which every account request names. */
   std::int64_t sequence_{0};
-  /** The account type as Toss reported it. For display. */
+  /** @brief The account type as Toss reports it, for display. */
   std::string account_type_;
 };
 
 /**
- * Lifecycle group selected by a Toss order listing.
- *
- * Toss groups order states rather than listing them individually: `OPEN`
- * covers pending, partially filled, and pending amendment states, while
- * `CLOSED` covers terminal ones. The group is not the same value space as an
- * individual order's `OrderStatus`.
+ * @brief Which orders a Toss order listing returns: `OPEN` (pending, partly filled, amendment
+ *   pending) or `CLOSED` (ended).
  */
 enum class TossOrderScope {
   OPEN,
@@ -49,57 +45,51 @@ enum class TossOrderScope {
 };
 
 /**
- * Filter for one Toss order listing.
+ * @brief A Toss order-listing query.
  *
- * Toss ignores `cursor_` and `limit_` for `TossOrderScope::OPEN`, which always
- * returns every pending order in one response. They are still accepted here so
- * one query type serves both scopes, and the adapter simply omits them where
- * the broker states they have no effect.
+ * For `OPEN`, Toss returns every open order at once and ignores `cursor_` and `limit_` (they are not
+ * sent).
  */
 struct TossOrderQuery {
-  /** Which account to list, by `TossAccount::sequence_`. */
+  /** @brief The account (`TossAccount::sequence_`). */
   std::int64_t account_sequence_{0};
-  /** Open orders or closed ones. */
+  /** @brief Open or closed orders. */
   TossOrderScope scope_{TossOrderScope::OPEN};
-  /** Restrict to one symbol. */
+  /** @brief Only this symbol, if set. */
   std::optional<std::string> symbol_;
-  /** The first date to include. */
+  /** @brief The first date to include. */
   std::optional<Date> from_;
-  /** The last date to include. */
+  /** @brief The last date to include. */
   std::optional<Date> to_;
-  /** A cursor from a previous page. Ignored for `OPEN`, which returns everything at once. */
+  /** @brief The cursor from a previous page (`OrderPage::next_cursor_`); ignored for `OPEN`. */
   std::optional<std::string> cursor_;
-  /** The maximum rows to return. Ignored for `OPEN`, as above. */
+  /** @brief The most rows to return; ignored for `OPEN`. */
   std::optional<int> limit_;
 };
 
 /**
- * Price and quantity instruction for a Toss order modification.
+ * @brief An amendment of a Toss order: a new price, and for a Korean order a new quantity.
  *
- * Toss requires `quantity_` for Korean orders and forbids it for United States
- * orders, where only the price may change. The caller states the intent and
- * the adapter transmits it unchanged rather than inferring one.
+ * `quantity_` is required for a Korean order and must be empty for a US order (whose quantity cannot
+ * change); it is sent as given.
  */
 struct TossAmendment {
-  /** The order to amend, by Toss's own identifier. */
+  /** @brief Toss's order id. */
   std::string order_id_;
-  /** The price basis the amended order should have. */
+  /** @brief The order type it should have. */
   OrderType type_{OrderType::LIMIT};
-  /** The new quantity. Required for a Korean order and forbidden for a United States one. */
+  /** @brief The new quantity: required for a Korean order, empty for a US one. */
   std::optional<Decimal64> quantity_;
-  /** The new price. */
+  /** @brief The new price. */
   std::optional<Decimal64> price_;
-  /** Acknowledges Toss's high-value confirmation. */
+  /** @brief Confirms a high-value order, which Toss otherwise refuses. */
   bool confirm_high_value_{false};
 };
 
 /**
- * Reads the retry delay Toss publishes with a rate-limit refusal.
- *
- * `Retry-After` is documented on Toss's `429` response. It is read here rather
- * than in shared broker code because which headers carry meaning is each
- * broker's own contract: KIS publishes neither this one nor any equivalent, and a
- * future broker will publish its own set.
+ * @brief Reads the `Retry-After` header of a Toss rate-limit refusal.
+ * @param response The response.
+ * @return The delay, or `std::nullopt` if absent or not a whole number.
  */
 inline std::optional<std::chrono::seconds> retry_after(const network::HttpResponse& response) {
   const auto seconds = broker_detail::integer_header(response, "Retry-After");
@@ -110,11 +100,9 @@ inline std::optional<std::chrono::seconds> retry_after(const network::HttpRespon
 }
 
 /**
- * Reads the allowance Toss says it is enforcing, in requests per second.
- *
- * Toss documents `X-RateLimit-Limit` as the burst capacity per second on the same
- * refusal. It is observed when present and never required, because the header is
- * documented on the refusal rather than promised on a successful response.
+ * @brief Reads the `X-RateLimit-Limit` header of a Toss rate-limit refusal (requests per second).
+ * @param response The response.
+ * @return The limit, or `std::nullopt` if absent or not a positive whole number.
  */
 inline std::optional<int> reported_rate_limit(const network::HttpResponse& response) {
   const auto limit = broker_detail::integer_header(response, "X-RateLimit-Limit");
@@ -125,13 +113,10 @@ inline std::optional<int> reported_rate_limit(const network::HttpResponse& respo
 }
 
 /**
- * Returns an error when Toss does not publish bars at `interval`.
- *
- * Toss publishes one-minute and one-day bars only. An interval it does not publish
- * is refused rather than produced by aggregating a shorter one, which would answer
- * a different question from the one asked.
- *
- * Both the client and the broker port call this, so the rule has one definition.
+ * @brief Refuses a bar interval Toss does not publish (it publishes one-minute and one-day bars
+ *   only; nothing is aggregated).
+ * @param interval The interval.
+ * @return An `INVALID_ARGUMENT` error (`unsupported_interval`, not sent), or `std::nullopt`.
  */
 inline std::optional<BrokerError> unsupported_bar_interval(BarInterval interval) {
   if (interval == BarInterval::ONE_MINUTE || interval == BarInterval::ONE_DAY) {
@@ -147,60 +132,68 @@ inline std::optional<BrokerError> unsupported_bar_interval(BarInterval interval)
   return error;
 }
 
-/** Persistent asynchronous Toss Securities client with coalesced OAuth refresh. */
+/**
+ * @brief The asynchronous Toss Securities REST client: market data, accounts and orders.
+ *
+ * It requests an access token when first needed and shares one refresh among concurrent requests.
+ * Create it with `std::make_shared`. Each completion runs on the handler's associated executor, or on
+ * the client's strand if it has none. A blocking wrapper is `TossBlockingClient`.
+ */
 class TossClient : public std::enable_shared_from_this<TossClient> {
 public:
-  /** Completion handler for one normalized quote. */
+  /** @brief Completion handler for one normalized quote. */
   using QuoteHandler = net::any_completion_handler<void(Result<QuoteSnapshot>)>;
 
-  /** Completion handler for one normalized bar series. */
+  /** @brief Completion handler for one normalized bar series. */
   using BarsHandler = net::any_completion_handler<void(Result<BarSeries>)>;
 
-  /** Completion handler for one normalized order book. */
+  /** @brief Completion handler for one normalized order book. */
   using DepthHandler = net::any_completion_handler<void(Result<DepthSnapshot>)>;
 
-  /** Completion handler for one instrument's price bounds. */
+  /** @brief Completion handler for one instrument's price bounds. */
   using PriceLimitsHandler = net::any_completion_handler<void(Result<PriceLimits>)>;
 
-  /** Completion handler for recent executions. */
+  /** @brief Completion handler for recent executions. */
   using TradesHandler = net::any_completion_handler<void(Result<std::vector<TradePrint>>)>;
 
-  /** Completion handler for several instruments quoted at once. */
+  /** @brief Completion handler for several instruments quoted at once. */
   using PricesHandler = net::any_completion_handler<void(Result<std::vector<QuoteSnapshot>>)>;
 
-  /** Completion handler for one trading calendar. */
+  /** @brief Completion handler for one trading calendar. */
   using CalendarHandler = net::any_completion_handler<void(Result<TradingCalendar>)>;
 
-  /** Completion handler for one instrument's reference data. */
+  /** @brief Completion handler for one instrument's reference data. */
   using InstrumentHandler = net::any_completion_handler<void(Result<Instrument>)>;
-  /** Completion handler for Toss account discovery. */
+  /** @brief Completion handler for Toss account discovery. */
   using AccountsHandler = net::any_completion_handler<void(Result<std::vector<TossAccount>>)>;
 
-  /** Completion handler for one normalized holdings snapshot. */
+  /** @brief Completion handler for one normalized holdings snapshot. */
   using HoldingsHandler = net::any_completion_handler<void(Result<HoldingsSnapshot>)>;
-  /** Completion handler for one normalized buying-power reading. */
+  /** @brief Completion handler for one normalized buying-power reading. */
   using BuyingPowerHandler = net::any_completion_handler<void(Result<BuyingPower>)>;
-  /** Completion handler for one instrument's sellable quantity. */
+  /** @brief Completion handler for one instrument's sellable quantity. */
   using SellableQuantityHandler = net::any_completion_handler<void(Result<Decimal64>)>;
-  /** Completion handler for the account's commission schedule. */
+  /** @brief Completion handler for the account's commission schedule. */
   using CommissionScheduleHandler = net::any_completion_handler<void(Result<CommissionSchedule>)>;
 
-  /** Completion handler for one accepted Toss order instruction. */
+  /** @brief Completion handler for one accepted Toss order instruction. */
   using OrderAckHandler = net::any_completion_handler<void(Result<OrderAck>)>;
 
-  /** Completion handler for one normalized page of orders. */
+  /** @brief Completion handler for one normalized page of orders. */
   using OrderPageHandler = net::any_completion_handler<void(Result<OrderPage>)>;
 
-  /** Completion handler for one normalized order. */
+  /** @brief Completion handler for one normalized order. */
   using OrderHandler = net::any_completion_handler<void(Result<OrderSnapshot>)>;
 
-  /** Internal completion handler for a shared access-token refresh. */
+  /** @brief Internal completion handler for a shared access-token refresh. */
   using TokenHandler = net::any_completion_handler<void(std::optional<BrokerError>)>;
 
   /**
-   * Constructs a client and takes value ownership of its credentials.
-   *
-   * Lvalue configurations are copied once; rvalue configurations are moved.
+   * @brief Constructs a client; nothing is sent until the first request.
+   * @param executor The executor its strand runs on.
+   * @param context The TLS context; borrowed, and must outlive the client.
+   * @param config The credentials.
+   * @param options HTTP options (set `rate_limit_` to pace requests).
    */
   TossClient(
     net::any_io_executor executor,
@@ -214,11 +207,11 @@ public:
     ) {}
 
   /**
-   * Requests bars, following Toss's cursor until `count_` is satisfied.
-   *
-   * Toss returns at most 200 bars per page, newest first, with `nextBefore` as the
-   * cursor for the page before. The adapter pages backwards and reverses once at
-   * the end, so the caller receives ascending bars however many pages it took.
+   * @brief Requests bars, reading as many pages as needed for `count_` bars (oldest first).
+   * @tparam CompletionToken An Asio completion token.
+   * @param query The query (one-minute or one-day bars only).
+   * @param token The completion token, called with `Result<BarSeries>`.
+   * @return Whatever the completion token returns.
    */
   template <typename CompletionToken>
   auto async_bars(BarQuery query, CompletionToken&& token) {
@@ -237,11 +230,12 @@ public:
   }
 
   /**
-   * Requests the trading calendar around `from`.
-   *
-   * Toss answers with three days — the requested one and the business days either
-   * side of it — rather than a span, so the calendar returned covers exactly those
-   * three. A caller needing more asks again from a different date.
+   * @brief Requests the trading calendar around a date: that date and the business days either side of it (three days).
+   * @tparam CompletionToken An Asio completion token.
+   * @param country The market.
+   * @param from The date (empty: Toss's today).
+   * @param token The completion token, called with `Result<TradingCalendar>`.
+   * @return Whatever the completion token returns.
    */
   template <typename CompletionToken>
   auto async_calendar(Country country, std::optional<Date> from, CompletionToken&& token) {
@@ -259,7 +253,13 @@ public:
     );
   }
 
-  /** Requests static reference data for one instrument. */
+  /**
+   * @brief Requests static reference data for one instrument.
+   * @tparam CompletionToken An Asio completion token.
+   * @param instrument The instrument.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_instrument(InstrumentId instrument, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<Instrument>)>(
@@ -281,7 +281,13 @@ public:
     );
   }
 
-  /** Requests today's upper and lower price bound for one instrument. */
+  /**
+   * @brief Requests today's upper and lower price bound for one instrument.
+   * @tparam CompletionToken An Asio completion token.
+   * @param instrument The instrument.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_price_limits(InstrumentId instrument, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<PriceLimits>)>(
@@ -303,7 +309,14 @@ public:
     );
   }
 
-  /** Requests recent executions for one instrument, newest first. */
+  /**
+   * @brief Requests recent executions for one instrument, newest first.
+   * @tparam CompletionToken An Asio completion token.
+   * @param instrument The instrument.
+   * @param count The most trades to return.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_trades(InstrumentId instrument, int count, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<std::vector<TradePrint>>)>(
@@ -333,11 +346,11 @@ public:
   }
 
   /**
-   * Quotes up to two hundred instruments in one request.
-   *
-   * The whole point of the call is that it is one request rather than many, so a
-   * list longer than Toss accepts is refused rather than split: splitting would
-   * quietly spend several times the rate-limit budget the caller was economising.
+   * @brief Quotes up to 200 instruments in one request.
+   * @tparam CompletionToken An Asio completion token.
+   * @param instruments The instruments; a longer list is refused, not split.
+   * @param token The completion token, called with `Result<std::vector<QuoteSnapshot>>`.
+   * @return Whatever the completion token returns.
    */
   template <typename CompletionToken>
   auto async_prices(std::vector<InstrumentId> instruments, CompletionToken&& token) {
@@ -356,7 +369,13 @@ public:
     );
   }
 
-  /** Requests and normalizes the resting orders on both sides of the book. */
+  /**
+   * @brief Requests and normalizes the resting orders on both sides of the book.
+   * @tparam CompletionToken An Asio completion token.
+   * @param instrument The instrument.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_depth(InstrumentId instrument, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<DepthSnapshot>)>(
@@ -373,7 +392,13 @@ public:
     );
   }
 
-  /** Requests and normalizes a current quote. */
+  /**
+   * @brief Requests and normalizes a current quote.
+   * @tparam CompletionToken An Asio completion token.
+   * @param instrument The instrument.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_quote(InstrumentId instrument, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<QuoteSnapshot>)>(
@@ -390,7 +415,12 @@ public:
     );
   }
 
-  /** Discovers the brokerage accounts available to the current credentials. */
+  /**
+   * @brief Discovers the brokerage accounts available to the current credentials.
+   * @tparam CompletionToken An Asio completion token.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_accounts(CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<std::vector<TossAccount>>)>(
@@ -408,10 +438,12 @@ public:
   }
 
   /**
-   * Requests what the account may spend in `currency`.
-   *
-   * The currency is required by the endpoint rather than defaulted, and a currency Toss does not
-   * price is refused before the socket write instead of being sent and rejected.
+   * @brief Requests the account's buying power in a currency.
+   * @tparam CompletionToken An Asio completion token.
+   * @param currency The currency; Toss answers KRW and USD, and any other is refused before sending.
+   * @param account_sequence The account (`TossAccount::sequence_`).
+   * @param token The completion token, called with `Result<BuyingPower>`.
+   * @return Whatever the completion token returns.
    */
   template <typename CompletionToken>
   auto async_buying_power(Currency currency, std::int64_t account_sequence, CompletionToken&& token) {
@@ -429,7 +461,14 @@ public:
     );
   }
 
-  /** Requests how much of one instrument the account may sell. */
+  /**
+   * @brief Requests how much of one instrument the account may sell.
+   * @tparam CompletionToken An Asio completion token.
+   * @param instrument The instrument.
+   * @param account_sequence The account (`TossAccount::sequence_`).
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_sellable_quantity(
     InstrumentId instrument,
@@ -455,7 +494,13 @@ public:
     );
   }
 
-  /** Requests the commission rates in force for the account. */
+  /**
+   * @brief Requests the commission rates in force for the account.
+   * @tparam CompletionToken An Asio completion token.
+   * @param account_sequence The account (`TossAccount::sequence_`).
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_commissions(std::int64_t account_sequence, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<CommissionSchedule>)>(
@@ -472,7 +517,13 @@ public:
     );
   }
 
-  /** Requests and normalizes holdings for one discovered account sequence. */
+  /**
+   * @brief Requests and normalizes holdings for one discovered account sequence.
+   * @tparam CompletionToken An Asio completion token.
+   * @param account_sequence The account (`TossAccount::sequence_`).
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_holdings(std::int64_t account_sequence, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<HoldingsSnapshot>)>(
@@ -490,14 +541,18 @@ public:
   }
 
   /**
-   * Submits a new order and returns Toss's acknowledgement.
+   * @brief Places an order.
    *
-   * The order POST is never replayed automatically. A `TRANSPORT` error
-   * therefore leaves the outcome *indeterminate*: the order may or may not
-   * have reached Toss. Supplying `OrderRequest::client_order_id_` makes a
-   * deliberate resubmission safe for ten minutes, because Toss treats it as an
-   * idempotency key and returns the original result. Without one, reconcile
-   * through `async_orders` before resubmitting.
+   * The request is never resent. After a `TRANSPORT` error the outcome is unknown. With
+   * `OrderRequest::client_order_id_` set, Toss treats it as an idempotency key for ten minutes, so
+   * sending the same order again returns the original result; without one, read `async_orders` before
+   * placing again.
+   *
+   * @tparam CompletionToken An Asio completion token.
+   * @param account_sequence The account (`TossAccount::sequence_`).
+   * @param order The order.
+   * @param token The completion token, called with `Result<OrderAck>`.
+   * @return Whatever the completion token returns.
    */
   template <typename CompletionToken>
   auto async_place_order(
@@ -527,10 +582,15 @@ public:
   }
 
   /**
-   * Modifies the price, and for Korean orders the quantity, of an open order.
+   * @brief Amends an open order's price, and for a Korean order its quantity.
    *
-   * The same indeterminacy rule as `async_place_order` applies, and a
-   * modification carries no idempotency key at all.
+   * After a `TRANSPORT` error the outcome is unknown; an amendment has no idempotency key.
+   *
+   * @tparam CompletionToken An Asio completion token.
+   * @param account_sequence The account (`TossAccount::sequence_`).
+   * @param amendment The amendment.
+   * @param token The completion token, called with `Result<OrderAck>`.
+   * @return Whatever the completion token returns.
    */
   template <typename CompletionToken>
   auto async_replace_order(
@@ -562,10 +622,15 @@ public:
   }
 
   /**
-   * Cancels an open order.
+   * @brief Cancels an open order.
    *
-   * The same indeterminacy rule as `async_place_order` applies: a transport
-   * failure does not mean the order is still live.
+   * After a `TRANSPORT` error the outcome is unknown: the order may still rest.
+   *
+   * @tparam CompletionToken An Asio completion token.
+   * @param account_sequence The account (`TossAccount::sequence_`).
+   * @param order_id Toss's order id.
+   * @param token The completion token, called with `Result<OrderAck>`.
+   * @return Whatever the completion token returns.
    */
   template <typename CompletionToken>
   auto async_cancel_order(
@@ -595,11 +660,15 @@ public:
   }
 
   /**
-   * Retrieves one page of orders in the requested lifecycle group.
+   * @brief Requests a page of orders.
    *
-   * A `TossOrderScope::OPEN` listing returns every pending order and reports
-   * no cursor. A `TossOrderScope::CLOSED` listing pages; pass the returned
-   * `OrderPage::next_cursor_` back unchanged to continue.
+   * An `OPEN` listing returns every open order and no cursor. A `CLOSED` listing pages: pass
+   * `OrderPage::next_cursor_` back as `cursor_` to continue.
+   *
+   * @tparam CompletionToken An Asio completion token.
+   * @param query The query.
+   * @param token The completion token, called with `Result<OrderPage>`.
+   * @return Whatever the completion token returns.
    */
   template <typename CompletionToken>
   auto async_orders(TossOrderQuery query, CompletionToken&& token) {
@@ -617,7 +686,14 @@ public:
     );
   }
 
-  /** Retrieves one order in any lifecycle state. */
+  /**
+   * @brief Retrieves one order in any lifecycle state.
+   * @tparam CompletionToken An Asio completion token.
+   * @param account_sequence The account (`TossAccount::sequence_`).
+   * @param order_id Toss's order id.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_order(std::int64_t account_sequence, std::string order_id, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<OrderSnapshot>)>(
@@ -642,18 +718,19 @@ public:
   }
 
   /**
-   * Returns this connection's pacing statistics, or null when it is unpaced.
+   * @brief Returns the rate limiter's statistics.
    *
-   * The counters live on the client's strand. Read them from a completion
-   * handler, where that strand is already current; on a blocking facade any
-   * moment between calls is safe, because its event loop is idle then.
+   * Read them on the client's strand or while no request is in progress (between calls on the
+   * blocking client).
+   *
+   * @return The statistics, or null if the client has no rate-limit budget.
    */
   const network::RateLimitStats* rate_limit_stats() const {
     const auto* limiter = http_->rate_limits();
     return limiter ? &limiter->stats() : nullptr;
   }
 
-  /** Cancels transport work and queued HTTP operations. */
+  /** @brief Cancels transport work and queued HTTP operations. */
   void close() { http_->close(); }
 
 private:
@@ -666,14 +743,12 @@ private:
   bool refreshing_{false};
   std::deque<TokenHandler> token_waiters_;
 
-  /**
-   * One bar request spanning however many pages Toss needs to answer it.
-   *
-   * `descending_` accumulates pages exactly as Toss sends them — newest first,
-   * each page older than the last — and is reversed once when the operation
-   * finishes. Reversing per page, or inserting at the front, would do the same
-   * work repeatedly for no benefit.
-   */
+  // One bar request spanning however many pages Toss needs to answer it.
+  //
+  // `descending_` accumulates pages exactly as Toss sends them — newest first,
+  // each page older than the last — and is reversed once when the operation
+  // finishes. Reversing per page, or inserting at the front, would do the same
+  // work repeatedly for no benefit.
   struct BarOperation {
     BarQuery query_;
     Currency currency_;
@@ -691,20 +766,18 @@ private:
     }
   };
 
-  /** Largest number of bars Toss returns in one page. */
+  // Largest number of bars Toss returns in one page.
   static constexpr int bar_page_limit_ = 200;
 
-  /**
-   * Most pages one bar request may consume.
-   *
-   * A bound is needed because a broker that kept returning a cursor would
-   * otherwise page forever. Fifty pages is 10,000 bars, far beyond any window a
-   * caller asks for in one call, so reaching it means something is wrong rather
-   * than that the caller was unlucky.
-   */
+  // Most pages one bar request may consume.
+  //
+  // A bound is needed because a broker that kept returning a cursor would
+  // otherwise page forever. Fifty pages is 10,000 bars, far beyond any window a
+  // caller asks for in one call, so reaching it means something is wrong rather
+  // than that the caller was unlucky.
   static constexpr int bar_page_budget_ = 50;
 
-  /** Validates a bar request and starts paging. */
+  // Validates a bar request and starts paging.
   void start_bars(BarQuery query, BarsHandler completion) {
     if (auto invalid = validate_bar_query(query)) {
       deliver(std::move(completion), Result<BarSeries>(std::move(*invalid)));
@@ -727,7 +800,7 @@ private:
     );
   }
 
-  /** Returns an error when Toss cannot answer the request as described. */
+  // Returns an error when Toss cannot answer the request as described.
   static std::optional<BrokerError> validate_bar_query(const BarQuery& query) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
@@ -745,12 +818,12 @@ private:
     return unsupported_bar_interval(query.interval_);
   }
 
-  /** Returns Toss's code for a supported interval. */
+  // Returns Toss's code for a supported interval.
   static const char* bar_interval_code(BarInterval interval) {
     return interval == BarInterval::ONE_MINUTE ? "1m" : "1d";
   }
 
-  /** Sends the next page of a bar request. */
+  // Sends the next page of a bar request.
   void request_bars(const std::shared_ptr<BarOperation>& operation) {
     const int outstanding = operation->query_.count_ -
       static_cast<int>(operation->descending_.size());
@@ -781,7 +854,7 @@ private:
     );
   }
 
-  /** Accumulates one page and either continues or finishes the request. */
+  // Accumulates one page and either continues or finishes the request.
   void handle_bars_page(
     const std::shared_ptr<BarOperation>& operation,
     Result<network::HttpResponse> result
@@ -810,16 +883,14 @@ private:
     request_bars(operation);
   }
 
-  /**
-   * Parses one page into the operation, or returns the error that ends it.
-   *
-   * A page that parses but contains no bar also ends the request: a broker that
-   * returns an empty page while still reporting a cursor would otherwise be paged
-   * forever, and `holdings-core` established the same guard.
-   *
-   * Takes the accumulation and cursor by reference rather than an operation, so the
-   * normalization is a pure function of a response and can be tested as one.
-   */
+  // Parses one page into the operation, or returns the error that ends it.
+  //
+  // A page that parses but contains no bar also ends the request: a broker that
+  // returns an empty page while still reporting a cursor would otherwise be paged
+  // forever, and `holdings-core` established the same guard.
+  //
+  // Takes the accumulation and cursor by reference rather than an operation, so the
+  // normalization is a pure function of a response and can be tested as one.
   static std::optional<BrokerError> parse_bars_page(
     Result<network::HttpResponse> result,
     const BarQuery& query,
@@ -880,14 +951,12 @@ private:
     }
   }
 
-  /**
-   * Normalizes one Toss candle.
-   *
-   * Toss stamps a one-minute bar at the instant it closed, aggregating
-   * `[t - 1m, t)`, and a one-day bar at local midnight, which is its open. The
-   * convention travels in the bar, because reading one as the other is a lookahead
-   * no timestamp can reveal.
-   */
+  // Normalizes one Toss candle.
+  //
+  // Toss stamps a one-minute bar at the instant it closed, aggregating
+  // `[t - 1m, t)`, and a one-day bar at local midnight, which is its open. The
+  // convention travels in the bar, because reading one as the other is a lookahead
+  // no timestamp can reveal.
   static Bar parse_bar(const json::object& row, const BarQuery& query) {
     static_cast<void>(query);
     Bar bar;
@@ -904,12 +973,10 @@ private:
     return bar;
   }
 
-  /**
-   * Reverses the accumulation and trims to the requested count.
-   *
-   * Paging runs backwards from the newest bar, so an overshoot is always at the
-   * old end; the newest `count_` bars are what the caller asked for.
-   */
+  // Reverses the accumulation and trims to the requested count.
+  //
+  // Paging runs backwards from the newest bar, so an overshoot is always at the
+  // old end; the newest `count_` bars are what the caller asked for.
   void finish_bars(
     const std::shared_ptr<BarOperation>& operation,
     const std::optional<std::string>& cursor
@@ -937,13 +1004,11 @@ private:
     deliver(std::move(operation->completion_), Result<BarSeries>(std::move(series)));
   }
 
-  /**
-   * Returns the `result` member of a market-data response, or the error ending it.
-   *
-   * Toss wraps every market-data answer in `result`, sometimes as an object and
-   * sometimes as a bare array, so the shape check belongs to each parser while the
-   * status, envelope, and JSON handling belong here once.
-   */
+  // Returns the `result` member of a market-data response, or the error ending it.
+  //
+  // Toss wraps every market-data answer in `result`, sometimes as an object and
+  // sometimes as a bare array, so the shape check belongs to each parser while the
+  // status, envelope, and JSON handling belong here once.
   static Result<json::value> market_result(Result<network::HttpResponse> response) {
     if (!response) {
       return Result<json::value>(std::move(response.error()));
@@ -967,15 +1032,13 @@ private:
     return Result<json::value>(std::move(*payload));
   }
 
-  /**
-   * Normalizes Toss's reference data for one instrument.
-   *
-   * The identity comes from the instrument the caller asked about rather than from
-   * the response's symbol, so the country and venue the caller stated survive.
-   *
-   * `price_rule_` is the library's own grid, not Toss's: no broker publishes tick
-   * size, so the rule is chosen from the market rather than normalized from a field.
-   */
+  // Normalizes Toss's reference data for one instrument.
+  //
+  // The identity comes from the instrument the caller asked about rather than from
+  // the response's symbol, so the country and venue the caller stated survive.
+  //
+  // `price_rule_` is the library's own grid, not Toss's: no broker publishes tick
+  // size, so the rule is chosen from the market rather than normalized from a field.
   static Result<Instrument> parse_instrument(
     InstrumentId requested,
     Result<network::HttpResponse> result
@@ -1022,7 +1085,7 @@ private:
     }
   }
 
-  /** Maps Toss's security type, tolerating a value this library has not normalized. */
+  // Maps Toss's security type, tolerating a value this library has not normalized.
   static SecurityType normalized_security_type(std::string_view code) {
     if (code == "STOCK") {
       return SecurityType::STOCK;
@@ -1054,13 +1117,11 @@ private:
     return SecurityType::UNKNOWN;
   }
 
-  /**
-   * Maps Toss's listing status, tolerating an unfamiliar value.
-   *
-   * Named apart from the order-status mapper on purpose: a listing status and an
-   * order status are unrelated vocabularies that happen to share a broker field
-   * name, and overloading on return type alone would not compile anyway.
-   */
+  // Maps Toss's listing status, tolerating an unfamiliar value.
+  //
+  // Named apart from the order-status mapper on purpose: a listing status and an
+  // order status are unrelated vocabularies that happen to share a broker field
+  // name, and overloading on return type alone would not compile anyway.
   static InstrumentStatus normalized_listing_status(std::string_view code) {
     if (code == "SCHEDULED") {
       return InstrumentStatus::SCHEDULED;
@@ -1074,14 +1135,12 @@ private:
     return InstrumentStatus::UNKNOWN;
   }
 
-  /**
-   * Reads a listing or delisting date as one of three answers.
-   *
-   * `null` or absent is **not stated** -- Toss documents a `null` `listDate` as 정보 미제공,
-   * information not provided, and a `null` `delistDate` as the value an active instrument carries --
-   * a `YYYY-MM-DD` of digits forming a real date is **stated**, and anything else, including a value
-   * that is not a string, is **unreadable**.
-   */
+  // Reads a listing or delisting date as one of three answers.
+  //
+  // `null` or absent is **not stated** -- Toss documents a `null` `listDate` as 정보 미제공,
+  // information not provided, and a `null` `delistDate` as the value an active instrument carries --
+  // a `YYYY-MM-DD` of digits forming a real date is **stated**, and anything else, including a value
+  // that is not a string, is **unreadable**.
   static StatedDate stated_calendar_date(const json::object& row, std::string_view key) {
     const auto bound = calendar_bound(row, key);
     if (bound.unreadable_) {
@@ -1090,7 +1149,7 @@ private:
     return bound.date_ ? StatedDate::stated(*bound.date_) : StatedDate{};
   }
 
-  /** Validates the request and asks for the calendar of one market. */
+  // Validates the request and asks for the calendar of one market.
   void start_calendar(Country country, std::optional<Date> from, CalendarHandler completion) {
     if (from && !is_valid_date(*from)) {
       BrokerError error;
@@ -1140,19 +1199,17 @@ private:
     );
   }
 
-  /**
-   * Normalizes Toss's calendar into the three days it reports.
-   *
-   * A day is a trading day when Toss reports trading hours for it: it documents the
-   * hours as null "둘 다 휴장이면", when both KRX and NXT are closed. So the presence of
-   * the hours *is* the answer, and the hours themselves are not normalized — only
-   * Toss publishes them, so they stay reachable on this client rather than becoming
-   * a field permanently empty for KIS.
-   *
-   * The two days either side are reported as business days, which is why they are
-   * recorded as open without consulting their hours: Toss has already answered the
-   * question by calling them that.
-   */
+  // Normalizes Toss's calendar into the three days it reports.
+  //
+  // A day is a trading day when Toss reports trading hours for it: it documents the
+  // hours as null "둘 다 휴장이면", when both KRX and NXT are closed. So the presence of
+  // the hours *is* the answer, and the hours themselves are not normalized — only
+  // Toss publishes them, so they stay reachable on this client rather than becoming
+  // a field permanently empty for KIS.
+  //
+  // The two days either side are reported as business days, which is why they are
+  // recorded as open without consulting their hours: Toss has already answered the
+  // question by calling them that.
   static Result<TradingCalendar> parse_calendar(
     Country country,
     Result<network::HttpResponse> result
@@ -1183,7 +1240,7 @@ private:
     }
   }
 
-  /** Reads one reported day, deciding whether the market opens on it. */
+  // Reads one reported day, deciding whether the market opens on it.
   static void append_calendar_day(
     const json::object& object,
     std::string_view key,
@@ -1214,16 +1271,14 @@ private:
     calendar.days_.push_back(day);
   }
 
-  /**
-   * Parses a `YYYY-MM-DD` calendar date, or nothing when the text is not one.
-   *
-   * **Every character of every field must be a digit, and that is not pedantry.** `std::stoi` takes
-   * a numeric prefix, so a shape check alone let `20x6-01-01` through as the year 20 -- a date that
-   * is valid, plausible and not the one the broker sent, which is worse than no date at all because
-   * nothing downstream can see that it is wrong. It also threw on `x026-01-01`, turning one bad
-   * field into a failure of whatever response carried it. Reading the digits here makes both cases
-   * the same answer: this text is not a date, said once, where a caller can act on it.
-   */
+  // Parses a `YYYY-MM-DD` calendar date, or nothing when the text is not one.
+  //
+  // **Every character of every field must be a digit, and that is not pedantry.** `std::stoi` takes
+  // a numeric prefix, so a shape check alone let `20x6-01-01` through as the year 20 -- a date that
+  // is valid, plausible and not the one the broker sent, which is worse than no date at all because
+  // nothing downstream can see that it is wrong. It also threw on `x026-01-01`, turning one bad
+  // field into a failure of whatever response carried it. Reading the digits here makes both cases
+  // the same answer: this text is not a date, said once, where a caller can act on it.
   static std::optional<Date> parse_calendar_date(std::string_view text) {
     if (text.size() != 10 || text[4] != '-' || text[7] != '-') {
       return std::nullopt;
@@ -1252,22 +1307,20 @@ private:
     return is_valid_date(date) ? std::optional<Date>(date) : std::nullopt;
   }
 
-  /** A date bound as the wire gave it: absent, readable, or stated and unreadable. */
+  // A date bound as the wire gave it: absent, readable, or stated and unreadable.
   struct CalendarBound {
     std::optional<Date> date_;
     bool unreadable_{false};
   };
 
-  /**
-   * Reads an optional date bound, holding "the broker said nothing" apart from "the broker said
-   * something unreadable".
-   *
-   * Absent and JSON `null` are the first: `null` is Toss's own spelling for a rate with no scheduled
-   * change in that direction, and reading it as damage would refuse every open-ended rate it
-   * publishes. Anything else that does not yield a date is the second -- including a value that is
-   * not a string at all, which is a bound stated in a form nothing here can read rather than a bound
-   * withheld.
-   */
+  // Reads an optional date bound, holding "the broker said nothing" apart from "the broker said
+  // something unreadable".
+  //
+  // Absent and JSON `null` are the first: `null` is Toss's own spelling for a rate with no scheduled
+  // change in that direction, and reading it as damage would refuse every open-ended rate it
+  // publishes. Anything else that does not yield a date is the second -- including a value that is
+  // not a string at all, which is a bound stated in a form nothing here can read rather than a bound
+  // withheld.
   static CalendarBound calendar_bound(const json::object& row, std::string_view key) {
     CalendarBound bound;
     const auto value = row.if_contains(key);
@@ -1283,18 +1336,16 @@ private:
     return bound;
   }
 
-  /** Most executions Toss returns in one request. */
+  // Most executions Toss returns in one request.
   static constexpr int trade_limit_ = 50;
 
-  /** Most instruments Toss quotes in one request. */
+  // Most instruments Toss quotes in one request.
   static constexpr int price_batch_limit_ = 200;
 
-  /**
-   * Issues one authenticated market-data GET for a single instrument.
-   *
-   * The three single-instrument reads differ only in their path and their parser,
-   * so the token handling, the traffic class, and the validation live here once.
-   */
+  // Issues one authenticated market-data GET for a single instrument.
+  //
+  // The three single-instrument reads differ only in their path and their parser,
+  // so the token handling, the traffic class, and the validation live here once.
   template <typename Handler, typename Parse>
   void start_market_read(
     InstrumentId instrument,
@@ -1350,13 +1401,11 @@ private:
     );
   }
 
-  /**
-   * Normalizes Toss's price bounds.
-   *
-   * Both bounds are null in a market without a price limit, and the absence is
-   * preserved: a bound of zero would read as "this instrument may not trade above
-   * nothing", which is not what an unlimited market means.
-   */
+  // Normalizes Toss's price bounds.
+  //
+  // Both bounds are null in a market without a price limit, and the absence is
+  // preserved: a bound of zero would read as "this instrument may not trade above
+  // nothing", which is not what an unlimited market means.
   static Result<PriceLimits> parse_price_limits(
     InstrumentId instrument,
     Result<network::HttpResponse> result
@@ -1384,7 +1433,7 @@ private:
     }
   }
 
-  /** Normalizes Toss's recent executions. */
+  // Normalizes Toss's recent executions.
   static Result<std::vector<TradePrint>> parse_trades(
     InstrumentId instrument,
     Result<network::HttpResponse> result
@@ -1423,7 +1472,7 @@ private:
     }
   }
 
-  /** Validates a batch and requests every instrument's price in one call. */
+  // Validates a batch and requests every instrument's price in one call.
   void start_prices(std::vector<InstrumentId> instruments, PricesHandler completion) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
@@ -1495,14 +1544,12 @@ private:
     );
   }
 
-  /**
-   * Normalizes a batch of quotes, keeping the caller's instrument identities.
-   *
-   * Toss answers with a symbol per row, so each row is matched back to the
-   * instrument the caller asked about rather than being rebuilt from the symbol
-   * alone, which would lose the country and venue the caller stated. A row for a
-   * symbol that was not asked for is a protocol error.
-   */
+  // Normalizes a batch of quotes, keeping the caller's instrument identities.
+  //
+  // Toss answers with a symbol per row, so each row is matched back to the
+  // instrument the caller asked about rather than being rebuilt from the symbol
+  // alone, which would lose the country and venue the caller stated. A row for a
+  // symbol that was not asked for is a protocol error.
   static Result<std::vector<QuoteSnapshot>> parse_prices(
     const std::vector<InstrumentId>& requested,
     Result<network::HttpResponse> result
@@ -1548,7 +1595,7 @@ private:
     }
   }
 
-  /** Returns a protocol error naming the response that could not be read. */
+  // Returns a protocol error naming the response that could not be read.
   static BrokerError market_error(const char* code, const std::exception& cause) {
     BrokerError error;
     error.category_ = ErrorCategory::PROTOCOL;
@@ -1557,7 +1604,7 @@ private:
     return error;
   }
 
-  /** Validates the instrument and requests its book. */
+  // Validates the instrument and requests its book.
   void start_depth(InstrumentId instrument, DepthHandler completion) {
     if (!broker_detail::valid_symbol(instrument.symbol_)) {
       BrokerError error;
@@ -1606,14 +1653,12 @@ private:
     );
   }
 
-  /**
-   * Normalizes one Toss order book.
-   *
-   * The levels are sorted rather than taken in the order they arrive. Toss's
-   * specification documents `asks` as ascending and its own worked example lists
-   * them descending, so trusting either would be a guess, and reading the best
-   * offer off the wrong end of the book makes the spread negative.
-   */
+  // Normalizes one Toss order book.
+  //
+  // The levels are sorted rather than taken in the order they arrive. Toss's
+  // specification documents `asks` as ascending and its own worked example lists
+  // them descending, so trusting either would be a guess, and reading the best
+  // offer off the wrong end of the book makes the spread negative.
   static Result<DepthSnapshot> parse_depth(
     InstrumentId instrument,
     Result<network::HttpResponse> result
@@ -1654,7 +1699,7 @@ private:
     }
   }
 
-  /** Reads one side of the book into `levels`. */
+  // Reads one side of the book into `levels`.
   static void append_levels(
     const json::object& payload,
     std::string_view key,
@@ -2173,17 +2218,15 @@ private:
     }
   }
 
-  /** Returns whether Toss prices buying power in `currency`. */
+  // Returns whether Toss prices buying power in `currency`.
   static bool priced_currency(const Currency& currency) {
     return currency == Currency::krw() || currency == Currency::usd();
   }
 
-  /**
-   * Normalizes one buying-power reading.
-   *
-   * The currency comes from the response rather than from the request, so a broker answering in a
-   * currency other than the one asked for is carried as it answered rather than relabelled.
-   */
+  // Normalizes one buying-power reading.
+  //
+  // The currency comes from the response rather than from the request, so a broker answering in a
+  // currency other than the one asked for is carried as it answered rather than relabelled.
   static Result<BuyingPower> parse_buying_power(Result<network::HttpResponse> result) {
     auto payload = account_payload(result);
     if (!payload) {
@@ -2207,7 +2250,7 @@ private:
     }
   }
 
-  /** Normalizes one instrument's sellable quantity, which Toss may report fractionally. */
+  // Normalizes one instrument's sellable quantity, which Toss may report fractionally.
   static Result<Decimal64> parse_sellable_quantity(Result<network::HttpResponse> result) {
     auto payload = account_payload(result);
     if (!payload) {
@@ -2226,14 +2269,12 @@ private:
     }
   }
 
-  /**
-   * Normalizes the account's commission schedule.
-   *
-   * A row for a market this library does not normalize is **skipped rather than refused**: the
-   * schedule is a list of what the broker charges where, and one unfamiliar market must not deny a
-   * caller the rate for the market they trade. That is the same rule the holdings and order paths
-   * follow for an unrecognized row.
-   */
+  // Normalizes the account's commission schedule.
+  //
+  // A row for a market this library does not normalize is **skipped rather than refused**: the
+  // schedule is a list of what the broker charges where, and one unfamiliar market must not deny a
+  // caller the rate for the market they trade. That is the same rule the holdings and order paths
+  // follow for an unrecognized row.
   static Result<CommissionSchedule> parse_commissions(Result<network::HttpResponse> result) {
     auto payload = account_payload(result);
     if (!payload) {
@@ -2309,13 +2350,11 @@ private:
     }
   }
 
-  /**
-   * Returns the `result` field of an account response, or the error that stopped it.
-   *
-   * The three account-capacity reads share one envelope, so they share one unwrapping: transport
-   * failure, unparseable body, and a non-2xx status all become the error they are, and only a
-   * successful response yields a payload.
-   */
+  // Returns the `result` field of an account response, or the error that stopped it.
+  //
+  // The three account-capacity reads share one envelope, so they share one unwrapping: transport
+  // failure, unparseable body, and a non-2xx status all become the error they are, and only a
+  // successful response yields a payload.
   static Result<json::value> account_payload(Result<network::HttpResponse>& result) {
     if (!result) {
       return Result<json::value>(std::move(result.error()));
@@ -2339,7 +2378,7 @@ private:
     return Result<json::value>(std::move(*payload));
   }
 
-  /** Builds the protocol error an account-capacity parse failure reports. */
+  // Builds the protocol error an account-capacity parse failure reports.
   static BrokerError account_error(std::string code, const std::exception& exception) {
     BrokerError error;
     error.category_ = ErrorCategory::PROTOCOL;
@@ -2397,13 +2436,11 @@ private:
     }
   }
 
-  /**
-   * Returns the venue that identifies an instrument at Toss.
-   *
-   * One function with two callers — the holdings parse and the order parse —
-   * because those two disagreed, and an `InstrumentId` compares its venue. Toss
-   * publishes no per-order venue, so this is about identity only.
-   */
+  // Returns the venue that identifies an instrument at Toss.
+  //
+  // One function with two callers — the holdings parse and the order parse —
+  // because those two disagreed, and an `InstrumentId` compares its venue. Toss
+  // publishes no per-order venue, so this is about identity only.
   static Venue instrument_venue(Country country) {
     return country == Country::KR ? Venue::COMBINED : Venue::UNSPECIFIED;
   }
@@ -2534,7 +2571,7 @@ private:
     return result;
   }
 
-  /** Returns an error when the account sequence cannot address a Toss account. */
+  // Returns an error when the account sequence cannot address a Toss account.
   static std::optional<BrokerError> validate_account_sequence(std::int64_t account_sequence) {
     if (account_sequence > 0) {
       return std::nullopt;
@@ -2547,7 +2584,7 @@ private:
     return error;
   }
 
-  /** Returns an error when an order identifier is empty. */
+  // Returns an error when an order identifier is empty.
   static std::optional<BrokerError> validate_order_id(std::string_view order_id) {
     if (!order_id.empty()) {
       return std::nullopt;
@@ -2560,14 +2597,12 @@ private:
     return error;
   }
 
-  /**
-   * Returns an error when a client order identifier cannot be used as an
-   * idempotency key.
-   *
-   * Toss accepts at most thirty-six characters drawn from letters, digits,
-   * hyphen, and underscore. A key rejected on the wire would silently remove
-   * the very guarantee the caller asked for, so it is checked here first.
-   */
+  // Returns an error when a client order identifier cannot be used as an
+  // idempotency key.
+  //
+  // Toss accepts at most thirty-six characters drawn from letters, digits,
+  // hyphen, and underscore. A key rejected on the wire would silently remove
+  // the very guarantee the caller asked for, so it is checked here first.
   static std::optional<BrokerError> validate_client_order_id(std::string_view client_order_id) {
     bool valid = !client_order_id.empty() && client_order_id.size() <= 36;
     for (const char ch : client_order_id) {
@@ -2587,13 +2622,11 @@ private:
     return error;
   }
 
-  /**
-   * Returns an error when a quantity is not a positive whole number of shares, or, where
-   * `fraction_allowed`, a positive quantity of at most six decimal places.
-   *
-   * The raw scale is checked rather than a normalized one, because the request sends
-   * `quantity.str()`, which keeps it.
-   */
+  // Returns an error when a quantity is not a positive whole number of shares, or, where
+  // `fraction_allowed`, a positive quantity of at most six decimal places.
+  //
+  // The raw scale is checked rather than a normalized one, because the request sends
+  // `quantity.str()`, which keeps it.
   static std::optional<BrokerError> validate_quantity(
     const Decimal64& quantity,
     bool fraction_allowed = false
@@ -2612,7 +2645,7 @@ private:
     return error;
   }
 
-  /** Returns an error when a price does not match its order type. */
+  // Returns an error when a price does not match its order type.
   static std::optional<BrokerError> validate_price(
     OrderType type,
     const std::optional<Decimal64>& price
@@ -2648,19 +2681,17 @@ private:
     return error;
   }
 
-  /**
-   * Returns an error when Toss cannot express this order shape.
-   *
-   * Toss publishes two price bases (`LIMIT`, `MARKET`), one execution condition
-   * (day-valid), and three sessions, of which two are restricted. Everything
-   * else this library can name is KIS's, and is rejected here rather than
-   * approximated: a fill-or-kill order downgraded to a day order is a different
-   * order, and a mid-price order has no Toss spelling at all.
-   *
-   * The restrictions are the spec's own, checked before I/O so a caller learns
-   * the rule without spending an order on it: the closing auction is US limit
-   * orders only, and the opening auction is Korean orders only.
-   */
+  // Returns an error when Toss cannot express this order shape.
+  //
+  // Toss publishes two price bases (`LIMIT`, `MARKET`), one execution condition
+  // (day-valid), and three sessions, of which two are restricted. Everything
+  // else this library can name is KIS's, and is rejected here rather than
+  // approximated: a fill-or-kill order downgraded to a day order is a different
+  // order, and a mid-price order has no Toss spelling at all.
+  //
+  // The restrictions are the spec's own, checked before I/O so a caller learns
+  // the rule without spending an order on it: the closing auction is US limit
+  // orders only, and the opening auction is Korean orders only.
   static std::optional<BrokerError> validate_order_shape(
     OrderType type,
     TimeInForce time_in_force,
@@ -2707,7 +2738,7 @@ private:
     }
   }
 
-  /** Returns an error when the order cannot be represented as a Toss order. */
+  // Returns an error when the order cannot be represented as a Toss order.
   static std::optional<BrokerError> validate_order(const OrderRequest& order) {
     if (!broker_detail::valid_symbol(order.instrument_.symbol_)) {
       BrokerError error;
@@ -2788,18 +2819,16 @@ private:
     return std::nullopt;
   }
 
-  /**
-   * Returns Toss's wire code for a normalized price basis.
-   *
-   * This used to read `type == MARKET ? "MARKET" : "LIMIT"`, which was
-   * harmless while those were the only two bases and is not now: it would send
-   * a mid-price or best-limit amendment to Toss as a plain limit order, which
-   * is the silent downgrade Decision 6 forbids and is invisible in the
-   * request. Every caller validates the basis first, so the remaining cases
-   * cannot be reached from outside this class; reaching one means a new body
-   * was built without a validation step, which is a defect here rather than a
-   * caller's bad input.
-   */
+  // Returns Toss's wire code for a normalized price basis.
+  //
+  // This used to read `type == MARKET ? "MARKET" : "LIMIT"`, which was
+  // harmless while those were the only two bases and is not now: it would send
+  // a mid-price or best-limit amendment to Toss as a plain limit order, which
+  // is the silent downgrade Decision 6 forbids and is invisible in the
+  // request. Every caller validates the basis first, so the remaining cases
+  // cannot be reached from outside this class; reaching one means a new body
+  // was built without a validation step, which is a defect here rather than a
+  // caller's bad input.
   static const char* order_type_code(OrderType type) {
     switch (type) {
       case OrderType::MARKET:
@@ -2812,13 +2841,11 @@ private:
     throw std::logic_error("Toss order body built from an unvalidated price basis");
   }
 
-  /**
-   * Returns an error when Toss cannot express an amendment's price basis.
-   *
-   * A modification states a basis and Toss accepts two of them. The placement
-   * path checks this inside `validate_order_shape`; the modification path had
-   * no check at all, so the basis reached `order_type_code` unexamined.
-   */
+  // Returns an error when Toss cannot express an amendment's price basis.
+  //
+  // A modification states a basis and Toss accepts two of them. The placement
+  // path checks this inside `validate_order_shape`; the modification path had
+  // no check at all, so the basis reached `order_type_code` unexamined.
   static std::optional<BrokerError> validate_amendment_shape(OrderType type) {
     if (type == OrderType::LIMIT || type == OrderType::MARKET) {
       return std::nullopt;
@@ -2831,17 +2858,15 @@ private:
     return error;
   }
 
-  /**
-   * Returns Toss's `timeInForce` wire value for a normalized session.
-   *
-   * Toss spells the session on the field it calls `timeInForce`: its own spec
-   * defines `OPG` as 국내 시가단일가 and `CLS` as the closing auction, which are
-   * sessions rather than validity conditions. This library keeps the two facts
-   * apart -- KIS spells both inside one `ORD_DVSN` and would otherwise have to
-   * put the same fact in a different field -- so the mapping to Toss's wire
-   * shape happens here, at the adapter boundary, which is where Decision 2b
-   * says a vendor spelling belongs.
-   */
+  // Returns Toss's `timeInForce` wire value for a normalized session.
+  //
+  // Toss spells the session on the field it calls `timeInForce`: its own spec
+  // defines `OPG` as 국내 시가단일가 and `CLS` as the closing auction, which are
+  // sessions rather than validity conditions. This library keeps the two facts
+  // apart -- KIS spells both inside one `ORD_DVSN` and would otherwise have to
+  // put the same fact in a different field -- so the mapping to Toss's wire
+  // shape happens here, at the adapter boundary, which is where Decision 2b
+  // says a vendor spelling belongs.
   static const char* session_code(OrderSession session) {
     switch (session) {
       case OrderSession::CLOSING_AUCTION:
@@ -2853,7 +2878,7 @@ private:
     }
   }
 
-  /** Builds the authenticated Toss order-placement POST request. */
+  // Builds the authenticated Toss order-placement POST request.
   static network::HttpRequest make_place_order_request(
     std::int64_t account_sequence,
     std::string_view access_token,
@@ -2890,7 +2915,7 @@ private:
     return request;
   }
 
-  /** Builds the authenticated Toss order-modification POST request. */
+  // Builds the authenticated Toss order-modification POST request.
   static network::HttpRequest make_replace_order_request(
     std::int64_t account_sequence,
     std::string_view access_token,
@@ -2922,7 +2947,7 @@ private:
     return request;
   }
 
-  /** Builds the authenticated Toss order-cancellation POST request. */
+  // Builds the authenticated Toss order-cancellation POST request.
   static network::HttpRequest make_cancel_order_request(
     std::int64_t account_sequence,
     std::string_view access_token,
@@ -2942,7 +2967,7 @@ private:
     return request;
   }
 
-  /** Builds a Toss order-list request from the supplied filters. */
+  // Builds a Toss order-list request from the supplied filters.
   static network::HttpRequest make_orders_request(
     std::string_view access_token,
     const TossOrderQuery& query
@@ -2983,7 +3008,7 @@ private:
     return request;
   }
 
-  /** Builds a Toss request for one order by broker identifier. */
+  // Builds a Toss request for one order by broker identifier.
   static network::HttpRequest make_order_request(
     std::int64_t account_sequence,
     std::string_view access_token,
@@ -3001,7 +3026,7 @@ private:
     return request;
   }
 
-  /** Validates and starts one Toss order submission. */
+  // Validates and starts one Toss order submission.
   void start_place_order(
     std::int64_t account_sequence,
     OrderRequest order,
@@ -3039,7 +3064,7 @@ private:
     );
   }
 
-  /** Validates and starts one Toss order modification. */
+  // Validates and starts one Toss order modification.
   void start_replace_order(
     std::int64_t account_sequence,
     TossAmendment amendment,
@@ -3086,7 +3111,7 @@ private:
     );
   }
 
-  /** Validates and starts one Toss order cancellation. */
+  // Validates and starts one Toss order cancellation.
   void start_cancel_order(
     std::int64_t account_sequence,
     std::string order_id,
@@ -3124,7 +3149,7 @@ private:
     );
   }
 
-  /** Sends an order-writing request and dispatches its parsed acknowledgement. */
+  // Sends an order-writing request and dispatches its parsed acknowledgement.
   void request_order_ack(network::HttpRequest request, OrderAckHandler completion) {
     http_->async_request(
       std::move(request),
@@ -3141,7 +3166,7 @@ private:
     );
   }
 
-  /** Validates and starts one filtered Toss order listing. */
+  // Validates and starts one filtered Toss order listing.
   void start_orders(TossOrderQuery query, OrderPageHandler completion) {
     if (auto invalid = validate_account_sequence(query.account_sequence_)) {
       complete_order_page(std::move(completion), Result<OrderPage>(std::move(*invalid)));
@@ -3211,7 +3236,7 @@ private:
     );
   }
 
-  /** Validates and starts an inquiry for one Toss order. */
+  // Validates and starts an inquiry for one Toss order.
   void start_order(std::int64_t account_sequence, std::string order_id, OrderHandler completion) {
     auto invalid = validate_account_sequence(account_sequence);
     if (!invalid) {
@@ -3257,7 +3282,7 @@ private:
     );
   }
 
-  /** Parses a Toss order-instruction response into an acknowledgement. */
+  // Parses a Toss order-instruction response into an acknowledgement.
   static Result<OrderAck> parse_order_ack(Result<network::HttpResponse> result) {
     if (!result) {
       return Result<OrderAck>(std::move(result.error()));
@@ -3294,7 +3319,7 @@ private:
     }
   }
 
-  /** Parses one Toss order-list response and its continuation cursor. */
+  // Parses one Toss order-list response and its continuation cursor.
   static Result<OrderPage> parse_orders(Result<network::HttpResponse> result) {
     if (!result) {
       return Result<OrderPage>(std::move(result.error()));
@@ -3341,7 +3366,7 @@ private:
     }
   }
 
-  /** Parses a Toss single-order response into a normalized snapshot. */
+  // Parses a Toss single-order response into a normalized snapshot.
   static Result<OrderSnapshot> parse_order(Result<network::HttpResponse> result) {
     if (!result) {
       return Result<OrderSnapshot>(std::move(result.error()));
@@ -3370,17 +3395,15 @@ private:
     }
   }
 
-  /**
-   * Normalizes one Toss order object.
-   *
-   * Toss reports a currency rather than a market country, so the instrument's
-   * country is taken from that currency. This is a stated broker fact, not an
-   * inference from the symbol's shape.
-   *
-   * Unrecognized order-type, validity, and status codes become their `UNKNOWN`
-   * value. Toss's specification requires clients to tolerate them, so one
-   * unfamiliar order must not fail an entire listing.
-   */
+  // Normalizes one Toss order object.
+  //
+  // Toss reports a currency rather than a market country, so the instrument's
+  // country is taken from that currency. This is a stated broker fact, not an
+  // inference from the symbol's shape.
+  //
+  // Unrecognized order-type, validity, and status codes become their `UNKNOWN`
+  // value. Toss's specification requires clients to tolerate them, so one
+  // unfamiliar order must not fail an entire listing.
   static OrderSnapshot parse_order_object(const json::object& row) {
     const auto currency = Currency(broker_detail::json_string(row, "currency"));
 
@@ -3449,7 +3472,7 @@ private:
     return order;
   }
 
-  /** Maps a Toss order-type code onto a normalized order type. */
+  // Maps a Toss order-type code onto a normalized order type.
   static OrderType normalized_order_type(std::string_view code) {
     if (code == "LIMIT") {
       return OrderType::LIMIT;
@@ -3460,7 +3483,7 @@ private:
     return OrderType::UNKNOWN;
   }
 
-  /** Maps a Toss validity code onto a normalized validity condition. */
+  // Maps a Toss validity code onto a normalized validity condition.
   static OrderSession normalized_session(std::string_view code) {
     if (code == "DAY") {
       return OrderSession::REGULAR;
@@ -3474,7 +3497,7 @@ private:
     return OrderSession::UNKNOWN;
   }
 
-  /** Maps a Toss status code onto a normalized lifecycle state. */
+  // Maps a Toss status code onto a normalized lifecycle state.
   static OrderStatus normalized_status(std::string_view code) {
     if (code == "PENDING") {
       return OrderStatus::PENDING;
@@ -3509,7 +3532,7 @@ private:
     return OrderStatus::UNKNOWN;
   }
 
-  /** Maps a Toss side code or rejects an invalid broker response. */
+  // Maps a Toss side code or rejects an invalid broker response.
   static OrderSide normalized_order_side(std::string_view code) {
     if (code == "BUY") {
       return OrderSide::BUY;
@@ -3520,14 +3543,12 @@ private:
     throw std::runtime_error("invalid Toss order side code");
   }
 
-  /**
-   * Reads a decimal string field that Toss may omit entirely.
-   *
-   * Toss marks an order's price as neither required nor always present, unlike
-   * the execution amounts, which are always sent and merely nullable. Those
-   * keep the stricter `optional_decimal`, so a genuinely missing execution
-   * field is still reported as a protocol error.
-   */
+  // Reads a decimal string field that Toss may omit entirely.
+  //
+  // Toss marks an order's price as neither required nor always present, unlike
+  // the execution amounts, which are always sent and merely nullable. Those
+  // keep the stricter `optional_decimal`, so a genuinely missing execution
+  // field is still reported as a protocol error.
   static std::optional<Decimal64> nullable_decimal(
     const json::object& object,
     std::string_view key
@@ -3542,7 +3563,7 @@ private:
     return Decimal64::parse(std::string_view(value->as_string()));
   }
 
-  /** Reads a nullable decimal string field as an amount in `currency`. */
+  // Reads a nullable decimal string field as an amount in `currency`.
   static std::optional<Money> optional_money(
     const json::object& object,
     std::string_view key,
@@ -3555,7 +3576,7 @@ private:
     return Money{*amount, currency};
   }
 
-  /** Reads a nullable ISO 8601 timestamp field. */
+  // Reads a nullable ISO 8601 timestamp field.
   static std::optional<std::chrono::system_clock::time_point> optional_timestamp(
     const json::object& object,
     std::string_view key
@@ -3574,7 +3595,7 @@ private:
     return parsed;
   }
 
-  /** Reads a nullable `YYYY-MM-DD` calendar date field. */
+  // Reads a nullable `YYYY-MM-DD` calendar date field.
   static std::optional<Date> optional_date(const json::object& object, std::string_view key) {
     const auto value = object.if_contains(key);
     if (!value || value->is_null()) {
@@ -3600,21 +3621,19 @@ private:
     return date;
   }
 
-  /** Formats a calendar date as Toss's `YYYY-MM-DD` filter bound. */
+  // Formats a calendar date as Toss's `YYYY-MM-DD` filter bound.
   static std::string iso_date(const Date& date) {
     char buffer[11];
     std::snprintf(buffer, sizeof(buffer), "%04d-%02u-%02u", date.year_, date.month_, date.day_);
     return std::string(buffer);
   }
 
-  /** Dispatches an order acknowledgement through its associated executor. */
-  /**
-   * Dispatches one result through its associated executor, exactly once.
-   *
-   * Every operation's result passes through here, which makes it the one place a
-   * broker's own rate-limit refusal can be fed back into this connection's pacer
-   * without each operation having to remember to do it.
-   */
+  // Dispatches an order acknowledgement through its associated executor.
+  // Dispatches one result through its associated executor, exactly once.
+  //
+  // Every operation's result passes through here, which makes it the one place a
+  // broker's own rate-limit refusal can be fed back into this connection's pacer
+  // without each operation having to remember to do it.
   template <typename Handler, typename T>
   void deliver(Handler handler, Result<T> result) {
     if (!result) {
@@ -3626,14 +3645,12 @@ private:
     });
   }
 
-  /**
-   * Corrects this connection's pacing from a Toss rate-limit refusal.
-   *
-   * Toss documents a token bucket and reports `X-RateLimit-Limit` with its
-   * refusal, so the allowance it is enforcing is known and is applied directly.
-   * The headers are documented on the refusal rather than promised on every
-   * response, so an absent one falls back to halving rather than to a guess.
-   */
+  // Corrects this connection's pacing from a Toss rate-limit refusal.
+  //
+  // Toss documents a token bucket and reports `X-RateLimit-Limit` with its
+  // refusal, so the allowance it is enforcing is known and is applied directly.
+  // The headers are documented on the refusal rather than promised on every
+  // response, so an absent one falls back to halving rather than to a guess.
   void note_rate_limit(const BrokerError& error) {
     if (error.category_ != ErrorCategory::RATE_LIMIT) {
       return;
@@ -3659,12 +3676,12 @@ private:
     deliver(std::move(handler), std::move(result));
   }
 
-  /** Dispatches an order-list result through its associated executor. */
+  // Dispatches an order-list result through its associated executor.
   void complete_order_page(OrderPageHandler handler, Result<OrderPage> result) {
     deliver(std::move(handler), std::move(result));
   }
 
-  /** Dispatches a single-order result through its associated executor. */
+  // Dispatches a single-order result through its associated executor.
   void complete_order(OrderHandler handler, Result<OrderSnapshot> result) {
     deliver(std::move(handler), std::move(result));
   }
@@ -3694,10 +3711,15 @@ private:
   }
 };
 
-/** Blocking facade that drives `TossClient` on a private event loop. */
+/** @brief Blocking facade that drives `TossClient` on a private event loop. */
 class TossBlockingClient {
 public:
-  /** Constructs a blocking Toss Securities client. */
+  /**
+   * @brief Constructs a blocking Toss Securities client.
+   * @param context The TLS context; borrowed, and must outlive the client.
+   * @param config The credentials.
+   * @param options HTTP options.
+   */
   TossBlockingClient(
     ssl::context& context,
     TossConfig config,
@@ -3707,7 +3729,11 @@ public:
       std::make_shared<TossClient>(ioc_.get_executor(), context, std::move(config), options)
     ) {}
 
-  /** Returns the current normalized quote or a structured error. */
+  /**
+   * @brief Returns the current normalized quote or a structured error.
+   * @param instrument The instrument.
+   * @return The result, or an error.
+   */
   Result<QuoteSnapshot> quote(InstrumentId instrument) {
     return run<QuoteSnapshot>(
       [&](auto&& sink) { client_->async_quote(std::move(instrument), std::move(sink)); },
@@ -3715,7 +3741,10 @@ public:
     );
   }
 
-  /** Discovers the brokerage accounts available to the current credentials. */
+  /**
+   * @brief Discovers the brokerage accounts available to the current credentials.
+   * @return The result, or an error.
+   */
   Result<std::vector<TossAccount>> accounts() {
     return run<std::vector<TossAccount>>(
       [&](auto&& sink) { client_->async_accounts(std::move(sink)); },
@@ -3723,8 +3752,11 @@ public:
     );
   }
 
-  /** Returns normalized holdings for one discovered account sequence. */
-  /** Returns static reference data for one instrument. */
+  /**
+   * @brief Returns static reference data for one instrument.
+   * @param subject The instrument.
+   * @return The result, or an error.
+   */
   Result<Instrument> instrument(InstrumentId subject) {
     return run<Instrument>(
       [&](auto&& sink) { client_->async_instrument(std::move(subject), std::move(sink)); },
@@ -3732,7 +3764,12 @@ public:
     );
   }
 
-  /** Returns the trading calendar around `from` for one market. */
+  /**
+   * @brief Returns the trading calendar around `from` for one market.
+   * @param country The market.
+   * @param from The date (empty: Toss's today).
+   * @return The result, or an error.
+   */
   Result<TradingCalendar> calendar(Country country, std::optional<Date> from = std::nullopt) {
     return run<TradingCalendar>(
       [&](auto&& sink) { client_->async_calendar(country, from, std::move(sink)); },
@@ -3740,7 +3777,11 @@ public:
     );
   }
 
-  /** Returns today's upper and lower price bound. */
+  /**
+   * @brief Returns today's upper and lower price bound.
+   * @param instrument The instrument.
+   * @return The result, or an error.
+   */
   Result<PriceLimits> price_limits(InstrumentId instrument) {
     return run<PriceLimits>(
       [&](auto&& sink) { client_->async_price_limits(std::move(instrument), std::move(sink)); },
@@ -3748,7 +3789,12 @@ public:
     );
   }
 
-  /** Returns recent executions for one instrument. */
+  /**
+   * @brief Returns recent executions for one instrument.
+   * @param instrument The instrument.
+   * @param count The most trades to return.
+   * @return The result, or an error.
+   */
   Result<std::vector<TradePrint>> trades(InstrumentId instrument, int count) {
     return run<std::vector<TradePrint>>(
       [&](auto&& sink) {
@@ -3758,7 +3804,11 @@ public:
     );
   }
 
-  /** Returns a quote for every instrument in one request. */
+  /**
+   * @brief Returns a quote for every instrument in one request.
+   * @param instruments The instruments.
+   * @return The result, or an error.
+   */
   Result<std::vector<QuoteSnapshot>> prices(std::vector<InstrumentId> instruments) {
     return run<std::vector<QuoteSnapshot>>(
       [&](auto&& sink) { client_->async_prices(std::move(instruments), std::move(sink)); },
@@ -3766,7 +3816,11 @@ public:
     );
   }
 
-  /** Returns the resting orders on both sides of the book. */
+  /**
+   * @brief Returns the resting orders on both sides of the book.
+   * @param instrument The instrument.
+   * @return The result, or an error.
+   */
   Result<DepthSnapshot> depth(InstrumentId instrument) {
     return run<DepthSnapshot>(
       [&](auto&& sink) { client_->async_depth(std::move(instrument), std::move(sink)); },
@@ -3774,7 +3828,11 @@ public:
     );
   }
 
-  /** Returns bars, paging until the query's count is satisfied. */
+  /**
+   * @brief Returns bars, paging until the query's count is satisfied.
+   * @param query The query.
+   * @return The result, or an error.
+   */
   Result<BarSeries> bars(BarQuery query) {
     return run<BarSeries>(
       [&](auto&& sink) { client_->async_bars(std::move(query), std::move(sink)); },
@@ -3782,7 +3840,11 @@ public:
     );
   }
 
-  /** Returns normalized positions and per-currency totals for one account. */
+  /**
+   * @brief Returns normalized positions and per-currency totals for one account.
+   * @param account_sequence The account (`TossAccount::sequence_`).
+   * @return The result, or an error.
+   */
   Result<HoldingsSnapshot> holdings(std::int64_t account_sequence) {
     return run<HoldingsSnapshot>(
       [&](auto&& sink) { client_->async_holdings(account_sequence, std::move(sink)); },
@@ -3790,7 +3852,12 @@ public:
     );
   }
 
-  /** Returns what the account may spend in `currency`. */
+  /**
+   * @brief Returns what the account may spend in `currency`.
+   * @param currency The currency.
+   * @param account_sequence The account (`TossAccount::sequence_`).
+   * @return The result, or an error.
+   */
   Result<BuyingPower> buying_power(Currency currency, std::int64_t account_sequence) {
     return run<BuyingPower>(
       [&](auto&& sink) {
@@ -3800,7 +3867,12 @@ public:
     );
   }
 
-  /** Returns how much of `instrument` the account may sell. */
+  /**
+   * @brief Returns how much of `instrument` the account may sell.
+   * @param instrument The instrument.
+   * @param account_sequence The account (`TossAccount::sequence_`).
+   * @return The result, or an error.
+   */
   Result<Decimal64> sellable_quantity(InstrumentId instrument, std::int64_t account_sequence) {
     return run<Decimal64>(
       [&](auto&& sink) {
@@ -3810,7 +3882,11 @@ public:
     );
   }
 
-  /** Returns the commission rates in force for the account. */
+  /**
+   * @brief Returns the commission rates in force for the account.
+   * @param account_sequence The account (`TossAccount::sequence_`).
+   * @return The result, or an error.
+   */
   Result<CommissionSchedule> commissions(std::int64_t account_sequence) {
     return run<CommissionSchedule>(
       [&](auto&& sink) { client_->async_commissions(account_sequence, std::move(sink)); },
@@ -3819,11 +3895,14 @@ public:
   }
 
   /**
-   * Submits a new order and returns Toss's acknowledgement.
+   * @brief Places an order; see `TossClient::async_place_order`.
    *
-   * A `TRANSPORT` error leaves the outcome indeterminate. Supplying
-   * `OrderRequest::client_order_id_` makes a deliberate resubmission safe for
-   * ten minutes; without one, reconcile through `orders()` before retrying.
+   * After a `TRANSPORT` error the outcome is unknown. With `client_order_id_` set, sending the same
+   * order again within ten minutes is safe; without one, read `orders()` before placing again.
+   *
+   * @param account_sequence The account (`TossAccount::sequence_`).
+   * @param order The order.
+   * @return The acknowledgement or an error.
    */
   Result<OrderAck> place_order(std::int64_t account_sequence, OrderRequest order) {
     return run<OrderAck>(
@@ -3834,7 +3913,12 @@ public:
     );
   }
 
-  /** Modifies the price, and for Korean orders the quantity, of an open order. */
+  /**
+   * @brief Modifies the price, and for Korean orders the quantity, of an open order.
+   * @param account_sequence The account (`TossAccount::sequence_`).
+   * @param amendment The amendment.
+   * @return The result, or an error.
+   */
   Result<OrderAck> replace_order(std::int64_t account_sequence, TossAmendment amendment) {
     return run<OrderAck>(
       [&](auto&& sink) {
@@ -3844,7 +3928,12 @@ public:
     );
   }
 
-  /** Cancels an open order. */
+  /**
+   * @brief Cancels an open order.
+   * @param account_sequence The account (`TossAccount::sequence_`).
+   * @param order_id Toss's order id.
+   * @return The result, or an error.
+   */
   Result<OrderAck> cancel_order(std::int64_t account_sequence, std::string order_id) {
     return run<OrderAck>(
       [&](auto&& sink) {
@@ -3854,7 +3943,11 @@ public:
     );
   }
 
-  /** Returns one page of orders in the requested lifecycle group. */
+  /**
+   * @brief Returns one page of orders in the requested lifecycle group.
+   * @param query The query.
+   * @return The result, or an error.
+   */
   Result<OrderPage> orders(TossOrderQuery query) {
     return run<OrderPage>(
       [&](auto&& sink) { client_->async_orders(std::move(query), std::move(sink)); },
@@ -3862,7 +3955,12 @@ public:
     );
   }
 
-  /** Returns one order in any lifecycle state. */
+  /**
+   * @brief Returns one order in any lifecycle state.
+   * @param account_sequence The account (`TossAccount::sequence_`).
+   * @param order_id Toss's order id.
+   * @return The result, or an error.
+   */
   Result<OrderSnapshot> order(std::int64_t account_sequence, std::string order_id) {
     return run<OrderSnapshot>(
       [&](auto&& sink) {
@@ -3873,17 +3971,15 @@ public:
   }
 
   /**
-   * Returns this connection's pacing statistics, or null when it is unpaced.
-   *
-   * A blocking facade's event loop is idle between calls, so any moment between
-   * them is safe to read from.
+   * @brief Returns the rate limiter's statistics (safe to read between calls).
+   * @return The statistics, or null if the client has no rate-limit budget.
    */
   const network::RateLimitStats* rate_limit_stats() const {
     return client_->rate_limit_stats();
   }
 
 private:
-  /** Drives one asynchronous operation to completion on the private loop. */
+  // Drives one asynchronous operation to completion on the private loop.
   template <typename T, typename Start>
   Result<T> run(Start start, std::string_view operation) {
     std::optional<Result<T>> result;
