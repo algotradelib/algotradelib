@@ -200,10 +200,9 @@ int main() {
   LoopRunner live_runner;
   live_runner.context().set_instrument(samsung_reference());
 
-  // **The phase is the loop's, not this program's.** This used to read
-  // `set_phase(MarketPhase::OPEN)`, which froze a value nothing ever updated -- so the run traded as
-  // though the market were permanently open and `on_phase` never fired at all. The loop now derives
-  // the phase from its session window and the trading calendar, and it overwrites anything set here.
+  // **The phase is the loop's, not this program's.** The loop derives it from its session window and
+  // the trading calendar, and overwrites anything set here; a fixed `set_phase(MarketPhase::OPEN)`
+  // would trade as though the market never closed, and `on_phase` would never fire.
   //
   // A real program gets that calendar from `PollKind::CALENDAR`, which is on by default. This example
   // has no broker, so its source answers no calendar; the date is therefore uncovered, the phase is
@@ -224,28 +223,26 @@ int main() {
   // No broker here, so nothing could answer a calendar request; a real program leaves this at its
   // six-hour default.
   schedule.calendar_.reset();
-  // **The band, on a cadence rather than once.** Nothing in this library used to refresh one, so an
-  // operator who registered a band at startup was clamping every limit order to it for as long as
-  // the process ran. Ten minutes here is arbitrary; the real constraint is that it be shorter than
-  // the session, because the value changes with the previous close.
+  // **The band, on a cadence rather than once.** A band registered once at startup would clamp every
+  // limit order for as long as the process ran. Ten minutes here is arbitrary; the real constraint is
+  // that it be shorter than the session, because the value changes with the previous close.
   schedule.price_limits_ = std::chrono::minutes(10);
 
   runner::PollingLoop<LoopRunner, ScriptedSource, runner::ManualClock> loop(
     live_runner, source, schedule, runner::ManualClock{start_time()});
-  // **Two statements every placement-enabled run now owes, and this source cannot satisfy either.**
+  // **Two statements every placement-enabled run owes, and this source cannot satisfy either.**
   //
   // A run states how old a holdings snapshot may be before it stops sizing against it, and a run
   // that has never read one holds rather than treating an empty account as a current one -- an
-  // empty portfolio is the *permissive* answer to every ceiling and to every target subtraction.
-  // Neither was required before, and "not required" meant a run that never thought about holdings
-  // traded as though it held nothing.
+  // empty portfolio is the *permissive* answer to every ceiling and to every target subtraction, so a
+  // run that never thought about holdings would trade as though it held nothing.
   //
   // This example has no broker, so it reads no holdings ever. Saying so explicitly is what an
   // operator in the same position does; leaving them out would hold this loop for the whole run.
   loop.allow_unbounded_portfolio_age();
   loop.allow_absent_portfolio();
-  // **The third statement, and the same shape as the first.** A band of unbounded age used to be
-  // applied forever; now a run states how old one may be, or states that it accepts any age. Twenty
+  // **The third statement, and the same shape as the first.** A run states how old a band may be, or
+  // that it accepts any age; with neither, no band is applied. Twenty
   // minutes against a ten-minute cadence, so one failed poll is tolerated and a run of failures is
   // not -- which is what the policy is actually bounding, since a failed poll deliberately leaves
   // the last good band in place.

@@ -4,9 +4,9 @@
  * @file
  * @brief The strategies this library ships (`algotradelib::strategy::vanilla`).
  *
- * Each emits a target position rather than orders, so after a restart it does not need to remember
- * whether it already entered: reconciliation compares the target with the portfolio and the working
- * orders. Each states its warm-up requirement and emits nothing before it is met.
+ * Each states the holding it wants (a target position, or for `EqualWeightRebalance` a target
+ * weight) rather than a quantity to trade, so after a restart it does not need to remember whether it
+ * already entered: reconciliation compares it with the portfolio and the working orders. Each states its warm-up requirement and emits nothing before it is met.
  *
  * `BuyAndHold` and `TimedLiquidation` read no series and are available in every build; the rest
  * compute indicators and need a linear-algebra backend.

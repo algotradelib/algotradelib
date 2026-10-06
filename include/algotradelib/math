@@ -3,6 +3,8 @@
 /**
  * @file
  * @brief Basic mathematics: the scalar type, and linear algebra when a backend is configured.
+ *
+ * Without a backend, including `src/math/matrix.hpp` directly gives a diagnostic naming the option.
  */
 
 #include "src/math/scalar.hpp"

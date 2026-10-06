@@ -6,8 +6,8 @@
  *   `bind` factories.
  *
  * Separate from `<algotradelib/runner>` because it needs a broker session, and so TLS, HTTP and an
- * adapter; a program that includes only `<algotradelib/runner>` contains no code that could place an
- * order.
+ * adapter; a program that includes only `<algotradelib/runner>` contains no library code that could
+ * place an order.
  */
 
 #include "src/live/bind.hpp"

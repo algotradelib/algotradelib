@@ -239,8 +239,8 @@ int run_kis(ssl::context& tls, const Arguments& arguments) {
   // and account read through it is refused before any I/O.
   if (arguments.market_data_ == "toss") {
     if (!demo) {
-      // Toss's band can differ from KIS's (`labs/FINDINGS.md` F27); not for real money until that
-      // is explained.
+      // Toss publishes the next session's band after the close, before KIS does, and when each rolls
+      // over is not settled: a KIS demo run only.
       throw std::runtime_error("--market-data toss is for a KIS demo run only");
     }
     if (!arguments.credentials_) {
