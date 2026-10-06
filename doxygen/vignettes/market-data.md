@@ -85,7 +85,7 @@ a rule that was never set cannot silently approve anything.
 ## What differs between the brokers
 
 Per the intersection principle, each of these can be tested at compile time, and none
-is emulated for the broker that lacks it (the session-hours row only says that Toss
+is emulated for a broker that lacks it (the session-hours row only says that Toss
 publishes them; see below).
 
 | Capability | KIS | Toss |
