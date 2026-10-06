@@ -185,8 +185,8 @@ public:
    *   fill priced at the open. For a fill inside a multi-day bar `date` is used, which can be a later
    *   day than the fill.
    * @param released Whether an earlier bar already released this stop-limit order.
-   * @return The decision. A stop-limit order without both a trigger and a limit price neither trades
-   *   nor rests.
+   * @return The decision. A stop-limit order not yet released without both a trigger and a limit
+   *   price neither trades nor rests (a released stop must still have its limit price).
    */
   FillDecision decide(
     const strategy::PlannedOrder& order,

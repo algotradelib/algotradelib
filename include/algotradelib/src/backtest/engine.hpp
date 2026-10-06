@@ -47,9 +47,12 @@ struct QueuedOrder {
   /**
    * @brief When the strategy decided the order, if known.
    *
-   * Where the engine knows when a bar's period began, the order may fill only against a bar whose
-   * period began at or after this instant (so a decision at 10:30 is not filled at that day's 09:00
-   * open). Empty (an order placed by a caller driving the executor directly) is always eligible.
+   * Where the engine knows when a bar's period began and this instant is exact, the order may fill
+   * only against a bar whose period began at or after it (so a decision at 10:30 is not filled at
+   * that day's 09:00 open). A nominal instant (`decision_is_exact_` false) is an upper bound: a
+   * start at or after it still proves the order came first, while an earlier start is allowed and
+   * counted in `ReplayResult::unchecked_fill_causality_`. Empty (an order placed by a caller driving
+   * the executor directly) is always eligible.
    */
   std::optional<std::chrono::system_clock::time_point> decided_at_;
   /**
@@ -307,8 +310,9 @@ struct ReplayResult {
   /**
    * @brief Bars whose equity total did not fit an exact decimal, so they have no curve point.
    *
-   * The next point carries no return. The replay continues, and the strategy still decides on such
-   * a bar; only the equity curve uses the total.
+   * The next point carries no return. The replay and its callbacks continue, with per-lot and
+   * per-currency figures available, but the missing total also means no portfolio value for
+   * weight sizing, so a weight-sized intent on such a bar is rejected (`NO_PORTFOLIO_VALUE`).
    */
   std::size_t unvalued_bars_{0};
   /** @brief The period end of the first unvalued bar, if any. */
@@ -358,7 +362,7 @@ struct ReplayConfig {
    * the KRX close.
    */
   strategy::SessionWindow session_{strategy::SessionWindow::krx()};
-  /** @brief How many trailing bars the context caches per series, for indicators. */
+  /** @brief How many trailing bars the context caches per series, for indicators; must be positive. */
   std::size_t series_capacity_{512};
   /**
    * @brief The calendar `ctx.calendar()` returns, for a strategy asking about dates it has no bar
@@ -454,8 +458,12 @@ public:
    * (calling `on_phase` on a change), then call `on_bar`, whose orders wait for a later bar. After a
    * halt it does nothing.
    *
-   * @param event The bar; feed bars in timestamp order across instruments.
+   * @param event The bar; feed bars in timestamp order across instruments. Within one instrument
+   *   and interval each bar's timestamp must be later than the last.
    * @param trading_day Whether the bar's date trades, for the phase; empty gives `UNKNOWN`.
+   * @throws std::invalid_argument (with a linear algebra backend) if `series_capacity_` is zero, or
+   *   the bar is not later than the previous bar of its instrument and interval. The exception
+   *   propagates after the bar was counted and settled; it does not set `ReplayResult::halted_`.
    */
   void feed(const strategy::BarEvent& event, std::optional<bool> trading_day = true) {
     // **A halted replay consumes nothing further.** `feed` keeps returning `void` so no caller has to

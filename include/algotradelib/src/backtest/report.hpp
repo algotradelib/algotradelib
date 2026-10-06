@@ -97,7 +97,9 @@ struct ReportCaveats {
    * Counted once per queued order per bar considered (the fill model may still decline). It happens
    * when a bar's period start or end is not known exactly: a close-stamped weekly, monthly or yearly
    * bar, or an open-stamped bar of a day or longer, whose end is nominal (every shipped adapter
-   * produces those). A regular weekly series counts nothing.
+   * produces those). An open-stamped weekly series whose bars each start at or after the previous
+   * bar's nominal end (Monday to Monday) counts nothing; a close-stamped weekly series counts every
+   * decision.
    *
    * With no quotes, one interval per instrument and non-overlapping periods, the fills were causal
    * whatever this says. See `ReplayResult::unchecked_fill_causality_`.
@@ -140,7 +142,8 @@ struct ReportCaveats {
    * @brief Bars whose equity total could not be computed exactly (`ReplayResult::unvalued_bars_`).
    *
    * Each has no point on the equity curve and the point after it no return, so the return series is
-   * shorter than the bar count by at least this much. The strategy's own decisions were unaffected.
+   * shorter than the bar count by at least this much. Weight-sized intents on such a bar are rejected
+   * for want of a portfolio value.
    */
   std::size_t unvalued_bars_{0};
   /** @brief The period end of the first unvalued bar, if any. */
@@ -274,7 +277,8 @@ struct Report {
    * @brief Sale tax paid.
    *
    * Absent when no tax was modelled (which is not a tax of zero), nothing executed in the taxed
-   * market, the executions span currencies, or a sum did not fit.
+   * market, the executions in the taxed market span currencies, or a sum did not fit. Untaxed
+   * executions in other currencies do not affect it.
    */
   std::optional<Decimal64> tax_paid_;
   /** @brief Sale tax paid per currency, over executions in the taxed market. */
@@ -303,6 +307,8 @@ inline math::Scalar to_scalar(const Decimal64& value) {
  *   `backtest::periods_per_year`); absent leaves it `missing()`.
  * @param risk_free The risk-free rate per period, in the units of the returns.
  * @return The report.
+ * @throws std::invalid_argument if `periods_per_year` is given, not positive, and the equity curve
+ *   is not empty.
  */
 inline Report summarize(
   const ReplayResult& result,

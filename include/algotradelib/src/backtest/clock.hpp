@@ -53,7 +53,7 @@ inline std::optional<std::chrono::seconds> interval_duration(BarInterval interva
  * @param session The session window (used for minute bars).
  * @param trading_days Trading days per year, such as about 245 for KRX or 252 for US markets.
  * @return The count, or `std::nullopt` for weekly, monthly or yearly bars, a non-positive
- *   `trading_days`, or a session whose close is not after its open.
+ *   `trading_days`, or (for minute bars) a session whose close is not after its open.
  */
 inline std::optional<math::Scalar> periods_per_year(
   BarInterval interval,
