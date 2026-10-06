@@ -18,7 +18,7 @@ namespace algotradelib {
  */
 struct TradingDay {
   /**
-   * @brief The calendar date, as the broker reports it.
+   * @brief The market's local calendar date, as the broker reports it.
    *
    * A broker row whose date cannot be read produces no `TradingDay`; it is counted in
    * `TradingCalendar::unreadable_days_` instead.
@@ -31,9 +31,12 @@ struct TradingDay {
 /**
  * @brief The trading days a broker reported for one market, ascending by date.
  *
- * A calendar covers a finite span. Every lookup tells "closed" apart from "not
- * covered": a date outside the span, or one whose row could not be read, has no
- * answer rather than a guessed one.
+ * A calendar covers a finite set of dates. `is_trading_day` tells "closed" apart
+ * from "not covered": a date the broker did not report, or one whose row could not
+ * be read, has no answer rather than a guessed one. The searches return reported
+ * days only, and do not say whether unreported dates are open.
+ *
+ * Keep `days_` ascending if you fill it yourself.
  *
  * Intraday session hours are not part of this type; a broker that publishes them
  * exposes them through its own client.

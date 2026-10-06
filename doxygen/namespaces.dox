@@ -1,0 +1,64 @@
+/**
+ * @namespace algotradelib
+ * @brief The library: broker-neutral types (`core`), and the modules below.
+ *
+ * Include `<algotradelib/core>` for orders, quotes, bars, instruments, the calendar and the broker
+ * port; each module has its own umbrella header (`<algotradelib/runner>`, `<algotradelib/kis>`, ...).
+ */
+
+/**
+ * @namespace algotradelib::math
+ * @brief The numeric vocabulary: `Scalar`, `missing()`, and the matrix and vector types.
+ */
+
+/**
+ * @namespace algotradelib::analytics
+ * @brief Returns, rolling statistics, indicators and performance metrics over numeric series.
+ *
+ * Needs a build with a linear algebra backend (`ATL_USE_EIGEN=ON`).
+ */
+
+/**
+ * @namespace algotradelib::strategy
+ * @brief What a strategy sees and emits: events, intents, the portfolio, reconciliation and risk limits.
+ */
+
+/**
+ * @namespace algotradelib::strategy::vanilla
+ * @brief Ready-made example strategies (buy and hold, crossovers, mean reversion, sizing, liquidation).
+ */
+
+/**
+ * @namespace algotradelib::backtest
+ * @brief Replays a strategy over stored bars: fill and cost models, the replay ledger, and the report.
+ */
+
+/**
+ * @namespace algotradelib::runner
+ * @brief Runs a strategy: the runner, the polling loop, the order journal, and stopping.
+ */
+
+/**
+ * @namespace algotradelib::live
+ * @brief Connects a runner to a broker session for live trading.
+ */
+
+/**
+ * @namespace algotradelib::network
+ * @brief HTTP and WebSocket transport, OAuth tokens, and request pacing.
+ */
+
+/**
+ * @namespace algotradelib::kis
+ * @brief The Korea Investment & Securities (KIS) Open API client.
+ */
+
+/**
+ * @namespace algotradelib::tossinvest
+ * @brief The Toss Securities Open API client.
+ */
+
+/**
+ * @namespace algotradelib::kiwoom
+ * @brief The Kiwoom Securities REST API client.
+ */
