@@ -702,8 +702,8 @@ struct BrokerError {
    *
    * `false` when nothing was written: the client refused before any I/O (an order id too long, an
    * unsupported time in force), or the transport failed before writing (resolving, connecting,
-   * handshaking, a full queue, or a closed client). Such an error is not counted against a rate limit and was not the
-   * broker's; a runner may offer the instruction again. Defaults to `true`.
+   * handshaking, a full queue, or a closed client). Such an error is not counted against a rate
+   * limit and was not the broker's; a runner may offer the instruction again. Defaults to `true`.
    */
   bool reached_broker_{true};
   /** @brief The HTTP status, or `0` if the failure happened before a response. */
