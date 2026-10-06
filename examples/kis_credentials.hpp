@@ -46,8 +46,8 @@ inline std::optional<std::filesystem::path> environment_directory() {
  * @param argv The arguments; the rest are moved down.
  * @return The directory, or `std::nullopt` if neither names one.
  * @throws std::runtime_error if `--credentials` has no usable value (missing, empty, or another
- *   flag), so a mistyped command never falls back to another source, or if `ATL_CREDENTIALS_DIR` is
- *   set but empty.
+ *   flag), so a mistyped command never falls back to another source, or if no `--credentials` is
+ *   given and `ATL_CREDENTIALS_DIR` is set but empty.
  */
 inline std::optional<std::filesystem::path> take_directory(int& argc, char** argv) {
   std::optional<std::filesystem::path> directory;

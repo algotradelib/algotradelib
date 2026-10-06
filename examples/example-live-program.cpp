@@ -451,7 +451,7 @@ std::optional<Arguments> parse(int argc, char** argv) {
  * @param argc The argument count.
  * @param argv The arguments.
  * @return A `live_program::Exit` value, 64 for a usage error, or 70 if an exception escaped (what was
- *   in flight is then unknown).
+ *   in flight may then be unknown).
  */
 int main(int argc, char** argv) {
   const auto arguments = parse(argc, argv);
