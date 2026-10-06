@@ -93,7 +93,7 @@ struct TossRest : public network::AuthBody<TossRest> {
    */
   static constexpr std::string_view token_field() noexcept { return "access_token"; }
 
-  /** @brief Reads nothing more from a token response (Toss states `expires_in`); called by `from_json`. */
+  /** @brief Reads nothing more from a token response (the argument is unused; Toss states `expires_in`); called by `from_json`. */
   void from_json_impl(const json::object&) {}
 
   // bool valid() const noexcept {

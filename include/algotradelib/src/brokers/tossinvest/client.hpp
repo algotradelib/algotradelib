@@ -36,19 +36,21 @@ struct TossAccount {
 };
 
 /**
- * @brief Which orders a Toss order listing returns: `OPEN` (pending, partly filled, amendment
- *   pending) or `CLOSED` (ended).
+ * @brief Which orders a Toss order listing returns.
  */
 enum class TossOrderScope {
+  /** @brief Open orders: pending, partly filled, or with an amendment or cancellation pending. */
   OPEN,
+  /** @brief Ended orders. */
   CLOSED,
 };
 
 /**
  * @brief A Toss order-listing query.
  *
- * For `OPEN`, Toss returns every open order at once and ignores `cursor_` and `limit_` (they are not
- * sent).
+ * For `OPEN`, Toss returns all matching open orders at once (`cursor_` and `limit_` are not sent).
+ * Only orders placed as limit, market or closing-auction limit orders are listed; orders of other
+ * types placed outside the API are not.
  */
 struct TossOrderQuery {
   /** @brief The account (`TossAccount::sequence_`). */
@@ -57,13 +59,13 @@ struct TossOrderQuery {
   TossOrderScope scope_{TossOrderScope::OPEN};
   /** @brief Only this symbol, if set. */
   std::optional<std::string> symbol_;
-  /** @brief The first date to include. */
+  /** @brief The first order date to include (Korean date; any scope). */
   std::optional<Date> from_;
-  /** @brief The last date to include. */
+  /** @brief The last order date to include; before `from_` is refused. */
   std::optional<Date> to_;
   /** @brief The cursor from a previous page (`OrderPage::next_cursor_`); ignored for `OPEN`. */
   std::optional<std::string> cursor_;
-  /** @brief The most rows to return; ignored for `OPEN`. */
+  /** @brief The most rows to return, 1 to 100 (outside that range is refused, even for `OPEN`); not sent for `OPEN`. */
   std::optional<int> limit_;
 };
 
@@ -207,7 +209,11 @@ public:
     ) {}
 
   /**
-   * @brief Requests bars, reading as many pages as needed for `count_` bars (oldest first).
+   * @brief Requests up to `count_` bars, oldest first.
+   *
+   * Fewer are returned, with `next_cursor_` set when more remain, if history runs out or after 50
+   * pages (10,000 bars). One-minute and one-day bars only.
+   *
    * @tparam CompletionToken An Asio completion token.
    * @param query The query (one-minute or one-day bars only).
    * @param token The completion token, called with `Result<BarSeries>`.
@@ -313,7 +319,7 @@ public:
    * @brief Requests recent executions for one instrument, newest first.
    * @tparam CompletionToken An Asio completion token.
    * @param instrument The instrument.
-   * @param count The most trades to return.
+   * @param count The most trades to return, clamped to 1-50 (today's trades only).
    * @param token The completion token.
    * @return Whatever the completion token returns.
    */
@@ -393,7 +399,8 @@ public:
   }
 
   /**
-   * @brief Requests and normalizes a current quote.
+   * @brief Requests a quote for a Korean instrument (a US instrument is refused before sending; use
+   *   `async_prices`).
    * @tparam CompletionToken An Asio completion token.
    * @param instrument The instrument.
    * @param token The completion token.
@@ -548,6 +555,12 @@ public:
    * sending the same order again returns the original result; without one, read `async_orders` before
    * placing again.
    *
+   * Refused before sending: an instrument whose venue is not Toss's own (`COMBINED` for Korea,
+   * `UNSPECIFIED` for the US); an `OrderRequest::venue_`; a trigger price; a type other than limit or
+   * market; a condition other than `DAY`; an unsupported session; a fractional quantity (except a US
+   * market sell, up to six decimals); a Korean price that is not whole won; a client order id that is
+   * not 1-36 characters of `[A-Za-z0-9_-]`.
+   *
    * @tparam CompletionToken An Asio completion token.
    * @param account_sequence The account (`TossAccount::sequence_`).
    * @param order The order.
@@ -585,6 +598,8 @@ public:
    * @brief Amends an open order's price, and for a Korean order its quantity.
    *
    * After a `TRANSPORT` error the outcome is unknown; an amendment has no idempotency key.
+   * On success, `OrderAck::order_id_` is the **new** id Toss issued for the amended or cancelled order
+   * (not the original); later requests must use it.
    *
    * @tparam CompletionToken An Asio completion token.
    * @param account_sequence The account (`TossAccount::sequence_`).
@@ -625,6 +640,8 @@ public:
    * @brief Cancels an open order.
    *
    * After a `TRANSPORT` error the outcome is unknown: the order may still rest.
+   * On success, `OrderAck::order_id_` is the **new** id Toss issued for the amended or cancelled order
+   * (not the original); later requests must use it.
    *
    * @tparam CompletionToken An Asio completion token.
    * @param account_sequence The account (`TossAccount::sequence_`).
@@ -662,7 +679,11 @@ public:
   /**
    * @brief Requests a page of orders.
    *
-   * An `OPEN` listing returns every open order and no cursor. A `CLOSED` listing pages: pass
+   * Only orders placed as limit, market or closing-auction limit orders are listed or readable;
+   * orders of other types placed outside the API (such as after-hours closing-price orders placed in
+   * the app) are not.
+   *
+   * An `OPEN` listing returns all matching open orders and no cursor. A `CLOSED` listing pages: pass
    * `OrderPage::next_cursor_` back as `cursor_` to continue.
    *
    * @tparam CompletionToken An Asio completion token.
@@ -687,7 +708,12 @@ public:
   }
 
   /**
-   * @brief Retrieves one order in any lifecycle state.
+   * @brief Requests one order by id, in any state.
+   *
+   * Only orders placed as limit, market or closing-auction limit orders are listed or readable;
+   * orders of other types placed outside the API (such as after-hours closing-price orders placed in
+   * the app) are not.
+   *
    * @tparam CompletionToken An Asio completion token.
    * @param account_sequence The account (`TossAccount::sequence_`).
    * @param order_id Toss's order id.
@@ -3730,7 +3756,7 @@ public:
     ) {}
 
   /**
-   * @brief Returns the current normalized quote or a structured error.
+   * @brief Returns a quote for a Korean instrument (a US instrument is refused; use `prices`).
    * @param instrument The instrument.
    * @return The result, or an error.
    */
@@ -3792,7 +3818,7 @@ public:
   /**
    * @brief Returns recent executions for one instrument.
    * @param instrument The instrument.
-   * @param count The most trades to return.
+   * @param count The most trades to return, clamped to 1-50 (today's trades only).
    * @return The result, or an error.
    */
   Result<std::vector<TradePrint>> trades(InstrumentId instrument, int count) {
@@ -3829,7 +3855,7 @@ public:
   }
 
   /**
-   * @brief Returns bars, paging until the query's count is satisfied.
+   * @brief Returns up to `count_` bars; see `TossClient::async_bars`.
    * @param query The query.
    * @return The result, or an error.
    */
@@ -3914,7 +3940,8 @@ public:
   }
 
   /**
-   * @brief Modifies the price, and for Korean orders the quantity, of an open order.
+   * @brief Amends an open order; after a `TRANSPORT` error the outcome is unknown. On success the
+   *   acknowledgement carries the new order id. See `TossClient::async_replace_order`.
    * @param account_sequence The account (`TossAccount::sequence_`).
    * @param amendment The amendment.
    * @return The result, or an error.
@@ -3929,7 +3956,8 @@ public:
   }
 
   /**
-   * @brief Cancels an open order.
+   * @brief Cancels an open order; after a `TRANSPORT` error the outcome is unknown. On success the
+   *   acknowledgement carries the new order id. See `TossClient::async_cancel_order`.
    * @param account_sequence The account (`TossAccount::sequence_`).
    * @param order_id Toss's order id.
    * @return The result, or an error.
@@ -3956,7 +3984,7 @@ public:
   }
 
   /**
-   * @brief Returns one order in any lifecycle state.
+   * @brief Returns one order by id; see `TossClient::async_order` for which orders can be read.
    * @param account_sequence The account (`TossAccount::sequence_`).
    * @param order_id Toss's order id.
    * @return The result, or an error.

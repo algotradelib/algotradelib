@@ -90,11 +90,11 @@ struct Normalizers {
   /** @brief `false`: a calendar request covers only a date and the business days either side. */
   static constexpr bool has_calendar_range = false;
 
-  /** @brief `true`: Toss publishes session hours (read them through `session.client()`). */
+  /** @brief `true`: Toss publishes session hours, but this library does not expose them yet. */
   static constexpr bool has_calendar_sessions = true;
 
   /**
-   * @brief Refuses a calendar request with an invalid date.
+   * @brief Refuses a calendar request with an invalid date (the market argument is not checked).
    * @param from The date (empty: the broker's today).
    * @return An error if refused (nothing is sent), otherwise `std::nullopt`.
    */
@@ -110,7 +110,11 @@ struct Normalizers {
     return error;
   }
 
-  /** @brief Returns whether this broker publishes bars at `interval`. */
+  /**
+   * @brief Tests whether Toss publishes bars at an interval.
+   * @param interval The interval.
+   * @return `true` for one-minute and one-day bars.
+   */
   static constexpr bool supports_interval(BarInterval interval) {
     static_cast<void>(interval);
     return interval == BarInterval::ONE_MINUTE || interval == BarInterval::ONE_DAY;
@@ -137,8 +141,9 @@ struct Normalizers {
   }
 
   /**
-   * @brief Accepts every order: Toss validates the order itself and honours `client_order_id_` as
-   *   an idempotency key for ten minutes.
+   * @brief Accepts every order here; the client refuses what Toss cannot take before sending (see
+   *   `TossClient::async_place_order`). Toss honours `client_order_id_` as an idempotency key for ten
+   *   minutes. The order argument is not used.
    * @return `std::nullopt`.
    */
   static std::optional<BrokerError> validate_place(const OrderRequest&) { return std::nullopt; }
@@ -186,8 +191,10 @@ struct Normalizers {
    * @brief Converts an amendment into Toss's form.
    *
    * Toss requires a quantity for a Korean order and refuses one for a US order. It reports no
-   * amendable quantity, so an amendment built with `replace_with()` and no quantity carries none:
-   * state the quantity for a Korean order.
+   * amendable quantity, so an amendment built with `reprice()` or `replace_with()` and no quantity
+   * carries none, which Toss refuses for a Korean order: state the quantity there. Toss cannot change
+   * the condition or session, so a change to either is refused, as is any amendment without
+   * `resting_` (`unknown_resting_shape`).
    *
    * @param ref The order's reference.
    * @param instruction The amendment.
@@ -357,7 +364,10 @@ struct Capabilities {
   /** @brief `false`: a broker that takes orders; see `BrokerCaps::data_only`. */
   static constexpr bool data_only = false;
 
-  /** @brief `true`: the `OPEN` listing returns every open order. */
+  /**
+   * @brief `true`: the `OPEN` listing returns open orders (only those placed as limit, market or
+   *   closing-auction limit orders; see `TossClient::async_orders`).
+   */
   static constexpr bool has_working_orders = true;
 
   /** @brief `false`: Toss reports no amendable quantity. */
@@ -369,7 +379,7 @@ struct Capabilities {
    */
   static constexpr bool working_orders_state_terminal = false;
 
-  /** @brief `true`: one order can be read by id, in any state. */
+  /** @brief `true`: one order can be read by id, in any state (with the same type restriction as listings). */
   static constexpr bool has_order_by_id = true;
 
   /** @brief `false`: Toss cancels whole orders only. */
@@ -398,7 +408,9 @@ struct BrokerTraits<tossinvest::TossClient>
   /**
    * @brief Returns the venue a Toss order reaches: none in particular (Toss does not route by venue,
    *   and its listings carry none).
-   * @return `Venue::UNSPECIFIED`, whatever was asked.
+   * The venue asked for is ignored.
+   *
+   * @return `Venue::UNSPECIFIED`.
    */
   static constexpr Venue effective_route(Venue) noexcept { return Venue::UNSPECIFIED; }
 
@@ -489,7 +501,7 @@ struct BrokerTraits<tossinvest::TossClient>
    * @tparam Token An Asio completion token.
    * @param client The client.
    * @param instrument The instrument.
-   * @param count The most trades to return.
+   * @param count The most trades to return, clamped to 1-50.
    * @param token The completion token.
    * @return Whatever the completion token returns.
    */
@@ -735,7 +747,9 @@ struct BrokerTraits<tossinvest::TossBlockingClient>
   /**
    * @brief Returns the venue a Toss order reaches: none in particular (Toss does not route by venue,
    *   and its listings carry none).
-   * @return `Venue::UNSPECIFIED`, whatever was asked.
+   * The venue asked for is ignored.
+   *
+   * @return `Venue::UNSPECIFIED`.
    */
   static constexpr Venue effective_route(Venue) noexcept { return Venue::UNSPECIFIED; }
 
@@ -816,7 +830,7 @@ struct BrokerTraits<tossinvest::TossBlockingClient>
    * @brief Returns recent executions.
    * @param client The client.
    * @param instrument The instrument.
-   * @param count The most trades to return.
+   * @param count The most trades to return, clamped to 1-50.
    * @return The result, or an error.
    */
   static Result<std::vector<TradePrint>> trades(
