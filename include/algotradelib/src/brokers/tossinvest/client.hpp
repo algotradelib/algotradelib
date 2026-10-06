@@ -1237,8 +1237,8 @@ private:
   // A day is a trading day when Toss reports trading hours for it: it documents the
   // hours as null "둘 다 휴장이면", when both KRX and NXT are closed. So the presence of
   // the hours *is* the answer, and the hours themselves are not normalized — only
-  // Toss publishes them, so they stay reachable on this client rather than becoming
-  // a field permanently empty for KIS.
+  // Toss publishes them -- and they are dropped here, not exposed (the library does not
+  // offer session hours yet; see `BrokerCaps::has_calendar_sessions`).
   //
   // The two days either side are reported as business days, which is why they are
   // recorded as open without consulting their hours: Toss has already answered the
