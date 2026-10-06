@@ -603,9 +603,12 @@ struct LoopReport {
   std::size_t orders_guard_refused_{0};
   /** @brief Orders the binding refused to send; see `Runner::orders_binding_refused`. */
   std::size_t orders_binding_refused_{0};
-  /** @brief Orders the broker refused; see `last_broker_refusal_`. */
+  /**
+   * @brief Orders the broker refused (`SendOutcome::REJECTED`); see `last_broker_refusal_`. At KIS
+   *   and Toss most refusals arrive as unknown outcomes and are counted in `orders_indeterminate_`.
+   */
   std::size_t orders_broker_refused_{0};
-  /** @brief Orders with an unknown outcome. */
+  /** @brief Orders with an unknown outcome (`SendOutcome::INDETERMINATE`, including KIS and Toss refusals). */
   std::size_t orders_indeterminate_{0};
   /** @brief Sent orders that timed out unconfirmed, each withholding its instrument; see `Runner::set_confirmation_timeout`. */
   std::size_t orders_unconfirmed_timed_out_{0};
@@ -661,7 +664,7 @@ struct LoopReport {
    * @brief Positions whose closing order was sized down, or not sent, because another order could
    *   close them too.
    *
-   * A flatten cancels every resting order and then closes the position, but a same-side order can
+   * A flatten cancels every listed order and then closes the position, but a same-side order can
    * fill while its cancellation is pending. So the close is sized to the holding minus what is
    * working on that side, or not sent at all when the listing cannot be trusted
    * (`closing_source_unverified_`). Makes `closing_complete()` false.
@@ -684,6 +687,10 @@ struct LoopReport {
    * an unknown outcome) after that listing, holdings were never read or are too old, or the listing
    * is newer than the holdings. Then a `FLATTEN` places no closing orders at all, while the
    * withdrawals of the orders it knows of are still sent.
+   *
+   * A verified source still lists only what the broker's listing shows: at Toss, an order of a type
+   * the API does not list (such as an after-hours closing-price order placed in the app) is in no
+   * listing, so a flatten can neither withdraw it nor size around it.
    */
   bool closing_source_unverified_{false};
 

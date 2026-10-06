@@ -82,7 +82,7 @@ inline bool flush_to_disk(std::FILE* handle) noexcept {
  * outside it and the sweep writes `NOT_PLACED` for an order that exists -- and
  * it does not catch a stamp that is merely an hour wrong, because nothing in a
  * line can. Distinguishing a valid value from a valid-but-changed one needs the
- * line to carry a digest of itself; see `plan/todo/journal-line-integrity.md`.
+ * line to carry a digest of itself.
  *
  * The lower bound is 2020-01-01, comfortably before this library existed, and
  * the upper is a century out, which is far enough that clock skew and a
