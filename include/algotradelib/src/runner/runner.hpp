@@ -384,7 +384,7 @@ public:
    */
   static constexpr bool on_fill_never_fires =
     runner_detail::sends_to_a_broker<Executor>::value &&
-    strategy::strategy_detail::has_on_fill<Strategy, Context>::value;
+    strategy::strategy_detail::declares_on_fill<Strategy>;
 
   /**
    * Whether this runner keeps every order it sends in `working_`, whatever the limits, until the

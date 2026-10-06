@@ -59,8 +59,9 @@ InstrumentId traded() { return InstrumentId{Country::KR, Venue::COMBINED, "00593
 // holds no session, and performs no I/O, which is exactly why this same source runs in a dry run and
 // in a live session without being rewritten. The template is load-bearing rather than stylistic: it
 // is what lets one strategy be handed three different runner contexts. `ATL_ASSERT_STRATEGY` below
-// checks that property at compile time, so a handler accidentally written against one concrete
-// context fails here rather than at the point somebody tries to run it live.
+// compiles every handler against two stub contexts, so a handler accidentally written against one
+// concrete context, or one the runner's call does not fit, fails here rather than when somebody first
+// runs it live.
 //
 // Emit a **target position**, not an order. A strategy that emits orders has to remember whether it
 // already entered, and after a restart it does not know -- so it either misses an exit or re-enters a
@@ -230,8 +231,8 @@ void compare(const std::string& name, Strategy instance, math::Scalar periods) {
 
 } // namespace
 
-// Checks that every handler really is a template, by detecting it for two unrelated probe contexts.
-// A strategy that passes runs under the dry runner, the backtester and a live session alike.
+// Compiles every handler against a stub with no capability and one with every capability, so both
+// branches of each capability gate are checked. Each runner checks it again with its own context.
 ATL_ASSERT_STRATEGY(MyStrategy, algotradelib::strategy::MinimalContext);
 ATL_ASSERT_STRATEGY(MyStrategy, algotradelib::strategy::FullContext);
 
