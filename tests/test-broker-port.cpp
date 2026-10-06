@@ -1088,72 +1088,8 @@ TEST_CASE("every adapter states whether it transmits a trigger", "[port][trigger
   static_assert(!BrokerCaps<tossinvest::TossBlockingClient>::has_trigger_price);
 }
 
-TEST_CASE(
-  "a trigger never reaches an adapter that does not say it can send one",
-  "[port][trigger]"
-) {
-  net::io_context ioc;
-  auto client = std::make_shared<mock::MockClient>(ioc.get_executor());
-  client->ack_ = mock::MockAck{"ticket-1", std::chrono::system_clock::now()};
-  BrokerSession<mock::MockClient> session(client, mock::MockAccount{"cust", 1});
-
-  WorkingOrder<mock::Broker> working;
-  working.ref_.primary_ = "ticket-1";
-  working.order_.instrument_ = samsung();
-  working.order_.type_ = OrderType::STOP_LIMIT;
-  working.order_.price_ = Decimal64::parse("69000");
-  working.order_.trigger_price_ = Decimal64::parse("69500");
-  working.order_.time_in_force_ = TimeInForce::DAY;
-  working.order_.session_ = OrderSession::REGULAR;
-  working.amendable_quantity_ = Decimal64::parse("10");
-
-  SECTION("a placement is refused before the client is asked") {
-    OrderRequest order;
-    order.instrument_ = samsung();
-    order.quantity_ = Decimal64::parse("1");
-    order.price_ = Decimal64::parse("70000");
-    // On a plain limit: the adapter would have sent the limit and silently lost the trigger.
-    order.trigger_price_ = Decimal64::parse("69000");
-
-    auto result = session.async_place(order, net::use_future);
-    ioc.run();
-    const auto placed = result.get();
-    REQUIRE_FALSE(placed);
-    CHECK(placed.error().broker_code_ == "unsupported_trigger_price");
-    CHECK_FALSE(placed.error().reached_broker_);
-    CHECK(client->place_calls_ == 0);
-  }
-
-  SECTION("a modification is refused, including one that only keeps the resting trigger") {
-    // `reprice` restates the trigger explicitly, and `OrderShape{STOP_LIMIT, limit}` leaves it
-    // unset to be kept: both would reach an unaware adapter as a stop with no trigger.
-    auto restated = session.async_replace(
-      working.ref_, reprice(working, Decimal64::parse("68000")), net::use_future
-    );
-    auto kept = session.async_replace(
-      working.ref_,
-      replace_with(working, OrderShape{OrderType::STOP_LIMIT, Decimal64::parse("68000")}),
-      net::use_future
-    );
-    ioc.run();
-    const auto first = restated.get();
-    const auto second = kept.get();
-    REQUIRE_FALSE(first);
-    REQUIRE_FALSE(second);
-    CHECK(first.error().broker_code_ == "unsupported_trigger_price");
-    CHECK(second.error().broker_code_ == "unsupported_trigger_price");
-    CHECK(client->replace_calls_ == 0);
-  }
-
-  SECTION("a cancellation carrying one is still sent") {
-    // `cancel_all` restates the trigger the listing reported. Refusing it would leave a stop order
-    // the caller cannot take back, through an adapter that could read the stop and not send one.
-    auto result = session.async_cancel(working.ref_, cancel_all(working), net::use_future);
-    ioc.run();
-    REQUIRE(result.get());
-    CHECK(client->cancel_calls_ == 1);
-  }
-}
+// The trigger rules on place, replace and cancel are held for both sessions at once, through one scripted
+// broker, in tests/test-session-parity.cpp. This file keeps the real Toss facade's case below.
 
 TEST_CASE("a blocking session refuses a trigger to a broker without the capability", "[port][trigger]") {
   ssl::context tls(ssl::context::tls_client);

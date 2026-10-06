@@ -13,7 +13,7 @@ See @ref writing-a-strategy for writing the strategy itself.
 | `<algotradelib/strategy>` | the surface a strategy is written against | no |
 | `<algotradelib/vanilla>` | the strategies this library ships | no |
 | `<algotradelib/runner>` | the context, the dispatcher, `DryRunner` | **no** |
-| `<algotradelib/live>` | `SessionExecutor`, over a bound `BrokerSession` | yes |
+| `<algotradelib/live>` | `SessionExecutor`, over a bound `BlockingSession` | yes |
 
 `<algotradelib/vanilla>` is named for the namespace it fills, `strategy::vanilla`, rather than as a
 plural of `strategy` — two headers differing only in an `s` are indistinguishable in an autocomplete

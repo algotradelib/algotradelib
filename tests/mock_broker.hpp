@@ -7,6 +7,7 @@
 #include <boost/asio/async_result.hpp>
 #include <boost/asio/associated_executor.hpp>
 #include <boost/asio/dispatch.hpp>
+#include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/strand.hpp>
 
@@ -377,15 +378,11 @@ struct Capabilities {
 };
 
 /**
- * Broker port adaptation for the in-memory client, apart from its capabilities.
- *
- * Nothing outside this test header is touched to add it, which is the property
- * being demonstrated.
+ * What the in-memory broker's two adaptations share: the associated types and the pure validators,
+ * converters and normalizers. `Members` adds the asynchronous thunks and `BrokerTraits<MockBlockingClient>`
+ * the blocking ones, as every shipped broker shares one core between its two clients.
  */
-struct Members {
-  /** Concrete client this specialization adapts. */
-  using Client = mock::MockClient;
-
+struct Normalizers {
   /** Configuration type. */
   using Config = mock::MockConfig;
 
@@ -410,9 +407,6 @@ struct Members {
   /** Normalized broker name. */
   static constexpr std::string_view name = mock::Broker::name;
 
-  /** This client completes through a completion token. */
-  static constexpr bool blocking = false;
-
   /**
    * The in-memory broker publishes minute and daily bars, like both real ones, and
    * refuses the longer periods only KIS has.
@@ -433,11 +427,6 @@ struct Members {
     return error;
   }
 
-  /** Forwards a bar request. */
-  template <typename Token>
-  static auto bars(Client& client, BarQuery query, Token&& token) {
-    return client.async_bars(std::move(query), std::forward<Token>(token));
-  }
 
   /** Returns an opaque reference carrying the broker's ticket. */
   static OrderRef<mock::Broker> make_ref(std::string ticket) {
@@ -446,8 +435,17 @@ struct Members {
     return ref;
   }
 
+  /**
+   * How often the session asked the adapter to validate a placement or convert a modification, so a test
+   * can show a session refusal never reached the adapter (`tests/test-session-parity.cpp`).
+   */
+  static inline int validate_place_calls_ = 0;
+  /** See `validate_place_calls_`. */
+  static inline int to_replacement_calls_ = 0;
+
   /** Refuses an idempotency key this broker does not honor. */
   static std::optional<BrokerError> validate_place(const OrderRequest& order) {
+    ++validate_place_calls_;
     if (!order.client_order_id_) {
       return std::nullopt;
     }
@@ -490,11 +488,20 @@ struct Members {
     return Result<WorkingOrders<mock::Broker>>(std::move(orders));
   }
 
-  /** Converts a normalized modification. */
+  /** Converts a normalized modification, refusing a stated quantity of zero. */
   static Result<Amendment> to_replacement(
     const OrderRef<mock::Broker>& ref,
     const AmendInstruction& instruction
   ) {
+    ++to_replacement_calls_;
+    if (instruction.quantity_ && *instruction.quantity_ == Decimal64::parse("0")) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
+      error.broker_code_ = "zero_quantity";
+      error.message_ = "the in-memory broker takes no modification to a quantity of zero";
+      return Result<Amendment>(std::move(error));
+    }
     Amendment amendment;
     amendment.ticket_ = ref.primary_;
     amendment.whole_ = instruction.all_remaining_;
@@ -529,8 +536,29 @@ struct Members {
     return Result<HistoryQuery>(std::move(selector));
   }
 
+};
+
+/**
+ * Broker port adaptation for the asynchronous in-memory client, apart from its capabilities.
+ *
+ * Nothing outside this test header is touched to add it, which is the property
+ * being demonstrated.
+ */
+struct Members : Normalizers {
+  /** Concrete client this specialization adapts. */
+  using Client = mock::MockClient;
+
+  /** This client completes through a completion token. */
+  static constexpr bool blocking = false;
+
   /** The in-memory broker issues no network requests and is never paced. */
   static const network::RateLimitStats* rate_limit_stats(const Client&) { return nullptr; }
+
+  /** Forwards a bar request. */
+  template <typename Token>
+  static auto bars(Client& client, BarQuery query, Token&& token) {
+    return client.async_bars(std::move(query), std::forward<Token>(token));
+  }
 
   /** Forwards a quote request. */
   template <typename Token>
@@ -593,6 +621,128 @@ struct BrokerTraits<mock::MockClient> : mock_port::Members, mock_port::Capabilit
    * a caller gates on.
    */
   static constexpr bool working_orders_state_terminal = true;
+};
+
+} // namespace algotradelib
+
+namespace mock {
+
+/**
+ * A blocking facade over `MockClient`, built the way every shipped blocking client is: it owns an event loop
+ * and drives the asynchronous client on it to completion, once per call (`kis::KisBlockingClient::run`).
+ *
+ * Exists so one test can drive `BrokerSession` and `BlockingSession` through the same scripted broker and
+ * hold them to the same pre-flight and the same results (`tests/test-session-parity.cpp`). The scripted
+ * answers and call counters are the inner client's, through `mock()`.
+ */
+class MockBlockingClient {
+public:
+  /** Constructs a blocking client over a fresh in-memory client. */
+  MockBlockingClient() : client_(std::make_shared<MockClient>(ioc_.get_executor())) {}
+
+  /** The in-memory client underneath: its scripted answers and call counters. */
+  MockClient& mock() noexcept { return *client_; }
+
+  /** Answers a quote request. */
+  Result<QuoteSnapshot> quote(InstrumentId instrument) {
+    return run<QuoteSnapshot>([&](auto handler) { client_->async_quote(std::move(instrument), std::move(handler)); });
+  }
+  /** Answers a bar request. */
+  Result<BarSeries> bars(BarQuery query) {
+    return run<BarSeries>([&](auto handler) { client_->async_bars(std::move(query), std::move(handler)); });
+  }
+  /** Answers a holdings request. */
+  Result<HoldingsSnapshot> holdings(const MockAccount& account) {
+    return run<HoldingsSnapshot>([&](auto handler) { client_->async_holdings(account, std::move(handler)); });
+  }
+  /** Answers an order submission. */
+  Result<MockAck> place(const MockAccount& account, OrderRequest order) {
+    return run<MockAck>([&](auto handler) { client_->async_place(account, std::move(order), std::move(handler)); });
+  }
+  /** Answers an order modification. */
+  Result<MockAck> replace(const MockAccount& account, MockAmendment amendment) {
+    return run<MockAck>([&](auto handler) { client_->async_replace(account, std::move(amendment), std::move(handler)); });
+  }
+  /** Answers an order cancellation. */
+  Result<MockAck> cancel(const MockAccount& account, MockAmendment amendment) {
+    return run<MockAck>([&](auto handler) { client_->async_cancel(account, std::move(amendment), std::move(handler)); });
+  }
+  /** Answers an amendable-order inquiry. */
+  Result<MockLiveOrders> live_orders(const MockAccount& account) {
+    return run<MockLiveOrders>([&](auto handler) { client_->async_live_orders(account, std::move(handler)); });
+  }
+  /** Answers an order-history inquiry. */
+  Result<OrderPage> history(MockHistorySelector selector) {
+    return run<OrderPage>([&](auto handler) { client_->async_history(std::move(selector), std::move(handler)); });
+  }
+
+private:
+  /** Drives one asynchronous operation to completion on the private loop. */
+  template <typename T, typename Start>
+  Result<T> run(Start start) {
+    std::optional<Result<T>> result;
+    ioc_.restart();
+    start([&result](Result<T> value) { result.emplace(std::move(value)); });
+    ioc_.run();
+    if (!result) {
+      BrokerError error;
+      error.category_ = ErrorCategory::TRANSPORT;
+      error.broker_code_ = "event_loop_stopped";
+      error.message_ = "event loop stopped before completion";
+      return Result<T>(std::move(error));
+    }
+    return std::move(*result);
+  }
+
+  net::io_context ioc_;
+  std::shared_ptr<MockClient> client_;
+};
+
+} // namespace mock
+
+namespace algotradelib {
+
+/** The blocking in-memory client's adaptation: the shared core, the capabilities, and blocking thunks. */
+template <>
+struct BrokerTraits<mock::MockBlockingClient> : mock_port::Normalizers, mock_port::Capabilities {
+  /** Concrete client this specialization adapts. */
+  using Client = mock::MockBlockingClient;
+  /** This client returns each result directly. */
+  static constexpr bool blocking = true;
+  /** Takes orders. */
+  static constexpr bool data_only = false;
+  /** As the asynchronous mock's. */
+  static constexpr bool working_orders_state_terminal = true;
+
+  /** Never paced. */
+  static const network::RateLimitStats* rate_limit_stats(const Client&) { return nullptr; }
+  /** Forwards a quote request. */
+  static Result<QuoteSnapshot> quote(Client& client, InstrumentId instrument) { return client.quote(std::move(instrument)); }
+  /** Forwards a bar request. */
+  static Result<BarSeries> bars(Client& client, BarQuery query) { return client.bars(std::move(query)); }
+  /** Forwards a holdings request. */
+  static Result<HoldingsSnapshot> holdings(Client& client, const Account& account) { return client.holdings(account); }
+  /** Forwards an order submission. */
+  static Result<PlaceAck> place_order(Client& client, const Account& account, OrderRequest order) {
+    return client.place(account, std::move(order));
+  }
+  /** Forwards an order modification. */
+  static Result<PlaceAck> replace_order(Client& client, const Account& account, Amendment amendment) {
+    return client.replace(account, std::move(amendment));
+  }
+  /** Forwards an order cancellation. */
+  static Result<PlaceAck> cancel_order(Client& client, const Account& account, Amendment amendment) {
+    return client.cancel(account, std::move(amendment));
+  }
+  /** Forwards an amendable-order inquiry. */
+  static Result<WorkingOrdersResult> working_orders(Client& client, const Account& account) {
+    return client.live_orders(account);
+  }
+  /** Forwards an order-history inquiry. */
+  static Result<OrderPage> order_history(Client& client, const Account& account, HistoryQuery query) {
+    static_cast<void>(account);
+    return client.history(std::move(query));
+  }
 };
 
 } // namespace algotradelib
