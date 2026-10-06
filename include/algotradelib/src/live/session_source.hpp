@@ -106,12 +106,13 @@ struct feeds_warmup<
  * check applies to close-stamped bars and to daily and minute bars, and only once either instant is
  * known (open-stamped weekly, monthly and yearly bars are fed unchecked). Of the bars collected, only
  * each instrument's newest (which may be yesterday's, if today's is still forming) is fed live, and
- * only if it ended strictly after every other collected bar; the rest go through
+ * only if it ended strictly after every older bar collected in the same poll, of any instrument (a
+ * tie is history; instruments' newest bars are not compared with each other). The rest go through
  * `Runner::feed_warmup`, so a restart does not act on the history it reads. This does not make the
  * newest bar recent.
  *
- * Requests are tagged by kind, and the rate limiter keeps capacity for orders, so polling cannot
- * starve an order. A kind the broker does not offer compiles to no request and returns `UNCHANGED`.
+ * Requests are tagged by kind, so a client budget with a trading reserve
+ * (`network::RateLimitBudget::trading_reserve_`) keeps capacity for orders. A kind the broker does not offer compiles to no request and returns `UNCHANGED`.
  * A failed poll leaves the previous calendar, buying power and price bands in place.
  *
  * With a journal (`set_journal`), every order listing is also checked against the instructions the
@@ -301,8 +302,9 @@ public:
    * @tparam Runner The runner type.
    * @param kind The kind to poll.
    * @param runner_instance The runner.
-   * @return `UPDATED` if anything new arrived, `UNCHANGED` if nothing did (or the broker does not
-   *   offer the kind), `FAILED` or `RATE_LIMITED` on an error (see `last_error()`).
+   * @return `UPDATED` if a read succeeded and fed or installed something (holdings and working
+   *   orders: every successful read), `UNCHANGED` if nothing arrived (or the broker does not offer
+   *   the kind), `FAILED` or `RATE_LIMITED` on an error (see `last_error()`).
    */
   template <typename Runner>
   runner::PollOutcome poll(runner::PollKind kind, Runner& runner_instance) {

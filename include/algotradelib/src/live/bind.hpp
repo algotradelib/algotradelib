@@ -123,7 +123,7 @@ using JournaledRunner = runner::Runner<
  * @param strategy The strategy.
  * @param limits The risk limits.
  * @param series_capacity How many trailing bars each cached series keeps.
- * @param default_route As for `bind`; the journal records the venue the order will reach
+ * @param default_route As for `bind`; the journal records the route the order is sent with
  *   (`SessionExecutor::effective_route`, such as KRX for an unspecified KIS order).
  * @return The runner.
  */

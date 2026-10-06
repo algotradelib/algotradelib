@@ -97,9 +97,10 @@ struct HttpClientOptions {
    *   (one second by default).
    *
    * A server closes idle connections on its own schedule (KIS after five seconds), and a request
-   * written into a closed connection fails. A GET is then sent again, but a POST (which may be an
-   * order) is not, so its outcome would be unknown. A POST after a longer idle period is therefore
-   * sent on a fresh connection, at the cost of a TLS handshake.
+   * written into a closed connection fails. A GET is then sent again, but any other request (which
+   * may be an order) is not, so its outcome would be unknown. Such a request after a longer idle
+   * period is therefore sent on a fresh connection, at the cost of a TLS handshake (once per request
+   * in `AsyncHttpClient`; see its description).
    */
   std::chrono::milliseconds unreplayed_idle_limit_{1000};
 };
@@ -164,7 +165,7 @@ inline void close_ssl_stream(beast::ssl_stream<beast::tcp_stream>& stream) noexc
  * @brief A blocking HTTP/1.1 client over TLS that keeps one connection to one host.
  *
  * Not paced, not thread-safe, and with no enforced deadlines: a blocking DNS lookup, connect, TLS
- * handshake, write or read can wait indefinitely. Broker clients use `AsyncHttpClient`.
+ * handshake, write, read, or the TLS shutdown when closing can wait indefinitely. Broker clients use `AsyncHttpClient`.
  */
 class HttpClient {
 public:

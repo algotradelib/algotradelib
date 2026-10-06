@@ -82,7 +82,8 @@ public:
   }
 
   /**
-   * @brief Returns the venue an order will actually reach, for the journal to record before sending.
+   * @brief Returns the route an order is sent with, for the journal to record before sending (for
+   *   SOR, `COMBINED`, not the venue it executes on).
    *
    * `default_route()` is applied first; then the broker's traits say where an unspecified venue goes
    * (KRX at KIS). A session whose traits do not say returns the requested route.
