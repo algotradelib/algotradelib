@@ -69,9 +69,9 @@ InstrumentId traded() { return InstrumentId{Country::KR, Venue::COMBINED, "00593
 // see the portfolio and the working orders; you cannot.
 // ---------------------------------------------------------------------------------------------
 struct MyStrategy {
-  /** How many closes the average is taken over. */
+  /** @brief How many closes the average is taken over. */
   std::size_t lookback_{5};
-  /** How many shares to hold when the signal is on. */
+  /** @brief How many shares to hold when the signal is on. */
   Decimal64 quantity_{Decimal64::parse("1000")};
 
   std::vector<Decimal64> history_;
@@ -125,7 +125,7 @@ struct MyStrategy {
 // Everything below is the harness. Replace the bars; the rest can stay as it is.
 // ---------------------------------------------------------------------------------------------
 
-/** What the strategies trade. A replay needs the reference data a live session would have fetched. */
+/** @brief What the strategies trade. A replay needs the reference data a live session would have fetched. */
 Instrument reference() {
   Instrument instrument;
   instrument.id_ = traded();
@@ -140,7 +140,7 @@ Instrument reference() {
   return instrument;
 }
 
-/** A path that rises, stalls, falls and recovers, so a trend strategy has both sides to trade. */
+/** @brief A path that rises, stalls, falls and recovers, so a trend strategy has both sides to trade. */
 const std::vector<int>& closes() {
   static const std::vector<int> path = {
     60000, 60500, 61200, 61000, 62000, 63000, 64500, 65000, 66200, 67000,
@@ -161,7 +161,7 @@ backtest::ReplayConfig config_for() {
   return config;
 }
 
-/** Costs a Korean online brokerage charges, in the right order of magnitude. */
+/** @brief Costs a Korean online brokerage charges, in the right order of magnitude. */
 backtest::NextBarFillModel costs() {
   return backtest::NextBarFillModel(
     backtest::CommissionModel::of(Decimal64::parse("0.00015"), Decimal64::parse("100")),
@@ -170,7 +170,7 @@ backtest::NextBarFillModel costs() {
 }
 
 /**
- * Replays `closes()` through one strategy.
+ * @brief Replays `closes()` through one strategy.
  *
  * A function template rather than a container, because `Backtester<A>` and `Backtester<B>` are
  * unrelated types -- which is the same static-dispatch choice the rest of the library makes, and the
@@ -197,7 +197,7 @@ backtest::Backtester<Strategy> replay(Strategy instance) {
 
 #if defined(ATL_HAS_EIGEN)
 
-/** Prints a scalar as a percentage, or a dash where the figure does not exist. */
+/** @brief Prints a scalar as a percentage, or a dash where the figure does not exist. */
 std::string percent(math::Scalar value) {
   if (!math::observed(value)) {
     return math::is_undefined(value) ? "undefined" : "       --";
@@ -207,7 +207,7 @@ std::string percent(math::Scalar value) {
   return text.str();
 }
 
-/** Prints a scalar plainly, or a dash. */
+/** @brief Prints a scalar plainly, or a dash. */
 std::string plain(math::Scalar value) {
   if (!math::observed(value)) {
     return math::is_undefined(value) ? "undefined" : "       --";
@@ -217,7 +217,7 @@ std::string plain(math::Scalar value) {
   return text.str();
 }
 
-/** Replays one strategy and prints its row. */
+/** @brief Replays one strategy and prints its row. */
 template <typename Strategy>
 void compare(const std::string& name, Strategy instance, math::Scalar periods) {
   const auto engine = replay(std::move(instance));

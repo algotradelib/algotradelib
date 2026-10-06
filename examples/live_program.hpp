@@ -41,62 +41,62 @@ namespace live = algotradelib::live;
 namespace runner = algotradelib::runner;
 namespace strategy = algotradelib::strategy;
 
-/** What a run is told, gathered so `main` states it once and a test can state it differently. */
+/** @brief What a run is told, gathered so `main` states it once and a test can state it differently. */
 struct Settings {
-  /** The instruments the source polls. */
+  /** @brief The instruments the source polls. */
   std::vector<atl::InstrumentId> universe_;
-  /** The limits the guard enforces. */
+  /** @brief The limits the guard enforces. */
   strategy::RiskLimits limits_;
   /**
-   * How often each kind is polled. `trade` needs `working_orders_` set, shorter than
+   * @brief How often each kind is polled. `trade` needs `working_orders_` set, shorter than
    * `maximum_portfolio_age_`: a runner that sends orders keeps them until the listing or holdings
    * account for them, and the loop holds (with a note) while no listing will come.
    */
   runner::PollSchedule schedule_;
-  /** Which bars the source asks for, and how many: the history read at start is this many. */
+  /** @brief Which bars the source asks for, and how many: the history read at start is this many. */
   atl::BarInterval bar_interval_{atl::BarInterval::ONE_DAY};
-  /** How many bars each bar poll asks for. */
+  /** @brief How many bars each bar poll asks for. */
   int bar_count_{100};
-  /** How old a holdings snapshot -- and the order listing -- may be before the loop stops sizing against it. */
+  /** @brief How old a holdings snapshot -- and the order listing -- may be before the loop stops sizing against it. */
   std::chrono::nanoseconds maximum_portfolio_age_{std::chrono::minutes(2)};
-  /** How old a price band may be before the loop stops clamping to it. */
+  /** @brief How old a price band may be before the loop stops clamping to it. */
   std::chrono::nanoseconds maximum_price_limits_age_{std::chrono::minutes(20)};
-  /** Where the order journal lives. */
+  /** @brief Where the order journal lives. */
   std::string journal_path_;
-  /** Which account the journal belongs to; a journal naming another refuses to open. */
+  /** @brief Which account the journal belongs to; a journal naming another refuses to open. */
   std::string journal_scope_;
-  /** The file an operator writes `quiesce`, `withdraw` or `flatten` into to stop the run. */
+  /** @brief The file an operator writes `quiesce`, `withdraw` or `flatten` into to stop the run. */
   std::string control_file_;
-  /** Iterations before returning; 0 runs until a stop. */
+  /** @brief Iterations before returning; 0 runs until a stop. */
   std::size_t max_iterations_{0};
   /**
-   * The venue an order is sent to, since a strategy's orders name none; `UNSPECIFIED` takes the
+   * @brief The venue an order is sent to, since a strategy's orders name none; `UNSPECIFIED` takes the
    * broker's own default. Kiwoom has none, so a Kiwoom run must state one. See
    * `live::SessionExecutor::default_route`.
    */
   atl::Venue default_route_{atl::Venue::UNSPECIFIED};
 };
 
-/** What the program exits with, so a supervisor can tell its endings apart. */
+/** @brief What the program exits with, so a supervisor can tell its endings apart. */
 enum class Exit : int {
-  /** The run ended, and any closing pass it made got every instruction out. */
+  /** @brief The run ended, and any closing pass it made got every instruction out. */
   CLEAN = 0,
-  /** A stop that closes ran and `closing_complete()` is false: read the broker's order list. */
+  /** @brief A stop that closes ran and `closing_complete()` is false: read the broker's order list. */
   CLOSING_INCOMPLETE = 1,
-  /** The journal would not open, so nothing was bound. */
+  /** @brief The journal would not open, so nothing was bound. */
   JOURNAL_REFUSED = 2,
-  /** Recovery halted the runner; nothing was started. */
+  /** @brief Recovery halted the runner; nothing was started. */
   RECOVERY_HALTED = 3,
-  /** Reference data could not be read, so no order could be priced; nothing was started. */
+  /** @brief Reference data could not be read, so no order could be priced; nothing was started. */
   REFERENCE_UNREADABLE = 4,
-  /** The loop gave up after repeated poll failures: it was not trading when it returned. */
+  /** @brief The loop gave up after repeated poll failures: it was not trading when it returned. */
   LOOP_ABANDONED = 5,
   /**
-   * Local machinery failed during the run -- usually a journal write -- and the runner halted itself.
+   * @brief Local machinery failed during the run -- usually a journal write -- and the runner halted itself.
    * Whatever it was sending when that happened is unknown until the broker's order list is read.
    */
   LOCAL_FAILURE = 6,
-  /** The program could not settle which account to trade (used by `example-live-program`). */
+  /** @brief The program could not settle which account to trade (used by `example-live-program`). */
   ACCOUNT_UNRESOLVED = 7,
 };
 

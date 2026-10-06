@@ -35,7 +35,7 @@ using Clock = std::chrono::system_clock;
 
 InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
 
-/** Reference data, without which nothing can be priced onto a tick grid. */
+/** @brief Reference data, without which nothing can be priced onto a tick grid. */
 Instrument samsung_reference() {
   Instrument reference;
   reference.id_ = samsung();
@@ -46,7 +46,7 @@ Instrument samsung_reference() {
   return reference;
 }
 
-/** A strategy that simply counts, so the output is about the loop rather than about signals. */
+/** @brief A strategy that simply counts, so the output is about the loop rather than about signals. */
 struct CountBars {
   std::size_t bars_{0};
 
@@ -60,7 +60,7 @@ struct CountBars {
 using LoopRunner = runner::DryRunner<CountBars>;
 
 /**
- * A source that invents a rising price.
+ * @brief A source that invents a rising price.
  *
  * This is the whole seam for a dry run. A source owes the loop two things:
  *
@@ -137,7 +137,7 @@ private:
   int reads_{0};
 };
 
-/** Prints a loop report the way an operator would want to read it. */
+/** @brief Prints a loop report the way an operator would want to read it. */
 void describe(const runner::LoopReport& report) {
   std::cout << "iterations      : " << report.iterations_ << '\n'
             << "bar polls       : " << report.attempted(runner::PollKind::BARS)
@@ -179,7 +179,7 @@ void describe(const runner::LoopReport& report) {
 }
 
 /**
- * When this example's clock starts: 200 days after the epoch, at 09:00 in Seoul.
+ * @brief When this example's clock starts: 200 days after the epoch, at 09:00 in Seoul.
  *
  * Named rather than repeated, because three things now have to agree about it -- the clock, the
  * calendar's covered date, and the session window the phase is derived against. They used to be one.

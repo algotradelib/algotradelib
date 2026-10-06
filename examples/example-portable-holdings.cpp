@@ -39,7 +39,7 @@ using algotradelib::BrokerCaps;
 using algotradelib::BrokerError;
 using algotradelib::HoldingsSnapshot;
 
-/** Prints a structured broker or transport failure. */
+/** @brief Prints a structured broker or transport failure. */
 void print_error(std::string_view operation, const BrokerError& error) {
   std::cerr << operation << " failed";
   if (!error.broker_code_.empty()) {
@@ -57,7 +57,7 @@ void print_error(std::string_view operation, const BrokerError& error) {
   std::cerr << '\n';
 }
 
-/** Prints normalized positions and per-currency totals. */
+/** @brief Prints normalized positions and per-currency totals. */
 void print_holdings(const HoldingsSnapshot& snapshot) {
   std::cout << "positions: " << snapshot.positions_.size() << '\n';
   for (const auto& position : snapshot.positions_) {
@@ -74,7 +74,7 @@ void print_holdings(const HoldingsSnapshot& snapshot) {
   }
 }
 
-/** Prints normalized working orders and the reference each amendment would use. */
+/** @brief Prints normalized working orders and the reference each amendment would use. */
 template <typename Broker>
 void print_working_orders(const algotradelib::WorkingOrders<Broker>& orders) {
   std::cout << "working orders: " << orders.orders_.size() << '\n';
@@ -93,7 +93,7 @@ void print_working_orders(const algotradelib::WorkingOrders<Broker>& orders) {
 }
 
 /**
- * Reports one account through the broker port only.
+ * @brief Reports one account through the broker port only.
  *
  * Nothing here mentions a broker. The two capability gates are the whole of the
  * broker-specific surface, and each states what the difference actually is
@@ -131,7 +131,7 @@ int report(BlockingSession<Client>& session) {
   return 0;
 }
 
-/** Builds a KIS session from the environment and reports it. */
+/** @brief Builds a KIS session from the environment and reports it. */
 int report_kis(ssl::context& tls) {
   namespace kis = algotradelib::kis;
 
@@ -147,7 +147,7 @@ int report_kis(ssl::context& tls) {
   return report(session);
 }
 
-/** Builds a Toss session, discovering the account when none is supplied. */
+/** @brief Builds a Toss session, discovering the account when none is supplied. */
 int report_tossinvest(ssl::context& tls, const char* requested_sequence) {
   namespace toss = algotradelib::tossinvest;
 

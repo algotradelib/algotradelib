@@ -77,7 +77,7 @@ namespace atl = algotradelib;
 namespace runner = algotradelib::runner;
 namespace vanilla = algotradelib::strategy::vanilla;
 
-/** What the command line said. */
+/** @brief What the command line said. */
 struct Arguments {
   std::string broker_;
   std::string symbol_;
@@ -91,7 +91,7 @@ struct Arguments {
   std::optional<std::string> kiwoom_account_;
 };
 
-/** The strategy this program runs: one share, held. The line a consumer replaces. */
+/** @brief The strategy this program runs: one share, held. The line a consumer replaces. */
 vanilla::BuyAndHold strategy_for(const atl::InstrumentId& instrument) {
   vanilla::BuyAndHold holding;
   holding.params_.instrument_ = instrument;
@@ -100,7 +100,7 @@ vanilla::BuyAndHold strategy_for(const atl::InstrumentId& instrument) {
 }
 
 /**
- * Settings for one instrument, with every age the loop asks about stated.
+ * @brief Settings for one instrument, with every age the loop asks about stated.
  *
  * The limits are sized for one share on purpose. A consumer's own limits belong to their strategy.
  */
@@ -133,7 +133,7 @@ live_program::Settings settings_for(const atl::InstrumentId& instrument) {
   return settings;
 }
 
-/** Keeps letters, digits and `-`, so an account label can name a file. */
+/** @brief Keeps letters, digits and `-`, so an account label can name a file. */
 std::string file_safe(std::string text) {
   for (auto& ch : text) {
     if (!std::isalnum(static_cast<unsigned char>(ch)) && ch != '-') {
@@ -144,7 +144,7 @@ std::string file_safe(std::string text) {
 }
 
 /**
- * Names the journal after the account, and scopes it to broker, environment and account.
+ * @brief Names the journal after the account, and scopes it to broker, environment and account.
  *
  * The scope is written into the journal's header, and a file whose header names another scope
  * refuses to open. So a demo journal cannot be continued by a live run, and one account's unresolved
@@ -164,7 +164,7 @@ void name_journal(
 }
 
 /**
- * Prints what is about to happen, before anything is read or sent.
+ * @brief Prints what is about to happen, before anything is read or sent.
  *
  * `demo_variable` names the broker's demo switch, or is null for a broker without one.
  */
@@ -192,7 +192,7 @@ void announce(
   }
 }
 
-/** Runs the chosen mode, installing the signal stop for the run's duration. */
+/** @brief Runs the chosen mode, installing the signal stop for the run's duration. */
 template <typename Session, typename MarketData>
 int run(
   Session& session,
@@ -210,7 +210,7 @@ int run(
   return static_cast<int>(exit);
 }
 
-/** Runs the chosen mode with one session for everything. */
+/** @brief Runs the chosen mode with one session for everything. */
 template <typename Session>
 int run(Session& session, const atl::InstrumentId& instrument, const live_program::Settings& settings, bool live) {
   return run(session, session, instrument, settings, live);
@@ -386,7 +386,7 @@ int run_toss(ssl::context& tls, const Arguments& arguments) {
   return run(session, instrument, settings, arguments.live_);
 }
 
-/** Parses the command line, or explains it. */
+/** @brief Parses the command line, or explains it. */
 std::optional<Arguments> parse(int argc, char** argv) {
   Arguments arguments;
   const int given = argc;

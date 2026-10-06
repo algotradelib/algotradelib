@@ -65,19 +65,19 @@ using algotradelib::InstrumentId;
 using algotradelib::OrderSide;
 using algotradelib::Venue;
 
-/** How the example is being run, which decides where the send step goes. */
+/** @brief How the example is being run, which decides where the send step goes. */
 enum class Mode {
   /**
-   * Read real market data, run the real pipeline, and send through an executor with no session.
+   * @brief Read real market data, run the real pipeline, and send through an executor with no session.
    *
    * Not a check that declines to send: there is nothing to send *through*.
    */
   OBSERVE,
-  /** Send what the strategy decides, through the bound session. */
+  /** @brief Send what the strategy decides, through the bound session. */
   TRADE,
 };
 
-/** The strategy this example runs, chosen because it needs no series and so builds everywhere. */
+/** @brief The strategy this example runs, chosen because it needs no series and so builds everywhere. */
 vanilla::BuyAndHold strategy_for(const InstrumentId& instrument) {
   vanilla::BuyAndHold holding;
   holding.params_.instrument_ = instrument;
@@ -85,7 +85,7 @@ vanilla::BuyAndHold strategy_for(const InstrumentId& instrument) {
   return holding;
 }
 
-/** Limits an example should not run without. Small on purpose. */
+/** @brief Limits an example should not run without. Small on purpose. */
 strategy::RiskLimits example_limits() {
   strategy::RiskLimits limits;
   // One share of a Korean blue chip is well under this, so a configuration mistake that asked for
@@ -97,13 +97,13 @@ strategy::RiskLimits example_limits() {
 }
 
 /**
- * Runs the strategy against `session`, and names no broker anywhere in its body.
+ * @brief Runs the strategy against `session`, and names no broker anywhere in its body.
  *
  * This is the portability claim in executable form. The only broker-shaped thing here is the
  * template parameter; the capability gate below is how a broker-specific feature is reached when one
  * is wanted, and it compiles to nothing on the broker that lacks it.
  */
-/** What the session was read for, so the pipeline can be driven without reading it twice. */
+/** @brief What the session was read for, so the pipeline can be driven without reading it twice. */
 struct MarketState {
   algotradelib::Instrument reference_;
   algotradelib::BarSeries bars_;
@@ -111,7 +111,7 @@ struct MarketState {
 };
 
 /**
- * Runs the pipeline over `state` with an already-bound runner.
+ * @brief Runs the pipeline over `state` with an already-bound runner.
  *
  * Names no broker: the tag arrives as a template parameter and the runner was bound by
  * `live::bind` or `live::bind_observer`, which read the broker's capabilities and tag off the
@@ -177,7 +177,7 @@ int drive(const InstrumentId& instrument, const MarketState& state, R live_runne
   return 0;
 }
 
-/** Warns, after a live run, about what an interruption would have left unrecorded. */
+/** @brief Warns, after a live run, about what an interruption would have left unrecorded. */
 void note_interruption_hazard() {
   std::cout
     << "\nnote: interrupting a live run does not withdraw an accepted order, and an order in\n"
@@ -186,7 +186,7 @@ void note_interruption_hazard() {
 }
 
 /**
- * Reads what the strategy needs from `session`, then drives the pipeline over it.
+ * @brief Reads what the strategy needs from `session`, then drives the pipeline over it.
  *
  * **How observing works, and why it is not a flag.** Both modes run the identical pipeline over
  * identical real market data; they differ only in which executor the send step goes to. Trading
@@ -307,7 +307,7 @@ int trade_tossinvest(
   return trade(session, InstrumentId{Country::KR, Venue::COMBINED, symbol}, mode);
 }
 
-/** Runs the same strategy with no broker at all, which needs no credentials. */
+/** @brief Runs the same strategy with no broker at all, which needs no credentials. */
 int trade_dry(const std::string& symbol) {
   const InstrumentId instrument{Country::KR, Venue::COMBINED, symbol};
   std::cout << "no broker bound: nothing in this path can reach a market\n\n";

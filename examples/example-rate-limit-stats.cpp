@@ -22,30 +22,30 @@ using algotradelib::network::RateLimitGroup;
 using algotradelib::network::rate_limit_group_name;
 using algotradelib::network::usable_burst;
 
-/** Clock this example advances by hand, so the output is identical every run. */
+/** @brief Clock this example advances by hand, so the output is identical every run. */
 struct WalkClock {
   using duration = std::chrono::nanoseconds;
   using rep = duration::rep;
   using period = duration::period;
   using time_point = std::chrono::time_point<WalkClock, duration>;
 
-  /** Returns the epoch; the example supplies instants explicitly. */
+  /** @brief Returns the epoch; the example supplies instants explicitly. */
   static time_point now() { return time_point{}; }
 };
 
 using Bucket = algotradelib::network::BasicRateLimitBucket<WalkClock>;
 
-/** Returns milliseconds as the pacer's duration type. */
+/** @brief Returns milliseconds as the pacer's duration type. */
 std::chrono::nanoseconds ms(long long count) {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::milliseconds(count));
 }
 
-/** Returns a duration in milliseconds, for printing. */
+/** @brief Returns a duration in milliseconds, for printing. */
 long long as_ms(std::chrono::nanoseconds value) {
   return std::chrono::duration_cast<std::chrono::milliseconds>(value).count();
 }
 
-/** Reads one optional positive integer argument, or returns `fallback`. */
+/** @brief Reads one optional positive integer argument, or returns `fallback`. */
 int argument(int argc, char** argv, int index, int fallback) {
   if (argc <= index) {
     return fallback;
@@ -54,7 +54,7 @@ int argument(int argc, char** argv, int index, int fallback) {
   return value >= 0 ? value : fallback;
 }
 
-/** Prints how much of the burst each traffic class may spend. */
+/** @brief Prints how much of the burst each traffic class may spend. */
 void print_allowances(const RateLimitBudget& budget) {
   std::cout << "budget: burst=" << budget.burst_ << " per_second=" << budget.per_second_
     << " trading_reserve=" << budget.trading_reserve_ << '\n';
@@ -71,7 +71,7 @@ void print_allowances(const RateLimitBudget& budget) {
   }
 }
 
-/** Spends everything a polling loop is allowed, then shows what is left over. */
+/** @brief Spends everything a polling loop is allowed, then shows what is left over. */
 void print_reserve(const RateLimitBudget& budget) {
   Bucket bucket(budget);
   const auto now = WalkClock::now();
@@ -89,7 +89,7 @@ void print_reserve(const RateLimitBudget& budget) {
   std::cout << " with " << bucket.available(now, trading) << " reserved slot(s) left\n";
 }
 
-/** Shows what a broker refusal does to the budget, for each kind of refusal. */
+/** @brief Shows what a broker refusal does to the budget, for each kind of refusal. */
 void print_corrections(const RateLimitBudget& budget) {
   std::cout << "\nreactions to a broker refusal\n";
 
@@ -108,7 +108,7 @@ void print_corrections(const RateLimitBudget& budget) {
     << " refusals are counted)\n";
 }
 
-/** Walks a minute of polling to show the sustained rate the budget produces. */
+/** @brief Walks a minute of polling to show the sustained rate the budget produces. */
 void print_sustained(const RateLimitBudget& budget) {
   Bucket bucket(budget);
   const auto start = WalkClock::now();
