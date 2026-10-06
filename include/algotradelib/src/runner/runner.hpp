@@ -714,15 +714,19 @@ public:
    *   them.
    *
    * A runner that keeps sent orders (`keeps_sent_orders_until_listed`) remembers each order the
-   * broker accepted with a reference, and each order of unknown outcome, provided holdings and the
-   * order list had been read and the instrument's net holding was known when it was sent. Before
-   * each pass it rebuilds a reserved working row from what neither holdings (moved in the order's
-   * direction since it was sent) nor a listing yet explains. An entry ends when holdings show the whole quantity, or the broker's
-   * history shows the order ended with less (`confirm_from_history`). This stops a target from
-   * ordering again while a fill has not reached the holdings yet. An order not tracked (no
-   * reference, or sent before holdings were read, as `allow_absent_portfolio` permits) has no such
-   * protection: its reservation lasts only until the next listing. Only orders sent in this process
-   * are tracked; a restart starts with none.
+   * broker accepted with a reference, and each order of unknown outcome if its executor reports
+   * references (has `last_ref()`, as `live::SessionExecutor` does), provided holdings had been read
+   * and the instrument's net holding was known when it was sent. Before each pass it rebuilds a
+   * reserved working row from what neither holdings (moved in the order's direction since it was
+   * sent) nor a listing yet explains. An entry ends when holdings show the whole quantity, or the
+   * broker's history shows the order ended with less (`confirm_from_history`). This stops a target
+   * from ordering again while a fill has not reached the holdings yet.
+   *
+   * An accepted order not tracked (no reference, or sent before holdings were read, as
+   * `allow_absent_portfolio` permits) has no such protection: its reservation lasts only until the
+   * next listing. An order of unknown outcome not tracked (an executor without `last_ref()`) gets no
+   * reservation at all once the ledger entry is resolved. Only orders sent in this process are
+   * tracked; a restart starts with none.
    *
    * @return The number of such orders.
    */
@@ -816,9 +820,11 @@ public:
   /**
    * @brief Returns from when the broker's order history must be read to settle sent orders.
    *
-   * An order needs it when part of it is unexplained, it is not settled and its history was not
-   * already consulted without an answer, and either it passed the confirmation timeout (listed or
-   * not), or no listing carries it and it was listed before or its cancellation was accepted.
+   * An order needs it when part of it is unexplained and either it passed the confirmation timeout
+   * (listed or not), or no listing carries it and it was listed before or its cancellation was
+   * accepted. Excluded: an order the history already settled; one whose history had no answer after
+   * the timeout (until a later listing or holdings explain it again); and an order of unknown outcome
+   * with no reference while its instrument is in the ledger.
    *
    * @return The earliest such order's send instant, or `std::nullopt` if none needs history.
    */
@@ -845,8 +851,9 @@ public:
    * A terminal row for an order caps the quantity holdings must still show at its filled quantity;
    * an order that ended with nothing filled is forgotten at once. After the runner has seen the phase
    * `CLOSED` or `POST_CLOSE` since the order was sent, an open row of a `DAY` order counts as
-   * terminal (its filled quantity is final). An order still unexplained past the confirmation
-   * timeout withholds its instrument (`orders_unconfirmed_timed_out`).
+   * terminal (its filled quantity is final). An order the history settled, or had no answer for
+   * after the timeout, withholds its instrument (`orders_unconfirmed_timed_out`) if a holdings read
+   * a timeout later still does not show it; see `set_confirmation_timeout`.
    *
    * @param evidence History rows covering the instants `unconfirmed_awaiting_evidence` asked for.
    */
@@ -898,8 +905,8 @@ public:
    *
    * The last two only in a runner that sends to a broker. Not kept: anything decided under the
    * `STOPPING`, `OPERATOR` or `LOCAL_FAILURE` hold; an intent with a client order id the broker
-   * answered; an intent whose instrument's net holding is unknown. So a protective stop refused out
-   * of hours is not installed at the open by itself.
+   * answered; an intent whose instrument's net holding is unknown. So a protective stop with a client
+   * order id, refused out of hours, is not installed at the open by itself (one without an id is).
    *
    * At release, a kept intent is dropped (`kept_intents_dropped`) if the instrument's holding
    * changed since (except a `TARGET_WEIGHT` intent, which is planned again against the new holding),
