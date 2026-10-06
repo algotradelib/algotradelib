@@ -727,9 +727,12 @@ inline JournalEntry unattributable_journal_entry(std::string_view line) {
 /**
  * @brief Parses one journal line.
  * @param line The line, without its newline.
- * @return The entry, or `std::nullopt` if the line is not a complete, readable journal entry
- *   (including a present field it cannot read, or a checksum that does not match). An unreadable
- *   instrument field yields an entry with no instrument.
+ * @return The entry, or `std::nullopt` if the line is not a readable journal entry: not JSON, its
+ *   action, outcome or time missing or unreadable, an unknown field, or a checksum that does not
+ *   match. If a field describing the order (symbol, country, venue, side, type, quantity, or a
+ *   present condition, session, price or trigger) is missing or unreadable, the entry is
+ *   operator-only, names no instrument, and its id is suffixed `~damaged`; it keeps its outcome. An
+ *   unreadable route leaves the route unknown on an otherwise complete entry.
  */
 inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line) {
   boost::system::error_code error;
@@ -939,7 +942,9 @@ inline bool salvage_damaged(std::string_view line, std::string_view key) {
  * @brief Salvages a torn final line into an entry nothing can resolve automatically.
  *
  * The entry's id is suffixed so it pairs with no `PENDING` line, its outcome is `PENDING` whatever
- * the text said, and it is operator-only. A field present but unreadable leaves no instrument.
+ * the text said, and it is operator-only. An instrument, side or type field that was written in full
+ * but cannot be read leaves no instrument; a number or route that cannot be read is left absent or
+ * unknown, and the instrument is kept.
  *
  * @param line The torn line.
  * @return The entry, or `std::nullopt` if the line does not even name a symbol.
@@ -1193,7 +1198,10 @@ inline JournalReplay read_journal_file(const std::string& path) {
  * to another account is refused.
  *
  * On POSIX, opening takes an exclusive `flock` on the file, so a second journal on the same file (in
- * any process) is refused and a program built on it starts nothing. The lock ends with the process.
+ * any process) is refused and a program built on it starts nothing. The lock is on the open file,
+ * not the path: deleting or renaming the file while it is open lets another journal create and lock
+ * a new file at the same path, so do not rotate an active journal. It ends when the process exits,
+ * unless a forked child still holds the descriptor (it is closed on `exec`, not on `fork`).
  * Keep the journal on a local disk (`flock` and `fsync` over NFS are unreliable). Windows takes no
  * lock. A flushed line survives a killed process everywhere; on macOS `fsync` does not guarantee it
  * survives a power loss. Two journals at different paths for one account are not detected.

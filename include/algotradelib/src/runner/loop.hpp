@@ -173,7 +173,7 @@ struct PollSchedule {
   /**
    * @brief How often to read buying power.
    *
-   * With `RiskLimits::enforce_buying_power_` on and this unset, buys are held
+   * With `RiskLimits::enforce_buying_power_` on and this unset, every placement is held
    * (`BUYING_POWER_UNREAD`).
    */
   std::optional<std::chrono::nanoseconds> buying_power_;
@@ -494,8 +494,8 @@ struct source_states_charged_costs<
  * @brief Detects whether a source provides `const std::vector<Currency>& buying_power_currencies()
  *   const`.
  *
- * With it, the buying-power gate holds until every configured currency has a reading; without it,
- * one reading in any currency releases the gate.
+ * With it (and currencies named), the buying-power gate holds until every named currency has a fresh
+ * reading; otherwise it needs at least one reading, and every reading present must be fresh.
  *
  * @tparam Source The source type.
  */
@@ -555,8 +555,11 @@ struct IterationReport {
 /**
  * @brief What a whole `PollingLoop::run` did, and why it ended.
  *
- * Read `notes_` first; they explain anything the run could not do. The order-outcome counters
- * cover this run's polling, not the closing pass, which has its own `closing_*` figures.
+ * Read `notes_` first; they explain anything the run could not do. Scope of the counters: the
+ * `orders_*`, `cancels_*`, `plans_withheld_` and `instructions_unavailable_` outcomes (and
+ * `last_broker_refusal_`, `last_unbuildable_`) cover the run's polling, before any closing pass,
+ * whose results are the `closing_*` fields; `price_bands_withheld_`, `unclamped_orders_*` and
+ * `sends_outside_permitted_phase_` cover the whole run, closing pass included.
  */
 struct LoopReport {
   /** @brief How many iterations ran. */
@@ -639,9 +642,9 @@ struct LoopReport {
   std::size_t withdrawn_{0};
   /** @brief Closing orders queued for a `FLATTEN` (asked for, not necessarily sent). */
   std::size_t flattened_{0};
-  /** @brief Closing instructions the broker accepted. */
+  /** @brief Closing orders (placements, not cancellations) accepted by the executor (for a dry run, recorded). */
   std::size_t closing_placed_{0};
-  /** @brief Closing instructions rejected (by reconciliation, the broker or the binding); the position is unchanged. */
+  /** @brief Closing instructions (placements and cancellations) rejected by reconciliation, the broker or the binding. */
   std::size_t closing_rejected_{0};
   /** @brief Closing instructions the risk guard refused. */
   std::size_t closing_refused_{0};
@@ -665,12 +668,22 @@ struct LoopReport {
    */
   std::size_t closing_contended_{0};
 
-  /** @brief Positions whose closing size could not be computed (rows that do not add up); makes `closing_complete()` false. */
+  /**
+   * @brief Positions whose closing order could not be sized: the holding rows do not add up, the
+   *   closing quantity is not representable, or the same-side working quantity cannot be subtracted.
+   *   Makes `closing_complete()` false.
+   */
   std::size_t closing_unsizable_{0};
 
   /**
-   * @brief Whether the closing pass could not establish what it owed (no holdings read, or the
-   *   broker's order list never read); it still sends what it knows. Makes `closing_complete()` false.
+   * @brief Whether the closing pass could not trust its picture of the account. Makes
+   *   `closing_complete()` false.
+   *
+   * Set if the order list was never read, the source publishes no working orders, no working-order
+   * listing was read or it is older than the portfolio age limit, an order was placed (or sent with
+   * an unknown outcome) after that listing, holdings were never read or are too old, or the listing
+   * is newer than the holdings. Then a `FLATTEN` places no closing orders at all, while the
+   * withdrawals of the orders it knows of are still sent.
    */
   bool closing_source_unverified_{false};
 
@@ -678,9 +691,10 @@ struct LoopReport {
    * @brief Tests whether every closing instruction the loop asked for was accepted, and the loop knew
    *   what to ask for.
    *
-   * `true` does not mean flat or nothing resting: an accepted closing order may not have filled, and
-   * an accepted cancellation may not have completed. Read the broker's order list and holdings for
-   * the state.
+   * Meaningful only after a `WITHDRAW` or `FLATTEN` stop (`stopped_by_`): a run that ended otherwise,
+   * or with `QUIESCE`, also returns `true`, having checked nothing. `true` does not mean flat or nothing resting: an accepted closing
+   * order may not have filled, and an accepted cancellation may not have completed. Read the broker's
+   * order list and holdings for the state.
    *
    * @return `false` if any closing instruction was rejected, refused, withheld, of unknown outcome,
    *   unavailable or unresolved, or any position was contended or unsizable, or the source was
@@ -835,7 +849,7 @@ public:
   }
 
   /**
-   * @brief Reads the order list: returns the configured outcome.
+   * @brief Reads the order list: returns the configured outcome. The runner argument is ignored.
    * @return The outcome.
    */
   PollOutcome read_order_list(Runner&) {
@@ -866,20 +880,27 @@ private:
 };
 
 /**
- * @brief Runs a runner for a live session: polls a source on a schedule, gates sending, derives the
- *   market phase, and honours stop requests.
+ * @brief Runs a runner for a live session: polls a source on a schedule, gates placements, derives
+ *   the market phase, and honours stop requests.
  *
  * Each iteration: check for a stop (a `StopSource` or the control file); make sure the broker's
- * order list has been read once (nothing is sent before); derive and install the market phase from
- * the `SessionWindow` and the polled calendar; poll whatever is due, in `all_poll_kinds` order;
- * announce a phase change; retry retained targets. Sending is blocked through holds on the runner's
- * `strategy::RiskGuard` (`ORDER_LIST_UNREAD`, `PORTFOLIO_ABSENT`, `PORTFOLIO_STALE`,
- * `BUYING_POWER_UNREAD`, `STOPPING`, `POLL_FAILING`); the loop never takes or releases `OPERATOR` or
- * `LOCAL_FAILURE`.
+ * order list has been read once (until it has, placements are held); derive and install the market
+ * phase from the `SessionWindow` and the polled calendar; poll whatever is due, in `all_poll_kinds`
+ * order; announce a phase change; retry retained targets.
+ *
+ * Placements are held through holds on the runner's `strategy::RiskGuard`: `ORDER_LIST_UNREAD`,
+ * `PORTFOLIO_ABSENT`, `PORTFOLIO_STALE`, `BUYING_POWER_UNREAD`, `STOPPING`, `POLL_FAILING`. These are
+ * data holds: named cancellations still go (see `strategy::halt_blocks`), so a stop can withdraw
+ * known orders even when the order list could not be read. The loop never takes or releases
+ * `OPERATOR` or `LOCAL_FAILURE`, which block cancellations too.
+ *
+ * **State a holdings age policy** (`set_maximum_portfolio_age` or `allow_unbounded_portfolio_age`):
+ * without one, every placement is held as `PORTFOLIO_STALE`.
  *
  * A phase the loop cannot establish is reported (`final_phase_` and a note), not held. A stop is
  * honoured with a closing pass (see `StopIntent`); `LoopReport::closing_complete()` says whether
- * everything asked for was accepted, which is not the same as being flat.
+ * everything asked for was accepted, which is not the same as being flat. The closing orders are
+ * allowed in any phase but still face every other risk check (sellable quantity, ceilings).
  *
  * @note If you write a source: install the trading calendar during `PollKind::CALENDAR` only, and do
  *   not feed the runner from that poll.
@@ -986,7 +1007,9 @@ public:
    * @brief Sets how old the holdings (and, for a runner that sends to a broker, the working-order
    *   listing) may be before placements are held (`PORTFOLIO_STALE`).
    *
-   * Without a maximum or `allow_unbounded_portfolio_age`, the report notes that no policy was stated.
+   * One of this and `allow_unbounded_portfolio_age` is required: without either, every placement is
+   * held as `PORTFOLIO_STALE` (and a note says so). The same age bounds a stop's closing pass (see
+   * `LoopReport::closing_source_unverified_`).
    *
    * @param age The maximum age.
    */
@@ -1004,6 +1027,10 @@ public:
    *
    * It does not lift the hold for holdings never read, nor the one for a runner whose working-order
    * listing never arrives.
+   *
+   * @warning A listing is then never too old. If account polls keep being refused for the rate limit
+   *   (which never exhausts the failure budget), the loop keeps placing against the last listing,
+   *   and sent orders can stay counted as working indefinitely.
    */
   void allow_unbounded_portfolio_age() {
     allow_unbounded_portfolio_age_ = true;
@@ -1869,8 +1896,14 @@ private:
   // Sets how old a buying-power reading may be before the gate closes on it.
 public:
   /**
-   * @brief Sets how old a buying-power reading may be before buys checked against it are held
-   *   (`BUYING_POWER_UNREAD`).
+   * @brief Sets how old buying-power readings may be.
+   *
+   * Used only with `RiskLimits::enforce_buying_power_` on. Then a missing or too-old reading holds
+   * every placement, sells included (`BUYING_POWER_UNREAD`); named cancellations still go. The
+   * readings needed: one per currency the source names
+   * (`live::SessionSource::set_buying_power_currencies`), or, if it names none, at least one, with
+   * every reading present fresh.
+   *
    * @param age The maximum age.
    */
   void set_maximum_buying_power_age(std::chrono::nanoseconds age) {

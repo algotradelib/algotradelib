@@ -86,7 +86,8 @@ enum class JournalOutcome {
    * @brief A recovery sweep read the broker's order list and closed the question.
    *
    * `order_id_` is set if a matching order was found and empty if none was; `detail_` says what was
-   * seen. For a cancellation, a match means the order is **still resting**.
+   * seen. For a cancellation, a match means the named order was in the listing read (resting only if
+   * that listing held working orders alone); it does not mean the cancellation completed.
    */
   RESOLVED,
 };
@@ -140,7 +141,8 @@ inline std::optional<JournalOutcome> journal_outcome_from(std::string_view text)
  * @brief Maps a send outcome to the journal outcome that records it.
  * @param outcome The send outcome.
  * @return `ACCEPTED`, `INDETERMINATE`, or `REJECTED` for `REJECTED`, `UNAVAILABLE` and
- *   `REFUSED_LOCALLY` (in each the order does not exist).
+ *   `REFUSED_LOCALLY` (for a placement, the order does not exist; for a cancellation, the order
+ *   it named is as it was).
  */
 inline constexpr JournalOutcome journal_outcome_of(SendOutcome outcome) noexcept {
   switch (outcome) {
@@ -327,7 +329,8 @@ struct OpenInstruction {
  * @brief Lists the instructions whose outcome is unknown, in the order they were opened.
  *
  * A `PENDING` line with no answer, or one answered `INDETERMINATE`, is listed; `ACCEPTED` and
- * `REJECTED` answers resolve it. An `INDETERMINATE` line whose `PENDING` line is missing (a rotated or
+ * `REJECTED` answers resolve it. An answer is paired with the first open line carrying its id, so
+ * ids must be unique (see `JournalingExecutor::set_id_prefix`). An `INDETERMINATE` line whose `PENDING` line is missing (a rotated or
  * edited file) is listed too.
  *
  * @param replay The journal's contents.
@@ -380,6 +383,7 @@ inline std::vector<OpenInstruction> unresolved_instructions(const JournalReplay&
  */
 class MemoryJournal {
 public:
+  /** @brief Constructs a journal with an empty scope. */
   MemoryJournal() = default;
 
   /**
@@ -434,8 +438,11 @@ private:
 /**
  * @brief An executor wrapper that records each instruction in a journal before sending it.
  *
- * `place` and `cancel` append a `PENDING` line, wait for it to be durable, call the wrapped
- * executor, and append its outcome. The wrapped executor's outcome is returned unchanged, except
+ * `place` and `cancel` append a `PENDING` line, call the wrapped executor only if the append
+ * succeeded, and append its outcome. The line is as durable as the journal makes it before
+ * `append` returns: `FileJournal` flushes it to disk, `MemoryJournal` (for tests and dry runs)
+ * loses it at exit. A journal of your own must write durably before returning success if it is to
+ * be recovered from after a crash. The wrapped executor's outcome is returned unchanged, except
  * that **if the `PENDING` line cannot be written, nothing is sent** and the outcome is
  * `SendOutcome::UNAVAILABLE` (which stops the runner). If only the answering line fails, the send has
  * happened; the failure is recorded and the instruction will look unresolved to recovery.
@@ -463,14 +470,23 @@ public:
   }
 
   /**
-   * @brief Sets the prefix of line ids (by default, the construction time in microseconds, which
-   *   keeps ids unique across restarts).
+   * @brief Sets the prefix of line ids.
+   *
+   * Ids are the prefix plus a counter starting at zero, and recovery pairs lines by id, so the prefix
+   * must differ between every executor run that shares a journal. The default is the construction
+   * time in microseconds, which is distinct only if no two executors on the journal are made at the
+   * same instant.
+   *
    * @param prefix The prefix.
    */
   void set_id_prefix(std::string prefix) { prefix_ = std::move(prefix); }
 
   /**
    * @brief Returns the venue the wrapped executor says an order will reach.
+   *
+   * Call it as `route_of(order, 0)`; the second argument selects this overload over the fallback,
+   * and its value is ignored.
+   *
    * @tparam E The wrapped executor type (deduced).
    * @param order The order.
    * @return The wrapped executor's `effective_route` for the order's venue.
@@ -482,7 +498,8 @@ public:
   }
 
   /**
-   * @brief Returns the venue an order asked for, when the wrapped executor cannot resolve routes.
+   * @brief Returns the venue an order asked for, when the wrapped executor cannot resolve routes
+   *   (the fallback of `route_of(order, 0)`; the second argument's value is ignored).
    * @param order The order.
    * @return `order.venue_`.
    */

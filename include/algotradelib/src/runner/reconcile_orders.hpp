@@ -24,12 +24,17 @@ namespace runner {
  * an accepted write); before that it is `UNDECIDED`.
  */
 enum class MatchVerdict {
-  /** @brief Exactly one row corresponds; the order exists. */
+  /**
+   * @brief Exactly one row corresponds; the order exists.
+   *
+   * For a cancellation: the named order is in the listing supplied (which may include history, so
+   * not necessarily resting).
+   */
   MATCHED,
   /**
    * @brief No row corresponds and the window has closed; the order does not exist.
    *
-   * For a cancellation: the named order is no longer listed, so it is not resting.
+   * For a cancellation: the named order is not in the listing supplied.
    */
   NOT_PLACED,
   /** @brief More than one row could correspond; the instrument stays withheld until an operator decides. */
@@ -341,13 +346,14 @@ inline bool row_corresponds(
  *   read (such as an order type outside the broker's published table).
  *
  * Such a row makes the verdict `AMBIGUOUS` (an operator decides) rather than `NOT_PLACED`. It
- * compares instrument, side, quantity and time, and rules the row out only on a positive
- * disagreement; it does not compare the price.
+ * compares instrument, side, quantity and time, and the price when both order types are known, and
+ * rules the row out on any positive disagreement.
  *
  * @param instruction The instruction.
  * @param row The row.
  * @param window The allowances.
- * @return `true` if nothing positively disagrees.
+ * @return `true` if some attribute is unknown and nothing disagrees; `false` for a row that fully
+ *   corresponds (see `row_corresponds`) or disagrees.
  */
 inline bool row_might_correspond(
   const OpenInstruction& instruction, const OrderSnapshot& row, const MatchWindow& window
@@ -404,8 +410,9 @@ inline bool row_might_correspond(
 /**
  * @brief Returns why an instruction cannot be resolved from a broker listing.
  *
- * A cancellation with no order id, or a placement whose recorded price does not fit its type
- * (missing for a priced type, or present for an unpriced one), would otherwise read as absent.
+ * A cancellation with no order id, or a placement whose recorded price or trigger price does not fit
+ * its type (missing where required, or present where not taken), would otherwise read as absent.
+ * Such an instruction needs an operator (`match_against` returns `NEEDS_OPERATOR`).
  *
  * @param entry The journalled instruction.
  * @return The reason, or an empty string if it can be matched.
@@ -451,9 +458,9 @@ inline std::string unresolvable_reason(const JournalEntry& entry) {
 /**
  * @brief Decides what a broker listing says about one instruction of unknown outcome.
  *
- * A cancellation is matched by the broker order id it names (so never `AMBIGUOUS`); a placement by
- * attributes (`row_corresponds`, `row_might_correspond`). An operator-only instruction is
- * `NEEDS_OPERATOR`, and an unresolvable one (`unresolvable_reason`) stays `UNDECIDED`.
+ * A cancellation is matched by the broker order id it names (`AMBIGUOUS` only if two rows carry that
+ * id); a placement by attributes (`row_corresponds`, `row_might_correspond`). An operator-only or
+ * unresolvable (`unresolvable_reason`) instruction is `NEEDS_OPERATOR`.
  *
  * @param instruction The instruction.
  * @param rows The listing (working orders and history).
@@ -743,9 +750,10 @@ inline ReconcileReport decide_nothing(
 }
 
 /**
- * @brief Tests whether any instruction is a placement (which needs history, not only working orders).
+ * @brief Tests whether any instruction is a placement a listing could decide (which needs history,
+ *   not only working orders).
  * @param open The instructions.
- * @return `true` if any is a `PLACE`.
+ * @return `true` if any is a `PLACE` that is not operator-only.
  */
 inline bool any_placement(const std::vector<OpenInstruction>& open) {
   for (const auto& instruction : open) {
@@ -908,8 +916,9 @@ struct RecoveryReport {
 /**
  * @brief Marks the ledger for every instrument a journal left an instruction of unknown outcome for.
  *
- * Prefer `recover_runner`: with a bare ledger, a torn line naming no instrument
- * (`unattributable_`) must be handled by halting trading yourself.
+ * It halts nothing. Prefer `recover_runner`; with a bare ledger, stop trading yourself if the report
+ * has `unattributable_`, `unreadable_lines_` or `unreadable_file_` set: then the ledger can be empty
+ * while the journal's contents are unknown.
  *
  * @param replay The journal's contents.
  * @param ledger The ledger to mark.
