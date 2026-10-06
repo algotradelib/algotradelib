@@ -29,6 +29,12 @@ target_link_libraries(algotradelib-broker-port-tests PRIVATE
     Catch2::Catch2WithMain
 )
 
+add_executable(algotradelib-session-parity-tests test-session-parity.cpp)
+target_link_libraries(algotradelib-session-parity-tests PRIVATE
+    algotradelib::algotradelib
+    Catch2::Catch2WithMain
+)
+
 add_executable(algotradelib-capability-conformance-tests test-capability-conformance.cpp)
 target_link_libraries(algotradelib-capability-conformance-tests PRIVATE
     algotradelib::algotradelib
@@ -121,6 +127,7 @@ endif()
 include(Catch)
 catch_discover_tests(algotradelib-core-tests)
 catch_discover_tests(algotradelib-broker-port-tests)
+catch_discover_tests(algotradelib-session-parity-tests)
 catch_discover_tests(algotradelib-capability-conformance-tests)
 catch_discover_tests(algotradelib-data-only-tests)
 catch_discover_tests(algotradelib-kiwoom-tests)

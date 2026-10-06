@@ -79,6 +79,41 @@ std::optional<BrokerError> trigger_refusal(const std::optional<Decimal64>& trigg
   }
 }
 
+/**
+ * A placement's pre-flight, shared by both sessions: the trigger rule, then the adapter's own validation.
+ *
+ * The order matters and is written here once. A trigger the broker cannot send is refused before the
+ * adapter is asked anything, so an adapter that has never read `trigger_price_` cannot pass the order on
+ * without it.
+ */
+template <typename Client>
+std::optional<BrokerError> prepare_place(const OrderRequest& order) {
+  if (auto refused = trigger_refusal<Client>(order.trigger_price_)) {
+    return refused;
+  }
+  return BrokerTraits<Client>::validate_place(order);
+}
+
+/**
+ * A modification's pre-flight, shared by both sessions: the trigger rule on the amended order, then the
+ * adapter's conversion.
+ *
+ * `amended_trigger_price` is the trigger the amended order would carry, whether the instruction states it
+ * or keeps the resting one. **A cancellation has no counterpart here, deliberately**: it calls
+ * `to_cancellation` directly, because refusing a trigger there could leave a stop order that cannot be
+ * withdrawn (see `trigger_refusal`).
+ */
+template <typename Client>
+Result<typename BrokerTraits<Client>::Amendment> prepare_replace(
+  const OrderRef<typename BrokerTraits<Client>::BrokerTag>& ref, const AmendInstruction& instruction
+) {
+  using Amendment = typename BrokerTraits<Client>::Amendment;
+  if (auto refused = trigger_refusal<Client>(amended_trigger_price(instruction))) {
+    return Result<Amendment>(std::move(*refused));
+  }
+  return BrokerTraits<Client>::to_replacement(ref, instruction);
+}
+
 } // namespace port_detail
 
 /**
@@ -178,7 +213,7 @@ public:
    * the reservation doing its job, and rising `shed_` means the queue is full.
    *
    * The counters live on the client's strand, so read them from a completion
-   * handler; on a blocking session any moment between calls is safe.
+   * handler.
    */
   const network::RateLimitStats* rate_limit_stats() const {
     return Traits::rate_limit_stats(*client_);
@@ -312,14 +347,9 @@ public:
    */
   template <typename CompletionToken>
   auto async_place(OrderRequest order, CompletionToken&& token) {
-    if (auto refused = port_detail::trigger_refusal<Client>(order.trigger_price_)) {
+    if (auto refused = port_detail::prepare_place<Client>(order)) {
       return complete_error<Placed>(
         std::forward<CompletionToken>(token), std::move(*refused)
-      );
-    }
-    if (auto invalid = Traits::validate_place(order)) {
-      return complete_error<Placed>(
-        std::forward<CompletionToken>(token), std::move(*invalid)
       );
     }
     return translate<Placed>(
@@ -341,12 +371,7 @@ public:
    */
   template <typename CompletionToken>
   auto async_replace(Ref ref, AmendInstruction instruction, CompletionToken&& token) {
-    if (auto refused = port_detail::trigger_refusal<Client>(amended_trigger_price(instruction))) {
-      return complete_error<Placed>(
-        std::forward<CompletionToken>(token), std::move(*refused)
-      );
-    }
-    auto amendment = Traits::to_replacement(ref, instruction);
+    auto amendment = port_detail::prepare_replace<Client>(ref, instruction);
     if (!amendment) {
       return complete_error<Placed>(
         std::forward<CompletionToken>(token), std::move(amendment.error())
@@ -808,8 +833,8 @@ public:
    * has: rising `delayed_` on a polling group while `TRADING` stays undelayed is
    * the reservation doing its job, and rising `shed_` means the queue is full.
    *
-   * The counters live on the client's strand, so read them from a completion
-   * handler; on a blocking session any moment between calls is safe.
+   * Any moment between calls is safe: nothing runs on the client while no call
+   * is in progress.
    */
   const network::RateLimitStats* rate_limit_stats() const {
     return Traits::rate_limit_stats(*client_);
@@ -954,21 +979,15 @@ public:
 
   /** Submits a new order. The indeterminacy rule of `BrokerSession::async_place` applies. */
   Result<Placed> place(OrderRequest order) {
-    if (auto refused = port_detail::trigger_refusal<Client>(order.trigger_price_)) {
+    if (auto refused = port_detail::prepare_place<Client>(order)) {
       return Result<Placed>(std::move(*refused));
-    }
-    if (auto invalid = Traits::validate_place(order)) {
-      return Result<Placed>(std::move(*invalid));
     }
     return Traits::normalize_place(Traits::place_order(*client_, account_, std::move(order)));
   }
 
   /** Modifies an existing order. */
   Result<Placed> replace(const Ref& ref, const AmendInstruction& instruction) {
-    if (auto refused = port_detail::trigger_refusal<Client>(amended_trigger_price(instruction))) {
-      return Result<Placed>(std::move(*refused));
-    }
-    auto amendment = Traits::to_replacement(ref, instruction);
+    auto amendment = port_detail::prepare_replace<Client>(ref, instruction);
     if (!amendment) {
       return Result<Placed>(std::move(amendment.error()));
     }
