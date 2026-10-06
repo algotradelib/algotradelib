@@ -5,7 +5,7 @@
 namespace algotradelib {
 namespace kiwoom {
 
-/** Blocking HTTP transport retained for the compatibility authentication API. */
+/** @brief The blocking HTTP client `KiwoomAuth` uses. */
 using KiwoomHttpClient = network::HttpClient;
 
 } // namespace kiwoom

@@ -13,23 +13,25 @@
 namespace algotradelib::kiwoom {
 
 /**
- * Which pacing layer a Kiwoom `return_code` reports as exhausted.
- *
- * Kiwoom documents three separate 유량 ceilings — per API, account-wide, and per API group — and
- * they are not interchangeable: backing off the wrong one leaves the exhausted one exhausted.
+ * @brief Which of Kiwoom's three rate limits a refusal reports (per API, account-wide, or per API
+ *   group); backing off the wrong one does not help.
  */
 enum class KiwoomRateLimitLayer {
-  /** Not a rate-limit code. */
+  /** @brief Not a rate-limit code. */
   NONE,
-  /** `1700`: this API's own allowance. */
+  /** @brief `1700`: this API's own allowance. */
   ENDPOINT,
-  /** `1701`: the total allowance across every API. */
+  /** @brief `1701`: the total allowance across every API. */
   TOTAL,
-  /** `1702`: the allowance of the API group this endpoint belongs to. */
+  /** @brief `1702`: the allowance of the API group this endpoint belongs to. */
   GROUP,
 };
 
-/** Returns the pacing layer `code` reports, or `NONE` when it reports none. */
+/**
+ * @brief Classifies a Kiwoom return code as a rate-limit refusal.
+ * @param code Kiwoom's `return_code`, as text.
+ * @return The layer, or `NONE` if the code is not a rate-limit refusal.
+ */
 inline KiwoomRateLimitLayer kiwoom_rate_limit_layer(std::string_view code) noexcept {
   if (code == "1700") {
     return KiwoomRateLimitLayer::ENDPOINT;
@@ -44,25 +46,15 @@ inline KiwoomRateLimitLayer kiwoom_rate_limit_layer(std::string_view code) noexc
 }
 
 /**
- * Returns the `ErrorCategory` one of Kiwoom's documented `return_code` values belongs to.
+ * @brief Classifies a Kiwoom `return_code`.
  *
- * Driven from the whole of the specification's `errorCodeList` -- thirty-seven entries -- rather
- * than from the handful an adapter notices first, because the ones it does not notice are the
- * expensive ones. **The entire `80xx` family names the key, the token, the terminal or the
- * registered IP**, and two of its members arrive on *ordinary* endpoints rather than on the token
- * call: `8005` 토큰이 유효하지 않습니다 and `8010` 토큰을 발급받은 IP와 요청 IP가 다릅니다. Reported
- * as an ordinary protocol failure, an expired token would never be refreshed -- the refresh path keys on
- * `AUTHENTICATION` -- and every later request would fail identically until the process restarted.
+ * The `80xx` codes (key, token, terminal, registered IP) are `AUTHENTICATION`, so an expired token
+ * is refreshed, except `8104` (not offered on demo) and `8200` (not offered to corporate customers),
+ * which are `INVALID_ARGUMENT`. Rate-limit codes (`1700`-`1702`, `1687`) are `RATE_LIMIT`. An
+ * undocumented code is `PROTOCOL`.
  *
- * `8104` (모의투자에서 지원하지 않는 API) and `8200` (법인 고객 미지원) are the exceptions in that
- * family, and they are `INVALID_ARGUMENT` rather than `AUTHENTICATION` because they are
- * **availability, not authentication**: the credential is fine and this endpoint is not offered to
- * it. Decision 2 settled exactly this distinction for KIS's demo accounts -- capability is compile
- * time, availability is run time -- so one binary must not claim different things for a live and a
- * demo key.
- *
- * An undocumented code is `PROTOCOL` with Kiwoom's own code and message preserved, which is the
- * category the KIS adapter gives a declared failure it does not otherwise classify.
+ * @param code The code, as text.
+ * @return The category.
  */
 inline ErrorCategory kiwoom_error_category(std::string_view code) noexcept {
   // Header-level authentication faults: the authorization field is missing or malformed.
@@ -92,22 +84,12 @@ inline ErrorCategory kiwoom_error_category(std::string_view code) noexcept {
 }
 
 /**
- * Returns the failure a Kiwoom response body declares, or nothing when it declares success.
- *
- * **Kiwoom states a business failure in the body of an HTTP 200.** Every response carries
- * `return_code` — zero on success — and `return_msg`, so a 2xx status is not evidence that the
- * request did what was asked. Checking it in one place is what keeps a parser from reading a
- * refusal as data.
- *
- * The classification itself is `kiwoom_error_category`, which is driven from the whole of the
- * specification's `errorCodeList`. An undocumented code is `PROTOCOL` -- the category the KIS
- * adapter gives a declared failure it does not otherwise classify -- and `ErrorCategory` has no
- * "broker" member to fall back to.
- *
- * `reached_broker_` stays true for every classified failure: Kiwoom answered. The token path is
- * the one exception and marks its own failures, for the reason both other adapters record -- an
- * unmarked authentication failure reads to a runner as the broker refusing an order it never
- * received, spending rate-limit budget on nothing.
+ * @brief Reads the failure a Kiwoom response declares in its body (Kiwoom reports business failures
+ *   with HTTP 200 and a nonzero `return_code`).
+ * @param document The response body.
+ * @return The error (`reached_broker_` set, classified by `kiwoom_error_category`, Kiwoom's code and
+ *   `return_msg` kept), a `PROTOCOL` error if `return_code` is neither a number nor a string, or
+ *   `std::nullopt` if it is `0` or absent.
  */
 inline std::optional<BrokerError> kiwoom_declared_error(const json::object& document) {
   const auto code = document.if_contains("return_code");
