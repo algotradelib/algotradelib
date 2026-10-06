@@ -248,7 +248,7 @@ struct Normalizers {
    * Kiwoom cannot change an order's type, condition or session, so an instruction asking to is
    * refused (a stated value equal to the resting one is not a change; see `refuse_shape_change`).
    * Also refused: no `quantity_` and not `all_remaining_` (`quantity_required`), and on a
-   * modification a trigger price that does not fit the type (`invalid_trigger`). "All remaining" is
+   * modification a trigger price that does not fit the type (`invalid_trigger_price`). "All remaining" is
    * sent as quantity `0`, which Kiwoom evaluates when it processes the instruction.
    * `confirm_high_value_` is ignored.
    *
@@ -518,7 +518,10 @@ struct Capabilities {
   /** @brief Kiwoom documents no caller-supplied order identifier. */
   static constexpr bool has_client_order_id = false;
 
-  /** @brief Kiwoom sends a stop-limit (`28`) order's trigger as `cond_uv`, and a modified one as `mdfy_cond_uv`. */
+  /**
+   * @brief Kiwoom sends a stop-limit (`28`) order's trigger as `cond_uv`, and a modified one as
+   *   `mdfy_cond_uv`.
+   */
   static constexpr bool has_trigger_price = true;
 
   /** @brief A broker that takes orders, not a market-data source; see `BrokerCaps::data_only`. */

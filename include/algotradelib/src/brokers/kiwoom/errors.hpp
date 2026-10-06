@@ -55,7 +55,7 @@ inline KiwoomRateLimitLayer kiwoom_rate_limit_layer(std::string_view code) noexc
  * - `RATE_LIMIT`: `1700`-`1702` and `1687`;
  * - `PROTOCOL`: any other code.
  *
- * The client does not discard a token Kiwoom refuses: requests keep failing until five minutes
+ * The client does not discard a token Kiwoom refuses: requests may keep failing until five minutes
  * before the token's stated expiry.
  *
  * @param code The code, as text.

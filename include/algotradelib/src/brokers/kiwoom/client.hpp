@@ -100,7 +100,10 @@ struct KiwoomOrderAck {
   OrderAck ack_;
   /** @brief The reference a later amendment must address. */
   KiwoomOrderRef order_;
-  /** @brief Kiwoom's `base_orig_ord_no` (모주문번호) on an amendment: the order the amendment chain began with, not necessarily the one addressed. */
+  /**
+   * @brief Kiwoom's `base_orig_ord_no` (모주문번호) on an amendment: the order the amendment chain
+   *   began with, not necessarily the one addressed.
+   */
   std::string base_order_number_;
   /** @brief The quantity Kiwoom echoed on an amendment, `mdfy_qty` or `cncl_qty`. Empty on a placement. */
   std::optional<Decimal64> amended_quantity_;
@@ -1048,8 +1051,8 @@ public:
    * @brief Requests bars, following Kiwoom's continuation pages from `before_`'s Korean date (or today).
    *
    * `before_` applies by day only: minute bars later than it on the same date are returned. A short
-   * series comes back only when Kiwoom has no more; `next_cursor_` is set then only when Kiwoom said
-   * there is more, and never for minute bars. If Kiwoom offers more but its continuation key is blank,
+   * series comes back only when Kiwoom has no more. `next_cursor_` is set when the series is full and
+   * Kiwoom said there is more, and never for minute bars. If Kiwoom offers more but its continuation key is blank,
    * a page adds nothing, or 50 pages were read, the request fails (`PROTOCOL`, `incomplete_listing`)
    * instead of returning a partial series. Refused before sending: `count_` of zero or less, or a
    * symbol that is not Korean or malformed.
@@ -1225,11 +1228,12 @@ public:
   /**
    * @brief Places an order (`kt10000` buy, `kt10001` sell).
    *
-   * The request is never resent. After an error with `BrokerError::reached_broker_` set that is not a refusal (one `runner::outcome_of`
-   * calls `INDETERMINATE`: a transport failure, a cancellation, an unreadable reply such as one with
-   * no order number, or an HTTP status of 500 or more),
-   * the order may exist: read `async_open_orders` or `async_order_history` before placing again,
-   * since Kiwoom has no idempotency key.
+   * The request is never resent. After an error for which `runner::outcome_of` returns
+   * `INDETERMINATE` (`BrokerError::reached_broker_` set and a category of `TRANSPORT`, `CANCELLED`
+   * or `PROTOCOL`, or `HTTP` with a status of 500 or more), the order may exist. That includes a
+   * reply without an order number and a failure code Kiwoom declares but does not document (both
+   * `PROTOCOL`). Read `async_open_orders` or `async_order_history` before placing again, since Kiwoom
+   * has no idempotency key.
    *
    * Refused before sending, among others: an instrument that is not Korean or whose `venue_` is not
    * `COMBINED` (route with `OrderRequest::venue_`); no venue on the order; a client order id; a
@@ -1264,12 +1268,10 @@ public:
   /**
    * @brief Amends an order's quantity, price or trigger price (`kt10002`).
    *
-   * After an error with `BrokerError::reached_broker_` set that is not a refusal (one `runner::outcome_of`
-   * calls `INDETERMINATE`: a transport failure, a cancellation, an unreadable reply such as one with
-   * no order number, or an HTTP status of 500 or more),
-   * the outcome is unknown. Refused before sending: an amendment without a venue, an order number
-   * or a symbol, with a fractional or negative quantity, or while
-   * `KiwoomConfig::holdings_position_scope_` is not stated.
+   * After an error of unknown outcome (see `async_place_order`) the amendment may have been made.
+   * Refused before sending, among others: an amendment without a venue, an order number or a
+   * symbol; a fractional or negative quantity; a fractional price; an invalid trigger price; and any
+   * amendment while `KiwoomConfig::holdings_position_scope_` is not stated.
    *
    * @tparam CompletionToken An Asio completion token.
    * @param account The account (empty).
@@ -1303,11 +1305,9 @@ public:
   /**
    * @brief Cancels an order, all or part of it (`kt10003`).
    *
-   * After an error with `BrokerError::reached_broker_` set that is not a refusal (one `runner::outcome_of`
-   * calls `INDETERMINATE`: a transport failure, a cancellation, an unreadable reply such as one with
-   * no order number, or an HTTP status of 500 or more),
-   * the outcome is unknown: the order may still rest. Refused before sending: a cancellation without
-   * a venue, an order number or a symbol, or carrying a price or trigger price.
+   * After an error of unknown outcome (see `async_place_order`) the order may still rest. Refused
+   * before sending, among others: a cancellation without a venue, an order number or a symbol; a
+   * fractional or negative quantity; or one carrying a price or trigger price.
    *
    * @tparam CompletionToken An Asio completion token.
    * @param account The account (empty).
@@ -3811,8 +3811,8 @@ public:
   }
 
   /**
-   * @brief Submits a new order. The outcome can be unknown after
-   *   an error; see `KiwoomClient::async_place_order`.
+   * @brief Submits a new order. The outcome can be unknown after an error; see
+   *   `KiwoomClient::async_place_order`.
    * @param account The bound account.
    * @param order The order.
    * @return The result, or an error.
@@ -3827,8 +3827,8 @@ public:
   }
 
   /**
-   * @brief Modifies an existing order. The outcome can be unknown after
-   *   an error; see `KiwoomClient::async_replace_order`.
+   * @brief Modifies an existing order. The outcome can be unknown after an error; see
+   *   `KiwoomClient::async_replace_order`.
    * @param account The bound account.
    * @param amendment The amendment.
    * @return The result, or an error.
@@ -3843,8 +3843,8 @@ public:
   }
 
   /**
-   * @brief Cancels an existing order. The outcome can be unknown after
-   *   an error; see `KiwoomClient::async_cancel_order`.
+   * @brief Cancels an existing order. The outcome can be unknown after an error; see
+   *   `KiwoomClient::async_cancel_order`.
    * @param account The bound account.
    * @param amendment The amendment.
    * @return The result, or an error.
