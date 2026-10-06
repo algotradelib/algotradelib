@@ -69,7 +69,7 @@ What that assertion does and does not claim is worth being exact about. It estab
 or replay translation unit **instantiates** no adapter and no transport code, so there is no
 instantiated code path from a backtest to a market. It does not claim libssl is off the link line:
 the package exports one interface target for every consumer, so an offline binary carries the
-dependency it never calls. Splitting the target is `plan/todo/offline-only-target.md`.
+dependency it never calls; splitting the target is planned.
 
 Two other edges are worth reading off the picture:
 
@@ -96,9 +96,8 @@ and on its own it is not enough here. The one underneath it is about *values*:
 The test is not "does this cover the brokers we have" but **"could someone add a broker for another
 country, in their own project, without editing this library?"** `BrokerTraits` is already
 specializable out of tree; the vocabulary has to be extensible the same way. Where it is not yet —
-`Venue` enumerates one country's market structure — that is a known, filed gap rather than a
-settled design (`plan/todo/venue-is-korea-only.md`,
-`plan/todo/core-vocabulary-extensibility.md`).
+`Venue` enumerates one country's market structure — that is a known gap rather than a
+settled design.
 
 `Code<N>` is the fixed-capacity, allocation-free preservation type that exists for this: a code the
 library does not recognize is carried verbatim beside the normalized enums rather than discarded —

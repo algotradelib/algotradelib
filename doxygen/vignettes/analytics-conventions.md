@@ -154,7 +154,7 @@ Every trailing function advances one row at a time. A stride greater than one is
 also not foreclosed: because the result is always as long as the input, a stride means "compute at
 every `k`-th row, leave the rest unobserved", which reaches the API as a trailing defaulted
 parameter without changing any existing meaning. Usually the need behind it is resampling rather
-than subsampling — see `plan/todo/bar-resampling.md`.
+than subsampling, which the library does not do yet.
 
 The same principle governs the conventions that differ between packages. Each function states which
 one it implements, next to the arithmetic, because the differences change decisions rather than
@@ -270,7 +270,7 @@ defer what requires choosing. `macd(12, 26, 9)` means one thing, and the value o
 that Wilder's seed and the span convention are got right once instead of re-derived. `sortino`
 ships with its divisor documented rather than parameterized because there *is* a correct answer.
 "Covariance of series with gaps" has no canonical answer, so it waits for a consumer that can say
-what it needs — see `plan/todo/covariance-estimation.md` and `plan/todo/factor-models.md`.
+what it needs.
 
 Note that this is not the same rule as "remove anything the next branch does not use". Applied
 that way it would also delete `macd`, `bollinger`, `atr`, `wma`, `sharpe`, `one_way_turnover`,

@@ -384,7 +384,7 @@ So **after any abnormal termination, the broker's order list must be read before
 restarted runner starts with an empty ledger, and an empty ledger does not mean nothing is owed — it
 means nothing is *remembered*.
 
-**That is now automatic, and it is worth knowing which part does what.** `runner::PollingLoop` will
+**That is automatic, and it is worth knowing which part does what.** `runner::PollingLoop` will
 not send anything until it has read the broker's order list once, so even with no journal at all a
 restarted process cannot trade blind. With a journal bound through `live::bind_journaled`, the
 instructions themselves survive the process: recovery reads them back, withholds every instrument

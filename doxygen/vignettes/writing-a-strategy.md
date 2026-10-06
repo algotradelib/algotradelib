@@ -51,9 +51,8 @@ only `on_bar` and costs nothing for the rest.
 **`on_fill` does not fire live, and this is the one difference between the two modes that can cost
 money.** A fill is discovered live by polling: positions are replaced and working orders are
 replaced, and neither synthesises an execution. Discrete executions cannot be recovered from
-periodic cumulative snapshots — that was established across thirteen review findings and the design
-is parked until the library streams execution notifications. So a strategy that places an entry and
-sets its stop from `on_fill` is **correct in a backtest and inert live**: the handler never runs and
+periodic cumulative snapshots, so this waits until the library streams execution notifications. So a
+strategy that places an entry and sets its stop from `on_fill` is **correct in a backtest and inert live**: the handler never runs and
 the stop is never placed.
 
 **It is reported, not refused.** Using `on_fill` for backtest-only bookkeeping is legitimate, so

@@ -12,7 +12,7 @@ it, and an opt-in pacer that decides what goes out and in what order.
   replayed automatically, and never written on a connection idle longer than
   `HttpClientOptions::unreplayed_idle_limit_` (one second): both KIS hosts close
   an idle connection after five seconds, and an order written into one failed
-  as an unknown outcome KIS never received (`labs` F28). Such a request goes out
+  as an unknown outcome KIS never received. Such a request goes out
   on a fresh connection, at the cost of a TLS handshake; Kiwoom sends its reads
   as POSTs, so most paced Kiwoom reads pay it.
 - Rate-limit refusals surface as `ErrorCategory::RATE_LIMIT` with whatever hints
@@ -41,7 +41,7 @@ per-key allowance is an account-level portal setting its documentation does not
 state, so the library cannot assert a number. KIS does note that demo accounts are
 metered more tightly than live ones, again without stating either figure.
 
-**Measured on one account (2026-10-02, `labs/FINDINGS.md` F26):** a KIS demo account
+**Measured on one account (2026-10-02):** a KIS demo account
 refused reads closer than about a second apart (`EGW00201`), and with real keys the
 20-page holiday calendar was refused at eight a second and served at one. The KIS
 examples therefore pace at `RateLimitBudget{1, 1, 0}` (`kis_credentials::paced_options`

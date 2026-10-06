@@ -178,8 +178,7 @@ durations rather than one tolerance because it absorbs three unrelated things:
 bar fed -- once a bar has been fed. Before that, as at the startup read after a restart, the loop's own
 clock (the wall clock for a source driven without a loop), so a restart can resolve `not_placed` at its
 first read instead of waiting for a bar. On daily bars the decision instant is the previous session's
-end, so after the first bar a placement left in doubt stays `undecided` until the next bar
-(`labs/FINDINGS.md` F20).
+end, so after the first bar a placement left in doubt stays `undecided` until the next bar.
 
 **`ambiguous` is a stop, not a retry.** Two rows that could both be your order stay ambiguous however
 many times you sweep; no heuristic turns them into one answer. Go and look, then clear the ledger entry
