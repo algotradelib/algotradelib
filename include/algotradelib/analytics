@@ -1,10 +1,10 @@
 #pragma once
 
 /**
- * The numeric layer a strategy computes on.
+ * @file
+ * @brief The numeric layer a strategy computes on: series, indicators and statistics.
  *
- * Needs the `math` module's linear algebra, and therefore a configured backend. The
- * trading headers — quote, order, market data — need neither.
+ * Needs a linear-algebra backend (configure with `ATL_USE_EIGEN=ON`); the trading headers do not.
  */
 
 #if !defined(ATL_HAS_EIGEN)

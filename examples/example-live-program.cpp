@@ -24,8 +24,9 @@
  * - `--market-data kis`, the default on demo when `DIR/kis/real.json` exists: the real account's keys
  *   with an empty `KisAccount`;
  * - `--market-data toss`: Toss from `DIR/tossinvest/real.json`, with no account selected. The price
- *   band and reference data are then Toss's, which can differ from KIS's (`labs/FINDINGS.md` F27):
- *   KIS may refuse an order clamped to Toss's band.
+ *   band and reference data are then Toss's, which can differ from KIS's (after the close Toss
+ *   publishes the next session's band, KIS keeps the day's): KIS may refuse an order clamped to
+ *   Toss's band.
  *
  * Without a directory, or without `DIR/kis/real.json`, the demo session reads its own market data,
  * and stops at reference data. With `kis/real.json` the run reads reference data and the calendar

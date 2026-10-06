@@ -181,8 +181,8 @@ void describe(const runner::LoopReport& report) {
 /**
  * @brief When this example's clock starts: 200 days after the epoch, at 09:00 in Seoul.
  *
- * Named rather than repeated, because three things now have to agree about it -- the clock, the
- * calendar's covered date, and the session window the phase is derived against. They used to be one.
+ * Named rather than repeated, because three things have to agree about it: the clock, the
+ * calendar's covered date, and the session window the phase is derived against.
  */
 Clock::time_point start_time() {
   return Clock::time_point{} + std::chrono::hours(24 * 200);

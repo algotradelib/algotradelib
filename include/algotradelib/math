@@ -1,12 +1,8 @@
 #pragma once
 
 /**
- * Basic mathematics: the scalar type, and linear algebra.
- *
- * `scalar.hpp` needs no backend. The linear algebra does, and is included only when one
- * is configured, so this header is usable either way — a consumer that wants matrices in
- * a build without a backend gets the diagnostic from `matrix.hpp` by including it
- * directly.
+ * @file
+ * @brief Basic mathematics: the scalar type, and linear algebra when a backend is configured.
  */
 
 #include "src/math/scalar.hpp"
