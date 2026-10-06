@@ -16,36 +16,43 @@ namespace strategy {
 namespace vanilla {
 
 /**
- * Shared machinery for the strategies that read a series.
+ * @file
+ * @brief Helpers for the vanilla strategies that compute indicators.
  *
- * Available only where the library was built with a linear-algebra backend, because these compute
- * indicators. `BuyAndHold` and `TimedLiquidation` need none and are available either way.
+ * Needs a linear algebra backend (`ATL_USE_EIGEN=ON`). `BuyAndHold` and `TimedLiquidation` do not.
  */
 
-/** The last two values of an indicator, which is what a crossing test needs. */
+/** @brief The last two values of an indicator line, for testing a crossing. */
 struct Crossing {
-  /** The value on the previous bar. */
+  /** @brief The value on the previous bar. */
   math::Scalar previous_{0};
-  /** The value on the latest bar. */
+  /** @brief The value on the latest bar. */
   math::Scalar current_{0};
 
-  /** Returns whether the line rose through `other` on the latest bar. */
+  /**
+   * @brief Tests whether this line crossed above another on the latest bar.
+   * @param other The other line's last two values.
+   * @return `true` if this line was at or below `other` before and is above it now.
+   */
   bool rose_above(const Crossing& other) const {
     return previous_ <= other.previous_ && other.current_ < current_;
   }
 
-  /** Returns whether the line fell through `other` on the latest bar. */
+  /**
+   * @brief Tests whether this line crossed below another on the latest bar.
+   * @param other The other line's last two values.
+   * @return `true` if this line was at or above `other` before and is below it now.
+   */
   bool fell_below(const Crossing& other) const {
     return other.previous_ <= previous_ && current_ < other.current_;
   }
 };
 
 /**
- * Returns the last two values of `line`, or nothing unless both are observed.
- *
- * Both, deliberately. A crossing is a statement about a change, so a line whose previous value is
- * still in its warm-up region cannot have crossed anything — and treating an absent previous value
- * as zero would fire a crossing on the first bar that produced a number, every time.
+ * @brief Returns the last two values of a line.
+ * @param line The indicator line.
+ * @return The two values, or `std::nullopt` if the line has fewer than two rows or either value is
+ *   unobserved (a line still warming up cannot have crossed).
  */
 inline std::optional<Crossing> last_two(const math::Vector& line) {
   if (line.size() < 2) {
@@ -59,23 +66,22 @@ inline std::optional<Crossing> last_two(const math::Vector& line) {
 }
 
 /**
- * Returns the compensated exponential average of `values`: at each row, the exponentially weighted mean
- * of the observations so far, its weights normalized to sum to one.
+ * @brief Computes the bias-adjusted exponential moving average.
  *
- * With `q = 1 - alpha`, the newest observation weighs `1`, the one before `q`, then `q^2`, and so on,
- * divided by their sum `N`. For finite observations that is pandas'
- * `ewm(alpha=alpha, adjust=True, ignore_na=True)` on observed rows. Unlike `analytics::ema`, which seeds at the first observation and keeps `q^{k-1}` of its value
- * after `k` observations, no observation weighs more than its exponential share -- the reason to use it
- * on a series with no history before its first row; see `MovingAverageCrossover` for when.
+ * At each row, the exponentially weighted mean of the observations so far, with weights `1, q, q^2,
+ * ...` (newest first, `q = 1 - alpha`) normalized to sum to one. On finite observed rows it equals
+ * pandas' `ewm(alpha=alpha, adjust=True, ignore_na=True).mean()`. Unlike `analytics::ema`, the first
+ * observation never weighs more than its exponential share, so use it on a short series with no
+ * history before its first row. A finite constant series gives exactly that constant.
  *
- * Computed as a running weighted mean, `N_t = 1 + q * N_{t-1}` and `C_t = C_{t-1} + (y_t - C_{t-1}) / N_t`.
- * That form stays exact on a finite constant series (a crossover comparing two lines with `<` must not
- * see a flat market as a crossing), and stays accurate for an `alpha` too small for `1 - q^k` to be
- * formed: it becomes the plain mean. Same masking as `analytics::ema`: unobserved inputs are skipped and
- * their rows left unobserved, and nothing is reported before `min_observed` observations. An infinity
- * counts as an observation, as it does there: the mean becomes infinite, then `NaN` at the next finite
- * value, and stays `NaN` -- except at `alpha = 1`, which keeps only the newest value.
+ * @warning An infinity counts as an observation: the average becomes infinite, then `NaN` from the
+ *   next finite value on, for the rest of the series (except at `alpha = 1`, which keeps only the
+ *   newest value).
  *
+ * @param values The series; `NaN` entries are skipped and their rows left `missing()`.
+ * @param alpha The smoothing factor, in `(0, 1]`.
+ * @param min_observed How many observations must be seen before a value is reported.
+ * @return The averages, one per row.
  * @throws std::invalid_argument unless `0 < alpha <= 1`, or if `min_observed` is zero.
  */
 inline math::Vector adjusted_ema(math::SeriesView values, math::Scalar alpha, std::size_t min_observed = 1) {
@@ -107,13 +113,16 @@ inline math::Vector adjusted_ema(math::SeriesView values, math::Scalar alpha, st
 }
 
 /**
- * Returns the exponential average a crossover reads: of the whole of `closes`, spanning `span`.
+ * @brief Computes the exponential moving average `MovingAverageCrossover` reads.
  *
- * Reported from the `span`-th observation. With three spans of *observed* closes or more, the plain
- * `analytics::ema`, seeded at the oldest; with fewer, `adjusted_ema`: the seed would still weigh more than
- * about `e^-6`, and the series may have no earlier history to stand for. Observations, not rows, because a cache with
- * gaps holds fewer closes than rows. `MovingAverageCrossover`'s class comment has the reasons and the
- * measurements.
+ * With at least `3 * span` observed closes, `analytics::ema` seeded at the oldest; with fewer,
+ * `adjusted_ema`, since the seed would still weigh too much. Reported from the `span`-th
+ * observation.
+ *
+ * @param closes The whole close series.
+ * @param span The EMA span.
+ * @return The line, one value per row.
+ * @throws std::invalid_argument if `span` is zero.
  */
 inline math::Vector exponential_line(math::SeriesView closes, std::size_t span) {
   const auto alpha = analytics::alpha_from_span(span);
@@ -128,14 +137,15 @@ inline math::Vector exponential_line(math::SeriesView closes, std::size_t span) 
 }
 
 /**
- * Returns the trailing `count + 1` rows of `values`, or nothing when there are too few.
+ * @brief Returns the last `count + 1` rows of a series.
  *
- * Why a strategy reading a windowed indicator passes a slice rather than the whole series: an indicator
- * over a cached window is `O(rows x window)`, and a strategy needs only the last two values. Slicing
- * first turns a per-bar cost that grows with the cache into one that does not. Not for a recursive
- * indicator, whose value depends on every row before the slice (`exponential_line`).
+ * Slice before computing a windowed indicator when only its latest values are needed, so the cost
+ * per bar does not grow with the cached history. Not for a recursive indicator such as an EMA, whose
+ * value depends on every earlier row.
  *
- * `count + 1` because a crossing needs the value before the latest one as well.
+ * @param values The series.
+ * @param count The indicator's window; one more row is kept for the previous value.
+ * @return A view of the last `count + 1` rows, or `std::nullopt` if there are fewer.
  */
 inline std::optional<math::SeriesView> trailing(math::SeriesView values, std::size_t count) {
   const auto needed = static_cast<math::Index>(count) + 1;

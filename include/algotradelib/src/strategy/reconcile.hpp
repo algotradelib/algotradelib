@@ -14,103 +14,74 @@ namespace algotradelib {
 namespace strategy {
 
 /**
- * Turning what a strategy asked for into what the broker will be told.
+ * @file
+ * @brief Reconciliation: turning a strategy's intents and targets into the orders and
+ *   cancellations to send.
  *
- * A pure function of the intent, the portfolio, and the instrument's reference data. It performs
- * no I/O and holds no state, which is what lets the same arithmetic serve a dry run, a live
- * session, and later a backtest — and what makes every case below testable without a broker.
- *
- * **The problem it exists to solve is the projected position.** A strategy that says "hold 100"
- * must not produce a second order for 100 when 40 are filled and 60 are still working. So the
- * comparison is never against the position alone; it is against the position *plus everything
- * already in the market*, which is why `Portfolio::working_quantity` exists and why
- * `TargetPosition` is the form most strategies should emit.
- *
- * Four adjustments happen here rather than in a strategy, because each needs data a strategy
- * should not have to collect: rounding a price onto the tick grid, rounding a quantity onto the
- * lot, clamping a price into today's permitted band, and dropping an instruction that would
- * change nothing. None of them is silent — every adjustment is recorded on the planned order.
+ * The `reconcile` functions are pure: no I/O and no state. A target is compared with the position
+ * **plus the orders already working**, so restating it does not order twice. Prices are clamped
+ * into the day's band and rounded onto the tick grid, and quantities rounded down onto the lot; each
+ * adjustment is flagged on the `PlannedOrder`.
  */
 
 /**
- * Why an instruction was not placed.
+ * @brief Why an instruction was not placed.
  *
- * Most values are reconciliation's own: it could not produce a valid instruction from what it was
- * given. The last two are not -- the instruction was built correctly and refused afterwards, by the
- * broker or by the binding that would have sent it -- and they live here because a report's
- * rejection bucket holds all of them, and a caller reading one entry needs its own answer rather
- * than a guess from executor state that a later instruction may already have overwritten.
+ * Most reasons mean reconciliation could not build a valid instruction. `BROKER_REFUSED` and
+ * `BINDING_REFUSED` mean it was built and then refused.
  */
 enum class RejectReason {
-  /** No reference data, so neither the tick grid nor the lot size is known. */
+  /** @brief No reference data for the instrument, so neither the tick grid nor the lot is known. */
   NO_REFERENCE_DATA,
-  /** The instrument's tick grid is unknown, so a limit price cannot be made valid. */
+  /** @brief The instrument's tick grid is unknown, so a limit price cannot be made valid. */
   UNKNOWN_PRICE_GRID,
-  /** A price was needed to size the order and none was available. */
+  /** @brief A price was needed to size the order and none was available. */
   NO_PRICE_AVAILABLE,
-  /** Sizing needed the portfolio's value and none was supplied. */
+  /** @brief A weight needed the portfolio's value, and none (or a non-positive one, or one in another currency) was supplied. */
   NO_PORTFOLIO_VALUE,
-  /** The quantity rounded to zero on the lot, so there is nothing to send. */
+  /** @brief The quantity rounded down to zero on the lot. */
   QUANTITY_ROUNDS_TO_ZERO,
-  /** The arithmetic overflowed the exact decimal range. */
+  /** @brief The decimal arithmetic did not fit, or the portfolio's rows did not add up. */
   NOT_REPRESENTABLE,
-  /** A limit price fell outside today's band and the band leaves no valid price. */
+  /** @brief A limit price fell outside the day's band and the band leaves no valid price. */
   NO_PERMITTED_PRICE,
-  /**
-   * The broker refused the instruction, which reconciliation had built correctly.
-   *
-   * Unlike every reason above it, this is not a decision this library made. It is here because a
-   * report's rejection bucket holds both, and a caller reading one needs to know which -- a broker
-   * refusal spent a request and says something about the account or the instrument, while the
-   * reasons above say the library could not build a valid order at all. Before this existed, a
-   * broker refusal was recorded as `NOT_REPRESENTABLE`, which claims the arithmetic overflowed.
-   */
+  /** @brief The broker refused the instruction (a request was sent). */
   BROKER_REFUSED,
   /**
-   * The binding refused to send it, so no broker was asked.
+   * @brief The binding refused to send the instruction, so no request was made.
    *
-   * An idempotency key at a broker that accepts none, or a withdrawal for an order the broker has
-   * no reference for. Distinct from `BROKER_REFUSED` because no request went out and none was
-   * counted, and distinct from the reasons above because reconciliation built the instruction
-   * correctly -- what it asked for is something this binding cannot express.
+   * For example, an idempotency key at a broker that accepts none, or a cancellation of an order the
+   * broker has no reference for.
    */
   BINDING_REFUSED,
   /**
-   * A stop-limit order's trigger is not on the instrument's tick grid.
+   * @brief A stop-limit order's trigger price is not on the instrument's tick grid.
    *
-   * Refused rather than rounded, unlike a limit. Rounding a limit toward the passive side is safe
-   * whichever way the market moves; rounding a trigger moves *when the order exists*, and which
-   * direction is the cautious one depends on whether the stop releases on a rise or a fall -- which
-   * neither KIS nor Kiwoom documents. `Price` is on-grid by construction for the rule it was built
-   * against, so this fires only when that rule was not the instrument's own.
+   * Unlike a limit price, a trigger is never rounded, since rounding would change when the order
+   * is released.
    */
   TRIGGER_OFF_GRID,
   /**
-   * A target that needs a trade was stated while a stop order rests on its instrument, so the stop
-   * is being withdrawn first and nothing is sent this pass.
+   * @brief A target needs a trade while a stop order rests on the instrument; the stop is cancelled
+   *   first and nothing is placed this pass.
    *
-   * A stop is a *conditional* order, and target arithmetic is about orders that will trade. Counted
-   * as working, a resting sell stop satisfies a target of zero and "flatten now" sends nothing;
-   * ignored, an immediate exit goes out beside it and both can sell. So a target that needs a trade
-   * withdraws the stop and waits. **`runner::Runner` keeps the target** and settles it again, with no
-   * callback from the strategy, once a listing no longer reports a stop on the instrument -- see
-   * `Runner::deferred_targets`. A strategy stating anything newer for the instrument replaces it.
-   *
-   * A target the holding already meets needs no trade and is not refused: the stop stays, since
-   * protecting a position the strategy means to hold is what it is for, and only other working orders
-   * are withdrawn as before.
+   * `runner::Runner` keeps the target and settles it again once no stop is listed on the
+   * instrument (see `Runner::deferred_targets`); a newer instruction for the instrument replaces it.
+   * A target the holding already meets is not refused, and the stop stays.
    */
   STOP_ORDER_RESTING,
   /**
-   * A weight-sized intent that states something a holding cannot: a sell, a negative weight, a
-   * trigger, a validity other than a day order, or an idempotency key. A weight is planned as the
-   * position it states (`weight_target`), and none of those survive the conversion, so each is
-   * refused by name rather than dropped.
+   * @brief A weight-sized intent with something a holding cannot express: a sell, a negative
+   *   weight, a trigger, a validity other than `DAY`, or an idempotency key.
    */
   UNSUPPORTED_WEIGHT,
 };
 
-/** Returns a stable lowercase name for `reason`, for logs and structured reporting. */
+/**
+ * @brief Returns a lowercase name for a reason, such as `"no_reference_data"`, for logs.
+ * @param reason The reason.
+ * @return The name.
+ */
 inline constexpr std::string_view reject_reason_name(RejectReason reason) noexcept {
   switch (reason) {
     case RejectReason::NO_REFERENCE_DATA:
@@ -141,155 +112,121 @@ inline constexpr std::string_view reject_reason_name(RejectReason reason) noexce
   return "unknown";
 }
 
-/** One instruction that was refused, and why. */
+/** @brief One instruction that was not placed, and why. */
 struct Rejection {
-  /** Why reconciliation refused the instruction. */
+  /** @brief Why it was not placed. */
   RejectReason reason_{RejectReason::NO_REFERENCE_DATA};
-  /** The instrument the refused instruction was for. */
+  /** @brief The instrument it was for. */
   InstrumentId instrument_;
-  /** The strategy's own label on the refused instruction, for attribution. */
+  /** @brief The tag of the intent or target it came from. */
   std::string tag_;
 };
 
 /**
- * One order the runner is to place.
+ * @brief One order the runner is to place.
  *
- * The three `*_adjusted_` flags record what reconciliation changed relative to what the strategy
- * asked for. They exist because an adjustment a caller cannot see is indistinguishable from a bug:
- * a strategy whose limit was clamped on a limit-up day traded at a price it did not choose, and it
- * is entitled to know.
+ * The `price_rounded_`, `price_clamped_` and `quantity_rounded_` flags say what reconciliation
+ * changed from what the strategy asked for.
  */
 struct PlannedOrder {
-  /** What to trade. Identity, not routing. */
+  /** @brief The instrument to trade. */
   InstrumentId instrument_;
-  /** Which way. */
+  /** @brief The side. */
   OrderSide side_{OrderSide::BUY};
-  /** The price basis. */
+  /** @brief The order type. */
   OrderType type_{OrderType::LIMIT};
-  /** The execution condition. */
+  /** @brief How long the order stays valid. */
   TimeInForce time_in_force_{TimeInForce::DAY};
-  /** The session to trade in. */
+  /** @brief The trading session. */
   OrderSession session_{OrderSession::REGULAR};
   /**
-   * Where to route it; see `OrderRequest::venue_`. Not the instrument's venue.
+   * @brief Where to route the order; see `OrderRequest::venue_`.
    *
-   * Nothing a strategy says sets it. A live runner writes its binding's route in before sending
-   * (`live::SessionExecutor::default_route`), so the journal, the reserved working row and the report
-   * name where the order went.
+   * Strategies do not set it; a live runner fills in its binding's route before sending.
    */
   Venue venue_{Venue::UNSPECIFIED};
-  /** How much, after any rounding onto the lot that `quantity_rounded_` records. */
+  /** @brief The quantity, after rounding onto the lot. */
   Decimal64 quantity_;
-  /** The limit price, after any rounding or clamping the flags below record. */
+  /** @brief The limit price, after clamping and rounding; empty for a market order. */
   std::optional<Decimal64> price_;
-  /**
-   * The trigger price of a `STOP_LIMIT` order, exactly as the strategy stated it. Never rounded
-   * and never clamped -- see `RejectReason::TRIGGER_OFF_GRID` -- and empty on every other basis.
-   */
+  /** @brief The trigger price of a `STOP_LIMIT` order, exactly as stated; empty otherwise. */
   std::optional<Decimal64> trigger_price_;
-  /** The strategy's own label on the intent this order came from. */
+  /** @brief The tag of the intent or target the order came from. */
   std::string tag_;
-  /** An idempotency key, only where the bound broker supports one. */
+  /** @brief The idempotency key, if the intent carried one. */
   std::optional<std::string> client_order_id_;
 
-  /** Whether the price was moved onto the tick grid. */
+  /** @brief Whether the price was rounded onto the tick grid. */
   bool price_rounded_{false};
-  /** Whether the price was moved into today's permitted band. */
+  /** @brief Whether the price was clamped into the day's band. */
   bool price_clamped_{false};
   /**
-   * Whether a band was held for this instrument, **not applied**, and would have moved this price.
+   * @brief Whether a price band was known but not applied (too old), and would have clamped this
+   *   price.
    *
-   * Never set by reconciliation, which is handed one band or none and cannot know a second existed.
-   * `runner::Runner` sets it after the fact when its own age policy withheld a band -- see
-   * `Runner::set_maximum_price_limits_age` for why withholding is the safe direction and
-   * `Runner::unclamped_orders_rejected` for what it costs when it is not.
-   *
-   * A statement about this price, not a prediction about the wire: the price lies outside the
-   * withheld band on the side the clamp corrects. Clamping runs before tick rounding, so a bound
-   * that binds here could in principle round back to the same value.
+   * Set by `runner::Runner`, not by reconciliation; see `Runner::set_maximum_price_limits_age`.
    */
   bool price_would_have_been_clamped_{false};
-  /** Whether the quantity was moved onto the lot. */
+  /** @brief Whether the quantity was rounded down onto the lot. */
   bool quantity_rounded_{false};
 };
 
 /**
- * What the runner should do, in this order: cancel first, then place.
+ * @brief What to send: first every cancellation, then every placement.
  *
- * The order matters and is the caller's obligation. A replacement placed before its predecessor
- * is withdrawn is briefly a double position; a cancellation issued first leaves the instrument
- * unrepresented for a moment instead, which is the lesser exposure and the one a strategy can
- * reason about.
+ * Send the cancellations first; placing a replacement before its predecessor is withdrawn would
+ * briefly double the position.
+ *
+ * @tparam Broker The broker tag of the order references.
  */
 template <typename Broker>
 struct Plan {
-  /** Orders to withdraw. These go first; see the note above on why the order is not optional. */
+  /** @brief The orders to cancel, sent first. */
   std::vector<OrderRef<Broker>> cancel_;
-  /** Orders to send, after every cancellation has gone. */
+  /** @brief The orders to place, after the cancellations. */
   std::vector<PlannedOrder> place_;
-  /** Instructions reconciliation refused, with the reason on each. */
+  /** @brief The instructions not placed, with reasons. */
   std::vector<Rejection> rejected_;
 
-  /** Returns whether the plan asks for nothing at all. */
+  /**
+   * @brief Tests whether the plan is empty.
+   * @return `true` if there is nothing to cancel, place or report.
+   */
   bool empty() const noexcept {
     return cancel_.empty() && place_.empty() && rejected_.empty();
   }
 };
 
 /**
- * How small a drift is not worth an instruction.
+ * @brief How small a difference from a target is not worth an order.
  *
- * An execution-cost policy, which is why it arrives from the runner rather than from a strategy: a
- * strategy states the position it wants, and how finely that is chased depends on commission, on
- * whether the venue charges per instruction, and on what queue priority is worth -- none of which a
- * signal knows.
+ * Every floor is optional and absent by default, which trades every share of drift. If any stated
+ * floor is met, no order is sent:
  *
- * **Three units, because the right one depends on which cost dominates, and one number in shares is
- * the weakest of them.** A single share count means wildly different things across a portfolio: with
- * `minimum_quantity_` set to five, the implied value threshold is 1,000,000 won on a 200,000-won share
- * and 15,000 won on a 3,000-won one, a factor of sixty-seven. There is no share count that is right
- * for a portfolio, so the other two exist.
- *
- * | Floor | Keys on | The cost it answers |
+ * | Floor | Compares | Use it for |
  * | --- | --- | --- |
- * | `minimum_quantity_` | the drift in shares | lot economics, or a per-share fee |
+ * | `minimum_quantity_` | the drift in shares | lot economics, a per-share fee |
  * | `minimum_notional_` | the drift's value at the reference price | a fixed or minimum fee per order |
- * | `minimum_fraction_of_working_` | the drift over what is already working | queue priority given up |
+ * | `minimum_fraction_of_working_` | the drift over the quantity already working | not giving up queue priority |
  *
- * The third is the subtle one and often the largest cost. Replacing a working order for 100 to change
- * it by one share risks that order's whole place in the book to adjust one percent of it -- and the
- * loss is proportional to the 100, not to the 1. It therefore applies **only when something is
- * working**: with nothing resting there is no priority to give up, and a drift is simply a new order.
- *
- * **Every floor is absent by default, which is exactly the behaviour before any of this existed.** No
- * number is invented here, because each depends on a broker's own fee schedule. A tolerance guessed at
- * would silently hold back orders a strategy asked for, and an invisible shortfall is worse than
- * visible churn.
- *
- * **Any stated floor being met is sufficient to suppress.** Each expresses an independent reason the
- * trade is not worth making, so one of them triggering is enough; requiring all of them would mean a
- * drift worth less than a fixed fee still traded because it happened to be a large fraction of a tiny
- * working order.
- *
- * **A floor that cannot be evaluated does not suppress.** Without a reference price the notional floor
- * is unknowable, and the honest response is to trade -- the opposite of `RiskGuard`, where a limit that
- * cannot be evaluated refuses. The reasoning is the same and the consequences are mirrored: there,
- * failing to refuse risks an oversized position; here, failing to trade leaves an invisible shortfall.
+ * A floor that cannot be evaluated (a notional floor without a price) does not suppress. A drift is
+ * never suppressed when an order on the wrong side has to be cancelled.
  */
 struct TradeTolerance {
-  /** Smallest drift worth trading, in shares. */
+  /** @brief The smallest drift worth trading, in shares. */
   std::optional<Decimal64> minimum_quantity_;
-  /** Smallest drift worth trading, valued at the reference price. */
+  /** @brief The smallest drift worth trading, valued at the reference price. */
   std::optional<Decimal64> minimum_notional_;
   /**
-   * Smallest drift worth trading, as a fraction of the quantity already working.
-   *
-   * `0.02` is two percent. Ignored when nothing is working, since there is then no queue position to
-   * give up.
+   * @brief The smallest drift worth trading, as a fraction of the quantity already working
+   *   (`0.02` is 2%). Ignored when nothing is working.
    */
   std::optional<Decimal64> minimum_fraction_of_working_;
 
-  /** Returns whether any floor is stated. */
+  /**
+   * @brief Tests whether any floor is set.
+   * @return `true` if at least one floor is present.
+   */
   bool stated() const noexcept {
     return minimum_quantity_.has_value() || minimum_notional_.has_value() ||
       minimum_fraction_of_working_.has_value();
@@ -297,38 +234,34 @@ struct TradeTolerance {
 };
 
 /**
- * Everything reconciliation needs that is not the intent or the portfolio.
+ * @brief What reconciliation needs besides the intent and the portfolio; the runner fills it in.
  *
- * Gathered by the runner, which has the caches; passed in so the arithmetic stays a pure
- * function. Each member is optional because a broker may not have published it, and the
- * rejections above say which absence stopped which instruction rather than letting a default
- * stand in for a fact.
+ * A missing input refuses the instructions that need it, with a `RejectReason` that names it.
  */
 struct ReconcileInputs {
-  /** Reference data, carrying the tick grid and the lot size. */
+  /** @brief The instrument's reference data (tick grid, lot size, currency); required. */
   const Instrument* instrument_{nullptr};
-  /** A price to size a notional or a weight against; the last trade or a mid. */
+  /** @brief A price to size a notional or weight against, such as the last trade. */
   std::optional<Decimal64> reference_price_;
-  /** Today's permitted band, where the broker publishes one. */
+  /** @brief The day's price band, if the broker publishes one. */
   std::optional<PriceLimits> limits_;
-  /** Total portfolio value in the instrument's currency, for weight sizing. */
+  /** @brief The total portfolio value, for weight sizing. */
   std::optional<Decimal64> portfolio_value_;
 
-  /** How small a drift is not worth an instruction. Every floor absent means chase every share. */
+  /** @brief How small a drift from a target is not worth an order. */
   TradeTolerance tolerance_;
   /**
-   * The currency `portfolio_value_` is stated in, where the caller said. A weight on an instrument in
-   * another currency is refused rather than sized across currencies at a rate of one; absent, the
-   * value is taken to be in the instrument's currency, as before. Appended last.
+   * @brief The currency of `portfolio_value_`; absent means the instrument's currency.
+   *
+   * A weight on an instrument in another currency is refused (`NO_PORTFOLIO_VALUE`).
    */
   std::optional<Currency> portfolio_value_currency_;
   /**
-   * Whether the portfolio's reserved rows (`WorkingOrder::reserved_`) are the part of orders this runner
-   * sent that holdings have not shown yet -- which may already have filled. Set by a runner that keeps
-   * its sent orders until the broker accounts for them (lab F38). A target that finds more working than
-   * it wants still withdraws every row on that side, but sizes its replacement net of the reserved rows,
-   * because withdrawing an order that filled is refused and a replacement beside it would trade twice.
-   * Off (a replay, a dry run), the replacement is the whole remainder, as before. Appended last.
+   * @brief Whether the portfolio's reserved rows (`WorkingOrder::reserved_`) are orders this runner
+   *   sent that the holdings may not reflect yet, and which may already have filled.
+   *
+   * When set, a target that finds too much working cancels that side and sizes its replacement net
+   * of those rows, so a filled reservation is not traded twice.
    */
   bool reserved_rows_are_unconfirmed_{false};
 };
@@ -475,35 +408,42 @@ inline bool below_tolerance(
 } // namespace reconcile_detail
 
 /**
- * Reconciles one target position into the smallest set of instructions that reaches it.
- *
- * The arithmetic, in order:
- *
- * 1. **What is still needed** is the target minus what is held. Working orders are not subtracted
- *    yet, because their side matters.
- * 2. **Orders working the wrong way are cancelled.** Buying toward a target while a sell is
- *    resting on the same instrument works against itself, and a target of exactly the held
- *    quantity means every working order is now unwanted.
- * 3. **What is left to send** is the need minus what is already working on the right side. This is
- *    the step that stops a partial fill producing a second full-size order.
- * 4. **Over-ordering cancels and re-places.** When more is working than is now wanted, the whole
- *    side is withdrawn and the remainder sent fresh, rather than partially cancelled — partial
- *    cancellation is a capability only one of the two brokers has, and cancel-then-replace is
- *    correct on both.
- *
- * A target already met produces an empty plan, which is the common case and must cost nothing.
- */
-/**
- * Returns whether a working row is a stop order: its basis says so, **or** it carries a trigger.
- *
- * The second half is not redundant. An adapter records a positive trigger even on a row whose basis
- * reads otherwise, and that row may be a stop that has released. Target reconciliation and the
- * runner's deferred targets both ask this, so they cannot disagree about which rows hold a target up.
+ * @brief Tests whether a working order is a stop order: a trigger-price type, or one carrying a
+ *   trigger price.
+ * @param order The order.
+ * @return `true` for a stop order.
  */
 inline bool is_stop_order(const OrderSnapshot& order) {
   return carries_trigger_price(order.type_) || order.trigger_price_.has_value();
 }
 
+/**
+ * @brief Plans the cancellations and the order that move a holding to a target position.
+ *
+ * 1. The need is the target minus the net quantity held (every row).
+ * 2. Open orders working against the need are cancelled; if the target is already met, every open
+ *    order on the instrument is.
+ * 3. What is already working on the needed side is subtracted from the need.
+ * 4. If more is working than needed, that whole side is cancelled and the remainder placed fresh.
+ * 5. The order is rounded down onto the lot, and its limit (if the target has one) clamped and
+ *    rounded; without a limit it is a market order.
+ *
+ * When a stop order rests on the instrument, the steps above do not apply:
+ * - if a trade is needed, the plan cancels the stop (unless its cancellation is already pending)
+ *   and also carries a `RejectReason::STOP_ORDER_RESTING` rejection, with nothing placed;
+ * - if the target is already met, the stop is kept and only the other open orders are cancelled.
+ *
+ * A drift below `ReconcileInputs::tolerance_` yields an empty plan, but only when nothing has to be
+ * cancelled; an order working against the target is still cancelled.
+ *
+ * @tparam Broker The broker tag.
+ * @param target The target position.
+ * @param portfolio The positions and working orders.
+ * @param inputs Reference data, prices, band and tolerance.
+ * @return The plan. A refusal for any reason other than `STOP_ORDER_RESTING` clears the
+ *   cancellations and placements and carries one `Rejection`; with `STOP_ORDER_RESTING` the
+ *   cancellations stay, and the caller should send them.
+ */
 template <typename Broker>
 Plan<Broker> reconcile(
   const TargetPosition& target,
@@ -523,14 +463,7 @@ Plan<Broker> reconcile(
   }
 
   const auto zero = Decimal64::parse("0");
-  // **Net across every position row, not the first one.** This read `quantity_of`, which returns the
-  // first match, and a broker reporting one instrument as two lots is ordinary -- so a target of
-  // zero against rows of 60 and 40 planned a sell of 60 and left 40 held, while
-  // `vanilla::TimedLiquidation` submitted one such target *per row* and planned that same sell
-  // twice. Together those sold 120 of a holding of 100 wherever the phase permitted it. Sizing
-  // against the net holding is the same rule `projected_gross_exposure` and `closes_toward_flat`
-  // already apply, and having reconciliation disagree with the guards about how much is held is the
-  // partial-coherence failure this repository has paid for before.
+  // Net across every position row, as the guards read it: a holding can be split across lots.
   const auto net = portfolio.net_quantity_of(target.instrument_);
   if (!net) {
     // A snapshot whose own rows will not add up cannot say what reaching a target would take, and
@@ -714,18 +647,20 @@ Plan<Broker> reconcile(
 }
 
 /**
- * Reconciles one order intent into an instruction, without diffing against the portfolio.
+ * @brief Plans the order for one intent, without comparing against the portfolio.
  *
- * An intent says "trade this much", not "hold this much", so the portfolio is deliberately not
- * consulted: a strategy that emits intents has taken responsibility for its own sizing. **Except a
- * weight**, which says "hold this much": the runner plans a weight-sized intent as the target it
- * states (`weight_target`) and does not call this for one. Called with one directly, this still
- * sizes the whole allocation as a trade. What still
- * happens here is the part that needs reference data — converting a notional or a weight into a
- * quantity, rounding onto the lot and the tick, and clamping into today's band.
+ * An intent says "trade this much", so the portfolio is not consulted. A notional size is divided
+ * by the limit price (or the reference price); the quantity is rounded down onto the lot; a limit
+ * is clamped into the band and rounded onto the grid; a trigger must already be on the grid.
  *
- * A strategy that wants the double-sizing protection emits a `TargetPosition` instead. That choice
- * is the whole reason both forms exist.
+ * @note The runner plans a weight-sized intent with `weight_target` instead; called directly, this
+ *   sizes the whole allocation as a trade.
+ *
+ * @tparam Broker The broker tag.
+ * @param intent The order intent.
+ * @param portfolio Not used.
+ * @param inputs Reference data, prices and band.
+ * @return A plan with one placement, or one `Rejection`.
  */
 template <typename Broker>
 Plan<Broker> reconcile(
@@ -842,35 +777,28 @@ Plan<Broker> reconcile(
   return plan;
 }
 
-/** What a weight-sized intent turns into: the target position it states, or the reason it cannot. */
+/** @brief The result of `weight_target`: a target position or a refusal, exactly one of them. */
 struct WeightTarget {
-  /** The target position the weight states, when it could be sized. */
+  /** @brief The target position, if the weight could be sized. */
   std::optional<TargetPosition> target_;
-  /** Why it could not, when it could not. Exactly one of the two is present. */
+  /** @brief Why it could not be, otherwise. */
   std::optional<RejectReason> refused_;
 };
 
 /**
- * Turns a weight-sized intent into the target position it states.
+ * @brief Converts a weight-sized intent into the target position it states.
  *
- * **A weight is a holding**, which is what `SizeKind::TARGET_WEIGHT` promises: planned as an order it
- * would buy the whole allocation again at every rebalance. So the runner plans it as a
- * `TargetPosition` of `weight x portfolio value / price` shares, rounded down onto the lot, where the
- * price is the intent's limit if it has one and the reference price otherwise, carrying the limit and
- * the tag; target reconciliation then diffs it against the position and the working orders.
+ * The target is `weight * portfolio value / price` shares, rounded down onto the lot, where the
+ * price is the intent's limit if it has one and the reference price otherwise. The target keeps the
+ * intent's limit and tag. Reconciled as a target, its limit applies to whatever trade the
+ * difference needs, so above the weight a buy limit becomes the limit of a sell.
  *
- * Refused by name, and never converted, when the intent states what a holding cannot
- * (`UNSUPPORTED_WEIGHT`): a sell or a negative weight (the side would be discarded, turning a sell
- * into a buy), a trigger (a target carries none, so a stop would become an immediate limit), a
- * validity other than a day order, or an idempotency key (a target carries neither, and a key
- * silently dropped is a retry that looked safe). Refused `NO_PORTFOLIO_VALUE` with no value, a value
- * of zero or less, or a value stated in another currency than the instrument's; `NO_PRICE_AVAILABLE`
- * with no price.
- *
- * As a target it behaves as a target does: other working orders on the instrument are withdrawn when
- * the weight is met, and orders opposing the trade it needs are withdrawn before it; and a buy
- * intent's limit is the limit of whatever trade the difference needs, so when the holding is above
- * the weight a passive buy limit becomes the limit of a sell.
+ * @param intent A weight-sized intent (`SizeKind::TARGET_WEIGHT`).
+ * @param inputs Reference data, reference price, and portfolio value.
+ * @return The target, or a refusal: `UNSUPPORTED_WEIGHT` (sell, negative weight, trigger, non-`DAY`,
+ *   idempotency key), `NO_REFERENCE_DATA`, `NO_PORTFOLIO_VALUE` (absent, not positive, or in
+ *   another currency), `NO_PRICE_AVAILABLE`, or `NOT_REPRESENTABLE`.
+ * @throws std::logic_error if `intent` is not weight-sized.
  */
 inline WeightTarget weight_target(const OrderIntent& intent, const ReconcileInputs& inputs) {
   WeightTarget out;

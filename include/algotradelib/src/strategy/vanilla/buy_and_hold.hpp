@@ -14,35 +14,34 @@ namespace strategy {
 namespace vanilla {
 
 /**
- * Buys a stated quantity once and never trades again.
+ * @brief Holds a fixed quantity of one instrument.
  *
- * The simplest thing that is still a strategy, and it earns its place twice: as the benchmark every
- * other strategy is measured against, and as the minimum test of the interface. It reaches for
- * nothing but a target and an instrument, so if *this* needs something the context does not offer,
- * the context is wrong.
- *
- * Emits a target rather than an order, which is why it "never trades again" without tracking
- * anything: once the position matches, reconciliation produces nothing. A version that emitted an
- * order would have to remember whether it had already bought, and would buy twice after a restart.
+ * States the same target position on every bar, so it buys once and then sends nothing while the
+ * holding matches, including after a restart. Useful as a benchmark.
  */
 struct BuyAndHold {
-  /** How this strategy is configured. */
+  /** @brief The strategy's settings. */
   struct Params {
-    /** Which instrument to hold. Bars for anything else are ignored. */
+    /** @brief The instrument to hold; bars for any other instrument are ignored. */
     InstrumentId instrument_;
-    /** How many shares to hold. */
+    /** @brief The shares to hold. */
     Decimal64 quantity_;
-    /** Label carried onto the orders, for attribution. */
+    /** @brief The tag on the targets. */
     std::string tag_{"buy-and-hold"};
   };
 
-  /** The configuration this instance runs under. */
+  /** @brief The settings. */
   Params params_;
 
-  /** No warm-up: one bar is enough to know the instrument trades. */
+  /** @brief One bar of history is enough. */
   static constexpr std::size_t warmup_bars = 1;
 
-  /** States the configured position on every bar for the configured instrument. */
+  /**
+   * @brief States the target position on each bar of the instrument.
+   * @tparam Ctx The runner's context type.
+   * @param ctx The context.
+   * @param bar The new bar.
+   */
   template <class Ctx>
   void on_bar(Ctx& ctx, const BarEvent& bar) {
     if (!(bar.instrument_ == params_.instrument_)) {

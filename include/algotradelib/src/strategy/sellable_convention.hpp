@@ -13,30 +13,27 @@ namespace algotradelib {
 namespace strategy {
 
 /**
- * Whether a broker's sellable figure already excludes orders resting on the sell side.
+ * @brief Whether a broker's sellable quantity already excludes sell orders resting at the broker.
  *
- * **Neither broker states this, and the answer changes what a correct guard does.** Toss's
- * `sellableQuantity` is documented in units only; KIS's `ord_psbl_qty` carries an empty Description
- * in the API workbook; the KIS example repository never mentions it. So `RiskGuard` subtracts
- * resting sells from the figure, because over-counting refuses an order that would have been
- * accepted while under-counting sells a position twice -- but if the broker already subtracts them,
- * that deduction is charging twice for the same order.
- *
- * Settling it by experiment needs a market session and someone to remember to look. This settles it
- * from data the runner already polls, as a by-product of ordinary trading.
+ * No broker documents this. `RiskGuard` assumes it does not (it subtracts resting sells itself);
+ * `SellableConventionProbe` infers the answer from ordinary polling.
  */
 enum class SellableConvention {
-  /** Nothing conclusive has been seen yet, which is the honest state for most runs. */
+  /** @brief Nothing conclusive has been observed yet. */
   UNDETERMINED,
-  /** The figure fell when an order began resting: the broker already excludes it. */
+  /** @brief The figure fell when a sell began resting: the broker excludes resting sells. */
   NET_OF_RESTING,
-  /** The figure did not move when an order began resting: the broker does not exclude it. */
+  /** @brief The figure did not move when a sell began resting: the broker includes them. */
   GROSS_OF_RESTING,
-  /** Both have been observed, so no single rule describes what was seen. */
+  /** @brief Both behaviours were observed; no single rule fits. */
   INCONSISTENT,
 };
 
-/** Returns a stable lowercase name for `convention`, for logs and structured reporting. */
+/**
+ * @brief Returns a lowercase name for a convention, such as `"net_of_resting"`, for logs.
+ * @param convention The convention.
+ * @return The name.
+ */
 inline constexpr std::string_view sellable_convention_name(SellableConvention convention) noexcept {
   switch (convention) {
     case SellableConvention::UNDETERMINED:
@@ -52,20 +49,22 @@ inline constexpr std::string_view sellable_convention_name(SellableConvention co
 }
 
 /**
- * How many observations supported each answer.
+ * @brief How many observations supported each answer.
  *
- * Counts rather than a flag, because one observation is evidence and not proof: a settlement or a
- * pledge release inside the same window moves the same number, and nothing here can see either. A
- * reader deciding whether to act on this should want to know it held across several days, which is
- * what the counts are for.
+ * One observation is evidence, not proof (a settlement in the same window moves the same
+ * number); look at the counts before acting on a verdict.
  */
 struct SellableEvidence {
-  /** Observations where the figure fell by the quantity that began resting. */
+  /** @brief Observations where the figure fell by the quantity that began resting. */
   std::size_t net_{0};
-  /** Observations where the figure did not move when an order began resting. */
+  /** @brief Observations where the figure did not move when a sell began resting. */
   std::size_t gross_{0};
 
-  /** Returns what the counts say, with disagreement reported rather than resolved. */
+  /**
+   * @brief Returns the convention the counts support.
+   * @return `INCONSISTENT` if both counts are nonzero, `UNDETERMINED` if both are zero, otherwise
+   *   the one with observations.
+   */
   SellableConvention verdict() const noexcept {
     if (net_ > 0 && gross_ > 0) {
       return SellableConvention::INCONSISTENT;
@@ -79,37 +78,35 @@ struct SellableEvidence {
     return SellableConvention::UNDETERMINED;
   }
 
-  /** Returns how many observations contributed at all. */
+  /**
+   * @brief Returns the number of observations.
+   * @return `net_ + gross_`.
+   */
   std::size_t total() const noexcept { return net_ + gross_; }
 };
 
 /**
- * Infers a broker's sellable convention from successive portfolio observations.
+ * @brief Infers a broker's `SellableConvention` from successive portfolios.
  *
- * Fed one portfolio per poll, and it reasons only about **changes**: the absolute distance between a
- * holding and its sellable quantity says nothing, because settlement, pledging and locking all open
- * one. What is diagnostic is the *movement* of that distance at the moment a sell order starts
- * resting.
+ * Call `observe` with each polled portfolio. An observation is recorded only when, between two
+ * polls, an instrument's holding is unchanged, the resting sell quantity the broker reported grew,
+ * and the gap between held and sellable moved by exactly that amount (`NET_OF_RESTING`) or not
+ * at all (`GROSS_OF_RESTING`); anything else is discarded. Positions whose sellable basis is not
+ * enforceable, or which carry no sellable figure, are skipped, so with a broker that does not
+ * publish the figure the verdict stays `UNDETERMINED`.
  *
- * Two guards keep an observation honest, and both discard rather than guess:
+ * @warning Fed a backtest's portfolios, it learns the replay ledger's model (which reports
+ *   sellable as held), not a broker's behaviour.
  *
- * - **The holding must be unchanged.** A fill moves the position and the resting quantity together,
- *   so any window containing one is unusable.
- * - **The resting quantity must have grown.** If it did not, nothing happened that this can learn
- *   from, and a change in the distance is somebody else's doing.
- *
- * What remains is still evidence rather than proof: a settlement landing in the same window as a new
- * resting order would be read as `GROSS_OF_RESTING`, since the distance would move by something
- * other than the resting quantity -- which is why a distance that moves by the *wrong* amount is
- * discarded too, and why the counts are public.
- *
- * Costs nothing where the figure is absent, which is every broker that does not publish it and every
- * replay: no previous observation is ever completed, and the verdict stays `UNDETERMINED`.
+ * @tparam Broker The broker tag of the portfolio.
  */
 template <typename Broker>
 class SellableConventionProbe {
 public:
-  /** Records one portfolio, completing any observation the previous one opened. */
+  /**
+   * @brief Records one polled portfolio, comparing it with the previous one.
+   * @param portfolio The portfolio.
+   */
   void observe(const Portfolio<Broker>& portfolio) {
     // **A figure of unknown coverage teaches nothing about resting orders, and would teach something
     // false.** This probe reads the *distance* between what is held and what is sellable and watches
@@ -148,10 +145,9 @@ public:
   }
 
   /**
-   * Drops any pending baseline for `instrument`.
-   *
-   * Called when a reading cannot be judged, so the next one that can is compared against a reading it
-   * actually follows rather than across a gap.
+   * @brief Discards the last recorded reading for an instrument, so the next one is not compared
+   *   across a gap.
+   * @param instrument The instrument.
    */
   void forget(const InstrumentId& instrument) {
     for (auto it = last_.begin(); it != last_.end(); ++it) {
@@ -162,7 +158,11 @@ public:
     }
   }
 
-  /** Returns what has been seen for `instrument`. */
+  /**
+   * @brief Returns the evidence for one instrument.
+   * @param instrument The instrument.
+   * @return Its counts, zero if nothing was observed.
+   */
   SellableEvidence evidence(const InstrumentId& instrument) const {
     if (const auto* found = find(evidence_, instrument)) {
       return *found;
@@ -170,7 +170,10 @@ public:
     return SellableEvidence{};
   }
 
-  /** Returns every instrument's evidence summed, which is the answer about the broker. */
+  /**
+   * @brief Returns the evidence summed over every instrument.
+   * @return The counts for the broker as a whole.
+   */
   SellableEvidence overall() const {
     SellableEvidence total;
     for (const auto& entry : evidence_) {
@@ -180,24 +183,28 @@ public:
     return total;
   }
 
-  /** Returns the verdict across every instrument seen. */
+  /**
+   * @brief Returns the broker's convention as observed so far.
+   * @return `overall().verdict()`.
+   */
   SellableConvention verdict() const { return overall().verdict(); }
 
-  /** Returns each instrument that has contributed an observation, with its evidence. */
+  /**
+   * @brief Returns the evidence per instrument.
+   * @return Each instrument that contributed an observation, with its counts.
+   */
   const std::vector<std::pair<InstrumentId, SellableEvidence>>& per_instrument() const noexcept {
     return evidence_;
   }
 
 private:
-  /**
-   * Returns the sell quantity **the broker reported** resting, ignoring the runner's reservations.
-   *
-   * A runner adds a row of its own for an order it has just sent, so that the next order in the
-   * pass cannot re-sell the same shares. Those rows are this library's arithmetic, and counting
-   * them here would be circular: the resting quantity would rise with no change in the broker's
-   * sellable figure, and the probe would record `GROSS_OF_RESTING` on evidence it manufactured
-   * itself -- every time, for any broker, whenever the sellable check happened to be enabled.
-   */
+  // Returns the sell quantity **the broker reported** resting, ignoring the runner's reservations.
+  //
+  // A runner adds a row of its own for an order it has just sent, so that the next order in the
+  // pass cannot re-sell the same shares. Those rows are this library's arithmetic, and counting
+  // them here would be circular: the resting quantity would rise with no change in the broker's
+  // sellable figure, and the probe would record `GROSS_OF_RESTING` on evidence it manufactured
+  // itself -- every time, for any broker, whenever the sellable check happened to be enabled.
   static Decimal64 reported_resting(
     const Portfolio<Broker>& portfolio,
     const InstrumentId& instrument
@@ -224,14 +231,14 @@ private:
     return total;
   }
 
-  /** One position as a poll reported it. */
+  // One position as a poll reported it.
   struct Reading {
     Decimal64 held_;
     Decimal64 sellable_;
     Decimal64 resting_;
   };
 
-  /** Returns whether two decimals are numerically equal, across differing scales. */
+  // Returns whether two decimals are numerically equal, across differing scales.
   static bool same(const Decimal64& lhs, const Decimal64& rhs) {
     // `operator==` compares the coefficient and the scale, so "70" and "70.0" are not equal by it.
     // A broker is free to change the scale it reports between two polls, and a probe that read that
@@ -239,7 +246,7 @@ private:
     return !decimal_less(lhs, rhs) && !decimal_less(rhs, lhs);
   }
 
-  /** Records what the move from `before` to `now` says, if it says anything. */
+  // Records what the move from `before` to `now` says, if it says anything.
   void judge(const InstrumentId& instrument, const Reading& before, const Reading& now) {
     if (!same(before.held_, now.held_)) {
       return;
@@ -272,7 +279,7 @@ private:
     // most likely -- and is discarded rather than forced into one of the two answers.
   }
 
-  /** Returns the entry for `instrument`, or null. */
+  // Returns the entry for `instrument`, or null.
   template <typename Entries>
   static auto find(Entries& entries, const InstrumentId& instrument)
     -> decltype(&entries.front().second) {

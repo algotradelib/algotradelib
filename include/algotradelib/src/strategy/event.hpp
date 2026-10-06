@@ -12,41 +12,37 @@ namespace algotradelib {
 namespace strategy {
 
 /**
- * What a strategy is told about, and when.
+ * @file
+ * @brief The events a runner delivers to a strategy's handlers, and the market phase.
  *
- * Every event is a value a runner has already finished assembling. A handler receives one,
- * decides, and returns; it never asks for more data, because anything it could ask for would be
- * a blocking request inside a handler. What the runner has is reachable through the context.
+ * Each event is complete when the handler receives it; a handler decides and returns without
+ * requesting more data.
  */
 
 /**
- * Where the clock stands relative to a trading session.
+ * @brief Where the clock stands relative to the trading session.
  *
- * **The day comes from the broker; the intraday boundaries come from configuration.** That split
- * is deliberate and follows `market-data-core`: both brokers publish which dates the market
- * trades, so `CLOSED` on a holiday is a broker-reported fact. Only Toss publishes intraday
- * session windows, and they are not normalized, so deriving `OPEN` from a broker would give one
- * answer for one broker and nothing for the other. Instead the operator states the window — for
- * KRX it is a published, stable fact, not something to discover per request.
- *
- * `UNKNOWN` is a distinct state rather than a synonym for `CLOSED`, for the same reason
- * `TradingCalendar` distinguishes them: treating an uncovered date as closed stops a strategy on
- * a day that is in fact open, and treating it as open lets one place orders into a holiday.
+ * Whether a date trades comes from the broker's calendar; the intraday open and close come from
+ * the configured `SessionWindow`.
  */
 enum class MarketPhase {
-  /** The calendar does not cover this date, so nothing is known about it. */
+  /** @brief The calendar does not cover this date; nothing is known about it. */
   UNKNOWN,
-  /** A date the market does not trade at all. */
+  /** @brief A date the market does not trade. */
   CLOSED,
-  /** A trading day, before the configured session opens. */
+  /** @brief A trading day, before the session opens. */
   PRE_OPEN,
-  /** Inside the configured session. */
+  /** @brief Inside the session. */
   OPEN,
-  /** A trading day, after the configured session closed. */
+  /** @brief A trading day, after the session closed. */
   POST_CLOSE,
 };
 
-/** Returns a stable lowercase name for `phase`, for logs and display. */
+/**
+ * @brief Returns a lowercase name for a phase, such as `"pre_open"`, for logs and display.
+ * @param phase The phase.
+ * @return The name.
+ */
 inline constexpr std::string_view market_phase_name(MarketPhase phase) noexcept {
   switch (phase) {
     case MarketPhase::UNKNOWN:
@@ -64,33 +60,38 @@ inline constexpr std::string_view market_phase_name(MarketPhase phase) noexcept 
 }
 
 /**
- * The intraday window a market trades in, as the operator states it.
+ * @brief The intraday session of a market, as the operator states it.
  *
- * Held as minutes since local midnight plus the market's offset from UTC, because that is what
- * the exchange publishes. Not read from a broker: see `MarketPhase` for why.
+ * Times are minutes from local midnight, with a fixed UTC offset. The default is the KRX regular
+ * session, 09:00-15:30 KST.
  *
- * The offset is fixed rather than a time zone. Both markets this library targets observe no
- * daylight saving, and a fixed offset that is wrong is obvious immediately, whereas a zone
- * database this library carried would be wrong quietly and a year late.
+ * @note The offset is fixed: a market that observes daylight saving needs a different window
+ *   each season.
  */
 struct SessionWindow {
-  /** Minutes from local midnight to the session open. */
+  /** @brief The session open, in minutes from local midnight. */
   std::chrono::minutes open_{std::chrono::hours(9)};
-  /** Minutes from local midnight to the session close. */
+  /** @brief The session close, in minutes from local midnight. */
   std::chrono::minutes close_{std::chrono::hours(15) + std::chrono::minutes(30)};
-  /** The market's fixed offset from UTC. */
+  /** @brief The market's offset from UTC. */
   std::chrono::minutes utc_offset_{std::chrono::hours(9)};
-  /** Where the window came from, so a reader learns who stated it. */
+  /** @brief A description of where the window came from, for reports. */
   std::string source_{"KRX regular session, 09:00-15:30 KST (operator-stated)"};
 
-  /** Returns the KRX regular session. */
+  /**
+   * @brief Returns the KRX regular session, 09:00-15:30 KST.
+   * @return The default window.
+   */
   static SessionWindow krx() { return SessionWindow{}; }
 
   /**
-   * Returns the phase at `now`, given whether its date is a trading day.
+   * @brief Returns the market phase at an instant.
    *
-   * `trading_day` is what `TradingCalendar::is_trading_day` answered, including its emptiness:
-   * an uncovered date yields `UNKNOWN` rather than a guess.
+   * @param now The instant.
+   * @param trading_day Whether `now`'s local date (see `local_date`) is a trading day, as
+   *   `TradingCalendar::is_trading_day` answered it.
+   * @return `UNKNOWN` if `trading_day` is empty, `CLOSED` if it is `false`, and otherwise
+   *   `PRE_OPEN`, `OPEN` or `POST_CLOSE` by local time. The open is inclusive, the close exclusive.
    */
   MarketPhase phase(
     std::chrono::system_clock::time_point now,
@@ -115,16 +116,13 @@ struct SessionWindow {
   }
 
   /**
-   * Returns the market's local calendar date at `now`.
+   * @brief Returns the market's local date at an instant.
    *
-   * The date to ask a `TradingCalendar` about, and it is the market's date rather than the
-   * process's: a loop running in Frankfurt at 23:30 UTC has to ask about tomorrow in Seoul, and
-   * asking about its own date would consult the wrong day for the six hours either side of local
-   * midnight — including, on a Sunday evening in Europe, a Monday session in Korea.
+   * Ask the `TradingCalendar` about this date, not the machine's own: in another time zone they
+   * differ for part of each day.
    *
-   * Here rather than on `TradingCalendar` because the offset lives here, and it is the same offset
-   * `phase` derives the intraday boundaries from. Two types holding a market's offset is how they
-   * come to disagree.
+   * @param now The instant.
+   * @return The date in the market's time zone.
    */
   Date local_date(std::chrono::system_clock::time_point now) const {
     using Days = std::chrono::duration<std::int64_t, std::ratio<86400>>;
@@ -134,13 +132,10 @@ struct SessionWindow {
   }
 
   /**
-   * Returns the instant this session opens on `now`'s local date.
+   * @brief Returns the instant the session opens on the local date of an instant.
    *
-   * Here rather than computed by a caller for the reason `local_date` states above: the offset lives
-   * here, and a second type doing this arithmetic is how two components come to disagree about which
-   * day it is. `backtest::Backtester` needs it to answer *when did this bar's period begin*, which
-   * decides whether an order decided part-way through that period may be credited a price from its
-   * start.
+   * @param now Any instant on the date in question.
+   * @return The open of `local_date(now)`, whether or not that date trades.
    */
   std::chrono::system_clock::time_point opens_at(
     std::chrono::system_clock::time_point now
@@ -149,18 +144,9 @@ struct SessionWindow {
   }
 
 private:
-  /**
-   * Returns the instant of the market's local midnight preceding `now`, as a UTC-shifted value.
-   *
-   * `std::chrono::days` is C++20; `Days` is the same duration, spelled for C++17. `floor` rounds
-   * toward negative infinity, so the arithmetic is right for instants before the epoch as well as
-   * after it — which `ReplayClock` needs, since a replay's instants come from whatever bars it was
-   * handed.
-   *
-   * Shared by `phase` and `local_date` so that the two cannot disagree about which day it is. They
-   * are asked about the same instant in the same iteration, and a rounding difference between them
-   * would consult the calendar for one date and compute the session boundaries for another.
-   */
+  // The market's local midnight before `now`, as a UTC-shifted instant. floor rounds toward
+  // negative infinity, so instants before the epoch work too. phase() and local_date() share it so
+  // they always agree on the day.
   std::chrono::time_point<std::chrono::system_clock, std::chrono::seconds> local_midnight(
     std::chrono::system_clock::time_point now
   ) const {
@@ -172,45 +158,40 @@ private:
 };
 
 /**
- * One completed bar, with everything needed to know which period it describes.
+ * @brief One bar, delivered to `on_bar`.
  *
- * A runner delivers only **closed** bars. A handler that saw a forming bar would be reading a
- * high and a low that can still change, which is a lookahead defect that shows up as a backtest
- * that cannot be reproduced live.
- *
- * `interval_` and `stamp_` are carried because a bar does not carry them — they live on
- * `BarSeries`, being constant across a series — and a strategy needs both to know what
- * `bar_.timestamp_` means. `period_end_` is that arithmetic already done: the instant the bar's
- * period finished, which is the earliest moment the strategy could legitimately have known the
- * bar. Deriving it needs the interval and the stamp convention together, so getting it wrong is
- * easy, which is why it is computed once here rather than in every strategy.
+ * `interval_` and `stamp_` say which period the bar covers; `period_end_` is the instant that
+ * period ended, the earliest moment the bar could be known. See `bar_` for which bars a live
+ * source may deliver while still forming.
  */
 struct BarEvent {
-  /** What the bar is for. */
+  /** @brief The instrument the bar is for. */
   InstrumentId instrument_;
-  /** The period the bar covers, carried because a `Bar` does not carry it. */
+  /** @brief The period length the bar covers. */
   BarInterval interval_{BarInterval::ONE_DAY};
-  /** Which edge of that period `bar_.timestamp_` marks. */
+  /** @brief Whether `bar_.timestamp_` marks the period's open or close. */
   BarStamp stamp_{BarStamp::CLOSE};
   /**
-   * The bar itself, closed. `live::SessionSource` holds back a bar whose period end is after the
-   * loop's instant, which is how a broker's current-session row -- every shipped adapter's daily
-   * query returns one -- is kept out of daily and minute bars. Not for a week, a month or a year
-   * stamped at its open (their stamp convention is unobserved and they are fed as read), not for a
-   * source driven with no instant at all, and not provably for a Toss daily bar of a market other
-   * than KRX, whose stamp has not been observed.
+   * @brief The bar.
+   *
+   * @note Live, `live::SessionSource` holds back a daily or minute bar whose period has not
+   *   ended, such as the broker's row for the current session. Weekly, monthly and yearly bars
+   *   stamped at their open are delivered as read and may still be forming.
    */
   Bar bar_;
-  /** When the period finished: the earliest moment a strategy could legitimately know this bar. */
+  /** @brief When the bar's period ended: the earliest moment the bar could be known. */
   std::chrono::system_clock::time_point period_end_{};
 };
 
 /**
- * Returns `bar`'s period end, given how its timestamp is stamped.
+ * @brief Computes the instant a bar's period ended.
  *
- * A `CLOSE`-stamped bar already carries it. An `OPEN`-stamped bar ends one interval later, which
- * for a calendar interval — a month, a year — is not a fixed duration, so those are advanced by
- * calendar arithmetic rather than by adding a nominal number of days.
+ * @param bar The bar.
+ * @param interval The period length the bar covers.
+ * @param stamp Whether `bar.timestamp_` marks the period's open or close.
+ * @return `bar.timestamp_` for a `CLOSE`-stamped bar; for an `OPEN`-stamped bar, the timestamp
+ *   plus one interval. A month counts as 31 days and a year as 366, so for those intervals the
+ *   result is an upper bound, not the exact end.
  */
 inline std::chrono::system_clock::time_point bar_period_end(
   const Bar& bar,
@@ -228,10 +209,7 @@ inline std::chrono::system_clock::time_point bar_period_end(
     case BarInterval::ONE_WEEK:
       return bar.timestamp_ + std::chrono::hours(24 * 7);
     case BarInterval::ONE_MONTH:
-      // Nominal, and deliberately so: a month has no fixed length, and the alternative is a
-      // civil-calendar dependency for a value only used to order events that are already
-      // ordered. Documented rather than hidden, because a caller comparing a monthly bar's
-      // period end to a precise instant would be relying on more than this can promise.
+      // Nominal: a month has no fixed length. Documented on the function.
       return bar.timestamp_ + std::chrono::hours(24 * 31);
     case BarInterval::ONE_YEAR:
       return bar.timestamp_ + std::chrono::hours(24 * 366);
@@ -239,7 +217,15 @@ inline std::chrono::system_clock::time_point bar_period_end(
   return bar.timestamp_;
 }
 
-/** Returns a bar event with `period_end_` derived from the interval and stamp convention. */
+/**
+ * @brief Makes a bar event, computing its `period_end_` with `bar_period_end`.
+ *
+ * @param instrument The instrument the bar is for.
+ * @param interval The period length the bar covers.
+ * @param stamp Whether the bar's timestamp marks the period's open or close.
+ * @param bar The bar.
+ * @return The event.
+ */
 inline BarEvent make_bar_event(
   InstrumentId instrument,
   BarInterval interval,
@@ -255,42 +241,37 @@ inline BarEvent make_bar_event(
   return event;
 }
 
-/** One quote the runner has just read. */
+/** @brief A quote the runner has just read, delivered to `on_quote`. */
 struct QuoteEvent {
-  /** The quote as the broker reported it. */
+  /** @brief The quote, as the broker reported it. */
   QuoteSnapshot quote_;
 };
 
 /**
- * One execution against an order this strategy placed.
+ * @brief One execution of an order the strategy placed, delivered to `on_fill`.
  *
- * Broker-neutral on purpose, unlike `CancelIntent`. A fill is identified by the broker's own
- * order id as a string rather than by a typed `OrderRef<Broker>`, so `on_fill`'s signature is
- * writable without naming a broker or reaching for `Ctx::Fill`. A strategy that needs to act on
- * the order — amend or cancel it — looks it up in `ctx.portfolio()`, where the typed reference
- * lives.
+ * Each execution is its own event, so a partial fill arrives as several; `quantity_` is this
+ * execution's quantity, and the order's running total is in the portfolio. The order is named by
+ * the broker's order id as a string; look it up in `ctx.portfolio()` to amend or cancel it.
  *
- * `tag_` is the label the strategy put on the intent that produced the order, carried back so a
- * fill can be attributed to the decision that caused it.
- *
- * `quantity_` is the quantity of *this* execution, not the order's running total. A partial fill
- * arrives as one event per execution, and summing them is the strategy's business; the running
- * total is in the portfolio.
+ * @warning A backtest delivers fills, but the shipped live loop never does: no broker inquiry
+ *   produces a `Fill`. A strategy that reacts to fills in `on_fill` (for example, to set a stop)
+ *   does nothing live. Live, executions show up through `on_order_update` and the portfolio.
  */
 struct Fill {
-  /** The broker's own order id, as a string, so this signature names no broker. */
+  /** @brief The broker's order id. */
   std::string order_id_;
-  /** What was traded. */
+  /** @brief The instrument traded. */
   InstrumentId instrument_;
-  /** Which way. */
+  /** @brief The side of the order. */
   OrderSide side_{OrderSide::BUY};
-  /** The quantity of *this* execution, not the order's running total. */
+  /** @brief The quantity of this execution, not the order's running total. */
   Decimal64 quantity_;
-  /** The price this execution went off at. */
+  /** @brief The execution price. */
   Decimal64 price_;
-  /** The label the strategy put on the intent that produced the order. */
+  /** @brief The tag of the intent that produced the order. */
   std::string tag_;
-  /** When the execution happened. */
+  /** @brief When the execution happened. */
   std::chrono::system_clock::time_point at_{};
 };
 

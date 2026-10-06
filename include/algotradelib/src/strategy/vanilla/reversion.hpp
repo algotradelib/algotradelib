@@ -13,49 +13,51 @@ namespace strategy {
 namespace vanilla {
 
 /**
- * Buys when the price is unusually low against its own recent history, and exits at the mean.
+ * @brief Long-only mean reversion on the z-score of the close.
  *
- * Three thresholds rather than two, and the third is what stops it thrashing. Entering at `-entry_`
- * and exiting at zero would re-enter the moment the score dipped again; exiting at `exit_`, a level
- * nearer the mean than the entry, gives the position somewhere to go. Mean reversion that enters and
- * exits on the same line trades constantly and pays the spread every time.
- *
- * Long only. A short leg needs borrow availability, a different margin model, and a hard stop —
- * none of which this library models yet, and a short mean-reversion position without a stop is the
- * classic way to lose more than the account holds.
+ * Buys `quantity_` when flat and the z-score over `window_` closes is at or below `-entry_`; goes
+ * flat when holding and the z-score has risen to `-exit_` or above. Exiting before the mean
+ * (`exit_ > 0`) keeps it from re-entering on the next small dip.
  */
 struct ZScoreReversion {
-  /** How this strategy is configured. */
+  /** @brief The strategy's settings. */
   struct Params {
-    /** Which instrument to trade. Bars for anything else are ignored. */
+    /** @brief The instrument to trade; bars for any other instrument are ignored. */
     InstrumentId instrument_;
-    /** Window the score is measured over. */
+    /** @brief The number of closes the z-score is measured over; below 2, nothing is traded. */
     std::size_t window_{20};
-    /** How far below the mean, in deviations, to buy. Positive. */
+    /** @brief How many standard deviations below the mean to buy at; positive. */
     math::Scalar entry_{2.0};
-    /** How far below the mean to hold down to before flattening. Positive, below `entry_`. */
+    /** @brief The z-score `-exit_` at which to sell; positive and less than `entry_`, or nothing is traded. */
     math::Scalar exit_{0.5};
-    /** How many shares to hold while the signal is on. */
+    /** @brief The shares to hold while in a position. */
     Decimal64 quantity_;
-    /** Label carried onto the orders, for attribution. */
+    /** @brief The tag on the targets. */
     std::string tag_{"zscore-reversion"};
   };
 
-  /** The configuration this instance runs under. */
+  /** @brief The settings. */
   Params params_;
 
-  /** The window plus one, because a score is read against the previous bar's. */
+  /**
+   * @brief Returns how many bars to load before the first live bar.
+   * @return `window_ + 1`.
+   */
   std::size_t warmup_bars() const { return params_.window_ + 1; }
 
-  /** Reads the latest bar and, when the signal says so, states a target position. */
+  /**
+   * @brief States a target position for the instrument when its signal enters or exits.
+   * @tparam Ctx The runner's context type.
+   * @param ctx The context.
+   * @param bar The new bar.
+   */
   template <class Ctx>
   void on_bar(Ctx& ctx, const BarEvent& bar) {
     if (!(bar.instrument_ == params_.instrument_)) {
       return;
     }
     if (params_.window_ < 2 || !(params_.exit_ < params_.entry_)) {
-      // An exit at or beyond the entry has no band to hold in, so the position would open and close
-      // on the same bar forever. Doing nothing is the honest response to a contradictory setting.
+      // An exit at or beyond the entry is contradictory; do nothing.
       return;
     }
     const auto* series = ctx.bars(bar.instrument_, bar.interval_);
@@ -75,16 +77,10 @@ struct ZScoreReversion {
       return;
     }
 
-    // **Net across every position row.** This asked `quantity_of`, which returns the first, so a
-    // broker listing this instrument as a spent lot of 0 beside a live one answered "flat" and the
-    // strategy entered again on top of a position it already held. `holding` is a question about
-    // the whole holding, and only the net answers it.
+    // Net across every position row: a spent lot of 0 beside a live one is not flat.
     const auto held = ctx.portfolio().net_quantity_of(params_.instrument_);
     if (!held) {
-      // A snapshot whose own rows will not add up says nothing about what is held, and the two ways
-      // of being wrong here are not symmetric: reading it as flat *enters*, on top of whatever is
-      // actually there. Reconciliation would reject the target anyway, but a strategy should not be
-      // deciding to open a position on a portfolio the library has just failed to read.
+      // Rows that do not add up say nothing about what is held; reading them as flat would enter.
       return;
     }
     const bool holding = held->coefficient() != 0;
@@ -104,64 +100,52 @@ struct ZScoreReversion {
 };
 
 /**
- * Buys an oversold instrument and sells an overbought one, on Wilder's index.
+ * @brief Long-only RSI strategy: buys when the index is oversold, sells when it is overbought.
  *
- * `30` and `70` are Wilder's own thresholds and the ones every chart draws. The index itself uses
- * his smoothing and his seed, which `analytics::rsi` documents — an index smoothed the other
- * conventional way produces different numbers from the chart a threshold was chosen against.
+ * Buys `quantity_` when flat and Wilder's RSI (`analytics::rsi`) is at or below `oversold_`; goes
+ * flat when holding and it is at or above `overbought_`. The defaults 30 and 70 are Wilder's.
  *
- * **It reads every cached bar.** Wilder's smoothing is a recursion: it seeds on the mean of the first
- * `period` changes, then `avg = (avg (n - 1) + change) / n`. Over only the last `period + 1` closes it
- * would seed on the last bar and never advance, and the index would be the simple average of the last
- * `period` changes instead of Wilder's. Over the whole cache (up to `series_capacity`), the seed's
- * weight in each average after `k` observed changes *beyond the seed* is `(1 - 1/n)^k`: for `n = 14`,
- * 84 such changes (99 closes) leave about 0.2%. That bounds the seed's weight in the gain and loss
- * averages, not the index's error, and promises no agreement with a chart that seeded elsewhere. With
- * less history the index is still Wilder's, its seed weighing more; a new listing needs no special
- * case, because the seed is already a mean of `period` changes, not one print.
+ * The index is computed over every cached close (up to the runner's `series_capacity`), because
+ * Wilder's smoothing depends on its seed. With about 99 closes the seed's weight falls below 0.2% for
+ * period 14.
  *
- * History changes readings the slice could not see. A flat or rising *tail* no longer reads 50 or 100
- * when earlier changes moved: period 3, `100, 90, 90, 90, 90` reads 0 (the slice read 50) and
- * `110, 100, 101, 102, 103` reads 25.9 (the slice, 100), so the strategy can buy, or keep a holding,
- * where it did nothing before -- and `100, 110, 109, 108, 107` reads 74.1 (the slice, 0), so it can
- * exit instead. Once the cache is full, each bar evicts the oldest close and the seed moves with it:
- * the residual weight is tiny (about `1e-16` at period 14 with 512 bars), but evicting a cache's only
- * move still changes the index (a full cache of 99s after one 100 reads 0, then 50). A replay, whose
- * cache keeps growing, can differ from a live start that read fewer bars until the live cache catches
- * up. Closes reach the cache from bars, which always carry one, so the cache itself has no gaps.
- *
- * Long only, for the reason `ZScoreReversion` gives.
+ * @note A backtest, whose cache keeps growing, can differ from a live run that loaded fewer bars,
+ *   until the live cache catches up. Once the cache is full, each bar evicts the oldest close, which
+ *   can change the index a lot: a full cache of unchanged closes after one fall reads 0, and 50 once
+ *   that fall is evicted. So the signal can change on an unchanged close.
  */
 struct RsiThreshold {
-  /** How this strategy is configured. */
+  /** @brief The strategy's settings. */
   struct Params {
-    /** Which instrument to trade. Bars for anything else are ignored. */
+    /** @brief The instrument to trade; bars for any other instrument are ignored. */
     InstrumentId instrument_;
-    /** The index period. Must be non-zero. */
+    /** @brief The RSI period; zero disables the strategy. */
     std::size_t period_{14};
-    /** Buy at or below this level. */
+    /** @brief Buy at or below this level. */
     math::Scalar oversold_{30.0};
-    /** Flatten at or above this level. */
+    /** @brief Sell at or above this level; must exceed `oversold_`, or nothing is traded. */
     math::Scalar overbought_{70.0};
-    /** How many shares to hold while the signal is on. */
+    /** @brief The shares to hold while in a position. */
     Decimal64 quantity_;
-    /** Label carried onto the orders, for attribution. */
+    /** @brief The tag on the targets. */
     std::string tag_{"rsi-threshold"};
   };
 
-  /** The configuration this instance runs under. */
+  /** @brief The settings. */
   Params params_;
 
   /**
-   * Bars needed before the index reports.
-   *
-   * Row zero has no price change at all and the smoothing needs `period_` changes before it has a
-   * seed, so the first value appears on row `period_` — hence one more than the period. Before that
-   * Wilder's index does not exist; from then on it does, and further bars only weaken its seed.
+   * @brief Returns how many bars to load before the first live bar.
+   * @return `period_ + 1`, the first row at which the index exists.
    */
   std::size_t warmup_bars() const { return params_.period_ + 1; }
 
-  /** Reads the latest bar and, when the signal says so, states a target position. */
+  /**
+   * @brief States a target position for the instrument when its signal enters or exits.
+   * @tparam Ctx The runner's context type.
+   * @param ctx The context.
+   * @param bar The new bar.
+   */
   template <class Ctx>
   void on_bar(Ctx& ctx, const BarEvent& bar) {
     if (!(bar.instrument_ == params_.instrument_)) {
@@ -178,23 +162,17 @@ struct RsiThreshold {
     if (static_cast<std::size_t>(closes.size()) < warmup_bars()) {
       return;
     }
-    // The whole cache, not a slice: see the struct comment.
+    // The whole cache, not a slice: Wilder's smoothing depends on its seed.
     const auto index = analytics::rsi(closes, params_.period_);
     const auto level = index[index.size() - 1];
     if (!math::observed(level)) {
       return;
     }
 
-    // **Net across every position row.** This asked `quantity_of`, which returns the first, so a
-    // broker listing this instrument as a spent lot of 0 beside a live one answered "flat" and the
-    // strategy entered again on top of a position it already held. `holding` is a question about
-    // the whole holding, and only the net answers it.
+    // Net across every position row: a spent lot of 0 beside a live one is not flat.
     const auto held = ctx.portfolio().net_quantity_of(params_.instrument_);
     if (!held) {
-      // A snapshot whose own rows will not add up says nothing about what is held, and the two ways
-      // of being wrong here are not symmetric: reading it as flat *enters*, on top of whatever is
-      // actually there. Reconciliation would reject the target anyway, but a strategy should not be
-      // deciding to open a position on a portfolio the library has just failed to read.
+      // Rows that do not add up say nothing about what is held; reading them as flat would enter.
       return;
     }
     const bool holding = held->coefficient() != 0;
@@ -214,34 +192,40 @@ struct RsiThreshold {
 };
 
 /**
- * Holds while the price is at a new high of its lookback, and exits at a new low.
+ * @brief Donchian channel breakout: holds after the close breaks above the channel, exits after it
+ *   breaks below.
  *
- * Donchian's breakout, and it reads the extremes of the *prior* window rather than one including
- * today. A channel that included the current bar could never be broken: today's high is always
- * within a range that contains today's high, so the signal would never fire. Getting that wrong
- * produces a strategy that silently does nothing, which is why the window is sliced to exclude the
- * latest row.
+ * The channel is the highest and lowest close of the `lookback_` bars **before** the latest one.
+ * A close above the channel states a target of `quantity_`; a close below it, a target of zero.
  */
 struct DonchianBreakout {
-  /** How this strategy is configured. */
+  /** @brief The strategy's settings. */
   struct Params {
-    /** Which instrument to trade. Bars for anything else are ignored. */
+    /** @brief The instrument to trade; bars for any other instrument are ignored. */
     InstrumentId instrument_;
-    /** How far back the channel is measured. Must be non-zero. */
+    /** @brief The number of prior closes the channel spans; zero disables the strategy. */
     std::size_t lookback_{20};
-    /** How many shares to hold while the signal is on. */
+    /** @brief The shares to hold while in a position. */
     Decimal64 quantity_;
-    /** Label carried onto the orders, for attribution. */
+    /** @brief The tag on the targets. */
     std::string tag_{"donchian-breakout"};
   };
 
-  /** The configuration this instance runs under. */
+  /** @brief The settings. */
   Params params_;
 
-  /** The lookback plus one, because the channel excludes the bar being tested against it. */
+  /**
+   * @brief Returns how many bars to load before the first live bar.
+   * @return `lookback_ + 1`.
+   */
   std::size_t warmup_bars() const { return params_.lookback_ + 1; }
 
-  /** Reads the latest bar and, when the signal says so, states a target position. */
+  /**
+   * @brief States a target position for the instrument when its signal enters or exits.
+   * @tparam Ctx The runner's context type.
+   * @param ctx The context.
+   * @param bar The new bar.
+   */
   template <class Ctx>
   void on_bar(Ctx& ctx, const BarEvent& bar) {
     if (!(bar.instrument_ == params_.instrument_)) {
