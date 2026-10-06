@@ -129,7 +129,7 @@ graph LR
 
   E1 --> O1["a list of what it would have sent"]
   E2 --> O2["fills, an equity curve,<br/>a Report with its caveats"]
-  E3 --> O3["a BrokerSession,<br/>then a broker"]
+  E3 --> O3["a BlockingSession,<br/>then a broker"]
 
   classDef pure fill:#e8f4ea,stroke:#4a7a55,color:#123
   classDef io fill:#fdeee6,stroke:#a4663c,color:#123

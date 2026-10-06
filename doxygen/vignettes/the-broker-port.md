@@ -106,9 +106,9 @@ author writing one must meet. Recovery (`live::SessionSource`) asks the order hi
 one stated date at a time — `from_ == to_`, one inquiry per UTC day of its window,
 paged by cursor as your adapter pages — because Kiwoom's single-date inquiry requires a
 date and refuses a range; so accept a single-date query. An adapter that also declares
-`has_working_orders = false` is additionally asked once, at startup, with no date at all
-(`SessionSource::read_order_list`), so accept that too or the order-list gate stays
-closed. Recovery merges the two listings and drops a history row only as an **exact
+`has_working_orders = false` is additionally asked at startup with no date at all
+(`SessionSource::read_order_list`), following its cursor page by page if it declares one, so
+accept that too or the order-list gate stays closed. Recovery merges the two listings and drops a history row only as an **exact
 copy** of a working row (`runner::exact_copy`: the same order id, instrument and
 `ordered_at_`), because an order number alone is not an order's identity across days.
 So **where your history can list an order your working listing also lists, stamp
