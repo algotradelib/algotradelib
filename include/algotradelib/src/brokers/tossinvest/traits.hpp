@@ -141,7 +141,7 @@ struct Normalizers {
   }
 
   /**
-   * @brief Accepts every order here; the client refuses what Toss cannot take before sending (see
+   * @brief Accepts every order here; the client refuses some orders Toss cannot take before sending (see
    *   `TossClient::async_place_order`). Toss honours `client_order_id_` as an idempotency key for ten
    *   minutes. The order argument is not used.
    * @return `std::nullopt`.
@@ -408,6 +408,7 @@ struct BrokerTraits<tossinvest::TossClient>
   /**
    * @brief Returns the venue a Toss order reaches: none in particular (Toss does not route by venue,
    *   and its listings carry none).
+   *
    * The venue asked for is ignored.
    *
    * @return `Venue::UNSPECIFIED`.
@@ -747,6 +748,7 @@ struct BrokerTraits<tossinvest::TossBlockingClient>
   /**
    * @brief Returns the venue a Toss order reaches: none in particular (Toss does not route by venue,
    *   and its listings carry none).
+   *
    * The venue asked for is ignored.
    *
    * @return `Venue::UNSPECIFIED`.
@@ -1011,7 +1013,8 @@ struct BrokerTraits<tossinvest::TossBlockingClient>
   }
 
   /**
-   * @brief Returns one order in any lifecycle state for the bound account.
+   * @brief Returns one order by id for the bound account; see `TossClient::async_order` for which
+   *   orders can be read.
    * @param client The client.
    * @param account The bound account.
    * @param order_id Toss's order id.

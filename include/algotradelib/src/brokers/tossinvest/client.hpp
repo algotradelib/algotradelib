@@ -41,7 +41,7 @@ struct TossAccount {
 enum class TossOrderScope {
   /** @brief Open orders: pending, partly filled, or with an amendment or cancellation pending. */
   OPEN,
-  /** @brief Ended orders. */
+  /** @brief Ended orders (including a partly filled order that ended). */
   CLOSED,
 };
 
@@ -212,7 +212,7 @@ public:
    * @brief Requests up to `count_` bars, oldest first.
    *
    * Fewer are returned, with `next_cursor_` set when more remain, if history runs out or after 50
-   * pages (10,000 bars). One-minute and one-day bars only.
+   * pages (at most 10,000 bars). One-minute and one-day bars only.
    *
    * @tparam CompletionToken An Asio completion token.
    * @param query The query (one-minute or one-day bars only).
@@ -555,11 +555,11 @@ public:
    * sending the same order again returns the original result; without one, read `async_orders` before
    * placing again.
    *
-   * Refused before sending: an instrument whose venue is not Toss's own (`COMBINED` for Korea,
-   * `UNSPECIFIED` for the US); an `OrderRequest::venue_`; a trigger price; a type other than limit or
-   * market; a condition other than `DAY`; an unsupported session; a fractional quantity (except a US
-   * market sell, up to six decimals); a Korean price that is not whole won; a client order id that is
-   * not 1-36 characters of `[A-Za-z0-9_-]`.
+   * Refused before sending, among others: an instrument whose venue is not Toss's own (`COMBINED`
+   * for Korea, `UNSPECIFIED` for the US); an `OrderRequest::venue_`; a trigger price; a type other
+   * than limit or market; a condition other than `DAY`; an unsupported session; a fractional
+   * quantity (except a US market sell, up to six decimals); a Korean price that is not whole won; a
+   * client order id that is not 1-36 characters of `[A-Za-z0-9_-]`.
    *
    * @tparam CompletionToken An Asio completion token.
    * @param account_sequence The account (`TossAccount::sequence_`).
@@ -598,8 +598,10 @@ public:
    * @brief Amends an open order's price, and for a Korean order its quantity.
    *
    * After a `TRANSPORT` error the outcome is unknown; an amendment has no idempotency key.
-   * On success, `OrderAck::order_id_` is the **new** id Toss issued for the amended or cancelled order
-   * (not the original); later requests must use it.
+   * Toss answers with a new id in `OrderAck::order_id_`, naming this amendment. If Toss carries it
+   * out, the original becomes `REPLACED` and the order rests under the new id; if Toss rejects it,
+   * the new id names a `REPLACE_REJECTED` row and the original rests unchanged under its own id. Read
+   * the order's state before acting on either id.
    *
    * @tparam CompletionToken An Asio completion token.
    * @param account_sequence The account (`TossAccount::sequence_`).
@@ -640,8 +642,9 @@ public:
    * @brief Cancels an open order.
    *
    * After a `TRANSPORT` error the outcome is unknown: the order may still rest.
-   * On success, `OrderAck::order_id_` is the **new** id Toss issued for the amended or cancelled order
-   * (not the original); later requests must use it.
+   * Toss answers with a new id in `OrderAck::order_id_` that names this cancellation, not the order.
+   * If Toss rejects the cancellation, that row is `CANCEL_REJECTED` and the original order rests
+   * under its own id.
    *
    * @tparam CompletionToken An Asio completion token.
    * @param account_sequence The account (`TossAccount::sequence_`).
@@ -3940,8 +3943,8 @@ public:
   }
 
   /**
-   * @brief Amends an open order; after a `TRANSPORT` error the outcome is unknown. On success the
-   *   acknowledgement carries the new order id. See `TossClient::async_replace_order`.
+   * @brief Amends an open order; after a `TRANSPORT` error the outcome is unknown. The
+   *   acknowledgement carries a new id; see `TossClient::async_replace_order`.
    * @param account_sequence The account (`TossAccount::sequence_`).
    * @param amendment The amendment.
    * @return The result, or an error.
@@ -3956,8 +3959,8 @@ public:
   }
 
   /**
-   * @brief Cancels an open order; after a `TRANSPORT` error the outcome is unknown. On success the
-   *   acknowledgement carries the new order id. See `TossClient::async_cancel_order`.
+   * @brief Cancels an open order; after a `TRANSPORT` error the outcome is unknown. The
+   *   acknowledgement carries a new id; see `TossClient::async_cancel_order`.
    * @param account_sequence The account (`TossAccount::sequence_`).
    * @param order_id Toss's order id.
    * @return The result, or an error.
@@ -3972,7 +3975,7 @@ public:
   }
 
   /**
-   * @brief Returns one page of orders in the requested lifecycle group.
+   * @brief Returns one page of orders; see `TossClient::async_orders` for which orders are listed.
    * @param query The query.
    * @return The result, or an error.
    */
