@@ -31,13 +31,15 @@ enum class SendOutcome {
   /** @brief The broker refused the instruction (for a placement, the order does not exist); nothing needs reconciling. */
   REJECTED,
   /**
-   * @brief The outcome is unknown (see `outcome_of`): the request failed in transit, the reply could
-   *   not be read, or the broker's answer is reported as `PROTOCOL`.
+   * @brief The outcome is unknown (see `outcome_of`): the request failed in transit or was
+   *   cancelled, the reply could not be read, the broker answered with an HTTP 5xx, or its answer is
+   *   reported as `PROTOCOL`.
    *
    * At KIS (a reply with `rt_cd` not `0`, such as insufficient balance), Toss (any refusal but a
    * rate limit) and Kiwoom (a `return_code` outside its documented error list) the broker's own
-   * refusals are reported as `PROTOCOL`, so they land here, not in `REJECTED`. Nothing more is placed for that instrument until the broker's order list has been
-   * read and the instrument resolved.
+   * refusals are reported as `PROTOCOL`, so they land here, not in `REJECTED`. Nothing more is
+   * placed for that instrument until the broker's order list has been read and the instrument
+   * resolved.
    */
   INDETERMINATE,
   /**
