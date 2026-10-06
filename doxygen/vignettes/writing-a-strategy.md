@@ -51,7 +51,7 @@ only `on_bar` and costs nothing for the rest.
 **`on_fill` does not fire live, and this is the one difference between the two modes that can cost
 money.** A fill is discovered live by polling: positions are replaced and working orders are
 replaced, and neither synthesises an execution. Discrete executions cannot be recovered from
-periodic cumulative snapshots, so this waits until the library streams execution notifications. So a
+periodic cumulative snapshots; that waits until the library streams execution notifications. So a
 strategy that places an entry and sets its stop from `on_fill` is **correct in a backtest and inert live**: the handler never runs and
 the stop is never placed.
 
@@ -191,7 +191,7 @@ reasoning and can close the same position twice. Use `on_stop` to write state, f
 record where you were; use `on_bar` to decide what to trade, including on a session boundary, which
 is what `vanilla::TimedLiquidation` does.
 
-A runner driven directly, without the loop, still gets the old behaviour from `Runner::stop()`:
+A runner driven directly, without the loop, gets different behaviour from `Runner::stop()`:
 `on_stop` runs and what it asks for is settled. The difference is the loop, because the loop is
 where an operator's stop exists.
 

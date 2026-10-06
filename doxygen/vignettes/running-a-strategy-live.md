@@ -222,7 +222,8 @@ A dry run and an observer are not held.
 
 **A price band is a per-trading-day value, and one nobody has aged is not applied.** `PriceLimits`
 is "the highest price allowed today" and for KRX it moves with the previous close, so a band
-registered once at startup describes the day the process started on, and would otherwise be clamped
+registered once at startup (`Runner::set_price_limits`) describes the day the process started on, and
+would otherwise be clamped
 into every limit price for as long as the process lived. So:
 
 - `PollSchedule::price_limits_` refreshes it, one request per instrument in the source's universe, at
@@ -262,20 +263,19 @@ overrides it either way.
 
 ## What the report says about orders that did not go out
 
-An ordinary broker refusal needs a field of its own in the loop's report. `Runner::feed` returns a
-report describing what became of every instruction — fourteen vectors of it — and
-`live::SessionSource` discards that report on every poll, so a run in which the broker refused every
-order looked very much like one in which it accepted every order: same iterations, same poll counts,
-no failures. (Not quite identical — the phase and price-band figures can differ for some refused
-orders — but nothing said *the broker refused these*.) The refusal was in the report `Runner::feed`
-returns, which the source drops on the floor — and, **if you bound a journaling executor whose
-terminal write landed**, in the order journal. `live::bind` does not journal at all: journalling is
+`Runner::feed` returns a report describing what became of every instruction — fourteen vectors of it
+— and `live::SessionSource` discards that report on every poll. Without the loop report's own
+figures below, a run in which the broker refused every order would look like one in which it accepted
+every order: same iterations, same poll counts, no failures. Apart from those figures, a refusal is
+recorded only in the order journal, **if you bound a journaling executor whose terminal write
+landed**. `live::bind` does not journal at all: journalling is
 `live::bind_journaled`, so a run built the way this page opens has no record of a refusal beyond the
 report. And `bind_journaled` is not itself a promise of durability — it takes whatever journal you hand
 it, including a `MemoryJournal` that is gone when the process is, and its *terminal* append can fail
 after the broker has already answered, leaving the `PENDING` line and no outcome.
 
-`LoopReport` carries thirteen figures and one record, all describing **the polling loop** — the
+`LoopReport` carries thirteen figures and two records (`last_broker_refusal_`, `last_unbuildable_`), all
+describing **the polling loop** — the
 stop handler and the closing pass keep their own families, `stop_handler_*` and `closing_*`, so a
 refused flatten is reported once rather than twice.
 
@@ -509,8 +509,8 @@ That is what a replay does by filling at the next bar's open. The rules around i
   request *was* written and whose reply was
   lost is not this: it may exist, and recovery resolves it from the broker's lists.
 - **An `OrderIntent` is kept the same way** (`Runner::intents_kept_for_phase`) — the commonest is a
-  daily strategy's protective stop, which a broker refuses at midnight; unkept, it was restated and
-  refused every midnight and the position was never protected live. But an intent states a quantity
+  daily strategy's protective stop, which a broker refuses at midnight; unkept, it would be restated
+  and refused every midnight, and the position would never be protected live. But an intent states a quantity
   decided against midnight's book, so at release it goes out only if the instrument's holding is still
   what it was when it was kept, and a kept intent carrying a trigger -- a stop sell or a breakout stop
   buy alike -- only if no stop now rests there; otherwise it is dropped and counted
@@ -681,7 +681,9 @@ between listings, a runner driven by hand, a quote and a bar in one iteration, w
 checks above (and `SessionSource` feeds a cold start's history as history, above, so only its newest bar
 can send at all). A dry run and `live::bind_observer` send to no broker, so their rows carry
 no broker reference — a later opposing target would ask to withdraw an order identified by nothing — and
-they keep the old scoping: they report a restated target again on every pass.
+for them an order stays counted across passes only when `enforce_buying_power_`,
+`enforce_sellable_quantity_`, `max_position_quantity_` or `max_gross_exposure_` reads it, or it is a
+stop; otherwise they report a restated target again on every pass.
 
 A listing alone does not end it. A market order that filled at once is in no listing, a
 resting order may not be listed yet, and a listed one can fill and leave; in each case a holdings answer
@@ -728,7 +730,7 @@ placed the next time the target is stated, once its history says what it filled 
 cost is waiting, on exits as on entries: a sell target whose reserved sells exceed the need sends
 nothing until holdings credit them (or the confirmation timeout withholds the instrument), and at
 Kiwoom, whose cancelled-order rows are not yet verified, a withdrawn order may wait for that timeout. A
-replay or a dry run is unchanged.
+replay or a dry run does not do this.
 
 A trade made outside the runner on the same instrument never doubles an order either: one in the same
 direction ends the wait early, one in the other direction keeps it until the timeout withholds the
@@ -770,9 +772,9 @@ A total with known coverage needs a deliberate order-history poll, which this lo
 
 ## The portfolio exposure ceiling, and what it means by "portfolio"
 
-`RiskLimits::max_gross_exposure_` caps the exposure the account may reach: the current exposure plus
-the order in front of it, so a ten-million ceiling stops a strategy reaching twenty million two million
-at a time.
+`RiskLimits::max_gross_exposure_` caps the exposure the account may reach: the exposure if this order
+and every outstanding one filled, valued at the highest price that could apply, so a ten-million
+ceiling stops a strategy reaching twenty million two million at a time.
 
 ```cpp
 strategy::RiskLimits limits;
@@ -801,7 +803,7 @@ loosening: such an order is allowed even when it is larger than the ceiling itse
 It is *not* true that any order opposing a position is exempt. Selling 300 against a long of 100
 reaches a short of 200, which is more reachable exposure than the 100 it started from, and the same
 rule refuses it. The test is what the order does to the projection, not which way it points. If you
-wanted a cap on a single order, that is `max_order_notional_`, which is unchanged.
+wanted a cap on a single order, that is `max_order_notional_`.
 
 **An account it cannot value refuses everything.** Every instrument the account holds or has working
 needs registered reference data, and a mark. One that has neither is not quietly left out of the sum —

@@ -104,7 +104,8 @@ no account selected), and only on demo. Either way the run knows the market phas
 `--live` it trades on demo. The example paces every KIS client at one request a second
 (`kis_credentials::paced_options`): faster, KIS refuses reads with `EGW00201`, and the real keys'
 holiday calendar takes about 20 s of pages at startup. Toss's daily price band can differ from
-KIS's for the same stock (observed on 2026-10-02), and the band clamps limit prices, so KIS may
+KIS's for the same stock: after the close Toss already publishes the next session's band while KIS
+keeps the day's (observed 2026-10-01). The band clamps limit prices, so KIS may
 refuse an order priced from it.
 
 **Kiwoom issues one key per account**: a Korean-stock and a US-stock account each have a key, and no

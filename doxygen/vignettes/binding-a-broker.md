@@ -29,7 +29,7 @@ market, which is a stronger guarantee than a runtime flag that can be set wrong.
 Be precise about what that is not: libssl is still on the link line. The package exports one
 interface target carrying the transport dependencies for every consumer, so a dry-run binary has the
 library as a dylib dependency it never calls. Making the promise literal needs a second,
-transport-free target, which is recorded as a todo rather than done.
+transport-free target, which the library does not have yet.
 
 Including `<algotradelib/live>` deliberately gives up the compile-time half as well.
 

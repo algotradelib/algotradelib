@@ -69,7 +69,7 @@ What that assertion does and does not claim is worth being exact about. It estab
 or replay translation unit **instantiates** no adapter and no transport code, so there is no
 instantiated code path from a backtest to a market. It does not claim libssl is off the link line:
 the package exports one interface target for every consumer, so an offline binary carries the
-dependency it never calls; splitting the target is planned.
+dependency it never calls; the library does not have a transport-free target yet.
 
 Two other edges are worth reading off the picture:
 

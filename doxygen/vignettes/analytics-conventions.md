@@ -260,11 +260,6 @@ predictors, over what estimation window, how a target aligns to lagged features,
 incomplete row is dropped or imputed, pairwise or listwise deletion. Those are modelling decisions,
 and answering them with defaults would make a strategy's choices while appearing to offer a utility.
 
-An earlier draft of this layer shipped `covariance` with pairwise deletion, and the forty lines of
-scalar loops it took were *entirely* the deletion policy — which also made it an order of magnitude
-slower than the vectorized complete-data form above. The overreach and the inefficiency had one
-cause.
-
 **The line, stated so it can be applied again:** ship what has one right answer everyone agrees on;
 defer what requires choosing. `macd(12, 26, 9)` means one thing, and the value of shipping it is
 that Wilder's seed and the span convention are got right once instead of re-derived. `sortino`
@@ -272,8 +267,8 @@ ships with its divisor documented rather than parameterized because there *is* a
 "Covariance of series with gaps" has no canonical answer, so it waits for a consumer that can say
 what it needs.
 
-Note that this is not the same rule as "remove anything the next branch does not use". Applied
-that way it would also delete `macd`, `bollinger`, `atr`, `wma`, `sharpe`, `one_way_turnover`,
+Note that this is not the same rule as "ship only what the first strategies use". Applied that way
+it would also delete `macd`, `bollinger`, `atr`, `wma`, `sharpe`, `one_way_turnover`,
 and `max_drawdown`, since the first set of vanilla strategies needs only `sma`,
 `ema`, `rolling_min`/`rolling_max`, `zscore`, `rsi`, `rolling_stdev`, and `Panel`.
 
