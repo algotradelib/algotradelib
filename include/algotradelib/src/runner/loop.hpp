@@ -604,11 +604,15 @@ struct LoopReport {
   /** @brief Orders the binding refused to send; see `Runner::orders_binding_refused`. */
   std::size_t orders_binding_refused_{0};
   /**
-   * @brief Orders the broker refused (`SendOutcome::REJECTED`); see `last_broker_refusal_`. At KIS
-   *   and Toss most refusals arrive as unknown outcomes and are counted in `orders_indeterminate_`.
+   * @brief Orders the broker refused (`SendOutcome::REJECTED`); see `last_broker_refusal_`. At KIS,
+   *   Toss and Kiwoom most refusals arrive as unknown outcomes and are counted in
+   *   `orders_indeterminate_`.
    */
   std::size_t orders_broker_refused_{0};
-  /** @brief Orders with an unknown outcome (`SendOutcome::INDETERMINATE`, including KIS and Toss refusals). */
+  /**
+   * @brief Orders with an unknown outcome (`SendOutcome::INDETERMINATE`, including most KIS, Toss and
+   *   Kiwoom refusals).
+   */
   std::size_t orders_indeterminate_{0};
   /** @brief Sent orders that timed out unconfirmed, each withholding its instrument; see `Runner::set_confirmation_timeout`. */
   std::size_t orders_unconfirmed_timed_out_{0};

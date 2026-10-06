@@ -80,7 +80,11 @@ enum class JournalOutcome {
    * The journal does not record who refused; a pass's report does.
    */
   REJECTED,
-  /** @brief The request failed in transit; whether the instruction exists is unknown. */
+  /**
+   * @brief The outcome is unknown (`SendOutcome::INDETERMINATE`: a failure in transit, an unreadable
+   *   reply, or a broker refusal reported as `PROTOCOL`); whether the instruction took effect is
+   *   unknown.
+   */
   INDETERMINATE,
   /**
    * @brief A recovery sweep read the broker's order list and closed the question.
