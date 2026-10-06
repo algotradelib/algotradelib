@@ -550,7 +550,9 @@ public:
   /**
    * @brief Places an order.
    *
-   * The request is never resent. After a `TRANSPORT` error the outcome is unknown. With
+   * The request is never resent. After an error with `BrokerError::reached_broker_` set that is
+   * not a refusal (one `runner::outcome_of` calls `INDETERMINATE`: a transport failure, a
+   * cancellation, an unreadable reply, or an HTTP status of 500 or more), the outcome is unknown. With
    * `OrderRequest::client_order_id_` set, Toss treats it as an idempotency key for ten minutes, so
    * sending the same order again returns the original result; without one, read `async_orders` before
    * placing again.
@@ -597,7 +599,8 @@ public:
   /**
    * @brief Amends an open order's price, and for a Korean order its quantity.
    *
-   * After a `TRANSPORT` error the outcome is unknown; an amendment has no idempotency key.
+   * After an error of unknown outcome (see `async_place_order`) the amendment may have been made; an
+   * amendment has no idempotency key.
    * Toss answers with a new id in `OrderAck::order_id_`, naming this amendment. If Toss carries it
    * out, the original becomes `REPLACED` and the order rests under the new id; if Toss rejects it,
    * the new id names a `REPLACE_REJECTED` row and the original rests unchanged under its own id. Read
@@ -641,7 +644,7 @@ public:
   /**
    * @brief Cancels an open order.
    *
-   * After a `TRANSPORT` error the outcome is unknown: the order may still rest.
+   * After an error of unknown outcome (see `async_place_order`) the order may still rest.
    * Toss answers with a new id in `OrderAck::order_id_` that names this cancellation, not the order.
    * If Toss rejects the cancellation, that row is `CANCEL_REJECTED` and the original order rests
    * under its own id.
@@ -3926,8 +3929,9 @@ public:
   /**
    * @brief Places an order; see `TossClient::async_place_order`.
    *
-   * After a `TRANSPORT` error the outcome is unknown. With `client_order_id_` set, sending the same
-   * order again within ten minutes is safe; without one, read `orders()` before placing again.
+   * The outcome can be unknown after an error (see `TossClient::async_place_order`). With
+   * `client_order_id_` set, sending the same order again within ten minutes is safe; without one,
+   * read `orders()` before placing again.
    *
    * @param account_sequence The account (`TossAccount::sequence_`).
    * @param order The order.
@@ -3943,7 +3947,7 @@ public:
   }
 
   /**
-   * @brief Amends an open order; after a `TRANSPORT` error the outcome is unknown. The
+   * @brief Amends an open order; the outcome can be unknown after an error. The
    *   acknowledgement carries a new id; see `TossClient::async_replace_order`.
    * @param account_sequence The account (`TossAccount::sequence_`).
    * @param amendment The amendment.
@@ -3959,7 +3963,7 @@ public:
   }
 
   /**
-   * @brief Cancels an open order; after a `TRANSPORT` error the outcome is unknown. The
+   * @brief Cancels an open order; the outcome can be unknown after an error. The
    *   acknowledgement carries a new id; see `TossClient::async_cancel_order`.
    * @param account_sequence The account (`TossAccount::sequence_`).
    * @param order_id Toss's order id.
