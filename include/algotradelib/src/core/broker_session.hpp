@@ -22,12 +22,7 @@ namespace algotradelib {
 
 namespace port_detail {
 
-/**
- * Converts a broker's own account listing into the normalized listing.
- *
- * The conversion is shared by the asynchronous and blocking entry points so a
- * broker's traits describe one account item in one place.
- */
+// Converts a broker's account listing into `AccountInfo` rows (shared by both sessions).
 template <typename Client, typename Items>
 Result<std::vector<AccountInfo<Client>>> to_account_info(Result<Items> raw) {
   using Traits = BrokerTraits<Client>;
@@ -117,53 +112,45 @@ Result<typename BrokerTraits<Client>::Amendment> prepare_replace(
 } // namespace port_detail
 
 /**
- * One broker bound to one account, exposing a verb set that names no vendor type.
+ * @brief An asynchronous broker client bound to one account, with broker-neutral operations.
  *
- * A session is the port strategy-side code is written against. Selecting a
- * broker is choosing `Client`; binding the account at construction is what
- * removes `kis::KisAccount` and Toss's account sequence from every call site,
- * which is the largest single source of signature divergence between the two
- * clients.
+ * Every operation takes a completion token and completes once with `Result<T>`, on the handler's
+ * associated executor. An operation the broker does not offer (see `Caps`) does not compile; gate
+ * it with `if constexpr`. A request the session or adapter refuses before any I/O completes with an
+ * error that is posted, never invoked inline. A session is cheap to copy (a shared client pointer
+ * and the account).
  *
- * Completion-signature translation lives here and only here. Each verb runs
- * `net::async_initiate` with the port's normalized signature, invokes the
- * trait's raw thunk with an inner handler bound to the caller handler's
- * associated executor, and applies the trait's pure normalizer to the result.
- * The guarantee the concrete clients already give — every completion runs once,
- * on the caller handler's associated executor — therefore holds for the port
- * through code written and reviewed one time rather than once per broker.
- *
- * A session is cheap to copy: it holds a shared client pointer and the bound
- * account selector.
+ * @tparam Client An asynchronous broker client (`BrokerTraits<Client>::blocking` is `false`); use
+ *   `BlockingSession` for a blocking one.
  */
 template <typename Client>
 class BrokerSession {
 public:
-  /** Adaptation point for the bound client. */
+  /** @brief The client's traits. */
   using Traits = BrokerTraits<Client>;
 
-  /** Compile-time feature set of the bound client. */
+  /** @brief The client's capabilities. */
   using Caps = BrokerCaps<Client>;
 
-  /** Broker-specific account selector type. */
+  /** @brief The broker's account selector type. */
   using Account = typename Traits::Account;
 
-  /** Broker-specific configuration type. */
+  /** @brief The broker's configuration type. */
   using Config = typename Traits::Config;
 
-  /** Compile-time identity of the bound broker. */
+  /** @brief The broker's tag type. */
   using BrokerTag = typename Traits::BrokerTag;
 
-  /** Opaque order reference this session issues and accepts. */
+  /** @brief The order reference type this session issues and accepts. */
   using Ref = OrderRef<BrokerTag>;
 
-  /** Acknowledgement and reference returned by an order-writing verb. */
+  /** @brief What an order-writing call returns: acknowledgement and reference. */
   using Placed = PlacedOrder<BrokerTag>;
 
-  /** One amendable order of this broker. */
+  /** @brief One working order of this broker. */
   using Working = WorkingOrder<BrokerTag>;
 
-  /** Amendable orders of this broker. */
+  /** @brief A working-order listing of this broker. */
   using WorkingSet = WorkingOrders<BrokerTag>;
 
   static_assert(
@@ -172,8 +159,9 @@ public:
   );
 
   /**
-   * Binds one client and one account.
-   *
+   * @brief Binds a client and an account.
+   * @param client The client; must not be null.
+   * @param account The account to act for.
    * @throws std::invalid_argument if `client` is null.
    */
   BrokerSession(std::shared_ptr<Client> client, Account account)
@@ -183,46 +171,68 @@ public:
     }
   }
 
-  /** Returns the normalized broker name this session is bound to. */
+  /**
+   * @brief Returns the broker's name.
+   * @return `Traits::name`.
+   */
   static constexpr std::string_view broker_name() noexcept { return Traits::name; }
 
-  /** Returns the bound account selector. */
+  /**
+   * @brief Returns the bound account.
+   * @return The account selector.
+   */
   const Account& account() const noexcept { return account_; }
 
   /**
-   * Returns the concrete client.
+   * @brief Returns the broker client, for broker-specific operations the session does not offer.
    *
-   * This is the deliberate escape hatch for a broker-specific operation the port
-   * does not normalize. Using it inside an `if constexpr` branch on
-   * `BrokerCaps<Client>` keeps the broker-specific path visible in the source
-   * and compiled only where the feature exists.
+   * Use it inside an `if constexpr` on `Caps` so the broker-specific code compiles only where the
+   * feature exists.
+   *
+   * @return The client.
    */
   Client& client() noexcept { return *client_; }
 
-  /** Returns the concrete client. */
+  /**
+   * @brief Returns the broker client.
+   * @return The client.
+   */
   const Client& client() const noexcept { return *client_; }
 
-  /** Returns the shared client pointer, for constructing a second session. */
+  /**
+   * @brief Returns the shared client pointer, for binding a second session.
+   * @return The client pointer.
+   */
   const std::shared_ptr<Client>& shared_client() const noexcept { return client_; }
 
   /**
-   * Returns how this broker's connection has been paced, or null when unpaced.
+   * @brief Returns the client's request-pacing counters.
    *
-   * A runner reads this to tell whether it is asking for more capacity than it
-   * has: rising `delayed_` on a polling group while `TRADING` stays undelayed is
-   * the reservation doing its job, and rising `shed_` means the queue is full.
+   * A rising `delayed_` on a polling group while `TRADING` stays undelayed means trading capacity
+   * is being kept free; a rising `shed_` means the queue is full.
    *
-   * The counters live on the client's strand, so read them from a completion
-   * handler.
+   * @warning The counters are plain integers the client updates on its own strand. Read them only
+   *   when no request is in flight, or from code running on that strand; a completion handler bound
+   *   to another executor can race with other requests.
+   *
+   * @return The counters, or `nullptr` if the client is not paced.
    */
   const network::RateLimitStats* rate_limit_stats() const {
     return Traits::rate_limit_stats(*client_);
   }
 
-  /** Cancels transport work and queued operations on the bound client. */
+  /** @brief Cancels the client's transport work and queued operations. */
   void close() { client_->close(); }
 
-  /** Requests and normalizes a current quote. */
+  /**
+   * @brief Requests the current quote for an instrument.
+   *
+   * @tparam CompletionToken A completion token for `void(Result<QuoteSnapshot>)`, such as a callback or
+   *   `boost::asio::use_future`.
+   * @param instrument The instrument.
+   * @param token The completion token; the handler runs once, on its associated executor.
+   * @return Whatever `token` produces (nothing for a callback, a future for `use_future`).
+   */
   template <typename CompletionToken>
   auto async_quote(InstrumentId instrument, CompletionToken&& token) {
     return translate<QuoteSnapshot>(
@@ -234,7 +244,14 @@ public:
     );
   }
 
-  /** Requests and normalizes all holdings for the bound account. */
+  /**
+   * @brief Requests the account's holdings.
+   *
+   * @tparam CompletionToken A completion token for `void(Result<HoldingsSnapshot>)`, such as a callback or
+   *   `boost::asio::use_future`.
+   * @param token The completion token; the handler runs once, on its associated executor.
+   * @return Whatever `token` produces (nothing for a callback, a future for `use_future`).
+   */
   template <typename CompletionToken>
   auto async_holdings(CompletionToken&& token) {
     return translate<HoldingsSnapshot>(
@@ -247,14 +264,17 @@ public:
   }
 
   /**
-   * Requests what the bound account may spend in `currency`.
+   * @brief Requests what the account may spend in a currency.
    *
-   * **A reading, with a reading's freshness.** It was true when the broker answered, and a fill
-   * against a resting order moves it without telling anyone. Sizing against it is the difference
-   * between the broker's last answer and nothing at all, which is what the live path had before.
+   * The figure was true when the broker answered; a fill since can change it. Requires
+   * `Caps::has_buying_power`.
    *
-   * A currency the broker does not price is refused with `INVALID_ARGUMENT` before any socket
-   * write, rather than sent and rejected.
+   * @tparam CompletionToken A completion token for `void(Result<BuyingPower>)`, such as a callback or
+   *   `boost::asio::use_future`.
+   * @param currency The currency; one the broker does not price is refused with
+   *   `INVALID_ARGUMENT` before any I/O.
+   * @param token The completion token; the handler runs once, on its associated executor.
+   * @return Whatever `token` produces (nothing for a callback, a future for `use_future`).
    */
   template <typename CompletionToken>
   auto async_buying_power(Currency currency, CompletionToken&& token) {
@@ -276,12 +296,16 @@ public:
   }
 
   /**
-   * Requests how much of `instrument` the bound account may sell.
+   * @brief Requests how much of an instrument the account may sell.
    *
-   * Only for a broker whose holdings snapshot does not already carry it. Where
-   * `BrokerCaps::sellable_source` is `HOLDINGS` the figure is on every position the runner already
-   * polls, and spending a request to fetch it again buys nothing -- so this verb does not exist
-   * there, and the `static_assert` says where to read it instead.
+   * Only where `Caps::sellable_source` is `INQUIRY`; elsewhere read
+   * `HoldingPosition::sellable_quantity_` from the holdings.
+   *
+   * @tparam CompletionToken A completion token for `void(Result<Decimal64>)`, such as a callback or
+   *   `boost::asio::use_future`.
+   * @param instrument The instrument.
+   * @param token The completion token; the handler runs once, on its associated executor.
+   * @return Whatever `token` produces (nothing for a callback, a future for `use_future`).
    */
   template <typename CompletionToken>
   auto async_sellable_quantity(InstrumentId instrument, CompletionToken&& token) {
@@ -308,11 +332,15 @@ public:
   }
 
   /**
-   * Requests the commission rates in force for the bound account.
+   * @brief Requests the account's commission rates.
    *
-   * Only one broker publishes any, which is why this is gated rather than returning an empty
-   * schedule: an empty schedule from a broker that publishes them means the account has no stated
-   * rates, and that is a different claim from the broker having no such inquiry.
+   * Requires `Caps::has_commission_schedule`. An empty schedule means the account has no stated
+   * rates.
+   *
+   * @tparam CompletionToken A completion token for `void(Result<CommissionSchedule>)`, such as a callback or
+   *   `boost::asio::use_future`.
+   * @param token The completion token; the handler runs once, on its associated executor.
+   * @return Whatever `token` produces (nothing for a callback, a future for `use_future`).
    */
   template <typename CompletionToken>
   auto async_commissions(CompletionToken&& token) {
@@ -334,16 +362,19 @@ public:
   }
 
   /**
-   * Submits a new order and returns its acknowledgement and reference.
+   * @brief Places a new order.
    *
-   * The order POST is never replayed automatically, by the client or by the
-   * port. A `TRANSPORT` error therefore leaves the outcome *indeterminate*: the
-   * order may or may not have reached the broker. Reconcile through
-   * `async_working_orders` or `async_order_history` before resubmitting.
+   * @warning A `TRANSPORT` error leaves the outcome unknown: the request may have reached the broker.
+   *   The request is never resent automatically. Check working orders or order history before
+   *   sending it again.
    *
-   * An idempotency key is rejected before any I/O on a broker that does not
-   * honor one, because a caller who supplied one would otherwise believe a
-   * resubmission was safe when it is not.
+   * @tparam CompletionToken A completion token for `void(Result<Placed>)`, such as a callback or
+   *   `boost::asio::use_future`.
+   * @param order The order. An idempotency key at a broker without one, a trigger at a broker
+   *   without `Caps::has_trigger_price`, or a combination the adapter does not offer is refused
+   *   before any I/O.
+   * @param token The completion token; the handler runs once, on its associated executor.
+   * @return Whatever `token` produces (nothing for a callback, a future for `use_future`).
    */
   template <typename CompletionToken>
   auto async_place(OrderRequest order, CompletionToken&& token) {
@@ -364,10 +395,18 @@ public:
   }
 
   /**
-   * Modifies the shape or quantity of an existing order.
+   * @brief Modifies a working order.
    *
-   * The indeterminacy rule of `async_place` applies unchanged: a transport
-   * failure does not mean the modification was rejected.
+   * @warning A `TRANSPORT` error leaves the outcome unknown: the request may have reached the broker.
+   *   The request is never resent automatically. Check working orders or order history before
+   *   sending it again.
+   *
+   * @tparam CompletionToken A completion token for `void(Result<Placed>)`, such as a callback or
+   *   `boost::asio::use_future`.
+   * @param ref The order.
+   * @param instruction What to change; build it with `replace_with` or `reprice`.
+   * @param token The completion token; the handler runs once, on its associated executor.
+   * @return Whatever `token` produces (nothing for a callback, a future for `use_future`).
    */
   template <typename CompletionToken>
   auto async_replace(Ref ref, AmendInstruction instruction, CompletionToken&& token) {
@@ -393,22 +432,22 @@ public:
   }
 
   /**
-   * Cancels an existing order.
+   * @brief Cancels a working order, in full or in part.
    *
-   * The indeterminacy rule of `async_place` applies unchanged: a transport
-   * failure does not mean the order is still live.
+   * @warning A `TRANSPORT` error leaves the outcome unknown: the request may have reached the broker.
+   *   The request is never resent automatically. Check working orders or order history before
+   *   sending it again.
    *
-   * Build `instruction` with `cancel_all()` or `cancel_quantity()` on the
-   * `WorkingOrder`, which supplies whatever the bound broker requires. A partial
-   * cancellation is rejected before any I/O on a broker that cancels in full.
-   *
-   * `Ref` is typed by broker, so a reference issued by another broker is a
-   * compile error rather than a run-time rejection.
-   *
-   * **A trigger price on the instruction is never refused here**, unlike on
-   * `async_place` and `async_replace`. `cancel_all` restates the trigger a
-   * listing reported, and a withdrawal refused for restating it would leave a
-   * stop order the caller cannot take back.
+   * @tparam CompletionToken A completion token for `void(Result<Placed>)`, such as a callback or
+   *   `boost::asio::use_future`.
+   * @param ref The order. A reference from another broker does not compile.
+   * @param instruction Build it with `cancel_all` or `cancel_quantity`; a partial cancellation at
+   *   a broker that cancels only in full is refused before any I/O. The session's
+   *   `has_trigger_price` check does not apply to cancellations, so restating a stop's trigger (as
+   *   `cancel_all` does) does not block its withdrawal; the adapter still validates the instruction
+   *   (Kiwoom refuses a trigger that differs from the resting one).
+   * @param token The completion token; the handler runs once, on its associated executor.
+   * @return Whatever `token` produces (nothing for a callback, a future for `use_future`).
    */
   template <typename CompletionToken>
   auto async_cancel(Ref ref, AmendInstruction instruction, CompletionToken&& token) {
@@ -434,12 +473,15 @@ public:
   }
 
   /**
-   * Retrieves every order still open to modification or cancellation.
+   * @brief Requests the orders still open to modification or cancellation.
    *
-   * Whether the broker *offers* this inquiry is `BrokerCaps::has_working_orders`.
-   * Whether the bound configuration may *use* it is a run-time matter: KIS does
-   * not serve it to demo accounts, so its adapter answers from today's order
-   * history there.
+   * Requires `Caps::has_working_orders`. KIS does not serve this inquiry to demo accounts; its
+   * adapter answers from the day's order history there.
+   *
+   * @tparam CompletionToken A completion token for `void(Result<WorkingSet>)`, such as a callback or
+   *   `boost::asio::use_future`.
+   * @param token The completion token; the handler runs once, on its associated executor.
+   * @return Whatever `token` produces (nothing for a callback, a future for `use_future`).
    */
   template <typename CompletionToken>
   auto async_working_orders(CompletionToken&& token) {
@@ -463,11 +505,14 @@ public:
   }
 
   /**
-   * Retrieves placed orders and their executions.
+   * @brief Requests order history: placed orders and their executions.
    *
-   * A filter the bound broker cannot express is rejected with
-   * `INVALID_ARGUMENT` before any I/O rather than dropped, so a listing never
-   * answers a different question from the one asked.
+   * @tparam CompletionToken A completion token for `void(Result<OrderPage>)`, such as a callback or
+   *   `boost::asio::use_future`.
+   * @param query The filter; one the broker cannot apply is refused with `INVALID_ARGUMENT` before
+   *   any I/O.
+   * @param token The completion token; the handler runs once, on its associated executor.
+   * @return Whatever `token` produces (nothing for a callback, a future for `use_future`).
    */
   template <typename CompletionToken>
   auto async_order_history(OrderHistoryQuery query, CompletionToken&& token) {
@@ -493,15 +538,16 @@ public:
   }
 
   /**
-   * Retrieves bars for one instrument, paging until `count_` is satisfied.
+   * @brief Requests bars for an instrument, paging until `count_` bars are read.
    *
-   * Bars arrive oldest first whatever order the broker sent them in, and carry the
-   * stamp convention the broker uses, because a timestamp alone cannot say whether
-   * it marks a period's open or its close.
+   * Bars arrive oldest first, with the broker's stamp convention in `BarSeries::stamp_`.
    *
-   * An interval the bound broker does not publish is refused before any I/O rather
-   * than produced by aggregating a shorter one; `BrokerCaps<Client>::supports_interval`
-   * answers the same question at compile time.
+   * @tparam CompletionToken A completion token for `void(Result<BarSeries>)`, such as a callback or
+   *   `boost::asio::use_future`.
+   * @param query What to fetch; an interval the broker does not publish is refused before any I/O
+   *   (see `Caps::supports_interval`).
+   * @param token The completion token; the handler runs once, on its associated executor.
+   * @return Whatever `token` produces (nothing for a callback, a future for `use_future`).
    */
   template <typename CompletionToken>
   auto async_bars(BarQuery query, CompletionToken&& token) {
@@ -520,15 +566,16 @@ public:
   }
 
   /**
-   * Retrieves static reference data for one instrument.
+   * @brief Requests an instrument's reference data.
    *
-   * One instrument per call, because that is what both brokers answer. Toss can
-   * answer for up to two hundred at once and KIS for one, so a caller building a
-   * universe checks `BrokerCaps<Client>::has_batch_reference_data` and goes through
-   * `session.client()` rather than having this verb loop on its behalf.
+   * Requires `Caps::has_reference_data`. One instrument per call; for many, see
+   * `Caps::has_batch_reference_data` and `client()`. `price_rule_` is the library's own grid.
    *
-   * The returned `price_rule_` is the library's own grid: no broker publishes tick
-   * size, so it is chosen from the market rather than normalized from a field.
+   * @tparam CompletionToken A completion token for `void(Result<Instrument>)`, such as a callback or
+   *   `boost::asio::use_future`.
+   * @param instrument The instrument.
+   * @param token The completion token; the handler runs once, on its associated executor.
+   * @return Whatever `token` produces (nothing for a callback, a future for `use_future`).
    */
   template <typename CompletionToken>
   auto async_instrument(InstrumentId instrument, CompletionToken&& token) {
@@ -550,12 +597,17 @@ public:
   }
 
   /**
-   * Retrieves which dates the market trades on.
+   * @brief Requests the trading calendar.
    *
-   * `from` selects the date the answer is anchored to, defaulting to today. How much
-   * a single answer covers differs by broker — `BrokerCaps<Client>::has_calendar_range`
-   * says whether one request spans many dates — so every lookup on the result
-   * distinguishes "closed" from "not covered".
+   * Requires `Caps::has_calendar`. How many dates one answer covers differs by broker
+   * (`Caps::has_calendar_range`).
+   *
+   * @tparam CompletionToken A completion token for `void(Result<TradingCalendar>)`, such as a callback or
+   *   `boost::asio::use_future`.
+   * @param country The market.
+   * @param from The date the answer is anchored to; empty means today.
+   * @param token The completion token; the handler runs once, on its associated executor.
+   * @return Whatever `token` produces (nothing for a callback, a future for `use_future`).
    */
   template <typename CompletionToken>
   auto async_calendar(Country country, std::optional<Date> from, CompletionToken&& token) {
@@ -581,7 +633,17 @@ public:
     }
   }
 
-  /** Retrieves today's upper and lower price bound for one instrument. */
+  /**
+   * @brief Requests an instrument's price limits for today.
+   *
+   * Requires `Caps::has_price_limits`.
+   *
+   * @tparam CompletionToken A completion token for `void(Result<PriceLimits>)`, such as a callback or
+   *   `boost::asio::use_future`.
+   * @param instrument The instrument.
+   * @param token The completion token; the handler runs once, on its associated executor.
+   * @return Whatever `token` produces (nothing for a callback, a future for `use_future`).
+   */
   template <typename CompletionToken>
   auto async_price_limits(InstrumentId instrument, CompletionToken&& token) {
     if constexpr (Caps::has_price_limits) {
@@ -603,7 +665,18 @@ public:
     }
   }
 
-  /** Retrieves recent executions for one instrument, newest first. */
+  /**
+   * @brief Requests recent trades for an instrument, newest first.
+   *
+   * Requires `Caps::has_trade_prints`.
+   *
+   * @tparam CompletionToken A completion token for `void(Result<std::vector<TradePrint>>)`, such as a callback or
+   *   `boost::asio::use_future`.
+   * @param instrument The instrument.
+   * @param count How many trades to request.
+   * @param token The completion token; the handler runs once, on its associated executor.
+   * @return Whatever `token` produces (nothing for a callback, a future for `use_future`).
+   */
   template <typename CompletionToken>
   auto async_trades(InstrumentId instrument, int count, CompletionToken&& token) {
     if constexpr (Caps::has_trade_prints) {
@@ -626,11 +699,15 @@ public:
   }
 
   /**
-   * Quotes several instruments in one request.
+   * @brief Requests quotes for several instruments in one request.
    *
-   * Only on a broker that offers it. Looping `async_quote` instead would wear the
-   * same signature with a different cost, and on a paced connection a materially
-   * different one, so the absence is a compile error rather than an emulation.
+   * Requires `Caps::has_batch_prices`; otherwise call `async_quote` per instrument.
+   *
+   * @tparam CompletionToken A completion token for `void(Result<std::vector<QuoteSnapshot>>)`, such as a callback or
+   *   `boost::asio::use_future`.
+   * @param instruments The instruments.
+   * @param token The completion token; the handler runs once, on its associated executor.
+   * @return Whatever `token` produces (nothing for a callback, a future for `use_future`).
    */
   template <typename CompletionToken>
   auto async_prices(std::vector<InstrumentId> instruments, CompletionToken&& token) {
@@ -652,10 +729,15 @@ public:
   }
 
   /**
-   * Retrieves the resting orders on both sides of one instrument's book.
+   * @brief Requests an instrument's order book, best levels first.
    *
-   * Levels come back best first on both sides, whatever order the broker sent them
-   * in, so `best_bid()` and `best_ask()` mean what they say.
+   * Requires `Caps::has_depth`.
+   *
+   * @tparam CompletionToken A completion token for `void(Result<DepthSnapshot>)`, such as a callback or
+   *   `boost::asio::use_future`.
+   * @param instrument The instrument.
+   * @param token The completion token; the handler runs once, on its associated executor.
+   * @return Whatever `token` produces (nothing for a callback, a future for `use_future`).
    */
   template <typename CompletionToken>
   auto async_depth(InstrumentId instrument, CompletionToken&& token) {
@@ -676,7 +758,17 @@ public:
     }
   }
 
-  /** Retrieves one order by reference, on a broker that addresses one directly. */
+  /**
+   * @brief Requests one order by its reference.
+   *
+   * Requires `Caps::has_order_by_id`; otherwise read it from working orders or order history.
+   *
+   * @tparam CompletionToken A completion token for `void(Result<OrderSnapshot>)`, such as a callback or
+   *   `boost::asio::use_future`.
+   * @param ref The order.
+   * @param token The completion token; the handler runs once, on its associated executor.
+   * @return Whatever `token` produces (nothing for a callback, a future for `use_future`).
+   */
   template <typename CompletionToken>
   auto async_order(Ref ref, CompletionToken&& token) {
     if constexpr (Caps::has_order_by_id) {
@@ -698,12 +790,7 @@ public:
   }
 
 private:
-  /**
-   * Initiates one client call and translates its completion signature.
-   *
-   * The inner handler is bound to the caller handler's associated executor, so
-   * normalization and the user handler both run there, exactly once.
-   */
+  // Initiates one client call; normalization and the handler run once, on the handler's executor.
   template <typename Out, typename Token, typename Call, typename Normalize>
   static auto translate(Token&& token, Call call, Normalize normalize) {
     return net::async_initiate<Token, void(Result<Out>)>(
@@ -725,17 +812,8 @@ private:
     );
   }
 
-  /**
-   * Completes with a pre-flight error without contacting the broker.
-   *
-   * The handler is posted rather than invoked inline, so a rejection never
-   * completes before the initiating call returns, which is the same guarantee a
-   * broker-side failure already gives.
-   *
-   * A rejection happens before any client work, so there is no broker strand to
-   * complete on. The caller handler's own associated executor is used when it has
-   * one, and the system executor is the fallback when it does not.
-   */
+  // Completes with a pre-flight error, posted (never inline) to the handler's executor, or the
+  // system executor if it has none.
   template <typename Out, typename Token>
   static auto complete_error(Token&& token, BrokerError error) {
     return net::async_initiate<Token, void(Result<Out>)>(
@@ -760,40 +838,40 @@ private:
 };
 
 /**
- * The same verb set over a blocking client facade.
+ * @brief A blocking broker client bound to one account, with the same operations as `BrokerSession`.
  *
- * Every verb returns `Result<T>` directly and reuses the identical trait
- * normalizers, so the blocking and asynchronous ports cannot drift apart in how
- * they normalize a broker response.
+ * Every operation returns `Result<T>`. An operation the broker does not offer does not compile.
+ *
+ * @tparam Client A blocking broker client (`BrokerTraits<Client>::blocking` is `true`).
  */
 template <typename Client>
 class BlockingSession {
 public:
-  /** Adaptation point for the bound client. */
+  /** @brief The client's traits. */
   using Traits = BrokerTraits<Client>;
 
-  /** Compile-time feature set of the bound client. */
+  /** @brief The client's capabilities. */
   using Caps = BrokerCaps<Client>;
 
-  /** Broker-specific account selector type. */
+  /** @brief The broker's account selector type. */
   using Account = typename Traits::Account;
 
-  /** Broker-specific configuration type. */
+  /** @brief The broker's configuration type. */
   using Config = typename Traits::Config;
 
-  /** Compile-time identity of the bound broker. */
+  /** @brief The broker's tag type. */
   using BrokerTag = typename Traits::BrokerTag;
 
-  /** Opaque order reference this session issues and accepts. */
+  /** @brief The order reference type this session issues and accepts. */
   using Ref = OrderRef<BrokerTag>;
 
-  /** Acknowledgement and reference returned by an order-writing verb. */
+  /** @brief What an order-writing call returns: acknowledgement and reference. */
   using Placed = PlacedOrder<BrokerTag>;
 
-  /** One amendable order of this broker. */
+  /** @brief One working order of this broker. */
   using Working = WorkingOrder<BrokerTag>;
 
-  /** Amendable orders of this broker. */
+  /** @brief A working-order listing of this broker. */
   using WorkingSet = WorkingOrders<BrokerTag>;
 
   static_assert(
@@ -803,8 +881,9 @@ public:
   );
 
   /**
-   * Binds one blocking client and one account.
-   *
+   * @brief Binds a blocking client and an account.
+   * @param client The client; must not be null.
+   * @param account The account to act for.
    * @throws std::invalid_argument if `client` is null.
    */
   BlockingSession(std::shared_ptr<Client> client, Account account)
@@ -814,41 +893,62 @@ public:
     }
   }
 
-  /** Returns the normalized broker name this session is bound to. */
+  /**
+   * @brief Returns the broker's name.
+   * @return `Traits::name`.
+   */
   static constexpr std::string_view broker_name() noexcept { return Traits::name; }
 
-  /** Returns the bound account selector. */
+  /**
+   * @brief Returns the bound account.
+   * @return The account selector.
+   */
   const Account& account() const noexcept { return account_; }
 
-  /** Returns the concrete client, as the broker-specific escape hatch. */
+  /**
+   * @brief Returns the broker client, for broker-specific operations the session does not offer.
+   * @return The client.
+   */
   Client& client() noexcept { return *client_; }
 
-  /** Returns the concrete client. */
+  /**
+   * @brief Returns the broker client.
+   * @return The client.
+   */
   const Client& client() const noexcept { return *client_; }
 
   /**
-   * Returns how this broker's connection has been paced, or null when unpaced.
+   * @brief Returns the client's request-pacing counters.
    *
-   * A runner reads this to tell whether it is asking for more capacity than it
-   * has: rising `delayed_` on a polling group while `TRADING` stays undelayed is
-   * the reservation doing its job, and rising `shed_` means the queue is full.
+   * A rising `delayed_` on a polling group while `TRADING` stays undelayed means trading capacity
+   * is being kept free; a rising `shed_` means the queue is full. Safe to read between calls.
    *
-   * Any moment between calls is safe: nothing runs on the client while no call
-   * is in progress.
+   * @return The counters, or `nullptr` if the client is not paced.
    */
   const network::RateLimitStats* rate_limit_stats() const {
     return Traits::rate_limit_stats(*client_);
   }
 
-  /** Returns the current normalized quote. */
+  /**
+   * @brief Returns the current quote for an instrument.
+   * @param instrument The instrument.
+   * @return The quote, or an error.
+   */
   Result<QuoteSnapshot> quote(InstrumentId instrument) {
     return Traits::quote(*client_, std::move(instrument));
   }
 
-  /** Returns all normalized holdings for the bound account. */
+  /**
+   * @brief Returns the account's holdings.
+   * @return The holdings, or an error.
+   */
   Result<HoldingsSnapshot> holdings() { return Traits::holdings(*client_, account_); }
 
-  /** Returns what the bound account may spend in `currency`. */
+  /**
+   * @brief Returns what the account may spend in a currency; requires `Caps::has_buying_power`.
+   * @param currency The currency.
+   * @return The buying power, or an error.
+   */
   Result<BuyingPower> buying_power(Currency currency) {
     if constexpr (Caps::has_buying_power) {
       return Traits::buying_power(*client_, account_, currency);
@@ -861,7 +961,11 @@ public:
     }
   }
 
-  /** Returns how much of `instrument` the bound account may sell. */
+  /**
+   * @brief Returns how much of an instrument the account may sell; only where `Caps::sellable_source` is `INQUIRY`.
+   * @param instrument The instrument.
+   * @return The quantity, or an error.
+   */
   Result<Decimal64> sellable_quantity(InstrumentId instrument) {
     if constexpr (Caps::sellable_source == SellableSource::INQUIRY) {
       return Traits::sellable_quantity(*client_, account_, std::move(instrument));
@@ -875,7 +979,10 @@ public:
     }
   }
 
-  /** Returns the commission rates in force for the bound account. */
+  /**
+   * @brief Returns the account's commission rates; requires `Caps::has_commission_schedule`.
+   * @return The schedule, or an error.
+   */
   Result<CommissionSchedule> commissions() {
     if constexpr (Caps::has_commission_schedule) {
       return Traits::commissions(*client_, account_);
@@ -888,7 +995,11 @@ public:
     }
   }
 
-  /** Returns static reference data for one instrument. */
+  /**
+   * @brief Returns an instrument's reference data; requires `Caps::has_reference_data`.
+   * @param subject The instrument.
+   * @return The reference data, or an error.
+   */
   Result<Instrument> instrument(InstrumentId subject) {
     if constexpr (Caps::has_reference_data) {
       return Traits::instrument(*client_, std::move(subject));
@@ -901,7 +1012,12 @@ public:
     }
   }
 
-  /** Returns which dates the market trades on. */
+  /**
+   * @brief Returns the trading calendar; requires `Caps::has_calendar`.
+   * @param country The market.
+   * @param from The date the answer is anchored to; empty means today.
+   * @return The calendar, or an error.
+   */
   Result<TradingCalendar> calendar(Country country, std::optional<Date> from = std::nullopt) {
     if constexpr (Caps::has_calendar) {
       if (auto invalid = Traits::validate_calendar(country, from)) {
@@ -917,7 +1033,11 @@ public:
     }
   }
 
-  /** Returns today's upper and lower price bound for one instrument. */
+  /**
+   * @brief Returns an instrument's price limits for today; requires `Caps::has_price_limits`.
+   * @param instrument The instrument.
+   * @return The limits, or an error.
+   */
   Result<PriceLimits> price_limits(InstrumentId instrument) {
     if constexpr (Caps::has_price_limits) {
       return Traits::price_limits(*client_, std::move(instrument));
@@ -930,7 +1050,12 @@ public:
     }
   }
 
-  /** Returns recent executions for one instrument, newest first. */
+  /**
+   * @brief Returns recent trades for an instrument, newest first; requires `Caps::has_trade_prints`.
+   * @param instrument The instrument.
+   * @param count How many trades to request.
+   * @return The trades, or an error.
+   */
   Result<std::vector<TradePrint>> trades(InstrumentId instrument, int count) {
     if constexpr (Caps::has_trade_prints) {
       return Traits::trades(*client_, std::move(instrument), count);
@@ -943,7 +1068,11 @@ public:
     }
   }
 
-  /** Quotes several instruments in one request, where the broker offers it. */
+  /**
+   * @brief Returns quotes for several instruments in one request; requires `Caps::has_batch_prices`.
+   * @param instruments The instruments.
+   * @return The quotes, or an error.
+   */
   Result<std::vector<QuoteSnapshot>> prices(std::vector<InstrumentId> instruments) {
     if constexpr (Caps::has_batch_prices) {
       return Traits::prices(*client_, std::move(instruments));
@@ -956,7 +1085,11 @@ public:
     }
   }
 
-  /** Returns the resting orders on both sides of one instrument's book. */
+  /**
+   * @brief Returns an instrument's order book, best levels first; requires `Caps::has_depth`.
+   * @param instrument The instrument.
+   * @return The book, or an error.
+   */
   Result<DepthSnapshot> depth(InstrumentId instrument) {
     if constexpr (Caps::has_depth) {
       return Traits::depth(*client_, std::move(instrument));
@@ -969,7 +1102,11 @@ public:
     }
   }
 
-  /** Returns bars for one instrument, paging until the query's count is satisfied. */
+  /**
+   * @brief Returns bars for an instrument, oldest first, paging until `count_` bars are read.
+   * @param query What to fetch.
+   * @return The bars, or an error (an unsupported interval is refused before any I/O).
+   */
   Result<BarSeries> bars(BarQuery query) {
     if (auto invalid = Traits::validate_bars(query)) {
       return Result<BarSeries>(std::move(*invalid));
@@ -977,7 +1114,15 @@ public:
     return Traits::bars(*client_, std::move(query));
   }
 
-  /** Submits a new order. The indeterminacy rule of `BrokerSession::async_place` applies. */
+  /**
+   * @brief Places a new order.
+   *
+   * @warning A `TRANSPORT` error leaves the outcome unknown: the request may have reached the broker.
+   *   The request is never resent automatically. Check working orders or order history before
+   *   sending it again.
+   * @param order The order; refused before any I/O as for `BrokerSession::async_place`.
+   * @return The acknowledgement and reference, or an error.
+   */
   Result<Placed> place(OrderRequest order) {
     if (auto refused = port_detail::prepare_place<Client>(order)) {
       return Result<Placed>(std::move(*refused));
@@ -985,7 +1130,16 @@ public:
     return Traits::normalize_place(Traits::place_order(*client_, account_, std::move(order)));
   }
 
-  /** Modifies an existing order. */
+  /**
+   * @brief Modifies a working order.
+   *
+   * @warning A `TRANSPORT` error leaves the outcome unknown: the request may have reached the broker.
+   *   The request is never resent automatically. Check working orders or order history before
+   *   sending it again.
+   * @param ref The order.
+   * @param instruction What to change; build it with `replace_with` or `reprice`.
+   * @return The acknowledgement and reference, or an error.
+   */
   Result<Placed> replace(const Ref& ref, const AmendInstruction& instruction) {
     auto amendment = port_detail::prepare_replace<Client>(ref, instruction);
     if (!amendment) {
@@ -996,7 +1150,17 @@ public:
     );
   }
 
-  /** Cancels an existing order. A trigger is never refused here; see `BrokerSession::async_cancel`. */
+  /**
+   * @brief Cancels a working order, in full or in part.
+   *
+   * @warning A `TRANSPORT` error leaves the outcome unknown: the request may have reached the broker.
+   *   The request is never resent automatically. Check working orders or order history before
+   *   sending it again.
+   * @param ref The order.
+   * @param instruction Build it with `cancel_all` or `cancel_quantity`; the session's
+   *   `has_trigger_price` check does not apply, though the adapter still validates it.
+   * @return The acknowledgement and reference, or an error.
+   */
   Result<Placed> cancel(const Ref& ref, const AmendInstruction& instruction) {
     auto amendment = Traits::to_cancellation(ref, instruction);
     if (!amendment) {
@@ -1007,7 +1171,10 @@ public:
     );
   }
 
-  /** Returns every order still open to modification or cancellation. */
+  /**
+   * @brief Returns the orders still open to modification or cancellation; requires `Caps::has_working_orders`.
+   * @return The listing, or an error.
+   */
   Result<WorkingSet> working_orders() {
     if constexpr (Caps::has_working_orders) {
       return Traits::normalize_working_orders(Traits::working_orders(*client_, account_));
@@ -1020,7 +1187,11 @@ public:
     }
   }
 
-  /** Returns placed orders and their executions. */
+  /**
+   * @brief Returns order history: placed orders and their executions.
+   * @param query The filter.
+   * @return One page, or an error (a filter the broker cannot apply is refused before any I/O).
+   */
   Result<OrderPage> order_history(const OrderHistoryQuery& query) {
     auto converted = Traits::to_history_query(account_, query);
     if (!converted) {
@@ -1029,7 +1200,11 @@ public:
     return Traits::order_history(*client_, account_, std::move(converted.value()));
   }
 
-  /** Returns one order by reference, on a broker that addresses one directly. */
+  /**
+   * @brief Returns one order by its reference; requires `Caps::has_order_by_id`.
+   * @param ref The order.
+   * @return The order, or an error.
+   */
   Result<OrderSnapshot> order(const Ref& ref) {
     if constexpr (Caps::has_order_by_id) {
       return Traits::order_by_id(*client_, account_, ref.primary_);
@@ -1044,10 +1219,8 @@ public:
   }
 
   /**
-   * Lists the accounts this broker publishes.
-   *
-   * Available only where the broker publishes a list; a broker whose selector
-   * comes from configuration does not compile this call.
+   * @brief Lists the broker's accounts; requires `Caps::has_account_discovery`.
+   * @return The accounts, or an error.
    */
   Result<std::vector<AccountInfo<Client>>> accounts() {
     if constexpr (Caps::has_account_discovery) {
@@ -1067,12 +1240,14 @@ private:
 };
 
 /**
- * Lists the accounts a broker publishes, on a broker that publishes them.
+ * @brief Lists a broker's accounts, before a session exists; requires
+ *   `BrokerCaps<Client>::has_account_discovery` (KIS reads its account from configuration).
  *
- * Account discovery is a free function rather than a session verb because it
- * answers what a session should be bound *to*, and therefore runs before a
- * session exists. On a broker whose selector is local — KIS reads it from
- * configuration — the capability is false and this function does not compile.
+ * @tparam Client An asynchronous broker client type.
+ * @tparam CompletionToken A completion token for `void(Result<std::vector<AccountInfo<Client>>>)`.
+ * @param client The client.
+ * @param token The completion token; the handler runs once, on its associated executor.
+ * @return Whatever `token` produces.
  */
 template <typename Client, typename CompletionToken>
 auto async_accounts(Client& client, CompletionToken&& token) {
@@ -1104,11 +1279,12 @@ auto async_accounts(Client& client, CompletionToken&& token) {
 }
 
 /**
- * Lists the accounts a blocking client's broker publishes.
+ * @brief Lists a broker's accounts with a blocking client, before a session exists; requires
+ *   `BrokerCaps<Client>::has_account_discovery`.
  *
- * Account discovery answers what a session should be bound *to*, so it runs
- * before a session exists. This is the blocking counterpart of
- * `async_accounts`.
+ * @tparam Client A blocking broker client type.
+ * @param client The client.
+ * @return The accounts, or an error.
  */
 template <typename Client>
 Result<std::vector<AccountInfo<Client>>> list_accounts(Client& client) {

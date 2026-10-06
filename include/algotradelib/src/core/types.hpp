@@ -20,11 +20,10 @@
 namespace algotradelib {
 
 /**
- * Identifies a country supported by the compiled library.
+ * @brief A country (market) the library supports.
  *
- * The set is intentionally closed and allocation-free. Supporting a new
- * country requires adding its normalized value together with broker mapping
- * and tests; unknown wire values must not silently enter strategy code.
+ * Adding a country requires its broker mappings; an unknown wire value is never mapped onto one
+ * of these.
  */
 enum class Country {
   KR,
@@ -32,10 +31,9 @@ enum class Country {
 };
 
 /**
- * Selects a normalized execution or quotation venue supported by the library.
+ * @brief A trading venue: an exchange, or the combined view across exchanges.
  *
- * Broker wire codes remain in adapters. New normalized venues are added with
- * their broker mappings and tests.
+ * `UNSPECIFIED` leaves routing to the broker's default. Broker wire codes stay in the adapters.
  */
 enum class Venue {
   UNSPECIFIED,
@@ -45,11 +43,9 @@ enum class Venue {
 };
 
 /**
- * Returns a stable name for `venue`, for a message a person reads.
- *
- * **`runner::venue_name` deliberately keeps its own copy.** That one is the journal's on-disk
- * spelling, and a recorded format must not move because a display name was reworded; they agree
- * today and the journal's round-trip tests are what hold it to its own.
+ * @brief Returns a display name for a venue, such as `"KRX"`.
+ * @param venue The venue.
+ * @return The name.
  */
 inline constexpr std::string_view venue_name(Venue venue) noexcept {
   switch (venue) {
@@ -65,27 +61,37 @@ inline constexpr std::string_view venue_name(Venue venue) noexcept {
   return "unspecified";
 }
 
-/** Broker-neutral identity for a financial instrument. */
+/** @brief Identifies an instrument: its country, venue and symbol. */
 struct InstrumentId {
-  /** The listing country, which selects the symbol convention and the price grid. */
+  /** @brief The listing country, which selects the symbol convention and the price grid. */
   Country country_{Country::KR};
-  /** The identity venue, which participates in equality; routing is `OrderRequest::venue_`. */
+  /**
+   * @brief The venue that is part of the identity (two venues are two instruments).
+   *
+   * Where an order is routed is `OrderRequest::venue_`, not this.
+   */
   Venue venue_{Venue::COMBINED};
-  /** The broker's own symbol, unpadded and as the venue spells it (`"005930"`). */
+  /** @brief The symbol as the venue spells it, such as `"005930"`. */
   std::string symbol_;
 
-  /** Compares country, venue and symbol; two instruments differing in venue are different. */
+  /**
+   * @brief Compares country, venue and symbol.
+   * @param lhs The first identity.
+   * @param rhs The second identity.
+   * @return `true` if all three are equal.
+   */
   friend bool operator==(const InstrumentId& lhs, const InstrumentId& rhs) {
     return lhs.country_ == rhs.country_ && lhs.venue_ == rhs.venue_ && lhs.symbol_ == rhs.symbol_;
   }
 
   /**
-   * Orders identities so they can key a map. The ordering itself carries no meaning.
+   * @brief Orders identities by country, venue, then symbol, so they can key a map.
    *
-   * It compares **exactly what `operator==` compares**, which is the whole reason it is declared
-   * beside it: a container keyed on less than all three fields silently merges two instruments that
-   * are not equal. `runner::Runner`'s price bands were such a container -- keyed on `symbol_` alone,
-   * so a KRX identity and an NXT identity for the same stock overwrote each other's band.
+   * The order has no meaning beyond that, and it is consistent with `operator==`.
+   *
+   * @param lhs The first identity.
+   * @param rhs The second identity.
+   * @return `true` if `lhs` sorts before `rhs`.
    */
   friend bool operator<(const InstrumentId& lhs, const InstrumentId& rhs) {
     if (lhs.country_ != rhs.country_) {
@@ -99,30 +105,26 @@ struct InstrumentId {
 };
 
 /**
- * Fixed-capacity uppercase code, stored without allocating.
+ * @brief A short uppercase code (letters, digits, `_`), stored inline without allocation.
  *
- * Some broker vocabularies are open sets: a market segment, a venue, or an
- * exchange identifier may take a value this library has not seen. A closed
- * `enum class` would have to either reject it or collapse it into a sentinel, and
- * both lose information the broker actually sent.
+ * The length is stored in one byte, so `N` must be at most 255.
  *
- * `Code` preserves such a value exactly, in place, so an unrecognized code can be
- * carried through normalization, compared, and displayed without a heap
- * allocation and without pretending to be understood. Where a value *is*
- * understood, a normalized enum stays the right representation; this is the
- * companion for the rest.
+ * Holds a broker code the library may not recognize (a market segment, an exchange id) exactly as
+ * sent, so it can be carried, compared and displayed.
+ *
+ * @tparam N The maximum number of characters.
  */
 template <std::size_t N>
 class Code {
 public:
-  /** Constructs an empty code. */
+  /** @brief Constructs an empty code. */
   Code() = default;
 
   /**
-   * Constructs a code from up to `N` uppercase ASCII characters or digits.
+   * @brief Constructs a code.
    *
-   * @throws std::invalid_argument if `text` is too long or contains anything
-   * other than `A`-`Z`, `0`-`9`, or `_`.
+   * @param text Up to `N` characters, each `A`-`Z`, `0`-`9` or `_`.
+   * @throws std::invalid_argument if `text` is longer than `N` or has any other character.
    */
   explicit Code(std::string_view text) {
     if (text.size() > N) {
@@ -140,12 +142,10 @@ public:
   }
 
   /**
-   * Returns a code holding `text`, or nothing when it cannot be stored.
+   * @brief Makes a code without throwing.
    *
-   * Normalization paths use this rather than the throwing constructor. An
-   * unfamiliar code is exactly the case this type exists for, so encountering one
-   * must not throw out of a response parse and fail an entire listing over a
-   * single odd value.
+   * @param text Up to `N` characters, each `A`-`Z`, `0`-`9` or `_`.
+   * @return The code, or `std::nullopt` if `text` is too long or has any other character.
    */
   static std::optional<Code> try_make(std::string_view text) {
     if (text.size() > N) {
@@ -164,27 +164,52 @@ public:
     return code;
   }
 
-  /** Returns the code as a view over its own storage. */
+  /**
+   * @brief Returns the code's characters.
+   * @return A view of the code's own storage, valid while the code is alive.
+   */
   std::string_view view() const noexcept {
     return std::string_view(characters_.data(), size_);
   }
 
-  /** Returns the code as a string. */
+  /**
+   * @brief Returns the code as a string.
+   * @return A copy of the characters.
+   */
   std::string str() const { return std::string(view()); }
 
-  /** Returns whether the code carries no value. */
+  /**
+   * @brief Tests whether the code is empty.
+   * @return `true` if it has no characters.
+   */
   bool empty() const noexcept { return size_ == 0; }
 
-  /** Returns how many characters the code holds. */
+  /**
+   * @brief Returns the number of characters.
+   * @return The length, at most `N`.
+   */
   std::size_t size() const noexcept { return size_; }
 
-  /** Returns the greatest number of characters a code of this width can hold. */
+  /**
+   * @brief Returns the maximum number of characters.
+   * @return `N`.
+   */
   static constexpr std::size_t capacity() noexcept { return N; }
 
-  /** Compares the stored characters. */
+  /**
+   * @brief Compares two codes' characters.
+   * @param lhs The first code.
+   * @param rhs The second code.
+   * @return `true` if they are equal.
+   */
   friend bool operator==(const Code& lhs, const Code& rhs) { return lhs.view() == rhs.view(); }
 
-  /** The negation of `operator==`. */
+  /**
+   * @brief Compares two codes for inequality.
+   * @param lhs The first code.
+   * @param rhs The second code.
+   * @return `true` if they differ.
+   */
   friend bool operator!=(const Code& lhs, const Code& rhs) { return !(lhs == rhs); }
 
 private:
@@ -192,17 +217,17 @@ private:
   std::uint8_t size_{0};
 };
 
-/** Validated ISO 4217-style three-letter currency code. */
+/** @brief A three-letter currency code, such as `KRW` or `USD` (ISO 4217 style). */
 class Currency {
 public:
-  /** Constructs Korean won. */
+  /** @brief Constructs Korean won. */
   Currency() : code_{'K', 'R', 'W'} {}
 
   /**
-   * Constructs a currency from a three-character uppercase code.
+   * @brief Constructs a currency from its code.
    *
-   * @throws std::invalid_argument if `code` is not three uppercase ASCII
-   * characters.
+   * @param code Three uppercase ASCII letters.
+   * @throws std::invalid_argument if `code` is not three uppercase ASCII letters.
    */
   explicit Currency(std::string_view code) {
     if (code.size() != code_.size()) {
@@ -217,16 +242,30 @@ public:
     }
   }
 
-  /** Returns Korean won. */
+  /**
+   * @brief Returns Korean won.
+   * @return `KRW`.
+   */
   static Currency krw() { return Currency("KRW"); }
 
-  /** Returns United States dollars. */
+  /**
+   * @brief Returns United States dollars.
+   * @return `USD`.
+   */
   static Currency usd() { return Currency("USD"); }
 
-  /** Returns the three-letter currency code. */
+  /**
+   * @brief Returns the code.
+   * @return The three letters.
+   */
   std::string str() const { return std::string(code_.begin(), code_.end()); }
 
-  /** Compares two currencies by their ISO 4217 code. */
+  /**
+   * @brief Compares two currencies.
+   * @param lhs The first currency.
+   * @param rhs The second currency.
+   * @return `true` if the codes are equal.
+   */
   friend bool operator==(const Currency& lhs, const Currency& rhs) {
     return lhs.code_ == rhs.code_;
   }
@@ -235,21 +274,38 @@ private:
   std::array<char, 3> code_{};
 };
 
-/** Exact signed fixed-point decimal represented by a coefficient and scale. */
+/**
+ * @brief An exact signed decimal: an `int64` coefficient times `10^-scale`.
+ *
+ * Prices, quantities and money are `Decimal64` wherever they come from or go to a broker. The
+ * arithmetic is the `decimal_*` free functions, which return `std::nullopt` when a coefficient,
+ * scale or intermediate value does not fit (a result whose final value would fit can still fail).
+ */
 class Decimal64 {
 public:
-  /** Constructs zero. */
+  /** @brief Constructs zero. */
   Decimal64() = default;
 
-  /** Constructs `coefficient * 10^-scale` without normalization. */
+  /**
+   * @brief Constructs `coefficient * 10^-scale`, keeping the scale as given.
+   * @param coefficient The integer coefficient.
+   * @param scale The number of fractional digits.
+   */
   Decimal64(std::int64_t coefficient, std::uint8_t scale)
   : coefficient_(coefficient), scale_(scale) {}
 
   /**
-   * Parses and normalizes a decimal string without binary floating point.
+   * @brief Parses a decimal string exactly (no binary floating point).
    *
-   * @throws std::invalid_argument for malformed input.
-   * @throws std::out_of_range when the coefficient or scale cannot be stored.
+   * Accepts an optional sign, digits and at most one `.`. Trailing fractional zeros are removed,
+   * so `parse("1.50") == parse("1.5")`.
+   *
+   * @param input The text, such as `"-12.345"`.
+   * @return The value.
+   * @throws std::invalid_argument if `input` is empty, has no digits, has more than one `.`, or
+   *   contains any other character.
+   * @throws std::out_of_range if the digits as written (before trailing zeros are removed) or the
+   *   scale do not fit.
    */
   static Decimal64 parse(std::string_view input) {
     if (input.empty()) {
@@ -323,13 +379,22 @@ public:
     return Decimal64(coefficient, scale);
   }
 
-  /** Returns the signed integer coefficient. */
+  /**
+   * @brief Returns the coefficient.
+   * @return The signed integer coefficient.
+   */
   std::int64_t coefficient() const noexcept { return coefficient_; }
 
-  /** Returns the count of fractional decimal digits. */
+  /**
+   * @brief Returns the scale.
+   * @return The number of fractional digits.
+   */
   std::uint8_t scale() const noexcept { return scale_; }
 
-  /** Returns a normalized decimal string. */
+  /**
+   * @brief Formats the value as a decimal string.
+   * @return The text, with exactly `scale()` fractional digits (no exponent).
+   */
   std::string str() const {
     const bool negative = coefficient_ < 0;
     std::uint64_t magnitude = negative ?
@@ -349,18 +414,16 @@ public:
   }
 
   /**
-   * Compares the stored representation: the coefficient **and** the scale.
+   * @brief Compares the coefficient **and** the scale.
    *
-   * **On the parse path that is the same as comparing the number**, because `parse` normalizes:
-   * it strips trailing zeros, so `parse("1.50")` and `parse("1.5")` are both `15` at scale `1` and
-   * compare equal. Two broker strings for the same figure agree whatever their trailing zeros, which
-   * is what reconciliation needs.
+   * Values from `parse` and the `decimal_*` functions are normalized, so for them this compares
+   * the numbers. A value built with an explicit scale is not: `Decimal64(150, 2)` does not equal
+   * `Decimal64(15, 1)`. To compare numbers at any scale, use `decimal_less` both ways or
+   * `decimal_normalized` first.
    *
-   * **It differs for a value built at an explicit scale**, which is not normalized: the
-   * two-argument constructor and `analytics::to_decimal(value, scale)`. `Decimal64(150, 2)` and
-   * `Decimal64(15, 1)` are not equal, and neither are `to_decimal(1.5, 3)` -- which is `1500` at
-   * scale `3` -- and `parse("1.5")`. Compare those with `decimal_subtract`, or on `str()` at a
-   * known scale, as `analytics/conversion.hpp` already says.
+   * @param lhs The first value.
+   * @param rhs The second value.
+   * @return `true` if coefficient and scale are both equal.
    */
   friend bool operator==(const Decimal64& lhs, const Decimal64& rhs) {
     return lhs.coefficient_ == rhs.coefficient_ && lhs.scale_ == rhs.scale_;
@@ -372,11 +435,9 @@ private:
 };
 
 /**
- * Returns `value` with trailing fractional zeros removed.
- *
- * `Decimal64` equality compares the coefficient and the scale, so `1.50` and
- * `1.5` are distinct values. Normalizing an arithmetic result keeps it comparable
- * to the same number parsed from a broker's string.
+ * @brief Removes trailing fractional zeros, so equal numbers compare equal with `==`.
+ * @param value The value.
+ * @return The same number at the smallest scale that represents it.
  */
 inline Decimal64 decimal_normalized(const Decimal64& value) {
   auto coefficient = value.coefficient();
@@ -426,13 +487,11 @@ inline bool align(
 } // namespace decimal_detail
 
 /**
- * Returns the exact sum, or nothing when it does not fit.
- *
- * The result is optional rather than wrapping or throwing. These operations sit on
- * paths that run per quote and per bar, where a throw is the wrong cost and a
- * silent wrap on a price is never acceptable; an empty result says "this number
- * cannot be represented" in the same vocabulary the rest of the library already
- * uses for absent values.
+ * @brief Adds two decimals exactly.
+ * @param lhs The first addend.
+ * @param rhs The second addend.
+ * @return The normalized sum, or `std::nullopt` if it, or either operand rescaled to the larger
+ *   scale, does not fit.
  */
 inline std::optional<Decimal64> decimal_add(const Decimal64& lhs, const Decimal64& rhs) {
   std::int64_t left = 0;
@@ -448,7 +507,13 @@ inline std::optional<Decimal64> decimal_add(const Decimal64& lhs, const Decimal6
   return decimal_normalized(Decimal64(left + right, scale));
 }
 
-/** Returns the exact difference, or nothing when it does not fit. */
+/**
+ * @brief Subtracts two decimals exactly.
+ * @param lhs The minuend.
+ * @param rhs The subtrahend.
+ * @return The normalized difference, or `std::nullopt` if it, or either operand rescaled to the
+ *   larger scale, does not fit.
+ */
 inline std::optional<Decimal64> decimal_subtract(const Decimal64& lhs, const Decimal64& rhs) {
   std::int64_t left = 0;
   std::int64_t right = 0;
@@ -464,11 +529,9 @@ inline std::optional<Decimal64> decimal_subtract(const Decimal64& lhs, const Dec
 }
 
 /**
- * Returns exactly half of `value`, or nothing when it does not fit.
- *
- * Halving an odd coefficient needs one more decimal place, so it is taken rather
- * than rounded away: rounding belongs to whoever is about to act on the number,
- * not to the arithmetic that produced it.
+ * @brief Halves a decimal exactly, adding a decimal place when needed.
+ * @param value The value.
+ * @return The normalized half, or `std::nullopt` if it does not fit.
  */
 inline std::optional<Decimal64> decimal_halve(const Decimal64& value) {
   const auto coefficient = value.coefficient();
@@ -486,12 +549,11 @@ inline std::optional<Decimal64> decimal_halve(const Decimal64& value) {
 }
 
 /**
- * Returns the exact product, or nothing when it does not fit.
- *
- * The scales add, which is what makes the product exact: two prices at scale 2 multiply to a
- * value at scale 4, and truncating that here would be rounding on behalf of a caller who has
- * not yet said where they want it. `decimal_normalized` then removes only trailing zeros, which
- * changes no value.
+ * @brief Multiplies two decimals exactly; the scales add.
+ * @param lhs The first factor.
+ * @param rhs The second factor.
+ * @return The normalized product, or `std::nullopt` if the product of the coefficients or the sum of
+ *   the scales does not fit (checked before trailing zeros are removed).
  */
 inline std::optional<Decimal64> decimal_multiply(const Decimal64& lhs, const Decimal64& rhs) {
   const auto left = lhs.coefficient();
@@ -514,16 +576,15 @@ inline std::optional<Decimal64> decimal_multiply(const Decimal64& lhs, const Dec
 }
 
 /**
- * Returns `lhs / rhs` truncated toward zero at `scale`, or nothing when it does not fit.
+ * @brief Divides two decimals, truncating toward zero at a given scale.
  *
- * The result scale is stated by the caller because a quotient has no natural one: a division
- * that does not terminate has to stop somewhere, and only the caller knows where. Truncation
- * rather than rounding, for the same reason: a quotient this library rounded would be a value
- * the caller did not choose. `decimal_divide(x, y, 0)` is therefore "how many whole `y` fit in
- * `x`", which is what sizing an order in shares needs.
+ * `decimal_divide(x, y, 0)` is the number of whole `y` in `x`, as when sizing an order in shares.
  *
- * Division by zero returns nothing rather than throwing, matching how the rest of this
- * arithmetic reports a value it cannot produce.
+ * @param lhs The dividend.
+ * @param rhs The divisor.
+ * @param scale The number of fractional digits to keep.
+ * @return The normalized quotient, or `std::nullopt` if `rhs` is zero, or the rescaled operands or
+ *   the dividend multiplied by `10^scale` do not fit.
  */
 inline std::optional<Decimal64> decimal_divide(
   const Decimal64& lhs,
@@ -552,14 +613,16 @@ inline std::optional<Decimal64> decimal_divide(
 }
 
 /**
- * Returns the largest multiple of `step` not exceeding `value`, or nothing when it does not fit.
+ * @brief Rounds down to a multiple of a step (toward negative infinity).
  *
- * Toward negative infinity, not toward zero, so the guarantee holds on both sides of zero: the
- * result is always less than or equal to the input. A caller rounding a quantity relies on that
- * — rounding a sell quantity toward zero would sell less than asked while rounding a negative
- * target toward zero would hold more than asked, and only one of those is a shortfall.
+ * The result is never greater than `value`, on either side of zero.
  *
- * `step` must be positive; a zero or negative step has no multiples to choose between.
+ * @param value The value.
+ * @param step The step, such as a lot size; must be positive.
+ * @return The largest multiple of `step` not above `value`, or `std::nullopt` if `step` is not
+ *   positive or the operands rescaled to a common scale do not fit.
+ * @warning A negative `value` whose rounded result is below the smallest `int64` coefficient is
+ *   undefined behaviour (unchecked overflow), such as `Decimal64(INT64_MIN, 0)` with step 3.
  */
 inline std::optional<Decimal64> decimal_floor_to_multiple(
   const Decimal64& value,
@@ -578,7 +641,14 @@ inline std::optional<Decimal64> decimal_floor_to_multiple(
   return decimal_normalized(Decimal64(left - rest, scale));
 }
 
-/** Returns whether `lhs` is numerically less than `rhs`, comparing exactly. */
+/**
+ * @brief Compares two decimals numerically, whatever their scales.
+ * @param lhs The first value.
+ * @param rhs The second value.
+ * @return `true` if `lhs < rhs`.
+ * @warning Wrong for two negative values when rescaling one to the other's scale overflows `int64`
+ *   (for example `-9e18` against `-0.01`). Values of ordinary prices and quantities are unaffected.
+ */
 inline bool decimal_less(const Decimal64& lhs, const Decimal64& rhs) {
   std::int64_t left = 0;
   std::int64_t right = 0;
@@ -592,7 +662,7 @@ inline bool decimal_less(const Decimal64& lhs, const Decimal64& rhs) {
   return left_negative != (rhs.coefficient() < 0) ? left_negative : lhs.scale() > rhs.scale();
 }
 
-/** Broad category for transport and broker-operation failures. */
+/** @brief The kind of failure a `BrokerError` reports. */
 enum class ErrorCategory {
   CANCELLED,
   TRANSPORT,
@@ -604,87 +674,105 @@ enum class ErrorCategory {
 };
 
 /**
- * Structured error returned by transport and broker operations.
+ * @brief The error a broker or transport operation returns.
  *
- * `retry_after_` and `rate_limit_` are populated only for
- * `ErrorCategory::RATE_LIMIT`, and only where the broker reported them.
- * `rate_limit_` is the allowance the broker says it is enforcing, in requests per
- * second, which is a better correction than any guess a client could make. A
- * broker that reports neither leaves both empty rather than having a number
- * invented for it.
+ * Branch on `category_`; the other fields are for diagnosis and logs.
  */
 struct BrokerError {
-  /** What kind of failure this is, and the only field a caller should branch on. */
+  /** @brief The kind of failure; the field to branch on. */
   ErrorCategory category_{ErrorCategory::PROTOCOL};
   /**
-   * Whether a request actually went out before this error was produced.
+   * @brief Whether a request was sent before this error.
    *
-   * **False only when a client refused before any I/O**, which is a normal thing for a client to do
-   * -- an order id too long for the broker's format, a time in force it does not support -- and is
-   * indistinguishable from a broker's own refusal by `category_` alone: both are
-   * `INVALID_ARGUMENT`. The difference matters twice over. A request that never went was not
-   * counted by the broker, so counting it against a rate window refuses a later order that would
-   * have been allowed; and a report saying the *broker* refused an instruction it never received
-   * sends a reader to the wrong place.
-   *
-   * Defaults to true, which is the safe direction on both counts: a client that forgets to say it
-   * refused locally over-counts its budget and over-attributes the refusal, and neither loses an
-   * order or hides a failure.
+   * `false` only when the client refused before any I/O (an order id too long, an unsupported time
+   * in force); such a refusal is not counted against a rate limit and was not the broker's.
+   * Defaults to `true`.
    */
   bool reached_broker_{true};
-  /** The HTTP status, or `0` when the failure happened before a response existed. */
+  /** @brief The HTTP status, or `0` if the failure happened before a response. */
   int http_status_{0};
-  /** The broker's own error code, verbatim (KIS's `EGW00201`, Toss's error identifier). */
+  /** @brief The broker's own error code, verbatim (for example KIS's `EGW00201`). */
   std::string broker_code_;
-  /** The broker's correlation identifier for this request, where it published one. */
+  /** @brief The broker's request id for this call, if it gave one. */
   std::string request_id_;
-  /** A human-readable description, for a log or an operator; never parsed. */
+  /** @brief A human-readable description, for logs; do not parse it. */
   std::string message_;
   /**
-   * How long the broker asked the caller to wait, where it said.
+   * @brief How long the broker asked the caller to wait (`Retry-After`), for a rate-limit error.
    *
-   * Empty means either that the broker sent no `Retry-After`, or that it sent one
-   * `broker_detail::integer_header` could not read -- malformed, or negative. A caller deciding
-   * when to retry cannot tell the two apart and should back off on its own rather than retry at once.
+   * Empty if the broker sent none or an unreadable one; back off on your own then rather than
+   * retrying at once.
    */
   std::optional<std::chrono::seconds> retry_after_;
   /**
-   * The allowance the broker states it is enforcing, in requests per second, where it published one.
+   * @brief The rate limit the broker says it enforces, in requests per second, for a rate-limit error.
    *
-   * Read through `broker_detail::integer_header` and then `reported_rate_limit`, so empty covers an
-   * absent header and one that could not be used: malformed, negative, zero, or above `INT_MAX`.
-   * A 429 can therefore carry `X-RateLimit-Limit` and still leave this empty. KIS states no
-   * allowance at all, with either of its two metering layers, so this is empty on every KIS refusal.
+   * Empty if the broker stated none or an unusable one. KIS never states one.
    */
   std::optional<int> rate_limit_;
 };
 
-/** Value-or-error result with no exception required on the success path. */
+/**
+ * @brief Either a value or a `BrokerError`.
+ *
+ * Test it with `has_value()` (or `if (result)`) before calling `value()` or `error()`; the wrong
+ * accessor throws `std::bad_variant_access`.
+ *
+ * @tparam T The value type.
+ */
 template <typename T>
 class Result {
 public:
-  /** Constructs a successful result. */
+  /**
+   * @brief Constructs a successful result.
+   * @param value The value.
+   */
   Result(T value) : value_(std::move(value)) {}
 
-  /** Constructs a failed result. */
+  /**
+   * @brief Constructs a failed result.
+   * @param error The error.
+   */
   Result(BrokerError error) : value_(std::move(error)) {}
 
-  /** Returns whether this result contains a value. */
+  /**
+   * @brief Tests whether the result holds a value.
+   * @return `true` for success.
+   */
   bool has_value() const noexcept { return std::holds_alternative<T>(value_); }
 
-  /** Returns whether this result contains a value. */
+  /**
+   * @brief Tests whether the result holds a value.
+   * @return `true` for success.
+   */
   explicit operator bool() const noexcept { return has_value(); }
 
-  /** Returns the contained value. */
+  /**
+   * @brief Returns the value.
+   * @return The value.
+   * @throws std::bad_variant_access if the result holds an error.
+   */
   T& value() { return std::get<T>(value_); }
 
-  /** Returns the contained value. */
+  /**
+   * @brief Returns the value.
+   * @return The value.
+   * @throws std::bad_variant_access if the result holds an error.
+   */
   const T& value() const { return std::get<T>(value_); }
 
-  /** Returns the contained error. */
+  /**
+   * @brief Returns the error.
+   * @return The error.
+   * @throws std::bad_variant_access if the result holds a value.
+   */
   BrokerError& error() { return std::get<BrokerError>(value_); }
 
-  /** Returns the contained error. */
+  /**
+   * @brief Returns the error.
+   * @return The error.
+   * @throws std::bad_variant_access if the result holds a value.
+   */
   const BrokerError& error() const { return std::get<BrokerError>(value_); }
 
 private:
@@ -692,158 +780,119 @@ private:
 };
 
 /**
- * Best bid and offer, with the size resting at each.
- *
- * Every member is optional because a quote may arrive before either side has a
- * resting order, and because a broker may publish a price without a size. An
- * absent value means the broker did not state one, never zero.
+ * @brief The best bid and offer, with the size at each. An absent field was not stated, never zero.
  */
 struct TopOfBook {
-  /** The best bid the broker published. Empty means it stated none, never zero. */
+  /** @brief The best bid price. */
   std::optional<Decimal64> bid_price_;
-  /** The size resting at `bid_price_`, where the broker published one. */
+  /** @brief The size at the best bid. */
   std::optional<Decimal64> bid_quantity_;
-  /** The best offer the broker published. Empty means it stated none, never zero. */
+  /** @brief The best offer price. */
   std::optional<Decimal64> ask_price_;
-  /** The size resting at `ask_price_`, where the broker published one. */
+  /** @brief The size at the best offer. */
   std::optional<Decimal64> ask_quantity_;
 };
 
-/**
- * Normalized point-in-time market quote.
- *
- * `top_of_book_` and `volume_` are optional additions: the members that existed
- * before keep their meaning, so a caller written against the earlier shape is
- * unaffected.
- */
+/** @brief A quote: the last traded price of an instrument at a point in time. */
 struct QuoteSnapshot {
-  /** What was quoted. */
+  /** @brief The instrument. */
   InstrumentId instrument_;
-  /** The last traded price, exact as the broker reported it. */
+  /** @brief The last traded price, as the broker reported it. */
   Decimal64 last_price_;
-  /** The currency `last_price_` is denominated in. */
+  /** @brief The currency of `last_price_`. */
   Currency currency_;
-  /** When the exchange says the quote was true, where the broker published a timestamp. */
+  /** @brief When the exchange says the quote was true, if the broker gave a timestamp. */
   std::optional<std::chrono::system_clock::time_point> exchange_time_;
-  /** When this process received the answer. A local clock, and the weaker of the two claims. */
+  /** @brief When this process received the quote, on this machine's clock. */
   std::chrono::system_clock::time_point received_at_;
 
   /**
-   * Best bid and offer alongside the quote -- **and no adapter fills this today**.
+   * @brief The best bid and offer.
    *
-   * Neither the KIS nor the Toss quote parser writes it, so it is `std::nullopt` on every quote
-   * either broker returns; the only values that ever appear here are ones a caller or a test
-   * constructed. It is not a capability gate away, it is simply unwired.
-   *
-   * The book is available, through `session.depth()` -> `DepthSnapshot`, which both adapters do
-   * populate and both declare with `BrokerCaps::has_depth`. Use that for a spread or a midpoint.
+   * @warning No shipped adapter fills this: it is empty on every quote from KIS, Toss or Kiwoom.
+   *   For the spread or midpoint, read the order book with the session's `depth()`.
    */
   std::optional<TopOfBook> top_of_book_;
-  /** Cumulative traded volume for the session, where the broker published it. */
+  /** @brief The session's cumulative traded volume, if the broker gave it. */
   std::optional<Decimal64> volume_;
 };
 
-/** Exact monetary amount paired with its currency. */
+/** @brief An exact amount of money in one currency. */
 struct Money {
-  /** The exact amount. */
+  /** @brief The amount. */
   Decimal64 amount_;
-  /** The currency it is denominated in; amounts in different currencies are never added. */
+  /** @brief The currency; the library never adds amounts in different currencies. */
   Currency currency_;
 
-  /** Compares amount and currency. Equal amounts in different currencies are not equal. */
+  /**
+   * @brief Compares amount (with `Decimal64::operator==`) and currency.
+   * @param lhs The first amount.
+   * @param rhs The second amount.
+   * @return `true` if both are equal.
+   */
   friend bool operator==(const Money& lhs, const Money& rhs) {
     return lhs.amount_ == rhs.amount_ && lhs.currency_ == rhs.currency_;
   }
 };
 
 /**
- * What a sellable figure is evidence of.
+ * @brief What a sellable quantity covers, and how `RiskGuard` must treat resting sells against it.
  *
- * `SellableSource` above says **where** the figure came from, which is a fact about this library's
- * plumbing and is correctly a compile-time constant. This says **what it means**, which is the
- * question `RiskGuard` actually asks of it, and it is a run-time value because one broker's answer
- * is a caller's assertion about an account rather than a property of the adapter.
- *
- * **Why a type and not a comment.** `HoldingPosition::sellable_quantity_` documents in prose that
- * whether the figure is already net of resting sell orders "is not stated by either broker and is
- * not assumed here" -- and then the guard reads the number and trusts it completely. A third party
- * writing an adapter fills that field from a vendor field whose scope they may never have
- * established, and nothing tells them. Both axes below therefore default to `UNESTABLISHED`, which
- * refuses: a safety rule has to fail closed for code this library has never seen.
+ * Both parts default to `UNESTABLISHED`, and `RiskGuard` refuses a checked sell against a figure
+ * whose basis is not enforceable. An adapter that fills `sellable_quantity_` must state this too.
  */
 struct SellableBasis {
-  /** Whether the figure covers the whole holding it will be measured against. */
+  /** @brief Whether the figure covers the whole holding. */
   enum class Coverage {
-    /** Nobody has established what the figure covers. The guard refuses. */
+    /** @brief Not established; `RiskGuard` refuses. */
     UNESTABLISHED,
-    /** It covers every share held of the instrument, whatever venue or lot they sit in. */
+    /** @brief Every share held of the instrument, whatever venue or lot. */
     WHOLE_HOLDING,
     /**
-     * It covers only part of the holding.
-     *
-     * The guard refuses this too, and the value exists so the refusal can say *which* gap it is: a
-     * figure covering one venue's slice cannot bound a sell of the whole position, and reporting
-     * that as "unestablished" would lose the distinction between nobody having looked and somebody
-     * having looked and found a partial answer.
+     * @brief Only part of the holding, such as one venue's shares; `RiskGuard` refuses, reporting
+     *   `SELLABLE_BASIS_UNESTABLISHED`.
      */
     PARTIAL,
   };
 
-  /**
-   * How the guard must treat resting sell orders against this figure.
-   *
-   * **A treatment, not a claim about the broker**, and that distinction is load-bearing. An earlier
-   * revision of this type named these `GROSS` and `NET` -- assertions about what a vendor reports.
-   * No broker publishes that fact, so no adapter could honestly declare one, so every guarded sell
-   * refused at two of three brokers. A policy this library applies is always statable; what nobody
-   * may state is a measurement nobody made, and `verified_` is where that goes.
-   */
+  /** @brief How `RiskGuard` treats resting sell orders against the figure. */
   enum class RestingTreatment {
-    /** No treatment stated. The guard refuses. */
+    /** @brief Not stated; `RiskGuard` refuses. */
     UNESTABLISHED,
     /**
-     * Deduct every resting sell.
+     * @brief Subtract every resting sell from the figure.
      *
-     * Declarable by any adapter without establishing anything, because it errs in the only safe
-     * direction: if the broker had already deducted them the result over-refuses, which costs a
-     * trade, where the other error sells the same shares twice.
-     *
-     * **There is deliberately no second value, and the reason is worth keeping.** A broker that
-     * reports a figure already net of resting orders is double-counted by this rule, which refuses an
-     * honest exit -- a real defect, and one this axis was originally shaped to express. It cannot be
-     * expressed safely with what a broker publishes. Such a figure accounts for the orders the broker
-     * saw *when it computed the figure*, so a guard trusting it must still deduct anything
-     * acknowledged since -- and nothing can identify those orders. `OrderSnapshot::ordered_at_` is
-     * optional and no shipped adapter fills it, because KIS's working-order inquiry publishes no
-     * timestamp at all; and a working-order poll replaces this library's own reservation rows with the
-     * broker's, losing the one marker that distinguished them. So the only implementable rule is this
-     * one, and an enumerator whose sole safe behaviour duplicates another is not offered.
-     * `plan/todo/netted-sellable-figures.md` carries the work.
+     * Safe whatever the broker does: if the broker already deducted them, sells are over-refused,
+     * never doubled.
      */
     DEDUCT,
   };
 
-  /** What the figure covers. Unestablished by default, which refuses. */
+  /** @brief What the figure covers; unestablished by default. */
   Coverage coverage_ = Coverage::UNESTABLISHED;
-  /** How the guard must treat resting sells against it. Unestablished by default, which refuses. */
+  /** @brief How resting sells are treated; unestablished by default. */
   RestingTreatment resting_ = RestingTreatment::UNESTABLISHED;
   /**
-   * False when this basis is a stated treatment rather than a measured broker fact.
+   * @brief Whether the basis was confirmed from a real broker response, rather than stated as a policy.
    *
-   * Nothing in this library sets it true. It is here so that "we apply the conservative rule" stays
-   * distinguishable, in the type, from "somebody read a real response and confirmed this" -- the
-   * distinction `issues/pre-trade-checks-sellable-deduction.md` records in prose because no type
-   * could hold it.
+   * Nothing in the library sets it to `true` today.
    */
   bool verified_ = false;
 
-  /** Whether the guard may measure a sell against a figure carrying this basis at all. */
+  /**
+   * @brief Tests whether `RiskGuard` may check a sell against a figure with this basis.
+   * @return `true` if the coverage is `WHOLE_HOLDING` and the treatment is stated.
+   */
   constexpr bool is_enforceable() const noexcept {
     return coverage_ == Coverage::WHOLE_HOLDING && resting_ != RestingTreatment::UNESTABLISHED;
   }
 };
 
-/** Returns a stable lowercase name for `coverage`, for logs and refusal detail. */
+/**
+ * @brief Returns a lowercase name for a coverage, such as `"whole_holding"`, for logs.
+ * @param coverage The coverage.
+ * @return The name.
+ */
 inline constexpr std::string_view sellable_coverage_name(SellableBasis::Coverage coverage
 ) noexcept {
   switch (coverage) {
@@ -857,7 +906,11 @@ inline constexpr std::string_view sellable_coverage_name(SellableBasis::Coverage
   return "unestablished";
 }
 
-/** Returns a stable lowercase name for `treatment`, for logs and refusal detail. */
+/**
+ * @brief Returns a lowercase name for a treatment, such as `"deduct"`, for logs.
+ * @param treatment The treatment.
+ * @return The name.
+ */
 inline constexpr std::string_view sellable_resting_name(SellableBasis::RestingTreatment treatment
 ) noexcept {
   switch (treatment) {
@@ -869,116 +922,96 @@ inline constexpr std::string_view sellable_resting_name(SellableBasis::RestingTr
   return "unestablished";
 }
 
-/** One broker-neutral position in an account holdings snapshot. */
+/** @brief One position row in a holdings snapshot. */
 struct HoldingPosition {
-  /** What is held. A broker reports a holding with no venue, so this carries the identity venue. */
+  /** @brief The instrument held (brokers report holdings without a trading venue). */
   InstrumentId instrument_;
-  /** The instrument's display name as the broker spells it. */
+  /** @brief The instrument's name as the broker spells it. */
   std::string name_;
   /**
-   * The quantity in this row.
+   * @brief The quantity in this row.
    *
-   * A broker may report one instrument across several rows, so this is not necessarily the whole
-   * position. Size a holding with `Portfolio::net_quantity_of`, never from one row.
+   * One instrument may span several rows; size a holding with `Portfolio::net_quantity_of`.
    */
   Decimal64 quantity_;
   /**
-   * How much of it the broker says may be sold now.
+   * @brief How much the broker says may be sold now.
    *
-   * Empty means the broker did not state one, which is not the same as zero. Whether the figure is
-   * already net of resting sell orders is not stated by either broker and is not assumed here.
+   * Empty if the broker did not say, which is not zero. What it covers is the row's
+   * `sellable_basis_`, or else the snapshot's `HoldingsSnapshot::sellable_basis_`.
    */
   std::optional<Decimal64> sellable_quantity_;
   /**
-   * What *this row's* `sellable_quantity_` is evidence of, when it did not come from the holdings read.
+   * @brief What this row's `sellable_quantity_` covers, when the figure came from a per-instrument
+   *   inquiry rather than the holdings read.
    *
-   * Empty means the figure arrived with the snapshot and `HoldingsSnapshot::sellable_basis_` describes
-   * it, which is the ordinary case. It is filled only where a figure reached this row by another route
-   * -- a per-instrument inquiry, which answers for the one instrument asked about and says nothing
-   * about any other row.
-   *
-   * **Why a row needs its own at all.** Promoting an inquiry's basis to the whole portfolio lets one
-   * instrument's declaration certify another's: answer A by inquiry, and a populated but undeclared
-   * figure sitting on B is suddenly enforceable, so a wrong-sized B sell reaches the wire. Provenance
-   * has to stay with the figure it describes.
+   * Empty in the ordinary case, where `HoldingsSnapshot::sellable_basis_` applies.
    */
   std::optional<SellableBasis> sellable_basis_;
-  /** The broker's own average cost for the position. */
+  /** @brief The broker's average purchase price. */
   Decimal64 average_purchase_price_;
-  /** The mark the broker valued the position at. */
+  /** @brief The price the broker valued the position at. */
   Decimal64 last_price_;
-  /** Cost basis, as the broker computed it. */
+  /** @brief The cost basis, as the broker computed it. */
   Money purchase_value_;
-  /** Current value, as the broker computed it. */
+  /** @brief The market value, as the broker computed it. */
   Money market_value_;
-  /** Unrealized profit and loss on the position, as the broker reported it. */
+  /** @brief The unrealized profit or loss, as the broker reported it. */
   Money unrealized_profit_loss_;
-  /** The broker's own return figure, as a fraction rather than a percentage. */
+  /** @brief The broker's return figure, as a fraction (`0.05` is 5%). */
   Decimal64 unrealized_return_;
 };
 
-/** Gross holdings totals for one currency without implicit conversion. */
+/** @brief The broker's holdings totals for one currency. */
 struct HoldingsTotals {
-  /** The currency these totals are in. There is one row per currency and no conversion. */
+  /** @brief The currency; there is one totals row per currency, never converted. */
   Currency currency_;
   /**
-   * The broker's own cost-basis total for `currency_`.
+   * @brief The broker's total cost basis in `currency_`.
    *
-   * Read from the broker's summary row, **not** summed from `positions_`. The two need not agree:
-   * a paged holdings inquiry can return part of the positions beside an account-wide summary.
+   * From the broker's summary, not summed from the positions; the two can differ when the
+   * positions were paged.
    */
   Decimal64 purchase_value_;
-  /** The broker's own market-value total for `currency_`. Read from its summary, as above. */
+  /** @brief The broker's total market value in `currency_`, from its summary. */
   Decimal64 market_value_;
-  /** The broker's own unrealized profit and loss for `currency_`. Read from its summary, as above. */
+  /** @brief The broker's total unrealized profit or loss in `currency_`, from its summary. */
   Decimal64 unrealized_profit_loss_;
 };
 
 
-/** Point-in-time normalized positions and per-currency totals. */
+/** @brief An account's positions and per-currency totals at one point in time. */
 struct HoldingsSnapshot {
-  /** Every position row the broker reported; one instrument may appear in more than one. */
+  /** @brief Every position row; one instrument may appear in more than one. */
   std::vector<HoldingPosition> positions_;
-  /** One totals row per currency held. */
+  /** @brief One totals row per currency held. */
   std::vector<HoldingsTotals> totals_;
-  /** When this process received the answer, which is what a staleness gate measures against. */
+  /** @brief When this process received the snapshot (brokers do not timestamp holdings). */
   std::chrono::system_clock::time_point received_at_;
   /**
-   * What `HoldingPosition::sellable_quantity_` on these rows is evidence of.
+   * @brief What the rows' `sellable_quantity_` figures cover (unless a row carries its own).
    *
-   * Describes **every** populated row in this snapshot, which is why it sits here rather than on
-   * each row: one read has one basis, and a per-row basis would invite an adapter to vary it
-   * without evidence. An adapter whose response would need two different bases to describe it must
-   * fail the snapshot rather than pick one.
-   *
-   * Defaults to unestablished, so an adapter that fills a sellable quantity and states nothing has
-   * its sells refused rather than measured against a figure nobody has characterized.
+   * Defaults to unestablished, so an adapter that fills sellable quantities without stating this
+   * has its sells refused.
    */
   SellableBasis sellable_basis_;
 };
 
-/**
- * Where this library learns what may be sold of a position.
- *
- * Named for the **source** rather than for a capability, deliberately. A `has_*` constant on
- * `BrokerCaps` answers whether the *broker* implements an operation, and by that question KIS's
- * answer is "yes, and this library does not use it": 매도가능수량조회 exists and is documented, and
- * the figure it returns is already on every holdings snapshot, so spending a request per instrument
- * to fetch it again -- on an endpoint a demo account cannot call -- would buy nothing.
- *
- * Saying where the figure comes from states what is true without implying a gap in anyone's API,
- * and it gates the runner with one `if constexpr`.
- */
+/** @brief Where the library gets a broker's sellable quantity. */
 enum class SellableSource {
-  /** It arrives on the holdings snapshot; filling it costs no request at all. */
+  /** @brief On the holdings snapshot, at no extra request. */
   HOLDINGS,
-  /** The port has a per-instrument inquiry, spent only where the snapshot is silent. */
+  /** @brief From a per-instrument inquiry, made only where the snapshot has no figure. */
   INQUIRY,
-  /** This library has no way to learn it for this broker. */
+  /** @brief Not available for this broker. */
   NONE,
 };
 
-/** Returns a stable lowercase name for `source`, for logs and structured reporting. */
+/**
+ * @brief Returns a lowercase name for a source, such as `"inquiry"`, for logs.
+ * @param source The source.
+ * @return The name.
+ */
 inline constexpr std::string_view sellable_source_name(SellableSource source) noexcept {
   switch (source) {
     case SellableSource::HOLDINGS:
@@ -992,67 +1025,53 @@ inline constexpr std::string_view sellable_source_name(SellableSource source) no
 }
 
 /**
- * What the broker says may be spent, in one currency.
+ * @brief What the broker says may be spent, in one currency.
  *
- * Deliberately not cash, and the distinction is why this type exists rather than a `Money` in the
- * portfolio's cash list. The distinction is **ledger-modelled cash versus broker-reported buying
- * power**: `Portfolio::cash_` is what this library's own accounting says, and in a replay that
- * accounting credits a sale on the fill (`backtest::ReplayLedger::apply`) because it models no
- * settlement schedule at all. A broker's buying power is the broker's own answer, which prices in
- * unsettled proceeds on its own terms and excludes whatever it is already reserving against resting
- * orders. Carrying that answer in the field meant for the library's accounting would make one
- * number mean two things depending on who last wrote it.
- *
- * `cash_` is the credit-free figure both brokers publish — Toss's `cashBuyingPower`, KIS's
- * `nrcvb_buy_amt`. A credit-inclusive figure is that broker's own and stays reachable through its
- * client: this library has no model of credit, and a number without the model is how a strategy
- * discovers leverage by accident.
- *
- * `received_at_` is the local clock, not the broker's, because neither broker timestamps the
- * answer. It is therefore when the figure *arrived* rather than when it was true, which is the
- * weaker of the two claims and is the one this field makes. A replay fills it with the snapshot
- * time for the same reason — that is when the modelled figure was read — and a caller must not read
- * it as evidence that a broker answered at that moment.
+ * The broker's own figure (Toss `cashBuyingPower`, KIS `nrcvb_buy_amt`): it counts unsettled
+ * proceeds on the broker's terms, excludes amounts reserved for resting orders, and includes no
+ * credit. It is not the library's own `Portfolio::cash_`. In a backtest the ledger fills it with
+ * modelled cash.
  */
 struct BuyingPower {
-  /** The spendable amount the broker stated, with its currency. */
+  /** @brief The amount that may be spent. */
   Money cash_;
-  /** When the figure arrived, on this machine's clock; see the note above on what that claims. */
+  /**
+   * @brief When the figure was received, on this machine's clock (brokers do not timestamp it).
+   *
+   * In a backtest, the snapshot time.
+   */
   std::chrono::system_clock::time_point received_at_{};
 };
 
 /**
- * Calendar date without a time of day or zone.
+ * @brief A calendar date with no time of day or time zone.
  *
- * Settlement and inquiry-range values are calendar dates in the broker's own
- * locale. Converting them to a time point would attach a zone the broker never
- * stated, so they are kept as plain dates.
+ * Settlement dates, calendar days and inquiry ranges are dates in the broker's local calendar.
  */
 struct Date {
-  /**
-   * The four-digit year.
-   *
-   * **A `Date` parsed from a broker string is checked digit by digit.** `std::stoi` skips leading
-   * whitespace, accepts a sign, takes the digits that follow and ignores the rest, so it returns `2`
-   * for `"2x"`, `" 2"` and `"+2"` alike, and a fixed-width field split into components and handed to
-   * it becomes a real date that is not the one on the wire. No adapter reads a date that way any
-   * more: KIS and Kiwoom share `broker_detail::compact_date` for `YYYYMMDD`, and Toss's
-   * `parse_calendar_date` checks `YYYY-MM-DD` the same way, so a malformed value is unreadable rather
-   * than different. Where it lands then depends on the field -- `StatedDate::State::UNREADABLE` for
-   * an instrument's dates, a dropped and counted row for a calendar day.
-   */
+  /** @brief The year. */
   int year_{0};
-  /** The month, `1`-`12`. Zero means unset. */
+  /** @brief The month, `1`-`12`; zero means unset. */
   unsigned month_{0};
-  /** The day of the month, `1`-`31`. Zero means unset. */
+  /** @brief The day of the month, `1`-`31`; zero means unset. */
   unsigned day_{0};
 
-  /** Compares two calendar dates for component-wise equality. */
+  /**
+   * @brief Compares two dates.
+   * @param lhs The first date.
+   * @param rhs The second date.
+   * @return `true` if year, month and day are equal.
+   */
   friend bool operator==(const Date& lhs, const Date& rhs) {
     return lhs.year_ == rhs.year_ && lhs.month_ == rhs.month_ && lhs.day_ == rhs.day_;
   }
 
-  /** Orders calendar dates chronologically. */
+  /**
+   * @brief Orders dates chronologically.
+   * @param lhs The first date.
+   * @param rhs The second date.
+   * @return `true` if `lhs` is earlier.
+   */
   friend bool operator<(const Date& lhs, const Date& rhs) {
     if (lhs.year_ != rhs.year_) {
       return lhs.year_ < rhs.year_;
@@ -1065,17 +1084,13 @@ struct Date {
 };
 
 /**
- * Returns the Gregorian date `days` after 1970-01-01, counting negative days backwards.
+ * @brief Converts a day count since 1970-01-01 to a Gregorian date.
  *
- * Pure arithmetic on a day count, deliberately: `std::chrono`'s calendar types are C++20 and this
- * library promises C++17, and the alternatives are worse than the eleven lines below. `gmtime_r` is
- * not portable to Windows without a second spelling and both take a `time_t`, which is not
- * guaranteed to be wide enough; `localtime` would attach the *process's* zone to a date that belongs
- * to a market. This is Howard Hinnant's `civil_from_days`, whose derivation and proof are published
- * with it, and it is exact for every representable day rather than for a range somebody tested.
+ * Howard Hinnant's `civil_from_days`, exact for any day count whose year fits an `int` (far beyond
+ * years 1 to 9999). The result is not checked against `is_valid_date`'s year range.
  *
- * The result is not range-checked against `is_valid_date`: every day count maps to a real date, and
- * a caller handing this a day count outside year 1..9999 has a bug this function cannot diagnose.
+ * @param days Days after 1970-01-01; negative counts go backwards.
+ * @return The date.
  */
 inline Date date_from_epoch_days(std::int64_t days) {
   // Shifts the era so that the year starts in March, which is what removes the leap-day special
@@ -1098,7 +1113,11 @@ inline Date date_from_epoch_days(std::int64_t days) {
   };
 }
 
-/** Returns whether `date` is a valid Gregorian calendar date. */
+/**
+ * @brief Tests whether a date exists in the Gregorian calendar, in years 1 to 9999.
+ * @param date The date.
+ * @return `true` if valid.
+ */
 inline bool is_valid_date(const Date& date) {
   if (date.year_ < 1 || date.year_ > 9999 || date.month_ < 1 || date.month_ > 12) {
     return false;
@@ -1114,49 +1133,38 @@ inline bool is_valid_date(const Date& date) {
   return date.day_ >= 1 && date.day_ <= days;
 }
 
-/** Which kind of venue a `VenueKey` names. */
+/** @brief Which kind of venue a `VenueKey` names. */
 enum class VenueKeyKind {
-  /** Applies to any venue. Every rate row that existed before venue-aware costing is this. */
+  /** @brief Any venue (a venue-neutral rate). */
   ANY,
-  /** A `Venue` this library normalizes. */
+  /** @brief A `Venue` the library normalizes. */
   NORMALIZED,
-  /** A code the broker named that this library does not normalize, preserved verbatim. */
+  /** @brief A broker venue code the library does not normalize, kept verbatim. */
   RAW,
 };
 
 /**
- * Which venue a commission rate applies to, as a key that cannot be ambiguous.
+ * @brief Which venue a commission rate applies to: any venue, a normalized `Venue`, or a raw code.
  *
- * **The three kinds are mutually exclusive, and that is the whole point.** An earlier design carried a
- * `Venue` beside a preserved code and let `Venue::UNSPECIFIED` mean "no venue stated", which made an
- * unnormalized row indistinguishable from a venue-neutral one -- so a rate published for one unknown
- * market could be charged on any venue at all. "Nobody said" is `ANY`; "a venue I know" is
- * `NORMALIZED`; "a venue I do not know, spelled as the broker spelled it" is `RAW`. A `RAW` key never
- * matches a `NORMALIZED` one even when the text looks the same, because the library has not established
- * that they mean the same market.
- *
- * `Venue::UNSPECIFIED` is refused as a normalized key for the same reason: it is the absence of a
- * statement, and the absence of a statement is `ANY`.
- *
- * **`Venue::COMBINED` is storable and is refused as an *execution* assertion**, and the two halves of
- * that belong in different places. A broker that publishes a consolidated rate must be representable,
- * so the key holds it. But `COMBINED` is what `normalized_venue` maps KIS's `SOR` to -- consolidated
- * *routing*, not a venue an order matched on -- so `backtest::CommissionPolicy` rejects it as the venue
- * a fill is asserted to have happened at. Costing against it would be a guess wearing a normalized name.
+ * The three kinds never match each other: a `RAW` key never equals a `NORMALIZED` one even if the
+ * text looks the same. A backtest refuses `Venue::COMBINED` as the venue a fill happened at, since
+ * it names consolidated routing (KIS `SOR`), not where an order matched.
  */
 class VenueKey {
 public:
-  /** Constructs the neutral key, which applies to any venue. */
+  /** @brief Constructs the key for any venue. */
   VenueKey() = default;
 
-  /** Returns the neutral key: this rate applies whatever venue a fill happened at. */
+  /**
+   * @brief Returns the key for any venue.
+   * @return A key of kind `ANY`.
+   */
   static VenueKey any() noexcept { return VenueKey(); }
 
   /**
-   * Returns a key naming a venue this library normalizes, or nothing for `UNSPECIFIED`.
-   *
-   * `UNSPECIFIED` is refused rather than accepted and treated as neutral, because a caller who has a
-   * `Venue` variable holding it has not stated a venue and should say so with `any()`.
+   * @brief Makes a key for a normalized venue.
+   * @param venue The venue; `UNSPECIFIED` is not a venue (use `any()`).
+   * @return The key, or `std::nullopt` for `Venue::UNSPECIFIED`.
    */
   static std::optional<VenueKey> normalized(Venue venue) {
     if (venue == Venue::UNSPECIFIED) {
@@ -1168,7 +1176,11 @@ public:
     return key;
   }
 
-  /** Returns a key preserving a venue code this library does not normalize, or nothing if it will not fit. */
+  /**
+   * @brief Makes a key for a venue code the library does not normalize.
+   * @param code The broker's code: 1 to 8 characters, each `A`-`Z`, `0`-`9` or `_`.
+   * @return The key, or `std::nullopt` if `code` is empty or cannot be stored.
+   */
   static std::optional<VenueKey> raw(std::string_view code) {
     auto stored = Code<8>::try_make(code);
     if (!stored || stored->empty()) {
@@ -1180,25 +1192,38 @@ public:
     return key;
   }
 
-  /** Returns which kind of venue this key names. */
+  /**
+   * @brief Returns the key's kind.
+   * @return `ANY`, `NORMALIZED` or `RAW`.
+   */
   VenueKeyKind kind() const noexcept { return kind_; }
 
-  /** Returns whether this key applies to any venue. */
+  /**
+   * @brief Tests whether the key is for any venue.
+   * @return `true` for kind `ANY`.
+   */
   bool is_any() const noexcept { return kind_ == VenueKeyKind::ANY; }
 
-  /** Returns the normalized venue; meaningful only when `kind()` is `NORMALIZED`. */
+  /**
+   * @brief Returns the normalized venue.
+   * @return The venue for kind `NORMALIZED`; `UNSPECIFIED` otherwise.
+   */
   Venue venue() const noexcept { return venue_; }
 
-  /** Returns the preserved code; empty unless `kind()` is `RAW`. */
+  /**
+   * @brief Returns the raw venue code.
+   * @return The code for kind `RAW`; empty otherwise.
+   */
   const Code<8>& raw_code() const noexcept { return raw_; }
 
   /**
-   * Returns whether this key is the one `asserted` names.
+   * @brief Tests whether two keys name the same venue, exactly in kind and value.
    *
-   * Exact in both kind and value. A `RAW` key never matches a `NORMALIZED` one, and neither matches
-   * `ANY`: falling back to a neutral rate is `CommissionSchedule::rate_for`'s second pass, deliberately
-   * not something this function does, so that "an exact rate exists" and "a neutral rate exists" can
-   * never be confused at the point of comparison.
+   * No fallback: an `ANY` key matches only `ANY`. Falling back to a neutral rate is done by
+   * `CommissionSchedule::rate_for`.
+   *
+   * @param asserted The key to compare with.
+   * @return `true` if the kinds and values are equal.
    */
   bool matches(const VenueKey& asserted) const noexcept {
     if (kind_ != asserted.kind_) {
@@ -1215,10 +1240,20 @@ public:
     return false;
   }
 
-  /** Compares kind and value. */
+  /**
+   * @brief Compares kind and value; same as `matches`.
+   * @param lhs The first key.
+   * @param rhs The second key.
+   * @return `true` if they match.
+   */
   friend bool operator==(const VenueKey& lhs, const VenueKey& rhs) noexcept { return lhs.matches(rhs); }
 
-  /** The negation of `operator==`. */
+  /**
+   * @brief Compares two keys for inequality.
+   * @param lhs The first key.
+   * @param rhs The second key.
+   * @return `true` if they do not match.
+   */
   friend bool operator!=(const VenueKey& lhs, const VenueKey& rhs) noexcept { return !(lhs == rhs); }
 
 private:
@@ -1227,7 +1262,11 @@ private:
   Code<8> raw_;
 };
 
-/** Returns a stable lowercase name for `kind`, for a report to state what a rate was keyed on. */
+/**
+ * @brief Returns a lowercase name for a key kind, such as `"raw"`, for reports.
+ * @param kind The kind.
+ * @return The name.
+ */
 inline constexpr std::string_view venue_key_kind_name(VenueKeyKind kind) noexcept {
   switch (kind) {
     case VenueKeyKind::ANY:
@@ -1240,15 +1279,19 @@ inline constexpr std::string_view venue_key_kind_name(VenueKeyKind kind) noexcep
   return "unknown";
 }
 
-/** Where a commission schedule's numbers came from. */
+/** @brief Where a commission schedule's numbers came from. */
 enum class CommissionOrigin {
-  /** The broker published them through an inquiry this library called. */
+  /** @brief The broker published them, through an inquiry the library made. */
   BROKER_PUBLISHED,
-  /** A caller stated them, from a published fee page or their own agreement. */
+  /** @brief The caller stated them, from a fee page or their own agreement. */
   CALLER_STATED,
 };
 
-/** Returns a stable lowercase name for `origin`, for a report to state where a rate came from. */
+/**
+ * @brief Returns a lowercase name for an origin, such as `"caller_stated"`, for reports.
+ * @param origin The origin.
+ * @return The name.
+ */
 inline constexpr std::string_view commission_origin_name(CommissionOrigin origin) noexcept {
   switch (origin) {
     case CommissionOrigin::BROKER_PUBLISHED:
@@ -1259,139 +1302,89 @@ inline constexpr std::string_view commission_origin_name(CommissionOrigin origin
   return "unknown";
 }
 
-/** Whether a dated row covers a date, when that is knowable at all. */
+/** @brief Whether a commission rate applies on a date. */
 enum class RateApplicability {
-  /** A bound this library could read puts the date outside the row's window. */
+  /** @brief A readable date bound puts the date outside the rate's window. */
   NO,
-  /** Every bound was readable, and they cover the date. */
+  /** @brief Every bound was readable, and they cover the date. */
   YES,
   /**
-   * No readable bound excludes the date, and a bound that could not be read might have.
+   * @brief Unknown: no readable bound excludes the date, but a bound could not be read.
    *
-   * Deliberately not folded into `NO`: the row may well be the one in force, so a caller who reaches
-   * for another row here charges a rate on the strength of something nobody established.
+   * Do not fall back to another rate on this answer; the unreadable row may be the one in force.
    */
   UNREADABLE,
 };
 
 /**
- * One commission rate a broker charges, and the dates it applies on.
+ * @brief One commission rate, the market and venue it applies to, and the dates it applies on.
  *
- * A rate is a fraction of traded value rather than a percentage, matching
- * `backtest::CommissionModel::rate_`: `0.00015` is the order of magnitude a Korean online
- * brokerage charges.
- *
- * Both bounds are optional. Absent usually means open-ended in that direction, which is how Toss
- * publishes them — a `null` end date is a rate with no scheduled change. Absent is deliberately not
- * "today": a schedule that started before the account did is a normal thing to be told, and
- * inventing a start for it would make a date comparison say something the broker did not.
- *
- * **Absent is not the only way a bound can be empty, and the two are held apart.** A bound that was
- * present and could not be read leaves the optional empty *and* sets its `_unreadable_` flag, so
- * `applies_on` answers a definite no rather than treating the row as unbounded. Before that
- * distinction existed, a damaged `endDate` made an expired rate read as current and a damaged
- * `startDate` made a future one read as already in force — an unreadable value downgraded to the
- * most permissive reading available, which is the shape Decision 6 exists to forbid.
- *
- * There is no per-order floor and no transaction tax here, because neither broker publishes one. A
- * replay states a sale-side tax itself, with `backtest::NextBarFillModel::with_sell_tax`.
+ * Rates are fractions of traded value (`0.00015`, not `0.015`). An absent date bound is open-ended
+ * in that direction; a bound that was present but unreadable sets `from_unreadable_` or
+ * `until_unreadable_`, and then `applies_on` answers `UNREADABLE` rather than treating the row as
+ * open-ended. No per-order minimum or transaction tax is modelled here; a backtest states a sale
+ * tax with `backtest::NextBarFillModel::with_sell_tax`.
  */
 struct CommissionRate {
-  /** The market this rate applies to, when the library normalizes it; see `other_` when it does not. */
+  /** @brief The market the rate applies to; meaningless when `other_` is set. */
   Country country_{Country::KR};
   /**
-   * The market the broker named, when this library does not normalize it.
+   * @brief The broker's market code, when the library does not normalize that market.
    *
-   * Empty on every row whose market is one of the normalized countries, and `country_` means
-   * nothing when this is set. Toss's specification requires a client to accept unknown values of
-   * its market enum, and this library's answer to an unrecognized wire value is to preserve it
-   * rather than drop it — the same shape `InstrumentId::other_` uses, for the same reason: a
-   * schedule that silently omitted a market would be a successful, incomplete answer with no way
-   * for a caller to see what was missing.
-   *
-   * A code too long or too odd for `Code<16>` cannot be preserved, and such a row is skipped rather
-   * than reported under a market it does not belong to.
+   * Empty for a normalized market. A broker row whose market code cannot be stored here is skipped
+   * and counted in `CommissionSchedule::dropped_`.
    */
   Code<16> other_;
   /**
-   * Which venue this rate applies to.
+   * @brief The venue the rate applies to.
    *
-   * `VenueKey::any()` on every row a broker publishes today, and on every row that existed before
-   * venue-aware costing — which is what makes the venue dimension additive rather than a migration.
-   * Neither broker publishes a per-venue rate: KRX and NXT charge differently and a caller states
-   * that from the published fee page, keyed on their own account's channel.
+   * `VenueKey::any()` on every rate a broker publishes; no broker publishes per-venue rates, so a
+   * caller states KRX and NXT rates from the fee page.
    */
   VenueKey venue_;
-  /** The broker's own commission, as a fraction of traded value: `0.00015`, not `0.015`. */
+  /** @brief The broker's commission, as a fraction of traded value (`0.00015`, not `0.015`). */
   Decimal64 rate_;
   /**
-   * The second charged component, when the rate's source distinguishes one -- and **empty when
-   * nobody said**.
+   * @brief The institution fee (유관기관제비용), as a fraction of traded value, if stated separately.
    *
-   * Korean equity trading carries 유관기관제비용 beside the broker's commission: an institution fee,
-   * charged by different parties (the exchange, the depository), differing by venue independently of
-   * the commission. A schedule carrying one combined number is wrong for whichever component it omits.
-   *
-   * **Three states, because "no separate charge" and "nobody said" are different answers.** Empty
-   * means the source stated one rate and nothing about its composition -- which is every row Toss
-   * publishes, since its schedule is a single `commissionRate`. A present zero is a stated zero. A
-   * present positive value is a second, non-overlapping charge. A report reading an empty one states
-   * its commission total as *inclusive* and its institution total as absent, rather than claiming a
-   * known zero for something nobody established.
+   * Empty means the source gave one combined rate and said nothing about its parts (every Toss
+   * row); a report then treats `rate_` as inclusive. A present zero is a stated zero; a positive
+   * value is charged in addition to `rate_`.
    */
   std::optional<Decimal64> institution_rate_;
   /**
-   * The first date the rate applies on. Empty is open-ended, and deliberately not "today".
-   *
-   * **Empty means open-ended only when `from_unreadable_` is false.** A bound the source stated and
-   * this library could not read is empty here too, which is why the flag exists: the two facts are
-   * different and one optional cannot carry both.
+   * @brief The first date the rate applies on; empty is open-ended unless `from_unreadable_` is set.
    */
   std::optional<Date> from_;
-  /** The last date the rate applies on. Empty is no scheduled change, subject to `until_unreadable_`. */
+  /** @brief The last date the rate applies on; empty is open-ended unless `until_unreadable_` is set. */
   std::optional<Date> until_;
   /**
-   * Whether `from_` is empty because the source stated a start this library could not read.
+   * @brief Whether the source stated a start date that could not be read (so `from_` is empty).
    *
-   * False on every row whose start was absent or parsed, which is every row a caller states by hand
-   * and every row a broker publishes readably. True means the broker named a first date in a form
-   * nothing here can hold -- a wrong length, a wrong separator, a digit that is not one, a day that
-   * is not a real calendar day, or a JSON value that is not a string at all.
-   *
-   * The row is kept rather than dropped, because the rate itself is intact and one bad bound must
-   * not lose a schedule's other rows. What changes is what the row is allowed to answer:
-   * `applies_on` returns `RateApplicability::UNREADABLE` for any date the readable bounds do not
-   * already exclude, so the row neither applies nor quietly steps aside.
+   * The row is kept, but `applies_on` answers `UNREADABLE` for any date the readable bounds do not
+   * exclude.
    */
   bool from_unreadable_{false};
-  /** @copydoc from_unreadable_ */
+  /**
+   * @brief Whether the source stated an end date that could not be read (so `until_` is empty).
+   *
+   * The row is kept, but `applies_on` answers `UNREADABLE` for any date the readable bounds do not
+   * exclude.
+   */
   bool until_unreadable_{false};
 
   /**
-   * Returns whether this row names a market this library normalizes.
-   *
-   * An unnormalized row carries its market in `other_`, so an empty `other_` means `country_` is
-   * the answer. A row naming no market at all must therefore never be built: it would read as a
-   * normalized row for `country_`'s default, which is to say a rate for Korea the broker never
-   * published. Parsers skip such a row and count it in `dropped_`.
+   * @brief Tests whether the rate's market is a normalized `Country`.
+   * @return `true` if `other_` is empty, so `country_` names the market.
    */
   bool normalized() const noexcept { return other_.empty(); }
 
   /**
-   * Returns whether this rate is the one in force on `date`, or that the row cannot say.
+   * @brief Tests whether the rate applies on a date.
    *
-   * **Not a `bool`, and the loud break is the point.** This predicate used to return one, meaning
-   * "in force", and every caller wrote `if (rate.applies_on(day))`. Adding a third answer under that
-   * signature would have made an unreadable window read as `false` at every one of those sites --
-   * safe where `false` means "do nothing", and a wrong charge where it means "use the other row
-   * instead", which is what a fallback path does. An `enum class` does not convert to `bool`, so
-   * every existing caller stops compiling and is made to decide which of the two it is.
-   *
-   * **Damage the date makes immaterial reports `NO`, not `UNREADABLE`.** A row with a readable start
-   * of 2026-01-01 and an unreadable end is a plain no on 2025-06-01: the readable bound already
-   * excluded the date and no reading of the other could have changed that. Reporting doubt there
-   * would be doubt this library does not have, and a refusal a caller cannot act on is one they
-   * learn to route around.
+   * @param date The date.
+   * @return `NO` if a readable bound excludes the date (even when the other bound is unreadable),
+   *   `UNREADABLE` if not excluded but a bound could not be read, and `YES` otherwise.
    */
   RateApplicability applies_on(const Date& date) const {
     if (excluded_on(date)) {
@@ -1404,10 +1397,9 @@ struct CommissionRate {
   }
 
   /**
-   * Returns whether a bound this library **could** read puts `date` outside this row's window.
-   *
-   * The half of the question that does not depend on damage. It stays public because this is an
-   * aggregate and a private section would stop a caller brace-initializing one.
+   * @brief Tests whether a readable bound puts a date outside the rate's window.
+   * @param date The date.
+   * @return `true` if `date` is before `from_` or after `until_`.
    */
   bool excluded_on(const Date& date) const {
     return (from_ && date < *from_) || (until_ && *until_ < date);
@@ -1415,97 +1407,66 @@ struct CommissionRate {
 };
 
 /**
- * The commission rates a broker published for one account, or a caller stated for their own.
+ * @brief The commission rates a broker published for an account, or a caller stated.
  *
- * Only one broker publishes any, so a caller reaches the published kind through a capability gate
- * rather than assuming it. An empty schedule from a broker that *does* publish them is a real answer —
- * the account has no stated rates — and is not the same as the broker having no such inquiry.
+ * An empty schedule from a broker that publishes rates is a real answer: the account has none.
  */
 struct CommissionSchedule {
-  /** Every rate row the broker published for the account. Empty is a real answer. */
+  /** @brief The rate rows. */
   std::vector<CommissionRate> rates_;
-  /** When the schedule arrived, on this machine's clock. */
+  /** @brief When the schedule was received, on this machine's clock. */
   std::chrono::system_clock::time_point received_at_{};
-  /** Whether a broker published these numbers or a caller stated them. */
+  /** @brief Whether a broker published the rates or a caller stated them. */
   CommissionOrigin origin_{CommissionOrigin::BROKER_PUBLISHED};
   /**
-   * Which tariff these numbers are, in the source's own words.
+   * @brief Which tariff the rates are, in the source's own words.
    *
-   * **Required on a caller-stated schedule, and a cost model refuses one without it.** A published
-   * fee page is a matrix of channel by venue, and the channel -- 온라인 영업점 개설 계좌,
-   * 온라인 뱅키스 계좌, 영업점매매 -- is a property of the account that no API states and that varies
-   * by an order of magnitude. Nothing here can select it, so a caller names the row they read, the
-   * report prints it, and omitting it is an error rather than a wrong number.
-   *
-   * A broker-published schedule carries the broker's own name and needs nothing from the caller.
+   * **Required for a caller-stated schedule**: a backtest's cost model refuses one without it,
+   * because fee pages differ by account channel (온라인 영업점 개설 계좌, 온라인 뱅키스 계좌,
+   * 영업점매매), which no API states. A broker-published schedule carries the broker's own name.
    */
   std::string tariff_;
 
   /**
-   * How many rows the broker sent that could not be represented at all.
+   * @brief How many broker rows were skipped because their market code could not be stored.
    *
-   * Nonzero means this schedule is **incomplete**: the broker named a market in a form nothing here
-   * can store -- a code too long for `Code<16>`, or no code at all -- and the row was skipped
-   * rather than reported under a market it does not belong to. A caller comparing a broker's own
-   * statement against this one needs to know the difference exists; a successful-looking schedule
-   * that had quietly lost rows is the failure this counter exists to prevent.
-   *
-   * It is a count rather than the rows themselves because what was lost is precisely the part that
-   * could not be held.
+   * Nonzero means the schedule is incomplete.
    */
   std::size_t dropped_{0};
 
   /**
-   * How many rows carry a date bound the source stated and this library could not read.
+   * @brief How many rows have a date bound that could not be read.
    *
-   * Nonzero means this schedule is **partly undated**: the rows are all here and their rates are
-   * intact, but at least one row's window is unknown, so a question whose answer that row could have
-   * changed is refused rather than answered from the rows that happen to be readable.
-   *
-   * It counts rows, not bounds -- a row with both bounds damaged counts once -- because what a
-   * caller does about it is per row: refetch the schedule, or state the rates by hand. Separate from
-   * `dropped_`, which counts rows that could not be **held** at all; these are held and cannot be
-   * **dated**.
+   * Nonzero means some rows' windows are unknown, so a lookup they could affect returns no rate
+   * (`RateSelection::bounds_unreadable_`). Unlike `dropped_`, these rows are kept.
    */
   std::size_t unreadable_bounds_{0};
 
-  /** What a lookup found, and whether an unreadable window is why it found nothing. */
+  /** @brief The result of `rate_for`: a rate, or why there is none. */
   struct RateSelection {
-    /** The rate in force, when one definitely is. */
+    /** @brief The rate in force, if one definitely is. */
     std::optional<CommissionRate> rate_;
     /**
-     * Whether a row whose window could not be read is why no rate was returned.
+     * @brief Whether an unreadable date window is why no rate was returned.
      *
-     * Never true together with a rate. A caller that falls back on an empty `rate_` -- to a stated
-     * tariff, to another schedule, to a zero -- must read this first: an absent rate means the
-     * schedule covers no such date, and an unreadable one means it may well cover it and nobody can
-     * tell. Falling back on the second charges a number the broker did not publish.
+     * Never `true` together with a rate. Check it before falling back to another rate: `true` means
+     * the schedule may cover the date, and nobody can tell.
      */
     bool bounds_unreadable_{false};
   };
 
   /**
-   * Returns the rate in force for `country` at `venue` on `date`, and why none is when none is.
+   * @brief Finds the rate in force for a market and venue on a date.
    *
-   * **Selection is two-pass, and that is what makes the venue dimension additive.** A row keyed to
-   * the venue `asserted` names wins; only when no such row exists does a venue-neutral row answer.
-   * So a schedule of neutral rows -- which is every schedule a broker publishes -- returns exactly
-   * what it returned before venues existed, including one that appends venue rows *after* a neutral
-   * row, which a plain first-match rule would have made unreachable.
+   * First the rows keyed to `asserted`'s venue are searched, then the venue-neutral ones; within
+   * each pass the first applicable row wins. If a row reached before any match has an unreadable
+   * window, the search stops and reports `bounds_unreadable_`. Asking with `VenueKey::any()` reads
+   * neutral rows only, so a schedule with only KRX and NXT rows answers nothing.
    *
-   * **A venue-specific schedule asked without an assertion refuses.** `VenueKey::any()` matches only
-   * neutral rows, so a schedule carrying KRX and NXT rows and no neutral one answers nothing rather
-   * than picking a venue nobody named. That is Decision 6: a caller who did not say where a fill
-   * happened is told, not guessed at.
-   *
-   * Within one pass the first matching row wins, as it always has. A broker publishing two
-   * overlapping rows for one country, venue and date is describing something this library cannot
-   * resolve, and picking the larger or the smaller would be inventing a policy nobody stated.
-   *
-   * **It returns a `RateSelection` rather than an `std::optional`, and that break is deliberate.**
-   * An empty optional said "the schedule covers no such date", and a row whose window could not be
-   * read is a different fact wearing the same emptiness. Callers fall back on emptiness, so the
-   * type has to make them look.
+   * @param country The market.
+   * @param asserted The venue the fill happened at, or `VenueKey::any()`.
+   * @param date The trading date.
+   * @return The rate, or none with `bounds_unreadable_` saying whether damage is why.
    */
   RateSelection rate_for(
     Country country,
@@ -1560,13 +1521,9 @@ struct CommissionSchedule {
   }
 
   /**
-   * Returns whether any rate for `country` carries a dated bound.
-   *
-   * Asked by a cost model before it prices a market whose trading day it cannot compute: if no rate
-   * for that market is dated, every candidate is the same whichever calendar named the day, and if
-   * one is, the day decides something and a date from elsewhere cannot decide it. Deliberately not
-   * "does the row that would be selected carry a bound" -- the row that would be selected *on the
-   * wrong date* says nothing about the row that would have won on the right one.
+   * @brief Tests whether any rate for a market has a date bound, readable or not.
+   * @param country The market.
+   * @return `true` if a rate for `country` has `from_`, `until_`, or an unreadable bound.
    */
   bool any_dated_rate_for(Country country) const {
     for (const auto& rate : rates_) {
@@ -1583,82 +1540,60 @@ struct CommissionSchedule {
   }
 
   /**
-   * Returns the rate in force for `country` on `date` with no venue asserted.
+   * @brief Finds the venue-neutral rate in force for a market on a date.
    *
-   * The pre-venue spelling, kept so a caller who never named a venue keeps compiling and keeps its
-   * answer. It asks for `VenueKey::any()`, so it reads a neutral row and **refuses** a schedule that
-   * only carries venue-specific ones rather than choosing one of them.
+   * Same as `rate_for(country, VenueKey::any(), date)`.
+   *
+   * @param country The market.
+   * @param date The trading date.
+   * @return The rate, or none with `bounds_unreadable_` saying whether damage is why.
    */
   RateSelection rate_for(Country country, const Date& date) const {
     return rate_for(country, VenueKey::any(), date);
   }
 };
 
-/** Direction of an order. */
+/** @brief The side of an order. */
 enum class OrderSide {
   BUY,
   SELL,
 };
 
 /**
- * How an order's execution price is decided: its price *basis*.
+ * @brief How an order's price is decided (its price basis).
  *
- * This is one of three independent facts about an order, and it is worth
- * saying why they are three fields rather than one. A broker names an order
- * with a single code -- KIS's `ORD_DVSN` has twenty-eight of them -- but that
- * code is a product: `16` is a best-limit order, filled-or-killed, in the
- * regular session, and `45` is a best-limit order, immediate-or-cancel, in the
- * after-market. Flattening the product would mean six spellings of "best
- * limit", and every consumer that wanted to ask "is this a best-limit order"
- * would have to enumerate all six. So the basis lives here, the execution
- * condition lives in `TimeInForce`, and the session lives in `OrderSession`.
- *
- * Only combinations a broker actually publishes are accepted on a request; the
- * adapter holds the table and rejects anything else before any network I/O,
- * rather than approximating it with a nearby value. On a read path an
- * unrecognized combination surfaces as `UNKNOWN` with the broker's own code
- * preserved beside it, because an order placed through another channel must
- * still be reportable.
- *
- * **Whether a basis carries a price is a property of the basis**, and callers
- * and adapters both need it. `LIMIT`, `CONDITIONAL_LIMIT` and `STOP_LIMIT` are
- * priced by the caller. `MARKET` is not, and neither are `BEST_LIMIT`,
- * `PRIMARY_LIMIT`, `MID_PRICE` or `CLOSING_PRICE`: each of those names a rule
- * for reading a price off the book or the session rather than a number, which
- * is the whole point of asking for one. `carries_caller_price` states it once so
- * no adapter has to re-derive it.
+ * The execution condition is `TimeInForce` and the session is `OrderSession`; a broker's single
+ * order code (such as KIS `ORD_DVSN`) maps to all three. A request is accepted only for
+ * combinations the broker publishes; an adapter refuses others before any I/O. On a read, an
+ * unrecognized combination is `UNKNOWN`. `carries_caller_price` says which bases take a price.
  */
 enum class OrderType {
   UNKNOWN,
-  /** 지정가 -- fills at the stated price or better. */
+  /** @brief 지정가: fills at the stated price or better. */
   LIMIT,
-  /** 시장가 -- fills at whatever the book offers. */
+  /** @brief 시장가: fills at whatever the book offers. */
   MARKET,
-  /** 조건부지정가 -- a limit that becomes a market order at the close. */
+  /** @brief 조건부지정가: a limit that becomes a market order at the close. */
   CONDITIONAL_LIMIT,
-  /** 최유리지정가 -- priced at the best quote on the opposite side. */
+  /** @brief 최유리지정가: priced at the best quote on the opposite side. */
   BEST_LIMIT,
-  /** 최우선지정가 -- priced at the best quote on the order's own side. */
+  /** @brief 최우선지정가: priced at the best quote on the order's own side. */
   PRIMARY_LIMIT,
-  /** 중간가 -- priced at the midpoint of the spread. */
+  /** @brief 중간가: priced at the midpoint of the spread. */
   MID_PRICE,
-  /** 스톱지정가 -- a limit released when a trigger price is reached. */
+  /** @brief 스톱지정가: a limit released when a trigger price is reached. */
   STOP_LIMIT,
-  /** 시간외종가 -- priced at a session's closing price rather than quoted. */
+  /** @brief 시간외종가: priced at a session's closing price. */
   CLOSING_PRICE,
 };
 
 /**
- * Returns whether `type` is priced by the caller rather than by the market.
+ * @brief Tests whether an order type takes a price from the caller.
  *
- * A basis that is not priced by the caller must be sent with no price at all:
- * KIS's `ORD_UNPR` is documented as "시장가 등 주문시 "0"으로 입력", and a
- * best-limit or mid-price order takes its price from the book at the moment it
- * is worked. A basis that *is* priced by the caller and is sent without one
- * becomes an order at zero, which is why this is a function rather than a
- * comparison against `LIMIT` repeated in each adapter -- that comparison was
- * wrong for `CONDITIONAL_LIMIT`, and silently: 조건부지정가 is a limit
- * instruction until the close, and it was being transmitted with `ORD_UNPR=0`.
+ * A type that does not is sent without a price; a type that does must have one.
+ *
+ * @param type The order type.
+ * @return `true` for `LIMIT`, `CONDITIONAL_LIMIT` and `STOP_LIMIT`.
  */
 inline constexpr bool carries_caller_price(OrderType type) noexcept {
   return type == OrderType::LIMIT || type == OrderType::CONDITIONAL_LIMIT ||
@@ -1666,89 +1601,65 @@ inline constexpr bool carries_caller_price(OrderType type) noexcept {
 }
 
 /**
- * Returns whether `type` is released by a caller-stated trigger price.
+ * @brief Tests whether an order type takes a trigger price.
  *
- * Only `STOP_LIMIT`, which needs **both** numbers: the trigger decides when the
- * order is released and `carries_caller_price` still says it is a limit once it
- * is. Every other basis takes no trigger, and one stated on such a basis is
- * refused rather than dropped (Decision 6), because an adapter has nowhere to
- * put it and the order sent would be a plain limit the caller did not describe.
+ * A trigger stated on any other type is refused, not dropped. The trigger's direction, tick grid
+ * and relation to the limit are the broker's rules and are not checked by the library.
  *
- * Neither KIS nor Kiwoom documents the trigger's direction, its tick grid or a
- * relation to the limit, so none of those is checked here or in an adapter; the
- * broker is the authority and its refusal reaches the caller like any other.
+ * @param type The order type.
+ * @return `true` for `STOP_LIMIT` only.
  */
 inline constexpr bool carries_trigger_price(OrderType type) noexcept {
   return type == OrderType::STOP_LIMIT;
 }
 
 /**
- * How long an order lives and what it does with an unfilled remainder.
+ * @brief How long an order stays valid and what happens to an unfilled remainder.
  *
- * This is the execution condition and nothing else, which is what FIX means by
- * the name. A trading session is a different fact and lives in `OrderSession`:
- * an at-the-close order is a `DAY` order in the `CLOSING_AUCTION` session, not
- * a validity condition of its own. That separation is load-bearing -- Toss
- * spells both on one wire field (`timeInForce` carries `DAY`, `CLS` and `OPG`)
- * while KIS spells both inside `ORD_DVSN`, and a library that mirrored either
- * wire shape would put the same fact in different fields depending on which
- * broker reported it.
- *
- * `UNKNOWN` appears only on a read path, for a condition this library does not
- * normalize. It is never accepted on a request.
+ * The session is a separate field, `OrderSession`: an at-the-close order is `DAY` in the
+ * `CLOSING_AUCTION` session. `UNKNOWN` appears only on reads, never on requests.
  */
 enum class TimeInForce {
   UNKNOWN,
-  /** Rests until the session ends; an unfilled remainder is cancelled then. */
+  /** @brief Rests until the session ends; an unfilled remainder is cancelled then. */
   DAY,
-  /** Fills what it can immediately and cancels the remainder. */
+  /** @brief Fills what it can immediately and cancels the remainder. */
   IMMEDIATE_OR_CANCEL,
-  /** Fills entirely and immediately, or not at all. */
+  /** @brief Fills entirely and immediately, or not at all. */
   FILL_OR_KILL,
 };
 
 /**
- * The trading session an order is submitted into.
+ * @brief The trading session an order is submitted into.
  *
- * Both brokers have these and neither puts them where the other does, which is
- * the whole reason this is its own field: Toss reports the opening and closing
- * auctions through `timeInForce` (`OPG`, `CLS`) and KIS reports its pre-market,
- * after-hours and after-market sessions inside `ORD_DVSN`. Normalizing them
- * into one field is Decision 2b applied to two spellings of one fact.
- *
- * A value a broker does not offer is rejected on a request, naming the broker
- * and the session, before any network I/O.
+ * A session the broker does not offer is refused on a request before any I/O.
  */
 enum class OrderSession {
   UNKNOWN,
-  /** The continuous regular session. */
+  /** @brief The continuous regular session. */
   REGULAR,
-  /** The opening single-price auction (시가단일가; Toss `OPG`). */
+  /** @brief The opening single-price auction (시가단일가; Toss `OPG`). */
   OPENING_AUCTION,
-  /** The closing auction (Toss `CLS`, a US limit-on-close). */
+  /** @brief The closing auction (Toss `CLS`, a US limit-on-close). */
   CLOSING_AUCTION,
-  /** Before the open, at the previous session's close (장전 시간외). */
+  /** @brief Before the open, at the previous session's close (장전 시간외). */
   PRE_MARKET,
-  /** After the close, at that session's close (장후 시간외). */
+  /** @brief After the close, at that session's close (장후 시간외). */
   AFTER_HOURS,
-  /** The after-hours single-price auction (시간외 단일가). */
+  /** @brief The after-hours single-price auction (시간외 단일가). */
   AFTER_HOURS_AUCTION,
-  /** KRX's after-market session (애프터마켓). */
+  /** @brief KRX's after-market session (애프터마켓). */
   AFTER_MARKET,
-  /** NXT's GTP session. */
+  /** @brief NXT's GTP session. */
   GTP,
 };
 
 /**
- * Lifecycle state of an order.
+ * @brief Where an order stands in its lifecycle.
  *
- * `CANCEL_REJECTED`, `REPLACE_REJECTED`, and `REPLACED` describe the fate of a
- * modify or cancel instruction rather than the original order, matching how
- * brokers record those instructions as separate rows.
- *
- * `UNKNOWN` carries a lifecycle state this library does not recognize. Both
- * broker specifications require clients to tolerate unknown status codes, so a
- * single unrecognized order must not fail an entire order listing.
+ * `CANCEL_REJECTED`, `REPLACE_REJECTED` and `REPLACED` describe a cancel or modify instruction,
+ * which brokers list as rows of their own. `UNKNOWN` is a status the library does not recognize;
+ * one such row does not fail a listing.
  */
 enum class OrderStatus {
   UNKNOWN,
@@ -1765,310 +1676,203 @@ enum class OrderStatus {
 };
 
 /**
- * Broker-neutral instruction to open a new order.
+ * @brief An order to place, in broker-neutral form.
  *
- * `price_` must be present for a basis `carries_caller_price` names and absent
- * otherwise; `trigger_price_` must be present for `OrderType::STOP_LIMIT` -- which
- * needs both -- and absent otherwise. Adapters reject any other combination
- * before performing network I/O.
- *
- * `client_order_id_` is an idempotency key where the broker supports one. It is
- * never generated automatically, because a generated key would make a retry
- * look safe on brokers that provide no such guarantee.
+ * `price_` must be set exactly when `carries_caller_price(type_)`, and `trigger_price_` exactly
+ * for `STOP_LIMIT`. An `UNKNOWN` type, time in force or session, or a combination the broker does
+ * not offer at the requested venue, is refused before any I/O.
  */
 struct OrderRequest {
-  /** What to trade. Its `venue_` is identity; routing is this struct's own `venue_`. */
+  /** @brief The instrument; its `venue_` is identity, and routing is this struct's `venue_`. */
   InstrumentId instrument_;
-  /** Buy or sell. */
+  /** @brief Buy or sell. */
   OrderSide side_{OrderSide::BUY};
-  /** The price basis: limit, market, best-limit, conditional-limit, and so on. */
+  /** @brief The price basis: limit, market, best-limit, and so on. */
   OrderType type_{OrderType::LIMIT};
-  /** The execution condition: day, immediate-or-cancel, fill-or-kill. */
+  /** @brief How long the order stays valid. */
   TimeInForce time_in_force_{TimeInForce::DAY};
-  /** The session to trade in: regular, an auction, pre-market, after-hours. */
+  /** @brief The trading session. */
   OrderSession session_{OrderSession::REGULAR};
-  // `UNKNOWN` in `type_`, `time_in_force_` or `session_` is rejected before
-  // network I/O, and so is any combination of the three the broker's own code
-  // table does not contain for the requested venue.
   /**
-   * The venue to route this order to, where the broker offers a choice.
+   * @brief Where to route the order, if the broker offers a choice.
    *
-   * **Not `instrument_.venue_`, for the reason `OrderSnapshot::venue_` is not
-   * either.** An `InstrumentId` names an instrument and compares its venue, and
-   * every consumer that asks "what have I already got resting in this" matches
-   * a working order's `instrument_` against the instrument a caller names --
-   * `Portfolio::working_quantity`, `strategy::reconcile`, every ceiling in
-   * `RiskGuard`, and recovery's `row_corresponds`. A broker reports a holding
-   * without a venue, so an order whose identity carried the venue it was routed
-   * to would stop matching its own holding, and the resting quantity would read
-   * zero: no sellable deduction, no working-order component in the position
-   * ceiling, and a reconciliation that plans a second order beside the one
-   * already out.
+   * Set routing here, not in `instrument_.venue_` (an adapter refuses an identity venue other than
+   * the one it reports). `UNSPECIFIED` takes the broker's default:
+   * - KIS routes `UNSPECIFIED` to KRX; `COMBINED` is sent as `SOR`, which a KIS **demo** account
+   *   refuses;
+   * - Kiwoom requires a venue and refuses `UNSPECIFIED` before any request;
+   * - Toss offers no choice and refuses any venue but `UNSPECIFIED`.
    *
-   * So routing lives here and identity stays in `instrument_`, and the request
-   * has the same shape as the snapshot it will be read back as. `UNSPECIFIED`
-   * sends no venue at all and takes the broker's documented default.
-   *
-   * **Routing across both books is opt-in.** At KIS `UNSPECIFIED` routes to
-   * KRX, and `COMBINED` (sent as `SOR`) is the caller's choice -- a strategy
-   * runner's through `live::SessionExecutor::default_route`, which explains why
-   * a runner should prefer KRX or NXT until SOR has been observed. It is not the
-   * default because a KIS demo account refuses SOR, and a default that fails on
-   * demo would stop a demo run rehearsing the live one. Kiwoom requires a venue
-   * and refuses `UNSPECIFIED` before any request; Toss offers no venue choice
-   * and refuses any venue but `UNSPECIFIED`.
-   *
-   * An adapter refuses an `instrument_.venue_` that is not the identity venue
-   * it reports for that instrument, rather than routing on it, because a caller
-   * who sets it there means routing and would otherwise get it silently.
+   * A live runner sets it from `live::SessionExecutor::default_route`.
    */
   Venue venue_{Venue::UNSPECIFIED};
-  /** How much to trade, in the instrument's own units. */
+  /** @brief The quantity, in the instrument's units (shares). */
   Decimal64 quantity_;
-  /** The limit price. Required for `OrderType::LIMIT`, and refused for `OrderType::MARKET`. */
+  /** @brief The price; required when `carries_caller_price(type_)`, refused otherwise. */
   std::optional<Decimal64> price_;
   /**
-   * The price that releases a stop order, for a basis `carries_trigger_price` names.
+   * @brief The trigger price; required for `STOP_LIMIT`, refused otherwise.
    *
-   * Required for `OrderType::STOP_LIMIT` beside `price_`, and refused on every other basis. A
-   * broker whose `BrokerCaps::has_trigger_price` is false never receives one: `BrokerSession`
-   * refuses the request before the adapter, because an adapter that does not read this field
-   * would send the order without its releasing condition.
+   * A broker whose `BrokerCaps::has_trigger_price` is false never receives one: `BrokerSession`
+   * refuses the request first.
    */
   std::optional<Decimal64> trigger_price_;
   /**
-   * An idempotency key, where the broker offers one.
+   * @brief An idempotency key, if the broker offers one; never generated by the library.
    *
-   * Never generated by this library, so its absence stays a visible caller decision. Toss honours
-   * one for ten minutes; KIS has none for individual customers and **refuses** a request carrying
-   * this field, before authentication and before any socket write.
+   * Toss honours one for ten minutes. KIS has none for individual customers and refuses a request
+   * that carries one, before any I/O.
    */
   std::optional<std::string> client_order_id_;
-  /** Acknowledges the broker's high-value-order confirmation, where the broker requires one. */
+  /** @brief Confirms a high-value order, where the broker asks for that confirmation. */
   bool confirm_high_value_{false};
 };
 
 /**
- * Realized execution totals for one order.
+ * @brief What has filled on one order, and what it cost.
  *
- * Monetary members are optional because a broker need not report them, **but a present one is not
- * evidence of a fill and the two adapters differ**. Toss leaves one empty when the broker sent an
- * explicit JSON `null`; a field missing from the response altogether is a protocol error there, not
- * an empty optional. KIS sets `filled_amount_` on every row of its open-order and history listings,
- * from `tot_ccld_amt`, so an unfilled KIS order carries a present `Money{0, KRW}`, and never sets
- * `average_filled_price_` on an open-order row at all.
+ * @warning Test whether an order filled with `filled_quantity_`, never with whether an amount is
+ *   present: KIS reports a zero `filled_amount_` on unfilled orders, and Toss leaves amounts empty
+ *   when the broker sent `null`.
  *
- * Decide whether an order filled from `filled_quantity_`, which is always present and is zero
- * exactly when nothing has filled. Never from `filled_amount_.has_value()`.
+ * At Toss, an amount sent as `null` is empty, but a missing field fails the listing as a protocol
+ * error.
  */
 struct OrderExecution {
-  /**
-   * How much has filled so far. Zero on an unfilled order, and never absent.
-   *
-   * **This is the field to test a fill against**, for the reason the struct comment gives.
-   */
+  /** @brief The quantity filled so far; zero if nothing has filled. Always present. */
   Decimal64 filled_quantity_;
   /**
-   * The volume-weighted fill price, **only where the broker supplies it** -- not whenever a fill
-   * exists.
+   * @brief The average fill price, only where the broker supplies it.
    *
-   * KIS's open-order listing never sets it, including on a row it marks `PARTIAL_FILLED`, and its
-   * history sets it only for a positive `avg_prvs`. So an empty value says nothing about whether
-   * the order filled; `filled_quantity_` does.
+   * KIS's open-order listing never sets it, even on a partly filled order.
    */
   std::optional<Decimal64> average_filled_price_;
   /**
-   * The cash the fills came to, as the broker computed it.
+   * @brief The value of the fills, as the broker computed it.
    *
-   * Present on every KIS listing row, including an unfilled one, where it is zero. Absent at Toss
-   * when the broker reported none. See the note above: this is not a fill indicator.
+   * Present (zero) on every KIS row, filled or not; empty at Toss when not reported.
    */
   std::optional<Money> filled_amount_;
-  /** Commission charged so far, where the broker reports it per order. Absence as the struct comment describes. */
+  /** @brief Commission charged so far, if the broker reports it per order. */
   std::optional<Money> commission_;
-  /** Transaction tax charged so far, where the broker reports it per order. Absence as the struct comment describes. */
+  /** @brief Transaction tax charged so far, if the broker reports it per order. */
   std::optional<Money> tax_;
-  /** When the most recent fill happened, where the broker timestamps it. */
+  /** @brief When the most recent fill happened, if the broker timestamps it. */
   std::optional<std::chrono::system_clock::time_point> filled_at_;
-  /** The settlement date the broker stated, kept as a plain date in the broker's own locale. */
+  /** @brief The settlement date the broker stated. */
   std::optional<Date> settlement_date_;
 };
 
-/** Point-in-time normalized state of one order. */
+/** @brief The state of one order, as a broker listing reported it. */
 struct OrderSnapshot {
-  /** The broker's own order number, as a listing spells it. */
+  /** @brief The broker's order number. */
   std::string order_id_;
-  /** What the order is for. Carries the identity venue, never the routing one. */
+  /** @brief The instrument (identity venue; the routing venue is `venue_`). */
   InstrumentId instrument_;
-  /** The instrument's display name as the broker spells it. */
+  /** @brief The instrument's name as the broker spells it. */
   std::string name_;
-  /** Buy or sell. */
+  /** @brief Buy or sell. */
   OrderSide side_{OrderSide::BUY};
-  /** The price basis this library read from the broker's code. `UNKNOWN` if it did not recognize it. */
+  /** @brief The price basis; `UNKNOWN` if the broker's code was not recognized. */
   OrderType type_{OrderType::UNKNOWN};
-  /** The execution condition read from the broker's code. `UNKNOWN` if it did not recognize it. */
+  /** @brief The time in force; `UNKNOWN` if the broker's code was not recognized. */
   TimeInForce time_in_force_{TimeInForce::UNKNOWN};
-  /** The session read from the broker's code. `UNKNOWN` if it did not recognize it. */
+  /** @brief The session; `UNKNOWN` if the broker's code was not recognized. */
   OrderSession session_{OrderSession::UNKNOWN};
   /**
-   * The venue the broker reported this order was routed to, where it reports one.
+   * @brief Where the broker says the order was routed; `UNSPECIFIED` if it does not say.
    *
-   * **Not `instrument_.venue_`, and the difference is load-bearing.** An
-   * `InstrumentId` names an instrument, and two `InstrumentId`s are equal only
-   * when their venues match — which is what `Portfolio::working_quantity`,
-   * `strategy::reconcile` and every ceiling in `RiskGuard` key on when they ask
-   * "what do I already have resting in this". A holding is reported without a
-   * venue by both brokers, so an order row that carried a *different* venue in
-   * its `instrument_` would stop matching the holding it belongs to, and the
-   * resting quantity would silently read as zero: no sellable deduction, no
-   * working-order component in the position ceiling, and a reconciliation that
-   * plans a second order beside the one already out.
-   *
-   * So the routing fact lives here instead. It is what a later amendment must
-   * address, and it is `UNSPECIFIED` where the broker reports none.
+   * An amendment must address this venue. It is kept apart from `instrument_` so the order still
+   * matches its holding, which brokers report without a venue.
    */
   Venue venue_{Venue::UNSPECIFIED};
   /**
-   * The broker's own order-shape code, preserved verbatim.
+   * @brief The broker's own order-type code, verbatim (KIS two digits, Toss three letters).
    *
-   * The three normalized fields above say what this library understood. This
-   * says what the broker sent, whether or not the table recognized it, so a
-   * code added after this release reaches a caller instead of being discarded
-   * behind an `UNKNOWN`.
-   *
-   * **It preserves the codes a broker can currently send, not every string.**
-   * `Code` accepts `A`-`Z`, `0`-`9` and `_` and at most eight of them; KIS's
-   * codes are two digits and Toss's are three uppercase letters, so both fit
-   * with room to spare. A future code carrying a lowercase letter, a hyphen or
-   * a dot would not be stored, and this would be empty rather than wrong --
-   * which is the same outcome as the broker reporting no code at all. The
-   * alternative was a `std::string`, and an allocation on every row of every
-   * listing to carry a value that has never needed one is the wrong trade; the
-   * alternative of throwing is worse still, because both specifications require
-   * a client to tolerate an unknown code and one odd row must not fail a whole
-   * listing.
-   *
-   * Empty therefore means one of three things -- the broker reported no code, it
-   * reported one outside that alphabet, or it reported a valid uppercase code
-   * longer than eight characters, which `Code<8>::try_make` also rejects -- and
-   * the normalized fields say `UNKNOWN` in all three.
+   * Kept even when the normalized fields read `UNKNOWN`. Empty if the broker sent none, or a code
+   * longer than eight characters or with characters other than `A`-`Z`, `0`-`9`, `_`.
    */
   Code<8> shape_code_;
-  /** Where the order stands. `UNKNOWN` where the broker publishes no status column. */
+  /** @brief The status; `UNKNOWN` where the broker publishes none. */
   OrderStatus status_{OrderStatus::UNKNOWN};
-  /** The limit price, where the order has one. */
+  /** @brief The limit price, if the order has one. */
   std::optional<Decimal64> price_;
   /**
-   * The trigger price of a stop order, where the broker reports one.
+   * @brief The trigger price, whenever the broker reports a positive one.
    *
-   * Set whenever the broker's value is a positive number, **whatever basis the row reads as**:
-   * both brokers report zero on an ordinary order, so a positive trigger on a row that is not
-   * `STOP_LIMIT` is the broker contradicting itself, and discarding it would hide that. Recorded,
-   * it makes a replacement of that order refuse (a trigger on a basis that takes none) while its
-   * cancellation still goes through.
-   *
-   * **Empty on a stop row means the broker did not say**, not that the order has no trigger: a
-   * replacement then has none to keep and is refused, and a cancellation is unaffected.
+   * Kept even on a row whose type is not `STOP_LIMIT` (a broker contradiction); replacing such an
+   * order is then refused, while cancelling it works. Empty on a stop row means the broker did not
+   * say, and replacing it is refused.
    */
   std::optional<Decimal64> trigger_price_;
-  /** The quantity ordered. What remains is this less `execution_.filled_quantity_`. */
+  /** @brief The quantity ordered; the remainder is this minus `execution_.filled_quantity_`. */
   Decimal64 quantity_;
   /**
-   * The cash amount an amount-based order committed, where the broker reports
-   * one.
+   * @brief The money an amount-based order committed (Toss US market orders), if any.
    *
-   * An amount-based order states money and lets the fill decide the quantity,
-   * which is the reverse of every other order here. Present only where a broker
-   * offers one -- Toss, for a US market order -- and `std::nullopt` otherwise.
-   * This library does not place one yet
-   * (`plan/todo/us-and-conditional-orders.md`); it reports one placed through
-   * another channel, because a snapshot that dropped the amount would state a
-   * quantity and be unable to say what the order actually committed.
+   * The library does not place such orders, but reports ones placed elsewhere.
    */
   std::optional<Decimal64> order_amount_;
-  /** The currency the prices and amounts on this row are in. */
+  /** @brief The currency of the row's prices and amounts. */
   Currency currency_;
-  /** When the broker recorded the order, where it timestamps one. */
+  /** @brief When the broker recorded the order, if it gives a time. KIS working orders have none. */
   std::optional<std::chrono::system_clock::time_point> ordered_at_;
-  /** When the order was cancelled, where the broker reports it. */
+  /** @brief When the order was cancelled, if the broker reports it. */
   std::optional<std::chrono::system_clock::time_point> canceled_at_;
-  /**
-   * What has filled, and what it cost. Always present as a value.
-   *
-   * An unfilled order has `filled_quantity_` of zero; its monetary members may be absent *or* a
-   * reported zero, depending on the broker. Read `OrderExecution`'s own comment before testing any
-   * of them, and test a fill with `filled_quantity_`.
-   */
+  /** @brief What has filled and what it cost; see `OrderExecution` before testing a fill. */
   OrderExecution execution_;
 };
 
-/**
- * One page of normalized orders.
- *
- * `next_cursor_` is empty when the broker reported no further page. Callers
- * pass it back unchanged; its content is broker-specific and opaque.
- */
+/** @brief One page of an order listing. */
 struct OrderPage {
-  /** This page's rows, in the order the broker returned them. */
+  /** @brief The rows, in the broker's order. */
   std::vector<OrderSnapshot> orders_;
-  /** Pass back unchanged to continue. Empty means the broker reported no further page. */
+  /** @brief The cursor for the next page, to pass back unchanged; empty if there is none. */
   std::optional<std::string> next_cursor_;
-  /** When this page arrived, on this machine's clock. */
+  /** @brief When the page was received, on this machine's clock. */
   std::chrono::system_clock::time_point received_at_;
 };
 
 /**
- * Broker acknowledgement that an order instruction was accepted.
+ * @brief The broker's acknowledgement that it accepted an instruction.
  *
- * An acknowledgement means the broker recorded the instruction, not that the
- * order executed. The resulting state must be read back through an order
- * inquiry.
+ * Accepted is not executed: read the order back to learn what happened.
  */
 struct OrderAck {
-  /** The order number the broker assigned. */
+  /** @brief The order number the broker assigned. */
   std::string order_id_;
-  /** The idempotency key echoed back, where the broker supports and echoes one. */
+  /** @brief The idempotency key, if the broker echoed one. */
   std::optional<std::string> client_order_id_;
-  /** When the acknowledgement arrived. Acceptance, not execution. */
+  /** @brief When the acknowledgement was received. */
   std::chrono::system_clock::time_point accepted_at_;
 };
 
 /**
- * Compile-time identity of the broker that issued an order reference.
+ * @brief A broker's reference to one order, used to amend or cancel it.
  *
- * A broker declares a tag type carrying `static constexpr std::string_view name`
- * and names it in its `BrokerTraits` specialization. The tag is a template
- * parameter rather than a stored field, so the broker costs nothing at run time
- * and a reference from one broker is a different *type* from another's: handing a
- * reference to the wrong session fails to compile instead of failing a check.
+ * The broker is a type parameter, so a reference from one broker cannot be passed to another's
+ * session (it does not compile); a broker's asynchronous and blocking clients share one tag. Treat
+ * the parts as opaque: store, compare and hash them, but do not parse them.
  *
- * Both of a broker's clients — asynchronous and blocking — share one tag, so a
- * reference obtained through either is usable with the other.
- */
-
-/**
- * Opaque order identity issued by broker `Broker`.
- *
- * Two parts are stored because addressing an order is not uniformly reducible to
- * one string: KIS needs a branch code together with an order number, while Toss
- * needs one identifier. `primary_` carries the order number or identifier and
- * `secondary_` carries the additional part when a broker has one.
- *
- * The parts are opaque. Strategy code stores, compares, and hashes a reference
- * but never parses it, so a broker may change its internal composition without
- * breaking a caller.
+ * @tparam Broker The broker's tag type, with `static constexpr std::string_view name`.
  */
 template <typename Broker>
 struct OrderRef {
-  /** The order number or identifier. Opaque: stored, compared and hashed, never parsed. */
+  /** @brief The order number or id. */
   std::string primary_;
-  /** The additional part a broker needs, such as KIS's branch code. Empty where it needs none. */
+  /** @brief A second part some brokers need, such as KIS's branch code; empty otherwise. */
   std::string secondary_;
 
-  /** Returns the issuing broker's normalized name, known at compile time. */
+  /**
+   * @brief Returns the issuing broker's name.
+   * @return `Broker::name`.
+   */
   static constexpr std::string_view broker() noexcept { return Broker::name; }
 
-  /** Returns a stable human-readable form for logs and order attribution. */
+  /**
+   * @brief Formats the reference for logs, as `broker:primary[:secondary]`.
+   * @return The text.
+   */
   std::string str() const {
     std::string text(broker());
     text += ':';
@@ -2080,67 +1884,59 @@ struct OrderRef {
     return text;
   }
 
-  /** Compares two references of the same broker. */
+  /**
+   * @brief Compares two references.
+   * @param lhs The first reference.
+   * @param rhs The second reference.
+   * @return `true` if both parts are equal.
+   */
   friend bool operator==(const OrderRef& lhs, const OrderRef& rhs) {
     return lhs.primary_ == rhs.primary_ && lhs.secondary_ == rhs.secondary_;
   }
 
-  /** Compares two references of the same broker for inequality. */
+  /**
+   * @brief Compares two references for inequality.
+   * @param lhs The first reference.
+   * @param rhs The second reference.
+   * @return `true` if either part differs.
+   */
   friend bool operator!=(const OrderRef& lhs, const OrderRef& rhs) { return !(lhs == rhs); }
 };
 
 /**
- * Broker acknowledgement of an accepted order together with its reference.
+ * @brief An accepted order: the acknowledgement and the reference to address it with.
  *
- * Acceptance means the broker recorded the instruction, not that the order
- * executed. `ref_` is what a later modification or cancellation must address.
+ * Accepted is not executed.
+ *
+ * @tparam Broker The broker tag.
  */
 template <typename Broker>
 struct PlacedOrder {
-  /** What the broker said when it accepted the instruction. */
+  /** @brief The acknowledgement. */
   OrderAck ack_;
-  /** The reference a later modification or cancellation must address. */
+  /** @brief The reference to amend or cancel the order with. */
   OrderRef<Broker> ref_;
 };
 
 /**
- * The price shape of an order: its type and, for a limit order, its price.
+ * @brief An order's type, price, trigger, time in force and session, as an amendment states them.
  *
- * A shape is carried explicitly because some brokers require the shape to be
- * restated on a modification or a cancellation. KIS's `order-rvsecncl` re-sends
- * `ORD_DVSN` and `ORD_UNPR` for both, and rejects a limit shape with no price.
- * Toss requires a shape for a modification and not for a cancellation. Stating
- * the shape keeps the port from inventing a value the broker will act on.
- *
- * All three normalized facts are carried, not just the basis. KIS composes one
- * `ORD_DVSN` from the three, so a shape that named only the basis would make an
- * amendment re-send a *different* order: an immediate-or-cancel order amended
- * to a new price would arrive as a plain day order at that price, which is a
- * silent downgrade of a condition the caller stated (Decision 6).
- *
- * The price basis and the price come first, and the condition and session
- * after them, because C++17 has no designated initializers and
- * `OrderShape{OrderType::LIMIT, price}` is both the common case and what every
- * existing caller writes.
- *
- * The two-argument form compiles cleanly under `-Wmissing-field-initializers`
- * because `OrderShape` has a constructor; as a plain aggregate it did not, and
- * the safe form would have been one a consumer with that flag could not write.
- * That is what the constructor is for.
+ * In an amendment, an unset time in force or session keeps the order's own. An unset trigger keeps
+ * the resting trigger only when both the new and the resting type are `STOP_LIMIT`; turning a stop
+ * into a plain `LIMIT` drops its trigger. To change only the price, use `reprice`.
  */
 struct OrderShape {
-  /**
-   * Constructs a shape, stating only as much as the caller means.
-   *
-   * **A constructor rather than plain aggregate initialization**, so that
-   * `OrderShape{OrderType::LIMIT, price}` -- the form this design depends on
-   * being the natural one -- is a call and not a brace with two members left
-   * out. Left as an aggregate it tripped `-Wmissing-field-initializers`, which
-   * this library's own warnings configuration promotes to an error, so the safe
-   * form would have been the one a careful consumer could not write.
-   */
+  /** @brief Constructs a limit shape with nothing else stated. */
   OrderShape() = default;
-  /** @copydoc OrderShape::OrderShape() */
+  /**
+   * @brief Constructs a shape, stating only what the caller means to set.
+   * @param type The price basis.
+   * @param price The price, for a basis that takes one.
+   * @param time_in_force The time in force, or unset to keep the resting order's.
+   * @param session The session, or unset to keep the resting order's.
+   * @param trigger_price The trigger; unset keeps a resting stop's trigger only if `type` is also
+   *   `STOP_LIMIT`.
+   */
   OrderShape(
     OrderType type,
     std::optional<Decimal64> price,
@@ -2154,115 +1950,72 @@ struct OrderShape {
     time_in_force_(time_in_force),
     session_(session) {}
 
-  /** The price basis this shape states. */
+  /** @brief The price basis. */
   OrderType type_{OrderType::LIMIT};
-  /** The price, for a basis that takes one. */
+  /** @brief The price, for a basis that takes one. */
   std::optional<Decimal64> price_;
   /**
-   * The trigger price, for a basis `carries_trigger_price` names.
+   * @brief The trigger price, for `STOP_LIMIT`.
    *
-   * **On an amendment, unset means "leave it as it is"**, like the condition and session below,
-   * so `replace_with(order, OrderShape{STOP_LIMIT, limit})` moves a stop's limit and keeps its
-   * trigger. `amended_trigger_price` is the one place that resolves it, and it resolves from
-   * `AmendInstruction::resting_` only when **both** shapes are `STOP_LIMIT`: a change of basis
-   * into a stop states its own trigger or is refused, and an unknown resting shape is never
-   * guessed at. A set value is a deliberate trigger, and on a basis that takes none it is refused
-   * rather than dropped.
-   *
-   * On an `OrderRequest`, which has no resting order, there is nothing to resolve from, and a
-   * stop-limit request without one is refused.
+   * On an amendment, unset keeps the resting stop's trigger, but only when both the new and the
+   * resting shape are `STOP_LIMIT` (see `amended_trigger_price`); changing into a stop needs a
+   * trigger stated. A trigger set on a type that takes none is refused. On an `OrderRequest`, a
+   * stop-limit without one is refused.
    */
   std::optional<Decimal64> trigger_price_;
   /**
-   * The execution condition and the session, **unset when the caller did not
-   * state one**.
+   * @brief The time in force; unset means "keep the resting order's".
    *
-   * Optional rather than defaulted, and that is the whole point. These were
-   * plain values with `DAY` and `REGULAR` defaults, so `OrderShape{LIMIT,
-   * price}` -- the form every caller writes to reprice an order -- silently
-   * *stated* a day order in the regular session. Against a resting
-   * closing-auction order that is a request to move it, and at Toss it is a
-   * request the modify endpoint cannot carry, so success was reported for a move
-   * that did not happen. Defaulting them the other way instead, from the resting
-   * order, only swapped that for silently discarding a deliberate change.
-   *
-   * Unset means "leave it as it is", and an adapter resolves it from
-   * `AmendInstruction::resting_`. A set value is a deliberate change, honoured
-   * where the broker can make one and refused where it cannot. Neither is a
-   * guess.
+   * A set value is a deliberate change: made where the broker can make it, refused where it cannot
+   * (Toss cannot change it on a modify).
    */
   std::optional<TimeInForce> time_in_force_;
-  /** @copydoc OrderShape::time_in_force_ */
+  /**
+   * @brief The session; unset means "keep the resting order's".
+   *
+   * A set value is a deliberate change: made where the broker can make it, refused where it cannot
+   * (Toss cannot move an order between sessions).
+   */
   std::optional<OrderSession> session_;
 };
 
 /**
- * Broker-neutral instruction for a modification or a cancellation.
+ * @brief A modification or cancellation of a working order.
  *
- * `all_remaining_` states whether the whole remaining quantity is affected or
- * only `quantity_`. It is never inferred, because guessing changes how much of
- * a live order is withdrawn.
- *
- * `quantity_` is optional in this shared value because brokers disagree about
- * needing it: KIS validates a positive whole quantity even for a full
- * cancellation, and Toss cancels in full with no quantity at all. A broker that
- * requires one rejects an instruction that omits it rather than substituting a
- * value. Building the instruction with `cancel_all()`, `cancel_quantity()`, or
- * `replace_with()` fills whatever the bound broker needs from a `WorkingOrder`.
+ * Build one from a `WorkingOrder` with `cancel_all`, `cancel_quantity`, `replace_with` or `reprice`,
+ * which fill in what the bound broker needs. `all_remaining_` is never inferred. A broker that
+ * needs a quantity (KIS, even to cancel everything) refuses an instruction without one.
  */
 struct AmendInstruction {
-  /** The shape the order should have after the amendment. */
+  /** @brief The shape the order should have afterwards. */
   OrderShape shape_;
   /**
-   * The venue the order lives at, where the broker's amendment endpoint takes
-   * one.
+   * @brief The venue the order rests at, for a broker whose amendment needs it (KIS).
    *
-   * KIS's `order-rvsecncl` publishes a different set of order codes per venue,
-   * exactly as its placement endpoint does, so an amendment needs the venue for
-   * the same reason a placement does. `UNSPECIFIED` omits the field and takes
-   * the broker's documented default; the helpers below fill it from the working
-   * order rather than leaving a caller to remember.
+   * The helper functions copy it from the working order; `UNSPECIFIED` takes the broker's default.
    */
   Venue venue_{Venue::UNSPECIFIED};
-  /** How much is affected. Required by a broker that validates one; never substituted. */
+  /** @brief The quantity affected; never substituted if a broker needs one and it is missing. */
   std::optional<Decimal64> quantity_;
-  /** Whether the whole remaining quantity is affected rather than `quantity_`. Never inferred. */
+  /** @brief Whether the whole remaining quantity is affected, rather than `quantity_`. */
   bool all_remaining_{false};
-  /** Acknowledges the broker's high-value confirmation, where the amendment endpoint requires one. */
+  /** @brief Confirms a high-value amendment, where the broker asks for that confirmation. */
   bool confirm_high_value_{false};
   /**
-   * The shape the order currently has, or nothing when the caller could not say.
+   * @brief The shape the order has now, or unset if unknown.
    *
-   * An adapter needs it to tell a *change* from a supported *value*. Toss can
-   * place an order in the closing auction and cannot move one -- its
-   * `OrderModifyRequest` has no validity field at all -- so checking that a
-   * requested session is one Toss supports proves nothing: the question is
-   * whether it differs from what the order already is.
-   *
-   * **Optional, so "unknown" is representable.** It was a plain `OrderShape`,
-   * whose defaults are `DAY`/`REGULAR`, so a hand-built instruction naming
-   * `DAY`/`REGULAR` and leaving this alone compared equal and passed -- and if
-   * the referenced order was really `CLS`, the POST carried no session field and
-   * success again reported a move that did not occur. A comment saying a
-   * hand-built instruction "states no original" was not represented in the
-   * type; now it is.
-   *
-   * `replace_with`, `reprice`, `cancel_all` and `cancel_quantity` fill it from
-   * the working order. An adapter that cannot verify a change it cannot
-   * transmit refuses before I/O rather than assuming it is a no-op.
+   * An adapter compares it with `shape_` to tell a change from a keep. One that cannot verify a
+   * change it cannot send refuses before any I/O. The helper functions fill it in.
    */
   std::optional<OrderShape> resting_;
 };
 
 /**
- * Returns the trigger price an amendment leaves the order with.
+ * @brief Returns the trigger price an amendment leaves the order with.
  *
- * The stated one where `instruction.shape_` sets it. Otherwise the resting order's, **but only
- * when the instruction keeps a `STOP_LIMIT` a `STOP_LIMIT`** -- the case in which "unset" can only
- * mean "unchanged". Anything else yields nothing: a basis change into a stop has no trigger to
- * inherit, a basis change out of one must not carry it along, and a resting shape the caller could
- * not state is not a trigger this library may assume. Every adapter that transmits a trigger on an
- * amendment reads it through here, so the rule is one rule.
+ * @param instruction The amendment.
+ * @return The trigger `shape_` states; otherwise the resting order's trigger if both shapes are
+ *   `STOP_LIMIT`; otherwise `std::nullopt`.
  */
 inline std::optional<Decimal64> amended_trigger_price(const AmendInstruction& instruction) {
   if (instruction.shape_.trigger_price_) {
@@ -2278,77 +2031,65 @@ inline std::optional<Decimal64> amended_trigger_price(const AmendInstruction& in
 }
 
 /**
- * One order that is still open to modification or cancellation.
+ * @brief An order still open to modification or cancellation.
  *
- * `ref_` is the reference a modification or cancellation must address. A broker
- * may also report which earlier order this one superseded — KIS's `orgn_odno` —
- * but that is lineage, not an address: amending it would address an order that is
- * no longer live. Lineage stays reachable through the concrete client and is not
- * normalized here.
- *
- * `amendable_quantity_` is optional because a broker reports it only where it
- * publishes one. An empty value means the broker did not state a quantity, not
- * that the quantity is zero.
+ * @tparam Broker The broker tag.
  */
 template <typename Broker>
 struct WorkingOrder {
-  /** The order's current normalized state. */
+  /** @brief The order's state. */
   OrderSnapshot order_;
-  /** The reference a modification or cancellation must address. */
+  /** @brief The reference to amend or cancel the order with. */
   OrderRef<Broker> ref_;
-  /** How much the broker says may still be amended. Empty means it stated none, not zero. */
+  /** @brief How much the broker says may still be amended. Empty means it stated none, not zero. */
   std::optional<Decimal64> amendable_quantity_;
   /**
-   * Whether this row is a runner's own reservation rather than something the broker reported.
+   * @brief Whether this row is a runner's record of an order it just sent, rather than a row the
+   *   broker listed.
    *
-   * False on everything a listing produced, which is every row an adapter builds. A runner sets it
-   * on the rows it adds for orders it has just sent, so that a limit sizing against "what is
-   * outstanding" counts them while anything **inferring what the broker does** ignores them --
-   * `strategy::SellableConventionProbe` reads a broker's behaviour from these rows, and a
-   * reservation is this library's own arithmetic, not evidence about the broker.
-   *
-   * A poll replaces the listing wholesale, so a reservation never outlives the picture it was added
-   * to.
-   *
-   * **It is not a "do not touch" marker.** A reserved row carries the reference the broker issued
-   * and the order's own shape, so it can be cancelled like any other -- an order this runner sent a
-   * moment ago is as real as one a listing reported, and refusing to withdraw it would be the
-   * defect, not the safeguard. The flag says only where the row came from.
+   * Such a row counts toward limits and can be cancelled like any other; only code that infers the
+   * broker's behaviour ignores it. The next listing replaces it.
    */
   bool reserved_{false};
 };
 
-/** Point-in-time set of orders open to modification or cancellation. */
+/**
+ * @brief The orders open to modification or cancellation at one point in time.
+ * @tparam Broker The broker tag.
+ */
 template <typename Broker>
 struct WorkingOrders {
-  /** Every order open to amendment at the moment of the listing. */
+  /** @brief The open orders. */
   std::vector<WorkingOrder<Broker>> orders_;
-  /** When the listing arrived, on this machine's clock. */
+  /** @brief When the listing was received, on this machine's clock. */
   std::chrono::system_clock::time_point received_at_;
 };
 
 /**
- * Filter for one order-history inquiry.
+ * @brief The filter for an order-history inquiry.
  *
- * A broker that cannot express a stated filter rejects the query with
- * `ErrorCategory::INVALID_ARGUMENT` before any network I/O. A filter is never
- * dropped silently, because a listing that ignored it would answer a different
- * question from the one asked.
+ * A filter the broker cannot apply is refused with `ErrorCategory::INVALID_ARGUMENT` before any
+ * I/O, never silently dropped.
  */
 struct OrderHistoryQuery {
-  /** The first date to include. Required by a broker whose history inquiry takes a range. */
+  /** @brief The first date to include; required where `BrokerCaps::history_requires_range`. */
   std::optional<Date> from_;
-  /** The last date to include. */
+  /** @brief The last date to include. */
   std::optional<Date> to_;
-  /** Restrict to one symbol, where the broker can express that filter. */
+  /** @brief Only this symbol, where the broker supports the filter. */
   std::optional<std::string> symbol_;
-  /** A cursor from a previous page's `next_cursor_`, passed back unchanged. */
+  /** @brief A previous page's `next_cursor_`, passed back unchanged. */
   std::optional<std::string> cursor_;
-  /** The maximum number of rows to return, where the broker honours one. */
+  /** @brief The most rows to return, where the broker supports a limit. */
   std::optional<int> limit_;
 };
 
-/** Returns the shape a working order currently has. */
+/**
+ * @brief Returns a working order's current shape.
+ * @tparam Broker The broker tag.
+ * @param order The working order.
+ * @return Its type, price, trigger, time in force and session.
+ */
 template <typename Broker>
 inline OrderShape resting_shape(const WorkingOrder<Broker>& order) {
   OrderShape shape;
@@ -2361,18 +2102,15 @@ inline OrderShape resting_shape(const WorkingOrder<Broker>& order) {
 }
 
 /**
- * Returns an instruction cancelling the whole remaining quantity of `order`.
- *
- * The order's own shape and reported amendable quantity are carried through, so
- * a broker that requires either receives it without the caller restating it.
+ * @brief Makes an instruction cancelling all that remains of an order.
+ * @tparam Broker The broker tag.
+ * @param order The working order.
+ * @return The instruction, carrying the order's shape, venue and amendable quantity.
  */
 template <typename Broker>
 inline AmendInstruction cancel_all(const WorkingOrder<Broker>& order) {
   AmendInstruction instruction;
-  // A cancellation states no shape of its own, so every part of the order's
-  // shape is copied. Copying the basis alone would have a broker re-read the
-  // order as a day order in the regular session, which is a different order
-  // from the one being withdrawn.
+  // A cancellation copies the whole shape, so a broker that re-reads it sees the same order.
   instruction.shape_.type_ = order.order_.type_;
   instruction.shape_.time_in_force_ = order.order_.time_in_force_;
   instruction.shape_.session_ = order.order_.session_;
@@ -2385,7 +2123,13 @@ inline AmendInstruction cancel_all(const WorkingOrder<Broker>& order) {
   return instruction;
 }
 
-/** Returns an instruction cancelling exactly `quantity` of `order`. */
+/**
+ * @brief Makes an instruction cancelling part of an order.
+ * @tparam Broker The broker tag.
+ * @param order The working order.
+ * @param quantity The quantity to cancel; check `BrokerCaps::has_partial_cancel` first.
+ * @return The instruction.
+ */
 template <typename Broker>
 inline AmendInstruction cancel_quantity(const WorkingOrder<Broker>& order, Decimal64 quantity) {
   AmendInstruction instruction;
@@ -2402,27 +2146,18 @@ inline AmendInstruction cancel_quantity(const WorkingOrder<Broker>& order, Decim
 }
 
 /**
- * Returns an instruction moving `order` to `shape`.
+ * @brief Makes an instruction changing a working order to a new shape.
  *
- * Omitting `quantity` amends the whole remaining quantity; supplying one amends
- * exactly that quantity.
+ * An unset time in force or session stays as the order has it; an unset trigger stays only if both
+ * `shape` and the order are `STOP_LIMIT` (see `amended_trigger_price`). A set value is a deliberate
+ * change, made where the broker can and refused where it cannot. To change only the price, use
+ * `reprice`.
  *
- * **`shape` states what to change. What it leaves unset stays as it is.**
- *
- * `OrderShape`'s condition and session are `std::optional`, so
- * `OrderShape{OrderType::LIMIT, price}` states a new price and says nothing
- * about either -- which is what a caller writing that form means. An adapter
- * resolves the unset parts from `resting_`, recorded here from `order`.
- *
- * Setting one is a deliberate change. KIS re-sends `ORD_DVSN` on an amendment
- * and can make one; Toss's modify request has no validity field, so it refuses
- * one rather than reporting a success that did not happen. Both are decided by
- * the adapter, because which of them is possible is a fact about the broker.
- *
- * This has been wrong twice in opposite directions. Taking the shape entirely as
- * written made the common form silently request a move; copying the condition and
- * session from the resting order silently discarded a deliberate change. Neither
- * was a guess the caller could see. An unset optional is.
+ * @tparam Broker The broker tag.
+ * @param order The working order.
+ * @param shape The new shape, such as `OrderShape{OrderType::LIMIT, price}`.
+ * @param quantity The quantity to amend, or unset for all that remains.
+ * @return The instruction.
  */
 template <typename Broker>
 inline AmendInstruction replace_with(
@@ -2433,11 +2168,7 @@ inline AmendInstruction replace_with(
   AmendInstruction instruction;
   instruction.shape_ = std::move(shape);
   instruction.resting_ = resting_shape(order);
-  // The caller's shape is left as written. An earlier version overwrote the
-  // condition and session from the resting order, which stopped the *common*
-  // form lying but silently discarded an explicit change -- including a KIS
-  // caller's, whose old code still compiled. Recording the original instead
-  // lets each adapter honour a change it can make and refuse one it cannot.
+  // The caller's shape is kept as written; `resting_` lets each adapter tell a change from a keep.
   instruction.venue_ = order.order_.venue_;
   instruction.all_remaining_ = !quantity.has_value();
   instruction.quantity_ = quantity ? quantity : order.amendable_quantity_;
@@ -2445,17 +2176,12 @@ inline AmendInstruction replace_with(
 }
 
 /**
- * Returns an instruction moving `order` to a new price and changing nothing else.
- *
- * A name for the common amendment. `replace_with(order, OrderShape{basis, price})`
- * says the same thing -- `OrderShape`'s condition and session are optional, so
- * that form already leaves both alone -- and this states the intent outright
- * rather than by omission.
- *
- * It was once the only safe way to reprice, because the condition and session
- * were defaulted values rather than optionals and the plain form silently
- * requested a move to the regular session. Making them optional fixed that at
- * the type; this stayed because "reprice" is what the caller is doing.
+ * @brief Makes an instruction changing only a working order's price.
+ * @tparam Broker The broker tag.
+ * @param order The working order.
+ * @param price The new price.
+ * @param quantity The quantity to amend, or unset for all that remains.
+ * @return The instruction.
  */
 template <typename Broker>
 inline AmendInstruction reprice(
@@ -2469,12 +2195,9 @@ inline AmendInstruction reprice(
 }
 
 /**
- * Formats an instant as an ISO 8601 timestamp in UTC.
- *
- * Emitted with a `Z` designator rather than a numeric offset, so the value cannot
- * be read against the wrong zone. Brokers that accept an ISO 8601 bound accept
- * this form; a broker that wants a local calendar date converts from it in its own
- * adapter, where the zone it means is known.
+ * @brief Formats an instant as an ISO 8601 timestamp in UTC, such as `2026-10-06T00:30:00Z`.
+ * @param value The instant; fractions of a second are dropped.
+ * @return The text.
  */
 inline std::string format_iso8601_utc(std::chrono::system_clock::time_point value) {
   const auto seconds = std::chrono::time_point_cast<std::chrono::seconds>(value);
@@ -2490,7 +2213,17 @@ inline std::string format_iso8601_utc(std::chrono::system_clock::time_point valu
   return std::string(buffer, written);
 }
 
-/** Parses an ISO 8601 timestamp with a UTC designator or numeric offset. */
+/**
+ * @brief Parses an ISO 8601 timestamp with a `Z` or a `+hh:mm`/`-hh:mm` offset.
+ *
+ * Fractional seconds are truncated to the millisecond.
+ *
+ * @param value The text, such as `2026-10-06T09:30:00.250+09:00`.
+ * @return The instant, or `std::nullopt` if the date-time part does not parse, the date or time is
+ *   invalid, or there is no zone designator.
+ * @warning Not a strict validator: it does not check the offset's range, trailing text after the
+ *   zone, or characters after the third fractional digit (`+99:99` and `Zgarbage` are accepted).
+ */
 inline std::optional<std::chrono::system_clock::time_point> parse_iso8601_timestamp(
   std::string_view value
 ) {
@@ -2567,15 +2300,16 @@ inline std::optional<std::chrono::system_clock::time_point> parse_iso8601_timest
 namespace std {
 
 /**
- * Hashes an opaque order reference so callers can key an order book on it.
- *
- * The broker is part of the type rather than the value, so only the two parts
- * are hashed; two brokers' references cannot collide because they cannot share a
- * container.
+ * @brief Hashes an order reference, so it can key an unordered container.
+ * @tparam Broker The broker tag.
  */
 template <typename Broker>
 struct hash<algotradelib::OrderRef<Broker>> {
-  /** Combines both reference parts. */
+  /**
+   * @brief Hashes both parts of the reference.
+   * @param ref The reference.
+   * @return The hash.
+   */
   std::size_t operator()(const algotradelib::OrderRef<Broker>& ref) const noexcept {
     std::size_t seed = hash<std::string>{}(ref.primary_);
     seed ^= hash<std::string>{}(ref.secondary_) + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
