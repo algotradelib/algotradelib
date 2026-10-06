@@ -247,8 +247,8 @@ int report(BlockingSession<Client>& session, const InstrumentId& subject) {
   }
 
   if constexpr (Caps::has_calendar_sessions) {
-    std::cout << "sessions: this broker publishes intraday session windows; read them "
-      << "through session.client()\n";
+    std::cout << "sessions: this broker publishes intraday session windows; the library "
+      << "does not expose them yet\n";
   }
 
   return 0;
