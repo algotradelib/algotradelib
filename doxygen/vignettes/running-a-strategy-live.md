@@ -285,8 +285,8 @@ refused flatten is reported once rather than twice.
 | `orders_unconfirmed_timed_out_` | an order this run sent was not confirmed by holdings, a listing or its history within the confirmation timeout, or, once its history settled it, a holdings read a timeout later did not show the fill; its instrument is now withheld until you clear it or the process restarts (below) |
 | `orders_guard_refused_` | `RiskGuard` refused it — **a hold as well as a limit**, since it checks the active holds first, so a halted run reports every order here. Nothing was sent |
 | `orders_binding_refused_` | the binding would not send it, or could not reach the broker (a DNS, connect or TLS failure; such an order is kept and retried, see the kept-instructions rules); no request went out |
-| `orders_broker_refused_` | the broker was asked and said no; a request was spent |
-| `orders_indeterminate_` | the request failed in transit, so the order may or may not exist |
+| `orders_broker_refused_` | the broker was asked and said no; a request was spent. At KIS and Toss most refusals are counted in the next row instead |
+| `orders_indeterminate_` | the outcome is unknown, so the order may or may not exist: the request failed in transit, the reply could not be read, or (at KIS and Toss) the broker's refusal arrived as `PROTOCOL` |
 | `cancels_rejected_` | a withdrawal refused outright — **by the broker or by the binding**; `RejectedCancel::by_broker_` distinguishes them and this figure does not |
 | `cancels_refused_` | a hold refused the withdrawal before anything was sent |
 | `cancels_unresolved_` | the reference named an order the snapshot does not hold |
@@ -300,7 +300,8 @@ code and message. One record, overwritten — a run refused ten thousand times k
 one **that came with an error**, and a refusal that says nothing clears it rather than leaving the
 previous order's words behind. Empty when *this* run's polling saw no refusal, even though the runner
 may still hold one from an earlier run; and empty, with a non-zero count beside it, when the refusals
-themselves were silent. It is empty on a dry runner and in a replay, which have no broker to be refused by.
+themselves were silent. It is empty on a dry runner and in a replay, which have no broker to be refused by,
+and it misses the KIS and Toss refusals counted as unknown outcomes.
 
 **`last_unbuildable_` does the same for `orders_unbuildable_`**: the reconciliation's reason
 (`RejectReason`), the instrument and your tag, for the last instruction this run's polling could not
@@ -339,9 +340,10 @@ to the operator; an order the strategy adds in that window would be planned agai
 as the loop's own closing orders and could close the same position twice.
 
 **A `flatten` states its instructions directly** rather than expressing them as a target position.
-It withdraws every working order once — including one on the same side as the close, which ordinary
-reconciliation would keep as progress toward the target — and then sends a market order for the
-position.
+It withdraws every listed working order once — including one on the same side as the close, which
+ordinary reconciliation would keep as progress toward the target — and then sends a market order for
+the position. An order the broker does not list cannot be withdrawn or sized around: at Toss, an order
+of a type the API does not list (such as an after-hours closing-price order placed in the app).
 
 **It closes only the part no working order was already trading**, and that subtlety is worth the
 paragraph. Ten held against a resting sell for ten: closing all ten alongside it could sell the
@@ -359,8 +361,9 @@ enumerate orders, like the history fallback — would slip past it and the full-
 the same double sell by a different route. The withdrawals still go, because cancelling only reduces
 exposure; the position stays, held and reported. A stop pending when the process starts (the control
 file already says `flatten`) makes the startup read itself before it closes anything, so this case is
-one of those listed under `closing_source_unverified_` below: a failed order-list or holdings read, a
-source with no working-order inquiry, or an order sent after the last listing.
+one of those listed under `closing_source_unverified_` below: a failed order-list or holdings read,
+holdings or a listing that are too old, a source with no working-order inquiry, or an order sent after
+the last listing.
 
 **A flatten beside your own protective stop therefore takes two runs.** The first withdraws the stop and
 leaves the position, contended, and the program exits `CLOSING_INCOMPLETE`. Start the program again with
@@ -422,7 +425,7 @@ flatten note above.
 
 **And one flag covers the case before any of those**, `closing_source_unverified_`. A stop builds its
 instructions from the portfolio snapshot — working orders for a `withdraw`, positions for a `flatten`
-— so it can only be complete if that picture is current. Five ways it is not:
+— so it can only be complete if that picture is current. Six ways it is not:
 
 - **The startup read failed.** A `withdraw` or `flatten` requested before the loop's first iteration
   attempts the startup read itself; if that read fails, the picture cannot contain an order a *previous
@@ -433,6 +436,7 @@ instructions from the portfolio snapshot — working orders for a `withdraw`, po
   runner placed in between.
 - **A listing is older than `set_maximum_portfolio_age`.** With no age policy stated, no age makes the
   picture unverified.
+- **The holdings were never read, or are older than `set_maximum_portfolio_age`.**
 - **The holdings are older than the listing** — a holdings read failed after it. A fill between the two
   would be in neither, so a `flatten` could miss both the order and the shares it bought.
 - **The source does not publish working orders at all.** A broker without the working-order inquiry

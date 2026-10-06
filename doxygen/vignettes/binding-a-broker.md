@@ -145,9 +145,11 @@ for its own reasons — a polling loop whose holdings snapshot is stale, a runne
 be written — and each releases only what it took, so nothing else can clear your halt and your
 `resume()` cannot clear theirs. `guard().holds()` says what is in force when more than one thing is.
 
-While any hold stands the runner sends **nothing**, cancellations included: a withdrawal is still an
-order-writing request that can fail indeterminately. Refused cancellations appear in
-`refused_cancel_` with the hold that refused them, the way refused placements appear in `refused_`.
+While any hold stands the runner places **nothing**. Cancellations depend on the hold
+(`strategy::halt_blocks`): `OPERATOR` and `STOPPING` refuse them too (they appear in
+`refused_cancel_` with the hold that refused them), `LOCAL_FAILURE` makes them unavailable
+(`unavailable_cancel_`), and the data holds (`ORDER_LIST_UNREAD`, `PORTFOLIO_*`,
+`BUYING_POWER_UNREAD`, `POLL_FAILING`) let a named cancellation go.
 
 **A guard rejects; it never resizes.** Halving an order that exceeded a ceiling would place a
 position the strategy never sized against a signal it never gave — and the strategy would then
@@ -311,9 +313,9 @@ the request is built rather than answered in the wrong unit.
 
 ## The rule that matters most
 
-An order POST is not idempotent on either supported broker. A request that fails **in transit** has
-an outcome nobody knows: the broker may have recorded the order and lost the reply, or never received
-it at all.
+No order request is ever replayed. Only Toss offers an idempotency key (`client_order_id_`, ten
+minutes); KIS and Kiwoom offer none. A request that fails **in transit** has an outcome nobody knows:
+the broker may have recorded the order and lost the reply, or never received it at all.
 
 So a failure is classified by whether the order might exist, and four categories say it might:
 
@@ -321,11 +323,12 @@ So a failure is classified by whether the order might exist, and four categories
 | --- | --- |
 | `TRANSPORT` | the connection failed; did the bytes arrive? |
 | `CANCELLED` | a *local* deadline or a closing session says nothing about what was already sent |
-| `PROTOCOL` | the broker answered and the answer could not be parsed — it may have been an ack |
+| `PROTOCOL` | the answer could not be parsed — it may have been an ack — or the broker declared a failure the client does not classify (at KIS a reply with `rt_cd` not `0`, such as insufficient balance; at Toss any refusal but a rate limit) |
 | `HTTP` 5xx | the broker's own infrastructure failing, possibly after the engine took the order |
 
-A 4xx, an authentication failure, and a rate-limit refusal are all *answers*: the order does not
-exist, so nothing needs reconciling.
+An HTTP 4xx, an authentication failure, an invalid argument and a rate-limit refusal are *answers*:
+the order does not exist, so nothing needs reconciling. At KIS and Toss most refusals arrive as
+`PROTOCOL` instead, so they are treated as unknown and the instrument is reconciled.
 
 When the outcome is unknown, the runner marks the instrument and **withholds everything further for
 it**. Not retried — a retry is exactly what doubles a position. Nothing clears the mark except

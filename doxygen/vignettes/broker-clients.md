@@ -144,7 +144,7 @@ Read these before using the order clients.
 - **An order POST is never replayed.** A `TRANSPORT` error therefore leaves the
   outcome *indeterminate*: the order may or may not have reached the broker.
   Reconcile against an order inquiry before resubmitting; do not retry blindly.
-- **Toss supports idempotency; KIS does not, and KIS says so.** Setting
+- **Toss supports idempotency; KIS and Kiwoom do not, and say so.** Setting
   `OrderRequest::client_order_id_` makes a Toss resubmission safe for ten
   minutes. KIS offers no such key for individual customers — `gt_uid` is
   documented `[법인 전용]` — so **KIS refuses an order carrying one** with
