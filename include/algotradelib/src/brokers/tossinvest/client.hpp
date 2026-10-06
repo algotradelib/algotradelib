@@ -550,9 +550,10 @@ public:
   /**
    * @brief Places an order.
    *
-   * The request is never resent. After an error with `BrokerError::reached_broker_` set that is
-   * not a refusal (one `runner::outcome_of` calls `INDETERMINATE`: a transport failure, a
-   * cancellation, an unreadable reply, or an HTTP status of 500 or more), the outcome is unknown. With
+   * The request is never resent. After an error for which `runner::outcome_of` returns
+   * `INDETERMINATE` (`BrokerError::reached_broker_` set and a category of `TRANSPORT`, `CANCELLED`
+   * or `PROTOCOL`, or `HTTP` with a status of 500 or more), the outcome is unknown. Toss's
+   * refusals other than a rate limit are reported as `PROTOCOL`, so they count too. With
    * `OrderRequest::client_order_id_` set, Toss treats it as an idempotency key for ten minutes, so
    * sending the same order again returns the original result; without one, read `async_orders` before
    * placing again.
