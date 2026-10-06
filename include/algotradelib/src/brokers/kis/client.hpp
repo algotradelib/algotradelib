@@ -590,11 +590,12 @@ public:
   /**
    * @brief Places a cash order.
    *
-   * The request is never resent. After an error with `BrokerError::reached_broker_` set that is
-   * not a refusal (one `runner::outcome_of` calls `INDETERMINATE`: a transport failure, a
-   * cancellation, an unreadable reply, or an HTTP status of 500 or more), the outcome is unknown: read
-   * `async_open_orders` or `async_order_history` before placing again, since KIS has no
-   * idempotency key.
+   * The request is never resent. After an error for which `runner::outcome_of` returns
+   * `INDETERMINATE` (`BrokerError::reached_broker_` set and a category of `TRANSPORT`, `CANCELLED`
+   * or `PROTOCOL`, or `HTTP` with a status of 500 or more), the outcome is unknown. That
+   * includes a 200 reply KIS marks as failed (`rt_cd` not `0`, such as insufficient balance), which
+   * this client reports as `PROTOCOL`. Read `async_open_orders` or `async_order_history` before
+   * placing again, since KIS has no idempotency key.
    *
    * @tparam CompletionToken An Asio completion token.
    * @param account The account.
