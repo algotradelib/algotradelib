@@ -161,7 +161,8 @@ struct RejectedCancel {
 /**
  * @brief What one runner pass decided and did, sorted by outcome (returned by `Runner::feed`).
  *
- * Every instruction appears in exactly one bucket.
+ * The buckets list outcomes of orders, cancellations and plans, not one entry per instruction: a
+ * target already met adds nothing, and one target can produce several orders and cancellations.
  *
  * @tparam BrokerTag The broker tag.
  */
@@ -214,7 +215,13 @@ struct DryRunReport {
   std::vector<WithheldOrder> unavailable_;
   /** @brief Cancellations not sent because local machinery was unavailable. */
   std::vector<OrderRef<BrokerTag>> unavailable_cancel_;
-  /** @brief Cancellations a hold refused; a halted runner cancels nothing. */
+  /**
+   * @brief Cancellations refused by a hold that blocks withdrawals (`OPERATOR`, `STOPPING`; see
+   *   `strategy::halt_blocks`).
+   *
+   * A hold that only means data is missing (such as `PORTFOLIO_STALE`) does not refuse a named
+   * cancellation; `LOCAL_FAILURE` puts it in `unavailable_cancel_` instead.
+   */
   std::vector<RefusedCancel<BrokerTag>> refused_cancel_;
   /** @brief Lines the strategy logged during the pass. */
   std::vector<std::string> log_;
@@ -296,7 +303,8 @@ public:
    * @brief Constructs a runner.
    * @param strategy The strategy.
    * @param limits The risk limits.
-   * @param series_capacity How many trailing bars each cached series keeps.
+   * @param series_capacity How many trailing bars each cached series keeps; must be positive with a
+   *   linear algebra backend, or the first bar fed throws `std::invalid_argument`.
    * @param executor Where instructions are sent.
    */
   explicit Runner(
@@ -362,7 +370,9 @@ public:
    * @brief Sets how old the holdings may be before a reconciliation plan computed from them is held
    *   back (`WithheldPlanReason::PORTFOLIO_STALE`).
    *
-   * `PollingLoop` sets it from its own configuration.
+   * It applies to every plan that would cancel something, and to placement-only plans while
+   * `require_known_portfolio` is on. It takes no hold on the guard. Age is measured against the later
+   * of `observed_at()` and `Context::now()`. `PollingLoop` sets it from its own configuration.
    *
    * @param age The maximum age, or `std::nullopt` for no limit.
    */
@@ -395,11 +405,11 @@ public:
   void allow_absent_portfolio() { allow_absent_portfolio_ = true; }
 
   /**
-   * @brief Sets whether placing requires holdings to have been read.
+   * @brief Sets whether placing requires holdings to have been read and fresh.
    *
-   * On by default for an executor that can reach a broker, off for a dry run or a replay.
-   * `PollingLoop` sets it each iteration. A plan that would cancel something is held back without
-   * read holdings regardless.
+   * On by default for an executor that can reach a broker, off for a dry run or a replay. Off, a
+   * placement-only plan skips both the read and the age check. `PollingLoop` sets it each iteration.
+   * A plan that would cancel something is held back without read, fresh holdings regardless.
    *
    * @param required Whether placing requires read holdings.
    */
@@ -505,10 +515,12 @@ public:
   /**
    * @brief Records an instrument's price band for today, used to clamp order prices.
    *
-   * The band is dated by the exchange's timestamp where the broker gave one (Toss, Kiwoom), and
-   * otherwise by the instant last set with `set_observed_at` (every KIS band). A band recorded before
-   * any instant was set is dated at the epoch, so under an age limit it is never applied. Whether a
-   * band is applied depends on `set_maximum_price_limits_age`.
+   * The band is dated by the earlier of the exchange's timestamp, where the broker gave one (Toss,
+   * Kiwoom), and the instant last set with `set_observed_at` (the only date of a KIS band); a future
+   * exchange timestamp cannot make it fresher. A band recorded before any instant was set is dated at
+   * the epoch, so any realistic age limit rejects it. Its age is measured against the later of
+   * `observed_at()` and `Context::now()`; a band dated after that instant is never applied, whatever
+   * the policy. Whether a band is applied depends on `set_maximum_price_limits_age`.
    *
    * @param id The instrument (bands are kept per full identity, venue included).
    * @param limits The band.
@@ -701,13 +713,16 @@ public:
    * @brief Returns how many sent orders are still counted as reserved until the broker accounts for
    *   them.
    *
-   * A runner that keeps sent orders (`keeps_sent_orders_until_listed`) remembers every order the
-   * broker accepted, and every order of unknown outcome, and before each pass rebuilds a reserved
-   * working row from what neither holdings (moved in the order's direction since it was sent) nor a
-   * listing yet explains. An entry ends when holdings show the whole quantity, or the broker's
+   * A runner that keeps sent orders (`keeps_sent_orders_until_listed`) remembers each order the
+   * broker accepted with a reference, and each order of unknown outcome, provided holdings and the
+   * order list had been read and the instrument's net holding was known when it was sent. Before
+   * each pass it rebuilds a reserved working row from what neither holdings (moved in the order's
+   * direction since it was sent) nor a listing yet explains. An entry ends when holdings show the whole quantity, or the broker's
    * history shows the order ended with less (`confirm_from_history`). This stops a target from
-   * ordering again while a fill has not reached the holdings yet. Only orders accepted in this
-   * process are tracked; a restart starts with none.
+   * ordering again while a fill has not reached the holdings yet. An order not tracked (no
+   * reference, or sent before holdings were read, as `allow_absent_portfolio` permits) has no such
+   * protection: its reservation lasts only until the next listing. Only orders sent in this process
+   * are tracked; a restart starts with none.
    *
    * @return The number of such orders.
    */
@@ -801,8 +816,9 @@ public:
   /**
    * @brief Returns from when the broker's order history must be read to settle sent orders.
    *
-   * An order needs it when part of it is unexplained, no listing carries it, and it was listed
-   * before, its cancellation was accepted, or it passed the confirmation timeout.
+   * An order needs it when part of it is unexplained, it is not settled and its history was not
+   * already consulted without an answer, and either it passed the confirmation timeout (listed or
+   * not), or no listing carries it and it was listed before or its cancellation was accepted.
    *
    * @return The earliest such order's send instant, or `std::nullopt` if none needs history.
    */
@@ -827,7 +843,10 @@ public:
    * @brief Settles reserved orders against the broker's order history; sends nothing.
    *
    * A terminal row for an order caps the quantity holdings must still show at its filled quantity;
-   * an order that ended with nothing filled is forgotten at once.
+   * an order that ended with nothing filled is forgotten at once. After the runner has seen the phase
+   * `CLOSED` or `POST_CLOSE` since the order was sent, an open row of a `DAY` order counts as
+   * terminal (its filled quantity is final). An order still unexplained past the confirmation
+   * timeout withholds its instrument (`orders_unconfirmed_timed_out`).
    *
    * @param evidence History rows covering the instants `unconfirmed_awaiting_evidence` asked for.
    */
@@ -871,19 +890,28 @@ public:
    *
    * The runner keeps (rather than drops):
    * - a target withheld as `PORTFOLIO_ABSENT`, `PORTFOLIO_STALE` or `PORTFOLIO_SUPERSEDED`, until
-   *   holdings are usable;
+   *   holdings are usable (any runner, a dry run included);
    * - a target or order intent refused for the market phase (a daily strategy deciding while the
-   *   market is shut), until `RiskLimits::permitted_phases_` admits the phase; a kept intent is
-   *   dropped at release if the instrument's holding changed since, or a stop now rests
-   *   (`kept_intents_dropped`);
-   * - an instruction the broker could not be reached for, or refused for its rate limit, until a
-   *   holdings read newer than the failure arrives.
+   *   market is shut), until `RiskLimits::permitted_phases_` admits the phase;
+   * - a target or order intent the broker could not be reached for, or refused for its rate limit,
+   *   until a holdings read newer than the failure arrives.
+   *
+   * The last two only in a runner that sends to a broker. Not kept: anything decided under the
+   * `STOPPING`, `OPERATOR` or `LOCAL_FAILURE` hold; an intent with a client order id the broker
+   * answered; an intent whose instrument's net holding is unknown. So a protective stop refused out
+   * of hours is not installed at the open by itself.
+   *
+   * At release, a kept intent is dropped (`kept_intents_dropped`) if the instrument's holding
+   * changed since (except a `TARGET_WEIGHT` intent, which is planned again against the new holding),
+   * or if it carries a trigger and a stop now rests on the instrument.
    *
    * Nothing is released while holdings were never read or predate the listing, or while any hold is
-   * in force. An operator's halt or a local failure discards what was kept for the phase. A later
-   * target or intent for the instrument replaces a retained one; `clear_retained_targets` discards
-   * all. Only a runner that sends to a broker keeps them. `PollingLoop` calls this once per
-   * iteration; a program driving a `Runner` itself must call it (or `clear_retained_targets`).
+   * in force. If this method runs while `OPERATOR` or `LOCAL_FAILURE` holds, it discards every kept
+   * intent and every target kept for the phase or the broker (targets kept for the account stay).
+   * Halting and resuming without calling it in between discards nothing, so the kept work can still
+   * go out after the resume; call `clear_retained_targets` to drop it. A later target or intent for
+   * the instrument replaces a retained one. `PollingLoop` calls this once per iteration; a program
+   * driving a `Runner` itself must call it (or `clear_retained_targets`).
    *
    * @return The report of the settlement, empty if nothing was released.
    */
@@ -954,13 +982,15 @@ public:
   }
 
   /**
-   * @brief Returns how many order intents are kept for the market phase or an unreachable broker; see `retry_retained_targets`.
+   * @brief Returns how many order intents are kept for the market phase, an unreachable broker or a
+   *   rate limit; see `retry_retained_targets`.
    * @return The number kept now.
    */
   std::size_t intents_kept_for_phase() const noexcept { return kept_intents_.size(); }
 
   /**
-   * @brief Returns how many kept intents were dropped at release because the holding they were decided against had changed.
+   * @brief Returns how many kept intents were dropped at release, because the holding they were
+   *   decided against had changed or a stop now rests.
    * @return The count over the runner's life.
    */
   std::size_t kept_intents_dropped() const noexcept { return kept_intents_dropped_; }
@@ -972,7 +1002,8 @@ public:
   std::size_t targets_retained() const noexcept { return retained_targets_.size(); }
 
   /**
-   * @brief Returns how many retained targets wait for the market phase or an unreachable broker.
+   * @brief Returns how many retained targets wait for the market phase, an unreachable broker or a
+   *   rate limit.
    * @return The number retained now.
    */
   std::size_t targets_retained_for_phase() const noexcept {
@@ -1165,7 +1196,10 @@ public:
    *
    * Use it for every bar older than the newest one, so a restart or a backlog does not act on an old
    * signal at today's price. A source of your own should feed a read's new bars in period-end order
-   * across instruments, and feed live only each instrument's newest bar.
+   * across instruments, and feed live (with `feed`) only each instrument's newest closed bar, and
+   * only if its period ended strictly after every bar fed as history from the same read, across
+   * instruments. A newest bar that ties or trails one (a suspended name, or one a bar behind) is
+   * history too, or an order could be decided on a stale cross-section at today's price.
    *
    * @param event The bar.
    * @throws std::invalid_argument (with a linear algebra backend) if the bar is not later than the

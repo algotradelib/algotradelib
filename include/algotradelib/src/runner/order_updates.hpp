@@ -127,7 +127,8 @@ public:
 
   /**
    * @brief Returns how many orders the watch is tracking.
-   * @return The number of orders in the last listing.
+   * @return The number of orders kept from the last listing (not counting reserved rows, rows with
+   *   an empty reference, or orders the listing contradicted).
    */
   std::size_t tracked_orders() const noexcept { return tracked_.size(); }
 

@@ -14,21 +14,27 @@ namespace algotradelib {
 namespace runner {
 
 /**
- * @brief What became of one instruction an executor was asked to send.
+ * @brief What became of one instruction (a placement or a cancellation) an executor was asked to send.
  *
- * An order request is never resent automatically, and a request that failed in transit has an
- * unknown outcome (`INDETERMINATE`): the runner then sends nothing more for that instrument until
- * it has read the broker's order list.
+ * A request of unknown outcome (`INDETERMINATE`) is never replayed automatically: the runner places
+ * nothing more for that instrument until the broker's order list is read and the instrument
+ * resolved, though a named cancellation may still go. (A request known not to have reached the
+ * broker, or refused for its rate limit, can be offered again; see
+ * `Runner::retry_retained_targets`.)
+ *
+ * For a cancellation, `ACCEPTED` means the request was accepted, not that the order is gone, and a
+ * refused cancellation leaves the order as it was (resting, or filled meanwhile).
  */
 enum class SendOutcome {
-  /** @brief The broker accepted the instruction; the order exists. */
+  /** @brief The broker accepted the instruction (for a placement, the order exists). */
   ACCEPTED,
-  /** @brief The broker refused the instruction; the order does not exist, and nothing needs reconciling. */
+  /** @brief The broker refused the instruction (for a placement, the order does not exist); nothing needs reconciling. */
   REJECTED,
   /**
    * @brief The outcome is unknown (the request failed in transit, or the reply could not be read).
    *
-   * Nothing more is sent for that instrument until the broker's order list has been read.
+   * Nothing more is placed for that instrument until the broker's order list has been read and the
+   * instrument resolved.
    */
   INDETERMINATE,
   /**
@@ -42,8 +48,8 @@ enum class SendOutcome {
    * @brief The binding refused the instruction before sending it (such as an idempotency key at a
    *   broker without one, or a cancellation of an order the broker has no reference for).
    *
-   * The order does not exist, no request was counted against the rate limit, and the runner keeps
-   * trading.
+   * No request was counted against the rate limit (for a placement, the order does not exist), and
+   * the runner keeps trading.
    */
   REFUSED_LOCALLY,
 };
@@ -75,8 +81,8 @@ inline constexpr std::string_view send_outcome_name(SendOutcome outcome) noexcep
  * - `REFUSED_LOCALLY` when `reached_broker_` is `false` (nothing was sent), whatever the category;
  * - `INDETERMINATE` for `TRANSPORT`, `CANCELLED` (a local timeout says nothing about whether the
  *   request went out), `PROTOCOL` (the unreadable reply may have been an acknowledgement), an HTTP
- *   5xx, and any unknown category;
- * - `REJECTED` for an HTTP 4xx, `AUTHENTICATION`, `RATE_LIMIT` and `INVALID_ARGUMENT`.
+ *   status of 500 or more, and any unknown category;
+ * - `REJECTED` for an HTTP status below 500, `AUTHENTICATION`, `RATE_LIMIT` and `INVALID_ARGUMENT`.
  *
  * Doubtful cases are classified as unknown, which costs a reconciliation, rather than as refused,
  * which could leave a live order unwatched.
@@ -299,10 +305,11 @@ struct WithheldOrder {
 };
 
 /**
- * @brief The instruments with an order of unknown outcome, which must not trade until the broker's
- *   order list is read.
+ * @brief The instruments with an order of unknown outcome, where nothing may be placed until the
+ *   broker's order list is read and the instrument resolved.
  *
- * Only `resolve_after_reading_orders` clears an entry. The ledger is in memory: it does not survive
+ * Named cancellations are not blocked. Only `resolve_after_reading_orders` clears an entry; reading
+ * the list alone does not. The ledger is in memory: it does not survive
  * the process, and an order in flight when a process is killed is never recorded. After an
  * abnormal exit, read the broker's order list before trading; `PollingLoop` does this before its
  * first send, and a `FileJournal` (`live::bind_journaled`) carries unresolved instructions across a
@@ -330,7 +337,7 @@ public:
   /**
    * @brief Tests whether an instrument is waiting for reconciliation.
    * @param id The instrument.
-   * @return `true` if nothing may be sent for it.
+   * @return `true` if nothing may be placed for it.
    */
   bool requires_reconcile(const InstrumentId& id) const {
     for (const auto& entry : pending_) {

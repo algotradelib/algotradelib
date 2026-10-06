@@ -91,7 +91,7 @@ public:
    * @return Not callable.
    */
   Context& operator=(const Context&) = delete;
-  /** @brief Move constructor: takes the other context's state. */
+  /** @brief Move constructor: takes the state of the context passed in, which is left valid but unspecified. */
   Context(Context&&) = default;
   /**
    * @brief Move assignment: takes the other context's state.
@@ -137,7 +137,8 @@ public:
 
   /**
    * @brief Constructs a context.
-   * @param series_capacity How many trailing bars each cached series keeps.
+   * @param series_capacity How many trailing bars each cached series keeps; must be positive with a
+   *   linear algebra backend, or the first `record_bar` throws.
    */
   explicit Context(std::size_t series_capacity = 512) : series_capacity_(series_capacity) {}
 
@@ -315,7 +316,8 @@ public:
   /**
    * @brief Appends a bar to its cached series, creating the series at the configured capacity.
    * @param event The bar.
-   * @throws std::invalid_argument if the bar is not later than the series' newest bar.
+   * @throws std::invalid_argument if the bar is not later than the series' newest bar, or the series
+   *   capacity is zero.
    */
   void record_bar(const BarEvent& event) {
     const SeriesKey key{event.instrument_, event.interval_};
