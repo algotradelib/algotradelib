@@ -117,9 +117,9 @@ Result<typename BrokerTraits<Client>::Amendment> prepare_replace(
  * Every operation takes a completion token and completes once with `Result<T>`, on the handler's
  * associated executor. An operation the broker does not offer (see `Caps`) does not compile; gate
  * it with `if constexpr`. A request the session or adapter refuses before any I/O completes with an
- * error that is posted, never invoked inline: for a handler with no associated executor, that
- * refusal runs on the system executor, while a broker's reply runs on the client's strand, so one
- * callback can run on two threads. Bind the handler to an executor if that matters. A session is cheap to copy (a shared client pointer
+ * error that is posted, never invoked inline. For a handler with no associated executor, that
+ * refusal runs on the system executor while a broker's reply runs on the client's strand, so one
+ * callback can run on two threads; bind the handler to an executor if that matters. A session is cheap to copy (a shared client pointer
  * and the account).
  *
  * @tparam Client An asynchronous broker client (`BrokerTraits<Client>::blocking` is `false`); use

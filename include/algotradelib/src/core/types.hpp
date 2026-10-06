@@ -676,12 +676,13 @@ enum class ErrorCategory {
   HTTP,
   /** @brief The credentials or token were refused. */
   AUTHENTICATION,
-  /** @brief A rate limit was hit, the client's or the broker's. */
+  /** @brief The broker refused the request for its rate limit. */
   RATE_LIMIT,
   /**
    * @brief The reply could not be read, or the broker declared a failure this client does not
    *   classify further: at KIS a reply with `rt_cd` not `0` (such as insufficient balance), at Toss
-   *   any refusal but a rate limit. For an order it means the outcome is unknown.
+   *   any refusal but a rate limit, at Kiwoom a `return_code` outside its documented error list. For
+   *   an order it means the outcome is unknown.
    */
   PROTOCOL,
   /** @brief The request was invalid, refused by the client before sending or by the broker. */
@@ -701,7 +702,7 @@ struct BrokerError {
    *
    * `false` when nothing was written: the client refused before any I/O (an order id too long, an
    * unsupported time in force), or the transport failed before writing (resolving, connecting,
-   * handshaking, or a full queue). Such an error is not counted against a rate limit and was not the
+   * handshaking, a full queue, or a closed client). Such an error is not counted against a rate limit and was not the
    * broker's; a runner may offer the instruction again. Defaults to `true`.
    */
   bool reached_broker_{true};
