@@ -87,13 +87,13 @@ a rule that was never set cannot silently approve anything.
 Per the intersection principle, each of these is reachable rather than hidden, and
 none is emulated for the broker that lacks it.
 
-| Capability | KIS | Toss |
-| --- | --- | --- |
-| `supports_interval(ONE_WEEK/MONTH/YEAR)` | yes | no |
-| `has_batch_prices` | no | yes, 200 symbols |
-| `has_batch_reference_data` | no | yes, 200 symbols |
-| `has_calendar_range` | yes, from a base date | no, three days |
-| `has_calendar_sessions` | no | yes |
+| Capability | KIS | Toss | Kiwoom |
+| --- | --- | --- | --- |
+| `supports_interval(ONE_WEEK/MONTH/YEAR)` | yes | no | yes |
+| `has_batch_prices` | no | yes, 200 symbols | no |
+| `has_batch_reference_data` | no | yes, 200 symbols | no |
+| `has_calendar_range` | yes, from a base date | no, three days | no calendar at all (`has_calendar` is `false`) |
+| `has_calendar_sessions` | no | yes | no |
 
 An interval a broker does not publish is **refused**, never produced by aggregating
 a shorter one. A batch verb a broker lacks does not compile rather than looping

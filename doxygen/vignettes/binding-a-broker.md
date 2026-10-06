@@ -284,14 +284,14 @@ own. The rule is ownership rather than size.
 ## What each broker will tell you about the account
 
 Three questions, and the brokers do not answer them the same way. `BrokerCaps` says which you can
-ask before you write the call, so one strategy source compiles against both.
+ask before you write the call, so one strategy source compiles against all three.
 
-| | Toss | KIS |
-| --- | --- | --- |
-| `has_buying_power` | yes | yes |
-| `has_buying_power_quantity` | no — an amount only | yes — also how many shares |
-| `sellable_source` | `INQUIRY` — one request per instrument | `HOLDINGS` — free, on every snapshot |
-| `has_commission_schedule` | yes | no |
+| | Toss | KIS | Kiwoom |
+| --- | --- | --- | --- |
+| `has_buying_power` | yes | yes | yes |
+| `has_buying_power_quantity` | no — an amount only | yes — also how many shares | yes — per margin tier, through `session.client()` |
+| `sellable_source` | `INQUIRY` — one request per instrument | `HOLDINGS` — free, on every snapshot | `NONE` — the holdings rows carry it, as far as `KiwoomConfig::holdings_sellable_scope_` asserts |
+| `has_commission_schedule` | yes | no | no |
 
 `sellable_source` names a **source** rather than asking `has_*`, and the distinction is deliberate:
 KIS does publish a dedicated 매도가능수량조회, and this library does not use it, because the same
