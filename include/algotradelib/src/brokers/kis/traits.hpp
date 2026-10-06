@@ -82,7 +82,8 @@ struct Normalizers {
   static constexpr bool has_calendar_sessions = false;
 
   /**
-   * @brief Refuses a calendar request for a market other than Korea's.
+   * @brief Refuses a calendar request for a market other than Korea's (`unsupported_market`) or
+   *   with an invalid date (`invalid_date`).
    * @param country The market.
    * @param from The first date.
    * @return An error if refused (nothing is sent), otherwise `std::nullopt`.
@@ -104,7 +105,11 @@ struct Normalizers {
     return std::nullopt;
   }
 
-  /** @brief Returns whether this broker publishes bars at `interval`. */
+  /**
+   * @brief Tests whether KIS publishes bars at an interval.
+   * @param interval The interval.
+   * @return `true`: KIS publishes every interval.
+   */
   static constexpr bool supports_interval(BarInterval interval) {
     static_cast<void>(interval);
     return true;
@@ -200,7 +205,9 @@ struct Normalizers {
    * @brief Converts an amendment or cancellation into KIS's form.
    *
    * KIS requires a positive whole quantity even for a full cancellation, so an instruction without a
-   * quantity is refused (`cancel_all()` fills it from the amendable quantity).
+   * quantity is refused (`cancel_all()` fills it from the amendable quantity). KIS re-sends the whole
+   * shape, so an instruction whose condition or session is unset is refused (`incomplete_shape`)
+   * unless `resting_` supplies them (`reprice()`, `replace_with()` and `cancel_all()` do).
    * `confirm_high_value_` is ignored.
    *
    * @param ref The order's reference.

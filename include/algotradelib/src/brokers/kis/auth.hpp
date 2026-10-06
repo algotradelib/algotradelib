@@ -20,7 +20,7 @@ class KisAuth {
 public:
   /**
    * @brief Constructs the wrapper.
-   * @param ioc The I/O context the requests run on.
+   * @param ioc The I/O context the requests run on; borrowed, and must outlive the wrapper.
    * @param ctx The TLS context; borrowed, and must outlive the wrapper.
    * @param config The credentials (copied).
    */

@@ -106,9 +106,11 @@ struct KisOrderRef {
  * @brief An amendment or cancellation of a KIS order.
  *
  * KIS re-sends the whole order shape (one `ORD_DVSN` code composed from type, condition and session,
- * which differs by venue) on both, so state the order's type, condition, session and venue as they
- * should be after the amendment. Read the amendable quantity first from `async_open_orders`
- * (`KisOpenOrder::amendable_quantity_`).
+ * which differs by venue) on both, so state the order's type, condition, session and price as they
+ * should be after the amendment, and the venue where it rests, **on a cancellation too**: the same
+ * checks apply (a limit order needs a positive whole-won price; a market order must carry none).
+ * Read the amendable quantity first from `async_open_orders` (`KisOpenOrder::amendable_quantity_`).
+ * A demo account accepts only `Venue::KRX` (or `UNSPECIFIED`); others are refused before sending.
  */
 struct KisAmendment {
   /** @brief The order to amend or cancel. */
@@ -123,13 +125,14 @@ struct KisAmendment {
   Venue venue_{Venue::UNSPECIFIED};
   /** @brief The quantity affected; KIS requires a positive whole number even with `all_remaining_`. */
   Decimal64 quantity_;
-  /** @brief The new price, for an order type that takes one. */
+  /** @brief The price the order should have: required for an order type that takes one, on a cancellation too. */
   std::optional<Decimal64> price_;
   /**
    * @brief The trigger price (KIS's `CNDT_PRIC`), for a `STOP_LIMIT` order.
    *
    * Required when amending a stop-limit order and refused for any other type. On a cancellation it
-   * is sent if valid and otherwise left off, so a cancellation is never refused for it.
+   * is sent if valid and otherwise left off, so a cancellation is never refused for the trigger
+   * price (the other fields are still checked).
    */
   std::optional<Decimal64> trigger_price_;
   /** @brief Whether the whole remaining quantity is affected (KIS's `QTY_ALL_ORD_YN`), rather than `quantity_`. */
@@ -346,11 +349,12 @@ public:
     ) {}
 
   /**
-   * @brief Requests bars, reading as many KIS pages as needed for `count_` bars.
+   * @brief Requests bars, reading KIS pages until `count_` bars are collected.
    *
-   * Minute bars are stamped at the close, other intervals at the open. A minute request does not
-   * cross a trading day, so a series may be shorter than `count_`; then `next_cursor_` is set to
-   * continue from.
+   * Minute bars are stamped at the close, other intervals at the open. Paging stops early after 50
+   * pages, when KIS has no older bars, or (for minutes) at the start of the trading day. A series may
+   * therefore be shorter than `count_` for any interval; then `next_cursor_` is set to continue
+   * from.
    *
    * @tparam CompletionToken An Asio completion token.
    * @param query The query.
@@ -403,7 +407,7 @@ public:
    * is answered without a request.
    *
    * @tparam CompletionToken An Asio completion token.
-   * @param from The first date.
+   * @param from The first date; an invalid date is refused (`invalid_date`) before sending.
    * @param refresh `true` to request again even if the cache covers `from`.
    * @param token The completion token, called with `Result<TradingCalendar>`.
    * @return Whatever the completion token returns.
@@ -457,7 +461,8 @@ public:
    * @brief Requests an instrument's recent trades.
    * @tparam CompletionToken An Asio completion token.
    * @param instrument The instrument.
-   * @param count The most trades to return (KIS returns a fixed window, trimmed to this).
+   * @param count The most trades to return (KIS returns a fixed window, trimmed to this; zero or
+   *   less returns the whole window).
    * @param token The completion token, called with `Result<std::vector<TradePrint>>`.
    * @return Whatever the completion token returns.
    */
@@ -733,7 +738,7 @@ public:
    *
    * @tparam CompletionToken An Asio completion token.
    * @param account The account.
-   * @param range The dates.
+   * @param range The dates (an invalid range, or `to_` before `from_`, is refused before sending).
    * @param token The completion token, called with `Result<OrderPage>`.
    * @return Whatever the completion token returns.
    */
@@ -809,7 +814,10 @@ public:
     return true;
   }
 
-  /** @brief Closes the connection; queued requests complete with `CANCELLED`. */
+  /**
+   * @brief Closes the client for good: pending and later requests complete with `CANCELLED`. A
+   *   request already being sent has `reached_broker_` set and an unknown outcome.
+   */
   void close() { http_->close(); }
 
 private:
@@ -4345,6 +4353,9 @@ private:
 /**
  * @brief A blocking KIS client: each call runs a `KisClient` request on a private event loop and
  *   returns its result. Not thread-safe.
+ *
+ * A call whose loop stops before the request completes returns a `TRANSPORT` error
+ * (`event_loop_stopped`).
  */
 class KisBlockingClient {
 public:
@@ -4387,7 +4398,7 @@ public:
 
   /**
    * @brief Returns the trading calendar from a date on; see `KisClient::async_calendar` (cached).
-   * @param from The first date.
+   * @param from The first date; an invalid date is refused (`invalid_date`) before sending.
    * @param refresh `true` to request again even if the cache covers `from`.
    * @return The calendar or an error.
    */
@@ -4413,7 +4424,7 @@ public:
   /**
    * @brief Returns an instrument's recent trades.
    * @param instrument The instrument.
-   * @param count The most trades to return.
+   * @param count The most trades to return (zero or less: the whole window).
    * @return The trades or an error.
    */
   Result<std::vector<TradePrint>> trades(InstrumentId instrument, int count) {
@@ -4497,7 +4508,8 @@ public:
   }
 
   /**
-   * @brief Amends an order's price or quantity.
+   * @brief Amends an order's price or quantity; after a `TRANSPORT` error the outcome is unknown
+   *   (see `KisClient::async_replace_order`).
    * @param account The account.
    * @param amendment The amendment.
    * @return The acknowledgement or an error.
@@ -4512,7 +4524,8 @@ public:
   }
 
   /**
-   * @brief Cancels an order.
+   * @brief Cancels an order; after a `TRANSPORT` error the outcome is unknown, and the order may
+   *   still rest (see `KisClient::async_cancel_order`).
    * @param account The account.
    * @param amendment The order and quantity.
    * @return The acknowledgement or an error.
@@ -4528,7 +4541,7 @@ public:
 
   /**
    * @brief Returns the orders that can still be amended or cancelled; see
-   *   `KisClient::async_open_orders` (demo accounts).
+   *   `KisClient::async_open_orders` (including how demo accounts are answered).
    * @param account The account.
    * @return The orders or an error.
    */
@@ -4542,7 +4555,7 @@ public:
   /**
    * @brief Returns the orders placed over a date range, with their fills.
    * @param account The account.
-   * @param range The dates.
+   * @param range The dates (an invalid range, or `to_` before `from_`, is refused before sending).
    * @return The orders or an error.
    */
   Result<OrderPage> order_history(KisAccount account, KisHistoryRange range) {
