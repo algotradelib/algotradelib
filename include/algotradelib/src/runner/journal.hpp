@@ -82,8 +82,7 @@ enum class JournalOutcome {
   REJECTED,
   /**
    * @brief The outcome is unknown (`SendOutcome::INDETERMINATE`: a failure in transit, an unreadable
-   *   reply, or a broker refusal reported as `PROTOCOL`); whether the instruction took effect is
-   *   unknown.
+   *   reply, an HTTP 5xx, or a broker refusal reported as `PROTOCOL`).
    */
   INDETERMINATE,
   /**
