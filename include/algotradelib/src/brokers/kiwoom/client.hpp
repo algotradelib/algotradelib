@@ -29,160 +29,127 @@
 namespace algotradelib::kiwoom {
 
 /**
- * Selects a Kiwoom trading account — and carries nothing, because Kiwoom carries nothing.
- *
- * **No Kiwoom endpoint takes an account number.** Not the order endpoints (`kt10000`-`kt10003`),
- * not the balance (`kt00018`), not the deposit inquiry (`kt00001`), not the unfilled listing
- * (`ka10075`), not the execution detail (`kt00007`). The application key *is* the account, and
- * `ka00001` 계좌번호조회 exists precisely because a caller otherwise has no way to find out which
- * one it is.
- *
- * So the selector is empty rather than absent. The port binds an account at construction for every
- * broker, and an empty selector is the honest answer to "which account did you bind": the one the
- * credential drives, and there is no other.
+ * @brief The Kiwoom account selector, which is empty: no Kiwoom endpoint takes an account number,
+ *   since the app key determines the account (`ka00001` reports which).
  */
 struct KiwoomAccount {
-  /** Two selectors are equal because a Kiwoom credential drives exactly one account. */
+  /**
+   * @brief Compares two selectors (the arguments are not used); always equal, since a Kiwoom
+   *   credential drives exactly one account.
+   * @return `true`.
+   */
   friend bool operator==(const KiwoomAccount&, const KiwoomAccount&) { return true; }
 };
 
-/** One account Kiwoom's `ka00001` reports for the bound credential. */
+/** @brief One account Kiwoom's `ka00001` reports for the bound credential. */
 struct KiwoomAccountInfo {
-  /** The account number as Kiwoom reported it, for display. */
+  /** @brief The account number as Kiwoom reported it, for display. */
   std::string account_number_;
 };
 
 /**
- * Identifies one accepted Kiwoom order.
+ * @brief A Kiwoom order's address: order number and symbol, both of which amendments and
+ *   cancellations require.
  *
- * **Kiwoom addresses an order by order number *and* symbol.** `kt10002` 정정주문 and `kt10003`
- * 취소주문 both require `stk_cd` beside `orig_ord_no`, so an order reference is not reducible to
- * the order number alone — exactly the situation `OrderRef`'s two parts exist for, and the same
- * shape KIS needs for its branch code.
- *
- * The symbol is stored as Kiwoom's six-digit code without the tape suffix and without the `A`
- * prefix some of its account listings add, because that is the form its order endpoints take.
+ * The symbol is the six-digit code, without a tape suffix or `A` prefix.
  */
 struct KiwoomOrderRef {
-  /** Kiwoom's `ord_no`. */
+  /** @brief Kiwoom's `ord_no`. */
   std::string order_number_;
-  /** Kiwoom's `stk_cd`, which its amendment endpoints require beside the order number. */
+  /** @brief Kiwoom's `stk_cd`, which its amendment endpoints require beside the order number. */
   std::string symbol_;
 };
 
 /**
- * Quantity and price instruction for a Kiwoom modification or cancellation.
+ * @brief An amendment or cancellation of a Kiwoom order.
  *
- * Unlike KIS, Kiwoom does **not** re-send the order's shape on an amendment: `kt10002` carries
- * `mdfy_qty`, `mdfy_uv` and `mdfy_cond_uv`, and `kt10003` carries `cncl_qty` alone. So an
- * amendment cannot change the price basis, the validity condition or the session, and an
- * instruction asking for one of those changes is refused rather than sent as a reprice that
- * silently leaves the shape alone (Decision 6).
- *
- * `all_remaining_` **does** have a Kiwoom counterpart, and it is the quantity itself: both endpoints
- * document `0` as 잔량 전부. See `quantity_`.
+ * Kiwoom amends only quantity, price and trigger price (`kt10002`) and cancels by quantity
+ * (`kt10003`); the order type, condition and session cannot change, and an amendment asking to
+ * change them is refused.
  */
 struct KiwoomAmendment {
-  /** The order to amend, which carries the symbol Kiwoom requires beside the order number. */
+  /** @brief The order to amend, which carries the symbol Kiwoom requires beside the order number. */
   KiwoomOrderRef order_;
-  /** Where the order lives; Kiwoom's `dmst_stex_tp`. */
+  /**
+   * @brief The venue the order rests on, as listed (Kiwoom's `dmst_stex_tp`): `KRX`, `NXT` or
+   *   `COMBINED` (SOR). Required: `UNSPECIFIED` is refused before sending, for a cancellation too.
+   */
   Venue venue_{Venue::UNSPECIFIED};
   /**
-   * The quantity affected, or zero to mean everything still resting.
-   *
-   * **Kiwoom spells "all remaining" as the quantity `0`**, on both endpoints: `kt10002` documents
-   * `mdfy_qty` as "'0' 입력 시 잔량 전부 정정" and `kt10003` documents `cncl_qty` as
-   * "'0' 입력시 잔량 전부 취소". That is a better answer than a number read from a listing, because
-   * the listing can be stale: a partial fill landing between the read and the cancel makes a
-   * stated quantity larger than what is left, and Kiwoom's own `0` is evaluated when it processes
-   * the instruction.
-   *
-   * `all_remaining_` on a normalized `AmendInstruction` is what selects it; see
-   * `BrokerTraits::to_amendment`.
+   * @brief The quantity affected, or zero for everything still resting (Kiwoom evaluates `0` when it
+   *   processes the instruction, so it cannot overshoot a partial fill).
    */
   Decimal64 quantity_;
-  /** The new price, on a modification. Absent on a cancellation and on an unpriced basis. */
+  /** @brief The new price, on a modification; absent on an unpriced basis, and refused on a cancellation. */
   std::optional<Decimal64> price_;
   /**
-   * The new trigger price, which Kiwoom carries as `mdfy_cond_uv`.
-   *
-   * Set by `BrokerTraits::to_amendment` from `OrderShape::trigger_price_` on a modification of a
-   * stop-limit (`28`) order, and never on a cancellation: `kt10003` has no trigger field, and a
-   * cancellation carrying one is refused here rather than acknowledged with the trigger dropped.
-   * `reprice` restates the resting trigger, so a repriced stop keeps it rather than sending the
-   * empty `mdfy_cond_uv` whose meaning Kiwoom does not document.
+   * @brief The new trigger price (`mdfy_cond_uv`), for amending a stop-limit (`28`) order; must be
+   *   empty on a cancellation, which is otherwise refused.
    */
   std::optional<Decimal64> condition_price_;
 };
 
 /**
- * Kiwoom acknowledgement of an accepted order, modification, or cancellation.
+ * @brief Kiwoom's acknowledgement of an accepted order, amendment or cancellation.
  *
- * Acceptance means Kiwoom recorded the instruction, not that it executed. Kiwoom's order responses
- * carry only `ord_no` (and, on an amendment, `base_orig_ord_no` and the affected quantity), so the
- * resulting state must be read back through `ka10075` or `kt00007`.
+ * Acceptance means Kiwoom recorded the instruction, not that it executed; read the state back through
+ * the working-order listing (`ka10075`) or order history (`kt00007`).
  */
 struct KiwoomOrderAck {
-  /** The normalized acknowledgement, whose `accepted_at_` is local receipt. */
+  /** @brief The normalized acknowledgement, whose `accepted_at_` is local receipt. */
   OrderAck ack_;
-  /** The reference a later amendment must address. */
+  /** @brief The reference a later amendment must address. */
   KiwoomOrderRef order_;
-  /** Kiwoom's `base_orig_ord_no` on an amendment: the order this instruction acted on. */
+  /**
+   * @brief Kiwoom's `base_orig_ord_no` (모주문번호) on an amendment: the order the amendment chain
+   *   began with, not necessarily the one addressed.
+   */
   std::string base_order_number_;
-  /** The quantity Kiwoom echoed on an amendment, `mdfy_qty` or `cncl_qty`. Empty on a placement. */
+  /** @brief The quantity Kiwoom echoed on an amendment, `mdfy_qty` or `cncl_qty`. Empty on a placement. */
   std::optional<Decimal64> amended_quantity_;
 };
 
-/** One Kiwoom order that is still open to modification or cancellation. */
+/** @brief One Kiwoom order that is still open to modification or cancellation. */
 struct KiwoomOpenOrder {
-  /** The order's normalized state. */
+  /** @brief The order's normalized state. */
   OrderSnapshot order_;
-  /** The reference an amendment must address. */
+  /** @brief The reference an amendment must address. */
   KiwoomOrderRef order_ref_;
-  /** Kiwoom's `orig_ord_no`: which earlier order this one superseded. Lineage, not an address. */
+  /** @brief Kiwoom's `orig_ord_no`: which earlier order this one superseded. Lineage, not an address. */
   std::string original_order_number_;
-  /** How much Kiwoom says is still unfilled, `oso_qty`, and therefore still amendable. */
+  /** @brief How much Kiwoom says is still unfilled, `oso_qty`, and therefore still amendable. */
   std::optional<Decimal64> amendable_quantity_;
   /**
-   * Kiwoom's `trde_tp`, preserved verbatim — and it is a Korean display name, not a code.
+   * @brief Kiwoom's order-type name on the row (`trde_tp`), verbatim, such as `보통` or `시장가`.
    *
-   * **This is why `OrderSnapshot::shape_code_` is empty on every Kiwoom row.** Kiwoom takes a
-   * numeric `trde_tp` on a request (`0`, `3`, `10`…) and reports a Korean name on a response
-   * (`보통`, `시장가`, `보통(IOC)`), and `Code<8>` holds `A`-`Z`, `0`-`9` and `_` only. Storing
-   * the numeric code this adapter *inferred* from the name would make a field documented as
-   * "what the broker sent" carry something the broker did not send, so it stays empty and the raw
-   * name is kept here, reachable through `session.client()`.
+   * Responses give a Korean name rather than the numeric request code, so
+   * `OrderSnapshot::shape_code_` is empty on Kiwoom rows.
    */
   std::string shape_name_;
 };
 
-/** One page of Kiwoom orders that remain modifiable or cancellable. */
+/** @brief One page of Kiwoom orders that remain modifiable or cancellable. */
 struct KiwoomOpenOrderPage {
-  /** The rows on this page. */
+  /** @brief The rows on this page. */
   std::vector<KiwoomOpenOrder> orders_;
-  /** When the page arrived, on this machine's clock. */
+  /** @brief When the page arrived, on this machine's clock. */
   std::chrono::system_clock::time_point received_at_;
 };
 
 /**
- * Selector for one Kiwoom order-history inquiry.
- *
- * **One calendar date, not a range.** `kt00007` 계좌별주문체결내역상세요청 takes a single `ord_dt`,
- * so a query spanning more than one day is refused by the traits layer rather than answered with
- * one day of it.
+ * @brief A Kiwoom order-history query: one date (`kt00007` takes no range, so a multi-day query is
+ *   refused).
  */
 struct KiwoomHistoryQuery {
-  /** The single 주문일자 to list. */
+  /** @brief The single 주문일자 to list. */
   Date date_;
-  /** Restrict to one symbol, which Kiwoom expresses as `stk_cd`. Empty lists every symbol. */
+  /** @brief Restrict to one symbol, which Kiwoom expresses as `stk_cd`. Empty lists every symbol. */
   std::string symbol_;
 };
 
 /**
- * Returns today's calendar date in Seoul.
- *
- * Kiwoom dates every request and response in Korean local time, so "today" for a Kiwoom call is
- * today there, not wherever the process happens to run.
+ * @brief Returns today's date in Korea (UTC+9), the date Kiwoom requests are made in.
+ * @return The date.
  */
 inline Date today_in_seoul() {
   const auto seoul = std::chrono::system_clock::now() + std::chrono::hours(9);
@@ -203,33 +170,15 @@ inline Date today_in_seoul() {
 }
 
 /**
- * Refuses an instruction that can *open or enlarge* a position while this library cannot establish
- * what the account already holds.
+ * @brief Makes the error that refuses a new order or an amendment while
+ *   `KiwoomConfig::holdings_position_scope_` is not stated.
  *
- * `kt00018` names one venue and publishes no all-venue value, so the normalized holdings verb
- * refuses (see `BrokerTraits::refuse_holdings`) -- and an instruction sized against an empty
- * portfolio is sized against the *permissive* baseline for `RiskGuard`'s position ceiling and for
- * anything sizing an entry. Leaving that to the loop's send gate left a configuration-shaped hole:
- * a schedule with no holdings cadence never calls the refusing port at all. So the refusal lives at
- * this adapter's own boundary, where the unanswered question is, and no schedule routes around it.
+ * Without it the library cannot establish what the account holds, so an order could be sized against
+ * an empty portfolio. An amendment is refused too, since repricing can make a resting order fill.
+ * Cancellations, including `cancel_quantity()`, are never refused. The client applies it to every
+ * placement and amendment, however they arrive.
  *
- * **It covers a placement and a replacement, and not a cancellation.** The first version covered
- * placements alone, on the reasoning that an amendment addresses an order the broker already has
- * and never consults the portfolio -- which is true and is not the point. A resting buy priced
- * below the market is not executable; `kt10002` can move it to a price that is, and the fill opens
- * or enlarges exactly the position this cannot measure. Repricing is a risk-changing instruction
- * wearing an amendment's clothes.
- *
- * A **cancellation** stays available, and must: `kt10003` only ever reduces what is resting, it
- * needs the order's reference rather than the portfolio, and an order that cannot be withdrawn
- * keeps resting and can fill. Reducing a resting order's size is still expressible while this
- * holds, through `cancel_quantity()`.
- *
- * Applied by the client, which every placement and every amendment passes through -- the port's own
- * `place` and `replace` both reach it -- so neither the normalized verb nor `session.client()`
- * routes around it.
- *
- * Deleted when `issues/kiwoom-api-holdings-venue-scope.md` is answered; it is one request pair.
+ * @return An `INVALID_ARGUMENT` error (`holdings_scope_unestablished`, not sent) naming the setting.
  */
 inline std::optional<BrokerError> unestablished_holdings_scope() {
   BrokerError error;
@@ -252,11 +201,10 @@ inline std::optional<BrokerError> unestablished_holdings_scope() {
 }
 
 /**
- * Refuses an order carrying an idempotency key, which Kiwoom does not publish.
- *
- * Applied by the client and by the traits layer, for the reason KIS applies its own twice: the port
- * refuses before a client is asked, and the client refuses whether or not the caller came through
- * the port.
+ * @brief Refuses an idempotency key, which Kiwoom does not offer (an order carrying
+ *   `client_order_id_` is refused before sending).
+ * @param order The order.
+ * @return An `INVALID_ARGUMENT` error if the order has a client order id, otherwise `std::nullopt`.
  */
 inline std::optional<BrokerError> unsupported_client_order_id(const OrderRequest& order) {
   if (!order.client_order_id_) {
@@ -272,20 +220,24 @@ inline std::optional<BrokerError> unsupported_client_order_id(const OrderRequest
   return error;
 }
 
-/** Returns whether `trigger` is a value `cond_uv` and `mdfy_cond_uv` can carry: positive, whole won. */
+/**
+ * @brief Tests whether a trigger price is one Kiwoom can carry (`cond_uv`, `mdfy_cond_uv`).
+ * @param trigger The trigger price.
+ * @return `true` if it is a positive whole number of won.
+ */
 inline bool valid_trigger_value(const Decimal64& trigger) {
   return trigger.coefficient() > 0 && trigger.scale() == 0;
 }
 
 /**
- * Returns an error when a trigger price does not match its price basis.
+ * @brief Checks that a trigger price is present exactly when the order type takes one (only
+ *   `STOP_LIMIT`, Kiwoom's `28`) and is a positive whole number of won.
  *
- * `28` 스톱지정가 needs one in `cond_uv` and every other `trde_tp` has nowhere to put one, so a
- * trigger stated on it would be sent as `""` and dropped (Decision 6). The trigger's direction and
- * its relation to the limit are not checked: the specification documents neither.
+ * Its direction relative to the limit is not checked (Kiwoom documents none).
  *
- * Applied to a placement by the client and to a modification by the traits layer, which is the one
- * that still knows the basis -- `kt10002` carries no `trde_tp`, so `KiwoomAmendment` has none.
+ * @param type The order type.
+ * @param trigger The trigger price.
+ * @return An `INVALID_ARGUMENT` error, or `std::nullopt`.
  */
 inline std::optional<BrokerError> invalid_trigger(
   OrderType type,
@@ -315,25 +267,24 @@ inline std::optional<BrokerError> invalid_trigger(
   return std::nullopt;
 }
 
+/// \cond ATL_KIWOOM_DETAIL
 namespace detail {
 
-/**
- * Reads one of Kiwoom's signed magnitude strings as a price or a quantity.
- *
- * **Kiwoom prefixes a market-data number with a change *direction*, not a sign.** `"+181400"` and
- * `"-91200"` are prices of 181,400 and 91,200 won; the specification says so field by field
- * ("단위: 원, 부호가 포함된 숫자"). Parsing `-91200` as a negative price produces a number that is
- * wrong by a factor of minus one, is a perfectly valid `Decimal64`, and passes every type check
- * downstream — so every price and quantity this adapter reads from a market-data response goes
- * through here, and the direction is read separately from `pred_pre_sig` where it is wanted.
- *
- * Account responses pad to a fixed width with leading zeros (`"000000017598258"`), which
- * `Decimal64::parse` handles, and may carry a genuine minus on a profit-and-loss figure — so
- * `signed_value` is the entry point for those, and this one is for the market-data fields whose
- * sign is a direction.
- *
- * Returns nothing for an empty or unparsable field, which is how Kiwoom spells "no value".
- */
+// Reads one of Kiwoom's signed magnitude strings as a price or a quantity.
+//
+// **Kiwoom prefixes a market-data number with a change *direction*, not a sign.** `"+181400"` and
+// `"-91200"` are prices of 181,400 and 91,200 won; the specification says so field by field
+// ("단위: 원, 부호가 포함된 숫자"). Parsing `-91200` as a negative price produces a number that is
+// wrong by a factor of minus one, is a perfectly valid `Decimal64`, and passes every type check
+// downstream — so every price and quantity this adapter reads from a market-data response goes
+// through here, and the direction is read separately from `pred_pre_sig` where it is wanted.
+//
+// Account responses pad to a fixed width with leading zeros (`"000000017598258"`), which
+// `Decimal64::parse` handles, and may carry a genuine minus on a profit-and-loss figure — so
+// `signed_value` is the entry point for those, and this one is for the market-data fields whose
+// sign is a direction.
+//
+// Returns nothing for an empty or unparsable field, which is how Kiwoom spells "no value".
 inline std::optional<Decimal64> magnitude(const json::object& row, std::string_view key) {
   const auto value = row.if_contains(key);
   if (!value || !value->is_string()) {
@@ -354,30 +305,28 @@ inline std::optional<Decimal64> magnitude(const json::object& row, std::string_v
   return Decimal64::parse(text);
 }
 
-/** Reads a magnitude, or zero where Kiwoom reported nothing. */
+// Reads a magnitude, or zero where Kiwoom reported nothing.
 inline Decimal64 magnitude_or_zero(const json::object& row, std::string_view key) {
   const auto value = magnitude(row, key);
   return value ? *value : Decimal64();
 }
 
-/**
- * Reads a field whose minus sign is arithmetic rather than a direction.
- *
- * **Use this only where the value can genuinely be negative**: holdings' profit and loss and return
- * ratios, and the `kt00001` / `kt00010` deposit figures, which go negative when the account is in
- * 미수. Everything that is a price, a quantity or a holdings money total goes through `magnitude`,
- * because none of those can be negative and Kiwoom documents
- * *both* kinds with the same phrase: `kt00018`'s 현재가 is "단위: 원, 좌측 0-padding 처리된 부호 포함
- * 12자리 숫자", the identical wording it uses for 평가손익 on the row beside it.
- *
- * So the field description cannot tell them apart, and only the *meaning* can: a 현재가 of minus
- * 59,000 won is not a price, so a sign there is a direction — while a 평가손익 of minus 196,888 won
- * is exactly what it says. Reading a mark price as negative would put it straight into
- * `HoldingPosition::last_price_` and from there into every valuation that reads a holding.
- *
- * Values are zero-padded to a fixed width, sometimes with the sign inside the padding, and
- * `Decimal64::parse` reads both the sign and the leading zeros.
- */
+// Reads a field whose minus sign is arithmetic rather than a direction.
+//
+// **Use this only where the value can genuinely be negative**: holdings' profit and loss and return
+// ratios, and the `kt00001` / `kt00010` deposit figures, which go negative when the account is in
+// 미수. Everything that is a price, a quantity or a holdings money total goes through `magnitude`,
+// because none of those can be negative and Kiwoom documents
+// *both* kinds with the same phrase: `kt00018`'s 현재가 is "단위: 원, 좌측 0-padding 처리된 부호 포함
+// 12자리 숫자", the identical wording it uses for 평가손익 on the row beside it.
+//
+// So the field description cannot tell them apart, and only the *meaning* can: a 현재가 of minus
+// 59,000 won is not a price, so a sign there is a direction — while a 평가손익 of minus 196,888 won
+// is exactly what it says. Reading a mark price as negative would put it straight into
+// `HoldingPosition::last_price_` and from there into every valuation that reads a holding.
+//
+// Values are zero-padded to a fixed width, sometimes with the sign inside the padding, and
+// `Decimal64::parse` reads both the sign and the leading zeros.
 inline std::optional<Decimal64> signed_value(const json::object& row, std::string_view key) {
   const auto value = row.if_contains(key);
   if (!value || !value->is_string()) {
@@ -401,28 +350,26 @@ inline std::optional<Decimal64> signed_value(const json::object& row, std::strin
   return Decimal64::parse(text);
 }
 
-/**
- * Reads a magnitude that must be there, and throws when it is not.
- *
- * **`magnitude_or_zero` cannot be used for a figure a risk check consumes.** It turns a missing,
- * blank *or malformed* field into zero, and zero is a statement: a holdings row whose `rmnd_qty`
- * came back garbled would be a successful listing saying the account holds none of that
- * instrument, and `Portfolio::net_quantity_of` would undercount the exposure a position ceiling is
- * measured against. A working order whose `ord_qty` was unreadable would understate
- * `Portfolio::working_quantity`, which is what the sellable guard deducts a resting sell with.
- *
- * A *reported* zero is still zero and still fine. It is the unreadable one that must fail the row,
- * because the two are indistinguishable afterwards.
- *
- * **The line is drawn at what a risk check consumes, and no wider**, because the failure mode of
- * this guard is the opposite one: a field made required that Kiwoom may legitimately omit fails a
- * valid listing, and a listing that fails is a poll that fails. So it covers `rmnd_qty`
- * (`Portfolio::net_quantity_of`), and `ord_qty` and `cntr_qty` (`Portfolio::working_quantity`),
- * plus a bar's `trde_qty`, which a strategy reads directly. The reporting figures beside them --
- * cost basis, market value, profit and loss, the account totals, the deposit detail -- stay
- * tolerant: a missing one there is wrong in a report, not in an order, and an account with no
- * positions is the kind of edge case that should not fail a poll.
- */
+// Reads a magnitude that must be there, and throws when it is not.
+//
+// **`magnitude_or_zero` cannot be used for a figure a risk check consumes.** It turns a missing,
+// blank *or malformed* field into zero, and zero is a statement: a holdings row whose `rmnd_qty`
+// came back garbled would be a successful listing saying the account holds none of that
+// instrument, and `Portfolio::net_quantity_of` would undercount the exposure a position ceiling is
+// measured against. A working order whose `ord_qty` was unreadable would understate
+// `Portfolio::working_quantity`, which is what the sellable guard deducts a resting sell with.
+//
+// A *reported* zero is still zero and still fine. It is the unreadable one that must fail the row,
+// because the two are indistinguishable afterwards.
+//
+// **The line is drawn at what a risk check consumes, and no wider**, because the failure mode of
+// this guard is the opposite one: a field made required that Kiwoom may legitimately omit fails a
+// valid listing, and a listing that fails is a poll that fails. So it covers `rmnd_qty`
+// (`Portfolio::net_quantity_of`), and `ord_qty` and `cntr_qty` (`Portfolio::working_quantity`),
+// plus a bar's `trde_qty`, which a strategy reads directly. The reporting figures beside them --
+// cost basis, market value, profit and loss, the account totals, the deposit detail -- stay
+// tolerant: a missing one there is wrong in a report, not in an order, and an account with no
+// positions is the kind of edge case that should not fail a poll.
 inline Decimal64 required_magnitude(const json::object& row, std::string_view key) {
   const auto value = magnitude(row, key);
   if (!value) {
@@ -431,7 +378,7 @@ inline Decimal64 required_magnitude(const json::object& row, std::string_view ke
   return *value;
 }
 
-/** Reads a genuinely signed figure that must be there, and throws when it is not. */
+// Reads a genuinely signed figure that must be there, and throws when it is not.
 inline Decimal64 required_signed(const json::object& row, std::string_view key) {
   const auto value = signed_value(row, key);
   if (!value) {
@@ -440,13 +387,13 @@ inline Decimal64 required_signed(const json::object& row, std::string_view key) 
   return *value;
 }
 
-/** Reads a signed field, or zero where Kiwoom reported nothing. */
+// Reads a signed field, or zero where Kiwoom reported nothing.
 inline Decimal64 signed_or_zero(const json::object& row, std::string_view key) {
   const auto value = signed_value(row, key);
   return value ? *value : Decimal64();
 }
 
-/** Reads a string field, or an empty string where Kiwoom reported none. */
+// Reads a string field, or an empty string where Kiwoom reported none.
 inline std::string text_field(const json::object& row, std::string_view key) {
   const auto value = row.if_contains(key);
   if (!value || !value->is_string()) {
@@ -455,18 +402,16 @@ inline std::string text_field(const json::object& row, std::string_view key) {
   return std::string(value->as_string());
 }
 
-/**
- * Returns a symbol as Kiwoom's order endpoints spell it.
- *
- * **Kiwoom's account listings prefix a symbol with `A`** — `kt00018` reports `"A005930"` and
- * `kt00007` reports `"A069500"` — while `ka10075` and every market-data endpoint report the bare
- * six digits. An instrument identity built from the prefixed form would not compare equal to one
- * built from the bare form, so a holding and its own working order would stop matching. The prefix
- * is stripped once, here.
- *
- * The tape suffix is stripped for the same reason: `005930_AL` is the same instrument as `005930`,
- * read off a different book.
- */
+// Returns a symbol as Kiwoom's order endpoints spell it.
+//
+// **Kiwoom's account listings prefix a symbol with `A`** — `kt00018` reports `"A005930"` and
+// `kt00007` reports `"A069500"` — while `ka10075` and every market-data endpoint report the bare
+// six digits. An instrument identity built from the prefixed form would not compare equal to one
+// built from the bare form, so a holding and its own working order would stop matching. The prefix
+// is stripped once, here.
+//
+// The tape suffix is stripped for the same reason: `005930_AL` is the same instrument as `005930`,
+// read off a different book.
 inline std::string bare_symbol(std::string_view reported) {
   std::string_view symbol = reported;
   if (symbol.size() > 1 && symbol.front() == 'A') {
@@ -478,7 +423,7 @@ inline std::string bare_symbol(std::string_view reported) {
   return std::string(symbol);
 }
 
-/** Reads Kiwoom's `HHmmss` or `HH:mm:ss` clock time as an instant on `date` in Seoul. */
+// Reads Kiwoom's `HHmmss` or `HH:mm:ss` clock time as an instant on `date` in Seoul.
 inline std::optional<std::chrono::system_clock::time_point> seoul_timestamp(
   const Date& date,
   std::string_view clock
@@ -513,19 +458,17 @@ inline std::optional<std::chrono::system_clock::time_point> seoul_timestamp(
   return std::chrono::system_clock::from_time_t(utc);
 }
 
-/** Reads Kiwoom's `YYYYMMDD` as a calendar date, or nothing when it is not one. */
+// Reads Kiwoom's `YYYYMMDD` as a calendar date, or nothing when it is not one.
 inline std::optional<Date> compact_date(std::string_view text) {
   return broker_detail::compact_date(text);
 }
 
-/**
- * Reads a `YYYYMMDD` field that states a date or leaves it blank, as one of three answers.
- *
- * Reads the raw value rather than `text_field`, which maps every non-string to `""` and would so
- * report a number as a date not stated. Not stated: absent, `null` or `""`. Stated: eight digits
- * forming a real date. Unreadable: anything else -- **including `"00000000"`**, since nothing in
- * Kiwoom's specification uses a zero date as a blank, and KIS's use of one says nothing about Kiwoom.
- */
+// Reads a `YYYYMMDD` field that states a date or leaves it blank, as one of three answers.
+//
+// Reads the raw value rather than `text_field`, which maps every non-string to `""` and would so
+// report a number as a date not stated. Not stated: absent, `null` or `""`. Stated: eight digits
+// forming a real date. Unreadable: anything else -- **including `"00000000"`**, since nothing in
+// Kiwoom's specification uses a zero date as a blank, and KIS's use of one says nothing about Kiwoom.
 inline StatedDate stated_compact_date(const json::object& row, std::string_view key) {
   const auto value = row.if_contains(key);
   if (!value || value->is_null()) {
@@ -542,7 +485,7 @@ inline StatedDate stated_compact_date(const json::object& row, std::string_view 
   return date ? StatedDate::stated(*date) : StatedDate::unreadable();
 }
 
-/** Renders a calendar date as Kiwoom's `YYYYMMDD`. */
+// Renders a calendar date as Kiwoom's `YYYYMMDD`.
 inline std::string compact_text(const Date& date) {
   std::string text(8, '0');
   int year = date.year_;
@@ -558,67 +501,38 @@ inline std::string compact_text(const Date& date) {
 }
 
 } // namespace detail
+/// \endcond
 
 /**
- * One row of Kiwoom's order-shape vocabulary.
+ * @brief One row of Kiwoom's order-type table: the numeric request code, the Korean names its
+ *   listings report, and the normalized shape.
  *
- * **Kiwoom spells this one field three different ways**, and the adapter needs all three:
- *
- * - `kt10000` / `kt10001` take a **numeric** `trde_tp` on a request: `0`, `3`, `10`, `40`.
- * - `ka10075` 미체결 and `ka10076` 체결 report a **Korean name**, using `보통` for a plain limit,
- *   and their label list includes `시간외단일가`, which no request table has.
- * - `kt00007` and `kt00009` 주문체결내역 report a Korean name too — but a *different* one, using
- *   `지정가` where the other listings say `보통`, and publishing neither `시간외단일가` nor the GTP
- *   shapes.
- *
- * All three live in one table rather than three, because a shape that could be requested under one
- * spelling and read back as something else is exactly the drift a single table exists to prevent.
- * A row therefore carries the code and up to two names; `alternate_name_` is null where the two
- * listings agree, and `code_` is null for a shape that exists only on a read path.
+ * Working-order listings (`ka10075`, `ka10076`) and history (`kt00007`, `kt00009`) name some shapes
+ * differently (`보통` vs `지정가`), hence two names.
  */
 struct KiwoomOrderShapeRow {
-  /** The numeric `trde_tp` a request carries, or null for a shape this library cannot send. */
+  /** @brief The numeric `trde_tp` a request carries, or null for a shape this library cannot send. */
   const char* code_;
-  /** The name `kt10000`, `ka10075` and `ka10076` use. */
+  /** @brief The name `kt10000`, `ka10075` and `ka10076` use. */
   const char* name_;
-  /** The name `kt00007` and `kt00009` use, or null where it is the same as `name_`. */
+  /** @brief The name `kt00007` and `kt00009` use, or null where it is the same as `name_`. */
   const char* alternate_name_;
-  /** The normalized price basis. */
+  /** @brief The normalized price basis. */
   OrderType type_;
-  /** The normalized execution condition. */
+  /** @brief The normalized execution condition. */
   TimeInForce time_in_force_;
-  /** The normalized session. */
+  /** @brief The normalized session. */
   OrderSession session_;
-  /** Whether this adapter may *send* the code, as opposed to reading it. */
+  /** @brief Whether this adapter may *send* the code, as opposed to reading it. */
   bool requestable_;
 };
 
 /**
- * Kiwoom's `trde_tp` table, transcribed from `docs/api/kiwoom/kiwoom-rest-api-spec.json`.
+ * @brief Kiwoom's order-type (`trde_tp`) table, from its API specification.
  *
- * The request column comes from `kt10000`'s `requestIo`, the first name column from `ka10075`'s and
- * `ka10076`'s `responseIo`, and the second from `kt00007`'s and `kt00009`'s.
- *
- * The twenty request codes factor into the core's three axes with nothing left over, which is worth
- * recording: the three-axis decomposition was derived from KIS's `ORD_DVSN` and Toss's
- * `timeInForce`, and Kiwoom shares no wire format with either.
- *
- * **One row is read-only.** `28` 스톱지정가 was a second until `OrderRequest::trigger_price_`
- * existed; its trigger goes in `cond_uv`, and `invalid_trigger` refuses a `28` without one.
- *
- * `시간외단일가` has **no code at all**. It appears in `ka10075`'s and `ka10076`'s label lists and in
- * no request table, so this library could not place one even if `OrderRequest` could express it.
- * Reading it as a *limit* in the after-hours auction is an inference rather than something the
- * specification states — it names the auction without giving its price rule — and it is the same
- * inference the KIS adapter makes about its own response-only `07`, about a field it likewise
- * cannot send.
- *
- * **There is deliberately no per-venue column.** KIS's workbook publishes which codes each venue
- * offers and the KIS adapter refuses a mismatch locally. Kiwoom publishes one flat list plus a
- * separate `dmst_stex_tp` selector and no code-by-venue matrix. Inventing a restriction would refuse
- * orders Kiwoom accepts; inventing permission would be a guess the other way. So a combination
- * Kiwoom has no code for at all is refused before any I/O, and a venue-specific refusal comes from
- * Kiwoom with its own `return_code`, preserved.
+ * `시간외단일가` (after-hours single price) has no request code: it can be read, not placed. Kiwoom
+ * publishes no per-venue restriction, so a venue-specific refusal comes from Kiwoom with its own
+ * code.
  */
 inline constexpr std::array<KiwoomOrderShapeRow, 21> kOrderShapes{{
   // code   name              alternate       type                       condition                         session
@@ -646,11 +560,13 @@ inline constexpr std::array<KiwoomOrderShapeRow, 21> kOrderShapes{{
 }};
 
 /**
- * Maps a normalized order shape to Kiwoom's `trde_tp`.
- *
- * A combination Kiwoom has no code for, or has a read-only code for, is rejected with
- * `INVALID_ARGUMENT` before any token fetch or socket write. It is never sent under a neighbouring
- * code (Decision 6).
+ * @brief Finds Kiwoom's order-type code for an order shape.
+ * @param type The order type.
+ * @param time_in_force The execution condition.
+ * @param session The session.
+ * @param division Set to the code on success.
+ * @return An `INVALID_ARGUMENT` error (before any request) if Kiwoom has no code for the shape or
+ *   the code cannot be sent, otherwise `std::nullopt`.
  */
 inline std::optional<BrokerError> order_division(
   OrderType type,
@@ -688,12 +604,9 @@ inline std::optional<BrokerError> order_division(
 }
 
 /**
- * Returns the row a response's Korean `trde_tp` names, or null when the table has none.
- *
- * **Both name columns are searched**, because `ka10075` and `kt00007` disagree about what to call a
- * limit order and a caller reading a working order through one and its history through the other
- * must get the same shape. A label in neither column yields null, and the caller leaves the
- * normalized fields `UNKNOWN` with the raw text preserved rather than mapping it to a neighbour.
+ * @brief Looks up an order shape by the Korean name a response gives (either listing's spelling).
+ * @param name The name.
+ * @return The row, or null if neither column has it (the caller then leaves the shape `UNKNOWN`).
  */
 inline const KiwoomOrderShapeRow* shape_by_name(std::string_view name) noexcept {
   for (const auto& row : kOrderShapes) {
@@ -707,7 +620,11 @@ inline const KiwoomOrderShapeRow* shape_by_name(std::string_view name) noexcept 
   return nullptr;
 }
 
-/** Returns the row a numeric `trde_tp` names, or null when the table has none. */
+/**
+ * @brief Looks up an order shape by Kiwoom's numeric `trde_tp` code.
+ * @param code The code.
+ * @return The row, or null if the table has none.
+ */
 inline const KiwoomOrderShapeRow* shape_by_code(std::string_view code) noexcept {
   for (const auto& row : kOrderShapes) {
     if (row.code_ != nullptr && code == row.code_) {
@@ -717,7 +634,11 @@ inline const KiwoomOrderShapeRow* shape_by_code(std::string_view code) noexcept 
   return nullptr;
 }
 
-/** Returns Kiwoom's `dmst_stex_tp` value for `venue`, or an empty string where it sends none. */
+/**
+ * @brief Returns Kiwoom's `dmst_stex_tp` value for a venue.
+ * @param venue The venue.
+ * @return The code, or an empty string where none is sent.
+ */
 inline const char* exchange_code(Venue venue) noexcept {
   switch (venue) {
     case Venue::KRX:
@@ -734,16 +655,18 @@ inline const char* exchange_code(Venue venue) noexcept {
 }
 
 /**
- * Returns the venue a Kiwoom order carrying `asked` actually reaches.
- *
- * **Kiwoom documents `dmst_stex_tp` as a required field with no default**, so unlike KIS there is
- * no "omitted means KRX" rule to record. An order that names no venue is refused before any I/O
- * rather than being sent with a guessed one, and this function exists to say that in one place:
- * an unspecified venue resolves to itself, and `validate_order` refuses it.
+ * @brief Returns the venue a Kiwoom order reaches: the one it names (Kiwoom requires one, so an
+ *   order naming none is refused before sending).
+ * @param asked The order's venue.
+ * @return `asked`.
  */
 inline constexpr Venue kiwoom_effective_route(Venue asked) noexcept { return asked; }
 
-/** Returns the venue Kiwoom's `stex_tp` / `dmst_stex_tp` names on a read path. */
+/**
+ * @brief Converts a venue Kiwoom names on a response (`stex_tp`, `dmst_stex_tp`).
+ * @param code The value.
+ * @return The venue, or `UNSPECIFIED` if unrecognized.
+ */
 inline Venue normalized_venue(std::string_view code) noexcept {
   if (code == "KRX" || code == "1") {
     return Venue::KRX;
@@ -758,18 +681,14 @@ inline Venue normalized_venue(std::string_view code) noexcept {
 }
 
 /**
- * Returns the venue a `ka10075` working-order row reports, from its `stex_tp` and `sor_yn`.
+ * @brief Returns the venue of a working-order row (`ka10075`) from its `stex_tp` and `sor_yn`.
  *
- * **`sor_yn` is read in case `stex_tp` alone does not say SOR.** Kiwoom documents the two
- * separately -- `stex_tp` 거래소구분 as `0 : 통합, 1 : KRX, 2 : NXT` and `sor_yn` SOR 여부값 as
- * `Y,N`. Its only example SOR row (`ka10076`'s) reads `stex_tp 0`, `stex_tp_txt SOR`, `sor_yn Y`,
- * which `stex_tp` already reads as `COMBINED`; but nothing documents how a resting SOR order is listed.
- * If it came under the book it rests on with the flag set, `stex_tp` alone would say KRX while the
- * journal recorded `COMBINED`, recovery would read it as a different order, and a withdrawal would be
- * sent with `KRX` instead of the `SOR` it was placed with. So `Y` means `Venue::COMBINED` whatever
- * `stex_tp` says. Anything else, including an absent or unreadable
- * flag, leaves `stex_tp` to answer: the flag is informational for every other order, and one odd
- * row must not cost a listing. Documented, not yet observed on an account.
+ * `sor_yn` `Y` means `Venue::COMBINED` (SOR) whatever `stex_tp` says; otherwise `stex_tp` decides.
+ * How Kiwoom lists a resting SOR order has not been observed.
+ *
+ * @param stex_tp The row's `stex_tp`.
+ * @param sor_yn The row's `sor_yn`.
+ * @return The venue.
  */
 inline Venue listed_venue(std::string_view stex_tp, std::string_view sor_yn) noexcept {
   if (sor_yn == "Y") {
@@ -779,17 +698,11 @@ inline Venue listed_venue(std::string_view stex_tp, std::string_view sor_yn) noe
 }
 
 /**
- * Returns the side Kiwoom's `io_tp_nm` names.
- *
- * Kiwoom spells it several ways across its listings — `+매수`, `-매도`, `현금매수`, `현금매도`,
- * `융자매수`, `매수정정`, `매도취소` — and publishes the field as free text with no closed value
- * list, so the test is which of 매수 or 매도 the text contains rather than an exact match.
- *
- * **Nothing here defaults.** `OrderSide` has no unknown member, and its default is `BUY`, so a
- * label this function cannot read would be *reported as a buy* if the caller left the field alone
- * — and a resting sell reported as a buy is not counted against the sellable quantity by
- * `RiskGuard`. Every caller therefore fails the row rather than accepting the default; see
- * `parse_open_order` and `parse_history_row`.
+ * @brief Reads the side from Kiwoom's free-text `io_tp_nm` (such as `+매수`, `현금매도`,
+ *   `매수정정`), by whether it contains 매수 or 매도.
+ * @param text The text.
+ * @return The side, or `std::nullopt` if neither (the listing being read then fails rather than
+ *   default to `BUY`).
  */
 inline std::optional<OrderSide> normalized_order_side(std::string_view text) noexcept {
   if (text.find("매수") != std::string_view::npos) {
@@ -802,12 +715,10 @@ inline std::optional<OrderSide> normalized_order_side(std::string_view text) noe
 }
 
 /**
- * Returns the lifecycle state Kiwoom's `ord_stt` / `acpt_tp` names.
- *
- * Kiwoom publishes no status *code*, only a Korean word: `접수` (received), `확인` (confirmed —
- * which is what it calls an accepted modification or cancellation), and `체결` (filled). An
- * unrecognized word is `UNKNOWN` rather than being mapped to a neighbour, because both
- * specifications this library follows require a client to tolerate a status it does not know.
+ * @brief Reads an order status from Kiwoom's Korean word.
+ * @param text The word (`ord_stt` or `acpt_tp`).
+ * @return `PENDING` for `접수` (received) and `확인` (confirmed), `FILLED` for `체결`, `CANCELED` for
+ *   `취소`, and `UNKNOWN` for any other word.
  */
 inline OrderStatus normalized_order_status(std::string_view text) noexcept {
   if (text == "접수") {
@@ -826,13 +737,9 @@ inline OrderStatus normalized_order_status(std::string_view text) noexcept {
 }
 
 /**
- * Returns the `api-id` of the chart endpoint that publishes `interval`, or null when none does.
- *
- * Null is unreachable today -- Kiwoom publishes all five intervals the core names -- and the
- * function is written to be able to say so anyway, because the alternative is what it replaced: a
- * lookup that fell through to the daily endpoint, so a sixth `BarInterval` added later would have
- * silently returned *daily bars* for it. `-Wswitch` would flag the new enumerator in a build with
- * warnings as errors, and this is what happens in one without.
+ * @brief Returns the `api-id` of the chart endpoint for a bar interval.
+ * @param interval The interval.
+ * @return The id, or null if Kiwoom has none (every interval has one today).
  */
 inline const char* chart_api_id(BarInterval interval) noexcept {
   switch (interval) {
@@ -850,7 +757,11 @@ inline const char* chart_api_id(BarInterval interval) noexcept {
   return nullptr;
 }
 
-/** Returns the array field that endpoint returns its rows in, or null when there is no endpoint. */
+/**
+ * @brief Returns the array field a bar interval's chart endpoint returns its rows in.
+ * @param interval The interval.
+ * @return The field name, or null if Kiwoom has no endpoint for it.
+ */
 inline const char* chart_rows_field(BarInterval interval) noexcept {
   switch (interval) {
     case BarInterval::ONE_MINUTE:
@@ -868,11 +779,9 @@ inline const char* chart_rows_field(BarInterval interval) noexcept {
 }
 
 /**
- * Refuses a bar interval Kiwoom publishes no chart endpoint for.
- *
- * Reads the same table the request builder does rather than answering from a constant, so the
- * capability and the request cannot disagree. Every interval the core names is backed today, so
- * this refuses nothing -- and it will refuse the right thing on the day one is not.
+ * @brief Refuses a bar interval Kiwoom has no chart endpoint for (none today).
+ * @param interval The interval.
+ * @return An `INVALID_ARGUMENT` error (not sent), or `std::nullopt`.
  */
 inline std::optional<BrokerError> unsupported_bar_interval(BarInterval interval) {
   if (chart_api_id(interval) != nullptr && chart_rows_field(interval) != nullptr) {
@@ -889,137 +798,115 @@ inline std::optional<BrokerError> unsupported_bar_interval(BarInterval interval)
 }
 
 /**
- * Kiwoom's deposit detail, `kt00001` 예수금상세현황요청, as the broker reports it.
- *
- * The port's `buying_power` verb answers one question — what may be spent — and reads
- * `spendable_` from it. The rest is here because Kiwoom's answer is richer than the port's
- * question and Decision 2b says to expose the difference rather than hide it or fake it.
+ * @brief Kiwoom's deposit detail (`kt00001`), as reported; `buying_power` reads `spendable_` from it,
+ *   and the rest is reachable through `session.client()`.
  */
 struct KiwoomDeposit {
   /**
-   * `100stk_ord_alow_amt` 100%종목주문가능금액: what the account can buy funding the position in
-   * full.
-   *
-   * **This, and not `orderable_`, is what `BuyingPower::cash_` is filled from**, and the difference
-   * is leverage. `BuyingPower` documents its own field as "the credit-free figure both brokers
-   * publish -- Toss's `cashBuyingPower`, KIS's `nrcvb_buy_amt`", and warns that "a number without
-   * the model is how a strategy discovers leverage by accident". Kiwoom's own example makes the gap
-   * concrete: 주문가능금액 is 85,341 against a 100%종목주문가능금액 of 12,550, on an account holding
-   * 3,915,500 of 대용금 -- collateral, not cash. 미수없는매수금액 is what KIS means and
-   * `100stk_ord_alow_amt` is what Kiwoom means by it; it agrees with `d2_entra` to the won.
+   * @brief What the account can buy paying in full, without credit (`100stk_ord_alow_amt`);
+   *   `BuyingPower::cash_` is this, not `orderable_`, which counts collateral.
    */
   Decimal64 spendable_;
-  /** `ord_alow_amt` 주문가능금액: orderable *including* what margin and 대용금 allow. */
+  /** @brief `ord_alow_amt` 주문가능금액: orderable *including* what margin and 대용금 allow. */
   Decimal64 orderable_;
-  /** `entr` 예수금: the cash deposit. */
+  /** @brief `entr` 예수금: the cash deposit. */
   Decimal64 deposit_;
-  /** `d2_entra` D+2 추정예수금: the deposit once today's trades settle. */
+  /** @brief `d2_entra` D+2 추정예수금: the deposit once today's trades settle. */
   Decimal64 settled_deposit_;
-  /** `repl_amt` 대용금: securities pledged as collateral, which is not cash. */
+  /** @brief `repl_amt` 대용금: securities pledged as collateral, which is not cash. */
   Decimal64 substitute_amount_;
-  /** `pymn_alow_amt` 출금가능금액: what may be withdrawn. */
+  /** @brief `pymn_alow_amt` 출금가능금액: what may be withdrawn. */
   Decimal64 withdrawable_;
-  /** The currency every figure above is in, which is won. */
+  /** @brief The currency every figure above is in, which is won. */
   Currency currency_;
-  /** When the figures arrived, on this machine's clock. */
+  /** @brief When the figures arrived, on this machine's clock. */
   std::chrono::system_clock::time_point received_at_;
 };
 
-/** One margin tier of Kiwoom's `kt00010` answer: what may be ordered at that 증거금률. */
+/** @brief One margin tier of Kiwoom's `kt00010` answer: what may be ordered at that 증거금률. */
 struct KiwoomMarginTier {
-  /** The margin rate the row applies to, as a percentage: 20, 30, 40, 50, 60 or 100. */
+  /** @brief The margin rate the row applies to, as a percentage: 20, 30, 40, 50, 60 or 100. */
   int margin_percent_{0};
-  /** Whether this row is the 증거금감면 (reduced-margin) variant of its rate. */
+  /** @brief Whether this row is the 증거금감면 (reduced-margin) variant of its rate. */
   bool reduced_{false};
-  /**
-   * `profa_NNord_alow_amt`: the orderable amount at this rate, where Kiwoom reported one.
-   *
-   * Optional rather than zero-defaulted, because a tier Kiwoom did not answer for is not a tier at
-   * which nothing may be ordered. The two are indistinguishable once a missing field has become a
-   * zero, and this is the figure a caller gates a size on.
-   */
+  /** @brief The orderable amount at this margin rate (`profa_NNord_alow_amt`), if Kiwoom reported one. */
   std::optional<Decimal64> amount_;
-  /** `profa_NNord_alowq`: the orderable quantity at this rate. Empty as for `amount_`. */
+  /** @brief `profa_NNord_alowq`: the orderable quantity at this rate. Empty as for `amount_`. */
   std::optional<Decimal64> quantity_;
 };
 
 /**
- * Kiwoom's `kt00010` 주문인출가능금액요청: what may be ordered, per margin tier, for one instrument.
+ * @brief What may be ordered of one instrument, per margin tier (`kt00010`), reachable through
+ *   `session.client()`.
  *
- * **This is why `BrokerCaps::has_buying_power_quantity` is true for Kiwoom.** That constant asks
- * whether the *broker* publishes an affordable quantity, not whether the port's verb returns one —
- * the port asks only for an amount, because Toss reports no quantity at all. Kiwoom publishes seven
- * tiers of amount-and-quantity, and a caller gating on the capability reaches them here through
- * `session.client()`.
- *
- * There is deliberately **no single "affordable quantity"** on this type. Which tier applies
- * depends on the instrument's 증거금률, which Kiwoom states per row and not as a selection, so
- * collapsing the seven into one would be this library choosing a margin rate on the caller's
- * behalf.
+ * There is no single affordable quantity: which tier applies depends on the instrument's margin
+ * rate, which Kiwoom does not select for you.
  */
 struct KiwoomOrderableAmount {
-  /** Every 증거금률 tier Kiwoom answered with, in the order it publishes them. */
+  /** @brief Every 증거금률 tier Kiwoom answered with, in the order it publishes them. */
   std::vector<KiwoomMarginTier> tiers_;
-  /** `ord_alowa` 주문가능현금: the cash available to order with. */
+  /** @brief `ord_alowa` 주문가능현금: the cash available to order with. */
   Decimal64 orderable_cash_;
-  /** `wthd_alowa` 인출가능금액. */
+  /** @brief `wthd_alowa` 인출가능금액. */
   Decimal64 withdrawable_;
-  /** `d2entra` D+2 추정예수금. */
+  /** @brief `d2entra` D+2 추정예수금. */
   Decimal64 settled_deposit_;
-  /** `profa_rdex_aplc_tp`: whether the 증거금감면 tiers are the ones in force (`1`) or not (`0`). */
+  /** @brief `profa_rdex_aplc_tp`: whether the 증거금감면 tiers are the ones in force (`1`) or not (`0`). */
   bool margin_reduction_applies_{false};
-  /** The currency every amount above is in, which is won. */
+  /** @brief The currency every amount above is in, which is won. */
   Currency currency_;
-  /** When the figures arrived, on this machine's clock. */
+  /** @brief When the figures arrived, on this machine's clock. */
   std::chrono::system_clock::time_point received_at_;
 };
 
 /**
- * Asynchronous Kiwoom REST client.
+ * @brief The asynchronous Kiwoom REST client: market data, account inquiries and orders for domestic
+ *   stocks.
  *
- * Every Kiwoom request is a `POST` to a *group* path — `/api/dostk/acnt`, `/api/dostk/ordr`,
- * `/api/dostk/mrkcond` — with the operation named by an `api-id` header rather than by the path.
- * `make_request` is the one place that shape is built, so a new endpoint cannot quietly disagree
- * with the others about the envelope.
+ * It requests an access token when first needed and shares one refresh among concurrent requests.
+ * Create it with `std::make_shared`. Each completion runs on the handler's associated executor, or on
+ * the client's strand if it has none. Before trading, state the holdings settings in `KiwoomConfig`.
+ * A blocking wrapper is `KiwoomBlockingClient`.
  */
 class KiwoomClient : public std::enable_shared_from_this<KiwoomClient> {
 public:
-  /** Completion handler for one normalized quote. */
+  /** @brief Completion handler for one normalized quote. */
   using QuoteHandler = net::any_completion_handler<void(Result<QuoteSnapshot>)>;
-  /** Completion handler for one normalized bar series. */
+  /** @brief Completion handler for one normalized bar series. */
   using BarsHandler = net::any_completion_handler<void(Result<BarSeries>)>;
-  /** Completion handler for one normalized order book. */
+  /** @brief Completion handler for one normalized order book. */
   using DepthHandler = net::any_completion_handler<void(Result<DepthSnapshot>)>;
-  /** Completion handler for one instrument's price bounds. */
+  /** @brief Completion handler for one instrument's price bounds. */
   using PriceLimitsHandler = net::any_completion_handler<void(Result<PriceLimits>)>;
-  /** Completion handler for recent executions. */
+  /** @brief Completion handler for recent executions. */
   using TradesHandler = net::any_completion_handler<void(Result<std::vector<TradePrint>>)>;
-  /** Completion handler for one instrument's reference data. */
+  /** @brief Completion handler for one instrument's reference data. */
   using InstrumentHandler = net::any_completion_handler<void(Result<Instrument>)>;
-  /** Completion handler for one normalized holdings snapshot. */
+  /** @brief Completion handler for one normalized holdings snapshot. */
   using HoldingsHandler = net::any_completion_handler<void(Result<HoldingsSnapshot>)>;
-  /** Completion handler for one normalized buying-power reading. */
+  /** @brief Completion handler for one normalized buying-power reading. */
   using BuyingPowerHandler = net::any_completion_handler<void(Result<BuyingPower>)>;
-  /** Completion handler for Kiwoom's own fuller deposit detail. */
+  /** @brief Completion handler for Kiwoom's own fuller deposit detail. */
   using DepositHandler = net::any_completion_handler<void(Result<KiwoomDeposit>)>;
-  /** Completion handler for Kiwoom's per-margin-tier orderable amounts and quantities. */
+  /** @brief Completion handler for Kiwoom's per-margin-tier orderable amounts and quantities. */
   using OrderableHandler = net::any_completion_handler<void(Result<KiwoomOrderableAmount>)>;
-  /** Completion handler for the one account the bound credential drives. */
+  /** @brief Completion handler for the one account the bound credential drives. */
   using AccountsHandler = net::any_completion_handler<void(Result<std::vector<KiwoomAccountInfo>>)>;
-  /** Completion handler for one Kiwoom order acknowledgement. */
+  /** @brief Completion handler for one Kiwoom order acknowledgement. */
   using OrderAckHandler = net::any_completion_handler<void(Result<KiwoomOrderAck>)>;
-  /** Completion handler for one page of modifiable or cancellable orders. */
+  /** @brief Completion handler for one page of modifiable or cancellable orders. */
   using OpenOrderHandler = net::any_completion_handler<void(Result<KiwoomOpenOrderPage>)>;
-  /** Completion handler for one normalized page of order history. */
+  /** @brief Completion handler for one normalized page of order history. */
   using OrderPageHandler = net::any_completion_handler<void(Result<OrderPage>)>;
-  /** Internal completion handler for a shared access-token refresh. */
+  /** @brief Internal completion handler for a shared access-token refresh. */
   using TokenHandler = net::any_completion_handler<void(std::optional<BrokerError>)>;
 
   /**
-   * Constructs a client for one Kiwoom environment.
-   *
-   * `config` is a value sink because the client retains its own credentials; lvalues are copied
-   * once and rvalues are moved into the client.
+   * @brief Constructs a client; nothing is sent until the first request.
+   * @param executor The executor its strand runs on.
+   * @param context The TLS context; borrowed, and must outlive the client.
+   * @param config The credentials, environment and holdings settings.
+   * @param options HTTP options (set `rate_limit_` to pace requests).
    */
   KiwoomClient(
     net::any_io_executor executor,
@@ -1034,7 +921,13 @@ public:
       )
     ) {}
 
-  /** Requests and normalizes a current quote, from `ka10007` 시세표성정보요청. */
+  /**
+   * @brief Requests and normalizes a current quote, from `ka10007` 시세표성정보요청.
+   * @tparam CompletionToken An Asio completion token.
+   * @param instrument The instrument.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_quote(InstrumentId instrument, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<QuoteSnapshot>)>(
@@ -1054,7 +947,13 @@ public:
     );
   }
 
-  /** Requests today's upper and lower price bound, from the same `ka10007` response. */
+  /**
+   * @brief Requests today's upper and lower price bound, from the same `ka10007` response.
+   * @tparam CompletionToken An Asio completion token.
+   * @param instrument The instrument.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_price_limits(InstrumentId instrument, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<PriceLimits>)>(
@@ -1074,7 +973,13 @@ public:
     );
   }
 
-  /** Requests the resting orders on both sides of the book, from `ka10004` 주식호가요청. */
+  /**
+   * @brief Requests the resting orders on both sides of the book, from `ka10004` 주식호가요청.
+   * @tparam CompletionToken An Asio completion token.
+   * @param instrument The instrument.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_depth(InstrumentId instrument, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<DepthSnapshot>)>(
@@ -1094,7 +999,14 @@ public:
     );
   }
 
-  /** Requests recent executions, newest first, from `ka10003` 체결정보요청. */
+  /**
+   * @brief Requests recent executions, newest first, from `ka10003` 체결정보요청.
+   * @tparam CompletionToken An Asio completion token.
+   * @param instrument The instrument.
+   * @param count The most trades to return.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_trades(InstrumentId instrument, int count, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<std::vector<TradePrint>>)>(
@@ -1112,7 +1024,13 @@ public:
     );
   }
 
-  /** Requests static reference data for one instrument, from `ka10100` 종목정보 조회. */
+  /**
+   * @brief Requests static reference data for one instrument, from `ka10100` 종목정보 조회.
+   * @tparam CompletionToken An Asio completion token.
+   * @param instrument The instrument.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_instrument(InstrumentId instrument, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<Instrument>)>(
@@ -1129,7 +1047,21 @@ public:
     );
   }
 
-  /** Requests bars, paging Kiwoom's `base_dt` backwards until `count_` is satisfied. */
+  /**
+   * @brief Requests bars, following Kiwoom's continuation pages from `before_`'s Korean date (or today).
+   *
+   * `before_` applies by day only: minute bars later than it on the same date are returned. A short
+   * series comes back only when Kiwoom has no more. `next_cursor_` is set when the series is full and
+   * Kiwoom said there is more, and never for minute bars. If Kiwoom offers more but its continuation key is blank,
+   * a page adds nothing, or 50 pages were read, the request fails (`PROTOCOL`, `incomplete_listing`)
+   * instead of returning a partial series. Refused before sending: `count_` of zero or less, or a
+   * symbol that is not Korean or malformed.
+   *
+   * @tparam CompletionToken An Asio completion token.
+   * @param query The query.
+   * @param token The completion token, called with `Result<BarSeries>`.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_bars(BarQuery query, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<BarSeries>)>(
@@ -1147,24 +1079,30 @@ public:
   }
 
   /**
-   * Returns the configuration this client was built with.
-   *
-   * Exposed because the port has to read one run-time assertion out of it -- what the operator says
-   * `dmst_stex_tp` means -- to decide whether the normalized holdings verb may answer at all. A
-   * capability constant cannot carry that, since it varies per configuration rather than per adapter.
+   * @brief Returns the configuration (the session reads its holdings assertions from it).
+   * @return The configuration.
    */
   const KiwoomConfig& config() const noexcept { return config_; }
 
   /**
-   * Returns the strand every completion of this client is initiated from.
-   *
-   * Exposed for the port's one completion that performs no I/O -- the holdings refusal while the
-   * scope is unstated -- so it is posted where every other completion of this client starts, and an
-   * `io_context` running this client counts it as outstanding work.
+   * @brief Returns the client's strand.
+   * @return The strand.
    */
   net::strand<net::any_io_executor> get_executor() const noexcept { return strand_; }
 
-  /** Requests every holding, paging `kt00018` 계좌평가잔고내역요청. */
+  /**
+   * @brief Requests the holdings `kt00018` lists for `KiwoomConfig::holdings_venue_` (refused before
+   *   sending until it is `KRX` or `NXT`); whether that is every holding is what
+   *   `KiwoomConfig::holdings_position_scope_` asserts, which this call does not check.
+   *
+   * The snapshot fails if one symbol appears on two rows or paging stops while Kiwoom offers more. Its
+   * `sellable_basis_` follows `KiwoomConfig::holdings_sellable_scope_`.
+   *
+   * @tparam CompletionToken An Asio completion token.
+   * @param account The account (empty).
+   * @param token The completion token, called with `Result<HoldingsSnapshot>`.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_holdings(KiwoomAccount account, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<HoldingsSnapshot>)>(
@@ -1181,7 +1119,14 @@ public:
     );
   }
 
-  /** Requests what the account may spend, from `kt00001` 예수금상세현황요청. */
+  /**
+   * @brief Requests what the account may spend, from `kt00001` 예수금상세현황요청.
+   * @tparam CompletionToken An Asio completion token.
+   * @param currency The currency; anything but KRW is refused before sending.
+   * @param account The bound account.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_buying_power(Currency currency, KiwoomAccount account, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<BuyingPower>)>(
@@ -1199,7 +1144,12 @@ public:
     );
   }
 
-  /** Requests Kiwoom's own fuller deposit detail, which `async_buying_power` reads one field of. */
+  /**
+   * @brief Requests Kiwoom's own fuller deposit detail, which `async_buying_power` reads one field of.
+   * @tparam CompletionToken An Asio completion token.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_deposit(CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<KiwoomDeposit>)>(
@@ -1216,10 +1166,13 @@ public:
   }
 
   /**
-   * Requests what may be ordered of one instrument, per margin tier, from `kt00010`.
-   *
-   * Kiwoom-specific on purpose: the port asks only for an amount, because Toss publishes no
-   * quantity. `BrokerCaps::has_buying_power_quantity` is what points a caller here.
+   * @brief Requests what may be ordered of one instrument, per margin tier (`kt00010`).
+   * @tparam CompletionToken An Asio completion token.
+   * @param instrument The instrument.
+   * @param side The side.
+   * @param price The unit price to evaluate at (`uv`), or empty to send none.
+   * @param token The completion token, called with `Result<KiwoomOrderableAmount>`.
+   * @return Whatever the completion token returns.
    */
   template <typename CompletionToken>
   auto async_orderable_amount(
@@ -1251,7 +1204,12 @@ public:
     );
   }
 
-  /** Requests the one account the bound credential drives, from `ka00001` 계좌번호조회. */
+  /**
+   * @brief Requests the one account the bound credential drives, from `ka00001` 계좌번호조회.
+   * @tparam CompletionToken An Asio completion token.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_accounts(CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<std::vector<KiwoomAccountInfo>>)>(
@@ -1267,7 +1225,29 @@ public:
     );
   }
 
-  /** Submits a new order, to `kt10000` 매수주문 or `kt10001` 매도주문 depending on the side. */
+  /**
+   * @brief Places an order (`kt10000` buy, `kt10001` sell).
+   *
+   * The request is never resent. After an error for which `runner::outcome_of` returns
+   * `INDETERMINATE` (`BrokerError::reached_broker_` set and a category of `TRANSPORT`, `CANCELLED`
+   * or `PROTOCOL`, or `HTTP` with a status of 500 or more), the order may exist. That includes a
+   * reply without an order number and a failure code Kiwoom declares but does not document (both
+   * `PROTOCOL`). Read `async_open_orders` or `async_order_history` before placing again, since Kiwoom
+   * has no idempotency key.
+   *
+   * Refused before sending, among others: an instrument that is not Korean or whose `venue_` is not
+   * `COMBINED` (route with `OrderRequest::venue_`); no venue on the order; a client order id; a
+   * quantity that is not a positive whole number; a missing, non-positive or fractional price on a
+   * priced type, or a price on an unpriced one; a trigger price missing or invalid on `STOP_LIMIT`,
+   * or present on another type; a shape Kiwoom has no code for; and any order while
+   * `KiwoomConfig::holdings_position_scope_` is not stated.
+   *
+   * @tparam CompletionToken An Asio completion token.
+   * @param account The account (empty).
+   * @param order The order.
+   * @param token The completion token, called with `Result<KiwoomOrderAck>`.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_place_order(KiwoomAccount account, OrderRequest order, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<KiwoomOrderAck>)>(
@@ -1285,7 +1265,20 @@ public:
     );
   }
 
-  /** Modifies an existing order, through `kt10002` 정정주문. */
+  /**
+   * @brief Amends an order's quantity, price or trigger price (`kt10002`).
+   *
+   * After an error of unknown outcome (see `async_place_order`) the amendment may have been made.
+   * Refused before sending, among others: an amendment without a venue, an order number or a
+   * symbol; a fractional or negative quantity; a fractional price; an invalid trigger price; and any
+   * amendment while `KiwoomConfig::holdings_position_scope_` is not stated.
+   *
+   * @tparam CompletionToken An Asio completion token.
+   * @param account The account (empty).
+   * @param amendment The amendment.
+   * @param token The completion token, called with `Result<KiwoomOrderAck>`.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_replace_order(
     KiwoomAccount account,
@@ -1309,7 +1302,19 @@ public:
     );
   }
 
-  /** Cancels an existing order, through `kt10003` 취소주문. */
+  /**
+   * @brief Cancels an order, all or part of it (`kt10003`).
+   *
+   * After an error of unknown outcome (see `async_place_order`) the order may still rest. Refused
+   * before sending, among others: a cancellation without a venue, an order number or a symbol; a
+   * fractional or negative quantity; or one carrying a price or trigger price.
+   *
+   * @tparam CompletionToken An Asio completion token.
+   * @param account The account (empty).
+   * @param amendment The order and quantity (zero for all remaining).
+   * @param token The completion token, called with `Result<KiwoomOrderAck>`.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_cancel_order(
     KiwoomAccount account,
@@ -1331,7 +1336,13 @@ public:
     );
   }
 
-  /** Requests every order still open to amendment, paging `ka10075` 미체결요청. */
+  /**
+   * @brief Requests every order still open to amendment, paging `ka10075` 미체결요청.
+   * @tparam CompletionToken An Asio completion token.
+   * @param account The bound account.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_open_orders(KiwoomAccount account, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<KiwoomOpenOrderPage>)>(
@@ -1348,7 +1359,14 @@ public:
     );
   }
 
-  /** Requests one day of order history, paging `kt00007` 계좌별주문체결내역상세요청. */
+  /**
+   * @brief Requests one day of order history, paging `kt00007` 계좌별주문체결내역상세요청.
+   * @tparam CompletionToken An Asio completion token.
+   * @param account The bound account.
+   * @param query The query.
+   * @param token The completion token.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_order_history(
     KiwoomAccount account,
@@ -1370,13 +1388,23 @@ public:
     );
   }
 
-  /** Returns this client's pacing statistics, or null when it is unpaced. */
+  /**
+   * @brief Returns the rate limiter's statistics.
+   *
+   * Read them on the client's strand or while no request is in progress (between calls on the
+   * blocking client).
+   *
+   * @return The statistics, or null if the client has no rate-limit budget.
+   */
   const network::RateLimitStats* rate_limit_stats() const {
     const auto* limiter = http_->rate_limits();
     return limiter ? &limiter->stats() : nullptr;
   }
 
-  /** Cancels transport work and queued operations. */
+  /**
+   * @brief Closes the client for good: pending and later requests complete with `CANCELLED`. A
+   *   request already being sent has `reached_broker_` set and an unknown outcome.
+   */
   void close() { http_->close(); }
 
 private:
@@ -1389,17 +1417,15 @@ private:
   bool refreshing_{false};
   std::deque<TokenHandler> token_waiters_;
 
-  /** Most pages one paged inquiry may consume, for the reason every paging path is bounded. */
+  // Most pages one paged inquiry may consume, for the reason every paging path is bounded.
   static constexpr int page_budget_ = 50;
 
-  /**
-   * Builds one Kiwoom request: the group path, the operation header, and the token.
-   *
-   * **Every Kiwoom endpoint has this shape**, which is why it is built once. The operation is the
-   * `api-id` header rather than the path — `/api/dostk/acnt` alone serves the balance, the deposit,
-   * the unfilled listing and the execution detail — so a request with the right path and the wrong
-   * header is a valid request for the wrong thing, and there is exactly one place that pairs them.
-   */
+  // Builds one Kiwoom request: the group path, the operation header, and the token.
+  //
+  // **Every Kiwoom endpoint has this shape**, which is why it is built once. The operation is the
+  // `api-id` header rather than the path — `/api/dostk/acnt` alone serves the balance, the deposit,
+  // the unfilled listing and the execution detail — so a request with the right path and the wrong
+  // header is a valid request for the wrong thing, and there is exactly one place that pairs them.
   network::HttpRequest make_request(
     std::string_view api_id,
     std::string_view path,
@@ -1426,19 +1452,17 @@ private:
     return request;
   }
 
-  /**
-   * Returns the continuation a response carries: nothing when it reports no further page.
-   *
-   * **An absent value and an empty one are different answers**, which is why this is an optional
-   * rather than a string. `cont-yn: Y` means Kiwoom has another page; `next-key` is how to ask for
-   * it. A `Y` with a missing or blank key is therefore *another page this walk cannot fetch* — and
-   * collapsing that into "no further page", which returning a bare empty string did, turned a
-   * listing the adapter could not finish into one it reported as complete.
-   *
-   * - `std::nullopt` — Kiwoom offered no further page. The listing is complete.
-   * - a non-empty string — another page, and the key to ask for it.
-   * - an empty string — another page, and no usable key. Incomplete.
-   */
+  // Returns the continuation a response carries: nothing when it reports no further page.
+  //
+  // **An absent value and an empty one are different answers**, which is why this is an optional
+  // rather than a string. `cont-yn: Y` means Kiwoom has another page; `next-key` is how to ask for
+  // it. A `Y` with a missing or blank key is therefore *another page this walk cannot fetch* — and
+  // collapsing that into "no further page", which returning a bare empty string did, turned a
+  // listing the adapter could not finish into one it reported as complete.
+  //
+  // - `std::nullopt` — Kiwoom offered no further page. The listing is complete.
+  // - a non-empty string — another page, and the key to ask for it.
+  // - an empty string — another page, and no usable key. Incomplete.
   static std::optional<std::string> continuation_key(const network::HttpResponse& response) {
     const auto flag = response.base().find("cont-yn");
     if (flag == response.base().end() || flag->value() != "Y") {
@@ -1451,12 +1475,10 @@ private:
     return std::string(key->value());
   }
 
-  /**
-   * Fetches a token when the held one has expired, coalescing concurrent waiters.
-   *
-   * Identical in shape to the KIS and Toss clients: at most one refresh is ever in flight, and
-   * every other request waits behind it.
-   */
+  // Fetches a token when the held one has expired, coalescing concurrent waiters.
+  //
+  // Identical in shape to the KIS and Toss clients: at most one refresh is ever in flight, and
+  // every other request waits behind it.
   void ensure_token(TokenHandler handler) {
     if (token_.valid()) {
       std::move(handler)(std::nullopt);
@@ -1484,7 +1506,7 @@ private:
     );
   }
 
-  /** Parses a token response and releases every waiter, with the failure if there was one. */
+  // Parses a token response and releases every waiter, with the failure if there was one.
   void finish_token(Result<network::HttpResponse> result) {
     refreshing_ = false;
     std::optional<BrokerError> failure;
@@ -1532,12 +1554,10 @@ private:
     }
   }
 
-  /**
-   * Returns a response's declared payload, or the error ending it.
-   *
-   * Applies the HTTP status check, the JSON parse, and Kiwoom's own `return_code` before a parser
-   * looks at any field, so a declared failure is never read as data.
-   */
+  // Returns a response's declared payload, or the error ending it.
+  //
+  // Applies the HTTP status check, the JSON parse, and Kiwoom's own `return_code` before a parser
+  // looks at any field, so a declared failure is never read as data.
   static Result<json::object> document(Result<network::HttpResponse> response) {
     if (!response) {
       return Result<json::object>(std::move(response.error()));
@@ -1556,7 +1576,7 @@ private:
     return Result<json::object>(std::move(*parsed));
   }
 
-  /** Refuses an instrument this adapter's domestic endpoints cannot address. */
+  // Refuses an instrument this adapter's domestic endpoints cannot address.
   static std::optional<BrokerError> validate_instrument(const InstrumentId& instrument) {
     if (instrument.country_ == Country::KR && broker_detail::valid_symbol(instrument.symbol_) &&
         (instrument.symbol_.size() == 6 || instrument.symbol_.size() == 7)) {
@@ -1572,14 +1592,14 @@ private:
     return error;
   }
 
-  /** Builds the `{"stk_cd": ...}` body every market-data endpoint takes, with the tape suffix. */
+  // Builds the `{"stk_cd": ...}` body every market-data endpoint takes, with the tape suffix.
   std::string symbol_body(const InstrumentId& instrument) const {
     json::object body;
     body["stk_cd"] = config_.tape_symbol(instrument.symbol_);
     return json::serialize(body);
   }
 
-  /** Issues one market-data read and hands the response to `parse`. */
+  // Issues one market-data read and hands the response to `parse`.
   template <typename T, typename Handler, typename Parse>
   void start_market_read(
     InstrumentId instrument,
@@ -1621,13 +1641,11 @@ private:
     );
   }
 
-  /**
-   * Normalizes `ka10007` into a quote.
-   *
-   * The last price, the volume and the top of the book all come off one response, so the quote
-   * carries a `top_of_book_` — which neither shipped adapter fills, because neither KIS's nor
-   * Toss's quote endpoint publishes one. Kiwoom's does, in the same response, at no extra request.
-   */
+  // Normalizes `ka10007` into a quote.
+  //
+  // The last price, the volume and the top of the book all come off one response, so the quote
+  // carries a `top_of_book_` — which neither shipped adapter fills, because neither KIS's nor
+  // Toss's quote endpoint publishes one. Kiwoom's does, in the same response, at no extra request.
   static Result<QuoteSnapshot> parse_quote(
     InstrumentId instrument,
     Result<network::HttpResponse> result
@@ -1666,12 +1684,10 @@ private:
     }
   }
 
-  /**
-   * Normalizes `ka10007`'s price bounds.
-   *
-   * KRX sets a limit on every listed equity, so both bounds are expected; a blank or zero bound is
-   * reported as absent rather than as a bound of nothing.
-   */
+  // Normalizes `ka10007`'s price bounds.
+  //
+  // KRX sets a limit on every listed equity, so both bounds are expected; a blank or zero bound is
+  // reported as absent rather than as a bound of nothing.
   static Result<PriceLimits> parse_price_limits(
     InstrumentId instrument,
     Result<network::HttpResponse> result
@@ -1697,13 +1713,11 @@ private:
     }
   }
 
-  /**
-   * Normalizes `ka10004` into the ten levels each side.
-   *
-   * Kiwoom names the first level differently from the rest — `sel_fpr_bid` and `buy_fpr_bid` for
-   * level one, `sel_2th_pre_bid` through `sel_10th_pre_bid` for the others — so the field names are
-   * built rather than listed, and level one is spelled out.
-   */
+  // Normalizes `ka10004` into the ten levels each side.
+  //
+  // Kiwoom names the first level differently from the rest — `sel_fpr_bid` and `buy_fpr_bid` for
+  // level one, `sel_2th_pre_bid` through `sel_10th_pre_bid` for the others — so the field names are
+  // built rather than listed, and level one is spelled out.
   static Result<DepthSnapshot> parse_depth(
     InstrumentId instrument,
     Result<network::HttpResponse> result
@@ -1734,7 +1748,7 @@ private:
     }
   }
 
-  /** Appends one book level, skipping the empty ones Kiwoom pads a thin book with. */
+  // Appends one book level, skipping the empty ones Kiwoom pads a thin book with.
   static void append_level(
     std::vector<DepthLevel>& side,
     const json::object& row,
@@ -1752,7 +1766,7 @@ private:
     side.push_back(level);
   }
 
-  /** Returns a decimal only when it is strictly positive, which is how Kiwoom spells "no value". */
+  // Returns a decimal only when it is strictly positive, which is how Kiwoom spells "no value".
   static std::optional<Decimal64> positive(std::optional<Decimal64> value) {
     if (!value || value->coefficient() <= 0) {
       return std::nullopt;
@@ -1760,16 +1774,14 @@ private:
     return value;
   }
 
-  /**
-   * Returns an order's trigger from `key`, or nothing.
-   *
-   * `ka10075`'s `stop_pric` and `kt00007`'s `cond_uv` are both documented as "스톱지정가주문
-   * 스톱가", and `kt00007`'s own example carries `"0000000000"` on a market order -- so an ordinary
-   * order reports zero, and a positive value is recorded **whatever the row's basis**, for the
-   * reason `OrderSnapshot::trigger_price_` gives. An empty, zero or unreadable value leaves the
-   * trigger unreported rather than failing the listing: a trigger is one fact about one order, and
-   * the row is still the order, which must stay cancellable.
-   */
+  // Returns an order's trigger from `key`, or nothing.
+  //
+  // `ka10075`'s `stop_pric` and `kt00007`'s `cond_uv` are both documented as "스톱지정가주문
+  // 스톱가", and `kt00007`'s own example carries `"0000000000"` on a market order -- so an ordinary
+  // order reports zero, and a positive value is recorded **whatever the row's basis**, for the
+  // reason `OrderSnapshot::trigger_price_` gives. An empty, zero or unreadable value leaves the
+  // trigger unreported rather than failing the listing: a trigger is one fact about one order, and
+  // the row is still the order, which must stay cancellable.
   static std::optional<Decimal64> reported_trigger(const json::object& row, std::string_view key) {
     try {
       return positive(detail::magnitude(row, key));
@@ -1778,7 +1790,7 @@ private:
     }
   }
 
-  /** Builds a `PROTOCOL` failure from a parser exception. */
+  // Builds a `PROTOCOL` failure from a parser exception.
   static BrokerError protocol_error(const char* code, const std::exception& exception) {
     BrokerError error;
     error.category_ = ErrorCategory::PROTOCOL;
@@ -1787,7 +1799,7 @@ private:
     return error;
   }
 
-  /** Delivers `result` to `handler` on the strand, exactly once. */
+  // Delivers `result` to `handler` on the strand, exactly once.
   template <typename Handler, typename T>
   void deliver(Handler handler, Result<T> result) {
     if (!result) {
@@ -1799,17 +1811,15 @@ private:
     });
   }
 
-  /**
-   * Holds admission after one of Kiwoom's three ceilings refused a request.
-   *
-   * Kiwoom documents the ceilings separately — per API (`1700`), account-wide (`1701`) and per API
-   * group (`1702`) — but states **no allowance and no retry-after** with any of them, so there is
-   * nothing to correct the budget *to*. Admission is held for a second and the refusal is counted;
-   * the configured budget is left exactly as the caller set it, for the reason the KIS adapter
-   * gives: reducing a stated budget from a guess is the silent downgrade this library refuses
-   * everywhere else. `KiwoomRateLimitLayer` is what tells a caller watching the refusals *which*
-   * ceiling to lower.
-   */
+  // Holds admission after one of Kiwoom's three ceilings refused a request.
+  //
+  // Kiwoom documents the ceilings separately — per API (`1700`), account-wide (`1701`) and per API
+  // group (`1702`) — but states **no allowance and no retry-after** with any of them, so there is
+  // nothing to correct the budget *to*. Admission is held for a second and the refusal is counted;
+  // the configured budget is left exactly as the caller set it, for the reason the KIS adapter
+  // gives: reducing a stated budget from a guess is the silent downgrade this library refuses
+  // everywhere else. `KiwoomRateLimitLayer` is what tells a caller watching the refusals *which*
+  // ceiling to lower.
   void note_rate_limit(const BrokerError& error) {
     if (error.category_ != ErrorCategory::RATE_LIMIT) {
       return;
@@ -1825,7 +1835,7 @@ private:
     );
   }
 
-  /** Issues the recent-execution read, whose parser needs the requested count. */
+  // Issues the recent-execution read, whose parser needs the requested count.
   void start_trades(InstrumentId instrument, int count, TradesHandler completion) {
     using Prints = std::vector<TradePrint>;
     if (count <= 0) {
@@ -1868,13 +1878,11 @@ private:
     );
   }
 
-  /**
-   * Normalizes `ka10003`'s recent executions, newest first as Kiwoom sends them.
-   *
-   * Kiwoom reports a print's time as `HHmmss` with no date, so the KST calendar day is supplied
-   * from the clock. A print is intraday by construction, so this is the day it happened on — the
-   * same reasoning the KIS adapter records for the same field.
-   */
+  // Normalizes `ka10003`'s recent executions, newest first as Kiwoom sends them.
+  //
+  // Kiwoom reports a print's time as `HHmmss` with no date, so the KST calendar day is supplied
+  // from the clock. A print is intraday by construction, so this is the day it happened on — the
+  // same reasoning the KIS adapter records for the same field.
   static Result<std::vector<TradePrint>> parse_trades(
     Result<network::HttpResponse> result,
     int count
@@ -1917,7 +1925,7 @@ private:
     }
   }
 
-  /** Issues the reference-data read, which takes the bare symbol rather than a tape-suffixed one. */
+  // Issues the reference-data read, which takes the bare symbol rather than a tape-suffixed one.
   void start_instrument(InstrumentId instrument, InstrumentHandler completion) {
     if (auto invalid = validate_instrument(instrument)) {
       deliver(std::move(completion), Result<Instrument>(std::move(*invalid)));
@@ -1956,7 +1964,7 @@ private:
     );
   }
 
-  /** Normalizes `ka10100` into reference data. */
+  // Normalizes `ka10100` into reference data.
   static Result<Instrument> parse_instrument(
     InstrumentId instrument,
     Result<network::HttpResponse> result
@@ -1983,14 +1991,12 @@ private:
     }
   }
 
-  /**
-   * Maps Kiwoom's `marketCode` to a normalized segment.
-   *
-   * `0` is 거래소 (KOSPI) and `10` is 코스닥, which `ka10099` documents as its 시장구분 values. The
-   * rest of that list — K-OTC, 코넥스, ETN, ELW and the funds — has no `MarketSegment::Known`
-   * member, so the raw code is preserved through `market_segment` rather than collapsed into one
-   * of the two this library does know.
-   */
+  // Maps Kiwoom's `marketCode` to a normalized segment.
+  //
+  // `0` is 거래소 (KOSPI) and `10` is 코스닥, which `ka10099` documents as its 시장구분 values. The
+  // rest of that list — K-OTC, 코넥스, ETN, ELW and the funds — has no `MarketSegment::Known`
+  // member, so the raw code is preserved through `market_segment` rather than collapsed into one
+  // of the two this library does know.
   static MarketSegment kiwoom_market_segment(std::string_view code) {
     if (code == "0") {
       return market_segment("KOSPI");
@@ -2001,15 +2007,13 @@ private:
     return market_segment(code);
   }
 
-  /**
-   * Reads a listing state from `ka10100`'s `auditInfo`.
-   *
-   * Kiwoom publishes 감리구분 as a Korean phrase — `정상`, `투자주의환기종목`, `관리종목` — and
-   * publishes no delisting date and no `SCHEDULED` state at all. Everything it reports is a listed
-   * instrument under some degree of supervision, so the honest reading is `ACTIVE` for the states
-   * it names and `UNKNOWN` for a phrase this adapter has not seen: supervision is not delisting,
-   * and inventing a `DELISTED` from a warning would be worse than saying nothing.
-   */
+  // Reads a listing state from `ka10100`'s `auditInfo`.
+  //
+  // Kiwoom publishes 감리구분 as a Korean phrase — `정상`, `투자주의환기종목`, `관리종목` — and
+  // publishes no delisting date and no `SCHEDULED` state at all. Everything it reports is a listed
+  // instrument under some degree of supervision, so the honest reading is `ACTIVE` for the states
+  // it names and `UNKNOWN` for a phrase this adapter has not seen: supervision is not delisting,
+  // and inventing a `DELISTED` from a warning would be worse than saying nothing.
   static InstrumentStatus kiwoom_status(std::string_view audit) {
     if (audit == "정상" || audit == "투자주의환기종목" || audit == "관리종목") {
       return InstrumentStatus::ACTIVE;
@@ -2017,24 +2021,24 @@ private:
     return InstrumentStatus::UNKNOWN;
   }
 
-  /** What a paged listing should do after one page. */
+  // What a paged listing should do after one page.
   enum class PageStep {
-    /** Kiwoom offered no further page: the listing is complete. */
+    // Kiwoom offered no further page: the listing is complete.
     FINISH,
-    /** Kiwoom offered another page and this walk may fetch it. */
+    // Kiwoom offered another page and this walk may fetch it.
     CONTINUE,
-    /** Kiwoom still offered another page and this walk stopped: the listing is incomplete. */
+    // Kiwoom still offered another page and this walk stopped: the listing is incomplete.
     INCOMPLETE,
   };
 
-  /** One bar request spanning however many Kiwoom pages it needs. */
+  // One bar request spanning however many Kiwoom pages it needs.
   struct BarOperation {
     BarQuery query_;
     std::vector<Bar> descending_;
-    /** The upper bound for the next page, as a KST calendar date. */
+    // The upper bound for the next page, as a KST calendar date.
     Date date_{};
     std::string next_key_;
-    /** Whether Kiwoom said another page exists, which is not the same as having its key. */
+    // Whether Kiwoom said another page exists, which is not the same as having its key.
     bool more_{false};
     int pages_{0};
     BarsHandler completion_;
@@ -2043,7 +2047,7 @@ private:
     : query_(std::move(query)), completion_(std::move(completion)) {}
   };
 
-  /** Validates a bar request and starts walking Kiwoom's pages. */
+  // Validates a bar request and starts walking Kiwoom's pages.
   void start_bars(BarQuery query, BarsHandler completion) {
     if (auto invalid = validate_bar_query(query)) {
       deliver(std::move(completion), Result<BarSeries>(std::move(*invalid)));
@@ -2057,7 +2061,7 @@ private:
     request_bars(operation);
   }
 
-  /** Refuses a bar request Kiwoom cannot answer, before any I/O. */
+  // Refuses a bar request Kiwoom cannot answer, before any I/O.
   static std::optional<BrokerError> validate_bar_query(const BarQuery& query) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
@@ -2073,7 +2077,7 @@ private:
     return unsupported_bar_interval(query.interval_);
   }
 
-  /** Issues one page of a bar request. */
+  // Issues one page of a bar request.
   void request_bars(std::shared_ptr<BarOperation> operation) {
     ensure_token(
       TokenHandler(
@@ -2111,7 +2115,7 @@ private:
     );
   }
 
-  /** Accumulates one page of bars and either continues or finishes. */
+  // Accumulates one page of bars and either continues or finishes.
   void handle_bars_page(
     const std::shared_ptr<BarOperation>& operation,
     Result<network::HttpResponse> result
@@ -2166,19 +2170,17 @@ private:
     }
   }
 
-  /**
-   * Records the page's continuation key and returns whether the walk should stop.
-   *
-   * **The key is recorded before the decision is taken, not after it**, and that ordering is the
-   * point of this being one function. `finish_bars` reads `next_key_` to decide whether the series
-   * carries a continuation cursor, and the walk stops with data still available precisely when
-   * `count_` is satisfied -- which is exactly when a caller needs that cursor to page further
-   * back. Assigning the key only on the path that continues left the *previous* page's key here,
-   * so a satisfied request reported a stale cursor or none.
-   *
-   * A page that returned nothing also ends the walk. Without that, a broker answering `Y` with an
-   * empty array would spend the whole page budget learning nothing.
-   */
+  // Records the page's continuation key and returns whether the walk should stop.
+  //
+  // **The key is recorded before the decision is taken, not after it**, and that ordering is the
+  // point of this being one function. `finish_bars` reads `next_key_` to decide whether the series
+  // carries a continuation cursor, and the walk stops with data still available precisely when
+  // `count_` is satisfied -- which is exactly when a caller needs that cursor to page further
+  // back. Assigning the key only on the path that continues left the *previous* page's key here,
+  // so a satisfied request reported a stale cursor or none.
+  //
+  // A page that returned nothing also ends the walk. Without that, a broker answering `Y` with an
+  // empty array would spend the whole page budget learning nothing.
   static PageStep advance_bars(
     BarOperation& operation,
     std::optional<std::string> next_key,
@@ -2206,13 +2208,11 @@ private:
     return PageStep::CONTINUE;
   }
 
-  /**
-   * Normalizes one chart row.
-   *
-   * A minute row stamps `cntr_tm` as `yyyyMMddHHmmss`; every other interval stamps `dt` as
-   * `yyyyMMdd`. `cur_prc` is the period's close and, like every market-data price, carries a
-   * direction prefix rather than a sign.
-   */
+  // Normalizes one chart row.
+  //
+  // A minute row stamps `cntr_tm` as `yyyyMMddHHmmss`; every other interval stamps `dt` as
+  // `yyyyMMdd`. `cur_prc` is the period's close and, like every market-data price, carries a
+  // direction prefix rather than a sign.
   static Bar parse_bar(const json::object& row, BarInterval interval) {
     Bar bar;
     if (interval == BarInterval::ONE_MINUTE) {
@@ -2250,12 +2250,10 @@ private:
     return bar;
   }
 
-  /**
-   * Reverses the accumulation, trims to the requested count, and returns the series.
-   *
-   * Pure, and separate from the completion for that reason: what a walk *produced* is the thing
-   * worth checking, and checking it should not require a strand, a socket or a completion token.
-   */
+  // Reverses the accumulation, trims to the requested count, and returns the series.
+  //
+  // Pure, and separate from the completion for that reason: what a walk *produced* is the thing
+  // worth checking, and checking it should not require a strand, a socket or a completion token.
   static BarSeries compose_bars(BarOperation& operation) {
     BarSeries series;
     series.instrument_ = operation.query_.instrument_;
@@ -2292,12 +2290,12 @@ private:
     return series;
   }
 
-  /** Composes the series and delivers it. */
+  // Composes the series and delivers it.
   void finish_bars(const std::shared_ptr<BarOperation>& operation) {
     deliver(std::move(operation->completion_), Result<BarSeries>(compose_bars(*operation)));
   }
 
-  /** Returns the KST calendar date an instant falls on. */
+  // Returns the KST calendar date an instant falls on.
   static Date seoul_date_of(std::chrono::system_clock::time_point instant) {
     const std::time_t raw = std::chrono::system_clock::to_time_t(
       std::chrono::time_point_cast<std::chrono::seconds>(instant + std::chrono::hours(9))
@@ -2315,14 +2313,12 @@ private:
     return date;
   }
 
-  /**
-   * Records the page's continuation key and says what the walk should do next.
-   *
-   * One function for the three account listings, because the decision is the same for all of them
-   * and the consequence of getting it wrong is the same too. It is separate from the handlers so
-   * that the decision can be exercised without a socket, which is what
-   * `plan/README.md` means by observing the mechanism rather than a seam.
-   */
+  // Records the page's continuation key and says what the walk should do next.
+  //
+  // One function for the three account listings, because the decision is the same for all of them
+  // and the consequence of getting it wrong is the same too. It is separate from the handlers so
+  // that the decision can be exercised without a socket, which is what
+  // `plan/README.md` means by observing the mechanism rather than a seam.
   static PageStep advance_page(
     std::string& next_key_slot,
     int& pages,
@@ -2342,20 +2338,18 @@ private:
     return PageStep::CONTINUE;
   }
 
-  /**
-   * Returns the failure a listing that stopped while more remained should end with.
-   *
-   * **A guard that bounds a walk must not also decide the walk finished.** Kiwoom says `cont-yn: Y`
-   * with a `next-key` exactly when there is another page, so stopping on the page budget -- or on a
-   * page that added no rows while Kiwoom still offered another -- leaves rows unread. Returning
-   * what was gathered would hand a *partial* answer to code that cannot tell: a working-order
-   * listing missing a resting sell understates what `RiskGuard` deducts, and partial holdings
-   * understate exposure, which is the permissive direction for a position ceiling.
-   *
-   * Bars are the exception and do not come through here: `BarSeries` carries `next_cursor_`, so a
-   * bar walk can say "there is more" in the value itself. Holdings, working orders and order
-   * history have nowhere to say it, so they fail instead.
-   */
+  // Returns the failure a listing that stopped while more remained should end with.
+  //
+  // **A guard that bounds a walk must not also decide the walk finished.** Kiwoom says `cont-yn: Y`
+  // with a `next-key` exactly when there is another page, so stopping on the page budget -- or on a
+  // page that added no rows while Kiwoom still offered another -- leaves rows unread. Returning
+  // what was gathered would hand a *partial* answer to code that cannot tell: a working-order
+  // listing missing a resting sell understates what `RiskGuard` deducts, and partial holdings
+  // understate exposure, which is the permissive direction for a position ceiling.
+  //
+  // Bars are the exception and do not come through here: `BarSeries` carries `next_cursor_`, so a
+  // bar walk can say "there is more" in the value itself. Holdings, working orders and order
+  // history have nowhere to say it, so they fail instead.
   static BrokerError incomplete_listing(std::string_view what, int pages) {
     BrokerError error;
     error.category_ = ErrorCategory::PROTOCOL;
@@ -2367,7 +2361,7 @@ private:
     return error;
   }
 
-  /** One holdings request spanning however many `kt00018` pages it needs. */
+  // One holdings request spanning however many `kt00018` pages it needs.
   struct HoldingsOperation {
     HoldingsSnapshot snapshot_;
     std::string next_key_;
@@ -2378,7 +2372,7 @@ private:
     explicit HoldingsOperation(HoldingsHandler completion) : completion_(std::move(completion)) {}
   };
 
-  /** Validates the configured holdings venue and starts paging. */
+  // Validates the configured holdings venue and starts paging.
   void start_holdings(HoldingsHandler completion) {
     if (auto invalid = validate_holdings_venue()) {
       deliver(std::move(completion), Result<HoldingsSnapshot>(std::move(*invalid)));
@@ -2388,39 +2382,33 @@ private:
     request_holdings(operation);
   }
 
-  /**
-   * Refuses a holdings venue `kt00018` cannot express.
-   *
-   * `kt00018`'s `dmst_stex_tp` documents `KRX` and `NXT` and no all-venue value, so there is
-   * nothing for `COMBINED` or `UNSPECIFIED` to be sent as. Resolving either to one of the two
-   * would answer a different question from the one asked and would do it silently, which is what
-   * Decision 6 forbids — and holdings are what the sellable guard and every position ceiling are
-   * measured against. See `KiwoomConfig::holdings_venue_` and
-   * `issues/kiwoom-api-holdings-venue-scope.md`.
-   */
-  /**
-   * Refuses an instruction that can open or enlarge a position while the holdings scope is unstated.
-   *
-   * Nothing once the operator has asserted what `dmst_stex_tp` means: the assertion is what this
-   * refusal exists to demand, so honouring it is the whole point rather than a weakening. It does
-   * **not** promise a holdings read has succeeded -- see `KiwoomConfig::holdings_position_scope_`
-   * for what an assertion does and does not claim, and note that the runner's own portfolio gate is
-   * a separate rule that still applies.
-   */
-  /**
-   * Returns what `trde_able_qty` on a `kt00018` row is evidence of, given what the operator asserted.
-   *
-   * **A named decision with one caller**, rather than three lines inside the paging branch that
-   * completes a snapshot. That branch is unreachable without a live HTTP round trip, so a rule
-   * written there is a rule no test can drive -- and slice 25 spent a round learning that a
-   * decision worth making is worth naming (`validate_amendment`). This is the same shape.
-   *
-   * The coverage is the operator's assertion and nothing more. The resting treatment is this
-   * library's own conservative rule either way and is deliberately not a caller's to state:
-   * deducting a resting sell Kiwoom had also deducted refuses a trade, while not deducting one
-   * sells the same shares twice, and only the first error is recoverable. `verified_` stays false
-   * because an assertion is not a measurement.
-   */
+  // Refuses a holdings venue `kt00018` cannot express.
+  //
+  // `kt00018`'s `dmst_stex_tp` documents `KRX` and `NXT` and no all-venue value, so there is
+  // nothing for `COMBINED` or `UNSPECIFIED` to be sent as. Resolving either to one of the two
+  // would answer a different question from the one asked and would do it silently, which is what
+  // Decision 6 forbids — and holdings are what the sellable guard and every position ceiling are
+  // measured against. See `KiwoomConfig::holdings_venue_` and
+  // `issues/kiwoom-api-holdings-venue-scope.md`.
+  // Refuses an instruction that can open or enlarge a position while the holdings scope is unstated.
+  //
+  // Nothing once the operator has asserted what `dmst_stex_tp` means: the assertion is what this
+  // refusal exists to demand, so honouring it is the whole point rather than a weakening. It does
+  // **not** promise a holdings read has succeeded -- see `KiwoomConfig::holdings_position_scope_`
+  // for what an assertion does and does not claim, and note that the runner's own portfolio gate is
+  // a separate rule that still applies.
+  // Returns what `trde_able_qty` on a `kt00018` row is evidence of, given what the operator asserted.
+  //
+  // **A named decision with one caller**, rather than three lines inside the paging branch that
+  // completes a snapshot. That branch is unreachable without a live HTTP round trip, so a rule
+  // written there is a rule no test can drive -- and slice 25 spent a round learning that a
+  // decision worth making is worth naming (`validate_amendment`). This is the same shape.
+  //
+  // The coverage is the operator's assertion and nothing more. The resting treatment is this
+  // library's own conservative rule either way and is deliberately not a caller's to state:
+  // deducting a resting sell Kiwoom had also deducted refuses a trade, while not deducting one
+  // sells the same shares twice, and only the first error is recoverable. `verified_` stays false
+  // because an assertion is not a measurement.
   static SellableBasis holdings_sellable_basis(KiwoomSellableScope scope) {
     return SellableBasis{
       scope == KiwoomSellableScope::WHOLE_HOLDING ? SellableBasis::Coverage::WHOLE_HOLDING
@@ -2453,7 +2441,7 @@ private:
     return error;
   }
 
-  /** Issues one page of the holdings inquiry. */
+  // Issues one page of the holdings inquiry.
   void request_holdings(std::shared_ptr<HoldingsOperation> operation) {
     ensure_token(
       TokenHandler(
@@ -2481,7 +2469,7 @@ private:
     );
   }
 
-  /** Builds `kt00018`'s body: one summed listing, from the configured venue. */
+  // Builds `kt00018`'s body: one summed listing, from the configured venue.
   std::string holdings_body() const {
     json::object body;
     // `1:합산` asks Kiwoom to sum the lots of one instrument into one row; `2:개별` reports them
@@ -2494,7 +2482,7 @@ private:
     return json::serialize(body);
   }
 
-  /** Accumulates one page of holdings and either continues or completes. */
+  // Accumulates one page of holdings and either continues or completes.
   void handle_holdings_page(
     const std::shared_ptr<HoldingsOperation>& operation,
     Result<network::HttpResponse> result
@@ -2553,25 +2541,23 @@ private:
     }
   }
 
-  /**
-   * Appends one `kt00018` page's rows and, on the first page only, its totals.
-   *
-   * **A symbol that appears twice fails the snapshot.** The request asks for a summed listing
-   * (`qry_tp: "1"`), and the specification's own response example answers exactly that request
-   * with two `A005930` rows carrying 3 and 8 shares -- so a split listing is a real possibility
-   * and not a hypothetical. It is refused rather than accepted for a reason that costs money:
-   * `Portfolio` reads the *first* matching row's `sellable_quantity_`, so a split holding would
-   * report 3 sellable shares where Kiwoom said 11, and which 3 would depend on row order.
-   * Summing them instead is not this library's call to make -- whether two lots' *sellable*
-   * quantities add is a statement about what the broker meant, which is precisely what
-   * `plan/todo/split-position-rows.md` exists for. So the snapshot fails loudly, once, with the
-   * symbol named.
-   *
-   * **The totals come from Kiwoom's summary fields and are never summed from the rows**, which is
-   * what `HoldingsTotals` documents: a paged listing can return part of the positions beside an
-   * account-wide summary, so the two need not agree and the broker's own figure is the one to
-   * report. Only the first page's summary is taken, because every page repeats it.
-   */
+  // Appends one `kt00018` page's rows and, on the first page only, its totals.
+  //
+  // **A symbol that appears twice fails the snapshot.** The request asks for a summed listing
+  // (`qry_tp: "1"`), and the specification's own response example answers exactly that request
+  // with two `A005930` rows carrying 3 and 8 shares -- so a split listing is a real possibility
+  // and not a hypothetical. It is refused rather than accepted for a reason that costs money:
+  // `Portfolio` reads the *first* matching row's `sellable_quantity_`, so a split holding would
+  // report 3 sellable shares where Kiwoom said 11, and which 3 would depend on row order.
+  // Summing them instead is not this library's call to make -- whether two lots' *sellable*
+  // quantities add is a statement about what the broker meant, which is precisely what
+  // `plan/todo/split-position-rows.md` exists for. So the snapshot fails loudly, once, with the
+  // symbol named.
+  //
+  // **The totals come from Kiwoom's summary fields and are never summed from the rows**, which is
+  // what `HoldingsTotals` documents: a paged listing can return part of the positions beside an
+  // account-wide summary, so the two need not agree and the broker's own figure is the one to
+  // report. Only the first page's summary is taken, because every page repeats it.
   static void append_holdings_page(
     HoldingsSnapshot& snapshot,
     bool& totals_seen,
@@ -2608,7 +2594,7 @@ private:
     }
   }
 
-  /** Returns whether `symbol` already has a row in `snapshot`. */
+  // Returns whether `symbol` already has a row in `snapshot`.
   static bool duplicate_symbol(const HoldingsSnapshot& snapshot, const std::string& symbol) {
     for (const auto& position : snapshot.positions_) {
       if (position.instrument_.symbol_ == symbol) {
@@ -2618,7 +2604,7 @@ private:
     return false;
   }
 
-  /** Normalizes one `kt00018` position row. */
+  // Normalizes one `kt00018` position row.
   static HoldingPosition parse_holding(const json::object& row) {
     HoldingPosition position;
     position.instrument_.country_ = Country::KR;
@@ -2645,7 +2631,7 @@ private:
     return position;
   }
 
-  /** Issues the deposit inquiry and reduces it to what the port asked for. */
+  // Issues the deposit inquiry and reduces it to what the port asked for.
   void start_buying_power(Currency currency, BuyingPowerHandler completion) {
     if (!(currency == Currency::krw())) {
       BrokerError error;
@@ -2674,7 +2660,7 @@ private:
     );
   }
 
-  /** Issues `kt00001` 예수금상세현황요청. */
+  // Issues `kt00001` 예수금상세현황요청.
   void start_deposit(DepositHandler completion) {
     ensure_token(
       TokenHandler(
@@ -2706,7 +2692,7 @@ private:
     );
   }
 
-  /** Normalizes `kt00001` into Kiwoom's own deposit detail. */
+  // Normalizes `kt00001` into Kiwoom's own deposit detail.
   static Result<KiwoomDeposit> parse_deposit(Result<network::HttpResponse> result) {
     auto body = document(std::move(result));
     if (!body) {
@@ -2733,7 +2719,7 @@ private:
     }
   }
 
-  /** Issues `kt00010` 주문인출가능금액요청 for one instrument. */
+  // Issues `kt00010` 주문인출가능금액요청 for one instrument.
   void start_orderable_amount(
     InstrumentId instrument,
     OrderSide side,
@@ -2777,7 +2763,7 @@ private:
     );
   }
 
-  /** Normalizes `kt00010` into the per-margin-tier amounts and quantities. */
+  // Normalizes `kt00010` into the per-margin-tier amounts and quantities.
   static Result<KiwoomOrderableAmount> parse_orderable_amount(
     Result<network::HttpResponse> result
   ) {
@@ -2820,7 +2806,7 @@ private:
     }
   }
 
-  /** Issues `ka00001` 계좌번호조회, which answers with the one account the credential drives. */
+  // Issues `ka00001` 계좌번호조회, which answers with the one account the credential drives.
   void start_accounts(AccountsHandler completion) {
     using Accounts = std::vector<KiwoomAccountInfo>;
     ensure_token(
@@ -2848,13 +2834,11 @@ private:
     );
   }
 
-  /**
-   * Normalizes `ka00001` into a listing of one.
-   *
-   * A listing rather than a single value, because that is the port's shape — and the shape is
-   * honest here: Kiwoom answers with the account the credential drives and there is no other to
-   * choose between.
-   */
+  // Normalizes `ka00001` into a listing of one.
+  //
+  // A listing rather than a single value, because that is the port's shape — and the shape is
+  // honest here: Kiwoom answers with the account the credential drives and there is no other to
+  // choose between.
   static Result<std::vector<KiwoomAccountInfo>> parse_accounts(
     Result<network::HttpResponse> result
   ) {
@@ -2876,12 +2860,10 @@ private:
     }
   }
 
-  /**
-   * Returns an error when a quantity is not a whole number of shares.
-   *
-   * `allow_zero` is Kiwoom's all-remaining value on an amendment, which it documents as the
-   * quantity `0`. A *placement* of zero shares is still refused.
-   */
+  // Returns an error when a quantity is not a whole number of shares.
+  //
+  // `allow_zero` is Kiwoom's all-remaining value on an amendment, which it documents as the
+  // quantity `0`. A *placement* of zero shares is still refused.
   static std::optional<BrokerError> validate_quantity(
     const Decimal64& quantity,
     bool allow_zero = false
@@ -2900,13 +2882,11 @@ private:
     return error;
   }
 
-  /**
-   * Returns an error when a price does not match its price basis.
-   *
-   * `carries_caller_price`, not `== LIMIT`: 조건부지정가 is a limit instruction until the close, and
-   * treating it as unpriced is how KIS's adapter once transmitted `ORD_UNPR="0"` — an order at zero
-   * rather than at the stated limit.
-   */
+  // Returns an error when a price does not match its price basis.
+  //
+  // `carries_caller_price`, not `== LIMIT`: 조건부지정가 is a limit instruction until the close, and
+  // treating it as unpriced is how KIS's adapter once transmitted `ORD_UNPR="0"` — an order at zero
+  // rather than at the stated limit.
   static std::optional<BrokerError> validate_price(
     OrderType type,
     const std::optional<Decimal64>& price
@@ -2939,14 +2919,12 @@ private:
     return std::nullopt;
   }
 
-  /**
-   * Returns an error when a Kiwoom order names no venue.
-   *
-   * **Kiwoom documents `dmst_stex_tp` with no default**, so unlike KIS there is no "omitted means
-   * KRX" rule this adapter could record and journal. An order that names no venue is refused before
-   * any I/O rather than sent to a venue this library chose, because recovery has to be able to say
-   * where an order went and a guessed venue makes that a fabrication.
-   */
+  // Returns an error when a Kiwoom order names no venue.
+  //
+  // **Kiwoom documents `dmst_stex_tp` with no default**, so unlike KIS there is no "omitted means
+  // KRX" rule this adapter could record and journal. An order that names no venue is refused before
+  // any I/O rather than sent to a venue this library chose, because recovery has to be able to say
+  // where an order went and a guessed venue makes that a fabrication.
   static std::optional<BrokerError> validate_venue(Venue venue) {
     if (venue == Venue::KRX || venue == Venue::NXT || venue == Venue::COMBINED) {
       return std::nullopt;
@@ -2962,10 +2940,10 @@ private:
     return error;
   }
 
-  /** The identity venue this adapter reports every Korean instrument at. */
+  // The identity venue this adapter reports every Korean instrument at.
   static constexpr Venue instrument_venue() { return Venue::COMBINED; }
 
-  /** Returns an error when an order cannot be represented as a Kiwoom instruction. */
+  // Returns an error when an order cannot be represented as a Kiwoom instruction.
   static std::optional<BrokerError> validate_order(
     KiwoomPositionScope scope,
     const OrderRequest& order,
@@ -3013,12 +2991,10 @@ private:
     return holdings_scope_refusal(scope);
   }
 
-  /**
-   * Returns an error when an amendment cannot be represented as a Kiwoom instruction.
-   *
-   * Its own function for the reason the KIS adapter gives: the decision a test needs to exercise is
-   * the one the submission path takes, not one a test re-derives from the same inputs.
-   */
+  // Returns an error when an amendment cannot be represented as a Kiwoom instruction.
+  //
+  // Its own function for the reason the KIS adapter gives: the decision a test needs to exercise is
+  // the one the submission path takes, not one a test re-derives from the same inputs.
   static std::optional<BrokerError> validate_amendment(
     KiwoomPositionScope scope,
     const KiwoomAmendment& amendment,
@@ -3084,7 +3060,7 @@ private:
     return std::nullopt;
   }
 
-  /** Builds `kt10000`/`kt10001`'s body. The side selects the endpoint, not a field. */
+  // Builds `kt10000`/`kt10001`'s body. The side selects the endpoint, not a field.
   static network::HttpRequest place_order_request(
     const KiwoomClient& client,
     const OrderRequest& order,
@@ -3109,7 +3085,7 @@ private:
     );
   }
 
-  /** Builds `kt10002`'s or `kt10003`'s body. */
+  // Builds `kt10002`'s or `kt10003`'s body.
   static network::HttpRequest amend_order_request(
     const KiwoomClient& client,
     const KiwoomAmendment& amendment,
@@ -3135,7 +3111,7 @@ private:
     );
   }
 
-  /** Validates and submits a placement. */
+  // Validates and submits a placement.
   void start_place_order(OrderRequest order, OrderAckHandler completion) {
     std::string division;
     if (auto invalid = validate_order(config_.holdings_position_scope_, order, division)) {
@@ -3169,7 +3145,7 @@ private:
     );
   }
 
-  /** Validates and submits a modification or a cancellation. */
+  // Validates and submits a modification or a cancellation.
   void start_amend_order(KiwoomAmendment amendment, bool cancel, OrderAckHandler completion) {
     if (auto invalid = validate_amendment(config_.holdings_position_scope_, amendment, cancel)) {
       deliver(std::move(completion), Result<KiwoomOrderAck>(std::move(*invalid)));
@@ -3202,13 +3178,11 @@ private:
     );
   }
 
-  /**
-   * Normalizes an order response into an acknowledgement and a reference.
-   *
-   * The symbol comes from the request rather than the response, because Kiwoom's order responses
-   * carry `ord_no` and the venue and no `stk_cd` at all — and the reference needs the symbol to be
-   * usable for a later amendment.
-   */
+  // Normalizes an order response into an acknowledgement and a reference.
+  //
+  // The symbol comes from the request rather than the response, because Kiwoom's order responses
+  // carry `ord_no` and the venue and no `stk_cd` at all — and the reference needs the symbol to be
+  // usable for a later amendment.
   static Result<KiwoomOrderAck> parse_order_ack(
     const std::string& symbol,
     Result<network::HttpResponse> result
@@ -3239,7 +3213,7 @@ private:
     }
   }
 
-  /** One amendable-order listing spanning however many `ka10075` pages it needs. */
+  // One amendable-order listing spanning however many `ka10075` pages it needs.
   struct OpenOrderOperation {
     KiwoomOpenOrderPage page_;
     std::string next_key_;
@@ -3249,13 +3223,13 @@ private:
     explicit OpenOrderOperation(OpenOrderHandler completion) : completion_(std::move(completion)) {}
   };
 
-  /** Starts the amendable-order listing. */
+  // Starts the amendable-order listing.
   void start_open_orders(OpenOrderHandler completion) {
     auto operation = std::make_shared<OpenOrderOperation>(std::move(completion));
     request_open_orders(operation);
   }
 
-  /** Issues one page of `ka10075` 미체결요청. */
+  // Issues one page of `ka10075` 미체결요청.
   void request_open_orders(std::shared_ptr<OpenOrderOperation> operation) {
     ensure_token(
       TokenHandler(
@@ -3292,7 +3266,7 @@ private:
     );
   }
 
-  /** Accumulates one page of amendable orders and either continues or completes. */
+  // Accumulates one page of amendable orders and either continues or completes.
   void handle_open_orders_page(
     const std::shared_ptr<OpenOrderOperation>& operation,
     Result<network::HttpResponse> result
@@ -3353,17 +3327,15 @@ private:
     }
   }
 
-  /**
-   * Returns the side a row states, and throws when it states none this adapter can read.
-   *
-   * Throwing fails the listing, which is deliberate and is the one place this adapter does *not*
-   * tolerate an unrecognized value. Everywhere else an unknown wire value becomes `UNKNOWN` with
-   * the raw text preserved, because both specifications require a client to tolerate one and a
-   * single odd row must not cost a whole listing. `OrderSide` has no `UNKNOWN`: the choice is
-   * between failing and asserting a side, and asserting the wrong one puts a resting sell into the
-   * picture as a buy, where `RiskGuard` will not deduct it from what may be sold. A listing that
-   * fails is a poll that fails, which the runner already treats as a reason to hold.
-   */
+  // Returns the side a row states, and throws when it states none this adapter can read.
+  //
+  // Throwing fails the listing, which is deliberate and is the one place this adapter does *not*
+  // tolerate an unrecognized value. Everywhere else an unknown wire value becomes `UNKNOWN` with
+  // the raw text preserved, because both specifications require a client to tolerate one and a
+  // single odd row must not cost a whole listing. `OrderSide` has no `UNKNOWN`: the choice is
+  // between failing and asserting a side, and asserting the wrong one puts a resting sell into the
+  // picture as a buy, where `RiskGuard` will not deduct it from what may be sold. A listing that
+  // fails is a poll that fails, which the runner already treats as a reason to hold.
   static OrderSide read_side(const std::string& label) {
     if (const auto side = normalized_order_side(label)) {
       return *side;
@@ -3374,7 +3346,7 @@ private:
     );
   }
 
-  /** Normalizes one `ka10075` unfilled row. */
+  // Normalizes one `ka10075` unfilled row.
   static KiwoomOpenOrder parse_open_order(const json::object& row) {
     KiwoomOpenOrder open_order;
     const auto number = detail::text_field(row, "ord_no");
@@ -3410,45 +3382,43 @@ private:
     return open_order;
   }
 
-  /**
-   * Refuses to report an order closed on a row that says quantity is still outstanding.
-   *
-   * ## The contradiction
-   *
-   * `normalized_order_status` is shared with the history parser, so it maps `체결` to `FILLED` and
-   * `취소` to `CANCELED` -- correct there, and on *this* endpoint those words would contradict the
-   * row they arrive on. `ka10075` is the 미체결 listing, its array is `oso`, and `oso_qty` is the
-   * quantity still outstanding. The specification documents `ord_stt` here with the single value
-   * `접수`, so nothing establishes that Kiwoom ever sends the other two on this inquiry.
-   *
-   * **This is therefore a defensive rule, not a repair of an observed incident.** What is
-   * established is only that if such a row arrived, the adapter would mishandle it, and that the
-   * response carries the field needed to refuse to.
-   *
-   * ## Why a wrong answer here is not cosmetic
-   *
-   * `strategy::order_is_open` is false for `FILLED` and `CANCELED`, and
-   * `Portfolio::working_quantity` skips any row that is not open. A resting order reported closed
-   * would read as **zero** resting quantity: no sellable deduction, no working-order component in
-   * the position ceiling, and a reconciliation that plans a second order beside the one already
-   * out.
-   *
-   * ## The rule
-   *
-   * A word and a number disagree, and only one of them can be checked, so the number wins:
-   * a positive `oso_qty` means the order is still open whatever `ord_stt` says. Which open status
-   * follows from the filled quantity, the same way KIS's parser answers the same question --
-   * `PARTIAL_FILLED` where something has filled, `PENDING` where nothing has. A row reporting
-   * nothing outstanding keeps whatever the broker said, so this narrows a contradiction rather than
-   * refusing to believe the broker.
-   *
-   * Applied here rather than inside `normalized_order_status`, because the contradicting quantity
-   * exists only on this endpoint and the history parser reads those words legitimately.
-   *
-   * The two statuses tested are the two `normalized_order_status` can produce that mean the order
-   * is over, named here rather than asked of `strategy::order_is_open`: an adapter must not depend
-   * on the strategy layer, and `core/` is where the two layers may meet.
-   */
+  // Refuses to report an order closed on a row that says quantity is still outstanding.
+  //
+  // ## The contradiction
+  //
+  // `normalized_order_status` is shared with the history parser, so it maps `체결` to `FILLED` and
+  // `취소` to `CANCELED` -- correct there, and on *this* endpoint those words would contradict the
+  // row they arrive on. `ka10075` is the 미체결 listing, its array is `oso`, and `oso_qty` is the
+  // quantity still outstanding. The specification documents `ord_stt` here with the single value
+  // `접수`, so nothing establishes that Kiwoom ever sends the other two on this inquiry.
+  //
+  // **This is therefore a defensive rule, not a repair of an observed incident.** What is
+  // established is only that if such a row arrived, the adapter would mishandle it, and that the
+  // response carries the field needed to refuse to.
+  //
+  // ## Why a wrong answer here is not cosmetic
+  //
+  // `strategy::order_is_open` is false for `FILLED` and `CANCELED`, and
+  // `Portfolio::working_quantity` skips any row that is not open. A resting order reported closed
+  // would read as **zero** resting quantity: no sellable deduction, no working-order component in
+  // the position ceiling, and a reconciliation that plans a second order beside the one already
+  // out.
+  //
+  // ## The rule
+  //
+  // A word and a number disagree, and only one of them can be checked, so the number wins:
+  // a positive `oso_qty` means the order is still open whatever `ord_stt` says. Which open status
+  // follows from the filled quantity, the same way KIS's parser answers the same question --
+  // `PARTIAL_FILLED` where something has filled, `PENDING` where nothing has. A row reporting
+  // nothing outstanding keeps whatever the broker said, so this narrows a contradiction rather than
+  // refusing to believe the broker.
+  //
+  // Applied here rather than inside `normalized_order_status`, because the contradicting quantity
+  // exists only on this endpoint and the history parser reads those words legitimately.
+  //
+  // The two statuses tested are the two `normalized_order_status` can produce that mean the order
+  // is over, named here rather than asked of `strategy::order_is_open`: an adapter must not depend
+  // on the strategy layer, and `core/` is where the two layers may meet.
   static void resolve_open_status(
     const std::optional<Decimal64>& amendable, OrderSnapshot& order
   ) {
@@ -3465,19 +3435,17 @@ private:
       OrderStatus::PENDING;
   }
 
-  /**
-   * Writes the three normalized shape facts from Kiwoom's Korean label.
-   *
-   * **`OrderSnapshot::shape_code_` is deliberately left empty.** Its documentation calls it "the
-   * broker's own order-shape code, preserved verbatim", and Kiwoom does not send a code on a read
-   * path at all — it sends a Korean display name, which `Code<8>` cannot hold. Writing the numeric
-   * code this adapter *inferred* from the name would put something the broker never sent into a
-   * field defined as what it did. The raw label is kept on `KiwoomOpenOrder::shape_name_` instead.
-   *
-   * A label the table does not know leaves all three fields `UNKNOWN` and does not fail the row,
-   * because both specifications this library follows require a client to tolerate a value it does
-   * not recognize, and one odd row must not fail a whole listing.
-   */
+  // Writes the three normalized shape facts from Kiwoom's Korean label.
+  //
+  // **`OrderSnapshot::shape_code_` is deliberately left empty.** Its documentation calls it "the
+  // broker's own order-shape code, preserved verbatim", and Kiwoom does not send a code on a read
+  // path at all — it sends a Korean display name, which `Code<8>` cannot hold. Writing the numeric
+  // code this adapter *inferred* from the name would put something the broker never sent into a
+  // field defined as what it did. The raw label is kept on `KiwoomOpenOrder::shape_name_` instead.
+  //
+  // A label the table does not know leaves all three fields `UNKNOWN` and does not fail the row,
+  // because both specifications this library follows require a client to tolerate a value it does
+  // not recognize, and one odd row must not fail a whole listing.
   static void apply_shape(std::string_view label, OrderSnapshot& order) {
     const auto* row = shape_by_name(label);
     if (row == nullptr) {
@@ -3488,7 +3456,7 @@ private:
     order.session_ = row->session_;
   }
 
-  /** One order-history listing spanning however many `kt00007` pages it needs. */
+  // One order-history listing spanning however many `kt00007` pages it needs.
   struct HistoryOperation {
     KiwoomHistoryQuery query_;
     OrderPage page_;
@@ -3500,7 +3468,7 @@ private:
     : query_(std::move(query)), completion_(std::move(completion)) {}
   };
 
-  /** Starts the order-history listing for one calendar date. */
+  // Starts the order-history listing for one calendar date.
   void start_order_history(KiwoomHistoryQuery query, OrderPageHandler completion) {
     if (!is_valid_date(query.date_)) {
       BrokerError error;
@@ -3515,7 +3483,7 @@ private:
     request_order_history(operation);
   }
 
-  /** Issues one page of `kt00007` 계좌별주문체결내역상세요청. */
+  // Issues one page of `kt00007` 계좌별주문체결내역상세요청.
   void request_order_history(std::shared_ptr<HistoryOperation> operation) {
     ensure_token(
       TokenHandler(
@@ -3554,7 +3522,7 @@ private:
     );
   }
 
-  /** Accumulates one page of order history and either continues or completes. */
+  // Accumulates one page of order history and either continues or completes.
   void handle_order_history_page(
     const std::shared_ptr<HistoryOperation>& operation,
     Result<network::HttpResponse> result
@@ -3613,7 +3581,7 @@ private:
     }
   }
 
-  /** Normalizes one `kt00007` row. */
+  // Normalizes one `kt00007` row.
   static OrderSnapshot parse_history_row(const json::object& row, const Date& date) {
     OrderSnapshot order;
     order.order_id_ = detail::text_field(row, "ord_no");
@@ -3642,16 +3610,14 @@ private:
     return order;
   }
 
-  /**
-   * Reads a history row's lifecycle state.
-   *
-   * `kt00007` publishes two columns and neither alone is the answer: `acpt_tp` 접수구분 says the
-   * order was received, and `mdfy_cncl` 정정취소 says whether this row is a 정정확인 or a 취소확인.
-   * A cancellation confirmation is a cancelled order, and nothing else on the row says so.
-   *
-   * A fill is read from the quantities rather than from a word, because `kt00007` publishes no
-   * 체결 state at all — `ord_remnq` 주문잔량 is what remains.
-   */
+  // Reads a history row's lifecycle state.
+  //
+  // `kt00007` publishes two columns and neither alone is the answer: `acpt_tp` 접수구분 says the
+  // order was received, and `mdfy_cncl` 정정취소 says whether this row is a 정정확인 or a 취소확인.
+  // A cancellation confirmation is a cancelled order, and nothing else on the row says so.
+  //
+  // A fill is read from the quantities rather than from a word, because `kt00007` publishes no
+  // 체결 state at all — `ord_remnq` 주문잔량 is what remains.
   static OrderStatus history_status(const json::object& row) {
     const auto amendment = detail::text_field(row, "mdfy_cncl");
     if (amendment == "취소확인") {
@@ -3673,14 +3639,20 @@ private:
 };
 
 /**
- * Blocking facade over `KiwoomClient`, driving its own event loop.
+ * @brief A blocking Kiwoom client: each call runs a `KiwoomClient` request on a private event loop
+ *   and returns its result. Not thread-safe. Order references work with either client.
  *
- * Shares `kiwoom::Broker` with the asynchronous client, so a reference obtained through either is
- * usable with the other.
+ * A call whose loop stops before the request completes returns a `TRANSPORT` error
+ * (`event_loop_stopped`).
  */
 class KiwoomBlockingClient {
 public:
-  /** Constructs a blocking client for one Kiwoom environment. */
+  /**
+   * @brief Constructs a client.
+   * @param context The TLS context; borrowed, and must outlive the client.
+   * @param config The credentials and environment.
+   * @param options HTTP options.
+   */
   KiwoomBlockingClient(
     ssl::context& context,
     KiwoomConfig config,
@@ -3690,7 +3662,11 @@ public:
       std::make_shared<KiwoomClient>(ioc_.get_executor(), context, std::move(config), options)
     ) {}
 
-  /** Returns the current normalized quote or a structured error. */
+  /**
+   * @brief Returns the current normalized quote or a structured error.
+   * @param instrument The instrument.
+   * @return The result, or an error.
+   */
   Result<QuoteSnapshot> quote(InstrumentId instrument) {
     return run<QuoteSnapshot>(
       [&](auto&& sink) { client_->async_quote(std::move(instrument), std::move(sink)); },
@@ -3698,7 +3674,11 @@ public:
     );
   }
 
-  /** Returns today's upper and lower price bound. */
+  /**
+   * @brief Returns today's upper and lower price bound.
+   * @param instrument The instrument.
+   * @return The result, or an error.
+   */
   Result<PriceLimits> price_limits(InstrumentId instrument) {
     return run<PriceLimits>(
       [&](auto&& sink) { client_->async_price_limits(std::move(instrument), std::move(sink)); },
@@ -3706,7 +3686,11 @@ public:
     );
   }
 
-  /** Returns the resting orders on both sides of the book. */
+  /**
+   * @brief Returns the resting orders on both sides of the book.
+   * @param instrument The instrument.
+   * @return The result, or an error.
+   */
   Result<DepthSnapshot> depth(InstrumentId instrument) {
     return run<DepthSnapshot>(
       [&](auto&& sink) { client_->async_depth(std::move(instrument), std::move(sink)); },
@@ -3714,7 +3698,12 @@ public:
     );
   }
 
-  /** Returns recent executions, newest first. */
+  /**
+   * @brief Returns recent executions, newest first.
+   * @param instrument The instrument.
+   * @param count The most trades to return.
+   * @return The result, or an error.
+   */
   Result<std::vector<TradePrint>> trades(InstrumentId instrument, int count) {
     return run<std::vector<TradePrint>>(
       [&](auto&& sink) { client_->async_trades(std::move(instrument), count, std::move(sink)); },
@@ -3722,7 +3711,11 @@ public:
     );
   }
 
-  /** Returns static reference data for one instrument. */
+  /**
+   * @brief Returns static reference data for one instrument.
+   * @param subject The instrument.
+   * @return The result, or an error.
+   */
   Result<Instrument> instrument(InstrumentId subject) {
     return run<Instrument>(
       [&](auto&& sink) { client_->async_instrument(std::move(subject), std::move(sink)); },
@@ -3730,7 +3723,11 @@ public:
     );
   }
 
-  /** Returns bars, paging inside the client. */
+  /**
+   * @brief Returns bars; see `KiwoomClient::async_bars`.
+   * @param query The query.
+   * @return The result, or an error.
+   */
   Result<BarSeries> bars(BarQuery query) {
     return run<BarSeries>(
       [&](auto&& sink) { client_->async_bars(std::move(query), std::move(sink)); },
@@ -3738,10 +3735,17 @@ public:
     );
   }
 
-  /** Returns the configuration this facade's client was built with; see `KiwoomClient::config`. */
+  /**
+   * @brief Returns the configuration; see `KiwoomClient::config`.
+   * @return The configuration.
+   */
   const KiwoomConfig& config() const noexcept { return client_->config(); }
 
-  /** Returns every holding for the bound credential. */
+  /**
+   * @brief Returns the holdings for `KiwoomConfig::holdings_venue_`; see `KiwoomClient::async_holdings`.
+   * @param account The account (empty).
+   * @return The result, or an error.
+   */
   Result<HoldingsSnapshot> holdings(KiwoomAccount account) {
     return run<HoldingsSnapshot>(
       [&](auto&& sink) { client_->async_holdings(account, std::move(sink)); },
@@ -3749,7 +3753,12 @@ public:
     );
   }
 
-  /** Returns what the bound credential's account may spend. */
+  /**
+   * @brief Returns what the bound credential's account may spend.
+   * @param currency The currency; anything but KRW is refused before sending.
+   * @param account The bound account.
+   * @return The result, or an error.
+   */
   Result<BuyingPower> buying_power(Currency currency, KiwoomAccount account) {
     return run<BuyingPower>(
       [&](auto&& sink) { client_->async_buying_power(currency, account, std::move(sink)); },
@@ -3757,7 +3766,10 @@ public:
     );
   }
 
-  /** Returns Kiwoom's own fuller deposit detail. */
+  /**
+   * @brief Returns Kiwoom's own fuller deposit detail.
+   * @return The result, or an error.
+   */
   Result<KiwoomDeposit> deposit() {
     return run<KiwoomDeposit>(
       [&](auto&& sink) { client_->async_deposit(std::move(sink)); },
@@ -3765,7 +3777,13 @@ public:
     );
   }
 
-  /** Returns what may be ordered of one instrument, per margin tier. */
+  /**
+   * @brief Returns what may be ordered of one instrument, per margin tier.
+   * @param instrument The instrument.
+   * @param side The side.
+   * @param price The unit price to evaluate at (`uv`), or empty to send none.
+   * @return The result, or an error.
+   */
   Result<KiwoomOrderableAmount> orderable_amount(
     InstrumentId instrument,
     OrderSide side,
@@ -3781,7 +3799,10 @@ public:
     );
   }
 
-  /** Returns the one account the bound credential drives. */
+  /**
+   * @brief Returns the one account the bound credential drives.
+   * @return The result, or an error.
+   */
   Result<std::vector<KiwoomAccountInfo>> accounts() {
     return run<std::vector<KiwoomAccountInfo>>(
       [&](auto&& sink) { client_->async_accounts(std::move(sink)); },
@@ -3789,7 +3810,13 @@ public:
     );
   }
 
-  /** Submits a new order. */
+  /**
+   * @brief Submits a new order. The outcome can be unknown after an error; see
+   *   `KiwoomClient::async_place_order`.
+   * @param account The bound account.
+   * @param order The order.
+   * @return The result, or an error.
+   */
   Result<KiwoomOrderAck> place_order(KiwoomAccount account, OrderRequest order) {
     return run<KiwoomOrderAck>(
       [&](auto&& sink) {
@@ -3799,7 +3826,13 @@ public:
     );
   }
 
-  /** Modifies an existing order. */
+  /**
+   * @brief Modifies an existing order. The outcome can be unknown after an error; see
+   *   `KiwoomClient::async_replace_order`.
+   * @param account The bound account.
+   * @param amendment The amendment.
+   * @return The result, or an error.
+   */
   Result<KiwoomOrderAck> replace_order(KiwoomAccount account, KiwoomAmendment amendment) {
     return run<KiwoomOrderAck>(
       [&](auto&& sink) {
@@ -3809,7 +3842,13 @@ public:
     );
   }
 
-  /** Cancels an existing order. */
+  /**
+   * @brief Cancels an existing order. The outcome can be unknown after an error; see
+   *   `KiwoomClient::async_cancel_order`.
+   * @param account The bound account.
+   * @param amendment The amendment.
+   * @return The result, or an error.
+   */
   Result<KiwoomOrderAck> cancel_order(KiwoomAccount account, KiwoomAmendment amendment) {
     return run<KiwoomOrderAck>(
       [&](auto&& sink) {
@@ -3819,7 +3858,11 @@ public:
     );
   }
 
-  /** Returns every order still open to amendment. */
+  /**
+   * @brief Returns every order still open to amendment.
+   * @param account The bound account.
+   * @return The result, or an error.
+   */
   Result<KiwoomOpenOrderPage> open_orders(KiwoomAccount account) {
     return run<KiwoomOpenOrderPage>(
       [&](auto&& sink) { client_->async_open_orders(account, std::move(sink)); },
@@ -3827,7 +3870,12 @@ public:
     );
   }
 
-  /** Returns one day of order history. */
+  /**
+   * @brief Returns one day of order history.
+   * @param account The bound account.
+   * @param query The query.
+   * @return The result, or an error.
+   */
   Result<OrderPage> order_history(KiwoomAccount account, KiwoomHistoryQuery query) {
     return run<OrderPage>(
       [&](auto&& sink) {
@@ -3837,14 +3885,21 @@ public:
     );
   }
 
-  /** Cancels transport work and queued operations. */
+  /** @brief Closes the client for good; see `KiwoomClient::close`. */
   void close() { client_->close(); }
 
-  /** Returns this client's pacing statistics, or null when it is unpaced. */
+  /**
+   * @brief Returns the rate limiter's statistics.
+   *
+   * Read them on the client's strand or while no request is in progress (between calls on the
+   * blocking client).
+   *
+   * @return The statistics, or null if the client has no rate-limit budget.
+   */
   const network::RateLimitStats* rate_limit_stats() const { return client_->rate_limit_stats(); }
 
 private:
-  /** Drives one asynchronous operation to completion on the private loop. */
+  // Drives one asynchronous operation to completion on the private loop.
   template <typename T, typename Start>
   Result<T> run(Start start, std::string_view operation) {
     std::optional<Result<T>> result;

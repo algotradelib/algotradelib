@@ -25,32 +25,24 @@ struct KiwoomConfig;
 struct KiwoomRest;
 
 /**
- * Which venue's book a Kiwoom domestic market-data call reads.
+ * @brief Which venue's prices Kiwoom market-data requests read (see `KiwoomConfig::market_tape_`).
  *
- * Kiwoom-private, for the reason `kis::MarketTape` is KIS-private: a tape is Korean market
- * structure -- two venues trading one listing, plus the consolidated feed over them -- and
- * broker-neutral `core/` has nothing to normalize it to. Whether the two adapters should share one
- * such enum is an open question for the operator, recorded at
- * `issues/kiwoom-api-shared-tape-vocabulary.md`; they are declared separately today because an
- * adapter owns its vendor vocabulary and because the two encode the same choice differently.
- *
- * **Kiwoom encodes the tape as a suffix on the symbol**, not as a request parameter:
- * `005930` is KRX, `005930_NX` is NXT, `005930_AL` is SOR, the consolidated book. See
- * `KiwoomConfig::market_tape_`.
+ * Kiwoom encodes it as a suffix on the symbol: `005930` is KRX, `005930_NX` NXT, `005930_AL` both
+ * combined (SOR).
  */
 enum class MarketTape {
-  /** The consolidated SOR book over KRX and NXT (`_AL`). */
+  /** @brief KRX and NXT combined, the SOR book (`_AL`). */
   CONSOLIDATED,
-  /** KRX alone, which is the unsuffixed symbol. */
+  /** @brief KRX alone (no suffix). */
   KRX,
-  /** NXT alone (`_NX`). */
+  /** @brief NXT alone (`_NX`). */
   NXT,
 };
 
 /**
- * Returns the suffix Kiwoom spells `tape` with, appended to a six-digit symbol.
- *
- * KRX is the unsuffixed form, so this returns an empty string for it rather than a code.
+ * @brief Returns the symbol suffix for a tape.
+ * @param tape The tape.
+ * @return `""` for KRX, `"_NX"` or `"_AL"`.
  */
 inline constexpr const char* tape_suffix(MarketTape tape) noexcept {
   switch (tape) {
@@ -65,11 +57,10 @@ inline constexpr const char* tape_suffix(MarketTape tape) noexcept {
 }
 
 /**
- * Reads Kiwoom's `yyyyMMddHHmmss` stamp, in Korean local time, as an absolute instant.
- *
- * Returns the epoch default when the text is not fourteen digits, which is what
- * `network::AuthBody::from_json` turns into a refusal rather than into a token with an invented
- * lifetime.
+ * @brief Reads Kiwoom's token expiry, `yyyyMMddHHmmss` in Korean time.
+ * @param text The text.
+ * @return The instant, or the epoch if the text is not fourteen digits (out-of-range fields are not
+ *   checked: they normalize into some instant).
  */
 inline std::chrono::system_clock::time_point parse_compact_expiry(std::string_view text) {
   if (text.size() != 14) {
@@ -104,138 +95,98 @@ inline std::chrono::system_clock::time_point parse_compact_expiry(std::string_vi
 }
 
 /**
- * What a Kiwoom balance request's `dmst_stex_tp` means for the positions it lists.
- *
- * Kiwoom's specification does not say, and the two readings have opposite failure modes, so this is
- * asserted by whoever runs the account and never inferred by this library. See
- * `KiwoomConfig::holdings_position_scope_` for the argument and
- * `issues/kiwoom-api-holdings-venue-scope.md` for the experiment that settles it.
+ * @brief What the venue named on a Kiwoom holdings request (`kt00018`'s `dmst_stex_tp`) means for
+ *   the positions it lists; Kiwoom does not document it, so you assert it (see
+ *   `KiwoomConfig::holdings_position_scope_`).
  */
 enum class KiwoomPositionScope {
-  /** Nobody has stated it: the holdings verb refuses, as does anything that can open a position. */
+  /**
+   * @brief Not stated: every new order and amendment is refused (cancellations are not), and the
+   *   session's holdings verb refuses (the client's own holdings request still answers).
+   */
   UNSPECIFIED,
   /**
-   * Asserted: the parameter selects whose price values a position, and every position is listed.
-   *
-   * The more plausible reading of a 계좌평가 inquiry, because custody at a Korean broker is not held
-   * per venue -- a share is a share, and KRX and NXT are two places to trade it. Plausible is not
-   * established, which is exactly why this is an assertion and why nothing sets it by default.
+   * @brief Asserted: the venue only selects which venue's price values each position, and every
+   *   position is listed (the more plausible reading, but unverified).
    */
   VALUATION_ONLY,
 };
 
 /**
- * What a Kiwoom balance row's `trde_able_qty` covers.
- *
- * Independent of `KiwoomPositionScope` on purpose: nothing in the specification ties the two fields'
- * scopes together, and this is the one that can admit a sell of shares that are not there.
+ * @brief What a Kiwoom holdings row's tradable quantity (`trde_able_qty`) covers; undocumented, so
+ *   you assert it (see `KiwoomConfig::holdings_sellable_scope_`).
  */
 enum class KiwoomSellableScope {
-  /** Nobody has stated it: the published basis is unestablished and a checked sell refuses. */
+  /** @brief Not stated: the sellable basis is unestablished, and a sell checked against it is refused. */
   UNSPECIFIED,
-  /** Asserted: it covers every share held of the instrument, whatever venue it trades on. */
+  /** @brief Asserted: it covers every share held of the instrument, on any venue. */
   WHOLE_HOLDING,
 };
 
-/** Kiwoom application credentials and live/demo endpoint selection. */
+/**
+ * @brief Kiwoom credentials (app key and secret key), demo or real account, the market-data tape,
+ *   and the holdings settings an account must state before trading.
+ *
+ * Load with `from_env()` (`KIWOOM_APP_KEY`, `KIWOOM_SECRET_KEY`, `KIWOOM_DEMO`) or
+ * `from_json(filename)`. Holdings cannot be read until `holdings_venue_` is set. Orders cannot be
+ * placed or amended, and the session (so a runner) reads no holdings, until `holdings_position_scope_`
+ * is set; a checked sell also needs `holdings_sellable_scope_`.
+ */
 struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
   /**
-   * Whether to use Kiwoom's 모의투자 (paper-trading) endpoints. **Demo unless stated otherwise.**
+   * @brief Whether to use Kiwoom's demo (모의투자) endpoints; **`true` unless stated otherwise**.
    *
-   * Live is the one choice that moves real money, so it is the one that has to be written down:
-   * `KIWOOM_DEMO=0` in the environment, `"demo": false` in a credential file, or `is_demo_ = false` in code.
-   * Anything left unstated is demo -- and live keys sent to the demo endpoints are refused at the first
-   * token request, so a forgotten setting fails instead of trading.
+   * Real trading must be stated: `KIWOOM_DEMO=0`, `"demo": false` in the credential file, or
+   * `is_demo_ = false`. Real-account keys sent to the demo endpoints are refused at the first token
+   * request, so a forgotten setting fails rather than trades.
    */
   bool is_demo_ = true;
 
   /**
-   * Which book Kiwoom's domestic market-data calls read.
+   * @brief Which venue's prices every Kiwoom market-data request reads (quotes, depth, trades, price
+   *   bands, bars); KRX and NXT combined by default.
    *
-   * **One setting for every market-data verb**, which is the rule `ai/market-data-tape` settled for
-   * KIS after five of its seven verbs had quietly disagreed with the other two about which market
-   * they described. The quote, the depth, the recent prints, the price bounds and every bar request
-   * append the same suffix, so a caller's last price and their bars always describe one book.
-   *
-   * **Deliberately not read from `InstrumentId::venue_`.** That field is identity -- it participates
-   * in equality, and a holding carries no venue -- so deriving the tape from it would make a
-   * market-data setting able to invalidate an order. Routing is `OrderRequest::venue_`, and it is a
-   * separate question from which book a price came off.
-   *
-   * Consolidated by default, which is what a Korean equity's price means when nobody says otherwise
-   * and what the other two adapters already answer.
+   * It does not change the instrument's identity or where orders go.
    */
   MarketTape market_tape_ = MarketTape::CONSOLIDATED;
 
   /**
-   * Which book `kt00018` 계좌평가잔고내역요청 reports holdings from.
+   * @brief The venue holdings requests (`kt00018`) name: `Venue::KRX` or `Venue::NXT`. **No
+   *   default: holdings requests are refused until it is set.**
    *
-   * **`kt00018` has no all-venue value.** Its `dmst_stex_tp` documents `KRX` and `NXT` and nothing
-   * else, while `ka10075`'s `stex_tp` offers `0 : 통합` and `kt00007`'s offers `%:(전체)`. So one
-   * balance request cannot be shown to cover both books, and holdings are what the sellable guard
-   * and every position ceiling are measured against.
-   *
-   * **This adapter states one book rather than sending two requests and merging them**, and that is
-   * the safe direction rather than the lazy one. If `dmst_stex_tp` selects which venue's *price*
-   * values the position -- the more plausible reading of a 계좌평가 inquiry, since custody at a
-   * Korean broker is not held per venue -- then merging two responses would **double every
-   * position**. A doubled holding defeats a position ceiling silently and in the permissive
-   * direction; an incomplete one refuses trades, which is loud. So nothing is merged.
-   *
-   * **It has no default, and that is the point.** `UNSPECIFIED` refuses every holdings request
-   * before any I/O, naming this gap. Defaulting to `KRX` -- Kiwoom's own choice in the `kt00018`
-   * request example -- would have been a silent answer to a question nobody has answered: if the
-   * parameter filters positions rather than valuing them, a KRX-only snapshot omits whatever is
-   * held on NXT, and an **under-reported holding is the permissive direction** for a position
-   * ceiling, which then admits buys against room that does not exist.
-   *
-   * So a caller states the book deliberately, having read why. `COMBINED` is refused too, because
-   * `kt00018` publishes no value for it.
-   *
-   * What the parameter actually selects needs an account to settle, and it is one request pair:
-   * the experiment is written out at `issues/kiwoom-api-holdings-venue-scope.md`.
+   * `kt00018` has no all-venue value, and the library does not request both and merge them: if the
+   * venue only selects the valuation price, merging would double every position. If instead it
+   * filters positions, one venue's request omits what is held on the other, so a position ceiling
+   * would see too little. Which it is, Kiwoom does not document; see `holdings_position_scope_`.
+   * `Venue::COMBINED` is refused.
    */
   Venue holdings_venue_ = Venue::UNSPECIFIED;
 
   /**
-   * What the operator asserts `dmst_stex_tp` *means* for the positions `kt00018` lists.
+   * @brief Your assertion of what `holdings_venue_` means for the positions listed. **No default:
+   *   until it is set, every new order and amendment is refused and the session reads no holdings**
+   *   (cancellations, including `cancel_quantity()`, still go).
    *
-   * `holdings_venue_` above names the book a request is sent for. This states what naming it does,
-   * which is the thing the specification never says: `kt00018`'s `dmst_stex_tp` documents
-   * `KRX:한국거래소,NXT:넥스트트레이드` and no meaning, and both quantity fields' descriptions carry
-   * units and zero-padding and nothing else.
-   *
-   * **The library will not infer this, and the reason is recorded rather than assumed.** Sending
-   * both requests and comparing them was analysed and rejected: two reads are not a snapshot, so
-   * disjoint row sets are evidence of a change *between* the reads rather than of what the parameter
-   * means -- read KRX holding A, sell A and buy B, read NXT, and the union is `{A, B}` when only B
-   * is held. `issues/kiwoom-api-holdings-venue-scope.md` carries the full argument.
-   *
-   * So a caller may **assert** it, and asserting is not knowing: an assertion that is wrong
-   * *undercounts* the account, which admits a buy at a ceiling already reached and refuses or
-   * undersizes a sell. That is the milder of the two failure directions and it is not safe. The
-   * experiment that would settle it is two requests and about a minute of an account's time.
+   * Kiwoom does not document it, and two reads cannot settle it (the account can change between
+   * them). A wrong assertion undercounts the account: a buy can pass a ceiling already reached, and
+   * a sell can be refused or sized too small.
    */
   KiwoomPositionScope holdings_position_scope_ = KiwoomPositionScope::UNSPECIFIED;
 
   /**
-   * What the operator asserts `trde_able_qty` covers.
+   * @brief Your assertion of what a holdings row's tradable quantity covers; separate from the
+   *   position scope, since Kiwoom documents neither.
    *
-   * **Separate from the position scope above, because the specification promises nothing about
-   * either and certainly not that they agree.** `rmnd_qty` could be the whole account while
-   * `trde_able_qty` is what may be traded on the named venue -- both `desc` columns say only
-   * "단위: 1주, 좌측 0-padding 처리된 부호 포함 15자리 숫자". One switch covering both would assume
-   * exactly the thing nobody has checked, and the sellable half is the one that admits a wrong-sized
-   * sell rather than merely refusing one.
-   *
-   * `UNSPECIFIED` publishes an unestablished `SellableBasis`, so `RiskGuard` refuses a checked sell
-   * instead of measuring it against a figure of unknown coverage. Asserting `WHOLE_HOLDING` supplies
-   * the coverage; the *resting* treatment is this library's conservative `DEDUCT` either way and is
-   * not a caller's to state, because over-deducting only ever refuses a trade.
+   * `UNSPECIFIED` (the default) leaves the sellable basis unestablished, so `RiskGuard` refuses a
+   * checked sell. `WHOLE_HOLDING` supplies the coverage; resting sells are deducted either way.
    */
   KiwoomSellableScope holdings_sellable_scope_ = KiwoomSellableScope::UNSPECIFIED;
 
-  /** Reads Kiwoom credentials and environment selection from process variables. */
+  /**
+   * @brief Reads the credentials from `KIWOOM_APP_KEY` and `KIWOOM_SECRET_KEY`, and the environment
+   *   from `KIWOOM_DEMO` (see `demo_from_env`); called by `from_env()`. Nothing changes if it throws.
+   * @throws std::runtime_error if a key variable is missing or `KIWOOM_DEMO` is invalid.
+   */
   void from_env_impl() {
     const char* key = std::getenv("KIWOOM_APP_KEY");
     const char* secret = std::getenv("KIWOOM_SECRET_KEY");
@@ -250,11 +201,15 @@ struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
   }
 
   /**
-   * Reads credentials from a JSON file.
+   * @brief Reads the credentials from a JSON file; called by `from_json(filename)`. Nothing changes
+   *   if it throws.
    *
-   * Expected format: `{ "appkey": "...", "secretkey": "...", "demo": false }`, which is the
-   * spelling Kiwoom's own `au10001` request body uses. Without `"demo"` the config is demo; when
-   * present it must be `true` or `false`.
+   * Format: `{ "appkey": "...", "secretkey": "...", "demo": false }` (Kiwoom's own field names);
+   * without `"demo"` the config is demo.
+   *
+   * @param filename The file.
+   * @throws std::runtime_error if the file cannot be read or parsed, a key is missing or not a
+   *   string, or `"demo"` is not a boolean.
    */
   void from_json_impl(const std::string& filename) {
     std::ifstream ifs(filename);
@@ -287,10 +242,9 @@ struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
   }
 
   /**
-   * Reads `KIWOOM_DEMO`: unset is demo, `1` is demo, `0` is live, anything else refuses.
-   *
-   * No trimming, no `true` or `yes`: a value that has to be interpreted is one somebody could have
-   * meant the other way, and guessing wrong in either direction is worse than refusing.
+   * @brief Reads `KIWOOM_DEMO`.
+   * @return `true` (demo) if unset or `1`, `false` (real) if `0`.
+   * @throws std::runtime_error for any other value.
    */
   static bool demo_from_env() {
     const char* demo = std::getenv("KIWOOM_DEMO");
@@ -306,7 +260,13 @@ struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
     );
   }
 
-  /** Reads a credential file's `"demo"`: absent is demo, otherwise it must be a JSON boolean. */
+  /**
+   * @brief Reads a credential file's `"demo"`.
+   * @param doc The file's contents.
+   * @param filename The file, for the error message.
+   * @return `true` if absent, otherwise its value.
+   * @throws std::runtime_error if it is not a boolean.
+   */
   static bool demo_from_json(const json::object& doc, const std::string& filename) {
     const json::value* demo = doc.if_contains("demo");
     if (!demo) {
@@ -321,53 +281,71 @@ struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
     return demo->get_bool();
   }
 
-  /** The JSON field Kiwoom expects the application key under. */
+  /**
+   * @brief The JSON field Kiwoom expects the application key under.
+   * @return `"appkey"`.
+   */
   static constexpr std::string_view key_field() noexcept { return "appkey"; }
 
-  /** The JSON field Kiwoom expects the application secret under. */
+  /**
+   * @brief The JSON field Kiwoom expects the application secret under.
+   * @return `"secretkey"`.
+   */
   static constexpr std::string_view secret_field() noexcept { return "secretkey"; }
 
-  /** The REST host for the selected environment. */
+  /**
+   * @brief The REST host for the selected environment.
+   * @return `"mockapi.kiwoom.com"` (demo) or `"api.kiwoom.com"`.
+   */
   const char* rest_host() const noexcept {
     return is_demo_ ? "mockapi.kiwoom.com" : "api.kiwoom.com";
   }
 
-  /** The REST port, which is the same for both environments. */
+  /**
+   * @brief The REST port, which is the same for both environments.
+   * @return `"443"`.
+   */
   const char* rest_port() const noexcept { return "443"; }
 
-  /** The WebSocket host for the selected environment. */
+  /**
+   * @brief The WebSocket host for the selected environment.
+   * @return `"mockapi.kiwoom.com"` (demo) or `"api.kiwoom.com"`.
+   */
   const char* ws_host() const noexcept {
     return is_demo_ ? "mockapi.kiwoom.com" : "api.kiwoom.com";
   }
 
-  /** The WebSocket port, which is the same for both environments. */
+  /**
+   * @brief The WebSocket port, which is the same for both environments.
+   * @return `"10000"`.
+   */
   const char* ws_port() const noexcept { return "10000"; }
 
-  /** Returns `symbol` as this configuration's tape spells it, for a market-data request. */
+  /**
+   * @brief Returns a symbol with this configuration's tape suffix, for a market-data request.
+   * @param symbol The six-digit symbol.
+   * @return The suffixed symbol.
+   */
   std::string tape_symbol(std::string_view symbol) const {
     return std::string(symbol) + tape_suffix(market_tape_);
   }
 };
 
-/**
- * Parsed Kiwoom REST OAuth token.
- *
- * **Kiwoom is why `network::AuthBody` names no field of its own.** Its `au10001` returns the token
- * under `token`, not `access_token`, and states the expiry as `expires_dt` -- an absolute
- * `yyyyMMddHHmmss` stamp in Korean local time -- with no `expires_in` anywhere in the response.
- */
+/** @brief A Kiwoom REST access token (`au10001`'s `token`) and its expiry (`expires_dt`). */
 struct KiwoomRest : public network::AuthBody<KiwoomRest> {
-  /** Kiwoom's `token_type`, which the specification's example gives as `bearer`. */
+  /** @brief Kiwoom's `token_type` (`bearer` in its example). */
   std::string token_type_;
 
-  /** The field Kiwoom returns the bearer token under. */
+  /**
+   * @brief The field Kiwoom returns the bearer token under.
+   * @return `"token"`.
+   */
   static constexpr std::string_view token_field() noexcept { return "token"; }
 
   /**
-   * Reads Kiwoom's absolute expiry, which is the only expiry it states.
-   *
-   * A missing or malformed `expires_dt` leaves `expires_at_` unset, and the base then refuses the
-   * response rather than treating the token as valid for a guessed day.
+   * @brief Reads the expiry (`expires_dt`, the only one Kiwoom states) and `token_type`; called by
+   *   `from_json`. A response with no readable expiry makes `from_json` throw.
+   * @param doc The response.
    */
   void from_json_impl(const json::object& doc) {
     if (const auto expiry = doc.if_contains("expires_dt"); expiry && expiry->is_string()) {
