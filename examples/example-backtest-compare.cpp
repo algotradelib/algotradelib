@@ -12,8 +12,8 @@
 //
 // No credentials and no network: the bars are built in code, so the output is identical on every
 // run and on every machine. Replacing `closes()` with your own history is the first thing to do
-// after the numbers below stop surprising you -- see the README for where bars come from, because
-// this library deliberately does not read files.
+// after the numbers below stop surprising you -- see "Using it" on the documentation main page
+// (`doxygen/index.md`) for where bars come from, because this library deliberately does not read files.
 //
 // Run it as:
 //

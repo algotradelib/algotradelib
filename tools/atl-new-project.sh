@@ -207,7 +207,7 @@ feeds it bars and prints the comparison. Two things to keep when you rewrite it:
 
 This library does not read files, on purpose: bars come from a broker adapter or from your own code.
 Replace \`closes()\` with your history, keeping prices in \`Decimal64\` so nothing rounds on the way in.
-See the library's README for the two routes and what each one costs you.
+See "Using it" on the library's documentation main page (\`doxygen/index.md\`) for the two routes.
 MDEOF
 
 # Printed single-quoted, because a project directory containing a space generates and builds perfectly

@@ -82,8 +82,8 @@ printf '%s\n' "$OUTPUT"
 # has an undefined Sharpe, and this test should not be what makes that confusing to discover.
 # Reads a comparison table from stdin and prints its strategy rows, whitespace-normalized.
 #
-# Used on README.md and on the generated program's output, so the two are parsed by the same code and
-# cannot disagree about what counts as a row. Tabs are normalized alongside spaces: the committed
+# Used on the documentation main page (doxygen/index.md) and on the generated program's output, so the
+# two are parsed by the same code and cannot disagree about what counts as a row. Tabs are normalized alongside spaces: the committed
 # printer emits spaces, and a harmless change to that should not be a test failure about onboarding.
 table_rows() {
     awk '
@@ -124,7 +124,7 @@ invalid_rows() {
 # Asserts that a parsed table has exactly `want` rows, one per distinct strategy, each a complete
 # report row.
 #
-# Applied to all three tables -- README.md's, the program's, and the perturbed program's -- because
+# Applied to all three tables -- the main page's, the program's, and the perturbed program's -- because
 # checking only some of them is how this file kept shipping holes. The perturbed side once passed
 # `MyStrategy(5) incomplete` and a duplicated row, both of which the baseline side rejected; the rule
 # existed and had not reached every place it applied.
@@ -202,8 +202,8 @@ if [ "$BACKEND" = ON ]; then
     check_row 'SmaCrossover(3,8)' 0
     check_row 'DonchianBreakout(5)' 0
 
-    # The program's table must equal the table README.md publishes, as a set: same rows, same count,
-    # nothing missing and nothing extra.
+    # The program's table must equal the table doxygen/index.md publishes, as a set: same rows, same
+    # count, nothing missing and nothing extra.
     #
     # **What this does and does not establish.** It is an output regression check, not proof that a
     # replay ran -- a program can print any literal. No assertion
@@ -213,27 +213,27 @@ if [ "$BACKEND" = ON ]; then
     # here. A test that misdescribes itself is how the next person gets talked out of a real one.
     #
     # Compared as a set rather than row by row, because the row-by-row version accepted an output that
-    # printed the four rows twice, and one that added a fifth strategy the README never published.
-    # The expected side is checked for distinct names too: four copies of one README row would
+    # printed the four rows twice, and one that added a fifth strategy the main page never published.
+    # The expected side is checked for distinct names too: four copies of one published row would
     # otherwise satisfy a count of four and leave three published comparisons untested.
-    README_ROWS=$WORK_DIR/expected-table.txt
+    PUBLISHED_ROWS=$WORK_DIR/expected-table.txt
     OUTPUT_ROWS=$WORK_DIR/actual-table.txt
-    table_rows < "$SOURCE_DIR/README.md" | sort > "$README_ROWS"
+    table_rows < "$SOURCE_DIR/doxygen/index.md" | sort > "$PUBLISHED_ROWS"
     printf '%s\n' "$OUTPUT" | table_rows | sort > "$OUTPUT_ROWS"
 
-    EXPECTED_COUNT=$(grep -c '[A-Za-z]' "$README_ROWS" || true)
+    EXPECTED_COUNT=$(grep -c '[A-Za-z]' "$PUBLISHED_ROWS" || true)
     if [ "$EXPECTED_COUNT" -lt 4 ]; then
-        printf 'found %s strategy rows in README.md, wanted at least 4 -- has the published table been removed?\n' \
+        printf 'found %s strategy rows in doxygen/index.md, wanted at least 4 -- has the published table been removed?\n' \
             "$EXPECTED_COUNT" >&2
         exit 1
     fi
-    assert_valid_table "$README_ROWS" 'README.md' "$EXPECTED_COUNT"
+    assert_valid_table "$PUBLISHED_ROWS" 'doxygen/index.md' "$EXPECTED_COUNT"
     assert_valid_table "$OUTPUT_ROWS" 'the generated program' "$EXPECTED_COUNT"
 
-    if ! cmp -s "$README_ROWS" "$OUTPUT_ROWS"; then
-        printf 'the generated program did not print the table README.md publishes\n' >&2
-        printf -- '--- README.md ---\n' >&2
-        cat "$README_ROWS" >&2
+    if ! cmp -s "$PUBLISHED_ROWS" "$OUTPUT_ROWS"; then
+        printf 'the generated program did not print the table doxygen/index.md publishes\n' >&2
+        printf -- '--- doxygen/index.md ---\n' >&2
+        cat "$PUBLISHED_ROWS" >&2
         printf -- '--- generated program ---\n' >&2
         cat "$OUTPUT_ROWS" >&2
         exit 1
@@ -275,7 +275,7 @@ if [ "$BACKEND" = ON ]; then
     # Run to a file, and check the status, before anything parses it. Piping the executable straight
     # into `table_rows | sort` made the pipeline report *sort's* status: a perturbed
     # binary that printed one row and exited 42, and the script passed, because a truncated table is
-    # trivially "different from the README's" -- which was the only thing being asked.
+    # trivially "different from the published one" -- which was the only thing being asked.
     PERTURBED_OUTPUT=$WORK_DIR/perturbed-output.txt
     if ! "$PERTURBED_BINARY" > "$PERTURBED_OUTPUT"; then
         printf 'the perturbed program exited non-zero; its output proves nothing\n' >&2
@@ -298,7 +298,7 @@ if [ "$BACKEND" = ON ]; then
     assert_valid_table "$PERTURBED_ROWS" 'the perturbed program' "$EXPECTED_COUNT"
 
     # ...and it must still be comparing the same strategies, not four different ones.
-    awk '{ print $1 }' "$README_ROWS"    | sort -u > "$WORK_DIR/names-expected.txt"
+    awk '{ print $1 }' "$PUBLISHED_ROWS" | sort -u > "$WORK_DIR/names-expected.txt"
     awk '{ print $1 }' "$PERTURBED_ROWS" | sort -u > "$WORK_DIR/names-perturbed.txt"
     if ! cmp -s "$WORK_DIR/names-expected.txt" "$WORK_DIR/names-perturbed.txt"; then
         printf 'the perturbed program did not compare the same strategies\n' >&2
@@ -308,7 +308,7 @@ if [ "$BACKEND" = ON ]; then
     fi
 
     # The response has to be asymmetric: only the perturbed strategy may move.
-    grep -v "^$PERTURBED_STRATEGY " "$README_ROWS"    > "$WORK_DIR/others-expected.txt" || true
+    grep -v "^$PERTURBED_STRATEGY " "$PUBLISHED_ROWS" > "$WORK_DIR/others-expected.txt" || true
     grep -v "^$PERTURBED_STRATEGY " "$PERTURBED_ROWS" > "$WORK_DIR/others-perturbed.txt" || true
     if ! cmp -s "$WORK_DIR/others-expected.txt" "$WORK_DIR/others-perturbed.txt"; then
         printf 'perturbing %s changed another strategy'"'"'s row, which nothing about that edit can justify\n' \
@@ -316,7 +316,7 @@ if [ "$BACKEND" = ON ]; then
         exit 1
     fi
 
-    grep "^$PERTURBED_STRATEGY " "$README_ROWS"    > "$WORK_DIR/mine-expected.txt" || true
+    grep "^$PERTURBED_STRATEGY " "$PUBLISHED_ROWS" > "$WORK_DIR/mine-expected.txt" || true
     grep "^$PERTURBED_STRATEGY " "$PERTURBED_ROWS" > "$WORK_DIR/mine-perturbed.txt" || true
     if [ ! -s "$WORK_DIR/mine-perturbed.txt" ]; then
         printf 'the perturbed program printed no %s row\n' "$PERTURBED_STRATEGY" >&2
