@@ -1809,7 +1809,7 @@ private:
     //
     // This was optional, and optional meant that a run which never thought about holdings sent
     // orders sized against whatever the portfolio happened to contain -- including nothing at all.
-    // Fail-open by default is the defect this branch exists for. The library states no default
+    // Fail-open by default was the defect. The library states no default
     // duration of its own, because any constant it picked would be a risk policy it has no basis
     // for: how stale a position may be before it must not be sized against is the operator's
     // judgement about their own market and cadence, not this library's.

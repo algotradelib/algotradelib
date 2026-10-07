@@ -670,7 +670,7 @@ TEST_CASE("buying power is absent until a broker answers, and absent is not zero
   REQUIRE(portfolio.buying_power_in(Currency::krw()) == Decimal64::parse("5000000"));
 
   // A currency the broker did not answer for stays unknown rather than borrowing another's number:
-  // holdings-core refuses implicit conversion and this is the same refusal.
+  // the library refuses implicit conversion and this is the same refusal.
   REQUIRE_FALSE(portfolio.buying_power_in(Currency::usd()));
 
   // An answer of zero is a different claim from no answer, and both are representable.
@@ -796,7 +796,7 @@ TEST_CASE("the probe learns nothing from a figure of unknown coverage") {
   REQUIRE(stated.verdict() == strategy::SellableConvention::GROSS_OF_RESTING);
 
   // **And a gap drops the baseline rather than spanning it**, which is the half that skipping alone
-  // does not give. Found at round 3: a declared reading, then an undeclared one, then a declared one
+  // does not give: a declared reading, then an undeclared one, then a declared one
   // would otherwise be judged against the reading from *before* the gap -- so the distance appears to
   // move by everything that happened while the probe was not looking, and it records a confident
   // verdict about a window it never observed.
@@ -1771,7 +1771,7 @@ TEST_CASE("buying power is per currency and never borrows another currency's ans
   won.order_currency_ = Currency::krw();
   REQUIRE_FALSE(guard.check(planned("10", "70000"), portfolio, won));
 
-  // The same order priced in dollars has no answer, and holdings-core's refusal to convert is why
+  // The same order priced in dollars has no answer, and the library's refusal to convert is why
   // this is unknown rather than generously funded.
   auto dollars = open_market();
   dollars.order_currency_ = Currency::usd();
@@ -1785,8 +1785,8 @@ TEST_CASE("buying power is per currency and never borrows another currency's ans
 }
 
 TEST_CASE("a withdrawal spends rate budget but can never be refused by the limit") {
-  // The asymmetry the todo named. A rate limit must never be the reason a cancellation cannot go --
-  // that is the premise ai/rate-limit-control was built on -- but not *counting* one is a different
+  // The asymmetry. A rate limit must never be the reason a cancellation cannot go -- that is the
+  // premise of the rate limit -- but not *counting* one is a different
   // claim, and it makes the window mean less than the field's own documentation says.
   RiskLimits limits;
   limits.max_orders_per_window_ = 2;
@@ -1928,7 +1928,7 @@ TEST_CASE("a sellable figure nobody characterized refuses, and works the moment 
 }
 
 TEST_CASE("a split holding cannot borrow one lot's declaration for another lot's figure") {
-  // **Round 3's blocker, and it is the first-row pattern this repository has paid for before.** The
+  // **The first-row pattern this repository has paid for before.** The
   // figure and its basis were two accessors, each walking the rows and each taking the first match on
   // its own criterion: the figure from the first row of the instrument, the basis from the first row
   // carrying an override. For a holding split across two lots those are different rows.
@@ -1974,8 +1974,8 @@ TEST_CASE("a split holding cannot borrow one lot's declaration for another lot's
   // differently cannot be reconciled by this library, so nothing is enforced against either.
   REQUIRE(guard.check(planned("30", "70000", OrderSide::SELL), split, open_market()));
 
-  // **Two lots that agree on a basis but disagree on the figure also refuse**, and this is the case
-  // round 4 caught -- in a fixture of mine that had asserted the opposite. If both rows say
+  // **Two lots that agree on a basis but disagree on the figure also refuse**; a fixture once
+  // asserted the opposite. If both rows say
   // `WHOLE_HOLDING`, both claim to state the limit for the *same* shares, so 100 and 30 are a
   // contradiction rather than two facts, and taking the first row's number would put a sell above the
   // real limit on the wire whenever the larger row comes first. Reachable from the shipped KIS parser,
@@ -2308,8 +2308,7 @@ bool refused_for_phase(
 TEST_CASE("a sell that closes a long is permitted although the market is shut") {
   // The branch, in one case. `permitted_phases_` governs what an order opens, not what it closes:
   // an operator whose flatten is refused by their own risk limits has a limit that says "you may
-  // not reduce risk", which is what `ai/guard-inputs` already refused to let `max_gross_exposure_`
-  // mean.
+  // not reduce risk", which `max_gross_exposure_` already refuses to mean.
   const RiskGuard guard;  // defaults to OPEN alone
   ProbePortfolio portfolio;
   portfolio.positions_.push_back(holding("100"));
@@ -2538,7 +2537,7 @@ TEST_CASE("an order whose quantity is not positive is never treated as closing")
 }
 
 TEST_CASE("a buy that opens a position outside the session is refused as before") {
-  // The limit still does its job. Nothing about this branch relaxes an opening order, which is what
+  // The limit still does its job. Nothing here relaxes an opening order, which is what
   // `permitted_phases_` is for.
   const RiskGuard guard;
   ProbePortfolio portfolio;
@@ -2570,7 +2569,7 @@ TEST_CASE("an exit the phase admits still answers to every other limit") {
 TEST_CASE("the sellable limit still applies to an exit the phase admits") {
   // Named because it is the limit most likely to refuse a valid exit in practice: a broker that
   // publishes no sellable figure leaves it absent, and absent refuses. An operator seeing a flatten
-  // refused after this branch is most likely seeing this, not the phase.
+  // refused is most likely seeing this, not the phase.
   RiskLimits limits;
   limits.enforce_sellable_quantity_ = true;
   const RiskGuard guard(limits);
@@ -2924,7 +2923,7 @@ TEST_CASE("a position that has gone flat does not refuse orders in another instr
 }
 
 TEST_CASE("an ordinary portfolio is valued and permitted, not refused by the tightening") {
-  // **The property four rounds of review put at risk.** Each round added a refusal -- an incomplete
+  // **The property the added refusals put at risk.** Each added a refusal -- an incomplete
   // basis, a non-positive price, an inconsistent order row -- and a limit that refuses ordinary
   // trading is a worse outcome than the permissive defect it replaced. This is an ordinary
   // afternoon: three positions, one partially filled working buy, one resting sell, and a lot left
@@ -3000,7 +2999,7 @@ TEST_CASE("a limit order is valued at its limit, not at a cheaper quote") {
 }
 
 TEST_CASE("an exposure basis that does not describe the portfolio refuses") {
-  // Decision 6, and the reason the basis replaced an optional total. An instrument left out of the
+  // No silent understatement, and the reason the basis replaced an optional total. An instrument left out of the
   // sum could have belonged to the currency being checked, so omitting it under-reports.
   RiskLimits limits;
   limits.max_gross_exposure_ = Decimal64::parse("10000000");
@@ -3041,7 +3040,7 @@ TEST_CASE("an exposure basis that does not describe the portfolio refuses") {
 
 TEST_CASE("the exposure ceiling is per currency and neither currency leaks into the other") {
   // The same number applied independently to each currency, which is `max_order_notional_`'s reading
-  // and `holdings-core`'s refusal to add currencies without a rate the caller can see.
+  // and the library's refusal to add currencies without a rate the caller can see.
   RiskLimits limits;
   limits.max_gross_exposure_ = Decimal64::parse("10000000");
   const RiskGuard guard(limits);
@@ -3149,7 +3148,7 @@ TEST_CASE("every guard reason has a stable name") {
   );
   REQUIRE(strategy::guard_reason_name(GuardReason::ORDER_RATE_EXCEEDED) == "order_rate_exceeded");
   REQUIRE(strategy::guard_reason_name(GuardReason::VALUE_NOT_KNOWN) == "value_not_known");
-  // **The last three were missing, and two of them predate this branch.** A test called "every guard
+  // **The last three were once missing.** A test called "every guard
   // reason" that covers most of them is worse than one that names its subset, because the gap is
   // exactly where a new enumerator slips through unnamed -- and `guard_reason_name`'s trailing
   // `return "unknown"` means an unhandled reason compiles and reports nothing useful rather than

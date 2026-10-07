@@ -493,7 +493,7 @@ TEST_CASE("a journal line records where the order goes, not what it asked", "[jo
   // lookalike could be attributed to an order that went to KRX.
   //
   // The binding is asked before the durable line is written, which keeps the
-  // ordering `ai/order-journal` chose: `effective_route` is a pure function of
+  // ordering the journal relies on: `effective_route` is a pure function of
   // the order, so nothing has been sent when the line lands.
   struct RoutingExecutor : ObservingExecutor<runner::DryTag> {
     using ObservingExecutor<runner::DryTag>::ObservingExecutor;
@@ -607,7 +607,7 @@ namespace {
  *
  * The truncation tests write real files rather than faking a journal, because what is being tested
  * is what a partially completed write actually looks like on disk. A mock would assert the reader
- * against my own idea of a torn line instead of against one.
+ * against an idea of a torn line instead of against one.
  */
 void write_file(const std::string& path, const std::string& text) {
   std::FILE* handle = std::fopen(path.c_str(), "wb");
@@ -796,7 +796,7 @@ TEST_CASE("a damaged value makes a line unattributable, not a different order", 
 }
 
 TEST_CASE("a damaged number does not throw out of recovery", "[journal]") {
-  // **The seventh instance of this branch's pattern, and the only one that
+  // **The seventh instance of the pattern, and the only one that
   // escaped rather than defaulted** -- which is why sweeping the `*_from`
   // readers did not find it. `Decimal64::parse` throws, and
   // `journal_entry_from_line` called it on any non-empty quantity or price. A
@@ -889,9 +889,8 @@ TEST_CASE("a torn line's wrong-typed prefix field is damage, not an absent one",
 }
 
 TEST_CASE("a truncated line with a damaged value is unattributable too", "[journal]") {
-  // The salvage path had the same hole as the strict reader, and this branch
-  // found it by looking for the rest of the pattern rather than waiting to be
-  // told. A truncated line is missing its *tail*, so an absent field is
+  // The salvage path had the same hole as the strict reader, found by looking
+  // for the rest of the pattern. A truncated line is missing its *tail*, so an absent field is
   // expected and its default is a fact about such a line. A field that is
   // present and unreadable is corruption in the middle, and guessing it hands
   // the entry a different instrument -- `requires_operator_` then withholds a
@@ -1009,7 +1008,7 @@ TEST_CASE("a line the writer emits is readable, and unresolvable", "[journal]") 
   // reservation whose broker id is unknown, a limit with no price -- is already
   // on disk by the time anything could object.
   //
-  // Round 5 made the reader reject them, and that turned an ordinary local
+  // Making the reader reject them turned an ordinary local
   // refusal into a global halt on the next restart: both lines became
   // `~damaged` operator-only entries with fresh ids, so the terminal line could
   // no longer close its pending partner. The reader reads them now; refusing to
@@ -2413,7 +2412,7 @@ TEST_CASE("a journal line ends in a checksum over every byte before it", "[journ
 TEST_CASE("no single changed byte reads as an ordinary line", "[journal][integrity]") {
   // **The property the checksum exists for**, stated over the whole line rather than a few chosen
   // fields: every position, two replacements each. A value damaged into another valid value --
-  // `005930` into `005931`, a real instrument -- read as ordinary before this branch.
+  // `005930` into `005931`, a real instrument -- was once read as ordinary.
   const auto line = runner::journal_entry_to_line(checked_entry());
   std::size_t ordinary = 0;
   for (std::size_t at = 0; at < line.size(); ++at) {

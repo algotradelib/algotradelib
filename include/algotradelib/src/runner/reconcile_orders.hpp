@@ -426,7 +426,7 @@ inline std::string unresolvable_reason(const JournalEntry& entry) {
   // `row.order_id_ == entry.order_id_` and nothing else -- so its copy of the
   // order's shape is never compared and an inconsistency in it cannot mislead
   // anything. Applying the check to every action withheld an instrument whose
-  // identity the journal *had* recorded, for a cancellation `main` resolved
+  // identity the journal *had* recorded, for a cancellation that resolves
   // without trouble: the shape is copied from the working order, so a
   // reservation carrying an unpriced `LIMIT` or a reported `MARKET` price puts
   // it there without the cancellation caring.
@@ -496,7 +496,7 @@ inline OrderMatch match_against(
   if (instruction.entry_.requires_operator_) {
     // Checked before anything else, so no window arithmetic runs on a timestamp that was never
     // recorded. This is the entry the file-journal documentation calls "something nothing can ever
-    // resolve", and this branch is what makes that true rather than aspirational.
+    // resolve", and this check is what makes that true rather than aspirational.
     match.verdict_ = MatchVerdict::NEEDS_OPERATOR;
     match.detail_ = instruction.entry_.detail_.empty() ?
       "recovered from a damaged journal line; only an operator can resolve it" :

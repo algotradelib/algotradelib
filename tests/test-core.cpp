@@ -1334,8 +1334,7 @@ TEST_CASE(
   "two KIS rows for one holding that disagree cannot authorize a sell",
   "[broker][kis][holdings]"
 ) {
-  // **The minimum test round 4 asked for, and it starts at the wire rather than at a hand-built
-  // portfolio.** `parse_holdings_page` appends every `output1` row and `append_holdings_page`
+  // **It starts at the wire rather than at a hand-built portfolio.** `parse_holdings_page` appends every `output1` row and `append_holdings_page`
   // concatenates pages, neither checking for a repeated `pdno` -- so a KIS response listing one
   // instrument twice with different `ord_psbl_qty` reaches the guard, and every row carries the same
   // enforceable basis the completed traversal assigns. Picking the first row's figure would put a sell
@@ -2201,7 +2200,7 @@ TEST_CASE(
   // The refusal that keeps an order's identity equal to its holding's. Written
   // without a test, and a surviving mutation said so: deleting it failed
   // nothing, because every other case in this file already uses the identity
-  // venue. The value it refuses is one callers wrote before this branch, so the
+  // venue. The value it refuses is one callers once wrote, so the
   // path is reachable and the refusal is what makes the round trip hold.
   SECTION("KIS") {
     auto order = korean_limit_buy();
@@ -2397,7 +2396,7 @@ TEST_CASE("a depth response with no levels is an empty book, not an error", "[br
   // **This pins the residual risk of moving the depth verb to the consolidated tape, rather than
   // claiming there is none.** The workbook gives the same response layout for J, NX and UN, and the
   // parser reads `askp1..10` / `bidp1..10` out of `output1` with no KRX-specific discriminator -- but
-  // the workbook carries no per-tape example, so neither this branch nor its review could establish
+  // the workbook carries no per-tape example, so nothing here could establish
   // what a live UN depth response actually populates.
   //
   // What matters is what the parser does if those fields are absent: `append_level` skips a level it
@@ -2469,7 +2468,7 @@ TEST_CASE("a KIS demo account trades on KRX and is told so before I/O", "[broker
     // Routing is opt-in. An order that states no `venue_` omits
     // `EXCG_ID_DVSN_CD`, and KIS documents an omitted field as proceeding at
     // KRX -- which a demo account can reach. This is the state an earlier
-    // version of this branch broke by routing on `instrument_.venue_`, whose
+    // version broke by routing on `instrument_.venue_`, whose
     // default is `COMBINED` and which had started meaning `SOR`: every default
     // demo order would have been refused, at the far end of a POST this library
     // never replays.
@@ -2721,11 +2720,10 @@ TEST_CASE(
       )
     );
     REQUIRE(orders);
-    // This assertion fails on `main`. The holdings parse wrote `COMBINED` for a
-    // Korean instrument and the order parse wrote `UNSPECIFIED`, so a Korean
-    // Toss working order was never found by `working_quantity`. A defect that
-    // predates this branch, fixed here because the KIS half of the same
-    // mismatch is one this branch would otherwise have introduced.
+    // The holdings parse once wrote `COMBINED` for a Korean instrument and the
+    // order parse wrote `UNSPECIFIED`, so a Korean Toss working order was never
+    // found by `working_quantity`. Fixed together with the KIS half of the same
+    // mismatch.
     REQUIRE(orders.value().orders_.front().instrument_.venue_ == kKoreanInstrumentVenue);
   }
 }

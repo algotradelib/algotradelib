@@ -688,8 +688,7 @@ private:
   runner::PollOutcome poll_price_limits(Runner& runner_instance) {
     if constexpr (!MarketData::Caps::has_price_limits) {
       // A broker that publishes no band compiles no request, and a loop with this cadence set
-      // against one simply never reads a band -- Decision 2b, the capability is absent and absent is
-      // not faked.
+      // against one simply never reads a band: the capability is absent, and absent is not faked.
       static_cast<void>(runner_instance);
       return runner::PollOutcome::UNCHANGED;
     } else {
@@ -750,8 +749,8 @@ private:
   runner::PollOutcome poll_calendar(Runner& runner_instance) {
     if constexpr (!MarketData::Caps::has_calendar) {
       // A broker that publishes no calendar compiles no request. The loop then never establishes a
-      // phase, which it reports rather than guesses at -- Decision 2b: the capability is absent, and
-      // absent is not faked.
+      // phase, which it reports rather than guesses at: the capability is absent, and absent is not
+      // faked.
       static_cast<void>(runner_instance);
       return runner::PollOutcome::UNCHANGED;
     } else {
@@ -770,7 +769,7 @@ private:
   //
   // **One invariant holds the arithmetic together: what `charged_seen_` holds for a figure is
   // exactly what has been contributed to the totals for it, and at which filled quantity.** Every
-  // rule below exists to keep that true, and each was a place review found it broken.
+  // rule below exists to keep that true, and each was a place it was once broken.
   //
   // - **A figure is cumulative per order**, so a total moves by the *delta* against what is held
   //   rather than by the whole figure again.

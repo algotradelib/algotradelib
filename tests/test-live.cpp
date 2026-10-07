@@ -1415,7 +1415,7 @@ TEST_CASE("a target does not re-place an order it only reserved while holdings l
 }
 
 TEST_CASE("a resting order not yet listed is withdrawn for a lower target, and not replaced beside it", "[confirm]") {
-  // Round 0's B1: a reserved row may also be a resting order the listing does not show yet. Withdrawn as
+  // A reserved row may also be a resting order the listing does not show yet. Withdrawn as
   // before; the rest is placed once its history says what it filled.
   ConfirmRig rig;
   auto limit_target = [](const char* quantity) {
@@ -4874,10 +4874,10 @@ struct KisLikeCaps : strategy::NoCaps {
 /**
  * A session that validates every history query through KIS's own conversion.
  *
- * The gap the round-2 review found: a fake that accepts any query shape proves nothing about a
+ * The gap: a fake that accepts any query shape proves nothing about a
  * query the production adapter refuses. `KisTraits::to_history_query` is the function the real
  * client calls before any network I/O, so routing the fake through it makes the test assert the
- * contract rather than my idea of it.
+ * contract rather than an idea of it.
  */
 class KisContractSession {
 public:
@@ -5030,7 +5030,7 @@ TEST_CASE("the history-limit capability says what each broker does") {
 TEST_CASE("polling the calendar puts it where the loop and the strategy both read it") {
   // The one poll whose answer is not an event. `runner::PollingLoop` derives the market phase from
   // it and a strategy answers "does tomorrow trade" from the same copy, so it lands on the context
-  // rather than being fed -- and before this branch `Context::set_calendar` had no caller at all,
+  // rather than being fed -- and `Context::set_calendar` once had no caller at all,
   // which made `Context::calendar()` permanently empty in every world.
   CalendarSession session;
   const Date today{2026, 3, 10};
@@ -5093,7 +5093,7 @@ TEST_CASE("a failed calendar poll leaves the last answer standing") {
 }
 
 TEST_CASE("a broker that publishes no calendar is asked for none") {
-  // Decision 2b: the capability is absent and absent is not faked. The loop then never establishes a
+  // The capability is absent, and absent is not faked. The loop then never establishes a
   // phase, which it reports rather than guesses at.
   NoCalendarSession session;
   session.set_calendar(one_day_calendar(Date{2026, 3, 10}));
@@ -5391,7 +5391,7 @@ TEST_CASE("a tax restated at one filled quantity is noticed too") {
 }
 
 TEST_CASE("an order that starts stating nothing and later states a charge differences cleanly") {
-  // The run-scope failure review found: `orders_stating_none_` used to fall when an order first
+  // The run-scope failure: `orders_stating_none_` used to fall when an order first
   // stated a charge, and `since` subtracts it as an unsigned count -- so the ordinary transition
   // of one order across two runs reported a count of `0 - 1`, wrapping to an enormous number.
   WorkingSession session;
@@ -5411,7 +5411,7 @@ TEST_CASE("an order that starts stating nothing and later states a charge differ
 }
 
 TEST_CASE("a fee arriving after a silent row at the same new quantity is taken, not discarded") {
-  // Found at round 4, and it is the sharper form of the silence case. A silent row advanced the
+  // The sharper form of the silence case. A silent row advanced the
   // order's filled quantity while the held figure stayed at the quantity it was accepted at, so
   // the fee that then arrived **for the new quantity** looked like a second opinion about the old
   // one and was dropped as a conflict. The quantity a figure was accepted at therefore lives with
@@ -5478,7 +5478,7 @@ TEST_CASE("a sum that will not fit is counted, not silently left out of the tota
 }
 
 TEST_CASE("a zero stated in a currency already seen is still an observation of that run") {
-  // Round 6's counterexample, and the narrower half of the one before it. Keeping a zero only when
+  // The narrower half of the case before it. Keeping a zero only when
   // its currency was *new* left the ordinary case broken: a run whose only observation is an order
   // stating zero, in a currency an earlier run already saw, moves no total -- so a delta computed
   // from the money alone omitted it and the run reported absence where the broker had spoken.

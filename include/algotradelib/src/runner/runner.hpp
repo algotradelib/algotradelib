@@ -1554,7 +1554,7 @@ private:
       // already makes.** `REJECTED` means the exchange saw this price and refused it.
       // `REFUSED_LOCALLY` means the binding did -- and that is a price-dependent refusal too: a
       // limit price no adapter will send is a limit price the withheld band might have moved into
-      // range, and review found the concrete case, a sell at zero that `Price::checked` admits
+      // range. The concrete case is a sell at zero that `Price::checked` admits
       // because zero sits on a stated grid. Counting only the first left that invisible.
       // `INDETERMINATE` is excluded because it is not a refusal at all -- the request may well be
       // resting -- and `UNAVAILABLE` because it is local machinery being unavailable, which no price
@@ -2129,7 +2129,7 @@ private:
     // so it needs the reservation for the same reason. Left out, a caller enabling only this limit
     // would get the within-pass fix and not the across-pass one: ten bought on each of two bars,
     // with no poll between, passes twice against a ceiling one of them should have reached. That is
-    // precisely the omission `ai/pre-trade-checks` round 2 found for `max_position_quantity_`.
+    // precisely the omission `max_position_quantity_` once had.
     const bool exposed = guard_.limits().max_gross_exposure_.has_value();
     // A stop is read by target reconciliation whatever the limits, which refuses a target while one
     // rests (`RejectReason::STOP_ORDER_RESTING`). Not persisted, a stop placed on this pass would be
@@ -2295,8 +2295,8 @@ private:
   // needs no reference at all, while `live::SessionExecutor` refuses to send one to a broker.
   //
   // `spends` decides whether a buy also draws down the published buying-power reading, and it is
-  // the caller's buying-power check rather than anything this function can see. Review found the
-  // two entangled: a caller who had enabled only the position ceiling watched
+  // the caller's buying-power check rather than anything this function can see. The two were once
+  // entangled: a caller who had enabled only the position ceiling watched
   // `portfolio().buying_power_in()` fall after a buy, which is a public figure a strategy is free
   // to size its next order from -- a behaviour change well past enforcing a ceiling.
   static void reserve(
@@ -2771,8 +2771,8 @@ private:
     }
     const auto outcome = executor_.cancel(*working);
     note_executor_failure(outcome == SendOutcome::UNAVAILABLE);
-    // Switched over rather than tested one outcome at a time, deliberately. Three rounds of review
-    // found three different outcomes falling through to `would_cancel_` -- the bucket that says the
+    // Switched over rather than tested one outcome at a time, deliberately. Three different outcomes
+    // once fell through to `would_cancel_` -- the bucket that says the
     // broker withdrew the order -- because each fix handled the case it was told about and left the
     // rest. A switch with no default makes the next added enumerator a compile error under
     // `-Werror`, which is the only version of this that stays fixed.

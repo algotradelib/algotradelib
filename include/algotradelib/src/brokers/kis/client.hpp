@@ -2075,7 +2075,7 @@ private:
     auto invalid = validate_account(account);
     if (!invalid && !(currency == Currency::krw())) {
       // The domestic inquiry answers in won. Answering a dollar request with a won figure under a
-      // dollar label is the silent downgrade Decision 6 forbids, and KIS's foreign-currency
+      // dollar label is a silent downgrade, which this library refuses, and KIS's foreign-currency
       // buying power is a different endpoint answering a different question.
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
@@ -2168,8 +2168,8 @@ private:
   // `cashBuyingPower` means -- both answer "what can be bought without credit" -- while the maximum
   // includes 미수 and means something the other broker never reports. Normalizing the larger number
   // would make one library type mean cash at one broker and cash-plus-credit at the other, which is
-  // exactly what Decision 2b exists to prevent, and it would do it in the direction that permits
-  // more.
+  // exactly what a broker-neutral type must not do, and it would do it in the direction that
+  // permits more.
   static Result<BuyingPower> parse_buying_power(Result<network::HttpResponse> response) {
     auto document = market_document(std::move(response));
     if (!document) {
@@ -2502,8 +2502,7 @@ private:
     operation->snapshot_.received_at_ = std::chrono::system_clock::now();
     // **What `ord_psbl_qty` on these rows is evidence of, and it is a treatment rather than a
     // measurement.** The workbook gives 주문가능수량 an empty Description column, so whether the
-    // figure is already reduced by resting sell orders is unestablished --
-    // `issues/pre-trade-checks-sellable-deduction.md`. `DEDUCT` is therefore the conservative rule
+    // figure is already reduced by resting sell orders is unestablished. `DEDUCT` is therefore the conservative rule
     // this library applies, not a claim that KIS reports a gross figure: deducting resting sells
     // that the broker had also deducted over-refuses a trade, where the other error sells the same
     // shares twice. `verified_` stays false to say exactly that nobody has measured it.
@@ -2796,7 +2795,7 @@ private:
   // `22` 스톱지정가 needs one -- the 주식주문(현금) sheet documents `CNDT_PRIC` as "스탑지정가호가
   // 주문 (ORD_DVSN이 22) 사용 시에만 필수" -- and every other code has nowhere to put one, so a
   // trigger stated on it would be dropped and the order sent as something the caller did not
-  // describe. Neither is sent (Decision 6).
+  // describe. Neither is sent: a stated condition is honoured or refused, never dropped.
   //
   // Nothing about the trigger's direction or its relation to the limit is checked: the sheet
   // documents neither, and a local rule KIS does not state would refuse orders KIS accepts.
@@ -2872,7 +2871,7 @@ private:
   //
   // A combination absent from this table is refused before any network I/O, and
   // a code absent from it reads as `UNKNOWN` with the raw code preserved. Neither
-  // is approximated by a neighbouring value (Decision 6).
+  // is approximated by a neighbouring value.
   static constexpr std::array<OrderShapeRow, 28> kOrderShapes{{
     // code  type                       condition                         session
     {"00", OrderType::LIMIT,             TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
@@ -2935,8 +2934,8 @@ private:
   //
   // A combination this library has no code for, or has a code for at another
   // venue, is rejected with `INVALID_ARGUMENT` before any token fetch or socket
-  // write. It is never sent under a neighbouring code: `ai/order-core` settled
-  // that a condition the caller stated is honoured or refused, and the failure
+  // write. It is never sent under a neighbouring code: a condition the caller
+  // stated is honoured or refused, and the failure
   // this replaces was silent — a market order bound for NXT was sent as `01`,
   // which the sheet lists under `[KRX]` and `[SOR]` and not under `[NXT]`.
   static std::optional<BrokerError> order_division(
@@ -3144,7 +3143,7 @@ private:
   //
   // Both KIS order sheets say `모의투자는 KRX만 가능`: a demo account routes to
   // the Korea Exchange and nowhere else. That restriction is per credential
-  // rather than per broker, which Decision 2 settles as a **run-time** error
+  // rather than per broker, so it is a **run-time** error
   // rather than a compile-time capability -- one binary must not claim
   // different things for a live key and a demo key.
   //

@@ -614,7 +614,7 @@ public:
     // pushed -- an order placed by the *previous* quote has had no settlement pass behind it.
     install_portfolio();
     drain_reports(runner_.feed(event));
-    // **After the dispatch, exactly as the bar path does.** An earlier version of this branch left
+    // **After the dispatch, exactly as the bar path does.** An earlier version left
     // it out, arguing that live a quote poll publishes no order update -- which is true of that one
     // call and false of the loop it sits in: an order placed from `on_quote` can be listed by a later
     // working-order poll and announced. Publishing here is the closer parity, and it also
@@ -736,11 +736,11 @@ private:
   //    underivable (a close-stamped weekly, monthly or yearly bar), or the decision instant is only
   //    an upper bound (an open-stamped bar of any calendar interval, which is what every shipped
   //    adapter produces) and the bar's start falls before it. Either way the fill is allowed, on the
-  //    bar-counter rule that governed every fill before this branch, and **counted** in
+  //    bar-counter rule that governed every fill before this check existed, and **counted** in
   //    `ReplayResult::unchecked_fill_causality_` so the report can say the check did not happen.
   //
-  // **Three successive versions of this function tried to infer that period instead, and a reviewer
-  // falsified all three.** The previous bar of the instrument: wrong, because two intervals of one
+  // **Three successive versions of this function tried to infer that period instead, and all three
+  // were wrong.** The previous bar of the instrument: wrong, because two intervals of one
   // instrument overlap. The previous bar of the same instrument *and* interval: wrong, because
   // nothing in `feed`'s contract requires one stamp convention or anchor for a series, so two
   // same-interval weekly bars can overlap too. Each inference rested on an invariant that is usually
@@ -1024,7 +1024,7 @@ private:
   //
   // **Every fill used to be booked in `config_.currency_`**, which is documented as the currency the
   // *starting cash* is in. A replay of a dollar-quoted instrument therefore banked dollars as won at
-  // a rate of one -- the implicit conversion Decision 6 forbids and `holdings-core` exists to refuse.
+  // a rate of one -- an implicit currency conversion, which this library never makes silently.
   //
   // The fallback is defensive rather than a policy: `reconcile` refuses an instrument with no
   // reference data before a `PlannedOrder` exists (`strategy/reconcile.hpp`), so nothing can reach

@@ -2384,10 +2384,9 @@ private:
   //
   // `kt00018`'s `dmst_stex_tp` documents `KRX` and `NXT` and no all-venue value, so there is
   // nothing for `COMBINED` or `UNSPECIFIED` to be sent as. Resolving either to one of the two
-  // would answer a different question from the one asked and would do it silently, which is what
-  // Decision 6 forbids — and holdings are what the sellable guard and every position ceiling are
-  // measured against. See `KiwoomConfig::holdings_venue_` and
-  // `issues/kiwoom-api-holdings-venue-scope.md`.
+  // would answer a different question from the one asked and would do it silently, which this
+  // library refuses to do — and holdings are what the sellable guard and every position ceiling are
+  // measured against. See `KiwoomConfig::holdings_venue_`.
   // Refuses an instruction that can open or enlarge a position while the holdings scope is unstated.
   //
   // Nothing once the operator has asserted what `dmst_stex_tp` means: the assertion is what this

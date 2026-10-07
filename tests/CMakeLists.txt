@@ -546,8 +546,8 @@ endif()
 # checkout, build it, run it.
 #
 # Built rather than inspected, because what a new consumer depends on is that it compiles and runs.
-# This is the same standard `ai/wall-clock-test-assertions` settled on -- observe the mechanism that
-# does the work, not a seam that exists for the test -- and here the mechanism is a real build.
+# Observe the mechanism that does the work, not a seam that exists for the test -- and here the
+# mechanism is a real build.
 #
 # Not run on Windows: the script is POSIX sh and the generated project is checked with `cmp`. The
 # scaffold itself is portable CMake; only this driver assumes a shell.

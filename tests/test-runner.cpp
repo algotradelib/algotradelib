@@ -458,7 +458,7 @@ TEST_CASE("the same reference cancelled twice by the strategy is one request") {
 
 TEST_CASE("the exposure ceiling sees what this pass has already sent") {
   // Two buys of ten at 70,000 in one pass, against a ceiling of a million. Each is 700,000 on its
-  // own, so before this branch both passed -- the ceiling was compared against one order's notional
+  // own, so both once passed -- the ceiling was compared against one order's notional
   // with the current exposure defaulting to zero. Together they are 1,400,000.
   strategy::RiskLimits limits;
   limits.max_gross_exposure_ = Decimal64::parse("1000000");
@@ -1022,7 +1022,7 @@ TEST_CASE("a runner without the checks carries no reservation between passes") {
 }
 
 TEST_CASE("withdrawals spend the rate window a later placement is checked against") {
-  // The asymmetry this branch absorbed: a placement recorded a send on three of its four outcomes
+  // The asymmetry: a placement once recorded a send on three of its four outcomes
   // and a cancellation recorded none, so a withdrawal of many resting orders was many requests the
   // broker counted and the guard did not. The next placement was then checked against a window it
   // believed was empty.
@@ -2301,8 +2301,8 @@ struct WithdrawsOne {
 } // namespace
 
 TEST_CASE("a named withdrawal survives a hold that only means the runner is uninformed") {
-  // The half of this branch that *permits* rather than refuses, and the reason the two halves could
-  // not ship apart: an order that cannot be withdrawn keeps resting and can fill, which is worse
+  // The half of this rule that *permits* rather than refuses, and the reason the two halves cannot
+  // be separated: an order that cannot be withdrawn keeps resting and can fill, which is worse
   // than the exposure a holdings-shaped hold was guarding.
   runner::DryRunner<WithdrawsOne> dry;
   arrange(dry);
@@ -2477,7 +2477,7 @@ TEST_CASE("an unheld resize still cancels and replaces, so the rule is not simpl
 }
 
 TEST_CASE("opting out of a known account permits the placement and not the withdrawal") {
-  // The contract the two opt-outs actually make, and the one an earlier revision of this branch
+  // The contract the two opt-outs actually make, and the one an earlier revision
   // broke: they say the operator accepts *sizing* against an account this library cannot vouch for.
   // They do not say it should withdraw orders it cannot account for -- an account that merely looks
   // flat makes a resting protective order look opposed, and withdrawing it leaves a real holding
@@ -2534,7 +2534,7 @@ TEST_CASE("opting out of a known account permits the placement and not the withd
 TEST_CASE("an opted-out placement still faces a hold somebody set") {
   // Stated because the opt-out is easy to read as "send anyway". It is not: it excuses the portfolio
   // requirement and nothing else, and the refusal below comes from `RiskGuard` rather than from the
-  // withhold -- which is the division this branch draws, recorded here so a later change that moves
+  // withhold -- which is the division the runner draws, recorded here so a later change that moves
   // the responsibility has to decide about this case rather than inherit it.
   runner::DryRunner<HoldTen> dry;
   arrange(dry);

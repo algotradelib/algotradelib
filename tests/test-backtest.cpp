@@ -804,8 +804,8 @@ backtest::ReplayConfig replay_config() {
  *
  * Separate from `replay_config` because that one switches the limit off and every other test here
  * wants it off -- the point of those tests is fill timing, not the guard. The two tests using this
- * one are about the default itself, which until `ai/phase-limit-exits` no replay could run: the
- * flatten a shipped vanilla produces was refused by it.
+ * one are about the default itself, which no replay could once run: the flatten a shipped vanilla
+ * produces was refused by it.
  */
 backtest::ReplayConfig replay_config_with_default_phases() {
   backtest::ReplayConfig config;
@@ -1066,7 +1066,7 @@ Clock::time_point session_minute(int minute) { return utc(2026, 3, 10, 1, minute
 } // namespace
 
 TEST_CASE("on_quote fires in a replay, which it never did before") {
-  // `issues/live-parity-audit.md` finding 2, measured by its own probe: the same strategy driven
+  // Measured: the same strategy driven
   // through both paths saw one quote live and none in a replay, because `QuoteEvent` appeared
   // nowhere in `backtest/`. A supported live cadence with no counterpart means a strategy written
   // on this handler runs against real money having been evaluated against nothing.
@@ -1197,9 +1197,9 @@ TEST_CASE("a weekly bar's period start is not derivable, and the engine says so 
   // **The one shape this engine cannot check, and the third answer it took four review rounds to
   // arrive at.** A close-stamped weekly bar ends on a Friday and began on a Monday, and nothing in
   // the event says when. Three versions of this code inferred it from a previous bar -- of the
-  // instrument, then of the instrument and interval -- and a reviewer falsified each in turn, because
+  // instrument, then of the instrument and interval -- and each was wrong in turn, because
   // `feed`'s contract requires timestamp order and nothing about stamps, anchors or overlap. So the
-  // fill is allowed on the rule that governed every fill before this branch, and **counted**: the
+  // fill is allowed on the rule that governed every fill before this check, and **counted**: the
   // report says the check did not happen rather than claiming one that did not.
   backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
   engine.feed(moving_bar(utc(2026, 3, 6, 6, 30), BarInterval::ONE_WEEK, "60000", "61000"));
@@ -1273,8 +1273,8 @@ strategy::BarEvent open_stamped(
 }
 
 TEST_CASE("a nominal period end does not defer a fill by a whole month") {
-  // **The defect a senior review found after eight rounds of the other one.** The causal rule
-  // compares two instants and this branch had checked only one of them. `bar_period_end` adds a
+  // **The other half of the causal rule.** It compares two instants, and only one of them was
+  // once checked. `bar_period_end` adds a
   // nominal 31 days to an open-stamped monthly bar, and every shipped adapter stamps every
   // non-minute bar `OPEN` -- so February's period end lands on 5 March, an order decided on
   // February's bar looked as though it had been decided inside March's period, and it was deferred
@@ -1340,9 +1340,8 @@ TEST_CASE("an open-stamped bar states its own period start") {
 
 TEST_CASE("an order placed from on_quote is announced in that same call") {
   // **Parity is a property of the loop, not of the function with the matching name.** A quote poll
-  // publishes no order update, which is what an earlier version of this branch reasoned from -- but
-  // `WORKING_ORDERS` follows `QUOTES` in `all_poll_kinds`, so live the order can be listed and
-  // announced moments after the quote that placed it. Publishing here is the closer parity, and it
+  // publishes no order update, which is what an earlier version reasoned from -- but live, a later
+  // working-order poll can list the order and announce it soon after the quote that placed it. Publishing here is the closer parity, and it
   // also announces an order that would otherwise fill and be gone before any later observation
   // point.
   backtest::Backtester<QuoteBuyerCountingUpdates> engine(
@@ -2125,8 +2124,7 @@ TEST_CASE("TimedLiquidation flattens a position when a replay leaves the session
 }
 
 TEST_CASE("TimedLiquidation flattens a replay under the default limits") {
-  // **The acceptance criterion of `ai/phase-limit-exits`, and the first place in this repository
-  // that runs the default `permitted_phases_` where the phase is real.** Every other replay either
+  // **The first place in this repository that runs the default `permitted_phases_` where the phase is real.** Every other replay either
   // switches the limit off or widens it -- including the test above, which has to add `POST_CLOSE`
   // for this same vanilla to place anything at all. That was the evidence the default was not
   // usable: a shipped strategy could not do its job without the operator disabling a risk limit.
@@ -2623,7 +2621,7 @@ struct RestsOneLimit {
 } // namespace
 
 TEST_CASE("an order resting from an earlier bar is in the portfolio the strategy decides on") {
-  // The defect this branch exists for. The order is placed on bar 1, rests through bars 2 and 3
+  // The order is placed on bar 1, rests through bars 2 and 3
   // because the market never reaches 50,000, and was invisible on both -- so reconciliation, the
   // position and exposure ceilings and the sellable deduction all read an empty field in a replay
   // and a full one live. Minute bars of one session, because a DAY order rests only within one.
@@ -3068,7 +3066,7 @@ TEST_CASE("reconciliation withdraws a resting order that opposes the new target"
 }
 
 TEST_CASE("the sellable check counts the sell already resting") {
-  // `ai/pre-trade-checks` refuses a sell whose quantity plus what is already resting on that side
+  // The sellable check refuses a sell whose quantity plus what is already resting on that side
   // exceeds what the broker says is sellable. Ten are held and a replay reports all ten sellable,
   // so the first resting sell of ten is allowed and the second must be refused -- and was not,
   // because `working_quantity` summed an empty list.
@@ -3101,9 +3099,9 @@ TEST_CASE("the position ceiling counts what is resting, not only what is held") 
 }
 
 TEST_CASE("the exposure ceiling counts a resting buy") {
-  // `ai/guard-inputs` merged the projection max(|held + working_buys|, |held - working_sells|). In a
-  // replay both working sums were empty on every bar, so the ceiling it exists to make real reduced
-  // to |held| -- the defect that branch closed live, still open here.
+  // The exposure ceiling projects max(|held + working_buys|, |held - working_sells|). In a replay
+  // both working sums were once empty on every bar, so the ceiling reduced to |held| -- a defect
+  // already closed live and still open here.
   auto config = replay_config();
   // Ten at 70,000 is 700,000 a bar, so a ceiling of one million is breached by the second.
   config.limits_.max_gross_exposure_ = Decimal64::parse("1000000");
@@ -3394,7 +3392,7 @@ struct PlacesTheOtherOnFill {
 
 TEST_CASE("a fill callback can withdraw an order the same pass had not reached") {
   // The order the loop has not filled yet is outstanding, so it is in the portfolio `on_fill` reads
-  // and its reference resolves. Before this branch the queue was empty for the length of the loop,
+  // and its reference resolves. The queue was once empty for the length of the loop,
   // so `on_fill` saw nothing to withdraw and could not have reached it if it had.
   backtest::Backtester<WithdrawsTheOtherOnFill> engine(
     WithdrawsTheOtherOnFill{}, replay_config()
@@ -3781,7 +3779,7 @@ backtest::CommissionPolicy policy_for(Venue venue, std::vector<CommissionRate> r
 TEST_CASE("a KRX fill and an NXT fill of the same size are charged differently") {
   // The whole point of the slice, asserted end to end rather than on the schedule alone. The rates
   // are hand-picked round numbers rather than the operator's published table, which is still
-  // disputed -- see issues/venue-aware-costs-rate-components.md. What is asserted is that the venue
+  // unsettled. What is asserted is that the venue
   // reaches the arithmetic, not that any particular percentage is the right one.
   const std::vector<CommissionRate> rows{
     venue_rate(Venue::KRX, "0.002", "0.0001"),
@@ -3842,7 +3840,7 @@ TEST_CASE("each cost component moves the ledger's cash, not only the report") {
 
 TEST_CASE("one replay spanning a rate change charges each rate on its own dates") {
   // Deliberately one replay with one policy. Constructing two frozen models at two dates already
-  // worked before this branch, so a test doing that would pass against `main` and prove nothing.
+  // worked before dated schedules, so a test doing that would prove nothing.
   auto policy = backtest::CommissionPolicy::scheduled(
     operator_tariff({
       venue_rate(Venue::KRX, "0.002", "0", std::nullopt, Date{2026, 3, 11}),
@@ -4437,7 +4435,7 @@ TEST_CASE("a fill at an open-stamped month's open is costed in that month", "[ba
 
 TEST_CASE("a limit priced inside an open-stamped month keeps the period-end date", "[backtest][costs]") {
   // **The partial scope, pinned.** Under `AT_LIMIT` a limit is priced at the limit, somewhere inside
-  // the month, and nothing says which day: this branch dates only a fill at the open. The limit keeps
+  // the month, and nothing says which day: only a fill at the open is dated. The limit keeps
   // the old dating -- the nominal 5 March, so the March rate -- for now; a change that widened or
   // shrank the correction would move this figure.
   backtest::Backtester<BuysOneLimit> engine(
@@ -4642,7 +4640,7 @@ TEST_CASE("a replay spanning two currencies states each, and no scalar total at 
         // The American row, keyed to no venue: the US listing has none this library normalizes.
         // **Deliberately a different rate from the Korean row.** With both at 0.002 this row could
         // be deleted without changing the expected USD figure, so the test would have passed while
-        // a US fill was charged the Korean tariff -- which is exactly the defect review found.
+        // a US fill was charged the Korean tariff -- which is exactly the defect.
         CommissionRate row;
         row.country_ = Country::US;
         row.rate_ = Decimal64::parse("0.005");
@@ -4703,7 +4701,7 @@ TEST_CASE("a replay spanning two currencies states each, and no scalar total at 
 }
 
 TEST_CASE("a dated rate for another market's calendar is refused, not charged a day early") {
-  // Found at round 4. A replay derives one local date from its single `SessionWindow`, so a US
+  // A replay derives one local date from its single `SessionWindow`, so a US
   // execution in a KRX-sessioned replay can be stamped with the next day -- and a US rate window
   // changing at that boundary would be charged on the wrong side of it, or halt despite a row that
   // covers the real trading day. Refused only where it could matter: an open-ended row is the same
@@ -4796,7 +4794,7 @@ TEST_CASE("a costing refusal names the unreadable window, and the foreign guard 
 }
 
 TEST_CASE("a foreign market with any dated rate is refused, whichever row would have won") {
-  // Round 5's counterexample, found with a probe. The earlier check asked whether the *selected*
+  // The earlier check asked whether the *selected*
   // row was dated -- but `rate_for` excludes a dated row that does not cover the date it was
   // given, so a US row dated through 11 March simply lost to an undated one when a Korean session
   // supplied 12 March, and the undated row was charged with no refusal at all. What matters is
@@ -4838,7 +4836,7 @@ TEST_CASE("a foreign market with any dated rate is refused, whichever row would 
 }
 
 TEST_CASE("a cost total that will not sum is stated as incomplete rather than short") {
-  // Round 5 disproved the bound I had assumed: two ledger-accepted executions, each carrying an
+  // No bound holds here: two ledger-accepted executions, each carrying an
   // individually representable commission, can have a sum that does not fit -- and `summarize`
   // left the previous total in place and reported it as the answer.
   backtest::ReplayConfig config = replay_config();
@@ -4868,7 +4866,7 @@ TEST_CASE("a cost total that will not sum is stated as incomplete rather than sh
 
 TEST_CASE("an unsummable cost total is reported through a real replay, not only a built result") {
   // The route rather than the arithmetic: the previous case builds a `ReplayResult` directly, and
-  // review asked for one that reaches `summarize` the way a replay does -- through the fill model,
+  // this one reaches `summarize` the way a replay does -- through the fill model,
   // the ledger's acceptance, and the engine's own accounting. Two one-share fills, each charged a
   // commission that is representable on its own and not when added to the other.
   backtest::ReplayConfig config = replay_config();
@@ -4897,7 +4895,7 @@ TEST_CASE("an unsummable cost total is reported through a real replay, not only 
 }
 
 TEST_CASE("slippage in two currencies is kept apart like every other cost") {
-  // The last cost figure still summed across currencies, and review found it with a probe: one won
+  // The last cost figure once summed across currencies: one won
   // fill and one dollar fill produced a scalar denominated in neither, with no caveat set and both
   // shipped examples printing it plainly. `Execution` has carried its currency since the
   // mixed-currency commission fix; slippage simply had not been given it.

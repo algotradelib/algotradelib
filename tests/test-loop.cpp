@@ -25,7 +25,7 @@ using namespace std::chrono_literals;
  *
  * The tests write real files rather than mocking the filesystem, because the thing worth testing is
  * the parsing of what an operator's `echo` actually produces -- trailing newline included -- and a
- * mock would be asserting the parser against my own assumptions instead.
+ * mock would be asserting the parser against assumptions instead.
  */
 void write_file(const std::string& path, const std::string& text) {
   std::FILE* handle = std::fopen(path.c_str(), "wb");
@@ -1349,7 +1349,7 @@ TEST_CASE("the loop does not clear a halt an operator set by hand", "[loop][halt
 }
 
 TEST_CASE("an operator halting into a closed gate survives the gate opening", "[loop][halt]") {
-  // The defect this branch exists for, end to end. Before named holds, step 2 was a no-op because
+  // End to end. Before named holds, step 2 was a no-op because
   // the guard was already halted, and step 4 cleared the operator's intent along with the loop's.
   InertRunner runner_instance;
   InertSource source;
@@ -1505,11 +1505,10 @@ TEST_CASE("a zero-quantity position is not flattened", "[loop][stop]") {
 }
 
 TEST_CASE("a flatten outside market hours goes out, because it closes", "[loop][stop]") {
-  // **This assertion is the inverse of the one it replaces, and the inversion is the branch.**
-  // `ai/phase-limit-exits` decided that `permitted_phases_` governs what an order opens rather than
-  // what it closes, so an operator who asks to be flat while the market is shut is no longer told
+  // **This assertion is the inverse of the one it replaces.** `permitted_phases_` governs what an
+  // order opens rather than what it closes, so an operator who asks to be flat while the market is shut is no longer told
   // "refused" by their own risk limits. The test below it keeps the refusal path pinned, because a
-  // branch that only inverts an assertion has removed a guard rather than changed one.
+  // change that only inverts an assertion has removed a guard rather than changed one.
   InertRunner runner_instance;
   runner_instance.context().set_instrument(samsung_reference());
   serve_calendar(runner_instance, /*trades=*/false);
@@ -1528,8 +1527,8 @@ TEST_CASE("a flatten outside market hours goes out, because it closes", "[loop][
   const auto report = loop.run(stop, 10);
 
   // **The market really is shut.** Without this the test would pass against a fixture that left the
-  // phase at `OPEN`, and would then be asserting nothing about the exception at all -- the shape
-  // `ai/live-market-phase` found four times by mutating rather than by reading.
+  // phase at `OPEN`, and would then be asserting nothing about the exception at all -- a shape
+  // found by mutating the code rather than by reading it.
   REQUIRE(report.final_phase_ == strategy::MarketPhase::CLOSED);
   CHECK(report.flattened_ == 1);
   CHECK(report.closing_placed_ == 1);
@@ -1546,7 +1545,7 @@ TEST_CASE("a stop flattens the net of an instrument's lots, not each lot", "[loo
   // looped over position *rows*. Rows of +100 and -40 are a holding of +60, and it submitted SELL
   // 100 *and* BUY 40 -- so outside the session the phase rule refused both, and an operator who
   // asked to be flat got nothing sent although SELL 60 was permitted the whole time. The vanilla's
-  // target path was fixed earlier in this branch; this is the separate stop path.
+  // target path was fixed separately; this is the stop path.
   InertRunner runner_instance;
   runner_instance.context().set_instrument(samsung_reference());
   serve_calendar(runner_instance, /*trades=*/false);
@@ -2809,7 +2808,7 @@ TEST_CASE("a flatten of a short position is sized the same way", "[loop][stop]")
 
 TEST_CASE("a flatten sends no close when a sell it cannot see may already be working",
           "[loop][stop]") {
-  // The same double sell as round 8, reached through a listing that is *known* to be out of date.
+  // A double sell, reached through a listing that is *known* to be out of date.
   // Ten held, an empty working-order list read at startup, a bar that sells all ten, and a stop
   // before the next working-order poll. The snapshot still shows nothing working, so the
   // same-side deduction subtracts nothing and the pass would send a second full-size sell. Marking
@@ -2985,8 +2984,7 @@ TEST_CASE("a quiesce still tells the strategy it is stopping", "[loop][stop]") {
 
 // --- The market phase, live ---------------------------------------------------------------
 //
-// Everything below this line is about one defect: until `ai/live-market-phase`, nothing outside
-// `backtest/` ever called `Context::set_phase`, so a live run held whatever the caller set at
+// Everything below this line is about one defect: nothing outside `backtest/` once called `Context::set_phase`, so a live run held whatever the caller set at
 // startup. `on_phase` never fired, `vanilla::TimedLiquidation` was inert live, and a caller who set
 // nothing was refused every order. The tests above used to *conceal* that by setting `OPEN` by hand;
 // they now install a calendar, so they exercise the mechanism instead.
@@ -3070,8 +3068,8 @@ runner::ManualClock clock_at_local_hour(int hour) {
 TEST_CASE("on_phase fires live, in the order the session actually moves", "[loop][phase]") {
   // The headline. No `set_phase` anywhere: the loop derives PRE_OPEN, OPEN and POST_CLOSE from a
   // configured window and a calendar, so a strategy written against `on_phase` behaves the same live
-  // as it does in a replay -- which is the divergence `Decision 3` and the whole backtesting module
-  // exist to prevent.
+  // as it does in a replay -- which is the divergence the whole backtesting module exists to
+  // prevent.
   PhaseRunner runner_instance;
   PhaseSource source;
   serve_calendar(runner_instance);
@@ -3242,7 +3240,7 @@ TEST_CASE("an order that opens a short is refused after the close, and not count
 
 TEST_CASE("an order settled inside a poll is checked against this iteration's phase",
           "[loop][phase]") {
-  // The ordering blocker, and the case is deliberately the *crossing* rather than a run that begins
+  // The ordering case, deliberately the *crossing* rather than a run that begins
   // after the close. A source's `poll` calls `Runner::feed`, which settles, so an order can leave the
   // process from inside a poll. A phase installed *after* the polls would let the first bar arriving
   // after 15:30 send under the `OPEN` the previous iteration established -- once per session, on the
@@ -3408,7 +3406,7 @@ TEST_CASE("the context clock moves with an announced phase, and only forwards", 
 }
 
 TEST_CASE("TimedLiquidation flattens live, which it could not do before", "[loop][phase][vanilla]") {
-  // **The headline, and the reason this branch exists.** `vanilla::TimedLiquidation` is built
+  // **The headline.** `vanilla::TimedLiquidation` is built
   // entirely on `on_phase`, so before the loop computed a phase it flattened in a backtest and did
   // nothing whatsoever in a live session -- a strategy this library ships, diverging between the two
   // worlds, which is the one defect the whole backtesting module exists to prevent.
@@ -3417,8 +3415,8 @@ TEST_CASE("TimedLiquidation flattens live, which it could not do before", "[loop
   // is closed.
   strategy::RiskLimits limits;
   // `POST_CLOSE` is permitted because the vanilla liquidates in it and the default `{OPEN}` would
-  // refuse the very order it exists to place. Whether that default should change is the operator's
-  // call -- `issues/live-market-phase-permitted-phases.md` -- and this test does not depend on it.
+  // refuse the very order it exists to place. Whether that default should change is open, and this
+  // test does not depend on it.
   limits.permitted_phases_ = std::vector<strategy::MarketPhase>{
     strategy::MarketPhase::OPEN,
     strategy::MarketPhase::POST_CLOSE,
@@ -3549,8 +3547,7 @@ TEST_CASE("a calendar arriving mid-iteration reaches the order polled after it",
   // it replaced. The clock never moved, so the crossing test above cannot see this: it is a revision
   // of the *answer*, not a change of the hour.
   //
-  // This is the shape every blocker in `ai/replay-working-orders` had -- one coherence rule not
-  // reaching one more input -- which is why the phase is now re-established after every poll rather
+  // This is a familiar shape -- one coherence rule not reaching one more input -- which is why the phase is now re-established after every poll rather
   // than only before the first.
   SendingRunner runner_instance;
   FeedingSource source;
@@ -3902,8 +3899,8 @@ TEST_CASE("a calendar revised by on_stop is in force for the closing pass", "[lo
   const auto report = loop.run(stop, 2);
 
   // **The witness for this is no longer a refusal, and it had to change.** This test used to prove
-  // the re-derivation by watching the guard refuse the flatten under the revised phase. Since
-  // `ai/phase-limit-exits` a flatten is permitted whatever the phase -- it closes -- so a refusal
+  // the re-derivation by watching the guard refuse the flatten under the revised phase. A flatten is
+  // now permitted whatever the phase -- it closes -- so a refusal
   // can no longer distinguish "the phase was re-derived" from "it was not". The count of sends made
   // under a phase the limits do not permit can: it is 1 only if the revision was in force when the
   // closing pass was checked, and 0 if the pass still saw the `OPEN` the handler replaced. The
@@ -3977,7 +3974,7 @@ TEST_CASE("a second run reports its own charges rather than the first run's as w
 }
 
 TEST_CASE("a broker-stated zero survives the run boundary", "[loop]") {
-  // Round 5's second counterexample. `since` dropped every zero delta, so a broker that stated a
+  // `since` once dropped every zero delta, so a broker that stated a
   // charge of zero during a run produced no entry at all -- which is exactly how the report says
   // "the broker stated nothing". The absence-is-not-zero contract has to survive the subtraction,
   // not only the accumulation.
@@ -4000,7 +3997,7 @@ TEST_CASE("a broker-stated zero survives the run boundary", "[loop]") {
 }
 
 TEST_CASE("a run delta that cannot be represented is counted, not dropped", "[loop]") {
-  // Round 7's counterexample. `since` skipped a currency whose own subtraction failed, so a run
+  // `since` once skipped a currency whose own subtraction failed, so a run
   // reported absence where a charge had been observed -- the third shape of the same
   // wrong-answer: a figure missing rather than nil, with nothing saying which.
   //

@@ -170,7 +170,7 @@ TEST_CASE("an instruction whose own line cannot decide anything needs an operato
     // carrying an unpriced LIMIT -- or a MARKET the broker reported a price for
     // -- puts one there without the cancellation caring. Applying the placement
     // check to it withheld an instrument whose identity the journal had
-    // recorded, for a cancellation `main` resolved without trouble.
+    // recorded, for a cancellation that resolves without trouble.
     auto unpriced = cancellation("KRX-1");
     unpriced.entry_.type_ = OrderType::LIMIT;
     unpriced.entry_.price_.reset();
@@ -478,7 +478,7 @@ TEST_CASE("a row whose condition the broker did not report is a candidate, not a
   auto instruction = placement();
   instruction.entry_.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
 
-  // **This test asserted MATCHED until round 5, and that was half right.**
+  // **This test once asserted MATCHED, and that was half right.**
   // Excluding such a row reports `NOT_PLACED` for an order that may be in the
   // listing, and the runner's answer to that is to send again -- so it stays a
   // candidate. But *matching* it names this row as the order and clears the
@@ -650,7 +650,7 @@ TEST_CASE("clock skew is allowed in both directions", "[reconcile]") {
 TEST_CASE("a row with no timestamp is judged on attributes alone", "[reconcile]") {
   // Excluding it would report NOT_PLACED for an order sitting in the listing.
   //
-  // **Round 5 argued this should be ambiguous instead**, on the grounds that an
+  // **One could argue this should be ambiguous instead**, on the grounds that an
   // older otherwise-identical order outside the window, reported without a
   // timestamp, becomes a unique match and clears the hold on the newer one.
   // That hazard is real. The fix is not, because at KIS *every* working-order

@@ -279,8 +279,8 @@ TEST_CASE("each broker says where an order actually goes", "[broker][route]") {
   // **The real policies, not a double.** The journal test drives this through a
   // local executor with its own hardcoded rule, so it pins the wiring and says
   // nothing about what either broker answers -- verified, because replacing
-  // KIS's policy with the identity failed nothing. Fourth time in this branch a
-  // test has exercised a reimplementation rather than the thing reimplemented.
+  // KIS's policy with the identity failed nothing. A test had exercised a
+  // reimplementation rather than the thing reimplemented.
   using KisTraits = BrokerTraits<kis::KisClient>;
   using TossTraits = BrokerTraits<tossinvest::TossClient>;
 

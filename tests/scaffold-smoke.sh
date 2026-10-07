@@ -71,10 +71,9 @@ printf '%s\n' "$OUTPUT"
 # **A strategy's name appearing is not evidence that it ran**, and two earlier versions of this check
 # believed it was. The first matched `MyStrategy` followed by a digit, and passed when the strategy was
 # mutated to return before reading anything, because the row still printed `0.00 %` and `0` fills. The
-# second matched the row loosely with `$NF`, and review found it passed for a line reading
+# second matched the row loosely with `$NF`, and it passed for a line reading
 # `MyStrategy(5) skipped 40` -- which contains no report at all -- and for vanillas printed as bare
-# names with no figures. Both are the cooperating guard `ai/wall-clock-test-assertions` set a rule
-# about, found twice in the same file.
+# names with no figures. Both are a guard that cooperates with the code it checks.
 #
 # So a row is validated structurally: the strategy name as the first field, a numeric fill count as
 # the last, and every field between them one of a number, a `%`, `undefined` or `--`, which are the
@@ -126,9 +125,9 @@ invalid_rows() {
 # report row.
 #
 # Applied to all three tables -- README.md's, the program's, and the perturbed program's -- because
-# checking only some of them is how this file kept shipping holes. Review defeated the perturbed side
-# with `MyStrategy(5) incomplete` and with a duplicated row, both of which the baseline side had been
-# rejecting since round 2; the rule existed and had not reached every place it applied.
+# checking only some of them is how this file kept shipping holes. The perturbed side once passed
+# `MyStrategy(5) incomplete` and a duplicated row, both of which the baseline side rejected; the rule
+# existed and had not reached every place it applied.
 assert_valid_table() {
     table=$1
     label=$2

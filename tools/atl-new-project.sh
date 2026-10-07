@@ -40,7 +40,7 @@ die() {
 # Wrapping in quotes is not enough on its own: a directory named `it's a project` is perfectly legal,
 # and `cd 'it's a project'` is a syntax error. The only character that needs handling inside single
 # quotes is the single quote itself, which is closed, escaped and reopened -- the standard `'\''`
-# dance. Review caught the unescaped version, after the unquoted version before it.
+# dance. An unescaped version, and an unquoted one before it, both broke on such a name.
 shell_quote() {
     printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }

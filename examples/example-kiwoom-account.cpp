@@ -37,8 +37,8 @@ int main(int argc, char** argv) {
     // And what naming it *means* is a separate statement, which this example does not make: with
     // both scopes left unstated the normalized holdings verb refuses and so does anything that can
     // open a position, which is what an example should demonstrate rather than assume away. A real
-    // program asserts them once it has run the experiment in
-    // issues/kiwoom-api-holdings-venue-scope.md -- and an assertion is not a measurement.
+    // program asserts them once it has measured what its account returns -- and an assertion is not
+    // a measurement.
 
     ssl::context tls(ssl::context::tls_client);
     tls.set_default_verify_paths();
@@ -72,7 +72,7 @@ int main(int argc, char** argv) {
     // It is not by itself a proof, and that is worth knowing before reading the output: two reads
     // are not a snapshot, so rows that differ may record a fill between them rather than a filtered
     // listing, and an empty account makes both answers identical. Run it on a quiet account and
-    // read it as evidence, not as an answer. See issues/kiwoom-api-holdings-venue-scope.md.
+    // read it as evidence, not as an answer.
     const auto holdings = session.client().holdings(algotradelib::kiwoom::KiwoomAccount{});
     if (!holdings) {
       std::cerr << "holdings failed: " << holdings.error().message_ << '\n';

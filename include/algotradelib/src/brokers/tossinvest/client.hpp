@@ -920,7 +920,7 @@ private:
   //
   // A page that parses but contains no bar also ends the request: a broker that
   // returns an empty page while still reporting a cursor would otherwise be paged
-  // forever, and `holdings-core` established the same guard.
+  // forever. The holdings pages have the same guard.
   //
   // Takes the accumulation and cursor by reference rather than an operation, so the
   // normalization is a pure function of a response and can be tested as one.
@@ -2350,7 +2350,7 @@ private:
           // bearing: an empty code stores successfully, and an empty `other_` is how a row says it
           // names a *normalized* market -- so a row with no market at all would become a rate for
           // whatever `country_` defaults to, which is a Korean commission the broker never
-          // published. Review found exactly that path.
+          // published.
           rate.other_ = *preserved;
         } else {
           // Not storable, so it cannot be reported under any market honestly. One such row must not
@@ -2867,7 +2867,7 @@ private:
   // This used to read `type == MARKET ? "MARKET" : "LIMIT"`, which was
   // harmless while those were the only two bases and is not now: it would send
   // a mid-price or best-limit amendment to Toss as a plain limit order, which
-  // is the silent downgrade Decision 6 forbids and is invisible in the
+  // is a silent downgrade, which this library refuses, and is invisible in the
   // request. Every caller validates the basis first, so the remaining cases
   // cannot be reached from outside this class; reaching one means a new body
   // was built without a validation step, which is a defect here rather than a
@@ -2908,8 +2908,8 @@ private:
   // sessions rather than validity conditions. This library keeps the two facts
   // apart -- KIS spells both inside one `ORD_DVSN` and would otherwise have to
   // put the same fact in a different field -- so the mapping to Toss's wire
-  // shape happens here, at the adapter boundary, which is where Decision 2b
-  // says a vendor spelling belongs.
+  // shape happens here, at the adapter boundary, which is where a vendor
+  // spelling belongs.
   static const char* session_code(OrderSession session) {
     switch (session) {
       case OrderSession::CLOSING_AUCTION:
@@ -3465,9 +3465,7 @@ private:
     // `parse_position` wrote `COMBINED` for the same Korean instrument, so an
     // order and its holding were never the same `InstrumentId` and
     // `Portfolio::working_quantity` found nothing for a Korean Toss order. That
-    // is a defect on `main`, not one this branch introduced; it is fixed here
-    // because the KIS half of it would otherwise have been introduced by the
-    // venue this branch began reading.
+    // was a defect, fixed here together with its KIS half.
     order.instrument_ = InstrumentId{
       country,
       instrument_venue(country),
