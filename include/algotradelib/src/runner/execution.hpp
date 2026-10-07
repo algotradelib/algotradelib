@@ -159,29 +159,27 @@ inline constexpr bool send_outcome_reached_broker(SendOutcome outcome) noexcept 
 
 namespace runner_detail {
 
-/**
- * Whether `Executor` can put an order in front of a real broker.
- *
- * Declared by the executor, because it is the executor that knows. It decides one thing: whether a
- * runner built on it must have read the account before it places. That requirement has to hold for
- * every live path, and there are more of those than the two binding factories --
- * `doxygen/vignettes/binding-a-broker.md` shows a `Runner<..., SessionExecutor<Session>>` assembled
- * by hand, and a rule installed only by the factories would hold for their callers and nobody else.
- *
- * **The default is `true`, and an executor opts *out*.** That is the opposite of how a detection
- * trait beside it usually reads, and it is deliberate: the two directions fail differently. An
- * unmarked executor assumed harmless is a consumer's own adapter -- one whose `place` forwards to
- * `SessionExecutor` or straight to a broker client -- silently exempted from the rule this whole
- * branch exists for, and it fails by sending a real order sized against an account nobody read. An
- * unmarked executor assumed live is a test double that refuses until it is given a stamped portfolio
- * or says `allow_absent_portfolio()`, and it fails by being noticed at once. Only one of those two
- * is discoverable, so silence means live.
- *
- * `RecordingExecutor` and `backtest::QueueingExecutor` therefore say `false` explicitly: a dry run
- * and a replay have no holdings inquiry that could have failed, and a replay stamps its own
- * portfolio. `JournalingExecutor` forwards whatever it wraps, because recording an order does not
- * change who receives it.
- */
+// Whether `Executor` can put an order in front of a real broker.
+//
+// Declared by the executor, because it is the executor that knows. It decides one thing: whether a
+// runner built on it must have read the account before it places. That requirement has to hold for
+// every live path, and there are more of those than the two binding factories --
+// `doxygen/vignettes/binding-a-broker.md` shows a `Runner<..., SessionExecutor<Session>>` assembled
+// by hand, and a rule installed only by the factories would hold for their callers and nobody else.
+//
+// **The default is `true`, and an executor opts *out*.** That is the opposite of how a detection
+// trait beside it usually reads, and it is deliberate: the two directions fail differently. An
+// unmarked executor assumed harmless is a consumer's own adapter -- one whose `place` forwards to
+// `SessionExecutor` or straight to a broker client -- silently exempted from the rule this whole
+// branch exists for, and it fails by sending a real order sized against an account nobody read. An
+// unmarked executor assumed live is a test double that refuses until it is given a stamped portfolio
+// or says `allow_absent_portfolio()`, and it fails by being noticed at once. Only one of those two
+// is discoverable, so silence means live.
+//
+// `RecordingExecutor` and `backtest::QueueingExecutor` therefore say `false` explicitly: a dry run
+// and a replay have no holdings inquiry that could have failed, and a replay stamps its own
+// portfolio. `JournalingExecutor` forwards whatever it wraps, because recording an order does not
+// change who receives it.
 template <typename Executor, typename = void>
 struct sends_to_a_broker : std::true_type {};
 

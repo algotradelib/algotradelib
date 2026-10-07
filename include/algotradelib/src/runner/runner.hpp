@@ -25,14 +25,12 @@ namespace runner {
 
 namespace runner_detail {
 
-/**
- * Whether an executor can ask the broker what may be sold of one instrument.
- *
- * Detected rather than required, for the same reason the strategy's handlers are: a dry runner, a
- * replay's queueing executor and a test double have no broker to ask, and none of them should have
- * to grow a method that returns nothing. An executor bound to a broker whose holdings already carry
- * the figure declares it too and answers nothing, so the runner's own condition stays one test.
- */
+// Whether an executor can ask the broker what may be sold of one instrument.
+//
+// Detected rather than required, for the same reason the strategy's handlers are: a dry runner, a
+// replay's queueing executor and a test double have no broker to ask, and none of them should have
+// to grow a method that returns nothing. An executor bound to a broker whose holdings already carry
+// the figure declares it too and answers nothing, so the runner's own condition stays one test.
 template <typename Executor, typename = void>
 struct fills_sellable : std::false_type {};
 
@@ -44,15 +42,13 @@ struct fills_sellable<
   >
 > : std::true_type {};
 
-/**
- * Whether `Executor` states what its sellable *inquiry* answer is evidence of.
- *
- * Detected rather than required, and the default is what matters: an executor that answers a
- * sellable quantity and says nothing about its basis is treated as having established nothing, so
- * the guard refuses rather than measuring a sell against a figure nobody characterized. A consumer's
- * own executor gets that default without being told it exists, which is the point -- the alternative
- * default would silently enforce against whatever its author happened to return.
- */
+// Whether `Executor` states what its sellable *inquiry* answer is evidence of.
+//
+// Detected rather than required, and the default is what matters: an executor that answers a
+// sellable quantity and says nothing about its basis is treated as having established nothing, so
+// the guard refuses rather than measuring a sell against a figure nobody characterized. A consumer's
+// own executor gets that default without being told it exists, which is the point -- the alternative
+// default would silently enforce against whatever its author happened to return.
 template <typename Executor, typename = void>
 struct states_sellable_basis : std::false_type {};
 
@@ -62,7 +58,7 @@ struct states_sellable_basis<
   std::void_t<decltype(Executor::sellable_inquiry_basis())>
 > : std::true_type {};
 
-/** Returns what `Executor`'s inquiry answer is evidence of, or an unestablished basis. */
+// Returns what `Executor`'s inquiry answer is evidence of, or an unestablished basis.
 template <typename Executor>
 constexpr SellableBasis sellable_inquiry_basis_of() {
   if constexpr (states_sellable_basis<Executor>::value) {
@@ -72,14 +68,12 @@ constexpr SellableBasis sellable_inquiry_basis_of() {
   }
 }
 
-/**
- * Whether `Executor` can say which reference the broker issued for the order it just accepted.
- *
- * Detected rather than required, for the same reason as above: a dry runner and a replay's
- * queueing executor have no broker to have been answered by. A reservation written without one is
- * still worth writing -- a limit that ignored the order would be the worse failure -- but it cannot
- * be cancelled by reference until a listing supplies one.
- */
+// Whether `Executor` can say which reference the broker issued for the order it just accepted.
+//
+// Detected rather than required, for the same reason as above: a dry runner and a replay's
+// queueing executor have no broker to have been answered by. A reservation written without one is
+// still worth writing -- a limit that ignored the order would be the worse failure -- but it cannot
+// be cancelled by reference until a listing supplies one.
 template <typename Executor, typename = void>
 struct reports_last_ref : std::false_type {};
 
@@ -88,13 +82,11 @@ struct reports_last_ref<
   Executor, std::void_t<decltype(std::declval<const Executor&>().last_ref())>
 > : std::true_type {};
 
-/**
- * Whether `Executor` decides which venue an order that names none is sent to.
- *
- * Detected rather than required: only a broker binding routes, and a dry runner, an observer and a
- * replay's queueing executor send the planned venue as it stands. `live::SessionExecutor` answers
- * with its `default_route()`, and a `JournalingExecutor` forwards its inner executor's answer.
- */
+// Whether `Executor` decides which venue an order that names none is sent to.
+//
+// Detected rather than required: only a broker binding routes, and a dry runner, an observer and a
+// replay's queueing executor send the planned venue as it stands. `live::SessionExecutor` answers
+// with its `default_route()`, and a `JournalingExecutor` forwards its inner executor's answer.
 template <typename Executor, typename = void>
 struct resolves_route : std::false_type {};
 
@@ -103,21 +95,19 @@ struct resolves_route<
   Executor, std::void_t<decltype(std::declval<const Executor&>().requested_route(Venue::UNSPECIFIED))>
 > : std::true_type {};
 
-/**
- * Whether `Executor` can say **why** the last instruction failed.
- *
- * Detected rather than required, on the same terms as the two above: a dry runner refuses nothing
- * and a replay's queueing executor has no broker to be refused by, so neither should have to grow a
- * method that answers nothing. An executor that binds a session declares
- * `const std::optional<BrokerError>& last_error() const` and its refusals then reach
- * `Runner::last_broker_refusal`, where a report can carry the broker's own code and message instead
- * of a count with nothing to chase.
- *
- * **The *shape* is detected, not the name.** An earlier version asked only whether `last_error()`
- * was a valid expression, which would have selected this branch for any executor that happened to
- * have a method of that name -- one returning `std::optional<std::string>`, say -- and then failed
- * to compile on `broker_code_`. A name is not a contract; the return type is.
- */
+// Whether `Executor` can say **why** the last instruction failed.
+//
+// Detected rather than required, on the same terms as the two above: a dry runner refuses nothing
+// and a replay's queueing executor has no broker to be refused by, so neither should have to grow a
+// method that answers nothing. An executor that binds a session declares
+// `const std::optional<BrokerError>& last_error() const` and its refusals then reach
+// `Runner::last_broker_refusal`, where a report can carry the broker's own code and message instead
+// of a count with nothing to chase.
+//
+// **The *shape* is detected, not the name.** An earlier version asked only whether `last_error()`
+// was a valid expression, which would have selected this branch for any executor that happened to
+// have a method of that name -- one returning `std::optional<std::string>`, say -- and then failed
+// to compile on `broker_code_`. A name is not a contract; the return type is.
 template <typename Executor, typename = void>
 struct states_last_error : std::false_type {};
 
