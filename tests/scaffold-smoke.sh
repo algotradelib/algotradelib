@@ -206,12 +206,11 @@ if [ "$BACKEND" = ON ]; then
     # nothing missing and nothing extra.
     #
     # **What this does and does not establish.** It is an output regression check, not proof that a
-    # replay ran -- a program can print any literal, and review demonstrated exactly that. No assertion
+    # replay ran -- a program can print any literal. No assertion
     # made by reading stdout can distinguish computing a number from printing one, so this test does
     # not claim to. What it does is make a forgery reproduce every published figure, which is a great
     # deal harder than printing a plausible shape, and it is the strongest thing available from out
-    # here. The claim was overstated in two earlier versions of this comment; it is stated accurately
-    # now because a test that misdescribes itself is how the next person gets talked out of a real one.
+    # here. A test that misdescribes itself is how the next person gets talked out of a real one.
     #
     # Compared as a set rather than row by row, because the row-by-row version accepted an output that
     # printed the four rows twice, and one that added a fifth strategy the README never published.
@@ -248,9 +247,9 @@ if [ "$BACKEND" = ON ]; then
     # can justify: the `MyStrategy` row differs, and the other three are untouched, because nothing
     # about that edit may reach `BuyAndHold` or either indicator vanilla.
     #
-    # **Still not proof that a replay ran**, and the comment here said it was for two versions. A
+    # **Still not proof that a replay ran.** A
     # printer whose literals vary with its own source would satisfy this too. What it rules out is the
-    # forgery that actually turned up in review -- fixed literals -- and it does so by requiring a
+    # simplest forgery -- fixed literals -- and it does so by requiring a
     # specific, asymmetric response rather than merely a different one.
     PERTURBED_STRATEGY='MyStrategy(5)'
     PERTURBED_PROJECT=$WORK_DIR/perturbed
@@ -274,7 +273,7 @@ if [ "$BACKEND" = ON ]; then
     [ -n "$PERTURBED_BINARY" ] || { printf 'perturbed build produced no binary\n' >&2; exit 1; }
 
     # Run to a file, and check the status, before anything parses it. Piping the executable straight
-    # into `table_rows | sort` made the pipeline report *sort's* status: review supplied a perturbed
+    # into `table_rows | sort` made the pipeline report *sort's* status: a perturbed
     # binary that printed one row and exited 42, and the script passed, because a truncated table is
     # trivially "different from the README's" -- which was the only thing being asked.
     PERTURBED_OUTPUT=$WORK_DIR/perturbed-output.txt

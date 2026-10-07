@@ -1033,7 +1033,7 @@ private:
 
     // The decision instant, as always -- except before anything was fed, as at the startup read after
     // a restart, when it is still the epoch. A resolution stamped there reads back as damage and halts
-    // the next start (lab F29), so the loop's last reading stands in, or the wall clock without a loop.
+    // the next start, so the loop's last reading stands in, or the wall clock without a loop.
     auto now = runner_instance.context().now();
     if (now == std::chrono::system_clock::time_point{}) {
       now = runner_instance.observed_at() != std::chrono::system_clock::time_point{} ?
@@ -1057,7 +1057,7 @@ private:
       );
       return;
     }
-    // **A placement whose reply was lost, now answered** (lab F35): the runner has counted it since the
+    // **A placement whose reply was lost, now answered**: the runner has counted it since the
     // send, and keeps counting a matched one until holdings show it -- the ledger, just cleared, no
     // longer withholds the instrument, and a filled market order is in no listing.
     for (const auto& match : reconcile_.matches_) {

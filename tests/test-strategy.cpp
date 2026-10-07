@@ -1168,7 +1168,7 @@ TEST_CASE("over-ordering withdraws the side and sends the remainder fresh") {
 }
 
 TEST_CASE("over-ordering through reserved rows that may have filled re-sends only what they do not cover") {
-  // Lab F38: a reserved row is the part of an order holdings have not shown, and it has often filled.
+  // A reserved row is the part of an order holdings have not shown, and it has often filled.
   // Its withdrawal is then refused, so a whole remainder sent beside it traded twice.
   const auto reference = samsung_reference();
   ReconcileInputs inputs;
@@ -1865,10 +1865,9 @@ TEST_CASE("a sell beyond what the broker says is sellable is refused with both n
 }
 
 TEST_CASE("a sellable figure nobody characterized refuses, and works the moment it is stated") {
-  // **The branch's central property, and it is written as a pair.** A refusal on its own proves
-  // nothing -- four branches in this repository have shipped a test that refused one step early for
-  // an unrelated reason -- so the positive control changes *only* the basis and requires the same
-  // order through.
+  // **The central property, written as a pair.** A refusal on its own proves nothing -- a test can refuse one
+  // step early for an unrelated reason -- so the positive control changes *only* the basis and requires the
+  // same order through.
   RiskLimits limits;
   limits.enforce_sellable_quantity_ = true;
   const RiskGuard guard(limits);
@@ -1974,11 +1973,10 @@ TEST_CASE("a split holding cannot borrow one lot's declaration for another lot's
   // differently cannot be reconciled by this library, so nothing is enforced against either.
   REQUIRE(guard.check(planned("30", "70000", OrderSide::SELL), split, open_market()));
 
-  // **Two lots that agree on a basis but disagree on the figure also refuse**; a fixture once
-  // asserted the opposite. If both rows say
-  // `WHOLE_HOLDING`, both claim to state the limit for the *same* shares, so 100 and 30 are a
-  // contradiction rather than two facts, and taking the first row's number would put a sell above the
-  // real limit on the wire whenever the larger row comes first. Reachable from the shipped KIS parser,
+  // **Two lots that agree on a basis but disagree on the figure also refuse**; a fixture once asserted the
+  // opposite. If both rows say `WHOLE_HOLDING`, both claim to state the limit for the *same* shares, so 100
+  // and 30 are a contradiction rather than two facts, and taking the first row's number would put a sell above
+  // the real limit on the wire whenever the larger row comes first. Reachable from the shipped KIS parser,
   // which concatenates every `output1` row across pages without checking for a repeated `pdno`.
   ProbePortfolio conflicting = split;
   conflicting.positions_[0].sellable_basis_ = second.sellable_basis_;
@@ -2306,7 +2304,7 @@ bool refused_for_phase(
 } // namespace
 
 TEST_CASE("a sell that closes a long is permitted although the market is shut") {
-  // The branch, in one case. `permitted_phases_` governs what an order opens, not what it closes:
+  // In one case: `permitted_phases_` governs what an order opens, not what it closes:
   // an operator whose flatten is refused by their own risk limits has a limit that says "you may
   // not reduce risk", which `max_gross_exposure_` already refuses to mean.
   const RiskGuard guard;  // defaults to OPEN alone

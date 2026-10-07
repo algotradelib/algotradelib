@@ -1,6 +1,6 @@
 // One strategy, compiled for both brokers from this one source, bound at a single line in `main`.
 //
-// The point of the whole branch, demonstrated: `trade()` below names no broker. It takes a session
+// The point, demonstrated: `trade()` below names no broker. It takes a session
 // by template parameter, and everything broker-specific is either behind a capability gate or
 // inside the adapter. Swapping KIS for Toss changes which overload `main` calls, nothing else.
 //

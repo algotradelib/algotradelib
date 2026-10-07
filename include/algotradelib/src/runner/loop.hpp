@@ -1598,8 +1598,8 @@ private:
   // that order would settle against the phase as it stood when the poll began. `PollKind::CALENDAR`
   // documents the contract that rules it out, `SessionSource` satisfies it -- it writes the calendar in
   // the calendar poll and nowhere else -- and `note_revised_phase` reports a source that
-  // breaks it, because a violation nobody is told about is one nobody fixes. An earlier version of this
-  // comment claimed the stronger at-send-site invariant, which a probe falsified.
+  // breaks it, because a violation nobody is told about is one nobody fixes. The stronger at-send-site
+  // invariant does not hold.
   //
   // The instant is the iteration's own `at_` throughout, never re-read from the clock, so a poll that
   // took a second does not move the session boundary mid-iteration.

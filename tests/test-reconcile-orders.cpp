@@ -653,8 +653,8 @@ TEST_CASE("a row with no timestamp is judged on attributes alone", "[reconcile]"
   // **One could argue this should be ambiguous instead**, on the grounds that an
   // older otherwise-identical order outside the window, reported without a
   // timestamp, becomes a unique match and clears the hold on the newer one.
-  // That hazard is real. The fix is not, because at KIS *every* working-order
-  // row is timestamp-less -- `parse_open_orders` sets no `ordered_at_`, since
+  // That hazard is real. The fix is not, because every row of KIS's live
+  // working-order inquiry is timestamp-less -- `parse_open_orders` sets no `ordered_at_`, since
   // the inquiry gives `HHMMSS` with no date and this library will not guess the
   // day -- so treating an absent instant as silence makes every KIS recovery
   // ambiguous and stalls the primary path.

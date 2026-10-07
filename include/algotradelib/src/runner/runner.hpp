@@ -1599,7 +1599,7 @@ private:
             // **Turned away for the broker's rate limit, which is about the moment.** Kept as an
             // unreachable send is, and offered again after a newer holdings read: dropped, a daily
             // strategy's opening order or protective stop refused once at a busy open waited a day
-            // (lab: one `EGW00201` at 09:00 moved a buy to the next session and left a position
+            // (in a simulated run, one `EGW00201` at 09:00 moved a buy to the next session and left a position
             // without its stop all day). The broker processed nothing, so a retry cannot double it.
             retain_for_phase(source_instruction, /*broker_answered=*/true, context_.portfolio().as_of_);
           }
@@ -1617,7 +1617,7 @@ private:
           ++placements_at_broker_;
           ledger_.mark(order.instrument_, "an order request failed in transit");
           ++orders_indeterminate_;
-          // **Counted as if accepted, until the sweep says what became of it** (lab F35). The ledger
+          // **Counted as if accepted, until the sweep says what became of it.** The ledger
           // withholds the instrument meanwhile; but once a sweep finds the order in the broker's
           // listing it clears the ledger, and a market order that filled is then in no listing while
           // holdings may not show it yet, so a target sent it again (twice the target, in one
@@ -1650,7 +1650,7 @@ private:
           } else if (last_error_is(broker_unreachable)) {
             // **The broker could not be reached, so the decision is kept rather than lost.** Dropped,
             // a daily strategy's target or protective stop released at the open into a dropped
-            // connection waited for its next bar, a day away (lab: a 30-minute outage at 09:00 moved a
+            // connection waited for its next bar, a day away (in a simulated run, a 30-minute outage at 09:00 moved a
             // buy to the next session and left a position without its stop all day). Kept as a phase
             // refusal is -- discarded by a stop, an operator's halt or a local failure, replaced by a
             // later statement, an intent checked against the book -- and offered again only after a
@@ -1982,7 +1982,7 @@ private:
           // A sum of zero is no evidence: two opposite orders that have not filled at all look like
           // two that both have. They wait for their history, and once it has said what each one
           // filled, holdings that did not move are evidence after all. That includes the resting order
-          // above, which waits for no history (lab F37: it held them up until they timed out).
+          // above, which waits for no history (it once held them up until they timed out).
           bool all_settled = true;
           for (std::size_t at = 0; at < group.size(); ++at) {
             all_settled = all_settled && (unconfirmed_[group[at]].settled_ || fillable[at].coefficient() == 0);
@@ -2089,7 +2089,7 @@ private:
   // **Always, for a runner that sends to a broker which lists working orders.** Target
   // reconciliation reads the same portfolio, and an order this runner just sent has to count as
   // working there, whatever the limits: a target restated on the next pass would otherwise be sent
-  // again. It was scoped to the limits below until 2026-09-30, and the cold start showed the cost --
+  // again. It was once scoped to the limits below, and the cold start showed the cost --
   // `SessionSource` then fed a whole history read one pass per bar before the next listing, so a
   // target strategy under default limits sent one order per history bar (`tests/test-live.cpp`,
   // `[own-orders]`). It now feeds history through `feed_warmup`, which sends nothing; the reservation
@@ -2114,7 +2114,7 @@ private:
   //
   // A listing replaces `working_` wholesale, and so used to retire the row whether or not it carried the
   // order -- a market order that filled at once is in no listing, and holdings lagging the fill did not
-  // show it either (lab F15). For a runner that keeps sent orders until listed, the row is now rebuilt
+  // show it either. For a runner that keeps sent orders until listed, the row is now rebuilt
   // before every pass from what nothing explains yet (`track_unconfirmed`, `unconfirmed_orders`).
   void persist_reservation(
     const strategy::PlannedOrder& order,
@@ -2161,7 +2161,7 @@ private:
   // **An instrument this cannot resolve is left out, and leaving it out is how the refusal
   // happens.** `projected_gross_exposure` returns nothing when the basis does not cover something
   // the portfolio holds or has working, and the guard turns that into `VALUE_NOT_KNOWN`. Inventing
-  // a currency or a price here would be the silent pass this whole branch is about.
+  // a currency or a price here would be a silent pass, which this check exists to prevent.
   //
   // **Only fields somebody explicitly set are read**, which rules out the position's own
   // `market_value_.currency_` as a fallback however tempting it is. `Currency` default-constructs to

@@ -1,6 +1,6 @@
 // Deliberately does not compile. `strategy-refuses-a-wrapped-malformed-handler` builds this file and passes
 // only when the diagnostic is the call to the inner strategy's `on_phase`. The outer strategy is valid and
-// forwards through `runner::dispatch`, as the lab's `Logged<Inner>` does; the inner one takes the phase
+// forwards through `runner::dispatch`, as a logging wrapper would; the inner one takes the phase
 // as a mutable reference. Checking the outer type alone would have skipped the inner handler in silence.
 #include <algotradelib/runner>
 

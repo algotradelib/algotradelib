@@ -5,7 +5,7 @@
 # The starting `src/main.cpp` is a *copy of a file this repository compiles*
 # (`examples/example-backtest-compare.cpp`) rather than a heredoc written out from here. A template
 # carried inside a scaffolder is a second copy of an example that nothing builds, and it is wrong
-# within two branches. This way the suite compiles and runs the same source a new project starts from.
+# soon. This way the suite compiles and runs the same source a new project starts from.
 #
 # It does not touch your git index. Adding a submodule writes to somebody else's repository and makes
 # the script one you cannot run twice; the command is printed instead.

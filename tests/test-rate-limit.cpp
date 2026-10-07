@@ -377,7 +377,7 @@ TEST_CASE(
   // And time really passed, which is a different claim from the counters below and the reason this
   // *floor* stays. `delayed_` and `waited_` are what the pacer decided; an admission delay computed
   // too short would still record two delays and satisfy them, and would not survive this line. Load
-  // can only make a floor truer, unlike the ceiling this test once had.
+  // can only make a floor truer; an upper bound would fail on a loaded host.
   REQUIRE(elapsed >= std::chrono::milliseconds(40));
 
   const auto* stats = client->rate_limits() ? &client->rate_limits()->stats() : nullptr;

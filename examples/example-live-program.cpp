@@ -291,7 +291,8 @@ int run_kiwoom(ssl::context& tls, const Arguments& arguments) {
   // Kiwoom's balance inquiry names one venue and does not say whether that filters the positions or
   // only values them, so the adapter refuses holdings until you state both. Until then the loop has
   // no portfolio and holds: this program runs and places nothing. Measure what your account returns
-  // (run `example-kiwoom-account` once for KRX and once for NXT), then assert what you measured:
+  // (run `example-kiwoom-account`, then set its `holdings_venue_` to NXT, rebuild and run it again),
+  // then assert what you measured:
   config.holdings_venue_ = atl::Venue::KRX;
   // config.holdings_position_scope_ = kiwoom::KiwoomPositionScope::WHOLE_HOLDING;
   // config.holdings_sellable_scope_ = kiwoom::KiwoomSellableScope::WHOLE_HOLDING;

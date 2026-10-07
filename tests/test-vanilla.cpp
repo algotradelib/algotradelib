@@ -123,7 +123,7 @@ TEST_CASE("timed liquidation flattens when the session leaves the phases it hold
   // After the close it flattens, **under the default limits**, which is the whole reason this
   // vanilla is usable. `permitted_phases_` still defaults to
   // `{OPEN}` and still refuses everything that opens a position outside the session; a sell of the
-  // whole holding closes one, so the limit does not stand in front of it. Before that branch this
+  // whole holding closes one, so the limit does not stand in front of it. Otherwise this
   // strategy could not place the order it exists to place without the operator switching its own
   // phase limit off.
   const auto after = dry.feed(strategy::MarketPhase::POST_CLOSE);

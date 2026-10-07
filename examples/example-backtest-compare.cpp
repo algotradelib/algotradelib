@@ -8,7 +8,7 @@
 // This file has two jobs, and it is one file so that they cannot disagree. It is an example built
 // inside this repository, and it is what `tools/atl-new-project.sh` copies into a generated project
 // as `src/main.cpp`. A template kept separately from a compiled example is a second copy that
-// nothing builds, and it is wrong within two branches.
+// nothing builds, and it soon goes stale.
 //
 // No credentials and no network: the bars are built in code, so the output is identical on every
 // run and on every machine. Replacing `closes()` with your own history is the first thing to do

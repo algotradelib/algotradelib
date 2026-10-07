@@ -1116,7 +1116,7 @@ TEST_CASE("a replayed quote sets the price and the clock, exactly as a live one 
 
 TEST_CASE("an order placed from on_quote fills against the next bar, not the quote") {
   // The consequence a strategy author has to know, and the reason `ReportCaveats::quotes_` exists.
-  // `NextBarFillModel` is unchanged by this slice: a quote neither fills nor marks, so the order
+  // `NextBarFillModel` ignores quotes: a quote neither fills nor marks, so the order
   // rests until a bar arrives and executes at that bar's price -- a whole bar's movement away from
   // the quote the strategy reacted to. Live, the same order reaches the broker at once.
   backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
@@ -1137,7 +1137,7 @@ TEST_CASE("an order placed from on_quote fills against the next bar, not the quo
 
 TEST_CASE("the report states how many quotes a replay saw, and says so only when it saw one") {
   // Absence versus zero, on a field a reader uses to decide whether the next-bar caveat applied to
-  // their run. A bars-only replay is every replay written before this slice and must not carry a
+  // their run. A bars-only replay must not carry a
   // caveat about a mechanism it never used.
   SECTION("a replay with quotes") {
     backtest::Backtester<CountsEverything> engine(CountsEverything{}, replay_config());
@@ -1194,13 +1194,12 @@ TEST_CASE("a phase announced by a quote is announced after that quote's price is
 }
 
 TEST_CASE("a weekly bar's period start is not derivable, and the engine says so instead of guessing") {
-  // **The one shape this engine cannot check, and the third answer it took four review rounds to
-  // arrive at.** A close-stamped weekly bar ends on a Friday and began on a Monday, and nothing in
-  // the event says when. Three versions of this code inferred it from a previous bar -- of the
-  // instrument, then of the instrument and interval -- and each was wrong in turn, because
-  // `feed`'s contract requires timestamp order and nothing about stamps, anchors or overlap. So the
-  // fill is allowed on the rule that governed every fill before this check, and **counted**: the
-  // report says the check did not happen rather than claiming one that did not.
+  // **The one shape this engine cannot check.** A close-stamped weekly bar ends on a Friday and began on a
+  // Monday, and nothing in the event says when. Three versions of this code inferred it from a previous bar
+  // -- of the instrument, then of the instrument and interval -- and each was wrong in turn, because `feed`'s
+  // contract requires timestamp order and nothing about stamps, anchors or overlap. So the fill is allowed on
+  // the rule that governed every fill before this check, and **counted**: the report says the check did not
+  // happen rather than claiming one that did not.
   backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
   engine.feed(moving_bar(utc(2026, 3, 6, 6, 30), BarInterval::ONE_WEEK, "60000", "61000"));
   engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_WEEK, "69000", "70000"));
@@ -1685,7 +1684,7 @@ TEST_CASE("costs reach the replay's executions, so a report can separate them ou
 #if defined(ATL_HAS_EIGEN)
 
 TEST_CASE("a replay says whether its commission came from the broker or from the caller") {
-  // Found in review: the caveat existed and nothing ever set it, so a replay seeded from a broker's
+  // The caveat existed and nothing ever set it, so a replay seeded from a broker's
   // published schedule still reported the rate as the caller's. The provenance now travels on the
   // model, because the model is what reaches the report -- a flag the caller had to set separately
   // would be false on exactly the runs where it mattered.
@@ -2826,7 +2825,7 @@ TEST_CASE("an order the bar fills is gone from the portfolio that bar installs")
 }
 
 // ---------------------------------------------------------------------------
-// The acceptance slice: the guards that read `working_` now fire in a replay
+// The guards that read `working_` fire in a replay
 //
 // Every case here is a rule the library already enforces live. Each one fails
 // against the build before `Backtester` filled the field in.
@@ -3672,7 +3671,7 @@ TEST_CASE("a replayed strategy can read the calendar it was configured with") {
   // `Context::set_calendar` had no caller anywhere in the library, so `ctx.calendar()` -- published to
   // every strategy -- was permanently empty in both worlds. The live loop now fills it from a polled
   // calendar; leaving the replay empty would make a strategy that reads it behave differently in a
-  // backtest from live, which is the divergence this slice exists to remove.
+  // backtest from live, which is the divergence to avoid.
   auto config = replay_config();
   config.calendar_.country_ = algotradelib::Country::KR;
   config.calendar_.days_.push_back(algotradelib::TradingDay{algotradelib::Date{2026, 3, 11}, false});
@@ -3777,9 +3776,8 @@ backtest::CommissionPolicy policy_for(Venue venue, std::vector<CommissionRate> r
 } // namespace
 
 TEST_CASE("a KRX fill and an NXT fill of the same size are charged differently") {
-  // The whole point of the slice, asserted end to end rather than on the schedule alone. The rates
-  // are hand-picked round numbers rather than the operator's published table, which is still
-  // unsettled. What is asserted is that the venue
+  // The venue-aware cost, asserted end to end rather than on the schedule alone. The rates
+  // are hand-picked round numbers, not a published tariff. What is asserted is that the venue
   // reaches the arithmetic, not that any particular percentage is the right one.
   const std::vector<CommissionRate> rows{
     venue_rate(Venue::KRX, "0.002", "0.0001"),
@@ -3840,7 +3838,7 @@ TEST_CASE("each cost component moves the ledger's cash, not only the report") {
 
 TEST_CASE("one replay spanning a rate change charges each rate on its own dates") {
   // Deliberately one replay with one policy. Constructing two frozen models at two dates already
-  // worked before dated schedules, so a test doing that would prove nothing.
+  // worked before per-execution rate selection, so a test doing that would prove nothing.
   auto policy = backtest::CommissionPolicy::scheduled(
     operator_tariff({
       venue_rate(Venue::KRX, "0.002", "0", std::nullopt, Date{2026, 3, 11}),
@@ -4115,7 +4113,7 @@ TEST_CASE("a halted replay consumes no quote either") {
 }
 
 TEST_CASE("the refusal bar itself runs nothing after the refusal") {
-  // Found in review, and it is the counterexample to the promised terminal transition. `feed`
+  // The counterexample to the promised terminal transition. `feed`
   // returned only from settlement, so on the very bar whose fill could not be costed it still
   // marked the book, recorded an equity point, advanced the clock, called `on_phase` and called
   // `on_bar` -- and the strategy, deciding once more on a portfolio missing that trade, queued two
@@ -4468,9 +4466,9 @@ TEST_CASE("a fill the ledger cannot record halts the replay rather than disappea
   // A zero-rate model, so the commission arithmetic cannot be what fails: `CommissionModel::on`
   // computes the notional before the rate, so any notional that overflows is refused there first
   // and the ledger is never reached. **Which step inside `apply` gives way is deliberately not
-  // asserted** -- an earlier version of this comment claimed the cash total and review showed it
-  // is the position valuation. What this test pins is the engine's response to `apply` refusing:
-  // a typed halt rather than a fill that quietly disappears.
+  // asserted** -- today it is the position valuation, not the cash total. What this test pins is
+  // the engine's response to `apply` refusing: a typed halt rather than a fill that quietly
+  // disappears.
   backtest::Backtester<BuysHuge> engine(
     BuysHuge{}, config, backtest::NextBarFillModel(backtest::CommissionModel::none())
   );
@@ -4569,8 +4567,8 @@ TEST_CASE("a rate stating one figure leaves the institution total absent rather 
 }
 
 TEST_CASE("an existing schedule with no venue on it charges exactly what it charged") {
-  // The migration regression, and it matters because the operator consumes this library as a
-  // submodule: a number that moved under them would move silently.
+  // The migration regression, and it matters to a project that tracks this library: a number that
+  // moved under it would move silently.
   CommissionSchedule published;
   published.origin_ = CommissionOrigin::BROKER_PUBLISHED;
   published.rates_.push_back(
@@ -5428,7 +5426,7 @@ struct StopsThenTargetsFlat {
 } // namespace
 
 TEST_CASE("a queued stop is withdrawn before a flatten in a replay as it is live", "[trigger]") {
-  // The parity this slice exists for: the working row a replay shows is a stop row with its trigger,
+  // The parity: the working row a replay shows is a stop row with its trigger,
   // so the target rule refuses exactly as it would against a live listing.
   // Minute bars of one session: across daily bars the stop would have expired before bar 3.
   backtest::Backtester<StopsThenTargetsFlat> engine(StopsThenTargetsFlat{}, replay_config());

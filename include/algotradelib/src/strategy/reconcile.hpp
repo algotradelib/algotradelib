@@ -570,7 +570,7 @@ Plan<Broker> reconcile(
   // Step 4: more working than wanted, so withdraw the side and send the whole remainder -- net of what
   // this runner reserved for its own orders not yet shown by holdings, when those may have filled
   // (`ReconcileInputs::reserved_rows_are_unconfirmed_`): their withdrawal is refused if they did, and a
-  // whole remainder beside them traded twice (lab F38). One genuinely resting is withdrawn all the same;
+  // whole remainder beside them traded twice. One genuinely resting is withdrawn all the same;
   // its history settles what it filled, and a later pass places the rest.
   if (decimal_less(*remaining, zero)) {
     Decimal64 reserved = zero;

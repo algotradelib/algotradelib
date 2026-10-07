@@ -989,7 +989,7 @@ struct ConfirmRig {
 } // namespace
 
 TEST_CASE("a filled market order no listing shows stays counted until holdings show it", "[confirm]") {
-  // Lab F15: a market order that filled at once is in no listing, and holdings lag the fill. The
+  // A market order that filled at once is in no listing, and holdings lag the fill. The
   // listing used to retire its reservation, and the next bar's target bought again.
   ConfirmRig rig;
   for (int at = 0; at < 3; ++at) {
@@ -1094,7 +1094,7 @@ BrokerError reply_lost() {
 } // namespace
 
 TEST_CASE("an order whose reply was lost is counted until holdings show it, once a sweep finds it", "[confirm]") {
-  // Lab F35: the sweep found the filled order in the listing and cleared the ledger; holdings lagged
+  // The sweep once found the filled order in the listing and cleared the ledger; holdings lagged
   // the fill, no listing carried it, and the next bar's target bought again -- twice the target.
   ConfirmRig rig;
   for (int at = 0; at < 4; ++at) {
@@ -1165,7 +1165,7 @@ TEST_CASE("an order whose reply was lost is counted until holdings show it, once
 }
 
 TEST_CASE("a sweep's answer names the newest order whose reply was lost", "[confirm]") {
-  // Combined review N1: after a hold cleared by hand without naming its order, a second lost reply on the
+  // After a hold cleared by hand without naming its order, a second lost reply on the
   // same instrument and side leaves two unnamed entries. The sweep answers the one just sent.
   ConfirmRig rig;
   rig.script.push_back(target_of("10"));
@@ -1295,7 +1295,7 @@ TEST_CASE("an order whose reply was lost times out once the ledger is cleared by
 }
 
 TEST_CASE("a protective stop listed in full does not hold up the orders beside it", "[confirm]") {
-  // Lab (chaos sweep, partial fills): a market sell filled 6 of 10, the strategy turned, the 4 left were
+  // From a randomized fault run with partial fills: a market sell filled 6 of 10, the strategy turned, the 4 left were
   // withdrawn and 6 bought back, and a stop for the 10 held rested in full. Holdings ended where they
   // began, which is evidence only once every order's history has said what it filled -- and a resting
   // stop has no ending to report, so the sell and the buy timed out and withheld the instrument.
@@ -1370,7 +1370,7 @@ BrokerError already_finished() {
 } // namespace
 
 TEST_CASE("a target does not re-place an order it only reserved while holdings lag", "[confirm]") {
-  // Lab F38: a buy filled 7 of 10 (holdings show them), the signal turned (the 3 left withdrawn, 7 sold,
+  // A buy filled 7 of 10 (holdings show them), the signal turned (the 3 left withdrawn, 7 sold,
   // not yet shown), and turned back. Seven reserved on the buy side met a need of three, so the side was
   // withdrawn -- refused, the order was done -- and three sent beside it, every bar.
   ConfirmRig rig;
@@ -2143,7 +2143,7 @@ TEST_CASE("only a refusal for want of a broker is about the connection") {
 }
 
 TEST_CASE("a target the broker could not be reached for is planned again once it answers") {
-  // Lab: a daily strategy's target, released at the open into a dropped connection, used to be
+  // A daily strategy's target, released at the open into a dropped connection, used to be
   // dropped, so the trade waited a day for the next bar. It is kept -- and offered again only after a
   // holdings read newer than the failure, so a dead connection is not retried every tick.
   FakeSession<WithoutKey> session;
@@ -2846,8 +2846,8 @@ TEST_CASE("a cold start's history read places one order, not one per bar", "[own
   CHECK(live_runner.context().portfolio().working_[0].reserved_);
 
   // The next working-order poll lists nothing -- a market order that filled at once is in no listing
-  // -- and holdings do not show the fill yet. The order stays counted, so nothing is sent again (lab
-  // F15: a listing that retired it let a target buy twice).
+  // -- and holdings do not show the fill yet. The order stays counted, so nothing is sent again (a
+  // listing that retired it once let a target buy twice).
   loop.run(stop, 1);
   REQUIRE(live_runner.context().portfolio().working_.size() == 1);
   CHECK(live_runner.context().portfolio().working_[0].reserved_);
@@ -3664,7 +3664,7 @@ TEST_CASE("a dry run keeps no intent the phase refused", "[kept-intents]") {
 }
 
 TEST_CASE("a broker refusal reaches a live run's report, with what the broker said") {
-  // **The defect this slice exists for, exercised through the real source.** Five direct `feed`
+  // **Exercised through the real source.** Five direct `feed`
   // cases prove the counters classify correctly and prove nothing about the defect, which lives in
   // `SessionSource` discarding the report `feed` returns. So this drives a real `SessionSource` and a
   // real `PollingLoop`: the poll succeeds, the order it produces is refused by the broker, and the
@@ -4982,7 +4982,7 @@ public:
 } // namespace
 
 TEST_CASE("a sent order's history is read from the day it was sent, whatever bar was last fed", "[confirm]") {
-  // Combined review of the 2026-10-02 run: the read's start is when the order was sent (the loop's
+  // The read's start is when the order was sent (the loop's
   // clock), its end was the decision instant (the last bar's period end). A daily strategy sending on
   // a Monday with Friday's bar fed asked KIS for an inverted range, which KIS's conversion refuses, so
   // every working-order poll failed and the loop gave up.
@@ -5311,7 +5311,7 @@ TEST_CASE("an order that fills between two polls is missed, and the counter does
 }
 
 TEST_CASE("silence between two stated figures does not add the second one twice") {
-  // Found in review. The held reading was overwritten with empty while the total kept the old
+  // The held reading was once overwritten with empty while the total kept the old
   // amount, so the next stated figure was added in full on top of it: 100, then silence, then 150
   // reported 250. The held state and the total have to stay in step.
   WorkingSession session;
@@ -5330,7 +5330,7 @@ TEST_CASE("silence between two stated figures does not add the second one twice"
 }
 
 TEST_CASE("a first figure at an unchanged filled quantity is taken, not discarded") {
-  // Also found in review. Only a strictly greater filled quantity was accepted, so an order seen
+  // Only a strictly greater filled quantity was once accepted, so an order seen
   // first without a figure and then with one at the same quantity was ignored entirely -- and it
   // was not a conflict either, because that check needed two present amounts. The charge simply
   // vanished from the subtotal.
@@ -7403,7 +7403,7 @@ struct WantsHalf {
 } // namespace
 
 TEST_CASE("a live run's report says why reconciliation could not build an instruction") {
-  // Lab: `EqualWeightRebalance` through `live_program` reported "not buildable: 80" and nothing else,
+  // `EqualWeightRebalance` through `live_program` once reported "not buildable: 80" and nothing else,
   // because the source discards each pass's report and its reasons with it. The run now carries the
   // last one, as it carries the broker's last refusal.
   using LoopRunner = runner::Runner<
@@ -7448,7 +7448,7 @@ TEST_CASE("a live run's report says why reconciliation could not build an instru
 }
 
 TEST_CASE("a file journal reads back a resolution a startup sweep wrote", "[recovery][file]") {
-  // F29 through the reader that failed: a `RESOLVED` line stamped at the epoch was damage to
+  // Through the reader that failed: a `RESOLVED` line stamped at the epoch was damage to
   // `FileJournal`, so the next open counted it as a line this library did not write and recovery halted.
   const TempPath path("atl-test-startup-sweep.jsonl");
   const auto sent = std::chrono::system_clock::now() - std::chrono::minutes(5);

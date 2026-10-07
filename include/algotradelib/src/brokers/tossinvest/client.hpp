@@ -920,7 +920,7 @@ private:
   //
   // A page that parses but contains no bar also ends the request: a broker that
   // returns an empty page while still reporting a cursor would otherwise be paged
-  // forever. The holdings pages have the same guard.
+  // forever.
   //
   // Takes the accumulation and cursor by reference rather than an operation, so the
   // normalization is a pure function of a response and can be tested as one.

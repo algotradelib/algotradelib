@@ -168,13 +168,12 @@ namespace runner_detail {
 // by hand, and a rule installed only by the factories would hold for their callers and nobody else.
 //
 // **The default is `true`, and an executor opts *out*.** That is the opposite of how a detection
-// trait beside it usually reads, and it is deliberate: the two directions fail differently. An
-// unmarked executor assumed harmless is a consumer's own adapter -- one whose `place` forwards to
-// `SessionExecutor` or straight to a broker client -- silently exempted from the rule this whole
-// branch exists for, and it fails by sending a real order sized against an account nobody read. An
-// unmarked executor assumed live is a test double that refuses until it is given a stamped portfolio
-// or says `allow_absent_portfolio()`, and it fails by being noticed at once. Only one of those two
-// is discoverable, so silence means live.
+// trait beside it usually reads, and it is deliberate: the two directions fail differently. An unmarked
+// executor assumed harmless is a consumer's own adapter -- one whose `place` forwards to `SessionExecutor` or
+// straight to a broker client -- silently exempted from the rule, and it fails by sending a real order sized
+// against an account nobody read. An unmarked executor assumed live is a test double that refuses until it is
+// given a stamped portfolio or says `allow_absent_portfolio()`, and it fails by being noticed at once. Only
+// one of those two is discoverable, so silence means live.
 //
 // `RecordingExecutor` and `backtest::QueueingExecutor` therefore say `false` explicitly: a dry run
 // and a replay have no holdings inquiry that could have failed, and a replay stamps its own

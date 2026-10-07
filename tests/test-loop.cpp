@@ -3414,9 +3414,7 @@ TEST_CASE("TimedLiquidation flattens live, which it could not do before", "[loop
   // Nothing here calls `feed(MarketPhase)` or `set_phase`. The clock crosses 15:30 and the position
   // is closed.
   strategy::RiskLimits limits;
-  // `POST_CLOSE` is permitted because the vanilla liquidates in it and the default `{OPEN}` would
-  // refuse the very order it exists to place. Whether that default should change is open, and this
-  // test does not depend on it.
+  // This fixture permits `POST_CLOSE` explicitly, the phase the vanilla liquidates in.
   limits.permitted_phases_ = std::vector<strategy::MarketPhase>{
     strategy::MarketPhase::OPEN,
     strategy::MarketPhase::POST_CLOSE,

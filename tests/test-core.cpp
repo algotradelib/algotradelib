@@ -631,7 +631,7 @@ TEST_CASE(
   STATIC_REQUIRE(ATL_VERSION_ENCODE(0, 999, 999) < ATL_VERSION_ENCODE(1, 0, 0));
   STATIC_REQUIRE(ATL_VERSION_ENCODE(2, 0, 0) > ATL_VERSION_ENCODE(1, 999, 999));
 
-  // Still the development version before any release: no release number until the operator decides.
+  // Still the development version before any release.
   STATIC_REQUIRE(ATL_VERSION == ATL_VERSION_ENCODE(0, 0, 0));
   STATIC_REQUIRE(ATL_VERSION_DEV == 9000);
 }
@@ -3065,7 +3065,7 @@ TEST_CASE(
   "KIS answers the modifiable-order read on demo from today's order history",
   "[broker][kis][order]"
 ) {
-  // Demo has no `TTTC0084R`. F16: refused, it kept a demo loop's startup gate closed for good.
+  // Demo has no `TTTC0084R`. Refused, it kept a demo loop's startup gate closed for good.
   const kis::KisAccount account{"12345678", "01"};
   kis::KisConfig demo;
   demo.is_demo_ = true;
@@ -4396,7 +4396,7 @@ TEST_CASE(
 }
 
 TEST_CASE("a KIS minute page repeating the previous page's oldest bar adds it once", "[broker][kis][bars]") {
-  // Observed 2026-10-04 (labs F43): a read before 2026-09-01 13:22 KST returned the bar at each page join
+  // Observed on 2026-10-04: a read before 2026-09-01 13:22 KST returned the bar at each page join
   // twice, identical. The runner's bar cache throws on a repeated timestamp, so the series must not carry one.
   BarQuery query;
   query.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "005930"};

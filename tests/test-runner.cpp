@@ -1057,7 +1057,7 @@ TEST_CASE("withdrawals spend the rate window a later placement is checked agains
 }
 
 TEST_CASE("the probe does not learn the broker's convention from this runner's own reservation") {
-  // Found in review, and it would have made the probe worse than useless: with the sellable check
+  // Without this the probe would be worse than useless: with the sellable check
   // on, an accepted sell is kept as a row of ours so the next order cannot re-sell the same shares.
   // If the probe counted that row, the resting quantity would rise with no change in the broker's
   // sellable figure -- and it would record GROSS_OF_RESTING on evidence it manufactured itself,
@@ -1767,7 +1767,7 @@ TEST_CASE("the runner caches bars as a contiguous series an indicator can read")
 #endif
 
 // ---------------------------------------------------------------------------
-// Transport indeterminacy: the most important behaviour in the branch
+// Transport indeterminacy: the most important behaviour here
 // ---------------------------------------------------------------------------
 
 namespace {

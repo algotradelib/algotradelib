@@ -4,8 +4,8 @@ file(GLOB_RECURSE CPP_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.c
 # without a linear algebra backend -- on purpose, so the diagnostic names the option to
 # set. A build configured with ATL_USE_EIGEN=OFF must therefore not try to build them.
 #
-# Matched on the file name rather than on the glob's absolute paths: a worktree directory
-# can itself be named after the branch, and a bare "analytics" regex over full paths then
+# Matched on the file name rather than on the glob's absolute paths: a checkout directory
+# can itself contain the word, and a bare "analytics" regex over full paths then
 # excludes every example in the directory.
 if(NOT ATL_USE_EIGEN)
     set(ATL_PORTABLE_EXAMPLES "")

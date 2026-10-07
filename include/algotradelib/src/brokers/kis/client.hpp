@@ -1113,7 +1113,7 @@ private:
     // passed KIS returns nothing and the empty-page guard above ends the request.
     // The date check below is the second line of defence, for a bound that crosses
     // midnight: a minute request never steps to another calendar day, because
-    // choosing the previous *trading* day needs a calendar this slice has not built.
+    // choosing the previous *trading* day needs a calendar this request does not have.
     const auto& oldest = operation->descending_.back();
     Date date{};
     std::string time;
@@ -1350,7 +1350,7 @@ private:
       // KIS's 표준상품번호 is the KRX standard code, which is also the ISIN. KIS does not
       // say so in as many words, but it documents the field as twelve characters for
       // both domestic and foreign instruments, which is the ISIN's length and not the
-      // length of any domestic-only code. Confirmed in review.
+      // length of any domestic-only code.
       instrument.isin_ = broker_detail::json_string(row, "std_pdno");
       const auto market = broker_detail::json_string(row, "mket_id_cd");
       instrument.segment_ = kis_market_segment(market);
@@ -3136,7 +3136,7 @@ private:
   //
   // The sheet's demo restriction -- 모의투자는 KRX만 가능 -- **is** enforced,
   // by `validate_venue` above, and `transmitted_exchange` omits the field
-  // entirely on a demo account. It was not enforced until a review pointed out
+  // entirely on a demo account. It was not enforced until it became clear
   // that making `COMBINED` mean `SOR` had turned the most ordinary demo order
   // into one the account would refuse, after its POST.
   // Returns an error when a venue is unusable on this configuration.
