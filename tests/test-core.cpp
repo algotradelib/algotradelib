@@ -511,6 +511,41 @@ TEST_CASE(
   REQUIRE(utc);
   REQUIRE(*timestamp == *utc);
   REQUIRE_FALSE(parse_iso8601_timestamp("2026-03-25 09:30:00"));
+
+  // More than three fractional digits are truncated, and a negative offset is subtracted.
+  REQUIRE(parse_iso8601_timestamp("2026-03-25T00:30:00.123456Z") == utc);
+  REQUIRE(parse_iso8601_timestamp("2026-03-24T15:30:00.123-09:00") == utc);
+
+  // Anything but the exact layout is refused rather than read as some other instant.
+  for (const char* malformed : {
+         "2026-03-25T09:30:00+99:99", "2026-03-25T09:30:00+24:00", "2026-03-25T09:30:00+09:60",
+         "2026-03-25T09:30:00Zgarbage", "2026-03-25T09:30:00.123oopsZ", "2026-03-25T09:30:00.Z",
+         "2026-03-25T09:30:00", "2026-03-25T09:30:00+0900", "2026-03-25T09:30:00+09:00x",
+         "2026-3-25T09:30:00Z", " 2026-03-25T09:30:00Z", "+2026-03-25T09:30:00Z",
+       }) {
+    INFO(malformed);
+    REQUIRE_FALSE(parse_iso8601_timestamp(malformed));
+  }
+}
+
+TEST_CASE("decimal arithmetic at the edges of the coefficient", "[core][decimal]") {
+  // Two negatives whose common scale overflows: the smaller scale holds the larger magnitude.
+  const Decimal64 tiny(-1, 2);
+  const Decimal64 huge(-9000000000000000000LL, 0);
+  REQUIRE_FALSE(decimal_less(tiny, huge));
+  REQUIRE(decimal_less(huge, tiny));
+  REQUIRE(decimal_less(Decimal64(1, 2), Decimal64(9000000000000000000LL, 0)));
+  REQUIRE(decimal_less(huge, Decimal64(1, 2)));
+
+  // Flooring the most negative coefficient would go below it: refused rather than overflowing.
+  const Decimal64 lowest(std::numeric_limits<std::int64_t>::min(), 0);
+  REQUIRE_FALSE(decimal_floor_to_multiple(lowest, Decimal64(3, 0)));
+  REQUIRE(decimal_floor_to_multiple(lowest, Decimal64(2, 0)) == lowest);
+
+  // A remainder that does not fit says "cannot tell", as `round_to_tick` does, not "off the grid".
+  const Decimal64 unrepresentable(std::numeric_limits<std::int64_t>::max(), 19);
+  REQUIRE_FALSE(PriceRule::krx_equity().on_tick(unrepresentable).has_value());
+  REQUIRE_FALSE(PriceRule::krx_equity().round_to_tick(unrepresentable, OrderSide::BUY).has_value());
 }
 
 TEST_CASE(
@@ -909,6 +944,29 @@ TEST_CASE(
   ioc.run();
   REQUIRE(kis_completed);
   REQUIRE(toss_completed);
+}
+
+TEST_CASE(
+  "a Toss sellable-quantity inquiry refuses a symbol that would change its URL",
+  "[toss][account]"
+) {
+  // The symbol goes into the query string; one carrying `&` or `?` must not reach the wire.
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  auto client =
+    std::make_shared<tossinvest::TossClient>(ioc.get_executor(), context, tossinvest::TossConfig{});
+  bool completed = false;
+  client->async_sellable_quantity(
+    InstrumentId{Country::KR, Venue::COMBINED, "005930&symbol=000660"}, 1,
+    [&completed](Result<Decimal64> result) {
+      REQUIRE_FALSE(result);
+      REQUIRE(result.error().broker_code_ == "invalid_instrument");
+      REQUIRE_FALSE(result.error().reached_broker_);
+      completed = true;
+    }
+  );
+  ioc.run();
+  REQUIRE(completed);
 }
 
 TEST_CASE(

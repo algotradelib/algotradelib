@@ -1880,6 +1880,15 @@ private:
       complete_sellable_quantity(std::move(completion), Result<Decimal64>(std::move(*invalid)));
       return;
     }
+    if (!broker_detail::valid_symbol(instrument.symbol_)) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
+      error.broker_code_ = "invalid_instrument";
+      error.message_ = "sellable-quantity request requires a symbol";
+      complete_sellable_quantity(std::move(completion), Result<Decimal64>(std::move(error)));
+      return;
+    }
     ensure_token(
       TokenHandler(
         [self = shared_from_this(), instrument = std::move(instrument), account_sequence,
@@ -1906,7 +1915,8 @@ private:
     network::HttpRequest request;
     request.group_ = network::RateLimitGroup::ACCOUNT;
     request.method_ = http::verb::get;
-    request.target_ = "/api/v1/sellable-quantity?symbol=" + instrument.symbol_;
+    request.target_ =
+      "/api/v1/sellable-quantity?symbol=" + broker_detail::query_encode(instrument.symbol_);
     request.headers_ = {
       {"Authorization", "Bearer " + token_.access_token_},
       {"X-Tossinvest-Account", std::to_string(account_sequence)},
@@ -2079,7 +2089,7 @@ private:
     // Quote polling is the traffic a reserve exists to hold back.
     request.group_ = network::RateLimitGroup::MARKET_DATA;
     request.method_ = http::verb::get;
-    request.target_ = "/api/v1/prices?symbols=" + instrument.symbol_;
+    request.target_ = "/api/v1/prices?symbols=" + broker_detail::query_encode(instrument.symbol_);
     request.headers_.emplace_back("Authorization", "Bearer " + token_.access_token_);
     http_->async_request(
       std::move(request),

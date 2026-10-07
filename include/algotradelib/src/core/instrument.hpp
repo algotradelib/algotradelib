@@ -189,9 +189,9 @@ struct PriceRule {
   /**
    * @brief Tests whether a price is on the grid.
    * @param price The price.
-   * @return `std::nullopt` if the grid is unknown (kind `UNKNOWN`); `true` if `price` is on its
-   *   band's tick, or there is no band at `price` (an unconstrained rule); otherwise `false`, which
-   *   also covers a remainder that does not fit a `Decimal64`.
+   * @return `std::nullopt` if the grid is unknown (kind `UNKNOWN`) or the remainder does not fit a
+   *   `Decimal64`; `true` if `price` is on its band's tick, or there is no band at `price` (an
+   *   unconstrained rule); otherwise `false`.
    */
   std::optional<bool> on_tick(const Decimal64& price) const {
     if (kind_ == Kind::UNKNOWN) {
@@ -202,7 +202,10 @@ struct PriceRule {
       return true;
     }
     const auto rest = remainder(price, *tick);
-    return rest.has_value() && rest->coefficient() == 0;
+    if (!rest) {
+      return std::nullopt;
+    }
+    return rest->coefficient() == 0;
   }
 
   /**

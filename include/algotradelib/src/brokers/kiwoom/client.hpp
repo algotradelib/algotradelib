@@ -195,8 +195,7 @@ inline std::optional<BrokerError> unestablished_holdings_scope() {
     "resting one into a fillable price, against a position it cannot read. Cancelling is "
     "unaffected, including cancel_quantity(). To proceed, assert what the parameter means by "
     "setting KiwoomConfig::holdings_position_scope_ to KiwoomPositionScope::VALUATION_ONLY, having "
-    "read issues/kiwoom-api-holdings-venue-scope.md -- an assertion that is wrong undercounts the "
-    "account. Two requests settle it for real; the experiment is in that issue";
+    "read its documentation -- an assertion that is wrong undercounts the account";
   return error;
 }
 
@@ -2436,8 +2435,8 @@ private:
     error.message_ =
       "Kiwoom's balance inquiry names one venue and publishes no combined value, and whether that "
       "selects which positions are listed or only how they are valued is not stated; set "
-      "KiwoomConfig::holdings_venue_ to Venue::KRX or Venue::NXT deliberately, having read "
-      "issues/kiwoom-api-holdings-venue-scope.md";
+      "KiwoomConfig::holdings_venue_ to Venue::KRX or Venue::NXT deliberately, having read its "
+      "documentation";
     return error;
   }
 
