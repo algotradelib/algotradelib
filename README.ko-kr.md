@@ -1,4 +1,4 @@
-# algotradelib (한국어) <img src="doxygen/figures/logo.png" align="right" height="150" alt="" />
+# algotradelib <img src="doxygen/figures/logo.png" align="right" height="139" alt="" />
 
 <!-- badges: start -->
 ![License](https://img.shields.io/badge/license-MIT-blue.svg?style=plastic)
@@ -17,8 +17,8 @@
   그 페이지의 같은 절이 바뀔 때도 이 문서를 확인합니다.
 -->
 
-이 문서는 [README](README.md)를 짧게 요약한 안내입니다.
-두 문서의 내용이 다르면 영어 README를 따르세요.
+> 이 문서는 [README](README.md)를 짧게 요약한 안내입니다.
+> 두 문서의 내용이 다르면 영어 README를 따르세요.
 
 algotradelib은 한국투자증권 (KIS), 키움증권, 토스증권 Open API로 자동매매 프로그램을 만들 수 있는 C++ 헤더 전용 라이브러리입니다.
 전략 코드 하나로 백테스트, 주문 없는 시험 실행, 실거래를 모두 할 수 있고, 증권사를 바꿔도 전략 코드는 그대로 쓸 수 있습니다.
