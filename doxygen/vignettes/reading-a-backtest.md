@@ -250,7 +250,10 @@ strategy whose price rose is then leveraged without having asked to be, and its 
 drawdown are a leveraged strategy's. `ReportCaveats::overdrawn_bars_` counts the bars that closed with
 cash below zero, `first_overdrawn_` says when it started and `lowest_cash_` how far it went; read them
 before a ranking. They measure cash in the replay's currency only: a short's proceeds count as cash,
-so leverage through shorts is not in them (see "Borrow availability" above). Turning the check on
+so leverage through shorts is not in them (see "Borrow availability" above). Borrowing can lose more than the opening equity: once
+equity is zero or below, the periods after it have no return (`EquityPoint::period_return_` is missing),
+and `sharpe_`, `sortino_` and `annualized_sharpe_` are `math::undefined()`, because no ratio describes such
+a run. Turning the check on
 refuses such buys, but a market buy is checked at the reference price, without commission, and filled
 at the next bar's open, so a gap up can still overdraw a little. Live, whether a buy the cash cannot
 cover is refused depends on the account: a Korean account with 미수 (credit) enabled can buy past its
