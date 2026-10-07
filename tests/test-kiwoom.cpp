@@ -2036,8 +2036,8 @@ TEST_CASE("the two holdings assertions are independent of each other", "[kiwoom]
 TEST_CASE("asserting the scope admits what it refused, per instruction", "[kiwoom][orders]") {
   // **The positive control for the refusal above.** A refusal on its own does not show the gate is
   // the holdings scope -- it could be anything else about the order -- so this changes only the
-  // scope and requires each instruction through. Enumerated per instruction because slice 25 spent
-  // four rounds discovering that a reprice is a placement wearing an amendment's clothes.
+  // scope and requires each instruction through. Enumerated per instruction because a reprice is
+  // a placement wearing an amendment's clothes.
   using Access = kiwoom::KiwoomClientTestAccess;
   using Traits = BrokerTraits<kiwoom::KiwoomClient>;
   const auto asserted = kiwoom::KiwoomPositionScope::VALUATION_ONLY;

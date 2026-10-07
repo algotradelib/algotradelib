@@ -1557,7 +1557,7 @@ private:
   // **Both halves are required, and each one removes a wrong answer.** The phase must have moved, or an
   // ordinary send would be reported. Something must have been sent, or an ordinary calendar poll would be
   // reported on every iteration -- which is why this no longer excludes the calendar poll by kind. That
-  // exclusion was a false-positive workaround and it hid the case Codex round 3 found: a source obeying
+  // exclusion was a false-positive workaround and it hid this case: a source obeying
   // the letter of the contract, writing the calendar in the calendar poll and *then* feeding.
   //
   // `total_sent()` rather than the guard's rate-window deque, because that one prunes and can fall, so
@@ -1599,7 +1599,7 @@ private:
   // documents the contract that rules it out, `SessionSource` satisfies it -- it writes the calendar in
   // the calendar poll and nowhere else -- and `note_revised_phase` reports a source that
   // breaks it, because a violation nobody is told about is one nobody fixes. An earlier version of this
-  // comment claimed the stronger at-send-site invariant; Codex round 2 falsified it with a probe.
+  // comment claimed the stronger at-send-site invariant, which a probe falsified.
   //
   // The instant is the iteration's own `at_` throughout, never re-read from the clock, so a poll that
   // took a second does not move the session boundary mid-iteration.
@@ -1662,7 +1662,7 @@ private:
     // and telling an operator it was never established would send them looking for a configuration
     // fault that is not there.
     //
-    // This used to read `report.phase_transitions_ > 0`, which Codex round 2 falsified: `announced_`
+    // This used to read `report.phase_transitions_ > 0`, which was wrong: `announced_`
     // outlives a `run` while the report's counter restarts at zero, so a run with nothing left to
     // announce reports no transitions and would claim the phase had never been known -- of a loop that
     // spent its first run open. The verdict was right in the case that was tested and the reasoning was
@@ -1789,8 +1789,7 @@ private:
       // question the send path asks it, so a run that has never read the account sizes an entry as
       // though it were flat.
       //
-      // **No longer inside the age check.** It was, and `plan/todo/
-      // holdings-failure-is-not-a-send-gate.md` recorded why hoisting it was not a one-line change:
+      // **No longer inside the age check.** It was, and hoisting it was not a one-line change:
       // the hold would reach cancellations, and an order that cannot be withdrawn keeps resting and
       // can fill. That objection is answered rather than avoided -- `strategy::halt_blocks` lets a
       // named withdrawal through a hold that only means this runner is uninformed, and
@@ -2155,8 +2154,8 @@ private:
     // **Derived once more, immediately before the only call that can send during a stop.** `on_stop` ran
     // a few lines above with a mutable context, so it may have revised the calendar -- and unlike a
     // strategy's write inside `on_phase`, this one the loop *can* answer, because `settle_closing` is a
-    // separate call it makes itself. Codex round 3 reproduced the version without this: a handler
-    // revising the calendar to closed, and the flatten going out under the `OPEN` it replaced.
+    // separate call it makes itself. Without this, a handler that revised the calendar to closed
+    // saw the flatten go out under the `OPEN` it replaced.
     //
     // At `clock_.now()` rather than the iteration's instant, because a stop is honoured after the
     // iteration and a closing pass should be checked against the session as it is now.

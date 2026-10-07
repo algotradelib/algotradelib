@@ -1136,7 +1136,7 @@ private:
   // first and each is bounded just before the previous page's oldest bar, but KIS's minute bound does not
   // always exclude that bar: a read of 005930 before 2026-09-01 13:22 KST (주식일별분봉조회, 120 a page)
   // returned the bar at each page join twice, identical, at 11:23 and 09:24, while reads starting at other
-  // minutes repeated nothing (`labs/FINDINGS.md` F43). A series with a repeated timestamp is not a series:
+  // minutes repeated nothing. A series with a repeated timestamp is not a series:
   // the runner's bar cache refuses a bar that is not later than the last (`SeriesBuffer::push` throws), so
   // a backtest fed it stopped on the first repeat. Dropping the repeat is safe whatever the bound's rule
   // is, and a page that brings nothing older counts as empty, which ends the request rather than asking

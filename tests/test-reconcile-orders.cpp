@@ -1099,7 +1099,7 @@ TEST_CASE("recovery tells two stops apart by their triggers", "[reconcile][trigg
   }
 
   SECTION("a limit row that also reports a trigger is withheld, not read as an absence") {
-    // What slice 39's readers record when a broker reports a positive trigger on a non-stop row.
+    // What the readers record when a broker reports a positive trigger on a non-stop row.
     // It is the broker contradicting its own code, not proof of another order: reading it as one
     // reported this runner's own limit NOT_PLACED and cleared the hold for a second send.
     auto plain = placement();

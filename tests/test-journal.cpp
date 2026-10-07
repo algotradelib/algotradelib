@@ -969,7 +969,7 @@ TEST_CASE("an implausible instant is not read as a current one", "[journal]") {
   //
   // **This is a bound, not an integrity check.** It catches the demonstrated
   // case and it cannot catch a stamp that is merely an hour wrong, because
-  // nothing inside a line can. See plan/todo/journal-line-integrity.md.
+  // nothing inside a line can.
   const auto with_instant = [](const char* micros) {
     auto line = runner::journal_entry_to_line(sample_entry());
     const auto at = line.find("\"at\":");
@@ -1733,9 +1733,8 @@ TEST_CASE(
   "a cancellation of a market order the broker priced survives writer to reader",
   "[journal][file][reconcile]"
 ) {
-  // Codex round 7's blocker, as the path it actually travels rather than as a hand-built
-  // `OpenInstruction`. Round 7 asked for this distinction explicitly and the first fix did not
-  // supply it: the direct test shows the matcher tolerates a price-inconsistent cancellation, but
+  // The same case as the path it actually travels rather than as a hand-built
+  // `OpenInstruction`: the direct test shows the matcher tolerates a price-inconsistent cancellation, but
   // only this one shows such a line is *written* in the first place, accepted by the reader, and
   // still resolvable. Without it the guard could be protecting a case that never occurs.
   //
@@ -2532,7 +2531,7 @@ TEST_CASE("salvage reads a value with an escaped quote whole", "[journal][integr
 }
 
 TEST_CASE("a changed terminal line halts recovery rather than being dropped as an orphan", "[journal][integrity]") {
-  // **Codex round 1's first blocker.** Read as a damaged entry, a terminal line carries an id suffixed
+  // Read as a damaged entry, a terminal line carries an id suffixed
   // `~damaged`, pairs with nothing and is dropped -- leaving its intact pending partner open as an
   // ordinary instruction a sweep may resolve. A changed line is unreadable instead, and that halts.
   auto pending = checked_entry();
@@ -2565,7 +2564,7 @@ TEST_CASE("a changed terminal line halts recovery rather than being dropped as a
 }
 
 TEST_CASE("a header that declares checksums protects the first entry too", "[journal][integrity]") {
-  // **Codex round 1's third blocker.** In a file begun before checksums, only a checksummed line
+  // In a file begun before checksums, only a checksummed line
   // *above* can reveal that a line lost its whole checksum member. A file this release begins says so
   // in its header, so even its first entry cannot pass as an older release's.
   const auto header = runner::journal_header_line("test:account");
@@ -2589,7 +2588,7 @@ TEST_CASE("a header that declares checksums protects the first entry too", "[jou
 }
 
 TEST_CASE("an entry overwritten by a newline or by the header is counted, not skipped", "[journal][integrity]") {
-  // **Codex round 2's blocker.** A blank line and a second header were skipped, so an entry replaced by
+  // A blank line and a second header were skipped, so an entry replaced by
   // either vanished from recovery with nothing counted -- and its terminal companion became an orphan.
   const auto header = runner::journal_header_line("test:account");
   auto pending = checked_entry();

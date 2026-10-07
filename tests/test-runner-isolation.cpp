@@ -13,7 +13,7 @@
 // It does *not* establish that libssl is absent from the link line. The package exports one
 // interface target carrying the transport dependencies for every consumer, so a dry-run binary has
 // the library as a dylib dependency it never calls. Making that literal needs a second,
-// transport-free target — see plan/todo/offline-only-target.md.
+// transport-free target.
 //
 // `LiveRunner` lives in `<algotradelib/live>` precisely because it does need a session, and keeping
 // the two apart is what makes the compile-time half assertable.

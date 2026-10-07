@@ -1394,7 +1394,7 @@ private:
         // placements for a plan that also wanted to withdraw something -- the last two on a perfectly
         // fresh portfolio. Counted at all because the loop's own gate
         // does not always describe it: with `allow_absent_portfolio` the gate can be open while this
-        // fires, which is the case Codex round 0 named.
+        // fires.
         ++plans_withheld_;
         std::string detail = withhold_detail(*reason);
         if (data_is_missing) {

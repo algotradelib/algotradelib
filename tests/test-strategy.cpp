@@ -2374,7 +2374,7 @@ TEST_CASE("a sell that has finished does not hold back the next one") {
   // already ended. **The row is `CANCELED` with a non-zero remainder, and that is the whole point.**
   // An earlier version used a `FILLED` row of 100 filled 100, whose remaining quantity is zero --
   // so an implementation that dropped the `order_is_open` check entirely still passed it, and the
-  // test proved nothing. Codex round 1 caught that. A cancelled sell of 100 with nothing filled has
+  // test proved nothing. A cancelled sell of 100 with nothing filled has
   // 100 remaining, so counting it would take the whole holding and refuse the exit.
   const RiskGuard guard;
   ProbePortfolio portfolio;
@@ -2398,7 +2398,7 @@ TEST_CASE("a working sell of unknown status still reserves what it might take") 
 }
 
 TEST_CASE("a position ceiling measures the net holding, so an exit from split lots is not refused") {
-  // **Codex round 1's blocker.** Reconciliation sizes a target against the net of every position
+  // Reconciliation sizes a target against the net of every position
   // row, so a target of zero against lots of 60 and 40 plans a sell of 100. This ceiling read the
   // *first* row, computed 60 - 100 = -40, and refused the order for reaching a short of 40 -- an
   // exit refused for breaching a ceiling it was on its way under, leaving the position held. Before

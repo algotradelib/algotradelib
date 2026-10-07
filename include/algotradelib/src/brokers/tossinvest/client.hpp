@@ -3493,7 +3493,7 @@ private:
     // quantity. The library does not place one yet, but it must not drop the
     // field off one placed through another channel: without it the snapshot
     // says an order of some quantity and cannot say what was actually
-    // committed. See `plan/todo/us-and-conditional-orders.md`.
+    // committed.
     order.order_amount_ = nullable_decimal(row, "orderAmount");
     order.currency_ = currency;
     order.ordered_at_ = optional_timestamp(row, "orderedAt");

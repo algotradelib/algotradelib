@@ -1220,7 +1220,7 @@ TEST_CASE("an order whose reply was lost carries no reference, not the previous 
 }
 
 TEST_CASE("a resting order whose reply was lost is not counted twice beside its own listed row", "[confirm]") {
-  // Fable's merge check: a listing carries the order before any sweep names it (a failed history read,
+  // A listing carries the order before any sweep names it (a failed history read,
   // an ambiguous sweep, no journal). Its reserved row beside the broker's own made 20 working for a
   // target of 10, and the target withdrew the real order -- cancels are not held by the ledger.
   ConfirmRig rig;
@@ -3956,8 +3956,8 @@ TEST_CASE("a failed holdings poll leaves the rows and their basis together") {
   REQUIRE(source.poll(runner::PollKind::HOLDINGS, live_runner) == runner::PollOutcome::UPDATED);
   REQUIRE(live_runner.context().portfolio().sellable_basis_.is_enforceable());
 
-  // Now the read fails. The previous portfolio survives, which is deliberate and is slice 26's rule
-  // rather than this branch's -- and it survives *whole*.
+  // Now the read fails. The previous portfolio survives, which is deliberate -- and it survives
+  // *whole*.
   session.fail_with(ErrorCategory::TRANSPORT, 503);
   const auto outcome = source.poll(runner::PollKind::HOLDINGS, live_runner);
   REQUIRE(outcome != runner::PollOutcome::UPDATED);
@@ -4288,8 +4288,7 @@ TEST_CASE("polling holdings stamps the portfolio with the broker's own time") {
 TEST_CASE("an account holding nothing still stamps the portfolio") {
   // **The fact any "has a portfolio arrived" question rests on.** The epoch on `as_of_` is what
   // tells "never arrived" from "arrived empty": `PollingLoop`'s staleness gate reads it that way
-  // today, and `plan/todo/holdings-failure-is-not-a-send-gate.md` proposes reading it that way
-  // unconditionally. If a successful read of an account with no positions left the stamp at the
+  // today, and other rules may read it that way unconditionally. If a successful read of an account with no positions left the stamp at the
   // epoch, every such rule would hold an empty account forever.
   WorkingSession session;
   HoldingsSnapshot empty;
@@ -4558,7 +4557,7 @@ TEST_CASE("a sweep that finds an order whose reply was lost hands it to the runn
 }
 
 TEST_CASE("a sweep before any bar stamps its resolution with the loop's clock", "[recovery]") {
-  // Observed on a KIS demo account (2026-10-02, `labs/FINDINGS.md` F29): a process restarted after
+  // Observed on a KIS demo account (2026-10-02): a process restarted after
   // `kill -9` resolved its predecessor's order at the startup read, before any bar set the decision
   // instant. The resolution line was stamped at the epoch, the journal reader takes such a line for
   // damage, and the next start halted ("lines this library did not write").
@@ -5877,7 +5876,7 @@ TEST_CASE("one order stated twice in a listing is reported once") {
 TEST_CASE("two readings of one order that disagree are reported to nobody") {
   // Neither reading can be preferred and nothing here can say which is true, so reporting either
   // states something unestablished and reporting both hands a strategy a contradiction as two
-  // events. The same answer slice 27 reached for two sellable figures that contradicted.
+  // events. The same answer as for two sellable figures that contradict.
   WorkingSession session;
   auto live_runner = live::bind_observer(session, WatchesOrders{});
   live::SessionSource<WorkingSession> source(session, {samsung()});
@@ -6031,7 +6030,7 @@ void record_stop(WorkingSession& session, OrderStatus status, const char* filled
 
 TEST_CASE("a deferred flatten is sent once the broker records its stop cancelled unfilled", "[trigger]") {
   // No holdings poll at all: the working-order poll that no longer lists the stop reads the stop's own
-  // history row on demand, and that row decides. (Codex round 4's first blocker.)
+  // history row on demand, and that row decides.
   WorkingSession session;
   auto bound = live::bind(session, FlattensOnPhase{}, {});
   live::SessionSource<WorkingSession> source(session, {samsung()});
@@ -6041,7 +6040,7 @@ TEST_CASE("a deferred flatten is sent once the broker records its stop cancelled
   record_stop(session, OrderStatus::CANCELED, "0");
   poll_listing_at(source, bound, session, {}, 1);
   // A broker that takes no range -- this fake, like Kiwoom -- is asked one stated date at a time:
-  // Kiwoom's `kt00007` requires the date and refuses a range. (Codex round 5.)
+  // Kiwoom's `kt00007` requires the date and refuses a range.
   REQUIRE(session.history_calls() >= 1);
   for (const auto& query : session.history_queries()) {
     REQUIRE(query.from_);
@@ -6056,7 +6055,7 @@ TEST_CASE("a deferred flatten is sent once the broker records its stop cancelled
 
 TEST_CASE("a deferred flatten does not sell again after the stop filled", "[trigger]") {
   // Holdings still say ten -- stale, the broker's endpoints promise no consistency -- and the stop's own
-  // record says it filled. (Codex round 4's second blocker.)
+  // record says it filled.
   WorkingSession session;
   auto bound = live::bind(session, FlattensOnPhase{}, {});
   live::SessionSource<WorkingSession> source(session, {samsung()});
@@ -6094,7 +6093,7 @@ TEST_CASE("a deferred flatten waits while the stop's record is not terminal, or 
 }
 
 TEST_CASE("an update in the same listing supersedes the deferred flatten before it can go", "[trigger]") {
-  // **Codex round 3's second blocker.** The listing that drops the stop also carries an update the
+  // The listing that drops the stop also carries an update the
   // strategy answers by holding ten. That answer must win, whatever the order of rows.
   WorkingSession session;
   auto bound = live::bind(session, FlattensOnPhase{}, {});
@@ -6110,7 +6109,7 @@ TEST_CASE("an update in the same listing supersedes the deferred flatten before 
 }
 
 TEST_CASE("the evidence read covers the Korean day when UTC has not reached it yet", "[trigger]") {
-  // **Codex round 6.** At 08:45 KST on 30 September it is 23:45 UTC on the 29th. A stop placed and
+  // At 08:45 KST on 30 September it is 23:45 UTC on the 29th. A stop placed and
   // withdrawn that morning lives in Kiwoom's history under 30 September, which a read ending at the UTC
   // date never asked for.
   WorkingSession session;
@@ -6136,7 +6135,7 @@ TEST_CASE("the evidence read covers the Korean day when UTC has not reached it y
 }
 
 TEST_CASE("a row from another day under the same order number is a different order", "[recovery]") {
-  // **Codex's round-1 finding on the single-date sweep.** Kiwoom numbers orders per day, and a sweep
+  // Kiwoom numbers orders per day, and a sweep
   // read one date at a time can see yesterday's order under today's number. Merged by the number alone,
   // today's row -- the journalled order, filled and gone from the working list -- was dropped, the
   // older row failed the time window, and recovery said `NOT_PLACED`.
@@ -6171,7 +6170,7 @@ TEST_CASE("a row from another day under the same order number is a different ord
   CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::MATCHED);
   CHECK(source.last_reconcile().matches_.front().order_id_ == "KRX-1");
 
-  // Yesterday's row with no readable time does not swallow today's either (Codex round 2): the pages
+  // Yesterday's row with no readable time does not swallow today's either: the pages
   // are never merged against each other.
   yesterday.ordered_at_.reset();
   runner::MemoryJournal again;
@@ -6197,7 +6196,7 @@ TEST_CASE("a row from another day under the same order number is a different ord
 }
 
 TEST_CASE("an open history row is not dropped under a working row that only shares its number", "[recovery]") {
-  // **Codex round 3.** Yesterday's journalled order is still open in yesterday's history; today a
+  // Yesterday's journalled order is still open in yesterday's history; today a
   // different order resting in the working list carries the same number. Dropping the history row as
   // the working row's copy left no candidate inside the window, and recovery said `NOT_PLACED`.
   WorkingSession session;
@@ -6232,7 +6231,7 @@ TEST_CASE("an open history row is not dropped under a working row that only shar
 TEST_CASE("a resting order listed in both inquiries recovers as one match on a no-range broker", "[recovery]") {
   // The happy path of the exact-copy rule, end to end: the working row and the history row state the
   // same id, instrument and order time -- as Kiwoom's and Toss's listings do -- so they are one
-  // candidate and the journalled order is `MATCHED`. (Fable's note at slice 44's merge check.)
+  // candidate and the journalled order is `MATCHED`.
   WorkingSession session;
   auto resting = working();
   resting.ref_ = OrderRef<FakeBroker>{"KRX-1", ""};

@@ -601,7 +601,7 @@ public:
       // **The price and the clock move first, then the change is announced.** `Runner::feed` sets
       // both from the quote, but it runs *after* this, so announcing first left `on_phase` deciding
       // on the previous bar's close and stamping its send at the previous instant -- a market order
-      // sized and guarded at the wrong value, which Codex round 1 found. This is the order
+      // sized and guarded at the wrong value. This is the order
       // `feed(const BarEvent&)` already uses: mark, price, clock, announce, dispatch.
       runner_.context().set_last_price(event.quote_.instrument_, event.quote_.last_price_);
       runner_.context().set_now(event.quote_.received_at_);
@@ -618,7 +618,7 @@ public:
     // it out, arguing that live a quote poll publishes no order update -- which is true of that one
     // call and false of the iteration it sits in: `WORKING_ORDERS` follows `QUOTES` in
     // `all_poll_kinds`, so an order placed from `on_quote` can be listed moments later and
-    // announced. Codex round 0 found it. Publishing here is the closer parity, and it also announces
+    // announced. Publishing here is the closer parity, and it also announces
     // an order that would otherwise fill and be gone before any later observation point.
     publish_order_updates();
   }
@@ -679,8 +679,7 @@ private:
 
   // Returns when `event`'s period began, where that is answerable **from the event itself**.
   //
-  // Three cases, in the order they are decided, and the ordering is the correction Codex round 1
-  // forced:
+  // Three cases, in the order they are decided; the order matters:
   //
   // 1. **An open-stamped bar states it.** `BarStamp::OPEN` means `bar_.timestamp_` *is* the first
   //    instant of the period, for every interval. Nothing has to be derived.

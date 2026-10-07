@@ -5661,7 +5661,7 @@ TEST_CASE(
   };
   const Date today{2026, 9, 29};
 
-  // Slice 32 refused this read, because an empty `delisted_on_` read as "not delisted". That field
+  // This read was once refused, because an empty `delisted_on_` read as "not delisted". That field
   // can no longer be read that way, so the row survives -- currency and price grid included -- and
   // the damage is recorded where the date would have been.
   const auto damaged_delisting = parse(R"("1996-12-26")", R"("2026-13-01")", "ACTIVE");

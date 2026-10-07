@@ -2316,8 +2316,7 @@ private:
   //
   // One function for the three account listings, because the decision is the same for all of them
   // and the consequence of getting it wrong is the same too. It is separate from the handlers so
-  // that the decision can be exercised without a socket, which is what
-  // `plan/README.md` means by observing the mechanism rather than a seam.
+  // that the decision can be exercised without a socket.
   static PageStep advance_page(
     std::string& next_key_slot,
     int& pages,
@@ -2400,8 +2399,8 @@ private:
   //
   // **A named decision with one caller**, rather than three lines inside the paging branch that
   // completes a snapshot. That branch is unreachable without a live HTTP round trip, so a rule
-  // written there is a rule no test can drive -- and slice 25 spent a round learning that a
-  // decision worth making is worth naming (`validate_amendment`). This is the same shape.
+  // written there is a rule no test can drive. A decision worth making is worth naming
+  // (`validate_amendment`), and this is the same shape.
   //
   // The coverage is the operator's assertion and nothing more. The resting treatment is this
   // library's own conservative rule either way and is deliberately not a caller's to state:
@@ -2549,9 +2548,8 @@ private:
   // `Portfolio` reads the *first* matching row's `sellable_quantity_`, so a split holding would
   // report 3 sellable shares where Kiwoom said 11, and which 3 would depend on row order.
   // Summing them instead is not this library's call to make -- whether two lots' *sellable*
-  // quantities add is a statement about what the broker meant, which is precisely what
-  // `plan/todo/split-position-rows.md` exists for. So the snapshot fails loudly, once, with the
-  // symbol named.
+  // quantities add is a statement about what the broker meant, which the specification does not
+  // settle. So the snapshot fails loudly, once, with the symbol named.
   //
   // **The totals come from Kiwoom's summary fields and are never summed from the rows**, which is
   // what `HoldingsTotals` documents: a paged listing can return part of the positions beside an

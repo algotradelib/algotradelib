@@ -281,8 +281,7 @@ public:
   /**
    * Serves the calendar a test scripted, so a calendar poll can *change* the answer mid-iteration.
    *
-   * A source can both replace the calendar and settle an order in one iteration, which is the hole
-   * Codex round 1 found: the calendar is polled first, so a revision arriving now must reach the phase
+   * A source can both replace the calendar and settle an order in one iteration, and the calendar is polled first, so a revision arriving now must reach the phase
    * the bar poll after it is checked against.
    */
   void set_calendar(algotradelib::TradingCalendar calendar) { calendar_ = std::move(calendar); }
@@ -312,7 +311,7 @@ public:
    *
    * Without this a staleness test cannot tell which clock is ageing the value: the bar fixture
    * advances a day per poll while a `ManualClock` advances by the tick, so a rule reading either one
-   * passes. Codex round 1 found exactly that in the band-ageing test below.
+   * passes, as the band-ageing test below once did.
    *
    * A second rather than nothing at all, because the context's `SeriesBuffer` refuses an observation
    * that is not later than the last -- so the instant has to move, and what matters is that it moves
@@ -414,8 +413,7 @@ public:
    *
    * A source obeying the letter of the first half of `PollKind::CALENDAR`'s contract -- it writes the
    * calendar in the calendar poll and nowhere else -- and breaking the second, by feeding from that
-   * poll. Codex round 3 found that this sends under the replaced phase and that excluding the calendar
-   * poll from the check hid it.
+   * poll. That sends under the replaced phase, and excluding the calendar poll from the check hid it.
    */
   void set_calendar_and_feed_in_calendar_poll(algotradelib::TradingCalendar calendar) {
     calendar_in_calendar_poll_ = std::move(calendar);
@@ -550,7 +548,7 @@ using RejectingLoop = runner::PollingLoop<RejectingRunner, RejectingSource, runn
 /**
  * States a portfolio policy on a loop whose test is about something else.
  *
- * Slice 26 made two things mandatory that were optional: a run states how old a holdings snapshot
+ * Two things are mandatory that were once optional: a run states how old a holdings snapshot
  * may be, and a run that has never read one holds rather than sizing against an empty account. Most
  * of the cases in this file predate that and are about the calendar, the phase, a stop, a cadence or
  * buying power. Most construct no portfolio because they never needed one; a few do construct one and
@@ -1544,7 +1542,7 @@ TEST_CASE("a flatten outside market hours goes out, because it closes", "[loop][
 }
 
 TEST_CASE("a stop flattens the net of an instrument's lots, not each lot", "[loop][stop]") {
-  // **Codex round 2's blocker, and it broke the one thing this branch promises.** The closing pass
+  // **This broke the one thing a stop promises.** The closing pass
   // looped over position *rows*. Rows of +100 and -40 are a holding of +60, and it submitted SELL
   // 100 *and* BUY 40 -- so outside the session the phase rule refused both, and an operator who
   // asked to be flat got nothing sent although SELL 60 was permitted the whole time. The vanilla's
@@ -1586,7 +1584,7 @@ TEST_CASE("a stop flattens the net of an instrument's lots, not each lot", "[loo
 
 TEST_CASE("a stop that cannot size a close says so instead of reporting completion",
           "[loop][stop]") {
-  // **Codex round 3's blocker.** A net can be representable while the *magnitude* that would close
+  // A net can be representable while the *magnitude* that would close
   // it is not: two rows summing to the most negative `Decimal64` have no positive counterpart, so
   // the size of the buy that would flatten them cannot be stated. That path used to `continue` in
   // silence, moving no count -- so `closing_complete()` returned true over a position the pass had
@@ -3545,7 +3543,7 @@ TEST_CASE("a calendar with no unreadable rows adds no clause", "[loop][phase][ca
 }
 
 TEST_CASE("a calendar arriving mid-iteration reaches the order polled after it", "[loop][phase]") {
-  // **Codex round 1's blocker, reproduced and pinned.** The calendar is polled first and a bar poll
+  // **Reproduced and pinned.** The calendar is polled first and a bar poll
   // settles orders, so a calendar arriving in this iteration saying the market is shut used to be
   // followed, in the same iteration, by an order checked against the `OPEN` derived from the calendar
   // it replaced. The clock never moved, so the crossing test above cannot see this: it is a revision
@@ -3588,7 +3586,7 @@ TEST_CASE("a calendar arriving mid-iteration reaches the order polled after it",
 TEST_CASE("a poll schedule written positionally still means what it meant", "[loop][cadence]") {
   // `PollSchedule` is an aggregate, so a member added at the front reassigns every positional brace
   // initializer: `PollSchedule{5s}` would have started configuring the calendar and stopped polling
-  // bars. Codex round 1 found this by compiling it.
+  // bars, which compiling it showed.
   //
   // **Partly silent, and the warning is worth knowing about.** Writing it here failed this
   // repository's own `-Wall -Wextra -Werror` build on `-Wmissing-field-initializers`, so a caller
@@ -3614,7 +3612,7 @@ TEST_CASE("a poll schedule written positionally still means what it meant", "[lo
 }
 
 TEST_CASE("a phase that was known and is lost is not reported as never known", "[loop][phase]") {
-  // Raised by Codex round 1. A run can establish the phase and then lose it -- the local date rolls
+  // A run can establish the phase and then lose it -- the local date rolls
   // past what the calendar covers, which is exactly what a Toss-shaped three-day answer does over a
   // weekend. Telling an operator it was "never established" would send them looking for a
   // configuration fault that is not there.
@@ -3644,7 +3642,7 @@ TEST_CASE("a phase that was known and is lost is not reported as never known", "
 }
 
 TEST_CASE("a run whose every calendar poll failed says exactly that", "[loop][phase]") {
-  // The reason text itself is asserted, because Codex round 1 changed it to something incorrect and
+  // The reason text itself is asserted, because it was once changed to something incorrect and
   // all thirteen phase cases stayed green: a diagnostic nothing reads is a diagnostic nothing keeps
   // honest.
   PhaseRunner runner_instance;
@@ -3706,7 +3704,7 @@ TEST_CASE("a calendar learned during the order-list read reaches the first poll"
 
 TEST_CASE("a source that writes the calendar mid-poll is reported, since it cannot be stopped",
           "[loop][phase]") {
-  // **The limit of the mechanism, made visible.** Codex round 2 probed it: a source can replace the
+  // **The limit of the mechanism, made visible.** A source can replace the
   // calendar and then feed the runner inside one `poll`, and no loop code runs in between, so that
   // order is settled against the phase as it stood when the poll began. Re-deriving the phase before
   // every poll cannot fix it and this test does not pretend otherwise -- the order goes out under the
@@ -3765,7 +3763,7 @@ TEST_CASE("the calendar poll replacing the calendar is not reported as a violati
 }
 
 TEST_CASE("knowing the phase once outlives the run that knew it", "[loop][phase]") {
-  // Codex round 2's counterexample to deriving "was it ever known" from the report's transition count:
+  // The counterexample to deriving "was it ever known" from the report's transition count:
   // `announced_` lives as long as the loop while the counter restarts each `run`, so a second run whose
   // calendar had been cleared showed one transition whose first announced value was `UNKNOWN`. The
   // verdict was right by accident. It is now tracked on the loop, where the claim lives.
@@ -3837,7 +3835,7 @@ TEST_CASE("a calendar change that does not move today's answer is not reported",
 }
 
 TEST_CASE("a source obeying only half the calendar contract is still reported", "[loop][phase]") {
-  // **Codex round 3's blocker.** The contract used to say only "write the calendar in the calendar poll
+  // The contract used to say only "write the calendar in the calendar poll
   // and nowhere else", and a source can obey that exactly -- revise today's answer in its calendar poll,
   // then feed before returning -- and still send under the phase it just replaced. Worse, the detector
   // excluded the calendar poll by kind, so the count and the note were both zero.
@@ -3881,7 +3879,7 @@ struct RevisesCalendarOnStop {
 };
 
 TEST_CASE("a calendar revised by on_stop is in force for the closing pass", "[loop][phase][stop]") {
-  // Codex round 3's second probe, and this half the loop **can** answer: `settle_closing` is a separate
+  // This half the loop **can** answer: `settle_closing` is a separate
   // call the loop makes itself, so the phase is re-derived immediately before it. Without that, a stop
   // handler revising the calendar left the flatten going out under the phase it had replaced.
   using StopRunner = runner::DryRunner<RevisesCalendarOnStop>;
@@ -4042,7 +4040,7 @@ TEST_CASE("a run in which nothing was charged reports no currency at all", "[loo
 
 TEST_CASE("a run that has never read its holdings does not size an entry against an empty account",
           "[loop][gate][portfolio]") {
-  // The measurement behind `plan/portfolio-absence-gate.md` criterion 1. A live loop with the
+  // The measurement behind the portfolio-absence gate. A live loop with the
   // default configuration -- no `maximum_portfolio_age_`, and no holdings cadence -- reaches a bar,
   // runs `on_bar`, reconciles a target against a `Portfolio` that was never populated, and sends.
   // An empty portfolio is the permissive answer for every ceiling and for the target subtraction,
@@ -4091,7 +4089,7 @@ using FlatLoop = runner::PollingLoop<FlatRunner, FlatSource, runner::ManualClock
 
 TEST_CASE("a target-derived cancellation is not sent while the account is unknown",
           "[loop][gate][portfolio]") {
-  // Codex round 0's blocker 1, measured. The order-list read populates `working_` and satisfies the
+  // Measured: the order-list read populates `working_` and satisfies the
   // startup gate; the holdings read never succeeds, so `positions_` is empty and `as_of_` is the
   // epoch. `reconcile` reads that as flat, `needed` is zero, and every open row on the instrument
   // "opposes" -- so the plan withdraws a resting sell that is protecting a real holding, and

@@ -1,7 +1,7 @@
 // Deliberately does not compile. `strategy-refuses-a-mutable-copy-context` builds this file and passes only
 // when the diagnostic is that a strategy context must not be copyable. This context's copy constructor takes
 // a mutable reference, so `std::is_copy_constructible` says no; but `dispatch` passes a mutable lvalue, which
-// it does copy, and the by-value handler's submission would be lost (Codex round 1).
+// it does copy, and the by-value handler's submission would be lost.
 #include <algotradelib/strategy>
 
 using namespace algotradelib;

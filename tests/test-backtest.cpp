@@ -938,8 +938,8 @@ struct QuoteBuyerCountingUpdates {
     }
     // **A limit the bars never reach**, so the order is still resting when the next bar publishes.
     // A market order placed here would fill against that same bar and be gone before the
-    // observation point -- which is not this test's subject, and is the limitation slice 28 already
-    // documented: an order placed and completed between two listings appears in neither.
+    // observation point -- which is not this test's subject, and is a documented limitation: an
+    // order placed and completed between two listings appears in neither.
     const auto limit =
       strategy::Price::checked(Decimal64::parse("10000"), reference->price_rule_);
     if (!limit) {
@@ -2655,7 +2655,7 @@ TEST_CASE("an order resting from an earlier bar is in the portfolio the strategy
 }
 
 TEST_CASE("a DAY order on daily bars lasts one session, not until it fills") {
-  // `labs/FINDINGS.md` F14. Decided at the 10th's close, the limit trades in the 11th's session and
+  // Decided at the 10th's close, the limit trades in the 11th's session and
   // expires at its close, before the strategy is shown the 11th's bar -- as a broker expires it. It
   // was good-till-cancelled: still working on the 12th, and on any later day the market reached it.
   backtest::Backtester<RestsOneLimit> engine(RestsOneLimit{}, replay_config());
@@ -3628,7 +3628,7 @@ struct AddsFromFillThenFromBar {
 } // namespace
 
 TEST_CASE("an order placed from a fill reaches the next guard check") {
-  // Slice 3 promised this and the earlier tests did not establish it: they showed the order was
+  // The earlier tests did not establish this: they showed the order was
   // *visible*, not that an enabled guard counts it.
   //
   // Ten are held when `on_fill` runs, so its buy of five projects to the ceiling of fifteen exactly
@@ -3712,7 +3712,7 @@ struct ComparesPhaseWithCalendar {
 };
 
 TEST_CASE("a replay believes feed's own trading-day argument, not the configured calendar") {
-  // **Raised by Codex round 1, and pinned rather than fixed.** A configured calendar can say a bar's
+  // **Pinned rather than fixed.** A configured calendar can say a bar's
   // date is closed while `feed`'s argument says it traded, and the replay believes the argument -- so
   // the same calendar would give `CLOSED` live and `OPEN` here.
   //
@@ -4294,7 +4294,7 @@ struct ReadsTheBookEachBar {
 };
 
 TEST_CASE("a strategy on an unvalued bar reads exact figures rather than the failed total", "[backtest][caveats]") {
-  // `plan/todo/unvalued-bar-portfolio.md`: the replay goes on past a bar whose equity total will not
+  // The replay goes on past a bar whose equity total will not
   // fit, so `on_bar` runs there. What it reads is per lot and per currency -- cash, buying power (here
   // equal to cash: the buying-power check is off, so no resting buy is committed against it), the
   // quantity, the lot's own mark and value -- and the one portfolio-wide sum the guard takes, the gross
@@ -4438,9 +4438,8 @@ TEST_CASE("a fill at an open-stamped month's open is costed in that month", "[ba
 TEST_CASE("a limit priced inside an open-stamped month keeps the period-end date", "[backtest][costs]") {
   // **The partial scope, pinned.** Under `AT_LIMIT` a limit is priced at the limit, somewhere inside
   // the month, and nothing says which day: this branch dates only a fill at the open. The limit keeps
-  // the old dating -- the nominal 5 March, so the March rate -- until
-  // `plan/todo/nominal-period-end-dates-a-fill.md` settles it; a change that widened or shrank the
-  // correction would move this figure.
+  // the old dating -- the nominal 5 March, so the March rate -- for now; a change that widened or
+  // shrank the correction would move this figure.
   backtest::Backtester<BuysOneLimit> engine(
     BuysOneLimit{}, replay_config(),
     backtest::NextBarFillModel(rate_change(Date{2026, 2, 28}, Date{2026, 3, 1}))
@@ -5696,7 +5695,7 @@ struct FlattensOnce {
 } // namespace
 
 TEST_CASE("a replay's deferred flatten goes the bar its stop is withdrawn", "[trigger]") {
-  // **Codex round 2's first blocker.** The replay withdraws a stop synchronously, so the flatten the
+  // The replay withdraws a stop synchronously, so the flatten the
   // runner deferred behind it is placed in the same bar and fills on the next -- stated once, with no
   // restatement to lean on. Waiting for the next bar's portfolio filled it a bar later than live.
   // Minute bars of one session, so the stop is still working when bar 3 flattens.
@@ -5720,7 +5719,7 @@ TEST_CASE("a replay's deferred flatten goes the bar its stop is withdrawn", "[tr
 }
 
 TEST_CASE("negative slippage never lifts a stop fill past its bar", "[trigger]") {
-  // **Codex round 2's second blocker.** `SlippageModel` accepts a negative figure, which moves a fill
+  // `SlippageModel` accepts a negative figure, which moves a fill
   // in the order's favour; past the bar's opposite extreme that is a price the bar never showed.
   const backtest::NextBarFillModel generous(
     backtest::CommissionModel::none(),
@@ -5740,7 +5739,7 @@ TEST_CASE("negative slippage never lifts a stop fill past its bar", "[trigger]")
 }
 
 TEST_CASE("favourable slippage cannot credit a price the bar reached before the release", "[trigger]") {
-  // **Codex round 3's second blocker.** `70,000 -> 70,500 -> 69,000 -> 69,200` is a valid path for this
+  // `70,000 -> 70,500 -> 69,000 -> 69,200` is a valid path for this
   // bar: its high came before the 69,500 trigger, and after the release the price never returned
   // above 69,500. Negative slippage used to lift the fill to that high.
   const backtest::NextBarFillModel generous(
@@ -5813,7 +5812,7 @@ struct ChangesItsMindInOneBatch {
 } // namespace
 
 TEST_CASE("a replay releases a deferred target only after the whole update batch", "[trigger]") {
-  // **Codex round 3's first blocker.** The stop's update makes the strategy state flat, which withdraws
+  // The stop's update makes the strategy state flat, which withdraws
   // the stop and defers flat; a later update in the same batch answers with an `OrderIntent` for the
   // instrument, which supersedes the fallback. Released after the first update, the sell was already
   // queued and both would trade.

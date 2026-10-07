@@ -616,8 +616,8 @@ struct BrokerTraits<mock::MockClient> : mock_port::Members, mock_port::Capabilit
    * Set so the `true` answer is compiled through the public capability, not only detected.
    *
    * Every shipped adapter answers `false`, so without a fixture stating `true` the constant's
-   * other branch would never be instantiated -- which `plan/README.md` records as the way a
-   * capability constant goes unchecked. Nothing in the library reads it yet; it is a statement
+   * other branch would never be instantiated, and a capability constant nothing instantiates
+   * goes unchecked. Nothing in the library reads it yet; it is a statement
    * a caller gates on.
    */
   static constexpr bool working_orders_state_terminal = true;

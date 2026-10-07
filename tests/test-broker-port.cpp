@@ -1055,8 +1055,8 @@ struct SellableWithHoldings {
 
 TEST_CASE("the terminal-state answer is read only where working orders are listed") {
   // **Both answers are instantiated here on purpose.** Every shipped adapter answers `false`, so
-  // without the mock's `true` that branch of the public member would never be compiled -- the shape
-  // `plan/README.md` records as *a capability constant that nothing instantiates is not checked*.
+  // without the mock's `true` that branch of the public member would never be compiled, and a
+  // capability constant that nothing instantiates is not checked.
   static_assert(BrokerCaps<mock::MockClient>::working_orders_state_terminal);
   // None of the shipped working-order inquiries states a terminal status.
   static_assert(!BrokerCaps<kis::KisClient>::working_orders_state_terminal);

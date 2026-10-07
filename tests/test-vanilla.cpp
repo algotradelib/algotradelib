@@ -153,7 +153,7 @@ TEST_CASE("timed liquidation flattens when the session leaves the phases it hold
 }
 
 TEST_CASE("timed liquidation flattens a holding the broker reports as two lots") {
-  // **Codex round 0's blocker, and it was a real over-sell.** A broker reporting one instrument as
+  // **This was a real over-sell.** A broker reporting one instrument as
   // two lots is ordinary. This strategy submitted one zero target per *row*, and
   // `reconcile(TargetPosition)` sized each against `Portfolio::quantity_of`, which returns the
   // *first* row -- so rows of 60 and 40 produced two sells of 60, and wherever the phase permitted
@@ -526,7 +526,7 @@ TEST_CASE("a z-score reversion emits nothing until its window is full, then buys
 }
 
 TEST_CASE("a reversion asks whether it holds anything, not what its first lot says") {
-  // **A fourth first-row reader, found by grepping for them after Codex round 1 caught the third.**
+  // **A fourth first-row reader, found by grepping for them after the third was caught.**
   // A broker listing a spent lot of 0 beside a live one is ordinary, and `quantity_of` returns the
   // first row -- so this strategy read "flat" while holding 10, and on the next dip entered *again*
   // on top of the position it already had. It is a doubling, in a shipped strategy, from a listing
@@ -1039,7 +1039,7 @@ void flattens_after_the_stop_is_gone(runner::DryRunner<Strategy>& dry) {
 } // namespace
 
 TEST_CASE("timed liquidation completes after a resting stop is withdrawn, with no bar after", "[trigger]") {
-  // **Codex round 2's blocker.** The cancellation is confirmed after the session's last bar; nothing
+  // The cancellation is confirmed after the session's last bar; nothing
   // out of phase arrives again, so a flatten the strategy has to restate is never restated. The runner
   // keeps it instead.
   runner::DryRunner<vanilla::TimedLiquidation> dry(vanilla::TimedLiquidation{});
@@ -1052,7 +1052,7 @@ TEST_CASE("a composing strategy that forwards only on_phase is not relied on to 
 }
 
 TEST_CASE("a stop that filled while it was withdrawn is not sold again", "[trigger]") {
-  // **Codex round 3's first blocker, answered by the stop's own record.** The listing drops a filled
+  // **Answered by the stop's own record.** The listing drops a filled
   // stop exactly as it drops a cancelled one, and holdings are no proof either way; the broker's row
   // for the stop is. Anything filled -- even with a stale holding still showing ten -- sends nothing.
   runner::DryRunner<OnlyPhaseLiquidation> dry(OnlyPhaseLiquidation{});
@@ -1095,7 +1095,7 @@ TEST_CASE("a deferred target gives way to what the strategy says next", "[trigge
 }
 
 TEST_CASE("an ordinary pass never releases a deferred target", "[trigger]") {
-  // **Codex round 3's second blocker.** Each order update in a listing is its own pass; releasing
+  // Each order update in a listing is its own pass; releasing
   // there sent the fallback before a later update in the same listing let the strategy speak.
   runner::DryRunner<OnlyPhaseLiquidation> dry(OnlyPhaseLiquidation{});
   exits_behind_the_stop(dry);
