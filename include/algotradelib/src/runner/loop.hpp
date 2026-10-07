@@ -21,103 +21,51 @@
 namespace algotradelib {
 namespace runner {
 
-/** What a loop polls for, and the key its cadence is configured under. */
+/**
+ * @brief What a `PollingLoop` polls for; each has a cadence in `PollSchedule`.
+ *
+ * Each iteration polls in the order of `all_poll_kinds`: calendar, price limits, working orders,
+ * holdings, buying power, bars, quotes.
+ */
 enum class PollKind {
-  /** Completed bars, which is what most strategies trade on. */
+  /** @brief Completed bars. */
   BARS,
-  /** Current prices, for strategies that act between bars. */
+  /** @brief Current quotes, for strategies that act between bars. */
   QUOTES,
-  /** Positions and cash, which sizing is reconciled against. */
+  /** @brief Holdings, which orders are sized against. */
   HOLDINGS,
-  /** Resting orders, which reconciliation and withdrawal both need. */
+  /** @brief Working orders, which reconciliation and cancellation need. */
   WORKING_ORDERS,
-  /**
-   * What the broker says may be spent, which sizing a buy is checked against.
-   *
-   * On the holdings cadence rather than per order, deliberately. The figure changes on every fill,
-   * so reading it immediately before each order would cost a round trip on the latency-sensitive
-   * path and still race a resting order filling a moment later. Polled beside holdings it is
-   * exactly as fresh as the positions it is reconciled against, which is the staleness the loop
-   * already reasons about.
-   */
+  /** @brief Buying power, polled beside holdings (not before each order). */
   BUYING_POWER,
   /**
-   * Which dates the market trades, which is half of what the market phase is derived from.
+   * @brief The trading calendar, from which the loop derives the market phase; polled first, and on
+   *   by default.
    *
-   * **The only poll whose answer the loop itself reads.** Every other kind feeds the runner and is
-   * done; this one lands in `Context::set_calendar` and the loop then asks it whether today is a
-   * trading day, because `strategy::RiskLimits::permitted_phases_` decides whether anything may be
-   * sent at all. It is therefore **first in `all_poll_kinds`**, and the one cadence that is **on by
-   * default** -- see `PollSchedule::calendar_` for that argument, which is not the argument for the
-   * others.
-   *
-   * Declared **last** even so, because these values are array indices and an enumerator inserted at
-   * the front renumbers every existing one. Where a kind is polled and where it is declared are two
-   * different questions with two different answers.
-   *
-   * ## The one obligation this puts on a source
-   *
-   * **A source writes the calendar during this poll, nowhere else, and does not feed the runner from
-   * it.** Two halves, and the second is not redundant: Codex round 3 found that a source obeying only
-   * the first -- writing the calendar in this poll and then calling `Runner::feed` before returning --
-   * sends an order against the phase as it stood when the poll began, which is the whole hazard the
-   * phase exists to prevent. The loop derives the phase before every call it makes into a source, so a
-   * calendar arriving in one call is in force for the next; but nothing of its runs between a source's
-   * own `set_calendar` and its own `Runner::feed`.
-   *
-   * Stated as "this poll installs a calendar and feeds nothing", which is the version with no edge:
-   * `live::SessionSource::poll_calendar` is exactly that. A source that breaks either half is
-   * reported rather than silently tolerated -- see `PollingLoop::note_revised_phase`, which counts a
-   * call that both sent an order and left the phase changed, whichever poll it was.
+   * @note A source must install the calendar during this poll only, and must not feed the runner
+   *   from it (`live::SessionSource::poll_calendar` does exactly that). A call that both sends an
+   *   order and changes the phase is counted (`LoopReport::sends_under_a_revised_phase_`).
    */
   CALENDAR,
   /**
-   * Today's permitted price band, which reconciliation clamps a limit price into.
+   * @brief Today's price bands, which limit prices are clamped into; polled second, before anything
+   *   that feeds.
    *
-   * **A per-trading-day value, which is what makes a cadence the point of it.** `PriceLimits` is
-   * "the highest price allowed today", and for KRX it moves with the previous close -- so a band
-   * registered once at startup describes the day it was registered on and no other. Before this
-   * kind existed there was no way for a loop to read one at all, and `Runner::set_price_limits` was
-   * the operator's own startup step with nothing ageing it.
-   *
-   * **On the same obligation as `CALENDAR`: this poll installs and feeds nothing.** It lands in
-   * `Runner::set_price_limits` and no strategy handler runs for it. The hazard the calendar's own
-   * note describes -- a source that installs and then feeds, sending an order against the answer as
-   * it stood when the poll began -- does not arise here, because a band changes no gate and is read
-   * only when a plan is built. The obligation is stated anyway so the next kind added does not have
-   * to re-derive which polls may feed.
-   *
-   * **Polled second, immediately after the calendar and before anything that feeds.** A band read at
-   * the top of an iteration is in force for the orders that iteration's bars produce, because every
-   * other poll settles through `Runner::feed` while this one has already returned. Polled after the
-   * bars it would govern the *next* iteration's orders, which is the ordering defect slice 19 fixed
-   * for the market phase.
-   *
-   * **The claim is about polls, and one thing runs before all of them.** `PollingLoop::gate_for`
-   * calls `Source::read_order_list` out of band, before the first poll of the iteration, and a
-   * source that feeds from inside that call settles against whatever band the *previous* iteration
-   * left. Neither shipped source does -- `live::SessionSource::read_order_list` adopts the listing
-   * as a baseline and publishes nothing -- but the loop cannot depend on that, because the source is
-   * a template parameter. So: every order decided from a poll is decided under this iteration's
-   * band, and an order decided from the order-list read is not.
-   *
-   * Declared last for the reason `CALENDAR` states above its own declaration: these values index
-   * fixed-size arrays, so an enumerator inserted anywhere but the end renumbers existing ones.
+   * It installs bands with `Runner::set_price_limits` and feeds nothing. Orders decided from a poll
+   * use this iteration's bands; an order decided inside `Source::read_order_list` (which runs before
+   * the polls) would use the previous iteration's.
    */
   PRICE_LIMITS,
 };
 
-/**
- * How many `PollKind` enumerators there are, for the fixed-size counters keyed by one.
- *
- * Several arrays are indexed by `static_cast<int>(kind)`. Sized by a literal, adding an enumerator
- * writes one past the end of every one of them -- silently, since the index is in range for the
- * enum and out of range for the array. Naming the count is what makes the next enumerator a
- * one-line change rather than a hunt.
- */
+/** @brief The number of `PollKind` values. */
 inline constexpr std::size_t poll_kind_count = 7;
 
-/** Returns a stable lowercase name for `kind`. */
+/**
+ * @brief Returns a poll kind's lowercase name, such as `"working_orders"`.
+ * @param kind The kind.
+ * @return The name.
+ */
 inline constexpr std::string_view poll_kind_name(PollKind kind) noexcept {
   switch (kind) {
     case PollKind::CALENDAR:
@@ -138,36 +86,17 @@ inline constexpr std::string_view poll_kind_name(PollKind kind) noexcept {
   return "unknown";
 }
 
-/** Every kind, for iterating without repeating the list. */
+/** @brief Every poll kind, in the order an iteration polls them. */
 inline constexpr PollKind all_poll_kinds[] = {
-  // First, because it is the cheapest and because the phase derived from it decides whether anything
-  // else in this iteration may be sent -- and being first, its answer is in force for every other poll
-  // in the same iteration, since the phase is re-derived before each of them. It used to be in force
-  // only from the next iteration, which was a defect rather than a design: see `PollingLoop::step`.
+  // First: the phase derived from it decides whether anything else in this iteration may be sent.
   PollKind::CALENDAR,
-  // Second, and before every poll that can feed. A band installed here governs the orders this
-  // iteration's bars produce; installed after them it would govern the next iteration's, which is
-  // the phase's own ordering defect one level down. It feeds nothing itself, so nothing can be sent
-  // between reading it and applying it.
+  // Second, before every poll that can feed, so this iteration's orders use this iteration's bands.
   PollKind::PRICE_LIMITS,
-  // **The account before anything that can decide against it, and the listing before the account.**
-  //
-  // Both halves are about one hazard: a fill landing between two reads of the same account. Holdings
-  // at *h*, the working-order listing at *w*, a resting buy filling at *f*:
-  //
-  //  - *h < f < w*: holdings still flat and the row already gone. The position is under-counted, and a
-  //    target strategy buys again. That is what the old order -- holdings, then the listing -- allowed.
-  //  - *w < f < h*: the row still listed and holdings already showing the fill. Over-counted: the
-  //    target reads as met, and at worst a cancellation of an order that has already filled is
-  //    refused. Harmless.
-  //
-  // So the listing is read first, and holdings after it. And both come before the bars and quotes,
-  // which feed and therefore send: they used to be polled first, so every decision a bar produced was
-  // sized against the previous iteration's account, and on a cold start against none at all.
+  // The listing, then holdings, before anything that feeds. A fill between the two reads then
+  // over-counts the position (harmless) rather than under-counting it (which would buy again).
   PollKind::WORKING_ORDERS,
   PollKind::HOLDINGS,
-  // After holdings, so an iteration that refreshes both leaves the money and the positions equally
-  // fresh, and the buy sized against them is sized against one moment rather than two.
+  // After holdings, so money and positions are equally fresh.
   PollKind::BUYING_POWER,
   PollKind::BARS,
   PollKind::QUOTES,
@@ -180,29 +109,27 @@ static_assert(
 );
 
 /**
- * What became of one poll.
+ * @brief What became of one poll.
  *
- * Four values rather than a bool, because the loop owes a different response to each and two of
- * them are easy to conflate:
- *
- * - **`UNCHANGED` is not a failure.** Nothing new since the last poll is the normal case between
- *   bars, and counting it as a failure would escalate a quiet market into a shutdown.
- * - **`RATE_LIMITED` is not a failure either.** It is the limiter working as designed. The
- *   controller already handles the wait, and counting a refusal as an outage would make a loop
- *   polling slightly too fast quiesce itself.
+ * Only `FAILED` counts toward `FailurePolicy`; nothing new (`UNCHANGED`) and a rate-limiter
+ * refusal (`RATE_LIMITED`) do not.
  */
 enum class PollOutcome {
-  /** New data arrived and was fed to the runner. */
+  /** @brief New data arrived and was fed to the runner. */
   UPDATED,
-  /** The poll succeeded and there was nothing new. */
+  /** @brief The poll succeeded and there was nothing new. */
   UNCHANGED,
-  /** The poll failed. Counted toward the failure budget. */
+  /** @brief The poll failed; counted toward the failure budget. */
   FAILED,
-  /** The poll was refused by the rate limiter. Not counted as a failure. */
+  /** @brief The rate limiter refused the poll; not counted as a failure. */
   RATE_LIMITED,
 };
 
-/** Returns a stable lowercase name for `outcome`. */
+/**
+ * @brief Returns an outcome's lowercase name, such as `"rate_limited"`.
+ * @param outcome The outcome.
+ * @return The name.
+ */
 inline constexpr std::string_view poll_outcome_name(PollOutcome outcome) noexcept {
   switch (outcome) {
     case PollOutcome::UPDATED:
@@ -218,100 +145,61 @@ inline constexpr std::string_view poll_outcome_name(PollOutcome outcome) noexcep
 }
 
 /**
- * How often each kind is polled.
+ * @brief How often a `PollingLoop` polls each kind; an unset interval disables that poll.
  *
- * An unset interval disables that poll entirely, which is the honest default: a loop should not
- * invent a cadence for data the caller never said they wanted, and a broker without working-order
- * inquiry has no cadence to set.
+ * Only `calendar_` is on by default. `tick_` is the loop's own step: it bounds how quickly a stop is
+ * noticed, even when no poll is due.
  *
- * **`tick_` is the loop's own granularity**, and the floor on how quickly a stop is noticed through
- * the control file. It is not a poll: an iteration with nothing due still checks for a stop, which is
- * why a loop polling bars once a day still responds to an operator within a second.
+ * @note Members are positional in aggregate initialization (`PollSchedule{std::chrono::seconds(5)}`
+ *   sets `bars_`); new members are appended.
  */
 struct PollSchedule {
-  /** How often to fetch bars; absent disables the poll. */
+  /** @brief How often to fetch bars. */
   std::optional<std::chrono::nanoseconds> bars_;
-  /** How often to fetch quotes; absent disables the poll. */
+  /** @brief How often to fetch quotes. */
   std::optional<std::chrono::nanoseconds> quotes_;
-  /** How often to re-read holdings; absent disables the poll and leaves the portfolio stale. */
+  /** @brief How often to read holdings; without it the portfolio is never refreshed. */
   std::optional<std::chrono::nanoseconds> holdings_;
   /**
-   * How often to re-read the broker's working orders; absent disables the poll.
+   * @brief How often to read the working orders.
    *
-   * **Not shorter than `holdings_`, unless you accept withheld plans.** A listing newer than the
-   * holdings makes the account unreliable -- a fill between the two reads is in neither -- so every
-   * plan made then is withheld as `PORTFOLIO_SUPERSEDED` (a target is retained and planned again
-   * after the next holdings read). Equal cadences put both reads in one iteration, listing first.
-   * The loop notes a shorter working-order cadence once per run.
-   *
-   * **Required for a runner that sends to a broker, and shorter than the portfolio age policy.** Such
-   * a runner keeps the orders it sent in `working_` until the broker accounts for them
-   * (`Runner::keeps_sent_orders_until_listed`), so the loop holds it as `PORTFOLIO_STALE` while no
-   * cadence is set, and while the last listing is older than `PollingLoop::set_maximum_portfolio_age`
-   * -- which a cadence equal to the age reaches for a tick before each poll, so leave a tick of
-   * margin. The report names the missing piece once. A dry run and an observer are not held.
+   * Do not make it shorter than `holdings_`: a listing newer than the holdings withholds every plan
+   * as `PORTFOLIO_SUPERSEDED` (equal cadences read both in one iteration, listing first). Required
+   * for a runner that sends to a broker: without it, or when the last listing is older than
+   * `PollingLoop::set_maximum_portfolio_age`, the loop holds placements as `PORTFOLIO_STALE` (leave a
+   * tick of margin between the cadence and the age).
    */
   std::optional<std::chrono::nanoseconds> working_orders_;
   /**
-   * How often to ask what may be spent; absent disables the poll.
+   * @brief How often to read buying power.
    *
-   * Absent by default, like every other cadence here, and a caller enforcing
-   * `RiskLimits::enforce_buying_power_` without setting it gets a runner that holds rather than one
-   * that guesses -- which is the safe direction and is visible in the report.
+   * With `RiskLimits::enforce_buying_power_` on and this unset, every placement is held
+   * (`BUYING_POWER_UNREAD`).
    */
   std::optional<std::chrono::nanoseconds> buying_power_;
-  /** The loop's own granularity, and the floor on how quickly a stop is noticed. Not a poll. */
+  /** @brief The loop's step, which bounds how quickly a stop is noticed; not a poll. */
   std::chrono::nanoseconds tick_{std::chrono::seconds(1)};
   /**
-   * How often to ask which dates the market trades. **The one cadence that is on by default.**
+   * @brief How often to read the trading calendar; six hours by default.
    *
-   * Every other member here is absent by default, because the library will not spend a request on
-   * data the caller never asked for. This one is different in kind: the loop derives the market phase
-   * from it, `RiskLimits::permitted_phases_` defaults to `{OPEN}`, and an uncovered date is `UNKNOWN`
-   * -- so a loop with no calendar refuses every order that opens or increases a position. It still
-   * permits one that closes a held position, which is the only thing a run in an unknown phase
-   * should be doing. A cadence absent by default would make the whole mechanism one nobody switches
-   * on, which is exactly the shape the phase decision closed.
-   *
-   * **Six hours, and the number has three constraints behind it.** KIS asks that its holiday endpoint
-   * be called at most once a day, and its client caches -- a covered date is answered without a
-   * request -- so four polls a day cost one request a day, on the first new date. Toss answers at
-   * reference-data priority, the lowest there is, and states no daily limit. And a calendar stops
-   * covering the local date at local midnight, so any cadence longer than the nine hours between
-   * midnight and a 09:00 open can leave the phase `UNKNOWN` through an open.
-   *
-   * Absent disables it, which is then a visible act rather than a default nobody noticed. A broker
-   * that publishes no calendar compiles no request whatever this says.
-   *
-   * **Declared last rather than beside the other cadences, and that is not tidiness.** This is an
-   * aggregate, so `PollSchedule{std::chrono::seconds(5)}` initializes whichever member comes first.
-   * Adding this one at the front silently turned that expression from "poll bars every five seconds"
-   * into "poll the calendar every five seconds, and never poll bars" -- a caller that compiles cleanly
-   * and stops receiving data. Appending preserves every existing positional mapping. The **poll**
-   * order is `all_poll_kinds`, where the calendar is deliberately first; declaration order here is
-   * only layout.
+   * Without a calendar the phase is `UNKNOWN` and the default `RiskLimits::permitted_phases_`
+   * refuses every order that opens or increases a position (closing a position is still allowed).
+   * Keep it under the nine hours between local midnight and a 09:00 open. KIS's client caches the
+   * calendar, so four polls a day cost about one request.
    */
   std::optional<std::chrono::nanoseconds> calendar_{std::chrono::hours(6)};
   /**
-   * How often to re-read today's permitted price band; absent disables the poll.
+   * @brief How often to read today's price bands.
    *
-   * Absent by default like every cadence but the calendar's, and the band it would refresh is
-   * itself optional: a run that registers no band and sets no cadence clamps nothing, which is what
-   * every run in this repository did before this member existed.
-   *
-   * **A band is a per-trading-day value, so an interval longer than a session is a band from
-   * another day.** The library states no default here for the reason it states none for the
-   * portfolio: how fresh a band must be is a judgement about the operator's own market and cadence.
-   * What it does refuse to do is apply one whose age nobody has bounded -- see
+   * A band is valid for one trading day. Bands are applied only under an age policy; see
    * `PollingLoop::set_maximum_price_limits_age`.
-   *
-   * **Declared last**, after `calendar_`, for the reason `calendar_` states above: this is an
-   * aggregate, and an appended member is the only kind that preserves every existing positional
-   * initialization. Declaration order here is layout; `all_poll_kinds` is the poll order, and there
-   * this kind is second.
    */
   std::optional<std::chrono::nanoseconds> price_limits_;
-  /** Returns the interval configured for `kind`, or nothing when it is disabled. */
+  /**
+   * @brief Returns the interval for a poll kind.
+   * @param kind The kind.
+   * @return The interval, or `std::nullopt` if that poll is disabled.
+   */
   std::optional<std::chrono::nanoseconds> interval_for(PollKind kind) const noexcept {
     switch (kind) {
       case PollKind::CALENDAR:
@@ -334,12 +222,12 @@ struct PollSchedule {
 };
 
 /**
- * Whether `Source` leaves the broker's outstanding orders in the portfolio after an order-list read.
+ * @brief Detects whether a source declares `static constexpr bool provides_working_orders = true`,
+ *   meaning it leaves the broker's working orders in the portfolio after an order-list read.
  *
- * **Defaults to false**, which is the safe direction and a deliberate one: a source that does not
- * say it publishes working orders cannot be assumed to, and the cost of being wrong is a `WITHDRAW`
- * that reports a complete stop while an order is still resting. A source declares
- * `static constexpr bool provides_working_orders = true;` to say otherwise.
+ * `false` when undeclared; a `WITHDRAW` then does not report a complete stop from that source.
+ *
+ * @tparam Source The source type.
  */
 template <typename Source, typename = void>
 struct source_provides_working_orders : std::false_type {};
@@ -350,12 +238,12 @@ struct source_provides_working_orders<
 > : std::bool_constant<Source::provides_working_orders> {};
 
 /**
- * Whether `Runner` keeps the orders it sends until the broker accounts for them.
+ * @brief Detects `Runner::keeps_sent_orders_until_listed`.
  *
- * Detected, and false when undeclared: a runner that states nothing is assumed to retire its own
- * rows, which is what every runner did before `Runner::keeps_sent_orders_until_listed` existed. **A
- * type that wraps `runner::Runner` for `PollingLoop` must forward the constant**, or its reservations
- * outlive a missing listing with no hold to say so.
+ * `false` when undeclared, so a type wrapping `runner::Runner` for `PollingLoop` must forward the
+ * constant, or the loop does not hold it for a missing working-order listing.
+ *
+ * @tparam Runner The runner type.
  */
 template <typename Runner, typename = void>
 struct runner_keeps_sent_orders : std::false_type {};
@@ -365,7 +253,10 @@ struct runner_keeps_sent_orders<
   Runner, std::void_t<decltype(Runner::keeps_sent_orders_until_listed)>
 > : std::bool_constant<Runner::keeps_sent_orders_until_listed> {};
 
-/** Whether `Runner` counts the order intents it kept for the phase and dropped at release. */
+/**
+ * @brief Detects whether a runner reports `kept_intents_dropped()`.
+ * @tparam Runner The runner type.
+ */
 template <typename Runner, typename = void>
 struct runner_counts_kept_drops : std::false_type {};
 
@@ -374,7 +265,10 @@ struct runner_counts_kept_drops<
   Runner, std::void_t<decltype(std::declval<const Runner&>().kept_intents_dropped())>
 > : std::true_type {};
 
-/** Whether `Runner` counts the instructions it discarded as history (`Runner::feed_warmup`). */
+/**
+ * @brief Detects whether a runner reports `warmup_instructions_discarded()`.
+ * @tparam Runner The runner type.
+ */
 template <typename Runner, typename = void>
 struct runner_counts_warmup : std::false_type {};
 
@@ -384,135 +278,95 @@ struct runner_counts_warmup<
 > : std::true_type {};
 
 /**
- * Cost a broker stated against its own orders, as observed on the snapshots a loop happened to poll.
+ * @brief Commission and tax the broker stated on the orders a loop happened to poll (Toss states
+ *   them; KIS does not).
  *
- * **This is a subtotal of unknown coverage, and every name here is chosen to keep saying so.** A
- * running loop polls *working* orders; an order that fills and leaves that listing between two polls
- * is never seen carrying its final commission, and an order placed and filled between two polls is
- * never seen at all. Neither is detectable from the listing, so nothing here can be called a total
- * and no counter here certifies completeness. A figure with known coverage needs a deliberate
- * order-history poll, which this loop does not make.
- *
- * What it is good for is the thing that did not exist before it: Toss states the actual commission
- * and tax it charged on every order, the library read it into `OrderExecution` and then discarded
- * it, and a replay's modelled cost had nothing on the live side to be compared against at all.
+ * A subtotal of unknown coverage, not a total: an order that fills and leaves the working-order
+ * listing between two polls, or is placed and filled between them, is never seen with its final
+ * cost.
  */
 struct ChargedCosts {
   /**
-   * One currency's running figure, and **how many accepted statements are in it**.
+   * @brief One currency's running figure and how many statements contributed to it.
    *
-   * The count is what makes "the broker said something this run" answerable, and inferring it from
-   * the money does not work: a broker that states a charge of zero moves no total, so a run in
-   * which that was the only thing observed looked identical to a run in which nothing was
-   * observed -- which is the absence-versus-zero contract inverted, in the one place it is hardest
-   * to notice. Review demonstrated both halves of it with a probe; the first fix caught only the
-   * case where the currency was new.
-   *
-   * Monotone, like the order counters and for the same reason: `since` subtracts it.
+   * The count tells a stated zero apart from silence.
    */
   struct StatedTotal {
-    /** The running figure for this currency. */
+    /** @brief The running figure. */
     Money amount_;
-    /** How many accepted figures have contributed to it. */
+    /** @brief How many statements contributed. */
     std::size_t statements_{0};
   };
 
-  /**
-   * Broker-stated commission observed, per currency.
-   *
-   * Per currency because `Money` refuses to add unlike currencies and a run can poll a universe
-   * spanning markets: one scalar would either be wrong or would have to refuse to exist. A currency
-   * nobody stated a cost in has **no entry**, which is not the same as an entry of zero.
-   */
+  /** @brief Commission stated, per currency; a currency with no statement has no entry (not zero). */
   std::vector<StatedTotal> commission_;
-  /** Broker-stated tax observed, per currency, on the same terms. */
+  /** @brief Tax stated, per currency, on the same terms. */
   std::vector<StatedTotal> tax_;
-  /**
-   * How many distinct orders have **ever** stated a cost, including a stated zero.
-   *
-   * Counted once per order, the first time it states anything, and never taken back -- both this
-   * and `orders_stating_none_` are monotone so that differencing them across runs cannot
-   * underflow. An order that was first seen without a figure and later carried one is counted in
-   * **both**, which is the honest reading of what was observed rather than a reclassification that
-   * would make a per-run subtraction wrap.
-   */
+  /** @brief How many orders have stated a cost (including zero); counted once per order, never decreased. */
   std::size_t orders_stating_cost_{0};
   /**
-   * How many distinct orders were **first seen** stating no cost at all.
-   *
-   * Every KIS order is one of these: its order snapshots carry no commission field, so absence here
-   * is the broker's silence rather than a charge of nothing. Monotone, and never decremented when
-   * an order later states a figure -- see `orders_stating_cost_` for why the two can overlap.
+   * @brief How many orders were first seen stating no cost (every KIS order); never decreased, so an
+   *   order that later states one is counted in both.
    */
   std::size_t orders_stating_none_{0};
   /**
-   * How many orders left the working-order listing between two polls.
-   *
-   * **This is not a completeness measure and must not be read as one.** It counts what it says: a
-   * row that was there and then was not. That happens on a fill, and equally on a cancellation or an
-   * expiry, and it cannot see an order that was placed and filled without ever appearing. It is a
-   * diagnostic for how much of the picture moved while the loop was not looking, nothing more.
+   * @brief How many orders left the working-order listing between two polls (filled, cancelled or
+   *   expired); a diagnostic, not a completeness measure.
    */
   std::size_t working_list_disappearances_{0};
   /**
-   * How many times an order restated a *different* cost at the same filled quantity.
-   *
-   * Nothing in an order snapshot carries a broker sequence number or a fee revision time --
-   * `ordered_at_` and `canceled_at_` are lifecycle instants and `filled_at_` timestamps the latest
-   * fill -- so when two readings disagree at the same filled quantity there is no authority that
-   * says which is later. The first is kept and the disagreement is counted here rather than being
-   * resolved by arrival order, which would let a delayed stale payload silently reduce a charge.
+   * @brief How many times an order restated a different cost at the same filled quantity; the first
+   *   figure is kept.
    */
   std::size_t conflicting_restatements_{0};
   /**
-   * How many arithmetic attempts were refused as unrepresentable.
-   *
-   * **Attempts, not figures**, and the distinction is real: a rejected row polled again is counted
-   * again, because the held figure is deliberately not advanced past something that was never
-   * contributed. What the count says is "this subtotal is short", not "this many distinct charges
-   * are missing".
-   *
-   * Nonzero means the figures above are **incomplete**, and there are three ways to reach it: a sum
-   * that did not fit, a per-order delta that did not fit, and a run's own subtraction in `since`
-   * that did not fit. Each takes amounts or precisions far beyond a real account -- two figures
-   * representable on their own whose sum is not, or a five-quintillion-won correction restated at
-   * a tenth of a won, where the two scales cannot be aligned.
-   *
-   * **All three are counted rather than ignored**, and the third was the last to be: `since`
-   * skipped a currency whose subtraction failed, so a run reported absence where a charge had been
-   * observed and nothing said the figure was missing rather than nil. That is the same
-   * wrong-answer class as the two before it, one step further out.
+   * @brief How many additions or subtractions did not fit a `Decimal64`; nonzero means the figures
+   *   are short (it counts attempts, and a re-polled row counts again).
    */
   std::size_t unrepresentable_sums_{0};
 
-  /** Returns the commission observed in `currency`, or nothing when none was stated in it. */
+  /**
+   * @brief Returns the commission stated in a currency.
+   * @param currency The currency.
+   * @return The figure, or `std::nullopt` if none was stated.
+   */
   std::optional<Decimal64> commission_in(const Currency& currency) const {
     return figure_in(commission_, currency);
   }
 
-  /** Returns the tax observed in `currency`, or nothing when none was stated in it. */
+  /**
+   * @brief Returns the tax stated in a currency.
+   * @param currency The currency.
+   * @return The figure, or `std::nullopt` if none was stated.
+   */
   std::optional<Decimal64> tax_in(const Currency& currency) const {
     return figure_in(tax_, currency);
   }
 
-  /** Returns how many accepted commission statements `currency` holds. */
+  /**
+   * @brief Returns how many commission statements a currency has.
+   * @param currency The currency.
+   * @return The count.
+   */
   std::size_t commission_statements_in(const Currency& currency) const {
     return statements_in(commission_, currency);
   }
 
-  /** Returns how many accepted tax statements `currency` holds. */
+  /**
+   * @brief Returns how many tax statements a currency has.
+   * @param currency The currency.
+   * @return The count.
+   */
   std::size_t tax_statements_in(const Currency& currency) const {
     return statements_in(tax_, currency);
   }
 
   /**
-   * Adds `amount` to the running figure for its own currency, or reports that it would not fit.
-   *
-   * **Checked, and the caller must not record a contribution this refused.** It used to swallow a
-   * failed `decimal_add` and return as though it had succeeded, so a sum that did not fit left the
-   * total at its previous value while the caller marked the amount as counted -- a silently
-   * incomplete monetary answer, which is the one thing every exact-decimal path here exists to
-   * avoid. It takes two individually representable figures to reach, and the type accepts both.
+   * @brief Adds an amount to its currency's figure in a list of totals.
+   * @param totals `commission_` or `tax_`.
+   * @param amount The amount.
+   * @return `false` (counted in `unrepresentable_sums_`, figure unchanged) if the sum does not fit;
+   *   the caller must not then treat the amount as counted.
    */
   bool add(std::vector<StatedTotal>& totals, const Money& amount) {
     for (auto& held : totals) {
@@ -531,7 +385,12 @@ struct ChargedCosts {
     return true;
   }
 
-  /** Returns the figure held for `currency`, or nothing when none was stated in it. */
+  /**
+   * @brief Returns a currency's figure from a list of totals.
+   * @param totals The totals.
+   * @param currency The currency.
+   * @return The figure, or `std::nullopt` if none.
+   */
   static std::optional<Decimal64> figure_in(
     const std::vector<StatedTotal>& totals,
     const Currency& currency
@@ -544,7 +403,12 @@ struct ChargedCosts {
     return std::nullopt;
   }
 
-  /** Returns how many accepted statements `currency` holds in `totals`. */
+  /**
+   * @brief Returns a currency's statement count from a list of totals.
+   * @param totals The totals.
+   * @param currency The currency.
+   * @return The count; zero if none.
+   */
   static std::size_t statements_in(
     const std::vector<StatedTotal>& totals,
     const Currency& currency
@@ -558,17 +422,13 @@ struct ChargedCosts {
   }
 
   /**
-   * Returns what was observed between `before` and this, per currency.
+   * @brief Returns what was observed since an earlier copy, for one run's report.
    *
-   * A `SessionSource` outlives the runs made against it, and `Loop::run` builds a fresh report each
-   * call -- so an absolute accumulator copied at the end would put the first run's charges in the
-   * second run's report. Differenced around the run, exactly as `sends_outside_permitted_phase` is.
+   * A currency appears if its statement count rose (so a stated zero is kept). A money delta can be
+   * negative if the broker revised a figure down.
    *
-   * **The counters are monotone, which is what makes their subtraction safe**; they are unsigned,
-   * and a classification that could fall would wrap on a perfectly ordinary transition. The money
-   * is signed and deliberately not assumed to rise: a broker that revises a cumulative figure
-   * downward at a greater filled quantity produces a negative delta, and a negative figure in a
-   * run's report is a true statement about what was observed in it.
+   * @param before The earlier copy.
+   * @return The difference; a subtraction that does not fit is counted in `unrepresentable_sums_`.
    */
   ChargedCosts since(const ChargedCosts& before) const {
     ChargedCosts delta;
@@ -588,20 +448,13 @@ struct ChargedCosts {
             break;
           }
         }
-        // **Whether anything was stated this run is the statement count, not the money.** A broker
-        // that states a charge of zero moves no total, so a delta of zero says nothing about
-        // whether it spoke -- and testing the money made a stated zero indistinguishable from
-        // silence whenever the currency had been seen before. A currency whose count did not rise
-        // had nothing observed for it in this run and stays out.
+        // Whether anything was stated is the statement count, not the money.
         if (held.statements_ == before_statements) {
           continue;
         }
         const auto moved = decimal_subtract(held.amount_.amount_, earlier);
         if (!moved) {
-          // **Counted, not skipped.** Something was observed for this currency -- the statement
-          // count says so -- and the amount of it cannot be represented. Reporting no entry would
-          // say the broker was silent, which is the absence-versus-zero contract inverted once
-          // again, and this is the third shape it has taken.
+          // Counted, not skipped: something was stated and its amount cannot be represented.
           ++refused;
           continue;
         }
@@ -625,11 +478,9 @@ struct ChargedCosts {
 };
 
 /**
- * Whether `Source` states the broker-reported cost it observed.
- *
- * **Defaults to false**, so a source that stays silent reports nothing rather than failing to
- * compile. A source declares `const ChargedCosts& charged_costs() const` to have its observations
- * reach `LoopReport`.
+ * @brief Detects whether a source provides `const ChargedCosts& charged_costs() const`, which
+ *   `LoopReport` then reports.
+ * @tparam Source The source type.
  */
 template <typename Source, typename = void>
 struct source_states_charged_costs : std::false_type {};
@@ -640,12 +491,13 @@ struct source_states_charged_costs<
 > : std::true_type {};
 
 /**
- * Whether `Source` can say which currencies it was configured to ask about.
+ * @brief Detects whether a source provides `const std::vector<Currency>& buying_power_currencies()
+ *   const`.
  *
- * **Defaults to false**, so a source that stays silent gets the weaker gate it had before rather
- * than a compile error. A source declares `const std::vector<Currency>& buying_power_currencies()
- * const` to let the gate hold for a configured budget that never arrived, instead of settling for
- * "some currency has a reading".
+ * With it (and currencies named), the buying-power gate holds until every named currency has a fresh
+ * reading; otherwise it needs at least one reading, and every reading present must be fresh.
+ *
+ * @tparam Source The source type.
  */
 template <typename Source, typename = void>
 struct source_names_buying_power_currencies : std::false_type {};
@@ -655,48 +507,41 @@ struct source_names_buying_power_currencies<
   Source, std::void_t<decltype(std::declval<const Source&>().buying_power_currencies())>
 > : std::true_type {};
 
-/** How the loop behaves when polls keep failing. */
+/** @brief How a `PollingLoop` responds to polls that keep failing. */
 struct FailurePolicy {
-  /**
-   * Consecutive failures of one kind before the loop quiesces.
-   *
-   * Bounded rather than infinite because a loop spinning against a broker that is refusing it is
-   * both useless and rude. Counted per kind, so a broken working-order inquiry does not mask a
-   * healthy bar feed.
-   */
+  /** @brief Consecutive failures of one poll kind after which the loop stops (`POLL_FAILING`). */
   std::size_t consecutive_limit_{5};
 };
 
-/** What one iteration did. */
+/** @brief What one loop iteration did. */
 struct IterationReport {
-  /** When the iteration ran. */
+  /** @brief When the iteration ran. */
   std::chrono::system_clock::time_point at_{};
-  /** What each poll returned, in the order they were attempted. */
+  /** @brief What each poll returned, in order. */
   std::vector<std::pair<PollKind, PollOutcome>> polls_;
   /**
-   * Which hold blocked a **placement**, or nothing when none did.
+   * @brief The hold that blocked placements, if any.
    *
-   * Placement, not "sending", and the distinction is not pedantry: a hold that means only that this
-   * runner is uninformed does not stop a cancellation the caller named, so an iteration can report a
-   * gate here and still have withdrawn an order. `strategy::halt_blocks` is the division.
+   * A named cancellation may still have gone out under a hold that only means data is missing
+   * (`strategy::halt_blocks`).
    */
   std::optional<strategy::HaltReason> gate_;
-  /** Whether anything was fed to the runner. */
+  /** @brief Whether anything was fed to the runner. */
   bool fed_{false};
   /**
-   * The phase the loop computed for this iteration.
+   * @brief The market phase the loop computed.
    *
-   * Reported because it decides most of what could be sent: `UNKNOWN` here and a default
-   * `RiskLimits::permitted_phases_` means every placement that would open or increase a position was
-   * refused, and a reader should not have to infer that from an empty placement count. An order
-   * closing a held position is permitted in any phase, so this is not on its own a claim that
-   * nothing went out -- `LoopReport::sends_outside_permitted_phase_` is what says whether any did.
+   * Under the default limits, `UNKNOWN` means every placement that would open or increase a position
+   * was refused (closing ones are still allowed).
    */
   strategy::MarketPhase phase_{strategy::MarketPhase::UNKNOWN};
-  /** Whether this iteration announced a phase change to the strategy. */
+  /** @brief Whether a phase change was announced to the strategy. */
   bool phase_changed_{false};
 
-  /** Returns whether any poll brought new data. */
+  /**
+   * @brief Tests whether any poll brought new data.
+   * @return `true` if any poll was `UPDATED`.
+   */
   bool updated() const noexcept {
     for (const auto& entry : polls_) {
       if (entry.second == PollOutcome::UPDATED) {
@@ -707,439 +552,288 @@ struct IterationReport {
   }
 };
 
-/** What a whole run did, and why it ended. */
+/**
+ * @brief What a whole `PollingLoop::run` did, and why it ended.
+ *
+ * Read `notes_` first; they explain anything the run could not do. Scope of the counters: the
+ * `orders_*`, `cancels_*`, `plans_withheld_` and `instructions_unavailable_` outcomes (and
+ * `last_broker_refusal_`, `last_unbuildable_`) cover the run's polling, before any closing pass,
+ * whose results are the `closing_*` fields; `price_bands_withheld_`, `unclamped_orders_*` and
+ * `sends_outside_permitted_phase_` cover the whole run, closing pass included.
+ */
 struct LoopReport {
-  /** How many iterations ran. */
+  /** @brief How many iterations ran. */
   std::size_t iterations_{0};
-  /**
-   * What the broker said it charged, on the orders this run happened to see.
-   *
-   * **Read `ChargedCosts`' own documentation before using it**: it is a subtotal whose coverage is
-   * unknown on every run, not a total. It exists because a replay reports a modelled commission and
-   * a live run reported nothing at all, so the two could not be compared in any direction.
-   */
+  /** @brief Commission and tax the broker stated on the orders this run saw; a subtotal (see `ChargedCosts`). */
   ChargedCosts charged_costs_;
-  /** How many polls of each kind were attempted, indexed by `PollKind`. */
+  /** @brief How many polls of each kind were attempted, indexed by `PollKind`; see `attempted()`. */
   std::size_t attempted_[poll_kind_count] = {};
-  /** How many polls of each kind failed. */
+  /** @brief How many polls of each kind failed; see `failed()`. */
   std::size_t failed_[poll_kind_count] = {};
-  /** How many iterations were blocked from **placing**; a named withdrawal may still have gone. */
+  /** @brief How many iterations were blocked from placing (a named cancellation may still have gone). */
   std::size_t blocked_{0};
-  /** The intent that ended the run, or nothing when it ended for another reason. */
+  /** @brief The stop intent that ended the run, if one did. */
   std::optional<StopIntent> stopped_by_;
-  /**
-   * Which hold stopped the loop **placing** when it did, for an operator reading the tail of a log.
-   *
-   * See `IterationReport::gate_`: this does not mean nothing left the process.
-   */
+  /** @brief The most fundamental hold in force when the run ended, whoever took it. */
   std::optional<strategy::HaltReason> final_gate_;
-  /** The phase the last iteration computed. */
+  /** @brief The phase the last iteration computed. */
   strategy::MarketPhase final_phase_{strategy::MarketPhase::UNKNOWN};
   /**
-   * How many calls into user code both sent an order and left the market phase changed behind them.
+   * @brief How many calls into a source or strategy both sent something and left the market phase
+   *   changed.
    *
-   * **What it measures, exactly**, because an earlier name and note overstated it: around every call the
-   * loop makes **that could send** -- a source's `poll` or `read_order_list`, a strategy handler, a
-   * closing pass -- the loop records the phase and the guard's total sends and compares both afterwards.
-   * This counts the calls where the phase moved **and** something went out. A call that cannot send is
-   * not watched: `Source::buying_power_currencies` is a const accessor handed no runner, and
-   * `Runner::observe_sellable_convention` reads the portfolio and dispatches nothing.
-   *
-   * It deliberately does **not** count a calendar revision that sent nothing, because nothing was
-   * harmed, nor one that leaves today's answer unchanged. It cannot see a revision that is undone before
-   * the call returns. And it is **co-occurrence, not causation**: a call that sent before revising, or one
-   * that only cancelled -- cancellations never consult the phase -- is counted too, because both break
-   * the writer contract even though neither placed an order against a stale answer. Always zero against `live::SessionSource` and any strategy that does not write the
-   * calendar; non-zero names a contract in `PollKind::CALENDAR` or `runner::Context::set_calendar` that
-   * somebody's code is breaking.
+   * Always zero with `live::SessionSource` and a strategy that does not write the calendar; nonzero
+   * means some code breaks the rule in `PollKind::CALENDAR` (co-occurrence, not proof of a stale send).
    */
   std::size_t sends_under_a_revised_phase_{0};
   /**
-   * Plans built during this run while a price band was held for the instrument and not applied.
-   *
-   * Plan evaluations, not orders: a plan that produced a market order or nothing at all counts.
-   * Non-zero means bands were read or registered and the age policy declined them, for one of three
-   * reasons: no policy was stated, in which case `notes_` says so; the band was older than the
-   * maximum that was stated; or the band was dated **after** the instant it was being aged at, which
-   * is a clock that went backwards rather than an old band.
+   * @brief Plans built while a known price band was not applied (no age policy, too old, or dated
+   *   after the clock); see `Runner::price_bands_withheld`.
    */
   std::size_t price_bands_withheld_{0};
-  /**
-   * Orders this run **sent** that the broker refused after a withheld band would have moved them.
-   *
-   * The cost of `PollingLoop::set_maximum_price_limits_age`'s refusal to clamp with a band it cannot
-   * age, measured where the outcome is known. **Co-occurrence rather than causation** -- a broker
-   * refuses orders for its own reasons, and this counts the ones that happened to be carrying an
-   * unclamped price -- so read a count that tracks a run's rejections as a reason to look at the
-   * band policy rather than as proof about any single order. See
-   * `Runner::unclamped_orders_rejected`, which also states what neither counter can see.
-   */
+  /** @brief Sent orders the broker refused while carrying a price a withheld band would have clamped; see `Runner::unclamped_orders_rejected`. */
   std::size_t unclamped_orders_rejected_{0};
-  /**
-   * Orders nothing sent to a broker during this run while carrying a withheld band's price.
-   *
-   * The half no exchange sees, and the one an empty `unclamped_orders_rejected_` would otherwise
-   * hide. Two sites: a guard, where a buy left above a withheld ceiling is the larger notional and a
-   * limit that multiplies quantity by price refuses what the band would have admitted; and the
-   * binding, where a price no adapter will send never becomes a request. See
-   * `Runner::unclamped_orders_refused`, and read both counters as co-occurrence.
-   */
+  /** @brief Orders refused before sending while carrying such a price; see `Runner::unclamped_orders_refused`. */
   std::size_t unclamped_orders_refused_{0};
-  /**
-   * What became of the instructions this run's **polling** decided, for every way one failed.
-   *
-   * A live run used to say nothing about any of this. `Runner::feed` returns a report describing
-   * what became of every instruction, and `live::SessionSource` discards it on every poll -- so a run
-   * in which the broker refused everything looked very much like one in which it accepted
-   * everything. Not identically: the phase and price-band figures can differ for some refused
-   * orders. But nothing said *the broker refused these*. See `Runner::orders_unbuildable` for what each origin means and why they are
-   * counted apart.
-   *
-   * **The polling path only.** These stop at the moment an operator's stop is honoured, because the
-   * stop handler and the closing pass have their own figures -- `closing_rejected_`,
-   * `closing_refused_`, `closing_withheld_` -- and a refused flatten counted in both families would
-   * be one failure reported twice. (`sends_outside_permitted_phase_` does span both, which is a fact
-   * about that figure rather than about these.)
-   */
+  /** @brief Orders reconciliation could not build during this run's polling; see `Runner::orders_unbuildable`. */
   std::size_t orders_unbuildable_{0};
-  /** @copydoc LoopReport::orders_unbuildable_ */
+  /** @brief Orders held back for an instrument of unknown order state; see `Runner::orders_reconcile_withheld`. */
   std::size_t orders_reconcile_withheld_{0};
-  /** @copydoc LoopReport::orders_unbuildable_ */
+  /** @brief Orders the risk guard refused; see `Runner::orders_guard_refused`. */
   std::size_t orders_guard_refused_{0};
-  /** @copydoc LoopReport::orders_unbuildable_ */
+  /** @brief Orders the binding refused to send; see `Runner::orders_binding_refused`. */
   std::size_t orders_binding_refused_{0};
-  /** @copydoc LoopReport::orders_unbuildable_ */
+  /**
+   * @brief Orders the broker refused (`SendOutcome::REJECTED`); see `last_broker_refusal_`. At KIS,
+   *   Toss and Kiwoom most refusals arrive as unknown outcomes and are counted in
+   *   `orders_indeterminate_`.
+   */
   std::size_t orders_broker_refused_{0};
-  /** @copydoc LoopReport::orders_unbuildable_ */
+  /**
+   * @brief Orders with an unknown outcome (`SendOutcome::INDETERMINATE`, including most KIS, Toss and
+   *   Kiwoom refusals).
+   */
   std::size_t orders_indeterminate_{0};
-  /**
-   * Orders this run sent that neither holdings, a listing nor the order history confirmed within the
-   * confirmation timeout. Each withheld its instrument in the ledger until an operator clears it. See
-   * `Runner::set_confirmation_timeout`.
-   */
+  /** @brief Sent orders that timed out unconfirmed, each withholding its instrument; see `Runner::set_confirmation_timeout`. */
   std::size_t orders_unconfirmed_timed_out_{0};
-  /**
-   * Plans this run's polling held back before judging any of their parts.
-   *
-   * **Four reasons reach it and this does not distinguish them**: an account never read, one older
-   * than the stated maximum, one read before the working-order listing it would be reconciled with,
-   * or a hold refusing placements for a plan that also wanted to withdraw something -- and the last
-   * two happen on a perfectly fresh portfolio. `Report::withheld_plans_`
-   * carries the reason per plan.
-   *
-   * Separate from the other figures because nothing was wrong with the instructions, and **not always
-   * visible in `final_gate_`**: with `allow_absent_portfolio` the gate is open while a plan that
-   * would withdraw something is still withheld. See `Runner::plans_withheld`.
-   */
+  /** @brief Whole plans held back (any `WithheldPlanReason`); see `Runner::plans_withheld`. */
   std::size_t plans_withheld_{0};
-  /**
-   * Instructions this run's polling could not send because **local machinery was unavailable**.
-   *
-   * A pre-send journal write that failed is the usual cause and not the only one: any executor
-   * answering `SendOutcome::UNAVAILABLE` lands here, journal or no journal, so a custom binding can
-   * produce this figure with nothing to repair in a journal at all.
-   *
-   * It leaves a sticky `LOCAL_FAILURE` hold. `final_gate_` **may** name it — or may show a
-   * higher-priority hold while that one is still in force — so this figure is how many instructions
-   * it cost rather than a second opinion about which hold was reported.
-   * See `Runner::instructions_unavailable`.
-   */
+  /** @brief Instructions not sent because local machinery was unavailable; see `Runner::instructions_unavailable`. */
   std::size_t instructions_unavailable_{0};
-  /** Withdrawals this run's polling could not complete; see `Runner::cancels_rejected`. */
+  /** @brief Cancellations refused by the broker or binding; see `Runner::cancels_rejected`. */
   std::size_t cancels_rejected_{0};
-  /** @copydoc LoopReport::cancels_rejected_ */
+  /** @brief Cancellations a hold refused. */
   std::size_t cancels_refused_{0};
-  /** @copydoc LoopReport::cancels_rejected_ */
+  /** @brief Cancellations naming an order the portfolio does not list. */
   std::size_t cancels_unresolved_{0};
-  /** @copydoc LoopReport::cancels_rejected_ */
+  /** @brief Cancellations with an unknown outcome. */
   std::size_t cancels_indeterminate_{0};
-  /**
-   * What the broker said about the last order **this run** saw it refuse.
-   *
-   * Empty when this run's polling saw none, even though the runner may still hold one from a previous
-   * run -- the same rule the counters follow, applied to a value. See `Runner::last_broker_refusal`.
-   */
+  /** @brief The broker's code and message for the last order it refused during this run, if any. */
   std::optional<BrokerRefusal> last_broker_refusal_;
-  /**
-   * Why reconciliation could not build the last instruction **this run's** polling counted in
-   * `orders_unbuildable_`, and for which instrument; empty when it counted none. See
-   * `Runner::last_unbuildable`.
-   */
+  /** @brief Why reconciliation could not build the last such instruction in this run, if any. */
   std::optional<strategy::Rejection> last_unbuildable_;
-  /**
-   * How many phase changes were announced to the strategy.
-   *
-   * The counter that distinguishes a mechanism that ran from one that was merely configured. A run
-   * spanning an open and a close sees transitions; a run of ten seconds sees the first one only.
-   */
+  /** @brief How many phase changes were announced to the strategy. */
   std::size_t phase_transitions_{0};
   /**
-   * Orders sent during this run under a phase `RiskLimits::permitted_phases_` did not permit.
-   *
-   * `permitted_phases_` governs what an order *opens*, not what it closes: an order reducing a held
-   * position toward flat is permitted whatever the phase, which is what lets an operator's flatten
-   * go out after the close instead of being refused by their own limits. This counts how often that
-   * happened, because it is the library sending into a session the operator said not to trade in and
-   * an empty report would not say so.
-   *
-   * **A send, not a decision.** An order the exception admitted and a later limit refused is not
-   * here; a broker's rejection is, because the request went out. Outside a session a rejection is
-   * the likeliest answer, so a counter that excluded it would read zero in the case it exists for.
-   *
-   * Non-zero is not a fault. A nightly flatten produces one; a strategy restating a close on every
-   * pass produces one per pass, and `RiskLimits::max_orders_per_window_` is the lever for that.
+   * @brief Orders sent in a phase `RiskLimits::permitted_phases_` does not permit, because they close
+   *   toward flat; see `Runner::sends_outside_permitted_phase`.
    */
   std::size_t sends_outside_permitted_phase_{0};
-  /** Whether the loop gave up because a poll kept failing. */
+  /** @brief Whether the loop gave up because a poll kept failing. */
   bool abandoned_{false};
-  /** Which kind exhausted its failure budget, when one did. */
+  /** @brief The poll kind that exhausted its failure budget, if one did. */
   std::optional<PollKind> abandoned_kind_;
-  /** Whether the order list was successfully read at least once. */
+  /** @brief Whether the broker's order list was read at least once. */
   bool order_list_read_{false};
-  /** Cancellations queued while honouring a `WITHDRAW` or `FLATTEN`. */
+  /** @brief Cancellations queued for a `WITHDRAW` or `FLATTEN` (asked for, not necessarily sent). */
   std::size_t withdrawn_{0};
-  /** Positions closed while honouring a `FLATTEN`. */
+  /** @brief Closing orders queued for a `FLATTEN` (asked for, not necessarily sent). */
   std::size_t flattened_{0};
-  /**
-   * What the closing pass actually managed to send.
-   *
-   * Separate from `withdrawn_` and `flattened_`, which count what was *asked for*. The difference is
-   * the whole point: a flatten that queues a closing order the guard then refuses has
-   * `flattened_ == 1` and `closing_placed_ == 0`, and an operator who only saw the first number
-   * would believe they were out of the market while still holding the position.
-   */
+  /** @brief Closing orders (placements, not cancellations) accepted by the executor (for a dry run, recorded). */
   std::size_t closing_placed_{0};
-  /**
-   * Closing instructions that were rejected: reconciliation could not build them, the broker
-   * refused them, or the binding refused to send them.
-   *
-   * All three are answers rather than doubts -- nothing needs reconciling any of them -- and all
-   * three leave the position exactly where it was, which is why they share a count. The report's
-   * `rejected_` and `rejected_cancel_` entries say which each one was.
-   */
+  /** @brief Closing instructions (placements and cancellations) rejected by reconciliation, the broker or the binding. */
   std::size_t closing_rejected_{0};
-  /** Closing instructions a guard refused. */
+  /** @brief Closing instructions the risk guard refused. */
   std::size_t closing_refused_{0};
-  /** Closing instructions withheld because the instrument's state is unresolved. */
+  /** @brief Closing instructions held back because the instrument has an order of unknown outcome. */
   std::size_t closing_withheld_{0};
-  /**
-   * Closing instructions whose send failed in transit, leaving their outcome unknown.
-   *
-   * Cancellations included. A cancellation that failed in transit may have withdrawn the order or
-   * may not, which is not the same as one that went.
-   */
+  /** @brief Closing instructions (cancellations included) with an unknown outcome. */
   std::size_t closing_indeterminate_{0};
-  /**
-   * Closing instructions local machinery refused to send, so no broker was asked.
-   *
-   * Local machinery was unavailable -- a pre-send journal write that failed is the usual cause and
-   * not the only one, since any executor answering `UNAVAILABLE` lands here. Different from every
-   * count above in what an operator does about it: repair whatever the binding could not reach,
-   * `resume_after_local_failure`, and stop again.
-   */
+  /** @brief Closing instructions not sent because local machinery was unavailable; fix it, `resume_after_local_failure`, and stop again. */
   std::size_t closing_unavailable_{0};
-  /**
-   * Closing cancellations naming an order the portfolio snapshot does not hold.
-   *
-   * The snapshot is stale rather than the instruction wrong, and the answer is to read the broker's
-   * own list rather than to retry blind.
-   */
+  /** @brief Closing cancellations naming an order the portfolio does not list; read the broker's list rather than retry. */
   std::size_t closing_unresolved_{0};
 
   /**
-   * Positions whose closing order was sized down, or not sent at all, because another order could
-   * close them too.
+   * @brief Positions whose closing order was sized down, or not sent, because another order could
+   *   close them too.
    *
-   * A flatten cancels every resting order and then closes the position -- but a cancellation is a
-   * request, not an outcome, so a same-side order can fill while its withdrawal is still pending.
-   * Closing the *whole* holding alongside it could sell the position twice and leave the account
-   * short. Two causes, one consequence:
-   *
-   * - **A same-side order in the listing.** The close is sized to the holding minus what is working
-   *   on that side, which is the most that cannot overshoot.
-   * - **A listing that cannot be trusted** -- `closing_source_unverified_`. Then no closing order is
-   *   sent for that position at all, because the deduction above can only subtract what it can see.
-   *
-   * Which way it resolves is not knowable in this pass: if the cancellations complete, part or all
-   * of the position is still held; if one fails because the order filled, that much is closed.
-   * Either is acceptable and neither is complete, which is why this makes `closing_complete()`
-   * false. The cancellations are sent in both cases, because withdrawing only reduces exposure.
+   * A flatten cancels every listed order and then closes the position, but a same-side order can
+   * fill while its cancellation is pending. So the close is sized to the holding minus what is
+   * working on that side, or not sent at all when the listing cannot be trusted
+   * (`closing_source_unverified_`). Makes `closing_complete()` false.
    */
   std::size_t closing_contended_{0};
 
   /**
-   * Positions whose closing order could not be *sized*, because the snapshot's own arithmetic
-   * failed.
-   *
-   * Separate from `closing_contended_`, and the separation is the point. Contention is a statement
-   * about competing **orders** -- something is working on the closing side, or the listing cannot be
-   * trusted -- and its note sends an operator to the order list. This is a statement about the
-   * **holding**: rows that will not add up, or a net whose closing size is not representable. An
-   * operator told "contended" would go and read the order list, which is not where the problem is.
-   *
-   * Reachable at the boundary rather than in ordinary trading: two rows that sum to the most
-   * negative `Decimal64` have no representable positive magnitude, so the size of the buy that would
-   * close them cannot be stated. Rare, and the reason it is counted rather than skipped is that
-   * `closing_complete()` promises the pass knew what to ask for. A silent `continue` here let a stop
-   * report completion over a position it had never sized.
+   * @brief Positions whose closing order could not be sized: the holding rows do not add up, the
+   *   closing quantity is not representable, or the same-side working quantity cannot be subtracted.
+   *   Makes `closing_complete()` false.
    */
   std::size_t closing_unsizable_{0};
 
   /**
-   * Whether the closing pass could not establish what it needed to send.
+   * @brief Whether the closing pass could not trust its picture of the account. Makes
+   *   `closing_complete()` false.
    *
-   * A stop builds its instructions from the holdings snapshot -- working orders for a `WITHDRAW`,
-   * positions for a `FLATTEN` -- so a pass that runs before that snapshot exists, or before the
-   * broker's own order list has been read once, is working from a picture that may be missing an
-   * order a *predecessor* left resting. A `WITHDRAW` or `FLATTEN` requested before the loop's first
-   * iteration attempts the startup read itself (`gate_for`); one whose read failed is exactly this.
+   * Set if the order list was never read, the source publishes no working orders, no working-order
+   * listing was read or it is older than the portfolio age limit, an order was placed (or sent with
+   * an unknown outcome) after that listing, holdings were never read or are too old, or the listing
+   * is newer than the holdings. Then a `FLATTEN` places no closing orders at all, while the
+   * withdrawals of the orders it knows of are still sent.
    *
-   * The pass still sends what it does know about, because withdrawing the orders it can see beats
-   * withdrawing none. But it cannot claim to have closed everything, which is why this makes
-   * `closing_complete()` false on its own.
+   * A verified source still lists only what the broker's listing shows: at Toss, an order of a type
+   * the API does not list (such as an after-hours closing-price order placed in the app) is in no
+   * listing, so a flatten can neither withdraw it nor size around it.
    */
   bool closing_source_unverified_{false};
 
   /**
-   * Returns whether every closing instruction the loop asked for actually went out.
+   * @brief Tests whether every closing instruction the loop asked for was accepted, and the loop knew
+   *   what to ask for.
    *
-   * **Every way a closing instruction can fail to go counts here**, which is the whole value of the
-   * call: an operator must not get `true` from a stop where the journal was broken, where the
-   * broker rejected a cancellation, or where a cancellation named an order a stale snapshot did not
-   * list. Those failed silently before, because they were reported on the runner's report and never
-   * carried onto this one.
+   * Meaningful only after a `WITHDRAW` or `FLATTEN` stop (`stopped_by_`): a run that ended otherwise,
+   * or with `QUIESCE`, also returns `true`, having checked nothing. `true` does not mean flat or nothing resting: an accepted closing
+   * order may not have filled, and an accepted cancellation may not have completed. Read the broker's
+   * order list and holdings for the state.
    *
-   * **It is not a confirmation of anything at the exchange, and must not be read as one.** It says
-   * every instruction the loop asked for was *accepted by the broker*, and acceptance is where this
-   * library's knowledge stops:
-   *
-   * - A closing placement that was accepted may not have **filled**. Only a later holdings snapshot
-   *   shows that, and a `WITHDRAW` deliberately leaves positions held anyway.
-   * - A cancellation that was accepted may not have **completed**. Cancellation is asynchronous at
-   *   both brokers -- Toss publishes `PENDING_CANCEL` and `CANCEL_REJECTED`, which returns the order
-   *   to its previous state -- so an accepted withdrawal can still be working.
-   *
-   * `closing_contended_` covers a third thing: a flatten that deliberately sent *less* than the
-   * position -- or nothing for it -- because closing the whole of it beside an order that could
-   * also close it risks selling it twice. `closing_unsizable_` covers a fourth: a holding whose own
-   * arithmetic failed, so no size could be stated at all. And `closing_source_unverified_` covers
-   * the case before all of them: a pass that never established *which* instructions it owed cannot
-   * be complete no matter how many it sent.
-   *
-   * `true` therefore means "every instruction I asked for was taken, and I knew what to ask for",
-   * never "I am flat" and never "nothing is resting". Read the broker's own order list and holdings
-   * to learn the state; this call tells you only whether anything failed to go.
+   * @return `false` if any closing instruction was rejected, refused, withheld, of unknown outcome,
+   *   unavailable or unresolved, or any position was contended or unsizable, or the source was
+   *   unverified.
    */
   bool closing_complete() const noexcept {
     return closing_rejected_ == 0 && closing_refused_ == 0 && closing_withheld_ == 0 &&
       closing_indeterminate_ == 0 && closing_unavailable_ == 0 && closing_unresolved_ == 0 &&
       closing_contended_ == 0 && closing_unsizable_ == 0 && !closing_source_unverified_;
   }
-  /**
-   * Instructions the strategy's `on_stop` asked for and the guard refused.
-   *
-   * Refusing them is the intended outcome rather than a failure, so this does not affect
-   * `closing_complete()`: during a stop the operator's instructions are the ones that go, and a
-   * strategy's parting order would be sized against nothing the closing pass reasoned about. It is
-   * counted because a strategy quietly losing its shutdown behaviour should be visible rather than
-   * discovered.
-   */
+  /** @brief Instructions the strategy's `on_stop` asked for during a stop, refused as intended (the operator's orders go instead). */
   std::size_t stop_handler_refused_{0};
-  /**
-   * Instructions the strategy's `on_stop` got out, which should always be zero.
-   *
-   * Kept as an assertion in the report rather than in a comment: the hold is applied before
-   * `on_stop` is dispatched, so a non-zero value here means that ordering has been broken.
-   */
+  /** @brief Instructions the strategy's `on_stop` got out during a stop; always zero. */
   std::size_t stop_handler_sent_{0};
 
-  /** Notes an operator should read, such as an unrecognized control-file token. */
+  /** @brief Notes for the operator, such as an unrecognized control-file word or a missing policy. */
   std::vector<std::string> notes_;
 
-  /** Returns how many polls of `kind` were attempted. */
+  /**
+   * @brief Returns how many polls of a kind were attempted.
+   * @param kind The kind.
+   * @return The count.
+   */
   std::size_t attempted(PollKind kind) const noexcept {
     return attempted_[static_cast<int>(kind)];
   }
 
-  /** Returns how many polls of `kind` failed. */
+  /**
+   * @brief Returns how many polls of a kind failed.
+   * @param kind The kind.
+   * @return The count.
+   */
   std::size_t failed(PollKind kind) const noexcept { return failed_[static_cast<int>(kind)]; }
 };
 
 /**
- * A source that answers nothing, for driving a loop in a test.
+ * @brief A source for tests: each poll returns a queued or default outcome, without any network.
  *
- * The counterpart to `RecordingExecutor`, and the reason every loop behaviour in this header is
- * testable with no session, no credentials and no network. A test queues what each poll should
- * return and then asserts what the loop did with it.
+ * It installs a calendar only during `PollKind::CALENDAR` (see `set_calendar`), the rule every
+ * source must follow.
  *
- * Deliberately not a mock of a broker. It is a mock of *arrival*: the question the loop answers is
- * "what do I do when data shows up, or does not, or the list read fails", and none of that needs a
- * broker to be interesting.
- *
- * **It also demonstrates the source contract worth copying**: `set_calendar` makes this source install
- * a calendar during `PollKind::CALENDAR` and during no other poll, which is the rule
- * `PollKind::CALENDAR` states and the one the loop cannot enforce.
+ * @tparam Runner The runner type.
  */
 template <typename Runner>
 class ManualSource {
 public:
-  /** Its queued outcomes stand for a real listing, so a closing pass may rely on them. */
+  /** @brief `true`: its outcomes stand for a real working-order listing. */
   static constexpr bool provides_working_orders = true;
 
-  /** Queues what the next poll of `kind` returns. */
+  /**
+   * @brief Queues the outcome of the next poll of a kind.
+   * @param kind The kind.
+   * @param outcome The outcome.
+   */
   void queue(PollKind kind, PollOutcome outcome) {
     queued_[static_cast<int>(kind)].push_back(outcome);
   }
 
-  /** Sets what every unqueued poll of `kind` returns. Defaults to `UNCHANGED`. */
+  /**
+   * @brief Sets the outcome of every unqueued poll of a kind (`UNCHANGED` by default).
+   * @param kind The kind.
+   * @param outcome The outcome.
+   */
   void set_default(PollKind kind, PollOutcome outcome) {
     defaults_[static_cast<int>(kind)] = outcome;
   }
 
-  /** Sets what the order-list read returns. */
+  /**
+   * @brief Sets the outcome of the order-list read (`UPDATED` by default).
+   * @param outcome The outcome.
+   */
   void set_order_list(PollOutcome outcome) { order_list_ = outcome; }
 
-  /** Sets which currencies this source stands for having been configured to ask about. */
+  /**
+   * @brief Sets the buying-power currencies the source claims to ask about.
+   * @param currencies The currencies.
+   */
   void set_buying_power_currencies(std::vector<Currency> currencies) {
     currencies_ = std::move(currencies);
   }
 
   /**
-   * Sets the calendar a successful calendar poll installs, and makes that poll succeed.
-   *
-   * Supplying one is how a test says "the broker answers this", so it also sets the default outcome
-   * for `PollKind::CALENDAR` to `UPDATED` -- a test that supplies a calendar and then has to remember
-   * a second call to make it arrive would be a test that silently asserts nothing about the phase. A
-   * test that wants the poll to fail queues or defaults that outcome afterwards, and then nothing is
-   * installed, which is what `live::SessionSource` does too.
+   * @brief Sets the calendar a successful calendar poll installs, and makes that poll default to
+   *   `UPDATED`.
+   * @param calendar The calendar.
    */
   void set_calendar(TradingCalendar calendar) {
     calendar_ = std::move(calendar);
     defaults_[static_cast<int>(PollKind::CALENDAR)] = PollOutcome::UPDATED;
   }
 
-  /** Returns those currencies, which is what lets the gate hold for one that never answered. */
+  /**
+   * @brief Returns the buying-power currencies.
+   * @return The currencies.
+   */
   const std::vector<Currency>& buying_power_currencies() const noexcept { return currencies_; }
 
-  /** Returns how many times the order list was read. */
+  /**
+   * @brief Returns how many times the order list was read.
+   * @return The count.
+   */
   std::size_t order_list_reads() const noexcept { return order_list_reads_; }
 
-  /** Returns how many times `kind` was polled. */
+  /**
+   * @brief Returns how many times a kind was polled.
+   * @param kind The kind.
+   * @return The count.
+   */
   std::size_t polls(PollKind kind) const noexcept { return polls_[static_cast<int>(kind)]; }
 
   /**
-   * Sets the band a successful price-limits poll installs, and makes that poll succeed.
-   *
-   * On the same terms as `set_calendar` above, and for the same reason: a test that supplied a band
-   * and then had to remember a second call to make it arrive would be a test that silently asserts
-   * nothing about clamping.
+   * @brief Adds a band a successful price-limits poll installs, and makes that poll default to
+   *   `UPDATED`.
+   * @param instrument The instrument.
+   * @param limits The band.
    */
   void set_price_limits(InstrumentId instrument, PriceLimits limits) {
     price_limits_.emplace_back(std::move(instrument), std::move(limits));
     defaults_[static_cast<int>(PollKind::PRICE_LIMITS)] = PollOutcome::UPDATED;
   }
 
-  /** Returns the queued outcome for `kind`, or its default, installing a calendar that arrived. */
+  /**
+   * @brief Polls: returns the next queued outcome or the default, and on `UPDATED` installs the
+   *   calendar or bands set for that kind.
+   * @param kind The kind.
+   * @param runner_instance The runner to install into.
+   * @return The outcome.
+   */
   PollOutcome poll(PollKind kind, Runner& runner_instance) {
     const int at = static_cast<int>(kind);
     ++polls_[at];
@@ -1165,20 +859,21 @@ public:
     return outcome;
   }
 
-  /** Returns the configured order-list outcome. */
+  /**
+   * @brief Reads the order list: returns the configured outcome. The runner argument is ignored.
+   * @return The outcome.
+   */
   PollOutcome read_order_list(Runner&) {
     ++order_list_reads_;
     return order_list_;
   }
 
 private:
-  /**
-   * Every kind's default outcome, filled rather than listed.
-   *
-   * It used to be a list with one entry per `PollKind`, and `PollOutcome::UPDATED` is the zero value
-   * -- so adding an enumerator silently defaulted the new kind to "new data arrived" in every test
-   * that had not set it. Filling cannot be one short.
-   */
+  // Every kind's default outcome, filled rather than listed.
+  //
+  // It used to be a list with one entry per `PollKind`, and `PollOutcome::UPDATED` is the zero value
+  // -- so adding an enumerator silently defaulted the new kind to "new data arrived" in every test
+  // that had not set it. Filling cannot be one short.
   static std::array<PollOutcome, poll_kind_count> unchanged_defaults() {
     std::array<PollOutcome, poll_kind_count> filled{};
     filled.fill(PollOutcome::UNCHANGED);
@@ -1196,100 +891,73 @@ private:
 };
 
 /**
- * Drives a runner for as long as a program lives, and stops on purpose.
+ * @brief Runs a runner for a live session: polls a source on a schedule, gates placements, derives
+ *   the market phase, and honours stop requests.
  *
- * `Runner::feed` is one pass and caller-driven, which is right for a backtest and right for a single
- * live decision. What was missing is everything a program needs *around* it, and the hazard is
- * specific: nothing stopped a caller writing `while (true) { runner.feed(next()); }`, at which point
- * they owned a cadence, a rate-limit interaction, a reconciliation obligation and a stop control,
- * with documentation as the only thing between them and a doubled position.
+ * Each iteration: check for a stop (a `StopSource` or the control file); make sure the broker's
+ * order list has been read once (until it has, placements are held); derive and install the market
+ * phase from the `SessionWindow` and the polled calendar; poll whatever is due, in `all_poll_kinds`
+ * order; announce a phase change; retry retained targets.
  *
- * **Parameterized on a source, for the same reason the runner is parameterized on an executor.** A
- * polling loop looks like a broker concern and almost none of it is: when to poll next, noticing a
- * stop, refusing to send before the first reconciliation, and deciding a snapshot is too stale to
- * size against are all broker-free. Only the fetching is not. So `SessionSource` does the fetching
- * in `<algotradelib/live>`, `ManualSource` stands in for it here, and every behaviour worth testing
- * is reachable without a network.
+ * Placements are held through holds on the runner's `strategy::RiskGuard`: `ORDER_LIST_UNREAD`,
+ * `PORTFOLIO_ABSENT`, `PORTFOLIO_STALE`, `BUYING_POWER_UNREAD` and `POLL_FAILING` are data holds,
+ * under which named cancellations still go (see `strategy::halt_blocks`), so a stop can withdraw
+ * known orders even when the order list could not be read. `STOPPING`, taken while a stop is
+ * honoured and left in place after it, blocks cancellations too; the loop lifts it only for its own
+ * closing instructions. The loop never takes or releases `OPERATOR` or `LOCAL_FAILURE`, which also
+ * block cancellations.
  *
- * ## How sending is blocked
+ * **State a holdings age policy** (`set_maximum_portfolio_age` or `allow_unbounded_portfolio_age`):
+ * without one, every placement is held as `PORTFOLIO_STALE`.
  *
- * Through `RiskGuard::halt()`, which is already the library's one documented primitive for "stop
- * sending without withdrawing or flattening" -- exactly what a gate needs, and exactly what
- * `QUIESCE` means. Reusing it means no change to `Runner::settle()` and no second parallel
- * mechanism that could disagree with the first.
+ * A phase the loop cannot establish is reported (`final_phase_` and a note), not held. A stop is
+ * honoured with a closing pass (see `StopIntent`); `LoopReport::closing_complete()` says whether
+ * everything asked for was accepted, which is not the same as being flat. The closing orders are
+ * allowed in any phase but still face every other risk check (sellable quantity, ceilings).
  *
- * ## The market phase, which this loop owns
+ * @note If you write a source: install the trading calendar during `PollKind::CALENDAR` only, and do
+ *   not feed the runner from that poll.
  *
- * Each iteration derives one from `set_session_window`'s window and whatever `PollKind::CALENDAR` has
- * put on the context, installs it **before** the polls, and announces a change **after** them. Before
- * this existed, nothing outside `backtest/` ever set a phase: `on_phase` never fired live, a shipped
- * vanilla built on it did nothing, and a caller who set nothing was refused every order by the
- * default `permitted_phases_`. The two halves of the ordering are separate because a poll can settle
- * an order -- see `step`, which carries the argument.
- *
- * A phase the loop cannot establish is **reported and not held**: `final_phase_` names it and a note
- * says why. See `note_unestablished_phase` for why a hold would be worse than nothing.
- *
- * **If you are writing a source, this is the one rule the loop cannot enforce for you**: write the
- * trading calendar during `PollKind::CALENDAR`, nowhere else, and do not feed the runner from that
- * poll. The loop re-derives the phase before
- * every call it makes into a source, but nothing of its runs between your own `set_calendar` and your
- * own `Runner::feed`, so doing both inside one poll settles an order against the phase as it stood
- * when that poll began. `PollKind::CALENDAR` carries the full argument, and
- * `LoopReport::sends_under_a_revised_phase_` reports a source that breaks it, and the rule has a
- * second half: the calendar poll must not feed either, because a source may not do both in one call.
- *
- * ## The trap a stop must not hide
- *
- * An operator who asked to be flat and was told nothing would believe they were. That is why
- * `LoopReport` counts what the broker *accepted* separately from what the loop *asked for*, and why
- * a refusal produces a note saying the position is still held. `closing_complete()` is the one call
- * that answers "did everything I asked for go out" -- which is not the same question as "am I
- * flat", and deliberately so: acceptance is the last thing this library observes, and the broker's
- * own order list and holdings are the authority on what is actually left.
- *
- * **The phase is no longer what springs this trap, and it was.** `RiskLimits::permitted_phases_`
- * defaults to `{MarketPhase::OPEN}`, and a flatten issued outside market hours used to be refused by
- * it -- so the one instruction an operator most needs to succeed failed because of their own risk
- * limit. `ai/phase-limit-exits` settled that the phase governs what an order *opens* rather than
- * what it closes, so a closing pass now goes out whatever the session is doing, and
- * `LoopReport::sends_outside_permitted_phase_` says when that happened.
- *
- * **The counts stay load-bearing, because every other limit still applies to a close.** A sellable
- * check with no broker reading, a per-order ceiling, a position ceiling, a halt: each of them
- * refuses an exit and each produces the same silence. The trap was never really about the phase.
- *
- * **The loop holds the guard, and it names what it holds.** Its gates are
- * `strategy::HaltReason` values it takes and releases itself -- `ORDER_LIST_UNREAD`,
- * `PORTFOLIO_STALE`, `STOPPING`, `POLL_FAILING`. It never takes `OPERATOR` or `LOCAL_FAILURE`,
- * which belong to a person and to the runner, so an operator halting by hand while the loop's gate
- * is closed is not lost when that gate opens. The loop still *reports* those holds: `final_gate_`
- * names the most fundamental hold in force, whoever owns it, so a run that sent nothing because
- * somebody halted it says so instead of showing an open gate.
+ * @tparam Runner The runner type (usually `runner::Runner`).
+ * @tparam Source The source type (`live::SessionSource`, or `ManualSource` in tests).
+ * @tparam Clock The clock (`SteadyClock`, or `ManualClock` in tests).
  */
 template <typename Runner, typename Source, typename Clock = SteadyClock>
 class PollingLoop {
 public:
-  /** Constructs a loop driving `runner` from `source`. Both are borrowed, not owned. */
+  /**
+   * @brief Constructs a loop.
+   * @param runner The runner; borrowed, and must outlive the loop.
+   * @param source The source; borrowed, and must outlive the loop.
+   * @param schedule How often to poll each kind.
+   * @param clock The clock.
+   */
   PollingLoop(Runner& runner, Source& source, PollSchedule schedule = {}, Clock clock = {})
   : runner_(&runner), source_(&source), schedule_(std::move(schedule)), clock_(std::move(clock)) {}
 
-  /** Returns the clock, so a test can read how long the loop believed it waited. */
+  /**
+   * @brief Returns the clock.
+   * @return The clock.
+   */
   const Clock& clock() const noexcept { return clock_; }
-  /** @copydoc PollingLoop::clock() const */
+  /**
+   * @brief Returns the clock, for a test to advance.
+   * @return The clock.
+   */
   Clock& clock() noexcept { return clock_; }
 
-  /** Returns the schedule. */
+  /**
+   * @brief Returns the schedule.
+   * @return The schedule.
+   */
   const PollSchedule& schedule() const noexcept { return schedule_; }
 
 private:
-  /**
-   * Every monotone instruction-outcome figure the runner holds, read at one instant.
-   *
-   * Twelve of them, read together rather than one call at a time, because they are differenced
-   * against each other's snapshot: a set taken at two instants describes one interval, and twelve
-   * separately captured values do not.
-   */
+  // Every monotone instruction-outcome figure the runner holds, read at one instant.
+  //
+  // Twelve of them, read together rather than one call at a time, because they are differenced
+  // against each other's snapshot: a set taken at two instants describes one interval, and twelve
+  // separately captured values do not.
   struct InstructionOutcomes {
     std::size_t unbuildable_{0};
     std::size_t unconfirmed_timed_out_{0};
@@ -1306,7 +974,7 @@ private:
     std::size_t instructions_unavailable_{0};
   };
 
-  /** Reads them all from the runner. */
+  // Reads them all from the runner.
   InstructionOutcomes instruction_outcomes() const {
     InstructionOutcomes at;
     at.unbuildable_ = runner_->orders_unbuildable();
@@ -1325,7 +993,7 @@ private:
     return at;
   }
 
-  /** Writes the difference between two snapshots onto `report`. */
+  // Writes the difference between two snapshots onto `report`.
   static void note_instruction_outcomes(
     LoopReport& report,
     const InstructionOutcomes& before,
@@ -1349,10 +1017,14 @@ private:
 public:
 
   /**
-   * Sets how stale a holdings snapshot may be before sending is blocked.
+   * @brief Sets how old the holdings (and, for a runner that sends to a broker, the working-order
+   *   listing) may be before placements are held (`PORTFOLIO_STALE`).
    *
-   * For a runner that sends to a broker the same bound applies to the order listing, which is the
-   * other half of the picture a plan is sized against; see `PollSchedule::working_orders_`.
+   * One of this and `allow_unbounded_portfolio_age` is required: without either, every placement is
+   * held as `PORTFOLIO_STALE` (and a note says so). The same age bounds a stop's closing pass (see
+   * `LoopReport::closing_source_unverified_`).
+   *
+   * @param age The maximum age.
    */
   void set_maximum_portfolio_age(std::chrono::nanoseconds age) {
     maximum_portfolio_age_ = age;
@@ -1364,16 +1036,14 @@ public:
   }
 
   /**
-   * States that this run accepts a snapshot of any age, in place of stating a maximum.
+   * @brief Accepts holdings of any age, instead of stating a maximum.
    *
-   * The deliberate half of the requirement above. It does not make staleness safe; it records that
-   * the operator considered it and chose to proceed, which is the difference between a risk taken
-   * and a risk defaulted into. It does **not** suspend the absent-portfolio hold: never read and
-   * unboundedly old are different states, and this answers only the second. Nor the hold for a
-   * runner whose order listing will never arrive (`PollSchedule::working_orders_`); but with no age
-   * to compare against, a listing poll that is rate-limited without end keeps the orders a runner
-   * sent "working" without end too, because a rate-limited poll does not count towards abandoning
-   * the run.
+   * It does not lift the hold for holdings never read, nor the one for a runner whose working-order
+   * listing never arrives.
+   *
+   * @warning A listing is then never too old. If account polls keep being refused for the rate limit
+   *   (which never exhausts the failure budget), the loop keeps placing against the last listing,
+   *   and sent orders can stay counted as working indefinitely.
    */
   void allow_unbounded_portfolio_age() {
     allow_unbounded_portfolio_age_ = true;
@@ -1382,49 +1052,25 @@ public:
   }
 
   /**
-   * Sets how old a price band may be before it is not applied to an order's price.
-   *
-   * Pushed down to the runner as the **policy**, for the reason `set_maximum_portfolio_age` states:
-   * the runner re-evaluates it against whatever band is in hand when it settles, and a source
-   * callback can install a band and settle between this loop's own checks.
-   *
-   * **A band is a per-trading-day value**, so the useful bound is shorter than a session rather
-   * than longer than one, and a run that polls `PollKind::PRICE_LIMITS` on a cadence is bounding
-   * how long a *failing* poll may go on serving the last good answer.
-   *
-   * `std::nullopt` withdraws the policy entirely, including an earlier
-   * `allow_unbounded_price_limits_age`, and every band is then withheld. The parameter is an
-   * optional for exactly that reason: the runner's setter can express the withdrawal and a wrapper
-   * that could not would leave an operator calling past the loop to reach it.
+   * @brief Sets how old a price band may be and still be applied; passed to the runner (see
+   *   `Runner::set_maximum_price_limits_age`).
+   * @param age The maximum age; `std::nullopt` withdraws the policy, so no band is applied.
    */
   void set_maximum_price_limits_age(std::optional<std::chrono::nanoseconds> age) {
     runner_->set_maximum_price_limits_age(age);
   }
 
-  /**
-   * States that this run applies a price band of any age, in place of stating a maximum.
-   *
-   * The deliberate half, as `allow_unbounded_portfolio_age` is for a snapshot. A run that registers
-   * a band at startup and never polls one is exactly the case this exists to make visible: it is
-   * the operator saying they know the band will outlive the day it describes.
-   */
+  /** @brief Applies price bands of any age (see `Runner::allow_unbounded_price_limits_age`). */
   void allow_unbounded_price_limits_age() {
     runner_->allow_unbounded_price_limits_age();
   }
 
   /**
-   * States that this run may act although it has never read what the account holds.
+   * @brief Lets the run place orders before holdings have ever been read (for a broker without a
+   *   holdings inquiry, or a run deliberately without that poll).
    *
-   * For a run that genuinely has no holdings to read -- a broker with no such inquiry, or a loop
-   * deliberately configured without the cadence. It suspends the `PORTFOLIO_ABSENT` hold **and the
-   * epoch's participation in any age comparison**, because the epoch is older than any bound and an
-   * opt-out that left it in the comparison would merely rename the refusal.
-   *
-   * It does not suspend a configured bound for a snapshot that *was* read, and it does not permit a
-   * cancellation derived from an account nobody has seen: `Runner::plan_withhold_reason` decides
-   * that on the snapshot itself, and no switch here reaches it. Together with
-   * `allow_unbounded_portfolio_age` this restores the library's previous *placement* behaviour, and
-   * deliberately not its previous cancellation behaviour.
+   * It lifts the `PORTFOLIO_ABSENT` hold, but not an age limit on holdings that were read, and a plan
+   * that would cancel something is still held back until holdings are read.
    */
   void allow_absent_portfolio() {
     allow_absent_portfolio_ = true;
@@ -1435,35 +1081,41 @@ public:
   }
 
   /**
-   * Sets the session the market phase is derived against.
-   *
-   * `strategy::SessionWindow::krx()` by default, which is the same default `backtest::ReplayConfig`
-   * carries -- so a strategy replayed and then run live derives its phases against the same window
-   * unless a caller changes one of them, and a divergence between the two worlds has to be asked for.
-   *
-   * Operator-stated rather than read from a broker, which `SessionWindow` itself argues: only Toss
-   * publishes intraday hours, so deriving them from a broker would give one answer for one broker and
-   * nothing for the other.
+   * @brief Sets the session window the market phase is derived from (KRX by default, as in a backtest).
+   * @param window The window.
    */
   void set_session_window(strategy::SessionWindow window) {
     session_window_ = std::move(window);
   }
 
-  /** Returns that session window. */
+  /**
+   * @brief Returns the session window.
+   * @return The window.
+   */
   const strategy::SessionWindow& session_window() const noexcept { return session_window_; }
 
-  /** Sets the failure policy. */
+  /**
+   * @brief Sets how many consecutive failures of one poll kind stop the loop.
+   * @param policy The policy.
+   */
   void set_failure_policy(FailurePolicy policy) { failure_policy_ = std::move(policy); }
 
-  /** Attaches a control file an operator can write an intent into. */
+  /**
+   * @brief Sets the control file an operator writes a stop intent into.
+   * @param channel The channel.
+   */
   void set_control_file(FileStopChannel channel) { control_ = std::move(channel); }
 
   /**
-   * Runs until `stop` is requested, a poll exhausts its failure budget, or `max_iterations` pass.
+   * @brief Runs until a stop is requested, a poll kind exhausts its failure budget, or
+   *   `max_iterations` iterations have run.
    *
-   * `max_iterations` exists for tests and for a bounded operational run; zero means unbounded. A
-   * caller who wants "forever" passes nothing, and a caller who wants one pass has always had
-   * `Runner::feed`.
+   * On a stop it honours the intent (cancelling and closing as asked) and calls the strategy's
+   * `on_stop` under the `STOPPING` hold.
+   *
+   * @param stop The stop source to poll (and that a signal handler may set).
+   * @param max_iterations The most iterations to run; zero means unbounded.
+   * @return The run's report.
    */
   LoopReport run(StopSource& stop, std::size_t max_iterations = 0) {
     LoopReport report;
@@ -1609,21 +1261,22 @@ public:
     return report;
   }
 
-  /** Returns what the last iteration did. */
+  /**
+   * @brief Returns what the last iteration did.
+   * @return The iteration report.
+   */
   const IterationReport& last() const noexcept { return last_; }
 
 private:
-  /**
-   * Puts the sellable-convention probe's verdict in the report, when it reached one.
-   *
-   * The probe answers a question neither broker's documentation does -- whether the sellable figure
-   * already excludes resting sells -- and it answers it as a by-product of ordinary polling. An
-   * operator should not have to write code to read that, so a run that learned something says so,
-   * with the counts behind it because one observation is evidence rather than proof.
-   *
-   * Silent when nothing was observed, which is most runs: a note saying "undetermined" on every run
-   * that never sold anything is noise, and noise is how a report stops being read.
-   */
+  // Puts the sellable-convention probe's verdict in the report, when it reached one.
+  //
+  // The probe answers a question neither broker's documentation does -- whether the sellable figure
+  // already excludes resting sells -- and it answers it as a by-product of ordinary polling. An
+  // operator should not have to write code to read that, so a run that learned something says so,
+  // with the counts behind it because one observation is evidence rather than proof.
+  //
+  // Silent when nothing was observed, which is most runs: a note saying "undetermined" on every run
+  // that never sold anything is noise, and noise is how a report stops being read.
   void note_sellable_convention(LoopReport& report) const {
     const auto evidence = runner_->sellable_convention().overall();
     if (evidence.total() == 0) {
@@ -1636,7 +1289,7 @@ private:
     );
   }
 
-  /** Returns how many instructions the runner has discarded as history, where it counts them. */
+  // Returns how many instructions the runner has discarded as history, where it counts them.
   std::size_t warmup_discarded() const {
     if constexpr (runner_counts_warmup<Runner>::value) {
       return runner_->warmup_instructions_discarded();
@@ -1645,14 +1298,12 @@ private:
     }
   }
 
-  /**
-   * Says, once per run, how many instructions were decided on bars fed as history and not sent.
-   *
-   * Only the newest bar of each instrument's read may send (`Runner::feed_warmup`), so a cold start's
-   * history and a backlog after an outage are shown to the strategy and nothing decided on them goes
-   * out. Worth a line because it is also what a bar cadence slower than the bars' interval costs: a
-   * poll bringing five minute bars acts on the newest one only.
-   */
+  // Says, once per run, how many instructions were decided on bars fed as history and not sent.
+  //
+  // Only the newest bar of each instrument's read may send (`Runner::feed_warmup`), so a cold start's
+  // history and a backlog after an outage are shown to the strategy and nothing decided on them goes
+  // out. Worth a line because it is also what a bar cadence slower than the bars' interval costs: a
+  // poll bringing five minute bars acts on the newest one only.
   void note_warmup_discarded(LoopReport& report) const {
     const auto discarded = warmup_discarded() - warmup_discarded_at_start_;
     if (discarded == 0) {
@@ -1664,7 +1315,7 @@ private:
     );
   }
 
-  /** Says, once per run, how many order intents kept for the phase were dropped at release. */
+  // Says, once per run, how many order intents kept for the phase were dropped at release.
   void note_kept_intents_dropped(LoopReport& report) const {
     if constexpr (runner_counts_kept_drops<Runner>::value) {
       const auto dropped = runner_->kept_intents_dropped() - kept_dropped_at_start_;
@@ -1679,12 +1330,10 @@ private:
     }
   }
 
-  /**
-   * Says, once per run, that the strategy's `on_fill` never fires on this runner.
-   *
-   * See `Runner::on_fill_never_fires`. On every run rather than only the first, because a report is
-   * read on its own, and a note that appeared only in a run nobody kept would be no note at all.
-   */
+  // Says, once per run, that the strategy's `on_fill` never fires on this runner.
+  //
+  // See `Runner::on_fill_never_fires`. On every run rather than only the first, because a report is
+  // read on its own, and a note that appeared only in a run nobody kept would be no note at all.
   void note_on_fill_never_fires(LoopReport& report) const {
     if constexpr (Runner::on_fill_never_fires) {
       report.notes_.push_back(
@@ -1696,14 +1345,12 @@ private:
     }
   }
 
-  /**
-   * Says, once per run, that working orders are polled more often than holdings.
-   *
-   * Not refused: it is a legitimate choice for a strategy that mostly watches its orders. But every
-   * plan made between a listing and the next holdings read is withheld (`PollSchedule::working_orders_`
-   * says why), and an operator reading a report full of `portfolio_superseded` should find the cause
-   * stated beside it.
-   */
+  // Says, once per run, that working orders are polled more often than holdings.
+  //
+  // Not refused: it is a legitimate choice for a strategy that mostly watches its orders. But every
+  // plan made between a listing and the next holdings read is withheld (`PollSchedule::working_orders_`
+  // says why), and an operator reading a report full of `portfolio_superseded` should find the cause
+  // stated beside it.
   void note_listing_outpaces_holdings(LoopReport& report) const {
     const auto& listing = schedule_.working_orders_;
     const auto& holdings = schedule_.holdings_;
@@ -1715,7 +1362,7 @@ private:
     }
   }
 
-  /** Runs one iteration: poll what is due, then let the runner act if the gate is open. */
+  // Runs one iteration: poll what is due, then let the runner act if the gate is open.
   IterationReport step(StopSource& stop, LoopReport& report) {
     IterationReport iteration;
     iteration.at_ = clock_.now();
@@ -1886,37 +1533,35 @@ private:
     return iteration;
   }
 
-  /** What the phase and the send count were before the loop handed control to somebody else. */
+  // What the phase and the send count were before the loop handed control to somebody else.
   struct PhaseWatch {
     std::chrono::system_clock::time_point at_{};
     strategy::MarketPhase phase_{strategy::MarketPhase::UNKNOWN};
     std::size_t sends_{0};
   };
 
-  /** Records the phase and the send count, for comparison after a call into user code. */
+  // Records the phase and the send count, for comparison after a call into user code.
   PhaseWatch watch_phase(const IterationReport& iteration) const {
     return PhaseWatch{iteration.at_, iteration.phase_, runner_->guard().total_sent()};
   }
 
-  /**
-   * Counts and names a call that sent an order and left the phase changed behind it.
-   *
-   * **The one hazard here the loop cannot prevent and can only witness.** It re-derives the phase before
-   * every call it makes that could send, but nothing of its runs *inside* such a call: a
-   * source that replaces the calendar and then feeds, or an `on_phase` handler that does the same before
-   * submitting, settles an order against the phase as it stood when the call began. So the loop looks
-   * afterwards, which turns an invisible violation into a line in the report -- the same choice
-   * `closing_source_unverified_` makes about a listing it could not trust.
-   *
-   * **Both halves are required, and each one removes a wrong answer.** The phase must have moved, or an
-   * ordinary send would be reported. Something must have been sent, or an ordinary calendar poll would be
-   * reported on every iteration -- which is why this no longer excludes the calendar poll by kind. That
-   * exclusion was a false-positive workaround and it hid the case Codex round 3 found: a source obeying
-   * the letter of the contract, writing the calendar in the calendar poll and *then* feeding.
-   *
-   * `total_sent()` rather than the guard's rate-window deque, because that one prunes and can fall, so
-   * it cannot be differenced across a call.
-   */
+  // Counts and names a call that sent an order and left the phase changed behind it.
+  //
+  // **The one hazard here the loop cannot prevent and can only witness.** It re-derives the phase before
+  // every call it makes that could send, but nothing of its runs *inside* such a call: a
+  // source that replaces the calendar and then feeds, or an `on_phase` handler that does the same before
+  // submitting, settles an order against the phase as it stood when the call began. So the loop looks
+  // afterwards, which turns an invisible violation into a line in the report -- the same choice
+  // `closing_source_unverified_` makes about a listing it could not trust.
+  //
+  // **Both halves are required, and each one removes a wrong answer.** The phase must have moved, or an
+  // ordinary send would be reported. Something must have been sent, or an ordinary calendar poll would be
+  // reported on every iteration -- which is why this no longer excludes the calendar poll by kind. That
+  // exclusion was a false-positive workaround and it hid the case Codex round 3 found: a source obeying
+  // the letter of the contract, writing the calendar in the calendar poll and *then* feeding.
+  //
+  // `total_sent()` rather than the guard's rate-window deque, because that one prunes and can fall, so
+  // it cannot be differenced across a call.
   void note_revised_phase(const std::string& what, const PhaseWatch& before, LoopReport& report) {
     if (runner_->guard().total_sent() == before.sends_) {
       return;
@@ -1940,26 +1585,24 @@ private:
     }
   }
 
-  /**
-   * Computes the phase for this iteration and installs it, so nothing can send under a stale one.
-   *
-   * **Called immediately before every point at which this loop hands control to the source**: once
-   * before `gate_for`, which performs an out-of-band order-list read; once before each due poll; and
-   * once before the phase announcement. So the invariant is exactly this, and no stronger:
-   * **whenever the loop calls into the source, `Context::phase_` is derived from the calendar as it
-   * stood at that call.**
-   *
-   * **What that deliberately does not promise**, because it cannot: a source is free to replace the
-   * calendar and then feed the runner inside a single `poll`, and no loop code runs in between, so
-   * that order would settle against the phase as it stood when the poll began. `PollKind::CALENDAR`
-   * documents the contract that rules it out, `SessionSource` satisfies it -- it writes the calendar in
-   * the calendar poll and nowhere else -- and `note_revised_phase` reports a source that
-   * breaks it, because a violation nobody is told about is one nobody fixes. An earlier version of this
-   * comment claimed the stronger at-send-site invariant; Codex round 2 falsified it with a probe.
-   *
-   * The instant is the iteration's own `at_` throughout, never re-read from the clock, so a poll that
-   * took a second does not move the session boundary mid-iteration.
-   */
+  // Computes the phase for this iteration and installs it, so nothing can send under a stale one.
+  //
+  // **Called immediately before every point at which this loop hands control to the source**: once
+  // before `gate_for`, which performs an out-of-band order-list read; once before each due poll; and
+  // once before the phase announcement. So the invariant is exactly this, and no stronger:
+  // **whenever the loop calls into the source, `Context::phase_` is derived from the calendar as it
+  // stood at that call.**
+  //
+  // **What that deliberately does not promise**, because it cannot: a source is free to replace the
+  // calendar and then feed the runner inside a single `poll`, and no loop code runs in between, so
+  // that order would settle against the phase as it stood when the poll began. `PollKind::CALENDAR`
+  // documents the contract that rules it out, `SessionSource` satisfies it -- it writes the calendar in
+  // the calendar poll and nowhere else -- and `note_revised_phase` reports a source that
+  // breaks it, because a violation nobody is told about is one nobody fixes. An earlier version of this
+  // comment claimed the stronger at-send-site invariant; Codex round 2 falsified it with a probe.
+  //
+  // The instant is the iteration's own `at_` throughout, never re-read from the clock, so a poll that
+  // took a second does not move the session boundary mid-iteration.
   void install_phase(IterationReport& iteration) {
     iteration.phase_ = phase_at(iteration.at_);
     // Recorded here rather than derived later, and it outlives a `run` for the same reason `announced_`
@@ -1970,30 +1613,26 @@ private:
     runner_->context().set_phase(iteration.phase_);
   }
 
-  /**
-   * Returns the phase at `at`, from the configured window and whatever calendar has arrived.
-   *
-   * The composition `ReplayClock` already performs, with a polled calendar in place of a replay's
-   * per-bar answer. An uncovered date is `UNKNOWN` and never "closed": `TradingCalendar` draws that
-   * distinction because assuming closed stops a strategy on a day that is in fact open, and assuming
-   * open lets one order into a holiday.
-   *
-   * The date is the *market's*, not this process's. `SessionWindow` owns the offset and derives both
-   * answers from it, so the day the calendar is asked about and the day the session boundaries are
-   * computed for cannot disagree.
-   */
+  // Returns the phase at `at`, from the configured window and whatever calendar has arrived.
+  //
+  // The composition `ReplayClock` already performs, with a polled calendar in place of a replay's
+  // per-bar answer. An uncovered date is `UNKNOWN` and never "closed": `TradingCalendar` draws that
+  // distinction because assuming closed stops a strategy on a day that is in fact open, and assuming
+  // open lets one order into a holiday.
+  //
+  // The date is the *market's*, not this process's. `SessionWindow` owns the offset and derives both
+  // answers from it, so the day the calendar is asked about and the day the session boundaries are
+  // computed for cannot disagree.
   strategy::MarketPhase phase_at(std::chrono::system_clock::time_point at) const {
     const auto& calendar = runner_->context().calendar();
     return session_window_.phase(at, calendar.is_trading_day(session_window_.local_date(at)));
   }
 
-  /**
-   * The clause naming unreadable calendar rows, or nothing when there were none.
-   *
-   * A row whose date the broker sent unreadably is dropped, so the day it was for is uncovered and
-   * the note above would otherwise send an operator to check a span or a broker that is fine. The
-   * count says the broker *did* answer, and what it answered could not be read.
-   */
+  // The clause naming unreadable calendar rows, or nothing when there were none.
+  //
+  // A row whose date the broker sent unreadably is dropped, so the day it was for is uncovered and
+  // the note above would otherwise send an operator to check a span or a broker that is fine. The
+  // count says the broker *did* answer, and what it answered could not be read.
   std::string unreadable_calendar_rows() const {
     const auto unreadable = runner_->context().calendar().unreadable_days_;
     if (unreadable == 0) {
@@ -2003,19 +1642,17 @@ private:
       (unreadable == 1 ? "" : "s") + " whose date could not be read";
   }
 
-  /**
-   * Says so when a run never established the phase, and names which of the three reasons applies.
-   *
-   * Silent otherwise, like `note_sellable_convention`: a line on every healthy run is how a report
-   * stops being read. But a run that placed nothing because the phase was never known must not look
-   * like a quiet market -- and this is **not** a hold on the guard, deliberately. A hold would also
-   * stop cancellations, which `Runner::send_cancel` refuses on any blocking reason while never
-   * consulting the phase at all; taking one because a reference-data poll failed would make an
-   * unknown phase more restrictive than a closed one, and a withdrawal only ever reduces exposure.
-   * `RiskGuard` already refuses every placement that opens or increases a position with
-   * `PHASE_NOT_PERMITTED`, and permits one that closes a held position -- which is exactly what a
-   * hold would wrongly stop, for the same reason it would wrongly stop a cancellation.
-   */
+  // Says so when a run never established the phase, and names which of the three reasons applies.
+  //
+  // Silent otherwise, like `note_sellable_convention`: a line on every healthy run is how a report
+  // stops being read. But a run that placed nothing because the phase was never known must not look
+  // like a quiet market -- and this is **not** a hold on the guard, deliberately. A hold would also
+  // stop cancellations, which `Runner::send_cancel` refuses on any blocking reason while never
+  // consulting the phase at all; taking one because a reference-data poll failed would make an
+  // unknown phase more restrictive than a closed one, and a withdrawal only ever reduces exposure.
+  // `RiskGuard` already refuses every placement that opens or increases a position with
+  // `PHASE_NOT_PERMITTED`, and permits one that closes a held position -- which is exactly what a
+  // hold would wrongly stop, for the same reason it would wrongly stop a cancellation.
   void note_unestablished_phase(LoopReport& report) const {
     if (report.iterations_ == 0 || report.final_phase_ != strategy::MarketPhase::UNKNOWN) {
       return;
@@ -2062,11 +1699,9 @@ private:
       (ever_known ? " after that" : ""));
   }
 
-  /**
-   * Attempts the startup order-list read once, and returns whether it succeeded.
-   *
-   * The startup gate's read and a pending stop's both come here, so the two cannot drift apart.
-   */
+  // Attempts the startup order-list read once, and returns whether it succeeded.
+  //
+  // The startup gate's read and a pending stop's both come here, so the two cannot drift apart.
   bool read_order_list_once(std::chrono::system_clock::time_point at, LoopReport& report) {
     // Watched like a poll, because it is the same kind of thing: a call into the source, from which a
     // source that revised the calendar and sent would reach the identical hazard through a different
@@ -2090,22 +1725,20 @@ private:
     return true;
   }
 
-  /**
-   * Returns which of the loop's *own* conditions blocks sending, reading the order list if due.
-   *
-   * Only conditions the loop computes, because a hold is released by whoever took it. `OPERATOR`
-   * belongs to a person and `LOCAL_FAILURE` to the runner; a loop that took either would be a
-   * second holder of someone else's hold -- the defect `HaltReason` exists to prevent,
-   * reintroduced one layer up.
-   *
-   * **Always evaluated, even while someone else's hold stands.** Short-circuiting on a foreign hold
-   * would leave the loop's own hold un-maintained underneath it, so the moment an operator resumed,
-   * the guard would be wide open against a portfolio nobody had rechecked.
-   *
-   * Called twice per iteration -- before the polls, which is what actually protects anything, and
-   * after them so the report is current. `may_read` is false on the second call so the order-list
-   * read is attempted at most once per iteration.
-   */
+  // Returns which of the loop's *own* conditions blocks sending, reading the order list if due.
+  //
+  // Only conditions the loop computes, because a hold is released by whoever took it. `OPERATOR`
+  // belongs to a person and `LOCAL_FAILURE` to the runner; a loop that took either would be a
+  // second holder of someone else's hold -- the defect `HaltReason` exists to prevent,
+  // reintroduced one layer up.
+  //
+  // **Always evaluated, even while someone else's hold stands.** Short-circuiting on a foreign hold
+  // would leave the loop's own hold un-maintained underneath it, so the moment an operator resumed,
+  // the guard would be wide open against a portfolio nobody had rechecked.
+  //
+  // Called twice per iteration -- before the polls, which is what actually protects anything, and
+  // after them so the report is current. `may_read` is false on the second call so the order-list
+  // read is attempted at most once per iteration.
   std::optional<strategy::HaltReason> gate_for(
     const StopSource& stop,
     std::chrono::system_clock::time_point at,
@@ -2225,17 +1858,15 @@ private:
     return std::nullopt;
   }
 
-  /**
-   * Returns whether some budget the run needs is missing or too old to size against.
-   *
-   * **Every configured currency must have its own fresh reading**, not merely one of them. A source
-   * that names its currencies is asked, because an account trading two and answering for one is a
-   * partial answer: the per-order guard would still refuse the unread currency, but the loop would
-   * go on reporting an open gate while a budget it was told to watch never arrived at all.
-   *
-   * A source that names none falls back to "any reading at all", which is the most the loop can
-   * check without knowing what was asked for.
-   */
+  // Returns whether some budget the run needs is missing or too old to size against.
+  //
+  // **Every configured currency must have its own fresh reading**, not merely one of them. A source
+  // that names its currencies is asked, because an account trading two and answering for one is a
+  // partial answer: the per-order guard would still refuse the unread currency, but the loop would
+  // go on reporting an open gate while a budget it was told to watch never arrived at all.
+  //
+  // A source that names none falls back to "any reading at all", which is the most the loop can
+  // check without knowing what was asked for.
   std::optional<strategy::HaltReason> buying_power_unread(
     std::chrono::system_clock::time_point at
   ) const {
@@ -2275,14 +1906,25 @@ private:
     return std::nullopt;
   }
 
-  /** Sets how old a buying-power reading may be before the gate closes on it. */
+  // Sets how old a buying-power reading may be before the gate closes on it.
 public:
+  /**
+   * @brief Sets how old buying-power readings may be.
+   *
+   * Used only with `RiskLimits::enforce_buying_power_` on. Then a missing or too-old reading holds
+   * every placement, sells included (`BUYING_POWER_UNREAD`); named cancellations still go. The
+   * readings needed: one per currency the source names
+   * (`live::SessionSource::set_buying_power_currencies`), or, if it names none, at least one, with
+   * every reading present fresh.
+   *
+   * @param age The maximum age.
+   */
   void set_maximum_buying_power_age(std::chrono::nanoseconds age) {
     maximum_buying_power_age_ = age;
   }
 
 private:
-  /** Reads the control file, escalating `stop` when it names an intent. */
+  // Reads the control file, escalating `stop` when it names an intent.
   void check_control_file(StopSource& stop, LoopReport& report) {
     if (!control_.enabled()) {
       return;
@@ -2299,7 +1941,7 @@ private:
     }
   }
 
-  /** Counts an outcome, and abandons the run when one kind keeps failing. */
+  // Counts an outcome, and abandons the run when one kind keeps failing.
   void note_outcome(PollKind kind, PollOutcome outcome, LoopReport& report) {
     const int at = static_cast<int>(kind);
     if (outcome == PollOutcome::FAILED) {
@@ -2321,7 +1963,7 @@ private:
     }
   }
 
-  /** Carries out `intent`, which is where the three stops actually differ. */
+  // Carries out `intent`, which is where the three stops actually differ.
   void honour(StopIntent intent, LoopReport& report) {
     hold(strategy::HaltReason::STOPPING);
     // Whenever the stop was requested -- before the iteration or during one of its polls -- nothing
@@ -2618,18 +2260,16 @@ private:
     }
   }
 
-  /**
-   * Takes `gate`'s hold on the guard and releases the one this loop took before it.
-   *
-   * There is no "did I halt it" flag any more, and that is the point: the loop names the hold it
-   * takes and releases only that one, so an operator halting by hand into a loop's closed gate is
-   * no longer invisible, and the loop reopening its gate no longer lifts their halt with it. The
-   * hold is released and retaken rather than diffed, because taking a hold is idempotent.
-   *
-   * Only the loop's *own* conditions are held. `OPERATOR` belongs to a person and `LOCAL_FAILURE`
-   * to the runner; both outlive any gate the loop computes, so they are reported and never taken or
-   * released here.
-   */
+  // Takes `gate`'s hold on the guard and releases the one this loop took before it.
+  //
+  // There is no "did I halt it" flag any more, and that is the point: the loop names the hold it
+  // takes and releases only that one, so an operator halting by hand into a loop's closed gate is
+  // no longer invisible, and the loop reopening its gate no longer lifts their halt with it. The
+  // hold is released and retaken rather than diffed, because taking a hold is idempotent.
+  //
+  // Only the loop's *own* conditions are held. `OPERATOR` belongs to a person and `LOCAL_FAILURE`
+  // to the runner; both outlive any gate the loop computes, so they are reported and never taken or
+  // released here.
   void hold(std::optional<strategy::HaltReason> gate) {
     if (gate && !owns(*gate)) {
       gate.reset();
@@ -2646,10 +2286,8 @@ private:
     held_ = gate;
   }
 
-  /**
-   * Says what is missing for a runner that keeps its sent orders until the broker accounts for them, as a
-   * note bit and the note, or nothing when the listing is in hand.
-   */
+  // Says what is missing for a runner that keeps its sent orders until the broker accounts for them, as a
+  // note bit and the note, or nothing when the listing is in hand.
   std::optional<std::pair<unsigned, std::string>> listing_missing(
     std::chrono::system_clock::time_point at
   ) const {
@@ -2680,17 +2318,15 @@ private:
     }
   }
 
-  /**
-   * Returns whether the loop knows what a closing pass at `at` would have to send.
-   *
-   * Two sources, both required. The broker's own order list must have been read once, which is what
-   * the startup gate exists for, and what a stop requested before the first iteration attempts itself
-   * (a failed attempt leaves it unread). And the
-   * holdings snapshot -- which is where a `WITHDRAW`'s working orders and a `FLATTEN`'s positions
-   * actually come from -- must exist, be within the configured age, and be **no older than the
-   * working-order listing**: a fill between the two reads leaves the listing before it reaches the
-   * holdings, so a flatten would see neither the order nor the shares it bought.
-   */
+  // Returns whether the loop knows what a closing pass at `at` would have to send.
+  //
+  // Two sources, both required. The broker's own order list must have been read once, which is what
+  // the startup gate exists for, and what a stop requested before the first iteration attempts itself
+  // (a failed attempt leaves it unread). And the
+  // holdings snapshot -- which is where a `WITHDRAW`'s working orders and a `FLATTEN`'s positions
+  // actually come from -- must exist, be within the configured age, and be **no older than the
+  // working-order listing**: a fill between the two reads leaves the listing before it reaches the
+  // holdings, so a flatten would see neither the order nor the shares it bought.
   bool closing_source_verified(std::chrono::system_clock::time_point at) const {
     if (!order_list_read_) {
       return false;
@@ -2723,13 +2359,11 @@ private:
     return !maximum_portfolio_age_ || at - as_of <= *maximum_portfolio_age_;
   }
 
-  /**
-   * Records that the working-order picture was just refreshed, with what it could not contain.
-   *
-   * Does nothing when the source does not publish working orders, so a stop on such a broker stays
-   * unverified rather than being told a history read or a no-op poll refreshed a listing it never
-   * built.
-   */
+  // Records that the working-order picture was just refreshed, with what it could not contain.
+  //
+  // Does nothing when the source does not publish working orders, so a stop on such a broker stays
+  // unverified rather than being told a history read or a no-op poll refreshed a listing it never
+  // built.
   void note_working_orders_read(
     std::chrono::system_clock::time_point at, std::size_t placements_before_poll
   ) {
@@ -2745,7 +2379,7 @@ private:
     }
   }
 
-  /** Returns which half of the closing source is missing, for the operator's note. */
+  // Returns which half of the closing source is missing, for the operator's note.
   std::string unverified_source_reason() const {
     if constexpr (!source_provides_working_orders<Source>::value) {
       return "this source does not publish the broker's outstanding orders";
@@ -2769,7 +2403,7 @@ private:
     return "the holdings snapshot is older than the configured maximum";
   }
 
-  /** Returns whether `kind` is due at `at`. */
+  // Returns whether `kind` is due at `at`.
   bool is_due(PollKind kind, std::chrono::system_clock::time_point at) const {
     const auto interval = schedule_.interval_for(kind);
     if (!interval) {
@@ -2779,7 +2413,7 @@ private:
     return !due || at >= *due;
   }
 
-  /** Records when `kind` is next due. */
+  // Records when `kind` is next due.
   void schedule_next(PollKind kind, std::chrono::system_clock::time_point at) {
     const auto interval = schedule_.interval_for(kind);
     if (!interval) {
@@ -2789,13 +2423,11 @@ private:
       at + std::chrono::duration_cast<std::chrono::system_clock::duration>(*interval);
   }
 
-  /**
-   * Returns how long to wait before the next iteration.
-   *
-   * The soonest due poll, capped at the tick so a stop through the control file is noticed within
-   * one tick however sparse the polling is. Never negative: a loop that has fallen behind catches up
-   * rather than pausing once per overdue poll.
-   */
+  // Returns how long to wait before the next iteration.
+  //
+  // The soonest due poll, capped at the tick so a stop through the control file is noticed within
+  // one tick however sparse the polling is. Never negative: a loop that has fallen behind catches up
+  // rather than pausing once per overdue poll.
   std::chrono::nanoseconds until_next(std::chrono::system_clock::time_point at) const {
     auto wait = schedule_.tick_;
     for (const auto kind : all_poll_kinds) {
@@ -2819,47 +2451,45 @@ private:
   FileStopChannel control_;
   FailurePolicy failure_policy_;
   strategy::SessionWindow session_window_{strategy::SessionWindow::krx()};
-  /**
-   * The phase most recently announced, which is not the same as the phase in force.
-   *
-   * `UNKNOWN` to begin with rather than "nothing announced yet", because that is genuinely what the
-   * loop knows before its first calendar arrives -- and it means a run that starts knowing nothing and
-   * then learns the market is open announces that as a change, which is exactly right.
-   */
+  // The phase most recently announced, which is not the same as the phase in force.
+  //
+  // `UNKNOWN` to begin with rather than "nothing announced yet", because that is genuinely what the
+  // loop knows before its first calendar arrives -- and it means a run that starts knowing nothing and
+  // then learns the market is open announces that as a change, which is exactly right.
   strategy::MarketPhase announced_{strategy::MarketPhase::UNKNOWN};
-  /** Whether this loop has ever derived a phase that was not `UNKNOWN`, across every `run`. */
+  // Whether this loop has ever derived a phase that was not `UNKNOWN`, across every `run`.
   bool phase_ever_known_{false};
   std::optional<std::chrono::nanoseconds> maximum_portfolio_age_;
-  /** Whether the missing-band-policy note has been said; it is said once per loop. */
+  // Whether the missing-band-policy note has been said; it is said once per loop.
   bool said_no_band_age_policy_{false};
-  /** Whether the operator stated that any snapshot age is acceptable; see the setter. */
+  // Whether the operator stated that any snapshot age is acceptable; see the setter.
   bool allow_unbounded_portfolio_age_{false};
-  /** Whether the operator stated that this run may act with no snapshot at all; see the setter. */
+  // Whether the operator stated that this run may act with no snapshot at all; see the setter.
   bool allow_absent_portfolio_{false};
-  /** Whether the missing-age-policy note has been reported, so it is said once and not per poll. */
+  // Whether the missing-age-policy note has been reported, so it is said once and not per poll.
   bool said_no_age_policy_{false};
-  /** Which of `listing_missing`'s notes have been given, so each is said once per loop. */
+  // Which of `listing_missing`'s notes have been given, so each is said once per loop.
   unsigned said_listing_{0};
-  /** The runner's discarded-history count when this run began; see `note_warmup_discarded`. */
+  // The runner's discarded-history count when this run began; see `note_warmup_discarded`.
   std::size_t warmup_discarded_at_start_{0};
-  /** The runner's dropped-kept-intent count when this run began; see `note_kept_intents_dropped`. */
+  // The runner's dropped-kept-intent count when this run began; see `note_kept_intents_dropped`.
   std::size_t kept_dropped_at_start_{0};
   std::optional<std::chrono::nanoseconds> maximum_buying_power_age_;
   std::optional<std::chrono::system_clock::time_point> next_due_[poll_kind_count];
   std::size_t consecutive_failures_[poll_kind_count] = {};
   bool order_list_read_{false};
-  /** Returns whether `reason` is a condition this loop computes, and may therefore hold. */
+  // Returns whether `reason` is a condition this loop computes, and may therefore hold.
   static constexpr bool owns(strategy::HaltReason reason) noexcept {
     return reason != strategy::HaltReason::OPERATOR &&
       reason != strategy::HaltReason::LOCAL_FAILURE;
   }
 
-  /** When the working-order picture was last refreshed, or nothing while it never has been. */
+  // When the working-order picture was last refreshed, or nothing while it never has been.
   std::optional<std::chrono::system_clock::time_point> working_orders_at_;
-  /** `Runner::placements_at_broker()` as of that read, so a later send invalidates it. */
+  // `Runner::placements_at_broker()` as of that read, so a later send invalidates it.
   std::size_t placements_at_working_read_{0};
 
-  /** The hold this loop currently owns, and the only one it will ever release. */
+  // The hold this loop currently owns, and the only one it will ever release.
   std::optional<strategy::HaltReason> held_;
   IterationReport last_;
 };

@@ -82,7 +82,7 @@ inline bool flush_to_disk(std::FILE* handle) noexcept {
  * outside it and the sweep writes `NOT_PLACED` for an order that exists -- and
  * it does not catch a stamp that is merely an hour wrong, because nothing in a
  * line can. Distinguishing a valid value from a valid-but-changed one needs the
- * line to carry a digest of itself; see `plan/todo/journal-line-integrity.md`.
+ * line to carry a digest of itself.
  *
  * The lower bound is 2020-01-01, comfortably before this library existed, and
  * the upper is a century out, which is far enough that clock skew and a
@@ -569,31 +569,34 @@ inline bool known_entry_key(std::string_view key) {
 
 } // namespace journal_detail
 
-/** The value of a journal header's `journal` field, identifying the format. */
+/**
+ * @brief Returns the format name in a journal header's `journal` field.
+ * @return `"algotradelib-order-journal"`.
+ */
 inline constexpr std::string_view journal_format_name() noexcept {
   return "algotradelib-order-journal";
 }
 
 /**
- * Renders the header line that opens a journal and names the account it belongs to.
- *
- * Written once, before any instruction, and never again. Everything else in the file can tear; this
- * cannot, because it is complete before the first order is ever contemplated.
+ * @brief Renders the header line a journal file starts with, naming its broker and account.
+ * @param scope The broker and account.
+ * @return The JSON line, without a newline.
  */
 inline std::string journal_header_line(std::string_view scope) {
   json::object row;
   row["journal"] = std::string(journal_format_name());
   row["version"] = 1;
   row["scope"] = std::string(scope);
-  // **Every entry below this header carries a checksum.** Declared here, before the first entry, so a
-  // reader can tell a protected line that lost its whole checksum member from a line an earlier release
-  // wrote -- which, in a file that began before checksums, only the order of lines can suggest. A reader
-  // from before this key ignores it: `journal_header_scope` reads `journal` and `scope` only.
+  // Declares that every entry after the header carries a checksum (older readers ignore the key).
   row["integrity"] = "crc32";
   return json::serialize(row);
 }
 
-/** Returns whether a header line declares that every entry after it carries a checksum. */
+/**
+ * @brief Tests whether a header line declares that every entry after it carries a checksum.
+ * @param line The line.
+ * @return `true` if it declares `"integrity":"crc32"`.
+ */
 inline bool journal_header_declares_checksums(std::string_view line) {
   boost::system::error_code error;
   const auto value = json::parse(line, error);
@@ -605,7 +608,11 @@ inline bool journal_header_declares_checksums(std::string_view line) {
     std::string_view(integrity->as_string()) == "crc32";
 }
 
-/** Returns the scope a header line declares, or nothing when the line is not a header. */
+/**
+ * @brief Returns the scope a header line declares.
+ * @param line The line.
+ * @return The scope, or `std::nullopt` if the line is not a journal header.
+ */
 inline std::optional<std::string> journal_header_scope(std::string_view line) {
   boost::system::error_code error;
   const auto value = json::parse(line, error);
@@ -621,17 +628,21 @@ inline std::optional<std::string> journal_header_scope(std::string_view line) {
   return journal_detail::string_field(row, "scope");
 }
 
-/** A journal file's bytes, and whether they were obtained at all. */
+/** @brief A journal file's bytes, and whether they could be read. */
 struct JournalBytes {
-  /** Whether the file was read, and if not, why not. */
+  /** @brief Whether the file was read. */
   JournalReadStatus status_{JournalReadStatus::MISSING};
-  /** The file's contents, empty unless `status_` says they were obtained. */
+  /** @brief The contents; empty unless `status_` is `READ`. */
   std::string text_;
-  /** What went wrong, for an operator. Empty on success. */
+  /** @brief What went wrong, for the operator; empty on success. */
   std::string detail_;
 };
 
-/** Renders one entry as the single JSON object that becomes one line of the journal. */
+/**
+ * @brief Renders one entry as a journal line: a JSON object ending in a CRC-32 checksum member.
+ * @param entry The entry.
+ * @return The line, without a newline.
+ */
 inline std::string journal_entry_to_line(const JournalEntry& entry) {
   json::object row;
   // Ordered so that the fields a damaged line most needs to yield come first. A truncated write
@@ -696,11 +707,12 @@ inline std::string journal_entry_to_line(const JournalEntry& entry) {
 }
 
 /**
- * Returns the record that stands for a torn line too short to name anything.
+ * @brief Makes the entry that stands for a torn line naming no instrument.
  *
- * Carries no instrument, which is exactly what makes it dangerous and exactly what it has to say:
- * something was in flight and the journal cannot name it. Recovery turns this into a global halt
- * rather than withholding one instrument, because there is no instrument to withhold.
+ * It is `PENDING`, operator-only and names no instrument; recovery halts all trading on it.
+ *
+ * @param line The torn line (quoted in the detail).
+ * @return The entry.
  */
 inline JournalEntry unattributable_journal_entry(std::string_view line) {
   JournalEntry entry;
@@ -712,7 +724,16 @@ inline JournalEntry unattributable_journal_entry(std::string_view line) {
   return entry;
 }
 
-/** Parses one journal line, or reports nothing when it is not a complete journal object. */
+/**
+ * @brief Parses one journal line.
+ * @param line The line, without its newline.
+ * @return The entry, or `std::nullopt` if the line is not a readable journal entry: not JSON, its
+ *   action, outcome or time missing or unreadable, an unknown field, or a checksum that does not
+ *   match. If a field describing the order (symbol, country, venue, side, type, quantity, or a
+ *   present condition, session, price or trigger) is missing or unreadable, the entry is
+ *   operator-only, names no instrument, and its id is suffixed `~damaged`; it keeps its outcome. An
+ *   unreadable route leaves the route unknown on an otherwise complete entry.
+ */
 inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line) {
   boost::system::error_code error;
   const auto value = json::parse(line, error);
@@ -899,37 +920,14 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
 }
 
 /**
- * Salvages what a damaged final line still says, as an entry nothing can resolve.
+ * @brief Tests whether a journal line has a field that was written completely but cannot be read.
  *
- * Two rules, and both are about refusing to be clever with a line that is by definition incomplete:
+ * Used when salvaging a torn line: a value followed by a comma was written to completion, so failing
+ * to read it is damage, not the truncation that cut the line's tail.
  *
- * - **Its id is rewritten.** A damaged line must never close a `PENDING` line, because its own
- *   `outcome` field may itself be the part that was cut off. Suffixing the id guarantees it pairs
- *   with nothing.
- * - **Its outcome is `PENDING`, whatever the text said.** An unresolved entry costs one
- *   reconciliation; a wrongly resolved one risks an order nobody is watching. Only one of those
- *   can lose money, which is the same asymmetry `outcome_of` is built on.
- */
-/**
- * Returns whether `line` carries `key` with a value that *finished being
- * written* and still could not be read.
- *
- * Three states, and a torn line has all three. `salvage_string` recognizes only
- * `"key":"value"`, so it answers nothing both for a key whose value is `null`,
- * a number or a bare token -- **damage** -- and for one the truncation cut off
- * -- **expected**. Telling them apart is what decides whether a default is a
- * fact about a torn line or a guess about a damaged one.
- *
- * A fragment reading `"country":null,"venue":"COMBINED","symbol":"AAPL"` was
- * salvaged as a *Korean* instrument, marked operator-only on that guessed key,
- * and left the real US instrument free to trade. But the first version of this
- * asked only whether the key was *mentioned*, which made the fragment's own
- * half-written final field -- the ordinary shape of truncation -- look like
- * damage too, and turned every torn line into a global halt.
- *
- * The comma is the tell: a value followed by one was written to completion, so
- * failing to read it is damage. A value with nothing after it is where the
- * writer stopped.
+ * @param line The journal line.
+ * @param key The field name.
+ * @return `true` if the field is damaged.
  */
 inline bool salvage_damaged(std::string_view line, std::string_view key) {
   const std::string needle = "\"" + std::string(key) + "\":";
@@ -940,6 +938,17 @@ inline bool salvage_damaged(std::string_view line, std::string_view key) {
   return line.find(',', at + needle.size()) != std::string_view::npos;
 }
 
+/**
+ * @brief Salvages a torn final line into an entry nothing can resolve automatically.
+ *
+ * The entry's id is suffixed so it pairs with no `PENDING` line, its outcome is `PENDING` whatever
+ * the text said, and it is operator-only. An instrument, side, type, condition or session field that
+ * was written in full but cannot be read leaves no instrument; a number that cannot be read is left
+ * absent (the quantity at its default) and a route unknown, and the instrument is kept.
+ *
+ * @param line The torn line.
+ * @return The entry, or `std::nullopt` if the line does not even name a symbol.
+ */
 inline std::optional<JournalEntry> salvage_journal_line(std::string_view line) {
   const auto symbol = journal_detail::salvage_string(line, "symbol");
   if (!symbol || symbol->empty()) {
@@ -1031,15 +1040,10 @@ inline std::optional<JournalEntry> salvage_journal_line(std::string_view line) {
 
 
 /**
- * Reads a journal file into a replay, salvaging a truncated final line.
- *
- * A free function rather than a member so that recovery can read a journal a crashed predecessor
- * left behind without opening it for appending — which is what an operator's inspection tool wants,
- * and what a test asserting truncation behaviour needs.
- *
- * An absent file is an intact, empty journal, not an error. A runner starting for the first time
- * has no journal and owes nothing, and that is a different situation from a journal that exists and
- * cannot be read.
+ * @brief Reads a journal file's bytes, without opening it for appending.
+ * @param path The file.
+ * @return The bytes and `READ`; `MISSING` if there is no file (a first start, nothing owed); or
+ *   `UNREADABLE` if it exists and could not be opened or read to the end.
  */
 inline JournalBytes read_journal_bytes(const std::string& path) {
   JournalBytes bytes;
@@ -1078,16 +1082,13 @@ inline JournalBytes read_journal_bytes(const std::string& path) {
 }
 
 /**
- * Parses journal bytes into a replay, salvaging a truncated final line.
+ * @brief Parses a journal's bytes, salvaging a torn final line.
  *
- * Split from the reading so the failure paths are drivable without a filesystem: a test hands this
- * an `UNREADABLE` status directly rather than arranging a permission the platform may or may not
- * enforce the same way twice.
+ * Unparsed lines are counted and a torn last line is salvaged as an operator-only entry; an empty
+ * line, or a header that is not the first line, counts as damage.
  *
- * An absent file is an intact, empty journal, not an error. A runner starting for the first time has
- * no journal and owes nothing, and that is a different situation from a journal that exists and
- * cannot be read -- which is why the two arrive here as different statuses rather than as the same
- * empty result.
+ * @param bytes The bytes and read status; a status other than `READ` is passed through.
+ * @return The replay.
  */
 inline JournalReplay parse_journal_bytes(const JournalBytes& bytes) {
   JournalReplay replay;
@@ -1179,56 +1180,47 @@ inline JournalReplay parse_journal_bytes(const JournalBytes& bytes) {
   return replay;
 }
 
-/** Reads a journal file into a replay, reporting a file that exists and cannot be read. */
+/**
+ * @brief Reads and parses a journal file.
+ * @param path The file.
+ * @return The replay; see `read_journal_bytes` and `parse_journal_bytes`.
+ */
 inline JournalReplay read_journal_file(const std::string& path) {
   return parse_journal_bytes(read_journal_bytes(path));
 }
 
 /**
- * An append-only journal on disk, one JSON object per line, durable before the call returns.
+ * @brief The order journal on disk: one JSON object per line, appended and flushed to disk
+ *   (`fsync`) before `append` returns.
  *
- * **Why JSON Lines and not something with a schema.** The window being closed is "the process was
- * killed mid-write", so the format has to make a partial write *detectable and local*. A document
- * rewritten in place can be left corrupt as a whole; a line-oriented file can only lose its last
- * line, and the missing newline says so. Boost.JSON is already a required dependency, so this adds
- * nothing to the build, and an operator can read the file with `tail` during an incident — which is
- * the interface that matters at the moment it matters.
+ * A write cut short loses only the last line, which shows as missing its newline. Read it with
+ * `tail`. The file starts with a header naming its broker and account; opening a file that belongs
+ * to another account is refused.
  *
- * **One journal, one writer, enforced on POSIX.** Two processes appending to one file is a larger
- * problem than a journal: two runners on one account will double positions regardless of what they
- * write down. So opening takes an exclusive `flock` on the file and holds it while the journal is
- * open; a second `FileJournal` on the same file -- in another process or this one -- is refused
- * (`rejection()`), and a program built on it starts nothing. The lock dies with the process, so a
- * `kill -9` leaves none behind (a child forked without `exec` shares it, and keeps it while it lives).
- * It belongs to the file, not the path: a journal deleted or rotated
- * away while a runner still has it open leaves a new file at the path, which the next opener takes.
- *   - `flock`, not `fcntl`/`lockf`: a POSIX record lock is released when the process closes *any*
- *     descriptor on the file, and reading the journal (`replay()`) opens and closes one.
- *   - Local filesystems. Linux emulates `flock` on NFS with record locks, which brings that release
- *     back; keep the journal on a local disk, as `fsync`'s promise already asks.
- *   - Windows takes no lock: its byte-range locks are mandatory and would refuse the journal's own
- *     reads through a second handle. There the rule is still yours.
- *   - Two journals on *different* paths for one account are not caught: that is the account, not the
- *     file.
- *
- * **An append that fails is reported, not swallowed.** `append` returns whether the line is durable,
- * and `JournalingExecutor` refuses to send when it is not. A journal that silently lost a line
- * would be worse than no journal at all: it would make the runner believe the window was closed.
+ * On POSIX, opening takes an exclusive `flock` on the file, so a second journal on the same file (in
+ * any process) is refused and a program built on it starts nothing. The lock is on the open file,
+ * not the path: deleting or renaming the file while it is open lets another journal create and lock
+ * a new file at the same path, so do not rotate an active journal. It ends when the process exits,
+ * unless a forked child still holds the descriptor (it is closed on `exec`, not on `fork`).
+ * Keep the journal on a local disk (`flock` and `fsync` over NFS are unreliable). Windows takes no
+ * lock. A flushed line survives a killed process everywhere; on macOS `fsync` does not guarantee it
+ * survives a power loss. Two journals at different paths for one account are not detected.
  */
 class FileJournal {
 public:
   /**
-   * Opens `path` for appending, creating it when absent.
+   * @brief Opens a journal file for appending, creating it if absent.
    *
-   * Failure is not thrown. It is reported through `open()`, so a caller can decide — a runner that
-   * cannot journal should refuse to trade, and that decision belongs to the program, not to a
-   * constructor.
+   * Never throws for an open failure: check `open()` and `rejection()`. A torn last line left by a
+   * killed predecessor is repaired first (see `repaired()`).
+   *
+   * @param path The file.
+   * @param scope The broker and account, such as `"kis:live:12345678-01"`; must not be empty.
    */
   FileJournal(std::string path, std::string scope)
   : path_(std::move(path)), scope_(std::move(scope)), handle_(nullptr, &closer) {
     if (scope_.empty()) {
-      // An unnamed journal cannot be checked against anything, so it would silently accept another
-      // account's file -- which is the whole failure this exists to prevent.
+      // An unnamed journal could not tell another account's file from its own.
       rejection_ = "an order journal must name the broker and account it belongs to";
       return;
     }
@@ -1282,62 +1274,56 @@ public:
     }
   }
 
-  /** Returns whether the file is open for appending. */
+  /**
+   * @brief Tests whether the journal opened.
+   * @return `true` if it is open for appending.
+   */
   bool open() const noexcept { return handle_ != nullptr; }
 
   /**
-   * Returns what opening the file had to repair, or an empty view when nothing was wrong.
-   *
-   * A predecessor killed mid-append leaves a line with no newline. Appending straight onto it would
-   * glue the next JSON object to the fragment, and the *combined* text would then carry a newline --
-   * so the next replay would see one complete unreadable line rather than a torn tail, losing both
-   * the fragment and the new instruction with it. Opening therefore terminates the fragment and
-   * writes a salvaged record beside it before accepting anything new.
+   * @brief Returns what opening had to repair: a torn last line is terminated and a salvaged entry
+   *   written beside it.
+   * @return The description, or empty if nothing was wrong.
    */
   const std::string& repaired() const noexcept { return repaired_; }
 
-  /** Returns the path being written. */
+  /**
+   * @brief Returns the file's path.
+   * @return The path.
+   */
   const std::string& path() const noexcept { return path_; }
 
-  /** Returns the broker and account this journal belongs to. */
+  /**
+   * @brief Returns the journal's broker and account.
+   * @return The scope.
+   */
   const std::string& scope() const noexcept { return scope_; }
 
   /**
-   * Returns why the journal refused to open, or an empty view when it did not refuse.
+   * @brief Returns why the journal refused to open.
    *
-   * - **The file already holds records for a different account**, or has no header naming one, or
-   *   cannot be read. Reusing a path across accounts is an easy mistake -- a copied config, a
-   *   renamed environment -- and it is not a harmless one. The symbol, side, quantity and price of an
-   *   order can all agree across two accounts trading the same instrument, so a sweep would reconcile
-   *   one account's unresolved instruction against the other's rows and clear a hold for an order
-   *   that is still resting.
-   * - **Another writer has the file open** (POSIX): the same program started twice, or a supervisor
-   *   starting a new copy while the old one still runs. Two runners on one account both send.
-   * - **The file could not be locked at all** (a filesystem without `flock`): refused, because the
-   *   rule above could not be enforced, with the system's reason.
-   * - **The file could not be opened at all** (a missing directory, no permission), with the
-   *   system's reason; on Windows this stays empty.
-   * - **The scope is empty.**
+   * The file holds another account's records, has no header, or cannot be read; another writer
+   * holds its lock (POSIX); the lock could not be taken; the file could not be opened; or the scope
+   * is empty.
    *
-   * Refusing to open is the only response that cannot be ignored.
+   * @return The reason, or empty if it opened.
    */
   const std::string& rejection() const noexcept { return rejection_; }
 
   /**
-   * Appends one line and returns whether it reached the disk.
+   * @brief Appends one entry and flushes it to disk.
    *
-   * The line and its terminating newline are written in one call, which is what makes the newline a
-   * commit marker: a write cut short loses the tail of the buffer, so a line that ends in `\n` is a
-   * line that was written whole.
+   * The journal's own scope replaces the entry's.
+   *
+   * @param entry The entry.
+   * @return `true` if the line was written whole and flushed.
    */
   bool append(const JournalEntry& entry) {
     if (!open()) {
       return false;
     }
     auto stamped = entry;
-    // Overwritten, not filled in. A caller-supplied scope that disagreed with the file's would put
-    // a record in this journal claiming to belong to another account, which is the confusion the
-    // header exists to rule out. The journal owns this field.
+    // Overwritten: the journal owns the scope.
     stamped.scope_ = scope_;
     auto line = journal_entry_to_line(stamped);
     line += '\n';
@@ -1349,33 +1335,28 @@ public:
   }
 
   /**
-   * Reads the whole journal back, reporting anything it could not read.
-   *
-   * Opened separately for reading rather than seeking the append handle, because this runs once at
-   * startup and mixing a read position into a handle opened for appending is a portability trap
-   * nobody needs to step in for a call made once per process.
+   * @brief Reads the whole journal back.
+   * @return The replay, reporting anything that could not be read.
    */
   JournalReplay replay() const { return read_journal_file(path_); }
 
 private:
-  /**
-   * Returns whether this journal may write to the file, deciding ownership from the header alone.
-   *
-   * **The header, not the records, and that distinction is the fix.** Reading ownership from the
-   * records leaves a hole exactly where it matters most: the scope is one field among many on a
-   * record, so a process killed partway through writing the *first* instruction leaves a file whose
-   * only line is torn and unscoped. Another account could then open the path, repair that line into
-   * its own journal, and reconcile the first account's instruction against its own rows.
-   *
-   * A header is written before any instruction is contemplated, so it is complete or the file is
-   * empty. Three cases, and the third is the strict one:
-   *
-   * - **Empty or absent.** Ours to claim; the header is written before the first append.
-   * - **Header present.** The scopes must agree.
-   * - **Non-empty with no header.** Refused. Something else wrote this file, or it predates the
-   *   format, and either way its ownership cannot be established -- which is not a question to
-   *   guess at while holding a file that may name another account's live orders.
-   */
+  // Returns whether this journal may write to the file, deciding ownership from the header alone.
+  //
+  // **The header, not the records, and that distinction is the fix.** Reading ownership from the
+  // records leaves a hole exactly where it matters most: the scope is one field among many on a
+  // record, so a process killed partway through writing the *first* instruction leaves a file whose
+  // only line is torn and unscoped. Another account could then open the path, repair that line into
+  // its own journal, and reconcile the first account's instruction against its own rows.
+  //
+  // A header is written before any instruction is contemplated, so it is complete or the file is
+  // empty. Three cases, and the third is the strict one:
+  //
+  // - **Empty or absent.** Ours to claim; the header is written before the first append.
+  // - **Header present.** The scopes must agree.
+  // - **Non-empty with no header.** Refused. Something else wrote this file, or it predates the
+  //   format, and either way its ownership cannot be established -- which is not a question to
+  //   guess at while holding a file that may name another account's live orders.
   bool claim_file() {
     const auto replay = read_journal_file(path_);
     if (!replay.readable()) {
@@ -1406,7 +1387,7 @@ private:
     return true;
   }
 
-  /** Writes and flushes the header, before any instruction can be recorded. */
+  // Writes and flushes the header, before any instruction can be recorded.
   bool write_header() {
     auto line = journal_header_line(scope_);
     line += '\n';
@@ -1420,20 +1401,18 @@ private:
     return true;
   }
 
-  /** Closes a stream, tolerating the null a failed open leaves behind. */
+  // Closes a stream, tolerating the null a failed open leaves behind.
   static void closer(std::FILE* handle) noexcept {
     if (handle != nullptr) {
       std::fclose(handle);
     }
   }
 
-  /**
-   * Reads the file and works out what a torn final line needs, without writing anything yet.
-   *
-   * Split from the writing half because the file must be inspected *before* it is opened for
-   * appending: once a stream is in append mode, everything written goes to the end, which is
-   * precisely what must not happen until the fragment is terminated.
-   */
+  // Reads the file and works out what a torn final line needs, without writing anything yet.
+  //
+  // Split from the writing half because the file must be inspected *before* it is opened for
+  // appending: once a stream is in append mode, everything written goes to the end, which is
+  // precisely what must not happen until the fragment is terminated.
   void repair_torn_tail() {
     const auto replay = read_journal_file(path_);
     if (!replay.truncated_tail_) {
@@ -1449,7 +1428,7 @@ private:
       "a torn final line was terminated; it named no instrument";
   }
 
-  /** Terminates the fragment and appends the record that stands for it, durably. */
+  // Terminates the fragment and appends the record that stands for it, durably.
   void finish_repair() {
     // The newline first and on its own: it is what turns the fragment into a complete -- if
     // unreadable -- line, so that the record written next is a line of its own rather than a
@@ -1469,7 +1448,7 @@ private:
   }
 
 #if !defined(_WIN32)
-  /** Takes the writer's lock on `descriptor`, or says in `rejection_` why it could not. */
+  // Takes the writer's lock on `descriptor`, or says in `rejection_` why it could not.
   bool lock(int descriptor) {
     if (::flock(descriptor, LOCK_EX | LOCK_NB) == 0) {
       return true;
@@ -1484,7 +1463,7 @@ private:
   }
 #endif
 
-  /** Returns the text after the file's last newline, which is the fragment a kill left behind. */
+  // Returns the text after the file's last newline, which is the fragment a kill left behind.
   static std::string read_torn_tail(const std::string& path) {
     std::unique_ptr<std::FILE, void (*)(std::FILE*)> reader(
       std::fopen(path.c_str(), "rb"), &closer

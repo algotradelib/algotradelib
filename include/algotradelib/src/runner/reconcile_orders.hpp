@@ -18,45 +18,38 @@ namespace algotradelib {
 namespace runner {
 
 /**
- * What the broker's own order list says about one instruction the journal cannot account for.
+ * @brief What the broker's order list says about one instruction of unknown outcome.
  *
- * Four values rather than two, and the pair most easily conflated is `NOT_PLACED` and `UNDECIDED`.
- * Getting that one wrong is how a live order goes unwatched: the absence of a row is evidence of
- * absence only *after* enough time has passed for the broker's listing to reflect a write it
- * accepted. Until then, absence means nothing at all.
+ * A missing row means `NOT_PLACED` only after the matching window has closed (the listing may lag
+ * an accepted write); before that it is `UNDECIDED`.
  */
 enum class MatchVerdict {
-  /** Exactly one row corresponds. The instruction's outcome is known. */
+  /**
+   * @brief Exactly one row corresponds; the order exists.
+   *
+   * For a cancellation: the named order is in the listing supplied (which may include history, so
+   * not necessarily resting).
+   */
   MATCHED,
   /**
-   * No row corresponds and the window has closed. The order does not exist.
+   * @brief No row corresponds and the window has closed; the order does not exist.
    *
-   * On a cancellation this reads oddly and means the right thing: the order the instruction named
-   * is no longer in the listing, so it is not resting, which is the state the question was about.
+   * For a cancellation: the named order is not in the listing supplied.
    */
   NOT_PLACED,
-  /**
-   * More than one row could correspond.
-   *
-   * **Report, never guess.** Resolving on a coin flip would either leave a live order unwatched or
-   * double a position, and no amount of heuristic refinement turns two indistinguishable rows into
-   * one answer. The instrument stays withheld until an operator says which it was.
-   */
+  /** @brief More than one row could correspond; the instrument stays withheld until an operator decides. */
   AMBIGUOUS,
-  /** No row yet, and the window is still open. Wait for the next sweep. */
+  /** @brief No row yet, and the window is still open; wait for the next sweep. */
   UNDECIDED,
-  /**
-   * The instruction came from a damaged journal line, so no sweep may decide it.
-   *
-   * Not a weaker `AMBIGUOUS`. An ambiguous instruction has too many candidate rows; this one has
-   * untrustworthy *criteria* -- a salvaged line has no recorded timestamp, and may be missing side,
-   * type, quantity or price. Matching on what survived would be matching on a guess, and the window
-   * arithmetic would resolve it to `NOT_PLACED` immediately, which is the unsafe direction.
-   */
+  /** @brief The instruction came from a damaged journal line; only an operator may resolve it. */
   NEEDS_OPERATOR,
 };
 
-/** Returns a stable lowercase name for `verdict`, for logs and structured reporting. */
+/**
+ * @brief Returns a verdict's lowercase name, such as `"not_placed"`, for logs.
+ * @param verdict The verdict.
+ * @return The name.
+ */
 inline constexpr std::string_view match_verdict_name(MatchVerdict verdict) noexcept {
   switch (verdict) {
     case MatchVerdict::MATCHED:
@@ -73,53 +66,43 @@ inline constexpr std::string_view match_verdict_name(MatchVerdict verdict) noexc
   return "unknown";
 }
 
-/** Returns whether `verdict` settles the question, so the instrument may trade again. */
+/**
+ * @brief Tests whether a verdict settles the question.
+ * @param verdict The verdict.
+ * @return `true` for `MATCHED` and `NOT_PLACED`.
+ */
 inline constexpr bool match_verdict_resolves(MatchVerdict verdict) noexcept {
   return verdict == MatchVerdict::MATCHED || verdict == MatchVerdict::NOT_PLACED;
 }
 
 /**
- * How much slack attribute matching allows, in three units rather than one number.
+ * @brief The time allowances used when matching journalled instructions against a broker listing.
  *
- * They are three because they absorb three unrelated things, and a single "tolerance" would have to
- * be set to the largest of them — widening the window for reasons that do not apply.
- *
- * **`clock_skew_` is about whose clock.** A journal entry is stamped by the runner's clock; an
- * `OrderSnapshot::ordered_at_` is stamped by the broker's. The two agree only as well as NTP makes
- * them agree, and KIS reports `HHMMSS` in its own market's day. A narrow allowance here does not
- * fail loudly — it silently reports `NOT_PLACED` for an order that exists, which is the worst
- * outcome in this whole design. The default is generous on purpose.
- *
- * **`maximum_request_` is about how long the bytes could have been in the air.** It bounds the span
- * of an instruction whose `PENDING` line was never answered, because the process died before it
- * could be. Where a terminal line *does* exist, the span is exact and this is not used.
- *
- * **`listing_delay_` is about the broker's own bookkeeping.** An accepted write does not appear in
- * an inquiry instantly. This is how long to keep saying `UNDECIDED` before concluding that a row
- * which has not appeared is not going to.
+ * Too narrow a window reports `NOT_PLACED` for an order that exists, which is the dangerous error;
+ * the defaults are generous.
  */
 struct MatchWindow {
-  /** How far the broker's clock may differ from this one, in either direction. */
+  /** @brief How far the broker's clock may differ from this machine's, either way. */
   std::chrono::seconds clock_skew_{30};
-  /** How long a request could have been outstanding when no terminal line says otherwise. */
+  /** @brief How long a request could have been in flight when no answering line records its end. */
   std::chrono::seconds maximum_request_{60};
-  /** How long the broker's listing may lag a write it accepted. */
+  /** @brief How long the broker's listing may lag an order it accepted. */
   std::chrono::seconds listing_delay_{30};
 };
 
-/** One instruction's verdict, and enough context for an operator to act on it. */
+/** @brief One instruction's verdict, with context for the operator. */
 struct OrderMatch {
-  /** What matching concluded. `AMBIGUOUS` and `NEEDS_OPERATOR` are stops, never retries. */
+  /** @brief The verdict. */
   MatchVerdict verdict_{MatchVerdict::UNDECIDED};
-  /** The instruction this answers. */
+  /** @brief The instruction's instrument. */
   InstrumentId instrument_;
-  /** The journal line id, so a report points at the file. */
+  /** @brief The journal line id. */
   std::string entry_id_;
-  /** The broker's order id, on `MATCHED`. */
+  /** @brief The broker's order id, on `MATCHED`. */
   std::string order_id_;
-  /** How many rows could correspond. Above one on `AMBIGUOUS`, zero on the other two. */
+  /** @brief How many rows could correspond (more than one on `AMBIGUOUS`). */
   std::size_t candidates_{0};
-  /** What was decided and why, in a sentence an operator reads. */
+  /** @brief What was decided and why, for the operator. */
   std::string detail_;
 };
 
@@ -149,10 +132,10 @@ inline bool same_value(
 } // namespace reconcile_detail
 
 /**
- * Returns the last instant at which `instruction` could have reached the broker.
- *
- * Exact where a terminal line bracketed the send, and bounded by `maximum_request_` where the
- * process died before one could be written.
+ * @brief Returns the last instant an instruction could have reached the broker.
+ * @param instruction The instruction.
+ * @param window The allowances.
+ * @return When its answering line was written, or its `PENDING` time plus `maximum_request_`.
  */
 inline std::chrono::system_clock::time_point instruction_sent_by(
   const OpenInstruction& instruction, const MatchWindow& window
@@ -163,10 +146,11 @@ inline std::chrono::system_clock::time_point instruction_sent_by(
 }
 
 /**
- * Returns whether enough time has passed that a row which has not appeared is not going to.
- *
- * The one predicate standing between `UNDECIDED` and `NOT_PLACED`, and therefore between "keep
- * watching" and "declare the order never existed".
+ * @brief Tests whether a missing row may now be read as "not placed".
+ * @param instruction The instruction.
+ * @param now The current instant.
+ * @param window The allowances.
+ * @return `true` once `now` is past `instruction_sent_by` plus the clock skew and listing delay.
  */
 inline bool match_window_closed(
   const OpenInstruction& instruction,
@@ -188,61 +172,28 @@ inline constexpr bool both_known(Enum left, Enum right) noexcept {
 } // namespace shape_detail
 
 /**
- * What one attribute of a broker row says about an instruction.
+ * @brief What one attribute of a broker row says about an instruction.
  *
- * **Three answers, because two are not enough.** Every defect this file has been
- * corrected for came from collapsing `ABSENT` into `CONFIRMS`: a fact nobody
- * recorded was read as a fact that agreed. Collapsing it into `CONTRADICTS` is
- * the opposite mistake and just as bad -- it reports `NOT_PLACED` for an order
- * sitting in the listing, and the runner's answer to that is to send again.
- *
- * So an attribute that cannot be established makes the row **plausible but
- * unconfirmable**: it blocks an absence verdict and it cannot carry a match.
+ * `ABSENT` (nothing recorded to compare) neither confirms a match nor allows an absence verdict.
  */
 enum class Evidence {
-  /** The row agrees, or there was nothing to disagree with. */
+  /** @brief The row agrees. */
   CONFIRMS,
-  /** The row says something else. It is not this order. */
+  /** @brief The row disagrees; it is not this order. */
   CONTRADICTS,
-  /** Nobody recorded enough to say. Neither a match nor an absence. */
+  /** @brief Not enough was recorded to say. */
   ABSENT,
 };
 
-/** Kept as the previous name for the route, which reads better at its call site. */
+/** @brief `Evidence`, under the name used for the route comparison. */
 using RouteEvidence = Evidence;
 
 /**
- * Classifies what `row`'s venue says about `instruction`'s requested route.
- *
- * **Silence is not confirmation, and that distinction is the whole function.**
- * Treating an unrecorded route as agreement let a legacy journal line -- written
- * before the route was recorded, for an order that had explicitly gone to NXT --
- * be resolved by the only row in the listing, a KRX order that was somebody
- * else's. The hold cleared and the NXT order was still out there. The same
- * followed for a *new* NXT instruction whenever KIS reported a venue this
- * library does not recognize, because that reads as `UNSPECIFIED` too.
- *
- * An instruction that asked for **no** venue is the case that still confirms.
- * That is not silence: it is a recorded fact, and it is every Toss order, whose
- * listings carry no venue at all and never could. There is nothing to verify, so
- * the other attributes decide.
- *
- * **What the instruction "asked for" is the route it will actually take.**
- * Nothing on the strategy path sets `PlannedOrder::venue_`, so every order a
- * strategy places asks for `UNSPECIFIED` -- and at KIS such an order still
- * reaches KRX, by the broker's documented default for an omitted field. So the
- * journal does not record the request: `JournalingExecutor` asks the binding
- * for the effective route before it writes the pending line, and it is that
- * which lands here. A row reporting NXT therefore contradicts a default KIS
- * order rather than confirming it.
- */
-/**
- * Classifies an enumerated attribute a broker may or may not have reported.
- *
- * `UNKNOWN` on the **row** while the entry knows is silence, not agreement --
- * the case that made an unreadable Toss `timeInForce` confirm a lookalike.
- * `UNKNOWN` on the **entry** is the same: this runner recorded nothing to
- * compare. Only two known values decide.
+ * @brief Compares an enumerated attribute of a row with the instruction's.
+ * @tparam Enum The enumeration (it must have an `UNKNOWN` value).
+ * @param row_value The row's value.
+ * @param entry_value The instruction's value.
+ * @return `ABSENT` if either is `UNKNOWN`; otherwise `CONFIRMS` or `CONTRADICTS`.
  */
 template <typename Enum>
 inline Evidence attribute_evidence(Enum row_value, Enum entry_value) noexcept {
@@ -253,26 +204,19 @@ inline Evidence attribute_evidence(Enum row_value, Enum entry_value) noexcept {
 }
 
 /**
- * Classifies a row's trigger price against the one the instruction recorded.
+ * @brief Compares a row's trigger price with the instruction's.
  *
  * | Row | Entry | Evidence |
  * | --- | --- | --- |
  * | `t` | `t` | `CONFIRMS` |
- * | `t` | `u` | `CONTRADICTS` -- two stops released at different prices are two orders |
- * | none | none | `CONFIRMS` -- neither is a stop, which both said |
- * | none | `t` | `ABSENT` -- the adapters leave a trigger they could not read empty, so the broker may simply not have said |
- * | `t` | none | `ABSENT` -- see below |
+ * | `t` | `u` | `CONTRADICTS` |
+ * | none | none | `CONFIRMS` |
+ * | none | `t` | `ABSENT` (the broker may not have reported it) |
+ * | `t` | none | `ABSENT` (the broker's row contradicts its own type) |
  *
- * The fourth row: reading it as a contradiction would exclude a real stop whose trigger the listing
- * did not carry, report `NOT_PLACED`, and have the runner send it again beside the one resting;
- * reading it as a confirmation would let any lookalike limit clear the hold on a stop. `ABSENT` is
- * neither, and `row_might_correspond` turns it into an ambiguity an operator resolves.
- *
- * The fifth row is `ABSENT` for the mirror reason. A stop row whose entry is a plain order is
- * already ruled out by the basis. What reaches here is a row whose **basis agrees** and which still
- * reports a trigger -- which the adapters record precisely because it is the broker contradicting
- * its own code. That is untrustworthy evidence, not proof of a different order: treating it as a
- * contradiction reports the runner's own limit `NOT_PLACED` and sends it a second time.
+ * @param row_trigger The row's trigger.
+ * @param entry_trigger The instruction's trigger.
+ * @return The evidence.
  */
 inline Evidence trigger_evidence(
   const std::optional<Decimal64>& row_trigger,
@@ -290,37 +234,18 @@ inline Evidence trigger_evidence(
 }
 
 /**
- * Classifies the instant a broker reported against the instruction's window.
+ * @brief Compares a row's order time with the window in which the instruction was sent.
  *
- * **A row with no timestamp is judged on its other attributes, and that is a
- * decision this file has now made twice.** `ai/order-journal` made it because
- * excluding such a row reports `NOT_PLACED` for an order sitting in the
- * listing. A later review argued the opposite -- an older otherwise-identical
- * order outside the window, whose broker reported no timestamp, becomes a
- * unique match and clears the hold on the newer one -- which is a real hazard
- * and is why this is worth writing down rather than leaving as an `if`.
+ * A row with no time is judged on its other attributes (`CONFIRMS` here), because every KIS
+ * working-order row lacks a date. So an identical order placed through another channel, while this
+ * runner's own order is not listed, can be matched to it; when both are listed the result is
+ * `AMBIGUOUS`.
  *
- * It is not treated as silence because at KIS **every** live working-order row
- * is timestamp-less: `parse_open_orders` sets no `ordered_at_` at all, since the
- * inquiry publishes `ord_tmd` as `HHMMSS` with no date and this library refuses
- * to guess the calendar day. Making an absent instant unconfirmable would make
- * every KIS recovery ambiguous and stall the primary path outright. (A KIS
- * *demo* listing comes from the daily inquiry, whose rows carry `ord_dt`, so a
- * demo reconcile takes the timed branch: it does not rehearse the live one.)
- *
- * **What contains the hazard, and what it does not.** Once an instrument is
- * marked, `IndeterminacyLedger::requires_reconcile` withholds everything for
- * it, so this *runner* cannot have two indistinguishable orders outstanding at
- * once. That is the whole of the containment, and it is narrower than it
- * sounds: it says nothing about an order the runner did not send.
- *
- * So the residual case is precise. An order placed through another channel --
- * the broker's own application, a second process -- that matches on instrument,
- * side, quantity and price, while *this* runner's order is absent from the
- * listing, is a single row and is matched. The ambiguity count catches it only
- * when both are listed. An absent instant is therefore not proof that the times
- * agree; it is the acknowledgement that at this broker there is no time to
- * compare, and the risk that remains is stated here rather than argued away.
+ * @param instruction The instruction.
+ * @param row The row.
+ * @param window The allowances.
+ * @return `CONFIRMS` if the row has no time or its time is inside the widened send window;
+ *   otherwise `CONTRADICTS`.
  */
 inline Evidence time_evidence(
   const OpenInstruction& instruction, const OrderSnapshot& row, const MatchWindow& window
@@ -334,6 +259,16 @@ inline Evidence time_evidence(
                                                                 : Evidence::CONTRADICTS;
 }
 
+/**
+ * @brief Compares a row's venue with the route the instruction recorded.
+ *
+ * The recorded route is where the order actually went (an unrouted KIS order reaches KRX).
+ *
+ * @param instruction The instruction.
+ * @param row The row.
+ * @return `ABSENT` if the line predates routes or the row names no venue; `CONFIRMS` if the
+ *   instruction asked for no venue (as at Toss) or the venues agree; otherwise `CONTRADICTS`.
+ */
 inline RouteEvidence route_evidence(
   const OpenInstruction& instruction, const OrderSnapshot& row
 ) {
@@ -354,22 +289,16 @@ inline RouteEvidence route_evidence(
 }
 
 /**
- * Returns whether `row` could be the order `instruction` describes.
+ * @brief Tests whether a row is established to be an instruction's order.
  *
- * **Attributes, because there is nothing better, on either broker.** The plan for this work
- * expected to branch here on `BrokerCaps::has_client_order_id` and match on that key where it
- * exists — an identity, needing no window and admitting no ambiguity. That branch cannot be
- * written, and the reason is worth recording so nobody tries again: Toss accepts a
- * `clientOrderId` on the order POST and echoes it on the **acknowledgement**, but its order
- * *listing* row carries no such field (`components/schemas/Order` in the published specification
- * has `orderId` and no client id). KIS has no equivalent at all outside the corporate-only
- * `gt_uid`. So the key is an idempotency guarantee on the write path, not a recovery handle on the
- * read path, and every instruction needing a match is one for which no identity was ever returned.
+ * Matched by attributes, since no broker lists a client order id: the instrument, side and type
+ * (both known), quantity and price must match, and time in force, session, trigger, route and time
+ * must each `CONFIRMS`.
  *
- * `ordered_at_` is the broker's clock and the instruction's span is this one's, so the comparison
- * is widened by `clock_skew_` at both ends. A row with no timestamp at all is admitted on
- * attributes alone rather than excluded: excluding it would report `NOT_PLACED` for an order that
- * is sitting in the listing.
+ * @param instruction The instruction.
+ * @param row The row.
+ * @param window The allowances.
+ * @return `true` if every attribute confirms.
  */
 inline bool row_corresponds(
   const OpenInstruction& instruction, const OrderSnapshot& row, const MatchWindow& window
@@ -378,13 +307,6 @@ inline bool row_corresponds(
   if (!(row.instrument_ == entry.instrument_)) {
     return false;
   }
-  // The whole shape, not just the basis. This compared `type_` alone, which was
-  // vacuous while KIS reported `DAY` for everything it could normalize: there
-  // was one condition and one session, so they could not disagree. Now they
-  // can, and a resting day order would otherwise be accepted as the
-  // immediate-or-cancel order this runner recorded sending -- which is recovery
-  // attributing one order to another, the failure the journal exists to
-  // prevent.
   if (row.side_ != entry.side_) {
     return false;
   }
@@ -398,27 +320,13 @@ inline bool row_corresponds(
   if (row.type_ != entry.type_) {
     return false;
   }
-  // A field the broker did not report cannot rule a row out. `UNKNOWN` on
-  // either side is absence of information, not disagreement, and this follows
-  // the rule already stated below for `ordered_at_`: a row admitted on the
-  // attributes that *are* known is the safe direction, because excluding it
-  // reports `NOT_PLACED` for an order sitting in the listing, and the runner's
-  // answer to `NOT_PLACED` is to send again.
   if (!reconcile_detail::same_value(row.quantity_, entry.quantity_)) {
     return false;
   }
   if (!reconcile_detail::same_value(row.price_, entry.price_)) {
     return false;
   }
-  // **Every silent attribute costs the match, not just the ones that disagree.**
-  // A match names one row as this instruction's order and clears the hold on it,
-  // and that claim needs the attributes to have been *established* rather than
-  // merely not contradicted. Each of these has, at some point in this file's
-  // history, confirmed a lookalike by saying nothing: the condition and session
-  // when a broker reported a validity code this library could not read, the
-  // route when nobody recorded one, the timestamp when the broker omitted it.
-  // `row_might_correspond` picks the same rows up, so they still block an
-  // absence verdict -- which is the other half of the rule.
+  // A match needs every attribute established, not merely not contradicted.
   for (const auto evidence : {
          attribute_evidence(row.time_in_force_, entry.time_in_force_),
          attribute_evidence(row.session_, entry.session_),
@@ -434,27 +342,18 @@ inline bool row_corresponds(
 }
 
 /**
- * Returns whether `row` could be this instruction's order despite a shape this
- * library could not read.
+ * @brief Tests whether a row might be an instruction's order although some attributes could not be
+ *   read (such as an order type outside the broker's published table).
  *
- * **Why a second, weaker predicate rather than a looser first one.** An order
- * whose `ORD_DVSN` is outside the published table normalizes to `UNKNOWN` in
- * all three shape fields, and — because an unknown basis is not one
- * `carries_caller_price` admits — with no price either. Three of the six
- * attributes `row_corresponds` compares are therefore missing, so it cannot
- * say yes. Letting it say *no* is the dangerous half: no row corresponds, the
- * window closes, the verdict is `NOT_PLACED`, the hold clears, and the runner's
- * answer to `NOT_PLACED` is to send the order again — beside the one already
- * resting under a code this release had not seen.
+ * Such a row makes the verdict `AMBIGUOUS` (an operator decides) rather than `NOT_PLACED`. It
+ * compares instrument, side, quantity and time, and the price when both order types are known, and
+ * rules the row out on any positive disagreement.
  *
- * So a row like that is neither a match nor an absence. It is reported as
- * `AMBIGUOUS`, which is the verdict this file already reserves for "report,
- * never guess", and which withholds the instrument until an operator says
- * which it was. `shape_code_` carries the broker's own code for them to read.
- *
- * This compares what survives an unreadable shape: the instrument, the side,
- * the quantity and the time window. It deliberately does **not** compare the
- * price, which such a row does not carry.
+ * @param instruction The instruction.
+ * @param row The row.
+ * @param window The allowances.
+ * @return `true` if some attribute is unknown and nothing disagrees; `false` for a row that fully
+ *   corresponds (see `row_corresponds`) or disagrees.
  */
 inline bool row_might_correspond(
   const OpenInstruction& instruction, const OrderSnapshot& row, const MatchWindow& window
@@ -509,21 +408,14 @@ inline bool row_might_correspond(
 }
 
 /**
- * Returns why this instruction cannot be resolved from a broker listing, or "".
+ * @brief Returns why an instruction cannot be resolved from a broker listing.
  *
- * Two shapes qualify, and both are lines this library's own writer emits before
- * the binding has had a chance to refuse the order:
+ * A cancellation with no order id, or a placement whose recorded price or trigger price does not fit
+ * its type (missing where required, or present where not taken), would otherwise read as absent.
+ * Such an instruction needs an operator (`match_against` returns `NEEDS_OPERATOR`).
  *
- * - **a cancellation with no target id.** The cancellation matcher finds its
- *   order by that id alone, so without one it matches nothing and a closed
- *   window would report a still-resting order as gone.
- * - **a placement whose basis states a price and whose line carries none**, or
- *   the reverse. `row_corresponds` compares the price, so either way every real
- *   row is excluded and the same false absence follows.
- *
- * Refusing to conclude is not the same as refusing to read: the line stays
- * readable, its own terminal line still closes it when the refusal was
- * ordinary, and only one still open at recovery is withheld.
+ * @param entry The journalled instruction.
+ * @return The reason, or an empty string if it can be matched.
  */
 inline std::string unresolvable_reason(const JournalEntry& entry) {
   if (entry.action_ == JournalAction::CANCEL && entry.order_id_.empty()) {
@@ -564,27 +456,17 @@ inline std::string unresolvable_reason(const JournalEntry& entry) {
 }
 
 /**
- * Decides what the broker's order list says about one unresolved instruction.
+ * @brief Decides what a broker listing says about one instruction of unknown outcome.
  *
- * **One matcher serves every broker.** Both adapters already normalize their listings into
- * `OrderSnapshot`, which carries the instrument, side, type, quantity, price and `ordered_at_` this
- * needs, and both populate `ordered_at_`. So the per-broker field lists this feature was specified
- * against — KIS's `pdno` / `sll_buy_dvsn_cd` / `ord_tmd`, Toss's `symbol` / `side` / `createdAt` —
- * are documentation of what the normalizer preserves, not a specification for this code.
+ * A cancellation is matched by the broker order id it names (`AMBIGUOUS` only if two rows carry that
+ * id); a placement by attributes (`row_corresponds`, `row_might_correspond`). An operator-only or
+ * unresolvable (`unresolvable_reason`) instruction is `NEEDS_OPERATOR`.
  *
- * **A cancellation is matched by identity, a placement by attributes.** That asymmetry is not a
- * preference; it is what the two instructions know. A cancellation names an order that already
- * exists, so its journal line carries the broker's own id from the moment it is written, and at
- * most one row can carry that id — `AMBIGUOUS` is unreachable on this path, and a test asserts it
- * rather than assuming it. A placement has no such handle, because no broker returns one in a
- * listing.
- *
- * **Second granularity is already mitigated, and it is worth knowing why.** KIS reports `ord_tmd`
- * as `HHMMSS`, so two identical orders in the same second would be indistinguishable. They cannot
- * both be outstanding: once an instrument is marked, `IndeterminacyLedger::requires_reconcile`
- * withholds *everything* for it, so a second identical order cannot be sent while the first is
- * unresolved. The serialization this matcher would otherwise need already exists, as a consequence
- * of the withholding rule rather than as something added for it.
+ * @param instruction The instruction.
+ * @param rows The listing (working orders and history).
+ * @param now The current instant.
+ * @param window The allowances.
+ * @return The verdict.
  */
 inline OrderMatch match_against(
   const OpenInstruction& instruction,
@@ -701,42 +583,45 @@ inline OrderMatch match_against(
   return match;
 }
 
-/** What one sweep of the broker's order list settled, and what it left owed. */
+/** @brief What one sweep of the broker's order list settled, and what is still withheld. */
 struct ReconcileReport {
-  /** One verdict per unresolved instruction, in journal order. */
+  /** @brief One verdict per instruction, in journal order. */
   std::vector<OrderMatch> matches_;
-  /** Instruments cleared, so they may trade again. */
+  /** @brief Instruments cleared; they may trade again. */
   std::vector<InstrumentId> resolved_;
-  /** Instruments still withheld, and why they are in `matches_`. */
+  /** @brief Instruments still withheld (their reasons are in `matches_`). */
   std::vector<InstrumentId> withheld_;
-  /** Whether any instruction could correspond to more than one row. */
+  /** @brief Whether any instruction was `AMBIGUOUS`. */
   bool ambiguous_{false};
-  /** How many resolutions were written back to the journal. */
+  /** @brief How many resolutions were written to the journal. */
   std::size_t recorded_{0};
   /**
-   * Whether a resolution could not be recorded, so its ledger entry was deliberately left standing.
-   *
-   * The same discipline as writing before a send, applied to the other end: a sweep that cleared
-   * the ledger without recording why would resolve the instruction in memory and leave it owed on
-   * disk, so the next restart would withhold the instrument all over again.
+   * @brief Whether a resolution could not be written to the journal; its instrument then stays
+   *   withheld.
    */
   bool unrecorded_{false};
 
-  /** Returns whether the sweep settled everything the journal owed. */
+  /**
+   * @brief Tests whether the sweep settled everything.
+   * @return `true` if nothing is still withheld.
+   */
   bool settled() const noexcept { return withheld_.empty(); }
 };
 
-/** Returns the terminal line that records how a sweep resolved `instruction`. */
+/**
+ * @brief Makes the `RESOLVED` journal line that records a sweep's verdict.
+ * @param instruction The instruction.
+ * @param match The verdict.
+ * @param now When it was resolved.
+ * @return The line.
+ */
 inline JournalEntry resolution_entry(
   const OpenInstruction& instruction,
   const OrderMatch& match,
   std::chrono::system_clock::time_point now
 ) {
   auto entry = instruction.entry_;
-  // `RESOLVED`, not `ACCEPTED` or `REJECTED`. Those are answers the broker gave to the instruction;
-  // this is what its listing showed afterwards, and for a cancellation the two can be opposites -- a
-  // matched row means the target order is still resting, which is the withdrawal *not* having
-  // happened. What was observed lives in `order_id_` and `detail_`.
+  // RESOLVED records what the listing showed, not the broker's answer to the instruction.
   entry.outcome_ = JournalOutcome::RESOLVED;
   entry.recorded_at_ = now;
   entry.requires_operator_ = false;
@@ -746,16 +631,20 @@ inline JournalEntry resolution_entry(
 }
 
 /**
- * Resolves what the broker's order list settles, and leaves the rest withheld.
+ * @brief Resolves what a broker listing settles, records it in the journal, and clears the ledger
+ *   for each instrument whose instructions are all decided.
  *
- * **An instrument is cleared only when every instruction for it is decided.** Resolving on the
- * first `MATCHED` while a second instruction for the same instrument is still `UNDECIDED` would
- * lift the hold with a question still open, and the ledger is keyed by instrument precisely because
- * that hold is what stops a second order being sent into an unknown state.
+ * An instrument is cleared only when every instruction for it is `MATCHED` or `NOT_PLACED`, and
+ * only after the resolution is written. Ledger entries the journal knows nothing about are left.
  *
- * Only what the journal accounts for is touched. A mark the ledger holds for an instrument this
- * journal knows nothing about — one made before journaling was configured, or by an operator —
- * stays exactly where it is.
+ * @tparam Journal The journal type.
+ * @param open The unresolved instructions.
+ * @param rows The listing, which must be complete.
+ * @param now The current instant.
+ * @param ledger The ledger to clear.
+ * @param journal The journal to record resolutions in.
+ * @param window The allowances.
+ * @return The report.
  */
 template <typename Journal>
 ReconcileReport reconcile_against(
@@ -825,12 +714,13 @@ ReconcileReport reconcile_against(
 }
 
 /**
- * Returns a report that decides nothing, leaving every instruction owed.
+ * @brief Makes a report that decides nothing, for a sweep that could not see a complete listing.
  *
- * What a sweep must produce when it could not see everything it needed to. The alternative -- run
- * the matcher over a partial listing -- is worse than doing nothing at all: after the window
- * closes, a missing row reads as `NOT_PLACED`, so an incomplete view resolves in the one direction
- * that clears the ledger for an order that may exist.
+ * Matching a partial listing could read a missing row as `NOT_PLACED`.
+ *
+ * @param open The unresolved instructions.
+ * @param detail Why nothing was decided.
+ * @return A report with every instruction `UNDECIDED` and withheld.
  */
 inline ReconcileReport decide_nothing(
   const std::vector<OpenInstruction>& open, std::string detail
@@ -859,7 +749,12 @@ inline ReconcileReport decide_nothing(
   return report;
 }
 
-/** Returns whether any of `open` is a placement, which is what needs a lifecycle-wide listing. */
+/**
+ * @brief Tests whether any instruction is a placement a listing could decide (which needs history,
+ *   not only working orders).
+ * @param open The instructions.
+ * @return `true` if any is a `PLACE` that is not operator-only.
+ */
 inline bool any_placement(const std::vector<OpenInstruction>& open) {
   for (const auto& instruction : open) {
     // Operator-only entries are excluded, because no listing can decide them: `match_against`
@@ -874,8 +769,11 @@ inline bool any_placement(const std::vector<OpenInstruction>& open) {
 }
 
 /**
- * Returns whether `a` and `b` are **established** to be two copies of one order: the same broker id and
- * instrument, and the same order time stated on both. Anything less is not proof.
+ * @brief Tests whether two rows are established copies of one order: the same order id and
+ *   instrument, and the same order time on both.
+ * @param a The first row.
+ * @param b The second row.
+ * @return `true` only if all three are stated and equal.
  */
 inline bool exact_copy(const OrderSnapshot& a, const OrderSnapshot& b) {
   return !a.order_id_.empty() && a.order_id_ == b.order_id_ && a.instrument_ == b.instrument_ &&
@@ -883,24 +781,14 @@ inline bool exact_copy(const OrderSnapshot& a, const OrderSnapshot& b) {
 }
 
 /**
- * Adds a single-date broker's history rows to a working-order listing, dropping only exact copies.
+ * @brief Adds history rows to a working-order listing, dropping only established copies
+ *   (`exact_copy`); for brokers whose history is read one date at a time (Kiwoom).
  *
- * **A history row is kept unless it is established to be a working row's copy** (`exact_copy`). Kiwoom
- * numbers orders per day, so a history row under a working row's number may be another day's order --
- * the very one a journal is waiting on -- and Kiwoom stamps its working and history rows from different
- * fields, so neither the number nor a near time proves identity. Dropping on either was how recovery
- * could report `NOT_PLACED` for an order that exists. Keeping an uncertain row costs at most a second
- * candidate, an `AMBIGUOUS` verdict, and a hold an operator settles.
+ * An uncertain row is kept, at the cost of a possible `AMBIGUOUS`. An adapter should stamp
+ * `ordered_at_` the same way on working and history rows of one order, or both are kept.
  *
- * Its history pages are merged against each other by the same rule
- * (`SessionSource::read_history_days`).
- *
- * **The contract this places on an adapter**: where its history can list an order its working listing
- * also lists, stamp `OrderSnapshot::ordered_at_` on both rows alike. Otherwise both rows are kept, and
- * if both answer a journal's waiting instruction it recovers as `AMBIGUOUS`. Kiwoom stamps both
- * listings from the broker's order time; Toss reads both scopes with one parser from `orderedAt`. KIS
- * leaves its working rows unstamped, which is safe only because KIS takes a range and is merged by
- * `merge_rows` instead. See `doxygen/vignettes/the-broker-port.md`.
+ * @param into The listing, extended in place.
+ * @param rows The history rows.
  */
 inline void merge_dated_history(
   std::vector<OrderSnapshot>& into,
@@ -921,7 +809,11 @@ inline void merge_dated_history(
   }
 }
 
-/** Adds rows to `into`, skipping any order id already there. */
+/**
+ * @brief Adds rows to a listing, skipping any whose order id is already there.
+ * @param into The listing, extended in place.
+ * @param rows The rows to add.
+ */
 inline void merge_rows(std::vector<OrderSnapshot>& into, const std::vector<OrderSnapshot>& rows) {
   for (const auto& row : rows) {
     bool known = false;
@@ -940,7 +832,11 @@ inline void merge_rows(std::vector<OrderSnapshot>& into, const std::vector<Order
   }
 }
 
-/** Returns the UTC calendar date `at` falls on. */
+/**
+ * @brief Returns the UTC calendar date of an instant.
+ * @param at The instant.
+ * @return The date.
+ */
 inline Date date_of(std::chrono::system_clock::time_point at) {
   const auto seconds = std::chrono::time_point_cast<std::chrono::seconds>(at);
   const std::time_t raw = std::chrono::system_clock::to_time_t(seconds);
@@ -958,12 +854,14 @@ inline Date date_of(std::chrono::system_clock::time_point at) {
 }
 
 /**
- * Returns the calendar range an order-history inquiry must cover for `open`.
+ * @brief Returns the date range an order-history inquiry must cover for some instructions.
  *
- * Widened by a day at each end, and the reason is not caution for its own sake: these instants are
- * UTC, a broker's trading day is its own market's, and KIS reports order times in Korean local
- * time. A range that is a day too wide returns rows that do not match and costs nothing; a range
- * that is an hour too narrow misses the order and reports `NOT_PLACED` for one that exists.
+ * Widened by a day at each end, since the instants are UTC and brokers date orders in their own
+ * market's time.
+ *
+ * @param open The instructions; must not be empty.
+ * @param window The allowances.
+ * @return The first and last date.
  */
 inline std::pair<Date, Date> history_range_for(
   const std::vector<OpenInstruction>& open, const MatchWindow& window
@@ -985,36 +883,30 @@ inline std::pair<Date, Date> history_range_for(
   };
 }
 
-/** What a journal left owed by the process that wrote it. */
+/** @brief What a journal showed was left owed by the process that wrote it. */
 struct RecoveryReport {
-  /** Instruments marked, so nothing is sent for them until the order list resolves them. */
+  /** @brief Instruments marked in the ledger, withheld until the order list resolves them. */
   std::vector<InstrumentId> marked_;
-  /** The instructions the journal could not account for. */
+  /** @brief The instructions of unknown outcome. */
   std::vector<OpenInstruction> open_;
-  /** Whether the journal's final line was cut off mid-write. */
+  /** @brief Whether the last line was torn. */
   bool truncated_{false};
   /**
-   * Whether something was in flight that the journal cannot attribute to an instrument.
-   *
-   * A truncated line too short to name a symbol. Nothing specific can be withheld, so this is a
-   * warning rather than a mark — and the loop's own `ORDER_LIST_UNREAD` gate is what covers it: a
-   * runner refuses to send *anything at all* until it has read the broker's order list once,
-   * whatever the journal says.
+   * @brief Whether something was in flight that names no instrument (a torn line too short to name
+   *   one); `recover_runner` halts the runner for it.
    */
   bool unattributable_{false};
-  /** Complete lines that were not written by this library. */
+  /** @brief Complete lines that did not parse. */
   std::size_t unreadable_lines_{0};
-  /**
-   * Whether the journal file exists and could not be read at all.
-   *
-   * Nothing about its contents is known, so nothing specific can be withheld -- and unlike a
-   * missing journal, this one may hold every order a predecessor left in flight.
-   */
+  /** @brief Whether the journal exists and could not be read; it may hold orders left in flight. */
   bool unreadable_file_{false};
-  /** What was found, in a sentence an operator reads. */
+  /** @brief What was found, for the operator. */
   std::string detail_;
 
-  /** Returns whether the journal left nothing owed and nothing damaged. */
+  /**
+   * @brief Tests whether nothing was owed or damaged.
+   * @return `true` if no instrument was marked and nothing was torn, unparsed or unreadable.
+   */
   bool clean() const noexcept {
     return marked_.empty() && !truncated_ && !unattributable_ && unreadable_lines_ == 0 &&
       !unreadable_file_;
@@ -1022,17 +914,15 @@ struct RecoveryReport {
 };
 
 /**
- * Marks the ledger for everything a journal left unaccounted for.
+ * @brief Marks the ledger for every instrument a journal left an instruction of unknown outcome for.
  *
- * **Prefer `recover_runner`.** This form takes a bare ledger, and one of the outcomes -- damage that
- * names no instrument -- cannot be expressed as a ledger mark at all, so a caller using this one has
- * to notice `unattributable_` and halt trading itself. `recover_runner` does that for you.
+ * It halts nothing. Prefer `recover_runner`; with a bare ledger, stop trading yourself if the report
+ * has `unattributable_`, `unreadable_lines_` or `unreadable_file_` set: then the ledger can be empty
+ * while the journal's contents are unknown.
  *
- * The restart half of the design, and it is independent of the loop's startup gate rather than a
- * duplicate of it. The gate is about *this process never having looked*; recovery is about *a
- * previous process having left something owed*. A runner needs both: the gate catches an order in
- * flight at the instant of a kill, whose `PENDING` line may not even have been written, and
- * recovery catches everything that was.
+ * @param replay The journal's contents.
+ * @param ledger The ledger to mark.
+ * @return The report.
  */
 inline RecoveryReport recover_into(const JournalReplay& replay, IndeterminacyLedger& ledger) {
   RecoveryReport report;
@@ -1065,33 +955,31 @@ inline RecoveryReport recover_into(const JournalReplay& replay, IndeterminacyLed
   return report;
 }
 
-/** Marks the ledger for everything `journal` left unaccounted for. */
+/**
+ * @brief Reads a journal and marks the ledger for what it left owed; see the other overload.
+ * @tparam Journal The journal type.
+ * @param journal The journal.
+ * @param ledger The ledger to mark.
+ * @return The report.
+ */
 template <typename Journal>
 RecoveryReport recover_into(const Journal& journal, IndeterminacyLedger& ledger) {
   return recover_into(journal.replay(), ledger);
 }
 
 /**
- * Recovers `journal` into `runner_instance`, halting it outright when the damage names nothing.
+ * @brief Recovers a journal into a runner at startup: marks each instrument left owed, and halts the
+ *   runner when damage names no instrument.
  *
- * **The entry point a program should use**, rather than `recover_into` with a bare ledger, because
- * one of the outcomes cannot be expressed as a ledger mark at all.
+ * The runner is halted (`LOCAL_FAILURE`) when a torn line names no instrument, a complete line does
+ * not parse, or the file cannot be read. An operator reads the broker's order list and calls
+ * `Runner::resume_after_local_failure`.
  *
- * A journal whose torn line was too short to yield a symbol says *something was in flight* and
- * cannot say for what. There is no instrument to withhold, so withholding one is not an option and
- * withholding everything is the only honest response. Leaving it to the loop's startup gate is not
- * enough: that gate lifts after a single successful order-list read, and a read cannot answer a
- * question nobody can pose -- there is no instrument to look for. So this halts the runner, and an
- * operator clears it with `resume_after_local_failure` once they have read the broker's list
- * themselves.
- *
- * **A complete line that does not parse halts it too**, for the same reason and one more. A journal
- * this library wrote contains no such line, so its presence means either that something else edited
- * the file or that a repair was itself interrupted -- `finish_repair` terminates a torn fragment and
- * then records a stand-in for it, and a process killed between those leaves the fragment as a
- * complete, unreadable line with no torn tail for the next open to notice. Either way the file
- * cannot account for what was in flight, and an unreadable line that only made `clean()` false had
- * no safety effect at all.
+ * @tparam Runner The runner type.
+ * @tparam Journal The journal type.
+ * @param runner_instance The runner.
+ * @param journal The journal.
+ * @return The report.
  */
 template <typename Runner, typename Journal>
 RecoveryReport recover_runner(Runner& runner_instance, const Journal& journal) {
