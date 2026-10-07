@@ -1555,8 +1555,7 @@ TEST_CASE("a batch stops at its first journal failure", "[journal]") {
 TEST_CASE("a terminal journal failure stops the runner too", "[journal]") {
   // The broker already answered, so the outcome passed back stays the broker's -- saying otherwise
   // would be a lie about an order that exists. But the journal is broken, and the earlier code
-  // recorded that only on the executor, where nothing read it. The comment claimed the runner
-  // stopped; it did not.
+  // recorded that only on the executor, where nothing read it, so the runner did not stop.
   HalfFailingJournal journal;
   using HalfExecutor = runner::JournalingExecutor<
     runner::RecordingExecutor<runner::DryTag>, HalfFailingJournal, runner::ManualClock>;

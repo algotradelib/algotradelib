@@ -155,8 +155,7 @@ inline constexpr std::string_view venue_name(Venue venue) noexcept {
  * says something I cannot read". A damaged token, or one written by a newer
  * release, must not become the first: `UNSPECIFIED` is a positive assertion that
  * recovery confirms any row against, so reading `"NX?"` as it would let a KRX
- * lookalike clear the hold on an NXT order. That is the same
- * silence-to-confirmation failure two earlier rounds closed elsewhere.
+ * lookalike clear the hold on an NXT order: silence read as confirmation.
  */
 inline std::optional<Venue> known_venue_from(std::string_view text) noexcept {
   if (text == "KRX") {

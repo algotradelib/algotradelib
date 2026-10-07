@@ -717,7 +717,7 @@ private:
   // Returns whether `entry` may fill against `event`, and records where the question *could this be
   // credited a price from before it was decided* could not be answered at all.
   //
-  // Three answers, and the third one was the hardest to reach:
+  // Three answers:
   //
   // 1. **An undated order is eligible.** That is every order placed by a caller driving
   //    `QueueingExecutor` directly, and this rule exists to defer fills rather than to invent them.
