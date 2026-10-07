@@ -17,13 +17,21 @@ struct TossConfig;
 struct TossRest;
 struct TossWebsocket;
 
-/** Toss Securities OAuth client credentials. */
+/**
+ * @brief Toss Securities credentials (client id and secret). Toss has no demo environment.
+ *
+ * Load with `from_env()` (`TOSS_CLIENT_ID`, `TOSS_CLIENT_SECRET`) or `from_json(filename)`.
+ */
 struct TossConfig : public network::ClientCredentials<TossConfig> {
   // std::string grant_type = "client_credentials"; // length = 18
   // std::string client_id_;
   // std::string client_secret_;
 
-  /** Reads Toss client credentials from process variables. */
+  /**
+   * @brief Reads the credentials from `TOSS_CLIENT_ID` and `TOSS_CLIENT_SECRET`; called by
+   *   `from_env()`.
+   * @throws std::runtime_error if either is not set.
+   */
   void from_env_impl() {
     const char* key = std::getenv("TOSS_CLIENT_ID");
     const char* secret = std::getenv("TOSS_CLIENT_SECRET");
@@ -34,7 +42,13 @@ struct TossConfig : public network::ClientCredentials<TossConfig> {
     secret_ = secret;
   }
 
-  /** Reads Toss client credentials from a JSON file. */
+  /**
+   * @brief Reads the credentials from a JSON file, `{ "client_id": "...", "client_secret": "..." }`;
+   *   called by `from_json(filename)`.
+   * @param filename The file.
+   * @throws std::runtime_error if the file cannot be read, is not a JSON object, or lacks either
+   *   field or has one that is not a string.
+   */
   void from_json_impl(const std::string& filename) {
     std::ifstream ifs(filename);
     if (!ifs.is_open()) {
@@ -58,19 +72,28 @@ struct TossConfig : public network::ClientCredentials<TossConfig> {
     secret_ = doc.at("client_secret").as_string().c_str();
   }
 
-  /** The JSON field Toss expects the client id under. */
+  /**
+   * @brief Returns the token request's field for the client id.
+   * @return `"client_id"`.
+   */
   static constexpr std::string_view key_field() noexcept { return "client_id"; }
 
-  /** The JSON field Toss expects the client secret under. */
+  /**
+   * @brief Returns the token request's field for the client secret.
+   * @return `"client_secret"`.
+   */
   static constexpr std::string_view secret_field() noexcept { return "client_secret"; }
 };
 
-/** Parsed Toss Securities REST OAuth token. */
+/** @brief A Toss REST access token and its expiry. */
 struct TossRest : public network::AuthBody<TossRest> {
-  /** The field Toss returns the bearer token under. */
+  /**
+   * @brief Returns the token response's field for the token.
+   * @return `"access_token"`.
+   */
   static constexpr std::string_view token_field() noexcept { return "access_token"; }
 
-  /** Nothing to read: Toss's token response carries no field beyond the shared base's. */
+  /** @brief Reads nothing more from a token response (the argument is unused; Toss states `expires_in`); called by `from_json`. */
   void from_json_impl(const json::object&) {}
 
   // bool valid() const noexcept {
