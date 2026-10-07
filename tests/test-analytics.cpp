@@ -624,6 +624,16 @@ TEST_CASE("a simple return refuses to divide by a zero prior price") {
   REQUIRE(result[2] == Catch::Approx(0.1));
 }
 
+TEST_CASE("a simple return refuses a negative prior price") {
+  // From a negative base the sign reverses: -10 to -20 would read as +100%.
+  const math::Vector prices = series({-10.0, -20.0, 5.0, 6.0});
+  const math::Vector result = analytics::returns(prices);
+
+  REQUIRE_FALSE(observed(result[1]));
+  REQUIRE_FALSE(observed(result[2]));
+  REQUIRE(result[3] == Catch::Approx(0.2));
+}
+
 TEST_CASE("a return spanning an unobserved price is unobserved on both sides") {
   const math::Vector prices = series({100.0, missing(), 121.0});
   const math::Vector result = analytics::returns(prices);

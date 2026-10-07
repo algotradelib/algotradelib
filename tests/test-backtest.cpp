@@ -1571,6 +1571,72 @@ TEST_CASE("equity is recorded per bar and the curve carries period returns") {
   REQUIRE(curve[2].period_return_ == Catch::Approx(0.0007).epsilon(0.01));
 }
 
+TEST_CASE("no return is measured from equity at or below zero, and the ratios are undefined") {
+  // Buying power is not enforced by default, so a replay can owe more than it holds. From a negative
+  // total the ratio's sign reverses: the fall from -100,000 to -200,000 read as +100%.
+  auto config = replay_config();
+  config.cash_ = Decimal64::parse("100000");
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, std::move(config));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "50000"));
+  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_DAY, "50000", "40000"));
+  engine.feed(moving_bar(utc(2026, 3, 16, 6, 30), BarInterval::ONE_DAY, "40000", "45000"));
+  engine.finish();
+
+  const auto& curve = engine.result().equity_;
+  REQUIRE(engine.result().executions_.size() == 1);
+  REQUIRE(curve.size() == 5);
+  REQUIRE(curve[2].equity_ == Decimal64::parse("-100000"));
+  REQUIRE(curve[3].equity_ == Decimal64::parse("-200000"));
+  // From 100,000 to -100,000 is a return; from a negative total there is none.
+  REQUIRE(curve[2].period_return_ == Catch::Approx(-2.0));
+  CHECK_FALSE(math::observed(curve[3].period_return_));
+  CHECK_FALSE(math::observed(curve[4].period_return_));
+
+  const auto report = backtest::summarize(engine.result(), engine.fills(), 252.0);
+  CHECK(math::is_undefined(report.sharpe_));
+  CHECK(math::is_undefined(report.sortino_));
+  CHECK(math::is_undefined(report.annualized_sharpe_));
+  // The figures that are still defined stay.
+  CHECK(report.total_return_ == Catch::Approx(-2.5));
+  CHECK(math::observed(report.max_drawdown_));
+}
+
+TEST_CASE("a replay that opens with negative equity has no total return and no turnover") {
+  // A replay may start with negative cash; -100,000 to -50,000 is not a 50% loss.
+  auto config = replay_config();
+  config.cash_ = Decimal64::parse("-100000");
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, std::move(config));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "75000"));
+  engine.finish();
+
+  REQUIRE(engine.result().equity_.front().equity_ == Decimal64::parse("-100000"));
+  REQUIRE(engine.result().equity_.back().equity_ == Decimal64::parse("-50000"));
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  CHECK(math::is_undefined(report.total_return_));
+  CHECK(math::is_undefined(report.total_turnover_));
+  CHECK(math::is_undefined(report.sharpe_));
+}
+
+TEST_CASE("equity that reaches zero only at the last point leaves every return defined") {
+  auto config = replay_config();
+  config.cash_ = Decimal64::parse("100000");
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, std::move(config));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "65000"));
+  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_DAY, "65000", "60000"));
+  engine.finish();
+
+  REQUIRE(engine.result().equity_.back().equity_ == Decimal64::parse("0"));
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  CHECK(math::observed(report.sharpe_));
+  CHECK(math::observed(report.sortino_));
+}
+
 TEST_CASE("a guard refusal is collected rather than lost in a per-bar report") {
   auto config = replay_config();
   config.limits_.max_order_notional_ = Decimal64::parse("100000");
