@@ -93,8 +93,10 @@ export KIS_APP_KEY=... KIS_APP_SECRET=... KIS_CANO=... KIS_DEMO=1
 A KIS demo host refuses reference data, so on demo these stop there unless market data comes from
 elsewhere: keep the keys in `DIR/kis/demo.json` and `DIR/kis/real.json` and pass `--credentials DIR`
 (market data then comes from the real keys, with no account selected); `--market-data toss` reads it
-from `DIR/tossinvest/real.json` instead. The [main page](doxygen/index.md#using-it) walks through the program, its
-credential files and its exit codes.
+from `DIR/tossinvest/real.json` instead. The [main page](doxygen/index.md#using-it) walks through the
+program, its credential files and its exit codes. Before `--live`, read
+[Running a strategy live](doxygen/vignettes/running-a-strategy-live.md): how a run stops, and what it
+refuses to send.
 
 ## Brokers and accounts
 

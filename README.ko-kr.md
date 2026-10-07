@@ -13,7 +13,8 @@
 <!--
   영어 README.md 6f6aab0 기준. 요약한 절: 첫 소개와 경고, "Brokers and accounts", "Install",
   "Using it"의 실행 예시, "Documentation"의 문서 빌드 명령, "Acknowledgements", "Disclaimer". 이 절들이
-  바뀌면 이 문서도 함께 고칩니다. 키움 설정과 빌드 옵션 같은 자세한 내용은 doxygen/index.md에 있습니다.
+  바뀌면 이 문서도 함께 고칩니다. 키움 설정과 빌드 옵션 같은 자세한 내용은 doxygen/index.md에 있으므로,
+  그 페이지의 같은 절이 바뀔 때도 이 문서를 확인합니다.
 -->
 
 이 문서는 [영어 README](https://github.com/ygeunkim/algotradelib/blob/main/README.md)를 짧게 요약한
