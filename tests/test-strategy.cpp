@@ -1477,6 +1477,78 @@ TEST_CASE("a weighted intent needs the portfolio's value and says so when it lac
   REQUIRE(with.place_[0].quantity_ == Decimal64::parse("35"));
 }
 
+TEST_CASE("an intent sized against a price that is not positive is refused, not sized negative") {
+  // A notional of a million at -10 would be -100,000 shares: a buy with a negative quantity. A price is
+  // negative only from a damaged response or a market where prices can be; neither sizes an order.
+  ProbePortfolio portfolio;
+  const auto reference = samsung_reference();
+  ReconcileInputs inputs;
+  inputs.instrument_ = &reference;
+  inputs.reference_price_ = Decimal64::parse("-10");
+  inputs.portfolio_value_ = Decimal64::parse("10000000");
+
+  const auto notional = strategy::reconcile(
+    OrderIntent::market(samsung(), OrderSide::BUY, SizeSpec::notional(Money{Decimal64::parse("1000000"), Currency{"KRW"}})),
+    portfolio, inputs
+  );
+  REQUIRE(notional.place_.empty());
+  REQUIRE(notional.rejected_[0].reason_ == RejectReason::NO_PRICE_AVAILABLE);
+
+  // Called directly, a weight is sized as a trade too.
+  const auto weight = strategy::reconcile(
+    OrderIntent::market(samsung(), OrderSide::BUY, SizeSpec::target_weight(Decimal64::parse("0.25"))), portfolio, inputs
+  );
+  REQUIRE(weight.place_.empty());
+  REQUIRE(weight.rejected_[0].reason_ == RejectReason::NO_PRICE_AVAILABLE);
+}
+
+TEST_CASE("a weight sized directly against a portfolio value that is not positive is refused") {
+  // As `weight_target` refuses it: sized against a negative value, a buy weight became a negative quantity.
+  ProbePortfolio portfolio;
+  const auto reference = samsung_reference();
+  ReconcileInputs inputs;
+  inputs.instrument_ = &reference;
+  inputs.reference_price_ = Decimal64::parse("70000");
+  inputs.portfolio_value_ = Decimal64::parse("-10000000");
+
+  const auto plan = strategy::reconcile(
+    OrderIntent::market(samsung(), OrderSide::BUY, SizeSpec::target_weight(Decimal64::parse("0.25"))), portfolio, inputs
+  );
+  REQUIRE(plan.place_.empty());
+  REQUIRE(plan.rejected_[0].reason_ == RejectReason::NO_PORTFOLIO_VALUE);
+}
+
+TEST_CASE("an intent whose size is negative places nothing") {
+  // A side and a magnitude: a negative magnitude is a sign error in the strategy, and an order of -5
+  // shares is not a sell of 5.
+  ProbePortfolio portfolio;
+  const auto reference = samsung_reference();
+  ReconcileInputs inputs;
+  inputs.instrument_ = &reference;
+  inputs.reference_price_ = Decimal64::parse("70000");
+  inputs.portfolio_value_ = Decimal64::parse("10000000");
+
+  const auto quantity = strategy::reconcile(
+    OrderIntent::market(samsung(), OrderSide::BUY, SizeSpec::quantity(Decimal64::parse("-5"))), portfolio, inputs
+  );
+  REQUIRE(quantity.place_.empty());
+  REQUIRE(quantity.rejected_[0].reason_ == RejectReason::NEGATIVE_SIZE);
+
+  const auto notional = strategy::reconcile(
+    OrderIntent::market(samsung(), OrderSide::SELL, SizeSpec::notional(Money{Decimal64::parse("-1000000"), Currency{"KRW"}})),
+    portfolio, inputs
+  );
+  REQUIRE(notional.place_.empty());
+  REQUIRE(notional.rejected_[0].reason_ == RejectReason::NEGATIVE_SIZE);
+
+  // A weight states a holding, and a negative holding is what `weight_target` already refuses.
+  const auto weight = strategy::reconcile(
+    OrderIntent::market(samsung(), OrderSide::BUY, SizeSpec::target_weight(Decimal64::parse("-0.25"))), portfolio, inputs
+  );
+  REQUIRE(weight.place_.empty());
+  REQUIRE(weight.rejected_[0].reason_ == RejectReason::UNSUPPORTED_WEIGHT);
+}
+
 TEST_CASE("a weight states a holding, and what a holding cannot state is refused", "[weights]") {
   const auto reference = samsung_reference();
   ReconcileInputs inputs;

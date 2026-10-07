@@ -1637,6 +1637,36 @@ TEST_CASE("equity that reaches zero only at the last point leaves every return d
   CHECK(math::observed(report.sortino_));
 }
 
+/** States one buy intent with a negative quantity: a strategy's sign error. */
+struct BuysMinusFive {
+  bool submitted_{false};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (submitted_) {
+      return;
+    }
+    submitted_ = true;
+    ctx.submit(
+      strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("-5"))
+      ).with_tag("minus-five")
+    );
+  }
+};
+
+TEST_CASE("a replay refuses an intent with a negative size instead of trading it") {
+  backtest::Backtester<BuysMinusFive> engine(BuysMinusFive{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.finish();
+
+  CHECK(engine.result().executions_.empty());
+  REQUIRE_FALSE(engine.result().rejected_.empty());
+  CHECK(engine.result().rejected_[0].reason_ == strategy::RejectReason::NEGATIVE_SIZE);
+  CHECK(engine.ledger().quantity_of(samsung()) == std::nullopt);
+}
+
 TEST_CASE("a guard refusal is collected rather than lost in a per-bar report") {
   auto config = replay_config();
   config.limits_.max_order_notional_ = Decimal64::parse("100000");

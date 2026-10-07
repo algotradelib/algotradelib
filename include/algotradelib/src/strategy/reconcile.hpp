@@ -75,6 +75,14 @@ enum class RejectReason {
    *   weight, a trigger, a validity other than `DAY`, or an idempotency key.
    */
   UNSUPPORTED_WEIGHT,
+  /**
+   * @brief An intent's size is negative: a quantity or a notional amount below zero.
+   *
+   * An intent carries its direction in its side, so a negative size is a sign error, and an order of -5
+   * shares is not a sell of 5. With the inputs it needs available, a zero quantity or notional is
+   * `QUANTITY_ROUNDS_TO_ZERO`; a negative weight is `UNSUPPORTED_WEIGHT`.
+   */
+  NEGATIVE_SIZE,
 };
 
 /**
@@ -108,6 +116,8 @@ inline constexpr std::string_view reject_reason_name(RejectReason reason) noexce
       return "stop_order_resting";
     case RejectReason::UNSUPPORTED_WEIGHT:
       return "unsupported_weight";
+    case RejectReason::NEGATIVE_SIZE:
+      return "negative_size";
   }
   return "unknown";
 }
@@ -688,10 +698,17 @@ Plan<Broker> reconcile(
   Decimal64 wanted;
   switch (intent.size().kind()) {
     case SizeKind::QUANTITY:
+      if (intent.size().as_quantity().coefficient() < 0) {
+        return reject(RejectReason::NEGATIVE_SIZE);
+      }
       wanted = intent.size().as_quantity();
       break;
     case SizeKind::NOTIONAL: {
-      if (!sizing_price || sizing_price->coefficient() == 0) {
+      if (intent.size().as_notional().amount_.coefficient() < 0) {
+        return reject(RejectReason::NEGATIVE_SIZE);
+      }
+      // Not positive is no price to size by: divided by a negative one, a buy became a negative quantity.
+      if (!sizing_price || sizing_price->coefficient() <= 0) {
         return reject(RejectReason::NO_PRICE_AVAILABLE);
       }
       const auto shares =
@@ -703,10 +720,15 @@ Plan<Broker> reconcile(
       break;
     }
     case SizeKind::TARGET_WEIGHT: {
-      if (!inputs.portfolio_value_) {
+      // The guards `weight_target` applies: a weight states a holding, which cannot be negative, and is
+      // a fraction of a value and sized by a price that must both be positive.
+      if (intent.size().as_target_weight().coefficient() < 0) {
+        return reject(RejectReason::UNSUPPORTED_WEIGHT);
+      }
+      if (!inputs.portfolio_value_ || inputs.portfolio_value_->coefficient() <= 0) {
         return reject(RejectReason::NO_PORTFOLIO_VALUE);
       }
-      if (!sizing_price || sizing_price->coefficient() == 0) {
+      if (!sizing_price || sizing_price->coefficient() <= 0) {
         return reject(RejectReason::NO_PRICE_AVAILABLE);
       }
       const auto allocation = decimal_multiply(
