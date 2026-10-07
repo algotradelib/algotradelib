@@ -256,7 +256,7 @@ Borrowing can lose more than the opening equity. A period whose preceding record
 negative has no return (`EquityPoint::period_return_` is missing); returns resume once equity is
 positive again. If any recorded equity point before the last is zero or negative, `summarize` reports
 `sharpe_` and `sortino_` as `math::undefined()` for the whole run, and `annualized_sharpe_` too when a
-period count is given. A non-positive last point alone leaves them defined. Reducing the curve's
+period count is given. A non-positive last point alone does not invalidate the ratios. Reducing the curve's
 returns yourself (`analytics::sharpe` over a slice) skips the missing ones and applies no such rule, so
 check the equity each return is measured from.
 
