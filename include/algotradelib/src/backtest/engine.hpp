@@ -616,8 +616,8 @@ public:
     drain_reports(runner_.feed(event));
     // **After the dispatch, exactly as the bar path does.** An earlier version of this branch left
     // it out, arguing that live a quote poll publishes no order update -- which is true of that one
-    // call and false of the loop it sits in: an order placed from `on_quote` is listed by the next
-    // iteration's working-order poll and announced. Publishing here is the closer parity, and it also
+    // call and false of the loop it sits in: an order placed from `on_quote` can be listed by a later
+    // working-order poll and announced. Publishing here is the closer parity, and it also
     // announces an order that would otherwise fill and be gone before any later observation point.
     publish_order_updates();
   }
