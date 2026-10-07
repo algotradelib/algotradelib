@@ -57,8 +57,9 @@ call is running on the same client: at startup, up to the calendar's 20 seconds.
 **Kiwoom, measured on a demo account (2026-10-07):** a second request to the same API within a few
 milliseconds of the first is refused (`1700`, with the API's id); 300 ms apart it was served, and
 different APIs back to back were too. A quote and a price-limit read are the same API (`ka10007`).
-Kiwoom's specification gives no numeric allowance. The Kiwoom examples pace at the same
-`RateLimitBudget{1, 1, 0}` (`kiwoom_credentials::paced_options` in `examples/kiwoom_credentials.hpp`).
+Kiwoom's specification gives no numeric allowance. The Kiwoom clients of `example-live-program` and
+`example-kiwoom-account` pace at the same `RateLimitBudget{1, 1, 0}` (`kiwoom_credentials::paced_options` in
+`examples/kiwoom_credentials.hpp`).
 
 **Leaving `rate_limit_` unset issues requests unpaced**, which is the default. Not
 every endpoint is metered, and one that is not should not be slowed down; an

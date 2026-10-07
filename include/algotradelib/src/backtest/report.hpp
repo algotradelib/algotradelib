@@ -232,8 +232,8 @@ struct Report {
   /**
    * @brief One-way turnover summed over the replay, as a fraction of equity.
    *
-   * `missing()` when any execution was in a currency other than the equity curve's, and
-   * `math::undefined()` when the opening equity is zero or negative.
+   * `missing()` when any execution was in a currency other than the equity curve's (whatever the opening
+   * equity), and otherwise `math::undefined()` when the opening equity is zero or negative.
    */
   math::Scalar total_turnover_{0};
 
