@@ -1603,6 +1603,24 @@ TEST_CASE("no return is measured from equity at or below zero, and the ratios ar
   CHECK(math::observed(report.max_drawdown_));
 }
 
+TEST_CASE("a replay that opens with negative equity has no total return and no turnover") {
+  // A replay may start with negative cash; -100,000 to -50,000 is not a 50% loss.
+  auto config = replay_config();
+  config.cash_ = Decimal64::parse("-100000");
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, std::move(config));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "75000"));
+  engine.finish();
+
+  REQUIRE(engine.result().equity_.front().equity_ == Decimal64::parse("-100000"));
+  REQUIRE(engine.result().equity_.back().equity_ == Decimal64::parse("-50000"));
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  CHECK(math::is_undefined(report.total_return_));
+  CHECK(math::is_undefined(report.total_turnover_));
+  CHECK(math::is_undefined(report.sharpe_));
+}
+
 TEST_CASE("equity that reaches zero only at the last point leaves every return defined") {
   auto config = replay_config();
   config.cash_ = Decimal64::parse("100000");

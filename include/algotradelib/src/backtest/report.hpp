@@ -202,7 +202,10 @@ struct Report {
   Decimal64 opening_equity_;
   /** @brief Equity at the last recorded point. */
   Decimal64 closing_equity_;
-  /** @brief The total return over the replay, as a fraction. */
+  /**
+   * @brief The total return over the replay, as a fraction; `math::undefined()` when the opening equity is
+   *   zero or negative (a replay may start with negative cash).
+   */
   math::Scalar total_return_{0};
 
   /**
@@ -229,7 +232,8 @@ struct Report {
   /**
    * @brief One-way turnover summed over the replay, as a fraction of equity.
    *
-   * `missing()` when any execution was in a currency other than the equity curve's.
+   * `missing()` when any execution was in a currency other than the equity curve's, and
+   * `math::undefined()` when the opening equity is zero or negative.
    */
   math::Scalar total_turnover_{0};
 
@@ -480,8 +484,10 @@ inline Report summarize(
     levels[static_cast<math::Index>(at)] = report_detail::to_scalar(result.equity_[at].equity_);
   }
 
+  // From a negative opening the ratio's sign reverses (a replay may start with negative cash), so a
+  // non-positive opening has no return and no turnover, as a zero one has none.
   const auto opening = report_detail::to_scalar(report.opening_equity_);
-  report.total_return_ = opening == math::Scalar{0} ?
+  report.total_return_ = !(opening > math::Scalar{0}) ?
     math::undefined() :
     report_detail::to_scalar(report.closing_equity_) / opening - math::Scalar{1};
 
@@ -513,7 +519,7 @@ inline Report summarize(
       break;
     }
   }
-  report.total_turnover_ = opening == math::Scalar{0} ? math::undefined() : math::Scalar{0};
+  report.total_turnover_ = !(opening > math::Scalar{0}) ? math::undefined() : math::Scalar{0};
   if (!one_currency) {
     report.total_turnover_ = math::missing();
   }
