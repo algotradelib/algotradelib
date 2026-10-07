@@ -268,7 +268,7 @@ figures below, a run in which the broker refused every order would look like one
 every order: same iterations, same poll counts, no failures. Apart from those figures, a refusal is
 recorded only in the order journal, **if you bound a journaling executor whose terminal write
 landed**. `live::bind` does not journal at all: journalling is
-`live::bind_journaled`, so a run built the way this page opens has no record of a refusal beyond the
+`live::bind_journaled`, so a run built with `live::bind` has no record of a refusal beyond the
 report. And `bind_journaled` is not itself a promise of durability — it takes whatever journal you hand
 it, including a `MemoryJournal` that is gone when the process is, and its *terminal* append can fail
 after the broker has already answered, leaving the `PENDING` line and no outcome.
@@ -690,8 +690,8 @@ stop; otherwise they report a restated target again on every pass.
 
 A listing alone does not end it. A market order that filled at once is in no listing, a
 resting order may not be listed yet, and a listed one can fill and leave; in each case a holdings answer
-that lags the fill does not show it either, and a target would send the order again (in a paper-broker
-test, holdings 70 seconds behind turned 47 trades into 295, at up to twice the target).
+that lags the fill does not show it either, and a target would send the order again, up to twice the
+target.
 So the runner remembers each accepted order with the instrument's holding when it was sent
 (`Runner::unconfirmed_orders`), and before every pass shows it as a reserved row of whatever nothing
 explains yet: the order's quantity, less what holdings have moved since in its direction, less what a
@@ -717,7 +717,7 @@ time out while the ledger holds the instrument. When the sweep finds it (`MATCHE
 counted on, by the number the sweep found, until holdings show it, and the ledger lets the instrument
 trade again once the sweep has decided everything open on it. (Otherwise a market order that had filled
 would be in no listing, holdings lagging the fill would not show it, and the next bar's target would buy
-it again: a paper-broker test held twice the target.) When the sweep concludes it was never placed (`NOT_PLACED`),
+it again.) When the sweep concludes it was never placed (`NOT_PLACED`),
 it is forgotten. `SessionSource` does this for every recorded resolution; a source of your own that
 calls `reconcile_against` should call `Runner::resolve_indeterminate_placement` the same way, and so
 must you after clearing the ledger by hand: an order nothing names once the ledger is clear shows as a
@@ -727,8 +727,7 @@ for holdings, and past the confirmation timeout withholds its instrument again, 
 **A target never re-places what it only reserved.** A reserved row has often filled already,
 so when a target finds more working on its side than it wants, it still withdraws every row there, but
 sizes the replacement net of the reserved ones: withdrawing a finished order is refused, and a whole
-remainder sent beside it would buy again every bar while holdings lagged (a paper-broker test held 210
-for a target of 100). A reserved order that was still resting is withdrawn all the same, and the rest is
+remainder sent beside it would buy again every bar while holdings lagged. A reserved order that was still resting is withdrawn all the same, and the rest is
 placed the next time the target is stated, once its history says what it filled or holdings show it. The
 cost is waiting, on exits as on entries: a sell target whose reserved sells exceed the need sends
 nothing until holdings credit them (or the confirmation timeout withholds the instrument), and at

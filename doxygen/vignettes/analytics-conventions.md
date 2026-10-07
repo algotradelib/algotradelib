@@ -61,9 +61,10 @@ So the library uses both, and the discipline is that **they meet in exactly one 
 
 Every conversion lives in `analytics/conversion.hpp`:
 
-- `to_scalar(Decimal64)` is total. Every price and quantity a broker can report has a
-  coefficient inside 53 bits, so `double` holds it exactly; the loss is theoretical here
-  rather than practical.
+- `to_scalar(Decimal64)` is total, and an approximation: the coefficient converts exactly
+  (every price and quantity a broker reports fits in 53 bits), but each decimal place is a
+  division by ten that can round, so `to_scalar(Decimal64(7, 2))` is `0.069999999999999993`,
+  not the nearest double to 0.07. Compare computed values with a tolerance.
 - `to_decimal(Scalar, scale)` returns `std::optional`. It refuses a non-finite value and a
   value that would overflow the coefficient, and it rounds half away from zero at the scale
   it was asked for. It honours that scale literally: `to_decimal(1.5, 3)` is `1.500`, which
@@ -162,7 +163,7 @@ decorating them:
 
 | Function | Convention, and the other one |
 | --- | --- |
-| `ema`, `ema_step` | take the smoothing factor `alpha`; `alpha_from_span(n)` is the span convention `2 / (n + 1)`; seeded on the first observed value; on observed rows, `pandas` `ewm(alpha=..., adjust=False, ignore_na=True)`, which also fills a missing row with the carried level |
+| `ema`, `ema_step` | take the smoothing factor `alpha`; `alpha_from_span(n)` is the span convention `2 / (n + 1)`; seeded on the first observed value. `ema_step` is the one-value update; `ema` over a series matches, on observed rows, `pandas` `ewm(alpha=..., adjust=False, ignore_na=True, min_periods=min_observed)` (it reports nothing before `min_observed` observations), which also fills a missing row with the carried level |
 | `rsi`, `atr` | Wilder's `1 / n` with Wilder's seed, not `2 / (n + 1)` |
 | `rolling_stdev`, `rolling_cov` | sample divisor `count - 1`, not the population `count` |
 | `sortino` | shortfalls divided by **all** observations, not by the losing ones |
