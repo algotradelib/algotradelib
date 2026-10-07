@@ -45,7 +45,7 @@ int main(int argc, char** argv) {
     tls.set_verify_mode(ssl::verify_peer);
 
     BlockingSession<KiwoomBlockingClient> session(
-      std::make_shared<KiwoomBlockingClient>(tls, std::move(config)),
+      std::make_shared<KiwoomBlockingClient>(tls, std::move(config), kiwoom_credentials::paced_options()),
       algotradelib::kiwoom::KiwoomAccount{}
     );
 

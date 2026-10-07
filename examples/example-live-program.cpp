@@ -33,6 +33,8 @@
  * through the real keys, so the market phase is known and, with `--live`, the strategy trades.
  * Every KIS client here is paced at one request a second (`kis_credentials::paced_options`): KIS
  * refuses faster reads (`EGW00201`), and the calendar's pages take about 20 s at startup.
+ * The Kiwoom client is paced the same way (`kiwoom_credentials::paced_options`): Kiwoom refuses a
+ * second request to the same API at once (`1700`), and a quote and a price-limit read are one API.
  *
  * **Kiwoom credentials** (`kiwoom_credentials.hpp`). Kiwoom issues one key per account, so with a
  * directory Kiwoom reads `DIR/kiwoom/demo-<label>.json` (or `real-<label>.json` with `KIWOOM_DEMO=0`),
@@ -299,7 +301,8 @@ int run_kiwoom(ssl::context& tls, const Arguments& arguments) {
   const bool demo = config.is_demo_;
 
   atl::BlockingSession<kiwoom::KiwoomBlockingClient> session(
-    std::make_shared<kiwoom::KiwoomBlockingClient>(tls, std::move(config)), kiwoom::KiwoomAccount{}
+    std::make_shared<kiwoom::KiwoomBlockingClient>(tls, std::move(config), kiwoom_credentials::paced_options()),
+    kiwoom::KiwoomAccount{}
   );
   // Kiwoom takes no account number on a request -- the application key is the account -- so the
   // journal is named after the account the key drives, as Kiwoom reports it.
