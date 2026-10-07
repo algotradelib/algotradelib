@@ -1,10 +1,9 @@
 #pragma once
 
 /**
- * Declares that this translation unit has reached a broker adapter.
+ * @brief Defined as 1 once a broker adapter header is included.
  *
- * Read by `tests/test-strategy-isolation.cpp`; see `ATL_TRANSPORT_LAYER_PRESENT` for why the
- * layers announce themselves rather than being inferred.
+ * The library's tests use it to check that the strategy headers include no broker.
  */
 #define ATL_BROKER_ADAPTER_PRESENT 1
 
@@ -23,13 +22,9 @@
 
 namespace algotradelib::broker_detail {
 
-/**
- * Reads a whole-number header, or nothing when it is absent or malformed.
- *
- * Which headers carry meaning is a broker's own contract, so each adapter reads
- * the ones its documentation promises. Only the parsing lives here, which is what
- * keeps a new broker from having to restate this guard.
- */
+// Reads a whole-number header, or nothing when it is absent or malformed. Which headers carry meaning
+// is a broker's own contract, so each adapter reads the ones its documentation promises; only the
+// parsing lives here.
 inline std::optional<std::int64_t> integer_header(
   const network::HttpResponse& response,
   std::string_view name
@@ -140,14 +135,10 @@ inline bool decimal_digits(std::string_view value, std::size_t length) {
   return true;
 }
 
-/**
- * Reads `YYYYMMDD` as a calendar date, or nothing when it is not one.
- *
- * The one reader for the format both Korean brokers use. Every character is checked as a digit
- * before any arithmetic, and the result must be a real date: `std::stoi` per component would read
- * `"2026092x"` as 2026-09-02, and unchecked digit arithmetic would read `"2026090:"` as 2026-09-10,
- * since `':'` follows `'9'` -- each a different, valid day instead of an unreadable one.
- */
+// Reads `YYYYMMDD` as a calendar date, or nothing when it is not one. Every character is checked as
+// a digit before any arithmetic, and the result must be a real date: `std::stoi` per component would
+// read `"2026092x"` as 2026-09-02, and unchecked digit arithmetic would read `"2026090:"` as
+// 2026-09-10, since `':'` follows `'9'`.
 inline std::optional<Date> compact_date(std::string_view text) {
   if (!decimal_digits(text, 8)) {
     return std::nullopt;

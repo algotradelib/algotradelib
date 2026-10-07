@@ -1,14 +1,9 @@
 #pragma once
 
 /**
- * Declares that this translation unit has reached the transport layer.
+ * @brief Defined as 1 once a transport (network) header is included.
  *
- * Read by `tests/test-strategy-isolation.cpp` to assert that the strategy surface does not. A
- * strategy must name no broker and perform no I/O, and that property degrades silently: one
- * convenience include in a strategy header would couple every strategy to a vendor, and nothing
- * would fail until someone built the same source against the other broker. Declaring the layer
- * here makes the assertion an architectural statement rather than a search for a third-party
- * macro that happens to come along for the ride.
+ * The library's tests use it to check that the strategy headers include no transport.
  */
 #define ATL_TRANSPORT_LAYER_PRESENT 1
 
@@ -45,76 +40,78 @@ namespace beast = boost::beast;
 namespace http = boost::beast::http;
 namespace net = boost::asio;
 namespace ssl = net::ssl;
+/** @brief Short for `boost::asio::ip::tcp`. */
 using tcp = net::ip::tcp;
 
 namespace network {
 
-/** HTTP response type returned by the transport clients. */
+/** @brief The HTTP response type the transport clients return. */
 using HttpResponse = http::response<http::string_body>;
 
 /**
- * Value-owned HTTP request accepted by the asynchronous transport.
+ * @brief An HTTP request for `AsyncHttpClient`.
  *
- * `group_` is the request's traffic class, used for admission and for queue
- * priority. It is assigned by the broker adapter that builds the request, never
- * by the caller, so a strategy cannot label its own chart polling as trading
- * traffic. The default is the most restricted class, so an unlabelled request
- * can never displace an order.
+ * A broker adapter builds it and sets `group_`, the traffic class used for rate limiting and queue
+ * priority.
  */
 struct HttpRequest {
-  /** The HTTP verb. A GET may be replayed once after a reconnect; a POST never is. */
+  /** @brief The HTTP method. A GET may be sent again once after a connection failure; nothing else is. */
   http::verb method_{http::verb::get};
-  /** The request target, path and query. */
+  /** @brief The request target: path and query. */
   std::string target_{"/"};
-  /** The request body, empty for a GET. */
+  /** @brief The request body, empty for a GET. */
   std::string body_;
-  /** Additional headers, in the order they should be sent. */
+  /** @brief Additional headers, in the order they are sent. */
   std::vector<std::pair<std::string, std::string>> headers_;
-  /** The HTTP version, `11` for HTTP/1.1. */
+  /** @brief The HTTP version, `11` for HTTP/1.1. */
   int version_{11};
-  /** The traffic class, set by the adapter that builds the request and never by a caller. */
+  /**
+   * @brief The traffic class, for rate limiting and queue priority.
+   *
+   * The default, `REFERENCE`, has the lowest priority, so an unlabelled request never displaces an
+   * order.
+   */
   RateLimitGroup group_{RateLimitGroup::REFERENCE};
 };
 
-/** Resource and deadline limits for HTTP transports. */
+/** @brief Deadlines, size limits and pacing for an HTTP client. */
 struct HttpClientOptions {
-  /** The deadline applied to each of DNS, connect, TLS, write and read. */
+  /**
+   * @brief The deadline for each of DNS lookup, connect, TLS handshake, write and read, in
+   *   `AsyncHttpClient`; `HttpClient`'s blocking operations are not bounded by it.
+   */
   std::chrono::seconds timeout_{30};
-  /** The largest response body that will be accepted, in bytes. */
+  /** @brief The largest response body accepted, in bytes. */
   std::size_t body_limit_{8 * 1024 * 1024};
-  /** How many requests may wait behind the one on the wire before further ones are shed. */
+  /** @brief How many requests may wait (`AsyncHttpClient`); one more fails with `queue_full`, unsent. */
   std::size_t queue_limit_{1024};
 
   /**
-   * Request allowance for this connection, or empty to issue requests unpaced.
-   *
-   * Empty is the default so that pacing is something a broker adapter turns on
-   * deliberately with a budget it can justify, rather than something every
-   * transport user inherits with a number the library guessed.
+   * @brief The rate-limit budget that paces this connection's requests, or empty (the default) for
+   *   no pacing (`AsyncHttpClient` only). Broker adapters set it.
    */
   std::optional<RateLimitBudget> rate_limit_;
 
   /**
-   * How long a kept-alive connection may sit idle and still carry a request that is never replayed.
+   * @brief How long a kept-alive connection may sit idle and still carry a request other than a GET
+   *   (one second by default).
    *
-   * **Why a POST is not written on a connection that has been idle.** A server closes an idle
-   * kept-alive connection on its own schedule -- the KIS hosts advertise `Keep-Alive: timeout=5`
-   * and close after five seconds -- and the client only learns of it by writing. A GET written into
-   * that closed connection is replayed once and nobody notices. A POST is never replayed, because it
-   * may be an order, so it failed as a transport error *after* its bytes were written: an order the
-   * broker never saw reported as one whose outcome is unknown, withholding the instrument until a
-   * reconciliation says it does not exist (observed on a KIS demo account, 2026-10-02: a live loop
-   * polling every ten seconds sent a market sell into a connection idle past the five).
-   *
-   * So a request that will not be replayed is sent on a fresh connection when the current one has
-   * been idle longer than this. One second by default, well inside any keep-alive timeout seen, at
-   * the cost of a TLS handshake for an order sent after a pause. A failure on a fresh connection is
-   * still reported as before: that one may genuinely have reached the broker.
+   * A server closes idle connections on its own schedule (KIS after five seconds), and a request
+   * written into a closed connection fails. A GET is then sent again, but any other request (which
+   * may be an order) is not, so its outcome would be unknown. Such a request after a longer idle
+   * period is therefore sent on a fresh connection, at the cost of a TLS handshake (once per request
+   * in `AsyncHttpClient`; see its description).
    */
   std::chrono::milliseconds unreplayed_idle_limit_{1000};
 };
 
-/** Converts a Boost transport error into a broker-neutral error. */
+/**
+ * @brief Converts a transport error into a `BrokerError`.
+ * @param stage Where it failed (such as `"connect"`), stored as the error code.
+ * @param ec The error.
+ * @return A `CANCELLED` error for an aborted operation, otherwise `TRANSPORT`. `reached_broker_` is
+ *   left at its default; the caller sets it.
+ */
 inline BrokerError transport_error(std::string stage, beast::error_code ec) {
   BrokerError error;
   error.category_ = ec == net::error::operation_aborted ?
@@ -125,15 +122,24 @@ inline BrokerError transport_error(std::string stage, beast::error_code ec) {
   return error;
 }
 
-/** Builds an HTTP Host header, omitting the default TLS port. */
+/**
+ * @brief Builds an HTTP `Host` header value.
+ * @param host The host name.
+ * @param port The port.
+ * @return `host`, with `:port` appended unless the port is `443`.
+ */
 inline std::string make_host_header(const std::string& host, const std::string& port) {
   return port == "443" ? host : host + ":" + port;
 }
 
 /**
- * Performs a bounded best-effort TLS shutdown before closing the TCP socket.
+ * @brief Shuts a TLS stream down (best effort) and closes its socket.
  *
- * This helper is used only by the explicitly blocking client.
+ * The TLS shutdown is a blocking call that `timeout` does not bound, so it can wait for an
+ * unresponsive peer.
+ *
+ * @param stream The stream.
+ * @param timeout Set as the stream's expiry, which does not bound the blocking shutdown.
  */
 inline void shutdown_ssl_stream(beast::ssl_stream<beast::tcp_stream>& stream, std::chrono::seconds timeout) noexcept {
   beast::error_code ignored;
@@ -143,7 +149,11 @@ inline void shutdown_ssl_stream(beast::ssl_stream<beast::tcp_stream>& stream, st
   beast::get_lowest_layer(stream).socket().close(ignored);
 }
 
-/** Cancels and closes a TLS stream without blocking for close notification. */
+/**
+ * @brief Cancels a TLS stream's operations and closes its socket, without waiting for the TLS
+ *   shutdown.
+ * @param stream The stream.
+ */
 inline void close_ssl_stream(beast::ssl_stream<beast::tcp_stream>& stream) noexcept {
   beast::error_code ignored;
   beast::get_lowest_layer(stream).cancel();
@@ -151,10 +161,24 @@ inline void close_ssl_stream(beast::ssl_stream<beast::tcp_stream>& stream) noexc
   beast::get_lowest_layer(stream).socket().close(ignored);
 }
 
-/** Persistent blocking HTTP/1.1 TLS client for synchronous compatibility APIs. */
+/**
+ * @brief A blocking HTTP/1.1 client over TLS that keeps one connection to one host.
+ *
+ * Not paced, not thread-safe, and with no enforced deadlines: a blocking DNS lookup, connect, TLS
+ * handshake, write, read, or the TLS shutdown when closing can wait indefinitely. Broker clients use `AsyncHttpClient`.
+ */
 class HttpClient {
 public:
-  /** Constructs a client for one TLS origin. */
+  /**
+   * @brief Constructs a client; it connects on the first request.
+   * @param ioc The I/O context.
+   * @param context The TLS context; borrowed, and must outlive the client. The client installs SNI
+   *   and a host-name check; for the peer to be verified, the context must enable
+   *   `ssl::verify_peer` and hold trusted roots.
+   * @param host The host name (also used for SNI and certificate verification).
+   * @param port The port.
+   * @param options The options; `rate_limit_` and `queue_limit_` are not used.
+   */
   HttpClient(
     net::io_context& ioc,
     ssl::context& context,
@@ -165,7 +189,13 @@ public:
   : resolver_(ioc), context_(context), host_(std::move(host)), port_(std::move(port)),
     options_(options) {}
 
-  /** Performs a blocking GET request. */
+  /**
+   * @brief Sends a GET request and waits for the response.
+   * @param target The path and query.
+   * @param headers Additional headers.
+   * @return The response, whatever its status.
+   * @throws boost::system::system_error on a transport failure (after one retry).
+   */
   HttpResponse get(
     const std::string& target,
     const std::map<std::string, std::string>& headers = {}
@@ -173,7 +203,14 @@ public:
     return request(http::verb::get, target, "", headers);
   }
 
-  /** Performs a blocking POST request. */
+  /**
+   * @brief Sends a POST request and waits for the response; never retried.
+   * @param target The path and query.
+   * @param body The body.
+   * @param headers Additional headers.
+   * @return The response, whatever its status.
+   * @throws boost::system::system_error on a transport failure.
+   */
   HttpResponse post(
     const std::string& target,
     const std::string& body,
@@ -183,10 +220,13 @@ public:
   }
 
   /**
-   * Performs a blocking request and retries a failed GET at most once.
-   *
-   * Network operations use error-code overloads. A terminal transport error is
-   * converted to `beast::system_error` only after retry policy is resolved.
+   * @brief Sends a request and waits for the response; a GET that fails is sent once more.
+   * @param method The HTTP method.
+   * @param target The path and query.
+   * @param body The body.
+   * @param headers Additional headers.
+   * @return The response, whatever its status.
+   * @throws boost::system::system_error on a transport failure.
    */
   HttpResponse request(
     http::verb method,
@@ -248,7 +288,7 @@ public:
     }
   }
 
-  /** Closes the persistent connection. */
+  /** @brief Closes the connection; the next request opens a new one. */
   void close() { disconnect(); }
 
 private:
@@ -259,7 +299,7 @@ private:
   HttpClientOptions options_;
   std::unique_ptr<beast::ssl_stream<beast::tcp_stream>> stream_;
   beast::flat_buffer buffer_;
-  /** When the connection last finished a response and was kept alive; empty while there is none. */
+  // When the connection last finished a response and was kept alive; empty while there is none.
   std::optional<std::chrono::steady_clock::time_point> idle_since_;
 
   void ensure_connected(beast::error_code& error) {
@@ -301,19 +341,43 @@ private:
 };
 
 /**
- * Persistent asynchronous HTTP/1.1 TLS client for one origin.
+ * @brief An asynchronous HTTP/1.1 client over TLS that keeps one connection to one host, used by the
+ *   broker clients.
  *
- * Requests are serialized on a strand because HTTP pipelining is not used.
- * Idempotent GET requests may be replayed once after transport failure; POST
- * requests are never replayed automatically, and never written on a connection
- * idle longer than `HttpClientOptions::unreplayed_idle_limit_`.
+ * Requests are queued by priority (`HttpRequest::group_`, then arrival) and sent one at a time on a
+ * strand. Each completion runs on the handler's associated executor, or on the client's strand if it
+ * has none.
+ *
+ * A GET that fails on the connection is sent once more; any other request never is. Before a request
+ * other than a GET is admitted, a connection idle longer than
+ * `HttpClientOptions::unreplayed_idle_limit_` is replaced by a fresh one, once per request: if the
+ * request then waits for rate-limit admission longer than that limit, it is still written on the
+ * fresh connection. With a rate-limit budget, a request waits for admission, and fails with
+ * `admission_deadline` if the wait would exceed the timeout.
+ *
+ * A failed request's `BrokerError::reached_broker_` is `false` only if no attempt at it began
+ * writing (a failure while resolving, connecting or handshaking, or a refusal in the queue). `true`
+ * means a write was begun, by this attempt or an earlier one (a retried GET), so the broker may have
+ * received it; it does not prove it did.
+ *
+ * Create it with `std::make_shared`: it uses `shared_from_this`.
  */
 class AsyncHttpClient : public std::enable_shared_from_this<AsyncHttpClient> {
 public:
-  /** Type-erased one-shot HTTP completion handler. */
+  /** @brief The completion handler type: called once with the response or an error. */
   using CompletionHandler = net::any_completion_handler<void(Result<HttpResponse>)>;
 
-  /** Constructs a client for one TLS origin. */
+  /**
+   * @brief Constructs a client; it connects on the first request.
+   * @param executor The executor its strand runs on.
+   * @param context The TLS context; borrowed, and must outlive the client. The client installs SNI
+   *   and a host-name check; for the peer to be verified, the context must enable
+   *   `ssl::verify_peer` and hold trusted roots.
+   * @param host The host name (also used for SNI and certificate verification).
+   * @param port The port.
+   * @param options The options.
+   * @throws std::invalid_argument if `options.rate_limit_` has a burst or rate below 1.
+   */
   AsyncHttpClient(
     net::any_io_executor executor,
     ssl::context& context,
@@ -330,51 +394,52 @@ public:
   }
 
   /**
-   * Returns this connection's pacer, or null when requests are unpaced.
+   * @brief Returns the connection's rate limiter.
    *
-   * Callers must use it only from this client's strand, which is where every
-   * response handler already runs.
+   * It is not synchronized: use it on the client's strand, or while no request is in progress. A
+   * completion handler bound to another executor is not on the strand.
+   *
+   * @return The limiter, or null if the client has no budget.
    */
   RateLimitController* rate_limits() noexcept {
     return limiter_ ? &*limiter_ : nullptr;
   }
 
-  /** Returns this connection's pacer, or null when requests are unpaced. */
+  /**
+   * @brief Returns the connection's rate limiter (read-only).
+   *
+   * Not synchronized: read it on the client's strand, or while no request is in progress.
+   *
+   * @return The limiter, or null if the client has no budget.
+   */
   const RateLimitController* rate_limits() const noexcept {
     return limiter_ ? &*limiter_ : nullptr;
   }
 
   /**
-   * Returns how many times this connection armed its admission wait.
+   * @brief Returns how many times the client started a rate-limit admission wait.
    *
-   * **Arms, not requests.** `pump()` re-evaluates admission for whichever request is at the front
-   * *now*, so a request that waits while a higher-priority one arrives can arm the timer more than
-   * once, and one arm can cover a request that never waited on its own account. The number is exact
-   * and it counts arms; a caller wanting "requests the pacer decided to delay" wants
-   * `RateLimitStats::delayed_`, which is a different question with a different answer.
+   * It counts waits started, not requests delayed (a request can wait more than once); for delayed
+   * requests read `RateLimitStats::delayed_`. Always zero for a client without a budget. Read it on
+   * the client's strand or after the event loop has stopped.
    *
-   * **Counted on the client rather than on the pacer, because the timer is the client's.** A pacer
-   * exists only when a budget was configured, so nothing on `RateLimitStats` could ever say whether
-   * an *unpaced* connection waited. That gap is what made "this transport is unpaced" untestable
-   * except by timing it, and timing it asserts the machine rather than the library.
-   *
-   * A connection with no budget must report zero here, on a fast host and a hung one alike.
-   *
-   * **What it covers, exactly: this admission timer.** It is not a general statement that a request
-   * was dispatched promptly. The other waits this client owns are deadlines rather than gates --
-   * `resolve_timer_` and the beast stream timeouts abort a request rather than hold one -- but a
-   * future delay built on another timer, or on a callback simply not posted, would slow a request
-   * while this still read zero. The removed wall-clock ceiling would have noticed some of those.
-   * That is the coverage this observable trades for determinism, and it is stated rather than
-   * implied.
-   *
-   * Like `rate_limits()`, callers must read this from this client's strand -- which is where every
-   * response handler already runs -- or after the event loop has stopped. `arms_` is a plain
-   * counter, so reading it concurrently with an arm races.
+   * @return The count.
    */
   std::uint64_t admission_waits() const noexcept { return admission_timer_.arms(); }
 
-  /** Initiates a queued request and completes with a response or error. */
+  /**
+   * @brief Queues a request; completes with the response (any status) or an error.
+   *
+   * Errors: `queue_full` (unsent) when the queue is full; `CANCELLED` if the client is closed or the
+   * admission wait would exceed the timeout (`admission_deadline`); `TRANSPORT` or `CANCELLED` from
+   * the connection. See the class description for `reached_broker_`. The handler runs on its
+   * associated executor, or on the client's strand if it has none.
+   *
+   * @tparam CompletionToken An Asio completion token.
+   * @param request_value The request.
+   * @param token The completion token, called with `Result<HttpResponse>`.
+   * @return Whatever the completion token returns.
+   */
   template <typename CompletionToken>
   auto async_request(HttpRequest request_value, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<HttpResponse>)>(
@@ -391,7 +456,10 @@ public:
     );
   }
 
-  /** Cancels transport work and completes queued requests as cancelled. */
+  /**
+   * @brief Closes the client: cancels the connection and completes every queued request with
+   *   `CANCELLED`. Later requests fail at once.
+   */
   void close() {
     net::post(strand_, [self = shared_from_this()] {
       self->stopped_ = true;
@@ -433,21 +501,17 @@ private:
     HttpRequest request_;
     CompletionHandler handler_;
     bool retried_{false};
-    /**
-     * Whether this request already went to a fresh connection because the last one sat idle. Once is
-     * enough, and it bounds the rule: a fresh connection starts its own idle clock, which with a limit
-     * of zero or below would otherwise send it straight back for another.
-     */
+    // Whether this request already went to a fresh connection because the last one sat idle. Once is
+    // enough, and it bounds the rule: a fresh connection starts its own idle clock, which with a limit
+    // of zero or below would otherwise send it straight back for another.
     bool refreshed_{false};
-    /**
-     * Whether any attempt at this request has begun writing it to the socket.
-     *
-     * The honest record of what a caller may be told about the broker having seen it, and
-     * deliberately not `retried_`, which counts a replay rather than a send: a GET that fails to
-     * *connect* is retried without a byte having left, and reading the retry as evidence would
-     * report an unsent request as one the broker may hold. Sticky once set, because a second
-     * attempt cannot unsend the first.
-     */
+    // Whether any attempt at this request has begun writing it to the socket.
+    //
+    // The honest record of what a caller may be told about the broker having seen it, and
+    // deliberately not `retried_`, which counts a replay rather than a send: a GET that fails to
+    // *connect* is retried without a byte having left, and reading the retry as evidence would
+    // report an unsent request as one the broker may hold. Sticky once set, because a second
+    // attempt cannot unsend the first.
     bool sent_{false};
 
     Pending(HttpRequest request_value, CompletionHandler completion)
@@ -457,31 +521,29 @@ private:
   net::strand<net::any_io_executor> strand_;
   tcp::resolver resolver_;
   net::steady_timer resolve_timer_;
-  /**
-   * The admission timer, wrapped so that arming it is counted by construction.
-   *
-   * **A counter beside the timer is not enough, and that is not hypothetical.** The first version of
-   * this observable incremented a member at the one call site that armed the timer, on the paced
-   * branch. `pump()` returns before that site when there is no budget, so a regression arming this
-   * timer on the *unpaced* branch would have delayed every request on an unmetered API while the
-   * counter still read zero -- and the test asserting zero would have passed.
-   *
-   * Making the count a property of the timer removes the bypass rather than documenting it: there
-   * is no way to arm *this* timer without `expires_after`, so there is no way to wait on it without
-   * saying so. What that does not cover is a delay built on some other timer; see
-   * `admission_waits()`.
-   *
-   * **A narrow wrapper for two call sites, not a general Asio timer substitute.** It discards the
-   * completion-token return values its callers do not use, and it counts an expiry reset even when
-   * no wait follows -- which is exact for the one place that arms this timer and immediately waits,
-   * and would need revisiting for any other use. Changing an expiry cancels a pending wait, whose
-   * handler then receives `operation_aborted`; this client's handler already returns on any error.
-   */
+  // The admission timer, wrapped so that arming it is counted by construction.
+  //
+  // **A counter beside the timer is not enough, and that is not hypothetical.** The first version of
+  // this observable incremented a member at the one call site that armed the timer, on the paced
+  // branch. `pump()` returns before that site when there is no budget, so a regression arming this
+  // timer on the *unpaced* branch would have delayed every request on an unmetered API while the
+  // counter still read zero -- and the test asserting zero would have passed.
+  //
+  // Making the count a property of the timer removes the bypass rather than documenting it: there
+  // is no way to arm *this* timer without `expires_after`, so there is no way to wait on it without
+  // saying so. What that does not cover is a delay built on some other timer; see
+  // `admission_waits()`.
+  //
+  // **A narrow wrapper for two call sites, not a general Asio timer substitute.** It discards the
+  // completion-token return values its callers do not use, and it counts an expiry reset even when
+  // no wait follows -- which is exact for the one place that arms this timer and immediately waits,
+  // and would need revisiting for any other use. Changing an expiry cancels a pending wait, whose
+  // handler then receives `operation_aborted`; this client's handler already returns on any error.
   class CountedTimer {
   public:
     explicit CountedTimer(net::strand<net::any_io_executor>& strand) : timer_(strand) {}
 
-    /** Arms the timer for `delay`, and counts the arm. */
+    // Arms the timer for `delay`, and counts the arm.
     template <typename Rep, typename Period>
     void expires_after(const std::chrono::duration<Rep, Period>& delay) {
       timer_.expires_after(delay);
@@ -489,16 +551,16 @@ private:
       ++arms_;
     }
 
-    /** Waits, forwarding to the underlying timer. */
+    // Waits, forwarding to the underlying timer.
     template <typename Handler>
     void async_wait(Handler&& handler) {
       timer_.async_wait(std::forward<Handler>(handler));
     }
 
-    /** Cancels any outstanding wait. Not counted: a cancellation is not an admission wait. */
+    // Cancels any outstanding wait. Not counted: a cancellation is not an admission wait.
     std::size_t cancel() { return timer_.cancel(); }
 
-    /** Returns how many times this timer has been armed. */
+    // Returns how many times this timer has been armed.
     std::uint64_t arms() const noexcept { return arms_; }
 
   private:
@@ -521,7 +583,7 @@ private:
   std::optional<std::chrono::steady_clock::time_point> waiting_since_;
   std::optional<http::request<http::string_body>> active_request_;
   std::optional<http::response_parser<http::string_body>> parser_;
-  /** When the connection last finished a response and was kept alive; empty while there is none. */
+  // When the connection last finished a response and was kept alive; empty while there is none.
   std::optional<std::chrono::steady_clock::time_point> idle_since_;
 
   void enqueue(Pending pending) {
@@ -554,16 +616,14 @@ private:
     pump();
   }
 
-  /**
-   * Returns where a request of `group` belongs in the pending queue.
-   *
-   * Higher priority is served first, and equal priority keeps arrival order, so
-   * a queue carrying one traffic class behaves exactly as a FIFO queue does.
-   *
-   * The front request is skipped while it is on the wire. Reordering around an
-   * in-flight request would detach it from the response being read for it, which
-   * is the one thing priority must never be allowed to do.
-   */
+  // Returns where a request of `group` belongs in the pending queue.
+  //
+  // Higher priority is served first, and equal priority keeps arrival order, so
+  // a queue carrying one traffic class behaves exactly as a FIFO queue does.
+  //
+  // The front request is skipped while it is on the wire. Reordering around an
+  // in-flight request would detach it from the response being read for it, which
+  // is the one thing priority must never be allowed to do.
   std::deque<Pending>::iterator insertion_point(RateLimitGroup group) {
     auto position = queue_.begin();
     if (front_in_flight() && position != queue_.end()) {
@@ -577,7 +637,7 @@ private:
     return position;
   }
 
-  /** Returns whether the front request has already been committed to the wire. */
+  // Returns whether the front request has already been committed to the wire.
   bool front_in_flight() const noexcept {
     return state_ == State::WRITING || state_ == State::READING;
   }

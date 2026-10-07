@@ -21,18 +21,13 @@ namespace algotradelib {
 namespace live {
 
 /**
- * Returns what a failed inquiry means for a poll.
+ * @brief Classifies a failed inquiry for a poll.
  *
- * The distinction that matters is `RATE_LIMIT`, which is **not a failure**: it is the limiter working
- * as designed, and counting it toward a failure budget would make a loop polling slightly too fast
- * shut itself down instead of simply slowing down. Everything else is a genuine failure — but note
- * that a failure here is far less consequential than one on an order write: nothing was sent, so
- * nothing needs reconciling and no ledger entry is owed. A quote that did not arrive is an absence of
- * information, not an unknown position.
+ * A rate-limit refusal is not a failure: it does not count toward `runner::FailurePolicy`'s budget.
+ * No order instruction was sent, so no failed read needs reconciling.
  *
- * That asymmetry is why this is a separate function from `runner::outcome_of` rather than a reuse of
- * it. They answer different questions: that one asks whether an order might exist, this one only
- * asks whether to try again.
+ * @param error The error.
+ * @return `RATE_LIMITED` for `ErrorCategory::RATE_LIMIT`, otherwise `FAILED`.
  */
 inline runner::PollOutcome poll_outcome_of(const BrokerError& error) noexcept {
   return error.category_ == ErrorCategory::RATE_LIMIT ?
@@ -41,11 +36,15 @@ inline runner::PollOutcome poll_outcome_of(const BrokerError& error) noexcept {
 }
 
 /**
- * The error an order-history read reports when the broker's answer is not the whole history: a page said
- * there is more and it was not read.
+ * @brief Makes the error an order-history read reports when the history is incomplete (a page said
+ *   there is more, and it was not read).
  *
- * `PROTOCOL` and `reached_broker_ = true`: the read reached the broker, and no instruction is involved.
- * Every caller treats it as a failed history read, so nothing is concluded from the part that was read.
+ * Its category is `PROTOCOL`, with `reached_broker_` set. Callers treat it as a failed read and
+ * conclude nothing from the pages that were read.
+ *
+ * @param code The error code.
+ * @param message The message.
+ * @return The error.
  */
 inline BrokerError incomplete_history(std::string code, std::string message) {
   BrokerError error;
@@ -56,7 +55,11 @@ inline BrokerError incomplete_history(std::string code, std::string message) {
   return error;
 }
 
-/** A page said there is more, and the adapter declares no cursor to read it. */
+/**
+ * @brief Makes the incomplete-history error for a broker whose adapter cannot read a further page
+ *   (`has_history_cursor` is `false`).
+ * @return The error (code `history_not_continued`).
+ */
 inline BrokerError history_not_continued() {
   return incomplete_history(
     "history_not_continued",
@@ -65,7 +68,11 @@ inline BrokerError history_not_continued() {
   );
 }
 
-/** Every page allowed was read and the last still said there is more. */
+/**
+ * @brief Makes the incomplete-history error for a history longer than the page limit.
+ * @param pages The page limit.
+ * @return The error (code `history_page_limit`).
+ */
 inline BrokerError history_page_limit(int pages) {
   return incomplete_history(
     "history_page_limit",
@@ -76,10 +83,8 @@ inline BrokerError history_page_limit(int pages) {
 
 namespace session_source_detail {
 
-/**
- * Whether `Runner` can be fed a bar as history, which every `runner::Runner` can. Required by
- * `poll_bars`: a runner without it would send what was decided on a cold start's history.
- */
+// Whether `Runner` can be fed a bar as history, which every `runner::Runner` can. Required by
+// `poll_bars`: a runner without it would send what was decided on a cold start's history.
 template <typename Runner, typename = void>
 struct feeds_warmup : std::false_type {};
 
@@ -92,35 +97,36 @@ struct feeds_warmup<
 } // namespace session_source_detail
 
 /**
- * Polls a bound session and feeds what arrives to a runner.
+ * @brief The source a `runner::PollingLoop` polls: reads a broker session and feeds bars, quotes,
+ *   holdings, orders, buying power, price bands and the calendar to a runner.
  *
- * The only part of the live loop that performs I/O, and the counterpart to `SessionExecutor`: that one
- * is the only thing that *writes* to a broker, this one the only thing that *reads* on a loop's
- * behalf. Everything about when to poll, when to stop and when to refuse to send lives in
- * `runner::PollingLoop`, which is why all of that is testable with `runner::ManualSource` and no
- * network.
+ * Bars: each poll reads every instrument, then feeds the bars not fed before in period-end order
+ * across instruments. A bar whose period has not ended by the later of `Runner::observed_at()` and
+ * the series' receipt time is left for a later poll (a daily bar read during the session waits); this
+ * check applies to close-stamped bars and to daily and minute bars, and only once either instant is
+ * known (open-stamped weekly, monthly and yearly bars are fed unchecked). Of the bars collected, only
+ * each instrument's newest (which may be yesterday's, if today's is still forming) is fed live, and
+ * only if it ended strictly after every older bar collected in the same poll, of any instrument (a
+ * tie is history; instruments' newest bars are not compared with each other). The rest go through
+ * `Runner::feed_warmup`, so a restart does not act on the history it reads. This does not make the
+ * newest bar recent.
  *
- * **Rate limiting needs nothing here.** Each client already tags its own requests — `MARKET_DATA` for
- * quotes and bars, `ACCOUNT` for holdings and order inquiries, `TRADING` only for placements and
- * cancellations — and `RateLimitController` holds `trading_reserve_` back from every non-trading
- * group. So a loop polling hard cannot starve an order of capacity, and this class does not have to
- * arrange that; it would only be able to get it wrong.
+ * Requests are tagged by kind, so a client budget with a trading reserve
+ * (`network::RateLimitBudget::trading_reserve_`) keeps capacity for orders. A kind the broker does not offer compiles to no request and returns `UNCHANGED`.
+ * A failed poll leaves the previous calendar, buying power and price bands in place.
  *
- * **Capabilities are compile-time.** A broker with no working-order inquiry compiles no call to one,
- * and the loop simply never polls that kind. Nothing is checked at run time and nothing throws.
+ * With a journal (`set_journal`), every order listing is also checked against the instructions the
+ * journal holds as unresolved, resolving them in the runner's ledger where the broker's rows settle
+ * them.
  *
- * **Reconciliation is opt-in and costs no extra request.** Bind an order journal with
- * `set_journal` and every listing this source reads is also swept against what the journal says is
- * owed, resolving the runner's ledger where the broker's own rows settle the question. Without a
- * journal the class behaves exactly as it did before: the gate still lifts on a clean start, and
- * nothing is matched.
+ * Market data can come from a second session (`MarketData`): bars, quotes, price bands and the
+ * calendar are read from it, everything about the account from `Session`. For example, a KIS demo
+ * account cannot read the calendar, so it is read through a session built from a real account's keys
+ * and an empty `KisAccount` (which refuses every account request and order before any I/O).
  *
- * **Market data may come from a second session.** `MarketData` serves the four market reads (bars,
- * quotes, price limits, calendar) and `Session` everything about the account. A KIS demo account,
- * whose host refuses the calendar (`CTCA0903R`, `EGW02006`), reads it through a session built from
- * the real account's keys and an empty `KisAccount`, which refuses every account request and order
- * before any I/O. `MarketData` may also be another broker's session. The two-argument constructor
- * reads both from one session, as before.
+ * @tparam Session The broker session for the account (not a market-data-only source).
+ * @tparam Journal The journal type, if one is set.
+ * @tparam MarketData The session market data is read from (`Session` by default).
  */
 template <
   typename Session,
@@ -129,35 +135,27 @@ template <
 >
 class SessionSource {
 public:
-  /**
-   * One figure of one order, and **the filled quantity it was accepted at**.
-   *
-   * The quantity lives per figure rather than per order, and review found why it has to: a silent
-   * row advanced the order's quantity while the figure stayed behind at the old one, so the fee
-   * that then arrived for the *new* quantity looked like a second opinion about the old one and was
-   * discarded as a conflict. What decides whether a reading is new information is the quantity
-   * **this figure** was last accepted at, not how far the order has filled since.
-   */
+  /** @brief One charge figure of one order, and the filled quantity it was recorded at. */
   struct ObservedFigure {
-    /** The amount the broker stated, empty until it has stated one. */
+    /** @brief The amount the broker stated, empty until it states one. */
     std::optional<Money> amount_;
-    /** The filled quantity `amount_` was accepted at. */
+    /** @brief The filled quantity `amount_` was recorded at. */
     Decimal64 at_;
   };
 
-  /** One order's stated charges, as the accumulator last accepted them. */
+  /** @brief One order's stated charges, as last recorded. */
   struct ObservedCharge {
-    /** The commission the broker stated, with the quantity it was accepted at. */
+    /** @brief The commission. */
     ObservedFigure commission_;
-    /** The tax the broker stated, with the quantity it was accepted at. */
+    /** @brief The tax. */
     ObservedFigure tax_;
-    /** Whether this order has already been counted as one that states a cost. */
+    /** @brief Whether this order was already counted as one that states a cost. */
     bool counted_cost_{false};
   };
 
-  /** The bound broker's capability set, forwarded from the session. */
+  /** @brief The broker's capabilities, from the account session. */
   using Caps = typename Session::Caps;
-  /** The bound broker's tag, forwarded from the session. */
+  /** @brief The broker tag, from the account session. */
   using BrokerTag = typename Session::BrokerTag;
 
   // The trading session is read for holdings, the order listing and history, which a market-data source
@@ -170,114 +168,144 @@ public:
   );
 
   /**
-   * Whether a successful order-list read leaves the broker's outstanding orders in the portfolio.
+   * @brief `true` if an order-list read installs the broker's working orders in the portfolio.
    *
-   * False on a broker without the working-order inquiry, and that is not a technicality. The
-   * fallback path reads *history* and hands its rows to journal reconciliation, which is enough for
-   * the startup gate -- this process has looked at the broker's own record before sending -- and is
-   * not enough to build a withdrawal from, because `portfolio.working_` is never populated. A
-   * `PollingLoop` reads this to decide whether a closing pass knows what is outstanding; telling it
-   * yes here would make a `WITHDRAW` report a complete stop with an order still resting.
+   * `false` at a broker without a working-order inquiry: the list is read from history, which lifts
+   * the loop's startup gate but lists nothing to cancel, so a closing pass cannot know what rests.
    */
   static constexpr bool provides_working_orders = Caps::has_working_orders;
 
   /**
-   * Binds a session and the universe to poll.
-   *
-   * The session is borrowed, matching `SessionExecutor`: it owns a client with executor affinity, and
-   * neither a runner nor a source owns the connection it uses.
+   * @brief Constructs a source that reads everything from one session.
+   * @param session The session; borrowed, and must outlive the source.
+   * @param universe The instruments to poll.
    */
   SessionSource(Session& session, std::vector<InstrumentId> universe)
   : session_(&session), market_data_(&session), universe_(std::move(universe)) {}
 
   /**
-   * Binds a trading session, a session for the market reads, and the universe to poll.
-   *
-   * `market_data` is borrowed too. Only bars, quotes, price limits and the calendar are read from it,
-   * gated on its own capabilities. Nothing is sent through either: orders go through the executor
-   * the runner was bound with.
+   * @brief Constructs a source that reads market data from a second session.
+   * @param session The account session; borrowed, and must outlive the source.
+   * @param market_data The session bars, quotes, price bands and the calendar are read from (as its
+   *   own capabilities allow); borrowed. No order or cancellation is sent through either session.
+   * @param universe The instruments to poll.
    */
   SessionSource(Session& session, MarketData& market_data, std::vector<InstrumentId> universe)
   : session_(&session), market_data_(&market_data), universe_(std::move(universe)) {}
 
   /**
-   * Binds the journal whose unresolved instructions each listing is swept against.
+   * @brief Sets the journal each order listing is checked against.
    *
-   * Borrowed rather than owned, and deliberately the *same* journal the executor writes to: one
-   * file, one writer, and one reader that knows what the writer recorded.
+   * Use the journal the runner writes to (`bind_journaled`). Listings arrive with the startup
+   * order-list read and every working-order poll; a broker without a working-order inquiry is checked
+   * only at startup.
    *
-   * **A sweep happens wherever rows arrive**, which is the startup read and every working-order
-   * poll, because both already fetch exactly what the matcher needs. A broker with no working-order
-   * inquiry has only the startup read, and that asymmetry is a consequence of what the broker
-   * offers rather than a choice made here.
+   * @param journal The journal; borrowed, and must outlive the source.
    */
   void set_journal(Journal& journal) { journal_ = &journal; }
 
-  /** Sets how much slack attribute matching allows. */
+  /**
+   * @brief Sets the tolerance used to match listed orders to journal entries without a broker
+   *   reference.
+   * @param window The window.
+   */
   void set_match_window(runner::MatchWindow window) { window_ = window; }
 
-  /** Returns what the last sweep settled and what it left owed. */
+  /**
+   * @brief Returns what the last check against the journal resolved and left unresolved.
+   * @return The report.
+   */
   const runner::ReconcileReport& last_reconcile() const noexcept { return reconcile_; }
 
   /**
-   * Sets which currencies to ask about what may be spent.
+   * @brief Sets the currencies a buying-power poll asks about (one request per currency).
    *
-   * Empty by default, and a buying-power poll with none configured does nothing rather than
-   * guessing one: a broker prices the answer per currency, and picking a default here would size a
-   * won order against a dollar budget on an account holding both.
+   * Empty by default: a buying-power poll then does nothing.
+   *
+   * @param currencies The currencies.
    */
   void set_buying_power_currencies(std::vector<Currency> currencies) {
     currencies_ = std::move(currencies);
   }
 
   /**
-   * Returns the currencies configured above, which is what a complete poll has to cover.
-   *
-   * Published so the loop's gate can hold for a budget that never arrived. Without it the gate can
-   * only ask whether *any* reading exists, and one currency answering would open the gate for an
-   * account trading two -- the order guard would still refuse the unread one, but the run would
-   * report healthy polls while a configured budget was missing.
+   * @brief Returns the buying-power currencies, which the loop holds sending for until each has
+   *   answered.
+   * @return The currencies.
    */
   const std::vector<Currency>& buying_power_currencies() const noexcept { return currencies_; }
 
   /**
-   * Returns how many bars a poll met before their period had ended, and left for later.
+   * @brief Returns how many bars were left for a later poll because their period had not ended.
    *
-   * Nonzero is normal for a daily query polled during the session, and it is the evidence that the
-   * broker publishes the session still trading. Monotone across every run against this source.
+   * Nonzero is normal for daily bars polled during the session.
+   *
+   * @return The count over the source's life (each bar counted once).
    */
   std::size_t bars_not_yet_closed() const noexcept { return bars_not_yet_closed_; }
 
   /**
-   * Returns how many bars were fed as history (`Runner::feed_warmup`): every new bar of a read but each
-   * instrument's newest, and a newest bar whose period did not end after all of those. Their
-   * decisions were discarded, never sent. Monotone.
+   * @brief Returns how many bars were fed as history (`Runner::feed_warmup`), so their decisions
+   *   were discarded.
+   * @return The count over the source's life.
    */
   std::size_t bars_fed_as_warmup() const noexcept { return bars_fed_as_warmup_; }
 
-  /** Sets the bar interval and depth each poll requests. */
+  /**
+   * @brief Sets the bars each poll requests.
+   * @param interval The bar interval.
+   * @param count How many bars to request per instrument.
+   */
   void set_bar_query(BarInterval interval, int count) {
     interval_ = interval;
     count_ = count;
   }
 
   /**
-   * Sets which market's trading calendar to ask for.
+   * @brief Sets the market whose trading calendar the calendar poll asks for (`Country::KR` by
+   *   default).
    *
-   * `Country::KR` by default: it is the domestic market of both brokers this library ships, the only
-   * one KIS publishes at all, and the one `strategy::SessionWindow::krx()` states the hours for. A
-   * wrong value is refused by the port before a socket is written -- KIS's `validate_calendar` names
-   * the reason -- rather than answering about the wrong market.
+   * A broker that does not publish that market's calendar refuses the request before sending it.
+   *
+   * @param country The market.
    */
   void set_calendar_country(Country country) { calendar_country_ = country; }
 
-  /** Returns the market the calendar poll asks about. */
+  /**
+   * @brief Returns the market the calendar poll asks about.
+   * @return The market.
+   */
   Country calendar_country() const noexcept { return calendar_country_; }
 
-  /** Returns why the last failing poll failed, for a caller to log. */
+  /**
+   * @brief Returns the error recorded by the most recent failing read.
+   *
+   * A diagnostic, not the outcome of the last poll: a poll that does nothing (a kind the broker does
+   * not offer, or nothing configured) leaves it as it was, and a working-order poll can return
+   * `UPDATED` while recording a failed journal-reconciliation history read here.
+   *
+   * @return The error, or empty if cleared by a later successful read.
+   */
   const std::optional<BrokerError>& last_error() const noexcept { return last_error_; }
 
-  /** Polls `kind` and feeds whatever arrived to `runner`. */
+  /**
+   * @brief Polls one kind of data and feeds or installs what arrived in the runner.
+   *
+   * A poll is not atomic. Buying power and price bands ask for every currency or instrument even
+   * after one fails: the answers that arrived are installed, and the poll returns the failure (a
+   * failure outranks a rate-limit refusal). A quote poll stops at the first failure, with the quotes
+   * before it already fed. A bar poll that fails feeds nothing. A working-order poll installs the
+   * listing, feeds order updates and reconciles before it reads any history the runner needs; if
+   * that read fails it returns the failure with those effects kept. `UPDATED` does not mean journal
+   * reconciliation succeeded (see `last_reconcile()` and `last_error()`).
+   *
+   * @tparam Runner The runner type.
+   * @param kind The kind to poll.
+   * @param runner_instance The runner.
+   * @return `UPDATED` if a read succeeded and fed or installed something (holdings and working
+   *   orders: every successful read), `UNCHANGED` if nothing arrived (or the broker does not offer
+   *   the kind), `FAILED` or `RATE_LIMITED` on an error (see `last_error()`).
+   */
   template <typename Runner>
   runner::PollOutcome poll(runner::PollKind kind, Runner& runner_instance) {
     switch (kind) {
@@ -300,17 +328,16 @@ public:
   }
 
   /**
-   * Reads the broker's own order list, which is what lifts the loop's startup gate.
+   * @brief Reads the broker's order list once, which lifts `PollingLoop`'s startup hold.
    *
-   * **Which inquiry is used is a compile-time decision, and both are correct answers to a different
-   * question.** `working_orders()` is the cheaper and more direct one — it lists exactly what is
-   * resting — but it is capability-gated, because not every broker offers it. `order_history()` is
-   * always available and answers a wider question at more cost.
+   * Reads the working orders where the broker offers that inquiry; otherwise the whole order history
+   * (all pages, or the read fails). A broker with neither does not compile. The listing is adopted as
+   * the starting state: orders already resting produce no order updates, and one that fills or is
+   * cancelled before the first working-order poll produces none either.
    *
-   * So this prefers working orders where they exist and falls back to history where they do not. A
-   * broker offering neither cannot satisfy the gate, and that is a **compile error** rather than a
-   * run-time refusal: a broker this loop cannot trade safely should fail to build, not fail at four
-   * in the afternoon.
+   * @tparam Runner The runner type.
+   * @param runner_instance The runner.
+   * @return `UPDATED` on success, otherwise `FAILED` or `RATE_LIMITED`.
    */
   template <typename Runner>
   runner::PollOutcome read_order_list(Runner& runner_instance) {
@@ -368,21 +395,20 @@ public:
   }
 
   /**
-   * Returns the broker-stated cost observed on the order snapshots polled so far.
+   * @brief Returns the commission and tax the broker stated on the orders this source has seen.
    *
-   * Absolute and monotone across every run made against this source; `Loop::run` differences it so
-   * a report carries its own run's observations rather than the previous run's as well. Read
-   * `runner::ChargedCosts` before believing it is a total -- it is a subtotal of unknown coverage,
-   * because a working-order listing cannot show an order that filled between two polls.
+   * A subtotal: a listing cannot show an order that filled between two polls (see
+   * `runner::ChargedCosts`). It accumulates over the source's life; `PollingLoop::run` reports each
+   * run's difference.
+   *
+   * @return The costs.
    */
   const runner::ChargedCosts& charged_costs() const noexcept { return charged_; }
 
 private:
-  /**
-   * Fetches bars for each instrument and feeds only those not seen before, in period-end order
-   * across the universe; only each instrument's newest may send (older ones are fed as history, see
-   * `Runner::feed_warmup`).
-   */
+  // Fetches bars for each instrument and feeds only those not seen before, in period-end order
+  // across the universe; only each instrument's newest may send (older ones are fed as history, see
+  // `Runner::feed_warmup`).
   template <typename Runner>
   runner::PollOutcome poll_bars(Runner& runner_instance) {
     // **Every instrument is read before anything is fed**, and then the new bars of all of them are
@@ -509,7 +535,7 @@ private:
     return outcome;
   }
 
-  /** Fetches a quote per instrument and feeds each one. */
+  // Fetches a quote per instrument and feeds each one.
   template <typename Runner>
   runner::PollOutcome poll_quotes(Runner& runner_instance) {
     auto outcome = runner::PollOutcome::UNCHANGED;
@@ -528,13 +554,11 @@ private:
     return outcome;
   }
 
-  /**
-   * Refreshes positions, keeping whatever working orders the context already holds.
-   *
-   * The two inquiries are separate calls on their own cadences, so each must merge rather than
-   * replace: rebuilding the portfolio from a holdings snapshot alone would silently drop every
-   * working order, and reconciliation would then place orders it had already placed.
-   */
+  // Refreshes positions, keeping whatever working orders the context already holds.
+  //
+  // The two inquiries are separate calls on their own cadences, so each must merge rather than
+  // replace: rebuilding the portfolio from a holdings snapshot alone would silently drop every
+  // working order, and reconciliation would then place orders it had already placed.
   template <typename Runner>
   runner::PollOutcome poll_holdings(Runner& runner_instance) {
     auto result = session_->holdings();
@@ -562,14 +586,12 @@ private:
     return runner::PollOutcome::UPDATED;
   }
 
-  /**
-   * Refreshes what may be spent, per configured currency, keeping everything else.
-   *
-   * One request per currency, on the holdings cadence. A currency whose answer fails leaves the
-   * previous reading in place and reports the failure, rather than dropping a figure the guard is
-   * about to size against -- the loop's own staleness gate is what decides when an old reading
-   * stops being good enough, and it can only do that if the reading is still there.
-   */
+  // Refreshes what may be spent, per configured currency, keeping everything else.
+  //
+  // One request per currency, on the holdings cadence. A currency whose answer fails leaves the
+  // previous reading in place and reports the failure, rather than dropping a figure the guard is
+  // about to size against -- the loop's own staleness gate is what decides when an old reading
+  // stops being good enough, and it can only do that if the reading is still there.
   template <typename Runner>
   runner::PollOutcome poll_buying_power(Runner& runner_instance) {
     if constexpr (!Caps::has_buying_power) {
@@ -645,25 +667,23 @@ private:
     }
   }
 
-  /**
-   * Refreshes today's permitted price band for each instrument, and records it on the runner.
-   *
-   * The second poll whose result is not an event, and the second that **installs and feeds nothing**
-   * -- `runner::PollKind::PRICE_LIMITS` states that obligation and why it is stated for a poll that
-   * cannot break it. The band lands in `Runner::set_price_limits`, which dates it, and
-   * reconciliation reads it when a plan is built.
-   *
-   * Swept per instrument, with the partial-failure rules `poll_buying_power` argues in full and for
-   * the same reasons: **a real failure outranks a rate-limit refusal** wherever in the sweep each
-   * landed, the reason is kept beside its own outcome so `last_error()` describes the failure it
-   * reports, and **a partial answer is a failed poll** even though the instruments that answered are
-   * still installed.
-   *
-   * **A failure leaves the previous band in place**, as the calendar and the budget both do. Erasing
-   * it would turn a timed-out request into an unclamped order, which is the opposite of the
-   * direction a failure should push; the runner's age policy is what decides when the band that is
-   * still there has stopped being usable, and it can only decide that if it is still there.
-   */
+  // Refreshes today's permitted price band for each instrument, and records it on the runner.
+  //
+  // The second poll whose result is not an event, and the second that **installs and feeds nothing**
+  // -- `runner::PollKind::PRICE_LIMITS` states that obligation and why it is stated for a poll that
+  // cannot break it. The band lands in `Runner::set_price_limits`, which dates it, and
+  // reconciliation reads it when a plan is built.
+  //
+  // Swept per instrument, with the partial-failure rules `poll_buying_power` argues in full and for
+  // the same reasons: **a real failure outranks a rate-limit refusal** wherever in the sweep each
+  // landed, the reason is kept beside its own outcome so `last_error()` describes the failure it
+  // reports, and **a partial answer is a failed poll** even though the instruments that answered are
+  // still installed.
+  //
+  // **A failure leaves the previous band in place**, as the calendar and the budget both do. Erasing
+  // it would turn a timed-out request into an unclamped order, which is the opposite of the
+  // direction a failure should push; the runner's age policy is what decides when the band that is
+  // still there has stopped being usable, and it can only decide that if it is still there.
   template <typename Runner>
   runner::PollOutcome poll_price_limits(Runner& runner_instance) {
     if constexpr (!MarketData::Caps::has_price_limits) {
@@ -710,24 +730,22 @@ private:
     }
   }
 
-  /**
-   * Refreshes which dates the market trades, and puts the answer where the loop and a strategy read it.
-   *
-   * The only poll whose result is not an event. It lands in `Context::set_calendar`, from which
-   * `runner::PollingLoop` derives the market phase and a strategy answers "does tomorrow trade" --
-   * one copy, one owner, and no way for the loop and the strategy to be looking at different
-   * calendars.
-   *
-   * `from` is left absent so each broker supplies its own "today", which is today *there*: KIS dates
-   * every request in Korean local time and its traits layer fills that in. Asking with a date derived
-   * from this process's clock would consult the wrong day for the hours either side of local midnight.
-   *
-   * **A failure leaves the previous calendar in place**, exactly as `poll_buying_power` leaves the
-   * previous budget. Erasing it would take a run that knew today was a trading day and make it
-   * `UNKNOWN` because a reference-data request timed out, which refuses every order; the loop's own
-   * reasoning about an uncovered date is what decides when an old answer has stopped being usable,
-   * and it can only do that if the answer is still there.
-   */
+  // Refreshes which dates the market trades, and puts the answer where the loop and a strategy read it.
+  //
+  // The only poll whose result is not an event. It lands in `Context::set_calendar`, from which
+  // `runner::PollingLoop` derives the market phase and a strategy answers "does tomorrow trade" --
+  // one copy, one owner, and no way for the loop and the strategy to be looking at different
+  // calendars.
+  //
+  // `from` is left absent so each broker supplies its own "today", which is today *there*: KIS dates
+  // every request in Korean local time and its traits layer fills that in. Asking with a date derived
+  // from this process's clock would consult the wrong day for the hours either side of local midnight.
+  //
+  // **A failure leaves the previous calendar in place**, exactly as `poll_buying_power` leaves the
+  // previous budget. Erasing it would take a run that knew today was a trading day and make it
+  // `UNKNOWN` because a reference-data request timed out, which refuses every order; the loop's own
+  // reasoning about an uncovered date is what decides when an old answer has stopped being usable,
+  // and it can only do that if the answer is still there.
   template <typename Runner>
   runner::PollOutcome poll_calendar(Runner& runner_instance) {
     if constexpr (!MarketData::Caps::has_calendar) {
@@ -748,26 +766,24 @@ private:
     }
   }
 
-  /**
-   * Accumulates what the broker stated it charged, from one working-order listing.
-   *
-   * **One invariant holds the arithmetic together: what `charged_seen_` holds for a figure is
-   * exactly what has been contributed to the totals for it, and at which filled quantity.** Every
-   * rule below exists to keep that true, and each was a place review found it broken.
-   *
-   * - **A figure is cumulative per order**, so a total moves by the *delta* against what is held
-   *   rather than by the whole figure again.
-   * - **A reading that states nothing withdraws nothing**, and does not move the quantity the held
-   *   figure belongs to. Silence that advanced the quantity made the next real fee look like a
-   *   disagreement about the previous one, and it was dropped.
-   * - **A figure for a quantity this figure has not been accepted at is new information**, whether
-   *   the order was silent in between or this is its first figure at all.
-   * - **Two present figures at one quantity are a conflict**, and the held one stands: nothing in a
-   *   snapshot says which the broker sent later.
-   * - **An order does not change the currency of its own charge**, so a reading that does is a
-   *   conflict rather than a replacement that would strand what was accumulated in the first.
-   * - **Absence is not zero.** An order stating nothing contributes to no currency's total.
-   */
+  // Accumulates what the broker stated it charged, from one working-order listing.
+  //
+  // **One invariant holds the arithmetic together: what `charged_seen_` holds for a figure is
+  // exactly what has been contributed to the totals for it, and at which filled quantity.** Every
+  // rule below exists to keep that true, and each was a place review found it broken.
+  //
+  // - **A figure is cumulative per order**, so a total moves by the *delta* against what is held
+  //   rather than by the whole figure again.
+  // - **A reading that states nothing withdraws nothing**, and does not move the quantity the held
+  //   figure belongs to. Silence that advanced the quantity made the next real fee look like a
+  //   disagreement about the previous one, and it was dropped.
+  // - **A figure for a quantity this figure has not been accepted at is new information**, whether
+  //   the order was silent in between or this is its first figure at all.
+  // - **Two present figures at one quantity are a conflict**, and the held one stands: nothing in a
+  //   snapshot says which the broker sent later.
+  // - **An order does not change the currency of its own charge**, so a reading that does is a
+  //   conflict rather than a replacement that would strand what was accumulated in the first.
+  // - **Absence is not zero.** An order stating nothing contributes to no currency's total.
   void observe_charged(const std::vector<OrderSnapshot>& rows) {
     std::vector<std::string> present;
     present.reserve(rows.size());
@@ -821,13 +837,11 @@ private:
     charged_listing_ = std::move(present);
   }
 
-  /**
-   * Moves one running total by a new reading, keeping `held` in step with what the total was given.
-   *
-   * `quantity` is how much of the order had filled when the broker stated `now`. A figure is taken
-   * when that exceeds the quantity this figure was last accepted at; at or below it, two present
-   * amounts that differ are a conflict and the held one stands.
-   */
+  // Moves one running total by a new reading, keeping `held` in step with what the total was given.
+  //
+  // `quantity` is how much of the order had filled when the broker stated `now`. A figure is taken
+  // when that exceeds the quantity this figure was last accepted at; at or below it, two present
+  // amounts that differ are a conflict and the held one stands.
   void take_figure(
     std::vector<runner::ChargedCosts::StatedTotal>& totals,
     ObservedFigure& held,
@@ -874,7 +888,7 @@ private:
     }
   }
 
-  /** Refreshes working orders, keeping positions. Compiles to nothing without the capability. */
+  // Refreshes working orders, keeping positions. Compiles to nothing without the capability.
   template <typename Runner>
   runner::PollOutcome poll_working_orders(Runner& runner_instance, bool publish = true) {
     if constexpr (Caps::has_working_orders) {
@@ -970,17 +984,15 @@ private:
     }
   }
 
-  /**
-   * Resolves what `rows` settle, leaving withheld whatever they do not.
-   *
-   * Does nothing at all without a journal, which is what keeps the pre-existing behaviour exactly
-   * as it was: a source with no journal reads the list, lifts the gate, and matches nothing.
-   *
-   * `now` comes from the runner's own context rather than from the page's `received_at_`. The two
-   * are different clocks -- the context's is local, like the journal's stamps, and the page's is the
-   * broker's -- and the matcher already widens for that difference in one place. Measuring the
-   * window against the broker's clock as well would apply the allowance twice.
-   */
+  // Resolves what `rows` settle, leaving withheld whatever they do not.
+  //
+  // Does nothing at all without a journal, which is what keeps the pre-existing behaviour exactly
+  // as it was: a source with no journal reads the list, lifts the gate, and matches nothing.
+  //
+  // `now` comes from the runner's own context rather than from the page's `received_at_`. The two
+  // are different clocks -- the context's is local, like the journal's stamps, and the page's is the
+  // broker's -- and the matcher already widens for that difference in one place. Measuring the
+  // window against the broker's clock as well would apply the allowance twice.
   template <typename Runner>
   void reconcile(Runner& runner_instance, const std::vector<OrderSnapshot>& rows) {
     if (journal_ == nullptr) {
@@ -1067,17 +1079,15 @@ private:
     }
   }
 
-  /**
-   * Fills `into` with the order history covering everything `open` could have reached the broker in.
-   *
-   * Returns whether the whole range was read. A partial read is a failure, not a smaller success,
-   * because every row this misses is one the matcher will count as absent.
-   *
-   * Both broker differences are handled here rather than pushed onto the caller: a calendar range
-   * where the broker requires one, and cursor paging where the broker offers one. The page cap is a
-   * guard against a cursor that never terminates, and exhausting it is reported as a failure for the
-   * same reason -- a truncated listing is a listing with holes in it.
-   */
+  // Fills `into` with the order history covering everything `open` could have reached the broker in.
+  //
+  // Returns whether the whole range was read. A partial read is a failure, not a smaller success,
+  // because every row this misses is one the matcher will count as absent.
+  //
+  // Both broker differences are handled here rather than pushed onto the caller: a calendar range
+  // where the broker requires one, and cursor paging where the broker offers one. The page cap is a
+  // guard against a cursor that never terminates, and exhausting it is reported as a failure for the
+  // same reason -- a truncated listing is a listing with holes in it.
   bool read_history(const std::vector<runner::OpenInstruction>& open,
     std::vector<OrderSnapshot>& into) {
     if constexpr (Caps::history_requires_range) {
@@ -1102,10 +1112,8 @@ private:
     }
   }
 
-  /**
-   * Reads the history one stated date at a time, for every UTC day from the day before `from` to the
-   * day after `to`: a broker's order date is its own market's, and that span contains it.
-   */
+  // Reads the history one stated date at a time, for every UTC day from the day before `from` to the
+  // day after `to`: a broker's order date is its own market's, and that span contains it.
   bool read_history_days(
     std::chrono::system_clock::time_point from,
     std::chrono::system_clock::time_point to,
@@ -1150,18 +1158,16 @@ private:
     return true;
   }
 
-  /**
-   * Fills `into` with the history a deferred target's stops can appear in: from the day before it was
-   * deferred to today.
-   *
-   * **Two query shapes, because the brokers that hold stops disagree.** KIS takes a range
-   * (`history_requires_range`), so one query covers it. Kiwoom's `kt00007` takes **one** date, which it
-   * requires, and refuses a range -- so each day is asked for on its own, from the day before the
-   * deferral (or the send) to the day after now, both in UTC so the market-local day is always inside:
-   * three or four requests within a week, six across a weekend on daily bars, repeated on each listing
-   * poll while an entry waits. A broker taking neither shape is asked each day as well, which states a
-   * date it may ignore rather than omitting one it may need.
-   */
+  // Fills `into` with the history a deferred target's stops can appear in: from the day before it was
+  // deferred to today.
+  //
+  // **Two query shapes, because the brokers that hold stops disagree.** KIS takes a range
+  // (`history_requires_range`), so one query covers it. Kiwoom's `kt00007` takes **one** date, which it
+  // requires, and refuses a range -- so each day is asked for on its own, from the day before the
+  // deferral (or the send) to the day after now, both in UTC so the market-local day is always inside:
+  // three or four requests within a week, six across a weekend on daily bars, repeated on each listing
+  // poll while an entry waits. A broker taking neither shape is asked each day as well, which states a
+  // date it may ignore rather than omitting one it may need.
   bool read_evidence(
     std::chrono::system_clock::time_point since,
     std::chrono::system_clock::time_point now,
@@ -1180,10 +1186,8 @@ private:
     }
   }
 
-  /**
-   * Fills `into` with the order history over `range` where the broker takes one, or wherever `dated`
-   * asks for the dates to be stated regardless; see `read_history`.
-   */
+  // Fills `into` with the order history over `range` where the broker takes one, or wherever `dated`
+  // asks for the dates to be stated regardless; see `read_history`.
   bool read_history_in(
     const std::pair<Date, Date>& range,
     std::vector<OrderSnapshot>& into,
@@ -1230,18 +1234,18 @@ private:
   MarketData* market_data_;
   std::vector<InstrumentId> universe_;
   std::vector<Currency> currencies_;
-  /** What the broker has stated it charged, across every run made against this source. */
+  // What the broker has stated it charged, across every run made against this source.
   runner::ChargedCosts charged_;
-  /** The last accepted reading per order id, so a cumulative figure is not added twice. */
+  // The last accepted reading per order id, so a cumulative figure is not added twice.
   std::map<std::string, ObservedCharge> charged_seen_;
-  /** The order ids in the previous working-order listing, for the disappearance diagnostic. */
+  // The order ids in the previous working-order listing, for the disappearance diagnostic.
   std::vector<std::string> charged_listing_;
   Country calendar_country_{Country::KR};
   Journal* journal_{nullptr};
   int maximum_history_pages_{20};
   runner::MatchWindow window_;
   runner::ReconcileReport reconcile_;
-  /** Turns successive working-order listings into `on_order_update` events. */
+  // Turns successive working-order listings into `on_order_update` events.
   runner::OrderUpdateWatch<BrokerTag> updates_;
   BarInterval interval_{BarInterval::ONE_DAY};
   int count_{100};

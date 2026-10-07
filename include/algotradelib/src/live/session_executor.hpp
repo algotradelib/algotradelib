@@ -13,36 +13,26 @@ namespace algotradelib {
 namespace live {
 
 /**
- * Sends a runner's instructions through a bound broker session.
+ * @brief The executor that sends a runner's orders and cancellations through a broker session.
  *
- * The only component in the whole strategy stack that performs I/O, and the entire reason the
- * pipeline was parameterized on an executor: every decision above this has already been tested
- * without a broker, and what remains here is a translation plus one error classification.
+ * It copies a `strategy::PlannedOrder` into an `OrderRequest` (prices and quantities are already on
+ * the grid) and classifies a failure with `runner::outcome_of`. Usually made by `bind` or
+ * `bind_journaled`.
  *
- * Two translations happen, and both are places where a mistake would reach an exchange:
- *
- * - **A `PlannedOrder` becomes an `OrderRequest`.** Reconciliation has already put the price on the
- *   tick grid and the quantity on the lot, so this adds nothing numeric; it moves fields.
- * - **A failure becomes a `SendOutcome`** through `runner::outcome_of`, which decides whether the
- *   order might exist. That function carries the reasoning; this one just asks it.
+ * @tparam Session The broker session type (it must not be a market-data-only session).
  */
 template <typename Session>
 class SessionExecutor {
 public:
 
   /**
-   * This executor puts orders in front of a real broker, which `runner::runner_detail::sends_to_a_broker` reads.
-   *
-   * It makes a runner built on it require an account it has actually read before it places, however
-   * that runner was assembled -- by `live::bind`, by `bind_journaled`, or by hand as
-   * `doxygen/vignettes/binding-a-broker.md` shows. An empty `Portfolio` is the permissive answer to
-   * every ceiling, so a run whose holdings read failed would otherwise size an entry as though the
-   * account held nothing. A live run that genuinely reads no holdings says `allow_absent_portfolio()`.
+   * @brief `true`: a runner built on this executor requires holdings to have been read before it
+   *   places, however the runner was assembled (see `Runner::allow_absent_portfolio`).
    */
   static constexpr bool reaches_a_broker = true;
-  /** The bound broker's capability set, forwarded from the session. */
+  /** @brief The broker's capabilities, from the session. */
   using Caps = typename Session::Caps;
-  /** The bound broker's tag, forwarded from the session. */
+  /** @brief The broker tag, from the session. */
   using BrokerTag = typename Session::BrokerTag;
 
   static_assert(
@@ -53,85 +43,67 @@ public:
   );
 
   /**
-   * Binds a session.
-   *
-   * Held by pointer rather than by value: a session owns a client and an executor, and a runner
-   * does not own the connection it borrows.
+   * @brief Constructs an executor for a session.
+   * @param session The session; borrowed, and must outlive the executor.
+   * @param default_route The venue for an order that names none; see `default_route()`.
    */
   explicit SessionExecutor(Session& session, Venue default_route = Venue::UNSPECIFIED)
   : session_(&session), default_route_(default_route) {}
 
   /**
-   * Returns the venue an order that names none is sent to.
+   * @brief Returns the venue an order that names none is sent to.
    *
-   * **The one routing input a strategy runner has.** Nothing on the strategy path names a venue --
-   * routing is a fact about the account and the broker, not about the strategy -- so every order a
-   * runner plans asks for `UNSPECIFIED`, and this is what it is sent with instead. An order that
-   * does name a venue keeps it.
+   * A strategy's orders name no venue, so this is the route of every order a runner plans; an order
+   * that names a venue keeps it. The runner writes the route into the order before sending, so the
+   * journal and reports name it.
    *
-   * `UNSPECIFIED`, the default, sends none and takes the broker's own documented default: KRX at KIS,
-   * no choice at Toss, and **a refusal at Kiwoom**, which documents no default and so requires one to
-   * be stated here (`Venue::KRX`, `Venue::NXT`, or `Venue::COMBINED` for Kiwoom's SOR). At KIS,
-   * `Venue::COMBINED` is how a runner opts into SOR, which a KIS demo account refuses. A route the
-   * broker cannot take is refused by its adapter before any request, as for any order.
+   * `UNSPECIFIED` (the default) takes the broker's own default: KRX at KIS, none needed at Toss, and
+   * **a refusal at Kiwoom**, which has no default (give `Venue::KRX`, `Venue::NXT`, or
+   * `Venue::COMBINED` for its SOR). At KIS, `Venue::COMBINED` selects SOR, which a demo account
+   * refuses. A route the broker cannot take is refused before any request.
    *
-   * Fixed for the executor's life, so "where did this executor send an unrouted order" has one
-   * answer. The runner writes the route into the order before sending it
-   * (`runner::Runner` asks `requested_route`), so the journal line, the row it reserves and the
-   * report all name the route the broker was asked for rather than the blank the strategy left.
+   * @warning Prefer `Venue::KRX` or `Venue::NXT` to `Venue::COMBINED` until SOR orders have been seen
+   *   listed on your account. Journal recovery matches a listed order to the recorded route; if the
+   *   broker lists a SOR order under the venue where it rests, recovery can conclude the order was
+   *   never placed, and a restarted runner could send it again. Neither broker's SOR listing has been
+   *   observed.
    *
-   * **Prefer `Venue::KRX` or `Venue::NXT` over `Venue::COMBINED` until SOR has been observed.**
-   * Recovery needs the broker's order listing to report a SOR order as SOR. If a listing reports it
-   * as the venue it rested at instead, recovery reads the listed row as contradicting the recorded
-   * route, so the row cannot be this order: once the match window closes the verdict is
-   * `NOT_PLACED`, the hold is released, and a runner restarted after a crash would send the order
-   * again beside the one resting. At Kiwoom the working-order listing documents a separate `sor_yn`
-   * flag, which the adapter reads (`kiwoom::listed_venue`), and the history names `SOR`; neither has
-   * been seen on an account. At KIS nothing documents how a SOR order is listed back. A single venue
-   * has less doubt: at Kiwoom it relies only on a plain order's `sor_yn` reading `N`, as the
-   * specification's example row does.
+   * @return The default route.
    */
   Venue default_route() const noexcept { return default_route_; }
 
-  /** Returns `asked`, or `default_route()` where `asked` is `UNSPECIFIED`: the venue this executor sends. */
+  /**
+   * @brief Returns the venue this executor requests for an order.
+   * @param asked The order's venue.
+   * @return `asked`, or `default_route()` if `asked` is `UNSPECIFIED`.
+   */
   Venue requested_route(Venue asked) const noexcept {
     return asked == Venue::UNSPECIFIED ? default_route_ : asked;
   }
 
   /**
-   * Returns the venue an order carrying `asked` will actually reach.
+   * @brief Returns the route an order is sent with, for the journal to record before sending (for
+   *   SOR, `COMBINED`, not the venue it executes on).
    *
-   * The binding knows this and nothing above it does: KIS documents an omitted
-   * exchange field as proceeding at KRX, and Toss routes nowhere at all. It is
-   * exposed here so a journaling wrapper can record the venue the order will
-   * reach **before** the durable line is written, rather than the `UNSPECIFIED`
-   * a strategy left behind -- which recovery reads as a positive claim that no
-   * venue was reached, and confirms a row from any venue against.
+   * `default_route()` is applied first; then the broker's traits say where an unspecified venue goes
+   * (KRX at KIS). A session whose traits do not say returns the requested route.
    *
-   * Resolving it here rather than in the request builder keeps the write
-   * ordering `ai/order-journal` chose: the line is still appended before any
-   * network I/O, and this is a pure function of the order.
-   *
-   * **Always answers, with `default_route()` applied first.** A broker's traits
-   * that say how it routes an omitted venue are asked about the requested
-   * route; traits that do not -- `effective_route` is optional, and a
-   * hand-written session need have no traits at all -- get the requested route
-   * itself. Without that fallback a third party's adapter bound with a default
-   * would journal `UNSPECIFIED` while sending the default. With no default the
-   * fallback is `asked`, which is what the journal recorded before.
+   * @param asked The order's venue.
+   * @return The venue.
    */
   Venue effective_route(Venue asked) const noexcept {
     return traits_route<Session>(requested_route(asked), 0);
   }
 
   /**
-   * Places one order, and reports whether it might now exist.
+   * @brief Places one order.
    *
-   * A planned order carrying an idempotency key for a broker that accepts none is **refused rather
-   * than sent with the key dropped**. Dropping it would make a retry look safe on a broker that
-   * offers no such guarantee, which is the specific mistake `OrderRequest::client_order_id_`
-   * documents. The strategy asked for a guarantee the binding cannot provide, and saying so is the
-   * only honest answer.
+   * An order with an idempotency key (`client_order_id_`) at a broker that accepts none is refused
+   * (`REFUSED_LOCALLY`), not sent without the key.
+   *
+   * @param order The order.
+   * @return The outcome; on failure `last_error()` says why, and on success `last_ref()` is the
+   *   broker's reference.
    */
   runner::SendOutcome place(const strategy::PlannedOrder& order) {
     if (order.client_order_id_) {
@@ -178,13 +150,12 @@ public:
   }
 
   /**
-   * Cancels one working order in full, and reports whether the withdrawal might have happened.
+   * @brief Cancels the whole remaining quantity of a working order.
    *
-   * `cancel_all` carries the order's own shape and amendable quantity, so a broker that requires
-   * either receives it without this code restating what the order already said.
+   * An order with no broker reference is refused (`REFUSED_LOCALLY`) without a request.
    *
-   * An order with no broker reference is refused here rather than sent, because a withdrawal
-   * addressed to an empty string can only fail.
+   * @param working The order, as listed (or reserved).
+   * @return The outcome (accepted means the request was accepted, not that the order is gone).
    */
   runner::SendOutcome cancel(const WorkingOrder<BrokerTag>& working) {
     if (working.ref_.primary_.empty()) {
@@ -216,16 +187,14 @@ public:
   }
 
   /**
-   * Returns what the broker says may be sold of `instrument`, when it takes asking.
+   * @brief Asks the broker how much of an instrument may be sold, where the broker answers that by a
+   *   separate inquiry (`SellableSource::INQUIRY`).
    *
-   * **Only exists where the holdings snapshot does not already carry the figure.** At a broker
-   * whose `sellable_source` is `HOLDINGS` the answer arrives with every position the runner already
-   * polls, so this compiles to nothing there and the runner never calls it -- one `if constexpr`
-   * decides between free and one request per instrument sold.
+   * Elsewhere the figure comes with the holdings, and this returns `std::nullopt` without a request.
    *
-   * Nothing on failure rather than an error, because the caller's next move is the same either way:
-   * a sellable quantity nobody could establish is unknown, and unknown refuses. The reason is in
-   * `last_error()` for the report.
+   * @param instrument The instrument.
+   * @return The quantity, or `std::nullopt` if not asked or the inquiry failed (`last_error()` says
+   *   why); the runner treats an unknown quantity as nothing sellable.
    */
   std::optional<Decimal64> sellable_quantity(const InstrumentId& instrument) {
     if constexpr (Caps::sellable_source == SellableSource::INQUIRY) {
@@ -242,15 +211,12 @@ public:
     }
   }
 
-  /** Whether asking this broker for a sellable quantity costs a request. */
+  /** @brief `true` if the sellable quantity is a separate inquiry (one request per instrument sold). */
   static constexpr bool inquires_sellable = Caps::sellable_source == SellableSource::INQUIRY;
 
   /**
-   * Returns what this broker's inquiry answer is evidence of.
-   *
-   * The runner writes this beside the figure rather than letting it inherit the holdings read's
-   * basis, because an inquiry is a separate reading: the holdings poll established nothing about a
-   * number it never reported.
+   * @brief Returns what the broker's sellable-quantity inquiry establishes, recorded with each figure.
+   * @return The basis.
    */
   static constexpr SellableBasis sellable_inquiry_basis() {
     // Read through the same gate as `BrokerCaps`, because `Caps` is a caller's type parameter and need
@@ -258,21 +224,27 @@ public:
     return caps_detail::inquiry_basis<Caps>();
   }
 
-  /** Returns the reference the broker issued for the last accepted order. */
+  /**
+   * @brief Returns the reference the broker issued for the last accepted order.
+   * @return The reference, or empty if no order was accepted yet.
+   */
   const std::optional<OrderRef<BrokerTag>>& last_ref() const noexcept { return last_ref_; }
 
-  /** Returns why the last instruction failed, for the runner to log. */
+  /**
+   * @brief Returns why the last instruction failed.
+   * @return The error, or empty if the last instruction succeeded.
+   */
   const std::optional<BrokerError>& last_error() const noexcept { return last_error_; }
 
 private:
-  /** Asks the session's traits where `requested` goes, where they say. */
+  // Asks the session's traits where `requested` goes, where they say.
   template <typename S>
   static constexpr auto traits_route(Venue requested, int) noexcept
     -> decltype(S::Traits::effective_route(requested)) {
     return S::Traits::effective_route(requested);
   }
 
-  /** The fallback, for traits that do not say: the requested route is the most that is known. */
+  // The fallback, for traits that do not say: the requested route is the most that is known.
   template <typename S>
   static constexpr Venue traits_route(Venue requested, long) noexcept { return requested; }
 
