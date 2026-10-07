@@ -66,7 +66,10 @@ struct BrokerCaps {
   /** @brief Whether the broker accepts an idempotency key (`OrderRequest::client_order_id_`). */
   static constexpr bool has_client_order_id = Traits::has_client_order_id;
 
-  /** @brief Whether the broker lists the orders still open to amendment. */
+  /**
+   * @brief Whether the broker lists the orders still open to amendment. A listing shows only what the
+   *   broker's API lists (at Toss, not orders of types placed outside it).
+   */
   static constexpr bool has_working_orders = Traits::has_working_orders;
 
   /** @brief Whether the broker reports the quantity still amendable on an open order. */
@@ -187,7 +190,8 @@ struct BrokerCaps {
   static constexpr bool has_calendar_range = Traits::has_calendar_range;
 
   /**
-   * @brief Whether the broker publishes intraday session hours (only Toss), through its own client.
+   * @brief Whether the broker publishes intraday session hours (only Toss); the library does not
+   *   expose them yet.
    */
   static constexpr bool has_calendar_sessions = Traits::has_calendar_sessions;
 

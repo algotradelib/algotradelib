@@ -41,70 +41,75 @@ namespace live = algotradelib::live;
 namespace runner = algotradelib::runner;
 namespace strategy = algotradelib::strategy;
 
-/** What a run is told, gathered so `main` states it once and a test can state it differently. */
+/** @brief What a run is told, gathered so `main` states it once and a test can state it differently. */
 struct Settings {
-  /** The instruments the source polls. */
+  /** @brief The instruments the source polls. */
   std::vector<atl::InstrumentId> universe_;
-  /** The limits the guard enforces. */
+  /** @brief The limits the guard enforces. */
   strategy::RiskLimits limits_;
   /**
-   * How often each kind is polled. `trade` needs `working_orders_` set, shorter than
+   * @brief How often each kind is polled. `trade` needs `working_orders_` set, shorter than
    * `maximum_portfolio_age_`: a runner that sends orders keeps them until the listing or holdings
    * account for them, and the loop holds (with a note) while no listing will come.
    */
   runner::PollSchedule schedule_;
-  /** Which bars the source asks for, and how many: the history read at start is this many. */
+  /** @brief Which bars the source asks for, and how many: the history read at start is this many. */
   atl::BarInterval bar_interval_{atl::BarInterval::ONE_DAY};
-  /** How many bars each bar poll asks for. */
+  /** @brief How many bars each bar poll asks for. */
   int bar_count_{100};
-  /** How old a holdings snapshot -- and the order listing -- may be before the loop stops sizing against it. */
+  /** @brief How old a holdings snapshot -- and the order listing -- may be before the loop stops sizing against it. */
   std::chrono::nanoseconds maximum_portfolio_age_{std::chrono::minutes(2)};
-  /** How old a price band may be before the loop stops clamping to it. */
+  /** @brief How old a price band may be before the loop stops clamping to it. */
   std::chrono::nanoseconds maximum_price_limits_age_{std::chrono::minutes(20)};
-  /** Where the order journal lives. */
+  /** @brief Where the order journal lives. */
   std::string journal_path_;
-  /** Which account the journal belongs to; a journal naming another refuses to open. */
+  /** @brief Which account the journal belongs to; a journal naming another refuses to open. */
   std::string journal_scope_;
-  /** The file an operator writes `quiesce`, `withdraw` or `flatten` into to stop the run. */
+  /** @brief The file an operator writes `quiesce`, `withdraw` or `flatten` into to stop the run. */
   std::string control_file_;
-  /** Iterations before returning; 0 runs until a stop. */
+  /** @brief Iterations before returning; 0 runs until a stop. */
   std::size_t max_iterations_{0};
   /**
-   * The venue an order is sent to, since a strategy's orders name none; `UNSPECIFIED` takes the
+   * @brief The venue an order is sent to, since a strategy's orders name none; `UNSPECIFIED` takes the
    * broker's own default. Kiwoom has none, so a Kiwoom run must state one. See
    * `live::SessionExecutor::default_route`.
    */
   atl::Venue default_route_{atl::Venue::UNSPECIFIED};
 };
 
-/** What the program exits with, so a supervisor can tell its endings apart. */
+/** @brief What the program exits with, so a supervisor can tell its endings apart. */
 enum class Exit : int {
-  /** The run ended, and any closing pass it made got every instruction out. */
+  /** @brief The run ended, and any closing pass it made got every instruction out. */
   CLEAN = 0,
-  /** A stop that closes ran and `closing_complete()` is false: read the broker's order list. */
+  /** @brief A stop that closes ran and `closing_complete()` is false: read the broker's order list. */
   CLOSING_INCOMPLETE = 1,
-  /** The journal would not open, so nothing was bound. */
+  /** @brief The journal would not open, so nothing was bound. */
   JOURNAL_REFUSED = 2,
-  /** Recovery halted the runner; nothing was started. */
+  /** @brief Recovery halted the runner; nothing was started. */
   RECOVERY_HALTED = 3,
-  /** Reference data could not be read, so no order could be priced; nothing was started. */
+  /** @brief Reference data could not be read, so no order could be priced; nothing was started. */
   REFERENCE_UNREADABLE = 4,
-  /** The loop gave up after repeated poll failures: it was not trading when it returned. */
+  /** @brief The loop gave up after repeated poll failures: it was not trading when it returned. */
   LOOP_ABANDONED = 5,
   /**
-   * Local machinery failed during the run -- usually a journal write -- and the runner halted itself.
+   * @brief Local machinery failed during the run -- usually a journal write -- and the runner halted itself.
    * Whatever it was sending when that happened is unknown until the broker's order list is read.
    */
   LOCAL_FAILURE = 6,
-  /** The program could not settle which account to trade (used by `example-live-program`). */
+  /** @brief The program could not settle which account to trade (used by `example-live-program`). */
   ACCOUNT_UNRESOLVED = 7,
 };
 
 /**
- * Reads each instrument's reference data onto the runner.
- *
- * The loop polls bars, holdings, orders and bands, but not reference data: that is read once, here,
- * because without a lot size and a price grid no order can be built at all.
+ * @brief Reads each instrument's reference data (lot size, price grid) onto the runner, once; the loop
+ *   does not poll it, and no order can be built without it.
+ * @tparam Session The session type.
+ * @tparam Runner The runner type.
+ * @param session The session to read from.
+ * @param bound The runner.
+ * @param settings The settings (its universe).
+ * @param out Where to print a failure.
+ * @return `true` if every instrument was read; otherwise prints why and returns `false`.
  */
 template <typename Session, typename Runner>
 bool load_reference_data(Session& session, Runner& bound, const Settings& settings, std::ostream& out) {
@@ -120,7 +125,11 @@ bool load_reference_data(Session& session, Runner& bound, const Settings& settin
   return true;
 }
 
-/** Prints what recovery found, in the words an operator acts on. */
+/**
+ * @brief Prints what recovery found, in the words an operator acts on.
+ * @param recovery The recovery report.
+ * @param out Where to print.
+ */
 inline void print_recovery(const runner::RecoveryReport& recovery, std::ostream& out) {
   if (recovery.clean()) {
     out << "recovery: clean -- the journal owes nothing\n";
@@ -147,7 +156,11 @@ inline void print_recovery(const runner::RecoveryReport& recovery, std::ostream&
   }
 }
 
-/** Prints how to stop the run, before it starts, so nobody reaches for `kill -9`. */
+/**
+ * @brief Prints how to stop the run, before it starts, so nobody reaches for `kill -9`.
+ * @param settings The settings (its control file).
+ * @param out Where to print.
+ */
 inline void print_how_to_stop(const Settings& settings, std::ostream& out) {
   out << "to stop: Ctrl-C or SIGTERM (quiesce), or\n"
       << "  echo quiesce  > " << settings.control_file_ << "   # stop placing, leave orders resting\n"
@@ -158,7 +171,11 @@ inline void print_how_to_stop(const Settings& settings, std::ostream& out) {
       << "a supervisor's grace period must exceed one loop iteration plus one request timeout\n";
 }
 
-/** Prints the loop's own figures and notes, which read the same in both modes. */
+/**
+ * @brief Prints the loop's own figures and notes, which read the same in both modes.
+ * @param report The loop report.
+ * @param out Where to print.
+ */
 inline void print_loop(const runner::LoopReport& report, std::ostream& out) {
   out << "\niterations      : " << report.iterations_ << '\n'
       << "order list read : " << (report.order_list_read_ ? "yes" : "no") << '\n'
@@ -205,7 +222,11 @@ inline void print_loop(const runner::LoopReport& report, std::ostream& out) {
   }
 }
 
-/** Prints the loop report and what `closing_complete()` does and does not mean. */
+/**
+ * @brief Prints the loop report and what `closing_complete()` does and does not mean.
+ * @param report The loop report.
+ * @param out Where to print.
+ */
 inline void print_report(const runner::LoopReport& report, std::ostream& out) {
   print_loop(report, out);
   out << "closing complete: " << (report.closing_complete() ? "yes" : "NO")
@@ -213,12 +234,21 @@ inline void print_report(const runner::LoopReport& report, std::ostream& out) {
       << "                  read the broker's order list and holdings to learn that\n";
 }
 
-/** Returns whether `report` ended with a stop that sends closing instructions. */
+/**
+ * @brief Tests whether a run ended with a stop that sends closing instructions.
+ * @param report The loop report.
+ * @return `true` for a `WITHDRAW` or `FLATTEN` stop.
+ */
 inline bool stop_closes(const runner::LoopReport& report) noexcept {
   return report.stopped_by_ && *report.stopped_by_ != runner::StopIntent::QUIESCE;
 }
 
-/** Configures the loop the same way for both modes: every age stated, the control file installed. */
+/**
+ * @brief Configures the loop the same way for both modes: every age stated, the control file installed.
+ * @tparam Loop The loop type.
+ * @param loop The loop.
+ * @param settings The settings.
+ */
 template <typename Loop>
 void configure(Loop& loop, const Settings& settings) {
   loop.set_maximum_portfolio_age(settings.maximum_portfolio_age_);
@@ -227,12 +257,25 @@ void configure(Loop& loop, const Settings& settings) {
 }
 
 /**
- * Trades `strategy` through `session`, reading market data and reference data from `market_data`.
+ * @brief Trades a strategy through a session, reading market data and reference data from another.
  *
- * **This places orders**, through `session` only: the runner is bound to it, and `market_data` is
- * only read. Use a session that cannot trade for `market_data` (a KIS session with an empty
- * `KisAccount`, a Toss session with account sequence 0), so that a swapped pair refuses rather than
- * trades.
+ * **This places orders**, through `session` only; `market_data` is only read. Use a session that
+ * cannot trade for `market_data` (a KIS session with an empty `KisAccount`, a Toss session with
+ * account sequence 0), so that a swapped pair refuses rather than trades.
+ *
+ * @tparam Strategy The strategy type.
+ * @tparam Session The trading session type.
+ * @tparam MarketData The market-data session type.
+ * @tparam Clock The clock type.
+ * @param session The session orders go through.
+ * @param market_data The session market data is read from.
+ * @param strategy_instance The strategy.
+ * @param settings The settings.
+ * @param stop The stop source the loop polls.
+ * @param out Where the program prints.
+ * @param clock The clock.
+ * @return `CLEAN`, `CLOSING_INCOMPLETE`, `JOURNAL_REFUSED`, `RECOVERY_HALTED`,
+ *   `REFERENCE_UNREADABLE`, `LOOP_ABANDONED` or `LOCAL_FAILURE`.
  */
 template <typename Strategy, typename Session, typename MarketData, typename Clock = runner::SteadyClock>
 Exit trade(
@@ -311,9 +354,21 @@ Exit trade(
 }
 
 /**
- * Trades `strategy` through `session`: journal, recover, loop, report.
+ * @brief Trades a strategy through a session: journal, recover, loop, report.
  *
  * **This places orders.** `observe` is the same loop with nowhere to send.
+ *
+ * @tparam Strategy The strategy type.
+ * @tparam Session The session type.
+ * @tparam Clock The clock type.
+ * @param session The session (orders and market data).
+ * @param strategy_instance The strategy.
+ * @param settings The settings.
+ * @param stop The stop source the loop polls.
+ * @param out Where the program prints.
+ * @param clock The clock.
+ * @return `CLEAN`, `CLOSING_INCOMPLETE`, `JOURNAL_REFUSED`, `RECOVERY_HALTED`,
+ *   `REFERENCE_UNREADABLE`, `LOOP_ABANDONED` or `LOCAL_FAILURE`.
  */
 template <typename Strategy, typename Session, typename Clock = runner::SteadyClock>
 Exit trade(
@@ -328,12 +383,25 @@ Exit trade(
 }
 
 /**
- * Runs `strategy` against `session`'s account and `market_data`'s market data, with nothing to send
- * through.
+ * @brief Runs a strategy against a session's account and another's market data, with nothing to send
+ *   through.
  *
- * `live::bind_observer` gives the runner the session's real capabilities and tag and no executor that
- * reaches it, so the pipeline, the guard and the gates all run, and no order can leave. No journal
- * is opened, because there is nothing to record.
+ * `live::bind_observer` gives the runner the session's real capabilities and no executor that reaches
+ * the broker, so the pipeline, the guard and the gates all run, and no order can leave. No journal is
+ * opened.
+ *
+ * @tparam Strategy The strategy type.
+ * @tparam Session The account session type.
+ * @tparam MarketData The market-data session type.
+ * @tparam Clock The clock type.
+ * @param session The account session.
+ * @param market_data The session market data is read from.
+ * @param strategy_instance The strategy.
+ * @param settings The settings.
+ * @param stop The stop source the loop polls.
+ * @param out Where the program prints.
+ * @param clock The clock.
+ * @return `CLEAN`, `REFERENCE_UNREADABLE` or `LOOP_ABANDONED`.
  */
 template <typename Strategy, typename Session, typename MarketData, typename Clock = runner::SteadyClock>
 Exit observe(
@@ -371,7 +439,19 @@ Exit observe(
   return report.abandoned_ ? Exit::LOOP_ABANDONED : Exit::CLEAN;
 }
 
-/** Observes `strategy` against `session`'s real data, reading market data from it too. */
+/**
+ * @brief Observes a strategy against a session's real data, reading market data from it too.
+ * @tparam Strategy The strategy type.
+ * @tparam Session The session type.
+ * @tparam Clock The clock type.
+ * @param session The session.
+ * @param strategy_instance The strategy.
+ * @param settings The settings.
+ * @param stop The stop source the loop polls.
+ * @param out Where the program prints.
+ * @param clock The clock.
+ * @return `CLEAN`, `REFERENCE_UNREADABLE` or `LOOP_ABANDONED`.
+ */
 template <typename Strategy, typename Session, typename Clock = runner::SteadyClock>
 Exit observe(
   Session& session,

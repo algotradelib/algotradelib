@@ -35,7 +35,7 @@ using Clock = std::chrono::system_clock;
 
 InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
 
-/** Reference data, without which nothing can be priced onto a tick grid. */
+/** @brief Reference data, without which nothing can be priced onto a tick grid. */
 Instrument samsung_reference() {
   Instrument reference;
   reference.id_ = samsung();
@@ -46,7 +46,7 @@ Instrument samsung_reference() {
   return reference;
 }
 
-/** A strategy that simply counts, so the output is about the loop rather than about signals. */
+/** @brief A strategy that simply counts, so the output is about the loop rather than about signals. */
 struct CountBars {
   std::size_t bars_{0};
 
@@ -60,7 +60,7 @@ struct CountBars {
 using LoopRunner = runner::DryRunner<CountBars>;
 
 /**
- * A source that invents a rising price.
+ * @brief A source that invents a rising price.
  *
  * This is the whole seam for a dry run. A source owes the loop two things:
  *
@@ -137,7 +137,7 @@ private:
   int reads_{0};
 };
 
-/** Prints a loop report the way an operator would want to read it. */
+/** @brief Prints a loop report the way an operator would want to read it. */
 void describe(const runner::LoopReport& report) {
   std::cout << "iterations      : " << report.iterations_ << '\n'
             << "bar polls       : " << report.attempted(runner::PollKind::BARS)
@@ -179,10 +179,10 @@ void describe(const runner::LoopReport& report) {
 }
 
 /**
- * When this example's clock starts: 200 days after the epoch, at 09:00 in Seoul.
+ * @brief When this example's clock starts: 200 days after the epoch, at 09:00 in Seoul.
  *
- * Named rather than repeated, because three things now have to agree about it -- the clock, the
- * calendar's covered date, and the session window the phase is derived against. They used to be one.
+ * Named rather than repeated, because three things have to agree about it: the clock, the
+ * calendar's covered date, and the session window the phase is derived against.
  */
 Clock::time_point start_time() {
   return Clock::time_point{} + std::chrono::hours(24 * 200);
@@ -190,17 +190,19 @@ Clock::time_point start_time() {
 
 } // namespace
 
-/** Runs the polling loop end to end with no broker, no credentials and no network. */
+/**
+ * @brief Runs the polling loop end to end with no broker, no credentials and no network.
+ * @return 0 on success.
+ */
 int main() {
   std::cout << "a live loop with no broker attached\n\n";
 
   LoopRunner live_runner;
   live_runner.context().set_instrument(samsung_reference());
 
-  // **The phase is the loop's, not this program's.** This used to read
-  // `set_phase(MarketPhase::OPEN)`, which froze a value nothing ever updated -- so the run traded as
-  // though the market were permanently open and `on_phase` never fired at all. The loop now derives
-  // the phase from its session window and the trading calendar, and it overwrites anything set here.
+  // **The phase is the loop's, not this program's.** The loop derives it from its session window and
+  // the trading calendar, and overwrites anything set here; a fixed `set_phase(MarketPhase::OPEN)`
+  // would trade as though the market never closed, and `on_phase` would never fire.
   //
   // A real program gets that calendar from `PollKind::CALENDAR`, which is on by default. This example
   // has no broker, so its source answers no calendar; the date is therefore uncovered, the phase is
@@ -221,28 +223,26 @@ int main() {
   // No broker here, so nothing could answer a calendar request; a real program leaves this at its
   // six-hour default.
   schedule.calendar_.reset();
-  // **The band, on a cadence rather than once.** Nothing in this library used to refresh one, so an
-  // operator who registered a band at startup was clamping every limit order to it for as long as
-  // the process ran. Ten minutes here is arbitrary; the real constraint is that it be shorter than
-  // the session, because the value changes with the previous close.
+  // **The band, on a cadence rather than once.** A band registered once at startup would clamp every
+  // limit order for as long as the process ran. Ten minutes here is arbitrary; the real constraint is
+  // that it be shorter than the session, because the value changes with the previous close.
   schedule.price_limits_ = std::chrono::minutes(10);
 
   runner::PollingLoop<LoopRunner, ScriptedSource, runner::ManualClock> loop(
     live_runner, source, schedule, runner::ManualClock{start_time()});
-  // **Two statements every placement-enabled run now owes, and this source cannot satisfy either.**
+  // **Two statements every placement-enabled run owes, and this source cannot satisfy either.**
   //
   // A run states how old a holdings snapshot may be before it stops sizing against it, and a run
   // that has never read one holds rather than treating an empty account as a current one -- an
-  // empty portfolio is the *permissive* answer to every ceiling and to every target subtraction.
-  // Neither was required before, and "not required" meant a run that never thought about holdings
-  // traded as though it held nothing.
+  // empty portfolio is the *permissive* answer to every ceiling and to every target subtraction, so a
+  // run that never thought about holdings would trade as though it held nothing.
   //
   // This example has no broker, so it reads no holdings ever. Saying so explicitly is what an
   // operator in the same position does; leaving them out would hold this loop for the whole run.
   loop.allow_unbounded_portfolio_age();
   loop.allow_absent_portfolio();
-  // **The third statement, and the same shape as the first.** A band of unbounded age used to be
-  // applied forever; now a run states how old one may be, or states that it accepts any age. Twenty
+  // **The third statement, and the same shape as the first.** A run states how old a band may be, or
+  // that it accepts any age; with neither, no band is applied. Twenty
   // minutes against a ten-minute cadence, so one failed poll is tolerated and a run of failures is
   // not -- which is what the policy is actually bounding, since a failed poll deliberately leaves
   // the last good band in place.

@@ -12,7 +12,7 @@ namespace atl = algotradelib;
 
 namespace {
 
-/** Parses one command-line order side. */
+/** @brief Parses one command-line order side. */
 atl::OrderSide parse_order_side(std::string_view side) {
   if (side == "BUY") {
     return atl::OrderSide::BUY;
@@ -23,7 +23,7 @@ atl::OrderSide parse_order_side(std::string_view side) {
   throw std::invalid_argument("side must be BUY or SELL");
 }
 
-/** Parses one command-line order type. */
+/** @brief Parses one command-line order type. */
 atl::OrderType parse_order_type(std::string_view type) {
   if (type == "LIMIT") {
     return atl::OrderType::LIMIT;
@@ -34,7 +34,7 @@ atl::OrderType parse_order_type(std::string_view type) {
   throw std::invalid_argument("type must be LIMIT or MARKET");
 }
 
-/** Prints the positional dry-run interface. */
+/** @brief Prints the positional dry-run interface. */
 void print_usage(const char* program) {
   std::cerr << "usage: " << program << " [symbol] [quantity] [BUY|SELL] "
     << "[LIMIT|MARKET] [limit-price]\n";
@@ -42,7 +42,7 @@ void print_usage(const char* program) {
 
 } // namespace
 
-/** Constructs and prints one KIS order request without network I/O. */
+/** @brief Constructs and prints one KIS order request without network I/O. */
 int main(int argc, char* argv[]) {
   try {
     if (argc > 6) {

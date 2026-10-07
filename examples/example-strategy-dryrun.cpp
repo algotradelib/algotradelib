@@ -43,7 +43,7 @@ using algotradelib::Venue;
 
 InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
 
-/** Reference data as a broker would report it: the KRX ladder and a lot of one share. */
+/** @brief Reference data as a broker would report it: the KRX ladder and a lot of one share. */
 Instrument samsung_reference() {
   Instrument reference;
   reference.id_ = samsung();
@@ -56,7 +56,7 @@ Instrument samsung_reference() {
 }
 
 /**
- * A month of daily closes that rise, stall, and fall.
+ * @brief A month of daily closes that rise, stall, and fall.
  *
  * Shaped so a trend strategy has something to enter and something to exit on, which is what makes
  * the output worth reading rather than a column of the same decision.
@@ -70,7 +70,7 @@ const std::vector<const char*>& closes() {
   return series;
 }
 
-/** Builds the bar for day `index`, stamped at its close. */
+/** @brief Builds the bar for day `index`, stamped at its close. */
 strategy::BarEvent bar(std::size_t index) {
   Bar value;
   value.timestamp_ = std::chrono::system_clock::time_point{} +
@@ -83,7 +83,7 @@ strategy::BarEvent bar(std::size_t index) {
   return strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, value);
 }
 
-/** Prints one decision line, or nothing when the strategy was quiet. */
+/** @brief Prints one decision line, or nothing when the strategy was quiet. */
 template <typename Report>
 void print(std::size_t day, const Report& report) {
   for (const auto& order : report.would_place_) {
@@ -104,7 +104,7 @@ void print(std::size_t day, const Report& report) {
 }
 
 /**
- * Counts refusals by reason rather than printing each one.
+ * @brief Counts refusals by reason rather than printing each one.
  *
  * A guard that refuses on one bar usually refuses on every bar, because the condition that tripped
  * it has not changed. Thirty identical lines say no more than one line and a count, and they bury
@@ -126,7 +126,7 @@ void tally(std::size_t day, const Report& report, RefusalTally& counts) {
 }
 
 /**
- * Runs one strategy over the fixture and prints what it decided.
+ * @brief Runs one strategy over the fixture and prints what it decided.
  *
  * The portfolio is advanced from the orders the runner would have sent, so the strategy sees the
  * consequences of its own decisions. Without that, a target-stating strategy would repeat the same

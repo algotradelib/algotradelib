@@ -26,7 +26,11 @@
 
 namespace kis_credentials {
 
-/** Returns `ATL_CREDENTIALS_DIR`, or nothing. For an example that parses no arguments of its own. */
+/**
+ * @brief Returns `ATL_CREDENTIALS_DIR`, for an example that parses no arguments of its own.
+ * @return The directory, or `std::nullopt` if the variable is unset.
+ * @throws std::runtime_error if it is set but empty.
+ */
 inline std::optional<std::filesystem::path> environment_directory() {
   const char* variable = std::getenv("ATL_CREDENTIALS_DIR");
   if (variable != nullptr && *variable == '\0') {
@@ -36,9 +40,14 @@ inline std::optional<std::filesystem::path> environment_directory() {
 }
 
 /**
- * Removes `--credentials DIR` from the command line and returns the directory it names, else
- * `ATL_CREDENTIALS_DIR`, else nothing. Throws when `--credentials` has no value, so a mistyped
- * command never falls back to another source.
+ * @brief Removes `--credentials DIR` from the command line and returns the directory, else
+ *   `ATL_CREDENTIALS_DIR`.
+ * @param argc The argument count; reduced by the arguments removed.
+ * @param argv The arguments; the rest are moved down.
+ * @return The directory, or `std::nullopt` if neither names one.
+ * @throws std::runtime_error if `--credentials` has no usable value (missing, empty, or another
+ *   flag), so a mistyped command never falls back to another source, or if no `--credentials` is
+ *   given and `ATL_CREDENTIALS_DIR` is set but empty.
  */
 inline std::optional<std::filesystem::path> take_directory(int& argc, char** argv) {
   std::optional<std::filesystem::path> directory;
@@ -59,13 +68,14 @@ inline std::optional<std::filesystem::path> take_directory(int& argc, char** arg
 }
 
 /**
- * Returns transport options that pace a KIS client at one request a second.
+ * @brief Returns transport options that pace a KIS client at one request a second.
  *
- * Measured on 2026-10-02 (`labs/FINDINGS.md` F26): a KIS demo account refuses reads closer than about
- * a second apart (`EGW00201`), and with real keys the 20-page holiday calendar is refused at 8 a
- * second and served at 1. The library paces nothing unless asked (`HttpClientOptions::rate_limit_`),
- * so these examples ask. A key with a larger allowance may raise it. With a burst of 1 the reserve
- * makes no difference: every traffic class may spend the one request.
+ * A KIS demo account refuses reads closer than about a second apart (`EGW00201`), and with real keys
+ * the holiday calendar was refused at eight a second. The library paces nothing unless asked
+ * (`HttpClientOptions::rate_limit_`), so these examples ask. A key with a larger allowance may raise
+ * it.
+ *
+ * @return The options.
  */
 inline algotradelib::network::HttpClientOptions paced_options() {
   algotradelib::network::HttpClientOptions options;
@@ -73,7 +83,13 @@ inline algotradelib::network::HttpClientOptions paced_options() {
   return options;
 }
 
-/** Returns `DIR/kis/<name>`, or throws when it is missing. */
+/**
+ * @brief Returns the path of a credential file in the directory.
+ * @param directory The credentials directory.
+ * @param name The file name, such as `"demo.json"`.
+ * @return `directory/kis/name`.
+ * @throws std::runtime_error if the file does not exist (the environment is not read instead).
+ */
 inline std::filesystem::path required_file(const std::filesystem::path& directory, const char* name) {
   const auto path = directory / "kis" / name;
   if (!std::filesystem::exists(path)) {
@@ -84,7 +100,13 @@ inline std::filesystem::path required_file(const std::filesystem::path& director
   return path;
 }
 
-/** Loads `config` from `path` and refuses a file whose `"demo"` contradicts its name. */
+/**
+ * @brief Loads a configuration from a file and refuses one whose `"demo"` contradicts its name.
+ * @param config The configuration to load into.
+ * @param path The file.
+ * @param demo Whether the file is the demo one.
+ * @throws std::runtime_error if the file cannot be loaded or contradicts its name.
+ */
 inline void load_config(algotradelib::kis::KisConfig& config, const std::filesystem::path& path, bool demo) {
   config.from_json(path.string());
   if (config.is_demo_ != demo) {
@@ -96,8 +118,13 @@ inline void load_config(algotradelib::kis::KisConfig& config, const std::filesys
 }
 
 /**
- * Loads the account `KIS_DEMO` chooses into `config` and, when given, `account`, and prints where
- * from (a path or "environment variables", never a key).
+ * @brief Loads the credentials (and account) `KIS_DEMO` chooses, and prints where from (a path or
+ *   "environment variables", never a key).
+ * @param directory The credentials directory, or `std::nullopt` to read the environment.
+ * @param config The configuration to load into.
+ * @param account The account to load into, or null.
+ * @param out Where to print the source.
+ * @throws std::runtime_error if the file or variables are missing or invalid.
  */
 inline void load(
   const std::optional<std::filesystem::path>& directory,
@@ -123,9 +150,13 @@ inline void load(
 }
 
 /**
- * Returns a config for market data alone, from `DIR/kis/real.json`, or nothing when there is no
- * directory or no such file. Pair it with an empty `KisAccount`, which refuses every account request
- * and order before any I/O.
+ * @brief Returns a configuration for market data alone, from `DIR/kis/real.json`.
+ *
+ * Pair it with an empty `KisAccount`, which refuses every account request and order before any I/O.
+ *
+ * @param directory The credentials directory.
+ * @return The configuration, or `std::nullopt` if there is no directory or no such file.
+ * @throws std::runtime_error if the file exists but cannot be loaded or is not a real-account file.
  */
 inline std::optional<algotradelib::kis::KisConfig> market_data_config(
   const std::optional<std::filesystem::path>& directory

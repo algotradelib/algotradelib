@@ -50,7 +50,7 @@ using algotradelib::TradingCalendar;
 using algotradelib::Venue;
 using algotradelib::bar_interval_name;
 
-/** Prints a structured broker or transport failure. */
+/** @brief Prints a structured broker or transport failure. */
 void print_error(std::string_view operation, const BrokerError& error) {
   std::cerr << "  " << operation << " failed";
   if (!error.broker_code_.empty()) {
@@ -62,7 +62,7 @@ void print_error(std::string_view operation, const BrokerError& error) {
   std::cerr << '\n';
 }
 
-/** Prints the oldest and newest bar, and the convention their stamps follow. */
+/** @brief Prints the oldest and newest bar, and the convention their stamps follow. */
 void print_bars(const BarSeries& series) {
   std::cout << "bars: " << series.bars_.size() << ' '
     << bar_interval_name(series.interval_) << (series.adjusted_ ? " adjusted" : " raw")
@@ -82,7 +82,7 @@ void print_bars(const BarSeries& series) {
   }
 }
 
-/** Prints the top of the book and what it implies. */
+/** @brief Prints the top of the book and what it implies. */
 void print_depth(const DepthSnapshot& book) {
   std::cout << "book: " << book.bids_.size() << " bids, " << book.asks_.size() << " asks\n";
   const auto bid = book.best_bid();
@@ -95,7 +95,7 @@ void print_depth(const DepthSnapshot& book) {
     << "  mid: " << (mid ? mid->str() : std::string("not both sides")) << '\n';
 }
 
-/** Prints the price bounds, distinguishing absent from zero. */
+/** @brief Prints the price bounds, distinguishing absent from zero. */
 void print_price_limits(const PriceLimits& limits) {
   std::cout << "price bounds: "
     << (limits.lower_ ? limits.lower_->str() : std::string("no lower limit")) << " .. "
@@ -103,7 +103,7 @@ void print_price_limits(const PriceLimits& limits) {
     << limits.currency_.str() << '\n';
 }
 
-/** Prints reference data, and what the library's own price grid says about it. */
+/** @brief Prints reference data, and what the library's own price grid says about it. */
 void print_instrument(const Instrument& instrument) {
   std::cout << "instrument: " << instrument.name_;
   if (!instrument.english_name_.empty()) {
@@ -130,7 +130,7 @@ void print_instrument(const Instrument& instrument) {
   std::cout << "  price grid: " << instrument.price_rule_.source_ << '\n';
 }
 
-/** Prints which of the reported dates the market actually opens on. */
+/** @brief Prints which of the reported dates the market actually opens on. */
 void print_calendar(const TradingCalendar& calendar) {
   std::cout << "calendar: " << calendar.days_.size() << " date(s) covered\n";
   for (const auto& day : calendar.days_) {
@@ -140,7 +140,7 @@ void print_calendar(const TradingCalendar& calendar) {
 }
 
 /**
- * Reports one instrument's market data through the port only.
+ * @brief Reports one instrument's market data through the port only.
  *
  * The capability gates below are the entire broker-specific surface, and each says
  * what the difference *is* rather than naming a broker.
@@ -254,7 +254,7 @@ int report(BlockingSession<Client>& session, const InstrumentId& subject) {
   return 0;
 }
 
-/** Builds a KIS session from the environment and reports through it. */
+/** @brief Builds a KIS session from the environment and reports through it. */
 int report_kis(ssl::context& tls, const std::string& symbol) {
   namespace kis = algotradelib::kis;
 
@@ -268,7 +268,7 @@ int report_kis(ssl::context& tls, const std::string& symbol) {
   return report(session, InstrumentId{Country::KR, Venue::COMBINED, symbol});
 }
 
-/** Builds a Toss session, discovering the account when none is supplied. */
+/** @brief Builds a Toss session, discovering the account when none is supplied. */
 int report_tossinvest(ssl::context& tls, const std::string& symbol, const char* sequence) {
   namespace toss = algotradelib::tossinvest;
 

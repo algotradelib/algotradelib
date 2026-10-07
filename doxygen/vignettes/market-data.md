@@ -84,8 +84,9 @@ a rule that was never set cannot silently approve anything.
 
 ## What differs between the brokers
 
-Per the intersection principle, each of these is reachable rather than hidden, and
-none is emulated for the broker that lacks it.
+Per the intersection principle, each of these can be tested at compile time, and none
+is emulated for a broker that lacks it (the session-hours row only says that Toss
+publishes them; see below).
 
 | Capability | KIS | Toss | Kiwoom |
 | --- | --- | --- | --- |
@@ -101,8 +102,8 @@ single requests behind the caller's back, which would wear one signature over
 several times the request cost.
 
 KIS's per-bar corporate-action columns, its after-hours depth totals, and Toss's
-intraday session windows are not normalized at all — only one broker publishes each,
-so they stay on the concrete client, reachable through `session.client()`.
+intraday session windows are not normalized — only one broker publishes each — and
+the library does not expose them yet.
 
 ## Two broker-specific behaviours worth knowing
 

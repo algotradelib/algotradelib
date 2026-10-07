@@ -33,7 +33,7 @@ namespace vanilla = algotradelib::strategy::vanilla;
 namespace math = algotradelib::math;
 
 /**
- * Returns a monetary figure, or why there is none.
+ * @brief Returns a monetary figure, or why there is none.
  *
  * A total that spans currencies is absent rather than summed, and so is one from a replay that
  * executed nothing -- neither is a charge of zero, and printing `0` would say it was.
@@ -68,7 +68,7 @@ Instrument samsung_reference() {
   return reference;
 }
 
-/** A path that rises, stalls, falls and recovers, so a trend strategy has both sides to trade. */
+/** @brief A path that rises, stalls, falls and recovers, so a trend strategy has both sides to trade. */
 const std::vector<int>& closes() {
   static const std::vector<int> path = {
     60000, 60500, 61200, 61000, 62000, 63000, 64500, 65000, 66200, 67000,
@@ -79,7 +79,7 @@ const std::vector<int>& closes() {
   return path;
 }
 
-/** Costs a Korean online brokerage charges, in the right order of magnitude. */
+/** @brief Costs a Korean online brokerage charges, in the right order of magnitude. */
 backtest::NextBarFillModel realistic_costs() {
   return backtest::NextBarFillModel(
     backtest::CommissionModel::of(Decimal64::parse("0.00015"), Decimal64::parse("100")),
@@ -98,7 +98,7 @@ backtest::ReplayConfig config_for() {
   return config;
 }
 
-/** Replays `closes()` through `strategy` at `interval`. */
+/** @brief Replays `closes()` through `strategy` at `interval`. */
 template <typename Strategy>
 backtest::Backtester<Strategy> replay(Strategy instance, BarInterval interval) {
   backtest::Backtester<Strategy> engine(std::move(instance), config_for(), realistic_costs());
@@ -122,7 +122,7 @@ backtest::Backtester<Strategy> replay(Strategy instance, BarInterval interval) {
   return engine;
 }
 
-/** Prints a scalar as a percentage, or a dash where the figure does not exist. */
+/** @brief Prints a scalar as a percentage, or a dash where the figure does not exist. */
 std::string percent(math::Scalar value) {
   if (!math::observed(value)) {
     return math::is_undefined(value) ? "undefined" : "       --";
@@ -132,7 +132,7 @@ std::string percent(math::Scalar value) {
   return text.str();
 }
 
-/** Prints a scalar plainly, or a dash. */
+/** @brief Prints a scalar plainly, or a dash. */
 std::string plain(math::Scalar value) {
   if (!math::observed(value)) {
     return math::is_undefined(value) ? "undefined" : "       --";
@@ -143,7 +143,7 @@ std::string plain(math::Scalar value) {
 }
 
 #if defined(ATL_HAS_EIGEN)
-/** Prints one report, figures first and then what they do not account for. */
+/** @brief Prints one report, figures first and then what they do not account for. */
 void print(const std::string& title, const backtest::Report& report) {
   std::cout << title << "\n"
             << "  bars            " << report.bars_ << "\n"

@@ -1,25 +1,15 @@
 #pragma once
 
 /**
- * The strategies this library ships, as headers.
+ * @file
+ * @brief The strategies this library ships (`algotradelib::strategy::vanilla`).
  *
- * Named for the namespace it fills -- `algotradelib::strategy::vanilla` -- rather than as a plural
- * of `<algotradelib/strategy>`. Two umbrellas differing only in an `s` are indistinguishable in an
- * autocomplete list, and the pair would have been a permanent small tax on everyone reading or
- * writing an include line.
+ * Each states the holding it wants (a target position, or for `EqualWeightRebalance` a target
+ * weight) rather than a quantity to trade, so after a restart it does not need to remember whether it
+ * already entered: reconciliation compares it with the portfolio and the working orders. Each states its warm-up requirement and emits nothing before it is met.
  *
- * They exist as much to prove the interface as to be traded: if a vanilla strategy needs something
- * the context does not expose, the context is wrong. Each states its own warm-up requirement, and
- * each has a test that it emits nothing before that requirement is met.
- *
- * Every one of them emits a **target position** rather than an order. That is not a stylistic
- * preference. A strategy that emitted orders would have to remember whether it had already entered,
- * and after a restart it does not know — so it would either miss an exit or re-enter a position it
- * already holds. Stating the position it wants leaves the arithmetic to reconciliation, which can
- * see the portfolio and the orders already working.
- *
- * `BuyAndHold` and `TimedLiquidation` read no series and are available in every build.
- * The rest compute indicators and therefore need a linear-algebra backend.
+ * `BuyAndHold` and `TimedLiquidation` read no series and are available in every build; the rest
+ * compute indicators and need a linear-algebra backend.
  */
 
 #include "src/strategy/vanilla/buy_and_hold.hpp"

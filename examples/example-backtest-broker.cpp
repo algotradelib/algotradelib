@@ -48,7 +48,7 @@ namespace vanilla = algotradelib::strategy::vanilla;
 namespace math = algotradelib::math;
 
 /**
- * Returns a monetary figure, or why there is none.
+ * @brief Returns a monetary figure, or why there is none.
  *
  * A total that spans currencies is absent rather than summed, and so is one from a replay that
  * executed nothing -- neither is a charge of zero, and printing `0` would say it was.
@@ -69,14 +69,14 @@ using algotradelib::Instrument;
 using algotradelib::InstrumentId;
 using algotradelib::Venue;
 
-/** What the session was read for. Nothing else is needed, and nothing else is kept. */
+/** @brief What the session was read for. Nothing else is needed, and nothing else is kept. */
 struct FetchedHistory {
   Instrument reference_;
   BarSeries bars_;
 };
 
 /**
- * Reads reference data and bars, and names no broker in doing it.
+ * @brief Reads reference data and bars, and names no broker in doing it.
  *
  * The same portability the strategy layer has: the session arrives as a template parameter and the body
  * asks only questions both brokers answer.
@@ -118,7 +118,7 @@ std::optional<FetchedHistory> read_history(
 }
 
 #if defined(ATL_HAS_EIGEN)
-/** Replays `history` through one strategy and prints the report. */
+/** @brief Replays `history` through one strategy and prints the report. */
 template <typename Strategy>
 void replay_and_report(const char* title, Strategy instance, const FetchedHistory& history) {
   backtest::ReplayConfig config;
@@ -183,7 +183,7 @@ void replay_and_report(const char* title, Strategy instance, const FetchedHistor
 }
 #endif
 
-/** Reads history, then replays it. The session is finished with before the replay starts. */
+/** @brief Reads history, then replays it. The session is finished with before the replay starts. */
 template <typename Session>
 int backtest_with(Session& session, const std::string& symbol) {
   const InstrumentId instrument{Country::KR, Venue::COMBINED, symbol};

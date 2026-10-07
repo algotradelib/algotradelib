@@ -18,7 +18,7 @@ namespace atl = algotradelib;
 
 namespace {
 
-/** Prints one structured broker failure and order-reconciliation guidance. */
+/** @brief Prints one structured broker failure and order-reconciliation guidance. */
 void print_error(std::string_view operation, const atl::BrokerError& error) {
   std::cerr << operation << " failed";
   if (!error.broker_code_.empty()) {
@@ -38,7 +38,7 @@ void print_error(std::string_view operation, const atl::BrokerError& error) {
   }
 }
 
-/** Returns a printable name for a normalized order status. */
+/** @brief Returns a printable name for a normalized order status. */
 std::string_view status_name(atl::OrderStatus status) {
   switch (status) {
     case atl::OrderStatus::PENDING:
@@ -66,7 +66,7 @@ std::string_view status_name(atl::OrderStatus status) {
   }
 }
 
-/** Prints one normalized order and its aggregate fill state. */
+/** @brief Prints one normalized order and its aggregate fill state. */
 void print_order(const atl::OrderSnapshot& order) {
   std::cout << order.order_id_ << "  " << order.instrument_.symbol_ << "  " << order.name_ << '\n';
   std::cout << "  " << (order.side_ == atl::OrderSide::BUY ? "BUY" : "SELL") << "  "
@@ -82,7 +82,7 @@ void print_order(const atl::OrderSnapshot& order) {
   std::cout << '\n';
 }
 
-/** Returns today's date in the local calendar for a default history range. */
+/** @brief Returns today's date in the local calendar for a default history range. */
 atl::Date today() {
   const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
   std::tm local{};
@@ -100,7 +100,7 @@ atl::Date today() {
 
 } // namespace
 
-/** Lists the selected KIS account's modifiable orders and today's history. */
+/** @brief Lists the selected KIS account's modifiable orders and today's history. */
 int main(int argc, char* argv[]) {
   try {
     atl::kis::KisConfig config;

@@ -1,17 +1,13 @@
 #pragma once
 
 /**
- * Running a strategy against a real broker.
+ * @file
+ * @brief Running a strategy against a real broker: `SessionExecutor`, `SessionSource` and the
+ *   `bind` factories.
  *
- * Separate from `<algotradelib/runner>` because this is the half that needs a session, and
- * therefore TLS, HTTP, and a broker adapter. Keeping them apart is what lets a dry-run binary link
- * none of that and so contain no code path that could place an order — a promise
- * `tests/test-runner-isolation.cpp` asserts, and one that including this header deliberately gives
- * up.
- *
- * Everything above the send has already been decided and tested without a broker: the strategy
- * surface, reconciliation, the guards, the indeterminacy rules, and the pipeline itself. What this
- * adds is a translation to `OrderRequest` and the session call.
+ * Separate from `<algotradelib/runner>` because it needs a broker session, and so TLS, HTTP and an
+ * adapter; a program that includes only `<algotradelib/runner>` contains no library code that could
+ * place an order.
  */
 
 #include "src/live/bind.hpp"

@@ -36,7 +36,7 @@ using Clock = std::chrono::system_clock;
 
 InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
 
-/** The instant this run pretends to be sending at, so the output is identical every time. */
+/** @brief The instant this run pretends to be sending at, so the output is identical every time. */
 Clock::time_point sent_at() { return Clock::time_point{} + std::chrono::hours(24 * 20000); }
 
 strategy::PlannedOrder buy_ten() {
@@ -50,7 +50,7 @@ strategy::PlannedOrder buy_ten() {
 }
 
 /**
- * An executor that never returns, standing in for a process killed mid-request.
+ * @brief An executor that never returns, standing in for a process killed mid-request.
  *
  * It throws rather than failing, because a failure would be *classified* -- `outcome_of` would call
  * it indeterminate and a terminal line would be written. The case worth demonstrating is the one
@@ -68,7 +68,7 @@ public:
   }
 };
 
-/** Prints the journal exactly as `tail` would show it during an incident. */
+/** @brief Prints the journal exactly as `tail` would show it during an incident. */
 void show_journal(const std::string& path) {
   std::FILE* handle = std::fopen(path.c_str(), "rb");
   if (handle == nullptr) {
@@ -98,7 +98,7 @@ void show_journal(const std::string& path) {
   }
 }
 
-/** A row as the broker's order list would report the order that did, in fact, get through. */
+/** @brief A row as the broker's order list would report the order that did, in fact, get through. */
 OrderSnapshot listed_order() {
   OrderSnapshot snapshot;
   snapshot.order_id_ = "KRX-4412";

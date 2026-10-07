@@ -117,8 +117,10 @@ Result<typename BrokerTraits<Client>::Amendment> prepare_replace(
  * Every operation takes a completion token and completes once with `Result<T>`, on the handler's
  * associated executor. An operation the broker does not offer (see `Caps`) does not compile; gate
  * it with `if constexpr`. A request the session or adapter refuses before any I/O completes with an
- * error that is posted, never invoked inline. A session is cheap to copy (a shared client pointer
- * and the account).
+ * error that is posted, never invoked inline. For a handler with no associated executor, that
+ * refusal runs on the system executor while a broker's reply runs on the client's strand, so one
+ * callback can run on two threads; bind the handler to an executor if that matters. A session is
+ * cheap to copy (a shared client pointer and the account).
  *
  * @tparam Client An asynchronous broker client (`BrokerTraits<Client>::blocking` is `false`); use
  *   `BlockingSession` for a blocking one.
@@ -364,7 +366,9 @@ public:
   /**
    * @brief Places a new order.
    *
-   * @warning A `TRANSPORT` error leaves the outcome unknown: the request may have reached the broker.
+   * @warning An error for which `runner::outcome_of` returns `INDETERMINATE` (`reached_broker_` set
+   *   and a category of `TRANSPORT`, `CANCELLED` or `PROTOCOL`, or `HTTP` 500 or more) leaves the
+   *   outcome unknown: the request may have taken effect.
    *   The request is never resent automatically. Check working orders or order history before
    *   sending it again.
    *
@@ -397,7 +401,9 @@ public:
   /**
    * @brief Modifies a working order.
    *
-   * @warning A `TRANSPORT` error leaves the outcome unknown: the request may have reached the broker.
+   * @warning An error for which `runner::outcome_of` returns `INDETERMINATE` (`reached_broker_` set
+   *   and a category of `TRANSPORT`, `CANCELLED` or `PROTOCOL`, or `HTTP` 500 or more) leaves the
+   *   outcome unknown: the request may have taken effect.
    *   The request is never resent automatically. Check working orders or order history before
    *   sending it again.
    *
@@ -434,7 +440,9 @@ public:
   /**
    * @brief Cancels a working order, in full or in part.
    *
-   * @warning A `TRANSPORT` error leaves the outcome unknown: the request may have reached the broker.
+   * @warning An error for which `runner::outcome_of` returns `INDETERMINATE` (`reached_broker_` set
+   *   and a category of `TRANSPORT`, `CANCELLED` or `PROTOCOL`, or `HTTP` 500 or more) leaves the
+   *   outcome unknown: the request may have taken effect.
    *   The request is never resent automatically. Check working orders or order history before
    *   sending it again.
    *
@@ -1117,7 +1125,9 @@ public:
   /**
    * @brief Places a new order.
    *
-   * @warning A `TRANSPORT` error leaves the outcome unknown: the request may have reached the broker.
+   * @warning An error for which `runner::outcome_of` returns `INDETERMINATE` (`reached_broker_` set
+   *   and a category of `TRANSPORT`, `CANCELLED` or `PROTOCOL`, or `HTTP` 500 or more) leaves the
+   *   outcome unknown: the request may have taken effect.
    *   The request is never resent automatically. Check working orders or order history before
    *   sending it again.
    * @param order The order; refused before any I/O as for `BrokerSession::async_place`.
@@ -1133,7 +1143,9 @@ public:
   /**
    * @brief Modifies a working order.
    *
-   * @warning A `TRANSPORT` error leaves the outcome unknown: the request may have reached the broker.
+   * @warning An error for which `runner::outcome_of` returns `INDETERMINATE` (`reached_broker_` set
+   *   and a category of `TRANSPORT`, `CANCELLED` or `PROTOCOL`, or `HTTP` 500 or more) leaves the
+   *   outcome unknown: the request may have taken effect.
    *   The request is never resent automatically. Check working orders or order history before
    *   sending it again.
    * @param ref The order.
@@ -1153,7 +1165,9 @@ public:
   /**
    * @brief Cancels a working order, in full or in part.
    *
-   * @warning A `TRANSPORT` error leaves the outcome unknown: the request may have reached the broker.
+   * @warning An error for which `runner::outcome_of` returns `INDETERMINATE` (`reached_broker_` set
+   *   and a category of `TRANSPORT`, `CANCELLED` or `PROTOCOL`, or `HTTP` 500 or more) leaves the
+   *   outcome unknown: the request may have taken effect.
    *   The request is never resent automatically. Check working orders or order history before
    *   sending it again.
    * @param ref The order.

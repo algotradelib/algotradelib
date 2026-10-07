@@ -662,14 +662,30 @@ inline bool decimal_less(const Decimal64& lhs, const Decimal64& rhs) {
   return left_negative != (rhs.coefficient() < 0) ? left_negative : lhs.scale() > rhs.scale();
 }
 
-/** @brief The kind of failure a `BrokerError` reports. */
+/**
+ * @brief The kind of failure a `BrokerError` reports.
+ *
+ * For an order, `runner::outcome_of` turns the category into whether the order may exist.
+ */
 enum class ErrorCategory {
+  /** @brief The operation was cancelled, such as by closing the client or a local deadline. */
   CANCELLED,
+  /** @brief The connection failed (DNS, connect, TLS, write or read). */
   TRANSPORT,
+  /** @brief The broker answered with an HTTP error status (`http_status_`). */
   HTTP,
+  /** @brief The credentials or token were refused. */
   AUTHENTICATION,
+  /** @brief The broker refused the request for its rate limit. */
   RATE_LIMIT,
+  /**
+   * @brief The reply could not be read, or the broker declared a failure this client does not
+   *   classify further: at KIS a reply with `rt_cd` not `0` (such as insufficient balance), at Toss
+   *   any refusal but a rate limit, at Kiwoom a `return_code` outside its documented error list. For
+   *   an order it means the outcome is unknown.
+   */
   PROTOCOL,
+  /** @brief The request was invalid, refused by the client before sending or by the broker. */
   INVALID_ARGUMENT,
 };
 
@@ -684,9 +700,10 @@ struct BrokerError {
   /**
    * @brief Whether a request was sent before this error.
    *
-   * `false` only when the client refused before any I/O (an order id too long, an unsupported time
-   * in force); such a refusal is not counted against a rate limit and was not the broker's.
-   * Defaults to `true`.
+   * `false` when nothing was written: the client refused before any I/O (an order id too long, an
+   * unsupported time in force), or the transport failed before writing (resolving, connecting,
+   * handshaking, a full queue, or a closed client). Such an error is not counted against a rate
+   * limit and was not the broker's; a runner may offer the instruction again. Defaults to `true`.
    */
   bool reached_broker_{true};
   /** @brief The HTTP status, or `0` if the failure happened before a response. */

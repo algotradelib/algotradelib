@@ -24,8 +24,9 @@
  * - `--market-data kis`, the default on demo when `DIR/kis/real.json` exists: the real account's keys
  *   with an empty `KisAccount`;
  * - `--market-data toss`: Toss from `DIR/tossinvest/real.json`, with no account selected. The price
- *   band and reference data are then Toss's, which can differ from KIS's (`labs/FINDINGS.md` F27):
- *   KIS may refuse an order clamped to Toss's band.
+ *   band and reference data are then Toss's, which can differ from KIS's (after the close Toss
+ *   publishes the next session's band, KIS keeps the day's): KIS may refuse an order clamped to
+ *   Toss's band.
  *
  * Without a directory, or without `DIR/kis/real.json`, the demo session reads its own market data,
  * and stops at reference data. With `kis/real.json` the run reads reference data and the calendar
@@ -77,7 +78,7 @@ namespace atl = algotradelib;
 namespace runner = algotradelib::runner;
 namespace vanilla = algotradelib::strategy::vanilla;
 
-/** What the command line said. */
+/** @brief What the command line said. */
 struct Arguments {
   std::string broker_;
   std::string symbol_;
@@ -91,7 +92,7 @@ struct Arguments {
   std::optional<std::string> kiwoom_account_;
 };
 
-/** The strategy this program runs: one share, held. The line a consumer replaces. */
+/** @brief The strategy this program runs: one share, held. The line a consumer replaces. */
 vanilla::BuyAndHold strategy_for(const atl::InstrumentId& instrument) {
   vanilla::BuyAndHold holding;
   holding.params_.instrument_ = instrument;
@@ -100,7 +101,7 @@ vanilla::BuyAndHold strategy_for(const atl::InstrumentId& instrument) {
 }
 
 /**
- * Settings for one instrument, with every age the loop asks about stated.
+ * @brief Settings for one instrument, with every age the loop asks about stated.
  *
  * The limits are sized for one share on purpose. A consumer's own limits belong to their strategy.
  */
@@ -133,7 +134,7 @@ live_program::Settings settings_for(const atl::InstrumentId& instrument) {
   return settings;
 }
 
-/** Keeps letters, digits and `-`, so an account label can name a file. */
+/** @brief Keeps letters, digits and `-`, so an account label can name a file. */
 std::string file_safe(std::string text) {
   for (auto& ch : text) {
     if (!std::isalnum(static_cast<unsigned char>(ch)) && ch != '-') {
@@ -144,7 +145,7 @@ std::string file_safe(std::string text) {
 }
 
 /**
- * Names the journal after the account, and scopes it to broker, environment and account.
+ * @brief Names the journal after the account, and scopes it to broker, environment and account.
  *
  * The scope is written into the journal's header, and a file whose header names another scope
  * refuses to open. So a demo journal cannot be continued by a live run, and one account's unresolved
@@ -164,7 +165,7 @@ void name_journal(
 }
 
 /**
- * Prints what is about to happen, before anything is read or sent.
+ * @brief Prints what is about to happen, before anything is read or sent.
  *
  * `demo_variable` names the broker's demo switch, or is null for a broker without one.
  */
@@ -192,7 +193,7 @@ void announce(
   }
 }
 
-/** Runs the chosen mode, installing the signal stop for the run's duration. */
+/** @brief Runs the chosen mode, installing the signal stop for the run's duration. */
 template <typename Session, typename MarketData>
 int run(
   Session& session,
@@ -210,7 +211,7 @@ int run(
   return static_cast<int>(exit);
 }
 
-/** Runs the chosen mode with one session for everything. */
+/** @brief Runs the chosen mode with one session for everything. */
 template <typename Session>
 int run(Session& session, const atl::InstrumentId& instrument, const live_program::Settings& settings, bool live) {
   return run(session, session, instrument, settings, live);
@@ -238,8 +239,8 @@ int run_kis(ssl::context& tls, const Arguments& arguments) {
   // and account read through it is refused before any I/O.
   if (arguments.market_data_ == "toss") {
     if (!demo) {
-      // Toss's band can differ from KIS's (`labs/FINDINGS.md` F27); not for real money until that
-      // is explained.
+      // Toss publishes the next session's band after the close, before KIS does, and when each rolls
+      // over is not settled: a KIS demo run only.
       throw std::runtime_error("--market-data toss is for a KIS demo run only");
     }
     if (!arguments.credentials_) {
@@ -386,7 +387,7 @@ int run_toss(ssl::context& tls, const Arguments& arguments) {
   return run(session, instrument, settings, arguments.live_);
 }
 
-/** Parses the command line, or explains it. */
+/** @brief Parses the command line, or explains it. */
 std::optional<Arguments> parse(int argc, char** argv) {
   Arguments arguments;
   const int given = argc;
@@ -446,7 +447,13 @@ std::optional<Arguments> parse(int argc, char** argv) {
 
 } // namespace
 
-/** Chooses a broker from the command line and observes or trades through it. */
+/**
+ * @brief Chooses a broker from the command line and observes or trades through it.
+ * @param argc The argument count.
+ * @param argv The arguments.
+ * @return A `live_program::Exit` value, 64 for a usage error, or 70 if an exception escaped (what was
+ *   in flight may then be unknown).
+ */
 int main(int argc, char** argv) {
   const auto arguments = parse(argc, argv);
   if (!arguments) {

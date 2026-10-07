@@ -45,7 +45,7 @@ namespace math = algotradelib::math;
 using analytics::Scalar;
 using analytics::observed;
 
-/** Prints a scalar, or a dash where there is no observation. */
+/** @brief Prints a scalar, or a dash where there is no observation. */
 std::string cell(Scalar value) {
   if (!observed(value)) {
     return "     --";
@@ -56,7 +56,7 @@ std::string cell(Scalar value) {
 }
 
 /**
- * Builds a month of daily bars for one instrument.
+ * @brief Builds a month of daily bars for one instrument.
  *
  * Exact decimals, the way a broker reports them, because that is the input the
  * conversion boundary is written for. One day is deliberately left without an open, to

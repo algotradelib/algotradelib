@@ -1,18 +1,13 @@
 #pragma once
 
 /**
- * Replaying history through the same context a live session uses.
+ * @file
+ * @brief Replaying history through the same context and runner a live session uses, so a strategy's
+ *   source is identical in a backtest, a dry run and a live run.
  *
- * The third runner over `Runner::feed()`, after `DryRunner` and the session-backed one. A strategy's
- * source is identical in all three, which is what the shape settled in `strategy-core` was for.
- *
- * **Nothing here assumes a bar is a day.** Neither supported broker makes intraday history easy, but
- * that is a limitation of two adapters rather than a property of backtesting, and a caller with minute
- * bars must be able to replay them without the engine being rewritten. The clock advances by a bar's
- * own period end, phases are derived from a session window, and the period count an annualized figure
- * needs is stated rather than assumed.
- *
- * Reaches no broker and no transport: a backtest touches nothing.
+ * Any bar interval works: the clock advances by each bar's period end, phases come from a session
+ * window, and the number of periods an annualized figure needs is stated, not assumed. Includes no
+ * broker or transport header.
  */
 
 #include "src/backtest/clock.hpp"

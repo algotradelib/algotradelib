@@ -1,37 +1,18 @@
 #pragma once
 
 /**
- * The machinery that drives a strategy without a broker.
+ * @file
+ * @brief The machinery that runs a strategy, without a broker: the context a strategy reads, the
+ *   dispatcher, `Runner` and `DryRunner`, the polling loop (`PollingLoop`, its clock and stop
+ *   controls) and the order journal.
  *
- * Where `<algotradelib/strategy>` is what a strategy author includes, this is what a program
- * includes to run one. It holds the context a strategy reads from, the dispatcher that calls only
- * the handlers a strategy defines, and `DryRunner`, which exercises a strategy end to end and
- * sends nothing.
+ * Includes no broker or transport header: a dry-run program compiles no call into TLS or HTTP and
+ * instantiates no adapter (checked by the library's tests). The link line still carries OpenSSL,
+ * because the package exports one target for every consumer. `SessionSource`, which fetches from a
+ * broker, is in `<algotradelib/live>`.
  *
- * **Reaches no broker and no transport header.** A dry run holds no session, so a dry-run
- * translation unit compiles no call into TLS or HTTP and instantiates no adapter code: verified both
- * by `tests/test-runner-isolation.cpp`, which asserts it from a unit including nothing else, and by
- * symbol inspection of an installed consumer, which finds no `algotradelib::network`,
- * `algotradelib::kis` or `algotradelib::tossinvest` symbol at all.
- *
- * What it does **not** promise is that the OpenSSL library is absent from the link line. The
- * package exports one interface target that carries the transport dependencies for every consumer,
- * so a dry-run binary still has libssl as a dylib dependency it never calls. Making that literal
- * needs a second, transport-free target; see `plan/todo/offline-only-target.md`.
- *
- * `LiveRunner` is in `<algotradelib/live>` precisely because it does need them, and separating the
- * two is what keeps the compile-time half of that checkable.
- *
- * `PollingLoop` is here rather than there for the same reason. Deciding *when* to poll, noticing that
- * a stop was requested, refusing to send before the first reconciliation, and judging a holdings
- * snapshot too stale to size against are not broker concerns -- only the fetching is -- so the loop,
- * its clock seam and the stop control all sit on this side of the line, and a test drives every one
- * of them with no session, no credentials and no signals raised. `SessionSource`, which does the
- * fetching, is in `<algotradelib/live>`.
- *
- * It does reach `<algotradelib/analytics>` when the library was built with a linear-algebra
- * backend, because a cached bar series is an analytics type. Without one the context simply offers
- * no series accessors, and a strategy trading on prices and positions alone is unaffected.
+ * With a linear-algebra backend it also includes `<algotradelib/analytics>`, for the cached bar
+ * series; without one the context has no series accessors.
  */
 
 #include "src/runner/clock.hpp"
