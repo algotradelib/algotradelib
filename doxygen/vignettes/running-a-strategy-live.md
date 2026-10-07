@@ -690,8 +690,7 @@ stop; otherwise they report a restated target again on every pass.
 
 A listing alone does not end it. A market order that filled at once is in no listing, a
 resting order may not be listed yet, and a listed one can fill and leave; in each case a holdings answer
-that lags the fill does not show it either, and a target would send the order again, up to twice the
-target.
+that lags the fill does not show it either, and a target would send the order again.
 So the runner remembers each accepted order with the instrument's holding when it was sent
 (`Runner::unconfirmed_orders`), and before every pass shows it as a reserved row of whatever nothing
 explains yet: the order's quantity, less what holdings have moved since in its direction, less what a
