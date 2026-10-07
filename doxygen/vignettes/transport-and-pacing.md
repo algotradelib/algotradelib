@@ -54,6 +54,12 @@ in `examples/kis_credentials.hpp`). At a burst of 1 the reserve changes nothing,
 a blocking client sends one operation at a time, so an order waits behind whatever
 call is running on the same client: at startup, up to the calendar's 20 seconds.
 
+**Kiwoom, measured on a demo account (2026-10-07):** a second request to the same API within a few
+milliseconds of the first is refused (`1700`, with the API's id); 300 ms apart it was served, and
+different APIs back to back were too. A quote and a price-limit read are the same API (`ka10007`).
+Kiwoom states no allowance. The Kiwoom examples pace at the same `RateLimitBudget{1, 1, 0}`
+(`kiwoom_credentials::paced_options` in `examples/kiwoom_credentials.hpp`).
+
 **Leaving `rate_limit_` unset issues requests unpaced**, which is the default. Not
 every endpoint is metered, and one that is not should not be slowed down; an
 unpaced client also keeps strict arrival order, exactly as it did before pacing

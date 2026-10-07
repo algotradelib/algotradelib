@@ -96,6 +96,24 @@ inline void refuse_unknown_flags(int argc, char** argv) {
 }
 
 /**
+ * @brief Returns transport options that pace a Kiwoom client at one request a second.
+ *
+ * A Kiwoom demo account refuses a second request to the same API within a few milliseconds of the
+ * first (`1700`, "허용된 요청 개수를 초과하였습니다", with the API's id): a quote and a price-limit read
+ * are both `ka10007`, so a loop reading both back to back loses one. Requests to different APIs back to
+ * back, and to the same API 300 ms apart, were served (measured 2026-10-07). Kiwoom states no allowance.
+ * The library paces nothing unless asked (`HttpClientOptions::rate_limit_`), so these examples ask, at
+ * the pace the KIS examples use.
+ *
+ * @return The options.
+ */
+inline algotradelib::network::HttpClientOptions paced_options() {
+  algotradelib::network::HttpClientOptions options;
+  options.rate_limit_ = algotradelib::network::RateLimitBudget{1, 1, 0};
+  return options;
+}
+
+/**
  * @brief Loads the credentials from `DIR/kiwoom/{demo,real}-LABEL.json` (as `KIWOOM_DEMO` chooses;
  *   label `kr` by default), or from the environment without a directory, and prints where from.
  * @param directory The credentials directory, or `std::nullopt` to read the environment.
