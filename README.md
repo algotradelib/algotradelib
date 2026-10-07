@@ -1,4 +1,4 @@
-# algotradelib
+# algotradelib <img src="doxygen/figures/logo.png" align="right" height="150" alt="" />
 
 <!-- badges: start -->
 ![License](https://img.shields.io/badge/license-MIT-blue.svg?style=plastic)

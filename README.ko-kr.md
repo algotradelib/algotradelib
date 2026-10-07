@@ -1,5 +1,7 @@
 # algotradelib (한국어)
 
+<img src="doxygen/figures/logo.png" align="right" height="150" alt="" />
+
 <!-- badges: start -->
 ![License](https://img.shields.io/badge/license-MIT-blue.svg?style=plastic)
 [![Lifecycle: experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg?style=plastic)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
