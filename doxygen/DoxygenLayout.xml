@@ -4,7 +4,7 @@
   <!-- Navigation index tabs for HTML output -->
   <navindex>
     <tab type="mainpage" visible="yes" title=""/>
-    <tab type="pages" visible="yes" title="User Guide" intro="The user guide, in the order its pages are worth reading, and a short guide in Korean."/>
+    <tab type="pages" visible="yes" title="User Guide" intro="The user guide, in the order its pages are worth reading."/>
     <tab type="topics" visible="yes" title="" intro=""/>
     <tab type="modules" visible="yes" title="" intro="">
       <tab type="modulelist" visible="yes" title="" intro=""/>

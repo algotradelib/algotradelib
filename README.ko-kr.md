@@ -1,6 +1,4 @@
-# algotradelib (한국어)
-
-<img src="doxygen/figures/logo.png" align="right" height="150" alt="" />
+# algotradelib (한국어) <img src="doxygen/figures/logo.png" align="right" height="150" alt="" />
 
 <!-- badges: start -->
 ![License](https://img.shields.io/badge/license-MIT-blue.svg?style=plastic)
@@ -8,7 +6,7 @@
 <!-- badges: end -->
 
 <!-- multilingual: start -->
-[![en](https://img.shields.io/badge/lang-en-red.svg?style=plastic)](https://github.com/ygeunkim/algotradelib/blob/main/README.md)
+[![en](https://img.shields.io/badge/lang-en-red.svg?style=plastic)](README.md)
 [![ko-kr](https://img.shields.io/badge/lang-ko--kr-green.svg?style=plastic)](README.ko-kr.md)
 <!-- multilingual: end -->
 
@@ -19,7 +17,7 @@
   그 페이지의 같은 절이 바뀔 때도 이 문서를 확인합니다.
 -->
 
-이 문서는 [README](https://github.com/ygeunkim/algotradelib/blob/main/README.md)를 짧게 요약한 안내입니다.
+이 문서는 [README](README.md)를 짧게 요약한 안내입니다.
 두 문서의 내용이 다르면 영어 README를 따르세요.
 
 algotradelib은 한국투자증권 (KIS), 키움증권, 토스증권 Open API로 자동매매 프로그램을 만들 수 있는 C++ 헤더 전용 라이브러리입니다.
