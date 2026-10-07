@@ -9,6 +9,13 @@ div.image img {
   height: auto;
 }
 
+/* Fit the project logo to the header, as Doxygen's PROJECT_LOGO help asks (at most 55 px high). Doxygen
+   sets no size on it, and the logo file is larger. */
+#projectlogo img {
+  max-height: 55px;
+  width: auto;
+}
+
 /* Naming any extra stylesheet makes Doxygen leave the block below out of doxygen.css (see the comment
    on HTML_EXTRA_STYLESHEET). It is restored verbatim from Doxygen 1.18.0's doxygen.css, so the output
    matches a build without an extra stylesheet. Under HTML_COLORSTYLE = AUTO_LIGHT nothing sets the
