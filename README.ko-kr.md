@@ -1,7 +1,7 @@
 # algotradelib 한국어 안내
 
 <!-- multilingual: start -->
-[![en](https://img.shields.io/badge/lang-en-red.svg?style=plastic)](README.md)
+[![en](https://img.shields.io/badge/lang-en-red.svg?style=plastic)](https://github.com/ygeunkim/algotradelib/blob/main/README.md)
 [![ko-kr](https://img.shields.io/badge/lang-ko--kr-green.svg?style=plastic)](README.ko-kr.md)
 <!-- multilingual: end -->
 
@@ -11,13 +11,13 @@
 <!-- badges: end -->
 
 <!--
-  영어 README.md 2be9533 기준. 요약한 절: 첫 소개와 경고, "Brokers and accounts", "Install",
-  "Using it"의 실행 예시, "Documentation"의 문서 빌드 명령, "Disclaimer". 이 절들이 바뀌면 이 문서도
-  함께 고칩니다.
+  영어 README.md 6f6aab0 기준. 요약한 절: 첫 소개와 경고, "Brokers and accounts", "Install",
+  "Using it"의 실행 예시, "Documentation"의 문서 빌드 명령, "Acknowledgements", "Disclaimer". 이 절들이
+  바뀌면 이 문서도 함께 고칩니다. 키움 설정과 빌드 옵션 같은 자세한 내용은 doxygen/index.md에 있습니다.
 -->
 
-이 문서는 [영어 README](README.md)를 짧게 요약한 안내입니다. 두 문서의 내용이 다르면 영어 README를
-따릅니다.
+이 문서는 [영어 README](https://github.com/ygeunkim/algotradelib/blob/main/README.md)를 짧게 요약한
+안내입니다. 두 문서의 내용이 다르면 영어 README를 따릅니다.
 
 algotradelib은 한국투자증권(KIS), 키움증권, 토스증권 Open API로 자동매매 프로그램을 만들 수 있는
 C++17 헤더 전용 라이브러리입니다. 전략 코드 하나로 백테스트, 주문 없는 시험 실행, 실거래를 모두 할
@@ -39,8 +39,8 @@ C++17 헤더 전용 라이브러리입니다. 전략 코드 하나로 백테스�
   전략은 백테스트나 KIS·키움 모의투자로 먼저 확인하세요.
 - 키움은 잔고 조회와 전략 주문에 추가 설정이 필요합니다. 설정하기 전에는 라이브러리가 요청을 보내지
   않고 거부합니다. 키움은 장 운영 시간 정보도 제공하지 않아 기본 설정으로는 새로 매수하지 않으며,
-  예제 프로그램(`example-live-program`)도 키움에서는 조회만 하고 주문하지 않습니다. 설정 방법은 영어
-  README의 "Brokers and accounts"를 참고하세요.
+  예제 프로그램(`example-live-program`)도 키움에서는 조회만 하고 주문하지 않습니다. 설정 방법은
+  [문서 첫 페이지](doxygen/index.md)(영어)의 "Brokers and accounts"를 참고하세요.
 - SOR(`Venue::COMBINED`)은 KIS와 키움 모두 주문에 쓸 수 있습니다. 다만 KIS 모의투자는 SOR을 받지 않고,
   키움 모의투자는 아직 확인하지 못했습니다. 키움은 미체결 조회에서 SOR 주문을 `sor_yn` 값으로 따로
   표시한다고 안내하고 있어 라이브러리도 이 값을 읽지만, 두 증권사 모두 SOR 주문이 조회에서 어떻게
@@ -57,13 +57,7 @@ C++17 헤더 전용 라이브러리입니다. 전략 코드 하나로 백테스�
 
 ## 시작하기
 
-새 프로젝트를 만들 때는 아래 스크립트를 실행하면 됩니다.
-
-```sh
-tools/atl-new-project.sh my-alpha
-```
-
-기존 프로젝트에는 서브모듈로 추가합니다.
+프로젝트에 서브모듈로 추가합니다.
 
 ```sh
 git submodule add https://github.com/ygeunkim/algotradelib.git libs/algotradelib
@@ -130,8 +124,12 @@ HTML 문서는 Doxygen이 설치되어 있으면 `cmake --build build --target d
 
 ## 더 알아보기
 
-설치 조건, 빌드 옵션, 실거래 프로그램 구성은 영어 README를 참고하세요. 자세한 설명은
-[사용자 가이드](doxygen/vignettes/guide.md)(영어)에 있습니다.
+설치 조건, 빌드 옵션, 실거래 프로그램 구성은 [문서 첫 페이지](doxygen/index.md)(영어)를 참고하세요.
+자세한 설명은 [사용자 가이드](doxygen/vignettes/guide.md)(영어)에 있습니다.
+
+## 감사의 말
+
+이 프로젝트는 생성형 AI 도구의 도움을 받아 개발했습니다.
 
 ## 라이선스
 
