@@ -262,6 +262,10 @@ struct EquityPoint {
   /**
    * @brief The return since the previous point; `missing()` on the first point, after an unvalued bar,
    *   and after a point whose equity was zero or negative (a return on no capital is not defined).
+   *
+   * A statistic over these returns skips the missing ones. `summarize` refuses its ratios for a run
+   * that reached non-positive equity before its last point; reducing a slice yourself, apply the same
+   * check to the equity each return is measured from.
    */
   math::Scalar period_return_{0};
 };

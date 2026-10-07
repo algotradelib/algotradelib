@@ -213,11 +213,16 @@ struct Report {
    */
   math::Scalar sharpe_{0};
   /**
-   * @brief The annualized Sharpe ratio; `missing()` unless a period count was given to `summarize`,
-   *   and undefined when `sharpe_` is.
+   * @brief The annualized Sharpe ratio; `missing()` unless a period count was given to `summarize`.
+   *
+   * With a period count, undefined whenever `sharpe_` is.
    */
   math::Scalar annualized_sharpe_{0};
-  /** @brief The per-period Sortino ratio; see `analytics::sortino`. Undefined when `sharpe_` is. */
+  /**
+   * @brief The per-period Sortino ratio; see `analytics::sortino`.
+   *
+   * `math::undefined()` when equity was zero or negative at any point but the last, as `sharpe_`.
+   */
   math::Scalar sortino_{0};
   /** @brief The worst peak-to-trough decline of equity, as a non-negative fraction. */
   math::Scalar max_drawdown_{0};
