@@ -5,7 +5,7 @@
 [![Lifecycle: experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg?style=plastic)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
 <!-- badges: end -->
 
-A C++17 library for algorithmic trading through Korean broker APIs — currently Korea Investment &
+A C++ library for algorithmic trading through Korean broker APIs — currently Korea Investment &
 Securities (KIS), Kiwoom Securities and Toss Securities.
 
 Header-only, consumed through CMake. A strategy is a plain struct that performs no I/O and names no
