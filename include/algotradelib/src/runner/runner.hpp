@@ -25,14 +25,12 @@ namespace runner {
 
 namespace runner_detail {
 
-/**
- * Whether an executor can ask the broker what may be sold of one instrument.
- *
- * Detected rather than required, for the same reason the strategy's handlers are: a dry runner, a
- * replay's queueing executor and a test double have no broker to ask, and none of them should have
- * to grow a method that returns nothing. An executor bound to a broker whose holdings already carry
- * the figure declares it too and answers nothing, so the runner's own condition stays one test.
- */
+// Whether an executor can ask the broker what may be sold of one instrument.
+//
+// Detected rather than required, for the same reason the strategy's handlers are: a dry runner, a
+// replay's queueing executor and a test double have no broker to ask, and none of them should have
+// to grow a method that returns nothing. An executor bound to a broker whose holdings already carry
+// the figure declares it too and answers nothing, so the runner's own condition stays one test.
 template <typename Executor, typename = void>
 struct fills_sellable : std::false_type {};
 
@@ -44,15 +42,13 @@ struct fills_sellable<
   >
 > : std::true_type {};
 
-/**
- * Whether `Executor` states what its sellable *inquiry* answer is evidence of.
- *
- * Detected rather than required, and the default is what matters: an executor that answers a
- * sellable quantity and says nothing about its basis is treated as having established nothing, so
- * the guard refuses rather than measuring a sell against a figure nobody characterized. A consumer's
- * own executor gets that default without being told it exists, which is the point -- the alternative
- * default would silently enforce against whatever its author happened to return.
- */
+// Whether `Executor` states what its sellable *inquiry* answer is evidence of.
+//
+// Detected rather than required, and the default is what matters: an executor that answers a
+// sellable quantity and says nothing about its basis is treated as having established nothing, so
+// the guard refuses rather than measuring a sell against a figure nobody characterized. A consumer's
+// own executor gets that default without being told it exists, which is the point -- the alternative
+// default would silently enforce against whatever its author happened to return.
 template <typename Executor, typename = void>
 struct states_sellable_basis : std::false_type {};
 
@@ -62,7 +58,7 @@ struct states_sellable_basis<
   std::void_t<decltype(Executor::sellable_inquiry_basis())>
 > : std::true_type {};
 
-/** Returns what `Executor`'s inquiry answer is evidence of, or an unestablished basis. */
+// Returns what `Executor`'s inquiry answer is evidence of, or an unestablished basis.
 template <typename Executor>
 constexpr SellableBasis sellable_inquiry_basis_of() {
   if constexpr (states_sellable_basis<Executor>::value) {
@@ -72,14 +68,12 @@ constexpr SellableBasis sellable_inquiry_basis_of() {
   }
 }
 
-/**
- * Whether `Executor` can say which reference the broker issued for the order it just accepted.
- *
- * Detected rather than required, for the same reason as above: a dry runner and a replay's
- * queueing executor have no broker to have been answered by. A reservation written without one is
- * still worth writing -- a limit that ignored the order would be the worse failure -- but it cannot
- * be cancelled by reference until a listing supplies one.
- */
+// Whether `Executor` can say which reference the broker issued for the order it just accepted.
+//
+// Detected rather than required, for the same reason as above: a dry runner and a replay's
+// queueing executor have no broker to have been answered by. A reservation written without one is
+// still worth writing -- a limit that ignored the order would be the worse failure -- but it cannot
+// be cancelled by reference until a listing supplies one.
 template <typename Executor, typename = void>
 struct reports_last_ref : std::false_type {};
 
@@ -88,13 +82,11 @@ struct reports_last_ref<
   Executor, std::void_t<decltype(std::declval<const Executor&>().last_ref())>
 > : std::true_type {};
 
-/**
- * Whether `Executor` decides which venue an order that names none is sent to.
- *
- * Detected rather than required: only a broker binding routes, and a dry runner, an observer and a
- * replay's queueing executor send the planned venue as it stands. `live::SessionExecutor` answers
- * with its `default_route()`, and a `JournalingExecutor` forwards its inner executor's answer.
- */
+// Whether `Executor` decides which venue an order that names none is sent to.
+//
+// Detected rather than required: only a broker binding routes, and a dry runner, an observer and a
+// replay's queueing executor send the planned venue as it stands. `live::SessionExecutor` answers
+// with its `default_route()`, and a `JournalingExecutor` forwards its inner executor's answer.
 template <typename Executor, typename = void>
 struct resolves_route : std::false_type {};
 
@@ -103,21 +95,19 @@ struct resolves_route<
   Executor, std::void_t<decltype(std::declval<const Executor&>().requested_route(Venue::UNSPECIFIED))>
 > : std::true_type {};
 
-/**
- * Whether `Executor` can say **why** the last instruction failed.
- *
- * Detected rather than required, on the same terms as the two above: a dry runner refuses nothing
- * and a replay's queueing executor has no broker to be refused by, so neither should have to grow a
- * method that answers nothing. An executor that binds a session declares
- * `const std::optional<BrokerError>& last_error() const` and its refusals then reach
- * `Runner::last_broker_refusal`, where a report can carry the broker's own code and message instead
- * of a count with nothing to chase.
- *
- * **The *shape* is detected, not the name.** An earlier version asked only whether `last_error()`
- * was a valid expression, which would have selected this branch for any executor that happened to
- * have a method of that name -- one returning `std::optional<std::string>`, say -- and then failed
- * to compile on `broker_code_`. A name is not a contract; the return type is.
- */
+// Whether `Executor` can say **why** the last instruction failed.
+//
+// Detected rather than required, on the same terms as the two above: a dry runner refuses nothing
+// and a replay's queueing executor has no broker to be refused by, so neither should have to grow a
+// method that answers nothing. An executor that binds a session declares
+// `const std::optional<BrokerError>& last_error() const` and its refusals then reach
+// `Runner::last_broker_refusal`, where a report can carry the broker's own code and message instead
+// of a count with nothing to chase.
+//
+// **The *shape* is detected, not the name.** An earlier version asked only whether `last_error()`
+// was a valid expression, which would have selected this branch for any executor that happened to
+// have a method of that name -- one returning `std::optional<std::string>`, say -- and then failed
+// to compile on `broker_code_`. A name is not a contract; the return type is.
 template <typename Executor, typename = void>
 struct states_last_error : std::false_type {};
 
@@ -135,173 +125,106 @@ struct states_last_error<
 } // namespace runner_detail
 
 /**
- * Runs a strategy against events it is fed, and sends nothing.
- *
- * The whole pipeline a live session uses, minus the session: handlers fire, intents are queued,
- * reconciliation turns them into instructions, and the guards accept or refuse them. What would
- * have been sent is recorded instead.
- *
- * That makes it three things at once, and the third is the point:
- *
- * - a way to exercise a strategy with no credentials and no network;
- * - the reference implementation of the pipeline, which `LiveRunner` reuses rather than restates;
- * - the proof that a strategy is portable, since a strategy that runs here and live has used
- *   nothing broker-shaped.
- *
- * **No adapter code exists in the binary.** This header reaches no broker and no transport header,
- * so a dry-run program instantiates none of either, and an installed consumer's symbol table
- * confirms it: no `algotradelib::network`, `algotradelib::kis` or `algotradelib::tossinvest` symbol
- * appears at all. There is no instantiated code path from a dry run to a market, which is stronger
- * than a runtime flag that can be set wrong.
- *
- * It does not mean libssl is off the link line: the package exports one interface target carrying
- * the transport dependencies for every consumer. See `plan/todo/offline-only-target.md`.
- *
- * Events are fed in rather than polled, which is also how a backtest will drive it. A live runner
- * polls and calls the same `on_*` methods.
- */
-
-/**
- * One cancellation a hold on the guard refused, and which hold refused it.
- *
- * The cancellation counterpart of `strategy::GuardRejection`, and separate from it because a
- * cancellation is not a `PlannedOrder`: there is no quantity or notional to report, only the order
- * being withdrawn and the reason nothing was sent.
+ * @brief A cancellation a hold refused (nothing was sent), and which hold.
+ * @tparam BrokerTag The broker tag.
  */
 template <typename BrokerTag>
 struct RefusedCancel {
-  /** The order that was to be withdrawn. */
+  /** @brief The order that was to be cancelled. */
   OrderRef<BrokerTag> ref_;
-  /** Which hold stopped it. Nothing was sent. */
+  /** @brief The hold that stopped it. */
   strategy::HaltReason reason_{strategy::HaltReason::OPERATOR};
 };
 
 /**
- * One cancellation that was refused, and by whom.
- *
- * Carried on the entry rather than left to the executor's `last_error()`, for the reason the
- * placement path gives: a pass sends several instructions, and a later accepted one clears that
- * error, so a report would outlive the only record of why this entry is here. The two refusals
- * differ in whether a request went out and was counted, which is the whole reason to tell them
- * apart.
+ * @brief A cancellation that was refused, by the broker or by the binding.
+ * @tparam BrokerTag The broker tag.
  */
 template <typename BrokerTag>
 struct RejectedCancel {
-  /** The order that was to be withdrawn. */
+  /** @brief The order that was to be cancelled. */
   OrderRef<BrokerTag> ref_;
-  /** False when the binding refused to send it, so no broker was asked. */
+  /** @brief `true` if the broker refused it; `false` if the binding refused to send it. */
   bool by_broker_{true};
 };
 
-/** What a dry run decided, in the order it decided. */
+/**
+ * @brief What one runner pass decided and did, sorted by outcome (returned by `Runner::feed`).
+ *
+ * The buckets list outcomes of orders, cancellations and plans, not one entry per instruction: a
+ * target already met adds nothing, and one target can produce several orders and cancellations.
+ *
+ * @tparam BrokerTag The broker tag.
+ */
 template <typename BrokerTag>
 struct DryRunReport {
-  /** Orders that passed reconciliation and every guard, and would have been sent. */
+  /** @brief Orders that passed every check and were sent (in a dry run, would have been). */
   std::vector<strategy::PlannedOrder> would_place_;
   /**
-   * Working orders the broker **accepted a withdrawal request** for, before anything was placed.
+   * @brief Cancellations the broker accepted.
    *
-   * **`ACCEPTED` and nothing else.** A cancellation that a hold refused, that the broker rejected,
-   * that failed in transit, that local machinery could not send, or that named an order the
-   * snapshot does not hold is in its own bucket, so the size of this one is what the broker took.
-   *
-   * **Taking a request is not the same as the order stopping.** Cancellation is asynchronous at
-   * both brokers: Toss publishes `PENDING_CANCEL` -- request received, broker not finished -- and
-   * `CANCEL_REJECTED`, which returns the order to its previous state. So an entry here can still be
-   * working, and only a fresh order list says otherwise. This bucket answers "did the instruction
-   * go", never "is the order gone".
+   * Accepted is not done: cancellation is asynchronous, so the order may still be working (or fill)
+   * until a listing says otherwise. Every other cancellation outcome has its own bucket.
    */
   std::vector<OrderRef<BrokerTag>> would_cancel_;
   /**
-   * Instructions that were not placed, each with its own reason.
+   * @brief Instructions not placed: reconciliation could not build them, the broker refused them
+   *   (`BROKER_REFUSED`), or the binding refused to send them (`BINDING_REFUSED`).
    *
-   * Three things land here and they share a consequence rather than a cause: reconciliation could
-   * not build the instruction, the broker refused it (`BROKER_REFUSED`), or the binding refused to
-   * send it (`BINDING_REFUSED` -- an idempotency key at a broker that accepts none, say). In every
-   * case the order does not exist and nothing needs reconciling; only the broker's refusal was a
-   * request the broker counted.
-   *
-   * **The reason is on the entry, not in `last_error()`.** A pass places several orders, and a
-   * later accepted one clears the executor's last error, so a report would outlive the only record
-   * of why an earlier entry is here.
+   * In each case the order does not exist and nothing needs reconciling.
    */
   std::vector<strategy::Rejection> rejected_;
-  /** Instructions a guard refused, with the reason -- a limit or a hold -- and what was attempted. */
+  /** @brief Instructions the risk guard refused (a limit or a hold). */
   std::vector<strategy::GuardRejection> refused_;
   /**
-   * Orders the runner declined to send because the instrument's state is unresolved.
-   *
-   * Reported rather than retried. A retry is exactly what must not happen after a transport
-   * failure, so these are surfaced for an operator and left alone.
+   * @brief Orders held back because an earlier order for the instrument has an unknown outcome, or
+   *   local machinery cannot send; not retried automatically.
    */
   std::vector<WithheldOrder> withheld_;
   /**
-   * Whole reconciliation plans held back before any part of them was sent.
-   *
-   * Distinct from `withheld_`, which is about an order. A plan's cancellations go out before its
-   * placements are guard-checked, so a plan that cannot be acted on has to be stopped as a unit or
-   * not at all. **Three reasons put one here** and `WithheldPlan::reason_` says which: an account
-   * never read, one older than the stated maximum, or a placement hold in force for a plan that also
-   * wanted to withdraw something -- and that last one on a portfolio that is perfectly current.
+   * @brief Whole plans (cancellations and placements) held back before any part was sent; see
+   *   `WithheldPlanReason`.
    */
   std::vector<WithheldPlan<BrokerTag>> withheld_plans_;
-  /** Instructions whose send failed in transit, leaving their outcome unknown. */
+  /**
+   * @brief Orders whose outcome is unknown (`SendOutcome::INDETERMINATE`, which at KIS, Toss and
+   *   Kiwoom includes most of the broker's own refusals); the instrument now needs reconciling.
+   */
   std::vector<strategy::PlannedOrder> indeterminate_;
   /**
-   * Cancellations that were refused, each saying whether the broker or the binding refused it.
+   * @brief Cancellations that were refused, by the broker or the binding.
    *
-   * A refusal is an answer about the *request*: it was not accepted, so nothing needs reconciling.
-   * It says nothing about the order, which may still be working or may have filled a moment
-   * earlier -- a fill is one of the ordinary reasons a broker refuses a withdrawal. Either way the
-   * request did not go, which is why this is not `would_cancel_`. The placement path carries the
-   * same distinction on `rejected_`.
+   * The order may still be working, or may have just filled (a common reason to refuse).
    */
   std::vector<RejectedCancel<BrokerTag>> rejected_cancel_;
-  /**
-   * Cancellations whose send failed in transit, leaving their outcome unknown.
-   *
-   * Separate from `would_cancel_`, and the separation is the point: the order may now be withdrawn
-   * or may still be resting, and reporting it as a withdrawal that happened would tell an operator
-   * the one thing this library will not say about an unknown outcome. The instrument is marked in
-   * the ledger for the same reason.
-   */
+  /** @brief Cancellations with an unknown outcome; the order may or may not still rest. */
   std::vector<OrderRef<BrokerTag>> indeterminate_cancel_;
-  /**
-   * Cancellations naming an order the portfolio snapshot does not hold.
-   *
-   * Reported rather than sent blind. The snapshot is stale, and the order may already be gone; a
-   * cancellation the runner cannot describe is one it should not invent.
-   */
+  /** @brief Cancellations naming an order the portfolio does not list; not sent. */
   std::vector<OrderRef<BrokerTag>> unresolved_cancel_;
   /**
-   * Instructions local machinery refused to send, with the reason.
-   *
-   * Never a broker's answer. **Local machinery was unavailable**, so nothing was attempted -- a
-   * pre-send journal write that failed is the usual cause and not the only one, since any executor
-   * answering `SendOutcome::UNAVAILABLE` lands here.
-   * Reported separately from `rejected_` because the two ask for opposite responses: a rejection is
-   * about one instruction, this is about whether the runner should still be trading at all.
+   * @brief Orders not sent because local machinery was unavailable (`SendOutcome::UNAVAILABLE`, such
+   *   as a failed journal write); the runner stops sending.
    */
   std::vector<WithheldOrder> unavailable_;
-  /** Cancellations local machinery refused to send. Distinct from one the snapshot cannot describe. */
+  /** @brief Cancellations not sent because local machinery was unavailable. */
   std::vector<OrderRef<BrokerTag>> unavailable_cancel_;
   /**
-   * Cancellations a hold on the guard refused, with the hold that refused them.
+   * @brief Cancellations refused by a hold that blocks withdrawals (`OPERATOR`, `STOPPING`; see
+   *   `strategy::halt_blocks`).
    *
-   * The counterpart of `refused_` on the cancellation path. A halt stops this runner *sending*, and
-   * a cancellation is a send: it is an order-writing request that can itself fail indeterminately
-   * and wedge the instrument. So a halted runner withdraws nothing, and says so rather than letting
-   * a `WITHDRAW` through a kill switch somebody had already pulled.
+   * A hold that only means data is missing (such as `PORTFOLIO_STALE`) does not refuse a named
+   * cancellation; `LOCAL_FAILURE` puts it in `unavailable_cancel_` instead.
    */
   std::vector<RefusedCancel<BrokerTag>> refused_cancel_;
-  /** Lines the strategy logged. */
+  /** @brief Lines the strategy logged during the pass. */
   std::vector<std::string> log_;
 
-  /** Returns whether the run decided to do nothing at all. */
+  /**
+   * @brief Tests whether the pass did nothing at all.
+   * @return `true` if every bucket except `log_` is empty.
+   */
   bool quiet() const noexcept {
-    // `withheld_plans_` is in this list for the reason the list exists at all: a run that withheld a
-    // cancel-only target did *not* decide to do nothing, and a `quiet()` that said so would hide the
-    // one result this branch added. A bucket left out of here is a result that reports as silence.
+    // Every outcome bucket belongs here; one left out would report as silence.
     return would_place_.empty() && would_cancel_.empty() && rejected_.empty() &&
       refused_.empty() && withheld_.empty() && withheld_plans_.empty() && indeterminate_.empty() &&
       unresolved_cancel_.empty() && unavailable_.empty() && unavailable_cancel_.empty() &&
@@ -309,44 +232,27 @@ struct DryRunReport {
   }
 };
 
-/**
- * Drives one strategy with no broker attached.
- *
- * Holds the strategy by value so a caller can read its state afterwards — a warm-up count, a
- * position it tracked — which is most of what a strategy test wants to assert.
- */
-/** The broker tag a runner with no broker stands in for. References are never sent anywhere. */
+/** @brief The broker tag of a dry run, whose order references reach no broker. */
 struct DryTag {
-  /** The tag's normalized name, which is what an order reference prints. */
+  /** @brief The name an order reference prints: `"dryrun"`. */
   static constexpr std::string_view name = "dryrun";
 };
 
 /**
- * Drives one strategy through the whole pipeline, sending through `Executor`.
+ * @brief Runs one strategy: feeds it events, reconciles what it asks for, checks the risk limits,
+ *   and sends through an executor.
  *
- * One implementation, parameterized on where instructions go. A dry run supplies an executor that
- * records and accepts; a live session supplies one that calls the broker; a test supplies one that
- * fails on purpose. That is what makes the transport-indeterminacy behaviour -- the most important
- * in this branch and the least reachable through a real broker -- exercisable without one.
+ * The same class serves a dry run (the default `RecordingExecutor`, which sends nothing), a live
+ * session (`live::SessionExecutor`) and a backtest (`backtest::QueueingExecutor`). Feed events with
+ * `feed`; each call runs the matching handler and returns a `DryRunReport` of what it decided. A
+ * live program usually drives it through `runner::PollingLoop`.
  *
- * **Everything it owns is held by value; everything it borrows is held by pointer.** That split is
- * worth stating, because a runner looks like the sort of object one would reach for a smart pointer
- * with, and it is not:
+ * A dry-run program contains no broker or network code: this header includes none.
  *
- * - The **strategy** is a template parameter, resolved at compile time. There is no base class to
- *   point at and no dynamic dispatch to enable, so an indirection would buy nothing and cost a
- *   dereference in a handler that is otherwise inlined. Holding it by value is also what lets a
- *   caller read the state it kept -- `dry.strategy().bars_seen_` -- which is most of what a strategy
- *   test wants to assert.
- * - The **context, guard, ledger and executor** are parts of the runner, not things shared with it.
- *   A runner is constructed once per program or per test, never per bar, so a heap allocation here
- *   would be a cost with no corresponding benefit.
- * - A **session** is borrowed, and `SessionExecutor` holds it by pointer for exactly that reason: it
- *   owns a connection with executor affinity, and a runner uses it without owning it. The client
- *   underneath is a `shared_ptr` because the transport layer genuinely shares it.
- *
- * So the rule is ownership, not size: by value when the runner's lifetime governs it and the type is
- * known at compile time, by pointer when something else owns it.
+ * @tparam Strategy The strategy type, held by value (read its state with `strategy()`).
+ * @tparam CapsType The broker capabilities the strategy sees.
+ * @tparam BrokerTag The broker tag of order references.
+ * @tparam Executor Where instructions are sent.
  */
 template <
   typename Strategy,
@@ -356,50 +262,44 @@ template <
 >
 class Runner {
 public:
-  /** The tag identifying the broker this runner sends to, or `DryTag` when it sends nowhere. */
+  /** @brief The broker tag (`DryTag` for a dry run). */
   using Tag = BrokerTag;
-  /** The context handed to every strategy handler. */
+  /** @brief The context type handed to the strategy's handlers. */
   using Context = runner::Context<BrokerTag, CapsType>;
-  /** What one `feed` returns: everything the pass decided, in the order it decided it. */
+  /** @brief What one `feed` returns. */
   using Report = DryRunReport<BrokerTag>;
 
   ATL_ASSERT_STRATEGY(Strategy, Context);
 
   /**
-   * Whether this runner sends to a broker and its strategy defines `on_fill` -- which then never fires.
+   * @brief `true` when this runner sends to a broker and the strategy defines `on_fill`, which then
+   *   never fires (no shipped live source produces fills).
    *
-   * A replay synthesizes fills and calls `on_fill`; a live session reports none as events, so the same
-   * handler is correct in a backtest and inert with real money. That is the one difference between
-   * the two modes a correct strategy can lose money over (`issues/live-parity-audit.md`, finding 1).
-   * It is legitimate to use `on_fill` for backtest-only bookkeeping, so this refuses nothing: it lets
-   * `PollingLoop` put a note in every run's report, and lets a program that drives a runner by hand
-   * say the same thing itself.
-   *
-   * `false` for a dry run, for `live::bind_observer` and for a replay, whose executors state that they
-   * reach no broker; `JournalingExecutor` forwards what it wraps.
-   *
-   * "Never" describes the shipped live path: nothing this library polls produces a `Fill`. A program
-   * that calls `feed(const strategy::Fill&)` itself, from a source of its own, does reach `on_fill`,
-   * and can ignore the note.
+   * Nothing is refused; `PollingLoop` puts a note in its report. A program that feeds `Fill` events
+   * itself does reach `on_fill`.
    */
   static constexpr bool on_fill_never_fires =
     runner_detail::sends_to_a_broker<Executor>::value &&
     strategy::strategy_detail::declares_on_fill<Strategy>;
 
   /**
-   * Whether this runner keeps every order it sends in `working_`, whatever the limits, until the
-   * broker shows what became of it (`persist_reservation`, `unconfirmed_orders`).
+   * @brief `true` when this runner keeps each order it sends in `Portfolio::working_` until a broker
+   *   listing accounts for it: a live runner whose broker lists working orders (every shipped
+   *   binding).
    *
-   * True for a runner that sends to a broker publishing a working-order inquiry -- every shipped
-   * binding (`live::SessionExecutor`, and `JournalingExecutor` over it) on KIS, Toss and Kiwoom.
-   * False for a dry run, `live::bind_observer` and a replay, which send nowhere. `PollingLoop` reads
-   * it: a runner that keeps its orders until the broker accounts for them is held while no listing will
-   * (see `PollSchedule::working_orders_`).
+   * `PollingLoop` then requires the working-order poll (see `PollSchedule::working_orders_`).
    */
   static constexpr bool keeps_sent_orders_until_listed =
     runner_detail::sends_to_a_broker<Executor>::value && CapsType::has_working_orders;
 
-  /** Constructs a runner with the given strategy, limits, and series warm-up window. */
+  /**
+   * @brief Constructs a runner.
+   * @param strategy The strategy.
+   * @param limits The risk limits.
+   * @param series_capacity How many trailing bars each cached series keeps; must be positive with a
+   *   linear algebra backend, or the first bar fed throws `std::invalid_argument`.
+   * @param executor Where instructions are sent.
+   */
   explicit Runner(
     Strategy strategy = {},
     strategy::RiskLimits limits = {},
@@ -411,45 +311,35 @@ public:
     context_(series_capacity),
     executor_(std::move(executor)) {}
 
-  /** Returns the executor, so a caller can read what it was handed. */
+  /**
+   * @brief Returns the executor.
+   * @return The executor.
+   */
   const Executor& executor() const noexcept { return executor_; }
-  /** @copydoc Runner::executor() const */
+  /**
+   * @brief Returns the executor.
+   * @return The executor.
+   */
   Executor& executor() noexcept { return executor_; }
 
   /**
-   * Returns the ledger of instruments whose order state is unresolved.
-   *
-   * Non-const so an operator, having read the broker's order list, can clear an entry. Nothing
-   * else clears one.
+   * @brief Returns the instruments with an order of unknown outcome.
+   * @return The ledger.
    */
   const IndeterminacyLedger& ledger() const noexcept { return ledger_; }
-  /** @copydoc Runner::ledger() const */
+  /**
+   * @brief Returns the ledger, so an operator who has read the broker's order list can clear an entry.
+   * @return The ledger.
+   */
   IndeterminacyLedger& ledger() noexcept { return ledger_; }
 
   /**
-   * Returns why local machinery can no longer send, or nothing while it can.
+   * @brief Returns why local machinery stopped sending, if it did.
    *
-   * **Sticky by policy, not by prediction.** Whatever failed may well fail on the next order too --
-   * but it may equally have recovered, and this hold stays either way. Clearing it on the next quiet
-   * bar would turn an outage into a trickle of unexplained refusals, and would decide on its own
-   * that a transient failure was transient; leaving it set makes resuming a deliberate act.
+   * The hold (`strategy::HaltReason::LOCAL_FAILURE`) stays until `resume_after_local_failure`, even
+   * if the failure was transient. The detail is the first failure recorded through this runner.
    *
-   * **It is a hold on the guard**, `strategy::HaltReason::LOCAL_FAILURE`, not a flag beside it.
-   * That is the difference between a condition every send path has to remember to check and one
-   * checked by the single function every order already passes through. It also means an operator
-   * asking the guard why it will not trade is told a local-failure detail -- what the binding said it
-   * could not do, or whatever a caller of `halt_locally` supplied, which `live::SessionSource` does
-   * when it cannot journal a reconciliation decision. A failed journal write is the usual answer and
-   * not the only one. Better than being told only that trading is halted.
-   *
-   * **Recorded through this runner it is the *first* detail**, kept while the hold stands, so a
-   * cascade of later failures cannot bury the one that started it. That promise covers
-   * `note_local_failure` and `halt_locally` and stops there: `guard()` hands out a mutable guard, and
-   * `RiskGuard::halt(LOCAL_FAILURE, detail)` replaces the detail on a hold already standing. A
-   * program that takes this hold itself owns what it reads back.
-   *
-   * Cleared only by `resume_after_local_failure`, which a program calls when it has fixed whatever
-   * was broken.
+   * @return The detail, or `std::nullopt` while sending works.
    */
   std::optional<std::string> local_failure() const {
     if (!guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
@@ -459,17 +349,10 @@ public:
   }
 
   /**
-   * Clears the local failure, after an operator has fixed what caused it.
+   * @brief Clears the local-failure hold, after an operator has fixed the cause.
    *
-   * **Acknowledges the executor's failure count as well as releasing the hold**, and without that
-   * second half the call does nothing useful. `JournalingExecutor::last_journal_error()` keeps its
-   * first reason forever -- correct for diagnosis -- so a runner that only released the hold would
-   * read that stale reason after the very next send and halt again immediately. Recording the count
-   * already seen is what lets the runner tell a *new* failure from the one that has been dealt
-   * with.
-   *
-   * Releases only `HaltReason::LOCAL_FAILURE`. An operator who also halted by hand stays halted,
-   * which is the whole point of a hold naming its holder.
+   * It also acknowledges the journal failures seen so far, so the same failure does not halt again.
+   * Other holds, such as an operator's halt, stay.
    */
   void resume_after_local_failure() {
     guard_.resume(strategy::HaltReason::LOCAL_FAILURE);
@@ -477,148 +360,101 @@ public:
   }
 
   /**
-   * States how old a holdings snapshot may be before a plan derived from it is not acted on.
+   * @brief Sets how old the holdings may be before a reconciliation plan computed from them is held
+   *   back (`WithheldPlanReason::PORTFOLIO_STALE`).
    *
-   * The **policy**, not a verdict: this runner evaluates it against the snapshot in hand every time
-   * it settles, so the answer cannot describe a portfolio that has since been replaced. A
-   * `runner::PollingLoop` pushes its own configured age down here; a consumer driving a runner
-   * directly sets it themselves, and leaving it unset means only that age is not a reason -- a
-   * snapshot that was never read, and a hold on placements, still are.
+   * It applies to every plan that would cancel something, and to placement-only plans while
+   * `require_known_portfolio` is on. It takes no hold on the guard. Age is measured against the later
+   * of `observed_at()` and `Context::now()`. `PollingLoop` sets it from its own configuration.
    *
-   * It does not hold, refuse or halt anything on its own. `PollingLoop` owns the *hold*; this owns
-   * only whether a reconciliation plan may be acted on.
+   * @param age The maximum age, or `std::nullopt` for no limit.
    */
   void set_maximum_portfolio_age(std::optional<std::chrono::nanoseconds> age) {
     maximum_portfolio_age_ = age;
   }
 
   /**
-   * Records the wall-clock instant a driving loop believes it is, for measuring a snapshot's age.
+   * @brief Sets the current wall-clock instant, used to measure the age of holdings and price bands.
    *
-   * **Not the same question as `Context::now()`, and using that one understates age.** `now_` is the
-   * *decision* instant, and `feed(BarEvent)` sets it to the bar's period end -- which on a daily bar
-   * is yesterday's close. A bar that arrives late would then measure a snapshot taken at the same
-   * moment as zero seconds old and act on it, however long ago that actually was.
+   * `PollingLoop` sets it each iteration. Without it, age is measured against `Context::now()`, which
+   * for a daily bar is its period end and understates age.
    *
-   * Set by `runner::PollingLoop` at the top of each iteration, before anything it calls can feed, so
-   * a plan settled from inside a source callback is measured against the clock rather than against
-   * the event that triggered it. A runner with no loop leaves it unset and falls back to `now()`.
+   * @param at The instant.
    */
   void set_observed_at(std::chrono::system_clock::time_point at) { observed_at_ = at; }
 
   /**
-   * Returns the last instant a driving loop reported through `set_observed_at`, or the epoch when
-   * none has.
-   *
-   * `live::SessionSource` reads it to hold back a bar whose period has not ended yet: a broker's
-   * daily query includes the session still trading, and that bar is not one a strategy may be shown.
+   * @brief Returns the instant last set by `set_observed_at`.
+   * @return The instant, or the epoch if never set.
    */
   std::chrono::system_clock::time_point observed_at() const noexcept { return observed_at_; }
 
   /**
-   * States that this runner may act although it has never read what the account holds.
+   * @brief Lets this runner place orders before holdings have ever been read.
    *
-   * The runner's half of `PollingLoop::allow_absent_portfolio`, which pushes it down. It exists here
-   * too because the loop's hold is not installed for the whole of an iteration -- a source callback
-   * can settle before it -- so the absence rule has to be enforced where the instruction is decided,
-   * and an opt-out that reached only the hold would be an opt-out with no effect on the rule that
-   * matters.
+   * `PollingLoop::allow_absent_portfolio` calls it. A plan that would cancel something is still held
+   * back until holdings are read.
    */
   void allow_absent_portfolio() { allow_absent_portfolio_ = true; }
 
   /**
-   * States whether this runner may **place** while it has never read what the account holds.
+   * @brief Sets whether placing requires holdings to have been read and fresh.
    *
-   * Set by `runner::PollingLoop` at the top of every iteration, before anything it calls can feed,
-   * and defaulted from the executor: **on** for one that can reach a broker, off for a dry run and a
-   * replay, which have no holdings inquiry that could have failed and, in the replay's case, stamp
-   * their own portfolio. `runner_detail::sends_to_a_broker` holds that decision and the argument for
-   * which way an unmarked executor should fail.
+   * On by default for an executor that can reach a broker, off for a dry run or a replay. Off, a
+   * placement-only plan skips both the read and the age check. `PollingLoop` sets it each iteration.
+   * A plan that would cancel something is held back unless holdings have been read and are fresh,
+   * whatever this setting.
    *
-   * It exists because the loop's own hold is not in force at every point an instruction can be
-   * settled -- a source's `read_order_list` runs before the first hold is installed and is handed a
-   * mutable runner. A rule enforced only by that hold is a rule with a hole in it on the first
-   * iteration, which is exactly the iteration a run has read nothing.
-   *
-   * Withdrawing is unaffected, and so is a plan that would cancel something: that one is withheld on
-   * the snapshot alone, whoever is driving, because a cancellation derived from an account nobody
-   * has read can withdraw the order protecting a real position.
+   * @param required Whether placing requires read holdings.
    */
   void require_known_portfolio(bool required) { require_known_portfolio_ = required; }
 
   /**
-   * Stops this runner sending, for a reason that has nothing to do with any one instruction.
+   * @brief Stops this runner sending, with the `LOCAL_FAILURE` hold, until
+   *   `resume_after_local_failure`.
    *
-   * Public because the conditions that warrant it are not all inside the runner. Recovery is the
-   * motivating one: a journal whose damaged tail named no instrument says something was in flight
-   * and cannot say what, so there is nothing to withhold and the only safe response is to withhold
-   * everything. Sticky, like a failure the executor raises, and cleared the same way -- it takes
-   * the same `HaltReason::LOCAL_FAILURE` hold, so it stops sending on its own rather than only
-   * when a `PollingLoop` notices.
+   * Used, for example, by recovery when a damaged journal shows something was in flight but not what.
+   *
+   * @param detail Why, for the operator.
    */
   void halt_locally(std::string detail) { note_local_failure(std::move(detail)); }
 
   /**
-   * Returns how many placements this runner has sent that may have left an order at the broker.
-   *
-   * Monotonic, and counting acceptances *and* indeterminate sends, because both can leave something
-   * resting. Its only purpose is comparison: a caller that read a working-order listing, recorded
-   * this number, and then sees it grow knows its listing is out of date without having to ask the
-   * broker. `PollingLoop` uses exactly that to decide whether a stop knows what it owes.
-   *
-   * A rejection does not count -- the broker said the order does not exist -- and neither does a
-   * local failure, which never reached a broker at all.
+   * @brief Returns how many placements may have left an order at the broker (accepted or of unknown outcome).
+   * @return The count over the runner's life; compare it before and after to tell whether a listing is out of date.
    */
   std::size_t placements_at_broker() const noexcept { return placements_at_broker_; }
 
   /**
-   * Returns how many orders this runner has sent under a phase the operator did not permit.
+   * @brief Returns how many orders were sent in a market phase `RiskLimits::permitted_phases_` does
+   *   not permit, because they close toward flat.
    *
-   * Monotonic, so a caller differences it around whatever span it cares about, the way
-   * `PollingLoop` does with `RiskGuard::total_sent`. It is not a per-pass figure and deliberately
-   * not one: an order can leave the process from inside a source's poll, whose report nobody keeps,
-   * so a count that lived only on a `DryRunReport` would miss every ordinary send and report only
-   * what a stop did.
+   * Counts sends, including ones the broker then rejected (likely outside a session). Not by itself
+   * a fault: it shows a flatten after the close, or a strategy restating a close every pass (limit
+   * that with `RiskLimits::max_orders_per_window_`).
    *
-   * **What it counts is a send, not a decision.** `RiskLimits::permitted_phases_` permits an order
-   * that closes a held position whatever the phase, which is what lets an operator's flatten go out
-   * after the close; this says how often that happened. An order the exception admitted and a later
-   * limit then refused is not counted, because nothing was sent. A broker's rejection *is* counted,
-   * because the request went out and the rejection is the broker's answer to it -- and outside a
-   * session that is the likeliest answer, so a counter excluding it would read zero in the case it
-   * exists for.
-   *
-   * A non-zero value is not by itself a fault. It is the library doing what the limit now says, and
-   * the number an operator needs to tell a nightly flatten from a strategy restating a close on
-   * every pass -- for which `RiskLimits::max_orders_per_window_` is the lever.
+   * @return The count over the runner's life.
    */
   std::size_t sends_outside_permitted_phase() const noexcept {
     return sends_outside_permitted_phase_;
   }
 
   /**
-   * Starts inferring whether the broker's sellable figure already excludes resting sells.
+   * @brief Turns on the `strategy::SellableConventionProbe`, which infers whether the broker's
+   *   sellable figure already excludes resting sells.
    *
-   * Off by default, because it costs a scan of the positions on every pass and answers a question
-   * most callers do not have. Neither broker documents the convention, and `RiskGuard` subtracts
-   * resting sells because the safe direction is to over-count; a caller who wants to know whether
-   * that deduction is charging twice turns this on and reads `sellable_convention()` after a few
-   * sessions of ordinary trading.
+   * Off by default. It only observes; it sends and requests nothing extra. Read the answer from
+   * `sellable_convention()`.
    *
-   * It observes rather than experiments: nothing extra is sent, nothing extra is requested, and a
-   * run with the probe on places exactly the orders it would have placed with it off.
+   * @param enabled Whether to probe.
    */
   void probe_sellable_convention(bool enabled = true) { probing_sellable_ = enabled; }
 
   /**
-   * Records one observation of the current portfolio for the convention probe.
+   * @brief Shows the current portfolio to the sellable-convention probe, if it is on.
    *
-   * Called by `settle` on every pass, and by a `PollingLoop` after it polls -- because a poll that
-   * refreshes the portfolio without feeding the runner is exactly the moment a sell of ours starts
-   * appearing in the listing, and a runner that only observed when fed would miss it.
-   *
-   * Observing the same state twice teaches nothing by construction: the probe concludes only from a
-   * change in the resting quantity, so a repeat is discarded rather than counted twice.
+   * Called on every pass and by `PollingLoop` after it polls. Skipped while the working-order listing
+   * is newer than the holdings.
    */
   void observe_sellable_convention() {
     // Skipped, not forgotten, while the listing is newer than the holdings: the resting quantity
@@ -629,62 +465,59 @@ public:
     }
   }
 
-  /** Returns what the probe has inferred, and the counts behind it. */
+  /**
+   * @brief Returns the sellable-convention probe.
+   * @return What it has inferred, with its counts.
+   */
   const strategy::SellableConventionProbe<Tag>& sellable_convention() const noexcept {
     return sellable_probe_;
   }
 
-  /** Returns the strategy, so a test can read the state it kept. */
+  /**
+   * @brief Returns the strategy, to read the state it kept.
+   * @return The strategy.
+   */
   const Strategy& strategy() const noexcept { return strategy_; }
-  /** @copydoc Runner::strategy() const */
+  /**
+   * @brief Returns the strategy.
+   * @return The strategy.
+   */
   Strategy& strategy() noexcept { return strategy_; }
 
-  /** Returns the context, so a caller can arrange the world before feeding an event. */
+  /**
+   * @brief Returns the context.
+   * @return The context.
+   */
   const Context& context() const noexcept { return context_; }
-  /** @copydoc Runner::context() const */
+  /**
+   * @brief Returns the context, to arrange its state (instruments, portfolio) before feeding events.
+   * @return The context.
+   */
   Context& context() noexcept { return context_; }
 
-  /** Returns the guard, so a caller can halt trading or read the limits. */
+  /**
+   * @brief Returns the risk guard.
+   * @return The guard.
+   */
   const strategy::RiskGuard& guard() const noexcept { return guard_; }
-  /** @copydoc Runner::guard() const */
+  /**
+   * @brief Returns the risk guard, to halt or resume trading.
+   * @return The guard.
+   */
   strategy::RiskGuard& guard() noexcept { return guard_; }
 
   /**
-   * Records today's permitted price band for one instrument, as a live runner would have read it.
+   * @brief Records an instrument's price band for today, used to clamp order prices.
    *
-   * Absent for an instrument means the broker published no band, which reconciliation treats as no
-   * clamping rather than as a band of zero width.
+   * The band is dated by the earlier of the exchange's timestamp, where the broker gave one (Toss,
+   * Kiwoom), and the instant last set with `set_observed_at` (the only date of a KIS band); a future
+   * exchange timestamp cannot make it fresher. A band recorded before any instant was set is dated at
+   * the epoch, so any realistic age limit rejects it. Its age is measured against the later of
+   * `observed_at()` and `Context::now()`; a band dated after that instant is never applied, whatever
+   * the policy. Whether a band is applied depends on `set_maximum_price_limits_age`.
    *
-   * **Dated on arrival, because a band is a per-trading-day value.** `PriceLimits` is "the highest
-   * price allowed today" and for KRX it moves with the previous close, so one registered at startup
-   * describes the day it was registered on. The date recorded is the **exchange's own stamp where
-   * the broker published one** -- Toss's `timestamp` and Kiwoom's `date`/`tm` both reach
-   * `PriceLimits::exchange_time_`, capped so it can only age a band -- and the last instant a
-   * driving loop reported, where the broker published none, which is every KIS band. The difference is not cosmetic and `set_maximum_price_limits_age` states it: a
-   * stamped band can be asked how old the *exchange's statement* is, an unstamped one only how long
-   * ago it was fetched, and a successful fetch of a week-old band would otherwise read as brand new.
-   *
-   * Keyed on the whole identity. Country and venue participate in `InstrumentId` equality, so a map
-   * keyed on the symbol alone lets a KRX band and an NXT band for the same stock overwrite each
-   * other -- which nothing reached while nothing in the library filled this map, and
-   * `PollKind::PRICE_LIMITS` sweeping a universe does.
-   *
-   * **The receipt clock is `set_observed_at`'s instant, and deliberately not `freshness_instant()`.**
-   * That maximum includes the context's own decision instant, which is a bar's *period end* -- and a
-   * broker that publishes a forming bar puts that instant in the future. A band stamped from it would
-   * be dated ahead of the clock and stay fresh past the stated maximum in wall time, which is the one
-   * direction a staleness rule must not fail in. Stamping from the reported instant while **ageing**
-   * against `freshness_instant()` leaves the comparison never earlier than the stamp, so a band can
-   * read older than it is and never younger.
-   *
-   * **A band registered before this runner has been told any instant is stamped at the epoch**, and
-   * is then older than any maximum an operator would state. That is a caller driving a runner
-   * directly: `PollingLoop` calls `set_observed_at` before anything can feed, so a polled band
-   * carries the iteration that read it. A direct caller states the instant itself, accepts any age,
-   * or gets a band that is held back -- the fail-closed direction, and visible in
-   * `price_bands_withheld`. The library does **not** read the wall clock here to paper over it: no
-   * decision path in this runner reads one, and introducing one would make a replay's answer depend
-   * on when the replay was run.
+   * @param id The instrument (bands are kept per full identity, venue included).
+   * @param limits The band.
    */
   void set_price_limits(const InstrumentId& id, PriceLimits limits) {
     DatedBand dated;
@@ -694,247 +527,132 @@ public:
   }
 
   /**
-   * States how old a price band may be before it is **not applied** to an order's price.
+   * @brief Sets how old a price band may be and still be applied to an order's price.
    *
-   * The policy, not a verdict, on the same terms as `set_maximum_portfolio_age`: it is evaluated
-   * against whatever band is in hand each time a plan is built.
+   * With no policy stated (the default), **no band is applied**; call
+   * `allow_unbounded_price_limits_age` to apply bands of any age.
    *
-   * **A band nobody has aged is not applied either**, which is the one behavioural change this
-   * carries for a caller who already registers bands. Leaving the policy unset used to mean "apply
-   * this band forever"; it now means the same as an expired one. State `allow_unbounded_price_limits_age`
-   * to keep the old behaviour deliberately.
+   * A band not applied leaves the strategy's own price on the order, as if no band were known. That
+   * has costs: the exchange may reject a price outside today's real band that the clamp would have
+   * fixed (an exit below today's floor, say), or a local check (notional, buying power, exposure)
+   * may refuse a buy priced above the ceiling. `unclamped_orders_rejected` and
+   * `unclamped_orders_refused` count those; an order accepted at the raw price that never filled is
+   * not counted.
    *
-   * **What withholding costs, stated without flattery.** It returns the order to the library's
-   * ordinary state -- no band, no clamp, the strategy's own price on the wire -- which is what every
-   * run that registers no band already does. That is not free, and an earlier draft of this comment
-   * claimed it was:
-   *
-   * - **A fill can be lost.** Where the stated price lies outside *today's real* band, the exchange
-   *   refuses the order, while the clamped price would have been accepted and could have traded.
-   *   `clamp_to_limits` says so itself: it turns an order the exchange would certainly reject into
-   *   one it will accept. A reducing sell is the case that stings -- an exit priced below today's
-   *   floor is refused instead of being lifted onto it.
-   * - **Something local can refuse it instead, and then no exchange ever sees it.** `RiskGuard`
-   *   values an order at `quantity * price_`, so a **buy** left above a withheld ceiling is a larger
-   *   notional than the clamped one: the per-order ceiling, buying power and the gross exposure
-   *   ceiling each see a bigger number and one of them may refuse an order the band would have
-   *   admitted. (A sell left below a withheld floor is the smaller notional, so those limits are not
-   *   what stops it.) And the binding itself refuses a price no adapter will send -- a sell at zero
-   *   passes `Price::checked`, because zero sits on a stated grid, and every shipped adapter rejects
-   *   it before any request goes out.
-   *
-   * **Both of those are refusals, and both are counted** -- `unclamped_orders_rejected` for the one
-   * a broker made and `unclamped_orders_refused` for the ones nothing sent, which is the same
-   * division `LoopReport` already makes between a closing instruction the broker rejected and one a
-   * guard refused. The case with **no refusal in it** is counted by neither and cannot be: an order
-   * accepted at the raw price that then simply never filled leaves nothing to observe.
-   *
-   * **Why it is still the default.** A band whose age nobody has bounded is not evidence about
-   * today's band, and this library does not alter an order's price on the strength of something that
-   * is not evidence. The alternative is not "clamp correctly" -- it is "clamp to a number from an
-   * unknown day", whose failure is an order resting at a price nobody chose, indistinguishable from
-   * a working order and possibly never filling. Between a stated refusal and a silent misprice this
-   * library takes the stated one, and the operator overrides it in one line.
-   *
-   * @param age how old a band may be. `std::nullopt` withdraws a stated maximum and returns this
-   *   runner to having stated no policy at all, which withholds every band -- it does not mean
-   *   "any age", which is what `allow_unbounded_price_limits_age` is for.
+   * @param age The maximum age. `std::nullopt` withdraws the policy (so no band is applied); it does
+   *   not mean "any age".
    */
   void set_maximum_price_limits_age(std::optional<std::chrono::nanoseconds> age) {
     maximum_price_limits_age_ = age;
-    // **Cleared whether or not an age was given**, because this call *is* the policy now. Clearing
-    // it only for a stated age left `set_maximum_price_limits_age(std::nullopt)` after
-    // `allow_unbounded_price_limits_age()` still applying a band of any age -- the documented
-    // withdrawal doing nothing, under the one call an operator would reach for to stop it.
+    // This call is now the whole policy, so it also withdraws "any age".
     allow_unbounded_price_limits_age_ = false;
   }
 
-  /**
-   * States that this runner applies a price band of any age, in place of stating a maximum.
-   *
-   * The deliberate half of the requirement above, and the pre-2026 behaviour named rather than
-   * defaulted into. It does not make a stale band safe; it records that the caller considered it.
-   */
+  /** @brief Applies price bands of any age (replacing a stated maximum). */
   void allow_unbounded_price_limits_age() {
     allow_unbounded_price_limits_age_ = true;
     maximum_price_limits_age_.reset();
   }
 
   /**
-   * Returns how many plans were built while a band was held for the instrument and not applied.
-   *
-   * **Plan evaluations, not orders**: a plan that produced a market order, or no order at all, is
-   * counted the same as one that produced a limit. Monotone, so a driving loop differences it.
-   * This figure is about the *policy*; what it cost is `unclamped_orders_rejected` and
-   * `unclamped_orders_refused`, and neither of those sees an order accepted at the raw price that
-   * then simply never filled.
+   * @brief Returns how many plans were built while a band was known for the instrument but not applied (counted per plan, not per order).
+   * @return The count over the runner's life.
    */
   std::size_t price_bands_withheld() const noexcept { return price_bands_withheld_; }
 
   /**
-   * Returns whether a band-age policy has been stated at all, either way.
-   *
-   * Published so a driving loop's diagnostics can describe **this runner's** policy rather than
-   * remembering which of its own wrappers were called. A loop that kept its own flag could disagree
-   * with the runner in both directions -- a maximum set directly on the runner before the loop was
-   * built read as "no policy stated", and a withdrawal made directly on the runner after the loop's
-   * `allow_unbounded_price_limits_age` suppressed the note that withdrawal is supposed to produce.
-   * There is one policy; there should be one place that answers for it.
-   *
-   * **Both halves are load-bearing as an answer, and only one of them is reachable through a loop
-   * today.** A run that accepts any age withholds no band for age, so the note that reads this
-   * cannot currently fire while `allow_unbounded_price_limits_age` is in force -- the one state that
-   * would combine them, a band dated after the instant it is aged at, needs a caller moving the
-   * reported clock backwards, which `PollingLoop` does not do. The term stays because this answers
-   * "has a policy been stated", not "is the note due", and an accessor that answered its own
-   * question wrongly would be waiting for the first caller who asked it directly.
+   * @brief Tests whether a price-band age policy has been stated (a maximum, or any age).
+   * @return `true` if one has.
    */
   bool price_limits_age_policy_stated() const noexcept {
     return maximum_price_limits_age_.has_value() || allow_unbounded_price_limits_age_;
   }
 
   /**
-   * Returns how many **sent** orders were refused by the broker after a withheld band would have
-   * moved their price.
+   * @brief Returns how many sent orders the broker refused while carrying a price a withheld band
+   *   would have clamped.
    *
-   * The half where a **broker was asked**, counted where the outcome is known rather than where the
-   * decision was made -- the division `sends_outside_permitted_phase` already makes. Everything that
-   * never reached a broker is `unclamped_orders_refused`; an order the broker accepted is in
-   * neither.
+   * Co-occurrence, not proof that the band caused the refusal. Orders refused before sending are in
+   * `unclamped_orders_refused`.
    *
-   * It is **co-occurrence, not causation**, and no arithmetic here can make it otherwise: a broker
-   * refuses orders for reasons that have nothing to do with a price band, and a count of one is one
-   * order that happened to be carrying an unclamped price when it was refused. Read a count that
-   * tracks a run's rejections as a reason to look at the band policy, not as proof about any single
-   * order. Zero does **not** mean withholding cost nothing: read it beside
-   * `unclamped_orders_refused`, and note that **neither counter can see the case with no refusal at
-   * all** -- an order accepted at the raw price that then simply never filled.
+   * @return The count over the runner's life.
    */
   std::size_t unclamped_orders_rejected() const noexcept { return unclamped_orders_rejected_; }
 
   /**
-   * Returns how many orders nothing sent to a broker while carrying a withheld band's unclamped
-   * price.
-   *
-   * Everything that **never reached a broker** while carrying that price, which is two sites and not
-   * one:
-   *
-   * - a **guard**: `RiskGuard` values an order at `quantity * price_`, so a buy left above a
-   *   withheld ceiling is the larger notional and the per-order ceiling, the buying-power check or
-   *   the gross exposure ceiling can refuse what the band would have admitted;
-   * - the **binding**: a limit price no adapter will send, which review found a real instance of --
-   *   a sell at zero, which `Price::checked` admits because zero sits on a stated grid, and which
-   *   a withheld floor would have lifted into range.
-   *
-   * `unclamped_orders_rejected` stays at zero through every one of them, which is why this exists
-   * separately rather than being folded in. Co-occurrence on the same terms as its sibling: a guard
-   * and a binding each refuse orders for their own reasons, and this counts the ones that happened
-   * to be carrying an unclamped price. `UNAVAILABLE` is **not** counted -- that is this process's
-   * local machinery being unavailable -- usually a pre-send journal write that failed, and not only
-   * that -- which no price affects.
+   * @brief Returns how many orders carrying a price a withheld band would have clamped were refused
+   *   before sending (by the risk guard or the binding; not counting `UNAVAILABLE`).
+   * @return The count over the runner's life.
    */
   std::size_t unclamped_orders_refused() const noexcept { return unclamped_orders_refused_; }
 
   /**
-   * How many instructions failed to reach a broker, by **origin**, and how many reached one and were
-   * refused.
+   * @brief Returns how many orders reconciliation could not build (any `strategy::RejectReason`
+   *   before sending, including a quantity that rounded to zero).
    *
-   * **All monotone, so a driving loop differences them**, exactly as it does
-   * `sends_outside_permitted_phase`. They exist because a live run threw every one of these away: a
-   * `Runner::Report` carries fourteen vectors describing what became of each instruction, and
-   * `live::SessionSource` discards the report on every poll -- so a run in which the broker refused
-   * everything looked very much like one in which it accepted everything. Not identical: the phase
-   * and price-band figures can differ for some refused orders. But nothing said *the broker refused
-   * these*.
+   * One of six counters of what became of placements: `orders_unbuildable`,
+   * `orders_reconcile_withheld`, `orders_guard_refused`, `orders_binding_refused`,
+   * `orders_broker_refused`, `orders_indeterminate`. All count over the runner's life, so a loop
+   * differences them; the per-instruction reasons are in each pass's `Report`. See also
+   * `last_unbuildable`.
    *
-   * **Six origins for placements**, not one figure, because an operator's next move differs for each
-   * and the library already distinguishes them:
-   *
-   * - `orders_unbuildable` -- **every** reconciliation rejection. Missing reference data, no price,
-   *   an unknown grid -- and a quantity that rounded to zero, which is an instruction deliberately
-   *   dropped rather than anything being wrong. So a non-zero figure is not by itself a reason to go
-   *   looking for missing data; `Report::rejected_` carries the reason per instruction.
-   * - `orders_reconcile_withheld` -- the indeterminacy ledger holds this instrument until a listing
-   *   settles an unknown outcome. Nothing was wrong with the instruction.
-   * - `orders_guard_refused` -- `RiskGuard` refused it. **A hold as well as a limit**: it checks the
-   *   active holds first, so a halted run reports every order here, not only one that breached a
-   *   number. `Report::refused_` carries the reason per order, which is what a diagnosis needs.
-   * - `orders_binding_refused` -- the binding would not send it. No request went out and no broker
-   *   counted one.
-   * - `orders_broker_refused` -- the broker was asked and said no. A request *was* spent, and
-   *   `last_broker_refusal` carries what it said.
-   * - `orders_indeterminate` -- the request failed in transit, so the order may or may not exist.
+   * @return The count.
    */
   std::size_t orders_unbuildable() const noexcept { return orders_unbuildable_; }
-  /** @copydoc Runner::orders_unbuildable */
+  /**
+   * @brief Returns how many orders were held back because the instrument had an order of unknown outcome; see `orders_unbuildable`.
+   * @return The count.
+   */
   std::size_t orders_reconcile_withheld() const noexcept { return orders_reconcile_withheld_; }
-  /** @copydoc Runner::orders_unbuildable */
+  /**
+   * @brief Returns how many orders the risk guard refused, for a limit or a hold; see `orders_unbuildable`.
+   * @return The count.
+   */
   std::size_t orders_guard_refused() const noexcept { return orders_guard_refused_; }
-  /** @copydoc Runner::orders_unbuildable */
+  /**
+   * @brief Returns how many orders the binding refused to send (no request made); see `orders_unbuildable`.
+   * @return The count.
+   */
   std::size_t orders_binding_refused() const noexcept { return orders_binding_refused_; }
-  /** @copydoc Runner::orders_unbuildable */
+  /**
+   * @brief Returns how many orders the broker refused (`SendOutcome::REJECTED`; a request was spent);
+   *   see `last_broker_refusal`. At KIS, Toss and Kiwoom most refusals count as unknown outcomes
+   *   instead.
+   * @return The count.
+   */
   std::size_t orders_broker_refused() const noexcept { return orders_broker_refused_; }
-  /** @copydoc Runner::orders_unbuildable */
+  /**
+   * @brief Returns how many orders had an unknown outcome (`SendOutcome::INDETERMINATE`, which at
+   *   KIS, Toss and Kiwoom includes most of the broker's own refusals).
+   * @return The count.
+   */
   std::size_t orders_indeterminate() const noexcept { return orders_indeterminate_; }
 
   /**
-   * The two failures that are not about one instruction's own merits.
-   *
-   * - `plans_withheld` -- a whole reconciliation plan held back before any of its parts was judged.
-   *   Counted apart from the six origins because nothing was wrong with the instructions themselves.
-   *   **Four reasons reach it and this figure does not tell them apart**: the portfolio was never
-   *   read (`PORTFOLIO_ABSENT`), it is older than the stated maximum (`PORTFOLIO_STALE`), the
-   *   working-order listing arrived after it (`PORTFOLIO_SUPERSEDED`), or a hold is refusing
-   *   placements while the plan also wanted to withdraw something (`PLACEMENT_HELD`) -- the last two
-   *   on a portfolio that is perfectly fresh, so a reader who assumed this figure meant "the account
-   *   is unknown" would chase the wrong thing. `Report::withheld_plans_` carries the
-   *   reason per plan; this counts how often it happened.
-   *
-   *   **The loop's own gate does not always describe it**, which is why it is a figure at all: with
-   *   `allow_absent_portfolio` the gate is open while this still fires for a plan that would withdraw
-   *   something.
-   * - `instructions_unavailable` -- **local machinery was unavailable**, so the instruction was not
-   *   sent. A pre-send journal write that failed is the usual cause and not the only one: any
-   *   executor answering `SendOutcome::UNAVAILABLE` lands here, so a binding with no journal at all
-   *   can produce this. Placements and withdrawals together, because the operator's response is about
-   *   the process rather than the order. It leaves a sticky `LOCAL_FAILURE` hold, which the loop's
-   *   gate *may* report -- a higher-priority hold can be named instead while that one is still in
-   *   force -- so this figure is how many instructions it cost rather than evidence about the gate.
+   * @brief Returns how many whole reconciliation plans were held back (any `WithheldPlanReason`:
+   *   holdings absent, stale or superseded, or a placement hold); the reasons are in each
+   *   `Report::withheld_plans_`.
+   * @return The count over the runner's life.
    */
   std::size_t plans_withheld() const noexcept { return plans_withheld_; }
 
   /**
-   * Targets held back while a stop on their instrument is withdrawn, at most one per instrument.
+   * @brief Returns the targets waiting for a stop on their instrument to be cancelled (at most one per
+   *   instrument).
    *
-   * **Why the runner keeps them rather than the strategy.** A target that needs a trade while a stop
-   * rests withdraws the stop and sends nothing (`strategy::RejectReason::STOP_ORDER_RESTING`), because
-   * a sell beside a stop that may still release can sell twice. What ends the wait is the stop's own
-   * outcome -- and a stop leaving the working-order listing feeds no strategy callback at all
-   * (`OrderUpdateWatch` reports what a listing says, never what it stopped saying). A flatten stated
-   * once from `on_phase` would therefore never be stated again. So the runner keeps it:
+   * A target that needs a trade while a stop rests cancels the stop and waits
+   * (`strategy::RejectReason::STOP_ORDER_RESTING`); the runner keeps it so it is not lost when no
+   * strategy callback follows. It is:
+   * - replaced by any later target or order intent the strategy states for the instrument;
+   * - released (and settled) by `retry_deferred` once each stop it waits on is no longer listed and
+   *   its history row is terminal with nothing filled;
+   * - dropped without sending if a stop shows any fill (counted in `deferred_dropped_after_fill`; a
+   *   partial fill's remainder is left for the strategy to restate);
+   * - kept while a stop is still listed or its history is missing or not terminal.
    *
-   * - **retained** when a `TargetPosition`'s plan passed the withheld-plan gate and came back refused
-   *   for `STOP_ORDER_RESTING`, together with the references of the stops it waits on. A plan withheld
-   *   whole retains nothing -- its withdrawal never went out;
-   * - **replaced** by any `TargetPosition` or `OrderIntent` the strategy states for the instrument
-   *   later, in any pass. It is a fallback for silence, not a goal that outranks what the strategy says;
-   * - **released** only by `retry_deferred`, never inside an ordinary pass, and only on **the broker's
-   *   own record of each stop**: every stop it waited on is no longer listed, and has a history row --
-   *   matched by `OrderSnapshot::order_id_` against the reference's primary part -- that is terminal
-   *   with **nothing filled**. A listing alone cannot tell a cancelled stop from a filled one, and a
-   *   holdings read is no proof either, since a broker's holdings and order endpoints promise no
-   *   read-after-write consistency. Fills are read from `execution_.filled_quantity_`, never from the
-   *   status: KIS reports a partly filled order it then cancelled as `CANCELED`;
-   * - **dropped without a send** when any stop it waited on shows anything filled. A full fill met the
-   *   flatten already; a partial one leaves its remainder **for the strategy to restate** -- the one
-   *   case this does not finish by itself, counted by `deferred_dropped_after_fill`. It fails towards
-   *   an omission, never a second sell;
-   * - **kept** while a stop is still listed, or its history row is missing or not yet terminal: a stale
-   *   answer waits, it does not release.
+   * Not journalled: a restart loses it.
    *
-   * It needs only the working-order cadence -- `live::SessionSource` reads the history on demand in
-   * the poll that no longer lists the stop -- and no holdings poll. Not journalled: it has produced no
-   * instruction a broker could have seen, and a restart loses it as it loses every unstated intention.
+   * @return The waiting targets.
    */
   std::vector<strategy::TargetPosition> deferred_targets() const {
     std::vector<strategy::TargetPosition> targets;
@@ -945,16 +663,22 @@ public:
     return targets;
   }
 
-  /** How many targets have been deferred behind a stop's withdrawal; see `deferred_targets`. */
+  /**
+   * @brief Returns how many targets have waited for a stop's cancellation; see `deferred_targets`.
+   * @return The count over the runner's life.
+   */
   std::size_t targets_deferred() const noexcept { return targets_deferred_; }
 
-  /** Deferred targets dropped because a stop they waited on had filled; see `deferred_targets`. */
+  /**
+   * @brief Returns how many waiting targets were dropped because a stop they waited on had filled.
+   * @return The count over the runner's life.
+   */
   std::size_t deferred_dropped_after_fill() const noexcept { return deferred_dropped_after_fill_; }
 
   /**
-   * Returns the earliest instant a target still waiting was deferred, where one's stops are all gone
-   * from the listing -- the start of the history a caller must read for it -- or nothing when no
-   * deferred target can be decided from history yet.
+   * @brief Returns from when the broker's order history must be read to decide waiting targets.
+   * @return The earliest instant a target whose stops are all unlisted began waiting, or
+   *   `std::nullopt` if none can be decided from history yet.
    */
   std::optional<std::chrono::system_clock::time_point> deferred_awaiting_evidence() const {
     std::optional<std::chrono::system_clock::time_point> earliest;
@@ -970,71 +694,60 @@ public:
   }
 
   /**
-   * Releases, drops or keeps each deferred target against `evidence`, the broker's history rows, and
-   * settles what it released.
+   * @brief Decides each waiting target against the broker's order history, and settles what it
+   *   released.
    *
-   * `live::SessionSource` calls it after a working-order poll's update feeds, with the history it read
-   * because `deferred_awaiting_evidence` asked for it. It dispatches no handler, settles only when it
-   * released something, and never runs inside an ordinary pass: an order update's pass would otherwise
-   * release the fallback before a later update in the same listing let the strategy say something else.
+   * `live::SessionSource` calls it after a working-order poll. It calls no handler.
+   *
+   * @param evidence History rows covering the instants `deferred_awaiting_evidence` asked for.
+   * @return The report of the settlement.
    */
   Report retry_deferred(const std::vector<OrderSnapshot>& evidence) {
     return release_deferred(&evidence);
   }
 
   /**
-   * How many orders this runner sent are still counted until the broker confirms what became of them.
+   * @brief Returns how many sent orders are still counted as reserved until the broker accounts for
+   *   them.
    *
-   * **Why a listing alone does not end a reservation** (lab F15). A working-order listing replaces
-   * `working_` wholesale, and used to retire every reserved row with it. But a market order that filled
-   * at once is in no listing, a resting order may not be listed yet, and a listed order can fill and
-   * leave the listing -- and in each case a holdings answer that lags the fill does not show it either.
-   * A target then sent the order again: in the lab, holdings 70 s behind turned 47 trades into 295, at
-   * up to twice the target.
+   * A runner that keeps sent orders (`keeps_sent_orders_until_listed`) remembers each order the
+   * broker accepted with a reference, and each order of unknown outcome if its executor reports
+   * references (has `last_ref()`, as `live::SessionExecutor` does), provided holdings had been read
+   * and the instrument's net holding was known when it was sent. Before each pass it rebuilds a
+   * reserved working row from what neither holdings (moved in the order's direction since it was
+   * sent) nor a listing yet explains. An entry ends when holdings show the whole quantity, or the
+   * broker's history shows the order ended with less (`confirm_from_history`). This stops a target
+   * from ordering again while a fill has not reached the holdings yet.
    *
-   * So a runner that keeps sent orders until listed (`keeps_sent_orders_until_listed`) remembers every
-   * order the broker accepted with a reference, with the instrument's net holding when it was sent --
-   * and every order whose request failed in transit, from the send, with no reference until a sweep
-   * names it (`resolve_indeterminate_placement`).
-   * Before every handler and every pass the reserved row is rebuilt from it, as the order's quantity
-   * that nothing yet explains: less what holdings have moved since in the order's direction, less what
-   * a listing still shows for the same reference. Several orders on one instrument are credited in
-   * the order they were sent; orders on both sides of one instrument are credited only when holdings
-   * account for all of them. The entry ends when **holdings** show the whole quantity, or when the
-   * broker's history shows the order ended with less filled (`confirm_from_history`). A trade outside
-   * this runner on the same instrument can shrink or delay that, until the timeout withholds the
-   * instrument; it cannot make a target send twice.
+   * An accepted order not tracked (no reference, or sent before holdings were read, as
+   * `allow_absent_portfolio` permits) has no such protection: its reservation lasts only until the
+   * next listing. An order of unknown outcome not tracked (an executor without `last_ref()`) gets no
+   * reservation at all once the ledger entry is resolved. Only orders sent in this process are
+   * tracked; a restart starts with none.
    *
-   * Only orders accepted in this process: a restart starts with none (`running-a-strategy-live.md`).
+   * @return The number of such orders.
    */
   std::size_t unconfirmed_orders() const noexcept { return unconfirmed_.size(); }
 
   /**
-   * Rebuilds those orders' reserved rows against the portfolio as it stands now.
+   * @brief Rebuilds the reserved working rows against the portfolio as it is now.
    *
-   * Every pass and every handler does this first. A caller reading `working_` outside one -- the
-   * loop's closing pass sizing a flatten -- calls it before reading.
+   * Every pass does this first; call it before reading `working_` outside a pass.
    */
   void refresh_unconfirmed() { confirm_reservations(); }
 
   /**
-   * Hands a sweep's answer to an order whose request failed in transit (`SendOutcome::INDETERMINATE`).
+   * @brief Tells the runner what a reconciliation sweep found for an order of unknown outcome.
    *
-   * Such an order is counted from its send like an accepted one, with no reference (lab F35): once a
-   * sweep finds it in the broker's listing the ledger lets the instrument trade again, and a market
-   * order that filled is then in no listing while holdings may not show it yet. With `order_id` (the
-   * sweep matched it) the order is counted on as an accepted one is -- a listing covers what it still
-   * shows, holdings what filled, its history what it ended with. Without (the sweep concluded it was
-   * never placed) it is forgotten, and its reserved row goes with it. An instrument with no such order
-   * here -- a predecessor's instruction resolved after a restart, a runner that does not keep its
-   * orders -- is left alone.
+   * With an order id (found in the broker's listing), the order is tracked like an accepted one;
+   * without (it was never placed), it is forgotten with its reserved row. `live::SessionSource`
+   * calls this for each recorded `MATCHED` or `NOT_PLACED` placement; a source of your own, or an
+   * operator clearing the ledger by hand, should too, or the order's instrument is withheld again
+   * after the confirmation timeout.
    *
-   * At most one exists per instrument while the ledger holds it (it withholds every placement there);
-   * after a hold cleared by hand without naming its order there can be two, and the newest is answered.
-   * `live::SessionSource` calls this for every recorded `MATCHED` or `NOT_PLACED` placement;
-   * a source of the caller's own that reconciles by hand should too, and so should an operator clearing
-   * the ledger by hand. Otherwise, once the hold is lifted, the order shows as a reserved row with no
-   * reference, waits for holdings, and past the confirmation timeout withholds its instrument again.
+   * @param instrument The instrument.
+   * @param side The order's side.
+   * @param order_id The broker's order id, or `std::nullopt` if the order was not placed.
    */
   void resolve_indeterminate_placement(
     const InstrumentId& instrument, OrderSide side, const std::optional<std::string>& order_id
@@ -1082,36 +795,35 @@ public:
   }
 
   /**
-   * Sets how long a sent order's quantity may stay unexplained before its instrument is withheld.
+   * @brief Sets how long a sent order's quantity may stay unexplained before its instrument is
+   *   withheld (ten minutes by default).
    *
-   * Ten minutes by default. Measured from the first pass at which neither holdings nor a listing
-   * account for the quantity, on `set_observed_at`'s clock or the decision instant, whichever is later.
-   * When it passes, the broker's history is read once more (`unconfirmed_awaiting_evidence`); if that
-   * does not settle it -- or if it does, and holdings still have not shown the filled quantity one more
-   * timeout later -- the entry is dropped and its instrument **marked in the indeterminacy ledger**,
-   * which an operator clears after reading the account (a restart drops it, as it drops every ledger
-   * entry, and a sweep resolving another instruction on the instrument lifts it). A timeout too short
-   * therefore costs trading on that instrument, never a duplicate order. The mark always waits for a
-   * holdings answer read a whole timeout after the quantity became unexplained (for a settled order,
-   * after the history settled it), so it does not depend on how often the loop polls. A source of your
-   * own that never advances `Portfolio::as_of_` therefore never marks: the order stays reserved for the
-   * rest of the run, with no ledger entry and no count.
+   * When it passes, the broker's history is read once more; if that does not settle it, or holdings
+   * still do not show the filled quantity one more timeout later, the instrument is marked in the
+   * indeterminacy ledger for an operator to clear. Too short a timeout costs trading on that
+   * instrument, never a duplicate order. It needs a source that advances `Portfolio::as_of_` on each
+   * holdings read.
+   *
+   * @param timeout The timeout.
    */
   void set_confirmation_timeout(std::chrono::nanoseconds timeout) { confirmation_timeout_ = timeout; }
 
-  /** How many sent orders timed out unconfirmed, each withholding its instrument; see `set_confirmation_timeout`. */
+  /**
+   * @brief Returns how many sent orders timed out unconfirmed, each withholding its instrument.
+   * @return The count over the runner's life.
+   */
   std::size_t orders_unconfirmed_timed_out() const noexcept { return orders_unconfirmed_timed_out_; }
 
   /**
-   * Returns the earliest instant a sent order that only the broker's history can settle was sent, or
-   * nothing when none needs it.
+   * @brief Returns from when the broker's order history must be read to settle sent orders.
    *
-   * An order needs it when some of its quantity is unexplained, no listing carries it, and either a
-   * listing once did (it was cancelled, expired or filled since), this runner's withdrawal of it was
-   * accepted (it may have filled before), or it has passed the confirmation timeout and the history has
-   * not yet been read once past it (after that it waits on holdings alone). `live::SessionSource`
-   * reads history from the day before this instant after a working-order poll and passes it to
-   * `confirm_from_history`.
+   * An order needs it when part of it is unexplained and either it passed the confirmation timeout
+   * (listed or not), or no listing carries it and it was listed before or its cancellation was
+   * accepted. Excluded: an order the history already settled; one whose history had no answer after
+   * the timeout (until a later listing or holdings explain it again); and an order of unknown outcome
+   * with no reference while its instrument is in the ledger.
+   *
+   * @return The earliest such order's send instant, or `std::nullopt` if none needs history.
    */
   std::optional<std::chrono::system_clock::time_point> unconfirmed_awaiting_evidence() {
     // Against the portfolio as it stands: a listing just installed may carry, or no longer carry, an
@@ -1131,15 +843,16 @@ public:
   }
 
   /**
-   * Settles sent orders against `evidence`, the broker's history rows, and withholds what timed out.
+   * @brief Settles reserved orders against the broker's order history; sends nothing.
    *
-   * A terminal row for an order (matched on the reference's primary part, instrument and side) caps
-   * what holdings must still show at its `execution_.filled_quantity_` -- never read from the status,
-   * since KIS reports a part-filled order it then cancelled as `CANCELED` -- and an order that ended
-   * with nothing filled is forgotten at once, and one that filled gets a fresh timeout for holdings to
-   * show it. An order past the confirmation timeout that this does not settle is flagged, and
-   * `confirm_reservations` withholds its instrument once a holdings read taken a timeout after its
-   * quantity became unexplained still lacks it. Sends nothing.
+   * A terminal row for an order caps the quantity holdings must still show at its filled quantity;
+   * an order that ended with nothing filled is forgotten at once. After the runner has seen the phase
+   * `CLOSED` or `POST_CLOSE` since the order was sent, an open row of a `DAY` order counts as
+   * terminal (its filled quantity is final). An order the history settled, or had no answer for
+   * after the timeout, withholds its instrument (`orders_unconfirmed_timed_out`) if a holdings read
+   * a timeout later still does not show it; see `set_confirmation_timeout`.
+   *
+   * @param evidence History rows covering the instants `unconfirmed_awaiting_evidence` asked for.
    */
   void confirm_from_history(const std::vector<OrderSnapshot>& evidence) {
     confirm_reservations();
@@ -1177,47 +890,34 @@ public:
   }
 
   /**
-   * Plans again the targets withheld for want of a trustworthy account, once there is one, and the
-   * targets the market phase refused, once the phase permits them.
+   * @brief Re-submits retained targets and kept intents once they can be acted on, and settles them.
    *
-   * A target withheld as `PORTFOLIO_ABSENT`, `PORTFOLIO_STALE` or `PORTFOLIO_SUPERSEDED` -- stated from
-   * an `on_order_update` during the listing poll, say, or on a bar after a failed holdings read -- is
-   * kept (`targets_retained`) and resubmitted here. `PollingLoop` calls it after each iteration's
-   * polls and gate, so the account and the budget it is sized against are that iteration's.
+   * The runner keeps (rather than drops):
+   * - a target withheld as `PORTFOLIO_ABSENT`, `PORTFOLIO_STALE` or `PORTFOLIO_SUPERSEDED`, until
+   *   holdings are usable (any runner, a dry run included);
+   * - a target or order intent refused for the market phase (a daily strategy deciding while the
+   *   market is shut), until `RiskLimits::permitted_phases_` admits the phase;
+   * - a target or order intent the broker could not be reached for, or refused for its rate limit,
+   *   until a holdings read newer than the failure arrives.
    *
-   * **A target the phase refused waits for a permitted phase** (`targets_retained_for_phase`), and so
-   * does an order intent (`intents_kept_for_phase`), checked against the book at release. A daily
-   * strategy decides on a bar fed after its day has ended -- at 00:00 KST for every shipped adapter's
-   * daily bars -- while the market is shut: its opening order is refused `PHASE_NOT_PERMITTED`, and an
-   * exit the limit admits outside the phase is typically rejected by a broker that is not taking
-   * orders. Either way the target is kept, and planned again in the first iteration whose phase
-   * `RiskLimits::permitted_phases_` admits, which is what a replay does by filling at the next bar's
-   * open. Only for a runner that sends to a broker: a replay and a dry run never call this, and keep
-   * dropping a refused target as before.
+   * The last two only in a runner that sends to a broker. Not kept: anything decided under the
+   * `STOPPING`, `OPERATOR` or `LOCAL_FAILURE` hold; an intent with a client order id the broker
+   * answered; an intent whose instrument's net holding is unknown. So a protective stop with a client
+   * order id, refused out of hours, is not installed at the open by itself (one without an id is).
    *
-   * **An instruction the broker could not be reached for, or turned away for its rate limit, is kept
-   * here too** (`broker_unreachable`, `broker_rate_limited`),
-   * with the phase-refusal rules, and offered again only once a holdings read newer than the failure
-   * has arrived: a retry every iteration into a dead connection would wait out a connect timeout per
-   * instruction and hold the loop, and a stop, behind it. The `_for_phase` counts include them. This
-   * needs a source that advances `Portfolio::as_of_` on every successful holdings read, as
-   * `SessionSource` does; one that does not leaves them waiting until a later statement, a stop or a
-   * halt replaces them, sending nothing.
+   * At release, a kept intent is dropped (`kept_intents_dropped`) if the instrument's holding
+   * changed since (except a `TARGET_WEIGHT` intent, which is planned again against the new holding),
+   * or if it carries a trigger and a stop now rests on the instrument.
    *
-   * **Does nothing, and keeps them, until it can succeed**: while the account was never read or
-   * predates the listing, and while any hold is in force. A later target or order intent for the same
-   * instrument replaces a retained target; a stop or an abandoned run discards them
-   * (`clear_retained_targets`), so retained work lives for one `PollingLoop::run`. `PollingLoop`
-   * retries last in an iteration, after `on_phase`. Within a run, a target retained for the account
-   * before an operator's halt survives it and is planned, against fresh holdings, once the halt is
-   * lifted; **a target retained for the phase does not**: an operator's halt or a local failure
-   * discards it, because it may have been decided hours before and the operator stopped trading since.
-   * The discard happens here, so a program driving a runner by hand that halts and resumes without a
-   * call in between keeps it; `PollingLoop` calls this every iteration.
+   * Nothing is released while holdings were never read or predate the listing, or while any hold is
+   * in force. If this method runs while `OPERATOR` or `LOCAL_FAILURE` holds, it discards every kept
+   * intent and every target kept for the phase or the broker (targets kept for the account stay).
+   * Halting and resuming without calling it in between discards nothing, so the kept work can still
+   * go out after the resume; call `clear_retained_targets` to drop it. A later target or intent for
+   * the instrument replaces a retained one. `PollingLoop` calls this once per iteration; a program
+   * driving a `Runner` itself must call it (or `clear_retained_targets`).
    *
-   * A program driving a `Runner` without `PollingLoop` retains the same way and must call this
-   * itself, or `clear_retained_targets`; nothing else replays or discards them. A replay never stamps
-   * `Portfolio::working_as_of_`, so a backtest never withholds as superseded.
+   * @return The report of the settlement, empty if nothing was released.
    */
   Report retry_retained_targets() {
     // Once per iteration, so the context shows what this iteration's holdings confirmed even when no
@@ -1254,12 +954,8 @@ public:
       released = true;
     }
     retained_targets_ = std::move(kept);
-    // Kept intents follow, in the order they were stated, and only once the phase permits. **Each is
-    // checked against the premise that kept it**: it states a quantity decided against the book at
-    // midnight, so it goes out only if the instrument's holding is still what it was then, and a kept
-    // stop only if no stop has come to rest meanwhile. Otherwise it is dropped and counted -- another
-    // client traded the account, or a corporate action moved it, and a quantity nobody re-decided must
-    // not be sent against the new book.
+    // Kept intents follow, in order, once the phase permits; each goes out only if the holding it was
+    // decided against is unchanged (and, for a stop, no stop has come to rest meanwhile).
     if (phase_permits && !kept_intents_.empty()) {
       auto intents = std::move(kept_intents_);
       kept_intents_.clear();
@@ -1290,23 +986,29 @@ public:
   }
 
   /**
-   * Returns how many order intents wait for a permitted market phase, or for a broker that could not be
-   * reached or turned them away for its rate limit; see `retry_retained_targets`.
+   * @brief Returns how many order intents are kept for the market phase, an unreachable broker or a
+   *   rate limit; see `retry_retained_targets`.
+   * @return The number kept now.
    */
   std::size_t intents_kept_for_phase() const noexcept { return kept_intents_.size(); }
 
   /**
-   * Returns how many kept intents were dropped at release because the book they were decided against
-   * had changed; monotone.
+   * @brief Returns how many kept intents were dropped at release, because the holding they were
+   *   decided against had changed or a stop now rests.
+   * @return The count over the runner's life.
    */
   std::size_t kept_intents_dropped() const noexcept { return kept_intents_dropped_; }
 
-  /** Returns how many targets are retained, for either reason; see `retry_retained_targets`. */
+  /**
+   * @brief Returns how many targets are retained, for any reason; see `retry_retained_targets`.
+   * @return The number retained now.
+   */
   std::size_t targets_retained() const noexcept { return retained_targets_.size(); }
 
   /**
-   * Returns how many of them wait for a permitted market phase, or for a broker that could not be
-   * reached or turned them away for its rate limit; see `retry_retained_targets`.
+   * @brief Returns how many retained targets wait for the market phase, an unreachable broker or a
+   *   rate limit.
+   * @return The number retained now.
    */
   std::size_t targets_retained_for_phase() const noexcept {
     return static_cast<std::size_t>(std::count_if(
@@ -1315,109 +1017,100 @@ public:
     ));
   }
 
-  /** Discards every retained target. `PollingLoop` calls it once a stop is requested. */
+  /** @brief Discards every retained target and kept intent (`PollingLoop` does this when stopping). */
   void clear_retained_targets() noexcept {
     retained_targets_.clear();
     kept_intents_.clear();
   }
 
   /**
-   * Releases, and settles, every deferred target whose stops are gone, for a caller whose working
-   * orders and fills are **one ledger**.
+   * @brief Releases and settles every waiting target whose stops are no longer listed, without
+   *   reading history.
    *
-   * A replay is that caller: its ledger is the broker, so a stop it has just withdrawn is gone and
-   * could not have filled, and there is no history to wait for. A live caller must use
-   * `retry_deferred`, because a live stop that left the listing may have filled.
+   * Only for a replay, whose ledger is the broker: a stop it withdrew cannot have filled. A live
+   * caller uses `retry_deferred`.
+   *
+   * @return The report of the settlement.
    */
   Report retry_deferred_on_one_snapshot() { return release_deferred(nullptr); }
 
-  /** @copydoc Runner::plans_withheld */
+  /**
+   * @brief Returns how many instructions (placements and cancellations) were not sent because local machinery was unavailable; each leaves the `LOCAL_FAILURE` hold.
+   * @return The count over the runner's life.
+   */
   std::size_t instructions_unavailable() const noexcept { return instructions_unavailable_; }
 
   /**
-   * The same question for **withdrawals**, in four figures rather than one.
-   *
-   * One figure was the plan and it would have stated a falsehood. An `INDETERMINATE` cancellation may
-   * have reached the broker and may have withdrawn the order -- which is why `send_cancel` records it
-   * apart from a refusal in the first place -- so calling it "not sent" would claim something nobody
-   * knows.
-   *
-   * - `cancels_rejected` -- refused outright, **by the broker or by the binding**. The two share a
-   *   vector, which carries `RejectedCancel::by_broker_` to tell them apart; this figure does not.
-   * - `cancels_refused` -- a hold refused it before anything was sent.
-   * - `cancels_unresolved` -- the reference named an order the snapshot does not hold, so there was
-   *   nothing to withdraw.
-   * - `cancels_indeterminate` -- the request failed in transit. It may have withdrawn the order.
+   * @brief Returns how many cancellations were refused, by the broker or the binding (`RejectedCancel::by_broker_` tells which).
+   * @return The count over the runner's life.
    */
   std::size_t cancels_rejected() const noexcept { return cancels_rejected_; }
-  /** @copydoc Runner::cancels_rejected */
+  /**
+   * @brief Returns how many cancellations a hold refused before sending.
+   * @return The count over the runner's life.
+   */
   std::size_t cancels_refused() const noexcept { return cancels_refused_; }
-  /** @copydoc Runner::cancels_rejected */
+  /**
+   * @brief Returns how many cancellations named an order the portfolio does not list.
+   * @return The count over the runner's life.
+   */
   std::size_t cancels_unresolved() const noexcept { return cancels_unresolved_; }
-  /** @copydoc Runner::cancels_rejected */
+  /**
+   * @brief Returns how many cancellations had an unknown outcome (the order may or may not have been cancelled).
+   * @return The count over the runner's life.
+   */
   std::size_t cancels_indeterminate() const noexcept { return cancels_indeterminate_; }
 
   /**
-   * What the broker said about the **most recent** order it refused, where the executor can say.
-   *
-   * Overwritten rather than accumulated: a run refused ten thousand times keeps **at most** one
-   * record, which is what makes this affordable at all -- at most, because a refusal that states
-   * nothing clears it, so a non-zero count can sit beside an empty optional.
-   *
-   * Empty on a runner whose broker has refused nothing, and empty
-   * on every executor that cannot answer -- a dry runner and a replay's queueing executor have no
-   * broker to have been refused by, so `runner_detail::states_last_error` detects the ability rather
-   * than requiring it.
-   *
-   * **A count without this was the half-measure worth avoiding.** `orders_broker_refused` says an
-   * operator has a problem; this says which instrument, under which of the strategy's own tags, and
-   * in the broker's own words.
+   * @brief Returns the broker's code and message for the most recent order it refused
+   *   (`SendOutcome::REJECTED`; at KIS, Toss and Kiwoom most refusals are `INDETERMINATE` and not
+   *   recorded here).
+   * @return The refusal, or `std::nullopt` if none (or the executor cannot report errors, as in a dry
+   *   run or replay). A refusal with no detail clears it, so a nonzero `orders_broker_refused` can
+   *   sit beside an empty value.
    */
   const std::optional<BrokerRefusal>& last_broker_refusal() const noexcept {
     return last_broker_refusal_;
   }
 
   /**
-   * Why reconciliation could not build the **most recent** instruction it refused, and for what.
+   * @brief Returns why reconciliation could not build the most recent instruction it refused.
    *
-   * The reason behind `orders_unbuildable`, kept as `last_broker_refusal` keeps the broker's: a live
-   * source discards each pass's `Report`, whose `rejected_` carries it per instruction, so without this
-   * a run reports only a count. Overwritten, not accumulated. Empty until reconciliation refuses one.
-   * A live weight-sized intent, for one, is refused `NO_PORTFOLIO_VALUE` on every pass unless the
-   * caller sets `set_portfolio_value`.
+   * For example, a live weight-sized intent is refused `NO_PORTFOLIO_VALUE` on every pass unless
+   * `set_portfolio_value` was called.
+   *
+   * @return The rejection, or `std::nullopt` if none.
    */
   const std::optional<strategy::Rejection>& last_unbuildable() const noexcept {
     return last_unbuildable_;
   }
 
   /**
-   * Sets how small a drift is not worth an instruction.
-   *
-   * An execution-cost policy and therefore the operator's, alongside `RiskLimits`. Every floor unset
-   * by default, which chases every share. See `strategy::TradeTolerance` for the three units, why one
-   * share count is the weakest of them, and why no default is invented.
+   * @brief Sets how small a drift from a target is not worth an order; see `strategy::TradeTolerance`.
+   * @param tolerance The floors; all unset (the default) trades every share.
    */
   void set_trade_tolerance(strategy::TradeTolerance tolerance) {
     tolerance_ = std::move(tolerance);
   }
 
   /**
-   * Sets only the share-count floor, for the simple case.
+   * @brief Sets only the share-count floor of the trade tolerance.
    *
-   * Right where a lot size is large or a venue charges per share. For a portfolio spanning price
-   * levels, prefer a notional or fractional floor: one share count implies a value threshold that
-   * differs by the ratio of the prices involved.
+   * Across instruments at different price levels, prefer a notional or fractional floor.
+   *
+   * @param quantity The smallest drift worth trading, in shares.
    */
   void set_minimum_trade(Decimal64 quantity) {
     tolerance_.minimum_quantity_ = std::move(quantity);
   }
 
   /**
-   * Records the portfolio's total value, which sizing a target weight needs.
+   * @brief Sets the portfolio's total value, which a weight-sized intent needs live.
    *
-   * Set by the caller rather than summed from the portfolio, because a total spanning currencies
-   * needs an exchange rate this library does not yet carry, and inventing one would silently
-   * misprice every weighted order. Absent means a weighted intent is refused by name.
+   * Without it a weighted intent is refused (`NO_PORTFOLIO_VALUE`). The value is taken to be in each
+   * instrument's own currency; use the `Money` overload to state it.
+   *
+   * @param value The total value.
    */
   void set_portfolio_value(Decimal64 value) {
     portfolio_value_ = std::move(value);
@@ -1425,35 +1118,39 @@ public:
   }
 
   /**
-   * Records the portfolio's total value and the currency it is in. A weight on an instrument priced
-   * in another currency is then refused rather than sized across currencies at a rate of one.
-   * **Never cleared on its own**: a live caller who sets it once sizes every weight against that
-   * figure until it sets another or calls `clear_portfolio_value`.
+   * @brief Sets the portfolio's total value and its currency.
+   *
+   * A weight on an instrument in another currency is then refused. The value is kept until replaced
+   * or cleared with `clear_portfolio_value`.
+   *
+   * @param value The total value and currency.
    */
   void set_portfolio_value(Money value) {
     portfolio_value_ = std::move(value.amount_);
     portfolio_value_currency_ = std::move(value.currency_);
   }
 
-  /** Forgets the portfolio value, so a weighted intent is refused rather than sized against an old one. */
+  /** @brief Forgets the portfolio value, so weighted intents are refused again. */
   void clear_portfolio_value() noexcept {
     portfolio_value_.reset();
     portfolio_value_currency_.reset();
   }
 
-  /** Calls `on_start` and drains whatever it asked for. */
+  /**
+   * @brief Calls `on_start` and settles what it asked for.
+   * @return The pass's report.
+   */
   Report start() {
     dispatch::start(strategy_, context_);
     return settle();
   }
 
   /**
-   * Calls `on_stop` and drains whatever it asked for.
+   * @brief Calls `on_stop` and settles what it asked for.
    *
-   * For a caller driving a runner directly. `PollingLoop` deliberately does **not** use this during
-   * an operator's stop: it calls `notify_stop` while its hold is still in force, so a strategy's
-   * parting instructions are refused rather than settled beside the operator's own, and then
-   * `settle_closing` for those. See `notify_stop` for why.
+   * For a caller driving a runner directly; `PollingLoop` uses `notify_stop` during a stop instead.
+   *
+   * @return The pass's report.
    */
   Report stop() {
     dispatch::stop(strategy_, context_);
@@ -1461,17 +1158,10 @@ public:
   }
 
   /**
-   * Calls `on_stop` and settles what it asked for **now**, before anything else is queued.
-   *
-   * Exists so that a strategy's shutdown handler cannot ride out alongside an operator's closing
-   * instructions. During a `WITHDRAW` or a `FLATTEN` the operator has taken over: the loop sizes
-   * its closing orders against what it can prove is outstanding, and an order the strategy adds
-   * afterwards goes through none of that reasoning -- it is planned against the same snapshot and
-   * can close the same position a second time.
-   *
-   * Called while the loop's `STOPPING` hold stands, so every instruction here is refused by the
-   * guard and reported. The strategy still learns the run is ending, which is what the handler is
-   * for; it simply cannot trade on the way out.
+   * @brief Calls `on_stop` and settles what it asked for while `PollingLoop`'s `STOPPING` hold stands,
+   *   so the strategy's parting orders are refused rather than sent beside the operator's closing
+   *   orders.
+   * @return The pass's report.
    */
   Report notify_stop() {
     dispatch::stop(strategy_, context_);
@@ -1479,22 +1169,21 @@ public:
   }
 
   /**
-   * Settles instructions a caller has already queued, dispatching no handler.
+   * @brief Settles instructions already queued on the context, without calling a handler.
    *
-   * The other half of `notify_stop`: `PollingLoop` queues its own cancellations and closing orders
-   * and settles exactly those. Using `stop()` here would call `on_stop` inside the window where the
-   * loop has lifted its hold so its own instructions can go -- which is the one moment a strategy's
-   * order must not.
+   * `PollingLoop` queues its closing orders and settles them with this.
+   *
+   * @return The pass's report.
    */
   Report settle_closing() { return settle(); }
 
   /**
-   * Feeds one bar: records it in the cached series, advances the clock, then calls the handler.
-   *
-   * The clock advances to the bar's **period end**, not its timestamp, because that is the earliest
-   * instant the bar could legitimately have been known. Advancing to a timestamp that marks the
-   * period's open would place the runner inside a bar it is being told about, which is the
-   * off-by-one that makes a backtest unreproducible.
+   * @brief Feeds one bar: caches it, sets the last price and the clock to the bar's period end, calls
+   *   `on_bar`, and settles what the strategy asked for.
+   * @param event The bar.
+   * @return The pass's report.
+   * @throws std::invalid_argument (with a linear algebra backend) if the bar is not later than the
+   *   cached series' newest bar.
    */
   Report feed(const strategy::BarEvent& event) {
 #if defined(ATL_HAS_EIGEN)
@@ -1508,21 +1197,19 @@ public:
   }
 
   /**
-   * Feeds one bar as history: the strategy sees it, and nothing it decides is sent.
+   * @brief Feeds one bar as history: like `feed`, but whatever the strategy asks for is discarded
+   *   (counted in `warmup_instructions_discarded`).
    *
-   * Exactly `feed`'s bookkeeping -- the bar is recorded in the series, the last price and the decision
-   * instant advance, and `on_bar` runs -- and then whatever the handler asked for is **discarded**,
-   * counted in `warmup_instructions_discarded`, without planning, sending, retaining or deferring any
-   * of it. A strategy's own state therefore evolves over a history exactly as it does in a replay; only
-   * the sending is withheld, and nothing a later pass relies on (deferred and retained targets, the
-   * reservations, the sellable probe, the guard's record) is touched.
+   * Use it for every bar older than the newest one, so a restart or a backlog does not act on an old
+   * signal at today's price. A source of your own should feed a read's new bars in period-end order
+   * across instruments, and feed live (with `feed`) only each instrument's newest closed bar, and
+   * only if its period ended strictly after every bar fed as history from the same read, across
+   * instruments. A newest bar that ties or trails one (a suspended name, or one a bar behind) is
+   * history too, or an order could be decided on a stale cross-section at today's price.
    *
-   * **The rule it serves**: an instruction reaches a broker only when it was decided on the newest
-   * closed bar a source held for that instrument at that poll. `live::SessionSource` feeds every older
-   * bar of a read through here -- a cold start's history, or a backlog after an outage -- so a restart
-   * does not act on a signal from months ago at today's price. A source of your own must do the same:
-   * feed a read's new bars in period-end order across instruments, and feed live only each
-   * instrument's newest bar whose period ended after every other bar fed as history.
+   * @param event The bar.
+   * @throws std::invalid_argument (with a linear algebra backend) if the bar is not later than the
+   *   cached series' newest bar.
    */
   void feed_warmup(const strategy::BarEvent& event) {
 #if defined(ATL_HAS_EIGEN)
@@ -1534,10 +1221,17 @@ public:
     warmup_instructions_discarded_ += context_.drain().size();
   }
 
-  /** Returns how many instructions `feed_warmup` discarded; monotone for the runner's life. */
+  /**
+   * @brief Returns how many instructions `feed_warmup` discarded.
+   * @return The count over the runner's life.
+   */
   std::size_t warmup_instructions_discarded() const noexcept { return warmup_instructions_discarded_; }
 
-  /** Feeds one quote and calls the handler. */
+  /**
+   * @brief Feeds one quote: sets the last price and the clock, calls `on_quote`, and settles.
+   * @param event The quote.
+   * @return The pass's report.
+   */
   Report feed(const strategy::QuoteEvent& event) {
     context_.set_last_price(event.quote_.instrument_, event.quote_.last_price_);
     context_.set_now(event.quote_.received_at_);
@@ -1546,21 +1240,33 @@ public:
     return settle();
   }
 
-  /** Feeds one execution and calls the handler. */
+  /**
+   * @brief Feeds one execution: calls `on_fill` and settles.
+   * @param event The fill.
+   * @return The pass's report.
+   */
   Report feed(const strategy::Fill& event) {
     confirm_reservations();
     dispatch::fill(strategy_, context_, event);
     return settle();
   }
 
-  /** Feeds one order update and calls the handler. */
+  /**
+   * @brief Feeds one order update: calls `on_order_update` and settles.
+   * @param event The order's new state.
+   * @return The pass's report.
+   */
   Report feed(const OrderSnapshot& event) {
     confirm_reservations();
     dispatch::order_update(strategy_, context_, event);
     return settle();
   }
 
-  /** Announces a phase change, setting it on the context first so a handler reads it. */
+  /**
+   * @brief Feeds a market phase change: sets it on the context, calls `on_phase`, and settles.
+   * @param phase The new phase.
+   * @return The pass's report.
+   */
   Report feed(strategy::MarketPhase phase) {
     context_.set_phase(phase);
     // A DAY order does not outlive its session, whatever its history row says afterwards: a broker may
@@ -1579,17 +1285,15 @@ public:
   }
 
 private:
-  /**
-   * Drains the queue and turns it into a report.
-   *
-   * **Cancellations are collected before any order is placed**, across the whole queue, rather than
-   * per instruction. That is the sequencing `Plan` documents as the caller's obligation, and here
-   * is the caller: a replacement placed before its predecessor is withdrawn is briefly a double
-   * position, while cancelling first leaves the instrument unrepresented for a moment instead.
-   *
-   * A guard refusal drops that instruction and nothing else. One instrument breaching a position
-   * ceiling must not silence the rest of a cross-sectional rebalance.
-   */
+  // Drains the queue and turns it into a report.
+  //
+  // **Cancellations are collected before any order is placed**, across the whole queue, rather than
+  // per instruction. That is the sequencing `Plan` documents as the caller's obligation, and here
+  // is the caller: a replacement placed before its predecessor is withdrawn is briefly a double
+  // position, while cancelling first leaves the instrument unrepresented for a moment instead.
+  //
+  // A guard refusal drops that instruction and nothing else. One instrument breaching a position
+  // ceiling must not silence the rest of a cross-sectional rebalance.
   Report settle() {
     // Before anything is planned, because this pass has not yet added anything of its own: the
     // probe must not read this runner's intentions as the broker's report. The portfolio can still
@@ -1986,29 +1690,25 @@ private:
     return report;
   }
 
-  /**
-   * Sends one cancellation, and marks the instrument when its outcome is unknown.
-   *
-   * A cancellation that fails in transit leaves the same question an order does -- the order may
-   * now be withdrawn or may still be resting -- so it obliges the same reconciliation. A
-   * cancellation is not gated by the ledger, because withdrawing an order is the one action that
-   * cannot make an unresolved position worse.
-   */
-  /**
-   * Asks the broker what may be sold, but only when nothing else can answer.
-   *
-   * Four conditions, and every one of them is there to avoid a request:
-   *
-   * - the executor can ask at all -- a dry run and a replay cannot, and compile to nothing here;
-   * - the caller enforces the limit, so nobody pays for a figure no check reads;
-   * - the order is a sell, since the figure says nothing about buying;
-   * - and the snapshot has not already answered, which at a `HOLDINGS` broker it always has.
-   *
-   * The answer is written to the context's portfolio as well as to this pass's view, so a later
-   * pass in the same holdings cycle reuses it rather than asking again. The next holdings poll
-   * replaces the positions wholesale and the figure goes with them, which is the right lifetime: it
-   * is exactly as fresh as the position it describes.
-   */
+  // Sends one cancellation, and marks the instrument when its outcome is unknown.
+  //
+  // A cancellation that fails in transit leaves the same question an order does -- the order may
+  // now be withdrawn or may still be resting -- so it obliges the same reconciliation. A
+  // cancellation is not gated by the ledger, because withdrawing an order is the one action that
+  // cannot make an unresolved position worse.
+  // Asks the broker what may be sold, but only when nothing else can answer.
+  //
+  // Four conditions, and every one of them is there to avoid a request:
+  //
+  // - the executor can ask at all -- a dry run and a replay cannot, and compile to nothing here;
+  // - the caller enforces the limit, so nobody pays for a figure no check reads;
+  // - the order is a sell, since the figure says nothing about buying;
+  // - and the snapshot has not already answered, which at a `HOLDINGS` broker it always has.
+  //
+  // The answer is written to the context's portfolio as well as to this pass's view, so a later
+  // pass in the same holdings cycle reuses it rather than asking again. The next holdings poll
+  // replaces the positions wholesale and the figure goes with them, which is the right lifetime: it
+  // is exactly as fresh as the position it describes.
   void fill_sellable_if_needed(
     strategy::Portfolio<Tag>& view,
     const strategy::PlannedOrder& order
@@ -2036,7 +1736,7 @@ private:
     }
   }
 
-  /** Returns the venue the executor sends an order asking for `asked` to; `asked` where it does not route. */
+  // Returns the venue the executor sends an order asking for `asked` to; `asked` where it does not route.
   Venue requested_route(Venue asked) const {
     if constexpr (runner_detail::resolves_route<Executor>::value) {
       return executor_.requested_route(asked);
@@ -2045,12 +1745,10 @@ private:
     }
   }
 
-  /**
-   * Returns the reference the broker issued for the order just accepted, where there is one.
-   *
-   * Nothing where the executor has no broker to have been answered by, which is every dry run and
-   * every replay.
-   */
+  // Returns the reference the broker issued for the order just accepted, where there is one.
+  //
+  // Nothing where the executor has no broker to have been answered by, which is every dry run and
+  // every replay.
   std::optional<OrderRef<Tag>> last_ref() const {
     if constexpr (runner_detail::reports_last_ref<Executor>::value) {
       return executor_.last_ref();
@@ -2059,53 +1757,49 @@ private:
     }
   }
 
-  /**
-   * An order the broker accepted, or one whose request failed in transit, that holdings have not yet
-   * shown in full; see `unconfirmed_orders`.
-   */
+  // An order the broker accepted, or one whose request failed in transit, that holdings have not yet
+  // shown in full; see `unconfirmed_orders`.
   struct Unconfirmed {
-    /** Empty while the order's outcome is unknown; see `resolve_indeterminate_placement`. */
+    // Empty while the order's outcome is unknown; see `resolve_indeterminate_placement`.
     OrderRef<Tag> ref_;
     InstrumentId instrument_;
     OrderSide side_{OrderSide::BUY};
-    /** What holdings must still show: the order's quantity, or less once its history says so. */
+    // What holdings must still show: the order's quantity, or less once its history says so.
     Decimal64 expected_;
-    /** The instrument's net holding when it was sent. */
+    // The instrument's net holding when it was sent.
     Decimal64 baseline_;
-    /** The reserved row as `reserve` wrote it; rebuilt with the residual quantity. */
+    // The reserved row as `reserve` wrote it; rebuilt with the residual quantity.
     WorkingOrder<Tag> row_;
     std::chrono::system_clock::time_point sent_at_{};
-    /** Whether any listing has carried it, and whether the latest one does. */
+    // Whether any listing has carried it, and whether the latest one does.
     bool listed_{false};
     bool listed_now_{false};
-    /** Whether this runner's withdrawal of it was accepted. */
+    // Whether this runner's withdrawal of it was accepted.
     bool withdrawn_{false};
-    /** Whether a terminal history row has capped `expected_`. */
+    // Whether a terminal history row has capped `expected_`.
     bool settled_{false};
-    /** Whether it is a DAY order and the session it was sent in has closed since. */
+    // Whether it is a DAY order and the session it was sent in has closed since.
     bool session_ended_{false};
-    /** Whether the current `confirm_from_history` looked for it. */
+    // Whether the current `confirm_from_history` looked for it.
     bool consulted_{false};
-    /** Whether the history, read past the timeout, had no terminal row for it. */
+    // Whether the history, read past the timeout, had no terminal row for it.
     bool history_missed_{false};
-    /** The quantity nothing explains, as of the last rebuild, and since when some has been. */
+    // The quantity nothing explains, as of the last rebuild, and since when some has been.
     Decimal64 residual_;
     std::optional<std::chrono::system_clock::time_point> unexplained_since_;
   };
-  /**
-   * Remembers an order the broker just accepted, so a listing that lacks it cannot retire its
-   * reservation; see `unconfirmed_orders`. Called right after `persist_reservation` wrote its row.
-   *
-   * Only for a runner that keeps sent orders until listed, an order with a broker reference, and a
-   * portfolio that has been read: without a reference no listing or history row can be matched to it,
-   * and without a read portfolio there is no baseline. Those keep the old behaviour, where the next
-   * listing retires the row.
-   *
-   * `indeterminate`: an order whose request failed in transit, tracked with no reference until a sweep
-   * names it (`resolve_indeterminate_placement`). While the indeterminacy ledger withholds its instrument
-   * it shows no row (nothing can be placed there anyway, and a resting order's own listed row would be
-   * counted twice) and does not time out; only holdings can cover it.
-   */
+  // Remembers an order the broker just accepted, so a listing that lacks it cannot retire its
+  // reservation; see `unconfirmed_orders`. Called right after `persist_reservation` wrote its row.
+  //
+  // Only for a runner that keeps sent orders until listed, an order with a broker reference, and a
+  // portfolio that has been read: without a reference no listing or history row can be matched to it,
+  // and without a read portfolio there is no baseline. Those keep the old behaviour, where the next
+  // listing retires the row.
+  //
+  // `indeterminate`: an order whose request failed in transit, tracked with no reference until a sweep
+  // names it (`resolve_indeterminate_placement`). While the indeterminacy ledger withholds its instrument
+  // it shows no row (nothing can be placed there anyway, and a resting order's own listed row would be
+  // counted twice) and does not time out; only holdings can cover it.
   void track_unconfirmed(
     const strategy::PlannedOrder& order, const std::optional<OrderRef<Tag>>& ref, bool indeterminate = false
   ) {
@@ -2139,7 +1833,7 @@ private:
     }
   }
 
-  /** Records that the broker accepted this runner's withdrawal of `ref`, if it is a sent order still counted. */
+  // Records that the broker accepted this runner's withdrawal of `ref`, if it is a sent order still counted.
   void note_withdrawal_accepted(const OrderRef<Tag>& ref) {
     for (auto& entry : unconfirmed_) {
       // The primary part alone, as everywhere a broker's own row is matched to the order.
@@ -2149,12 +1843,12 @@ private:
     }
   }
 
-  /** Whether some of `entry`'s quantity has been unexplained for longer than the confirmation timeout. */
+  // Whether some of `entry`'s quantity has been unexplained for longer than the confirmation timeout.
   bool timed_out(const Unconfirmed& entry, std::chrono::system_clock::time_point now) const {
     return entry.unexplained_since_ && now - *entry.unexplained_since_ > confirmation_timeout_;
   }
 
-  /** Whether only the broker's history can settle `entry` now; see `unconfirmed_awaiting_evidence`. */
+  // Whether only the broker's history can settle `entry` now; see `unconfirmed_awaiting_evidence`.
   bool awaits_evidence(const Unconfirmed& entry, std::chrono::system_clock::time_point now) const {
     // A settled entry has had its answer: what it filled is known, and only holdings remain to show it.
     // One the history had no answer for past the timeout waits on holdings too, without a read per poll.
@@ -2173,27 +1867,25 @@ private:
     return !entry.listed_now_ && (entry.listed_ || entry.withdrawn_);
   }
 
-  /** Whether `working` is this runner's reserved row for `entry`. */
+  // Whether `working` is this runner's reserved row for `entry`.
   static bool is_reserved_row_of(const WorkingOrder<Tag>& working, const Unconfirmed& entry) {
     return working.reserved_ && working.ref_.primary_ == entry.ref_.primary_ &&
       working.order_.instrument_ == entry.instrument_ && working.order_.side_ == entry.side_;
   }
 
-  /**
-   * Rebuilds the reserved row of every sent order still counted, and forgets those holdings confirm.
-   *
-   * Run before every handler and every pass, so whatever replaced `working_` since -- a listing, or a
-   * source of the caller's own -- the strategy and the guard see each order's unexplained quantity:
-   *
-   * - **covered**: holdings movement since the first unconfirmed order's baseline on the instrument, in
-   *   the orders' direction, credited in the order they were sent, each up to what it expects. Orders
-   *   on both sides of one instrument are credited only when holdings equal the baseline plus all of
-   *   them, since a movement could be either side's;
-   * - **listed**: what a listing still shows remaining for the same reference, instrument and side;
-   * - the row is put back with `expected - covered - listed`, when that is positive, and **never
-   *   spends buying power again** -- the pass that sent the order already did;
-   * - the entry ends once `covered` reaches what it expects.
-   */
+  // Rebuilds the reserved row of every sent order still counted, and forgets those holdings confirm.
+  //
+  // Run before every handler and every pass, so whatever replaced `working_` since -- a listing, or a
+  // source of the caller's own -- the strategy and the guard see each order's unexplained quantity:
+  //
+  // - **covered**: holdings movement since the first unconfirmed order's baseline on the instrument, in
+  //   the orders' direction, credited in the order they were sent, each up to what it expects. Orders
+  //   on both sides of one instrument are credited only when holdings equal the baseline plus all of
+  //   them, since a movement could be either side's;
+  // - **listed**: what a listing still shows remaining for the same reference, instrument and side;
+  // - the row is put back with `expected - covered - listed`, when that is positive, and **never
+  //   spends buying power again** -- the pass that sent the order already did;
+  // - the entry ends once `covered` reaches what it expects.
   void confirm_reservations() {
     if constexpr (keeps_sent_orders_until_listed) {
       if (unconfirmed_.empty()) {
@@ -2384,48 +2076,46 @@ private:
     }
   }
 
-  /**
-   * Carries this pass's reservation into the next one.
-   *
-   * **The in-pass view dies with the pass**, so without this a second pass before the next poll
-   * starts from the broker's last word again and can re-spend what the first pass already
-   * committed. The fix needs no matcher, because a working-order poll *replaces* what it
-   * refreshes: `poll_working_orders` assigns `working_` wholesale, so an untracked reservation
-   * written here is discarded the moment the broker's own listing arrives. (A holdings poll does not: it refreshes
-   * positions and keeps `working_`.) Nothing has to recognise its own order in a listing -- which is
-   * the half of reserve-and-match that carries a matcher's failure modes.
-   *
-   * **Always, for a runner that sends to a broker which lists working orders.** Target
-   * reconciliation reads the same portfolio, and an order this runner just sent has to count as
-   * working there, whatever the limits: a target restated on the next pass would otherwise be sent
-   * again. It was scoped to the limits below until 2026-09-30, and the cold start showed the cost --
-   * `SessionSource` then fed a whole history read one pass per bar before the next listing, so a
-   * target strategy under default limits sent one order per history bar (`tests/test-live.cpp`,
-   * `[own-orders]`). It now feeds history through `feed_warmup`, which sends nothing; the reservation
-   * still covers every other pass before a listing (a runner fed by hand, two names in one bar
-   * poll, or bar polls that come faster than the listing's). A listing and holdings bound its life
-   * (`unconfirmed_orders`), so the loop holds such a run while no listing will come -- the source
-   * publishes none, no working-order cadence is set, or the last listing is older than the portfolio
-   * age policy (`PollingLoop::gate_for`).
-   *
-   * **Scoped to the limits that read it everywhere else.** A dry run, `live::bind_observer` and a
-   * custom executor that reaches no broker write a row with no broker reference: a later target
-   * that opposes it would ask to withdraw an order identified by nothing, and a dry run has no
-   * listing to replace the row at all. A broker that publishes no working-order inquiry never
-   * replaces it either. For them the reservation persists only for the limits that size against
-   * what is outstanding, as before. `max_position_quantity_` is one of those limits: its ceiling
-   * counts same-side working orders, so an accepted order that stopped being visible at the end of a
-   * pass would let the next bar place another of the same size.
-   *
-   * A custom executor that reaches a broker but reports no reference (`reports_last_ref`) is still
-   * counted as keeping its orders: a duplicate order is the worse failure, and the listing the loop
-   * insists on retires the unaddressable row.
-   *
-   * A listing replaces `working_` wholesale, and so used to retire the row whether or not it carried the
-   * order -- a market order that filled at once is in no listing, and holdings lagging the fill did not
-   * show it either (lab F15). For a runner that keeps sent orders until listed, the row is now rebuilt
-   * before every pass from what nothing explains yet (`track_unconfirmed`, `unconfirmed_orders`).
-   */
+  // Carries this pass's reservation into the next one.
+  //
+  // **The in-pass view dies with the pass**, so without this a second pass before the next poll
+  // starts from the broker's last word again and can re-spend what the first pass already
+  // committed. The fix needs no matcher, because a working-order poll *replaces* what it
+  // refreshes: `poll_working_orders` assigns `working_` wholesale, so an untracked reservation
+  // written here is discarded the moment the broker's own listing arrives. (A holdings poll does not: it refreshes
+  // positions and keeps `working_`.) Nothing has to recognise its own order in a listing -- which is
+  // the half of reserve-and-match that carries a matcher's failure modes.
+  //
+  // **Always, for a runner that sends to a broker which lists working orders.** Target
+  // reconciliation reads the same portfolio, and an order this runner just sent has to count as
+  // working there, whatever the limits: a target restated on the next pass would otherwise be sent
+  // again. It was scoped to the limits below until 2026-09-30, and the cold start showed the cost --
+  // `SessionSource` then fed a whole history read one pass per bar before the next listing, so a
+  // target strategy under default limits sent one order per history bar (`tests/test-live.cpp`,
+  // `[own-orders]`). It now feeds history through `feed_warmup`, which sends nothing; the reservation
+  // still covers every other pass before a listing (a runner fed by hand, two names in one bar
+  // poll, or bar polls that come faster than the listing's). A listing and holdings bound its life
+  // (`unconfirmed_orders`), so the loop holds such a run while no listing will come -- the source
+  // publishes none, no working-order cadence is set, or the last listing is older than the portfolio
+  // age policy (`PollingLoop::gate_for`).
+  //
+  // **Scoped to the limits that read it everywhere else.** A dry run, `live::bind_observer` and a
+  // custom executor that reaches no broker write a row with no broker reference: a later target
+  // that opposes it would ask to withdraw an order identified by nothing, and a dry run has no
+  // listing to replace the row at all. A broker that publishes no working-order inquiry never
+  // replaces it either. For them the reservation persists only for the limits that size against
+  // what is outstanding, as before. `max_position_quantity_` is one of those limits: its ceiling
+  // counts same-side working orders, so an accepted order that stopped being visible at the end of a
+  // pass would let the next bar place another of the same size.
+  //
+  // A custom executor that reaches a broker but reports no reference (`reports_last_ref`) is still
+  // counted as keeping its orders: a duplicate order is the worse failure, and the listing the loop
+  // insists on retires the unaddressable row.
+  //
+  // A listing replaces `working_` wholesale, and so used to retire the row whether or not it carried the
+  // order -- a market order that filled at once is in no listing, and holdings lagging the fill did not
+  // show it either (lab F15). For a runner that keeps sent orders until listed, the row is now rebuilt
+  // before every pass from what nothing explains yet (`track_unconfirmed`, `unconfirmed_orders`).
   void persist_reservation(
     const strategy::PlannedOrder& order,
     const std::optional<Decimal64>& reference_price,
@@ -2460,36 +2150,34 @@ private:
     context_.set_portfolio(std::move(persisted));
   }
 
-  /**
-   * Resolves what every instrument the exposure ceiling must value is denominated in, and marked at.
-   *
-   * **This is the half `RiskGuard` cannot do**, which is why the guard takes it as an input rather
-   * than deriving it. A position states its own currency and last price; a working order on an
-   * instrument with no position states neither, and an opening buy is exactly that case. The runner
-   * is where reference data and the quote cache live, so it is where the lookup belongs -- the same
-   * reasoning that puts `order_currency_` here.
-   *
-   * **An instrument this cannot resolve is left out, and leaving it out is how the refusal
-   * happens.** `projected_gross_exposure` returns nothing when the basis does not cover something
-   * the portfolio holds or has working, and the guard turns that into `VALUE_NOT_KNOWN`. Inventing
-   * a currency or a price here would be the silent pass this whole branch is about.
-   *
-   * **Only fields somebody explicitly set are read**, which rules out the position's own
-   * `market_value_.currency_` as a fallback however tempting it is. `Currency` default-constructs to
-   * KRW and `HoldingPosition::last_price_` to zero, so an untouched position does not read as
-   * unresolved -- it reads as Korean won marked at nothing, resolves, and contributes zero to the
-   * sum. That is the silent omission this refusal exists to prevent, wearing the costume of an
-   * answer. It is the same trap `backtest::ReplayLedger` was in.
-   *
-   * So: the currency comes from registered reference data, which is also where `order_currency_`
-   * comes from, so the two cannot disagree about one instrument. The mark comes from the quote cache
-   * or from a position's `last_price_` **when that price is not zero** -- a mark of zero is not a
-   * valuation, and accepting one would value the position at nothing.
-   *
-   * The cost, and it is the intended direction: an account holding an instrument the caller never
-   * registered refuses every order while the ceiling is on. Visible and diagnosable, rather than a
-   * ceiling quietly measuring part of the portfolio.
-   */
+  // Resolves what every instrument the exposure ceiling must value is denominated in, and marked at.
+  //
+  // **This is the half `RiskGuard` cannot do**, which is why the guard takes it as an input rather
+  // than deriving it. A position states its own currency and last price; a working order on an
+  // instrument with no position states neither, and an opening buy is exactly that case. The runner
+  // is where reference data and the quote cache live, so it is where the lookup belongs -- the same
+  // reasoning that puts `order_currency_` here.
+  //
+  // **An instrument this cannot resolve is left out, and leaving it out is how the refusal
+  // happens.** `projected_gross_exposure` returns nothing when the basis does not cover something
+  // the portfolio holds or has working, and the guard turns that into `VALUE_NOT_KNOWN`. Inventing
+  // a currency or a price here would be the silent pass this whole branch is about.
+  //
+  // **Only fields somebody explicitly set are read**, which rules out the position's own
+  // `market_value_.currency_` as a fallback however tempting it is. `Currency` default-constructs to
+  // KRW and `HoldingPosition::last_price_` to zero, so an untouched position does not read as
+  // unresolved -- it reads as Korean won marked at nothing, resolves, and contributes zero to the
+  // sum. That is the silent omission this refusal exists to prevent, wearing the costume of an
+  // answer. It is the same trap `backtest::ReplayLedger` was in.
+  //
+  // So: the currency comes from registered reference data, which is also where `order_currency_`
+  // comes from, so the two cannot disagree about one instrument. The mark comes from the quote cache
+  // or from a position's `last_price_` **when that price is not zero** -- a mark of zero is not a
+  // valuation, and accepting one would value the position at nothing.
+  //
+  // The cost, and it is the intended direction: an account holding an instrument the caller never
+  // registered refuses every order while the ceiling is on. Visible and diagnosable, rather than a
+  // ceiling quietly measuring part of the portfolio.
   std::vector<strategy::InstrumentBasis> exposure_basis_for(
     const strategy::Portfolio<Tag>& view,
     const std::vector<strategy::PlannedOrder>& pending
@@ -2565,7 +2253,7 @@ private:
     return basis;
   }
 
-  /** Writes a sellable quantity onto the position for `instrument`, when there is one. */
+  // Writes a sellable quantity onto the position for `instrument`, when there is one.
   static void write_sellable(
     strategy::Portfolio<Tag>& portfolio,
     const InstrumentId& instrument,
@@ -2587,32 +2275,30 @@ private:
     }
   }
 
-  /**
-   * Records an accepted order in `view` so the rest of the pass sizes against it.
-   *
-   * Written as a working order because that is what it now is, and because the alternative --
-   * adjusting the position -- would be a lie: nothing has filled.
-   *
-   * **It carries the reference the broker just issued**, and that is not cosmetic. No guard reads a
-   * reference, but reconciliation does: a row opposing the next target is put on the cancel list by
-   * its `ref_`, and a synthetic row with an empty one would have the runner ask a broker to
-   * withdraw an order identified by nothing. The shape and the amendable quantity are filled for
-   * the same reason -- `cancel_all` builds the instruction from them, and a broker that requires a
-   * quantity would be sent zero. An order just accepted and unfilled is amendable in full.
-   *
-   * Where the executor could not supply a reference -- a dry run, a replay, a custom executor
-   * that does not report one, or an order whose reply was lost (passed no reference on purpose: the
-   * executor's last one belongs to an earlier order) -- the row is still written, because a limit
-   * that ignored the order would be the worse failure. Whether such a row can still be withdrawn is the executor's
-   * question, not this one's: a replay's engine matches a cancellation on instrument and side and
-   * needs no reference at all, while `live::SessionExecutor` refuses to send one to a broker.
-   *
-   * `spends` decides whether a buy also draws down the published buying-power reading, and it is
-   * the caller's buying-power check rather than anything this function can see. Review found the
-   * two entangled: a caller who had enabled only the position ceiling watched
-   * `portfolio().buying_power_in()` fall after a buy, which is a public figure a strategy is free
-   * to size its next order from -- a behaviour change well past enforcing a ceiling.
-   */
+  // Records an accepted order in `view` so the rest of the pass sizes against it.
+  //
+  // Written as a working order because that is what it now is, and because the alternative --
+  // adjusting the position -- would be a lie: nothing has filled.
+  //
+  // **It carries the reference the broker just issued**, and that is not cosmetic. No guard reads a
+  // reference, but reconciliation does: a row opposing the next target is put on the cancel list by
+  // its `ref_`, and a synthetic row with an empty one would have the runner ask a broker to
+  // withdraw an order identified by nothing. The shape and the amendable quantity are filled for
+  // the same reason -- `cancel_all` builds the instruction from them, and a broker that requires a
+  // quantity would be sent zero. An order just accepted and unfilled is amendable in full.
+  //
+  // Where the executor could not supply a reference -- a dry run, a replay, a custom executor
+  // that does not report one, or an order whose reply was lost (passed no reference on purpose: the
+  // executor's last one belongs to an earlier order) -- the row is still written, because a limit
+  // that ignored the order would be the worse failure. Whether such a row can still be withdrawn is the executor's
+  // question, not this one's: a replay's engine matches a cancellation on instrument and side and
+  // needs no reference at all, while `live::SessionExecutor` refuses to send one to a broker.
+  //
+  // `spends` decides whether a buy also draws down the published buying-power reading, and it is
+  // the caller's buying-power check rather than anything this function can see. Review found the
+  // two entangled: a caller who had enabled only the position ceiling watched
+  // `portfolio().buying_power_in()` fall after a buy, which is a public figure a strategy is free
+  // to size its next order from -- a behaviour change well past enforcing a ceiling.
   static void reserve(
     strategy::Portfolio<Tag>& view,
     const strategy::PlannedOrder& order,
@@ -2680,24 +2366,20 @@ private:
     }
   }
 
-  /**
-   * Returns why a plan derived from the current portfolio must not be acted on, or nothing.
-   *
-   * **The policy is evaluated here, against the snapshot in hand, rather than being pushed in as a
-   * verdict somebody else computed earlier.** A `bool` set by the loop would be a judgement about
-   * whatever portfolio was current when the loop last looked, and the loop looks at points a source
-   * callback can get between: `PollingLoop::gate_for` calls `read_order_list` -- which is handed a
-   * mutable runner and can feed -- before it ever reaches its own age check. A plan settled inside
-   * that call would be checked against a stale verdict. Asking the question at settlement time makes
-   * the answer structurally current, and there is no invalidation protocol to get wrong.
-   */
-  /**
-   * Drops the deferred targets `instructions` supersede.
-   *
-   * Every pass, so a target or order the strategy states for an instrument -- in answer to an order
-   * update, a bar, anything -- replaces the fallback before `retry_deferred` could release it. See
-   * `deferred_targets` for the whole contract.
-   */
+  // Returns why a plan derived from the current portfolio must not be acted on, or nothing.
+  //
+  // **The policy is evaluated here, against the snapshot in hand, rather than being pushed in as a
+  // verdict somebody else computed earlier.** A `bool` set by the loop would be a judgement about
+  // whatever portfolio was current when the loop last looked, and the loop looks at points a source
+  // callback can get between: `PollingLoop::gate_for` calls `read_order_list` -- which is handed a
+  // mutable runner and can feed -- before it ever reaches its own age check. A plan settled inside
+  // that call would be checked against a stale verdict. Asking the question at settlement time makes
+  // the answer structurally current, and there is no invalidation protocol to get wrong.
+  // Drops the deferred targets `instructions` supersede.
+  //
+  // Every pass, so a target or order the strategy states for an instrument -- in answer to an order
+  // update, a bar, anything -- replaces the fallback before `retry_deferred` could release it. See
+  // `deferred_targets` for the whole contract.
   void drop_superseded_deferred(const std::vector<Instruction<Tag>>& instructions) {
     if (deferred_targets_.empty()) {
       return;
@@ -2719,10 +2401,8 @@ private:
     }
   }
 
-  /**
-   * The release loop behind `retry_deferred` and `retry_deferred_on_one_snapshot`. `evidence` is the
-   * broker's history, or null for a caller whose own ledger decided every stop.
-   */
+  // The release loop behind `retry_deferred` and `retry_deferred_on_one_snapshot`. `evidence` is the
+  // broker's history, or null for a caller whose own ledger decided every stop.
   Report release_deferred(const std::vector<OrderSnapshot>* evidence) {
     bool released = false;
     for (auto at = deferred_targets_.begin(); at != deferred_targets_.end();) {
@@ -2782,7 +2462,7 @@ private:
     return settle();
   }
 
-  /** Drops the retained target on `instrument`, if there is one. */
+  // Drops the retained target on `instrument`, if there is one.
   void forget_retained(const InstrumentId& instrument) {
     if (instrument.symbol_.empty()) {
       return;
@@ -2804,20 +2484,18 @@ private:
     );
   }
 
-  /**
-   * Keeps a target withheld for want of a trustworthy account, to plan again once there is one.
-   *
-   * Withheld because the account was never read, is too old, or predates the listing: each is a fact
-   * about the data, and the next holdings read can change it. One per instrument, the latest kept, as
-   * for `deferred_targets_`. Returns false, retaining nothing:
-   *
-   * - for anything but a `TargetPosition`. An `OrderIntent` states a quantity against the picture that
-   *   was wrong, and replaying it later would act on a decision nobody re-made. (An intent the market
-   *   phase stopped is a different case -- the picture was right, the hour was not -- and is kept by
-   *   `keep_intent_for_phase`, with its holding checked at release.)
-   * - while a stop, an operator's halt or a local failure holds. What a strategy says then -- `on_stop`
-   *   included -- must not be replayed once the hold lifts.
-   */
+  // Keeps a target withheld for want of a trustworthy account, to plan again once there is one.
+  //
+  // Withheld because the account was never read, is too old, or predates the listing: each is a fact
+  // about the data, and the next holdings read can change it. One per instrument, the latest kept, as
+  // for `deferred_targets_`. Returns false, retaining nothing:
+  //
+  // - for anything but a `TargetPosition`. An `OrderIntent` states a quantity against the picture that
+  //   was wrong, and replaying it later would act on a decision nobody re-made. (An intent the market
+  //   phase stopped is a different case -- the picture was right, the hour was not -- and is kept by
+  //   `keep_intent_for_phase`, with its holding checked at release.)
+  // - while a stop, an operator's halt or a local failure holds. What a strategy says then -- `on_stop`
+  //   included -- must not be replayed once the hold lifts.
   bool retain_withheld(
     const Instruction<Tag>& instruction, bool for_phase = false,
     std::optional<std::chrono::system_clock::time_point> after = std::nullopt
@@ -2842,14 +2520,12 @@ private:
     return true;
   }
 
-  /**
-   * Keeps a target whose order the market phase stopped, for the first permitted phase.
-   *
-   * Two routes reach it, both only for a runner that sends to a broker: the phase limit refused an
-   * order that opens or grows a position, or it admitted one that reduces a position outside the
-   * phase and the broker (or the binding) refused it -- which is what a broker not taking orders at
-   * midnight does. See `retry_retained_targets`.
-   */
+  // Keeps a target whose order the market phase stopped, for the first permitted phase.
+  //
+  // Two routes reach it, both only for a runner that sends to a broker: the phase limit refused an
+  // order that opens or grows a position, or it admitted one that reduces a position outside the
+  // phase and the broker (or the binding) refused it -- which is what a broker not taking orders at
+  // midnight does. See `retry_retained_targets`.
   void retain_for_phase(
     const Instruction<Tag>& instruction, bool broker_answered = false,
     std::optional<std::chrono::system_clock::time_point> after = std::nullopt
@@ -2866,13 +2542,11 @@ private:
     }
   }
 
-  /**
-   * Whether the error behind the placement just refused satisfies `predicate` (`broker_unreachable`,
-   * `broker_rate_limited`).
-   *
-   * Read immediately after the send, which is the only moment `last_error()` is this order's. An
-   * executor that states no error has said nothing about why, so its refusals stay final.
-   */
+  // Whether the error behind the placement just refused satisfies `predicate` (`broker_unreachable`,
+  // `broker_rate_limited`).
+  //
+  // Read immediately after the send, which is the only moment `last_error()` is this order's. An
+  // executor that states no error has said nothing about why, so its refusals stay final.
   template <typename Predicate>
   bool last_error_is(Predicate predicate) const {
     if constexpr (runner_detail::states_last_error<Executor>::value) {
@@ -2884,18 +2558,16 @@ private:
     }
   }
 
-  /**
-   * Keeps an order intent whose order the market phase stopped, for the first permitted phase.
-   *
-   * The intent half of `retain_for_phase`: a daily strategy's protective stop, decided on the bar fed
-   * at midnight and refused by a broker not taking orders then, would otherwise be restated at the
-   * next midnight and refused again, and the position would never be protected live. Kept once per
-   * instruction (one instruction can produce two refused orders), in the order stated, with the
-   * instrument's holding at this moment, which `retry_retained_targets` checks before releasing it;
-   * any intent carrying a trigger, a stop buy as much as a stop sell, is also dropped there when a stop
-   * rests on the instrument. **Not** while a stop, an operator's halt or a local failure holds; **not** an intent carrying an
-   * idempotency key that a broker answered, because a second order would reuse the key.
-   */
+  // Keeps an order intent whose order the market phase stopped, for the first permitted phase.
+  //
+  // The intent half of `retain_for_phase`: a daily strategy's protective stop, decided on the bar fed
+  // at midnight and refused by a broker not taking orders then, would otherwise be restated at the
+  // next midnight and refused again, and the position would never be protected live. Kept once per
+  // instruction (one instruction can produce two refused orders), in the order stated, with the
+  // instrument's holding at this moment, which `retry_retained_targets` checks before releasing it;
+  // any intent carrying a trigger, a stop buy as much as a stop sell, is also dropped there when a stop
+  // rests on the instrument. **Not** while a stop, an operator's halt or a local failure holds; **not** an intent carrying an
+  // idempotency key that a broker answered, because a second order would reuse the key.
   void keep_intent_for_phase(
     const Instruction<Tag>& instruction, bool broker_answered,
     std::optional<std::chrono::system_clock::time_point> after = std::nullopt
@@ -2924,7 +2596,7 @@ private:
     kept_intents_.push_back(KeptIntent{*intent, *held, after});
   }
 
-  /** Returns whether the portfolio lists an open stop order on `instrument`. */
+  // Returns whether the portfolio lists an open stop order on `instrument`.
   bool stop_listed(const InstrumentId& instrument) const {
     for (const auto& working : context_.portfolio().working_) {
       if (working.order_.instrument_ == instrument &&
@@ -2936,7 +2608,7 @@ private:
     return false;
   }
 
-  /** Keeps a target whose plan is waiting on a stop's withdrawal; see `deferred_targets`. */
+  // Keeps a target whose plan is waiting on a stop's withdrawal; see `deferred_targets`.
   void defer_if_waiting_on_stop(
     const Instruction<Tag>& instruction,
     const strategy::Plan<Tag>& planned
@@ -3017,18 +2689,16 @@ private:
     return std::nullopt;
   }
 
-  /**
-   * Returns the instant a snapshot's age is measured against.
-   *
-   * The later of the decision instant and the last clock reading a loop supplied, so neither can be
-   * used to make an old snapshot look fresh: a late bar cannot rewind the clock, and a loop that has
-   * not spoken yet cannot erase the decision instant.
-   */
+  // Returns the instant a snapshot's age is measured against.
+  //
+  // The later of the decision instant and the last clock reading a loop supplied, so neither can be
+  // used to make an old snapshot look fresh: a late bar cannot rewind the clock, and a loop that has
+  // not spoken yet cannot erase the decision instant.
   std::chrono::system_clock::time_point freshness_instant() const {
     return observed_at_ > context_.now() ? observed_at_ : context_.now();
   }
 
-  /** Returns the detail recorded with a withheld plan, naming the hold where there is one. */
+  // Returns the detail recorded with a withheld plan, naming the hold where there is one.
   std::string withhold_detail(WithheldPlanReason reason) const {
     if (reason != WithheldPlanReason::PLACEMENT_HELD) {
       return {};
@@ -3037,7 +2707,7 @@ private:
     return holding ? std::string(strategy::halt_reason_name(*holding)) : std::string{};
   }
 
-  /** Returns the instrument an instruction is about, for reporting a plan that was not acted on. */
+  // Returns the instrument an instruction is about, for reporting a plan that was not acted on.
   static InstrumentId instruction_instrument(const Instruction<Tag>& instruction) {
     if (const auto* target = std::get_if<strategy::TargetPosition>(&instruction)) {
       return target->instrument_;
@@ -3048,7 +2718,7 @@ private:
     return InstrumentId{};
   }
 
-  /** Returns the tag an instruction carries, so a withheld plan can be attributed to it. */
+  // Returns the tag an instruction carries, so a withheld plan can be attributed to it.
   static std::string instruction_tag(const Instruction<Tag>& instruction) {
     if (const auto* target = std::get_if<strategy::TargetPosition>(&instruction)) {
       return target->tag_;
@@ -3160,16 +2830,14 @@ private:
     }
   }
 
-  /**
-   * Plans a weight-sized intent as the target position it states (`strategy::weight_target`).
-   *
-   * **A resting stop refuses it, and nothing is withdrawn.** Target reconciliation withdraws a
-   * resting stop when a trade is needed and waits for the stop's own history before trading, which
-   * only a `TargetPosition` in the instruction stream can do (`defer_if_waiting_on_stop`); a weight
-   * intent is not one, and an intent has never touched a stop. So a weight on an instrument with a
-   * stop resting is refused `STOP_ORDER_RESTING` and the stop stays -- unless the holding already
-   * meets it, when nothing is traded or withdrawn at all.
-   */
+  // Plans a weight-sized intent as the target position it states (`strategy::weight_target`).
+  //
+  // **A resting stop refuses it, and nothing is withdrawn.** Target reconciliation withdraws a
+  // resting stop when a trade is needed and waits for the stop's own history before trading, which
+  // only a `TargetPosition` in the instruction stream can do (`defer_if_waiting_on_stop`); a weight
+  // intent is not one, and an intent has never touched a stop. So a weight on an instrument with a
+  // stop resting is refused `STOP_ORDER_RESTING` and the stop stays -- unless the holding already
+  // meets it, when nothing is traded or withdrawn at all.
   strategy::Plan<Tag> plan_weight(
     const strategy::OrderIntent& intent,
     const strategy::ReconcileInputs& inputs
@@ -3198,14 +2866,12 @@ private:
     return strategy::reconcile(*converted.target_, context_.portfolio(), inputs);
   }
 
-  /**
-   * Reconciles one queued instruction against the current portfolio.
-   *
-   * The reference data is held in a local for the duration of the call, because
-   * `ReconcileInputs` borrows it rather than copying: an `Instrument` carries a tick table, and
-   * copying one per instruction per bar would be paying repeatedly for a value that does not
-   * change.
-   */
+  // Reconciles one queued instruction against the current portfolio.
+  //
+  // The reference data is held in a local for the duration of the call, because
+  // `ReconcileInputs` borrows it rather than copying: an `Instrument` carries a tick table, and
+  // copying one per instruction per bar would be paying repeatedly for a value that does not
+  // change.
   strategy::Plan<Tag> plan_for(const Instruction<Tag>& instruction) {
     const auto id = instrument_of(instruction);
     const auto reference = context_.instrument(id);
@@ -3247,14 +2913,12 @@ private:
     return plan;
   }
 
-  /**
-   * Records what the broker said about `order`, where the executor can say.
-   *
-   * Called at the `REJECTED` outcome and nowhere else, which is the only moment the answer is this
-   * order's: `SessionExecutor::last_error()` is cleared by the next accepted instruction in the same
-   * pass, so reading it later would attribute somebody else's silence to this refusal -- or nothing
-   * at all.
-   */
+  // Records what the broker said about `order`, where the executor can say.
+  //
+  // Called at the `REJECTED` outcome and nowhere else, which is the only moment the answer is this
+  // order's: `SessionExecutor::last_error()` is cleared by the next accepted instruction in the same
+  // pass, so reading it later would attribute somebody else's silence to this refusal -- or nothing
+  // at all.
   void note_broker_refusal(const strategy::PlannedOrder& order) {
     if constexpr (runner_detail::states_last_error<Executor>::value) {
       const auto& error = executor_.last_error();
@@ -3279,7 +2943,7 @@ private:
     }
   }
 
-  /** Returns which instrument a queued instruction concerns. */
+  // Returns which instrument a queued instruction concerns.
   static InstrumentId instrument_of(const Instruction<Tag>& instruction) {
     if (const auto* target = std::get_if<strategy::TargetPosition>(&instruction)) {
       return target->instrument_;
@@ -3290,23 +2954,21 @@ private:
     return InstrumentId{};
   }
 
-  /** A band and what its age is measured from; see `set_price_limits`. */
+  // A band and what its age is measured from; see `set_price_limits`.
   struct DatedBand {
-    /** The band as the broker published it. */
+    // The band as the broker published it.
     PriceLimits limits_;
-    /** When this runner was told about it, which is all an unstamped band has. */
+    // When this runner was told about it, which is all an unstamped band has.
     std::chrono::system_clock::time_point received_at_{};
-    /**
-     * Returns the instant the band's age is measured from; see `set_price_limits`.
-     *
-     * **The exchange's stamp may only make a band look older, never fresher.** It is there to catch
-     * a successful fetch of a week-old band, which is an ageing question; a stamp *later* than the
-     * moment this process received it answers nothing -- it is two clocks disagreeing, by ordinary
-     * skew at best and by a broker's bug at worst -- and taking it at face value would let a band
-     * date itself into the future and outlive any stated maximum. Capping it at the receipt instant
-     * keeps the case it exists for and gives the other one no purchase, with no invented tolerance
-     * for how far apart two clocks may be.
-     */
+    // Returns the instant the band's age is measured from; see `set_price_limits`.
+    //
+    // **The exchange's stamp may only make a band look older, never fresher.** It is there to catch
+    // a successful fetch of a week-old band, which is an ageing question; a stamp *later* than the
+    // moment this process received it answers nothing -- it is two clocks disagreeing, by ordinary
+    // skew at best and by a broker's bug at worst -- and taking it at face value would let a band
+    // date itself into the future and outlive any stated maximum. Capping it at the receipt instant
+    // keeps the case it exists for and gives the other one no purchase, with no invented tolerance
+    // for how far apart two clocks may be.
     std::chrono::system_clock::time_point as_of() const noexcept {
       if (!limits_.exchange_time_) {
         return received_at_;
@@ -3314,21 +2976,19 @@ private:
       return *limits_.exchange_time_ < received_at_ ? *limits_.exchange_time_ : received_at_;
     }
   };
-  /** Which band a plan may use, and which it was denied; see `band_for`. */
+  // Which band a plan may use, and which it was denied; see `band_for`.
   struct BandDecision {
-    /** The band to clamp with, when there is one this runner will stand behind. */
+    // The band to clamp with, when there is one this runner will stand behind.
     std::optional<PriceLimits> applied_;
-    /** The band that was held back, when one was, so the decision can be counted. */
+    // The band that was held back, when one was, so the decision can be counted.
     std::optional<PriceLimits> withheld_;
   };
 
-  /**
-   * Returns the band to apply to `id`'s prices, and separately the one that was held back.
-   *
-   * Exactly one of the two is filled when a band is registered, and neither when none is. The
-   * withheld half exists so the decision can be counted and reported: a band silently dropped is
-   * the same failure as a band silently applied.
-   */
+  // Returns the band to apply to `id`'s prices, and separately the one that was held back.
+  //
+  // Exactly one of the two is filled when a band is registered, and neither when none is. The
+  // withheld half exists so the decision can be counted and reported: a band silently dropped is
+  // the same failure as a band silently applied.
   BandDecision band_for(const InstrumentId& id) const {
     BandDecision decision;
     const auto found = price_limits_.find(id);
@@ -3361,14 +3021,12 @@ private:
     return decision;
   }
 
-  /**
-   * Marks the orders in `plan` whose price the band that was **not** applied would have moved.
-   *
-   * A statement about the planned price, not a prediction about the wire: clamping happens before
-   * tick rounding (`reconcile_detail::prepare_price`), so a bound that binds here could in principle
-   * round back to the same price. What the flag says is the checkable thing -- this order's price
-   * lies outside the withheld band on the side the clamp corrects.
-   */
+  // Marks the orders in `plan` whose price the band that was **not** applied would have moved.
+  //
+  // A statement about the planned price, not a prediction about the wire: clamping happens before
+  // tick rounding (`reconcile_detail::prepare_price`), so a bound that binds here could in principle
+  // round back to the same price. What the flag says is the checkable thing -- this order's price
+  // lies outside the withheld band on the side the clamp corrects.
   static void mark_withheld_band(strategy::Plan<Tag>& plan, const PriceLimits& withheld) {
     for (auto& order : plan.place_) {
       if (!order.price_) {
@@ -3384,28 +3042,26 @@ private:
 
   Strategy strategy_;
   strategy::RiskGuard guard_;
-  /** Placements sent that may have left an order resting; see `placements_at_broker`. */
+  // Placements sent that may have left an order resting; see `placements_at_broker`.
   std::size_t placements_at_broker_{0};
-  /** Orders sent under a phase the limits did not permit; see `sends_outside_permitted_phase`. */
+  // Orders sent under a phase the limits did not permit; see `sends_outside_permitted_phase`.
   std::size_t sends_outside_permitted_phase_{0};
-  /** How old a snapshot may be before a plan derived from it is withheld; see the setter. */
+  // How old a snapshot may be before a plan derived from it is withheld; see the setter.
   std::optional<std::chrono::nanoseconds> maximum_portfolio_age_;
-  /** The last wall-clock instant a driving loop reported; see `set_observed_at`. */
+  // The last wall-clock instant a driving loop reported; see `set_observed_at`.
   std::chrono::system_clock::time_point observed_at_{};
-  /** Whether the caller stated this runner may act with no snapshot at all; see the setter. */
+  // Whether the caller stated this runner may act with no snapshot at all; see the setter.
   bool allow_absent_portfolio_{false};
-  /**
-   * Whether a placement needs a portfolio that has actually been read; see the setter.
-   *
-   * Defaulted from the executor: a runner that can reach a broker requires it, and one that cannot
-   * does not. That is what makes the rule hold for a live runner assembled by hand rather than only
-   * for one the binding factories produced.
-   */
+  // Whether a placement needs a portfolio that has actually been read; see the setter.
+  //
+  // Defaulted from the executor: a runner that can reach a broker requires it, and one that cannot
+  // does not. That is what makes the rule hold for a live runner assembled by hand rather than only
+  // for one the binding factories produced.
   bool require_known_portfolio_{runner_detail::sends_to_a_broker<Executor>::value};
   bool probing_sellable_{false};
   strategy::SellableConventionProbe<Tag> sellable_probe_;
   Context context_;
-  /** Records the first local failure, keeping it rather than overwriting with a later one. */
+  // Records the first local failure, keeping it rather than overwriting with a later one.
   void note_local_failure(std::string detail) {
     // The *first* reason is kept, not the latest: a storage failure cascades, and the reason the
     // cascade started is the one an operator needs. Taking the hold again would only replace it.
@@ -3414,15 +3070,13 @@ private:
     }
   }
 
-  /**
-   * Makes the executor's own local failure sticky on the runner, if it reported one.
-   *
-   * Called after every send rather than only after a refusal, because the two are not the same
-   * event. A *pre-send* journal write that fails produces `UNAVAILABLE` and nothing was sent. A
-   * *terminal* journal write that fails happens after the broker has already answered: the send
-   * really did happen, so the outcome passed back stays the broker's, and only this call records
-   * that the journal is no longer trustworthy.
-   */
+  // Makes the executor's own local failure sticky on the runner, if it reported one.
+  //
+  // Called after every send rather than only after a refusal, because the two are not the same
+  // event. A *pre-send* journal write that fails produces `UNAVAILABLE` and nothing was sent. A
+  // *terminal* journal write that fails happens after the broker has already answered: the send
+  // really did happen, so the outcome passed back stays the broker's, and only this call records
+  // that the journal is no longer trustworthy.
   void note_executor_failure(bool refused) {
     const auto failures = executor_journal_failures();
     if (failures > acknowledged_journal_failures_) {
@@ -3440,7 +3094,7 @@ private:
     }
   }
 
-  /** Returns how many journal writes the executor has had fail, or zero when it cannot say. */
+  // Returns how many journal writes the executor has had fail, or zero when it cannot say.
   std::size_t executor_journal_failures() const { return executor_journal_failures_impl(0); }
 
   template <typename E = Executor>
@@ -3451,7 +3105,7 @@ private:
 
   std::size_t executor_journal_failures_impl(...) const { return 0; }
 
-  /** Returns what the executor says went wrong, or empty when it reports nothing or cannot. */
+  // Returns what the executor says went wrong, or empty when it reports nothing or cannot.
   std::string executor_journal_error() const { return executor_journal_error_impl(0); }
 
   template <typename E = Executor>
@@ -3466,83 +3120,83 @@ private:
   IndeterminacyLedger ledger_;
   std::size_t acknowledged_journal_failures_{0};
   std::map<InstrumentId, DatedBand> price_limits_;
-  /** How old a band may be before it is not applied; see `set_maximum_price_limits_age`. */
+  // How old a band may be before it is not applied; see `set_maximum_price_limits_age`.
   std::optional<std::chrono::nanoseconds> maximum_price_limits_age_;
-  /** Whether the caller stated this runner applies a band of any age; see the setter. */
+  // Whether the caller stated this runner applies a band of any age; see the setter.
   bool allow_unbounded_price_limits_age_{false};
-  /** Plans built while a band was held and not applied; see `price_bands_withheld`. */
+  // Plans built while a band was held and not applied; see `price_bands_withheld`.
   std::size_t price_bands_withheld_{0};
-  /** Sent orders a broker refused after a withheld band would have moved them; see the accessor. */
+  // Sent orders a broker refused after a withheld band would have moved them; see the accessor.
   std::size_t unclamped_orders_rejected_{0};
-  /** Orders nothing sent to a broker while carrying an unclamped price; see the accessor. */
+  // Orders nothing sent to a broker while carrying an unclamped price; see the accessor.
   std::size_t unclamped_orders_refused_{0};
-  /** Instructions that failed by each origin, and refusals a broker made; see the accessors. */
+  // Instructions that failed by each origin, and refusals a broker made; see the accessors.
   std::size_t orders_unbuildable_{0};
-  /** @copydoc Runner::orders_unbuildable_ */
+  // @copydoc Runner::orders_unbuildable_
   std::size_t orders_reconcile_withheld_{0};
-  /** @copydoc Runner::orders_unbuildable_ */
+  // @copydoc Runner::orders_unbuildable_
   std::size_t orders_guard_refused_{0};
-  /** @copydoc Runner::orders_unbuildable_ */
+  // @copydoc Runner::orders_unbuildable_
   std::size_t orders_binding_refused_{0};
-  /** @copydoc Runner::orders_unbuildable_ */
+  // @copydoc Runner::orders_unbuildable_
   std::size_t orders_broker_refused_{0};
-  /** @copydoc Runner::orders_unbuildable_ */
+  // @copydoc Runner::orders_unbuildable_
   std::size_t orders_indeterminate_{0};
-  /** Withdrawals that failed, by origin; see `cancels_rejected`. */
+  // Withdrawals that failed, by origin; see `cancels_rejected`.
   std::size_t cancels_rejected_{0};
-  /** @copydoc Runner::cancels_rejected_ */
+  // @copydoc Runner::cancels_rejected_
   std::size_t cancels_refused_{0};
-  /** @copydoc Runner::cancels_rejected_ */
+  // @copydoc Runner::cancels_rejected_
   std::size_t cancels_unresolved_{0};
-  /** @copydoc Runner::cancels_rejected_ */
+  // @copydoc Runner::cancels_rejected_
   std::size_t cancels_indeterminate_{0};
-  /** Plans held back whole, for any of three reasons; see `plans_withheld`. */
+  // Plans held back whole, for any of three reasons; see `plans_withheld`.
   std::size_t plans_withheld_{0};
   std::size_t warmup_instructions_discarded_{0};
-  /** One target waiting for a stop's withdrawal, and when a listing first showed the stop gone. */
+  // One target waiting for a stop's withdrawal, and when a listing first showed the stop gone.
   struct DeferredTarget {
-    /** The target, exactly as the strategy stated it. */
+    // The target, exactly as the strategy stated it.
     strategy::TargetPosition target_;
-    /** The stops it waits on, whose own history rows decide its release. */
+    // The stops it waits on, whose own history rows decide its release.
     std::vector<OrderRef<Tag>> stops_;
-    /** When it was deferred, which bounds the history that can hold those rows. */
+    // When it was deferred, which bounds the history that can hold those rows.
     std::chrono::system_clock::time_point deferred_at_{};
   };
-  /** Targets waiting for a stop's withdrawal; see `deferred_targets`. */
+  // Targets waiting for a stop's withdrawal; see `deferred_targets`.
   std::vector<DeferredTarget> deferred_targets_;
 
   std::vector<Unconfirmed> unconfirmed_;
   std::chrono::nanoseconds confirmation_timeout_{std::chrono::minutes(10)};
   std::size_t orders_unconfirmed_timed_out_{0};
-  /** Targets withheld for want of a trustworthy account, one per instrument; see `retry_retained_targets`. */
-  /** A retained target, and whether it waits for the market phase rather than for the account. */
+  // Targets withheld for want of a trustworthy account, one per instrument; see `retry_retained_targets`.
+  // A retained target, and whether it waits for the market phase rather than for the account.
   struct RetainedTarget {
     strategy::TargetPosition target_;
     bool for_phase_{false};
-    /** Kept because the broker could not be reached: planned again only after a later holdings read. */
+    // Kept because the broker could not be reached: planned again only after a later holdings read.
     std::optional<std::chrono::system_clock::time_point> after_;
   };
   std::vector<RetainedTarget> retained_targets_;
-  /** An order intent kept for the phase, and the instrument's net holding when it was kept. */
+  // An order intent kept for the phase, and the instrument's net holding when it was kept.
   struct KeptIntent {
     strategy::OrderIntent intent_;
     Decimal64 held_;
-    /** As for `RetainedTarget::after_`. */
+    // As for `RetainedTarget::after_`.
     std::optional<std::chrono::system_clock::time_point> after_;
   };
   std::vector<KeptIntent> kept_intents_;
   std::size_t kept_intents_dropped_{0};
-  /** The instructions kept for the phase in the current pass, so each is kept once. */
+  // The instructions kept for the phase in the current pass, so each is kept once.
   std::vector<const Instruction<Tag>*> kept_this_pass_;
-  /** True only inside a deferred release's settle, which `plan_withhold_reason` exempts. */
+  // True only inside a deferred release's settle, which `plan_withhold_reason` exempts.
   bool releasing_deferred_{false};
-  /** How many were ever deferred; see `targets_deferred`. */
+  // How many were ever deferred; see `targets_deferred`.
   std::size_t targets_deferred_{0};
-  /** How many were dropped after a fill; see `deferred_dropped_after_fill`. */
+  // How many were dropped after a fill; see `deferred_dropped_after_fill`.
   std::size_t deferred_dropped_after_fill_{0};
-  /** Instructions local machinery was unavailable to send; see the accessor. */
+  // Instructions local machinery was unavailable to send; see the accessor.
   std::size_t instructions_unavailable_{0};
-  /** What the broker said about the most recent order it refused; see the accessor. */
+  // What the broker said about the most recent order it refused; see the accessor.
   std::optional<BrokerRefusal> last_broker_refusal_;
   std::optional<strategy::Rejection> last_unbuildable_;
   std::optional<Decimal64> portfolio_value_;
@@ -3551,20 +3205,21 @@ private:
 };
 
 /**
- * A runner with no broker attached: handlers fire, instructions are recorded, nothing is sent.
+ * @brief A runner that sends nothing: handlers fire and instructions are recorded by a
+ *   `RecordingExecutor`.
  *
- * The plan's `DryRunner`, and now one configuration of the shared pipeline rather than a separate
- * implementation. That matters beyond tidiness: a dry run that ran different code from a live
- * session would be testing something other than what ships.
+ * It runs the same pipeline as a live session. A dry-run program contains no broker or network code
+ * (though the package's link line still carries the transport libraries).
  *
- * **No adapter code exists in the binary.** This header reaches no broker and no transport header,
- * so a dry-run program instantiates none of either -- confirmed by symbol inspection of an installed
- * consumer, which finds no `algotradelib::network`, `algotradelib::kis` or
- * `algotradelib::tossinvest` symbol. There is therefore no instantiated code path from a dry run to
- * a market, which is a stronger guarantee than a runtime flag.
+ * @code
+ * runner::DryRunner<MyStrategy> dry(MyStrategy{}, limits);
+ * dry.context().set_instrument(reference);
+ * const auto report = dry.feed(strategy::make_bar_event(id, BarInterval::ONE_DAY, BarStamp::CLOSE, bar));
+ * // report.would_place_ holds what would have been sent
+ * @endcode
  *
- * It does not mean libssl is off the link line: the package exports one interface target carrying
- * the transport dependencies for every consumer. See `plan/todo/offline-only-target.md`.
+ * @tparam Strategy The strategy type.
+ * @tparam CapsType The broker capabilities the strategy sees.
  */
 template <typename Strategy, typename CapsType = strategy::NoCaps>
 using DryRunner = Runner<Strategy, CapsType, DryTag, RecordingExecutor<DryTag>>;

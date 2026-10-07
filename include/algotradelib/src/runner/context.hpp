@@ -22,13 +22,7 @@
 namespace algotradelib {
 namespace runner {
 
-/**
- * The strategy vocabulary, imported once.
- *
- * A runner speaks in the strategy's own types — it is the component that feeds one — so importing
- * them is clearer than qualifying every mention. The types stay defined in `strategy`, which is
- * what a strategy author includes; nothing is duplicated here.
- */
+// The strategy types a runner speaks in, imported from `strategy`.
 using strategy::BarEvent;
 using strategy::CancelIntent;
 using strategy::Fill;
@@ -39,45 +33,28 @@ using strategy::QuoteEvent;
 using strategy::TargetPosition;
 
 /**
- * Everything a strategy sees, and the only thing it is given.
+ * @brief One request a strategy queued: an order, a target position or a cancellation.
  *
- * One type, shared by every runner, which is what makes a strategy's source identical in a dry
- * run, a live session, and later a backtest. A runner fills the caches and hands the same context
- * to the same handlers; only where the data came from differs.
+ * Requests are kept in one queue in the order the strategy made them, so a cancellation followed by
+ * a target is handled in that order.
  *
- * **Nothing here performs I/O.** Every read is from a cache the runner has already filled, so a
- * handler cannot block and cannot issue a request. Every write is queued and drained by the runner
- * after the handler returns, so a handler cannot send an order either — which is what keeps order
- * safety in one place rather than restated in every strategy.
- *
- * Templated on the broker tag and on the capability set. The tag is only reachable through
- * `OrderRef`, which a strategy takes with `auto`, so a strategy's source still names no broker.
- */
-
-/**
- * One thing a strategy asked for, in the order it asked.
- *
- * A single ordered queue rather than one list per kind, because the order is part of the meaning.
- * A strategy that cancels a resting order and then states a target expects the cancellation first;
- * draining targets before cancellations would reconcile against orders the strategy had already
- * disowned and produce the opposite instruction.
+ * @tparam Broker The broker tag of the cancellation's order reference.
  */
 template <typename Broker>
 using Instruction = std::variant<OrderIntent, TargetPosition, CancelIntent<Broker>>;
 
-/** Identifies one cached series: an instrument at one bar interval. */
+/** @brief Identifies one cached bar series: an instrument at one bar interval. */
 struct SeriesKey {
-  /** The instrument the series is for. */
+  /** @brief The instrument. */
   InstrumentId instrument_;
-  /** The bar interval, so the same instrument at two intervals is two series. */
+  /** @brief The bar interval; one instrument at two intervals is two series. */
   BarInterval interval_{BarInterval::ONE_DAY};
 
   /**
-   * Orders keys so they can live in a map; the ordering itself carries no meaning.
-   *
-   * The identity half is `InstrumentId`'s own ordering rather than a copy of it, so the fields a
-   * container distinguishes are stated in one place and cannot drift from the fields `operator==`
-   * compares.
+   * @brief Orders keys by instrument, then interval, so they can key a map.
+   * @param lhs The first key.
+   * @param rhs The second key.
+   * @return `true` if `lhs` sorts first.
    */
   friend bool operator<(const SeriesKey& lhs, const SeriesKey& rhs) {
     if (!(lhs.instrument_ == rhs.instrument_)) {
@@ -87,31 +64,48 @@ struct SeriesKey {
   }
 };
 
-/** The context a runner presents to a strategy. */
+/**
+ * @brief What a strategy's handlers receive as `ctx`: everything the strategy may read, and where it
+ *   queues what it wants.
+ *
+ * The same type in a dry run, a live session and a backtest. Nothing here performs I/O: every read
+ * comes from caches the runner filled, and `submit` and `cancel` only queue requests, which the
+ * runner checks and sends after the handler returns. The members under "What the runner uses" are
+ * for runners, not strategies.
+ *
+ * @tparam BrokerTag The broker tag of order references (a strategy reads them with `auto`).
+ * @tparam CapsType The broker capabilities, exposed as `caps` for `if constexpr`.
+ */
 template <typename BrokerTag, typename CapsType>
 class Context {
 public:
-  /** The tag identifying the broker whose references this context hands out. */
+  /** @brief The broker tag of the order references. */
   using Broker = BrokerTag;
-  /** The capability set a strategy gates on with `if constexpr`. */
+  /** @brief The broker capabilities, for `if constexpr (Ctx::caps::has_depth)` and the like. */
   using caps = CapsType;
 
-  /**
-   * Not copyable, so a handler cannot take it by value: what such a handler submitted would go to the copy
-   * and be lost. `ATL_ASSERT_STRATEGY` then reports the handler as declared and not callable.
-   */
+  /** @brief Deleted: a context cannot be copied, so a handler cannot take it by value. */
   Context(const Context&) = delete;
-  /** Not copyable; see the copy constructor. */
+  /**
+   * @brief Deleted: a context cannot be copied.
+   * @return Not callable.
+   */
   Context& operator=(const Context&) = delete;
-  /** Movable. */
+  /** @brief Move constructor: takes the state of the context passed in, which is left valid but unspecified. */
   Context(Context&&) = default;
-  /** Movable. */
+  /**
+   * @brief Move assignment: takes the other context's state.
+   * @return `*this`.
+   */
   Context& operator=(Context&&) = default;
 
-  /** A structured, non-blocking log. Lines are kept for the runner to emit or a test to read. */
+  /** @brief A log that keeps lines in memory for the runner to emit or a test to read. */
   class Log {
   public:
-    /** Records one line. Never blocks and never throws on a full buffer; the oldest is dropped. */
+    /**
+     * @brief Records one line; when 4096 lines are held, the oldest is dropped.
+     * @param message The line.
+     */
     void note(std::string_view message) {
       if (lines_.size() >= capacity_) {
         lines_.erase(lines_.begin());
@@ -119,10 +113,16 @@ public:
       lines_.emplace_back(message);
     }
 
-    /** Returns the lines recorded since they were last taken. */
+    /**
+     * @brief Returns the lines recorded since the last `take`.
+     * @return The lines, oldest first.
+     */
     const std::vector<std::string>& lines() const noexcept { return lines_; }
 
-    /** Removes and returns the recorded lines. */
+    /**
+     * @brief Removes and returns the recorded lines.
+     * @return The lines, oldest first.
+     */
     std::vector<std::string> take() {
       std::vector<std::string> taken;
       taken.swap(lines_);
@@ -130,40 +130,48 @@ public:
     }
 
   private:
-    /**
-     * Bounded on purpose.
-     *
-     * A strategy that logs every bar over a long session would otherwise grow this without limit
-     * inside a component that must not allocate unboundedly. Dropping the oldest line is a worse
-     * log; growing without bound is a worse program.
-     */
+    // Bounded so a long session cannot grow it without limit.
     static constexpr std::size_t capacity_ = 4096;
     std::vector<std::string> lines_;
   };
 
-  /** Constructs a context with the given warm-up window for cached series. */
+  /**
+   * @brief Constructs a context.
+   * @param series_capacity How many trailing bars each cached series keeps; must be positive with a
+   *   linear algebra backend, or the first `record_bar` throws.
+   */
   explicit Context(std::size_t series_capacity = 512) : series_capacity_(series_capacity) {}
 
   // --- What a strategy reads -------------------------------------------------------------
 
-  /** Returns the instant the runner is acting at. */
+  /**
+   * @brief Returns the instant the runner is acting at.
+   * @return The current instant (a replay's clock in a backtest).
+   */
   std::chrono::system_clock::time_point now() const noexcept { return now_; }
 
-  /** Returns where the clock stands relative to the trading session. */
+  /**
+   * @brief Returns the market phase.
+   * @return The phase.
+   */
   MarketPhase phase() const noexcept { return phase_; }
 
-  /** Returns the trading calendar the runner last read. */
+  /**
+   * @brief Returns the trading calendar the runner last read.
+   * @return The calendar; empty if none was read.
+   */
   const TradingCalendar& calendar() const noexcept { return calendar_; }
 
-  /** Returns positions, cash, and the orders already working. */
+  /**
+   * @brief Returns the portfolio: positions, buying power and the orders still working.
+   * @return The portfolio.
+   */
   const Portfolio<BrokerTag>& portfolio() const noexcept { return portfolio_; }
 
   /**
-   * Returns reference data for `id`, or nothing when the runner has not loaded it.
-   *
-   * Nothing rather than a default, because the `PriceRule` on it is what turns a computed price
-   * into a valid one, and a defaulted rule would be an unknown grid that silently refused every
-   * price. Absent says "not loaded yet"; a default would say "there is no grid".
+   * @brief Returns an instrument's reference data, including its price grid.
+   * @param id The instrument.
+   * @return The reference data, or `std::nullopt` if the runner has not loaded it.
    */
   std::optional<Instrument> instrument(const InstrumentId& id) const {
     const auto found = instruments_.find(key_of(id));
@@ -173,7 +181,11 @@ public:
     return found->second;
   }
 
-  /** Returns the most recent quoted price for `id`, or nothing when none has been seen. */
+  /**
+   * @brief Returns the latest price seen for an instrument (a quote's last price or a bar's close).
+   * @param id The instrument.
+   * @return The price, or `std::nullopt` if none has been seen.
+   */
   std::optional<Decimal64> last_price(const InstrumentId& id) const {
     const auto found = prices_.find(key_of(id));
     if (found == prices_.end()) {
@@ -184,15 +196,15 @@ public:
 
 #if defined(ATL_HAS_EIGEN)
   /**
-   * Returns the trailing bars of one instrument at one interval, or nothing when none are cached.
+   * @brief Returns the cached trailing bars of an instrument at an interval.
    *
-   * A view into the runner's own cache: contiguous, not copied, and safe to hand straight to an
-   * indicator. `analytics::SeriesBuffer::full()` says whether there are enough for a window.
+   * Only with a linear algebra backend (`ATL_USE_EIGEN=ON`). Use `SeriesBuffer::full()` to check
+   * there are enough bars for a window.
    *
-   * **Available only when the library is built with a linear-algebra backend.** The series type is
-   * an analytics type, and the strategy surface itself requires no backend so that a strategy
-   * trading on prices and positions alone does not have to acquire one. A strategy that reads
-   * series is, by definition, one that computes on them.
+   * @param id The instrument.
+   * @param interval The bar interval.
+   * @return A pointer to the cache (valid until the next bar is recorded), or `nullptr` if no bar
+   *   of that series has been seen.
    */
   const analytics::SeriesBuffer* bars(
     const InstrumentId& id,
@@ -206,77 +218,106 @@ public:
   }
 #endif
 
-  /** Returns the log. */
+  /**
+   * @brief Returns the log.
+   * @return The log.
+   */
   Log& log() noexcept { return log_; }
 
   // --- What a strategy asks for ---------------------------------------------------------
 
-  /** Queues an order. Nothing is sent until the runner drains the queue. */
+  /**
+   * @brief Queues an order; the runner checks and sends it after the handler returns.
+   * @param intent The order.
+   */
   void submit(OrderIntent intent) { queued_.emplace_back(std::move(intent)); }
 
-  /** Queues a target position, which the runner diffs against the portfolio. */
+  /**
+   * @brief Queues a target position; the runner trades the difference from the portfolio.
+   * @param target The target.
+   */
   void submit(TargetPosition target) { queued_.emplace_back(std::move(target)); }
 
-  /** Queues a cancellation of one working order. */
+  /**
+   * @brief Queues a cancellation of a working order.
+   * @param ref The order, from `portfolio().working_`.
+   * @param tag A label for the cancellation.
+   */
   void cancel(const OrderRef<BrokerTag>& ref, std::string tag = {}) {
     queued_.emplace_back(CancelIntent<BrokerTag>{ref, std::move(tag)});
   }
 
   // --- What the runner uses ------------------------------------------------------------
 
-  /** Returns what the strategy asked for, in order, without removing it. */
+  /**
+   * @brief Returns the queued requests without removing them (for runners).
+   * @return The requests, in order.
+   */
   const std::vector<Instruction<BrokerTag>>& queued() const noexcept { return queued_; }
 
-  /** Removes and returns what the strategy asked for, in order. */
+  /**
+   * @brief Removes and returns the queued requests (for runners).
+   * @return The requests, in order.
+   */
   std::vector<Instruction<BrokerTag>> drain() {
     std::vector<Instruction<BrokerTag>> taken;
     taken.swap(queued_);
     return taken;
   }
 
-  /** Sets the instant the runner is acting at. */
+  /**
+   * @brief Sets the current instant (for runners).
+   * @param when The instant.
+   */
   void set_now(std::chrono::system_clock::time_point when) noexcept { now_ = when; }
 
-  /** Sets the market phase. */
+  /**
+   * @brief Sets the market phase (for runners).
+   * @param phase The phase.
+   */
   void set_phase(MarketPhase phase) noexcept { phase_ = phase; }
 
   /**
-   * Replaces the trading calendar.
+   * @brief Replaces the trading calendar (for runners and sources, not strategies).
    *
-   * **Whose call this is matters.** In a live run the calendar belongs to `runner::PollingLoop`, which
-   * derives the market phase from it and re-derives before every call it makes into a source or a
-   * strategy; a source writes it during `PollKind::CALENDAR` and a replay states it once through
-   * `backtest::ReplayConfig::calendar_`. A **strategy** must not write it: `on_phase` and `on_stop`
-   * receive a mutable context, and a handler that revised the calendar and then submitted an order in
-   * the same call would have that order checked against the phase as it stood before the call -- the
-   * loop cannot intervene inside its own call into a handler. It does notice afterwards and reports it
-   * as `runner::LoopReport::sends_under_a_revised_phase_`, which is the most that is available.
+   * A strategy should only read `calendar()`: an order submitted in the same handler call that
+   * changed the calendar is checked against the phase from before the change.
+   * `runner::LoopReport::sends_under_a_revised_phase_` counts such sends.
    *
-   * A strategy that wants to know whether a date trades **reads** `calendar()`, which is what it is
-   * published for.
+   * @param calendar The calendar.
    */
   void set_calendar(TradingCalendar calendar) { calendar_ = std::move(calendar); }
 
-  /** Replaces the portfolio snapshot. */
+  /**
+   * @brief Replaces the portfolio (for runners).
+   * @param portfolio The portfolio.
+   */
   void set_portfolio(Portfolio<BrokerTag> portfolio) { portfolio_ = std::move(portfolio); }
 
-  /** Adds or replaces reference data for one instrument. */
+  /**
+   * @brief Adds or replaces an instrument's reference data.
+   * @param reference The reference data.
+   */
   void set_instrument(Instrument reference) {
     const auto key = key_of(reference.id_);
     instruments_.insert_or_assign(key, std::move(reference));
   }
 
-  /** Records the latest quoted price, used to value market orders and size notionals. */
+  /**
+   * @brief Records an instrument's latest price, used to value market orders and size notionals.
+   * @param id The instrument.
+   * @param price The price.
+   */
   void set_last_price(const InstrumentId& id, Decimal64 price) {
     prices_.insert_or_assign(key_of(id), std::move(price));
   }
 
 #if defined(ATL_HAS_EIGEN)
   /**
-   * Folds one bar into the cached series for its instrument and interval.
-   *
-   * The series is created on first use at the context's configured capacity, so a strategy's
-   * warm-up window is set once by the runner rather than guessed per instrument.
+   * @brief Appends a bar to its cached series, creating the series at the configured capacity.
+   * @param event The bar.
+   * @throws std::invalid_argument if the bar is not later than the series' newest bar, or the series
+   *   capacity is zero.
    */
   void record_bar(const BarEvent& event) {
     const SeriesKey key{event.instrument_, event.interval_};
@@ -289,7 +330,7 @@ public:
 #endif
 
 private:
-  /** Flattens an instrument identity into a map key, so lookups do not allocate a string. */
+  // An instrument's map key.
   static SeriesKey key_of(const InstrumentId& id) { return SeriesKey{id, BarInterval::ONE_DAY}; }
 
   std::size_t series_capacity_;
