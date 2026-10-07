@@ -222,9 +222,8 @@ A dry run and an observer are not held.
 
 **A price band is a per-trading-day value, and one nobody has aged is not applied.** `PriceLimits`
 is "the highest price allowed today" and for KRX it moves with the previous close, so a band
-registered once at startup describes the day the process started on. Until slice 29 nothing refreshed
-one: `Runner::set_price_limits` was an operator's startup step, no `PollKind` read one, and the band
-was clamped into every limit price for as long as the process lived. Now:
+registered once at startup (`Runner::set_price_limits`) describes the day the process started on, and
+would otherwise be clamped into every limit price for as long as the process lived. So:
 
 - `PollSchedule::price_limits_` refreshes it, one request per instrument in the source's universe, at
   market-data priority. Absent by default like every cadence but the calendar's.
@@ -263,20 +262,19 @@ overrides it either way.
 
 ## What the report says about orders that did not go out
 
-Until slice 31 an ordinary broker refusal had **no field of its own**. `Runner::feed` returns a
-report describing what became of every instruction — fourteen vectors of it — and
-`live::SessionSource` discards that report on every poll, so a run in which the broker refused every
-order looked very much like one in which it accepted every order: same iterations, same poll counts,
-no failures. (Not quite identical — the phase and price-band figures can differ for some refused
-orders — but nothing said *the broker refused these*.) The refusal was in the report `Runner::feed`
-returns, which the source drops on the floor — and, **if you bound a journaling executor whose
-terminal write landed**, in the order journal. `live::bind` does not journal at all: journalling is
-`live::bind_journaled`, so a run built the way this page opens has no record of a refusal beyond the
+`Runner::feed` returns a report describing what became of every instruction — fourteen vectors of it
+— and `live::SessionSource` discards that report on every poll. Without the loop report's own
+figures below, a run in which the broker refused every order would look like one in which it accepted
+every order: same iterations, same poll counts, no failures. Apart from those figures, a refusal is
+recorded only in the order journal, **if you bound a journaling executor whose terminal write
+landed**. `live::bind` does not journal at all: journalling is
+`live::bind_journaled`, so a run built with `live::bind` has no record of a refusal beyond the
 report. And `bind_journaled` is not itself a promise of durability — it takes whatever journal you hand
 it, including a `MemoryJournal` that is gone when the process is, and its *terminal* append can fail
 after the broker has already answered, leaving the `PENDING` line and no outcome.
 
-`LoopReport` now carries thirteen figures and one record, all describing **the polling loop** — the
+`LoopReport` carries thirteen figures and two records (`last_broker_refusal_`, `last_unbuildable_`), all
+describing **the polling loop** — the
 stop handler and the closing pass keep their own families, `stop_handler_*` and `closing_*`, so a
 refused flatten is reported once rather than twice.
 
@@ -287,12 +285,12 @@ refused flatten is reported once rather than twice.
 | `orders_unconfirmed_timed_out_` | an order this run sent was not confirmed by holdings, a listing or its history within the confirmation timeout, or, once its history settled it, a holdings read a timeout later did not show the fill; its instrument is now withheld until you clear it or the process restarts (below) |
 | `orders_guard_refused_` | `RiskGuard` refused it — **a hold as well as a limit**, since it checks the active holds first, so a halted run reports every order here. Nothing was sent |
 | `orders_binding_refused_` | the binding would not send it, or could not reach the broker (a DNS, connect or TLS failure; such an order is kept and retried, see the kept-instructions rules); no request went out |
-| `orders_broker_refused_` | the broker was asked and said no; a request was spent |
-| `orders_indeterminate_` | the request failed in transit, so the order may or may not exist |
+| `orders_broker_refused_` | the broker was asked and said no; a request was spent. At KIS, Toss and Kiwoom most refusals are counted in the next row instead |
+| `orders_indeterminate_` | the outcome is unknown, so the order may or may not exist: the request failed in transit or was cancelled, the reply could not be read, the broker answered with an HTTP 5xx, or (at KIS, Toss and Kiwoom) its refusal arrived as `PROTOCOL` |
 | `cancels_rejected_` | a withdrawal refused outright — **by the broker or by the binding**; `RejectedCancel::by_broker_` distinguishes them and this figure does not |
 | `cancels_refused_` | a hold refused the withdrawal before anything was sent |
 | `cancels_unresolved_` | the reference named an order the snapshot does not hold |
-| `cancels_indeterminate_` | the withdrawal failed in transit; **it may still have withdrawn the order** |
+| `cancels_indeterminate_` | the withdrawal's outcome is unknown, for the same reasons; **it may still have withdrawn the order** |
 | `plans_withheld_` | a whole plan held back before any of its parts was judged — **for one of four reasons this figure does not distinguish**: the account was never read, it is older than your stated maximum, it was read before the working-order listing it would be reconciled with (`portfolio_superseded`), or a hold is refusing placements for a plan that also wanted to withdraw something. The last two happen on a perfectly fresh portfolio, so do not read this as "the account is unknown". And **`final_gate_` does not always show it**: with `allow_absent_portfolio` the gate is open while a plan that would withdraw something is still withheld |
 | `instructions_unavailable_` | local machinery was unavailable, so it was not sent — a pre-send journal write that failed is the usual cause and **not the only one**, since any executor answering `UNAVAILABLE` lands here. Placements and withdrawals together. It leaves a sticky `local_failure` hold, which `final_gate_` *may* name — a higher-priority hold can be reported while that one is still in force — so read this as how many instructions it cost |
 
@@ -302,7 +300,8 @@ code and message. One record, overwritten — a run refused ten thousand times k
 one **that came with an error**, and a refusal that says nothing clears it rather than leaving the
 previous order's words behind. Empty when *this* run's polling saw no refusal, even though the runner
 may still hold one from an earlier run; and empty, with a non-zero count beside it, when the refusals
-themselves were silent. It is empty on a dry runner and in a replay, which have no broker to be refused by.
+themselves were silent. It is empty on a dry runner and in a replay, which have no broker to be refused by,
+and it misses the KIS, Toss and Kiwoom refusals counted as unknown outcomes.
 
 **`last_unbuildable_` does the same for `orders_unbuildable_`**: the reconciliation's reason
 (`RejectReason`), the instrument and your tag, for the last instruction this run's polling could not
@@ -341,9 +340,10 @@ to the operator; an order the strategy adds in that window would be planned agai
 as the loop's own closing orders and could close the same position twice.
 
 **A `flatten` states its instructions directly** rather than expressing them as a target position.
-It withdraws every working order once — including one on the same side as the close, which ordinary
-reconciliation would keep as progress toward the target — and then sends a market order for the
-position.
+It withdraws every listed working order once — including one on the same side as the close, which
+ordinary reconciliation would keep as progress toward the target — and then sends a market order for
+the position. An order the broker does not list cannot be withdrawn or sized around: at Toss, an order
+of a type the API does not list (such as an after-hours closing-price order placed in the app).
 
 **It closes only the part no working order was already trading**, and that subtlety is worth the
 paragraph. Ten held against a resting sell for ten: closing all ten alongside it could sell the
@@ -361,8 +361,9 @@ enumerate orders, like the history fallback — would slip past it and the full-
 the same double sell by a different route. The withdrawals still go, because cancelling only reduces
 exposure; the position stays, held and reported. A stop pending when the process starts (the control
 file already says `flatten`) makes the startup read itself before it closes anything, so this case is
-one of those listed under `closing_source_unverified_` below: a failed order-list or holdings read, a
-source with no working-order inquiry, or an order sent after the last listing.
+one of those listed under `closing_source_unverified_` below: a failed order-list or holdings read,
+holdings or a listing that are too old, a source with no working-order inquiry, or an order sent after
+the last listing.
 
 **A flatten beside your own protective stop therefore takes two runs.** The first withdraws the stop and
 leaves the position, contended, and the program exits `CLOSING_INCOMPLETE`. Start the program again with
@@ -424,7 +425,7 @@ flatten note above.
 
 **And one flag covers the case before any of those**, `closing_source_unverified_`. A stop builds its
 instructions from the portfolio snapshot — working orders for a `withdraw`, positions for a `flatten`
-— so it can only be complete if that picture is current. Five ways it is not:
+— so it can only be complete if that picture is current. Six ways it is not:
 
 - **The startup read failed.** A `withdraw` or `flatten` requested before the loop's first iteration
   attempts the startup read itself; if that read fails, the picture cannot contain an order a *previous
@@ -435,6 +436,7 @@ instructions from the portfolio snapshot — working orders for a `withdraw`, po
   runner placed in between.
 - **A listing is older than `set_maximum_portfolio_age`.** With no age policy stated, no age makes the
   picture unverified.
+- **The holdings were never read, or are older than `set_maximum_portfolio_age`.**
 - **The holdings are older than the listing** — a holdings read failed after it. A fill between the two
   would be in neither, so a `flatten` could miss both the order and the shares it bought.
 - **The source does not publish working orders at all.** A broker without the working-order inquiry
@@ -510,8 +512,8 @@ That is what a replay does by filling at the next bar's open. The rules around i
   request *was* written and whose reply was
   lost is not this: it may exist, and recovery resolves it from the broker's lists.
 - **An `OrderIntent` is kept the same way** (`Runner::intents_kept_for_phase`) — the commonest is a
-  daily strategy's protective stop, which a broker refuses at midnight; unkept, it was restated and
-  refused every midnight and the position was never protected live. But an intent states a quantity
+  daily strategy's protective stop, which a broker refuses at midnight; unkept, it would be restated
+  and refused every midnight, and the position would never be protected live. But an intent states a quantity
   decided against midnight's book, so at release it goes out only if the instrument's holding is still
   what it was when it was kept, and a kept intent carrying a trigger -- a stop sell or a breakout stop
   buy alike -- only if no stop now rests there; otherwise it is dropped and counted
@@ -567,11 +569,12 @@ everything decided on the older bars is discarded (`Runner::feed_warmup`), count
 run's report; only the newest bar's decision can be sent, or kept for the phase. The same holds for a
 backlog after an outage: two missed daily bars are both shown, and only the newer one acts.
 
-Why it matters: a restarted process used to act on every signal in its history, at today's price. An
-event-triggered strategy — `vanilla::RsiThreshold` enters on "not holding and oversold" — met an
-oversold bar months back against a flat book and bought again a minute after the previous process had
-sold. A level strategy (`SmaCrossover`) was right by accident, because only its last target survived.
-So a process started overnight and one started during the session now take the same decision: the
+Why it matters: otherwise a restarted process would act on every signal in its history, at today's
+price. An event-triggered strategy — `vanilla::RsiThreshold` enters on "not holding and oversold" —
+would meet an oversold bar months back against a flat book and buy again a minute after the previous
+process had sold. A level strategy (`SmaCrossover`) would be right only by accident, because only its
+last target survives.
+So a process started overnight and one started during the session take the same decision: the
 newest bar's. Four consequences to design for:
 
 - **State levels, not transitions**, including for cancellations: a transition detected on history is
@@ -677,17 +680,17 @@ pass, so a second bar before the next poll cannot re-spend the same money.
 **Every order sent to a broker counts as working until the broker shows what became of it, whatever
 the limits** — on a broker that lists working orders, which all three shipped ones do. Any later pass
 therefore sees the order an earlier one sent and does not send it again: two bars of a minute strategy
-between listings, a runner driven by hand, a quote and a bar in one iteration. Before 2026-09-30 this
-held only with one of the checks above enabled, and a target strategy under default limits sent one
-order per bar of a cold start's history (which `SessionSource` now feeds as history, above, so only its
-newest bar can send at all). A dry run and `live::bind_observer` send to no broker, so their rows carry
+between listings, a runner driven by hand, a quote and a bar in one iteration, with or without the
+checks above (and `SessionSource` feeds a cold start's history as history, above, so only its newest bar
+can send at all). A dry run and `live::bind_observer` send to no broker, so their rows carry
 no broker reference — a later opposing target would ask to withdraw an order identified by nothing — and
-they keep the old scoping: they report a restated target again on every pass.
+for them an order stays counted across passes only when `enforce_buying_power_`,
+`enforce_sellable_quantity_`, `max_position_quantity_` or `max_gross_exposure_` reads it, or it is a
+stop; otherwise they report a restated target again on every pass.
 
-A listing alone does not end it (lab F15). A market order that filled at once is in no listing, a
+A listing alone does not end it. A market order that filled at once is in no listing, a
 resting order may not be listed yet, and a listed one can fill and leave; in each case a holdings answer
-that lags the fill does not show it either, and a target used to send the order again (in the labs'
-paper broker, holdings 70 seconds behind turned 47 trades into 295, at up to twice the target).
+that lags the fill does not show it either, and a target would send the order again.
 So the runner remembers each accepted order with the instrument's holding when it was sent
 (`Runner::unconfirmed_orders`), and before every pass shows it as a reserved row of whatever nothing
 explains yet: the order's quantity, less what holdings have moved since in its direction, less what a
@@ -705,31 +708,30 @@ second order. Either way the mark waits for a holdings read taken a full timeout
 became unexplained (or after the history settled it), so a slow holdings cadence delays it, never makes
 it early.
 
-**An order whose reply was lost is counted the same way, from the send** (lab F35). Its instrument is
+**An order whose reply was lost is counted the same way, from the send.** Its instrument is
 withheld in the ledger until a sweep of the broker's lists says what became of it, and meanwhile the
 order is tracked but not shown: no placement on the instrument can go out, and a listing that already
 carries the order would otherwise count it twice and have a target withdraw the real one. It does not
 time out while the ledger holds the instrument. When the sweep finds it (`MATCHED`), the order is
 counted on, by the number the sweep found, until holdings show it, and the ledger lets the instrument
-trade again once the sweep has decided everything open on it: before, a market order that had filled was
-in no listing, holdings lagging the fill did not show it, and the next bar's target bought it again (the
-labs' paper broker held twice the target). When the sweep concludes it was never placed (`NOT_PLACED`),
+trade again once the sweep has decided everything open on it. (Otherwise a market order that had filled
+would be in no listing, holdings lagging the fill would not show it, and the next bar's target would buy
+it again.) When the sweep concludes it was never placed (`NOT_PLACED`),
 it is forgotten. `SessionSource` does this for every recorded resolution; a source of your own that
 calls `reconcile_against` should call `Runner::resolve_indeterminate_placement` the same way, and so
 must you after clearing the ledger by hand: an order nothing names once the ledger is clear shows as a
 reserved row with no broker reference (a resting one is then counted beside its own listed row), waits
 for holdings, and past the confirmation timeout withholds its instrument again, counted.
 
-**A target never re-places what it only reserved** (lab F38). A reserved row has often filled already,
+**A target never re-places what it only reserved.** A reserved row has often filled already,
 so when a target finds more working on its side than it wants, it still withdraws every row there, but
 sizes the replacement net of the reserved ones: withdrawing a finished order is refused, and a whole
-remainder sent beside it bought again every bar while holdings lagged (the labs' paper broker held 210
-for a target of 100). A reserved order that was still resting is withdrawn all the same, and the rest is
+remainder sent beside it would buy again every bar while holdings lagged. A reserved order that was still resting is withdrawn all the same, and the rest is
 placed the next time the target is stated, once its history says what it filled or holdings show it. The
 cost is waiting, on exits as on entries: a sell target whose reserved sells exceed the need sends
 nothing until holdings credit them (or the confirmation timeout withholds the instrument), and at
 Kiwoom, whose cancelled-order rows are not yet verified, a withdrawn order may wait for that timeout. A
-replay or a dry run is unchanged.
+replay or a dry run does not do this.
 
 A trade made outside the runner on the same instrument never doubles an order either: one in the same
 direction ends the wait early, one in the other direction keeps it until the timeout withholds the
@@ -771,10 +773,9 @@ A total with known coverage needs a deliberate order-history poll, which this lo
 
 ## The portfolio exposure ceiling, and what it means by "portfolio"
 
-`RiskLimits::max_gross_exposure_` caps the exposure the account may reach. Until `ai/guard-inputs` it
-did not do that: nothing in the library ever supplied the current exposure, so the ceiling was
-compared against the value of the single order in front of it, and a ten-million ceiling did not stop
-a strategy reaching twenty million two million at a time.
+`RiskLimits::max_gross_exposure_` caps the exposure the account may reach: the exposure if this order
+and every outstanding one filled, valued at the highest price that could apply, so a ten-million
+ceiling stops a strategy reaching twenty million two million at a time.
 
 ```cpp
 strategy::RiskLimits limits;
@@ -784,10 +785,10 @@ limits.max_gross_exposure_ = Decimal64::parse("10000000");
 Three things to know before turning it on.
 
 **It is a ceiling per currency.** The same number is applied independently to each currency, in the
-currency the order is priced in — `max_order_notional_`'s reading, and `holdings-core`'s refusal to
-add currencies without a rate you can see. So an account holding ten million of exposure in won and
+currency the order is priced in, as `max_order_notional_` reads it: the library does not add
+currencies without a rate you can see. So an account holding ten million of exposure in won and
 ten million in dollars passes a fifteen-million ceiling. If you need a converted account-wide cap,
-this is not it; `plan/todo/exchange-rates.md` is where that becomes expressible.
+this is not it; the library has no exchange rates yet.
 
 **It measures what would happen if everything outstanding filled**, not what the last poll reported —
 the same standard `max_position_quantity_` uses. Working orders count, so two orders in one pass
@@ -803,7 +804,7 @@ loosening: such an order is allowed even when it is larger than the ceiling itse
 It is *not* true that any order opposing a position is exempt. Selling 300 against a long of 100
 reaches a short of 200, which is more reachable exposure than the 100 it started from, and the same
 rule refuses it. The test is what the order does to the projection, not which way it points. If you
-wanted a cap on a single order, that is `max_order_notional_`, which is unchanged.
+wanted a cap on a single order, that is `max_order_notional_`.
 
 **An account it cannot value refuses everything.** Every instrument the account holds or has working
 needs registered reference data, and a mark. One that has neither is not quietly left out of the sum —
@@ -814,18 +815,17 @@ with `GuardReason::VALUE_NOT_KNOWN` until you register it.
 
 - **Remember an unconfirmed order across a restart.** The in-process rule above
   (`unconfirmed_orders`) lives in memory. A process started inside the lag of its predecessor's last
-  order does not know it, feeds the newest bar again, and a target can send the order twice (lab F15).
+  order does not know it, feeds the newest bar again, and a target can send the order twice.
   The same holds for a predecessor's order whose acknowledgement was lost and that the new process's
-  sweep finds: in process such an order is counted (above), across a restart it is not. Until the journal carries it
-  (`plan/todo/reservation-until-confirmed.md`, the second branch), let a restarted daily strategy start
-  after holdings have caught up: at the KIS demo both lags were below one second-paced poll.
-- **Stream.** It polls. `plan/todo/realtime-streaming.md` drops into the same source seam.
-- **Run more than one loop.** One loop, one thread. See `plan/todo/parallel-execution.md`.
+  sweep finds: in process such an order is counted (above), across a restart it is not. Until the
+  journal carries it, let a restarted daily strategy start after holdings have caught up: at the KIS demo both lags were below one second-paced poll.
+- **Stream.** It polls; streaming would plug into the same source seam.
+- **Run more than one loop.** One loop, one thread.
 - **Tell you whether the sellable figure already excludes your resting orders.** Neither broker
   documents it, so the guard subtracts them — safe, and possibly twice. Turn on
   `probe_sellable_convention()` and a run that observes one says so in `report.notes_`.
 
-Surviving a restart is no longer on this list, except for the lag above. Bind a
+Surviving a restart is not on this list, except for the lag above. Bind a
 `runner::FileJournal` and the ledger becomes durable: every instruction is recorded before it is sent, a
 restarted runner recovers what its predecessor left owed, and the listings this source already reads
 resolve it. See the

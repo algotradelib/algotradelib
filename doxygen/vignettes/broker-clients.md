@@ -104,7 +104,8 @@ no account selected), and only on demo. Either way the run knows the market phas
 `--live` it trades on demo. The example paces every KIS client at one request a second
 (`kis_credentials::paced_options`): faster, KIS refuses reads with `EGW00201`, and the real keys'
 holiday calendar takes about 20 s of pages at startup. Toss's daily price band can differ from
-KIS's for the same stock (`labs/FINDINGS.md` F27), and the band clamps limit prices, so KIS may
+KIS's for the same stock: after the close Toss already publishes the next session's band while KIS
+keeps the day's (observed 2026-10-01). The band clamps limit prices, so KIS may
 refuse an order priced from it.
 
 **Kiwoom issues one key per account**: a Korean-stock and a US-stock account each have a key, and no
@@ -143,7 +144,7 @@ Read these before using the order clients.
 - **An order POST is never replayed.** A `TRANSPORT` error therefore leaves the
   outcome *indeterminate*: the order may or may not have reached the broker.
   Reconcile against an order inquiry before resubmitting; do not retry blindly.
-- **Toss supports idempotency; KIS does not, and KIS says so.** Setting
+- **Toss supports idempotency; KIS and Kiwoom do not, and say so.** Setting
   `OrderRequest::client_order_id_` makes a Toss resubmission safe for ten
   minutes. KIS offers no such key for individual customers — `gt_uid` is
   documented `[법인 전용]` — so **KIS refuses an order carrying one** with
@@ -151,7 +152,8 @@ Read these before using the order clients.
   authentication and before any socket write. Accepting it and dropping it would
   leave a caller believing a resubmission is safe when it would place a second
   live order. The library never generates a key on its own either, so its absence
-  stays a visible caller decision.
+  stays a visible caller decision. Kiwoom refuses one the same way
+  (`client_order_id_unsupported`).
 - **Acceptance is not execution.** An `OrderAck` means the broker recorded the
   instruction. Read the resulting state back through an order inquiry.
 - **Unsupported instructions are rejected, never downgraded.** An order shape a
@@ -219,7 +221,7 @@ Read these before using the order clients.
   with that quantity as the amendable one. The listing then lags as the history
   lags; on the demo (2026-10-02) both showed a new order within one paced poll.
   A runner keeps what it sent counted until holdings or the history account for
-  it, so the lag no longer places an order twice in one process; across a restart
+  it, so the lag does not place an order twice in one process; across a restart
   it still can (`running-a-strategy-live.md`, "What this does not do yet"). On demo
   the listing also keeps a DAY order that expired at the close, until the date
   changes. A released stop cannot be told apart there, and the rows

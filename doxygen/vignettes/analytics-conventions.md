@@ -61,9 +61,10 @@ So the library uses both, and the discipline is that **they meet in exactly one 
 
 Every conversion lives in `analytics/conversion.hpp`:
 
-- `to_scalar(Decimal64)` is total. Every price and quantity a broker can report has a
-  coefficient inside 53 bits, so `double` holds it exactly; the loss is theoretical here
-  rather than practical.
+- `to_scalar(Decimal64)` is total, and an approximation: the coefficient converts exactly
+  when it fits in 53 bits (broker prices and quantities do), but each decimal place is a
+  division by ten that can round, so `to_scalar(Decimal64(7, 2))` is `0.069999999999999993`,
+  not the nearest double to 0.07. Compare computed values with a tolerance.
 - `to_decimal(Scalar, scale)` returns `std::optional`. It refuses a non-finite value and a
   value that would overflow the coefficient, and it rounds half away from zero at the scale
   it was asked for. It honours that scale literally: `to_decimal(1.5, 3)` is `1.500`, which
@@ -154,7 +155,7 @@ Every trailing function advances one row at a time. A stride greater than one is
 also not foreclosed: because the result is always as long as the input, a stride means "compute at
 every `k`-th row, leave the rest unobserved", which reaches the API as a trailing defaulted
 parameter without changing any existing meaning. Usually the need behind it is resampling rather
-than subsampling — see `plan/todo/bar-resampling.md`.
+than subsampling, which the library does not do yet.
 
 The same principle governs the conventions that differ between packages. Each function states which
 one it implements, next to the arithmetic, because the differences change decisions rather than
@@ -162,7 +163,7 @@ decorating them:
 
 | Function | Convention, and the other one |
 | --- | --- |
-| `ema`, `ema_step` | take the smoothing factor `alpha`; `alpha_from_span(n)` is the span convention `2 / (n + 1)`; seeded on the first observed value; on observed rows, `pandas` `ewm(alpha=..., adjust=False, ignore_na=True)`, which also fills a missing row with the carried level |
+| `ema`, `ema_step` | take the smoothing factor `alpha`; `alpha_from_span(n)` is the span convention `2 / (n + 1)`; seeded on the first observed value. `ema_step` is the one-value update; `ema` over a series matches, on observed rows, `pandas` `ewm(alpha=..., adjust=False, ignore_na=True, min_periods=min_observed)` (it reports nothing before `min_observed` observations), which also fills a missing row with the carried level |
 | `rsi`, `atr` | Wilder's `1 / n` with Wilder's seed, not `2 / (n + 1)` |
 | `rolling_stdev`, `rolling_cov` | sample divisor `count - 1`, not the population `count` |
 | `sortino` | shortfalls divided by **all** observations, not by the losing ones |
@@ -260,20 +261,15 @@ predictors, over what estimation window, how a target aligns to lagged features,
 incomplete row is dropped or imputed, pairwise or listwise deletion. Those are modelling decisions,
 and answering them with defaults would make a strategy's choices while appearing to offer a utility.
 
-An earlier draft of this layer shipped `covariance` with pairwise deletion, and the forty lines of
-scalar loops it took were *entirely* the deletion policy — which also made it an order of magnitude
-slower than the vectorized complete-data form above. The overreach and the inefficiency had one
-cause.
-
 **The line, stated so it can be applied again:** ship what has one right answer everyone agrees on;
 defer what requires choosing. `macd(12, 26, 9)` means one thing, and the value of shipping it is
 that Wilder's seed and the span convention are got right once instead of re-derived. `sortino`
 ships with its divisor documented rather than parameterized because there *is* a correct answer.
 "Covariance of series with gaps" has no canonical answer, so it waits for a consumer that can say
-what it needs — see `plan/todo/covariance-estimation.md` and `plan/todo/factor-models.md`.
+what it needs.
 
-Note that this is not the same rule as "remove anything the next branch does not use". Applied
-that way it would also delete `macd`, `bollinger`, `atr`, `wma`, `sharpe`, `one_way_turnover`,
+Note that this is not the same rule as "ship only what the first strategies use". Applied that way
+it would also delete `macd`, `bollinger`, `atr`, `wma`, `sharpe`, `one_way_turnover`,
 and `max_drawdown`, since the first set of vanilla strategies needs only `sma`,
 `ema`, `rolling_min`/`rolling_max`, `zscore`, `rsi`, `rolling_stdev`, and `Panel`.
 

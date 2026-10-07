@@ -29,10 +29,10 @@ graph TD
     BR["<b>&lt;broker&gt;</b><br/>BrokerTraits, BrokerCaps,<br/>BrokerSession"]
     CO["<b>&lt;core&gt;</b><br/>Decimal64, Money, InstrumentId,<br/>bars, calendar, Result, BrokerError"]
     NW["<b>&lt;network&gt;</b><br/>HTTPS transport, OAuth,<br/>WebSocket, rate-limit pacer"]
-    KT["<b>&lt;kis&gt;</b> &nbsp; <b>&lt;tossinvest&gt;</b><br/>adapters: one BrokerTraits<br/>specialization each"]
+    KT["<b>&lt;kis&gt;</b> &nbsp; <b>&lt;tossinvest&gt;</b> &nbsp; <b>&lt;kiwoom&gt;</b><br/>adapters: one BrokerTraits<br/>specialization each"]
   end
 
-  X(("KIS / Toss<br/>HTTPS"))
+  X(("KIS / Toss / Kiwoom<br/>HTTPS"))
 
   S --> ST
   V --> ST
@@ -69,7 +69,7 @@ What that assertion does and does not claim is worth being exact about. It estab
 or replay translation unit **instantiates** no adapter and no transport code, so there is no
 instantiated code path from a backtest to a market. It does not claim libssl is off the link line:
 the package exports one interface target for every consumer, so an offline binary carries the
-dependency it never calls. Splitting the target is `plan/todo/offline-only-target.md`.
+dependency it never calls; the library does not have a transport-free target yet.
 
 Two other edges are worth reading off the picture:
 
@@ -96,9 +96,8 @@ and on its own it is not enough here. The one underneath it is about *values*:
 The test is not "does this cover the brokers we have" but **"could someone add a broker for another
 country, in their own project, without editing this library?"** `BrokerTraits` is already
 specializable out of tree; the vocabulary has to be extensible the same way. Where it is not yet —
-`Venue` enumerates one country's market structure — that is a known, filed gap rather than a
-settled design (`plan/todo/venue-is-korea-only.md`,
-`plan/todo/core-vocabulary-extensibility.md`).
+`Venue` enumerates one country's market structure — that is a known gap rather than a
+settled design.
 
 `Code<N>` is the fixed-capacity, allocation-free preservation type that exists for this: a code the
 library does not recognize is carried verbatim beside the normalized enums rather than discarded —
@@ -125,7 +124,7 @@ graph LR
 
   PL --> E1["RecordingExecutor<br/><b>DryRunner</b>"]
   PL --> E2["QueueingExecutor + ReplayLedger<br/><b>Backtester</b>"]
-  PL --> E3["SessionExecutor<br/><b>LiveRunner</b>"]
+  PL --> E3["SessionExecutor<br/><b>live::bind</b>"]
 
   E1 --> O1["a list of what it would have sent"]
   E2 --> O2["fills, an equity curve,<br/>a Report with its caveats"]

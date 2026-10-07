@@ -7,17 +7,22 @@ it, and an opt-in pacer that decides what goes out and in what order.
 
 - HTTPS connections are persistent per client and requests are serialized on a
   bounded queue.
-- DNS, connect, TLS, write, and read operations have deadlines.
+- In the asynchronous client the broker facades use (`AsyncHttpClient`), DNS,
+  connect, TLS, write, and read operations have deadlines. The blocking
+  `network::HttpClient` enforces none.
 - A failed GET may be replayed once after reconnect. POST requests are never
-  replayed automatically, and never written on a connection idle longer than
-  `HttpClientOptions::unreplayed_idle_limit_` (one second): both KIS hosts close
-  an idle connection after five seconds, and an order written into one failed
-  as an unknown outcome KIS never received (`labs` F28). Such a request goes out
-  on a fresh connection, at the cost of a TLS handshake; Kiwoom sends its reads
-  as POSTs, so most paced Kiwoom reads pay it.
+  replayed automatically. Before a POST is admitted, a connection idle longer than
+  `HttpClientOptions::unreplayed_idle_limit_` (one second) is replaced by a fresh
+  one, once per request: both KIS hosts close an idle connection after five
+  seconds, and an order written into one failed as an unknown outcome KIS never
+  received. If the request then waits for rate-limit admission longer than that
+  limit, it is still written on the fresh connection. The refresh costs a TLS
+  handshake; Kiwoom sends its reads as POSTs, so most paced Kiwoom reads pay it.
 - Rate-limit refusals surface as `ErrorCategory::RATE_LIMIT` with whatever hints
   the broker published, and requests are paced against the budget described below.
-- TLS performs SNI and certificate hostname verification.
+- TLS sends SNI and installs a host-name check. For the peer to be verified, the
+  `ssl::context` you pass must enable `ssl::verify_peer` and hold trusted roots
+  (the broker-client examples do).
 - WebSocket sessions accept a target path and handshake headers, serialize
   writes and close, send idle keep-alive pings, and report lifecycle events
   through virtual callbacks. `WssSessionOptions` can enable bounded exponential
@@ -41,7 +46,7 @@ per-key allowance is an account-level portal setting its documentation does not
 state, so the library cannot assert a number. KIS does note that demo accounts are
 metered more tightly than live ones, again without stating either figure.
 
-**Measured on one account (2026-10-02, `labs/FINDINGS.md` F26):** a KIS demo account
+**Measured on one account (2026-10-02):** a KIS demo account
 refused reads closer than about a second apart (`EGW00201`), and with real keys the
 20-page holiday calendar was refused at eight a second and served at one. The KIS
 examples therefore pace at `RateLimitBudget{1, 1, 0}` (`kis_credentials::paced_options`
@@ -127,8 +132,9 @@ window.
 `shed_`, and accumulated `waited_`, plus the allowance currently in force and the
 number of broker refusals seen. Rising `delayed_` on a polling class while
 `TRADING` stays undelayed is the reserve working; rising `shed_` means the queue is
-full rather than the pacer slow. Read them from a completion handler, or between
-calls on a blocking session.
+full rather than the pacer slow. The counters are not synchronized: read them on
+the client's strand (a completion handler with no executor of its own runs there)
+or while no request is in progress, such as between calls on a blocking session.
 
 `example-rate-limit-stats [burst] [per-second] [reserve]` prints all of this for a
 budget offline, with no credentials and no network access.

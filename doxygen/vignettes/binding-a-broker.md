@@ -29,7 +29,7 @@ market, which is a stronger guarantee than a runtime flag that can be set wrong.
 Be precise about what that is not: libssl is still on the link line. The package exports one
 interface target carrying the transport dependencies for every consumer, so a dry-run binary has the
 library as a dylib dependency it never calls. Making the promise literal needs a second,
-transport-free target, which is recorded as a todo rather than done.
+transport-free target, which the library does not have yet.
 
 Including `<algotradelib/live>` deliberately gives up the compile-time half as well.
 
@@ -79,7 +79,7 @@ The report says everything that happened, and the distinctions matter:
 | `rejected_` | it was not placed, with the `RejectReason` saying why: reconciliation could not build it, the broker refused it (`BROKER_REFUSED`), or the binding refused to send it (`BINDING_REFUSED`) |
 | `refused_` | a guard forbade it (`GuardReason`), with the limit and what was attempted |
 | `withheld_` | the instrument's order state is unresolved; reported, never retried |
-| `indeterminate_` | the send failed in transit and the outcome is unknown |
+| `indeterminate_` | the outcome is unknown (see the rule below: a failure in transit, an unreadable reply, an HTTP 5xx, or a broker refusal reported as `PROTOCOL`) |
 | `unavailable_` | local machinery could not send it; no broker was asked |
 
 A cancellation has the same outcomes and its own bucket for each, because only `would_cancel_` means
@@ -89,7 +89,7 @@ the broker accepted the request:
 | --- | --- |
 | `rejected_cancel_` | the broker refused the request, or the binding refused to send it; `by_broker_` says which |
 | `refused_cancel_` | a hold on the guard refused it, with the `HaltReason` |
-| `indeterminate_cancel_` | the send failed in transit; whether the broker got it is unknown |
+| `indeterminate_cancel_` | the outcome is unknown, as for `indeterminate_`; the order may or may not have been withdrawn |
 | `unavailable_cancel_` | local machinery could not send it; no broker was asked |
 | `unresolved_cancel_` | it named an order the snapshot does not hold |
 
@@ -145,9 +145,11 @@ for its own reasons — a polling loop whose holdings snapshot is stale, a runne
 be written — and each releases only what it took, so nothing else can clear your halt and your
 `resume()` cannot clear theirs. `guard().holds()` says what is in force when more than one thing is.
 
-While any hold stands the runner sends **nothing**, cancellations included: a withdrawal is still an
-order-writing request that can fail indeterminately. Refused cancellations appear in
-`refused_cancel_` with the hold that refused them, the way refused placements appear in `refused_`.
+While any hold stands the runner places **nothing**. Cancellations depend on the hold
+(`strategy::halt_blocks`): `OPERATOR` and `STOPPING` refuse them too (they appear in
+`refused_cancel_` with the hold that refused them), `LOCAL_FAILURE` makes them unavailable
+(`unavailable_cancel_`), and the data holds (`ORDER_LIST_UNREAD`, `PORTFOLIO_*`,
+`BUYING_POWER_UNREAD`, `POLL_FAILING`) let a named cancellation go.
 
 **A guard rejects; it never resizes.** Halving an order that exceeded a ceiling would place a
 position the strategy never sized against a signal it never gave — and the strategy would then
@@ -282,19 +284,20 @@ own. The rule is ownership rather than size.
 ## What each broker will tell you about the account
 
 Three questions, and the brokers do not answer them the same way. `BrokerCaps` says which you can
-ask before you write the call, so one strategy source compiles against both.
+ask before you write the call, so one strategy source compiles against all three.
 
-| | Toss | KIS |
-| --- | --- | --- |
-| `has_buying_power` | yes | yes |
-| `has_buying_power_quantity` | no — an amount only | yes — also how many shares |
-| `sellable_source` | `INQUIRY` — one request per instrument | `HOLDINGS` — free, on every snapshot |
-| `has_commission_schedule` | yes | no |
+| | Toss | KIS | Kiwoom |
+| --- | --- | --- | --- |
+| `has_buying_power` | yes | yes | yes |
+| `has_buying_power_quantity` | no — an amount only | yes — also how many shares | yes — per margin tier, through `session.client()` |
+| `sellable_source` | `INQUIRY` — one request per instrument | `HOLDINGS` — free, on every snapshot | `NONE` — not yet: the session's holdings are refused until you assert `KiwoomConfig::holdings_position_scope_`; the rows then carry `trde_able_qty`, which `RiskGuard` uses only if `holdings_sellable_scope_` is `WHOLE_HOLDING` |
+| `has_commission_schedule` | yes | no | no |
 
 `sellable_source` names a **source** rather than asking `has_*`, and the distinction is deliberate:
 KIS does publish a dedicated 매도가능수량조회, and this library does not use it, because the same
 field arrives on the holdings snapshot for nothing and on a demo account too. The constant says where
-the figure comes from, not what the vendor offers.
+the figure comes from, not what the vendor offers; for Kiwoom, `NONE` means no source this library stands
+behind yet.
 
 Calling a verb a broker cannot serve is a compile error naming the broker and what to do instead:
 
@@ -306,14 +309,14 @@ session.sellable_quantity(i); // on KIS: "read HoldingPosition::sellable_quantit
 ```
 
 Buying power is per currency and the broker prices it that way, so ask for the one you trade in. Toss
-answers KRW and USD; the KIS domestic inquiry answers won, and any other currency is refused before
-the request is built rather than answered in the wrong unit.
+answers KRW and USD; the KIS and Kiwoom domestic inquiries answer won, and any other currency is
+refused before the request is built rather than answered in the wrong unit.
 
 ## The rule that matters most
 
-An order POST is not idempotent on either supported broker. A request that fails **in transit** has
-an outcome nobody knows: the broker may have recorded the order and lost the reply, or never received
-it at all.
+No order request is ever replayed. Only Toss offers an idempotency key (`client_order_id_`, ten
+minutes); KIS and Kiwoom offer none. A request that fails **in transit** has an outcome nobody knows:
+the broker may have recorded the order and lost the reply, or never received it at all.
 
 So a failure is classified by whether the order might exist, and four categories say it might:
 
@@ -321,11 +324,12 @@ So a failure is classified by whether the order might exist, and four categories
 | --- | --- |
 | `TRANSPORT` | the connection failed; did the bytes arrive? |
 | `CANCELLED` | a *local* deadline or a closing session says nothing about what was already sent |
-| `PROTOCOL` | the broker answered and the answer could not be parsed — it may have been an ack |
+| `PROTOCOL` | the answer could not be parsed — it may have been an ack — or the broker declared a failure the client does not classify (at KIS a reply with `rt_cd` not `0`, such as insufficient balance; at Toss any refusal but a rate limit; at Kiwoom a `return_code` outside its documented error list) |
 | `HTTP` 5xx | the broker's own infrastructure failing, possibly after the engine took the order |
 
-A 4xx, an authentication failure, and a rate-limit refusal are all *answers*: the order does not
-exist, so nothing needs reconciling.
+An HTTP 4xx, an authentication failure, an invalid argument and a rate-limit refusal are *answers*:
+the order does not exist, so nothing needs reconciling. At KIS, Toss and Kiwoom most refusals arrive
+as `PROTOCOL` instead, so they are treated as unknown and the instrument is reconciled.
 
 When the outcome is unknown, the runner marks the instrument and **withholds everything further for
 it**. Not retried — a retry is exactly what doubles a position. Nothing clears the mark except
@@ -384,7 +388,7 @@ So **after any abnormal termination, the broker's order list must be read before
 restarted runner starts with an empty ledger, and an empty ledger does not mean nothing is owed — it
 means nothing is *remembered*.
 
-**That is now automatic, and it is worth knowing which part does what.** `runner::PollingLoop` will
+**That is automatic, and it is worth knowing which part does what.** `runner::PollingLoop` will
 not send anything until it has read the broker's order list once, so even with no journal at all a
 restarted process cannot trade blind. With a journal bound through `live::bind_journaled`, the
 instructions themselves survive the process: recovery reads them back, withholds every instrument

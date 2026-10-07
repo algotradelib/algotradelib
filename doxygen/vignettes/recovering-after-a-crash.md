@@ -112,7 +112,7 @@ every instruction resolve, then start the other release on a new journal file.
 | --- | --- |
 | `pending` then `accepted` | the order exists, and `order_id` names it |
 | `pending` then `rejected` | the instruction was refused — by the broker, by the binding or client before it sent, or by local machinery that failed. The order does not exist. Nothing owed |
-| `pending` then `indeterminate` | the request failed in transit. **Unknown.** Still owed |
+| `pending` then `indeterminate` | the outcome is unknown (a failure in transit, an unreadable reply, an HTTP 5xx, or a broker refusal reported as `PROTOCOL`). Still owed |
 | `pending` then `resolved` | a sweep read the broker's list and closed it. `order_id` says what it saw |
 | `pending` alone, at the end of the file | the process died between the write and the answer |
 | a last line with no newline | the process died *during* the write |
@@ -178,8 +178,7 @@ durations rather than one tolerance because it absorbs three unrelated things:
 bar fed -- once a bar has been fed. Before that, as at the startup read after a restart, the loop's own
 clock (the wall clock for a source driven without a loop), so a restart can resolve `not_placed` at its
 first read instead of waiting for a bar. On daily bars the decision instant is the previous session's
-end, so after the first bar a placement left in doubt stays `undecided` until the next bar
-(`labs/FINDINGS.md` F20).
+end, so after the first bar a placement left in doubt stays `undecided` until the next bar.
 
 **`ambiguous` is a stop, not a retry.** Two rows that could both be your order stay ambiguous however
 many times you sweep; no heuristic turns them into one answer. Go and look, then clear the ledger entry

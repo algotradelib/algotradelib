@@ -82,12 +82,12 @@ working therefore restates every other session on daily bars, where live it woul
 session — replay such a strategy on minute bars. The order
 expires when a bar ends its session: any bar of a day or longer, or a minute bar ending at or after the
 `SessionWindow`'s close; a minute replay missing its last bar expires it before the next session's
-first bar can fill it. `report.caveats_.expired_day_orders_` counts them. **Replays from before this
-rule kept a missed limit or stop queued until it filled**, so a limit strategy on daily bars now fills
-less often and a protective stop has to be restated each session, as it does live. Three limits:
+first bar can fill it. `report.caveats_.expired_day_orders_` counts them. So a limit strategy on daily
+bars fills less often than if a missed order stayed queued, and a protective stop has to be restated each
+session, as it does live. Three limits:
 
-- a weekly, monthly or yearly bar still grants an order its whole range, every session in it — better than the
-  unlimited rest it had, still optimistic; trust limit fills on those intervals least;
+- a weekly, monthly or yearly bar grants an order its whole range, every session in it, which is
+  optimistic; trust limit fills on those intervals least;
 - one `SessionWindow` serves a whole replay, so a US minute replay under the KRX default expires orders
   at the KRX close, part way through the US session — give the replay the market's window; it is also
   fixed at 15:30, so on a day KRX closes late a minute replay expires orders at 15:30 and an order
@@ -100,7 +100,6 @@ less often and a protective stop has to be restated each session, as it does liv
 So `AT_LIMIT`, the default, never credits the better **open**. It is still not "never better than the
 limit": a limit marketable through the whole bar is credited the bar's worst price — a buy limited at
 72,000 on a bar whose high is 71,000 fills at 71,000 — because the limit itself is a price nobody traded.
-**Backtests from before this rule can therefore show better limit fills with no configuration change**;
 `report.caveats_.limit_fills_bounded_` counts every fill the bar moved.
 
 `LimitFillPrice::AT_OPEN_IF_BETTER` is the optimistic variant: it credits the open when the bar opened
@@ -262,24 +261,20 @@ easily in a replay than live**, because the whole holding is an upper bound on w
 let you sell. For buying power there is no such direction — ledger cash may be above or below what a
 broker would answer — so the difference is real but not one you can lean on either way. Either way,
 if you enable `enforce_buying_power_` or `enforce_sellable_quantity_`, a clean backtest is not
-evidence the live account will accept the same orders. `plan/todo/replay-settlement-model.md` is
-what would close the sellable half.
+evidence the live account will accept the same orders; a settlement model in the replay would close
+the sellable half, and the library does not have one yet.
 
-## The equity curve is one currency's, and now genuinely so
+## The equity curve is one currency's
 
 `ReplayConfig::currency_` names the currency the report is in, and the equity curve is
 `ledger.equity_in()` of it at every bar.
 
-That figure used to count **every** position whatever it was denominated in, so a won-quoted holding
-was added into a dollar equity curve at a rate of one — the implicit conversion `holdings-core` exists
-to refuse, in the number every derived metric is computed from. It now counts only positions in the
-currency being asked about, and the ledger records each position's currency from the fill that opened
-it.
+It counts only positions in the currency being asked about (adding a won-quoted holding into a
+dollar curve at a rate of one would corrupt every derived metric), and the ledger records each
+position's currency from the fill that opened it.
 
-The engine had the matching problem one step earlier: it booked every fill in `ReplayConfig::currency_`
-regardless of the instrument, which is documented as the currency the *starting cash* is in. A
-dollar-quoted instrument therefore banked dollars as won before the ledger saw a currency at all. It
-now books a fill in the instrument's own currency, from the reference data the replay already needs.
+The engine books each fill in the instrument's own currency, from the reference data the replay already
+needs (`ReplayConfig::currency_` is the currency of the *starting cash*, not of every fill).
 
 **What that means for a multi-currency replay.** Each currency is tracked apart and correctly, and a
 replay that opens with won and trades a dollar instrument runs its dollar cash negative from zero,
