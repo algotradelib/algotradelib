@@ -79,8 +79,8 @@ enum class RejectReason {
    * @brief An intent's size is negative: a quantity or a notional amount below zero.
    *
    * An intent carries its direction in its side, so a negative size is a sign error, and an order of -5
-   * shares is not a sell of 5. A size of zero is `QUANTITY_ROUNDS_TO_ZERO`; a negative weight is
-   * `UNSUPPORTED_WEIGHT`.
+   * shares is not a sell of 5. With the inputs it needs available, a zero quantity or notional is
+   * `QUANTITY_ROUNDS_TO_ZERO`; a negative weight is `UNSUPPORTED_WEIGHT`.
    */
   NEGATIVE_SIZE,
 };
