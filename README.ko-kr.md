@@ -1,52 +1,41 @@
-# algotradelib 한국어 안내
-
-<!-- multilingual: start -->
-[![en](https://img.shields.io/badge/lang-en-red.svg?style=plastic)](https://github.com/ygeunkim/algotradelib/blob/main/README.md)
-[![ko-kr](https://img.shields.io/badge/lang-ko--kr-green.svg?style=plastic)](README.ko-kr.md)
-<!-- multilingual: end -->
+# algotradelib (한국어)
 
 <!-- badges: start -->
 ![License](https://img.shields.io/badge/license-MIT-blue.svg?style=plastic)
 [![Lifecycle: experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg?style=plastic)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
 <!-- badges: end -->
 
+<!-- multilingual: start -->
+[![en](https://img.shields.io/badge/lang-en-red.svg?style=plastic)](https://github.com/ygeunkim/algotradelib/blob/main/README.md)
+[![ko-kr](https://img.shields.io/badge/lang-ko--kr-green.svg?style=plastic)](README.ko-kr.md)
+<!-- multilingual: end -->
+
 <!--
-  영어 README.md 6f6aab0 기준. 요약한 절: 첫 소개와 경고, "Brokers and accounts", "Install",
-  "Using it"의 실행 예시, "Documentation"의 문서 빌드 명령, "Acknowledgements", "Disclaimer". 이 절들이
+  영어 README.md aceae8b 기준. 요약한 절: 첫 소개와 경고, "Brokers and accounts", "Install",
+  "Using it"의 실행 예시, "Documentation", "Acknowledgements", "Disclaimer". 이 절들이
   바뀌면 이 문서도 함께 고칩니다. 키움 설정과 빌드 옵션 같은 자세한 내용은 doxygen/index.md에 있으므로,
   그 페이지의 같은 절이 바뀔 때도 이 문서를 확인합니다.
 -->
 
-이 문서는 [영어 README](https://github.com/ygeunkim/algotradelib/blob/main/README.md)를 짧게 요약한
-안내입니다. 두 문서의 내용이 다르면 영어 README를 따릅니다.
+이 문서는 [README](https://github.com/ygeunkim/algotradelib/blob/main/README.md)를 짧게 요약한 안내입니다.
+두 문서의 내용이 다르면 영어 README를 따르세요.
 
-algotradelib은 한국투자증권(KIS), 키움증권, 토스증권 Open API로 자동매매 프로그램을 만들 수 있는
-C++17 헤더 전용 라이브러리입니다. 전략 코드 하나로 백테스트, 주문 없는 시험 실행, 실거래를 모두 할
-수 있고, 증권사를 바꿔도 전략 코드는 그대로 쓸 수 있습니다.
+algotradelib은 한국투자증권 (KIS), 키움증권, 토스증권 Open API로 자동매매 프로그램을 만들 수 있는 C++ 헤더 전용 라이브러리입니다.
+전략 코드 하나로 백테스트, 주문 없는 시험 실행, 실거래를 모두 할 수 있고, 증권사를 바꿔도 전략 코드는 그대로 쓸 수 있습니다.
 
 ## 유의사항
 
-- KIS와 키움 모의투자 계좌에서는 주문을 넣어 확인했지만, 실전투자 계좌에서 전체 과정을 검증한 적은
-  아직 없습니다. 반드시 모의투자로 먼저 확인하세요.
-- KIS와 키움은 기본적으로 모의투자 서버에 연결됩니다. 실전투자는 `KIS_DEMO=0`, `KIWOOM_DEMO=0`처럼
-  직접 지정해야 합니다(인증 정보 파일이라면 `"demo": false`). 모의투자 서버는 실전 앱키를 받지
-  않으므로, 설정을 빠뜨려도 실전 주문은 나가지 않고 요청이 거부됩니다.
-- KIS 모의투자 서버는 종목 정보와 휴장일 조회를 지원하지 않습니다(`EGW02006`). 인증 정보 폴더에
-  `kis/real.json`이 있으면 예제 프로그램(`example-live-program`)은 모의투자로 주문하면서, 시세,
-  종목 정보, 휴장일은 실전투자 앱키로 조회합니다. 이 조회용 연결에는 계좌를 지정하지 않으므로 주문이
-  나갈 수 없습니다. 모의투자에서는 `--market-data toss`로 토스증권에서 조회할 수도 있습니다.
-  `kis/real.json`도 `--market-data toss`도 없으면 모의투자 실행은 종목 정보 조회에서 멈춥니다.
-- 토스증권은 모의투자를 제공하지 않습니다. 토스 인증 정보로 주문하면 실제 계좌에서 거래되므로,
-  전략은 백테스트나 KIS·키움 모의투자로 먼저 확인하세요.
-- 키움은 잔고 조회와 전략 주문에 추가 설정이 필요합니다. 설정하기 전에는 라이브러리가 요청을 보내지
-  않고 거부합니다. 키움은 장 운영 시간 정보도 제공하지 않아 기본 설정으로는 새로 매수하지 않으며,
-  예제 프로그램(`example-live-program`)도 키움에서는 조회만 하고 주문하지 않습니다. 설정 방법은
-  [문서 첫 페이지](doxygen/index.md)(영어)의 "Brokers and accounts"를 참고하세요.
-- SOR(`Venue::COMBINED`)은 KIS와 키움 모두 주문에 쓸 수 있습니다. 다만 KIS 모의투자는 SOR을 받지 않고,
-  키움 모의투자는 아직 확인하지 못했습니다. 키움은 미체결 조회에서 SOR 주문을 `sor_yn` 값으로 따로
-  표시한다고 안내하고 있어 라이브러리도 이 값을 읽지만, 두 증권사 모두 SOR 주문이 조회에서 어떻게
-  보이는지 실제 계좌로 확인하지는 못했습니다. 프로그램이 비정상 종료된 뒤 복구할
-  때 이 부분이 중요하므로, 당분간은 KRX나 NXT를 지정하세요.
+- KIS와 키움 모의투자 계좌에서는 주문을 넣어 확인했지만, 실전투자 계좌에서 전체 과정을 검증한 적은 없습니다. 모의투자로 먼저 확인하세요.
+- KIS와 키움은 기본적으로 모의투자 서버에 연결됩니다. 실전투자는 `KIS_DEMO=0`, `KIWOOM_DEMO=0`처럼 직접 지정해야 합니다 (인증 정보 파일이라면 `"demo": false`). 모의투자 서버는 실전 앱키를 받지 않으므로, 설정을 빠뜨려도 실전 주문은 나가지 않고 요청이 거부됩니다.
+- KIS 모의투자 서버는 종목 정보와 휴장일 조회를 지원하지 않습니다 (`EGW02006`).
+- 토스증권은 모의투자를 제공하지 않습니다. 토스 인증 정보로 주문하면 실제 계좌에서 거래되므로, 전략은 백테스트나 KIS·키움 모의투자로 먼저 확인하세요.
+- 키움은 잔고 조회와 전략 주문에 추가 설정이 필요합니다. 설정하기 전에는 라이브러리가 요청을 보내지 않고 거부합니다.
+키움은 장 운영 시간 정보도 제공하지 않아 기본 설정으로는 새로 매수하지 않으며, 예제 프로그램 (`example-live-program`)도 키움에서는 조회만 하고 주문하지 않습니다.
+설정 방법은 [문서 첫 페이지](doxygen/index.md)(영어)의 "Brokers and accounts"를 참고하세요.
+- SOR (`Venue::COMBINED`)은 KIS와 키움 모두 주문에 쓸 수 있습니다.
+다만 KIS 모의투자는 SOR을 받지 않고, 키움 모의투자는 아직 확인하지 못했습니다.
+키움은 미체결 조회에서 SOR 주문을 `sor_yn` 값으로 따로 표시한다고 안내하고 있어 라이브러리도 이 값을 읽지만, 두 증권사 모두 SOR 주문이 조회에서 어떻게 보이는지 실제 계좌로 확인하지는 못했습니다.
+프로그램이 비정상 종료된 뒤 복구할 때 이 부분이 중요하므로, 당분간은 KRX나 NXT를 지정하세요.
 
 ## 지원 증권사
 
@@ -82,31 +71,12 @@ target_link_libraries(my_alpha PRIVATE algotradelib::algotradelib)
 cmake -S . -B build -DATL_BUILD_EXAMPLES=ON
 cmake --build build
 export KIS_APP_KEY=... KIS_APP_SECRET=... KIS_CANO=... KIS_DEMO=1
-./build/bin/example-live-program kis 005930           # 조회만 하고 주문하지 않음
-./build/bin/example-live-program kis 005930 --live    # 주문 실행(저널에 기록)
+./build/bin/example-live-program kis 005930 # 조회만 하고 주문하지 않음
+./build/bin/example-live-program kis 005930 --live # 주문 실행(저널에 기록)
 ```
 
 환경 변수만으로 실행하면 모의투자 서버가 종목 정보 조회를 지원하지 않아 그 단계에서 멈춥니다.
-아래처럼 인증 정보 폴더를 지정하세요.
-
-앱키와 계좌번호를 계좌별 JSON 파일로 둘 수도 있습니다. 폴더를 `--credentials DIR`(또는
-`ATL_CREDENTIALS_DIR`)로 지정하면 `DIR/kis/demo.json`을 읽고, `KIS_DEMO=0`이면 `DIR/kis/real.json`을
-읽습니다. 파일 권한은 `chmod 600`으로 두세요.
-
-```sh
-./build/bin/example-live-program kis 005930 --credentials DIR          # 조회만 하고 주문하지 않음
-./build/bin/example-live-program kis 005930 --credentials DIR --live   # 모의투자 계좌로 주문
-```
-
-키움증권은 계좌마다 앱키를 따로 발급합니다. 같은 폴더에 `kiwoom/demo-kr.json`처럼 계좌별 파일을 두고
-`--kiwoom-account`로 고릅니다(기본값 `kr`). 실전투자는 `KIWOOM_DEMO=0`이며 `real-kr.json`을 읽습니다.
-폴더를 지정하면 환경 변수의 앱키는 읽지 않습니다.
-
-```sh
-./build/bin/example-live-program kiwoom 005930 --credentials DIR --kiwoom-account kr
-```
-
-HTML 문서는 Doxygen이 설치되어 있으면 `cmake --build build --target docs`로 만들 수 있습니다.
+인증 정보 폴더로 시세와 종목 정보를 따로 조회하는 방법은 예제 파일 (`examples/example-live-program.cpp`) 첫 부분의 설명을 참고하세요.
 
 ## 용어
 
@@ -120,8 +90,7 @@ HTML 문서는 Doxygen이 설치되어 있으면 `cmake --build build --target d
 | `HoldingPosition::sellable_quantity_` | 주문가능수량(KIS), 매매가능수량(키움) |
 | `BuyingPower::cash_` | 미수없는매수금액(KIS), 100%종목주문가능금액(키움) |
 
-`BuyingPower::cash_`는 미수나 신용 없이 살 수 있는 금액만 나타내므로, 증권사 앱의 주문가능금액보다
-작을 수 있습니다.
+`BuyingPower::cash_`는 미수나 신용 없이 살 수 있는 금액만 나타내므로, 증권사 앱의 주문가능금액보다 작을 수 있습니다.
 
 ## 더 알아보기
 
@@ -134,6 +103,6 @@ HTML 문서는 Doxygen이 설치되어 있으면 `cmake --build build --target d
 
 ## 라이선스
 
-MIT 라이선스로 배포합니다([LICENSE](LICENSE)). 이 라이브러리는 어떠한 보증 없이 제공되며, 이
-라이브러리를 사용해 생긴 손해(거래 손실 포함)에 대해 저작자는 책임지지 않습니다. 이 저장소의 어떤
-내용도 투자 권유가 아닙니다.
+MIT 라이선스로 배포합니다 ([LICENSE](LICENSE)).
+이 라이브러리는 어떠한 보증 없이 제공되며, 이 라이브러리를 사용해 생긴 손해(거래 손실 포함)에 대해 저작자는 책임지지 않습니다.
+이 저장소의 어떤 내용도 투자 권유가 아닙니다.
