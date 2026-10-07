@@ -205,11 +205,19 @@ struct Report {
   /** @brief The total return over the replay, as a fraction. */
   math::Scalar total_return_{0};
 
-  /** @brief The per-period Sharpe ratio; see `analytics::sharpe`. */
+  /**
+   * @brief The per-period Sharpe ratio; see `analytics::sharpe`.
+   *
+   * `math::undefined()` when equity was zero or negative at any point but the last: the periods that
+   * follow have no return, and a ratio over the rest would describe a run that did not happen.
+   */
   math::Scalar sharpe_{0};
-  /** @brief The annualized Sharpe ratio; `missing()` unless a period count was given to `summarize`. */
+  /**
+   * @brief The annualized Sharpe ratio; `missing()` unless a period count was given to `summarize`,
+   *   and undefined when `sharpe_` is.
+   */
   math::Scalar annualized_sharpe_{0};
-  /** @brief The per-period Sortino ratio; see `analytics::sortino`. */
+  /** @brief The per-period Sortino ratio; see `analytics::sortino`. Undefined when `sharpe_` is. */
   math::Scalar sortino_{0};
   /** @brief The worst peak-to-trough decline of equity, as a non-negative fraction. */
   math::Scalar max_drawdown_{0};
@@ -474,6 +482,15 @@ inline Report summarize(
 
   report.sharpe_ = analytics::sharpe(returns, risk_free);
   report.sortino_ = analytics::sortino(returns, risk_free);
+  // Equity at or below zero before the end leaves the periods after it without a return
+  // (`EquityPoint::period_return_`), so no ratio describes the run.
+  for (std::size_t at = 0; at + 1 < result.equity_.size(); ++at) {
+    if (result.equity_[at].equity_.coefficient() <= 0) {
+      report.sharpe_ = math::undefined();
+      report.sortino_ = math::undefined();
+      break;
+    }
+  }
   report.max_drawdown_ = analytics::max_drawdown(levels).magnitude_;
 
   report.annualized_sharpe_ = periods_per_year ?

@@ -259,7 +259,10 @@ struct EquityPoint {
   std::chrono::system_clock::time_point at_{};
   /** @brief Cash plus positions marked at the bar's close, in the replay's currency. */
   Decimal64 equity_;
-  /** @brief The return since the previous point; `missing()` on the first point and after an unvalued bar. */
+  /**
+   * @brief The return since the previous point; `missing()` on the first point, after an unvalued bar,
+   *   and after a point whose equity was zero or negative (a return on no capital is not defined).
+   */
   math::Scalar period_return_{0};
 };
 
@@ -993,7 +996,9 @@ private:
     equity_gap_ = false;
     if (!result_.equity_.empty() && !after_gap) {
       const auto& previous = result_.equity_.back().equity_;
-      if (previous.coefficient() != 0) {
+      // Only from positive equity. From a negative total the ratio's sign is reversed: a further loss
+      // reads as a gain, and a run that lost more than its capital reported a positive Sharpe ratio.
+      if (previous.coefficient() > 0) {
         const auto moved = decimal_subtract(*equity, previous);
         if (moved) {
           const auto ratio = decimal_divide(*moved, previous, 8);
