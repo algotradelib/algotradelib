@@ -1979,7 +1979,7 @@ TEST_CASE("nothing further is submitted for an instrument whose state is unknown
   REQUIRE(second.would_place_.empty());
   REQUIRE(second.withheld_.size() == 1);
   REQUIRE(second.withheld_[0].reason_ == WithheldReason::RECONCILE_REQUIRED);
-  REQUIRE(second.withheld_[0].detail_ == "an order request failed in transit");
+  REQUIRE(second.withheld_[0].detail_ == "an order request has an unknown outcome");
   // And it reached the executor exactly once, on the failing attempt -- never again.
   REQUIRE(dry.executor().placed().size() == 1);
 }
@@ -2057,7 +2057,7 @@ TEST_CASE("a cancellation that fails in transit also obliges reconciliation") {
   dry.executor().cancel_outcome_ = SendOutcome::INDETERMINATE;
   const auto report = dry.feed(bar_at(10, "70000"));
   REQUIRE(dry.ledger().requires_reconcile(samsung()));
-  REQUIRE(dry.ledger().detail(samsung()) == "a cancellation request failed in transit");
+  REQUIRE(dry.ledger().detail(samsung()) == "a cancellation request has an unknown outcome");
   // The order that would have followed the cancellation is withheld, not sent into the doubt.
   REQUIRE(report.would_place_.empty());
   REQUIRE(report.withheld_.size() == 1);

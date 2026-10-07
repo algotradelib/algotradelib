@@ -1615,7 +1615,7 @@ private:
           // Counted like an acceptance for the purpose below: the order may exist, and a listing
           // read before this moment cannot show it either way.
           ++placements_at_broker_;
-          ledger_.mark(order.instrument_, "an order request failed in transit");
+          ledger_.mark(order.instrument_, "an order request has an unknown outcome");
           ++orders_indeterminate_;
           // **Counted as if accepted, until the sweep says what became of it.** The ledger
           // withholds the instrument meanwhile; but once a sweep finds the order in the broker's
@@ -2805,7 +2805,7 @@ private:
         // Marked *and* reported apart from `would_cancel_`. The mark was always here; reporting it
         // as a withdrawal that happened was not right beside it, because the order may still be
         // resting and a caller reading `would_cancel_` would believe it is not.
-        ledger_.mark(working->order_.instrument_, "a cancellation request failed in transit");
+        ledger_.mark(working->order_.instrument_, "a cancellation request has an unknown outcome");
         // Counted like an acceptance, for the same reason a placement is: the request may well have
         // reached the broker, and a window that assumes it did not is the one that under-counts.
         guard_.note_sent(context_.now());

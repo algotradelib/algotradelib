@@ -2208,7 +2208,7 @@ private:
     if (report.closing_indeterminate_ != 0) {
       report.notes_.push_back(
         std::to_string(report.closing_indeterminate_) +
-        " closing instruction(s) failed in transit; their outcome is unknown");
+        " closing instruction(s) have an unknown outcome; read the broker's order list");
     }
     if (report.closing_unavailable_ != 0) {
       report.notes_.push_back(
