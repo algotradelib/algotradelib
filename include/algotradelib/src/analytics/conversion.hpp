@@ -81,7 +81,8 @@ inline std::optional<Decimal64> to_decimal(Scalar value, std::uint8_t scale) {
  * onto the tick grid the same way, so a buy is never above the computed value (by more than
  * floating-point noise) and a sell never below it: with the KRX grid and `scale = 0`, a buy at
  * `1999.8` gives `1999` and a sell at `2000.2` gives `2005`. A value within floating-point noise of a
- * decimal counts as that decimal, so a price converted from a `Decimal64` comes back unchanged.
+ * decimal counts as that decimal, so a market price converted from a `Decimal64` comes back
+ * unchanged (a coefficient beyond 2^52 may not).
  *
  * @param value The computed price.
  * @param rule The instrument's tick rule.
