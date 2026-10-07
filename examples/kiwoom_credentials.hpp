@@ -101,9 +101,9 @@ inline void refuse_unknown_flags(int argc, char** argv) {
  * A Kiwoom demo account refuses a second request to the same API within a few milliseconds of the
  * first (`1700`, "허용된 요청 개수를 초과하였습니다", with the API's id): a quote and a price-limit read
  * are both `ka10007`, so a loop reading both back to back loses one. Requests to different APIs back to
- * back, and to the same API 300 ms apart, were served (measured 2026-10-07). Kiwoom states no allowance.
- * The library paces nothing unless asked (`HttpClientOptions::rate_limit_`), so these examples ask, at
- * the pace the KIS examples use.
+ * back, and to the same API 300 ms apart, were served (measured 2026-10-07). Kiwoom's specification
+ * gives no numeric allowance. The library paces nothing unless asked (`HttpClientOptions::rate_limit_`),
+ * so these examples ask, at the pace the KIS examples use.
  *
  * @return The options.
  */
