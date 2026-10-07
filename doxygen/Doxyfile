@@ -1229,9 +1229,7 @@ INPUT_FILTER           =
 # need to set EXTENSION_MAPPING for the extension otherwise the files are not
 # properly processed by Doxygen.
 
-# algotradelib: the Markdown pages link the example sources by relative path for GitHub; this filter
-# points those links at the files' own pages in the HTML (a POSIX `sed`, run from the source root).
-FILTER_PATTERNS        = "*.md=sed -E -f doxygen/example-links.sed"
+FILTER_PATTERNS        =
 
 # If the FILTER_SOURCE_FILES tag is set to YES, the input filter (if set using
 # INPUT_FILTER) will also be used to filter the input files that are used for

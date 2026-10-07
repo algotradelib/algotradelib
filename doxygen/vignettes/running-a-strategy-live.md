@@ -21,8 +21,8 @@ At that moment you own four things you probably did not mean to: a cadence, a ra
 reconciliation obligation, and a stop control. The loop exists to own them for you.
 
 The whole production path — journal, recovery, loop, stops and the report — is
-[`examples/example-live-program.cpp`](../../examples/example-live-program.cpp) with
-[`examples/live_program.hpp`](../../examples/live_program.hpp); copy that. The loop at its centre:
+[`examples/example-live-program.cpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/example-live-program.cpp) with
+[`examples/live_program.hpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/live_program.hpp); copy that. The loop at its centre:
 
 ```cpp
 runner::FileJournal journal(path, scope);                     // one journal per account
