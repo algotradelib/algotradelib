@@ -18,10 +18,10 @@ broker, so one source is replayed against history, dry-run with no credentials, 
 without being rewritten — against KIS, Toss or Kiwoom, where a runner needs a few statements from you
 first (see "Brokers and accounts"). Selecting a broker is choosing a type parameter.
 
-> **This library sends real orders to real accounts, and has not yet been run end to end against a
-> broker account**: every broker behaviour it relies on was read from the brokers' specifications. It is
-> in development (`0.0.0.9000`, no release yet). Rehearse on a demo account first, and read "Brokers and
-> accounts" and the Disclaimer below before you do.
+> **This library sends real orders to real accounts.** It has placed orders on KIS and Kiwoom demo
+> accounts, but has not yet run end to end on a real account. It is in development (`0.0.0.9000`, no
+> release yet). Rehearse on a demo account first, and read "Brokers and accounts" and the Disclaimer
+> below before you do.
 
 ## Architecture
 
@@ -39,7 +39,7 @@ underneath it, and what that compile-time claim does and does not cover.
 | Dependency | Floor | Needed for |
 | --- | --- | --- |
 | A C++17 compiler | — | everything |
-| CMake | 3.10 for the library, **3.16** for the project templates below | everything |
+| CMake | 3.10 for the library, **3.16** for the project templates below, 3.14 for the tests | everything |
 | Boost | 1.87, component `json` | everything |
 | OpenSSL | 3.0 | everything (see below) |
 | Eigen | 3.4 | the analytics layer, on by default |
@@ -49,7 +49,8 @@ Three of those floors are worth a sentence each.
 **The two CMake numbers are not a typo.** The library itself configures under 3.10, so an existing
 project on an old CMake can consume it. The consumer `CMakeLists.txt` shown below — and the one the
 scaffold generates — ask for 3.16, which is simply a saner floor to start a new project on. Lower it
-to 3.10 in your own project if you need to; nothing here requires the newer version.
+to 3.10 in your own project if you need to; nothing here requires the newer version. Building this
+repository's tests needs 3.14, and downloads Catch2 if it is not installed.
 
 **OpenSSL's floor is an API minimum, not a recommendation.** The headers call OpenSSL directly only
 to set the TLS server name, which OpenSSL has offered since long before 3.0; everything else goes
