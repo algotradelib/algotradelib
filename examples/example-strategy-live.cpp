@@ -26,6 +26,10 @@
 // outcome as unknown, because the default signal handler terminates immediately. So after
 // interrupting a `--live` run, read the broker's order list before running it again. This example
 // places at most one order per run, which bounds what can be in doubt to that one.
+//
+// **On running it again.** Each run reads the open orders before the holdings, so a buy still waiting
+// to fill counts toward the one-share limit. A buy that has filled but does not show in the holdings
+// yet is in neither, and is bought again: wait until the holdings show it. Never run two at once.
 
 #include "kis_credentials.hpp"
 
@@ -118,7 +122,10 @@ struct MarketState {
  * session. That is the portability claim in executable form -- and it is also how observing works.
  */
 template <typename Tag, typename R>
-int drive(const InstrumentId& instrument, const MarketState& state, R live_runner) {
+int drive(
+  const InstrumentId& instrument, const MarketState& state,
+  const algotradelib::WorkingOrders<Tag>& open_orders, R live_runner
+) {
   live_runner.context().set_instrument(state.reference_);
   // A single pass driven by hand, so the phase is this program's to state: only
   // `runner::PollingLoop` computes one, from a session window and a polled calendar. A program that
@@ -132,6 +139,10 @@ int drive(const InstrumentId& instrument, const MarketState& state, R live_runne
   // an account nobody has read, and an empty account is the permissive answer to every ceiling.
   // Copying the rows without the timestamp is the mistake this line exists to prevent.
   portfolio.as_of_ = state.holdings_.received_at_;
+  // **And the orders still open, with when they were listed.** Without them a buy that is still
+  // waiting to fill is invisible, and the runner buys again past `max_position_quantity_`.
+  portfolio.working_ = open_orders.orders_;
+  portfolio.working_as_of_ = open_orders.received_at_;
   // **And with what the broker's sellable figures are evidence of, for the same reason.** A guard
   // enforcing `enforce_sellable_quantity_` refuses a figure whose coverage nobody stated, so a hand-
   // built portfolio that copies the rows without this refuses every sell -- and one that invented an
@@ -182,7 +193,8 @@ void note_interruption_hazard() {
   std::cout
     << "\nnote: interrupting a live run does not withdraw an accepted order, and an order in\n"
     << "      flight at that moment leaves no record that its outcome is unknown. Read the\n"
-    << "      broker's order list before running again.\n";
+    << "      broker's order list before running again, and wait until the holdings show any\n"
+    << "      fill: a filled buy they do not show yet is bought again.\n";
 }
 
 /**
@@ -238,6 +250,24 @@ int trade(Session& session, const InstrumentId& instrument, Mode mode) {
   }
   state.bars_ = std::move(bars.value());
 
+  // **Open orders before holdings.** An order that fills between the two reads then shows in the
+  // holdings. Read the other way round, it would be in neither.
+  algotradelib::WorkingOrders<Tag> open_orders;
+  if constexpr (Caps::has_working_orders) {
+    auto listed = session.working_orders();
+    if (!listed) {
+      std::cerr << "could not read open orders: " << listed.error().message_ << '\n';
+      return 1;
+    }
+    open_orders = std::move(listed.value());
+  } else {
+    if (mode == Mode::TRADE) {
+      std::cerr << "this broker lists no open orders, so a live run could not see an earlier order "
+                   "still waiting to fill; use example-live-program\n";
+      return 1;
+    }
+  }
+
   auto holdings = session.holdings();
   if (!holdings) {
     std::cerr << "could not read holdings: " << holdings.error().message_ << '\n';
@@ -249,13 +279,13 @@ int trade(Session& session, const InstrumentId& instrument, Mode mode) {
   // runners differ in exactly one thing -- where the send goes -- and cannot differ in any other.
   if (mode == Mode::TRADE) {
     const auto status = drive<Tag>(
-      instrument, state, live::bind(session, strategy_for(instrument), example_limits())
+      instrument, state, open_orders, live::bind(session, strategy_for(instrument), example_limits())
     );
     note_interruption_hazard();
     return status;
   }
   return drive<Tag>(
-    instrument, state, live::bind_observer(session, strategy_for(instrument), example_limits())
+    instrument, state, open_orders, live::bind_observer(session, strategy_for(instrument), example_limits())
   );
 }
 
