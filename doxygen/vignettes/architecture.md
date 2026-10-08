@@ -59,7 +59,9 @@ graph TD
   class BR,NW,KT,LV io
 ```
 
-Green is I/O-free. Orange links TLS. The boundary between them is not a convention — it is asserted
+Green is I/O-free. Orange is the broker side; its HTTP and TLS code is in `<network>` and the adapters,
+which `<algotradelib/broker>` and `<algotradelib/live>` reach only as far as the rate-limit header. The
+green boundary is not a convention — it is asserted
 at compile time by two translation units that include exactly one umbrella header each and
 `#error` if a transport or adapter macro is visible:
 `tests/test-strategy-isolation.cpp` for `<algotradelib/strategy>`, and

@@ -21,7 +21,8 @@ first (see "Brokers and accounts"). Selecting a broker is choosing a type parame
 
 ![How the modules depend on one another](figures/architecture.png)
 
-Blue is what you bring; orange carries the transport. Green reaches no transport header and
+Blue is what you bring; orange is the side that talks to a broker, and its HTTP and TLS code is in
+network and the adapters. Green reaches no transport header and
 instantiates no adapter or TLS code — asserted at compile time, not by convention, so there is no
 instantiated code path from a backtest to a market. It does **not** mean libssl is off the link
 line; the package exports one interface target for every consumer, as the prerequisites below

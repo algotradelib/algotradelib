@@ -25,7 +25,7 @@ Selecting a broker is choosing a type parameter.
 
 ![How the modules depend on one another](doxygen/figures/architecture.png)
 
-Blue is what you bring; orange carries the transport.
+Blue is what you bring; orange is the side that talks to a broker, and its HTTP and TLS code is in network and the adapters.
 Green reaches no transport header and instantiates no adapter or TLS code
 — asserted at compile time, so there is no instantiated code path from a backtest to a market.
 The [architecture page](doxygen/vignettes/architecture.md) explains the rule and what it does not cover.
