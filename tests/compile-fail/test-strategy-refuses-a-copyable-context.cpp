@@ -1,3 +1,4 @@
+// expect: a strategy context must not be copyable
 // Deliberately does not compile. `strategy-refuses-a-copyable-context` builds this file and passes only when
 // the diagnostic is that a strategy context must not be copyable. The context is a caller's own and can be
 // copied, so the by-value handler would run on a copy and its submission would be lost.

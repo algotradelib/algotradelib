@@ -1,3 +1,4 @@
+// expect: no member named 'has_history_cursor'|'has_history_cursor' is not a member
 // Deliberately does not compile. `conformance-requires-every-capability` builds this file and passes only
 // when the diagnostic names the one constant this adapter leaves out. `has_history_cursor` gates no verb,
 // so nothing but `ATL_ASSERT_BROKER`'s read of every constant finds it before a consumer's build does.

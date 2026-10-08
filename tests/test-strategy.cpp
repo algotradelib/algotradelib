@@ -552,7 +552,8 @@ TEST_CASE("a declared handler is found by name, whatever its signature") {
 
 TEST_CASE("each malformed handler is still declared, so the runner calls it") {
   // A strategy whose handler the call does not fit cannot be compiled in a test; the probes in
-  // tests/strategy-probe-*.cpp show the compiler refusing it. Pinned here: none of these reads as absent.
+  // tests/compile-fail/test-strategy-refuses-*.cpp show the compiler refusing it. Pinned here: none of
+  // these reads as absent.
   namespace detail = strategy::strategy_detail;
   STATIC_REQUIRE(detail::declares_on_start<MalformedEach>);
   STATIC_REQUIRE(detail::declares_on_stop<MalformedEach>);

@@ -1,3 +1,4 @@
+// expect: no matching[a-z ]*function for call to[^\n]*instrument
 // Deliberately does not compile. `conformance-verbs-reject-a-wrong-signature` builds this file and
 // passes only when the diagnostic is the missing overload of `instrument`: the thunk exists under the
 // right name with the wrong signature, which only a check that calls it can reject.

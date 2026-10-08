@@ -1,3 +1,4 @@
+// expect: no member named 'sellable_inquiry_basis' in [^\n]*InquiresWithoutBasis|'sellable_inquiry_basis' is not a member of [^\n]*InquiresWithoutBasis
 // Deliberately does not compile. `conformance-requires-an-asked-basis` builds this file and passes only
 // when the diagnostic names `sellable_inquiry_basis`: a capability set whose sellable figure comes from a
 // separate inquiry is asked what that figure covers, and must answer.

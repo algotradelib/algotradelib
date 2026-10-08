@@ -2,7 +2,7 @@
 
 // A market-data vendor written the way a third party would: a blocking and an asynchronous client, each
 // with a `BrokerTraits` built on `DataOnlyTraits`. Shared by test-data-only-traits.cpp and the probes
-// that must not compile (data-only-probe-*.cpp).
+// that must not compile (compile-fail/test-data-only-refused-*.cpp).
 #include <algotradelib/broker>
 
 #include <boost/asio/post.hpp>

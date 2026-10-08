@@ -1,3 +1,4 @@
+// expect: no matching (member )?function for call to[^\n]*on_phase
 // Deliberately does not compile. `strategy-refuses-a-wrapped-malformed-handler` builds this file and passes
 // only when the diagnostic is the call to the inner strategy's `on_phase`. The outer strategy is valid and
 // forwards through `runner::dispatch`, as a logging wrapper would; the inner one takes the phase

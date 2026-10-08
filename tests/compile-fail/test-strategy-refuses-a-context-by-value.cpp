@@ -1,3 +1,4 @@
+// expect: call to deleted constructor of[^\n]*ProbeContextT|use of deleted function[^\n]*ProbeContextT
 // Deliberately does not compile. `strategy-refuses-a-context-by-value` builds this file and passes only
 // when the diagnostic is that on_fill is declared and the runner cannot call it. Taking the context by
 // value, the handler would run on a copy and what it submitted would be lost; neither context can be

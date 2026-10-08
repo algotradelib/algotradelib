@@ -1,3 +1,4 @@
+// expect: a final strategy cannot be checked for a handler the runner would skip
 // Deliberately does not compile. `strategy-refuses-a-wrapped-final-strategy` builds this file and passes only
 // when the diagnostic is that a final strategy cannot be checked. The outer strategy is valid and forwards
 // through `runner::dispatch` to a `final` inner one, whose handler names cannot be looked up: without the

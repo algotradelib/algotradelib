@@ -1,7 +1,8 @@
+// expect: no member named 'data_only' in [^\n]*SilentAboutDataOnly|'data_only' is not a member of [^\n]*SilentAboutDataOnly
 // Deliberately does not compile. `conformance-traits-must-state-data-only` builds this file and passes
 // only when the diagnostic names `data_only`: an adapter whose traits do not say whether its client takes
 // orders is not admitted where orders are sent. The boundary is the traits, read through `BrokerCaps`;
-// `conformance-probe-caps-data-only.cpp` covers a capability set written by hand.
+// `test-conformance-caps-must-state-data-only.cpp` covers a capability set written by hand.
 #include <algotradelib/live>
 
 #include "mock_broker.hpp"

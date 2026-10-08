@@ -1,3 +1,4 @@
+// expect: no member named 'data_only' in [^\n]*SilentCaps|'data_only' is not a member of [^\n]*SilentCaps
 // Deliberately does not compile. `conformance-caps-must-state-data-only` builds this file and passes only
 // when the diagnostic names `data_only`: a hand-written capability set that does not say whether its
 // client takes orders is not admitted where orders are sent.

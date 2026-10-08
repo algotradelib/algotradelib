@@ -1,3 +1,4 @@
+// expect: a strategy context must not be copyable
 // Deliberately does not compile. `strategy-refuses-a-mutable-copy-context` builds this file and passes only
 // when the diagnostic is that a strategy context must not be copyable. This context's copy constructor takes
 // a mutable reference, so `std::is_copy_constructible` says no; but `dispatch` passes a mutable lvalue, which

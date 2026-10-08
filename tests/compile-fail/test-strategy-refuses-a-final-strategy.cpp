@@ -1,3 +1,4 @@
+// expect: a final strategy cannot be checked for a handler the runner would skip
 // Deliberately does not compile. `strategy-refuses-a-final-strategy` builds this file and passes only when
 // the diagnostic is that a final strategy cannot be checked. The case: the
 // fill handler takes its context by value, which was called with a copy before the context became

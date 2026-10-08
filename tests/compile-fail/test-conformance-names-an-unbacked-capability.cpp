@@ -1,3 +1,4 @@
+// expect: no member named 'instrument' in [^\n]*ClaimsReferenceData|'instrument' is not a member of [^\n]*ClaimsReferenceData
 // Deliberately does not compile. `conformance-names-an-unbacked-capability` builds this file and passes
 // only when the diagnostic names the missing thunk and this adapter: a capability claimed with no verb
 // behind it is what `ATL_ASSERT_BROKER` exists to find before a caller does.

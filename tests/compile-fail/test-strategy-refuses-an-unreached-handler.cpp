@@ -1,3 +1,4 @@
+// expect: no matching (member )?function for call to[^\n]*on_quote
 // Deliberately does not compile. `strategy-refuses-an-unreached-handler` builds this file and passes only when
 // the diagnostic is the call to `on_quote`. Nothing here feeds a quote, so only the assertion's compiling of
 // every handler call finds the wrong event type -- before a runner that does feed quotes is built.

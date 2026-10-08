@@ -1,3 +1,4 @@
+// expect: deleted (copy )?constructor[^\n]*MoveOnlyCallback|MoveOnlyCallback[^\n]*deleted|use of deleted function[^\n]*MoveOnlyCallback
 // Deliberately does not compile. `conformance-verbs-reject-a-token-copy` builds this file and passes
 // only when the diagnostic is the deleted copy of a completion handler. The thunk below works for
 // every copyable token -- a plain callback, `use_future` -- and fails for a move-only one, which a

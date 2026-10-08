@@ -10,486 +10,102 @@ if(NOT Catch2_FOUND)
     )
     FetchContent_MakeAvailable(Catch2)
 endif()
-
-add_executable(algotradelib-core-tests test-core.cpp)
-target_link_libraries(algotradelib-core-tests PRIVATE
-    algotradelib::algotradelib
-    Catch2::Catch2WithMain
-)
-# What CMake read out of version.hpp, so a test can compare it with what the preprocessor sees. The
-# project-named variable rather than PROJECT_VERSION, which a project() in a fetched dependency would
-# shadow within its own directory.
-target_compile_definitions(algotradelib-core-tests PRIVATE
-    ATL_TEST_PROJECT_VERSION="${algotradelib_VERSION}"
-)
-
-add_executable(algotradelib-broker-port-tests test-broker-port.cpp)
-target_link_libraries(algotradelib-broker-port-tests PRIVATE
-    algotradelib::algotradelib
-    Catch2::Catch2WithMain
-)
-
-add_executable(algotradelib-session-parity-tests test-session-parity.cpp)
-target_link_libraries(algotradelib-session-parity-tests PRIVATE
-    algotradelib::algotradelib
-    Catch2::Catch2WithMain
-)
-
-add_executable(algotradelib-capability-conformance-tests test-capability-conformance.cpp)
-target_link_libraries(algotradelib-capability-conformance-tests PRIVATE
-    algotradelib::algotradelib
-    Catch2::Catch2WithMain
-)
-
-add_executable(algotradelib-data-only-tests test-data-only-traits.cpp)
-target_link_libraries(algotradelib-data-only-tests PRIVATE
-    algotradelib::algotradelib
-    Catch2::Catch2WithMain
-)
-
-add_executable(algotradelib-kiwoom-tests test-kiwoom.cpp)
-target_link_libraries(algotradelib-kiwoom-tests PRIVATE
-    algotradelib::algotradelib
-    Catch2::Catch2WithMain
-)
-
-add_executable(algotradelib-rate-limit-tests test-rate-limit.cpp)
-target_link_libraries(algotradelib-rate-limit-tests PRIVATE
-    algotradelib::algotradelib
-    Catch2::Catch2WithMain
-)
-
-add_executable(algotradelib-market-data-tests test-market-data.cpp)
-target_link_libraries(algotradelib-market-data-tests PRIVATE
-    algotradelib::algotradelib
-    Catch2::Catch2WithMain
-)
-
-add_executable(algotradelib-loop-tests test-loop.cpp)
-target_link_libraries(algotradelib-loop-tests PRIVATE
-    algotradelib::algotradelib
-    Catch2::Catch2WithMain
-)
-
-add_executable(algotradelib-backtest-tests test-backtest.cpp)
-target_link_libraries(algotradelib-backtest-tests PRIVATE
-    algotradelib::algotradelib
-    Catch2::Catch2WithMain
-)
-
-add_executable(algotradelib-vanilla-tests test-vanilla.cpp)
-target_link_libraries(algotradelib-vanilla-tests PRIVATE
-    algotradelib::algotradelib
-    Catch2::Catch2WithMain
-)
-
-add_executable(algotradelib-live-tests test-live.cpp)
-target_link_libraries(algotradelib-live-tests PRIVATE
-    algotradelib::algotradelib
-    Catch2::Catch2WithMain
-)
-# The live program's broker-free wiring lives beside the example that uses it, and is tested here
-# against the in-memory session.
-target_include_directories(algotradelib-live-tests PRIVATE "${algotradelib_SOURCE_DIR}/examples")
-
-add_executable(algotradelib-reconcile-orders-tests test-reconcile-orders.cpp)
-target_link_libraries(algotradelib-reconcile-orders-tests PRIVATE
-    algotradelib::algotradelib
-    Catch2::Catch2WithMain
-)
-
-add_executable(algotradelib-journal-tests test-journal.cpp)
-target_link_libraries(algotradelib-journal-tests PRIVATE
-    algotradelib::algotradelib
-    Catch2::Catch2WithMain
-)
-
-add_executable(algotradelib-runner-tests test-runner.cpp)
-target_link_libraries(algotradelib-runner-tests PRIVATE
-    algotradelib::algotradelib
-    Catch2::Catch2WithMain
-)
-
-add_executable(algotradelib-strategy-tests test-strategy.cpp)
-target_link_libraries(algotradelib-strategy-tests PRIVATE
-    algotradelib::algotradelib
-    Catch2::Catch2WithMain
-)
-
-if(ATL_USE_EIGEN)
-    add_executable(algotradelib-analytics-tests test-analytics.cpp)
-    target_link_libraries(algotradelib-analytics-tests PRIVATE
-        algotradelib::algotradelib
-        Catch2::Catch2WithMain
-    )
-endif()
-
 include(Catch)
-catch_discover_tests(algotradelib-core-tests)
-catch_discover_tests(algotradelib-broker-port-tests)
-catch_discover_tests(algotradelib-session-parity-tests)
-catch_discover_tests(algotradelib-capability-conformance-tests)
-catch_discover_tests(algotradelib-data-only-tests)
-catch_discover_tests(algotradelib-kiwoom-tests)
-catch_discover_tests(algotradelib-rate-limit-tests)
-catch_discover_tests(algotradelib-market-data-tests)
-catch_discover_tests(algotradelib-strategy-tests)
-catch_discover_tests(algotradelib-runner-tests)
-catch_discover_tests(algotradelib-journal-tests)
-catch_discover_tests(algotradelib-reconcile-orders-tests)
-catch_discover_tests(algotradelib-live-tests)
-catch_discover_tests(algotradelib-vanilla-tests)
-catch_discover_tests(algotradelib-backtest-tests)
-catch_discover_tests(algotradelib-loop-tests)
-if(ATL_USE_EIGEN)
-    catch_discover_tests(algotradelib-analytics-tests)
-endif()
 
-# The strategy surface's isolation is asserted in source, by a translation unit that includes
-# only <algotradelib/strategy>; see tests/test-strategy-isolation.cpp. It is built rather than
-# merely run, because a violation should fail the build.
-add_executable(algotradelib-strategy-isolation test-strategy-isolation.cpp)
-target_link_libraries(algotradelib-strategy-isolation PRIVATE algotradelib::algotradelib)
-add_test(NAME strategy-surface-stays-isolated COMMAND algotradelib-strategy-isolation)
+# Every tests/test-*.cpp is one executable, named after the file, as examples/ builds example-*.cpp.
+#
+# A file ending in -isolation.cpp is not a Catch2 suite: it includes one umbrella header and nothing else,
+# and asserts with #error that the header did not reach the transport or a broker adapter (see the files).
+# A violation fails the build; the test that runs it only records that it was built.
+#
+# The analytics suite includes <algotradelib/analytics>, which refuses to compile without a linear algebra
+# backend, so a build without Eigen skips it, as examples/ skips its analytics examples.
+file(GLOB ATL_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/test-*.cpp")
 
-# A traits specialization that claims a capability with no verb behind it must fail `ATL_ASSERT_BROKER`,
-# and the failure must name what is missing. Built by the test rather than by `all`, because it is meant
-# not to build; the regular expression is the diagnostic, so a check that no longer fires fails this test
-# rather than passing it silently. Each expression covers Clang's and GCC's wording.
-add_library(algotradelib-conformance-probe OBJECT EXCLUDE_FROM_ALL conformance-probe.cpp)
-target_link_libraries(algotradelib-conformance-probe PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME conformance-names-an-unbacked-capability
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-conformance-probe
-            --config "$<CONFIG>"
-)
-set_tests_properties(conformance-names-an-unbacked-capability PROPERTIES
-    PASS_REGULAR_EXPRESSION "no member named 'instrument' in [^\n]*ClaimsReferenceData|'instrument' is not a member of [^\n]*ClaimsReferenceData"
-    TIMEOUT 300
-)
+foreach(source IN LISTS ATL_TEST_SOURCES)
+    get_filename_component(test ${source} NAME_WE)
+    if(NOT ATL_USE_EIGEN AND test MATCHES "analytics")
+        continue()
+    endif()
 
-# A market-data source (DataOnlyTraits) wired where orders go must not build, and the failure must be the
-# assertion that says so: as the executor's session, and as SessionSource's trading session.
-add_library(algotradelib-data-only-probe-executor OBJECT EXCLUDE_FROM_ALL data-only-probe-executor.cpp)
-target_link_libraries(algotradelib-data-only-probe-executor PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME data-only-refused-as-executor
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-data-only-probe-executor
-            --config "$<CONFIG>"
-)
-set_tests_properties(data-only-refused-as-executor PROPERTIES
-    PASS_REGULAR_EXPRESSION "SessionExecutor sends orders, and this session's client is a market-data source"
-    TIMEOUT 300
-)
-add_library(algotradelib-data-only-probe-source OBJECT EXCLUDE_FROM_ALL data-only-probe-source.cpp)
-target_link_libraries(algotradelib-data-only-probe-source PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME data-only-refused-as-trading-session
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-data-only-probe-source
-            --config "$<CONFIG>"
-)
-set_tests_properties(data-only-refused-as-trading-session PROPERTIES
-    PASS_REGULAR_EXPRESSION "SessionSource's first session is the trading session"
-    TIMEOUT 300
-)
+    add_executable(${test} ${source})
+    target_link_libraries(${test} PRIVATE algotradelib::algotradelib)
 
-# An asynchronous thunk under the right name with the wrong signature must fail `ATL_ASSERT_BROKER`, which
-# calls it.
-add_library(algotradelib-conformance-probe-verbs OBJECT EXCLUDE_FROM_ALL conformance-probe-verbs.cpp)
-target_link_libraries(algotradelib-conformance-probe-verbs PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME conformance-verbs-reject-a-wrong-signature
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-conformance-probe-verbs
-            --config "$<CONFIG>"
-)
-set_tests_properties(conformance-verbs-reject-a-wrong-signature PROPERTIES
-    PASS_REGULAR_EXPRESSION "no matching[a-z ]*function for call to[^\n]*instrument"
-    TIMEOUT 300
-)
+    if(test MATCHES "-isolation$")
+        add_test(NAME ${test} COMMAND ${test})
+        continue()
+    endif()
 
-# A thunk that copies its token works for every copyable token and not for a move-only one, which
-# a caller may pass; `ATL_ASSERT_BROKER` calls every verb with one, so it must fail here.
-add_library(algotradelib-conformance-probe-move-only OBJECT EXCLUDE_FROM_ALL conformance-probe-move-only.cpp)
-target_link_libraries(algotradelib-conformance-probe-move-only PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME conformance-verbs-reject-a-token-copy
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-conformance-probe-move-only
-            --config "$<CONFIG>"
-)
-set_tests_properties(conformance-verbs-reject-a-token-copy PROPERTIES
-    PASS_REGULAR_EXPRESSION "deleted (copy )?constructor[^\n]*MoveOnlyCallback|MoveOnlyCallback[^\n]*deleted|use of deleted function[^\n]*MoveOnlyCallback"
-    TIMEOUT 300
-)
-
-# A blocking account listing whose rows a range-for cannot walk must fail `ATL_ASSERT_BROKER`, which calls
-# the real `list_accounts`.
-add_library(algotradelib-conformance-probe-verbs-accounts OBJECT EXCLUDE_FROM_ALL conformance-probe-verbs-accounts.cpp)
-target_link_libraries(algotradelib-conformance-probe-verbs-accounts PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME conformance-verbs-reject-unwalkable-account-rows
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-conformance-probe-verbs-accounts
-            --config "$<CONFIG>"
-)
-set_tests_properties(conformance-verbs-reject-unwalkable-account-rows PROPERTIES
-    PASS_REGULAR_EXPRESSION "broker_session.hpp:[0-9]+:[0-9]+: error: (invalid operands to binary expression|no match for .operator!=)"
-    TIMEOUT 300
-)
-
-# An adapter that leaves one capability unanswered must fail `ATL_ASSERT_BROKER`, naming it, even when no
-# verb is gated on it: there is no default.
-add_library(algotradelib-conformance-probe-constant OBJECT EXCLUDE_FROM_ALL conformance-probe-constant.cpp)
-target_link_libraries(algotradelib-conformance-probe-constant PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME conformance-requires-every-capability
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-conformance-probe-constant
-            --config "$<CONFIG>"
-)
-set_tests_properties(conformance-requires-every-capability PROPERTIES
-    PASS_REGULAR_EXPRESSION "no member named 'has_history_cursor'|'has_history_cursor' is not a member"
-    TIMEOUT 300
-)
-
-# A call to a verb the broker does not claim, made without a capability gate, must not compile, and the
-# failure must be the session's assertion naming the capability to gate on.
-add_library(algotradelib-conformance-probe-ungated OBJECT EXCLUDE_FROM_ALL conformance-probe-ungated.cpp)
-target_link_libraries(algotradelib-conformance-probe-ungated PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME conformance-refuses-an-ungated-call
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-conformance-probe-ungated
-            --config "$<CONFIG>"
-)
-set_tests_properties(conformance-refuses-an-ungated-call PROPERTIES
-    PASS_REGULAR_EXPRESSION "gate the call with BrokerCaps<Client>::has_depth"
-    TIMEOUT 300
-)
-
-# A hand-written capability set that does not say whether its client takes orders must not be admitted
-# as the executor's session: the binding check reads `data_only` directly.
-add_library(algotradelib-conformance-probe-caps-data-only OBJECT EXCLUDE_FROM_ALL conformance-probe-caps-data-only.cpp)
-target_link_libraries(algotradelib-conformance-probe-caps-data-only PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME conformance-caps-must-state-data-only
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-conformance-probe-caps-data-only
-            --config "$<CONFIG>"
-)
-set_tests_properties(conformance-caps-must-state-data-only PROPERTIES
-    PASS_REGULAR_EXPRESSION "no member named 'data_only' in [^\n]*SilentCaps|'data_only' is not a member of [^\n]*SilentCaps"
-    TIMEOUT 300
-)
-
-# The same for an adapter's traits, read through `BrokerCaps`: one that does not say whether its client
-# takes orders must not be admitted as the executor's session.
-add_library(algotradelib-conformance-probe-traits-data-only OBJECT EXCLUDE_FROM_ALL conformance-probe-traits-data-only.cpp)
-target_link_libraries(algotradelib-conformance-probe-traits-data-only PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME conformance-traits-must-state-data-only
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-conformance-probe-traits-data-only
-            --config "$<CONFIG>"
-)
-set_tests_properties(conformance-traits-must-state-data-only PROPERTIES
-    PASS_REGULAR_EXPRESSION "no member named 'data_only' in [^\n]*SilentAboutDataOnly|'data_only' is not a member of [^\n]*SilentAboutDataOnly"
-    TIMEOUT 300
-)
-
-# A constant asked only of some brokers is required of those: an adapter that lists working orders must
-# say whether a row can state a terminal status.
-add_library(algotradelib-conformance-probe-asked-terminal OBJECT EXCLUDE_FROM_ALL conformance-probe-asked-terminal.cpp)
-target_link_libraries(algotradelib-conformance-probe-asked-terminal PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME conformance-requires-an-asked-capability
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-conformance-probe-asked-terminal
-            --config "$<CONFIG>"
-)
-set_tests_properties(conformance-requires-an-asked-capability PROPERTIES
-    PASS_REGULAR_EXPRESSION "no member named 'working_orders_state_terminal' in [^\n]*SilentAboutTerminal|'working_orders_state_terminal' is not a member of [^\n]*SilentAboutTerminal"
-    TIMEOUT 300
-)
-
-# And a capability set that makes the sellable inquiry must say what the figure covers.
-add_library(algotradelib-conformance-probe-asked-basis OBJECT EXCLUDE_FROM_ALL conformance-probe-asked-basis.cpp)
-target_link_libraries(algotradelib-conformance-probe-asked-basis PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME conformance-requires-an-asked-basis
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-conformance-probe-asked-basis
-            --config "$<CONFIG>"
-)
-set_tests_properties(conformance-requires-an-asked-basis PROPERTIES
-    PASS_REGULAR_EXPRESSION "no member named 'sellable_inquiry_basis' in [^\n]*InquiresWithoutBasis|'sellable_inquiry_basis' is not a member of [^\n]*InquiresWithoutBasis"
-    TIMEOUT 300
-)
-
-# A strategy handler that is declared and that the runner's call does not fit must not build: `dispatch` calls
-# every declared handler, so the compiler refuses the call. One probe per shape, each with a valid `on_bar`,
-# each failing for one reason only, in the compiler's words (Clang's and GCC's).
-add_library(algotradelib-strategy-probe-nonconst-fill OBJECT EXCLUDE_FROM_ALL strategy-probe-nonconst-fill.cpp)
-target_link_libraries(algotradelib-strategy-probe-nonconst-fill PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME strategy-refuses-a-nonconst-fill
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-nonconst-fill
-            --config "$<CONFIG>"
-)
-set_tests_properties(strategy-refuses-a-nonconst-fill PROPERTIES
-    PASS_REGULAR_EXPRESSION "no matching (member )?function for call to[^\n]*on_fill"
-    TIMEOUT 300
-)
-add_library(algotradelib-strategy-probe-wrong-update-event OBJECT EXCLUDE_FROM_ALL strategy-probe-wrong-update-event.cpp)
-target_link_libraries(algotradelib-strategy-probe-wrong-update-event PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME strategy-refuses-a-wrong-update-event
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-wrong-update-event
-            --config "$<CONFIG>"
-)
-set_tests_properties(strategy-refuses-a-wrong-update-event PROPERTIES
-    PASS_REGULAR_EXPRESSION "no matching (member )?function for call to[^\n]*on_order_update"
-    TIMEOUT 300
-)
-add_library(algotradelib-strategy-probe-missing-phase-event OBJECT EXCLUDE_FROM_ALL strategy-probe-missing-phase-event.cpp)
-target_link_libraries(algotradelib-strategy-probe-missing-phase-event PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME strategy-refuses-a-missing-phase-event
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-missing-phase-event
-            --config "$<CONFIG>"
-)
-set_tests_properties(strategy-refuses-a-missing-phase-event PROPERTIES
-    PASS_REGULAR_EXPRESSION "no matching (member )?function for call to[^\n]*on_phase"
-    TIMEOUT 300
-)
-add_library(algotradelib-strategy-probe-mutable-phase OBJECT EXCLUDE_FROM_ALL strategy-probe-mutable-phase.cpp)
-target_link_libraries(algotradelib-strategy-probe-mutable-phase PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME strategy-refuses-a-mutable-phase
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-mutable-phase
-            --config "$<CONFIG>"
-)
-set_tests_properties(strategy-refuses-a-mutable-phase PROPERTIES
-    PASS_REGULAR_EXPRESSION "no matching (member )?function for call to[^\n]*on_phase"
-    TIMEOUT 300
-)
-
-# A handler taking its context by value cannot be called, because no context can be copied.
-add_library(algotradelib-strategy-probe-context-by-value OBJECT EXCLUDE_FROM_ALL strategy-probe-context-by-value.cpp)
-target_link_libraries(algotradelib-strategy-probe-context-by-value PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME strategy-refuses-a-context-by-value
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-context-by-value
-            --config "$<CONFIG>"
-)
-set_tests_properties(strategy-refuses-a-context-by-value PROPERTIES
-    PASS_REGULAR_EXPRESSION "call to deleted constructor of[^\n]*ProbeContextT|use of deleted function[^\n]*ProbeContextT"
-    TIMEOUT 300
-)
-add_library(algotradelib-strategy-probe-runner-context-by-value OBJECT EXCLUDE_FROM_ALL strategy-probe-runner-context-by-value.cpp)
-target_link_libraries(algotradelib-strategy-probe-runner-context-by-value PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME strategy-refuses-a-runner-context-by-value
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-runner-context-by-value
-            --config "$<CONFIG>"
-)
-set_tests_properties(strategy-refuses-a-runner-context-by-value PROPERTIES
-    PASS_REGULAR_EXPRESSION "call to deleted constructor of[^\n]*Context<|use of deleted function[^\n]*Context<"
-    TIMEOUT 300
-)
-
-# A final strategy cannot be checked for handlers the runner would skip, so it is refused.
-add_library(algotradelib-strategy-probe-final OBJECT EXCLUDE_FROM_ALL strategy-probe-final.cpp)
-target_link_libraries(algotradelib-strategy-probe-final PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME strategy-refuses-a-final-strategy
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-final
-            --config "$<CONFIG>"
-)
-set_tests_properties(strategy-refuses-a-final-strategy PROPERTIES
-    PASS_REGULAR_EXPRESSION "a final strategy cannot be checked for a handler the runner would skip"
-    TIMEOUT 300
-)
-
-# A wrapper forwarding through runner::dispatch gets its inner strategy checked too.
-add_library(algotradelib-strategy-probe-wrapped-malformed OBJECT EXCLUDE_FROM_ALL strategy-probe-wrapped-malformed.cpp)
-target_link_libraries(algotradelib-strategy-probe-wrapped-malformed PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME strategy-refuses-a-wrapped-malformed-handler
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-wrapped-malformed
-            --config "$<CONFIG>"
-)
-set_tests_properties(strategy-refuses-a-wrapped-malformed-handler PROPERTIES
-    PASS_REGULAR_EXPRESSION "no matching (member )?function for call to[^\n]*on_phase"
-    TIMEOUT 300
-)
-
-# And a final inner strategy is refused inside dispatch, not read as declaring nothing.
-add_library(algotradelib-strategy-probe-wrapped-final OBJECT EXCLUDE_FROM_ALL strategy-probe-wrapped-final.cpp)
-target_link_libraries(algotradelib-strategy-probe-wrapped-final PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME strategy-refuses-a-wrapped-final-strategy
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-wrapped-final
-            --config "$<CONFIG>"
-)
-set_tests_properties(strategy-refuses-a-wrapped-final-strategy PROPERTIES
-    PASS_REGULAR_EXPRESSION "a final strategy cannot be checked for a handler the runner would skip"
-    TIMEOUT 300
-)
-
-# A handler with the wrong event that nothing calls yet fails at the assertion, which compiles every call.
-add_library(algotradelib-strategy-probe-unreached-handler OBJECT EXCLUDE_FROM_ALL strategy-probe-unreached-handler.cpp)
-target_link_libraries(algotradelib-strategy-probe-unreached-handler PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME strategy-refuses-an-unreached-handler
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-unreached-handler
-            --config "$<CONFIG>"
-)
-set_tests_properties(strategy-refuses-an-unreached-handler PROPERTIES
-    PASS_REGULAR_EXPRESSION "no matching (member )?function for call to[^\n]*on_quote"
-    TIMEOUT 300
-)
-
-# Every declared handler's body is compiled by the assertion, even for an event nothing feeds: one probe per
-# handler, the error in that handler's body alone.
-foreach(handler RANGE 1 7)
-    add_library(algotradelib-strategy-probe-handler-body-${handler} OBJECT EXCLUDE_FROM_ALL strategy-probe-handler-body.cpp)
-    target_link_libraries(algotradelib-strategy-probe-handler-body-${handler} PRIVATE algotradelib::algotradelib)
-    target_compile_definitions(algotradelib-strategy-probe-handler-body-${handler} PRIVATE ATL_PROBE_HANDLER=${handler})
-    add_test(
-        NAME strategy-compiles-handler-body-${handler}
-        COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-handler-body-${handler}
-                --config "$<CONFIG>"
-    )
-    set_tests_properties(strategy-compiles-handler-body-${handler} PROPERTIES
-        PASS_REGULAR_EXPRESSION "no member named 'no_such_member'"
-        TIMEOUT 300
-    )
+    target_link_libraries(${test} PRIVATE Catch2::Catch2WithMain)
+    # What CMake read out of version.hpp, so a test can compare it with what the preprocessor sees. The
+    # project-named variable rather than PROJECT_VERSION, which a project() in a fetched dependency would
+    # shadow within its own directory.
+    target_compile_definitions(${test} PRIVATE ATL_TEST_PROJECT_VERSION="${algotradelib_VERSION}")
+    # The live program's broker-free wiring lives beside the example that uses it, and is tested against
+    # the in-memory session.
+    target_include_directories(${test} PRIVATE "${algotradelib_SOURCE_DIR}/examples")
+    catch_discover_tests(${test})
 endforeach()
 
-# A context a caller can copy is refused: a by-value handler would submit to a copy.
-add_library(algotradelib-strategy-probe-copyable-context OBJECT EXCLUDE_FROM_ALL strategy-probe-copyable-context.cpp)
-target_link_libraries(algotradelib-strategy-probe-copyable-context PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME strategy-refuses-a-copyable-context
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-copyable-context
-            --config "$<CONFIG>"
-)
-set_tests_properties(strategy-refuses-a-copyable-context PROPERTIES
-    PASS_REGULAR_EXPRESSION "a strategy context must not be copyable"
-    TIMEOUT 300
-)
+# Every tests/compile-fail/test-<name>.cpp must not compile, and the compiler's diagnostic must be the
+# intended one. Each file states it in a `// expect: <regex>` line (Clang's and GCC's wording, `\n`
+# standing for a newline); CTest builds the file under the test name <name> and passes only on a match, so
+# a check that no longer fires, or fails for another reason, fails the test. A file with a
+# `// variants: <v>...` line is built once per value with ATL_PROBE_VARIANT=<v>, as <name>-<v>.
+#
+# Built by the test rather than by `all`, because each is meant not to build.
+file(GLOB ATL_COMPILE_FAIL_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/compile-fail/test-*.cpp")
 
-# And one whose copy constructor takes a mutable reference, which is what dispatch passes.
-add_library(algotradelib-strategy-probe-mutable-copy-context OBJECT EXCLUDE_FROM_ALL strategy-probe-mutable-copy-context.cpp)
-target_link_libraries(algotradelib-strategy-probe-mutable-copy-context PRIVATE algotradelib::algotradelib)
-add_test(
-    NAME strategy-refuses-a-mutable-copy-context
-    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target algotradelib-strategy-probe-mutable-copy-context
-            --config "$<CONFIG>"
-)
-set_tests_properties(strategy-refuses-a-mutable-copy-context PROPERTIES
-    PASS_REGULAR_EXPRESSION "a strategy context must not be copyable"
-    TIMEOUT 300
-)
+foreach(source IN LISTS ATL_COMPILE_FAIL_SOURCES)
+    get_filename_component(stem ${source} NAME_WE)
+    string(REGEX REPLACE "^test-" "" name ${stem})
+    # The expectation is read at configure time, so editing it must reconfigure.
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${source})
 
-# The same guarantee for the dry runner: a dry run links no transport, so a dry-run binary has no
-# code path that could place an order.
-add_executable(algotradelib-runner-isolation test-runner-isolation.cpp)
-target_link_libraries(algotradelib-runner-isolation PRIVATE algotradelib::algotradelib)
-add_test(NAME dry-runner-stays-isolated COMMAND algotradelib-runner-isolation)
+    file(STRINGS ${source} expect REGEX "^// expect: ")
+    list(LENGTH expect count)
+    if(NOT count EQUAL 1)
+        message(FATAL_ERROR "${source} needs exactly one '// expect: <regex>' line; it has ${count}")
+    endif()
+    string(REGEX REPLACE "^// expect: " "" expect "${expect}")
+    string(STRIP "${expect}" expect)
+    if(expect STREQUAL "")
+        message(FATAL_ERROR "${source} has an empty '// expect:' line")
+    endif()
+    string(REPLACE "\\n" "\n" expect "${expect}")
+
+    file(STRINGS ${source} variants REGEX "^// variants: ")
+    string(REGEX REPLACE "^// variants: " "" variants "${variants}")
+    separate_arguments(variants)
+    if(variants)
+        set(unique ${variants})
+        list(REMOVE_DUPLICATES unique)
+        if(NOT unique STREQUAL variants)
+            message(FATAL_ERROR "${source} lists a variant twice: ${variants}")
+        endif()
+    else()
+        set(variants "-")
+    endif()
+
+    foreach(variant IN LISTS variants)
+        set(probe ${name})
+        if(NOT variant STREQUAL "-")
+            set(probe ${name}-${variant})
+        endif()
+        add_library(compile-fail-${probe} OBJECT EXCLUDE_FROM_ALL ${source})
+        target_link_libraries(compile-fail-${probe} PRIVATE algotradelib::algotradelib)
+        target_include_directories(compile-fail-${probe} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+        if(NOT variant STREQUAL "-")
+            target_compile_definitions(compile-fail-${probe} PRIVATE ATL_PROBE_VARIANT=${variant})
+        endif()
+        add_test(
+            NAME ${probe}
+            COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target compile-fail-${probe}
+                    --config "$<CONFIG>"
+        )
+        set_tests_properties(${probe} PROPERTIES PASS_REGULAR_EXPRESSION "${expect}" TIMEOUT 300)
+    endforeach()
+endforeach()
 
 # Every header must compile on its own.
 #
