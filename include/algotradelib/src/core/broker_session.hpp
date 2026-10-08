@@ -2,6 +2,8 @@
 
 #include "./broker_caps.hpp"
 #include "./broker_traits.hpp"
+#include "./calendar.hpp"
+#include "./instrument.hpp"
 
 #include "../network/rate_limit.hpp"
 

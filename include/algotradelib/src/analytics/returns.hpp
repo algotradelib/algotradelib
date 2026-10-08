@@ -2,7 +2,6 @@
 
 #include "./numeric.hpp"
 
-#include <cmath>
 #include <cstddef>
 
 namespace algotradelib {

@@ -5,9 +5,9 @@
  * @brief Running a strategy against a real broker: `SessionExecutor`, `SessionSource` and the
  *   `bind` factories.
  *
- * Separate from `<algotradelib/runner>` because it needs a broker session, and so TLS, HTTP and an
- * adapter; a program that includes only `<algotradelib/runner>` contains no library code that could
- * place an order.
+ * Separate from `<algotradelib/runner>` because it binds a broker session, which a real broker
+ * provides through an adapter, HTTP and TLS; a program that includes only `<algotradelib/runner>`
+ * contains no library code that could place an order.
  */
 
 #include "src/live/bind.hpp"

@@ -1,9 +1,8 @@
 #pragma once
 
 #include "./broker_traits.hpp"
-#include "./calendar.hpp"
-#include "./instrument.hpp"
 #include "./market_data.hpp"
+#include "./types.hpp"
 
 namespace algotradelib {
 

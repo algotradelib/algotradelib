@@ -1,6 +1,5 @@
 #pragma once
 
-#include "./conversion.hpp"
 #include "./frame.hpp"
 #include "./time_index.hpp"
 
@@ -11,7 +10,7 @@
 #include <iterator>
 #include <optional>
 #include <stdexcept>
-#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 

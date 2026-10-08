@@ -14,7 +14,6 @@
 #include <boost/asio/any_completion_handler.hpp>
 #include <boost/asio/async_result.hpp>
 #include <boost/asio/associated_executor.hpp>
-#include <boost/asio/connect.hpp>
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
