@@ -12,6 +12,13 @@ if(NOT Catch2_FOUND)
 endif()
 include(Catch)
 
+# ATL_ENABLE_COVERAGE instruments the test executables, never the library target, so an installed consumer
+# inherits nothing. GCC and Clang both write gcov's format (`--coverage`), one data file beside each object, which
+# gcovr reads for either (`gcov`, or `llvm-cov gcov` for Clang) and joins by line.
+if(ATL_ENABLE_COVERAGE AND NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    message(FATAL_ERROR "ATL_ENABLE_COVERAGE supports GCC and Clang, not ${CMAKE_CXX_COMPILER_ID}.")
+endif()
+
 # Every tests/test-*.cpp is one executable, named after the file, as examples/ builds example-*.cpp.
 #
 # A file ending in -isolation.cpp is not a Catch2 suite: it includes one umbrella header and nothing else,
@@ -30,6 +37,10 @@ foreach(source IN LISTS ATL_TEST_SOURCES)
 
     add_executable(${test} ${source})
     target_link_libraries(${test} PRIVATE algotradelib::algotradelib)
+    if(ATL_ENABLE_COVERAGE)
+        target_compile_options(${test} PRIVATE --coverage)
+        target_link_libraries(${test} PRIVATE --coverage)
+    endif()
 
     if(test MATCHES "-isolation$")
         add_test(NAME ${test} COMMAND ${test})
@@ -103,7 +114,8 @@ foreach(source IN LISTS ATL_COMPILE_FAIL_SOURCES)
             COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target compile-fail-${probe}
                     --config "$<CONFIG>"
         )
-        set_tests_properties(${probe} PROPERTIES PASS_REGULAR_EXPRESSION "${expect}" TIMEOUT 300)
+        set_tests_properties(${probe} PROPERTIES
+            PASS_REGULAR_EXPRESSION "${expect}" TIMEOUT 300 LABELS compile-fail)
     endforeach()
 endforeach()
 
@@ -189,5 +201,5 @@ if(NOT WIN32)
     )
     # A full configure and build of a generated project, so it needs more than a unit test's budget.
     set_tests_properties(scaffold-generates-a-project-that-builds-and-runs
-        PROPERTIES TIMEOUT 600)
+        PROPERTIES TIMEOUT 600 LABELS scaffold)
 endif()

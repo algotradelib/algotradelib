@@ -124,7 +124,7 @@ any release.
 | `ATL_USE_EIGEN` | `ON` | the analytics backend; see below |
 | `ATL_BUILD_EXAMPLES` | `OFF` | the `example-*` programs in `examples/` |
 | `ATL_BUILD_TESTS` | `OFF` | the Catch2 suite in `tests/` |
-| `ATL_ENABLE_COVERAGE` | `OFF` | coverage instrumentation for that suite |
+| `ATL_ENABLE_COVERAGE` | `OFF` | coverage instrumentation for that suite (Clang or GCC) |
 
 `ATL_USE_EIGEN=OFF` does not make analytics slower — it removes them.
 `<algotradelib/analytics>` becomes a deliberate `#error` naming the option to set,

@@ -66,6 +66,13 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+# coverage: ATL_ENABLE_COVERAGE's output (Clang and GCC)
+*.profraw
+*.profdata
+*.gcda
+*.gcno
+coverage/
+
 # journals a test binary run outside a build directory leaves behind
 atl-test-*.jsonl
 

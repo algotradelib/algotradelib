@@ -63,7 +63,10 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 option(ATL_BUILD_EXAMPLES "Build example C++ programs" OFF)
 option(ATL_BUILD_TESTS "Build test C++ programs" OFF)
-option(ATL_ENABLE_COVERAGE "Enable C++ test coverage" OFF)
+option(ATL_ENABLE_COVERAGE "Instrument the tests for coverage (Clang or GCC)" OFF)
+if(ATL_ENABLE_COVERAGE AND NOT ATL_BUILD_TESTS)
+    message(FATAL_ERROR "ATL_ENABLE_COVERAGE measures the tests; configure with ATL_BUILD_TESTS=ON too.")
+endif()
 
 # `cmake --build build --target docs` runs doxygen/Doxyfile with PROJECT_NUMBER set to this version, so
 # the version is still written only in version.hpp; `doxygen doxygen/Doxyfile` by hand still works,
