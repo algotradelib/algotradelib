@@ -29,26 +29,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # One compiler is enough for coverage; GCC, because gcov is its own format and its branch counts follow the
-      # source. OpenSSL is the runner's (libssl-dev); Boost, Eigen and Catch2 are fetched and built (ATL_FETCH_DEPS).
       - uses: aminya/setup-cpp@v1
         with:
           compiler: gcc
           cmake: true
           ninja: true
-          gcovr: true
 
       - name: Install OpenSSL
         run: sudo apt-get update && sudo apt-get install -y libssl-dev
 
-      # Two compile jobs: one GCC Debug --coverage test file peaks at up to 6.4 GB, and Ninja's default (CPUs + 2)
-      # ran six of them at once on the 16 GB runner. No debug information (-g0): gcov reads its own notes files,
-      # so the report is the same line for line; measured, the build took 40 % less time and the largest file
-      # a quarter less memory.
       - uses: threeal/cmake-action@v2.1.0
         with:
           run-build: true
-          build-args: --parallel 2
           generator: Ninja
           options: |
             CMAKE_BUILD_TYPE=Debug
@@ -64,25 +56,12 @@ jobs:
           test-dir: build/tests
           args: -LE "^(compile-fail|scaffold)$" -j 4
 
-      # The library's own sources only (not the tests, not the fetched dependencies under build/_deps), one
-      # entry per source line however many template instances reached it (--merge-lines). gcov must match the
-      # GCC that compiled: setup-cpp sets CXX (e.g. /usr/bin/g++-14) but leaves `gcov` as the system's.
-      - name: Coverage report
-        shell: bash
-        run: |
-          gcov="${CXX%g++*}gcov${CXX##*g++}"
-          gcovr --root . --gcov-executable "$gcov" \
-            --filter "$PWD/include/" --filter "$PWD/examples/live_program\.hpp" \
-            --merge-lines --exclude-throw-branches --cobertura coverage.xml --print-summary build
-
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
         with:
-          files: coverage.xml
-          disable_search: true
-          plugins: noop
           fail_ci_if_error: true
           token: ${{ secrets.CODECOV_TOKEN }}
+          codecov_yml_path: codecov.yml
 
       - name: Show ctest output
         if: always()
