@@ -37,6 +37,11 @@ foreach(source IN LISTS ATL_TEST_SOURCES)
 
     add_executable(${test} ${source})
     target_link_libraries(${test} PRIVATE algotradelib::algotradelib)
+    # Some cases assert IEEE results digit for digit; a compiler that fuses a multiply and an add (GCC does by
+    # default on arm64) rounds once instead of twice and moves the last digit.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(${test} PRIVATE -ffp-contract=off)
+    endif()
     if(ATL_ENABLE_COVERAGE)
         target_compile_options(${test} PRIVATE --coverage)
         target_link_libraries(${test} PRIVATE --coverage)

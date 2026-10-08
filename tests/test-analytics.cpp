@@ -579,7 +579,8 @@ TEST_CASE("the exponential average keeps its arithmetic, digit for digit") {
   const math::Vector values = series({54.689, 897.428});
   REQUIRE(analytics::ema(values, analytics::alpha_from_span(3))[1] == 476.05850000000004);
   REQUIRE(analytics::ema_step(54.689, 897.428, analytics::alpha_from_span(3)) == 476.05850000000004);
-  REQUIRE(analytics::macd(values).macd_[1] == 67.227042735042758);
+  // IEEE, unfused (the suite is built with -ffp-contract=off): a fused multiply-add gives 67.227042735042758.
+  REQUIRE(analytics::macd(values).macd_[1] == 67.22704273504274);
 }
 
 // ---------------------------------------------------------------------------
