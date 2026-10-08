@@ -49,9 +49,10 @@ repository's tests needs 3.14, and downloads Catch2 if it is not installed.
 **OpenSSL's floor is an API minimum, not a recommendation.** The headers call OpenSSL directly only
 to set the TLS server name, which OpenSSL has offered since long before 3.0; everything else goes
 through Boost.Asio's `ssl` layer. So the build accepts 3.0. But upstream support for 3.0 ended in
-September 2026: for anything that trades, use a supported line (3.5 LTS or newer), or a distribution
-package that still receives security fixes. The only version this library has been built and tested
-against is 3.6.x.
+September 2026: for anything that trades, use 3.5, the long-term support line (supported until April
+2030), or a distribution package that still receives security fixes. The tests have been built against
+3.6 (Homebrew), and the coverage workflow builds them against Ubuntu 24.04's 3.0 package; 4.0 has not
+been tried.
 
 **Boost and OpenSSL are required even for a backtest that touches no network.** The library exports
 one interface target for every consumer, so an offline program still links `libssl`, `libcrypto` and

@@ -35,7 +35,7 @@ The [architecture page](doxygen/vignettes/architecture.md) explains the rule and
 Requires a C++17 compiler, CMake 3.10, Boost 1.87 (`json`), OpenSSL 3.0 and,
 for the analytics layer (on by default), Eigen 3.4.
 Boost and OpenSSL are linked even by a program that never touches the network.
-Use a supported OpenSSL line (3.5 LTS or newer) for anything that trades.
+Use OpenSSL 3.5 (long-term support), or a distribution package that still gets security fixes, for anything that trades.
 
 As a submodule:
 
