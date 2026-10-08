@@ -53,6 +53,12 @@ foreach(source IN LISTS ATL_TEST_SOURCES)
     if(ATL_ENABLE_COVERAGE)
         target_compile_options(${test} PRIVATE --coverage)
         target_link_libraries(${test} PRIVATE --coverage)
+        # GCC instruments every function a file emits, Boost's, Catch2's and the standard library's included;
+        # only the library's headers and the live program are reported, so only they are instrumented.
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            target_compile_options(${test} PRIVATE
+                "-fprofile-filter-files=.*/(include/algotradelib/.*|examples/live_program[.]hpp)")
+        endif()
     endif()
 
     if(test MATCHES "-isolation$")

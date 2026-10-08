@@ -42,7 +42,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libssl-dev
 
       # Two compile jobs: one GCC Debug --coverage test file peaks at up to 6.4 GB, and Ninja's default (CPUs + 2)
-      # ran six of them at once on the 16 GB runner.
+      # ran six of them at once on the 16 GB runner. No debug information (-g0): gcov reads its own notes files,
+      # so the report is the same line for line; measured, the build took 40 % less time and the largest file
+      # a quarter less memory.
       - uses: threeal/cmake-action@v2.1.0
         with:
           run-build: true
@@ -50,6 +52,7 @@ jobs:
           generator: Ninja
           options: |
             CMAKE_BUILD_TYPE=Debug
+            CMAKE_CXX_FLAGS_DEBUG=-g0
             ATL_FETCH_DEPS=ON
             ATL_BUILD_EXAMPLES=OFF
             ATL_BUILD_TESTS=ON
