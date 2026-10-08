@@ -59,8 +59,9 @@ struct AccountRow {
 struct RowsEnd {};
 
 /**
- * A cursor whose comparison and dereference accept only lvalues -- valid for a range-for, which
- * holds its iterator and sentinel in named variables, and for `to_account_info`, which does too.
+ * A cursor whose dereference accepts only lvalues -- valid for a range-for, which holds its iterator
+ * in a named variable, and for `to_account_info`, which does too. Its comparison takes const
+ * references: GCC rejects a range-for whose `!=` takes non-const ones, which Clang accepts.
  */
 struct LvalueCursor {
   const AccountRow* at_;
@@ -69,7 +70,7 @@ struct LvalueCursor {
     ++at_;
     return *this;
   }
-  friend bool operator!=(LvalueCursor& cursor, RowsEnd&) { return cursor.at_ != nullptr; }
+  friend bool operator!=(const LvalueCursor& cursor, const RowsEnd&) { return cursor.at_ != nullptr; }
 };
 
 /** A range over `LvalueCursor`, empty. */

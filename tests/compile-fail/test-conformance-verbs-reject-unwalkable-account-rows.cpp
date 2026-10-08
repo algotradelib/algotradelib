@@ -1,4 +1,4 @@
-// expect: broker_session.hpp:[0-9]+:[0-9]+: error: (invalid operands to binary expression|no match for .operator!=)
+// expect: broker_session.hpp:[0-9]+:[0-9]+: error: (invalid operands to binary expression|no match for .operator!=|cannot bind rvalue reference of type .probe::Cursor&&.)
 // Deliberately does not compile. `conformance-verbs-reject-unwalkable-account-rows` builds this file
 // and passes only on the failed comparison inside `to_account_info`'s range-for, which
 // `ATL_ASSERT_BROKER` reaches because it calls the real `list_accounts`.
