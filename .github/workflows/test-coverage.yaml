@@ -1,0 +1,86 @@
+on:
+  push:
+    branches: [main, master, 'hotfix/*', 'release/*', develop]
+    paths:
+      - 'CMakeLists.txt'
+      - 'include/**'
+      - 'tests/**'
+      - 'cmake/**'
+      - 'examples/live_program.hpp'
+      - 'codecov.yml'
+      - '.github/workflows/test-coverage.yaml'
+  pull_request:
+    branches: [main, master, develop]
+    paths:
+      - 'CMakeLists.txt'
+      - 'include/**'
+      - 'tests/**'
+      - 'cmake/**'
+      - 'examples/live_program.hpp'
+      - 'codecov.yml'
+      - '.github/workflows/test-coverage.yaml'
+
+name: test-coverage
+
+jobs:
+  test-coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # One compiler is enough for coverage; GCC, because gcov is its own format and its branch counts follow the
+      # source. OpenSSL is the runner's (libssl-dev); Boost, Eigen and Catch2 are fetched and built (ATL_FETCH_DEPS).
+      - uses: aminya/setup-cpp@v1
+        with:
+          compiler: gcc
+          cmake: true
+          ninja: true
+          gcovr: true
+
+      - name: Install OpenSSL
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev
+
+      - uses: threeal/cmake-action@v2.1.0
+        with:
+          run-build: true
+          generator: Ninja
+          options: |
+            CMAKE_BUILD_TYPE=Debug
+            ATL_FETCH_DEPS=ON
+            ATL_BUILD_EXAMPLES=OFF
+            ATL_BUILD_TESTS=ON
+            ATL_ENABLE_COVERAGE=ON
+
+      # The compile-fail probes and the scaffold build run no instrumented code; they belong to a build check.
+      - uses: threeal/ctest-action@v1.1.0
+        with:
+          test-dir: build/tests
+          args: -LE "^(compile-fail|scaffold)$" -j 4
+
+      # The library's own sources only (not the tests, not the fetched dependencies under build/_deps), one
+      # entry per source line however many template instances reached it (--merge-lines). gcov must match the
+      # GCC that compiled: setup-cpp sets CXX (e.g. /usr/bin/g++-14) but leaves `gcov` as the system's.
+      - name: Coverage report
+        shell: bash
+        run: |
+          gcov="${CXX%g++*}gcov${CXX##*g++}"
+          gcovr --root . --gcov-executable "$gcov" \
+            --filter "$PWD/include/" --filter "$PWD/examples/live_program\.hpp" \
+            --merge-lines --exclude-throw-branches --cobertura coverage.xml --print-summary build
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          disable_search: true
+          plugins: noop
+          fail_ci_if_error: true
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Show ctest output
+        if: always()
+        run: |
+          ## --------------------------------------------------------------------
+          find build/tests/Testing/Temporary -name 'LastTest.log' -exec cat '{}' \; || true
+        shell: bash
