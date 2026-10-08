@@ -63,7 +63,9 @@ Green is I/O-free. Orange links TLS. The boundary between them is not a conventi
 at compile time by two translation units that include exactly one umbrella header each and
 `#error` if a transport or adapter macro is visible:
 `tests/test-strategy-isolation.cpp` for `<algotradelib/strategy>`, and
-`tests/test-runner-isolation.cpp` for `<algotradelib/runner>`.
+`tests/test-runner-isolation.cpp` for `<algotradelib/runner>`. A third,
+`tests/test-broker-isolation.cpp`, holds `<algotradelib/broker>` to a narrower line: Asio and the
+network module's rate-limit types, but no Beast and no OpenSSL.
 
 What that assertion does and does not claim is worth being exact about. It establishes that a dry-run
 or replay translation unit **instantiates** no adapter and no transport code, so there is no
@@ -73,10 +75,13 @@ dependency it never calls; the library does not have a transport-free target yet
 
 Two other edges are worth reading off the picture:
 
-- **`<core>` does not include `<network>`.** `BrokerSession` does, which is why it ships under
-  `<algotradelib/broker>` rather than being reachable from the value types. A program that only
-  parses bars therefore compiles no transport code — though it still *links* libssl, because the
-  package exports one interface target for every consumer. The paragraph above is the exact claim.
+- **`<core>` does not include `<network>`.** `BrokerSession` includes one header of it, the
+  rate-limit statistics (`network/rate_limit.hpp`), which is why it ships under
+  `<algotradelib/broker>` rather than being reachable from the value types. HTTP, WebSocket and
+  TLS come with an adapter (`<algotradelib/kis>` and the others), not with the session. A program
+  that only parses bars therefore compiles no transport code — though it still *links* libssl,
+  because the package exports one interface target for every consumer. The paragraph above is the
+  exact claim.
 - **`<analytics>` is the only layer that *implements* against a linear-algebra backend**, and it is
   optional — but turning it off reaches further than that one box. With `ATL_USE_EIGEN=OFF`,
   `<algotradelib/analytics>` is a deliberate `#error` naming the option, `backtest::summarize` and
