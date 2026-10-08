@@ -2083,7 +2083,10 @@ TEST_CASE(
   entry.id_ = "run-1";
   entry.action_ = runner::JournalAction::PLACE;
   entry.outcome_ = runner::JournalOutcome::PENDING;
-  entry.recorded_at_ = *resting.ordered_at_;
+  // The adapter reads no order time from KIS's open-order inquiry, and a row without one contradicts
+  // no send window; so the entry is stamped at a fixed instant (13:14:38 KST, as listed).
+  REQUIRE_FALSE(resting.ordered_at_);
+  entry.recorded_at_ = std::chrono::system_clock::from_time_t(1773116078);
   entry.instrument_ = order.instrument_;
   entry.side_ = order.side_;
   entry.type_ = order.type_;
