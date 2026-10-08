@@ -34,6 +34,13 @@ endif()
 
 project(algotradelib VERSION ${ATL_PROJECT_VERSION} LANGUAGES CXX)
 
+option(ATL_USE_EIGEN "Build the analytics layer against Eigen" ON)
+option(ATL_FETCH_DEPS "Fetch all depending libraries using FetchContent" OFF)
+
+if(ATL_FETCH_DEPS)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/deps.cmake")
+endif()
+
 include(GNUInstallDirs)
 
 # atomic linking issue in llvm (macos, windows): dummy atomic
@@ -98,8 +105,8 @@ endif()
 # behaviour does not. The option is named for the backend rather than for a feature
 # because the backend is expected to change: a consumer may prefer another library, or
 # this one may carry its own, and the analytics API is written so that would be a new
-# implementation rather than a new public surface.
-option(ATL_USE_EIGEN "Build the analytics layer against Eigen" ON)
+# implementation rather than a new public surface. (ATL_USE_EIGEN is declared above, before
+# cmake/deps.cmake reads it.)
 
 if(ATL_USE_EIGEN)
     # Requested without a version on purpose. Eigen's package config declares
@@ -165,6 +172,13 @@ int main() { return 0; }
 endif()
 
 target_link_libraries(algotradelib INTERFACE Boost::json)
+# A Boost built from source (ATL_FETCH_DEPS) has a target per library, and its Boost::headers does not cover them all.
+# Only there: an installed config resolves Boost::json alone, so an exported Boost::asio would break its consumers.
+if(ATL_FETCH_DEPS)
+    foreach(component asio beast crc)
+        target_link_libraries(algotradelib INTERFACE Boost::${component})
+    endforeach()
+endif()
 if(TARGET Boost::headers)
     target_link_libraries(algotradelib INTERFACE Boost::headers)
 elseif(TARGET Boost::boost)
@@ -183,6 +197,12 @@ endif()
 if(ATL_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests tests)
+endif()
+
+# A build with fetched dependencies (CI) installs nothing: the fetched Boost is not installed, so no package could
+# name it.
+if(ATL_FETCH_DEPS)
+    return()
 endif()
 
 # Install header files

@@ -1,11 +1,19 @@
-find_package(Catch2 3 CONFIG QUIET)
+# A fetched-dependency build (ATL_FETCH_DEPS) fetches Catch2 too, so it is built by the compiler under test.
+if(NOT ATL_FETCH_DEPS)
+    find_package(Catch2 3 CONFIG QUIET)
+endif()
 
 if(NOT Catch2_FOUND)
+    # Catch2 compiles its library at its own minimum (C++14) unless told otherwise, and then lacks the
+    # std::string_view support a C++17 test expects (Apple Clang, whose default is older, shows it).
+    if(NOT DEFINED CMAKE_CXX_STANDARD)
+        set(CMAKE_CXX_STANDARD 17)
+    endif()
     include(FetchContent)
     FetchContent_Declare(
         Catch2
         GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-        GIT_TAG v3.7.1
+        GIT_TAG v3.16.0
         GIT_SHALLOW TRUE
     )
     FetchContent_MakeAvailable(Catch2)
@@ -187,12 +195,19 @@ endif()
 if(NOT WIN32)
     # The sub-build must match this one, or a no-backend build would be tested against a backend and
     # the guard in the example would never be exercised.
-    set(ATL_SCAFFOLD_ARGS "-DATL_USE_EIGEN=${ATL_USE_EIGEN}")
+    set(ATL_SCAFFOLD_ARGS "-DATL_USE_EIGEN=${ATL_USE_EIGEN}" "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}")
     if(CMAKE_GENERATOR)
         list(APPEND ATL_SCAFFOLD_ARGS "-G${CMAKE_GENERATOR}")
     endif()
     if(CMAKE_BUILD_TYPE)
         list(APPEND ATL_SCAFFOLD_ARGS "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}")
+    endif()
+    # A fetched-dependency build passes that on, with the sources already downloaded.
+    if(ATL_FETCH_DEPS)
+        list(APPEND ATL_SCAFFOLD_ARGS "-DATL_FETCH_DEPS=ON" "-DFETCHCONTENT_SOURCE_DIR_BOOST=${boost_SOURCE_DIR}")
+        if(ATL_USE_EIGEN)
+            list(APPEND ATL_SCAFFOLD_ARGS "-DFETCHCONTENT_SOURCE_DIR_EIGEN3=${eigen3_SOURCE_DIR}")
+        endif()
     endif()
 
     add_test(
