@@ -1,5 +1,5 @@
 #include <algotradelib/kis>
-#include <algotradelib/kiwoom>
+#include <algotradelib/src/brokers/kiwoom/config.hpp>
 #include <algotradelib/runner>
 #include <algotradelib/strategy>
 #include <algotradelib/tossinvest>

@@ -1,4 +1,3 @@
-#include <algotradelib/kis>
 #include <algotradelib/tossinvest>
 #include <algotradelib/src/network/rate_limit.hpp>
 #include <algotradelib/src/runner/execution.hpp>

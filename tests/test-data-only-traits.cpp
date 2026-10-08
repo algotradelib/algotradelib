@@ -1,8 +1,8 @@
 #include "data_only_vendor.hpp"
 
 #include <algotradelib/broker>
-#include <algotradelib/live>
-#include <algotradelib/runner>
+#include <algotradelib/strategy>
+#include <algotradelib/src/runner/execution.hpp>
 
 #include <boost/asio/any_completion_executor.hpp>
 #include <boost/asio/executor_work_guard.hpp>
