@@ -1,17 +1,6 @@
 #pragma once
 
-#include "./calendar.hpp"
-#include "./instrument.hpp"
-#include "./market_data.hpp"
-#include "./types.hpp"
-
-#include <functional>
-#include <optional>
 #include <string>
-#include <string_view>
-#include <type_traits>
-#include <utility>
-#include <vector>
 
 namespace algotradelib {
 

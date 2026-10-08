@@ -5,8 +5,6 @@
 #include "./instrument.hpp"
 #include "./market_data.hpp"
 
-#include <type_traits>
-
 namespace algotradelib {
 
 namespace caps_detail {

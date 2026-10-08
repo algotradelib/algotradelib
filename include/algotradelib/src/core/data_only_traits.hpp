@@ -1,8 +1,9 @@
 #pragma once
 
 #include "./broker_traits.hpp"
+#include "./types.hpp"
 
-#include <algotradelib/network>
+#include "../network/rate_limit.hpp"
 
 #include <boost/asio/associated_executor.hpp>
 #include <boost/asio/bind_executor.hpp>
@@ -14,6 +15,8 @@
 #include <utility>
 
 namespace algotradelib {
+
+namespace net = boost::asio;
 
 /**
  * @brief Placeholder types and the refusal used by `DataOnlyTraits`.

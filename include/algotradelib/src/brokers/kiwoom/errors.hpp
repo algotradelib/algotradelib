@@ -1,7 +1,5 @@
 #pragma once
 
-#include "./network.hpp"
-
 #include "../../core/types.hpp"
 
 #include <boost/json.hpp>
@@ -96,7 +94,7 @@ inline ErrorCategory kiwoom_error_category(std::string_view code) noexcept {
  *   `return_msg` kept), a `PROTOCOL` error if `return_code` is neither a number nor a string, or
  *   `std::nullopt` if it is `0` or absent.
  */
-inline std::optional<BrokerError> kiwoom_declared_error(const json::object& document) {
+inline std::optional<BrokerError> kiwoom_declared_error(const boost::json::object& document) {
   const auto code = document.if_contains("return_code");
   if (!code) {
     return std::nullopt;

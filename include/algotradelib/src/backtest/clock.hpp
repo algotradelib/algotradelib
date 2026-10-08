@@ -8,9 +8,7 @@
 
 #include <chrono>
 #include <utility>
-#include <cstdint>
 #include <optional>
-#include <ratio>
 
 namespace algotradelib {
 namespace backtest {

@@ -7,12 +7,10 @@
  */
 #define ATL_TRANSPORT_LAYER_PRESENT 1
 
-#include <algotradelib/core>
-
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
-#include <string>
 #include <string_view>
 
 namespace algotradelib {

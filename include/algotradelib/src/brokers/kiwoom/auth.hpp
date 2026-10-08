@@ -2,6 +2,7 @@
 
 #include "./config.hpp"
 #include "./errors.hpp"
+#include "./network.hpp"
 
 #include <mutex>
 #include <stdexcept>

@@ -2,6 +2,9 @@
 
 #include "./signal.hpp"
 
+#include "../event.hpp"
+#include "../intent.hpp"
+
 #include <algotradelib/analytics>
 #include <algotradelib/core>
 

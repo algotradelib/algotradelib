@@ -1,12 +1,7 @@
 #pragma once
 
-#include "../event.hpp"
-#include "../intent.hpp"
-
 #include <algotradelib/analytics>
-#include <algotradelib/core>
 
-#include <cmath>
 #include <cstddef>
 #include <optional>
 #include <stdexcept>

@@ -3,7 +3,7 @@
 #include "./broker_caps.hpp"
 #include "./broker_traits.hpp"
 
-#include <algotradelib/network>
+#include "../network/rate_limit.hpp"
 
 #include <boost/asio/associated_executor.hpp>
 #include <boost/asio/async_result.hpp>
@@ -19,6 +19,8 @@
 #include <vector>
 
 namespace algotradelib {
+
+namespace net = boost::asio;
 
 namespace port_detail {
 

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "./config.hpp"
+#include "./network.hpp"
+
 #include <mutex>
 
 namespace algotradelib {

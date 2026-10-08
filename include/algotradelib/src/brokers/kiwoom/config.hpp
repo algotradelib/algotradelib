@@ -1,6 +1,6 @@
 #pragma once
 
-#include "./network.hpp"
+#include "../../network/oauth.hpp"
 
 #include "../../core/types.hpp"
 

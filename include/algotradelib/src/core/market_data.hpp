@@ -4,10 +4,8 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstdint>
 #include <optional>
 #include <string>
-#include <utility>
 #include <vector>
 
 namespace algotradelib {
@@ -206,7 +204,6 @@ struct DepthSnapshot {
     return decimal_halve(*sum);
   }
 };
-
 
 /**
  * @brief Sorts a book's levels best first: bids descending, asks ascending.

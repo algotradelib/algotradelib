@@ -12,7 +12,6 @@
 #include <boost/json.hpp>
 
 #include <charconv>
-#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -41,8 +40,6 @@ inline std::optional<std::int64_t> integer_header(
   }
   return number;
 }
-
-
 
 inline BrokerError http_error(const network::HttpResponse& response) {
   BrokerError error;

@@ -5,6 +5,8 @@
 // that must not compile (compile-fail/test-data-only-refused-*.cpp).
 #include <algotradelib/broker>
 
+#include <boost/asio/any_io_executor.hpp>
+#include <boost/asio/async_result.hpp>
 #include <boost/asio/post.hpp>
 
 #include <memory>
