@@ -464,6 +464,7 @@ Clock::time_point session_minute(int minute) { return utc(2026, 3, 10, 1, minute
 
 } // namespace
 
+#if defined(ATL_HAS_EIGEN)
 TEST_CASE("a weekly bar's period start is not derivable, and the engine says so instead of guessing") {
   // **The one shape this engine cannot check.** A close-stamped weekly bar ends on a Friday and began on a
   // Monday, and nothing in the event says when. Three versions of this code inferred it from a previous bar
@@ -488,6 +489,7 @@ TEST_CASE("a weekly bar's period start is not derivable, and the engine says so 
   const auto report = backtest::summarize(engine.result(), engine.fills());
   CHECK(report.caveats_.unchecked_fill_causality_ == engine.result().unchecked_fill_causality_);
 }
+#endif
 
 /** An open-stamped bar of `interval` at `at`, which is how every shipped adapter stamps one. */
 strategy::BarEvent open_stamped(
@@ -541,6 +543,7 @@ TEST_CASE("an open-stamped week whose successor starts exactly a week later is c
   CHECK(engine.result().unchecked_fill_causality_ == 0);
 }
 
+#if defined(ATL_HAS_EIGEN)
 TEST_CASE("the report says it cannot know which book the bars came from") {
   // A KRX-listed equity trades on two venues and KIS can report either or the consolidated tape over
   // both. Nothing in a bar carries that provenance and `summarize` is handed neither the config nor
@@ -548,6 +551,7 @@ TEST_CASE("the report says it cannot know which book the bars came from") {
   // claim this code cannot support, and a wrong one would hide the very mismatch it exists to show.
   STATIC_REQUIRE(backtest::ReportCaveats::bar_tape_unverified);
 }
+#endif
 
 TEST_CASE("an order is never filled from the bar that produced it") {
   // **The defect a backtester exists to prevent.** The strategy submits on the first bar, whose close
@@ -623,6 +627,7 @@ TEST_CASE("the buying-power check still lets a gap up overdraw", "[overdraft]") 
   CHECK(engine.result().overdrawn_bars_ == 1);
 }
 
+#if defined(ATL_HAS_EIGEN)
 TEST_CASE("no return is measured from equity at or below zero, and the ratios are undefined") {
   // Buying power is not enforced by default, so a replay can owe more than it holds. From a negative
   // total the ratio's sign reverses: the fall from -100,000 to -200,000 read as +100%.
@@ -688,6 +693,7 @@ TEST_CASE("equity that reaches zero only at the last point leaves every return d
   CHECK(math::observed(report.sharpe_));
   CHECK(math::observed(report.sortino_));
 }
+#endif
 
 // ---------------------------------------------------------------------------
 // The report, and the caveats that travel with the figures
@@ -729,6 +735,7 @@ TEST_CASE("an annualized figure is unobserved unless a period count was supplied
 
 namespace {
 
+#if defined(ATL_HAS_EIGEN)
 /** A price path that rises, stalls, falls and recovers, so a trend strategy has both sides. */
 const std::vector<int>& path() {
   static const std::vector<int> closes = {
@@ -767,6 +774,7 @@ backtest::Backtester<Strategy> replay(Strategy strategy, BarInterval interval) {
   engine.finish();
   return engine;
 }
+#endif
 
 /**
  * A signal strategy and a liquidation policy composed, which is how the plan intended them to be used.
@@ -1151,6 +1159,7 @@ struct RestsOneLimit {
 
 } // namespace
 
+#if defined(ATL_HAS_EIGEN)
 TEST_CASE("a DAY order on daily bars lasts one session, not until it fills") {
   // Decided at the 10th's close, the limit trades in the 11th's session and
   // expires at its close, before the strategy is shown the 11th's bar -- as a broker expires it. It
@@ -1170,6 +1179,7 @@ TEST_CASE("a DAY order on daily bars lasts one session, not until it fills") {
   REQUIRE(engine.result().expired_day_orders_ == 1);
   REQUIRE(backtest::summarize(engine.result(), engine.fills()).caveats_.expired_day_orders_ == 1);
 }
+#endif
 
 namespace {
 
@@ -1574,6 +1584,7 @@ CommissionRate venue_rate(
 
 } // namespace
 
+#if defined(ATL_HAS_EIGEN)
 TEST_CASE("one replay spanning a rate change charges each rate on its own dates") {
   // Deliberately one replay with one policy. Constructing two frozen models at two dates already
   // worked before per-execution rate selection, so a test doing that would prove nothing.
@@ -1608,6 +1619,7 @@ TEST_CASE("one replay spanning a rate change charges each rate on its own dates"
   // 1,400 on the buy and 700 on the sale.
   CHECK(report.commission_paid_ == std::optional<Decimal64>(Decimal64::parse("2100")));
 }
+#endif
 
 TEST_CASE("COMBINED cannot be asserted as the venue a fill happened at") {
   // It is what KIS's `SOR` normalizes to: consolidated routing, not a venue an order matched on.
@@ -1753,6 +1765,7 @@ TEST_CASE("a halted replay consumes no quote either") {
   CHECK(engine.strategy().quotes_seen_ == handled_before);
 }
 
+#if defined(ATL_HAS_EIGEN)
 TEST_CASE("a mark that will not fit halts the replay before the strategy decides on it") {
   // The strategy buys two shares on every bar. The third bar opens at an ordinary price, so the two
   // orders from the second fill at it; its close cannot value the lot, so the book cannot be marked.
@@ -1796,6 +1809,7 @@ TEST_CASE("a mark that will not fit halts the replay before the strategy decides
   REQUIRE(report.halted_);
   CHECK(report.halted_->broker_code_ == "mark_not_representable");
 }
+#endif
 
 /** Records the book it decides on each bar; buys two on the first bar and one at a limit on the fourth. */
 struct ReadsTheBookEachBar {
@@ -1917,6 +1931,7 @@ TEST_CASE("a fill the ledger cannot record halts the replay rather than disappea
   CHECK(engine.result().bars_ < 4);
 }
 
+#if defined(ATL_HAS_EIGEN)
 namespace {
 
 /** An American listing, so a replay can span two currencies. */
@@ -1931,6 +1946,7 @@ Instrument apple_reference() {
 }
 
 } // namespace
+#endif
 
 TEST_CASE("a dated rate for another market's calendar is refused, not charged a day early") {
   // A replay derives one local date from its single `SessionWindow`, so a US
@@ -2025,6 +2041,7 @@ TEST_CASE("a costing refusal names the unreadable window, and the foreign guard 
   CHECK(not_local.error().broker_code_ == "commission_date_not_market_local");
 }
 
+#if defined(ATL_HAS_EIGEN)
 TEST_CASE("a cost total that will not sum is stated as incomplete rather than short") {
   // No bound holds here: two ledger-accepted executions, each carrying an
   // individually representable commission, can have a sum that does not fit -- and `summarize`
@@ -2132,6 +2149,7 @@ TEST_CASE("slippage in two currencies is kept apart like every other cost") {
   REQUIRE(at_home.slippage_paid_);
   CHECK(at_home.slippage_paid_->coefficient() > 0);
 }
+#endif
 
 namespace {
 
