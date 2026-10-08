@@ -27,6 +27,12 @@
 #error "<algotradelib/broker> reached a broker adapter. Adapters include the interface, not the reverse."
 #endif
 
+// The interface itself must have arrived, or the checks above passed on nothing (the helper below
+// includes `<algotradelib/broker>` again).
+#if !defined(ATL_ASSERT_BROKER)
+#error "<algotradelib/broker> did not supply the broker interface, so the checks above prove nothing."
+#endif
+
 #include "data_only_vendor.hpp"
 
 ATL_ASSERT_BROKER(vendor::BlockingClient);
