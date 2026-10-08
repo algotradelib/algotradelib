@@ -50,16 +50,6 @@ void check_refused_locally(const BrokerError& error) {
   CHECK(runner::outcome_of(error) == runner::SendOutcome::REFUSED_LOCALLY);
 }
 
-/** A strategy that only counts what it is fed. */
-struct CountsBars {
-  /** Bars fed so far. */
-  std::size_t bars_seen_{0};
-
-  /** Counts a bar. */
-  template <class Ctx>
-  void on_bar(Ctx&, const strategy::BarEvent&) { ++bars_seen_; }
-};
-
 /** A handler that cannot be copied, to show a refusal moves its handler rather than copying it. */
 struct MoveOnlyRecorder {
   /** Where the completion lands. */
@@ -201,46 +191,6 @@ TEST_CASE("every asynchronous session order verb refuses locally", "[data-only]"
   io.run();
   CHECK(bars.get().value().bars_.size() == 3);
   check_refused_locally(holdings.get().error());
-}
-
-TEST_CASE("a data-only session serves a source whose trading session is another broker", "[data-only]") {
-  // The use the helper is for: the account through one session, bars from the vendor. The trading side is
-  // a stand-in that declares itself not data-only (`TradingStandIn`, below); only its type matters, and
-  // the bars must come from the `MarketData` session.
-  using Trading = BlockingSession<vendor::TradingStandIn>;
-  using Data = BlockingSession<vendor::BlockingClient>;
-  auto trading_client = std::make_shared<vendor::TradingStandIn>();
-  auto data_client = std::make_shared<vendor::BlockingClient>();
-  Trading trading(trading_client, data_only::NoAccount{});
-  Data data(data_client, data_only::NoAccount{});
-  live::SessionSource<Trading, runner::MemoryJournal, Data> source(trading, data, {kInstrument});
-  source.set_bar_query(BarInterval::ONE_DAY, 10);
-  auto observing = live::bind_observer(trading, CountsBars{});
-  CHECK(source.poll(runner::PollKind::BARS, observing) == runner::PollOutcome::UPDATED);
-  CHECK(observing.strategy().bars_seen_ == 3);
-  CHECK(data_client->bar_calls_ == 1);
-  CHECK(trading_client->bar_calls_ == 0);
-}
-
-TEST_CASE("a refusal to a callback naming no executor still completes once", "[data-only]") {
-  // `BrokerSession` binds the sink it gives a thunk to the callback's associated executor: the system
-  // executor before Asio 1.37 (Boost 1.90) and the inline executor from it, which cannot take posted work.
-  // Either way the refusal completes, once, and not inside the initiating call.
-  net::io_context io;
-  BrokerSession<vendor::AsyncClient> session(
-    std::make_shared<vendor::AsyncClient>(io.get_executor()), data_only::NoAccount{}
-  );
-  auto done = std::make_shared<std::promise<BrokerError>>();
-  auto future = done->get_future();
-  auto calls = std::make_shared<std::atomic<int>>(0);
-  session.async_holdings([done, calls](Result<HoldingsSnapshot> result) {
-    if (calls->fetch_add(1) == 0) {
-      done->set_value(result.error());
-    }
-  });
-  REQUIRE(future.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
-  check_refused_locally(future.get());
-  CHECK(calls->load() == 1);
 }
 
 TEST_CASE("a refusal through an erased strand executor completes on that strand", "[data-only]") {

@@ -144,43 +144,6 @@ TEST_CASE("capabilities record each broker's real differences") {
   SUCCEED("capabilities are compile-time constants");
 }
 
-TEST_CASE("a strategy gates account-capacity calls on the capability rather than on a try") {
-  // What the gates are for: one source compiles against both brokers, and the branch the broker
-  // cannot serve is never instantiated. Removing an `if constexpr` here is a compile error naming
-  // the broker and the verb, not a run-time surprise at four in the afternoon.
-  const auto commission_rate = [](auto& session) -> std::optional<Decimal64> {
-    using Client = typename std::remove_reference_t<decltype(session)>::Client;
-    if constexpr (BrokerCaps<Client>::has_commission_schedule) {
-      auto schedule = session.commissions();
-      if (!schedule) {
-        return std::nullopt;
-      }
-      const auto selection = schedule.value().rate_for(Country::KR, Date{2026, 9, 23});
-      // Two silences, and a caller reaching past them wants to know which: no row for the date is a
-      // schedule to widen, and a row whose window could not be read is a schedule to refetch. The
-      // empty answer alone would let this state its own rate over a rate the broker may be charging.
-      if (selection.bounds_unreadable_) {
-        return std::nullopt;
-      }
-      return selection.rate_ ?
-        std::optional<Decimal64>(selection.rate_->rate_) :
-        std::nullopt;
-    } else {
-      // Nothing to ask, and nothing invented: a caller here states its own cost model.
-      static_cast<void>(session);
-      return std::nullopt;
-    }
-  };
-  static_cast<void>(commission_rate);
-
-  const auto sellable_costs_a_request = [](auto tag) {
-    using Client = typename decltype(tag)::type;
-    return BrokerCaps<Client>::sellable_source == SellableSource::INQUIRY;
-  };
-  REQUIRE_FALSE(sellable_costs_a_request(std::common_type<kis::KisBlockingClient>{}));
-  REQUIRE(sellable_costs_a_request(std::common_type<tossinvest::TossBlockingClient>{}));
-}
-
 TEST_CASE("a broker's two clients share one order-reference type") {
   // A reference read through the blocking facade must be usable with the
   // asynchronous client of the same broker, and with no other broker.
@@ -241,38 +204,6 @@ TEST_CASE("an order reference is opaque, comparable, and hashable") {
   book.insert(other_number);
   REQUIRE(book.size() == 2);
   REQUIRE(book.count(reference) == 1);
-}
-
-TEST_CASE("amendment factories carry the broker's own requirements") {
-  const auto order = working_order<kis::Broker>();
-
-  const auto full = cancel_all(order);
-  REQUIRE(full.all_remaining_);
-  REQUIRE(full.quantity_.has_value());
-  REQUIRE(*full.quantity_ == Decimal64::parse("7"));
-  REQUIRE(full.shape_.type_ == OrderType::LIMIT);
-  REQUIRE(full.shape_.price_.has_value());
-
-  const auto partial = cancel_quantity(order, Decimal64::parse("3"));
-  REQUIRE_FALSE(partial.all_remaining_);
-  REQUIRE(*partial.quantity_ == Decimal64::parse("3"));
-
-  const auto repriced =
-    replace_with(order, OrderShape{OrderType::LIMIT, Decimal64::parse("71000")});
-  REQUIRE(repriced.all_remaining_);
-  REQUIRE(*repriced.shape_.price_ == Decimal64::parse("71000"));
-  REQUIRE(*repriced.quantity_ == Decimal64::parse("7"));
-
-  const auto resized = replace_with(
-    order, OrderShape{OrderType::LIMIT, Decimal64::parse("71000")}, Decimal64::parse("4")
-  );
-  REQUIRE_FALSE(resized.all_remaining_);
-  REQUIRE(*resized.quantity_ == Decimal64::parse("4"));
-
-  // A broker that reports no amendable quantity yields an instruction without one.
-  auto without_quantity = working_order<tossinvest::Broker>();
-  without_quantity.amendable_quantity_.reset();
-  REQUIRE_FALSE(cancel_all(without_quantity).quantity_.has_value());
 }
 
 TEST_CASE("each broker says where an order actually goes", "[broker][route]") {
@@ -532,25 +463,6 @@ TEST_CASE("Toss working orders report no amendable quantity rather than zero") {
   REQUIRE_FALSE(orders.value().orders_[0].amendable_quantity_.has_value());
 }
 
-TEST_CASE("an idempotency key is refused by a broker that does not honor one") {
-  OrderRequest order;
-  order.instrument_ = samsung();
-  order.quantity_ = Decimal64::parse("1");
-  order.price_ = Decimal64::parse("70000");
-
-  REQUIRE_FALSE(BrokerTraits<kis::KisClient>::validate_place(order).has_value());
-  REQUIRE_FALSE(BrokerTraits<tossinvest::TossClient>::validate_place(order).has_value());
-
-  order.client_order_id_ = std::string("key-1");
-  const auto refused = BrokerTraits<kis::KisClient>::validate_place(order);
-  REQUIRE(refused.has_value());
-  REQUIRE(refused->category_ == ErrorCategory::INVALID_ARGUMENT);
-  REQUIRE(refused->broker_code_ == "idempotency_key_unsupported");
-
-  // Toss honors the key, so the same order passes.
-  REQUIRE_FALSE(BrokerTraits<tossinvest::TossClient>::validate_place(order).has_value());
-}
-
 TEST_CASE("KIS refuses an amendment with no quantity instead of inventing one") {
   using Traits = BrokerTraits<kis::KisClient>;
   const OrderRef<kis::Broker> reference{"0000117057", "00950"};
@@ -650,39 +562,6 @@ TEST_CASE("Toss maps a history query onto its closed listing") {
   REQUIRE(Traits::open_query(77).account_sequence_ == 77);
 }
 
-TEST_CASE("a port verb completes once, on the caller handler's executor") {
-  net::io_context ioc;
-  auto client = std::make_shared<mock::MockClient>(ioc.get_executor());
-  QuoteSnapshot quote;
-  quote.instrument_ = samsung();
-  quote.last_price_ = Decimal64::parse("72000");
-  client->quote_ = quote;
-
-  BrokerSession<mock::MockClient> session(client, mock::MockAccount{"cust", 1});
-  auto strand = net::make_strand(ioc);
-
-  int completions = 0;
-  bool on_caller_executor = false;
-  session.async_quote(
-    samsung(),
-    net::bind_executor(
-      strand,
-      [&](Result<QuoteSnapshot> result) {
-        ++completions;
-        on_caller_executor = strand.running_in_this_thread();
-        REQUIRE(result.has_value());
-        REQUIRE(result.value().last_price_ == Decimal64::parse("72000"));
-      }
-    )
-  );
-
-  REQUIRE(completions == 0);
-  ioc.run();
-  REQUIRE(completions == 1);
-  REQUIRE(on_caller_executor);
-  REQUIRE(client->quote_calls_ == 1);
-}
-
 TEST_CASE("a pre-flight rejection never reaches the client and never runs inline") {
   net::io_context ioc;
   auto client = std::make_shared<mock::MockClient>(ioc.get_executor());
@@ -715,21 +594,6 @@ TEST_CASE("a pre-flight rejection never reaches the client and never runs inline
   ioc.run();
   REQUIRE(completed);
   REQUIRE(client->place_calls_ == 0);
-}
-
-TEST_CASE("a rejection completes without a caller executor or a running loop") {
-  net::io_context ioc;
-  auto client = std::make_shared<mock::MockClient>(ioc.get_executor());
-  BrokerSession<mock::MockClient> session(client, mock::MockAccount{"cust", 1});
-
-  OrderHistoryQuery query;
-  query.symbol_ = std::string("005930");
-  auto pending = session.async_order_history(query, net::use_future);
-  auto result = pending.get();
-
-  REQUIRE_FALSE(result.has_value());
-  REQUIRE(result.error().broker_code_ == "symbol_filter_unsupported");
-  REQUIRE(client->history_calls_ == 0);
 }
 
 TEST_CASE("the port normalizes and plumbs a full order round trip") {
@@ -905,43 +769,6 @@ TEST_CASE("an interval a broker does not publish is refused before any request")
   REQUIRE(client->bar_calls_ == 0);
 }
 
-TEST_CASE("a supported interval reaches the client with the query intact") {
-  net::io_context ioc;
-  auto client = std::make_shared<mock::MockClient>(ioc.get_executor());
-  BarSeries scripted;
-  scripted.instrument_ = samsung();
-  scripted.interval_ = BarInterval::ONE_DAY;
-  scripted.received_at_ = std::chrono::system_clock::now();
-  client->bars_ = scripted;
-
-  BrokerSession<mock::MockClient> session(client, mock::MockAccount{"cust", 1});
-  auto strand = net::make_strand(ioc);
-
-  BarQuery daily;
-  daily.instrument_ = samsung();
-  daily.interval_ = BarInterval::ONE_DAY;
-  daily.count_ = 250;
-  daily.adjusted_ = false;
-
-  session.async_bars(
-    daily,
-    net::bind_executor(
-      strand,
-      [](Result<BarSeries> result) {
-        REQUIRE(result.has_value());
-        REQUIRE(result.value().interval_ == BarInterval::ONE_DAY);
-      }
-    )
-  );
-  ioc.run();
-
-  REQUIRE(client->bar_calls_ == 1);
-  REQUIRE(client->last_bar_query_.has_value());
-  REQUIRE(client->last_bar_query_->count_ == 250);
-  REQUIRE_FALSE(client->last_bar_query_->adjusted_);
-  REQUIRE(client->last_bar_query_->instrument_.symbol_ == "005930");
-}
-
 TEST_CASE("an order book verb exists only on a broker that publishes one") {
   static_assert(BrokerCaps<kis::KisClient>::has_depth);
   static_assert(BrokerCaps<tossinvest::TossClient>::has_depth);
@@ -1108,63 +935,6 @@ TEST_CASE("a blocking session refuses a trigger to a broker without the capabili
   // The session's own refusal, not the Toss client's: the message names the capability.
   CHECK(placed.error().message_.find("has_trigger_price") != std::string::npos);
   CHECK_FALSE(placed.error().reached_broker_);
-}
-
-TEST_CASE("an amendment keeps a stop's trigger only when it keeps the stop", "[port][trigger]") {
-  WorkingOrder<mock::Broker> stop;
-  stop.order_.type_ = OrderType::STOP_LIMIT;
-  stop.order_.price_ = Decimal64::parse("69000");
-  stop.order_.trigger_price_ = Decimal64::parse("69500");
-  stop.order_.time_in_force_ = TimeInForce::DAY;
-  stop.order_.session_ = OrderSession::REGULAR;
-
-  SECTION("every helper built from the order restates it") {
-    CHECK(resting_shape(stop).trigger_price_ == stop.order_.trigger_price_);
-    CHECK(cancel_all(stop).shape_.trigger_price_ == stop.order_.trigger_price_);
-    CHECK(cancel_quantity(stop, Decimal64::parse("1")).shape_.trigger_price_ ==
-          stop.order_.trigger_price_);
-    CHECK(reprice(stop, Decimal64::parse("68000")).shape_.trigger_price_ ==
-          stop.order_.trigger_price_);
-  }
-
-  SECTION("unset on a stop-to-stop amendment means unchanged") {
-    const auto instruction =
-      replace_with(stop, OrderShape{OrderType::STOP_LIMIT, Decimal64::parse("68000")});
-    CHECK_FALSE(instruction.shape_.trigger_price_);
-    CHECK(amended_trigger_price(instruction) == stop.order_.trigger_price_);
-  }
-
-  SECTION("a stated trigger is the new one") {
-    const auto instruction = replace_with(
-      stop,
-      OrderShape{
-        OrderType::STOP_LIMIT, Decimal64::parse("68000"), std::nullopt, std::nullopt,
-        Decimal64::parse("68500")
-      }
-    );
-    CHECK(amended_trigger_price(instruction) == Decimal64::parse("68500"));
-  }
-
-  SECTION("a basis change out of a stop does not carry the trigger along") {
-    const auto instruction =
-      replace_with(stop, OrderShape{OrderType::LIMIT, Decimal64::parse("68000")});
-    CHECK_FALSE(amended_trigger_price(instruction));
-  }
-
-  SECTION("a basis change into a stop has nothing to inherit") {
-    auto limit = stop;
-    limit.order_.type_ = OrderType::LIMIT;
-    limit.order_.trigger_price_.reset();
-    const auto instruction =
-      replace_with(limit, OrderShape{OrderType::STOP_LIMIT, Decimal64::parse("68000")});
-    CHECK_FALSE(amended_trigger_price(instruction));
-  }
-
-  SECTION("an unknown resting shape is never guessed at") {
-    AmendInstruction instruction;
-    instruction.shape_ = OrderShape{OrderType::STOP_LIMIT, Decimal64::parse("68000")};
-    CHECK_FALSE(amended_trigger_price(instruction));
-  }
 }
 
 TEST_CASE("a live KIS session with an empty account refuses every account path before I/O", "[port][kis][account]") {

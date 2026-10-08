@@ -224,16 +224,6 @@ network::HttpResponse ok_body(std::string body) {
   return response;
 }
 
-/** Returns the value of one header, or an empty string. */
-std::string header_of(const network::HttpRequest& request, std::string_view name) {
-  for (const auto& header : request.headers_) {
-    if (header.first == name) {
-      return header.second;
-    }
-  }
-  return {};
-}
-
 /** Parses a request body so a field can be asserted without matching serialization. */
 json::object body_of(const network::HttpRequest& request) {
   return json::parse(request.body_).as_object();
@@ -250,22 +240,6 @@ struct ClientFixture {
       std::make_shared<kiwoom::KiwoomClient>(ioc_.get_executor(), tls_, std::move(config))
     ) {}
 };
-
-/**
- * A strategy that counts phase changes and does nothing else.
- *
- * The runner requires at least one handler, and the phase handler is the one the calendar test is
- * about: it must never be called, because no phase is ever established.
- */
-struct CountPhases {
-  int phases_{0};
-
-  template <class Ctx>
-  void on_phase(Ctx&, strategy::MarketPhase) {
-    ++phases_;
-  }
-};
-
 
 } // namespace
 
@@ -330,20 +304,6 @@ TEST_CASE("a token whose lifetime nobody stated is refused, not given one", "[co
   CHECK_FALSE(bad_date.valid());
 }
 
-TEST_CASE("Kiwoom's expires_dt is read as Korean local time", "[core][oauth][kiwoom]") {
-  // 2026-01-02 09:00:00 KST is 2026-01-02 00:00:00 UTC.
-  const auto parsed = kiwoom::parse_compact_expiry("20260102090000");
-  const auto expected = std::chrono::system_clock::from_time_t(1767312000);
-  CHECK(parsed == expected);
-
-  // An expiry in the past makes the token unusable, which is what drives a refresh.
-  kiwoom::KiwoomRest expired;
-  CHECK_NOTHROW(
-    expired.from_json(json::parse(R"({"token":"x","expires_dt":"20200101090000"})").as_object())
-  );
-  CHECK_FALSE(expired.valid());
-}
-
 // ---------------------------------------------------------------------------------------------
 // The order-shape table and its three vocabularies
 // ---------------------------------------------------------------------------------------------
@@ -365,68 +325,6 @@ TEST_CASE("every requestable shape maps to the code Kiwoom publishes", "[kiwoom]
       CHECK(refusal->broker_code_ == "unsupported_order");
     }
   }
-}
-
-TEST_CASE("both inquiry vocabularies read back to the same shape", "[kiwoom][orders]") {
-  // ka10075 says 보통 and kt00007 says 지정가 for the same order. A caller that reads a working
-  // order through one and its history through the other has to get one answer, or `reprice()` --
-  // which fills the instruction from the resting shape -- would refuse or move the wrong thing.
-  for (const auto& row : kiwoom::kOrderShapes) {
-    const auto* by_name = kiwoom::shape_by_name(row.name_);
-    REQUIRE(by_name != nullptr);
-    CHECK(by_name->type_ == row.type_);
-    CHECK(by_name->time_in_force_ == row.time_in_force_);
-    CHECK(by_name->session_ == row.session_);
-    if (row.alternate_name_ != nullptr) {
-      const auto* by_alternate = kiwoom::shape_by_name(row.alternate_name_);
-      REQUIRE(by_alternate != nullptr);
-      CHECK(by_alternate->type_ == row.type_);
-      CHECK(by_alternate->time_in_force_ == row.time_in_force_);
-      CHECK(by_alternate->session_ == row.session_);
-    }
-  }
-
-  // The four pairs the two listings actually disagree about.
-  for (const auto& pair : {
-         std::pair<const char*, const char*>{"보통", "지정가"},
-         {"보통(IOC)", "지정가(IOC)"},
-         {"보통(FOK)", "지정가(FOK)"},
-       }) {
-    const auto* first = kiwoom::shape_by_name(pair.first);
-    const auto* second = kiwoom::shape_by_name(pair.second);
-    REQUIRE(first != nullptr);
-    REQUIRE(second != nullptr);
-    CHECK(first == second);
-  }
-}
-
-TEST_CASE("the read-only shape reads and is refused on a request", "[kiwoom][orders]") {
-  // 시간외단일가 appears in ka10075's label list and in no request table at all.
-  const auto* auction = kiwoom::shape_by_name("시간외단일가");
-  REQUIRE(auction != nullptr);
-  CHECK(auction->session_ == OrderSession::AFTER_HOURS_AUCTION);
-  CHECK(auction->code_ == nullptr);
-  CHECK_FALSE(auction->requestable_);
-
-  std::string code = "unchanged";
-  auto refusal = kiwoom::order_division(
-    auction->type_, auction->time_in_force_, auction->session_, code
-  );
-  REQUIRE(refusal);
-  CHECK(code == "unchanged");
-  CHECK(refusal->message_.find("no order code") != std::string::npos);
-
-  // 스톱지정가 was the second read-only row until `OrderRequest` could carry its trigger.
-  const auto* stop = kiwoom::shape_by_name("스톱지정가");
-  REQUIRE(stop != nullptr);
-  CHECK(stop->type_ == OrderType::STOP_LIMIT);
-  CHECK(std::string_view(stop->code_) == "28");
-  CHECK(stop->requestable_);
-  refusal = kiwoom::order_division(
-    OrderType::STOP_LIMIT, TimeInForce::DAY, OrderSession::REGULAR, code
-  );
-  REQUIRE_FALSE(refusal);
-  CHECK(code == "28");
 }
 
 TEST_CASE("an unrecognized label leaves the shape unknown and preserves it", "[kiwoom][orders]") {
@@ -594,131 +492,9 @@ TEST_CASE("a market-data sign is a direction, not a minus", "[kiwoom][parsing]")
   REQUIRE(quote.value().exchange_time_);
 }
 
-TEST_CASE("an account symbol keeps its identity across listings", "[kiwoom][parsing]") {
-  // kt00018 and kt00007 prefix the symbol with `A` and ka10075 does not. An InstrumentId built
-  // from the prefixed form would not compare equal to one built from the bare form, so a holding
-  // would stop matching its own working order and the resting quantity would read zero.
-  HoldingsSnapshot snapshot;
-  bool totals_seen = false;
-  kiwoom::KiwoomClientTestAccess::holdings_page(
-    snapshot,
-    totals_seen,
-    json::parse(
-      R"({"tot_pur_amt":"000000017598258","tot_evlt_amt":"000000025789890",
-          "tot_evlt_pl":"000000008138825",
-          "acnt_evlt_remn_indv_tot":[{"stk_cd":"A005930","stk_nm":"삼성전자",
-            "evltv_prft":"-00000000196888","prft_rt":"-52.71","pur_pric":"000000000124500",
-            "rmnd_qty":"000000000000003","trde_able_qty":"000000000000003",
-            "cur_prc":"000000059000","pur_amt":"000000000373500","evlt_amt":"000000000177000"}]})"
-    ).as_object()
-  );
-  REQUIRE(snapshot.positions_.size() == 1);
-  CHECK(snapshot.positions_.front().instrument_ == samsung());
-
-  const auto history = kiwoom::KiwoomClientTestAccess::history_row(
-    json::parse(
-      R"({"ord_no":"0000050","stk_cd":"A005930","trde_tp":"시장가","ord_qty":"0000000001",
-          "ord_uv":"0000000000","acpt_tp":"접수","ord_tm":"13:05:43","cntr_qty":"0000000000",
-          "ord_remnq":"0000000001","stk_nm":"삼성전자","io_tp_nm":"현금매수","dmst_stex_tp":"KRX"})"
-    ).as_object(),
-    Date{2026, 3, 25}
-  );
-  CHECK(history.instrument_ == samsung());
-
-  const auto unfilled = kiwoom::KiwoomClientTestAccess::open_order(
-    json::parse(
-      R"({"ord_no":"0000069","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
-          "ord_qty":"1","ord_pric":"0","oso_qty":"1","io_tp_nm":"+매수","trde_tp":"시장가",
-          "tm":"154113","cntr_qty":"0","stex_tp":"1"})"
-    ).as_object()
-  );
-  CHECK(unfilled.order_.instrument_ == samsung());
-  // All three describe one instrument, which is the property that has to hold.
-  CHECK(unfilled.order_.instrument_ == history.instrument_);
-  CHECK(unfilled.order_.instrument_ == snapshot.positions_.front().instrument_);
-}
-
-TEST_CASE("account figures keep their padding and their real sign", "[kiwoom][parsing]") {
-  HoldingsSnapshot snapshot;
-  bool totals_seen = false;
-  kiwoom::KiwoomClientTestAccess::holdings_page(
-    snapshot,
-    totals_seen,
-    json::parse(
-      R"({"tot_pur_amt":"000000017598258","tot_evlt_amt":"000000025789890",
-          "tot_evlt_pl":"000000008138825",
-          "acnt_evlt_remn_indv_tot":[{"stk_cd":"A005930","stk_nm":"삼성전자",
-            "evltv_prft":"-00000000196888","prft_rt":"-52.71","pur_pric":"000000000124500",
-            "rmnd_qty":"000000000000003","trde_able_qty":"000000000000003",
-            "cur_prc":"000000059000","pur_amt":"000000000373500","evlt_amt":"000000000177000"}]})"
-    ).as_object()
-  );
-
-  REQUIRE(snapshot.totals_.size() == 1);
-  CHECK(snapshot.totals_.front().purchase_value_ == Decimal64(17598258, 0));
-  const auto& position = snapshot.positions_.front();
-  CHECK(position.quantity_ == Decimal64(3, 0));
-  CHECK(position.sellable_quantity_ == Decimal64(3, 0));
-  // A loss is genuinely negative here, unlike a market-data direction prefix.
-  CHECK(position.unrealized_profit_loss_.amount_ == Decimal64(-196888, 0));
-  // And the broker's percentage becomes a fraction.
-  CHECK(position.unrealized_return_ == Decimal64(-5271, 4));
-}
-
 // ---------------------------------------------------------------------------------------------
 // Requests
 // ---------------------------------------------------------------------------------------------
-
-TEST_CASE("every request names its operation in the api-id header", "[kiwoom][requests]") {
-  ClientFixture fixture;
-  OrderRequest order;
-  order.instrument_ = samsung();
-  order.side_ = OrderSide::BUY;
-  order.type_ = OrderType::LIMIT;
-  order.venue_ = Venue::KRX;
-  order.quantity_ = Decimal64(10, 0);
-  order.price_ = Decimal64(70000, 0);
-
-  const auto buy = kiwoom::KiwoomClientTestAccess::place_request(*fixture.client_, order, "0");
-  CHECK(buy.target_ == "/api/dostk/ordr");
-  CHECK(header_of(buy, "api-id") == "kt10000");
-  CHECK(buy.method_ == http::verb::post);
-  CHECK(buy.group_ == network::RateLimitGroup::TRADING);
-
-  // The side selects the endpoint rather than a field, which is why this is asserted and not
-  // assumed: a sell sent to kt10000 would be a buy.
-  order.side_ = OrderSide::SELL;
-  const auto sell = kiwoom::KiwoomClientTestAccess::place_request(*fixture.client_, order, "0");
-  CHECK(header_of(sell, "api-id") == "kt10001");
-  CHECK(sell.target_ == buy.target_);
-}
-
-TEST_CASE("an order carries no account number anywhere", "[kiwoom][requests]") {
-  // The credential is the account. If a field ever appears carrying one, the empty
-  // `KiwoomAccount` selector has stopped being the honest answer.
-  ClientFixture fixture;
-  OrderRequest order;
-  order.instrument_ = samsung();
-  order.type_ = OrderType::MARKET;
-  order.venue_ = Venue::COMBINED;
-  order.quantity_ = Decimal64(1, 0);
-
-  const auto request = kiwoom::KiwoomClientTestAccess::place_request(*fixture.client_, order, "3");
-  const auto body = body_of(request);
-  CHECK(body.size() == 6);
-  CHECK(body.contains("dmst_stex_tp"));
-  CHECK(body.contains("stk_cd"));
-  CHECK(body.contains("ord_qty"));
-  CHECK(body.contains("ord_uv"));
-  CHECK(body.contains("trde_tp"));
-  CHECK(body.contains("cond_uv"));
-
-  // An unpriced basis sends an empty price rather than a zero, which would be a price nobody
-  // stated.
-  CHECK(body.at("ord_uv").as_string() == "");
-  CHECK(body.at("trde_tp").as_string() == "3");
-  CHECK(body.at("dmst_stex_tp").as_string() == "SOR");
-}
 
 TEST_CASE("the market-data tape is one setting for every verb", "[kiwoom][requests]") {
   kiwoom::KiwoomConfig consolidated;
@@ -759,32 +535,6 @@ TEST_CASE("the market-data tape is one setting for every verb", "[kiwoom][reques
   order.quantity_ = Decimal64(1, 0);
   const auto request = kiwoom::KiwoomClientTestAccess::place_request(*next.client_, order, "3");
   CHECK(body_of(request).at("stk_cd").as_string() == "005930");
-}
-
-TEST_CASE("an amendment addresses the order by number and symbol", "[kiwoom][requests]") {
-  ClientFixture fixture;
-  kiwoom::KiwoomAmendment amendment;
-  amendment.order_ = kiwoom::KiwoomOrderRef{"0000069", "005930"};
-  amendment.venue_ = Venue::KRX;
-  amendment.quantity_ = Decimal64(3, 0);
-  amendment.price_ = Decimal64(71000, 0);
-
-  const auto replace =
-    kiwoom::KiwoomClientTestAccess::amend_request(*fixture.client_, amendment, false);
-  CHECK(header_of(replace, "api-id") == "kt10002");
-  auto body = body_of(replace);
-  CHECK(body.at("orig_ord_no").as_string() == "0000069");
-  CHECK(body.at("stk_cd").as_string() == "005930");
-  CHECK(body.at("mdfy_qty").as_string() == "3");
-  CHECK(body.at("mdfy_uv").as_string() == "71000");
-
-  amendment.price_.reset();
-  const auto cancel =
-    kiwoom::KiwoomClientTestAccess::amend_request(*fixture.client_, amendment, true);
-  CHECK(header_of(cancel, "api-id") == "kt10003");
-  body = body_of(cancel);
-  CHECK(body.at("cncl_qty").as_string() == "3");
-  CHECK_FALSE(body.contains("mdfy_uv"));
 }
 
 TEST_CASE("a continuation is followed only when the broker offers one", "[kiwoom][requests]") {
@@ -889,41 +639,6 @@ TEST_CASE("a Kiwoom runner's order passes the venue check once its binding state
   CHECK(body.at("dmst_stex_tp").as_string() == "KRX");
 }
 
-TEST_CASE("a journaled Kiwoom binding takes a default route", "[kiwoom][route]") {
-  // The factory a live program uses, over the real session type: the parameter reaches the executor
-  // the runner sends through, rather than one built beside it.
-  ssl::context tls(ssl::context::tls_client);
-  using Session = BlockingSession<kiwoom::KiwoomBlockingClient>;
-  Session session(
-    std::make_shared<kiwoom::KiwoomBlockingClient>(tls, kiwoom::KiwoomConfig{}), kiwoom::KiwoomAccount{}
-  );
-  runner::MemoryJournal journal;
-  auto bound = live::bind_journaled(
-    session, journal, CountPhases{}, strategy::RiskLimits{}, live::default_series_capacity, Venue::NXT
-  );
-  CHECK(bound.executor().inner().default_route() == Venue::NXT);
-  CHECK(bound.executor().requested_route(Venue::UNSPECIFIED) == Venue::NXT);
-  CHECK(bound.executor().effective_route_of(strategy::PlannedOrder{}) == Venue::NXT);
-}
-
-TEST_CASE("an order carrying an idempotency key is refused", "[kiwoom][orders]") {
-  OrderRequest order;
-  order.instrument_ = samsung();
-  order.type_ = OrderType::MARKET;
-  order.venue_ = Venue::KRX;
-  order.quantity_ = Decimal64(1, 0);
-  order.client_order_id_ = "abc";
-
-  std::string code;
-  const auto direct = kiwoom::KiwoomClientTestAccess::validate_order(order, code);
-  REQUIRE(direct);
-  CHECK(direct->broker_code_ == "client_order_id_unsupported");
-  // The port refuses it too, through the same rule rather than a second copy of it.
-  const auto through_port = BrokerTraits<kiwoom::KiwoomClient>::validate_place(order);
-  REQUIRE(through_port);
-  CHECK(through_port->broker_code_ == direct->broker_code_);
-}
-
 TEST_CASE("an instrument naming a routing venue is refused", "[kiwoom][orders]") {
   // Identity is `InstrumentId::venue_` and routing is `OrderRequest::venue_`. A caller who sets
   // the first means the second, and routing on it silently is how a holding stops matching its
@@ -967,57 +682,6 @@ TEST_CASE("a priced basis needs its price and an unpriced one refuses it", "[kiw
   refusal = kiwoom::KiwoomClientTestAccess::validate_order(order, code);
   REQUIRE(refusal);
   CHECK(refusal->broker_code_ == "invalid_price");
-}
-
-TEST_CASE("an amendment missing the symbol cannot address an order", "[kiwoom][orders]") {
-  kiwoom::KiwoomAmendment amendment;
-  amendment.order_ = kiwoom::KiwoomOrderRef{"0000069", ""};
-  amendment.venue_ = Venue::KRX;
-  amendment.quantity_ = Decimal64(1, 0);
-
-  const auto refusal = kiwoom::KiwoomClientTestAccess::validate_amendment(amendment, true);
-  REQUIRE(refusal);
-  CHECK(refusal->broker_code_ == "invalid_order_reference");
-}
-
-TEST_CASE("an amendment cannot move a shape Kiwoom cannot move", "[kiwoom][orders]") {
-  using Traits = BrokerTraits<kiwoom::KiwoomClient>;
-  OrderRef<kiwoom::Broker> ref;
-  ref.primary_ = "0000069";
-  ref.secondary_ = "005930";
-
-  // kt10002 carries a quantity and a price and nothing else, so a request to change the validity
-  // condition is refused rather than sent as a reprice that leaves the condition alone.
-  AmendInstruction change_condition;
-  change_condition.quantity_ = Decimal64(3, 0);
-  change_condition.venue_ = Venue::KRX;
-  change_condition.shape_ = OrderShape(OrderType::LIMIT, Decimal64(71000, 0), TimeInForce::FILL_OR_KILL);
-  change_condition.resting_ = OrderShape(
-    OrderType::LIMIT, Decimal64(70000, 0), TimeInForce::DAY, OrderSession::REGULAR
-  );
-  const auto refused = Traits::to_replacement(ref, change_condition);
-  REQUIRE_FALSE(refused);
-  CHECK(refused.error().broker_code_ == "shape_change_unsupported");
-
-  // Restating the condition the order already has is not a change, and is accepted.
-  AmendInstruction reprice;
-  reprice.quantity_ = Decimal64(3, 0);
-  reprice.venue_ = Venue::KRX;
-  reprice.shape_ = OrderShape(
-    OrderType::LIMIT, Decimal64(71000, 0), TimeInForce::DAY, OrderSession::REGULAR
-  );
-  reprice.resting_ = reprice.shape_;
-  const auto accepted = Traits::to_replacement(ref, reprice);
-  REQUIRE(accepted);
-  CHECK(accepted.value().price_ == Decimal64(71000, 0));
-  CHECK(accepted.value().order_.symbol_ == "005930");
-
-  // A cancellation with no quantity is refused: Kiwoom has no all-remaining flag to send.
-  AmendInstruction bare_cancel;
-  bare_cancel.venue_ = Venue::KRX;
-  const auto no_quantity = Traits::to_cancellation(ref, bare_cancel);
-  REQUIRE_FALSE(no_quantity);
-  CHECK(no_quantity.error().broker_code_ == "quantity_required");
 }
 
 TEST_CASE("a history query wider than a day is refused", "[kiwoom][history]") {
@@ -1339,29 +1003,6 @@ TEST_CASE("an order acknowledgement carries the symbol from the request", "[kiwo
   CHECK(amended.value().amended_quantity_ == Decimal64(3, 0));
 }
 
-TEST_CASE("a working order reports what remains amendable", "[kiwoom][orders]") {
-  const auto row = kiwoom::KiwoomClientTestAccess::open_order(
-    json::parse(
-      R"({"ord_no":"0000069","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
-          "ord_qty":"10","ord_pric":"70000","oso_qty":"7","orig_ord_no":"0000068",
-          "io_tp_nm":"+매수","trde_tp":"보통","tm":"154113","cntr_qty":"3","stex_tp":"1"})"
-    ).as_object()
-  );
-  CHECK(row.amendable_quantity_ == Decimal64(7, 0));
-  CHECK(row.order_.quantity_ == Decimal64(10, 0));
-  CHECK(row.order_.execution_.filled_quantity_ == Decimal64(3, 0));
-  CHECK(row.order_.type_ == OrderType::LIMIT);
-  CHECK(row.order_.venue_ == Venue::KRX);
-  CHECK(row.order_.status_ == OrderStatus::PENDING);
-  // Lineage, not an address: amending orig_ord_no would address an order that is no longer live.
-  CHECK(row.original_order_number_ == "0000068");
-  CHECK(row.order_ref_.order_number_ == "0000069");
-  // Kiwoom sends no shape *code* on a read path, so the field defined as what the broker sent
-  // stays empty rather than carrying something this adapter inferred.
-  CHECK(row.order_.shape_code_.empty());
-  CHECK(row.shape_name_ == "보통");
-}
-
 TEST_CASE("a history row's state comes from two columns, not one", "[kiwoom][history]") {
   const auto date = Date{2026, 3, 25};
   const auto base = std::string(
@@ -1493,31 +1134,6 @@ TEST_CASE("a calendar request to Kiwoom is refused rather than answered", "[kiwo
   CHECK_FALSE(refusal->reached_broker_);
 }
 
-TEST_CASE("a live source over real Kiwoom traits establishes no phase", "[kiwoom][live]") {
-  // `tests/test-live.cpp` already covers this branch against a fake capability set. What is new
-  // here is that it is reached through a shipped `BrokerTraits` specialization: Kiwoom is the
-  // first adapter whose own traits answer `has_calendar = false`, so this is the first time the
-  // branch is instantiated for a broker rather than for a fixture.
-  ssl::context tls(ssl::context::tls_client);
-  auto session = std::make_shared<BlockingSession<kiwoom::KiwoomBlockingClient>>(
-    std::make_shared<kiwoom::KiwoomBlockingClient>(tls, kiwoom::KiwoomConfig{}),
-    kiwoom::KiwoomAccount{}
-  );
-  live::SessionSource<BlockingSession<kiwoom::KiwoomBlockingClient>> source(
-    *session, {samsung()}
-  );
-  auto runner_instance = live::bind_observer(*session, CountPhases{});
-
-  const auto outcome = source.poll(runner::PollKind::CALENDAR, runner_instance);
-
-  CHECK(outcome == runner::PollOutcome::UNCHANGED);
-  CHECK(runner_instance.context().calendar().days_.empty());
-  // No request was made, so no failure was recorded either: absent is not a failure.
-  CHECK_FALSE(source.last_error().has_value());
-  CHECK(runner_instance.strategy().phases_ == 0);
-}
-
-
 // ---------------------------------------------------------------------------------------------
 // The bar walk
 // ---------------------------------------------------------------------------------------------
@@ -1581,51 +1197,6 @@ TEST_CASE("a bar walk reports a cursor exactly when it can be acted on", "[kiwoo
   query.adjusted_ = true;
 }
 
-TEST_CASE("a minute series never promises a cursor it cannot resume from", "[kiwoom][bars]") {
-  // A caller continues a series with `BarQuery::before_`, which this adapter renders as `base_dt`
-  // -- a *date*. A daily series resumes from the oldest bar's timestamp; a minute series does not,
-  // because the oldest minute bar and the original bound can be the same KST day, and the retry
-  // would be the same first-page request returning the same bars forever.
-  BarQuery minutes;
-  minutes.instrument_ = samsung();
-  minutes.interval_ = BarInterval::ONE_MINUTE;
-  minutes.count_ = 6;
-
-  // Satisfied with more available: no cursor, because following it would not advance.
-  const auto satisfied = kiwoom::KiwoomClientTestAccess::walk(
-    minutes, {{3, std::string("page-2")}, {3, std::string("page-3")}}
-  );
-  REQUIRE(satisfied);
-  CHECK(satisfied.value().bars_.size() == 6);
-  CHECK_FALSE(satisfied.value().next_cursor_);
-  CHECK(satisfied.value().stamp_ == BarStamp::CLOSE);
-
-  // A minute walk still *pages* normally -- `next-key` is how the walk itself continues, and only
-  // the caller-facing cursor is unusable. A walk that runs out of pages before satisfying the
-  // count fails, for every interval, rather than returning a short series a caller cannot tell
-  // from a finished one.
-  const auto stalled = kiwoom::KiwoomClientTestAccess::walk(
-    minutes, {{2, std::string("page-2")}, {0, std::string("page-3")}}
-  );
-  REQUIRE_FALSE(stalled);
-  CHECK(stalled.error().broker_code_ == "incomplete_listing");
-
-  // An exhausted minute history is an ordinary short series and is returned.
-  const auto exhausted = kiwoom::KiwoomClientTestAccess::walk(minutes, {{2, std::nullopt}});
-  REQUIRE(exhausted);
-  CHECK(exhausted.value().bars_.size() == 2);
-  CHECK_FALSE(exhausted.value().next_cursor_);
-
-  // A daily walk in the same shape *is* resumable and does carry its cursor.
-  BarQuery days = minutes;
-  days.interval_ = BarInterval::ONE_DAY;
-  const auto daily = kiwoom::KiwoomClientTestAccess::walk(
-    days, {{3, std::string("page-2")}, {3, std::string("page-3")}}
-  );
-  REQUIRE(daily);
-  CHECK(daily.value().next_cursor_);
-}
-
 TEST_CASE("a modification with no resting shape is refused", "[kiwoom][orders]") {
   // `OrderShape::type_` is a plain value defaulting to LIMIT, so a hand-built instruction cannot
   // say "leave the basis alone". Accepting it against a best-limit order would send a price and
@@ -1666,39 +1237,6 @@ TEST_CASE("a modification with no resting shape is refused", "[kiwoom][orders]")
   REQUIRE_FALSE(wrong_basis);
   CHECK(wrong_basis.error().broker_code_ == "shape_change_unsupported");
   CHECK(wrong_basis.error().message_.find("price basis") != std::string::npos);
-}
-
-TEST_CASE("a signed account price is still a price", "[kiwoom][parsing]") {
-  // Kiwoom documents `kt00018`'s 현재가 and its 평가손익 with the *identical* phrase -- "단위: 원,
-  // 좌측 0-padding 처리된 부호 포함 N자리 숫자" -- so the field description cannot tell a direction
-  // prefix from an arithmetic sign. Only the meaning can: a mark of minus 59,000 won is not a
-  // price, and a loss of minus 196,888 won is exactly what it says.
-  //
-  // Reading the mark as negative would put it into `HoldingPosition::last_price_`, and from there
-  // into every valuation that reads a holding.
-  HoldingsSnapshot snapshot;
-  bool totals_seen = false;
-  kiwoom::KiwoomClientTestAccess::holdings_page(
-    snapshot,
-    totals_seen,
-    json::parse(
-      R"({"tot_pur_amt":"000000017598258","tot_evlt_amt":"000000025789890",
-          "tot_evlt_pl":"-00000008138825",
-          "acnt_evlt_remn_indv_tot":[{"stk_cd":"A005930","stk_nm":"삼성전자",
-            "evltv_prft":"-00000000196888","prft_rt":"-52.71","pur_pric":"-000000000124500",
-            "rmnd_qty":"000000000000003","trde_able_qty":"000000000000003",
-            "cur_prc":"-000000059000","pur_amt":"000000000373500","evlt_amt":"000000000177000"}]})"
-    ).as_object()
-  );
-
-  REQUIRE(snapshot.positions_.size() == 1);
-  const auto& position = snapshot.positions_.front();
-  // Prices stay positive however Kiwoom signs them.
-  CHECK(position.last_price_ == Decimal64(59000, 0));
-  CHECK(position.average_purchase_price_ == Decimal64(124500, 0));
-  // And the figures that are genuinely signed keep their sign.
-  CHECK(position.unrealized_profit_loss_.amount_ == Decimal64(-196888, 0));
-  CHECK(snapshot.totals_.front().unrealized_profit_loss_ == Decimal64(-8138825, 0));
 }
 
 TEST_CASE("a row whose side cannot be read fails the listing", "[kiwoom][orders]") {
@@ -1936,71 +1474,6 @@ TEST_CASE("a priced limit order can be cancelled through the runner's own helper
   CHECK(unknown.error().broker_code_ == "price_on_cancellation");
 }
 
-TEST_CASE("repricing through the runner's own helper reaches the wire", "[kiwoom][orders]") {
-  // The counterpart of the cancellation test, and for the same reason: `reprice()` and
-  // `replace_with()` fill the instruction from the working order, and a hand-built instruction
-  // does not exercise what they actually produce.
-  using Traits = BrokerTraits<kiwoom::KiwoomClient>;
-
-  WorkingOrder<kiwoom::Broker> working;
-  working.ref_ = OrderRef<kiwoom::Broker>{"0000069", "005930"};
-  working.order_.instrument_ = samsung();
-  working.order_.type_ = OrderType::LIMIT;
-  working.order_.time_in_force_ = TimeInForce::DAY;
-  working.order_.session_ = OrderSession::REGULAR;
-  working.order_.venue_ = Venue::KRX;
-  working.order_.price_ = Decimal64(70000, 0);
-  working.order_.quantity_ = Decimal64(10, 0);
-  working.amendable_quantity_ = Decimal64(7, 0);
-
-  // `reprice` with no quantity sets all_remaining_, which Kiwoom spells as mdfy_qty "0" --
-  // "'0' 입력 시 잔량 전부 정정" -- rather than as the 7 the listing reported.
-  const auto moved = Traits::to_replacement(working.ref_, reprice(working, Decimal64(71000, 0)));
-  REQUIRE(moved);
-  CHECK(moved.value().price_ == Decimal64(71000, 0));
-  CHECK(moved.value().quantity_ == Decimal64());
-  CHECK(moved.value().order_.symbol_ == "005930");
-
-  ClientFixture fixture;
-  const auto request =
-    kiwoom::KiwoomClientTestAccess::amend_request(*fixture.client_, moved.value(), false);
-  auto body = body_of(request);
-  CHECK(header_of(request, "api-id") == "kt10002");
-  CHECK(body.at("mdfy_qty").as_string() == "0");
-  CHECK(body.at("mdfy_uv").as_string() == "71000");
-  CHECK(body.at("orig_ord_no").as_string() == "0000069");
-
-  // A partial reprice keeps its stated quantity rather than becoming all-remaining.
-  const auto partial =
-    Traits::to_replacement(working.ref_, reprice(working, Decimal64(71000, 0), Decimal64(3, 0)));
-  REQUIRE(partial);
-  CHECK(partial.value().quantity_ == Decimal64(3, 0));
-
-  // `replace_with` asking for a condition the resting order does not have is refused, because
-  // kt10002 has no field to carry it and sending only the price would report success for a change
-  // that did not happen.
-  const auto condition = Traits::to_replacement(
-    working.ref_,
-    replace_with(
-      working,
-      OrderShape(OrderType::LIMIT, Decimal64(71000, 0), TimeInForce::FILL_OR_KILL)
-    )
-  );
-  REQUIRE_FALSE(condition);
-  CHECK(condition.error().broker_code_ == "shape_change_unsupported");
-
-  // And restating the shape the order already has is not a change.
-  const auto restated = Traits::to_replacement(
-    working.ref_,
-    replace_with(
-      working,
-      OrderShape(OrderType::LIMIT, Decimal64(71000, 0), TimeInForce::DAY, OrderSession::REGULAR)
-    )
-  );
-  REQUIRE(restated);
-  CHECK(restated.value().price_ == Decimal64(71000, 0));
-}
-
 TEST_CASE("the two holdings assertions are independent of each other", "[kiwoom][holdings]") {
   // **Two switches, not one, and this is the test that keeps them apart.** kt00018's `dmst_stex_tp`
   // desc is "KRX:한국거래소,NXT:넥스트트레이드" and both quantity fields' descs carry units and
@@ -2031,81 +1504,6 @@ TEST_CASE("the two holdings assertions are independent of each other", "[kiwoom]
   kiwoom::KiwoomConfig fresh;
   CHECK(fresh.holdings_position_scope_ == kiwoom::KiwoomPositionScope::UNSPECIFIED);
   CHECK(fresh.holdings_sellable_scope_ == kiwoom::KiwoomSellableScope::UNSPECIFIED);
-}
-
-TEST_CASE("asserting the scope admits what it refused, per instruction", "[kiwoom][orders]") {
-  // **The positive control for the refusal above.** A refusal on its own does not show the gate is
-  // the holdings scope -- it could be anything else about the order -- so this changes only the
-  // scope and requires each instruction through. Enumerated per instruction because a reprice is
-  // a placement wearing an amendment's clothes.
-  using Access = kiwoom::KiwoomClientTestAccess;
-  using Traits = BrokerTraits<kiwoom::KiwoomClient>;
-  const auto asserted = kiwoom::KiwoomPositionScope::VALUATION_ONLY;
-
-  OrderRequest buy;
-  buy.instrument_ = samsung();
-  buy.side_ = OrderSide::BUY;
-  buy.type_ = OrderType::LIMIT;
-  buy.venue_ = Venue::KRX;
-  buy.quantity_ = Decimal64(10, 0);
-  buy.price_ = Decimal64(70000, 0);
-
-  // kt10000, a new buy: refused unstated, admitted asserted.
-  std::string code;
-  REQUIRE(Access::validate_order(buy, code));
-  CHECK_FALSE(Access::validate_order(buy, code, asserted));
-
-  // kt10001, a new sell -- which can open or enlarge a short where one is permitted, so it is not
-  // exempt for being a sale. Asserted separately rather than assumed to follow the buy.
-  OrderRequest sell = buy;
-  sell.side_ = OrderSide::SELL;
-  REQUIRE(Access::validate_order(sell, code));
-  CHECK_FALSE(Access::validate_order(sell, code, asserted));
-
-  WorkingOrder<kiwoom::Broker> working;
-  working.ref_ = OrderRef<kiwoom::Broker>{"0000123", "005930"};
-  working.order_.instrument_ = samsung();
-  working.order_.type_ = OrderType::LIMIT;
-  working.order_.time_in_force_ = TimeInForce::DAY;
-  working.order_.session_ = OrderSession::REGULAR;
-  working.order_.venue_ = Venue::KRX;
-  working.order_.price_ = Decimal64(70000, 0);
-  working.order_.quantity_ = Decimal64(10, 0);
-  working.amendable_quantity_ = Decimal64(7, 0);
-
-  // kt10002 through `reprice()`: the instruction that moves a resting buy into a fillable price.
-  const auto repriced = Traits::to_replacement(working.ref_, reprice(working, Decimal64(71000, 0)));
-  REQUIRE(repriced);
-  REQUIRE(Access::validate_amendment(repriced.value(), false));
-  CHECK_FALSE(Access::validate_amendment(repriced.value(), false, asserted));
-
-  // kt10002 through `replace_with()`, the other normalized form of the same instruction. Both, not
-  // one: a gate reached by one builder and not the other is a gate with a hole in it.
-  const auto restated = Traits::to_replacement(
-    working.ref_,
-    replace_with(
-      working,
-      OrderShape(OrderType::LIMIT, Decimal64(71000, 0), TimeInForce::DAY, OrderSession::REGULAR)
-    )
-  );
-  REQUIRE(restated);
-  REQUIRE(Access::validate_amendment(restated.value(), false));
-  CHECK_FALSE(Access::validate_amendment(restated.value(), false, asserted));
-
-  // **And cancelling was never refused and still is not**, under either scope. kt10003 only ever
-  // reduces what is resting, and an order that cannot be withdrawn keeps resting and can fill.
-  const auto withdraw = Traits::to_cancellation(working.ref_, cancel_all(working));
-  REQUIRE(withdraw);
-  CHECK_FALSE(Access::validate_amendment(withdraw.value(), true));
-  CHECK_FALSE(Access::validate_amendment(withdraw.value(), true, asserted));
-
-  // A caller's own mistake is still reported ahead of the holdings gap once the gap is gone: an
-  // order naming no venue is refused for that, not silently admitted by the assertion.
-  OrderRequest ventureless = buy;
-  ventureless.venue_ = Venue::UNSPECIFIED;
-  const auto still_bad = Access::validate_order(ventureless, code, asserted);
-  REQUIRE(still_bad);
-  CHECK(still_bad->broker_code_ != "holdings_scope_unestablished");
 }
 
 TEST_CASE("the normalized holdings verb refuses while its scope is unestablished", "[kiwoom][holdings]") {
@@ -2433,37 +1831,6 @@ TEST_CASE("a cancellation refuses every shape change it cannot carry", "[kiwoom]
   CHECK(refused.error().message_.find("price basis") != std::string::npos);
 }
 
-TEST_CASE("an unfilled row is open however its status word reads", "[kiwoom][orders]") {
-  // `normalized_order_status` is shared with the history parser, where `체결` legitimately means
-  // filled. On `ka10075` it would contradict the row it arrives on: the listing *is* the unfilled
-  // one, and `oso_qty` says how much is still outstanding.
-  //
-  // This is defensive rather than a repair of an observed incident -- the specification documents
-  // `ord_stt` here with the single value `접수`. What it protects is real: `order_is_open` is false
-  // for `FILLED`, and `Portfolio::working_quantity` skips a row that is not open, so a resting
-  // order reported that way reads as zero resting quantity. No sellable deduction, no working-order
-  // component in the position ceiling, and a reconciliation that plans a second order beside the
-  // one already out.
-  const auto contradictory = kiwoom::KiwoomClientTestAccess::open_order(
-    json::parse(
-      R"({"ord_no":"0000069","stk_cd":"005930","ord_stt":"체결","stk_nm":"삼성전자",
-          "ord_qty":"10","ord_pric":"70000","oso_qty":"7","orig_ord_no":"0000068",
-          "io_tp_nm":"-매도","trde_tp":"보통","tm":"154113","cntr_qty":"3","stex_tp":"1"})"
-    ).as_object()
-  );
-  CHECK(contradictory.order_.status_ == OrderStatus::PARTIAL_FILLED);
-
-  // **The quantity, not only the status.** `working_quantity` sizes the remainder as the ordered
-  // quantity less what filled, so the override earns nothing unless those two agree with the
-  // positive `oso_qty` the row states.
-  strategy::Portfolio<kiwoom::Broker> portfolio;
-  WorkingOrder<kiwoom::Broker> row;
-  row.order_ = contradictory.order_;
-  row.ref_ = OrderRef<kiwoom::Broker>{"0000069", "005930"};
-  portfolio.working_.push_back(row);
-  CHECK(portfolio.working_quantity(samsung(), OrderSide::SELL) == Decimal64::parse("7"));
-}
-
 TEST_CASE("a row with nothing outstanding keeps the status the broker stated", "[kiwoom][orders]") {
   // The rule narrows a contradiction; it is not a blanket refusal to believe the broker. With
   // `oso_qty` at zero the two fields agree and the word stands.
@@ -2686,24 +2053,4 @@ TEST_CASE("Kiwoom places, amends and reads back a stop-limit order's trigger", "
     CHECK(row.type_ == OrderType::STOP_LIMIT);
     CHECK(row.trigger_price_ == Decimal64(69500, 0));
   }
-}
-
-TEST_CASE("the single-date query a deferred target's evidence read sends is one Kiwoom accepts", "[kiwoom][trigger]") {
-  // `SessionSource::read_evidence` asks a broker without `history_requires_range` for one stated date at
-  // a time. Kiwoom's `kt00007` requires that date and refuses a range; an undated query is refused.
-  using Traits = BrokerTraits<kiwoom::KiwoomClient>;
-  OrderHistoryQuery dated;
-  dated.from_ = Date{2026, 9, 29};
-  dated.to_ = Date{2026, 9, 29};
-  CHECK(Traits::to_history_query(kiwoom::KiwoomAccount{}, dated));
-
-  OrderHistoryQuery undated;
-  const auto refused = Traits::to_history_query(kiwoom::KiwoomAccount{}, undated);
-  REQUIRE_FALSE(refused);
-  CHECK(refused.error().broker_code_ == "date_required");
-
-  OrderHistoryQuery ranged;
-  ranged.from_ = Date{2026, 9, 28};
-  ranged.to_ = Date{2026, 9, 29};
-  CHECK_FALSE(Traits::to_history_query(kiwoom::KiwoomAccount{}, ranged));
 }

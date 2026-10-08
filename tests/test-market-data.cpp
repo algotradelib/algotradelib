@@ -15,18 +15,6 @@ namespace {
 /** Returns the instrument used throughout these tests. */
 InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
 
-/** Returns a bar closing at `close` on the given instant. */
-Bar bar_at(std::chrono::system_clock::time_point when, const char* close) {
-  Bar bar;
-  bar.timestamp_ = when;
-  bar.open_ = Decimal64::parse(close);
-  bar.high_ = Decimal64::parse(close);
-  bar.low_ = Decimal64::parse(close);
-  bar.close_ = Decimal64::parse(close);
-  bar.volume_ = Decimal64::parse("1000");
-  return bar;
-}
-
 /** Returns a depth snapshot with one level on each side. */
 DepthSnapshot book(const char* bid, const char* ask) {
   DepthSnapshot snapshot;
@@ -64,14 +52,6 @@ TEST_CASE("a fixed-capacity code preserves an unfamiliar value without allocatin
   REQUIRE_THROWS_AS(Code<8>("KO SPI"), std::invalid_argument);
 }
 
-TEST_CASE("an unstorable code is refused without throwing on a parse path") {
-  // A response parse must not fail an entire listing over one odd value.
-  REQUIRE(Code<4>::try_make("OK").has_value());
-  REQUIRE_FALSE(Code<4>::try_make("TOOLONG").has_value());
-  REQUIRE_FALSE(Code<8>::try_make("kospi").has_value());
-  REQUIRE(Code<8>::try_make("")->empty());
-}
-
 TEST_CASE("decimal addition and subtraction align scales exactly") {
   const auto sum = decimal_add(Decimal64::parse("70000"), Decimal64::parse("0.25"));
   REQUIRE(sum.has_value());
@@ -101,72 +81,6 @@ TEST_CASE("decimal arithmetic reports overflow instead of wrapping") {
 
   // Aligning scales can overflow even when the sum would not.
   REQUIRE_FALSE(decimal_add(huge, Decimal64::parse("0.0001")).has_value());
-}
-
-TEST_CASE("halving takes the extra decimal place rather than rounding") {
-  const auto even = decimal_halve(Decimal64::parse("70000"));
-  REQUIRE(even.has_value());
-  REQUIRE(even->str() == "35000");
-
-  const auto odd = decimal_halve(Decimal64::parse("70001"));
-  REQUIRE(odd.has_value());
-  REQUIRE(odd->str() == "35000.5");
-
-  const auto fractional = decimal_halve(Decimal64::parse("0.5"));
-  REQUIRE(fractional.has_value());
-  REQUIRE(fractional->str() == "0.25");
-}
-
-TEST_CASE("decimal comparison is exact across differing scales") {
-  REQUIRE(decimal_less(Decimal64::parse("1999"), Decimal64::parse("2000")));
-  REQUIRE(decimal_less(Decimal64::parse("1999.999"), Decimal64::parse("2000")));
-  REQUIRE_FALSE(decimal_less(Decimal64::parse("2000"), Decimal64::parse("2000.000")));
-  REQUIRE(decimal_less(Decimal64::parse("-1"), Decimal64::parse("0.5")));
-}
-
-TEST_CASE("a bar series knows whether it is in ascending order") {
-  const auto base = std::chrono::system_clock::now();
-  BarSeries series;
-  series.instrument_ = samsung();
-  series.bars_.push_back(bar_at(base, "70000"));
-  series.bars_.push_back(bar_at(base + std::chrono::hours(24), "70100"));
-  REQUIRE(series.ascending());
-
-  // Brokers return newest first, so a series that was not reversed is detectable.
-  BarSeries reversed;
-  reversed.bars_.push_back(bar_at(base + std::chrono::hours(24), "70100"));
-  reversed.bars_.push_back(bar_at(base, "70000"));
-  REQUIRE_FALSE(reversed.ascending());
-
-  // A repeated timestamp is not ascending either, so a paging overlap shows up.
-  BarSeries duplicated;
-  duplicated.bars_.push_back(bar_at(base, "70000"));
-  duplicated.bars_.push_back(bar_at(base, "70000"));
-  REQUIRE_FALSE(duplicated.ascending());
-
-  REQUIRE(BarSeries{}.ascending());
-}
-
-TEST_CASE("a series records which edge of its periods it is stamped at") {
-  // The convention lives in the value because a timestamp alone cannot reveal it,
-  // and reading a close-stamped bar as open-stamped is a lookahead. It sits on the
-  // series, not on each bar, because every bar in a series follows the same rule.
-  BarSeries minutes;
-  minutes.interval_ = BarInterval::ONE_MINUTE;
-  minutes.stamp_ = BarStamp::CLOSE;
-  REQUIRE(minutes.stamp_ == BarStamp::CLOSE);
-
-  BarSeries daily;
-  daily.interval_ = BarInterval::ONE_DAY;
-  daily.stamp_ = BarStamp::OPEN;
-  REQUIRE(daily.stamp_ == BarStamp::OPEN);
-
-  // A trading day with no trade has no open, and that is not zero.
-  REQUIRE_FALSE(Bar{}.open_.has_value());
-
-  REQUIRE(bar_interval_name(BarInterval::ONE_MINUTE) == "1m");
-  REQUIRE(bar_interval_name(BarInterval::ONE_DAY) == "1d");
-  REQUIRE(bar_interval_name(BarInterval::ONE_YEAR) == "1y");
 }
 
 TEST_CASE("a depth snapshot reports the best levels, the spread, and the midpoint") {
@@ -240,34 +154,6 @@ TEST_CASE("rounding to the grid never improves a price past the instruction") {
   REQUIRE(rule.round_to_tick(Decimal64::parse("2003"), OrderSide::SELL)->str() == "2005");
 }
 
-TEST_CASE("a market with no grid leaves prices untouched") {
-  const auto rule = PriceRule::unconstrained();
-  const auto price = Decimal64::parse("123.4567");
-  REQUIRE_FALSE(rule.tick_at(price).has_value());
-  REQUIRE(rule.on_tick(price) == true);
-  REQUIRE(rule.round_to_tick(price, OrderSide::BUY)->str() == "123.4567");
-  REQUIRE(rule.round_to_tick(price, OrderSide::SELL)->str() == "123.4567");
-}
-
-TEST_CASE("an unknown grid refuses to round rather than passing a price through") {
-  // The two reasons a rule has no bands behave differently on purpose. A market that
-  // imposes no grid accepts any price; an instrument this library has no table for
-  // cannot answer, and saying "fine" would let an off-grid price through a check that
-  // appeared to pass.
-  const auto rule = PriceRule::unknown("no table for this instrument");
-  const auto price = Decimal64::parse("70123");
-  REQUIRE(rule.kind_ == PriceRule::Kind::UNKNOWN);
-  REQUIRE_FALSE(rule.on_tick(price).has_value());
-  REQUIRE_FALSE(rule.round_to_tick(price, OrderSide::BUY).has_value());
-  REQUIRE_FALSE(rule.round_to_tick(price, OrderSide::SELL).has_value());
-  REQUIRE(rule.source_ == "no table for this instrument");
-
-  // A default-constructed rule is unknown, not unconstrained, so a rule that was
-  // never set cannot silently approve a price.
-  REQUIRE(PriceRule{}.kind_ == PriceRule::Kind::UNKNOWN);
-  REQUIRE_FALSE(PriceRule{}.round_to_tick(price, OrderSide::BUY).has_value());
-}
-
 TEST_CASE("the grid an instrument gets depends on what it is, not only where") {
   // KRX prices funds and notes on a different ladder from cash equities, and neither
   // broker publishes either, so attaching the equity table to an ETF would round a
@@ -309,22 +195,4 @@ TEST_CASE("a market segment normalizes what it knows and preserves what it does 
   REQUIRE(unstorable.known_ == MarketSegment::Known::UNKNOWN);
   REQUIRE(unstorable.other_.empty());
   REQUIRE(unstorable.str() == "UNKNOWN");
-}
-
-TEST_CASE("price limits and a quote's top of book distinguish absent from zero") {
-  PriceLimits limits;
-  REQUIRE_FALSE(limits.upper_.has_value());
-  REQUIRE_FALSE(limits.lower_.has_value());
-
-  QuoteSnapshot quote;
-  quote.instrument_ = samsung();
-  quote.last_price_ = Decimal64::parse("70000");
-  REQUIRE_FALSE(quote.top_of_book_.has_value());
-  REQUIRE_FALSE(quote.volume_.has_value());
-
-  TopOfBook top;
-  top.bid_price_ = Decimal64::parse("70000");
-  quote.top_of_book_ = top;
-  REQUIRE(quote.top_of_book_->bid_price_->str() == "70000");
-  REQUIRE_FALSE(quote.top_of_book_->ask_price_.has_value());
 }

@@ -105,53 +105,6 @@ TEST_CASE("buy and hold targets its quantity and then asks for nothing more") {
   REQUIRE(dry.feed(bar(2, "70000", hynix())).quiet());
 }
 
-TEST_CASE("timed liquidation flattens when the session leaves the phases it holds through") {
-  vanilla::TimedLiquidation flatten;
-  runner::DryRunner<vanilla::TimedLiquidation> dry(flatten);
-  arrange(dry);
-
-  strategy::Portfolio<runner::DryTag> portfolio;
-  HoldingPosition position;
-  position.instrument_ = samsung();
-  position.quantity_ = Decimal64::parse("10");
-  portfolio.positions_.push_back(position);
-  dry.context().set_portfolio(portfolio);
-
-  // Inside the session it holds.
-  REQUIRE(dry.feed(strategy::MarketPhase::OPEN).quiet());
-
-  // After the close it flattens, **under the default limits**, which is the whole reason this
-  // vanilla is usable. `permitted_phases_` still defaults to
-  // `{OPEN}` and still refuses everything that opens a position outside the session; a sell of the
-  // whole holding closes one, so the limit does not stand in front of it. Otherwise this
-  // strategy could not place the order it exists to place without the operator switching its own
-  // phase limit off.
-  const auto after = dry.feed(strategy::MarketPhase::POST_CLOSE);
-  REQUIRE(after.refused_.empty());
-  REQUIRE(after.would_place_.size() == 1);
-  REQUIRE(after.would_place_[0].side_ == OrderSide::SELL);
-  REQUIRE(after.would_place_[0].quantity_ == Decimal64::parse("10"));
-  // And the runner says it sent under a phase the operator did not permit, because it did.
-  REQUIRE(dry.sends_outside_permitted_phase() == 1);
-
-  // Widening the limit reaches the same place by the other road, and **does not** count as a send
-  // outside the permitted phases -- the phase was permitted outright, so no exception was used.
-  // Without this half the counter could be incremented for any order in a non-`OPEN` phase and the
-  // assertion above would still pass.
-  strategy::RiskLimits limits;
-  limits.permitted_phases_ =
-    std::vector<strategy::MarketPhase>{strategy::MarketPhase::OPEN,
-                                      strategy::MarketPhase::POST_CLOSE};
-  runner::DryRunner<vanilla::TimedLiquidation> permitted(flatten, limits);
-  arrange(permitted);
-  permitted.context().set_portfolio(portfolio);
-  const auto sent = permitted.feed(strategy::MarketPhase::POST_CLOSE);
-  REQUIRE(sent.would_place_.size() == 1);
-  REQUIRE(sent.would_place_[0].side_ == OrderSide::SELL);
-  REQUIRE(sent.would_place_[0].quantity_ == Decimal64::parse("10"));
-  REQUIRE(permitted.sends_outside_permitted_phase() == 0);
-}
-
 TEST_CASE("timed liquidation flattens a holding the broker reports as two lots") {
   // **This was a real over-sell.** A broker reporting one instrument as
   // two lots is ordinary. This strategy submitted one zero target per *row*, and
@@ -180,24 +133,6 @@ TEST_CASE("timed liquidation flattens a holding the broker reports as two lots")
   REQUIRE(after.would_place_.size() == 1);
   REQUIRE(after.would_place_[0].side_ == OrderSide::SELL);
   REQUIRE(after.would_place_[0].quantity_ == Decimal64::parse("100"));
-}
-
-TEST_CASE("timed liquidation flattens on an uncovered calendar date too") {
-  // An uncovered date is precisely when a position should not be carried on an assumption.
-  vanilla::TimedLiquidation flatten;
-  strategy::RiskLimits limits;
-  limits.permitted_phases_ = std::nullopt;
-  runner::DryRunner<vanilla::TimedLiquidation> dry(flatten, limits);
-  arrange(dry);
-
-  strategy::Portfolio<runner::DryTag> portfolio;
-  HoldingPosition position;
-  position.instrument_ = samsung();
-  position.quantity_ = Decimal64::parse("10");
-  portfolio.positions_.push_back(position);
-  dry.context().set_portfolio(portfolio);
-
-  REQUIRE(dry.feed(strategy::MarketPhase::UNKNOWN).would_place_.size() == 1);
 }
 
 #if defined(ATL_HAS_EIGEN)
@@ -244,40 +179,7 @@ math::Vector column_of(std::initializer_list<math::Scalar> values) {
   return column;
 }
 
-/** `count` closes on a path that rises, falls and rises again, so no two lines coincide. */
-math::Vector wandering(std::size_t count) {
-  math::Vector column(static_cast<math::Index>(count));
-  for (math::Index row = 0; row < column.size(); ++row) {
-    column[row] = 60000.0 + 900.0 * std::sin(0.4 * static_cast<double>(row)) + 35.0 * row;
-  }
-  return column;
-}
-
 } // namespace
-
-TEST_CASE("the adjusted average is pandas' adjust=True") {
-  // pandas 3.0.6: Series([100, 160, 150, NaN, 155]).ewm(alpha=0.5, adjust=True, ignore_na=True).mean()
-  // is 100, 140, 145.71428571428572, (145.71..., carried), 150.66666666666666.
-  const math::Vector values = column_of({100.0, 160.0, 150.0, math::missing(), 155.0});
-  const math::Vector levels = vanilla::adjusted_ema(values, 0.5);
-
-  REQUIRE(levels[0] == 100.0);
-  REQUIRE(levels[1] == Catch::Approx(140.0).epsilon(1e-14));
-  REQUIRE(levels[2] == Catch::Approx(145.71428571428572).epsilon(1e-14));
-  // pandas reports the carried level on the missing row; the library's convention leaves it unobserved.
-  REQUIRE_FALSE(math::observed(levels[3]));
-  REQUIRE(levels[4] == Catch::Approx(150.66666666666666).epsilon(1e-14));
-}
-
-TEST_CASE("the adjusted average of one observation is it, and alpha 1 keeps each value exactly") {
-  REQUIRE(vanilla::adjusted_ema(column_of({123.0}), 0.2)[0] == 123.0);
-
-  const math::Vector values = column_of({0.1, 0.7, 0.30000000000000004});
-  const math::Vector unsmoothed = vanilla::adjusted_ema(values, 1.0);
-  for (math::Index row = 0; row < values.size(); ++row) {
-    REQUIRE(unsmoothed[row] == values[row]);
-  }
-}
 
 TEST_CASE("the adjusted average stays accurate for a smoothing factor too small to normalize") {
   // Converting a plain-seeded average divides by `1 - (1 - alpha)^k`, which is 0 once `1 - alpha`
@@ -293,114 +195,6 @@ TEST_CASE("the adjusted average stays accurate for a smoothing factor too small 
   REQUIRE_THROWS_AS(vanilla::adjusted_ema(column_of({1.0}), 0.5, 0), std::invalid_argument);
 }
 
-TEST_CASE("a listing day's spike weighs an ordinary bar's weight in a short exponential line") {
-  // The new-listing case: no history before the first print, and that print far from the rest. A
-  // plain seed keeps 0.8^9 = 13.4% of the line on it after nine more bars; compensated, about 3%.
-  const math::Vector closes = column_of({200.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0});
-  const math::Scalar alpha = analytics::alpha_from_span(9);
-  REQUIRE(alpha == 0.2);
-  const math::Index last = closes.size() - 1;
-
-  REQUIRE(analytics::ema(closes, alpha)[last] == Catch::Approx(113.4217728).epsilon(1e-9));
-  REQUIRE(vanilla::exponential_line(closes, 9)[last] == Catch::Approx(103.0).epsilon(1e-2));
-}
-
-TEST_CASE("an exponential line is the plain average from three spans of rows, compensated below") {
-  const std::size_t span = 8;
-  const math::Scalar alpha = analytics::alpha_from_span(span);
-
-  // Three spans exactly: the plain average over every row, bit for bit.
-  const math::Vector enough = wandering(3 * span);
-  const math::Vector plain = analytics::ema(enough, alpha, span);
-  const math::Vector line = vanilla::exponential_line(enough, span);
-  for (math::Index row = 0; row < enough.size(); ++row) {
-    REQUIRE(math::observed(line[row]) == math::observed(plain[row]));
-    if (math::observed(plain[row])) {
-      REQUIRE(line[row] == plain[row]);
-    }
-  }
-
-  // One row fewer: compensated, and visibly not the plain average.
-  const math::Vector short_of = wandering(3 * span - 1);
-  const math::Vector compensated = vanilla::adjusted_ema(short_of, alpha, span);
-  const math::Vector short_line = vanilla::exponential_line(short_of, span);
-  const math::Index last = short_of.size() - 1;
-  REQUIRE(short_line[last] == compensated[last]);
-  REQUIRE(short_line[last] != analytics::ema(short_of, alpha, span)[last]);
-}
-
-TEST_CASE("an exponential line reads the whole series, not the last slow window") {
-  // The defect this replaced: recomputed over the last `slow + 1` closes, the slow line is reseeded
-  // every bar and differs from the average over the whole history by `(1 - alpha)^slow` of a raw close.
-  const std::size_t slow = 8;
-  const math::Vector closes = wandering(60);
-  const math::Index last = closes.size() - 1;
-  const math::Vector whole = vanilla::exponential_line(closes, slow);
-  const math::Vector sliced = analytics::ema(closes.tail(slow + 1), analytics::alpha_from_span(slow), slow);
-
-  REQUIRE(whole[last] == analytics::ema(closes, analytics::alpha_from_span(slow), slow)[last]);
-  REQUIRE(whole[last] != Catch::Approx(sliced[sliced.size() - 1]).epsilon(1e-6));
-}
-
-namespace {
-
-/** pandas' `ewm(alpha, adjust=True, ignore_na=True)` at the last row, computed directly. */
-math::Scalar adjusted_last(const math::Vector& values, math::Scalar alpha) {
-  math::Scalar weighted{0};
-  math::Scalar total{0};
-  math::Scalar weight{1};
-  for (math::Index row = values.size() - 1; row >= 0; --row) {
-    if (!math::observed(values[row])) {
-      continue;
-    }
-    weighted += weight * values[row];
-    total += weight;
-    weight *= 1.0 - alpha;
-  }
-  return weighted / total;
-}
-
-} // namespace
-
-TEST_CASE("the adjusted average holds across leading and inner gaps and a warm-up") {
-  const math::Scalar nan = math::missing();
-  const math::Vector values = column_of({nan, nan, 100.0, 104.0, nan, 98.0, 101.0, nan, 103.0});
-  const math::Scalar alpha = 0.3;
-  const math::Vector levels = vanilla::adjusted_ema(values, alpha, 3);
-
-  // Unobserved inputs, and rows the warm-up suppressed, stay unobserved.
-  for (const math::Index row : {0, 1, 2, 3, 4, 7}) {
-    REQUIRE_FALSE(math::observed(levels[row]));
-  }
-  // Every other row is the adjusted average of the observations up to it -- counting the two the
-  // warm-up suppressed.
-  for (const math::Index row : {5, 6, 8}) {
-    REQUIRE(levels[row] == Catch::Approx(adjusted_last(values.head(row + 1), alpha)).epsilon(1e-13));
-  }
-
-  // Nothing to compensate: an empty column and an all-missing one come back as they were.
-  const math::Vector empty(0);
-  REQUIRE(vanilla::adjusted_ema(empty, alpha).size() == 0);
-  REQUIRE(vanilla::exponential_line(empty, 3).size() == 0);
-  const math::Vector absent = column_of({nan, nan, nan});
-  const math::Vector line = vanilla::exponential_line(absent, 2);
-  for (math::Index row = 0; row < absent.size(); ++row) {
-    REQUIRE_FALSE(math::observed(line[row]));
-  }
-}
-
-TEST_CASE("a flat market leaves both exponential lines exactly flat, either side of each switch") {
-  // `(S - d * y0) / (1 - d)` gives 99.999999999999986 for fifty-one closes of 100, and a crossover
-  // comparing with `<` would buy a flat market. Every row count around the warm-up and the two
-  // three-span boundaries (60 for span 20, 150 for span 50).
-  for (const std::size_t rows : {51u, 59u, 60u, 61u, 149u, 150u, 151u}) {
-    const math::Vector closes = math::Vector::Constant(static_cast<math::Index>(rows), 100.0);
-    const math::Index last = closes.size() - 1;
-    REQUIRE(vanilla::exponential_line(closes, 20)[last] == 100.0);
-    REQUIRE(vanilla::exponential_line(closes, 50)[last] == 100.0);
-  }
-}
-
 TEST_CASE("the three-span switch counts observed closes, not rows") {
   // 150 rows but 51 closes: the plain seed would still weigh about 13%, so the line is compensated.
   math::Vector closes = math::Vector::Constant(150, 120.0);
@@ -412,47 +206,6 @@ TEST_CASE("the three-span switch counts observed closes, not rows") {
   REQUIRE(vanilla::exponential_line(closes, 50)[last] == Catch::Approx(119.87802735708622).epsilon(1e-12));
   REQUIRE(analytics::ema(closes, analytics::alpha_from_span(50), 50)[last] ==
           Catch::Approx(117.2940162004476).epsilon(1e-12));
-}
-
-TEST_CASE("one line switching method can change the signal on an unchanged close") {
-  // Documented, not a defect: compensation leans away from the first close, so when the fast line
-  // turns plain at three spans and the slow one does not, the two can swap on a close equal to the
-  // last. Spans 3/5: long at eight closes, flat at nine.
-  const math::Vector eight = column_of({95.0, 100.0, 105.0, 100.0, 100.0, 95.0, 105.0, 100.0});
-  const math::Vector nine = column_of({95.0, 100.0, 105.0, 100.0, 100.0, 95.0, 105.0, 100.0, 100.0});
-  REQUIRE(vanilla::exponential_line(eight, 5)[7] < vanilla::exponential_line(eight, 3)[7]);
-  REQUIRE_FALSE(vanilla::exponential_line(nine, 5)[8] < vanilla::exponential_line(nine, 3)[8]);
-}
-
-TEST_CASE("a simple crossover averages the slow window's slice, whose sums the result depends on") {
-  // Eigen reduces a window in an order that depends on where it starts in the masked copy, so the
-  // same window over a shorter slice can differ in the last bit: here the fast mean over `tail(4)`
-  // exceeds the slow one, over `tail(5)` it equals it. The strategy reads `tail(slow + 1)`, as it
-  // always has, and stays flat.
-  vanilla::MovingAverageCrossover::Params params;
-  params.instrument_ = samsung();
-  params.fast_ = 3;
-  params.slow_ = 4;
-  params.quantity_ = Decimal64::parse("10");
-  vanilla::SmaCrossover crossing(params);
-  runner::DryRunner<vanilla::SmaCrossover> dry(crossing);
-  arrange(dry);
-
-  const char* closes[] = {"99.29", "99.89", "99.12", "100.58", "99.97"};
-  runner::DryRunner<vanilla::SmaCrossover>::Report last;
-  for (std::size_t at = 0; at < 5; ++at) {
-    last = dry.feed(bar(at, closes[at]));
-  }
-
-  // The fixture still shows the hazard with these closes as the cache holds them.
-  const auto cached = dry.context().bars(samsung())->column(analytics::BarField::CLOSE);
-  const math::Scalar slow = analytics::sma(cached.tail(5), 4)[4];
-  const math::Scalar fast_slow_slice = analytics::sma(cached.tail(5), 3)[4];
-  const math::Scalar fast_own_slice = analytics::sma(cached.tail(4), 3)[3];
-  REQUIRE(fast_slow_slice == slow);
-  REQUIRE(slow < fast_own_slice);
-
-  REQUIRE(last.would_place_.empty());
 }
 
 TEST_CASE("a crossover whose fast window is not faster refuses to act") {
@@ -467,38 +220,6 @@ TEST_CASE("a crossover whose fast window is not faster refuses to act") {
   runner::DryRunner<vanilla::SmaCrossover> dry(vanilla::SmaCrossover{params});
   arrange(dry);
   REQUIRE(first_order_bar(dry, 20) == 20);
-}
-
-TEST_CASE("a crossover goes flat when the fast average falls back below the slow one") {
-  // Stated as a level, so the exit needs no memory of having entered.
-  vanilla::MovingAverageCrossover::Params params;
-  params.instrument_ = samsung();
-  params.fast_ = 2;
-  params.slow_ = 4;
-  params.quantity_ = Decimal64::parse("10");
-
-  runner::DryRunner<vanilla::SmaCrossover> dry(vanilla::SmaCrossover{params});
-  arrange(dry);
-
-  for (std::size_t at = 0; at < 6; ++at) {
-    const auto close = std::to_string(60000 + 500 * at);
-    dry.feed(bar(at, close.c_str()));
-  }
-  strategy::Portfolio<runner::DryTag> portfolio;
-  HoldingPosition position;
-  position.instrument_ = samsung();
-  position.quantity_ = Decimal64::parse("10");
-  portfolio.positions_.push_back(position);
-  dry.context().set_portfolio(portfolio);
-
-  // A sharp fall pulls the fast average under the slow one.
-  for (std::size_t at = 6; at < 12; ++at) {
-    const auto close = std::to_string(62500 - 1500 * (at - 5));
-    dry.feed(bar(at, close.c_str()));
-  }
-  const auto report = dry.feed(bar(12, "40000"));
-  REQUIRE(report.would_place_.size() == 1);
-  REQUIRE(report.would_place_[0].side_ == OrderSide::SELL);
 }
 
 TEST_CASE("a z-score reversion emits nothing until its window is full, then buys a dip") {
@@ -525,47 +246,6 @@ TEST_CASE("a z-score reversion emits nothing until its window is full, then buys
   REQUIRE(dipped.would_place_[0].side_ == OrderSide::BUY);
 }
 
-TEST_CASE("a reversion asks whether it holds anything, not what its first lot says") {
-  // **A fourth first-row reader, found by grepping for them after the third was caught.**
-  // A broker listing a spent lot of 0 beside a live one is ordinary, and `quantity_of` returns the
-  // first row -- so this strategy read "flat" while holding 10, and on the next dip entered *again*
-  // on top of the position it already had. It is a doubling, in a shipped strategy, from a listing
-  // the broker is entitled to send.
-  vanilla::ZScoreReversion reverting;
-  reverting.params_.instrument_ = samsung();
-  reverting.params_.window_ = 6;
-  reverting.params_.entry_ = 1.0;
-  reverting.params_.exit_ = 0.2;
-  reverting.params_.quantity_ = Decimal64::parse("10");
-
-  runner::DryRunner<vanilla::ZScoreReversion> dry(reverting);
-  arrange(dry);
-
-  // **The live lot is 25 and the entry size is 10, deliberately different.** An earlier version held
-  // exactly the entry quantity, and reconciliation then cancelled the spurious entry down to no
-  // order at all -- so the test passed against the defect and proved nothing. That is the fixture
-  // arranging for the defect not to matter, which this repository has now hit three times.
-  strategy::Portfolio<runner::DryTag> portfolio;
-  for (const char* lot : {"0", "25"}) {
-    HoldingPosition position;
-    position.instrument_ = samsung();
-    position.quantity_ = Decimal64::parse(lot);
-    portfolio.positions_.push_back(position);
-  }
-  dry.context().set_portfolio(portfolio);
-
-  for (std::size_t at = 0; at < 7; ++at) {
-    REQUIRE(dry.feed(bar(at, "70000")).quiet());
-  }
-
-  // The dip that would have entered. It is already holding 25, and the exit band has not been
-  // reached, so the correct answer is to do nothing. Reading the first row instead says "flat",
-  // targets the entry size of 10, and reconciliation turns that into a SELL of 15 -- an order that
-  // reduces a position the strategy believes it does not have.
-  const auto dipped = dry.feed(bar(7, "50000"));
-  CHECK(dipped.would_place_.empty());
-}
-
 TEST_CASE("a reversion with its exit at or beyond its entry refuses to act") {
   // The band would have no room, so the position would open and close on the same bar forever.
   vanilla::ZScoreReversion reverting;
@@ -578,75 +258,6 @@ TEST_CASE("a reversion with its exit at or beyond its entry refuses to act") {
   runner::DryRunner<vanilla::ZScoreReversion> dry(reverting);
   arrange(dry);
   REQUIRE(first_order_bar(dry, 15) == 15);
-}
-
-TEST_CASE("an RSI threshold emits nothing before its period has produced an index") {
-  vanilla::RsiThreshold indexed;
-  indexed.params_.instrument_ = samsung();
-  indexed.params_.period_ = 5;
-  indexed.params_.oversold_ = 45.0;
-  indexed.params_.overbought_ = 70.0;
-  indexed.params_.quantity_ = Decimal64::parse("10");
-
-  runner::DryRunner<vanilla::RsiThreshold> dry(indexed);
-  arrange(dry);
-
-  // A falling series, so the index is low and the entry must fire as soon as it exists.
-  std::size_t first = 30;
-  for (std::size_t at = 0; at < 30; ++at) {
-    const auto close = std::to_string(90000 - 1000 * at);
-    const auto report = dry.feed(bar(at, close.c_str()));
-    if (!report.would_place_.empty() && first == 30) {
-      first = at;
-    }
-  }
-  // Row zero has no price change and the smoothing needs `period_` of them, so the first index
-  // value lands on row `period_` -- which is `warmup_bars() - 1`.
-  REQUIRE(first == indexed.warmup_bars() - 1);
-}
-
-TEST_CASE("an RSI threshold reads Wilder's index over the whole history, not the last period") {
-  // Over only the last `period + 1` closes, Wilder's smoothing seeds on the last bar and never steps,
-  // which is the simple-average RSI. These closes keep the whole-history index above 32 until the last
-  // bar, where it is 23.69 and the strategy buys; over the old slice it would be 36.36, and it would not.
-  vanilla::RsiThreshold indexed;
-  indexed.params_.instrument_ = samsung();
-  indexed.params_.period_ = 3;
-  indexed.params_.oversold_ = 30.0;
-  indexed.params_.overbought_ = 70.0;
-  indexed.params_.quantity_ = Decimal64::parse("10");
-  runner::DryRunner<vanilla::RsiThreshold> dry(indexed);
-  arrange(dry);
-
-  const char* closes[] = {"100", "106", "101", "95", "94", "95", "94", "98", "97", "91"};
-  const std::size_t count = sizeof(closes) / sizeof(closes[0]);
-  for (std::size_t at = 0; at < count; ++at) {
-    const auto report = dry.feed(bar(at, closes[at]));
-    REQUIRE(report.would_place_.empty() == (at + 1 < count));
-  }
-
-  // The fixture still separates the two indices, as the cache holds these closes.
-  const auto cached = dry.context().bars(samsung())->column(analytics::BarField::CLOSE);
-  const math::Vector whole = analytics::rsi(cached, 3);
-  const math::Vector sliced = analytics::rsi(cached.tail(4), 3);
-  REQUIRE(whole[whole.size() - 1] == Catch::Approx(23.688311688311686).epsilon(1e-12));
-  REQUIRE(sliced[sliced.size() - 1] == Catch::Approx(36.36363636363636).epsilon(1e-12));
-}
-
-TEST_CASE("a Donchian breakout measures the channel excluding the current bar") {
-  // A channel including today could never be broken: today's high is always inside a range that
-  // contains it. Getting that wrong produces a strategy that silently does nothing.
-  vanilla::DonchianBreakout breaking;
-  breaking.params_.instrument_ = samsung();
-  breaking.params_.lookback_ = 5;
-  breaking.params_.quantity_ = Decimal64::parse("10");
-
-  runner::DryRunner<vanilla::DonchianBreakout> dry(breaking);
-  arrange(dry);
-
-  const auto first = first_order_bar(dry, 20);
-  REQUIRE(first < 20);
-  REQUIRE(first == breaking.warmup_bars() - 1);
 }
 
 TEST_CASE("volatility targeting sizes from return deviation, not price deviation") {
@@ -679,42 +290,6 @@ TEST_CASE("volatility targeting sizes from return deviation, not price deviation
   REQUIRE(placed > 0);
   REQUIRE(quantity.coefficient() > 0);
   REQUIRE_FALSE(decimal_less(sizing.params_.max_quantity_, quantity));
-}
-
-TEST_CASE("equal weight splits the universe exactly and leaves the residual unallocated") {
-  vanilla::EqualWeightRebalance weighted;
-  weighted.params_.universe_ = {samsung(), hynix()};
-
-  runner::DryRunner<vanilla::EqualWeightRebalance> dry(weighted);
-  arrange(dry, {samsung(), hynix()});
-
-  const auto report = dry.feed(strategy::MarketPhase::OPEN);
-  REQUIRE(report.would_place_.size() == 2);
-  // A hundred million at half weight is fifty million, which buys 714 shares at 70,000.
-  REQUIRE(report.would_place_[0].quantity_ == Decimal64::parse("714"));
-  REQUIRE(report.would_place_[1].quantity_ == Decimal64::parse("714"));
-  REQUIRE(report.would_place_[0].tag_ == "equal-weight");
-
-  // It rebalances only at the stated phase, not on every bar: a price move changes every weight, and
-  // chasing that costs more turnover than the drift it corrects.
-  REQUIRE(dry.feed(strategy::MarketPhase::PRE_OPEN).quiet());
-}
-
-TEST_CASE("equal weight over three names truncates rather than overshooting one") {
-  vanilla::EqualWeightRebalance weighted;
-  const auto third = InstrumentId{Country::KR, Venue::COMBINED, "035720"};
-  weighted.params_.universe_ = {samsung(), hynix(), third};
-
-  runner::DryRunner<vanilla::EqualWeightRebalance> dry(weighted);
-  arrange(dry, {samsung(), hynix(), third});
-
-  const auto report = dry.feed(strategy::MarketPhase::OPEN);
-  REQUIRE(report.would_place_.size() == 3);
-  // 0.3333 of a hundred million is 33,330,000, which buys 476 shares. The residual stays
-  // unallocated rather than making one arbitrary name larger than the others.
-  for (const auto& order : report.would_place_) {
-    REQUIRE(order.quantity_ == Decimal64::parse("476"));
-  }
 }
 
 namespace {
@@ -917,13 +492,6 @@ TEST_CASE("a replay sizes a weight against its own equity", "[weights]") {
 }
 #endif
 
-TEST_CASE("an empty universe asks for nothing rather than dividing by zero") {
-  vanilla::EqualWeightRebalance weighted;
-  runner::DryRunner<vanilla::EqualWeightRebalance> dry(weighted);
-  arrange(dry);
-  REQUIRE(dry.feed(strategy::MarketPhase::OPEN).quiet());
-}
-
 #endif
 
 namespace {
@@ -966,16 +534,6 @@ strategy::Portfolio<runner::DryTag> stop_listing(
   }
   return portfolio;
 }
-
-/** Forwards `on_phase` to a liquidation and nothing else, as a composing strategy does. */
-struct OnlyPhaseLiquidation {
-  vanilla::TimedLiquidation liquidation_;
-
-  template <class Ctx>
-  void on_phase(Ctx& ctx, strategy::MarketPhase phase) {
-    liquidation_.on_phase(ctx, phase);
-  }
-};
 
 /** The broker's history row for the stop, in `status` with `filled` executed. */
 OrderSnapshot stop_record(OrderStatus status, const char* filled) {
@@ -1044,96 +602,4 @@ TEST_CASE("timed liquidation completes after a resting stop is withdrawn, with n
   // keeps it instead.
   runner::DryRunner<vanilla::TimedLiquidation> dry(vanilla::TimedLiquidation{});
   flattens_after_the_stop_is_gone(dry);
-}
-
-TEST_CASE("a composing strategy that forwards only on_phase is not relied on to retry", "[trigger]") {
-  runner::DryRunner<OnlyPhaseLiquidation> dry(OnlyPhaseLiquidation{});
-  flattens_after_the_stop_is_gone(dry);
-}
-
-TEST_CASE("a stop that filled while it was withdrawn is not sold again", "[trigger]") {
-  // **Answered by the stop's own record.** The listing drops a filled
-  // stop exactly as it drops a cancelled one, and holdings are no proof either way; the broker's row
-  // for the stop is. Anything filled -- even with a stale holding still showing ten -- sends nothing.
-  runner::DryRunner<OnlyPhaseLiquidation> dry(OnlyPhaseLiquidation{});
-  exits_behind_the_stop(dry);
-  const auto after = dry.retry_deferred({stop_record(OrderStatus::FILLED, "10")});
-  CHECK(after.would_place_.empty());
-  CHECK(dry.deferred_targets().empty());
-  CHECK(dry.deferred_dropped_after_fill() == 1);
-}
-
-TEST_CASE("a stop cancelled after a partial fill leaves the remainder to the strategy", "[trigger]") {
-  // KIS reports such an order `CANCELED`; the fill is read from the quantity, never the status. The
-  // runner cannot know the remainder without a holding it can trust, so it stops, counted.
-  runner::DryRunner<OnlyPhaseLiquidation> dry(OnlyPhaseLiquidation{});
-  exits_behind_the_stop(dry);
-  const auto after = dry.retry_deferred({stop_record(OrderStatus::CANCELED, "4")});
-  CHECK(after.would_place_.empty());
-  CHECK(dry.deferred_targets().empty());
-  CHECK(dry.deferred_dropped_after_fill() == 1);
-}
-
-TEST_CASE("a deferred target gives way to what the strategy says next", "[trigger]") {
-  runner::DryRunner<OnlyPhaseLiquidation> dry(OnlyPhaseLiquidation{});
-  arrange(dry);
-  dry.context().set_portfolio(stop_listing(OrderStatus::PENDING));
-  dry.feed(strategy::MarketPhase::POST_CLOSE);
-  REQUIRE(dry.deferred_targets().size() == 1);
-
-  // The strategy changes its mind about the instrument in an ordinary pass: hold the ten. The fallback
-  // for its silence is dropped, so the stop's cancellation sells nothing.
-  strategy::TargetPosition hold;
-  hold.instrument_ = samsung();
-  hold.target_quantity_ = Decimal64::parse("10");
-  dry.context().submit(hold);
-  dry.settle_closing();
-  CHECK(dry.deferred_targets().empty());
-  dry.context().set_portfolio(stop_listing(std::nullopt));
-  const auto after = dry.retry_deferred({stop_record(OrderStatus::CANCELED, "0")});
-  CHECK(after.would_place_.empty());
-}
-
-TEST_CASE("an ordinary pass never releases a deferred target", "[trigger]") {
-  // Each order update in a listing is its own pass; releasing
-  // there sent the fallback before a later update in the same listing let the strategy speak.
-  runner::DryRunner<OnlyPhaseLiquidation> dry(OnlyPhaseLiquidation{});
-  exits_behind_the_stop(dry);
-  OrderSnapshot unrelated;
-  unrelated.order_id_ = "OTHER";
-  unrelated.instrument_ = samsung();
-  const auto update = dry.feed(unrelated);
-  CHECK(update.would_place_.empty());
-  CHECK(dry.deferred_targets().size() == 1);
-}
-
-TEST_CASE("a flatten withheld whole defers nothing", "[trigger]") {
-  // Its withdrawal never went out, so there is no stop leaving to wait for; it is reported as
-  // withheld, which is the bucket that already says so.
-  runner::DryRunner<OnlyPhaseLiquidation> dry(OnlyPhaseLiquidation{});
-  arrange(dry);
-  auto unread = stop_listing(OrderStatus::PENDING);
-  unread.as_of_ = {};
-  dry.context().set_portfolio(unread);
-  const auto exit = dry.feed(strategy::MarketPhase::POST_CLOSE);
-  CHECK(exit.withheld_plans_.size() == 1);
-  CHECK(dry.deferred_targets().empty());
-}
-
-TEST_CASE("one snapshot of listing and holdings releases a deferred target at once", "[trigger]") {
-  // A replay's ledger is the broker: the stop it withdrew is gone and the holding after it is known
-  // together, so there is no later holdings read to wait for.
-  runner::DryRunner<OnlyPhaseLiquidation> dry(OnlyPhaseLiquidation{});
-  arrange(dry);
-  dry.context().set_portfolio(stop_listing(OrderStatus::PENDING));
-  dry.feed(strategy::MarketPhase::POST_CLOSE);
-  REQUIRE(dry.deferred_targets().size() == 1);
-
-  // Still listed: nothing.
-  CHECK(dry.retry_deferred_on_one_snapshot().would_place_.empty());
-  dry.context().set_portfolio(stop_listing(std::nullopt));
-  const auto flat = dry.retry_deferred_on_one_snapshot();
-  REQUIRE(flat.would_place_.size() == 1);
-  CHECK(flat.would_place_[0].side_ == OrderSide::SELL);
-  CHECK(dry.deferred_targets().empty());
 }

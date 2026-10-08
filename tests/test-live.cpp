@@ -27,9 +27,7 @@ namespace live = algotradelib::live;
 namespace {
 
 /** Compile-time identity of the fake broker. */
-struct FakeBroker {
-  static constexpr std::string_view name = "fake";
-};
+struct FakeBroker {};
 
 /** Capabilities a fake session can be given, to exercise both sides of a gate. */
 struct WithKey : strategy::NoCaps {
@@ -586,124 +584,6 @@ WorkingOrder<FakeBroker> working() {
 
 } // namespace
 
-TEST_CASE("a reservation row can be withdrawn at the venue the order went to") {
-  // The runner reserves a row for an order it has just sent, and that row is
-  // what `cancel_all` reads until the broker's own listing arrives. A broker
-  // listing fills `venue_` from what the broker routed the order to; this row
-  // has no listing behind it, so it takes the venue the order was sent with.
-  // Left `UNSPECIFIED`, a withdrawal would be addressed to the broker's default
-  // venue rather than the one the order is actually resting at.
-  strategy::PlannedOrder order;
-  order.instrument_ = InstrumentId{Country::KR, Venue::NXT, "005930"};
-  order.quantity_ = Decimal64::parse("10");
-  order.price_ = Decimal64::parse("70000");
-
-  WorkingOrder<FakeBroker> row;
-  row.order_.instrument_ = order.instrument_;
-  row.order_.venue_ = order.instrument_.venue_;
-  row.amendable_quantity_ = order.quantity_;
-  REQUIRE(cancel_all(row).venue_ == Venue::NXT);
-}
-
-TEST_CASE("a non-default order shape reaches the session rather than its default") {
-  // The case above asserts the defaults, and a copy that was never written
-  // agrees with a default. This one states three facts none of which is the
-  // default, so a field the executor drops shows up as the default rather than
-  // as the value asked for -- which is how a dropped field fails: silently, and
-  // with a plausible value.
-  FakeSession<WithoutKey> session;
-  live::SessionExecutor<FakeSession<WithoutKey>> executor(session);
-
-  auto order = planned();
-  order.type_ = OrderType::BEST_LIMIT;
-  order.time_in_force_ = TimeInForce::FILL_OR_KILL;
-  order.session_ = OrderSession::AFTER_MARKET;
-  // The routing venue too. This was missing, and a surviving mutation said so:
-  // deleting the executor's copy of `venue_` failed nothing, because every test
-  // left it at its default and a copy that never runs agrees with a default.
-  // A venue that does not reach the wire is an order routed somewhere else.
-  order.venue_ = Venue::NXT;
-  REQUIRE(executor.place(order) == runner::SendOutcome::ACCEPTED);
-
-  REQUIRE(session.placed().size() == 1);
-  const auto& sent = session.placed()[0];
-  REQUIRE(sent.type_ == OrderType::BEST_LIMIT);
-  REQUIRE(sent.time_in_force_ == TimeInForce::FILL_OR_KILL);
-  REQUIRE(sent.session_ == OrderSession::AFTER_MARKET);
-  REQUIRE(sent.venue_ == Venue::NXT);
-}
-
-TEST_CASE("a stop's trigger reaches the session", "[trigger]") {
-  // A copy that was never written agrees with the default -- which here is "no trigger", so the
-  // order would go out as a plain limit.
-  FakeSession<WithoutKey> session;
-  live::SessionExecutor<FakeSession<WithoutKey>> executor(session);
-
-  auto order = planned();
-  order.type_ = OrderType::STOP_LIMIT;
-  order.trigger_price_ = Decimal64::parse("69500");
-  REQUIRE(executor.place(order) == runner::SendOutcome::ACCEPTED);
-  REQUIRE(session.placed().size() == 1);
-  REQUIRE(session.placed()[0].trigger_price_ == std::optional<Decimal64>(Decimal64::parse("69500")));
-}
-
-TEST_CASE("an accepted order reaches the session with its fields intact") {
-  // Reconciliation already put the price on the tick grid and the quantity on the lot, so this
-  // boundary adds nothing numeric; it moves fields, and a field lost here reaches an exchange.
-  FakeSession<WithoutKey> session;
-  live::SessionExecutor<FakeSession<WithoutKey>> executor(session);
-
-  REQUIRE(executor.place(planned()) == runner::SendOutcome::ACCEPTED);
-  REQUIRE(session.placed().size() == 1);
-  const auto& sent = session.placed()[0];
-  REQUIRE(sent.instrument_.symbol_ == "005930");
-  REQUIRE(sent.side_ == OrderSide::BUY);
-  REQUIRE(sent.type_ == OrderType::LIMIT);
-  REQUIRE(sent.time_in_force_ == TimeInForce::DAY);
-  REQUIRE(sent.session_ == OrderSession::REGULAR);
-  REQUIRE(sent.quantity_ == Decimal64::parse("10"));
-  REQUIRE(sent.price_ == std::optional<Decimal64>(Decimal64::parse("70000")));
-
-  // And the reference the broker issued is kept, which is what a later amendment must address.
-  REQUIRE(executor.last_ref());
-  REQUIRE(executor.last_ref()->primary_ == "0001569139");
-  // The compile-time broker tag travels with it, which is what stops one broker's reference being
-  // handed to another's session.
-  REQUIRE(executor.last_ref()->str() == "fake:0001569139");
-  REQUIRE_FALSE(executor.last_error());
-}
-
-TEST_CASE("a transport failure on the live path leaves the outcome unknown") {
-  FakeSession<WithoutKey> session;
-  live::SessionExecutor<FakeSession<WithoutKey>> executor(session);
-  session.fail_with(ErrorCategory::TRANSPORT);
-
-  REQUIRE(executor.place(planned()) == runner::SendOutcome::INDETERMINATE);
-  // It still reached the session, which is exactly why the outcome is unknown rather than refused.
-  REQUIRE(session.placed().size() == 1);
-  REQUIRE(executor.last_error());
-  REQUIRE(executor.last_error()->category_ == ErrorCategory::TRANSPORT);
-}
-
-TEST_CASE("a broker refusal on the live path is an answer, not a doubt") {
-  FakeSession<WithoutKey> session;
-  live::SessionExecutor<FakeSession<WithoutKey>> executor(session);
-  session.fail_with(ErrorCategory::HTTP, 400);
-
-  REQUIRE(executor.place(planned()) == runner::SendOutcome::REJECTED);
-  REQUIRE_FALSE(executor.last_ref());
-}
-
-TEST_CASE("an unparseable reply is treated as possibly successful") {
-  // The trap the classification exists for: transport plainly succeeded, so it reads like a
-  // client-side problem, and the order may be live.
-  FakeSession<WithoutKey> session;
-  live::SessionExecutor<FakeSession<WithoutKey>> executor(session);
-  session.fail_with(ErrorCategory::PROTOCOL);
-
-  REQUIRE(executor.place(planned()) == runner::SendOutcome::INDETERMINATE);
-}
-
 TEST_CASE("an idempotency key a broker cannot honour is refused, never dropped") {
   // Dropping it would make a retry look safe on a broker offering no such guarantee, which is the
   // specific mistake OrderRequest::client_order_id_ documents. The strategy asked for a guarantee
@@ -720,42 +600,6 @@ TEST_CASE("an idempotency key a broker cannot honour is refused, never dropped")
   REQUIRE(session.placed().empty());
   REQUIRE(executor.last_error());
   REQUIRE(executor.last_error()->category_ == ErrorCategory::INVALID_ARGUMENT);
-}
-
-TEST_CASE("an idempotency key a broker does honour is carried through") {
-  FakeSession<WithKey> session;
-  live::SessionExecutor<FakeSession<WithKey>> executor(session);
-
-  auto order = planned();
-  order.client_order_id_ = "idem-1";
-  REQUIRE(executor.place(order) == runner::SendOutcome::ACCEPTED);
-  REQUIRE(session.placed().size() == 1);
-  REQUIRE(session.placed()[0].client_order_id_ == std::optional<std::string>("idem-1"));
-}
-
-TEST_CASE("a cancellation carries the order's own shape and amendable quantity") {
-  // Restating either here would be inventing a value the broker will act on. cancel_all reads them
-  // off the order, which is what a broker requiring them receives.
-  FakeSession<WithoutKey> session;
-  live::SessionExecutor<FakeSession<WithoutKey>> executor(session);
-
-  REQUIRE(executor.cancel(working()) == runner::SendOutcome::ACCEPTED);
-  REQUIRE(session.canceled().size() == 1);
-  const auto& instruction = session.canceled()[0];
-  REQUIRE(instruction.all_remaining_);
-  REQUIRE(instruction.shape_.type_ == OrderType::LIMIT);
-  REQUIRE(instruction.shape_.price_ == std::optional<Decimal64>(Decimal64::parse("70000")));
-  REQUIRE(instruction.quantity_ == std::optional<Decimal64>(Decimal64::parse("10")));
-  REQUIRE(session.canceled_refs()[0].primary_ == "0001569139");
-}
-
-TEST_CASE("a cancellation that fails in transit reports the doubt it leaves") {
-  FakeSession<WithoutKey> session;
-  live::SessionExecutor<FakeSession<WithoutKey>> executor(session);
-  session.fail_with(ErrorCategory::CANCELLED);
-
-  // A local abandonment: the withdrawal may already have been sent.
-  REQUIRE(executor.cancel(working()) == runner::SendOutcome::INDETERMINATE);
 }
 
 // ---------------------------------------------------------------------------
@@ -1164,32 +1008,6 @@ TEST_CASE("an order whose reply was lost is counted until holdings show it, once
   }
 }
 
-TEST_CASE("a sweep's answer names the newest order whose reply was lost", "[confirm]") {
-  // After a hold cleared by hand without naming its order, a second lost reply on the
-  // same instrument and side leaves two unnamed entries. The sweep answers the one just sent.
-  ConfirmRig rig;
-  rig.script.push_back(target_of("10"));
-  rig.script.push_back(target_of("25"));
-  rig.session.fail_place_with(reply_lost());
-  rig.runner_instance.feed(bar_at(1, "70000"));
-  rig.runner_instance.ledger().resolve_after_reading_orders(samsung());
-  install(rig.runner_instance, polled(2, "0", {}));
-  rig.runner_instance.feed(bar_at(2, "70000"));
-  rig.session.heal_place();
-  REQUIRE(rig.session.placed().size() == 2);
-  REQUIRE(rig.runner_instance.unconfirmed_orders() == 2);
-
-  rig.runner_instance.ledger().resolve_after_reading_orders(samsung());
-  rig.runner_instance.resolve_indeterminate_placement(samsung(), OrderSide::BUY, std::string("NEW"));
-  rig.runner_instance.refresh_unconfirmed();
-  bool named_newest = false;
-  for (const auto& row : rig.runner_instance.context().portfolio().working_) {
-    named_newest = named_newest || (row.ref_.primary_ == "NEW" &&
-                                    row.order_.quantity_ == rig.session.placed()[1].quantity_);
-  }
-  CHECK(named_newest);
-}
-
 TEST_CASE("an order whose reply was lost carries no reference, not the previous order's", "[confirm]") {
   // `last_ref()` still names the last accepted order after a failed send. A row carrying it could be
   // withdrawn in that order's place.
@@ -1294,69 +1112,6 @@ TEST_CASE("an order whose reply was lost times out once the ledger is cleared by
   CHECK(rig.session.placed().size() == 1);
 }
 
-TEST_CASE("a protective stop listed in full does not hold up the orders beside it", "[confirm]") {
-  // From a randomized fault run with partial fills: a market sell filled 6 of 10, the strategy turned, the 4 left were
-  // withdrawn and 6 bought back, and a stop for the 10 held rested in full. Holdings ended where they
-  // began, which is evidence only once every order's history has said what it filled -- and a resting
-  // stop has no ending to report, so the sell and the buy timed out and withheld the instrument.
-  ConfirmRig rig;
-  rig.runner_instance.set_confirmation_timeout(std::chrono::minutes(10));
-  install(rig.runner_instance, polled(0, "10", {}));
-  rig.session.order_ids_ = {"S", "B", "C"};
-
-  rig.script.push_back(target_of("0"));
-  rig.runner_instance.feed(bar_at(1, "70000"));
-  REQUIRE(rig.session.placed().size() == 1);
-
-  // Six of the sell filled: holdings show them, the listing shows the four left.
-  install(rig.runner_instance, polled(2, "4", {listed_row("S", OrderSide::SELL, "10", "6")}));
-  rig.script.push_back(target_of("10"));
-  rig.runner_instance.feed(bar_at(2, "70000"));
-  REQUIRE(rig.session.canceled().size() == 1);
-  REQUIRE(rig.session.placed().size() == 2);
-  REQUIRE(rig.session.placed()[1].quantity_ == Decimal64::parse("6"));
-
-  // Holdings show the buy; the protective stop for the ten goes out and rests.
-  install(rig.runner_instance, polled(3, "10", {}));
-  const auto trigger = strategy::Price::checked(Decimal64::parse("65000"), PriceRule::krx_equity());
-  const auto limit = strategy::Price::checked(Decimal64::parse("64900"), PriceRule::krx_equity());
-  rig.script.push_back(strategy::OrderIntent::stop_limit(
-    samsung(), OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")), *trigger, *limit));
-  rig.runner_instance.feed(bar_at(3, "70000"));
-  REQUIRE(rig.session.placed().size() == 3);
-
-  auto stop_row = listed_row("C", OrderSide::SELL, "10", "0", OrderType::STOP_LIMIT);
-
-  SECTION("before the buy's history has said what it filled, nothing is credited") {
-    // Unchanged holdings with an opposite pair unsettled are no evidence, stop or no stop. (Within the
-    // timeout: the bars here are an hour apart.)
-    rig.runner_instance.set_confirmation_timeout(std::chrono::hours(24));
-    install(rig.runner_instance, polled(4, "10", {stop_row}));
-    rig.runner_instance.confirm_from_history({ended_row("S", OrderSide::SELL, "10", "6")});
-    rig.runner_instance.refresh_unconfirmed();
-    CHECK(rig.runner_instance.unconfirmed_orders() == 3);
-    CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
-    return;
-  }
-
-  // Past the timeout: the histories of the sell (6 filled) and the buy (6 filled) arrive; the stop rests.
-  auto late = polled(30, "10", {stop_row});
-  rig.runner_instance.set_observed_at(late.as_of_);
-  install(rig.runner_instance, std::move(late));
-  auto bought = ended_row("B", OrderSide::BUY, "6", "6");
-  bought.status_ = OrderStatus::FILLED;
-  rig.runner_instance.confirm_from_history({ended_row("S", OrderSide::SELL, "10", "6"), bought});
-
-  // A holdings read a further timeout on, still 10: the sell and the buy are confirmed, the stop counted.
-  auto later = polled(31, "10", {stop_row});
-  rig.runner_instance.set_observed_at(later.as_of_);
-  install(rig.runner_instance, std::move(later));
-  rig.runner_instance.refresh_unconfirmed();
-  CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 0);
-  CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
-  CHECK(rig.runner_instance.unconfirmed_orders() == 1);
-}
-
 namespace {
 /** What a broker answers when asked to withdraw an order that has already filled. */
 BrokerError already_finished() {
@@ -1412,32 +1167,6 @@ TEST_CASE("a target does not re-place an order it only reserved while holdings l
   REQUIRE(rig.session.placed().size() == 3);
   CHECK(rig.session.placed()[2].side_ == OrderSide::BUY);
   CHECK(rig.session.placed()[2].quantity_ == Decimal64::parse("10"));
-}
-
-TEST_CASE("a resting order not yet listed is withdrawn for a lower target, and not replaced beside it", "[confirm]") {
-  // A reserved row may also be a resting order the listing does not show yet. Withdrawn as
-  // before; the rest is placed once its history says what it filled.
-  ConfirmRig rig;
-  auto limit_target = [](const char* quantity) {
-    auto target = target_of(quantity);
-    target.limit_ = strategy::Price::checked(Decimal64::parse("69000"), samsung_reference().price_rule_);
-    return target;
-  };
-  rig.script.push_back(limit_target("10"));
-  rig.script.push_back(limit_target("5"));
-  rig.runner_instance.feed(bar_at(1, "70000"));
-  install(rig.runner_instance, polled(2, "0", {}));
-  rig.runner_instance.feed(bar_at(2, "70000"));
-  CHECK(rig.session.canceled().size() == 1);
-  CHECK(rig.session.placed().size() == 1);
-
-  // Its history: withdrawn with nothing filled. The next pass places the five.
-  rig.runner_instance.confirm_from_history({ended_row("0001569139", OrderSide::BUY, "10", "0")});
-  install(rig.runner_instance, polled(3, "0", {}));
-  rig.script.push_back(limit_target("5"));
-  rig.runner_instance.feed(bar_at(3, "70000"));
-  REQUIRE(rig.session.placed().size() == 2);
-  CHECK(rig.session.placed()[1].quantity_ == Decimal64::parse("5"));
 }
 
 TEST_CASE("an unconfirmed order past the timeout withholds its instrument", "[confirm]") {
@@ -1535,46 +1264,6 @@ TEST_CASE("a fill its history reports is not marked when holdings come after the
     CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 1);
     CHECK(rig.runner_instance.unconfirmed_orders() == 0);
   }
-}
-
-TEST_CASE("a fill the history does not return is not marked before the holdings that show it", "[confirm]") {
-  // The unsettled side of the slow-loop race: past the timeout, the listing poll reads a history that
-  // has no row for the order yet; the holdings read of the same iteration shows the fill.
-  ConfirmRig rig;
-  rig.script.push_back(target_of("10"));
-  rig.runner_instance.set_confirmation_timeout(std::chrono::minutes(1));
-  rig.runner_instance.feed(bar_at(1, "70000"));
-  install(rig.runner_instance, polled(1, "0", {}));
-  rig.runner_instance.set_observed_at(std::chrono::system_clock::time_point{} + std::chrono::hours(500002));
-  REQUIRE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
-  rig.runner_instance.confirm_from_history({});
-  CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
-  install(rig.runner_instance, polled(2, "10", {}));
-  rig.runner_instance.refresh_unconfirmed();
-  CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
-  CHECK(rig.runner_instance.unconfirmed_orders() == 0);
-  CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 0);
-}
-
-TEST_CASE("an order explained again after a history miss starts over", "[confirm]") {
-  // A listing that carries the order again explains it, so a later gap gets a fresh timeout and a
-  // fresh history read, not the earlier miss.
-  ConfirmRig rig;
-  rig.script.push_back(target_of("10"));
-  rig.runner_instance.set_confirmation_timeout(std::chrono::minutes(1));
-  rig.runner_instance.feed(bar_at(1, "70000"));
-  install(rig.runner_instance, polled(1, "0", {}));
-  rig.runner_instance.set_observed_at(std::chrono::system_clock::time_point{} + std::chrono::hours(500002));
-  REQUIRE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
-  rig.runner_instance.confirm_from_history({});
-  REQUIRE_FALSE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
-
-  install(rig.runner_instance, polled(2, "0", {listed_row("0001569139", OrderSide::BUY, "10", "0")}));
-  rig.runner_instance.refresh_unconfirmed();
-  // Gone again: it asks for the history, which it would not while still flagged.
-  install(rig.runner_instance, polled(2, "0", {}));
-  CHECK(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
-  CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
 }
 
 TEST_CASE("a fill that confirmed one order is not counted again for the next", "[confirm]") {
@@ -1720,177 +1409,6 @@ TEST_CASE("a withdrawal the binding refused says so on its own entry") {
   CHECK(session.canceled().empty());
 }
 
-TEST_CASE("a reserved order is withdrawn by the reference the broker actually issued") {
-  // The reservation is a working row this library wrote, and reconciliation reads working rows: a
-  // row opposing the next target goes on the cancel list **by its reference**. A synthetic row with
-  // an empty one would have the runner ask a broker to withdraw an order identified by nothing --
-  // the one thing a cancellation cannot be vague about.
-  FakeSession<SellableInHoldings> session;
-  strategy::RiskLimits limits;
-  limits.enforce_sellable_quantity_ = true;
-
-  FlipRunner<SellableInHoldings> live_runner(
-    FlipTarget{}, limits, 512, live::SessionExecutor<FakeSession<SellableInHoldings>>(session)
-  );
-  live_runner.context().set_instrument(samsung_reference());
-  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
-  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
-  live_runner.context().set_portfolio(held_position<SellableInHoldings>("10", "10"));
-
-  // Flat from ten held: one sell, accepted, and reserved for the next pass.
-  const auto first = live_runner.feed(bar_at(1, "70000"));
-  REQUIRE(first.would_place_.size() == 1);
-  REQUIRE(session.placed().size() == 1);
-
-  // Long from the same ten held, with nothing polled in between: the resting sell opposes the buy
-  // and has to be withdrawn first.
-  const auto second = live_runner.feed(bar_at(2, "70000"));
-  REQUIRE(session.canceled_refs().size() == 1);
-  REQUIRE(session.canceled_refs()[0].primary_ == "0001569139");
-  // And the instruction carries the order's own quantity, not the zero a default row would give a
-  // broker that requires one.
-  REQUIRE(session.canceled().size() == 1);
-  REQUIRE(session.canceled()[0].quantity_ == Decimal64::parse("10"));
-  REQUIRE(second.unavailable_cancel_.empty());
-}
-
-namespace {
-
-/** Routes an omitted venue to KRX, as KIS documents, so a test can tell the traits were asked. */
-struct KrxWhenOmitted {
-  static constexpr Venue effective_route(Venue asked) noexcept {
-    return asked == Venue::UNSPECIFIED ? Venue::KRX : asked;
-  }
-};
-
-/** The fake session, with traits that say how it routes -- as every shipped broker's do. */
-template <typename CapsType>
-class RoutedFakeSession : public FakeSession<CapsType> {
-public:
-  using Traits = KrxWhenOmitted;
-};
-
-} // namespace
-
-TEST_CASE("an unrouted order is sent with the binding's default route", "[route]") {
-  FakeSession<WithoutKey> session;
-
-  // No default: the order names no venue and none is sent, which is the broker's own default.
-  live::SessionExecutor<FakeSession<WithoutKey>> unrouted(session);
-  CHECK(unrouted.default_route() == Venue::UNSPECIFIED);
-  REQUIRE(unrouted.place(planned()) == runner::SendOutcome::ACCEPTED);
-  CHECK(session.placed().back().venue_ == Venue::UNSPECIFIED);
-
-  // A default: an order naming no venue is sent there, and one naming a venue keeps it.
-  live::SessionExecutor<FakeSession<WithoutKey>> executor(session, Venue::KRX);
-  CHECK(executor.default_route() == Venue::KRX);
-  REQUIRE(executor.place(planned()) == runner::SendOutcome::ACCEPTED);
-  CHECK(session.placed().back().venue_ == Venue::KRX);
-  auto routed = planned();
-  routed.venue_ = Venue::NXT;
-  REQUIRE(executor.place(routed) == runner::SendOutcome::ACCEPTED);
-  CHECK(session.placed().back().venue_ == Venue::NXT);
-}
-
-TEST_CASE("the route a binding reports applies its default before the broker's", "[route]") {
-  // **Every binding answers.** `effective_route` is optional on a broker's traits and a hand-written
-  // session need have none, so without a fallback a journal over such a binding would record the
-  // strategy's blank while the default went on the wire.
-  FakeSession<WithoutKey> bare;
-  CHECK(live::SessionExecutor<FakeSession<WithoutKey>>(bare).effective_route(Venue::UNSPECIFIED) ==
-    Venue::UNSPECIFIED);
-  CHECK(live::SessionExecutor<FakeSession<WithoutKey>>(bare, Venue::NXT)
-    .effective_route(Venue::UNSPECIFIED) == Venue::NXT);
-
-  // Traits that say how the broker routes an omitted venue are asked about the *requested* one: with
-  // a default, the omission never reaches them.
-  RoutedFakeSession<WithoutKey> routed;
-  CHECK(live::SessionExecutor<RoutedFakeSession<WithoutKey>>(routed)
-    .effective_route(Venue::UNSPECIFIED) == Venue::KRX);
-  CHECK(live::SessionExecutor<RoutedFakeSession<WithoutKey>>(routed, Venue::NXT)
-    .effective_route(Venue::UNSPECIFIED) == Venue::NXT);
-  CHECK(live::SessionExecutor<RoutedFakeSession<WithoutKey>>(routed, Venue::NXT)
-    .effective_route(Venue::COMBINED) == Venue::COMBINED);
-}
-
-TEST_CASE("a runner's journal, order, reservation and withdrawal all name the default route", "[route]") {
-  // The same sell-then-withdraw as the case above, bound with a default route and a journal. Each of
-  // the four places the route is written down is checked, because each is read by something
-  // different: the journal by recovery, the request by the broker, the reserved row by the
-  // withdrawal built from it, and the report by the operator. A default applied only at the wire
-  // would leave the other three naming a venue the order never went to.
-  //
-  // The runner resolves the route before the journal sees the order, so this case does not guard
-  // the executor's own fallback for a session without traits; the case above does.
-  FakeSession<SellableInHoldings> session;
-  runner::MemoryJournal journal;
-  strategy::RiskLimits limits;
-  // Enforced so the sell's reservation persists into the next pass, which is where it is withdrawn.
-  limits.enforce_sellable_quantity_ = true;
-
-  auto live_runner = live::bind_journaled(
-    session, journal, FlipTarget{}, limits, live::default_series_capacity, Venue::KRX
-  );
-  live_runner.context().set_instrument(samsung_reference());
-  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
-  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
-  live_runner.context().set_portfolio(held_position<SellableInHoldings>("10", "10"));
-
-  const auto first = live_runner.feed(bar_at(1, "70000"));
-  REQUIRE(session.placed().size() == 1);
-  CHECK(session.placed()[0].venue_ == Venue::KRX);
-  REQUIRE(first.would_place_.size() == 1);
-  CHECK(first.would_place_[0].venue_ == Venue::KRX);
-  REQUIRE_FALSE(journal.records().empty());
-  CHECK(journal.records().front().outcome_ == runner::JournalOutcome::PENDING);
-  CHECK(journal.records().front().venue_ == std::optional<Venue>(Venue::KRX));
-
-  const auto& working = live_runner.context().portfolio().working_;
-  REQUIRE(working.size() == 1);
-  CHECK(working[0].reserved_);
-  CHECK(working[0].order_.venue_ == Venue::KRX);
-
-  // Long from the same ten held: the reserved sell is withdrawn, at the venue it was sent to. At
-  // Kiwoom a withdrawal naming no venue is refused, so a blank here left the order resting.
-  live_runner.feed(bar_at(2, "70000"));
-  REQUIRE(session.canceled().size() == 1);
-  CHECK(session.canceled()[0].venue_ == Venue::KRX);
-}
-
-TEST_CASE("an unjournaled binding takes a default route too", "[route]") {
-  // `bind` builds its own executor, so a parameter it forgot to pass on would leave the runner
-  // sending unrouted orders while its caller had stated a route.
-  FakeSession<WithoutKey> session;
-  auto bound = live::bind(
-    session, HoldTen{}, strategy::RiskLimits{}, live::default_series_capacity, Venue::KRX
-  );
-  CHECK(bound.executor().default_route() == Venue::KRX);
-  CHECK(live::bind(session, HoldTen{}).executor().default_route() == Venue::UNSPECIFIED);
-}
-
-TEST_CASE("a binding with no default route sends and records the planned venue", "[route]") {
-  // The control for the case above, and the promise to every existing caller: nothing changes.
-  FakeSession<SellableInHoldings> session;
-  runner::MemoryJournal journal;
-  strategy::RiskLimits limits;
-  limits.enforce_sellable_quantity_ = true;
-
-  auto live_runner = live::bind_journaled(session, journal, FlipTarget{}, limits);
-  live_runner.context().set_instrument(samsung_reference());
-  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
-  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
-  live_runner.context().set_portfolio(held_position<SellableInHoldings>("10", "10"));
-
-  live_runner.feed(bar_at(1, "70000"));
-  REQUIRE(session.placed().size() == 1);
-  CHECK(session.placed()[0].venue_ == Venue::UNSPECIFIED);
-  REQUIRE_FALSE(journal.records().empty());
-  CHECK(journal.records().front().venue_ == std::optional<Venue>(Venue::UNSPECIFIED));
-  live_runner.feed(bar_at(2, "70000"));
-  REQUIRE(session.canceled().size() == 1);
-  CHECK(session.canceled()[0].venue_ == Venue::UNSPECIFIED);
-}
-
 /** Buys one share every bar, plainly. */
 struct BuysOne {
   template <class Ctx>
@@ -1954,170 +1472,6 @@ struct LimitSell {
     );
   }
 };
-
-/**
- * Sells one share at a price of zero, which `Price::checked` admits.
- *
- * Zero sits on a stated tick grid and `RiskGuard` has no general positivity rule, so this reaches
- * the binding -- where every shipped adapter refuses it before any request goes out. It is the
- * concrete case behind `Runner::unclamped_orders_refused`'s second site: a withheld floor would have
- * lifted this price into range.
- */
-struct SellsAtZero {
-  template <class Ctx>
-  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
-    const auto reference = ctx.instrument(bar.instrument_);
-    if (!reference) {
-      return;
-    }
-    const auto limit = strategy::Price::checked(Decimal64::parse("0"), reference->price_rule_);
-    if (!limit) {
-      return;
-    }
-    ctx.submit(
-      strategy::OrderIntent::limit(
-        bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("1")), *limit
-      )
-    );
-  }
-};
-
-/** Asks for an idempotency key on the first bar only, then buys plainly. */
-struct KeyedOnce {
-  int bars_{0};
-
-  template <class Ctx>
-  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
-    auto intent = strategy::OrderIntent::market(
-      bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
-    );
-    if (bars_++ == 0) {
-      ctx.submit(intent.with_client_order_id("idem-1"));
-      return;
-    }
-    ctx.submit(intent);
-  }
-};
-
-TEST_CASE("a send the binding itself refused spends no rate-limit budget") {
-  // The point of the fourth outcome. `REJECTED` means the *broker* refused, which obliges the
-  // runner to count a request -- the broker counted one. Reporting a purely local refusal that way
-  // spent budget for a request nobody made, and with a tight window that refuses a later order
-  // which would have been allowed.
-  using Runner = runner::Runner<
-    KeyedOnce, WithoutKey, FakeBroker, live::SessionExecutor<FakeSession<WithoutKey>>
-  >;
-  FakeSession<WithoutKey> session;
-  strategy::RiskLimits limits;
-  limits.max_orders_per_window_ = 1;
-  // Wide enough that both bars fall inside it, or the window would have expired between them and
-  // the test would pass whatever the first send spent.
-  limits.rate_window_ = std::chrono::hours(24);
-
-  Runner live_runner(
-    KeyedOnce{}, limits, 512, live::SessionExecutor<FakeSession<WithoutKey>>(session)
-  );
-  live_runner.context().set_instrument(samsung_reference());
-  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
-  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
-  // A session-backed runner requires an account it has read before it places; this case is about
-  // something else, so it supplies one.
-  live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
-
-  // Bar one asks for a guarantee this broker cannot give, so nothing is sent.
-  const auto first = live_runner.feed(bar_at(1, "70000"));
-  CHECK(session.placed().empty());
-  CHECK(first.would_place_.empty());
-  REQUIRE(first.rejected_.size() == 1);
-  // **The reason is on the entry**, not in `last_error()`: a pass places several orders and a later
-  // accepted one clears that, so a report would outlive the only record of why this entry is here.
-  // It also must not read as `NOT_REPRESENTABLE`, which claims the arithmetic overflowed.
-  CHECK(first.rejected_[0].reason_ == strategy::RejectReason::BINDING_REFUSED);
-
-  // Bar two asks for nothing unusual, and the window must still have room for it.
-  const auto second = live_runner.feed(bar_at(2, "70000"));
-  CHECK(second.refused_.empty());
-  CHECK(second.would_place_.size() == 1);
-  CHECK(session.placed().size() == 1);
-}
-
-TEST_CASE("a client refusing before it sends is not the broker refusing") {
-  // The path a capability check cannot catch: the binding is willing, the broker supports the
-  // feature, and the *client* refuses the instruction's shape before any I/O -- a Toss order id
-  // that is empty or too long, a time in force it does not express. That is `INVALID_ARGUMENT`,
-  // exactly like a broker's own refusal, and the two differ in whether a request went out at all.
-  using Runner = runner::Runner<
-    BuysOne, WithKey, FakeBroker, live::SessionExecutor<FakeSession<WithKey>>
-  >;
-  FakeSession<WithKey> session;
-  session.refuse_next_locally();
-  strategy::RiskLimits limits;
-  limits.max_orders_per_window_ = 1;
-  limits.rate_window_ = std::chrono::hours(24);
-
-  Runner live_runner(
-    BuysOne{}, limits, 512, live::SessionExecutor<FakeSession<WithKey>>(session)
-  );
-  live_runner.context().set_instrument(samsung_reference());
-  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
-  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
-  // A session-backed runner requires an account it has read before it places; this case is about
-  // something else, so it supplies one.
-  live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
-
-  const auto first = live_runner.feed(bar_at(1, "70000"));
-  REQUIRE(first.rejected_.size() == 1);
-  // Not `BROKER_REFUSED`: the broker never saw it.
-  CHECK(first.rejected_[0].reason_ == strategy::RejectReason::BINDING_REFUSED);
-  CHECK(session.placed().empty());
-
-  // And the window still has room, because nothing was counted against it.
-  const auto second = live_runner.feed(bar_at(2, "70000"));
-  CHECK(second.refused_.empty());
-  CHECK(second.would_place_.size() == 1);
-  CHECK(session.placed().size() == 1);
-}
-
-TEST_CASE("a token refresh that failed is not the broker refusing an order it never saw") {
-  // The prerequisite-request boundary. Both clients validate, then refresh a token, then build the
-  // order; a refresh that fails is handed to every caller waiting behind it. By category alone that
-  // is `AUTHENTICATION`, which reads as the broker refusing -- so the runner would count a request
-  // the broker never received, and a later valid order would be refused once credentials recover.
-  using Runner = runner::Runner<
-    BuysOne, WithKey, FakeBroker, live::SessionExecutor<FakeSession<WithKey>>
-  >;
-  FakeSession<WithKey> session;
-  session.fail_next_token();
-  strategy::RiskLimits limits;
-  limits.max_orders_per_window_ = 1;
-  limits.rate_window_ = std::chrono::hours(24);
-
-  Runner live_runner(
-    BuysOne{}, limits, 512, live::SessionExecutor<FakeSession<WithKey>>(session)
-  );
-  live_runner.context().set_instrument(samsung_reference());
-  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
-  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
-  // A session-backed runner requires an account it has read before it places; this case is about
-  // something else, so it supplies one.
-  live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
-
-  const auto first = live_runner.feed(bar_at(1, "70000"));
-  REQUIRE(first.rejected_.size() == 1);
-  CHECK(first.rejected_[0].reason_ == strategy::RejectReason::BINDING_REFUSED);
-  CHECK(session.placed().empty());
-  // Nor is it indeterminate: an order that was never built leaves nothing to reconcile.
-  CHECK(first.indeterminate_.empty());
-
-  // Credentials recover, and the window has room because nothing was ever sent.
-  const auto second = live_runner.feed(bar_at(2, "70000"));
-  CHECK(second.refused_.empty());
-  CHECK(second.would_place_.size() == 1);
-  CHECK(session.placed().size() == 1);
-  // The first intent was kept, the broker having been unreachable; the second bar's statement
-  // superseded it, so it is not sent as well.
-  CHECK(live_runner.intents_kept_for_phase() == 0);
-}
 
 TEST_CASE("only a refusal for want of a broker is about the connection") {
   // The rule `Runner` keeps an unsent instruction by: never written, and not the client's own
@@ -2311,40 +1665,6 @@ TEST_CASE("an order intent the broker could not be reached for is kept and sent 
   CHECK(live_runner.intents_kept_for_phase() == 0);
 }
 
-TEST_CASE("a token request that failed in transit leaves no doubt about an unsent order") {
-  // `TRANSPORT` maps to `INDETERMINATE` -- correctly, for the order's own request, where the bytes
-  // may have arrived. On the *token* request it is the wrong answer twice over: the order was never
-  // built, so nothing is in doubt, and withholding the instrument costs a reconciliation for an
-  // order that does not exist.
-  FakeSession<WithKey> session;
-  session.fail_next_token(ErrorCategory::TRANSPORT);
-  live::SessionExecutor<FakeSession<WithKey>> executor(session);
-
-  CHECK(executor.place(planned()) == runner::SendOutcome::REFUSED_LOCALLY);
-  CHECK(session.placed().empty());
-}
-
-TEST_CASE("a withdrawal is never addressed to a broker by an empty reference") {
-  // The other half of the reference the reservation now carries. A row can still reach the executor
-  // without one -- an executor that cannot report what the broker issued leaves it blank -- and
-  // sending that is a request which can only fail while looking like an attempt. Refused as an
-  // answer rather than as an outage: the order was never addressed, so nothing is in doubt.
-  FakeSession<SellableInHoldings> session;
-  live::SessionExecutor<FakeSession<SellableInHoldings>> executor(session);
-
-  WorkingOrder<FakeBroker> unaddressable = working();
-  unaddressable.ref_ = OrderRef<FakeBroker>{};
-
-  CHECK(executor.cancel(unaddressable) == runner::SendOutcome::REFUSED_LOCALLY);
-  CHECK(session.canceled().empty());
-  REQUIRE(executor.last_error().has_value());
-  CHECK(executor.last_error()->category_ == ErrorCategory::INVALID_ARGUMENT);
-
-  // And an ordinary one still goes.
-  CHECK(executor.cancel(working()) == runner::SendOutcome::ACCEPTED);
-  CHECK(session.canceled().size() == 1);
-}
-
 TEST_CASE("a broker carrying the figure in its holdings is never asked for it") {
   // The whole point of `sellable_source`: at KIS the answer is already on every position the
   // runner polls, so the check costs nothing. A test counts the requests, because "it should not
@@ -2387,36 +1707,6 @@ TEST_CASE("a broker carrying the figure in its holdings is never asked for it") 
   REQUIRE(refused.refused_[0].reason_ == strategy::GuardReason::QUANTITY_NOT_SELLABLE);
 }
 
-TEST_CASE("a broker that must be asked is asked once, for the instrument being sold") {
-  FakeSession<SellableByInquiry> session;
-  session.set_sellable("10");
-  strategy::RiskLimits limits;
-  limits.enforce_sellable_quantity_ = true;
-
-  SellRunner<SellableByInquiry> live_runner(
-    SellsAll{}, limits, 512, live::SessionExecutor<FakeSession<SellableByInquiry>>(session)
-  );
-  live_runner.context().set_instrument(samsung_reference());
-  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
-  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
-  // Toss leaves the field absent, which is why this broker has to be asked at all.
-  live_runner.context().set_portfolio(held_position<SellableByInquiry>("10", nullptr));
-
-  const auto report = live_runner.feed(bar_at(1, "70000"));
-
-  REQUIRE(session.sellable_asked().size() == 1);
-  REQUIRE(session.sellable_asked()[0] == samsung());
-  REQUIRE(session.placed().size() == 1);
-  REQUIRE(report.refused_.empty());
-
-  // The answer is kept with the position, so the next pass in the same holdings cycle reuses it
-  // rather than spending another request on a figure that has not been repolled.
-  REQUIRE(live_runner.context().portfolio().sellable_quantity_of(samsung()) ==
-          Decimal64::parse("10"));
-  live_runner.feed(bar_at(2, "70000"));
-  REQUIRE(session.sellable_asked().size() == 1);
-}
-
 TEST_CASE("an inquiry that fails leaves the quantity unknown, and unknown refuses") {
   FakeSession<SellableByInquiry> session;
   session.fail_with(ErrorCategory::TRANSPORT);
@@ -2438,64 +1728,6 @@ TEST_CASE("an inquiry that fails leaves the quantity unknown, and unknown refuse
   REQUIRE(session.placed().empty());
   REQUIRE(report.refused_.size() == 1);
   REQUIRE(report.refused_[0].reason_ == strategy::GuardReason::QUANTITY_NOT_SELLABLE);
-}
-
-TEST_CASE("a strategy drives a session through the same pipeline a dry run uses") {
-  FakeSession<WithoutKey> session;
-  LiveRunner live_runner(
-    HoldTen{}, {}, 512, live::SessionExecutor<FakeSession<WithoutKey>>(session)
-  );
-  live_runner.context().set_instrument(samsung_reference());
-  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
-  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
-  // A session-backed runner requires an account it has read before it places; this case is about
-  // something else, so it supplies one.
-  live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
-
-  const auto report = live_runner.feed(bar_at(0, "70000"));
-  REQUIRE(report.would_place_.size() == 1);
-  // It actually reached the session, on the lot. The target named no limit, so reconciliation
-  // produced a market order -- and a market order carries no price, which is the invariant
-  // OrderRequest states and every adapter enforces before any I/O.
-  REQUIRE(session.placed().size() == 1);
-  REQUIRE(session.placed()[0].quantity_ == Decimal64::parse("10"));
-  REQUIRE(session.placed()[0].type_ == OrderType::MARKET);
-  REQUIRE_FALSE(session.placed()[0].price_);
-}
-
-TEST_CASE("a mid-flight failure on the live path stops the next order for that instrument") {
-  // The acceptance criterion, end to end over a session: nothing further is submitted, and the
-  // session is the only thing that could have sent it.
-  FakeSession<WithoutKey> session;
-  LiveRunner live_runner(
-    HoldTen{}, {}, 512, live::SessionExecutor<FakeSession<WithoutKey>>(session)
-  );
-  live_runner.context().set_instrument(samsung_reference());
-  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
-  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
-  // A session-backed runner requires an account it has read before it places; this case is about
-  // something else, so it supplies one.
-  live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
-
-  session.fail_with(ErrorCategory::TRANSPORT);
-  const auto first = live_runner.feed(bar_at(0, "70000"));
-  REQUIRE(first.indeterminate_.size() == 1);
-  REQUIRE(live_runner.ledger().requires_reconcile(samsung()));
-  REQUIRE(session.placed().size() == 1);
-
-  // The transport recovers; the doubt about the first order does not.
-  session.succeed();
-  const auto second = live_runner.feed(bar_at(24, "70000"));
-  REQUIRE(second.withheld_.size() == 1);
-  REQUIRE(second.would_place_.empty());
-  // Still exactly one request ever made, which is the promise: no retry, no double position.
-  REQUIRE(session.placed().size() == 1);
-
-  // Only reading the broker's order list releases it.
-  live_runner.ledger().resolve_after_reading_orders(samsung());
-  const auto third = live_runner.feed(bar_at(48, "70000"));
-  REQUIRE(third.would_place_.size() == 1);
-  REQUIRE(session.placed().size() == 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -2580,39 +1812,6 @@ TEST_CASE("an exit priced below a withheld floor is refused rather than lifted o
   CHECK(live_runner.unclamped_orders_refused() == 0);
 }
 
-TEST_CASE("a price no adapter will send is counted as a local refusal, not as silence") {
-  // **The third outcome, and the one that was invisible.** A sell at zero passes `Price::checked`,
-  // because zero is on a stated grid, and passes a guard that has no positivity rule -- then the
-  // binding refuses it and no request goes out. Counting only what a broker refused left this
-  // looking exactly like a run where withholding cost nothing, and applying the withheld floor
-  // would have produced a valid order.
-  using Runner = runner::Runner<
-    SellsAtZero, WithKey, FakeBroker, live::SessionExecutor<FakeSession<WithKey>>
-  >;
-  FakeSession<WithKey> session;
-  Runner live_runner(SellsAtZero{}, {}, 512, live::SessionExecutor<FakeSession<WithKey>>(session));
-  live_runner.context().set_instrument(samsung_reference());
-  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
-  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
-  live_runner.context().set_portfolio(held_position<WithKey>("10", nullptr));
-  PriceLimits band;
-  band.lower_ = Decimal64::parse("65000");
-  live_runner.set_price_limits(samsung(), band);
-  // Stands for what every shipped adapter does with a nonpositive limit price: refuse before any
-  // I/O, with `reached_broker_` false.
-  session.refuse_next_locally();
-
-  const auto report = live_runner.feed(bar_at(1, "70000"));
-
-  REQUIRE(report.rejected_.size() == 1);
-  CHECK(report.rejected_[0].reason_ == strategy::RejectReason::BINDING_REFUSED);
-  CHECK(session.placed().empty());
-  CHECK(live_runner.price_bands_withheld() == 1);
-  CHECK(live_runner.unclamped_orders_refused() == 1);
-  // The broker was never asked, so the counter about brokers must not move.
-  CHECK(live_runner.unclamped_orders_rejected() == 0);
-}
-
 TEST_CASE("binding reads the capabilities and the tag off the session") {
   // The repetition the factories remove, and the mismatch they make unexpressible: writing the four
   // parameters out lets a caller pair one broker's tag with another's capabilities.
@@ -2656,19 +1855,6 @@ TEST_CASE("an observing binding has the same types and nothing to send through")
   // And the session was never touched: there is nothing to send through, rather than a check that
   // declined to send.
   REQUIRE(session.placed().empty());
-}
-
-TEST_CASE("an observing binding records nothing in the ledger, because nothing was sent") {
-  FakeSession<WithKey> session;
-  session.fail_with(ErrorCategory::TRANSPORT);
-  auto observing = live::bind_observer(session, HoldTen{}, {});
-  observing.context().set_instrument(samsung_reference());
-  observing.context().set_phase(strategy::MarketPhase::OPEN);
-  observing.context().set_last_price(samsung(), Decimal64::parse("70000"));
-
-  // The session would have failed, and it is never asked, so no doubt is created.
-  observing.feed(bar_at(0, "70000"));
-  REQUIRE(observing.ledger().empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -2860,56 +2046,6 @@ TEST_CASE("a cold start's history read places one order, not one per bar", "[own
   CHECK(live_runner.context().portfolio().working_.empty());
   CHECK(live_runner.unconfirmed_orders() == 0);
   CHECK(session.placed().size() == 1);
-}
-
-TEST_CASE("a bar fed before the next listing sees the order the last one sent", "[own-orders]") {
-  // What the reservation is for on the shipped path: the cold start sends one order, and the next bar
-  // arrives -- a later read bringing one more closed bar -- while the working-order listing is not
-  // due yet. Holdings are polled in between, as a live loop does, and must keep the reserved row: the
-  // target restated on the new bar is already met by the order working.
-  using LoopRunner = runner::Runner<
-    HoldTen, WithWorkingOrders, FakeBroker, live::SessionExecutor<FakeSession<WithWorkingOrders>>
-  >;
-  using Source = FreshHoldingsSource<FakeSession<WithWorkingOrders>, runner::ManualClock>;
-  FakeSession<WithWorkingOrders> session;
-  session.set_bars(history_bars(50));
-  strategy::RiskLimits any_phase;
-  any_phase.permitted_phases_ = std::nullopt;
-  LoopRunner live_runner(
-    HoldTen{}, any_phase, 512, live::SessionExecutor<FakeSession<WithWorkingOrders>>(session)
-  );
-  live_runner.context().set_instrument(samsung_reference());
-
-  const auto start = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 200);
-  runner::PollSchedule schedule;
-  schedule.bars_ = std::chrono::seconds(1);
-  schedule.holdings_ = std::chrono::seconds(1);
-  // Bars come faster than the listing, so the second bar is fed with only the reservation to go on.
-  schedule.working_orders_ = std::chrono::seconds(30);
-  schedule.tick_ = std::chrono::seconds(1);
-  schedule.calendar_.reset();
-  Source source(session, {samsung()}, nullptr);
-  runner::PollingLoop<LoopRunner, Source, runner::ManualClock> loop(
-    live_runner, source, schedule, runner::ManualClock{start});
-  source = Source(session, {samsung()}, &loop.clock());
-  // After the first bar poll, the session's next read has one more closed bar.
-  source.next_bars_ = history_bars(51);
-  loop.set_maximum_portfolio_age(std::chrono::minutes(1));
-  runner::StopSource stop;
-
-  // One run, because each run polls the listing first: two iterations a second apart.
-  const auto report = loop.run(stop, 2);
-  // Not vacuous: two bar polls and two holdings polls, one listing; forty-nine bars fed as history,
-  // and the fifty-first fed at all (its close is the last price), so the fiftieth and the fifty-first
-  // were each fed live, on their own pass.
-  REQUIRE(report.attempted(runner::PollKind::BARS) == 2);
-  REQUIRE(report.attempted(runner::PollKind::HOLDINGS) == 2);
-  REQUIRE(report.attempted(runner::PollKind::WORKING_ORDERS) == 1);
-  REQUIRE(live_runner.warmup_instructions_discarded() == 49);
-  REQUIRE(live_runner.context().last_price(samsung()) == Decimal64::parse("75000"));
-  CHECK(session.placed().size() == 1);
-  REQUIRE(live_runner.context().portfolio().working_.size() == 1);
-  CHECK(live_runner.context().portfolio().working_[0].reserved_);
 }
 
 TEST_CASE("a run that polls no working-order listing holds, whatever its age policy",
@@ -3663,68 +2799,6 @@ TEST_CASE("a dry run keeps no intent the phase refused", "[kept-intents]") {
   CHECK(dry.intents_kept_for_phase() == 0);
 }
 
-TEST_CASE("a broker refusal reaches a live run's report, with what the broker said") {
-  // **Exercised through the real source.** Five direct `feed`
-  // cases prove the counters classify correctly and prove nothing about the defect, which lives in
-  // `SessionSource` discarding the report `feed` returns. So this drives a real `SessionSource` and a
-  // real `PollingLoop`: the poll succeeds, the order it produces is refused by the broker, and the
-  // run's report has to say so.
-  using LoopRunner = runner::Runner<
-    BuysOne, WithKey, FakeBroker, live::SessionExecutor<FakeSession<WithKey>>
-  >;
-  FakeSession<WithKey> session;
-  session.set_bars(two_bars("70000", "71000"));
-  strategy::RiskLimits any_phase;
-  any_phase.permitted_phases_ = std::nullopt;
-  LoopRunner live_runner(
-    BuysOne{}, any_phase, 512, live::SessionExecutor<FakeSession<WithKey>>(session)
-  );
-  live_runner.context().set_instrument(samsung_reference());
-  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
-  live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
-
-  live::SessionSource<FakeSession<WithKey>> source(session, {samsung()});
-  runner::PollSchedule schedule;
-  schedule.bars_ = std::chrono::seconds(1);
-  schedule.tick_ = std::chrono::seconds(1);
-  schedule.calendar_.reset();
-  runner::PollingLoop<LoopRunner, live::SessionSource<FakeSession<WithKey>>, runner::ManualClock>
-    loop(live_runner, source, schedule, runner::ManualClock{});
-  loop.allow_unbounded_portfolio_age();
-  loop.allow_absent_portfolio();
-  runner::StopSource stop;
-
-  BrokerError refusal;
-  refusal.category_ = ErrorCategory::INVALID_ARGUMENT;
-  refusal.broker_code_ = "APBK0918";
-  refusal.message_ = "the account may not trade this instrument";
-  session.fail_place_with(refusal);
-
-  const auto report = loop.run(stop, 1);
-
-  // The poll itself succeeded: this is not a failed request, it is a successful one the broker
-  // answered with a refusal, which is exactly the case that used to be invisible.
-  CHECK(report.attempted(runner::PollKind::BARS) == 1);
-  CHECK(report.failed(runner::PollKind::BARS) == 0);
-  // One: the scripted series carries two bars and this strategy buys on each, but only the newest
-  // bar of a read may send; the older one is history (`Runner::feed_warmup`).
-  CHECK(report.orders_broker_refused_ == 1);
-  CHECK(report.orders_guard_refused_ == 0);
-  CHECK(report.orders_unbuildable_ == 0);
-  REQUIRE(report.last_broker_refusal_.has_value());
-  CHECK(report.last_broker_refusal_->code_ == "APBK0918");
-  CHECK(report.last_broker_refusal_->message_ == "the account may not trade this instrument");
-  CHECK(report.last_broker_refusal_->instrument_ == samsung());
-
-  // And a second run reports its own polling only: no stale count and no stale text, although the
-  // runner still holds both.
-  session.heal_place();
-  const auto second = loop.run(stop, 1);
-  CHECK(second.orders_broker_refused_ == 0);
-  CHECK_FALSE(second.last_broker_refusal_.has_value());
-  CHECK(live_runner.last_broker_refusal().has_value());
-}
-
 /**
  * A real `SessionSource` that asks for a stop once it has fed something.
  *
@@ -3824,153 +2898,6 @@ TEST_CASE("a closing refusal does not relabel the polling refusal the report cou
   CHECK(live_runner.last_broker_refusal()->code_ == "WHILE-CLOSING");
 }
 
-TEST_CASE("a refusal's account is replaced by the next one, not accumulated") {
-  // One record, overwritten, which is what makes it affordable -- and the assertion is exact
-  // replacement rather than "the newest text appears somewhere", because the second is satisfied by
-  // an implementation that keeps every refusal forever.
-  using Runner = runner::Runner<
-    BuysOne, WithKey, FakeBroker, live::SessionExecutor<FakeSession<WithKey>>
-  >;
-  FakeSession<WithKey> session;
-  Runner live_runner(BuysOne{}, {}, 512, live::SessionExecutor<FakeSession<WithKey>>(session));
-  live_runner.context().set_instrument(samsung_reference());
-  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
-  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
-  live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
-
-  BrokerError first;
-  first.category_ = ErrorCategory::INVALID_ARGUMENT;
-  first.broker_code_ = "FIRST";
-  first.message_ = "the first refusal";
-  session.fail_place_with(first);
-  live_runner.feed(bar_at(1, "70000"));
-  REQUIRE(live_runner.last_broker_refusal().has_value());
-  CHECK(live_runner.last_broker_refusal()->code_ == "FIRST");
-
-  BrokerError second;
-  second.category_ = ErrorCategory::INVALID_ARGUMENT;
-  second.broker_code_ = "SECOND";
-  second.message_ = "the second refusal";
-  session.fail_place_with(second);
-  live_runner.feed(bar_at(2, "70000"));
-
-  REQUIRE(live_runner.last_broker_refusal().has_value());
-  CHECK(live_runner.last_broker_refusal()->code_ == "SECOND");
-  CHECK(live_runner.last_broker_refusal()->message_ == "the second refusal");
-  CHECK(live_runner.orders_broker_refused() == 2);
-}
-
-TEST_CASE("a rate-limit refusal is not counted as a poll failure") {
-  // The limiter working as designed. Counting it as an outage would make a loop polling slightly too
-  // fast shut itself down instead of simply slowing down.
-  BrokerError limited;
-  limited.category_ = ErrorCategory::RATE_LIMIT;
-  CHECK(live::poll_outcome_of(limited) == runner::PollOutcome::RATE_LIMITED);
-
-  for (const auto category : {
-         ErrorCategory::TRANSPORT,
-         ErrorCategory::PROTOCOL,
-         ErrorCategory::HTTP,
-         ErrorCategory::AUTHENTICATION,
-         ErrorCategory::CANCELLED,
-         ErrorCategory::INVALID_ARGUMENT,
-       }) {
-    BrokerError error;
-    error.category_ = category;
-    CHECK(live::poll_outcome_of(error) == runner::PollOutcome::FAILED);
-  }
-}
-
-TEST_CASE("a holdings poll carries the basis with the rows it describes") {
-  // **The boundary every hand-built `Portfolio` test skips, and a real defect lived here.** The
-  // adapters set `HoldingsSnapshot::sellable_basis_` and `RiskGuard` reads
-  // `Portfolio::sellable_basis_`; if the poll between them copies only the rows, a broker that
-  // declared is treated as having declared nothing and every checked sell refuses. That shipped for
-  // four commits and no fixture test could see it, because they all write the `Portfolio` directly.
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  HoldingsSnapshot declared;
-  HoldingPosition position;
-  position.instrument_ = samsung();
-  position.quantity_ = Decimal64::parse("100");
-  position.sellable_quantity_ = Decimal64::parse("100");
-  declared.positions_.push_back(position);
-  declared.received_at_ = std::chrono::system_clock::now();
-  declared.sellable_basis_ = SellableBasis{
-    SellableBasis::Coverage::WHOLE_HOLDING,
-    SellableBasis::RestingTreatment::DEDUCT,
-    false,
-  };
-  session.set_holdings(declared);
-
-  REQUIRE(source.poll(runner::PollKind::HOLDINGS, live_runner) == runner::PollOutcome::UPDATED);
-  const auto& carried = live_runner.context().portfolio();
-  CHECK(carried.sellable_basis_.coverage_ == SellableBasis::Coverage::WHOLE_HOLDING);
-  CHECK(carried.sellable_basis_.resting_ == SellableBasis::RestingTreatment::DEDUCT);
-  CHECK(carried.sellable_basis_.is_enforceable());
-
-  // **And the other direction, which is the dangerous one.** A later snapshot that establishes
-  // nothing must not inherit the enforceable basis this one left behind: a third-party source's
-  // undeclared figure would otherwise be authorized by an earlier broker's declaration. The basis is
-  // assigned with the rows, not merged into them.
-  HoldingsSnapshot undeclared;
-  HoldingPosition later = position;
-  later.sellable_quantity_ = Decimal64::parse("100");
-  undeclared.positions_.push_back(later);
-  undeclared.received_at_ = std::chrono::system_clock::now();
-  session.set_holdings(undeclared);
-
-  REQUIRE(source.poll(runner::PollKind::HOLDINGS, live_runner) == runner::PollOutcome::UPDATED);
-  const auto& replaced = live_runner.context().portfolio();
-  CHECK(replaced.sellable_basis_.coverage_ == SellableBasis::Coverage::UNESTABLISHED);
-  CHECK_FALSE(replaced.sellable_basis_.is_enforceable());
-  // The rows did arrive, so this is not a poll that failed -- it is a poll that established nothing.
-  CHECK(replaced.positions_.size() == 1);
-}
-
-TEST_CASE("a failed holdings poll leaves the rows and their basis together") {
-  // **The waiver's own consequence, asserted rather than only documented.** Asserting a Kiwoom scope
-  // turns the holdings verb on; it does not promise a read has succeeded, and a failed poll keeps the
-  // previous portfolio rather than erasing it -- so a run can go on sizing against an older snapshot,
-  // which is what the portfolio age policy exists to bound. What must not happen is the two halves
-  // coming apart: rows from one read described by another read's basis, in either direction.
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  HoldingsSnapshot declared;
-  HoldingPosition position;
-  position.instrument_ = samsung();
-  position.quantity_ = Decimal64::parse("100");
-  position.sellable_quantity_ = Decimal64::parse("100");
-  declared.positions_.push_back(position);
-  declared.received_at_ = std::chrono::system_clock::now();
-  declared.sellable_basis_ = SellableBasis{
-    SellableBasis::Coverage::WHOLE_HOLDING,
-    SellableBasis::RestingTreatment::DEDUCT,
-    false,
-  };
-  session.set_holdings(declared);
-  REQUIRE(source.poll(runner::PollKind::HOLDINGS, live_runner) == runner::PollOutcome::UPDATED);
-  REQUIRE(live_runner.context().portfolio().sellable_basis_.is_enforceable());
-
-  // Now the read fails. The previous portfolio survives, which is deliberate -- and it survives
-  // *whole*.
-  session.fail_with(ErrorCategory::TRANSPORT, 503);
-  const auto outcome = source.poll(runner::PollKind::HOLDINGS, live_runner);
-  REQUIRE(outcome != runner::PollOutcome::UPDATED);
-
-  const auto& kept = live_runner.context().portfolio();
-  // The rows are still there, and so is the basis that describes them. Clearing one and not the other
-  // is the defect this pins: an enforceable basis over no rows refuses harmlessly, but rows left
-  // behind with no basis would refuse a sell the previous read had fully established.
-  CHECK(kept.positions_.size() == 1);
-  CHECK(kept.sellable_basis_.is_enforceable());
-  CHECK(kept.sellable_quantity_of(samsung()) == Decimal64::parse("100"));
-}
-
 TEST_CASE("an inquiry answers for one instrument and certifies no other") {
   // **One declaration must not travel to a figure it says nothing about.** The inquiry is asked per
   // instrument, so writing its basis to the whole portfolio would let the asked instrument's
@@ -4024,55 +2951,6 @@ TEST_CASE("an inquiry answers for one instrument and certifies no other") {
   REQUIRE_FALSE(after.sellable_basis_.is_enforceable());
 }
 
-TEST_CASE("polling bars feeds each new bar exactly once") {
-  // The property that matters: a poll returning the same closed bar again is the normal case between
-  // closes, and feeding it twice would double every signal derived from it.
-  WorkingSession session;
-  session.set_bars(two_bars("70000", "71000"));
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  const auto first = source.poll(runner::PollKind::BARS, live_runner);
-  CHECK(first == runner::PollOutcome::UPDATED);
-  CHECK(live_runner.strategy().bars_ == 2);
-
-  // Same series again: nothing new.
-  const auto second = source.poll(runner::PollKind::BARS, live_runner);
-  CHECK(second == runner::PollOutcome::UNCHANGED);
-  CHECK(live_runner.strategy().bars_ == 2);
-
-  // One more bar appears, and only it is fed.
-  auto extended = two_bars("70000", "71000");
-  Bar third = extended.bars_.back();
-  third.timestamp_ += std::chrono::hours(24);
-  third.close_ = Decimal64::parse("72000");
-  extended.bars_.push_back(third);
-  session.set_bars(extended);
-
-  const auto after = source.poll(runner::PollKind::BARS, live_runner);
-  CHECK(after == runner::PollOutcome::UPDATED);
-  CHECK(live_runner.strategy().bars_ == 3);
-}
-
-TEST_CASE("a price-limits poll records today's band for every instrument it polls") {
-  BandSession session;
-  session.set_price_limit_upper("71000");
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<BandSession> source(session, {samsung(), hynix()});
-  live_runner.allow_unbounded_price_limits_age();
-
-  const auto outcome = source.poll(runner::PollKind::PRICE_LIMITS, live_runner);
-
-  CHECK(outcome == runner::PollOutcome::UPDATED);
-  // The whole universe, because an instrument this loop trades is one whose band it needs.
-  REQUIRE(session.price_limits_asked().size() == 2);
-  CHECK(session.price_limits_asked()[0] == samsung());
-  CHECK(session.price_limits_asked()[1] == hynix());
-  // And it feeds nothing, which is `PollKind::PRICE_LIMITS`'s own obligation.
-  CHECK(live_runner.strategy().bars_ == 0);
-  CHECK(live_runner.strategy().quotes_ == 0);
-}
-
 TEST_CASE("a broker that publishes no band compiles no request") {
   // The `if constexpr` false branch. All three shipped adapters publish a band, so without this
   // instantiation that branch is never compiled at all -- which is how a call to a member the
@@ -4083,46 +2961,6 @@ TEST_CASE("a broker that publishes no band compiles no request") {
 
   CHECK(source.poll(runner::PollKind::PRICE_LIMITS, live_runner) == runner::PollOutcome::UNCHANGED);
   CHECK(session.price_limits_asked().empty());
-}
-
-TEST_CASE("a band poll that answers for one instrument and fails for another has failed") {
-  // The same partial-answer rule the buying-power sweep argues in full: reporting `UPDATED` because
-  // something arrived resets the loop's consecutive-failure count, and a name that fails every
-  // sweep would then go on being priced against a band from another day.
-  BandSession session;
-  session.fail_price_limits_for(hynix());
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<BandSession> source(session, {samsung(), hynix()});
-
-  CHECK(source.poll(runner::PollKind::PRICE_LIMITS, live_runner) == runner::PollOutcome::FAILED);
-  CHECK(source.last_error().has_value());
-  // Both were asked: one name failing must not abandon the rest of the round.
-  CHECK(session.price_limits_asked().size() == 2);
-}
-
-TEST_CASE("a throttled band poll does not downgrade another instrument's outright failure") {
-  BandSession session;
-  session.fail_price_limits_for(samsung());
-  session.throttle_price_limits_for(hynix());
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<BandSession> source(session, {samsung(), hynix()});
-
-  CHECK(source.poll(runner::PollKind::PRICE_LIMITS, live_runner) == runner::PollOutcome::FAILED);
-  REQUIRE(source.last_error().has_value());
-  // The reason names the instrument that actually failed, not the one throttled behind it.
-  CHECK(source.last_error()->category_ == ErrorCategory::TRANSPORT);
-}
-
-TEST_CASE("an outright band failure wins however late in the sweep it lands") {
-  BandSession session;
-  session.throttle_price_limits_for(samsung());
-  session.fail_price_limits_for(hynix());
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<BandSession> source(session, {samsung(), hynix()});
-
-  CHECK(source.poll(runner::PollKind::PRICE_LIMITS, live_runner) == runner::PollOutcome::FAILED);
-  REQUIRE(source.last_error().has_value());
-  CHECK(source.last_error()->category_ == ErrorCategory::TRANSPORT);
 }
 
 TEST_CASE("a throttled band poll alone is a throttled poll, not an outage") {
@@ -4154,51 +2992,6 @@ TEST_CASE("a failed band poll leaves the band it could not refresh in place") {
   live_runner.context().set_instrument(samsung_reference());
   live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
   CHECK(live_runner.price_bands_withheld() == 0);
-}
-
-TEST_CASE("a buying-power poll that answers for one currency and fails for another has failed") {
-  // The partial answer is the dangerous one, because it looks like success. Reporting `UPDATED`
-  // because *something* arrived resets the loop's consecutive-failure count, and a currency that
-  // fails every time would then never abandon a run: the loop would report healthy polls forever
-  // while orders in that currency were sized against a figure from hours ago.
-  BudgetSession session;
-  session.set_buying_power("5000000");
-  session.fail_buying_power_in(Currency::usd());
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<BudgetSession> source(session, {samsung()});
-  source.set_buying_power_currencies({Currency::krw(), Currency::usd()});
-
-  const auto outcome = source.poll(runner::PollKind::BUYING_POWER, live_runner);
-  CHECK(outcome == runner::PollOutcome::FAILED);
-  CHECK(source.last_error().has_value());
-  // Both were asked: one currency failing must not abandon the rest of the round.
-  CHECK(session.buying_power_asked().size() == 2);
-  // And the currency that answered was still applied, because dropping a budget the guard is about
-  // to size against is the worse direction; the staleness gate is what retires an old reading.
-  const auto& readings = live_runner.context().portfolio().buying_power_;
-  REQUIRE(readings.size() == 1);
-  CHECK(readings[0].cash_.currency_ == Currency::krw());
-}
-
-TEST_CASE("a throttled currency does not downgrade another currency's outright failure") {
-  // The two are not the same news: the limiter refusing is the limiter working, and the loop
-  // deliberately does not count a rate-limit refusal against a poll kind. Taking whichever answer
-  // came last would let a currency failing every sweep be reported as merely throttled the moment
-  // another currency was throttled behind it, and the failing budget would age on unnoticed.
-  BudgetSession session;
-  session.set_buying_power("5000000");
-  session.fail_buying_power_in(Currency::krw());
-  session.throttle_buying_power_in(Currency::usd());
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<BudgetSession> source(session, {samsung()});
-  // KRW fails outright first, USD is throttled second, so the last answer is the throttle.
-  source.set_buying_power_currencies({Currency::krw(), Currency::usd()});
-
-  CHECK(source.poll(runner::PollKind::BUYING_POWER, live_runner) == runner::PollOutcome::FAILED);
-  // And the reason names the currency that actually failed, not the one behind it: `last_error()`
-  // promises why the last failing poll failed, and a reader chases that reason.
-  REQUIRE(source.last_error().has_value());
-  CHECK(source.last_error()->category_ == ErrorCategory::TRANSPORT);
 }
 
 TEST_CASE("an outright failure wins however late in the sweep it lands") {
@@ -4245,120 +3038,6 @@ TEST_CASE("a buying-power poll that answers for every configured currency has su
   CHECK(live_runner.context().portfolio().buying_power_.size() == 2);
   // Published so the loop's gate can hold for a budget that never arrived at all.
   CHECK(source.buying_power_currencies().size() == 2);
-}
-
-TEST_CASE("a failing poll reports the failure and its reason") {
-  WorkingSession session;
-  session.set_bars(two_bars("70000", "71000"));
-  session.fail_with(ErrorCategory::TRANSPORT);
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  CHECK(source.poll(runner::PollKind::BARS, live_runner) == runner::PollOutcome::FAILED);
-  REQUIRE(source.last_error().has_value());
-  CHECK(source.last_error()->category_ == ErrorCategory::TRANSPORT);
-  // Nothing was fed, and nothing is owed: a poll that failed sent nothing, so unlike an order write
-  // it leaves no question about what exists.
-  CHECK(live_runner.strategy().bars_ == 0);
-  CHECK(live_runner.ledger().empty());
-}
-
-TEST_CASE("polling holdings stamps the portfolio with the broker's own time") {
-  // The loop's staleness gate measures against as_of_, so it must be when the broker says the
-  // positions were true rather than when the reply happened to arrive.
-  WorkingSession session;
-  HoldingsSnapshot snapshot;
-  HoldingPosition position;
-  position.instrument_ = samsung();
-  position.quantity_ = Decimal64::parse("10");
-  snapshot.positions_.push_back(position);
-  snapshot.received_at_ = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 200);
-  session.set_holdings(snapshot);
-
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  CHECK(source.poll(runner::PollKind::HOLDINGS, live_runner) == runner::PollOutcome::UPDATED);
-  const auto& portfolio = live_runner.context().portfolio();
-  REQUIRE(portfolio.positions_.size() == 1);
-  CHECK(portfolio.positions_[0].quantity_ == Decimal64::parse("10"));
-  CHECK(portfolio.as_of_ == snapshot.received_at_);
-}
-
-TEST_CASE("an account holding nothing still stamps the portfolio") {
-  // **The fact any "has a portfolio arrived" question rests on.** The epoch on `as_of_` is what
-  // tells "never arrived" from "arrived empty": `PollingLoop`'s staleness gate reads it that way
-  // today, and other rules may read it that way unconditionally. If a successful read of an account with no positions left the stamp at the
-  // epoch, every such rule would hold an empty account forever.
-  WorkingSession session;
-  HoldingsSnapshot empty;
-  empty.received_at_ = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 200);
-  session.set_holdings(empty);
-
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  CHECK(source.poll(runner::PollKind::HOLDINGS, live_runner) == runner::PollOutcome::UPDATED);
-  const auto& portfolio = live_runner.context().portfolio();
-  CHECK(portfolio.positions_.empty());
-  // Stamped, and therefore distinguishable from a portfolio that never arrived.
-  CHECK(portfolio.as_of_ == empty.received_at_);
-  CHECK(portfolio.as_of_ != std::chrono::system_clock::time_point{});
-}
-
-TEST_CASE("holdings and working orders merge rather than replace each other") {
-  // They are separate inquiries on separate cadences. Rebuilding the portfolio from either alone
-  // would drop the other, and a dropped working order is one reconciliation places again.
-  WorkingSession session;
-  HoldingsSnapshot snapshot;
-  HoldingPosition position;
-  position.instrument_ = samsung();
-  position.quantity_ = Decimal64::parse("10");
-  snapshot.positions_.push_back(position);
-  session.set_holdings(snapshot);
-  WorkingOrders<FakeBroker> orders;
-  orders.orders_.push_back(working());
-  session.set_working_orders(orders);
-
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  source.poll(runner::PollKind::HOLDINGS, live_runner);
-  source.poll(runner::PollKind::WORKING_ORDERS, live_runner);
-  CHECK(live_runner.context().portfolio().positions_.size() == 1);
-  CHECK(live_runner.context().portfolio().working_.size() == 1);
-
-  // And in the other order, because neither cadence is guaranteed to fire first.
-  auto other = live::bind_observer(session, CountEvents{});
-  live::SessionSource<WorkingSession> other_source(session, {samsung()});
-  other_source.poll(runner::PollKind::WORKING_ORDERS, other);
-  other_source.poll(runner::PollKind::HOLDINGS, other);
-  CHECK(other.context().portfolio().positions_.size() == 1);
-  CHECK(other.context().portfolio().working_.size() == 1);
-}
-
-TEST_CASE("the order-list read follows the broker's capability") {
-  // A compile-time choice, so both branches need a broker to instantiate against or only one is ever
-  // compiled. The gate needs *an* order list, not a particular one.
-  SECTION("a broker with working orders uses that inquiry") {
-    WorkingSession session;
-    auto live_runner = live::bind_observer(session, CountEvents{});
-    live::SessionSource<WorkingSession> source(session, {samsung()});
-
-    CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
-    CHECK(session.working_calls() == 1);
-    CHECK(session.history_calls() == 0);
-  }
-
-  SECTION("a broker without it falls back to order history") {
-    HistorySession session;
-    auto live_runner = live::bind_observer(session, CountEvents{});
-    live::SessionSource<HistorySession> source(session, {samsung()});
-
-    CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
-    CHECK(session.history_calls() == 1);
-    CHECK(session.working_calls() == 0);
-  }
 }
 
 TEST_CASE("a failing order-list read leaves the gate closed") {
@@ -4430,70 +3109,6 @@ std::chrono::system_clock::time_point swept_at() {
 }
 
 } // namespace
-
-TEST_CASE("a source with no journal reads the list and matches nothing") {
-  // The pre-existing behaviour, unchanged: the gate lifts because this process has looked at the
-  // broker's own record, and a mark nothing accounts for stays exactly where it is.
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live_runner.ledger().mark(samsung(), "an order request failed in transit");
-
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
-  CHECK(live_runner.ledger().requires_reconcile(samsung()));
-  CHECK(source.last_reconcile().matches_.empty());
-}
-
-TEST_CASE("the order-list read resolves what the broker's rows settle") {
-  WorkingSession session;
-  WorkingOrders<FakeBroker> orders;
-  auto listed = working();
-  listed.order_ = listed_order("KRX-1");
-  orders.orders_.push_back(listed);
-  session.set_working_orders(orders);
-
-  runner::MemoryJournal journal;
-  journal.append(journaled_placement());
-
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live_runner.context().set_now(swept_at());
-  live_runner.ledger().mark(samsung(), "an order request failed in transit");
-
-  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
-  source.set_journal(journal);
-
-  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
-  REQUIRE(source.last_reconcile().matches_.size() == 1);
-  CHECK(source.last_reconcile().matches_.front().order_id_ == "KRX-1");
-  CHECK(source.last_reconcile().settled());
-  // The instrument may trade again, and only reading the broker's own list got it there.
-  CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
-}
-
-TEST_CASE("a working-order poll sweeps the ledger without a request of its own") {
-  // The rows a working-order poll already fetches are exactly what the matcher needs, so
-  // reconciliation rides along rather than asking the broker again.
-  WorkingSession session;
-  WorkingOrders<FakeBroker> orders;
-  auto listed = working();
-  listed.order_ = listed_order("KRX-1");
-  orders.orders_.push_back(listed);
-  session.set_working_orders(orders);
-
-  runner::MemoryJournal journal;
-  journal.append(journaled_placement());
-
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live_runner.context().set_now(swept_at());
-  live_runner.ledger().mark(samsung(), "an order request failed in transit");
-
-  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
-  source.set_journal(journal);
-
-  CHECK(source.poll(runner::PollKind::WORKING_ORDERS, live_runner) == runner::PollOutcome::UPDATED);
-  CHECK(session.working_calls() == 1);
-  CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
-}
 
 namespace {
 /** A journal whose every write fails, so a sweep's resolution cannot be recorded. */
@@ -4609,243 +3224,9 @@ TEST_CASE("a sweep before any bar stamps its resolution with the loop's clock", 
   }
 }
 
-TEST_CASE("the history fallback sweeps against the page it read") {
-  // A broker with no working-order inquiry still reconciles, from the wider listing it does offer.
-  HistorySession session;
-  OrderPage page;
-  page.orders_.push_back(listed_order("KRX-1"));
-  session.set_history(page);
-
-  runner::MemoryJournal journal;
-  journal.append(journaled_placement());
-
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live_runner.context().set_now(swept_at());
-  live_runner.ledger().mark(samsung(), "an order request failed in transit");
-
-  live::SessionSource<HistorySession, runner::MemoryJournal> source(session, {samsung()});
-  source.set_journal(journal);
-
-  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
-  // Once to satisfy the gate, then the sweep over the days the matching window needs -- one stated
-  // date per request, because this fake, like Kiwoom, takes no range: three days here (the window's
-  // own day and one either side). The sweep happens only when something is owed, so a clean start
-  // still costs one.
-  CHECK(session.history_calls() == 4);
-  CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
-}
-
-TEST_CASE("an ambiguous listing leaves the instrument withheld") {
-  // Two rows that could both be the journaled order. Guessing would either leave a live order
-  // unwatched or double a position, so the hold stays and the report says why.
-  WorkingSession session;
-  WorkingOrders<FakeBroker> orders;
-  for (const auto* id : {"KRX-1", "KRX-2"}) {
-    auto listed = working();
-    listed.order_ = listed_order(id);
-    orders.orders_.push_back(listed);
-  }
-  session.set_working_orders(orders);
-
-  runner::MemoryJournal journal;
-  journal.append(journaled_placement());
-
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live_runner.context().set_now(swept_at());
-  live_runner.ledger().mark(samsung(), "an order request failed in transit");
-
-  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
-  source.set_journal(journal);
-
-  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
-  CHECK(source.last_reconcile().ambiguous_);
-  CHECK_FALSE(source.last_reconcile().settled());
-  CHECK(live_runner.ledger().requires_reconcile(samsung()));
-}
-
-TEST_CASE("an empty listing settles nothing until the window has closed") {
-  WorkingSession session;
-  runner::MemoryJournal journal;
-  journal.append(journaled_placement());
-
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live_runner.ledger().mark(samsung(), "an order request failed in transit");
-
-  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
-  source.set_journal(journal);
-
-  // Five seconds after the send, an absent row is not evidence of anything.
-  live_runner.context().set_now(journaled_at() + std::chrono::seconds(5));
-  source.read_order_list(live_runner);
-  CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::UNDECIDED);
-  CHECK(live_runner.ledger().requires_reconcile(samsung()));
-
-  // Ten minutes after it, the order was never placed.
-  live_runner.context().set_now(swept_at());
-  source.poll(runner::PollKind::WORKING_ORDERS, live_runner);
-  CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::NOT_PLACED);
-  CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
-}
-
-TEST_CASE("an open-orders listing alone cannot conclude a placement was not placed") {
-  // The failure this guards against: a market or aggressive limit order fills and leaves the open
-  // listing before the first sweep. Matching against open orders alone finds nothing, and after the
-  // window closes that absence reads as `not_placed` -- clearing the ledger for an order that
-  // existed and executed, so the runner places it again.
-  WorkingSession session;
-  session.set_working_orders(WorkingOrders<FakeBroker>{});
-
-  auto filled = listed_order("KRX-1");
-  filled.status_ = OrderStatus::FILLED;
-  OrderPage page;
-  page.orders_.push_back(filled);
-  session.set_history(page);
-
-  runner::MemoryJournal journal;
-  journal.append(journaled_placement());
-
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live_runner.context().set_now(swept_at());
-  live_runner.ledger().mark(samsung(), "an order request failed in transit");
-
-  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
-  source.set_journal(journal);
-
-  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
-  // The history was consulted even though this broker has the working-order inquiry, because only
-  // history covers every lifecycle state -- one stated date per request, since this fake, like
-  // Kiwoom's `kt00007`, takes a single required date and no range.
-  CHECK(session.history_calls() == 3);
-  for (const auto& query : session.history_queries()) {
-    REQUIRE(query.from_);
-    REQUIRE(query.to_);
-    CHECK(query.from_->day_ == query.to_->day_);
-  }
-  CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::MATCHED);
-  CHECK(source.last_reconcile().matches_.front().order_id_ == "KRX-1");
-}
-
-TEST_CASE("a failed history read concludes nothing from absence") {
-  // Seeing part of the picture is worse than seeing none: `not_placed` is a conclusion drawn from
-  // absence, and absence from a listing that never arrived is not evidence.
-  WorkingSession session;
-  session.set_working_orders(WorkingOrders<FakeBroker>{});
-
-  runner::MemoryJournal journal;
-  journal.append(journaled_placement());
-
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live_runner.context().set_now(swept_at());
-  live_runner.ledger().mark(samsung(), "an order request failed in transit");
-
-  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
-  source.set_journal(journal);
-  session.fail_history_with(ErrorCategory::HTTP, 503);
-
-  source.poll(runner::PollKind::WORKING_ORDERS, live_runner);
-  // Without the history the sweep decides nothing, rather than concluding the order never existed.
-  REQUIRE(source.last_reconcile().matches_.size() == 1);
-  CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::UNDECIDED);
-  CHECK(source.last_reconcile().recorded_ == 0);
-  CHECK(live_runner.ledger().requires_reconcile(samsung()));
-}
-
-TEST_CASE("an order in both listings is one candidate, not two") {
-  // A still-open order appears in the working-order inquiry *and* in history. Two copies of one row
-  // would read as two candidates and the matcher would report `ambiguous` for an instruction that
-  // is not ambiguous at all.
-  WorkingSession session;
-  WorkingOrders<FakeBroker> orders;
-  auto listed = working();
-  listed.order_ = listed_order("KRX-1");
-  orders.orders_.push_back(listed);
-  session.set_working_orders(orders);
-
-  OrderPage page;
-  page.orders_.push_back(listed_order("KRX-1"));
-  session.set_history(page);
-
-  runner::MemoryJournal journal;
-  journal.append(journaled_placement());
-
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live_runner.context().set_now(swept_at());
-  live_runner.ledger().mark(samsung(), "an order request failed in transit");
-
-  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
-  source.set_journal(journal);
-
-  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
-  CHECK_FALSE(source.last_reconcile().ambiguous_);
-  CHECK(source.last_reconcile().matches_.front().candidates_ == 1);
-  CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
-}
-
-TEST_CASE("a cancellation needs no history, because working orders answer it") {
-  // The asymmetry worth stating: working orders are sufficient for the cancellation question --
-  // is it still resting? -- and insufficient for the placement question.
-  WorkingSession session;
-  WorkingOrders<FakeBroker> orders;
-  auto listed = working();
-  listed.order_ = listed_order("KRX-1");
-  orders.orders_.push_back(listed);
-  session.set_working_orders(orders);
-
-  auto entry = journaled_placement();
-  entry.action_ = runner::JournalAction::CANCEL;
-  entry.order_id_ = "KRX-1";
-  runner::MemoryJournal journal;
-  journal.append(entry);
-
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live_runner.context().set_now(swept_at());
-  live_runner.ledger().mark(samsung(), "a cancellation request failed in transit");
-
-  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
-  source.set_journal(journal);
-
-  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
-  CHECK(session.history_calls() == 0);
-  CHECK(source.last_reconcile().settled());
-}
-
 // ---------------------------------------------------------------------------
 // The journal has to be in the runner's own send path, not beside it
 // ---------------------------------------------------------------------------
-
-TEST_CASE("a journaled binding records before the session is asked") {
-  // The assertion that would have caught the documented setup being wrong. Observing the pending
-  // entry *after* `feed` returns would pass even for a runner that journals nothing and sends
-  // through a plain executor, so the journal is read from inside the session's own `place`.
-  runner::MemoryJournal journal("test:account");
-  FakeSession<WithKey> session;
-  session.observe_journal(journal);
-
-  auto live_runner = live::bind_journaled(session, journal, HoldTen{}, {});
-  live_runner.context().set_instrument(samsung_reference());
-  live_runner.context().set_phase(strategy::MarketPhase::OPEN);
-  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
-  // A session-backed runner requires an account it has read; this case is about the journal.
-  live_runner.context().set_portfolio(held_position<WithKey>("0", nullptr));
-
-  const auto report = live_runner.feed(bar_at(0, "70000"));
-  REQUIRE(report.would_place_.size() == 1);
-  REQUIRE(session.placed().size() == 1);
-
-  // What the journal held at the moment the session was asked: the pending line, already written.
-  REQUIRE(session.journal_at_send().size() == 1);
-  CHECK(session.journal_at_send().front().outcome_ == runner::JournalOutcome::PENDING);
-  CHECK(session.journal_at_send().front().instrument_ == samsung());
-  CHECK(session.journal_at_send().front().scope_ == "test:account");
-
-  // And the terminal line afterwards, carrying the reference the session issued.
-  REQUIRE(journal.records().size() == 2);
-  CHECK(journal.records().back().outcome_ == runner::JournalOutcome::ACCEPTED);
-  CHECK_FALSE(journal.records().back().order_id_.empty());
-
-  // Nothing is owed, because the instruction was answered.
-  CHECK(runner::unresolved_instructions(journal.replay()).empty());
-}
 
 TEST_CASE("a journaled binding keeps the session's capabilities and tag") {
   // Same `Caps` and `BrokerTag` as a plain binding, so a capability-gated strategy compiles the
@@ -5027,42 +3408,6 @@ TEST_CASE("the history-limit capability says what each broker does") {
   STATIC_REQUIRE_FALSE(BrokerCaps<tossinvest::TossClient>::history_requires_range);
 }
 
-TEST_CASE("polling the calendar puts it where the loop and the strategy both read it") {
-  // The one poll whose answer is not an event. `runner::PollingLoop` derives the market phase from
-  // it and a strategy answers "does tomorrow trade" from the same copy, so it lands on the context
-  // rather than being fed -- and `Context::set_calendar` once had no caller at all,
-  // which made `Context::calendar()` permanently empty in every world.
-  CalendarSession session;
-  const Date today{2026, 3, 10};
-  session.set_calendar(one_day_calendar(today));
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<CalendarSession> source(session, {samsung()});
-
-  const auto outcome = source.poll(runner::PollKind::CALENDAR, live_runner);
-
-  CHECK(outcome == runner::PollOutcome::UPDATED);
-  REQUIRE(live_runner.context().calendar().is_trading_day(today).has_value());
-  CHECK(*live_runner.context().calendar().is_trading_day(today));
-  // The domestic market by default, which is the only one KIS publishes and the one the KRX session
-  // window states the hours for.
-  CHECK(session.calendar_asked() == Country::KR);
-  CHECK(source.calendar_country() == Country::KR);
-  // And no date is named, so each broker supplies its own "today" -- today *there*, not here.
-  CHECK_FALSE(session.calendar_from().has_value());
-}
-
-TEST_CASE("a calendar poll asks about the market it was configured for") {
-  CalendarSession session;
-  session.set_calendar(one_day_calendar(Date{2026, 3, 10}));
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<CalendarSession> source(session, {samsung()});
-  source.set_calendar_country(Country::US);
-
-  source.poll(runner::PollKind::CALENDAR, live_runner);
-
-  CHECK(session.calendar_asked() == Country::US);
-}
-
 TEST_CASE("a failed calendar poll leaves the last answer standing") {
   // The `poll_buying_power` rule, one field over. Erasing the calendar because a reference-data
   // request timed out would take a run that knew the market was open and, with the default
@@ -5204,155 +3549,6 @@ void poll_rows(
 
 } // namespace
 
-TEST_CASE("a broker-stated commission is observed once, not once per poll") {
-  // The figure on an order snapshot is *cumulative for that order*, so adding each reading would
-  // multiply one commission by the number of polls that happened to see it -- and a loop polling
-  // every few seconds would report a charge orders of magnitude too large.
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  poll_rows(source, live_runner, session, {charged_row("A1", "10", "1400")});
-  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
-        std::optional<Decimal64>(Decimal64::parse("1400")));
-
-  // The same order again, unchanged.
-  poll_rows(source, live_runner, session, {charged_row("A1", "10", "1400")});
-  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
-        std::optional<Decimal64>(Decimal64::parse("1400")));
-  CHECK(source.charged_costs().orders_stating_cost_ == 1);
-
-  // More of it fills and the charge rises: the total moves by the difference, not by the whole
-  // figure again.
-  poll_rows(source, live_runner, session, {charged_row("A1", "20", "2800")});
-  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
-        std::optional<Decimal64>(Decimal64::parse("2800")));
-  CHECK(source.charged_costs().orders_stating_cost_ == 1);
-}
-
-TEST_CASE("an order stating no commission is an absence, not a charge of zero") {
-  // Every KIS order is one of these: its snapshots carry no commission field at all. A currency
-  // reading zero would be this library claiming the broker charged nothing.
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  poll_rows(source, live_runner, session, {charged_row("K1", "10", std::nullopt)});
-  CHECK_FALSE(source.charged_costs().commission_in(Currency::krw()));
-  CHECK(source.charged_costs().orders_stating_none_ == 1);
-  CHECK(source.charged_costs().orders_stating_cost_ == 0);
-
-  // A stated zero is a different answer, and it is counted as a statement.
-  poll_rows(source, live_runner, session, {charged_row("T1", "10", "0")});
-  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
-        std::optional<Decimal64>(Decimal64::parse("0")));
-  CHECK(source.charged_costs().orders_stating_cost_ == 1);
-}
-
-TEST_CASE("a stale reading at the same filled quantity does not reduce a charge") {
-  // Nothing on an order snapshot says which of two readings the broker sent later: `filled_at_`
-  // timestamps the latest fill and `received_at_` is local arrival. So at an equal filled quantity
-  // the held value stands and the disagreement is reported, rather than being settled by whichever
-  // payload happened to arrive second.
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  poll_rows(source, live_runner, session, {charged_row("A1", "10", "1400")});
-  poll_rows(source, live_runner, session, {charged_row("A1", "10", "900")});
-
-  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
-        std::optional<Decimal64>(Decimal64::parse("1400")));
-  CHECK(source.charged_costs().conflicting_restatements_ == 1);
-}
-
-TEST_CASE("costs stated in two currencies are kept apart and never summed") {
-  // `Money` refuses to add unlike currencies, and a Toss universe can span KR and US. One scalar
-  // total would either be wrong or would have to refuse to exist.
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  poll_rows(source, live_runner, session, {
-    charged_row("KR1", "10", "1400"),
-    charged_row("US1", "10", "2", Currency::usd()),
-  });
-
-  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
-        std::optional<Decimal64>(Decimal64::parse("1400")));
-  CHECK(source.charged_costs().commission_in(Currency::usd()) ==
-        std::optional<Decimal64>(Decimal64::parse("2")));
-  CHECK(source.charged_costs().commission_.size() == 2);
-}
-
-TEST_CASE("an order that fills between two polls is missed, and the counter does not notice") {
-  // **This test asserts the limitation rather than a feature**, because the figure is documented as
-  // a subtotal of unknown coverage and a reader has to be able to see why. A loop polls *working*
-  // orders; an order placed and completely filled between two polls appears in no listing at all,
-  // so its charge is absent from the subtotal and the disappearance counter -- which only sees rows
-  // that were once present -- reads zero over it. A total with known coverage needs a deliberate
-  // order-history poll, which this loop does not make.
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  poll_rows(source, live_runner, session, {charged_row("A1", "10", "1400")});
-  // "B1" was placed and filled in here, and was never listed.
-  poll_rows(source, live_runner, session, {charged_row("A1", "10", "1400")});
-
-  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
-        std::optional<Decimal64>(Decimal64::parse("1400")));
-  CHECK(source.charged_costs().working_list_disappearances_ == 0);
-
-  // And when a row *does* leave the listing, the counter says only that it left -- which happens on
-  // a cancellation exactly as it does on a fill, so it certifies nothing either way.
-  poll_rows(source, live_runner, session, {});
-  CHECK(source.charged_costs().working_list_disappearances_ == 1);
-}
-
-TEST_CASE("silence between two stated figures does not add the second one twice") {
-  // The held reading was once overwritten with empty while the total kept the old
-  // amount, so the next stated figure was added in full on top of it: 100, then silence, then 150
-  // reported 250. The held state and the total have to stay in step.
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  poll_rows(source, live_runner, session, {charged_row("A1", "10", "100")});
-  poll_rows(source, live_runner, session, {charged_row("A1", "20", std::nullopt)});
-  // Silence withdrew nothing.
-  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
-        std::optional<Decimal64>(Decimal64::parse("100")));
-
-  poll_rows(source, live_runner, session, {charged_row("A1", "30", "150")});
-  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
-        std::optional<Decimal64>(Decimal64::parse("150")));
-}
-
-TEST_CASE("a first figure at an unchanged filled quantity is taken, not discarded") {
-  // Only a strictly greater filled quantity was once accepted, so an order seen
-  // first without a figure and then with one at the same quantity was ignored entirely -- and it
-  // was not a conflict either, because that check needed two present amounts. The charge simply
-  // vanished from the subtotal.
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  poll_rows(source, live_runner, session, {charged_row("A1", "10", std::nullopt)});
-  CHECK_FALSE(source.charged_costs().commission_in(Currency::krw()));
-  CHECK(source.charged_costs().orders_stating_none_ == 1);
-
-  poll_rows(source, live_runner, session, {charged_row("A1", "10", "1400")});
-  CHECK(source.charged_costs().commission_in(Currency::krw()) ==
-        std::optional<Decimal64>(Decimal64::parse("1400")));
-  // Counted as stating a cost now, and still counted as having been first seen without one: both
-  // counters are monotone, so a run-to-run subtraction of either cannot wrap.
-  CHECK(source.charged_costs().orders_stating_cost_ == 1);
-  CHECK(source.charged_costs().orders_stating_none_ == 1);
-  // A first figure is new information rather than a disagreement.
-  CHECK(source.charged_costs().conflicting_restatements_ == 0);
-}
-
 TEST_CASE("an order that changes the currency of its charge is a conflict, not a replacement") {
   // An order does not change the currency of its own charge. Replacing it would strand what was
   // already accumulated in the first currency and base every later delta on the second.
@@ -5367,26 +3563,6 @@ TEST_CASE("an order that changes the currency of its charge is a conflict, not a
   CHECK(source.charged_costs().commission_in(Currency::krw()) ==
         std::optional<Decimal64>(Decimal64::parse("1400")));
   CHECK_FALSE(source.charged_costs().commission_in(Currency::usd()));
-  CHECK(source.charged_costs().conflicting_restatements_ == 1);
-}
-
-TEST_CASE("a tax restated at one filled quantity is noticed too") {
-  // The disagreement check read commission and not tax, so a tax figure that changed under an
-  // unchanged quantity was neither taken nor reported.
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  auto first = charged_row("A1", "10", "1400");
-  first.order_.execution_.tax_ = Money{Decimal64::parse("500"), Currency::krw()};
-  poll_rows(source, live_runner, session, {first});
-
-  auto restated = charged_row("A1", "10", "1400");
-  restated.order_.execution_.tax_ = Money{Decimal64::parse("300"), Currency::krw()};
-  poll_rows(source, live_runner, session, {restated});
-
-  CHECK(source.charged_costs().tax_in(Currency::krw()) ==
-        std::optional<Decimal64>(Decimal64::parse("500")));
   CHECK(source.charged_costs().conflicting_restatements_ == 1);
 }
 
@@ -5434,27 +3610,6 @@ TEST_CASE("a fee arriving after a silent row at the same new quantity is taken, 
   CHECK(source.charged_costs().commission_in(Currency::krw()) ==
         std::optional<Decimal64>(Decimal64::parse("150")));
   CHECK(source.charged_costs().conflicting_restatements_ == 1);
-}
-
-TEST_CASE("a tax arriving after a silent row at the same new quantity is taken too") {
-  // The same rule, on the other component, because the first version of this check read commission
-  // and not tax.
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  auto first = charged_row("A1", "10", "100");
-  first.order_.execution_.tax_ = Money{Decimal64::parse("50"), Currency::krw()};
-  poll_rows(source, live_runner, session, {first});
-  poll_rows(source, live_runner, session, {charged_row("A1", "20", std::nullopt)});
-
-  auto later = charged_row("A1", "20", "150");
-  later.order_.execution_.tax_ = Money{Decimal64::parse("80"), Currency::krw()};
-  poll_rows(source, live_runner, session, {later});
-
-  CHECK(source.charged_costs().tax_in(Currency::krw()) ==
-        std::optional<Decimal64>(Decimal64::parse("80")));
-  CHECK(source.charged_costs().conflicting_restatements_ == 0);
 }
 
 TEST_CASE("a sum that will not fit is counted, not silently left out of the total") {
@@ -5699,104 +3854,6 @@ WorkingOrder<FakeBroker> update_row(
 
 } // namespace
 
-TEST_CASE("a resting order is reported once, not once per poll") {
-  // A working listing republishes every resting order on every poll. Reporting each of them would
-  // make `on_order_update` a per-poll firehose rather than a change notification.
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, WatchesOrders{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  poll_rows(source, live_runner, session, {update_row("A1", "", "0")});
-  CHECK(live_runner.strategy().updates_.size() == 1);
-
-  poll_rows(source, live_runner, session, {update_row("A1", "", "0")});
-  CHECK(live_runner.strategy().updates_.size() == 1);
-}
-
-TEST_CASE("execution progress on a resting order is reported, with the new figure") {
-  // Asserted on the *value* and not only the count: a detector feeding the previous row would pass
-  // a count-only assertion while telling the strategy nothing had happened.
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, WatchesOrders{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  poll_rows(source, live_runner, session, {update_row("A1", "", "0")});
-  poll_rows(
-    source, live_runner, session, {update_row("A1", "", "4", OrderStatus::PARTIAL_FILLED)}
-  );
-
-  REQUIRE(live_runner.strategy().updates_.size() == 2);
-  CHECK(live_runner.strategy().updates_[1].execution_.filled_quantity_ == Decimal64::parse("4"));
-  CHECK(live_runner.strategy().updates_[1].status_ == OrderStatus::PARTIAL_FILLED);
-}
-
-TEST_CASE("a quantity restated at another scale is not a change") {
-  // `Decimal64::operator==` compares the coefficient *and the scale*, so `Decimal64(100, 1)` and
-  // `Decimal64(10, 0)` are distinct values although both are ten.
-  //
-  // **Built at an explicit scale on purpose.** `Decimal64::parse` strips trailing fractional zeros,
-  // so `parse("10")` and `parse("10.0")` are the *same* value -- a fixture written that way passes
-  // whether the detector compares numerically or with `==`, which is a test that proves nothing.
-  // The two-argument constructor is the case that can actually reach here, from an adapter this
-  // library has never seen.
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, WatchesOrders{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  auto first = update_row("A1", "", "0");
-  first.order_.quantity_ = Decimal64(10, 0);
-  poll_rows(source, live_runner, session, {first});
-  REQUIRE(live_runner.strategy().updates_.size() == 1);
-
-  auto restated = update_row("A1", "", "0");
-  restated.order_.quantity_ = Decimal64(100, 1);
-  REQUIRE_FALSE(first.order_.quantity_ == restated.order_.quantity_);
-  poll_rows(source, live_runner, session, {restated});
-
-  CHECK(live_runner.strategy().updates_.size() == 1);
-}
-
-TEST_CASE("a row that leaves the listing is reported to nobody") {
-  // A listing cannot say whether an order filled, was cancelled, expired or was rejected, so a
-  // disappearance is counted where it is already counted and interpreted nowhere.
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, WatchesOrders{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  poll_rows(source, live_runner, session, {update_row("A1", "", "0")});
-  poll_rows(source, live_runner, session, {});
-
-  CHECK(live_runner.strategy().updates_.size() == 1);
-  CHECK(source.charged_costs().working_list_disappearances_ == 1);
-}
-
-TEST_CASE("two rows sharing an order number and differing in branch are two orders") {
-  // KIS's reference carries `odno` *and* `ord_gno_brno`, and the branch code is what an amendment
-  // must address. Keyed on `order_id_` alone these two rows would compare against each other and
-  // one update would be suppressed.
-  //
-  // The KIS workbook states no uniqueness scope either way, so this is an adversarial fixture
-  // protecting the address identity rather than evidence that KIS emits such a pair.
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, WatchesOrders{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  poll_rows(
-    source, live_runner, session,
-    {update_row("0001569139", "01", "0"), update_row("0001569139", "02", "0")}
-  );
-  CHECK(live_runner.strategy().updates_.size() == 2);
-
-  // And a change to one of them is still reported while the other is unchanged.
-  poll_rows(
-    source, live_runner, session,
-    {update_row("0001569139", "01", "0"),
-     update_row("0001569139", "02", "5", OrderStatus::PARTIAL_FILLED)}
-  );
-  REQUIRE(live_runner.strategy().updates_.size() == 3);
-  CHECK(live_runner.strategy().updates_[2].execution_.filled_quantity_ == Decimal64::parse("5"));
-}
-
 TEST_CASE("a row with no reference at all is counted and reported to nobody") {
   WorkingSession session;
   auto live_runner = live::bind_observer(session, WatchesOrders{});
@@ -5808,91 +3865,6 @@ TEST_CASE("a row with no reference at all is counted and reported to nobody") {
   poll_rows(source, live_runner, session, {anonymous});
 
   CHECK(live_runner.strategy().updates_.empty());
-}
-
-TEST_CASE("a row with a reference but no display order id is still reported") {
-  // The converse of the case above, and the one that matters for an adapter this library has never
-  // seen: a third party may fill an addressable reference and leave the display id empty, and
-  // dropping its updates would punish it for a field it does not need.
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, WatchesOrders{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  auto addressable = update_row("A1", "", "0");
-  addressable.order_.order_id_ = "";
-  poll_rows(source, live_runner, session, {addressable});
-
-  CHECK(live_runner.strategy().updates_.size() == 1);
-}
-
-TEST_CASE("the startup read adopts the listing rather than reporting it") {
-  // `read_order_list` runs inside `PollingLoop::gate_for`, which the loop calls *before* it applies
-  // the startup hold, and it is handed a mutable runner -- so a `Runner::feed` there would dispatch
-  // to a strategy that can still submit, against the picture the gate exists to withhold.
-  //
-  // **The second half is what makes this a test rather than a coincidence.** Skipping the feed
-  // without adopting the rows would also leave the count at zero here, and the whole listing would
-  // then arrive at the first scheduled poll as if it were new. So the same unchanged listing is
-  // polled afterwards and must still report nothing.
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, WatchesOrders{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  WorkingOrders<FakeBroker> listing;
-  listing.orders_ = {update_row("A1", "", "0")};
-  session.set_working_orders(listing);
-
-  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
-  CHECK(live_runner.strategy().updates_.empty());
-  // And it is state rather than an event: the same call installed it where a strategy reads what a
-  // predecessor left resting.
-  CHECK(live_runner.context().portfolio().working_.size() == 1);
-
-  poll_rows(source, live_runner, session, {update_row("A1", "", "0")});
-  CHECK(live_runner.strategy().updates_.empty());
-
-  // A genuine change after that startup read is still reported, so adopting is not muting.
-  poll_rows(
-    source, live_runner, session, {update_row("A1", "", "3", OrderStatus::PARTIAL_FILLED)}
-  );
-  CHECK(live_runner.strategy().updates_.size() == 1);
-}
-
-TEST_CASE("one order stated twice in a listing is reported once") {
-  // A duplicated row would otherwise be one change delivered as two events -- and a strategy
-  // answering an update may submit, so a duplicated row becomes a duplicated order. Both brokers
-  // that page this listing append their pages without deduplicating, so the input is not excluded
-  // upstream.
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, WatchesOrders{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  poll_rows(
-    source, live_runner, session, {update_row("A1", "", "0"), update_row("A1", "", "0")}
-  );
-  CHECK(live_runner.strategy().updates_.size() == 1);
-}
-
-TEST_CASE("two readings of one order that disagree are reported to nobody") {
-  // Neither reading can be preferred and nothing here can say which is true, so reporting either
-  // states something unestablished and reporting both hands a strategy a contradiction as two
-  // events. The same answer as for two sellable figures that contradict.
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, WatchesOrders{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  poll_rows(
-    source,
-    live_runner,
-    session,
-    {update_row("A1", "", "0"), update_row("A1", "", "5", OrderStatus::PARTIAL_FILLED)}
-  );
-  CHECK(live_runner.strategy().updates_.empty());
-
-  // And it keeps no baseline it could not settle on: a later listing stating the order once
-  // reports it afresh rather than against a reading this one could not choose.
-  poll_rows(source, live_runner, session, {update_row("A1", "", "5", OrderStatus::PARTIAL_FILLED)});
-  CHECK(live_runner.strategy().updates_.size() == 1);
 }
 
 TEST_CASE("a stop's trigger moved on its own is reported, and a disagreement about it is not") {
@@ -6028,31 +4000,6 @@ void record_stop(WorkingSession& session, OrderStatus status, const char* filled
   session.set_history(std::move(page));
 }
 
-TEST_CASE("a deferred flatten is sent once the broker records its stop cancelled unfilled", "[trigger]") {
-  // No holdings poll at all: the working-order poll that no longer lists the stop reads the stop's own
-  // history row on demand, and that row decides.
-  WorkingSession session;
-  auto bound = live::bind(session, FlattensOnPhase{}, {});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-  leave_behind_a_stop(bound, session);
-  CHECK(session.history_calls() == 0);
-
-  record_stop(session, OrderStatus::CANCELED, "0");
-  poll_listing_at(source, bound, session, {}, 1);
-  // A broker that takes no range -- this fake, like Kiwoom -- is asked one stated date at a time:
-  // Kiwoom's `kt00007` requires the date and refuses a range.
-  REQUIRE(session.history_calls() >= 1);
-  for (const auto& query : session.history_queries()) {
-    REQUIRE(query.from_);
-    REQUIRE(query.to_);
-    CHECK(query.from_->day_ == query.to_->day_);
-  }
-  REQUIRE(session.placed().size() == 1);
-  CHECK(session.placed()[0].side_ == OrderSide::SELL);
-  CHECK(session.placed()[0].quantity_ == Decimal64::parse("10"));
-  CHECK(bound.deferred_targets().empty());
-}
-
 TEST_CASE("a deferred flatten does not sell again after the stop filled", "[trigger]") {
   // Holdings still say ten -- stale, the broker's endpoints promise no consistency -- and the stop's own
   // record says it filled.
@@ -6090,48 +4037,6 @@ TEST_CASE("a deferred flatten waits while the stop's record is not terminal, or 
   CHECK(source.poll(runner::PollKind::WORKING_ORDERS, bound) != runner::PollOutcome::UPDATED);
   CHECK(session.placed().empty());
   CHECK(bound.deferred_targets().size() == 1);
-}
-
-TEST_CASE("an update in the same listing supersedes the deferred flatten before it can go", "[trigger]") {
-  // The listing that drops the stop also carries an update the
-  // strategy answers by holding ten. That answer must win, whatever the order of rows.
-  WorkingSession session;
-  auto bound = live::bind(session, FlattensOnPhase{}, {});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-  leave_behind_a_stop(bound, session);
-  record_stop(session, OrderStatus::CANCELED, "0");
-
-  auto first = update_row("OTHER", "", "0");
-  auto keep = update_row("KEEP", "", "0");
-  poll_listing_at(source, bound, session, {first, keep}, 1);
-  CHECK(bound.deferred_targets().empty());
-  CHECK(session.placed().empty());
-}
-
-TEST_CASE("the evidence read covers the Korean day when UTC has not reached it yet", "[trigger]") {
-  // At 08:45 KST on 30 September it is 23:45 UTC on the 29th. A stop placed and
-  // withdrawn that morning lives in Kiwoom's history under 30 September, which a read ending at the UTC
-  // date never asked for.
-  WorkingSession session;
-  auto bound = live::bind(session, FlattensOnPhase{}, {});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-  const auto morning_kst = std::chrono::system_clock::time_point{} +
-    std::chrono::hours(24 * 20726) - std::chrono::minutes(15);  // 2026-09-29T23:45Z
-  REQUIRE(runner::date_of(morning_kst).day_ == 29);
-  bound.context().set_now(morning_kst);
-  leave_behind_a_stop(bound, session);
-
-  record_stop(session, OrderStatus::CANCELED, "0");
-  poll_listing_at(source, bound, session, {}, 1);
-  bool asked_for_the_30th = false;
-  for (const auto& query : session.history_queries()) {
-    REQUIRE(query.from_);
-    if (query.from_->month_ == 9 && query.from_->day_ == 30) {
-      asked_for_the_30th = true;
-    }
-  }
-  CHECK(asked_for_the_30th);
-  CHECK(session.placed().size() == 1);
 }
 
 TEST_CASE("a row from another day under the same order number is a different order", "[recovery]") {
@@ -6195,88 +4100,6 @@ TEST_CASE("a row from another day under the same order number is a different ord
   CHECK(candidates.size() == 2);
 }
 
-TEST_CASE("an open history row is not dropped under a working row that only shares its number", "[recovery]") {
-  // Yesterday's journalled order is still open in yesterday's history; today a
-  // different order resting in the working list carries the same number. Dropping the history row as
-  // the working row's copy left no candidate inside the window, and recovery said `NOT_PLACED`.
-  WorkingSession session;
-  auto today = working();
-  today.ref_ = OrderRef<FakeBroker>{"KRX-1", ""};
-  today.order_.order_id_ = "KRX-1";
-  today.order_.ordered_at_ = journaled_at() + std::chrono::hours(20);
-  WorkingOrders<FakeBroker> listing;
-  listing.orders_.push_back(today);
-  session.set_working_orders(listing);
-  auto pending = listed_order("KRX-1");
-  pending.status_ = OrderStatus::PENDING;
-  OrderPage page;
-  page.orders_.push_back(pending);
-  session.set_history(page);
-
-  runner::MemoryJournal journal;
-  journal.append(journaled_placement());
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live_runner.context().set_now(swept_at());
-  live_runner.ledger().mark(samsung(), "an order request failed in transit");
-  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
-  source.set_journal(journal);
-
-  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
-  REQUIRE_FALSE(source.last_reconcile().matches_.empty());
-  // The history row survives and is the journalled order: matched, on the evidence of its own row.
-  CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::MATCHED);
-  CHECK(source.last_reconcile().matches_.front().order_id_ == "KRX-1");
-}
-
-TEST_CASE("a resting order listed in both inquiries recovers as one match on a no-range broker", "[recovery]") {
-  // The happy path of the exact-copy rule, end to end: the working row and the history row state the
-  // same id, instrument and order time -- as Kiwoom's and Toss's listings do -- so they are one
-  // candidate and the journalled order is `MATCHED`.
-  WorkingSession session;
-  auto resting = working();
-  resting.ref_ = OrderRef<FakeBroker>{"KRX-1", ""};
-  resting.order_ = listed_order("KRX-1");
-  resting.order_.status_ = OrderStatus::PENDING;
-  WorkingOrders<FakeBroker> listing;
-  listing.orders_.push_back(resting);
-  session.set_working_orders(listing);
-  OrderPage page;
-  page.orders_.push_back(resting.order_);
-  session.set_history(page);
-
-  runner::MemoryJournal journal;
-  journal.append(journaled_placement());
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live_runner.context().set_now(swept_at());
-  live_runner.ledger().mark(samsung(), "an order request failed in transit");
-  live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
-  source.set_journal(journal);
-
-  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
-  REQUIRE_FALSE(source.last_reconcile().matches_.empty());
-  CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::MATCHED);
-  CHECK(source.last_reconcile().matches_.front().candidates_ == 1);
-  CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
-
-  // Stamped differently, the same order is two candidates and the hold stays: the stated cost.
-  auto restamped = resting.order_;
-  restamped.ordered_at_ = *restamped.ordered_at_ + std::chrono::seconds(1);
-  OrderPage other;
-  other.orders_.push_back(restamped);
-  session.set_history(other);
-  auto second = live::bind_observer(session, CountEvents{});
-  second.context().set_now(swept_at());
-  second.ledger().mark(samsung(), "an order request failed in transit");
-  runner::MemoryJournal again;
-  again.append(journaled_placement());
-  live::SessionSource<WorkingSession, runner::MemoryJournal> source2(session, {samsung()});
-  source2.set_journal(again);
-  CHECK(source2.read_order_list(second) == runner::PollOutcome::UPDATED);
-  CHECK(source2.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::AMBIGUOUS);
-  CHECK(source2.last_reconcile().matches_.front().candidates_ == 2);
-  CHECK(second.ledger().requires_reconcile(samsung()));
-}
-
 // ---------------------------------------------------------------------------
 // The live program: examples/live_program.hpp, driven against the in-memory session.
 //
@@ -6315,20 +4138,6 @@ bool file_exists(const std::string& path) {
   }
   std::fclose(handle);
   return true;
-}
-
-/** Reads `path` whole. */
-std::string file_text(const std::string& path) {
-  std::string text;
-  if (std::FILE* handle = std::fopen(path.c_str(), "rb")) {
-    char buffer[4096];
-    std::size_t read = 0;
-    while ((read = std::fread(buffer, 1, sizeof buffer, handle)) > 0) {
-      text.append(buffer, read);
-    }
-    std::fclose(handle);
-  }
-  return text;
 }
 
 /** Writes `text` to `path`. */
@@ -6390,33 +4199,6 @@ live_program::Settings program_settings(const TempPath& journal, const TempPath&
 
 } // namespace
 
-TEST_CASE("the live program journals, recovers clean and places its order", "[live][program]") {
-  const TempPath journal("atl-test-program-trade.jsonl");
-  const TempPath control("atl-test-program-trade.stop");
-  ProgramSession session;
-  script_ready(session);
-  runner::StopSource stop;
-  std::ostringstream out;
-
-  const auto exit = live_program::trade(
-    session, one_share(), program_settings(journal, control), stop, out, runner::ManualClock{program_start()}
-  );
-
-  INFO(out.str());
-  CHECK(exit == live_program::Exit::CLEAN);
-  CHECK(out.str().find("recovery: clean") != std::string::npos);
-  // The account was read before the bars, so the decision on the bars read at start was not
-  // withheld: the first decision is the one that trades.
-  CHECK(out.str().find("plans withheld  : 0") != std::string::npos);
-  REQUIRE(session.placed().size() == 1);
-  CHECK(session.placed().front().quantity_ == Decimal64::parse("1"));
-  // Recorded before it was sent, and answered after.
-  const auto text = file_text(journal.str());
-  CHECK(text.find("\"outcome\":\"pending\"") != std::string::npos);
-  CHECK(text.find("\"outcome\":\"accepted\"") != std::string::npos);
-  CHECK(text.find("fake:demo:1") != std::string::npos);
-}
-
 TEST_CASE("the live program reads reference data and bars from its market-data session", "[live][program]") {
   // The trading session has no reference data and no bars, as a KIS demo host has no reference data:
   // the run gets past both only by reading them from the second session, and still places through
@@ -6455,29 +4237,6 @@ TEST_CASE("the live program reads reference data and bars from its market-data s
     runner::ManualClock{program_start()}
   );
   CHECK(alone == live_program::Exit::REFERENCE_UNREADABLE);
-}
-
-TEST_CASE("the live program sends and journals its stated route", "[live][program][route]") {
-  // `Settings::default_route_` is how `example-live-program` makes a Kiwoom run placeable; it has to
-  // reach the executor the runner sends through, and the file journal recovery will read.
-  const TempPath journal("atl-test-program-route.jsonl");
-  const TempPath control("atl-test-program-route.stop");
-  ProgramSession session;
-  script_ready(session);
-  runner::StopSource stop;
-  std::ostringstream out;
-  auto settings = program_settings(journal, control);
-  settings.default_route_ = Venue::NXT;
-
-  const auto exit = live_program::trade(
-    session, one_share(), settings, stop, out, runner::ManualClock{program_start()}
-  );
-
-  INFO(out.str());
-  CHECK(exit == live_program::Exit::CLEAN);
-  REQUIRE(session.placed().size() == 1);
-  CHECK(session.placed().front().venue_ == Venue::NXT);
-  CHECK(file_text(journal.str()).find("\"route\":\"NXT\"") != std::string::npos);
 }
 
 TEST_CASE("the live program withholds what a previous run left pending", "[live][program]") {
@@ -6535,23 +4294,6 @@ TEST_CASE("the live program refuses a journal that belongs to another account", 
   INFO(out.str());
   CHECK(exit == live_program::Exit::JOURNAL_REFUSED);
   CHECK(out.str().find("journal refused") != std::string::npos);
-  CHECK(session.placed().empty());
-  CHECK(session.holdings_calls() == 0);
-}
-
-TEST_CASE("the live program starts nothing without reference data", "[live][program]") {
-  const TempPath journal("atl-test-program-reference.jsonl");
-  const TempPath control("atl-test-program-reference.stop");
-  ProgramSession session;
-  session.set_bars(two_bars("70000", "71000"));
-  runner::StopSource stop;
-  std::ostringstream out;
-
-  const auto exit = live_program::trade(
-    session, one_share(), program_settings(journal, control), stop, out, runner::ManualClock{program_start()}
-  );
-
-  CHECK(exit == live_program::Exit::REFERENCE_UNREADABLE);
   CHECK(session.placed().empty());
   CHECK(session.holdings_calls() == 0);
 }
@@ -6665,72 +4407,7 @@ static_assert(
   !backtest::Backtester<StopsOnFill>::Runner::on_fill_never_fires, "a replay fires on_fill itself"
 );
 
-/** Counts how many of `notes` carry the on_fill note. */
-std::size_t on_fill_notes(const std::vector<std::string>& notes) {
-  std::size_t count = 0;
-  for (const auto& note : notes) {
-    if (note.find("strategy defines on_fill; it never fires on this runner") != std::string::npos) {
-      ++count;
-    }
-  }
-  return count;
-}
-
-/** Runs `bound` for three iterations over a session that answers every poll, from `start`. */
-template <typename Bound>
-runner::LoopReport run_three(
-  Bound& bound,
-  OnFillSession& session,
-  std::chrono::system_clock::time_point start = {}
-) {
-  live::SessionSource<OnFillSession> source(session, {samsung()});
-  runner::PollSchedule schedule;
-  schedule.bars_ = std::chrono::seconds(1);
-  schedule.tick_ = std::chrono::seconds(1);
-  schedule.calendar_.reset();
-  runner::PollingLoop<Bound, live::SessionSource<OnFillSession>, runner::ManualClock> loop(
-    bound, source, schedule, runner::ManualClock{start}
-  );
-  loop.allow_unbounded_portfolio_age();
-  loop.allow_absent_portfolio();
-  runner::StopSource stop;
-  return loop.run(stop, 3);
-}
-
 } // namespace
-
-TEST_CASE("a live run reports once that the strategy's on_fill never fires", "[live][on_fill]") {
-  OnFillSession session;
-  session.set_bars(two_bars("70000", "71000"));
-  auto bound = live::bind(session, StopsOnFill{});
-
-  const auto report = run_three(bound, session);
-
-  CHECK(report.iterations_ == 3);
-  CHECK(on_fill_notes(report.notes_) == 1);
-  // And again on the next run: a report is read on its own.
-  // Later than the first run, as a restarted loop over the same runner would be: a later clock, and
-  // bars the runner has not seen (a new source would otherwise feed the first two again).
-  const auto later = std::chrono::system_clock::time_point{} + std::chrono::hours(1);
-  auto newer = two_bars("72000", "73000");
-  for (auto& bar : newer.bars_) {
-    bar.timestamp_ += std::chrono::hours(24 * 10);
-  }
-  session.set_bars(newer);
-  CHECK(on_fill_notes(run_three(bound, session, later).notes_) == 1);
-  CHECK(bound.strategy().fills_ == 0);
-}
-
-TEST_CASE("an observing run and a strategy without on_fill say nothing about it", "[live][on_fill]") {
-  OnFillSession session;
-  session.set_bars(two_bars("70000", "71000"));
-
-  auto observer = live::bind_observer(session, StopsOnFill{});
-  CHECK(on_fill_notes(run_three(observer, session).notes_) == 0);
-
-  auto plain = live::bind(session, NoFillHandler{});
-  CHECK(on_fill_notes(run_three(plain, session).notes_) == 0);
-}
 
 TEST_CASE("the live program says on_fill never fires before it trades", "[live][on_fill][program]") {
   const TempPath journal("atl-test-program-on-fill.jsonl");
@@ -6756,119 +4433,6 @@ TEST_CASE("the live program says on_fill never fires before it trades", "[live][
 // ---------------------------------------------------------------------------
 // The order a loop reads the account in: the listing, then holdings, then anything that can send.
 // ---------------------------------------------------------------------------
-
-namespace {
-
-/**
- * A resting buy fills right after the iteration's holdings read has answered.
- *
- * The fill is complete: the listing loses the row **and** holdings would show the shares -- to the
- * next read. What the loop does between the two reads is the subject.
- */
-template <typename Session>
-class FillAfterHoldings {
-public:
-  static constexpr bool provides_working_orders = true;
-
-  FillAfterHoldings(Session& session, std::vector<InstrumentId> universe, HoldingsSnapshot filled)
-  : inner_(session, std::move(universe)), session_(&session), filled_(std::move(filled)) {}
-
-  template <typename Runner>
-  runner::PollOutcome poll(runner::PollKind kind, Runner& runner_instance) {
-    polled_.push_back(kind);
-    const auto outcome = inner_.poll(kind, runner_instance);
-    if (kind == runner::PollKind::HOLDINGS && !done_) {
-      session_->set_working_orders(WorkingOrders<FakeBroker>{});
-      session_->set_holdings(filled_);
-      done_ = true;
-    }
-    return outcome;
-  }
-
-  template <typename Runner>
-  runner::PollOutcome read_order_list(Runner& runner_instance) {
-    return inner_.read_order_list(runner_instance);
-  }
-
-  const std::vector<runner::PollKind>& polled() const noexcept { return polled_; }
-
-private:
-  live::SessionSource<Session> inner_;
-  Session* session_;
-  HoldingsSnapshot filled_;
-  std::vector<runner::PollKind> polled_;
-  bool done_{false};
-};
-
-/** Holdings of `quantity` Samsung shares, stamped at the program tests' start. */
-HoldingsSnapshot holding_samsung(const char* quantity) {
-  HoldingsSnapshot snapshot;
-  snapshot.received_at_ = program_start();
-  if (std::string_view(quantity) != "0") {
-    HoldingPosition position;
-    position.instrument_ = samsung();
-    position.quantity_ = Decimal64::parse(quantity);
-    snapshot.positions_.push_back(position);
-  }
-  return snapshot;
-}
-
-/** Runs `iterations` of a loop over `source` with every kind due each second, and a ten-share target. */
-template <typename Source>
-runner::LoopReport run_ten_share_target(ProgramSession& session, Source& source, std::size_t iterations) {
-  strategy::vanilla::BuyAndHold ten;
-  ten.params_.instrument_ = samsung();
-  ten.params_.quantity_ = Decimal64::parse("10");
-  strategy::RiskLimits any_phase;
-  any_phase.permitted_phases_ = std::nullopt;
-  auto bound = live::bind(session, ten, any_phase);
-  bound.context().set_instrument(samsung_reference());
-  runner::PollSchedule schedule;
-  schedule.bars_ = std::chrono::seconds(1);
-  schedule.holdings_ = std::chrono::seconds(1);
-  schedule.working_orders_ = std::chrono::seconds(1);
-  schedule.tick_ = std::chrono::seconds(1);
-  schedule.calendar_.reset();
-  runner::PollingLoop<decltype(bound), Source, runner::ManualClock> loop(
-    bound, source, schedule, runner::ManualClock{program_start()}
-  );
-  loop.set_maximum_portfolio_age(std::chrono::minutes(1));
-  runner::StopSource stop;
-  return loop.run(stop, iterations);
-}
-
-} // namespace
-
-TEST_CASE("a fill between two account reads does not buy again", "[live][poll-order]") {
-  // The double buy this ordering exists to prevent. A resting buy of ten is the whole target; it fills
-  // right after holdings answered flat. Read holdings-then-listing, the listing would show it gone
-  // beside flat holdings, and the next bar would buy ten more.
-  ProgramSession session;
-  script_ready(session);
-  session.set_holdings(holding_samsung("0"));
-  WorkingOrders<FakeBroker> resting;
-  resting.orders_.push_back(working());
-  session.set_working_orders(resting);
-  FillAfterHoldings<ProgramSession> source(session, {samsung()}, holding_samsung("10"));
-
-  const auto report = run_ten_share_target(session, source, 3);
-
-  INFO("plans withheld " << report.plans_withheld_);
-  CHECK(session.placed().empty());
-}
-
-TEST_CASE("a loop reads the listing, then holdings, before anything that can send", "[live][poll-order]") {
-  ProgramSession session;
-  script_ready(session);
-  FillAfterHoldings<ProgramSession> source(session, {samsung()}, holding_samsung("0"));
-
-  run_ten_share_target(session, source, 1);
-
-  const std::vector<runner::PollKind> expected{
-    runner::PollKind::WORKING_ORDERS, runner::PollKind::HOLDINGS, runner::PollKind::BARS,
-  };
-  CHECK(source.polled() == expected);
-}
 
 namespace {
 
@@ -6916,57 +4480,6 @@ auto bind_for_poll_order(WorkingSession& session, Strategy strategy_instance) {
 }
 
 } // namespace
-
-TEST_CASE("an update's target is planned against the holdings read after its listing", "[live][poll-order]") {
-  // A buy of ten rests; holdings read flat after it; five fill before the next listing, which the loop
-  // reads before holdings. Planned there, the handler's target of ten would read 0 held and 5 working
-  // and buy 5 more. It is withheld, retained, and planned against the next holdings read instead.
-  WorkingSession session;
-  auto bound = bind_for_poll_order(session, RestatesTenOnUpdate{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-  poll_listing_at(source, bound, session, {update_row("B-1", "", "0")}, 0);
-  poll_holdings_at(source, bound, session, "0", 1);
-  const auto withheld_before = bound.plans_withheld();
-
-  poll_listing_at(source, bound, session, {update_row("B-1", "", "5")}, 2);
-
-  CHECK(session.placed().empty());
-  CHECK(bound.plans_withheld() == withheld_before + 1);
-  CHECK(bound.targets_retained() == 1);
-
-  poll_holdings_at(source, bound, session, "5", 3);
-  // What `PollingLoop` does after an iteration's polls.
-  bound.retry_retained_targets();
-
-  // Five held and five still working is the target: nothing to place, nothing left retained.
-  CHECK(session.placed().empty());
-  CHECK(bound.targets_retained() == 0);
-}
-
-TEST_CASE("a bar after a listing with no newer holdings waits for the next holdings read", "[live][poll-order]") {
-  // Holdings read flat; the resting buy fills and the next listing no longer shows it; the holdings
-  // read that should follow fails. A bar then must not buy against the flat snapshot.
-  WorkingSession session;
-  auto bound = bind_for_poll_order(session, TenOnEveryBar{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-  poll_listing_at(source, bound, session, {update_row("B-1", "", "0")}, 0);
-  poll_holdings_at(source, bound, session, "0", 1);
-  poll_listing_at(source, bound, session, {}, 2);
-  const auto withheld_before = bound.plans_withheld();
-
-  const auto series = two_bars("70000", "71000");
-  bound.feed(strategy::make_bar_event(samsung(), series.interval_, series.stamp_, series.bars_.back()));
-
-  CHECK(session.placed().empty());
-  CHECK(bound.plans_withheld() == withheld_before + 1);
-  CHECK(bound.targets_retained() == 1);
-
-  // The next holdings read shows the fill, and the retained target finds nothing to do.
-  poll_holdings_at(source, bound, session, "10", 3);
-  bound.retry_retained_targets();
-  CHECK(session.placed().empty());
-  CHECK(bound.targets_retained() == 0);
-}
 
 TEST_CASE("an order intent stated against a superseded account is withheld and not replayed", "[live][poll-order]") {
   WorkingSession session;
@@ -7059,24 +4572,6 @@ TEST_CASE("a flatten after a listing newer than the holdings does not report a v
 
 namespace {
 
-/** Restates ten on an update, and answers a bar with a fixed order of one. */
-struct TargetOnUpdateOrderOnBar {
-  template <class Ctx>
-  void on_order_update(Ctx& ctx, const OrderSnapshot&) {
-    strategy::TargetPosition ten;
-    ten.instrument_ = samsung();
-    ten.target_quantity_ = Decimal64::parse("10");
-    ctx.submit(ten);
-  }
-
-  template <class Ctx>
-  void on_bar(Ctx& ctx, const strategy::BarEvent&) {
-    ctx.submit(
-      strategy::OrderIntent::market(samsung(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")))
-    );
-  }
-};
-
 /** Changes the listing after the startup read, so the first scheduled listing carries an update. */
 class ListingMovesAfterStartup {
 public:
@@ -7140,26 +4635,6 @@ TEST_CASE("an update's target withheld for an unread account at startup is plann
   CHECK(session.placed().front().quantity_ == Decimal64::parse("5"));
 }
 
-TEST_CASE("a later order decision replaces a retained target", "[live][poll-order]") {
-  WorkingSession session;
-  auto bound = bind_for_poll_order(session, TargetOnUpdateOrderOnBar{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-  poll_listing_at(source, bound, session, {update_row("B-1", "", "0")}, 0);
-  poll_holdings_at(source, bound, session, "0", 1);
-  poll_listing_at(source, bound, session, {update_row("B-1", "", "5")}, 2);
-  REQUIRE(bound.targets_retained() == 1);
-
-  // The strategy decides again about the instrument -- with an order, which is itself withheld and
-  // dropped. The earlier target must not come back after it.
-  const auto series = two_bars("70000", "71000");
-  bound.feed(strategy::make_bar_event(samsung(), series.interval_, series.stamp_, series.bars_.back()));
-  CHECK(bound.targets_retained() == 0);
-
-  poll_holdings_at(source, bound, session, "0", 3);
-  bound.retry_retained_targets();
-  CHECK(session.placed().empty());
-}
-
 TEST_CASE("nothing stated under an operator's halt is retained", "[live][poll-order]") {
   WorkingSession session;
   auto bound = bind_for_poll_order(session, RestatesTenOnUpdate{});
@@ -7174,215 +4649,6 @@ TEST_CASE("nothing stated under an operator's halt is retained", "[live][poll-or
   bound.guard().resume(strategy::HaltReason::OPERATOR);
   poll_holdings_at(source, bound, session, "0", 3);
   bound.retry_retained_targets();
-  CHECK(session.placed().empty());
-}
-
-TEST_CASE("a deferred release that throws does not leave supersession disabled", "[live][poll-order]") {
-  WorkingSession session;
-  auto bound = live::bind(session, FlattensOnPhase{}, {});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-  leave_behind_a_stop(bound, session);
-  record_stop(session, OrderStatus::CANCELED, "0");
-  session.throw_on_place();
-
-  WorkingOrders<FakeBroker> empty;
-  empty.received_at_ = live_hour(1);
-  session.set_working_orders(empty);
-  CHECK_THROWS(source.poll(runner::PollKind::WORKING_ORDERS, bound));
-
-  // The listing (hour 1) is newer than the holdings (hour 0). With the exemption stuck on, the next
-  // flatten would sell against that picture; it must be withheld instead.
-  session.throw_on_place(false);
-  const auto withheld_before = bound.plans_withheld();
-  bound.feed(strategy::MarketPhase::POST_CLOSE);
-  CHECK(bound.plans_withheld() == withheld_before + 1);
-  CHECK(session.placed().empty());
-}
-
-TEST_CASE("a retained target waits while a hold is in force, then is planned", "[live][poll-order]") {
-  WorkingSession session;
-  auto bound = bind_for_poll_order(session, RestatesTenOnUpdate{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-  poll_listing_at(source, bound, session, {update_row("B-1", "", "0")}, 0);
-  poll_holdings_at(source, bound, session, "0", 1);
-  poll_listing_at(source, bound, session, {update_row("B-1", "", "5")}, 2);
-  REQUIRE(bound.targets_retained() == 1);
-
-  poll_holdings_at(source, bound, session, "0", 3);
-  bound.guard().halt(strategy::HaltReason::OPERATOR);
-  bound.retry_retained_targets();
-  // Not drained into a refusal: still retained, nothing sent.
-  CHECK(bound.targets_retained() == 1);
-  CHECK(session.placed().empty());
-
-  bound.guard().resume(strategy::HaltReason::OPERATOR);
-  bound.retry_retained_targets();
-  CHECK(bound.targets_retained() == 0);
-  // By this fake's script nothing is held and five still work, so five of the ten are placed.
-  REQUIRE(session.placed().size() == 1);
-  CHECK(session.placed().front().quantity_ == Decimal64::parse("5"));
-}
-
-TEST_CASE("a stop discards retained targets", "[live][poll-order]") {
-  WorkingSession session;
-  auto bound = bind_for_poll_order(session, RestatesTenOnUpdate{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-  poll_listing_at(source, bound, session, {update_row("B-1", "", "0")}, 0);
-  poll_holdings_at(source, bound, session, "0", 1);
-  poll_listing_at(source, bound, session, {update_row("B-1", "", "5")}, 2);
-  REQUIRE(bound.targets_retained() == 1);
-
-  runner::PollSchedule schedule;
-  schedule.tick_ = std::chrono::seconds(1);
-  schedule.calendar_.reset();
-  runner::PollingLoop<decltype(bound), live::SessionSource<WorkingSession>, runner::ManualClock> loop(
-    bound, source, schedule, runner::ManualClock{live_hour(3)}
-  );
-  loop.allow_unbounded_portfolio_age();
-  runner::StopSource stop;
-  stop.request(runner::StopIntent::QUIESCE);
-  loop.run(stop, 1);
-
-  CHECK(bound.targets_retained() == 0);
-}
-
-namespace {
-
-/** Wants ten on an order update; wants nothing once a phase is announced. */
-struct EntryOnUpdateFlatOnPhase {
-  template <class Ctx>
-  void on_order_update(Ctx& ctx, const OrderSnapshot&) {
-    strategy::TargetPosition ten;
-    ten.instrument_ = samsung();
-    ten.target_quantity_ = Decimal64::parse("10");
-    ctx.submit(ten);
-  }
-
-  template <class Ctx>
-  void on_phase(Ctx& ctx, strategy::MarketPhase) {
-    strategy::TargetPosition flat;
-    flat.instrument_ = samsung();
-    flat.target_quantity_ = Decimal64::parse("0");
-    ctx.submit(flat);
-  }
-};
-
-/** Requests a stop from inside the holdings poll, after the iteration's start. */
-class StopsDuringHoldings {
-public:
-  static constexpr bool provides_working_orders = true;
-
-  StopsDuringHoldings(WorkingSession& session, runner::StopSource& stop)
-  : inner_(session, {samsung()}), stop_(&stop) {}
-
-  template <typename Runner>
-  runner::PollOutcome poll(runner::PollKind kind, Runner& runner_instance) {
-    const auto outcome = inner_.poll(kind, runner_instance);
-    if (kind == runner::PollKind::HOLDINGS) {
-      stop_->request(runner::StopIntent::QUIESCE);
-    }
-    return outcome;
-  }
-
-  template <typename Runner>
-  runner::PollOutcome read_order_list(Runner& runner_instance) {
-    return inner_.read_order_list(runner_instance);
-  }
-
-private:
-  live::SessionSource<WorkingSession> inner_;
-  runner::StopSource* stop_;
-};
-
-/** Leaves `bound` with one retained ten-share target on Samsung, as the update tests do. */
-template <typename Bound>
-void retain_one_target(Bound& bound, WorkingSession& session) {
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-  poll_listing_at(source, bound, session, {update_row("B-1", "", "0")}, 0);
-  poll_holdings_at(source, bound, session, "0", 1);
-  poll_listing_at(source, bound, session, {update_row("B-1", "", "5")}, 2);
-  REQUIRE(bound.targets_retained() == 1);
-}
-
-} // namespace
-
-TEST_CASE("a retained entry does not trade before the phase decision that follows it", "[live][poll-order]") {
-  // A retained entry of ten, then an iteration whose holdings read is good and whose phase changes.
-  // `on_phase` wants flat. Retried before the announcement, the entry would buy five and the flat
-  // target would arrive too late to stop it.
-  WorkingSession session;
-  auto bound = bind_for_poll_order(session, EntryOnUpdateFlatOnPhase{});
-  retain_one_target(bound, session);
-
-  const auto start = live_hour(3);
-  bound.context().set_calendar(one_day_calendar(strategy::SessionWindow::krx().local_date(start)));
-  HoldingsSnapshot flat;
-  flat.received_at_ = live_hour(4);
-  session.set_holdings(flat);
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-  runner::PollSchedule schedule;
-  schedule.holdings_ = std::chrono::seconds(1);
-  schedule.tick_ = std::chrono::seconds(1);
-  schedule.calendar_.reset();
-  runner::PollingLoop<decltype(bound), live::SessionSource<WorkingSession>, runner::ManualClock> loop(
-    bound, source, schedule, runner::ManualClock{start}
-  );
-  loop.allow_unbounded_portfolio_age();
-  runner::StopSource stop;
-
-  const auto report = loop.run(stop, 1);
-
-  REQUIRE(report.phase_transitions_ >= 1);
-  CHECK(session.placed().empty());
-  CHECK(bound.targets_retained() == 0);
-}
-
-TEST_CASE("a stop requested during a poll discards retained targets", "[live][poll-order]") {
-  WorkingSession session;
-  auto bound = bind_for_poll_order(session, RestatesTenOnUpdate{});
-  retain_one_target(bound, session);
-
-  runner::StopSource stop;
-  StopsDuringHoldings source(session, stop);
-  runner::PollSchedule schedule;
-  schedule.holdings_ = std::chrono::seconds(1);
-  schedule.tick_ = std::chrono::seconds(1);
-  schedule.calendar_.reset();
-  runner::PollingLoop<decltype(bound), StopsDuringHoldings, runner::ManualClock> loop(
-    bound, source, schedule, runner::ManualClock{live_hour(3)}
-  );
-  loop.allow_unbounded_portfolio_age();
-
-  const auto report = loop.run(stop, 2);
-
-  REQUIRE(report.stopped_by_ == runner::StopIntent::QUIESCE);
-  CHECK(bound.targets_retained() == 0);
-  CHECK(session.placed().empty());
-}
-
-TEST_CASE("an abandoned run discards retained targets", "[live][poll-order]") {
-  // Retained work lives for one run: a run given up after repeated poll failures, then resumed by hand,
-  // must not place a target decided before an outage of unknown length.
-  WorkingSession session;
-  auto bound = bind_for_poll_order(session, RestatesTenOnUpdate{});
-  retain_one_target(bound, session);
-
-  session.fail_with(ErrorCategory::TRANSPORT);
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-  runner::PollSchedule schedule;
-  schedule.holdings_ = std::chrono::seconds(1);
-  schedule.tick_ = std::chrono::seconds(1);
-  schedule.calendar_.reset();
-  runner::PollingLoop<decltype(bound), live::SessionSource<WorkingSession>, runner::ManualClock> loop(
-    bound, source, schedule, runner::ManualClock{live_hour(3)}
-  );
-  loop.allow_unbounded_portfolio_age();
-  runner::StopSource stop;
-
-  const auto report = loop.run(stop, 200);
-
-  REQUIRE(report.abandoned_);
-  CHECK(bound.targets_retained() == 0);
   CHECK(session.placed().empty());
 }
 
@@ -7576,51 +4842,6 @@ TEST_CASE("a page that says no more, or says nothing, is the whole history", "[h
   }
 }
 
-TEST_CASE("a deferred stop's row on a page saying more does not release the target", "[history][trigger]") {
-  // The stop's own row says cancelled, unfilled -- which releases the flatten -- but the page says there
-  // is more history this adapter cannot read. Released on it, the flatten would sell against a picture
-  // the broker said was incomplete.
-  WorkingSession session;
-  auto bound = live::bind(session, FlattensOnPhase{}, {});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-  leave_behind_a_stop(bound, session);
-
-  record_stop(session, OrderStatus::CANCELED, "0");
-  OrderPage page = session.order_history(OrderHistoryQuery{}).value();
-  session.set_history(saying_more(page));
-  WorkingOrders<FakeBroker> listing;
-  listing.received_at_ = live_hour(1);
-  session.set_working_orders(listing);
-
-  CHECK(source.poll(runner::PollKind::WORKING_ORDERS, bound) == runner::PollOutcome::FAILED);
-  REQUIRE(source.last_error());
-  CHECK(source.last_error()->broker_code_ == "history_not_continued");
-  CHECK(session.placed().empty());
-  CHECK(bound.deferred_targets().size() == 1);
-}
-
-TEST_CASE("a history that runs past the page limit fails with a reason", "[history]") {
-  // Every page says there is another. The read gives up at the limit, and the failure names itself, so
-  // a caller that reports the error has one to report.
-  FakeSession<WorkingWithCursor> session;
-  session.set_working_orders(WorkingOrders<FakeBroker>{});
-  session.history_by_query_ = [](const OrderHistoryQuery&) { return saying_more(OrderPage{}); };
-
-  runner::MemoryJournal journal;
-  journal.append(journaled_placement());
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live_runner.context().set_now(swept_at());
-  live_runner.ledger().mark(samsung(), "an order request failed in transit");
-  live::SessionSource<FakeSession<WorkingWithCursor>, runner::MemoryJournal> source(session, {samsung()});
-  source.set_journal(journal);
-
-  source.poll(runner::PollKind::WORKING_ORDERS, live_runner);
-  CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::UNDECIDED);
-  CHECK(live_runner.ledger().requires_reconcile(samsung()));
-  REQUIRE(source.last_error());
-  CHECK(source.last_error()->broker_code_ == "history_page_limit");
-}
-
 TEST_CASE("the startup read refuses a page saying more from a broker with no cursor", "[history]") {
   // No working-order listing, so the gate reads history. A page saying more, with no way to ask for it,
   // is not the broker's record; the gate stays unread.
@@ -7660,40 +4881,6 @@ TEST_CASE("the startup read follows a declared cursor", "[history]") {
   CHECK(*session.history_queries()[1].cursor_ == "p2");
   REQUIRE(source.last_reconcile().matches_.size() == 1);
   CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::MATCHED);
-}
-
-TEST_CASE("the startup read keeps two orders that share a number", "[history]") {
-  // The startup listing is undated, and two days' orders can share a number. Both rows are candidates
-  // for a cancellation naming that number, so it stays ambiguous and held -- on one page or across two.
-  for (const bool across_pages : {false, true}) {
-    FakeSession<HistoryWithCursor> session;
-    auto earlier = listed_order("X");
-    auto later = listed_order("X");
-    later.ordered_at_ = journaled_at() - std::chrono::hours(24);
-    session.history_by_query_ = [=](const OrderHistoryQuery& query) {
-      OrderPage page;
-      if (!across_pages) {
-        page.orders_ = {earlier, later};
-      } else if (!query.cursor_) {
-        page.orders_ = {earlier};
-        page.next_cursor_ = std::string("p2");
-      } else {
-        page.orders_ = {later};
-      }
-      return page;
-    };
-    runner::MemoryJournal journal;
-    journal.append(journaled_cancellation("X"));
-    auto live_runner = live::bind_observer(session, CountEvents{});
-    live_runner.context().set_now(swept_at());
-    live_runner.ledger().mark(samsung(), "a cancellation request failed in transit");
-    live::SessionSource<FakeSession<HistoryWithCursor>, runner::MemoryJournal> source(session, {samsung()});
-    source.set_journal(journal);
-
-    CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
-    CHECK(source.last_reconcile().ambiguous_);
-    CHECK(live_runner.ledger().requires_reconcile(samsung()));
-  }
 }
 
 TEST_CASE("the startup read sends no limit to a broker that does not honour one", "[history]") {

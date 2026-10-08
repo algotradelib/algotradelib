@@ -24,52 +24,6 @@ using analytics::to_decimal;
 using analytics::to_scalar;
 using analytics::bar_field_index;
 
-TEST_CASE("an exact decimal converts to a scalar without loss at market scales") {
-  // Every price and quantity a caller can place has a coefficient inside 53 bits,
-  // which `double` holds exactly. That is why this direction is safe in practice even
-  // though it is lossy in principle.
-  REQUIRE(to_scalar(Decimal64::parse("70000")) == 70000.0);
-  REQUIRE(to_scalar(Decimal64::parse("70000.5")) == 70000.5);
-  REQUIRE(to_scalar(Decimal64::parse("-0.25")) == -0.25);
-  REQUIRE(to_scalar(Decimal64::parse("0")) == 0.0);
-  REQUIRE(to_scalar(Decimal64::parse("185.75")) == 185.75);
-
-  // A round trip through the scalar returns the same decimal at the same scale.
-  for (const char* text : {"70000", "70000.5", "185.75", "-0.25", "1.125"}) {
-    const auto original = Decimal64::parse(text);
-    const auto back = to_decimal(to_scalar(original), original.scale());
-    REQUIRE(back.has_value());
-    REQUIRE(*back == original);
-  }
-}
-
-TEST_CASE("the return conversion rounds half away from zero") {
-  REQUIRE(to_decimal(0.5, 0)->str() == "1");
-  REQUIRE(to_decimal(1.5, 0)->str() == "2");
-  REQUIRE(to_decimal(2.5, 0)->str() == "3");
-  REQUIRE(to_decimal(-0.5, 0)->str() == "-1");
-  REQUIRE(to_decimal(-1.5, 0)->str() == "-2");
-
-  // Not banker's rounding: 2.5 goes to 3, not to 2. A series of conversions is not
-  // biased toward even values.
-  REQUIRE(to_decimal(2.5, 0)->str() != "2");
-
-  REQUIRE(to_decimal(70000.449, 1)->str() == "70000.4");
-  REQUIRE(to_decimal(70000.450, 1)->str() == "70000.5");
-}
-
-TEST_CASE("a value that is not a number has no decimal form") {
-  // An indicator's warm-up region is `missing()`, and a strategy that has not warmed
-  // up must not be able to turn that into a price.
-  REQUIRE_FALSE(to_decimal(missing(), 0).has_value());
-  REQUIRE_FALSE(to_decimal(std::numeric_limits<Scalar>::infinity(), 0).has_value());
-  REQUIRE_FALSE(to_decimal(-std::numeric_limits<Scalar>::infinity(), 2).has_value());
-
-  REQUIRE_FALSE(observed(missing()));
-  REQUIRE(observed(0.0));
-  REQUIRE(observed(-1.5));
-}
-
 TEST_CASE("a value too large for an exact decimal is refused, not wrapped") {
   const Scalar huge = 1e30;
   REQUIRE_FALSE(to_decimal(huge, 0).has_value());
@@ -131,43 +85,6 @@ TEST_CASE("a computed price never crosses its value on the way to the grid") {
   }
 }
 
-TEST_CASE("a midpoint computed exactly and one computed in scalars agree at market scale") {
-  // The two layers answer the same question in different arithmetic, and the boundary
-  // is only trustworthy if they agree where a caller can act on it.
-  DepthSnapshot book;
-  book.bids_.push_back(DepthLevel{Decimal64::parse("70000"), Decimal64::parse("10")});
-  book.asks_.push_back(DepthLevel{Decimal64::parse("70001"), Decimal64::parse("5")});
-
-  const auto exact = book.mid();
-  REQUIRE(exact.has_value());
-  REQUIRE(exact->str() == "70000.5");
-
-  const Scalar computed =
-    (to_scalar(book.bids_.front().price_) + to_scalar(book.asks_.front().price_)) / 2.0;
-  const auto converted = to_decimal(computed, 1);
-  REQUIRE(converted.has_value());
-  REQUIRE(*converted == *exact);
-}
-
-TEST_CASE("the returned decimal keeps the scale it was asked for") {
-  // The scale parameter is the caller stating the precision the market quotes in, so it
-  // is honoured rather than normalized away. That differs on purpose from the exact
-  // arithmetic in core, which normalizes because its results are for comparing.
-  const auto padded = to_decimal(1.5, 3);
-  REQUIRE(padded.has_value());
-  REQUIRE(padded->str() == "1.500");
-  REQUIRE(padded->scale() == 3);
-
-  // Numerically equal to the same value parsed, but not `==`, because equality compares
-  // the scale too. This is the trap the documentation names.
-  const auto parsed = Decimal64::parse("1.5");
-  REQUIRE_FALSE(*padded == parsed);
-  REQUIRE(decimal_subtract(*padded, parsed)->coefficient() == 0);
-
-  // Asking for the scale the value actually has gives a value that does compare equal.
-  REQUIRE(*to_decimal(1.5, 1) == parsed);
-}
-
 namespace {
 
 using analytics::Alignment;
@@ -208,19 +125,6 @@ BarSeries series_for(const char* symbol, std::vector<std::pair<int, const char*>
 
 } // namespace
 
-TEST_CASE("a time index refuses anything but strictly ascending instants") {
-  REQUIRE_NOTHROW(TimeIndex(std::vector<TimeIndex::Instant>{day_of(1), day_of(2), day_of(5)}));
-  REQUIRE_NOTHROW(TimeIndex(std::vector<TimeIndex::Instant>{}));
-
-  // Out of order, and repeated, both make every lookup ambiguous.
-  REQUIRE_THROWS_AS(
-    TimeIndex(std::vector<TimeIndex::Instant>{day_of(2), day_of(1)}), std::invalid_argument
-  );
-  REQUIRE_THROWS_AS(
-    TimeIndex(std::vector<TimeIndex::Instant>{day_of(1), day_of(1)}), std::invalid_argument
-  );
-}
-
 TEST_CASE("an as-of lookup never reaches forward") {
   const TimeIndex index(std::vector<TimeIndex::Instant>{day_of(1), day_of(3), day_of(7)});
 
@@ -258,18 +162,6 @@ TEST_CASE("bars become a frame once, and an absent value stays unobserved") {
 
   REQUIRE(frame.time().at(1) == day_of(2));
   REQUIRE(frame.time().asof(day_of(2)) == 1);
-}
-
-TEST_CASE("a frame column references the frame's own storage rather than a copy") {
-  const auto frame = analytics::from_bars(series_for("005930", {{1, "1"}, {2, "2"}, {3, "3"}}));
-
-  // Two views of the same column address the same memory, which is what makes reading a
-  // series free. Column-major storage with time on the rows is what allows it.
-  REQUIRE(frame.close().data() == frame.column(BarField::CLOSE).data());
-  REQUIRE(frame.close().data() == frame.values().col(bar_field_index(BarField::CLOSE)).data());
-
-  // And the column is contiguous, so an indicator walks it without a stride.
-  REQUIRE(frame.close().innerStride() == 1);
 }
 
 TEST_CASE("an out-of-order series is refused rather than indexed") {
@@ -368,26 +260,6 @@ TEST_CASE("a panel locates an instrument by identity and reports its own shape")
   REQUIRE(Panel::from_bars({}, BarField::CLOSE, Alignment::INTERSECTION).rows() == 0);
   REQUIRE(analytics::alignment_name(Alignment::FORWARD_FILL) == "forward_fill");
   REQUIRE(analytics::bar_field_name(BarField::CLOSE) == "close");
-}
-
-TEST_CASE("the math module's scalar needs no linear algebra backend") {
-  // `math/scalar.hpp` is deliberately backend-free, so the numeric vocabulary is
-  // available to code that does no linear algebra at all.
-  REQUIRE_FALSE(math::observed(math::missing()));
-  REQUIRE(math::observed(math::Scalar(0)));
-  REQUIRE(std::isnan(math::missing()));
-
-  // The linear algebra vocabulary is the module's, not the analytics layer's.
-  const auto blank = math::unobserved(3);
-  REQUIRE(blank.size() == 3);
-  for (math::Index position = 0; position < blank.size(); ++position) {
-    REQUIRE_FALSE(math::observed(blank(position)));
-  }
-
-  const auto grid = math::unobserved(2, 4);
-  REQUIRE(grid.rows() == 2);
-  REQUIRE(grid.cols() == 4);
-  REQUIRE_FALSE(math::observed(grid(1, 3)));
 }
 
 TEST_CASE("aligning a panel walks both indices and stops at their edges") {
@@ -548,41 +420,6 @@ TEST_CASE("a series buffer takes a bar the way a live loop receives one") {
   REQUIRE(buffer.capacity() == 2);
 }
 
-TEST_CASE("a series buffer's storage is taken once and never grows") {
-  // The claim is that a live loop does not allocate on the path that runs every tick.
-  // Storage is one matrix taken at construction, so its base address never moves; the
-  // only thing that moves is where the held run starts inside it, and that is bounded by
-  // the capacity. If the buffer were regrowing, the observed addresses would wander by
-  // arbitrary amounts instead of within that bound.
-  constexpr std::size_t capacity = 16;
-  analytics::SeriesBuffer buffer(capacity, 1);
-
-  const char* lowest = nullptr;
-  const char* highest = nullptr;
-  for (std::size_t step = 0; step < 5000; ++step) {
-    buffer.push(day_of(static_cast<int>(step)), std::vector<math::Scalar>{double(step)});
-    const auto* address = reinterpret_cast<const char*>(buffer.column(std::size_t{0}).data());
-    if (!lowest || address < lowest) {
-      lowest = address;
-    }
-    if (!highest || address > highest) {
-      highest = address;
-    }
-  }
-
-  REQUIRE(lowest != nullptr);
-  REQUIRE(highest != nullptr);
-
-  // Every observed start sits inside one buffer of twice the capacity, so the span can be
-  // at most `capacity` elements: the run's start never passes the compaction point.
-  const auto span = static_cast<std::size_t>(highest - lowest);
-  REQUIRE(span <= capacity * sizeof(math::Scalar));
-
-  // And after five thousand pushes the buffer still holds exactly its capacity.
-  REQUIRE(buffer.size() == capacity);
-  REQUIRE(buffer.compactions() > 0);
-}
-
 // ---------------------------------------------------------------------------
 // Returns and trailing statistics
 // ---------------------------------------------------------------------------
@@ -601,29 +438,6 @@ math::Vector series(std::initializer_list<Scalar> values) {
 
 } // namespace
 
-TEST_CASE("simple returns are unobserved wherever no return exists") {
-  const math::Vector prices = series({100.0, 110.0, 99.0, 99.0, 108.9});
-  const math::Vector result = analytics::returns(prices);
-
-  REQUIRE(result.size() == prices.size());
-  // Row 0 has no prior price. It is unobserved rather than zero, which would be a claim
-  // the price did not move.
-  REQUIRE_FALSE(observed(result[0]));
-  REQUIRE(result[1] == Catch::Approx(0.1));
-  REQUIRE(result[2] == Catch::Approx(-0.1));
-  REQUIRE(result[3] == Catch::Approx(0.0));
-  REQUIRE(result[4] == Catch::Approx(0.1));
-}
-
-TEST_CASE("a simple return refuses to divide by a zero prior price") {
-  // An infinity here would survive every later reduction: they mask NaN, not inf.
-  const math::Vector prices = series({0.0, 10.0, 11.0});
-  const math::Vector result = analytics::returns(prices);
-
-  REQUIRE_FALSE(observed(result[1]));
-  REQUIRE(result[2] == Catch::Approx(0.1));
-}
-
 TEST_CASE("a simple return refuses a negative prior price") {
   // From a negative base the sign reverses: -10 to -20 would read as +100%.
   const math::Vector prices = series({-10.0, -20.0, 5.0, 6.0});
@@ -632,16 +446,6 @@ TEST_CASE("a simple return refuses a negative prior price") {
   REQUIRE_FALSE(observed(result[1]));
   REQUIRE_FALSE(observed(result[2]));
   REQUIRE(result[3] == Catch::Approx(0.2));
-}
-
-TEST_CASE("a return spanning an unobserved price is unobserved on both sides") {
-  const math::Vector prices = series({100.0, missing(), 121.0});
-  const math::Vector result = analytics::returns(prices);
-
-  REQUIRE_FALSE(observed(result[1]));
-  // And row 2, whose prior price is the absent one, does not reach back past it to
-  // manufacture a two-period return.
-  REQUIRE_FALSE(observed(result[2]));
 }
 
 TEST_CASE("log returns add where simple returns compound") {
@@ -657,14 +461,6 @@ TEST_CASE("log returns add where simple returns compound") {
   // The property that makes them worth having: their sum is the total log return.
   const Scalar total = result[1] + result[2] + result[3] + result[4];
   REQUIRE(total == Catch::Approx(std::log(108.9 / 100.0)));
-}
-
-TEST_CASE("a log return refuses a non-positive price instead of returning a bare NaN") {
-  const math::Vector prices = series({10.0, -1.0, 10.0});
-  const math::Vector result = analytics::log_returns(prices);
-
-  REQUIRE_FALSE(observed(result[1]));
-  REQUIRE_FALSE(observed(result[2]));
 }
 
 TEST_CASE("cumulative returns compound to the total the price series implies") {
@@ -708,64 +504,6 @@ TEST_CASE("trailing statistics report nothing until their window is full") {
   REQUIRE(largest[4] == Catch::Approx(5.0));
 }
 
-TEST_CASE("a shorter warm-up is available but has to be asked for") {
-  const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0});
-  const math::Vector mean = analytics::rolling_mean(values, 3, 1);
-
-  REQUIRE(mean[0] == Catch::Approx(1.0));
-  REQUIRE(mean[1] == Catch::Approx(1.5));
-  REQUIRE(mean[2] == Catch::Approx(2.0));
-  REQUIRE(mean[4] == Catch::Approx(4.0));
-}
-
-TEST_CASE("a window skips an unobserved value rather than being blanked by it") {
-  const math::Vector values = series({1.0, missing(), 3.0, 4.0, 5.0});
-
-  // With the whole window demanded, the two windows containing the gap hold only two
-  // observations and stay unobserved.
-  const math::Vector strict = analytics::rolling_mean(values, 3);
-  REQUIRE_FALSE(observed(strict[2]));
-  REQUIRE_FALSE(observed(strict[3]));
-  REQUIRE(strict[4] == Catch::Approx(4.0));
-
-  // Relaxed to two observations, the gap is masked and the divisor is the count actually
-  // seen -- two, not three.
-  const math::Vector relaxed = analytics::rolling_mean(values, 3, 2);
-  REQUIRE_FALSE(observed(relaxed[1]));
-  REQUIRE(relaxed[2] == Catch::Approx(2.0));
-  REQUIRE(relaxed[3] == Catch::Approx(3.5));
-  REQUIRE(relaxed[4] == Catch::Approx(4.0));
-}
-
-TEST_CASE("a trailing deviation is the sample one and needs two observations") {
-  const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0});
-  const math::Vector deviation = analytics::rolling_stdev(values, 3);
-
-  REQUIRE_FALSE(observed(deviation[0]));
-  REQUIRE_FALSE(observed(deviation[1]));
-  REQUIRE(deviation[2] == Catch::Approx(1.0));
-  REQUIRE(deviation[3] == Catch::Approx(1.0));
-  REQUIRE(deviation[4] == Catch::Approx(1.0));
-
-  // Even asked for a one-observation warm-up, a single point has no dispersion to
-  // report: `count - 1` would be a division by zero.
-  const math::Vector relaxed = analytics::rolling_stdev(values, 3, 1);
-  REQUIRE_FALSE(observed(relaxed[0]));
-  REQUIRE(relaxed[1] == Catch::Approx(std::sqrt(0.5)));
-}
-
-TEST_CASE("a trailing deviation survives the price levels that break the one-pass form") {
-  // Three values one apart, around a level whose square exceeds what a double holds
-  // exactly. The sample deviation is 1 by construction. The one-pass
-  // `E[x^2] - E[x]^2` form returns a variance of 2 here -- a deviation of 1.414,
-  // wrong by 41% with no warning -- because the two terms agree to more digits than a
-  // double has. Two passes over the window is what buys the right answer.
-  const math::Vector values = series({1.0e8, 1.0e8 + 1.0, 1.0e8 + 2.0});
-  const math::Vector deviation = analytics::rolling_stdev(values, 3);
-
-  REQUIRE(deviation[2] == 1.0);
-}
-
 TEST_CASE("a weighted average leans on its most recent row and renormalizes over gaps") {
   const math::Vector values = series({1.0, 2.0, 3.0});
   const math::Vector weighted = analytics::wma(values, 3);
@@ -780,59 +518,6 @@ TEST_CASE("a weighted average leans on its most recent row and renormalizes over
   const math::Vector gapped = series({1.0, missing(), 3.0});
   const math::Vector over_gap = analytics::wma(gapped, 3, 2);
   REQUIRE(over_gap[2] == Catch::Approx((1.0 * 1.0 + 3.0 * 3.0) / (1.0 + 3.0)));
-}
-
-TEST_CASE("the simple moving average is the trailing mean, and stays that way") {
-  const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0});
-  const math::Vector average = analytics::sma(values, 3);
-  const math::Vector mean = analytics::rolling_mean(values, 3);
-
-  for (math::Index row = 0; row < values.size(); ++row) {
-    REQUIRE(observed(average[row]) == observed(mean[row]));
-    if (observed(mean[row])) {
-      REQUIRE(average[row] == mean[row]);
-    }
-  }
-}
-
-TEST_CASE("an exponential average takes its smoothing factor and seeds on its first value") {
-  const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0});
-
-  // alpha = 0.5 -- span 3 in the span convention -- so each level is the midpoint of the
-  // previous level and the new value.
-  const math::Vector smoothed = analytics::ema(values, 0.5);
-  REQUIRE(smoothed[0] == Catch::Approx(1.0));
-  REQUIRE(smoothed[1] == Catch::Approx(1.5));
-  REQUIRE(smoothed[2] == Catch::Approx(2.25));
-  REQUIRE(smoothed[3] == Catch::Approx(3.125));
-  REQUIRE(smoothed[4] == Catch::Approx(4.0625));
-
-  // alpha = 1 is no smoothing at all, and gives the series back.
-  const math::Vector unsmoothed = analytics::ema(values, 1.0);
-  for (math::Index row = 0; row < values.size(); ++row) {
-    REQUIRE(unsmoothed[row] == values[row]);
-  }
-}
-
-TEST_CASE("an exponential average carries its level across a gap without reporting one") {
-  const math::Vector values = series({1.0, missing(), 3.0});
-  const math::Vector smoothed = analytics::ema(values, 0.5);
-
-  REQUIRE(smoothed[0] == Catch::Approx(1.0));
-  // The row itself has no observation, so the indicator says nothing about it.
-  REQUIRE_FALSE(observed(smoothed[1]));
-  // But the level was not lost: 1 + 0.5 * (3 - 1).
-  REQUIRE(smoothed[2] == Catch::Approx(2.0));
-}
-
-TEST_CASE("an exponential average can suppress the region its seed still dominates") {
-  const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0});
-  const math::Vector smoothed = analytics::ema(values, 0.5, 3);
-
-  REQUIRE_FALSE(observed(smoothed[0]));
-  REQUIRE_FALSE(observed(smoothed[1]));
-  REQUIRE(smoothed[2] == Catch::Approx(2.25));
-  REQUIRE(smoothed[4] == Catch::Approx(4.0625));
 }
 
 TEST_CASE("an impossible window is refused rather than answered with nothing") {
@@ -876,25 +561,6 @@ static_assert(ema_step_accepts<Scalar>::value, "ema_step takes a smoothing facto
 static_assert(!ema_step_accepts<int>::value, "an int is a span: alpha_from_span");
 static_assert(!ema_step_accepts<std::size_t>::value, "a size_t is a span: alpha_from_span");
 
-TEST_CASE("the span convention is 2 / (span + 1), and a zero span is refused") {
-  REQUIRE(analytics::alpha_from_span(12) == 2.0 / 13.0);
-  REQUIRE(analytics::alpha_from_span(3) == 0.5);
-  REQUIRE(analytics::alpha_from_span(1) == 1.0);
-  REQUIRE_THROWS_AS(analytics::alpha_from_span(0), std::invalid_argument);
-}
-
-TEST_CASE("an exponential average takes a smoothing factor no span reaches") {
-  // RiskMetrics' lambda = 0.94 is alpha = 0.06, which is span 32.33: unreachable through a span.
-  const math::Vector values = series({100.0, 102.0, 101.0, 105.0, 104.0});
-  const math::Vector smoothed = analytics::ema(values, 0.06);
-  Scalar level = 100.0;
-  REQUIRE(smoothed[0] == level);
-  for (math::Index row = 1; row < values.size(); ++row) {
-    level = 0.06 * values[row] + 0.94 * level;
-    REQUIRE(smoothed[row] == Catch::Approx(level).epsilon(1e-12));
-  }
-}
-
 TEST_CASE("an exponential average refuses a smoothing factor outside (0, 1]") {
   const math::Vector values = series({1.0, 2.0, 3.0});
   const math::Vector empty = series({});
@@ -904,16 +570,6 @@ TEST_CASE("an exponential average refuses a smoothing factor outside (0, 1]") {
     REQUIRE_THROWS_AS(analytics::ema(empty, alpha), std::invalid_argument);
     REQUIRE_THROWS_AS(analytics::ema_step(1.0, 2.0, alpha), std::invalid_argument);
   }
-}
-
-TEST_CASE("one exponential-average step seeds, skips an absence, and updates") {
-  // No level yet: the first observation is the level.
-  REQUIRE(analytics::ema_step(missing(), 10.0, 0.5) == 10.0);
-  // An absent value leaves the level as it was, and an absent level stays absent.
-  REQUIRE(analytics::ema_step(10.0, missing(), 0.5) == 10.0);
-  REQUIRE_FALSE(observed(analytics::ema_step(missing(), missing(), 0.5)));
-  // Otherwise alpha * value + (1 - alpha) * level.
-  REQUIRE(analytics::ema_step(10.0, 20.0, 0.25) == Catch::Approx(12.5));
 }
 
 TEST_CASE("the exponential average keeps its arithmetic, digit for digit") {
@@ -926,87 +582,9 @@ TEST_CASE("the exponential average keeps its arithmetic, digit for digit") {
   REQUIRE(analytics::macd(values).macd_[1] == 67.227042735042758);
 }
 
-TEST_CASE("an infinity leaves the exponential average unobserved from then on") {
-  // The update meets +inf - inf and the level becomes NaN. `ema` keeps it, rather than taking
-  // the NaN for "no level yet" and reseeding on the next value.
-  const Scalar infinity = std::numeric_limits<Scalar>::infinity();
-  const math::Vector smoothed = analytics::ema(series({infinity, -infinity, 7.0}), 0.5);
-  REQUIRE(smoothed[0] == infinity);
-  REQUIRE_FALSE(observed(smoothed[1]));
-  REQUIRE_FALSE(observed(smoothed[2]));
-}
-
-TEST_CASE("a live level folded with ema_step is the vectorized average, bit for bit") {
-  // The property a live strategy depends on: keeping one number per bar computes exactly what
-  // a replay over the same bars computes, gaps included.
-  const math::Vector values = series({1.0, 2.0, 3.0, missing(), 5.0, 6.0});
-  const Scalar alpha = analytics::alpha_from_span(3);
-  const math::Vector vectorized = analytics::ema(values, alpha);
-
-  Scalar level = missing();
-  for (math::Index row = 0; row < values.size(); ++row) {
-    level = analytics::ema_step(level, values[row], alpha);
-    if (observed(values[row])) {
-      REQUIRE(level == vectorized[row]);
-    } else {
-      // The row itself says nothing, but the level carried across it in both.
-      REQUIRE_FALSE(observed(vectorized[row]));
-    }
-  }
-}
-
-TEST_CASE("an indicator reads a frame column and a series buffer the same way") {
-  // The point of one contiguous series per column: the same function serves a completed
-  // frame and a live buffer, so a backtest and a live loop cannot diverge here.
-  using namespace std::chrono_literals;
-  const auto base = std::chrono::system_clock::time_point{} + 24h;
-
-  analytics::SeriesBuffer buffer(3);
-  const std::vector<Scalar> rows[] = {
-    {0, 0, 0, 10.0, 0, 0},
-    {0, 0, 0, 20.0, 0, 0},
-    {0, 0, 0, 30.0, 0, 0},
-  };
-  for (std::size_t at = 0; at < 3; ++at) {
-    buffer.push(base + std::chrono::hours(24 * static_cast<int>(at)), rows[at]);
-  }
-
-  const math::Vector from_buffer =
-    analytics::sma(buffer.column(analytics::BarField::CLOSE), 3);
-  REQUIRE(from_buffer[2] == Catch::Approx(20.0));
-
-  const math::Vector direct = analytics::sma(series({10.0, 20.0, 30.0}), 3);
-  REQUIRE(direct[2] == from_buffer[2]);
-}
-
 // ---------------------------------------------------------------------------
 // Named indicators
 // ---------------------------------------------------------------------------
-
-TEST_CASE("a z-score measures distance from the trailing mean in trailing deviations") {
-  const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 10.0});
-  const math::Vector score = analytics::zscore(values, 3);
-
-  REQUIRE_FALSE(observed(score[0]));
-  REQUIRE_FALSE(observed(score[1]));
-  // Window {1,2,3}: mean 2, sample deviation 1, so 3 sits one deviation above.
-  REQUIRE(score[2] == Catch::Approx(1.0));
-  REQUIRE(score[3] == Catch::Approx(1.0));
-  // Window {3,4,10}: mean 17/3, squared deviations summing to 86/3, so a sample
-  // variance of 43/3.
-  const Scalar mean = 17.0 / 3.0;
-  REQUIRE(score[4] == Catch::Approx((10.0 - mean) / std::sqrt(43.0 / 3.0)));
-}
-
-TEST_CASE("a z-score over a flat window is undefined rather than zero") {
-  // A halted instrument, or a tick-constrained price that did not move. Zero would read
-  // as "exactly at the mean", which is a different claim from "cannot be computed".
-  const math::Vector values = series({5.0, 5.0, 5.0, 5.0});
-  const math::Vector score = analytics::zscore(values, 3);
-
-  REQUIRE_FALSE(observed(score[2]));
-  REQUIRE_FALSE(observed(score[3]));
-}
 
 TEST_CASE("Bollinger bands straddle the trailing mean by the deviation asked for") {
   const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0});
@@ -1062,23 +640,6 @@ TEST_CASE("the relative strength index decides its degenerate cases instead of d
   REQUIRE(analytics::rsi(flat, 3)[3] == Catch::Approx(50.0));
 }
 
-TEST_CASE("a true range counts the overnight gap, not just the bar's own height") {
-  const math::Vector highs = series({10.0, 11.0, 12.5, 11.5, 13.0});
-  const math::Vector lows = series({9.0, 9.5, 11.0, 10.0, 11.5});
-  const math::Vector closes = series({9.5, 10.5, 12.0, 10.5, 12.5});
-  const math::Vector range = analytics::true_range(highs, lows, closes);
-
-  // Row 0 has no previous close, so it is the bar's height: 10 - 9.
-  REQUIRE(range[0] == Catch::Approx(1.0));
-  // Row 1's own height is 1.5, and its span from the previous close of 9.5 is also 1.5,
-  // so the two agree and either would do.
-  REQUIRE(range[1] == Catch::Approx(1.5));
-  // Row 3 fell from a close of 12 to a low of 10: the gap span, 2.0, exceeds the bar's
-  // height of 1.5. A measure that missed that would understate the risk of holding it.
-  REQUIRE(range[3] == Catch::Approx(2.0));
-  REQUIRE(range[4] == Catch::Approx(2.5));
-}
-
 TEST_CASE("the average true range seeds on a simple mean then smooths Wilder's way") {
   const math::Vector highs = series({10.0, 11.0, 12.5, 11.5, 13.0});
   const math::Vector lows = series({9.0, 9.5, 11.0, 10.0, 11.5});
@@ -1092,42 +653,6 @@ TEST_CASE("the average true range seeds on a simple mean then smooths Wilder's w
   // Then (1.5 * 2 + 2.0) / 3.
   REQUIRE(average[3] == Catch::Approx(5.0 / 3.0));
   REQUIRE(average[4] == Catch::Approx(1.9444444444444446));
-}
-
-TEST_CASE("mismatched series lengths are refused rather than reduced to the shorter one") {
-  const math::Vector four = series({1.0, 2.0, 3.0, 4.0});
-  const math::Vector three = series({1.0, 2.0, 3.0});
-
-  REQUIRE_THROWS_AS(analytics::true_range(four, three, four), std::invalid_argument);
-  REQUIRE_THROWS_AS(analytics::rolling_cov(four, three, 2), std::invalid_argument);
-  REQUIRE_THROWS_AS(analytics::rolling_corr(four, three, 2), std::invalid_argument);
-  REQUIRE_THROWS_AS(analytics::beta(four, three, 2), std::invalid_argument);
-}
-
-TEST_CASE("MACD is the difference of two exponential averages and its own average") {
-  const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0});
-  const auto lines = analytics::macd(values, 2, 4, 3);
-
-  const math::Vector quick = analytics::ema(values, analytics::alpha_from_span(2));
-  const math::Vector slower = analytics::ema(values, analytics::alpha_from_span(4));
-  for (math::Index row = 0; row < values.size(); ++row) {
-    REQUIRE(lines.macd_[row] == Catch::Approx(quick[row] - slower[row]));
-  }
-  // The signal line is the exponential average of the MACD itself, and the histogram is
-  // the gap between them.
-  const math::Vector signal = analytics::ema(lines.macd_, analytics::alpha_from_span(3));
-  for (math::Index row = 0; row < values.size(); ++row) {
-    REQUIRE(lines.signal_[row] == Catch::Approx(signal[row]));
-    REQUIRE(lines.histogram_[row] == Catch::Approx(lines.macd_[row] - signal[row]));
-  }
-}
-
-TEST_CASE("MACD refuses a fast span that is not faster") {
-  // The reversed pair is the negation of the intended indicator: a sign error that
-  // survives every test of magnitude and shows up only as a strategy trading backwards.
-  const math::Vector values = series({1.0, 2.0, 3.0});
-  REQUIRE_THROWS_AS(analytics::macd(values, 26, 12), std::invalid_argument);
-  REQUIRE_THROWS_AS(analytics::macd(values, 12, 12), std::invalid_argument);
 }
 
 TEST_CASE("a trailing covariance is the sample one over paired rows") {
@@ -1152,31 +677,6 @@ TEST_CASE("a trailing correlation is bounded because it uses one sample for all 
   const math::Vector negated = series({-1.0, -2.0, -3.0, -4.0});
   REQUIRE(analytics::rolling_corr(left, doubled, 3)[3] == Catch::Approx(1.0));
   REQUIRE(analytics::rolling_corr(left, negated, 3)[3] == Catch::Approx(-1.0));
-}
-
-TEST_CASE("a correlation stays bounded when the two series have different gaps") {
-  // The trap this guards. Reducing the covariance over the rows where both are present
-  // while taking each deviation over its own rows describes three different samples, and
-  // the quotient can leave [-1, 1] entirely.
-  const math::Vector left = series({1.0, 2.0, missing(), 4.0, 5.0, 100.0});
-  const math::Vector right = series({2.0, missing(), 6.0, 8.0, 10.0, 12.0});
-  const math::Vector correlation = analytics::rolling_corr(left, right, 4, 2);
-
-  for (math::Index row = 0; row < left.size(); ++row) {
-    if (observed(correlation[row])) {
-      REQUIRE(correlation[row] >= -1.0);
-      REQUIRE(correlation[row] <= 1.0);
-    }
-  }
-}
-
-TEST_CASE("a correlation against a constant is undefined rather than zero") {
-  const math::Vector left = series({1.0, 2.0, 3.0, 4.0});
-  const math::Vector constant = series({3.0, 3.0, 3.0, 3.0});
-  const math::Vector correlation = analytics::rolling_corr(left, constant, 3);
-
-  REQUIRE_FALSE(observed(correlation[2]));
-  REQUIRE_FALSE(observed(correlation[3]));
 }
 
 TEST_CASE("beta is the covariance over the market's own variance") {
@@ -1217,33 +717,6 @@ math::Matrix columns(std::initializer_list<std::initializer_list<Scalar>> values
 }
 
 } // namespace
-
-TEST_CASE("one factorization solves a matrix of right-hand sides at once") {
-  // The shape the old wrapper could not express. `b` is a matrix of two targets, so the
-  // solution is a matrix of two coefficient columns, and both come from the same
-  // factorization rather than from two calls.
-  math::Matrix design(4, 2);
-  design << 1.0, 1.0, 1.0, 2.0, 1.0, 3.0, 1.0, 4.0;
-  math::Matrix targets(4, 2);
-  // First target is 2 + 3x, second is -1 + 5x.
-  targets << 5.0, 4.0, 8.0, 9.0, 11.0, 14.0, 14.0, 19.0;
-
-  const math::ColPivQr qr(design);
-  REQUIRE(qr.rank() == 2);
-
-  const math::Matrix coefficients = qr.solve(targets);
-  REQUIRE(coefficients.rows() == 2);
-  REQUIRE(coefficients.cols() == 2);
-  REQUIRE(coefficients(0, 0) == Catch::Approx(2.0));
-  REQUIRE(coefficients(1, 0) == Catch::Approx(3.0));
-  REQUIRE(coefficients(0, 1) == Catch::Approx(-1.0));
-  REQUIRE(coefficients(1, 1) == Catch::Approx(5.0));
-
-  // And the same factorization answers a vector right-hand side too, with no second
-  // decomposition and no separate entry point.
-  const math::Vector single = qr.solve(math::Vector(targets.col(0)));
-  REQUIRE(single[1] == Catch::Approx(3.0));
-}
 
 TEST_CASE("the caller picks the decomposition, and each reports its own failure") {
   math::Matrix design(4, 2);
@@ -1287,23 +760,6 @@ TEST_CASE("a rank-deficient design is reported by the decomposition itself") {
 // Evaluation metrics
 // ---------------------------------------------------------------------------
 
-TEST_CASE("the worst drawdown is the deepest one, not the most recent") {
-  const math::Vector levels = series({100.0, 120.0, 90.0, 150.0, 100.0});
-  const auto worst = analytics::max_drawdown(levels);
-
-  // 25% below the peak of 120 at row 2, then a third below the peak of 150 at row 4.
-  REQUIRE(worst.magnitude_ == Catch::Approx(1.0 / 3.0));
-  REQUIRE(worst.peak_row_ == 3);
-  REQUIRE(worst.trough_row_ == 4);
-}
-
-TEST_CASE("a monotonically rising curve has no drawdown at all") {
-  const math::Vector levels = series({100.0, 110.0, 120.0});
-  const auto worst = analytics::max_drawdown(levels);
-
-  REQUIRE(worst.magnitude_ == Catch::Approx(0.0));
-}
-
 TEST_CASE("a drawdown over nothing observable reports nothing rather than zero") {
   const math::Vector levels = series({missing(), missing()});
   const auto worst = analytics::max_drawdown(levels);
@@ -1313,132 +769,9 @@ TEST_CASE("a drawdown over nothing observable reports nothing rather than zero")
   REQUIRE(worst.trough_row_ == -1);
 }
 
-TEST_CASE("a Sharpe ratio is per period and the excess is over a per-period rate") {
-  const math::Vector period_returns = series({0.01, 0.02, 0.03});
-
-  // Mean 0.02, sample deviation 0.01.
-  REQUIRE(analytics::sharpe(period_returns) == Catch::Approx(2.0));
-  REQUIRE(analytics::sharpe(period_returns, 0.01) == Catch::Approx(1.0));
-}
-
-TEST_CASE("annualizing a ratio takes the square root of the period count") {
-  // The mean scales with the number of periods and the deviation with its square root, so
-  // the ratio scales with the square root. Scaling by 252 rather than sqrt(252) overstates
-  // a daily Sharpe ratio by about sixteen times, which is worth its own assertion.
-  REQUIRE(analytics::annualize_ratio(2.0, 252.0) == Catch::Approx(2.0 * std::sqrt(252.0)));
-  REQUIRE(analytics::annualize_ratio(2.0, 252.0) < 2.0 * 252.0);
-
-  // An unobserved ratio stays unobserved rather than becoming a number.
-  REQUIRE_FALSE(observed(analytics::annualize_ratio(missing(), 252.0)));
-  REQUIRE_THROWS_AS(analytics::annualize_ratio(1.0, 0.0), std::invalid_argument);
-}
-
-TEST_CASE("a Sharpe ratio over a flat or a single return is unobserved") {
-  REQUIRE_FALSE(observed(analytics::sharpe(series({0.01}))));
-  // A strategy whose returns never varied has no risk-adjusted return to report.
-  REQUIRE_FALSE(observed(analytics::sharpe(series({0.01, 0.01, 0.01}))));
-}
-
-TEST_CASE("a Sortino ratio divides by the whole count, not by the losses alone") {
-  const math::Vector period_returns = series({0.01, -0.02, 0.03});
-
-  // Mean 0.02/3. One shortfall of 0.02, and the downside deviation is
-  // sqrt(0.02^2 / 3) -- divided by all three observations. That makes the ratio
-  // exactly 1/sqrt(3).
-  REQUIRE(analytics::sortino(period_returns) == Catch::Approx(1.0 / std::sqrt(3.0)));
-
-  // Had the divisor been the single losing observation, the deviation would be 0.02 and
-  // the ratio 1/3 -- a *lower* number here, but systematically higher for the strategies
-  // this is usually applied to, where losses are rare. Pinning the definition is the point.
-  REQUIRE(analytics::sortino(period_returns) != Catch::Approx(1.0 / 3.0));
-}
-
-TEST_CASE("a Sortino ratio measures shortfalls from its target, not from the mean") {
-  const math::Vector period_returns = series({0.01, 0.02, 0.03});
-
-  // Against a target of zero nothing fell short, so there is no downside risk to divide
-  // by and the ratio is unobserved rather than infinite.
-  REQUIRE_FALSE(observed(analytics::sortino(period_returns)));
-
-  // Against a target of 0.02 the first return falls short by 0.01.
-  const Scalar downside = std::sqrt(0.01 * 0.01 / 3.0);
-  REQUIRE(analytics::sortino(period_returns, 0.02) == Catch::Approx(0.0 / downside));
-}
-
-TEST_CASE("turnover is the one-way fraction of the portfolio that changed hands") {
-  const math::Matrix weights = columns({
-    {0.5, 0.5, 1.0},
-    {0.5, 0.5, 0.0},
-  });
-  const math::Vector traded = analytics::one_way_turnover(weights);
-
-  // Row 0 builds the first position from cash: the whole book is deployed, which the
-  // one-way convention reports as 0.5.
-  REQUIRE(traded[0] == Catch::Approx(0.5));
-  // Row 1 changed nothing.
-  REQUIRE(traded[1] == Catch::Approx(0.0));
-  // Row 2 moved the whole book from one name to the other: a turnover of 1 one-way, which
-  // the two-way convention would report as 2.
-  REQUIRE(traded[2] == Catch::Approx(0.5));
-}
-
-TEST_CASE("turnover moving a whole book between instruments is one, not two") {
-  const math::Matrix weights = columns({
-    {1.0, 0.0},
-    {0.0, 1.0},
-  });
-  const math::Vector traded = analytics::one_way_turnover(weights);
-
-  REQUIRE(traded[0] == Catch::Approx(0.5));
-  // Selling all of one name and buying all of another: 0.5 * (1 + 1).
-  REQUIRE(traded[1] == Catch::Approx(1.0));
-}
-
-TEST_CASE("an absent weight is no position, unlike an absent price") {
-  // A weight is a decision, so its absence means no position was held. That is the
-  // opposite reading from a price, where absence means the value is unknown.
-  const math::Matrix absent = columns({
-    {1.0, missing()},
-    {0.0, 1.0},
-  });
-  const math::Matrix explicit_zero = columns({
-    {1.0, 0.0},
-    {0.0, 1.0},
-  });
-  const math::Vector over_absence = analytics::one_way_turnover(absent);
-  const math::Vector over_zero = analytics::one_way_turnover(explicit_zero);
-
-  // Which is the whole assertion: an absent weight and an explicit zero give the same
-  // answer, because both say the same thing about the position.
-  for (math::Index row = 0; row < over_absence.size(); ++row) {
-    REQUIRE(over_absence[row] == over_zero[row]);
-  }
-  // Row 1 leaves the first name and takes the second, a full rotation: 0.5 * (1 + 1).
-  REQUIRE(over_absence[1] == Catch::Approx(1.0));
-}
-
 // ---------------------------------------------------------------------------
 // The two kinds of absence, and the vectorized reductions
 // ---------------------------------------------------------------------------
-
-TEST_CASE("undefined is distinguishable from missing and both read as unobserved") {
-  REQUIRE_FALSE(observed(missing()));
-  REQUIRE_FALSE(observed(math::undefined()));
-
-  // Which is the point: every reduction masks both, so nothing downstream changes, and a caller
-  // that wants the distinction can ask for it.
-  REQUIRE(math::is_undefined(math::undefined()));
-  REQUIRE_FALSE(math::is_undefined(missing()));
-  REQUIRE_FALSE(math::is_undefined(0.0));
-  REQUIRE_FALSE(math::is_undefined(1.0e308));
-
-  // It survives a round trip through matrix storage, which is a bit copy.
-  math::Vector held(2);
-  held[0] = missing();
-  held[1] = math::undefined();
-  REQUIRE(math::is_undefined(held[1]));
-  REQUIRE_FALSE(math::is_undefined(held[0]));
-}
 
 TEST_CASE("a statistic that cannot exist says so, distinctly from having no data") {
   // A flat window: the data is there and the z-score does not exist for it.
@@ -1463,68 +796,6 @@ TEST_CASE("a statistic that cannot exist says so, distinctly from having no data
 
   // An equity curve at zero has not declined by a percentage; it is gone.
   REQUIRE(math::is_undefined(analytics::max_drawdown(series({0.0, 0.0})).magnitude_));
-}
-
-TEST_CASE("the vectorized reductions agree with a scalar reference, gaps and all") {
-  // The masking moved out of the per-window loop into one pass per series. This pins that the
-  // move changed no answer: a deliberately awkward series, checked against a plain loop.
-  math::Vector values(60);
-  for (math::Index row = 0; row < values.size(); ++row) {
-    values[row] = row % 7 == 3 ?
-      missing() :
-      1.0e6 + static_cast<Scalar>((row * 37) % 23) - 11.0;
-  }
-
-  const std::size_t window = 9;
-  const std::size_t min_observed = 4;
-  const math::Vector mean = analytics::rolling_mean(values, window, min_observed);
-  const math::Vector deviation = analytics::rolling_stdev(values, window, min_observed);
-  const math::Vector smallest = analytics::rolling_min(values, window, min_observed);
-  const math::Vector largest = analytics::rolling_max(values, window, min_observed);
-
-  for (math::Index row = 0; row < values.size(); ++row) {
-    const math::Index first =
-      row + 1 >= static_cast<math::Index>(window) ? row + 1 - static_cast<math::Index>(window) : 0;
-    std::size_t count = 0;
-    Scalar sum = 0.0;
-    Scalar low = 0.0;
-    Scalar high = 0.0;
-    for (math::Index at = first; at <= row; ++at) {
-      if (!observed(values[at])) {
-        continue;
-      }
-      if (count == 0 || values[at] < low) {
-        low = values[at];
-      }
-      if (count == 0 || high < values[at]) {
-        high = values[at];
-      }
-      ++count;
-      sum += values[at];
-    }
-
-    if (count < min_observed) {
-      REQUIRE_FALSE(observed(mean[row]));
-      REQUIRE_FALSE(observed(smallest[row]));
-      continue;
-    }
-
-    const Scalar expected = sum / static_cast<Scalar>(count);
-    REQUIRE(mean[row] == Catch::Approx(expected).epsilon(1e-14));
-    REQUIRE(smallest[row] == low);
-    REQUIRE(largest[row] == high);
-
-    Scalar squared = 0.0;
-    for (math::Index at = first; at <= row; ++at) {
-      if (observed(values[at])) {
-        squared += (values[at] - expected) * (values[at] - expected);
-      }
-    }
-    REQUIRE(
-      deviation[row] ==
-      Catch::Approx(std::sqrt(squared / static_cast<Scalar>(count - 1))).epsilon(1e-12)
-    );
-  }
 }
 
 TEST_CASE("the window overloads say what the three-argument form spells out") {

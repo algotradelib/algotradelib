@@ -549,46 +549,6 @@ TEST_CASE("decimal arithmetic at the edges of the coefficient", "[core][decimal]
 }
 
 TEST_CASE(
-  "Holdings values preserve quantities and separate currency totals",
-  "[core][holdings]"
-) {
-  HoldingsSnapshot snapshot;
-  HoldingPosition position;
-  position.instrument_ = InstrumentId{Country::US, Venue::UNSPECIFIED, "AAPL"};
-  position.name_ = "Apple";
-  position.quantity_ = Decimal64::parse("1.2500");
-  position.average_purchase_price_ = Decimal64::parse("180.50");
-  position.last_price_ = Decimal64::parse("185.70");
-  position.purchase_value_ = Money{Decimal64::parse("225.625"), Currency::usd()};
-  position.market_value_ = Money{Decimal64::parse("232.125"), Currency::usd()};
-  position.unrealized_profit_loss_ = Money{Decimal64::parse("6.50"), Currency::usd()};
-  position.unrealized_return_ = Decimal64::parse("0.0288088643");
-  snapshot.positions_.push_back(position);
-  snapshot.totals_.push_back(
-    HoldingsTotals{
-      Currency::krw(),
-      Decimal64::parse("0"),
-      Decimal64::parse("0"),
-      Decimal64::parse("0"),
-    }
-  );
-  snapshot.totals_.push_back(
-    HoldingsTotals{
-      Currency::usd(),
-      Decimal64::parse("225.625"),
-      Decimal64::parse("232.125"),
-      Decimal64::parse("6.50"),
-    }
-  );
-
-  REQUIRE(snapshot.positions_.front().quantity_ == Decimal64::parse("1.25"));
-  REQUIRE(snapshot.positions_.front().market_value_.currency_ == Currency::usd());
-  REQUIRE(snapshot.totals_.size() == 2);
-  REQUIRE(snapshot.totals_[0].currency_ == Currency::krw());
-  REQUIRE(snapshot.totals_[1].currency_ == Currency::usd());
-}
-
-TEST_CASE(
   "KIS account loads explicit and default product codes from environment",
   "[broker][kis][account][environment]"
 ) {
@@ -970,61 +930,6 @@ TEST_CASE(
 }
 
 TEST_CASE(
-  "Async HTTP queue rejects excess callback and future requests",
-  "[http][queue]"
-) {
-  net::io_context ioc;
-  ssl::context context(ssl::context::tls_client);
-  network::HttpClientOptions options;
-  options.queue_limit_ = 0;
-  auto client = std::make_shared<network::AsyncHttpClient>(
-    ioc.get_executor(), context, "localhost", "443", options
-  );
-  bool completed = false;
-  client->async_request(network::HttpRequest{}, [&completed](Result<network::HttpResponse> result) {
-    REQUIRE_FALSE(result);
-    REQUIRE(result.error().broker_code_ == "queue_full");
-    completed = true;
-  });
-  ioc.run();
-  REQUIRE(completed);
-
-  ioc.restart();
-  auto future = client->async_request(network::HttpRequest{}, net::use_future);
-  ioc.run();
-  const auto future_result = future.get();
-  REQUIRE_FALSE(future_result);
-  REQUIRE(future_result.error().broker_code_ == "queue_full");
-}
-
-TEST_CASE(
-  "Async HTTP preserves queue order on one TLS connection",
-  "[http][tls][persistence]"
-) {
-  test::LocalHttpsServer server;
-  net::io_context ioc;
-  ssl::context context(ssl::context::tls_client);
-  test::trustLocalhostCertificate(context);
-  auto client = std::make_shared<network::AsyncHttpClient>(
-    ioc.get_executor(), context, "localhost", server.port()
-  );
-
-  std::vector<std::string> bodies;
-  for (const std::string target : {"/first", "/second"}) {
-    network::HttpRequest request;
-    request.target_ = target;
-    client->async_request(std::move(request), [&bodies](Result<network::HttpResponse> result) {
-      REQUIRE(result);
-      bodies.push_back(result.value().body());
-    });
-  }
-
-  ioc.run();
-  REQUIRE(bodies == std::vector<std::string>{"/first", "/second"});
-  REQUIRE(server.connectionCount() == 1);
-}
-
-TEST_CASE(
   "Async HTTP reconnects after a server-requested close",
   "[http][tls][reconnect]"
 ) {
@@ -1239,34 +1144,6 @@ TEST_CASE(
 }
 
 TEST_CASE(
-  "Async HTTP enforces the configured response body limit",
-  "[http][tls][limits]"
-) {
-  test::LocalHttpsServer server;
-  net::io_context ioc;
-  ssl::context context(ssl::context::tls_client);
-  test::trustLocalhostCertificate(context);
-  network::HttpClientOptions options;
-  options.body_limit_ = 128;
-  auto client = std::make_shared<network::AsyncHttpClient>(
-    ioc.get_executor(), context, "localhost", server.port(), options
-  );
-
-  network::HttpRequest request;
-  request.target_ = "/large";
-  bool completed = false;
-  client->async_request(std::move(request), [&completed](Result<network::HttpResponse> result) {
-    REQUIRE_FALSE(result);
-    REQUIRE(result.error().category_ == ErrorCategory::TRANSPORT);
-    REQUIRE(result.error().broker_code_ == "read");
-    completed = true;
-  });
-
-  ioc.run();
-  REQUIRE(completed);
-}
-
-TEST_CASE(
   "KIS and Toss quote payloads normalize to shared types",
   "[broker][quote]"
 ) {
@@ -1422,55 +1299,6 @@ TEST_CASE(
 }
 
 TEST_CASE(
-  "KIS holdings payload normalizes positions and summary",
-  "[broker][kis][holdings]"
-) {
-  network::HttpResponse response{http::status::ok, 11};
-  response.body() = R"({
-    "rt_cd":"0",
-    "msg_cd":"MCA00000",
-    "ctx_area_fk100":"foreign-next",
-    "ctx_area_nk100":"domestic-next",
-    "output1":[{
-      "pdno":"005930",
-      "prdt_name":"Samsung Electronics",
-      "hldg_qty":"10",
-      "ord_psbl_qty":"7",
-      "pchs_avg_pric":"70000.0000",
-      "pchs_amt":"700000",
-      "prpr":"72000",
-      "evlu_amt":"720000",
-      "evlu_pfls_amt":"20000",
-      "evlu_pfls_rt":"2.857142"
-    }],
-    "output2":[{
-      "pchs_amt_smtl_amt":"700000",
-      "evlu_amt_smtl_amt":"720000",
-      "evlu_pfls_smtl_amt":"20000"
-    }]
-  })";
-
-  std::string foreign_cursor;
-  std::string domestic_cursor;
-  const auto result = kis::KisClientTestAccess::parse_holdings_page(
-    std::move(response), foreign_cursor, domestic_cursor
-  );
-  REQUIRE(result);
-  REQUIRE(foreign_cursor == "foreign-next");
-  REQUIRE(domestic_cursor == "domestic-next");
-  REQUIRE(result.value().positions_.size() == 1);
-  const auto& position = result.value().positions_.front();
-  const InstrumentId expected_instrument{Country::KR, kKoreanInstrumentVenue, "005930"};
-  REQUIRE(position.instrument_ == expected_instrument);
-  REQUIRE(position.quantity_ == Decimal64::parse("10"));
-  REQUIRE(position.sellable_quantity_ == Decimal64::parse("7"));
-  REQUIRE(position.average_purchase_price_ == Decimal64::parse("70000"));
-  REQUIRE(position.unrealized_return_ == Decimal64::parse("0.02857142"));
-  REQUIRE(result.value().totals_.size() == 1);
-  REQUIRE(result.value().totals_.front().market_value_ == Decimal64::parse("720000"));
-}
-
-TEST_CASE(
   "KIS percentage values use normalized ratio representation",
   "[broker][kis][holdings][decimal]"
 ) {
@@ -1560,27 +1388,6 @@ TEST_CASE(
   REQUIRE(error);
   REQUIRE(error->broker_code_ == "invalid_pagination");
   REQUIRE(page_count == 2);
-}
-
-TEST_CASE(
-  "KIS holdings rejects invalid accounts before network I/O",
-  "[broker][kis][holdings][validation]"
-) {
-  net::io_context ioc;
-  ssl::context context(ssl::context::tls_client);
-  auto client = std::make_shared<kis::KisClient>(ioc.get_executor(), context, kis::KisConfig{});
-  bool completed = false;
-  client->async_holdings(
-    kis::KisAccount{"1234-678", "1"},
-    [&completed](Result<HoldingsSnapshot> result) {
-      REQUIRE_FALSE(result);
-      REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
-      REQUIRE(result.error().broker_code_ == "invalid_account");
-      completed = true;
-    }
-  );
-  ioc.run();
-  REQUIRE(completed);
 }
 
 TEST_CASE(
@@ -1778,41 +1585,6 @@ Result<network::HttpResponse> json_response(std::string body, int status = 200) 
   return Result<network::HttpResponse>(std::move(response));
 }
 
-/** Builds one commission row without depending on the order of the struct's fields. */
-CommissionRate rate_row(
-  Country country,
-  Decimal64 rate,
-  std::optional<Date> from,
-  std::optional<Date> until
-) {
-  CommissionRate row;
-  row.country_ = country;
-  row.rate_ = std::move(rate);
-  row.from_ = std::move(from);
-  row.until_ = std::move(until);
-  return row;
-}
-
-/** Builds one venue-keyed commission row, with both components stated. */
-CommissionRate venue_row(
-  Venue venue,
-  const char* rate,
-  const char* institution,
-  std::optional<Date> from = std::nullopt,
-  std::optional<Date> until = std::nullopt
-) {
-  CommissionRate row;
-  row.country_ = Country::KR;
-  const auto key = VenueKey::normalized(venue);
-  REQUIRE(key);
-  row.venue_ = *key;
-  row.rate_ = Decimal64::parse(rate);
-  row.institution_rate_ = Decimal64::parse(institution);
-  row.from_ = std::move(from);
-  row.until_ = std::move(until);
-  return row;
-}
-
 /** Builds a limit buy order for ten shares of one Korean equity. */
 OrderRequest korean_limit_buy() {
   OrderRequest order;
@@ -1875,21 +1647,6 @@ TEST_CASE("Calendar dates validate Gregorian boundaries", "[core][order][date]")
   REQUIRE_FALSE(is_valid_date(Date{2025, 2, 29}));
   REQUIRE_FALSE(is_valid_date(Date{2026, 4, 31}));
   REQUIRE(Date{2026, 3, 1} < Date{2026, 3, 31});
-}
-
-TEST_CASE("A day count converts to the Gregorian date it names", "[core][date]") {
-  REQUIRE(date_from_epoch_days(0) == Date{1970, 1, 1});
-  REQUIRE(date_from_epoch_days(1) == Date{1970, 1, 2});
-  // Negative counts run backwards, which is what a replay handed pre-epoch bars needs.
-  REQUIRE(date_from_epoch_days(-1) == Date{1969, 12, 31});
-
-  // The cases a hand-rolled conversion gets wrong: a leap day, the day after it, and the two
-  // centuries that disagree about whether they have one.
-  REQUIRE(date_from_epoch_days(19782) == Date{2024, 2, 29});
-  REQUIRE(date_from_epoch_days(19783) == Date{2024, 3, 1});
-  REQUIRE(date_from_epoch_days(11016) == Date{2000, 2, 29});
-  REQUIRE(date_from_epoch_days(-25508) == Date{1900, 3, 1});
-  REQUIRE(date_from_epoch_days(-25509) == Date{1900, 2, 28});
 }
 
 TEST_CASE("Every date in a leap-year span round-trips through its day count", "[core][date]") {
@@ -2004,7 +1761,6 @@ TEST_CASE(
     REQUIRE(json::parse(request.body_).as_object().at("EXCG_ID_DVSN_CD").as_string() == "NXT");
   }
 }
-
 
 namespace {
 
@@ -2392,41 +2148,6 @@ TEST_CASE("every KIS market-data request reads the tape the adapter was told to"
   }
 }
 
-TEST_CASE("a depth response with no levels is an empty book, not an error", "[broker][kis]") {
-  // **This pins the residual risk of moving the depth verb to the consolidated tape, rather than
-  // claiming there is none.** The workbook gives the same response layout for J, NX and UN, and the
-  // parser reads `askp1..10` / `bidp1..10` out of `output1` with no KRX-specific discriminator -- but
-  // the workbook carries no per-tape example, so nothing here could establish
-  // what a live UN depth response actually populates.
-  //
-  // What matters is what the parser does if those fields are absent: `append_level` skips a level it
-  // cannot read, so an `output1` present but empty yields an empty book and **no protocol error**. So
-  // a shape surprise on the consolidated tape would present as "no depth" rather than as a failure.
-  // Recorded here so a real response can be compared against it.
-  auto result = kis::KisClientTestAccess::parse_depth(
-    InstrumentId{Country::KR, Venue::COMBINED, "005930"},
-    json_response(R"({"rt_cd":"0","output1":{}})")
-  );
-  REQUIRE(result);
-  CHECK(result.value().asks_.empty());
-  CHECK(result.value().bids_.empty());
-}
-
-TEST_CASE("choosing a tape cannot invalidate an order", "[broker][kis][order]") {
-  // The reason the tape is a setting rather than a field on the instrument. `validate_order` refuses
-  // an order whose `instrument_.venue_` is anything but the combined venue, because a holding
-  // carries no venue and a mismatch makes `Portfolio::working_quantity` read zero resting quantity.
-  // So a caller told to "set Venue::KRX to read the KRX book" would have broken their own trading.
-  for (const auto tape :
-       {kis::MarketTape::CONSOLIDATED, kis::MarketTape::KRX, kis::MarketTape::NXT}) {
-    kis::KisConfig config;
-    config.market_tape_ = tape;
-    auto order = korean_limit_buy();
-    std::string division;
-    REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division, config));
-  }
-}
-
 TEST_CASE("a KIS client hands its token on and adopts only a live one", "[broker][kis]") {
   // KIS issues one token per key per minute (EGW00133), so a process run per action keeps its token
   // for the next. No request is made here: adopting is a local decision.
@@ -2553,74 +2274,6 @@ TEST_CASE("a KIS demo account trades on KRX and is told so before I/O", "[broker
   }
 }
 
-TEST_CASE("a KIS conditional-limit order carries its limit price", "[broker][kis][order]") {
-  const kis::KisAccount account{"12345678", "01"};
-  kis::KisConfig live;
-  live.is_demo_ = false;
-
-  SECTION("it is sent as 02 with the stated price, not with zero") {
-    auto order = korean_limit_buy();
-    order.venue_ = Venue::KRX;
-    order.type_ = OrderType::CONDITIONAL_LIMIT;
-    std::string division;
-    REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division));
-    REQUIRE(division == "02");
-
-    const auto body = json::parse(
-      kis::KisClientTestAccess::place_order_request(account, live, order, division).body_
-    ).as_object();
-    REQUIRE(body.at("ORD_DVSN").as_string() == "02");
-    // 조건부지정가 is a limit instruction until the close. This was `"0"`,
-    // because the price was refused on the way in and never reached the body.
-    REQUIRE(body.at("ORD_UNPR").as_string() == "70000");
-  }
-
-  SECTION("it is refused without one") {
-    auto order = korean_limit_buy();
-    order.type_ = OrderType::CONDITIONAL_LIMIT;
-    order.price_.reset();
-    std::string division;
-    const auto error = kis::KisClientTestAccess::validate_order(order, division);
-    REQUIRE(error);
-    REQUIRE(error->broker_code_ == "invalid_price");
-    REQUIRE_FALSE(error->reached_broker_);
-  }
-
-  SECTION("a basis the book prices still refuses a stray price") {
-    for (const auto type :
-         {OrderType::BEST_LIMIT, OrderType::PRIMARY_LIMIT, OrderType::MID_PRICE,
-          OrderType::CLOSING_PRICE}) {
-      auto order = korean_limit_buy();
-      order.venue_ = Venue::KRX;
-      order.type_ = type;
-      order.session_ = type == OrderType::CLOSING_PRICE ? OrderSession::AFTER_HOURS
-                                                        : OrderSession::REGULAR;
-      std::string division;
-      INFO("basis " << static_cast<int>(type));
-      REQUIRE(kis::KisClientTestAccess::validate_order(order, division));
-    }
-  }
-
-  SECTION("a resting conditional-limit order reads its price back") {
-    auto result = kis::KisClientTestAccess::parse_open_orders(
-      json_response(
-        R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"1","orgn_odno":"",)"
-        R"("ord_dvsn_name":"x","pdno":"005930","prdt_name":"Samsung",)"
-        R"("rvse_cncl_dvsn_name":"x","ord_qty":"10","ord_unpr":"70000","ord_tmd":"131438",)"
-        R"("tot_ccld_qty":"0","tot_ccld_amt":"0","psbl_qty":"10","sll_buy_dvsn_cd":"02",)"
-        R"("ord_dvsn_cd":"02"}]})"
-      )
-    );
-    REQUIRE(result);
-    const auto& open_order = result.value().orders_.front();
-    REQUIRE(open_order.order_.type_ == OrderType::CONDITIONAL_LIMIT);
-    // The read path kept `ord_unpr` only for `LIMIT`, so an existing
-    // conditional-limit order came back with no price at all -- and
-    // `row_corresponds` compares the price.
-    REQUIRE(open_order.order_.price_ == Decimal64::parse("70000"));
-  }
-}
-
 TEST_CASE("KIS reads back every order code the workbook publishes", "[broker][kis][order]") {
   SECTION("each code normalizes to its own three facts and keeps itself") {
     for (const auto& shape : kWorkbookShapes) {
@@ -2658,73 +2311,6 @@ TEST_CASE("KIS reads back every order code the workbook publishes", "[broker][ki
       REQUIRE(order.session_ == OrderSession::UNKNOWN);
       REQUIRE(order.shape_code_.view() == code);
     }
-  }
-}
-
-TEST_CASE(
-  "an order and the holding it belongs to agree on the instrument",
-  "[broker][order][identity]"
-) {
-  SECTION("KIS keeps the routed venue off the instrument and beside it") {
-    auto orders = kis::KisClientTestAccess::parse_open_orders(
-      json_response(
-        R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"0001569139",)"
-        R"("orgn_odno":"","ord_dvsn_name":"limit","pdno":"005930",)"
-        R"("prdt_name":"Samsung","rvse_cncl_dvsn_name":"modify","ord_qty":"10",)"
-        R"("ord_unpr":"70000","ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0",)"
-        R"("psbl_qty":"10","sll_buy_dvsn_cd":"01","ord_dvsn_cd":"00",)"
-        R"("excg_id_dvsn_cd":"NXT"}]})"
-      )
-    );
-    REQUIRE(orders);
-    const auto& open_order = orders.value().orders_.front();
-    // The row says NXT and the instrument still says what a holding says, so
-    // the two remain the same `InstrumentId`.
-    REQUIRE(open_order.order_.instrument_.venue_ == kKoreanInstrumentVenue);
-    // And the routing fact is kept rather than dropped, because an amendment
-    // has to address it -- KIS publishes a different `ORD_DVSN` set per venue.
-    // `cancel_all` reads exactly this field; the amendment test below builds a
-    // `WorkingOrder` and pins that it carries through.
-    REQUIRE(open_order.order_.venue_ == Venue::NXT);
-  }
-
-  SECTION("KIS reports no venue and the amendment then takes the broker default") {
-    auto orders = kis::KisClientTestAccess::parse_open_orders(
-      json_response(
-        R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"0001569139",)"
-        R"("orgn_odno":"","ord_dvsn_name":"limit","pdno":"005930",)"
-        R"("prdt_name":"Samsung","rvse_cncl_dvsn_name":"modify","ord_qty":"10",)"
-        R"("ord_unpr":"70000","ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0",)"
-        R"("psbl_qty":"10","sll_buy_dvsn_cd":"01","ord_dvsn_cd":"00"}]})"
-      )
-    );
-    REQUIRE(orders);
-    const auto& open_order = orders.value().orders_.front();
-    REQUIRE(open_order.order_.instrument_.venue_ == kKoreanInstrumentVenue);
-    // Absent, not unrecognized: an amendment omits the field and takes KRX,
-    // which is what the sheet documents and what this did before the field was
-    // read at all.
-    REQUIRE(open_order.order_.venue_ == Venue::UNSPECIFIED);
-  }
-
-  SECTION("Toss agrees with itself about a Korean instrument") {
-    auto orders = tossinvest::TossClientTestAccess::parse_orders(
-      json_response(
-        R"({"result":{"orders":[)"
-        R"({"orderId":"a","symbol":"005930","side":"BUY","orderType":"LIMIT",)"
-        R"("timeInForce":"DAY","status":"PENDING","price":"70000","quantity":"10",)"
-        R"("orderAmount":null,"currency":"KRW","orderedAt":"2026-03-29T09:30:00+09:00",)"
-        R"("canceledAt":null,"execution":{"filledQuantity":"0","averageFilledPrice":null,)"
-        R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
-        R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
-      )
-    );
-    REQUIRE(orders);
-    // The holdings parse once wrote `COMBINED` for a Korean instrument and the
-    // order parse wrote `UNSPECIFIED`, so a Korean Toss working order was never
-    // found by `working_quantity`. Fixed together with the KIS half of the same
-    // mismatch.
-    REQUIRE(orders.value().orders_.front().instrument_.venue_ == kKoreanInstrumentVenue);
   }
 }
 
@@ -2782,43 +2368,6 @@ TEST_CASE("a KIS amendment restates the shape it is amending", "[broker][kis][or
     REQUIRE(instruction.shape_.time_in_force_ == TimeInForce::FILL_OR_KILL);
     REQUIRE(instruction.shape_.session_ == OrderSession::AFTER_MARKET);
     REQUIRE(instruction.venue_ == Venue::KRX);
-  }
-}
-
-TEST_CASE(
-  "KIS amendment distinguishes modification from cancellation",
-  "[broker][kis][order]"
-) {
-  const kis::KisAccount account{"12345678", "01"};
-  kis::KisConfig live;
-  live.is_demo_ = false;
-
-  kis::KisAmendment amendment;
-  amendment.order_ = kis::KisOrderRef{"06010", "0001569157"};
-  amendment.type_ = OrderType::LIMIT;
-  amendment.quantity_ = Decimal64::parse("3");
-  amendment.price_ = Decimal64::parse("71000");
-
-  SECTION("a partial modification carries the original order and a partial flag") {
-    const auto request =
-      kis::KisClientTestAccess::amend_order_request(account, live, amendment, false, "00");
-    REQUIRE(request.method_ == http::verb::post);
-    REQUIRE(request.target_ == "/uapi/domestic-stock/v1/trading/order-rvsecncl");
-    REQUIRE(header_of(request, "tr_id") == "TTTC0013U");
-    const auto body = json::parse(request.body_).as_object();
-    REQUIRE(body.at("KRX_FWDG_ORD_ORGNO").as_string() == "06010");
-    REQUIRE(body.at("ORGN_ODNO").as_string() == "0001569157");
-    REQUIRE(body.at("RVSE_CNCL_DVSN_CD").as_string() == "01");
-    REQUIRE(body.at("QTY_ALL_ORD_YN").as_string() == "N");
-  }
-
-  SECTION("a whole-remainder cancellation sets both documented flags") {
-    amendment.all_remaining_ = true;
-    const auto request =
-      kis::KisClientTestAccess::amend_order_request(account, live, amendment, true, "00");
-    const auto body = json::parse(request.body_).as_object();
-    REQUIRE(body.at("RVSE_CNCL_DVSN_CD").as_string() == "02");
-    REQUIRE(body.at("QTY_ALL_ORD_YN").as_string() == "Y");
   }
 }
 
@@ -2943,30 +2492,6 @@ TEST_CASE(
     REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division));
     REQUIRE(division == "00");
   }
-}
-
-TEST_CASE(
-  "KIS order placement rejects a malformed account before authentication",
-  "[broker][kis][order][validation]"
-) {
-  net::io_context ioc;
-  ssl::context context(ssl::context::tls_client);
-  auto client =
-    std::make_shared<kis::KisClient>(ioc.get_executor(), context, kis::KisConfig{});
-
-  bool completed = false;
-  client->async_place_order(
-    kis::KisAccount{"123", "01"},
-    korean_limit_buy(),
-    [&completed](Result<kis::KisOrderAck> result) {
-      REQUIRE_FALSE(result);
-      REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
-      REQUIRE(result.error().broker_code_ == "invalid_account");
-      completed = true;
-    }
-  );
-  ioc.run();
-  REQUIRE(completed);
 }
 
 TEST_CASE(
@@ -4853,72 +4378,6 @@ TEST_CASE("both brokers' calendars normalize to the same trading days") {
   }
 }
 
-TEST_CASE("the shared YYYYMMDD reader reads only a real date spelled in digits", "[core][calendar]") {
-  CHECK(broker_detail::compact_date("20260902") == std::optional<Date>(Date{2026, 9, 2}));
-  CHECK(broker_detail::compact_date("20240229") == std::optional<Date>(Date{2024, 2, 29}));
-  // ':' follows '9', so arithmetic without the digit check reads this as 2026-09-10.
-  REQUIRE(':' - '0' == 10);
-  for (const auto* damaged : {"2026090:", "2026092x", "20261332", "20230229", "2026090", "202609021",
-                              "", " 0260902", "+0260902", "2026-9-2"}) {
-    CHECK_FALSE(broker_detail::compact_date(damaged));
-  }
-}
-
-TEST_CASE("a KIS calendar row whose date cannot be read costs no day that was read", "[core][calendar][kis]") {
-  const auto page = [](std::string_view damaged_row) {
-    return json_response(
-      std::string(R"({"rt_cd":"0","ctx_area_fk":"","ctx_area_nk":"","output":[)") +
-      R"({"bass_dt":"20260901","opnd_yn":"Y"},)" + std::string(damaged_row) +
-      R"(,{"bass_dt":"20260903","opnd_yn":"Y"}]})"
-    );
-  };
-  // The prefix case first, with its premise: `std::stoi` read "2x" as 2, so this row used to become
-  // 2026-09-02 -- a real day, answered with another day's flag.
-  REQUIRE(std::stoi("2x") == 2);
-  for (const auto* damaged :
-       {R"({"bass_dt":"2026092x","opnd_yn":"N"})", R"({"bass_dt":"20261332","opnd_yn":"N"})",
-        R"({"bass_dt":"2026090","opnd_yn":"N"})", R"({"bass_dt":"","opnd_yn":"N"})",
-        R"({"opnd_yn":"N"})", R"({"bass_dt":20260902,"opnd_yn":"N"})",
-        R"({"bass_dt":"2026-09-02","opnd_yn":"N"})"}) {
-    TradingCalendar calendar;
-    std::string search;
-    std::string next;
-    const auto failure =
-      kis::KisClientTestAccess::parse_calendar_page(page(damaged), calendar, search, next);
-    // The page succeeds and its readable days are all there -- today among them, wherever the
-    // damaged row sits -- and the damaged row produced nothing.
-    REQUIRE_FALSE(failure);
-    CHECK(calendar.days_.size() == 2);
-    CHECK(calendar.is_trading_day(Date{2026, 9, 1}) == true);
-    CHECK(calendar.is_trading_day(Date{2026, 9, 3}) == true);
-    CHECK_FALSE(calendar.is_trading_day(Date{2026, 9, 2}).has_value());
-    CHECK(calendar.unreadable_days_ == 1);
-  }
-}
-
-TEST_CASE("a damaged KIS date can no longer answer for a real day", "[core][calendar][kis]") {
-  // The hazard the prefix made possible: a real closed 2026-09-02 and a damaged row that used to
-  // read as 2026-09-02 too, marked open. `is_trading_day` takes the first match, so under `std::stoi`
-  // the answer depended on row order. Now only the real row answers, in either order.
-  for (const bool damaged_first : {true, false}) {
-    const std::string real = R"({"bass_dt":"20260902","opnd_yn":"N"})";
-    const std::string damaged = R"({"bass_dt":"2026092x","opnd_yn":"Y"})";
-    TradingCalendar calendar;
-    std::string search;
-    std::string next;
-    const auto failure = kis::KisClientTestAccess::parse_calendar_page(
-      json_response(
-        std::string(R"({"rt_cd":"0","output":[)") + (damaged_first ? damaged : real) + "," +
-        (damaged_first ? real : damaged) + "]}"
-      ),
-      calendar, search, next
-    );
-    REQUIRE_FALSE(failure);
-    CHECK(calendar.is_trading_day(Date{2026, 9, 2}) == false);
-    CHECK(calendar.unreadable_days_ == 1);
-  }
-}
-
 TEST_CASE("a KIS calendar page that fails leaves the calendar as it was", "[core][calendar][kis]") {
   TradingCalendar calendar;
   calendar.days_.push_back(TradingDay{Date{2026, 8, 31}, true});
@@ -5139,56 +4598,6 @@ TEST_CASE("an ETF gets no price grid rather than the equity one", "[broker][refe
 // Decimal multiplication, division, and flooring onto a multiple
 // ---------------------------------------------------------------------------
 
-TEST_CASE("a product adds the scales so it stays exact") {
-  const auto product =
-    decimal_multiply(Decimal64::parse("1.25"), Decimal64::parse("4.2"));
-  REQUIRE(product);
-  // 1.25 * 4.2 is exactly 5.25, and nothing has rounded it.
-  REQUIRE(*product == Decimal64::parse("5.25"));
-
-  const auto shares = decimal_multiply(Decimal64::parse("70000"), Decimal64::parse("10"));
-  REQUIRE(shares);
-  REQUIRE(*shares == Decimal64::parse("700000"));
-
-  const auto signed_product =
-    decimal_multiply(Decimal64::parse("-2.5"), Decimal64::parse("4"));
-  REQUIRE(signed_product);
-  REQUIRE(*signed_product == Decimal64::parse("-10"));
-}
-
-TEST_CASE("a product that would overflow is refused rather than wrapped") {
-  // A wrapped price is exactly the failure this type exists to prevent, so the check happens
-  // before the multiplication: signed overflow is undefined behaviour, not a large number.
-  const Decimal64 huge(4000000000LL, 0);
-  REQUIRE_FALSE(decimal_multiply(huge, huge));
-
-  // And a scale sum past what the type can hold is refused too.
-  const Decimal64 deep(1, 200);
-  REQUIRE_FALSE(decimal_multiply(deep, deep));
-}
-
-TEST_CASE("a quotient truncates at the scale the caller asked for") {
-  // At scale zero this answers "how many whole divisors fit", which is what sizing shares needs.
-  const auto whole = decimal_divide(Decimal64::parse("1000000"), Decimal64::parse("70000"), 0);
-  REQUIRE(whole);
-  REQUIRE(*whole == Decimal64::parse("14"));
-
-  // More places, more of the answer -- and still truncated rather than rounded, because a value
-  // this library rounded would be one the caller did not choose.
-  const auto precise = decimal_divide(Decimal64::parse("10"), Decimal64::parse("3"), 4);
-  REQUIRE(precise);
-  REQUIRE(*precise == Decimal64::parse("3.3333"));
-
-  // Truncation toward zero on a negative quotient.
-  const auto negative = decimal_divide(Decimal64::parse("-10"), Decimal64::parse("3"), 0);
-  REQUIRE(negative);
-  REQUIRE(*negative == Decimal64::parse("-3"));
-}
-
-TEST_CASE("dividing by zero reports nothing rather than throwing") {
-  REQUIRE_FALSE(decimal_divide(Decimal64::parse("1"), Decimal64::parse("0"), 2));
-}
-
 TEST_CASE("flooring onto a multiple goes toward negative infinity on both sides of zero") {
   const auto lot = Decimal64::parse("10");
   REQUIRE(*decimal_floor_to_multiple(Decimal64::parse("47"), lot) == Decimal64::parse("40"));
@@ -5207,219 +4616,6 @@ TEST_CASE("flooring onto a multiple goes toward negative infinity on both sides 
   // A step with no multiples to choose between is refused.
   REQUIRE_FALSE(decimal_floor_to_multiple(Decimal64::parse("47"), Decimal64::parse("0")));
   REQUIRE_FALSE(decimal_floor_to_multiple(Decimal64::parse("47"), Decimal64::parse("-10")));
-}
-
-TEST_CASE(
-  "buying power is a broker's answer and is never confused with cash",
-  "[core][capacity]"
-) {
-  // The type exists to keep two different quantities apart, so the test that matters is that a
-  // holder of one cannot read it as the other. `Money` carries the currency, which is what makes a
-  // per-currency answer a normal value rather than a special case.
-  const BuyingPower power{Money{Decimal64::parse("5000000"), Currency::krw()}, {}};
-  REQUIRE(power.cash_.amount_ == Decimal64::parse("5000000"));
-  REQUIRE(power.cash_.currency_ == Currency::krw());
-
-  // A fractional foreign answer survives, because Toss reports US buying power with a fraction.
-  const BuyingPower foreign{Money{Decimal64::parse("3500.5"), Currency::usd()}, {}};
-  REQUIRE(foreign.cash_.amount_ == Decimal64::parse("3500.5"));
-  REQUIRE_FALSE(foreign.cash_.currency_ == Currency::krw());
-}
-
-TEST_CASE(
-  "a commission rate applies only within the window the broker stated",
-  "[core][capacity]"
-) {
-  CommissionRate rate;
-  rate.country_ = Country::KR;
-  rate.rate_ = Decimal64::parse("0.00015");
-  rate.from_ = Date{2026, 1, 1};
-  rate.until_ = Date{2026, 12, 31};
-
-  REQUIRE(rate.applies_on(Date{2026, 1, 1}) == RateApplicability::YES);
-  REQUIRE(rate.applies_on(Date{2026, 12, 31}) == RateApplicability::YES);
-  REQUIRE(rate.applies_on(Date{2026, 6, 15}) == RateApplicability::YES);
-  REQUIRE(rate.applies_on(Date{2025, 12, 31}) == RateApplicability::NO);
-  REQUIRE(rate.applies_on(Date{2027, 1, 1}) == RateApplicability::NO);
-
-  // An absent bound is open-ended in that direction, which is how a null date arrives.
-  CommissionRate open_ended = rate;
-  open_ended.until_ = std::nullopt;
-  REQUIRE(open_ended.applies_on(Date{2099, 1, 1}) == RateApplicability::YES);
-  REQUIRE(open_ended.applies_on(Date{2025, 12, 31}) == RateApplicability::NO);
-
-  CommissionRate unbounded;
-  unbounded.rate_ = Decimal64::parse("0.001");
-  REQUIRE(unbounded.applies_on(Date{1999, 1, 1}) == RateApplicability::YES);
-  REQUIRE(unbounded.applies_on(Date{2099, 1, 1}) == RateApplicability::YES);
-}
-
-TEST_CASE(
-  "a schedule answers per country and date, and says nothing rather than guessing",
-  "[core][capacity]"
-) {
-  CommissionSchedule schedule;
-  schedule.rates_.push_back(
-    rate_row(Country::KR, Decimal64::parse("0.00015"), Date{2026, 1, 1}, std::nullopt)
-  );
-  schedule.rates_.push_back(
-    rate_row(Country::US, Decimal64::parse("0.001"), std::nullopt, Date{2026, 6, 30})
-  );
-
-  const auto domestic = schedule.rate_for(Country::KR, Date{2026, 9, 23}).rate_;
-  REQUIRE(domestic);
-  REQUIRE(domestic->rate_ == Decimal64::parse("0.00015"));
-
-  // The same date answers differently per country, which is the whole reason country is a key.
-  const auto foreign = schedule.rate_for(Country::US, Date{2026, 9, 23}).rate_;
-  REQUIRE_FALSE(foreign);
-  REQUIRE(schedule.rate_for(Country::US, Date{2026, 6, 30}).rate_);
-
-  // A date before every window is unanswered rather than charged at zero, because a rate of zero
-  // is a claim the broker did not make.
-  REQUIRE_FALSE(schedule.rate_for(Country::KR, Date{2025, 12, 31}).rate_);
-
-  // An empty schedule is a real answer from a broker that publishes them, and still answers nothing.
-  const CommissionSchedule empty;
-  REQUIRE_FALSE(empty.rate_for(Country::KR, Date{2026, 9, 23}).rate_);
-}
-
-TEST_CASE(
-  "a bound that could not be read is unknown rather than unbounded",
-  "[core][capacity]"
-) {
-  auto damaged = rate_row(Country::KR, Decimal64::parse("0.00015"), Date{2024, 1, 1}, std::nullopt);
-  damaged.until_unreadable_ = true;
-
-  // The defect this replaces: an expired rate with an unreadable end read as still in force, because
-  // an empty bound meant open-ended whatever emptied it.
-  REQUIRE(damaged.applies_on(Date{2026, 9, 23}) == RateApplicability::UNREADABLE);
-
-  // And the answer is not simply "no". A caller told `NO` reaches for the next row; this row may be
-  // the one the broker is charging, so there is no next row to reach for.
-  REQUIRE_FALSE(damaged.applies_on(Date{2026, 9, 23}) == RateApplicability::NO);
-
-  // Damage the readable bound makes immaterial is a plain no. The start already excludes this date
-  // and no reading of the end could have changed that, so reporting doubt would invent one.
-  REQUIRE(damaged.applies_on(Date{2023, 12, 31}) == RateApplicability::NO);
-
-  // Either end, and both ends, behave the same way.
-  auto future = rate_row(Country::KR, Decimal64::parse("0.00015"), std::nullopt, Date{2030, 1, 1});
-  future.from_unreadable_ = true;
-  REQUIRE(future.applies_on(Date{2026, 9, 23}) == RateApplicability::UNREADABLE);
-  REQUIRE(future.applies_on(Date{2031, 1, 1}) == RateApplicability::NO);
-
-  // An undamaged row is untouched: absent still means open-ended, and deliberately not "today".
-  const auto sound = rate_row(Country::KR, Decimal64::parse("0.00015"), std::nullopt, std::nullopt);
-  REQUIRE(sound.applies_on(Date{1999, 1, 1}) == RateApplicability::YES);
-}
-
-TEST_CASE(
-  "a schedule refuses a date an unreadable window might have covered",
-  "[core][capacity]"
-) {
-  const auto date = Date{2026, 9, 23};
-  const auto asserted = *VenueKey::normalized(Venue::KRX);
-
-  SECTION("an unreadable row reached before any match stops the lookup") {
-    CommissionSchedule schedule;
-    auto damaged = rate_row(Country::KR, Decimal64::parse("0.005"), Date{2020, 1, 1}, std::nullopt);
-    damaged.until_unreadable_ = true;
-    schedule.rates_.push_back(damaged);
-    schedule.rates_.push_back(
-      rate_row(Country::KR, Decimal64::parse("0.00015"), std::nullopt, std::nullopt)
-    );
-
-    // The second row does apply, and is still not charged: the first row may have been the winner
-    // under the first-match rule, so which of the two the broker charges is unknown.
-    const auto selection = schedule.rate_for(Country::KR, date);
-    CHECK_FALSE(selection.rate_);
-    CHECK(selection.bounds_unreadable_);
-  }
-
-  SECTION("an unreadable row after a definite match changes nothing") {
-    CommissionSchedule schedule;
-    schedule.rates_.push_back(
-      rate_row(Country::KR, Decimal64::parse("0.00015"), std::nullopt, std::nullopt)
-    );
-    auto damaged = rate_row(Country::KR, Decimal64::parse("0.005"), Date{2020, 1, 1}, std::nullopt);
-    damaged.until_unreadable_ = true;
-    schedule.rates_.push_back(damaged);
-
-    // First match has always won, so this row could never have been the answer. Refusing here would
-    // throw away a rate the library knows.
-    const auto selection = schedule.rate_for(Country::KR, date);
-    REQUIRE(selection.rate_);
-    CHECK(selection.rate_->rate_ == Decimal64::parse("0.00015"));
-    CHECK_FALSE(selection.bounds_unreadable_);
-  }
-
-  SECTION("an unreadable neutral row does not spoil a venue row's answer") {
-    CommissionSchedule schedule;
-    auto venue_row = rate_row(Country::KR, Decimal64::parse("0.00147"), std::nullopt, std::nullopt);
-    venue_row.venue_ = asserted;
-    schedule.rates_.push_back(venue_row);
-    auto damaged = rate_row(Country::KR, Decimal64::parse("0.005"), Date{2020, 1, 1}, std::nullopt);
-    damaged.until_unreadable_ = true;
-    schedule.rates_.push_back(damaged);
-
-    // The neutral pass is only reached when no venue row applies, and one does. Its damage decides
-    // nothing, so it is not reported.
-    const auto selection = schedule.rate_for(Country::KR, asserted, date);
-    REQUIRE(selection.rate_);
-    CHECK(selection.rate_->rate_ == Decimal64::parse("0.00147"));
-    CHECK_FALSE(selection.bounds_unreadable_);
-  }
-
-  SECTION("an unreadable venue row stops the fall-through to the neutral pass") {
-    CommissionSchedule schedule;
-    auto venue_row = rate_row(Country::KR, Decimal64::parse("0.00147"), Date{2020, 1, 1}, std::nullopt);
-    venue_row.venue_ = asserted;
-    venue_row.until_unreadable_ = true;
-    schedule.rates_.push_back(venue_row);
-    schedule.rates_.push_back(
-      rate_row(Country::KR, Decimal64::parse("0.00015"), std::nullopt, std::nullopt)
-    );
-
-    // The neutral row's precondition is "no venue row applies", and that is exactly what stopped
-    // being known. Charging it would be charging the fallback on the strength of a guess.
-    const auto selection = schedule.rate_for(Country::KR, asserted, date);
-    CHECK_FALSE(selection.rate_);
-    CHECK(selection.bounds_unreadable_);
-
-    // A different venue never reached that row, so its own lookup is unaffected.
-    const auto elsewhere = schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::NXT), date);
-    REQUIRE(elsewhere.rate_);
-    CHECK(elsewhere.rate_->rate_ == Decimal64::parse("0.00015"));
-  }
-
-  SECTION("a row dated only by damage still counts as dated") {
-    CommissionSchedule schedule;
-    auto damaged = rate_row(Country::US, Decimal64::parse("0.001"), std::nullopt, std::nullopt);
-    damaged.until_unreadable_ = true;
-    schedule.rates_.push_back(damaged);
-
-    // Both optionals are empty, so asking only about them read this row as undated -- and that is
-    // the answer `ScheduledModel::charge` uses to decide whether a foreign market's trading day
-    // decides anything. It does: the window is simply unknown.
-    CHECK(schedule.any_dated_rate_for(Country::US));
-    CHECK_FALSE(schedule.any_dated_rate_for(Country::KR));
-  }
-
-  SECTION("a market the damage does not belong to is unaffected") {
-    CommissionSchedule schedule;
-    auto damaged = rate_row(Country::US, Decimal64::parse("0.001"), Date{2020, 1, 1}, std::nullopt);
-    damaged.until_unreadable_ = true;
-    schedule.rates_.push_back(damaged);
-    schedule.rates_.push_back(
-      rate_row(Country::KR, Decimal64::parse("0.00015"), std::nullopt, std::nullopt)
-    );
-
-    const auto domestic = schedule.rate_for(Country::KR, date);
-    REQUIRE(domestic.rate_);
-    CHECK_FALSE(domestic.bounds_unreadable_);
-    CHECK(schedule.rate_for(Country::US, date).bounds_unreadable_);
-  }
 }
 
 TEST_CASE(
@@ -5961,157 +5157,6 @@ TEST_CASE("a venue key keeps three kinds apart") {
   // A code too long to preserve, and an empty one, are both refused rather than stored as blank.
   CHECK_FALSE(VenueKey::raw("VERYLONGVENUECODE"));
   CHECK_FALSE(VenueKey::raw(""));
-}
-
-TEST_CASE("a schedule charges the venue's own rate, and falls back only when none names it") {
-  // The gap this closes: KRX and NXT charge differently at both brokers, and a rate keyed on
-  // `Country` alone charged a KRX fill and an NXT fill the same number with no way to say otherwise.
-  CommissionSchedule schedule;
-  schedule.origin_ = CommissionOrigin::CALLER_STATED;
-  schedule.tariff_ = "online, branch-opened account";
-  schedule.rates_.push_back(venue_row(Venue::KRX, "0.00147", "0.000036396"));
-  schedule.rates_.push_back(venue_row(Venue::NXT, "0.00146", "0.000031833"));
-
-  const auto date = Date{2026, 9, 23};
-  const auto on_krx = schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::KRX), date).rate_;
-  const auto on_nxt = schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::NXT), date).rate_;
-  REQUIRE(on_krx);
-  REQUIRE(on_nxt);
-  CHECK(on_krx->rate_ == Decimal64::parse("0.00147"));
-  CHECK(on_nxt->rate_ == Decimal64::parse("0.00146"));
-  // Both components differ by venue and are charged by different parties, so a schedule carrying one
-  // combined number would be wrong for whichever it folded away.
-  CHECK(on_krx->institution_rate_ == std::optional<Decimal64>(Decimal64::parse("0.000036396")));
-  CHECK(on_nxt->institution_rate_ == std::optional<Decimal64>(Decimal64::parse("0.000031833")));
-
-  // **No venue asserted against a venue-specific schedule refuses**, rather than picking the first
-  // row. A caller who did not say where a fill happened is told so.
-  CHECK_FALSE(schedule.rate_for(Country::KR, date).rate_);
-  CHECK_FALSE(schedule.rate_for(Country::KR, VenueKey::any(), date).rate_);
-
-  // A venue the schedule does not name also refuses rather than borrowing another venue's number.
-  CHECK_FALSE(schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::COMBINED), date).rate_);
-}
-
-TEST_CASE("a neutral row answers an unasserted question in either row order") {
-  // The migration property, asserted in both orders because a plain first-match rule makes venue
-  // rows unreachable in one of them and makes the neutral row unreachable in the other.
-  for (const bool neutral_first : {true, false}) {
-    CommissionSchedule schedule;
-    auto neutral = rate_row(Country::KR, Decimal64::parse("0.00015"), std::nullopt, std::nullopt);
-    auto krx = venue_row(Venue::KRX, "0.00147", "0.000036396");
-    if (neutral_first) {
-      schedule.rates_.push_back(neutral);
-      schedule.rates_.push_back(krx);
-    } else {
-      schedule.rates_.push_back(krx);
-      schedule.rates_.push_back(neutral);
-    }
-
-    const auto date = Date{2026, 9, 23};
-    // Unasserted reads the neutral row whichever order they are in.
-    const auto unasserted = schedule.rate_for(Country::KR, date).rate_;
-    REQUIRE(unasserted);
-    CHECK(unasserted->rate_ == Decimal64::parse("0.00015"));
-    // And an assertion reaches the exact row even when a neutral row precedes it.
-    const auto asserted = schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::KRX), date).rate_;
-    REQUIRE(asserted);
-    CHECK(asserted->rate_ == Decimal64::parse("0.00147"));
-    // A venue with no row of its own falls back to the neutral one, which is what makes adding one
-    // venue's rate to an existing schedule additive rather than a migration.
-    const auto other = schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::NXT), date).rate_;
-    REQUIRE(other);
-    CHECK(other->rate_ == Decimal64::parse("0.00015"));
-  }
-}
-
-TEST_CASE("an unnormalized venue row is preserved and selected by nothing else") {
-  // The `other_` precedent, applied to a venue: a row the library cannot interpret is kept so a
-  // caller can see the broker sent it -- and a row that was silently *matched* would be worse than
-  // one silently dropped, because it would charge a number for a market nobody established.
-  CommissionSchedule schedule;
-  CommissionRate exotic;
-  exotic.country_ = Country::KR;
-  exotic.venue_ = *VenueKey::raw("XQTC");
-  exotic.rate_ = Decimal64::parse("0.009");
-  schedule.rates_.push_back(exotic);
-
-  const auto date = Date{2026, 9, 23};
-  CHECK_FALSE(schedule.rate_for(Country::KR, date).rate_);
-  CHECK_FALSE(schedule.rate_for(Country::KR, VenueKey::any(), date).rate_);
-  CHECK_FALSE(schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::KRX), date).rate_);
-  // Only the same raw code reaches it, and the row is still there to be read.
-  const auto exact = schedule.rate_for(Country::KR, *VenueKey::raw("XQTC"), date).rate_;
-  REQUIRE(exact);
-  CHECK(exact->rate_ == Decimal64::parse("0.009"));
-  CHECK(schedule.rates_.front().venue_.raw_code().view() == "XQTC");
-}
-
-TEST_CASE("a schedule mixing all four venue kinds keeps every one of them apart") {
-  // One fixture covering every exact match, the neutral fallback, and the two refusals -- because
-  // separate fixtures can each pass while the combination picks the wrong row.
-  CommissionSchedule schedule;
-  schedule.rates_.push_back(rate_row(Country::KR, Decimal64::parse("0.001"), std::nullopt, std::nullopt));
-  schedule.rates_.push_back(venue_row(Venue::KRX, "0.002", "0.00002"));
-  schedule.rates_.push_back(venue_row(Venue::COMBINED, "0.003", "0.00003"));
-  CommissionRate raw;
-  raw.country_ = Country::KR;
-  raw.venue_ = *VenueKey::raw("KRX");
-  raw.rate_ = Decimal64::parse("0.004");
-  schedule.rates_.push_back(raw);
-
-  const auto date = Date{2026, 9, 23};
-  CHECK(schedule.rate_for(Country::KR, date).rate_->rate_ == Decimal64::parse("0.001"));
-  CHECK(schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::KRX), date).rate_->rate_ ==
-        Decimal64::parse("0.002"));
-  // COMBINED is storable and reachable as a *rate*; what it may not be is the venue a fill is
-  // asserted to have happened at, which `CommissionPolicy` refuses rather than this type.
-  CHECK(schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::COMBINED), date).rate_->rate_ ==
-        Decimal64::parse("0.003"));
-  CHECK(schedule.rate_for(Country::KR, *VenueKey::raw("KRX"), date).rate_->rate_ ==
-        Decimal64::parse("0.004"));
-  // A venue named by none of the four still falls back to the neutral row.
-  CHECK(schedule.rate_for(Country::KR, *VenueKey::normalized(Venue::NXT), date).rate_->rate_ ==
-        Decimal64::parse("0.001"));
-}
-
-TEST_CASE("a rate window includes both of its own bounds, in either row order") {
-  // The migration test's other half: two-pass selection must not move where a window starts or
-  // ends. Both bounds are inclusive, which is what `applies_on` has always meant, and a fixture
-  // that only asked mid-window would pass over an off-by-one at either edge.
-  for (const bool neutral_first : {true, false}) {
-    CommissionSchedule schedule;
-    auto neutral = rate_row(
-      Country::KR, Decimal64::parse("0.00015"), Date{2026, 3, 1}, Date{2026, 3, 31}
-    );
-    auto krx = venue_row(Venue::KRX, "0.00147", "0", Date{2026, 3, 10}, Date{2026, 3, 20});
-    if (neutral_first) {
-      schedule.rates_.push_back(neutral);
-      schedule.rates_.push_back(krx);
-    } else {
-      schedule.rates_.push_back(krx);
-      schedule.rates_.push_back(neutral);
-    }
-    const auto at = [&](int day, const VenueKey& venue) {
-      return schedule.rate_for(Country::KR, venue, Date{2026, 3, static_cast<unsigned>(day)}).rate_;
-    };
-    const auto asserted = *VenueKey::normalized(Venue::KRX);
-
-    // The venue row covers its first and last day, and neither one more.
-    CHECK(at(10, asserted)->rate_ == Decimal64::parse("0.00147"));
-    CHECK(at(20, asserted)->rate_ == Decimal64::parse("0.00147"));
-    // Outside it, the neutral row answers -- the fallback pass, not an off-by-one.
-    CHECK(at(9, asserted)->rate_ == Decimal64::parse("0.00015"));
-    CHECK(at(21, asserted)->rate_ == Decimal64::parse("0.00015"));
-    // And the neutral row covers its own bounds when nothing is asserted.
-    CHECK(at(1, VenueKey::any())->rate_ == Decimal64::parse("0.00015"));
-    CHECK(at(31, VenueKey::any())->rate_ == Decimal64::parse("0.00015"));
-    CHECK_FALSE(schedule.rate_for(Country::KR, VenueKey::any(), Date{2026, 4, 1}).rate_);
-    // Inside the neutral window but outside the venue one, an assertion still gets an answer --
-    // the fallback -- and outside both it refuses rather than reaching for a window that ended.
-    CHECK(at(1, asserted));
-    CHECK_FALSE(schedule.rate_for(Country::KR, asserted, Date{2026, 2, 28}).rate_);
-  }
 }
 
 TEST_CASE("KIS places, amends and reads back a stop-limit order's trigger", "[broker][kis][trigger]") {

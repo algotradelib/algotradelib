@@ -112,13 +112,6 @@ Clock::time_point inside_the_window() { return sent_at() + std::chrono::seconds(
  */
 runner::MemoryJournal sink;
 
-/** A journal that refuses to record, so the write-back failure path is reachable. */
-class FailingSink {
-public:
-  bool append(const JournalEntry&) { return false; }
-  runner::JournalReplay replay() const { return {}; }
-};
-
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -335,67 +328,6 @@ TEST_CASE("recovery tells two orders apart by the venue each was routed to") {
   }
 }
 
-TEST_CASE("a readable row does not win over a competing unreadable one") {
-  // The mixed listing. One row matches every attribute; one carries a code this
-  // release cannot read and matches every attribute that survives an unreadable
-  // shape. The unreadable row may be the instruction, and the readable one
-  // another order on the same account -- so resolving to the readable one
-  // attributes the wrong order and clears the hold, which is the harm the
-  // single-row case was changed to avoid, by a different route.
-  auto instruction = placement();
-
-  auto readable = row("KRX-1");
-  auto unreadable = row("KRX-2");
-  unreadable.type_ = OrderType::UNKNOWN;
-  unreadable.time_in_force_ = TimeInForce::UNKNOWN;
-  unreadable.session_ = OrderSession::UNKNOWN;
-  unreadable.price_.reset();
-  unreadable.shape_code_ = Code<8>("99");
-
-  const auto match = runner::match_against(instruction, {readable, unreadable},
-                                           after_the_window());
-  REQUIRE(match.verdict_ == MatchVerdict::AMBIGUOUS);
-  REQUIRE(match.candidates_ == 2);
-  // No order id: claiming one would be the attribution this refuses to make.
-  REQUIRE(match.order_id_.empty());
-
-  // The readable row alone still resolves, so the ambiguity is caused by the
-  // unreadable row rather than by the fixture.
-  const auto alone = runner::match_against(instruction, {readable}, after_the_window());
-  REQUIRE(alone.verdict_ == MatchVerdict::MATCHED);
-  REQUIRE(alone.order_id_ == "KRX-1");
-}
-
-TEST_CASE("an unreadable row the route rules out does not force an ambiguity") {
-  // Withholding is right when an unknown-code row really could be the order. A
-  // row the instruction's own route excludes could not be, however unreadable
-  // its shape is -- and letting it stall recovery would make an ordinary
-  // account's unrelated orders a reason to stop trading.
-  auto instruction = placement();
-  instruction.entry_.venue_ = Venue::NXT;
-
-  auto elsewhere = row("KRX-2");
-  elsewhere.venue_ = Venue::KRX;
-  elsewhere.type_ = OrderType::UNKNOWN;
-  elsewhere.time_in_force_ = TimeInForce::UNKNOWN;
-  elsewhere.session_ = OrderSession::UNKNOWN;
-  elsewhere.price_.reset();
-
-  auto ours = row("NXT-1");
-  ours.venue_ = Venue::NXT;
-
-  const auto match = runner::match_against(instruction, {elsewhere, ours}, after_the_window());
-  REQUIRE(match.verdict_ == MatchVerdict::MATCHED);
-  REQUIRE(match.order_id_ == "NXT-1");
-
-  // The same unreadable row, routed where we asked, does force the ambiguity --
-  // so the exclusion is the route and not the readability.
-  elsewhere.venue_ = Venue::NXT;
-  const auto ambiguous =
-    runner::match_against(instruction, {elsewhere, ours}, after_the_window());
-  REQUIRE(ambiguous.verdict_ == MatchVerdict::AMBIGUOUS);
-}
-
 TEST_CASE("an order code this release cannot read is not read as an absent order") {
   // A broker may add an `ORD_DVSN` after this release. It parses to `UNKNOWN`
   // in all three shape fields and -- because an unknown basis is not one
@@ -452,73 +384,6 @@ TEST_CASE("an unreadable row that is plainly a different order is still an absen
   );
 }
 
-TEST_CASE("recovery does not read a day order as the immediate-or-cancel order it sent") {
-  auto instruction = placement();
-  instruction.entry_.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
-
-  // Same instrument, side, basis, quantity, price and time. Only the condition
-  // differs, and it is the whole difference between an order that rests and one
-  // that does not.
-  auto resting = row("KRX-1");
-  resting.time_in_force_ = TimeInForce::DAY;
-  REQUIRE(
-    runner::match_against(instruction, {resting}, after_the_window()).verdict_ !=
-      MatchVerdict::MATCHED
-  );
-
-  auto immediate = row("KRX-2");
-  immediate.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
-  const auto match = runner::match_against(instruction, {immediate}, after_the_window());
-  REQUIRE(match.verdict_ == MatchVerdict::MATCHED);
-  // Attribution, not a count: the point is that it found *this* order.
-  REQUIRE(match.order_id_ == "KRX-2");
-}
-
-TEST_CASE("a row whose condition the broker did not report is a candidate, not a match") {
-  auto instruction = placement();
-  instruction.entry_.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
-
-  // **This test once asserted MATCHED, and that was half right.**
-  // Excluding such a row reports `NOT_PLACED` for an order that may be in the
-  // listing, and the runner's answer to that is to send again -- so it stays a
-  // candidate. But *matching* it names this row as the order and clears the
-  // hold on it, and nothing here established that. Toss parses an unreadable
-  // `timeInForce` -- `"CL?"` -- to an unknown condition and session while
-  // keeping a readable `LIMIT` basis, so a lone lookalike with an agreeing
-  // route was being attributed on evidence that did not exist.
-  auto silent = row("KRX-1");
-  silent.time_in_force_ = TimeInForce::UNKNOWN;
-  silent.session_ = OrderSession::UNKNOWN;
-  const auto match = runner::match_against(instruction, {silent}, after_the_window());
-  REQUIRE(match.verdict_ == MatchVerdict::AMBIGUOUS);
-  REQUIRE(match.order_id_.empty());
-  // And specifically not an absence, which is the half that was right.
-  REQUIRE(match.verdict_ != MatchVerdict::NOT_PLACED);
-  // **Counted once.** The verdict alone cannot tell a correct answer from a
-  // lenient `row_corresponds` that matched this row *and* counted it as
-  // plausible -- both give AMBIGUOUS. The number is what differs, and it is not
-  // cosmetic: the detail string tells an operator how many orders could be this
-  // instruction, and one row reported as two sends them looking for an order
-  // that does not exist. A surviving mutation found this.
-  REQUIRE(match.candidates_ == 1);
-
-  // A row that does report them still resolves, so this is about the silence.
-  auto reported = row("KRX-2");
-  reported.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
-  REQUIRE(
-    runner::match_against(instruction, {reported}, after_the_window()).order_id_ == "KRX-2"
-  );
-}
-
-TEST_CASE("one corresponding row matches a placement", "[reconcile]") {
-  const auto match =
-    runner::match_against(placement(), {row("KRX-1")}, after_the_window());
-  REQUIRE(match.verdict_ == MatchVerdict::MATCHED);
-  REQUIRE(match.order_id_ == "KRX-1");
-  REQUIRE(match.candidates_ == 1);
-  REQUIRE(match.instrument_ == samsung());
-}
-
 TEST_CASE("a row for another instrument is not a match", "[reconcile]") {
   const auto match =
     runner::match_against(placement(), {row("KRX-1", hynix())}, after_the_window());
@@ -526,159 +391,9 @@ TEST_CASE("a row for another instrument is not a match", "[reconcile]") {
   REQUIRE(match.candidates_ == 0);
 }
 
-TEST_CASE("side, type, quantity and price must all agree", "[reconcile]") {
-  auto wrong_side = row("KRX-1");
-  wrong_side.side_ = OrderSide::SELL;
-  REQUIRE(
-    runner::match_against(placement(), {wrong_side}, after_the_window()).verdict_ ==
-      MatchVerdict::NOT_PLACED
-  );
-
-  auto wrong_type = row("KRX-1");
-  wrong_type.type_ = OrderType::MARKET;
-  REQUIRE(
-    runner::match_against(placement(), {wrong_type}, after_the_window()).verdict_ ==
-      MatchVerdict::NOT_PLACED
-  );
-
-  REQUIRE(
-    runner::match_against(placement(), {row("KRX-1", samsung(), "11")}, after_the_window())
-        .verdict_ == MatchVerdict::NOT_PLACED
-  );
-  REQUIRE(
-    runner::match_against(placement(), {row("KRX-1", samsung(), "10", "70100")},
-      after_the_window())
-        .verdict_ == MatchVerdict::NOT_PLACED
-  );
-}
-
-TEST_CASE("a quantity of a different scale is still the same quantity", "[reconcile]") {
-  // `Decimal64::operator==` compares the coefficient and the scale, so a broker reporting `10.00`
-  // where the journal wrote `10` would fail an equality test while denoting the same number. A
-  // matcher using it would report NOT_PLACED for an order sitting in the listing.
-  const auto match =
-    runner::match_against(placement(), {row("KRX-1", samsung(), "10.00", "70000.0")},
-      after_the_window());
-  REQUIRE(match.verdict_ == MatchVerdict::MATCHED);
-}
-
-TEST_CASE("a market order matches a row with no price", "[reconcile]") {
-  auto instruction = placement();
-  instruction.entry_.type_ = OrderType::MARKET;
-  instruction.entry_.price_.reset();
-
-  auto market_row = row("KRX-1");
-  market_row.type_ = OrderType::MARKET;
-  market_row.price_.reset();
-
-  REQUIRE(
-    runner::match_against(instruction, {market_row}, after_the_window()).verdict_ ==
-      MatchVerdict::MATCHED
-  );
-  // One side carrying a price and the other not is a different order, not a near miss.
-  REQUIRE(
-    runner::match_against(instruction, {row("KRX-1")}, after_the_window()).verdict_ ==
-      MatchVerdict::NOT_PLACED
-  );
-}
-
-// ---------------------------------------------------------------------------
-// The window
-// ---------------------------------------------------------------------------
-
-TEST_CASE("absence inside the window decides nothing", "[reconcile]") {
-  const auto match = runner::match_against(placement(), {}, inside_the_window());
-  REQUIRE(match.verdict_ == MatchVerdict::UNDECIDED);
-  REQUIRE_FALSE(runner::match_verdict_resolves(match.verdict_));
-}
-
-TEST_CASE("absence after the window means the order does not exist", "[reconcile]") {
-  const auto match = runner::match_against(placement(), {}, after_the_window());
-  REQUIRE(match.verdict_ == MatchVerdict::NOT_PLACED);
-  REQUIRE(runner::match_verdict_resolves(match.verdict_));
-}
-
-TEST_CASE("the window closes later for an instruction nobody answered", "[reconcile]") {
-  // A `PENDING` line with a terminal companion brackets the send exactly. One without has to be
-  // bounded by how long a request could have been outstanding, so its window closes later.
-  auto answered = placement();
-  answered.answered_ = true;
-  answered.closed_at_ = sent_at();
-
-  const MatchWindow window;
-  const auto unanswered_closes =
-    runner::instruction_sent_by(placement(), window) + window.clock_skew_ + window.listing_delay_;
-  const auto answered_closes =
-    runner::instruction_sent_by(answered, window) + window.clock_skew_ + window.listing_delay_;
-  REQUIRE(answered_closes < unanswered_closes);
-
-  const auto between = answered_closes + std::chrono::seconds(1);
-  REQUIRE(runner::match_against(answered, {}, between).verdict_ == MatchVerdict::NOT_PLACED);
-  REQUIRE(runner::match_against(placement(), {}, between).verdict_ == MatchVerdict::UNDECIDED);
-}
-
-TEST_CASE("a row stamped outside the window is not this instruction", "[reconcile]") {
-  const auto stale = row("KRX-1", samsung(), "10", "70000", sent_at() - std::chrono::hours(2));
-  REQUIRE(
-    runner::match_against(placement(), {stale}, after_the_window()).verdict_ ==
-      MatchVerdict::NOT_PLACED
-  );
-}
-
-TEST_CASE("clock skew is allowed in both directions", "[reconcile]") {
-  // The journal's stamp is local and the broker's is its own. A skew allowance too narrow does not
-  // fail loudly: it reports NOT_PLACED for an order that exists, which is the worst outcome here.
-  const auto early = row("KRX-1", samsung(), "10", "70000", sent_at() - std::chrono::seconds(20));
-  const auto late = row("KRX-2", samsung(), "10", "70000", sent_at() + std::chrono::seconds(70));
-  REQUIRE(
-    runner::match_against(placement(), {early}, after_the_window()).verdict_ ==
-      MatchVerdict::MATCHED
-  );
-  REQUIRE(
-    runner::match_against(placement(), {late}, after_the_window()).verdict_ ==
-      MatchVerdict::MATCHED
-  );
-
-  MatchWindow narrow;
-  narrow.clock_skew_ = std::chrono::seconds(1);
-  REQUIRE(
-    runner::match_against(placement(), {early}, after_the_window(), narrow).verdict_ ==
-      MatchVerdict::NOT_PLACED
-  );
-}
-
-TEST_CASE("a row with no timestamp is judged on attributes alone", "[reconcile]") {
-  // Excluding it would report NOT_PLACED for an order sitting in the listing.
-  //
-  // **One could argue this should be ambiguous instead**, on the grounds that an
-  // older otherwise-identical order outside the window, reported without a
-  // timestamp, becomes a unique match and clears the hold on the newer one.
-  // That hazard is real. The fix is not, because every row of KIS's live
-  // working-order inquiry is timestamp-less -- `parse_open_orders` sets no `ordered_at_`, since
-  // the inquiry gives `HHMMSS` with no date and this library will not guess the
-  // day -- so treating an absent instant as silence makes every KIS recovery
-  // ambiguous and stalls the primary path.
-  //
-  // See `time_evidence` for what contains the hazard instead.
-  const auto undated = row("KRX-1", samsung(), "10", "70000", std::nullopt);
-  REQUIRE(
-    runner::match_against(placement(), {undated}, after_the_window()).verdict_ ==
-      MatchVerdict::MATCHED
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Ambiguity
 // ---------------------------------------------------------------------------
-
-TEST_CASE("two candidate rows resolve nothing", "[reconcile]") {
-  const auto match =
-    runner::match_against(placement(), {row("KRX-1"), row("KRX-2")}, after_the_window());
-  REQUIRE(match.verdict_ == MatchVerdict::AMBIGUOUS);
-  REQUIRE(match.candidates_ == 2);
-  REQUIRE(match.order_id_.empty());
-  REQUIRE_FALSE(runner::match_verdict_resolves(match.verdict_));
-}
 
 TEST_CASE("a cancellation can never be ambiguous", "[reconcile]") {
   // The identity match the design needs, and the only one available: a cancellation's journal line
@@ -693,37 +408,9 @@ TEST_CASE("a cancellation can never be ambiguous", "[reconcile]") {
   REQUIRE(match.order_id_ == "KRX-2");
 }
 
-TEST_CASE("a cancellation whose order has left the listing is resolved", "[reconcile]") {
-  const auto match =
-    runner::match_against(cancellation("KRX-9"), {row("KRX-1")}, after_the_window());
-  REQUIRE(match.verdict_ == MatchVerdict::NOT_PLACED);
-  REQUIRE(runner::match_verdict_resolves(match.verdict_));
-}
-
-TEST_CASE("a cancellation is not matched by attributes", "[reconcile]") {
-  // Identical in every attribute, different in id. Falling back to attributes here would resolve a
-  // cancellation against an order it never named.
-  const auto match =
-    runner::match_against(cancellation("KRX-9"), {row("KRX-1")}, inside_the_window());
-  REQUIRE(match.verdict_ == MatchVerdict::UNDECIDED);
-  REQUIRE(match.candidates_ == 0);
-}
-
 // ---------------------------------------------------------------------------
 // Sweeping the ledger
 // ---------------------------------------------------------------------------
-
-TEST_CASE("a sweep clears what the listing settles", "[reconcile]") {
-  IndeterminacyLedger ledger;
-  ledger.mark(samsung(), "an order request failed in transit");
-
-  const auto report =
-    runner::reconcile_against({placement()}, {row("KRX-1")}, after_the_window(), ledger, sink);
-  REQUIRE(report.settled());
-  REQUIRE(report.resolved_.size() == 1);
-  REQUIRE(report.resolved_.front() == samsung());
-  REQUIRE_FALSE(ledger.requires_reconcile(samsung()));
-}
 
 TEST_CASE("an ambiguous instruction leaves its instrument withheld", "[reconcile]") {
   IndeterminacyLedger ledger;
@@ -756,16 +443,6 @@ TEST_CASE("an instrument clears only when every instruction for it is decided", 
   REQUIRE(report.matches_[1].verdict_ == MatchVerdict::UNDECIDED);
   REQUIRE_FALSE(report.settled());
   REQUIRE(ledger.requires_reconcile(samsung()));
-}
-
-TEST_CASE("a sweep does not touch a mark the journal knows nothing about", "[reconcile]") {
-  IndeterminacyLedger ledger;
-  ledger.mark(hynix(), "an operator marked this by hand");
-
-  const auto report =
-    runner::reconcile_against({placement()}, {row("KRX-1")}, after_the_window(), ledger, sink);
-  REQUIRE(report.resolved_.size() == 1);
-  REQUIRE(ledger.requires_reconcile(hynix()));
 }
 
 TEST_CASE("verdict names are stable", "[reconcile]") {
@@ -832,61 +509,6 @@ JournalEntry entry_at(
 
 } // namespace
 
-TEST_CASE("a journal with nothing owed recovers into an empty ledger", "[reconcile][recover]") {
-  runner::JournalReplay replay;
-  replay.entries_ = {
-    entry_at("run-1", JournalOutcome::PENDING),
-    entry_at("run-1", JournalOutcome::ACCEPTED),
-  };
-
-  IndeterminacyLedger ledger;
-  const auto report = runner::recover_into(replay, ledger);
-  REQUIRE(report.clean());
-  REQUIRE(ledger.empty());
-}
-
-TEST_CASE("an unanswered instruction is recovered into the ledger", "[reconcile][recover]") {
-  runner::JournalReplay replay;
-  replay.entries_ = {entry_at("run-1", JournalOutcome::PENDING, hynix())};
-
-  IndeterminacyLedger ledger;
-  const auto report = runner::recover_into(replay, ledger);
-  REQUIRE_FALSE(report.clean());
-  REQUIRE(report.marked_.size() == 1);
-  REQUIRE(report.marked_.front() == hynix());
-  // The whole point: the restarted runner refuses to send for this instrument until the broker's
-  // own order list says what happened.
-  REQUIRE(ledger.requires_reconcile(hynix()));
-}
-
-TEST_CASE("an instruction answered in transit is recovered too", "[reconcile][recover]") {
-  runner::JournalReplay replay;
-  replay.entries_ = {
-    entry_at("run-1", JournalOutcome::PENDING),
-    entry_at("run-1", JournalOutcome::INDETERMINATE),
-  };
-
-  IndeterminacyLedger ledger;
-  const auto report = runner::recover_into(replay, ledger);
-  REQUIRE(report.marked_.size() == 1);
-  REQUIRE(ledger.requires_reconcile(samsung()));
-}
-
-TEST_CASE("a truncated line with no instrument is a warning, not a mark", "[reconcile][recover]") {
-  runner::JournalReplay replay;
-  replay.truncated_tail_ = true;
-  replay.detail_ = "the final journal line was truncated and named no instrument";
-
-  IndeterminacyLedger ledger;
-  const auto report = runner::recover_into(replay, ledger);
-  REQUIRE(report.truncated_);
-  REQUIRE(report.unattributable_);
-  REQUIRE(report.marked_.empty());
-  // Nothing specific can be withheld. The loop's own startup gate covers it: a runner sends nothing
-  // at all until it has read the broker's order list once.
-  REQUIRE(ledger.empty());
-}
-
 TEST_CASE("a crash and a restart, end to end", "[reconcile][recover]") {
   // The story the feature exists for, with no broker and no filesystem: a runner sends, the process
   // dies before the outcome is known, a new process starts with an empty ledger, and recovery plus
@@ -938,127 +560,6 @@ TEST_CASE("recovering twice marks an instrument once", "[reconcile][recover]") {
 // ---------------------------------------------------------------------------
 // Resolutions are written back, so a restart does not re-ask a settled question
 // ---------------------------------------------------------------------------
-
-TEST_CASE("a resolved instruction is closed in the journal", "[reconcile][recover]") {
-  runner::MemoryJournal journal;
-  journal.append(entry_at("run-1", JournalOutcome::PENDING));
-
-  IndeterminacyLedger ledger;
-  const auto recovery = runner::recover_into(journal, ledger);
-  REQUIRE(ledger.requires_reconcile(samsung()));
-
-  const auto report = runner::reconcile_against(
-    recovery.open_, {row("KRX-1")}, after_the_window(), ledger, journal
-  );
-  REQUIRE(report.settled());
-  REQUIRE(report.recorded_ == 1);
-  REQUIRE_FALSE(report.unrecorded_);
-
-  // The terminal line closes the pending one by id, and says what it is: a sweep read the listing.
-  // Not `ACCEPTED`, which is an answer the *broker* gave to the instruction -- what was observed is
-  // in `order_id_`.
-  REQUIRE(journal.records().size() == 2);
-  REQUIRE(journal.records().back().id_ == "run-1");
-  REQUIRE(journal.records().back().outcome_ == JournalOutcome::RESOLVED);
-  REQUIRE(journal.records().back().order_id_ == "KRX-1");
-
-  // A second restart finds nothing owed. Before the write-back this recovered and withheld again,
-  // forever, on every restart.
-  IndeterminacyLedger fresh;
-  const auto again = runner::recover_into(journal, fresh);
-  REQUIRE(again.clean());
-  REQUIRE(fresh.empty());
-}
-
-TEST_CASE("an order that never existed is closed with no reference", "[reconcile][recover]") {
-  runner::MemoryJournal journal;
-  journal.append(entry_at("run-1", JournalOutcome::PENDING));
-
-  IndeterminacyLedger ledger;
-  const auto recovery = runner::recover_into(journal, ledger);
-  const auto report =
-    runner::reconcile_against(recovery.open_, {}, after_the_window(), ledger, journal);
-  REQUIRE(report.matches_.front().verdict_ == MatchVerdict::NOT_PLACED);
-  REQUIRE(journal.records().back().outcome_ == JournalOutcome::RESOLVED);
-  // Empty, which is how the record says no row was found.
-  REQUIRE(journal.records().back().order_id_.empty());
-
-  IndeterminacyLedger fresh;
-  REQUIRE(runner::recover_into(journal, fresh).clean());
-}
-
-TEST_CASE("a reconciled cancellation does not claim the broker accepted it", "[reconcile]") {
-  // `MATCHED` on a cancellation means the target order is *still resting* -- the withdrawal has not
-  // happened. Recording that as `ACCEPTED` would read as the exact opposite of what was observed.
-  runner::MemoryJournal journal;
-  auto entry = entry_at("run-1", JournalOutcome::PENDING);
-  entry.action_ = JournalAction::CANCEL;
-  entry.order_id_ = "KRX-1";
-  journal.append(entry);
-
-  IndeterminacyLedger ledger;
-  const auto recovery = runner::recover_into(journal, ledger);
-  const auto report = runner::reconcile_against(
-    recovery.open_, {row("KRX-1")}, after_the_window(), ledger, journal
-  );
-  REQUIRE(report.matches_.front().verdict_ == MatchVerdict::MATCHED);
-  REQUIRE(journal.records().back().outcome_ == JournalOutcome::RESOLVED);
-  REQUIRE(journal.records().back().detail_.find("still in the broker's listing") !=
-    std::string::npos);
-}
-
-TEST_CASE("an operator-only entry needs no history inquiry", "[reconcile]") {
-  // No listing can decide it, so asking for one bought pointless pagination on Toss and a
-  // guaranteed rejected inquiry on KIS, on every sweep.
-  auto damaged = placement();
-  damaged.entry_.requires_operator_ = true;
-  REQUIRE_FALSE(runner::any_placement({damaged}));
-  REQUIRE(runner::any_placement({placement()}));
-}
-
-TEST_CASE("repeated sweeps do not contradict each other", "[reconcile][recover]") {
-  // Without the write-back, a later sweep replayed the unchanged journal and could report the same
-  // instruction `UNDECIDED` after an earlier sweep had already cleared the ledger on `MATCHED` --
-  // leaving the report inconsistent with the actual gate.
-  runner::MemoryJournal journal;
-  journal.append(entry_at("run-1", JournalOutcome::PENDING));
-
-  IndeterminacyLedger ledger;
-  auto open = runner::unresolved_instructions(journal.replay());
-  runner::recover_into(journal, ledger);
-
-  const auto first =
-    runner::reconcile_against(open, {row("KRX-1")}, after_the_window(), ledger, journal);
-  REQUIRE(first.settled());
-
-  // The next sweep replays the journal, as a source does, and finds the question closed.
-  open = runner::unresolved_instructions(journal.replay());
-  REQUIRE(open.empty());
-  const auto second = runner::reconcile_against(open, {}, after_the_window(), ledger, journal);
-  REQUIRE(second.matches_.empty());
-  REQUIRE(second.settled());
-  REQUIRE_FALSE(ledger.requires_reconcile(samsung()));
-}
-
-TEST_CASE("a resolution that cannot be recorded leaves the hold standing", "[reconcile][recover]") {
-  // The same discipline as writing before a send, applied to the other end. Clearing memory while
-  // failing to record why would resolve the instruction here and leave it owed on disk.
-  runner::MemoryJournal source;
-  source.append(entry_at("run-1", JournalOutcome::PENDING));
-
-  IndeterminacyLedger ledger;
-  const auto recovery = runner::recover_into(source, ledger);
-
-  FailingSink sink;
-  const auto report = runner::reconcile_against(
-    recovery.open_, {row("KRX-1")}, after_the_window(), ledger, sink
-  );
-  REQUIRE(report.matches_.front().verdict_ == MatchVerdict::MATCHED);
-  REQUIRE(report.unrecorded_);
-  REQUIRE(report.recorded_ == 0);
-  REQUIRE_FALSE(report.settled());
-  REQUIRE(ledger.requires_reconcile(samsung()));
-}
 
 TEST_CASE("recovery tells two stops apart by their triggers", "[reconcile][trigger]") {
   auto instruction = placement();

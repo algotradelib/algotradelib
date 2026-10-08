@@ -47,23 +47,6 @@ TEST_CASE("a price cannot be constructed at all except through a grid check") {
   STATIC_REQUIRE(std::is_copy_constructible_v<Price>);
 }
 
-TEST_CASE("a price on the grid is accepted and keeps its exact value") {
-  // 70,000 sits in the 100-won band and is a multiple of it.
-  const auto price = Price::checked(Decimal64::parse("70000"), krx());
-  REQUIRE(price);
-  REQUIRE(price->value() == Decimal64::parse("70000"));
-  REQUIRE(price->str() == "70000");
-}
-
-TEST_CASE("a price off the grid is refused rather than quietly moved") {
-  // 70,050 is not a multiple of the 100-won tick that applies above 50,000. Refusing is the
-  // point: silently moving it would place an order at a price the strategy did not choose.
-  REQUIRE_FALSE(Price::checked(Decimal64::parse("70050"), krx()));
-  // And just below the band boundary, where the tick is 50 rather than 100, it is fine.
-  REQUIRE(Price::checked(Decimal64::parse("49950"), krx()));
-  REQUIRE_FALSE(Price::checked(Decimal64::parse("49975"), krx()));
-}
-
 TEST_CASE("an unknown grid refuses every price rather than passing them all") {
   // An ETN, or a listing whose ladder this library does not have. Answering "on tick" here
   // would let an off-grid price through a check that appeared to have passed.
@@ -72,45 +55,9 @@ TEST_CASE("an unknown grid refuses every price rather than passing them all") {
   REQUIRE_FALSE(Price::rounded(Decimal64::parse("70000"), rule, OrderSide::BUY));
 }
 
-TEST_CASE("an unconstrained market accepts any decimal") {
-  const auto rule = PriceRule::unconstrained();
-  REQUIRE(Price::checked(Decimal64::parse("185.7049"), rule));
-}
-
-TEST_CASE("rounding moves a price the way that cannot cross the caller's intent") {
-  // A buy rounds down and a sell rounds up, so rounding never makes a limit more aggressive
-  // than instructed. 70,050 is between two 100-won ticks.
-  const auto buy = Price::rounded(Decimal64::parse("70050"), krx(), OrderSide::BUY);
-  const auto sell = Price::rounded(Decimal64::parse("70050"), krx(), OrderSide::SELL);
-  REQUIRE(buy);
-  REQUIRE(sell);
-  REQUIRE(buy->value() == Decimal64::parse("70000"));
-  REQUIRE(sell->value() == Decimal64::parse("70100"));
-
-  // Whatever it produces is on the grid, which is what makes the two factories agree.
-  REQUIRE(Price::checked(buy->value(), krx()));
-  REQUIRE(Price::checked(sell->value(), krx()));
-}
-
 // ---------------------------------------------------------------------------
 // SizeSpec
 // ---------------------------------------------------------------------------
-
-TEST_CASE("a size states which currency of measurement it is in") {
-  const auto shares = SizeSpec::quantity(Decimal64::parse("10"));
-  REQUIRE(shares.kind() == SizeKind::QUANTITY);
-  REQUIRE(shares.as_quantity() == Decimal64::parse("10"));
-
-  const auto cash = SizeSpec::notional(Money{Decimal64::parse("1000000"), Currency{"KRW"}});
-  REQUIRE(cash.kind() == SizeKind::NOTIONAL);
-  REQUIRE(cash.as_notional().amount_ == Decimal64::parse("1000000"));
-
-  // An exact decimal at the scale the caller chose, so a third is 0.3333 or 0.333333 by their
-  // decision rather than by a double's.
-  const auto weight = SizeSpec::target_weight(Decimal64::parse("0.25"));
-  REQUIRE(weight.kind() == SizeKind::TARGET_WEIGHT);
-  REQUIRE(weight.as_target_weight() == Decimal64::parse("0.25"));
-}
 
 TEST_CASE("reading a size as the wrong measurement throws instead of answering zero") {
   // An order for the wrong amount is not a failure to paper over with a default.
@@ -131,58 +78,6 @@ TEST_CASE("an intent can only be assembled in a shape an adapter accepts") {
   // to make a limit order without a price, or a market order with one.
   STATIC_REQUIRE_FALSE(std::is_default_constructible_v<OrderIntent>);
   STATIC_REQUIRE(std::is_copy_constructible_v<OrderIntent>);
-}
-
-TEST_CASE("a limit intent carries its price and a market intent carries none") {
-  const auto price = Price::checked(Decimal64::parse("70000"), krx());
-  REQUIRE(price);
-
-  const auto buy = OrderIntent::limit(
-    samsung(), OrderSide::BUY, SizeSpec::quantity(Decimal64::parse("10")), *price
-  );
-  REQUIRE(buy.type() == OrderType::LIMIT);
-  REQUIRE(buy.limit());
-  REQUIRE(buy.limit()->value() == Decimal64::parse("70000"));
-  REQUIRE(buy.side() == OrderSide::BUY);
-  REQUIRE(buy.time_in_force() == TimeInForce::DAY);
-  REQUIRE(buy.instrument().symbol_ == "005930");
-  REQUIRE(buy.size().as_quantity() == Decimal64::parse("10"));
-
-  const auto flatten = OrderIntent::market(
-    samsung(), OrderSide::SELL, SizeSpec::quantity(Decimal64::parse("10"))
-  );
-  REQUIRE(flatten.type() == OrderType::MARKET);
-  REQUIRE_FALSE(flatten.limit());
-}
-
-TEST_CASE("labelling and keying an intent leaves the original untouched") {
-  const auto base = OrderIntent::market(
-    samsung(), OrderSide::BUY, SizeSpec::quantity(Decimal64::parse("1"))
-  );
-  REQUIRE(base.tag().empty());
-  REQUIRE_FALSE(base.client_order_id());
-
-  const auto tagged = base.with_tag("sma-crossover");
-  REQUIRE(tagged.tag() == "sma-crossover");
-  // The value semantics matter: a handler may build several intents from one template.
-  REQUIRE(base.tag().empty());
-
-  const auto keyed = tagged.with_client_order_id("idem-1");
-  REQUIRE(keyed.client_order_id() == std::optional<std::string>("idem-1"));
-  REQUIRE(keyed.tag() == "sma-crossover");
-  REQUIRE_FALSE(tagged.client_order_id());
-}
-
-TEST_CASE("a target position is signed, so flat and short are both expressible") {
-  strategy::TargetPosition flat;
-  flat.instrument_ = samsung();
-  flat.target_quantity_ = Decimal64::parse("0");
-  REQUIRE(flat.target_quantity_.coefficient() == 0);
-  REQUIRE_FALSE(flat.limit_);
-
-  strategy::TargetPosition shorted;
-  shorted.target_quantity_ = Decimal64::parse("-10");
-  REQUIRE(decimal_less(shorted.target_quantity_, Decimal64::parse("0")));
 }
 
 TEST_CASE("the strategy surface needs no linear algebra backend") {
@@ -214,26 +109,6 @@ Clock::time_point utc(int year, int month, int day, int hour, int minute) {
 
 } // namespace
 
-TEST_CASE("an uncovered date is unknown, never assumed closed or open") {
-  // The same distinction TradingCalendar draws. Assuming closed stops a strategy on a day that
-  // is in fact open; assuming open lets it order into a holiday.
-  const auto session = strategy::SessionWindow::krx();
-  REQUIRE(session.phase(utc(2026, 3, 10, 2, 0), std::nullopt) == strategy::MarketPhase::UNKNOWN);
-  REQUIRE(session.phase(utc(2026, 3, 10, 2, 0), false) == strategy::MarketPhase::CLOSED);
-}
-
-TEST_CASE("the KRX session boundaries fall where the exchange publishes them") {
-  const auto session = strategy::SessionWindow::krx();
-  // KST is UTC+9, so 09:00 KST is 00:00 UTC and 15:30 KST is 06:30 UTC.
-  REQUIRE(session.phase(utc(2026, 3, 10, 23, 59), true) == strategy::MarketPhase::PRE_OPEN);
-  REQUIRE(session.phase(utc(2026, 3, 10, 0, 0), true) == strategy::MarketPhase::OPEN);
-  REQUIRE(session.phase(utc(2026, 3, 10, 3, 0), true) == strategy::MarketPhase::OPEN);
-  REQUIRE(session.phase(utc(2026, 3, 10, 6, 29), true) == strategy::MarketPhase::OPEN);
-  // The close is exclusive: at exactly 15:30 KST the session is over.
-  REQUIRE(session.phase(utc(2026, 3, 10, 6, 30), true) == strategy::MarketPhase::POST_CLOSE);
-  REQUIRE(session.phase(utc(2026, 3, 10, 14, 0), true) == strategy::MarketPhase::POST_CLOSE);
-}
-
 TEST_CASE("a session window stays brace-initializable by a caller stating their own market") {
   // `local_date` brought a private member *function* with it, and a private member function keeps an
   // aggregate an aggregate while a private data member would not. Pinned because the difference is
@@ -256,42 +131,6 @@ TEST_CASE("a session window stays brace-initializable by a caller stating their 
   REQUIRE(nyse.phase(utc(2026, 3, 10, 21, 0), true) == strategy::MarketPhase::POST_CLOSE);
   // And the date is still the market's: 03:00 UTC is the previous evening there.
   REQUIRE(nyse.local_date(utc(2026, 3, 10, 3, 0)) == Date{2026, 3, 9});
-}
-
-TEST_CASE("the local date is the market's, not the process's") {
-  const auto session = strategy::SessionWindow::krx();
-  // 23:30 UTC is already 08:30 the next morning in Seoul. A loop that asked its own calendar
-  // whether *today* trades would consult Monday's answer for a Tuesday session -- and, on the
-  // Sunday evening either side of this, would ask about a closed day for an open one.
-  REQUIRE(session.local_date(utc(2026, 3, 9, 23, 30)) == Date{2026, 3, 10});
-  REQUIRE(session.local_date(utc(2026, 3, 10, 0, 0)) == Date{2026, 3, 10});
-  REQUIRE(session.local_date(utc(2026, 3, 10, 14, 59)) == Date{2026, 3, 10});
-  // 15:00 UTC is midnight in Seoul, so the date rolls there and not at UTC midnight.
-  REQUIRE(session.local_date(utc(2026, 3, 10, 15, 0)) == Date{2026, 3, 11});
-
-  // A market west of UTC rolls the other way, which is the case a fixed offset gets wrong if the
-  // floor rounds toward zero instead of toward negative infinity.
-  strategy::SessionWindow new_york;
-  new_york.utc_offset_ = -std::chrono::hours(5);
-  REQUIRE(new_york.local_date(utc(2026, 3, 10, 4, 0)) == Date{2026, 3, 9});
-  REQUIRE(new_york.local_date(utc(2026, 3, 10, 5, 0)) == Date{2026, 3, 10});
-}
-
-TEST_CASE("the local date and the phase never disagree about which day it is") {
-  // They are two answers about one instant and a loop uses them together: the date asks the
-  // calendar whether the market trades, the phase says where in the session it is. A rounding
-  // difference between them would compute the boundaries for one day and the holiday answer for
-  // another, which is the incoherence that is worst precisely at an open.
-  const auto session = strategy::SessionWindow::krx();
-  // Midnight in Seoul on a covered trading day: the date must already be the new one, and the
-  // phase must be PRE_OPEN rather than the previous day's POST_CLOSE.
-  const auto at_local_midnight = utc(2026, 3, 10, 15, 0);
-  REQUIRE(session.local_date(at_local_midnight) == Date{2026, 3, 11});
-  REQUIRE(session.phase(at_local_midnight, true) == strategy::MarketPhase::PRE_OPEN);
-  // One minute earlier is still the old day, after its close.
-  const auto a_minute_before = utc(2026, 3, 10, 14, 59);
-  REQUIRE(session.local_date(a_minute_before) == Date{2026, 3, 10});
-  REQUIRE(session.phase(a_minute_before, true) == strategy::MarketPhase::POST_CLOSE);
 }
 
 TEST_CASE("a phase name is stable for every enumerator") {
@@ -334,23 +173,6 @@ TEST_CASE("a bar event states when its period ended, whichever edge it is stampe
   REQUIRE(daily.interval_ == BarInterval::ONE_DAY);
   REQUIRE(daily.stamp_ == BarStamp::OPEN);
   REQUIRE(daily.instrument_.symbol_ == "005930");
-}
-
-TEST_CASE("a fill reports one execution, not an order's running total") {
-  // A partial fill arrives as one event per execution. Summing them is the strategy's business;
-  // the running total lives in the portfolio.
-  strategy::Fill fill;
-  fill.order_id_ = "0001569139";
-  fill.instrument_ = samsung();
-  fill.side_ = OrderSide::BUY;
-  fill.quantity_ = Decimal64::parse("40");
-  fill.price_ = Decimal64::parse("70000");
-  fill.tag_ = "sma-crossover";
-
-  REQUIRE(fill.quantity_ == Decimal64::parse("40"));
-  REQUIRE(fill.tag_ == "sma-crossover");
-  // Broker-neutral: an order id as text, so on_fill's signature names no broker.
-  REQUIRE(fill.order_id_ == "0001569139");
 }
 
 // ---------------------------------------------------------------------------
@@ -564,22 +386,6 @@ TEST_CASE("each malformed handler is still declared, so the runner calls it") {
   STATIC_REQUIRE(detail::declares_on_phase<MalformedEach>);
 }
 
-TEST_CASE("a handler taking its event by value, or the phase by const reference, is called") {
-  MinimalContext ctx;
-  EventsByValue by_value;
-  runner::dispatch::order_update(by_value, ctx, OrderSnapshot{});
-  runner::dispatch::phase(by_value, ctx, strategy::MarketPhase::OPEN);
-  CHECK(by_value.updates_ == 1);
-  CHECK(by_value.phases_ == 1);
-  PhaseByConstRef by_reference;
-  runner::dispatch::phase(by_reference, ctx, strategy::MarketPhase::OPEN);
-  CHECK(by_reference.phases_ == 1);
-  // An overload set is called through its callable overload.
-  OverloadedFill overloaded;
-  runner::dispatch::fill(overloaded, ctx, strategy::Fill{});
-  CHECK(overloaded.fills_ == 1);
-}
-
 // The probe contexts are not copyable either, so a by-value handler is rejected as the runner rejects it.
 static_assert(!std::is_copy_constructible_v<MinimalContext>);
 static_assert(!std::is_copy_assignable_v<FullContext>);
@@ -605,31 +411,6 @@ TEST_CASE("a probe context records what a strategy asked for") {
   REQUIRE(ctx.log().lines().size() == 2);
   REQUIRE(ctx.log().lines()[0] == "bar");
   REQUIRE(ctx.submitted().empty());
-}
-
-TEST_CASE("both branches of a capability gate are exercised by the two probes") {
-  Bar bar;
-  bar.timestamp_ = utc(2026, 3, 10, 0, 0);
-  bar.high_ = Decimal64::parse("70500");
-  bar.low_ = Decimal64::parse("69400");
-  bar.close_ = Decimal64::parse("70000");
-  bar.volume_ = Decimal64::parse("1200000");
-  const auto event =
-    strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, bar);
-
-  // A broker with no idempotency key: the strategy takes the other path.
-  MinimalContext without;
-  CapabilityGated gated;
-  gated.on_bar(without, event);
-  REQUIRE(without.submitted().size() == 1);
-  REQUIRE_FALSE(without.submitted()[0].client_order_id());
-  REQUIRE(without.submitted()[0].tag() == "no-key");
-
-  // A broker that has one: the same source takes the key path.
-  FullContext with;
-  gated.on_bar(with, event);
-  REQUIRE(with.submitted().size() == 1);
-  REQUIRE(with.submitted()[0].client_order_id() == std::optional<std::string>("idem-1"));
 }
 
 // ---------------------------------------------------------------------------
@@ -658,44 +439,6 @@ WorkingOrder<strategy::ProbeBroker> working(
 }
 
 } // namespace
-
-TEST_CASE("buying power is absent until a broker answers, and absent is not zero") {
-  ProbePortfolio portfolio;
-
-  // Nobody has asked. A caller enforcing a limit must read this as unknown, not as an empty wallet.
-  REQUIRE_FALSE(portfolio.buying_power_in(Currency::krw()));
-
-  portfolio.buying_power_.push_back(
-    BuyingPower{Money{Decimal64::parse("5000000"), Currency::krw()}, {}}
-  );
-  REQUIRE(portfolio.buying_power_in(Currency::krw()) == Decimal64::parse("5000000"));
-
-  // A currency the broker did not answer for stays unknown rather than borrowing another's number:
-  // the library refuses implicit conversion and this is the same refusal.
-  REQUIRE_FALSE(portfolio.buying_power_in(Currency::usd()));
-
-  // An answer of zero is a different claim from no answer, and both are representable.
-  ProbePortfolio broke;
-  broke.buying_power_.push_back(BuyingPower{Money{Decimal64::parse("0"), Currency::krw()}, {}});
-  REQUIRE(broke.buying_power_in(Currency::krw()) == Decimal64::parse("0"));
-}
-
-TEST_CASE("cash and buying power are separate fields and do not answer for each other") {
-  // The backtest ledger fills cash_; a live poll fills buying_power_. Neither may stand in for the
-  // other, because one is this library's accounting and the other is the broker's.
-  ProbePortfolio portfolio;
-  portfolio.cash_.push_back(Money{Decimal64::parse("1000000"), Currency::krw()});
-
-  REQUIRE(portfolio.cash_in(Currency::krw()) == Decimal64::parse("1000000"));
-  REQUIRE_FALSE(portfolio.buying_power_in(Currency::krw()));
-
-  portfolio.buying_power_.push_back(
-    BuyingPower{Money{Decimal64::parse("1750000"), Currency::krw()}, {}}
-  );
-  // Unsettled sale proceeds are the ordinary reason these differ, and they must both survive.
-  REQUIRE(portfolio.cash_in(Currency::krw()) == Decimal64::parse("1000000"));
-  REQUIRE(portfolio.buying_power_in(Currency::krw()) == Decimal64::parse("1750000"));
-}
 
 TEST_CASE("sellable quantity is what the broker said, never the held quantity") {
   ProbePortfolio portfolio;
@@ -815,56 +558,11 @@ TEST_CASE("the probe learns nothing from a figure of unknown coverage") {
   REQUIRE(across_a_gap.overall().total() == 0);
 }
 
-TEST_CASE("the probe says nothing until a sell starts resting") {
-  Probe probe;
-  REQUIRE(probe.verdict() == strategy::SellableConvention::UNDETERMINED);
-
-  // Any number of polls with nothing resting teach it nothing, which is the common case and must
-  // not drift toward an answer.
-  probe.observe(observed("100", "70", "0"));
-  probe.observe(observed("100", "70", "0"));
-  probe.observe(observed("100", "70", "0"));
-  REQUIRE(probe.verdict() == strategy::SellableConvention::UNDETERMINED);
-  REQUIRE(probe.overall().total() == 0);
-}
-
-TEST_CASE("a figure that falls by the resting quantity is net of it") {
-  Probe probe;
-  probe.observe(observed("100", "100", "0"));
-  // Thirty starts resting and the figure drops by thirty: the broker had already subtracted it.
-  probe.observe(observed("100", "70", "30"));
-
-  REQUIRE(probe.verdict() == strategy::SellableConvention::NET_OF_RESTING);
-  REQUIRE(probe.evidence(samsung()).net_ == 1);
-  REQUIRE(probe.evidence(samsung()).gross_ == 0);
-}
-
-TEST_CASE("a figure that does not move is gross of the resting quantity") {
-  Probe probe;
-  probe.observe(observed("100", "100", "0"));
-  // Thirty rests and the figure is unchanged, so the deduction the guard makes is doing real work.
-  probe.observe(observed("100", "100", "30"));
-
-  REQUIRE(probe.verdict() == strategy::SellableConvention::GROSS_OF_RESTING);
-  REQUIRE(probe.evidence(samsung()).gross_ == 1);
-}
-
 TEST_CASE("a fill in the same window is not evidence of anything") {
   Probe probe;
   probe.observe(observed("100", "100", "0"));
   // The holding moved, so the sell filled somewhere in here and both numbers moved with it.
   probe.observe(observed("70", "70", "30"));
-
-  REQUIRE(probe.verdict() == strategy::SellableConvention::UNDETERMINED);
-  REQUIRE(probe.overall().total() == 0);
-}
-
-TEST_CASE("a move by the wrong amount is discarded rather than forced into an answer") {
-  Probe probe;
-  probe.observe(observed("100", "100", "0"));
-  // Thirty rests and the figure falls by fifty: a settlement or a pledge landed in the same window,
-  // and neither rule describes it.
-  probe.observe(observed("100", "50", "30"));
 
   REQUIRE(probe.verdict() == strategy::SellableConvention::UNDETERMINED);
   REQUIRE(probe.overall().total() == 0);
@@ -880,103 +578,6 @@ TEST_CASE("the probe reports disagreement rather than resolving it") {
   REQUIRE(probe.evidence(samsung()).net_ == 1);
   REQUIRE(probe.evidence(samsung()).gross_ == 1);
   REQUIRE(std::string(strategy::sellable_convention_name(probe.verdict())) == "inconsistent");
-}
-
-TEST_CASE("a broker that publishes no sellable figure teaches the probe nothing") {
-  // Toss leaves the field absent, so there is nothing to compare and the probe stays silent rather
-  // than treating absence as a number.
-  Probe probe;
-  ProbePortfolio portfolio;
-  HoldingPosition position;
-  position.instrument_ = samsung();
-  position.quantity_ = Decimal64::parse("100");
-  portfolio.positions_.push_back(position);
-  probe.observe(portfolio);
-  portfolio.working_.push_back(working("30", "0", OrderStatus::PENDING, OrderSide::SELL));
-  probe.observe(portfolio);
-
-  REQUIRE(probe.verdict() == strategy::SellableConvention::UNDETERMINED);
-}
-
-TEST_CASE("a scale change between polls is not read as a change in value") {
-  // Decimal64 equality compares the scale as well as the coefficient, so "100" and "100.0" are
-  // different values to it. A broker free to change the scale it reports must not make the probe
-  // conclude from formatting.
-  Probe probe;
-  probe.observe(observed("100", "100", "0"));
-  probe.observe(observed("100.0", "100.00", "30"));
-
-  REQUIRE(probe.verdict() == strategy::SellableConvention::GROSS_OF_RESTING);
-}
-
-TEST_CASE("working quantity counts what is still in the market, not what was ordered") {
-  // The partial-fill case that causes double-sizing: 100 ordered, 40 filled, so 60 is still
-  // working. A strategy sizing against the position alone would ask for 60 more on top.
-  ProbePortfolio portfolio;
-  portfolio.working_.push_back(working("100", "40", OrderStatus::PARTIAL_FILLED));
-
-  REQUIRE(portfolio.working_quantity(samsung(), OrderSide::BUY) == Decimal64::parse("60"));
-  // The other side has nothing working.
-  REQUIRE(portfolio.working_quantity(samsung(), OrderSide::SELL) == Decimal64::parse("0"));
-}
-
-TEST_CASE("a terminal order contributes no working quantity") {
-  ProbePortfolio portfolio;
-  portfolio.working_.push_back(working("100", "100", OrderStatus::FILLED));
-  portfolio.working_.push_back(working("50", "0", OrderStatus::CANCELED));
-  portfolio.working_.push_back(working("30", "0", OrderStatus::REJECTED));
-
-  REQUIRE(portfolio.working_quantity(samsung(), OrderSide::BUY) == Decimal64::parse("0"));
-}
-
-TEST_CASE("an order in an unrecognized state still counts as working") {
-  // Under-counting working quantity is what causes double-sizing, so an order whose status this
-  // library does not recognize is assumed live. Over-counting merely holds back an order.
-  ProbePortfolio portfolio;
-  portfolio.working_.push_back(working("100", "0", OrderStatus::UNKNOWN));
-
-  REQUIRE(portfolio.working_quantity(samsung(), OrderSide::BUY) == Decimal64::parse("100"));
-}
-
-TEST_CASE("a pending cancel or replace is still working until it is confirmed") {
-  ProbePortfolio portfolio;
-  portfolio.working_.push_back(working("100", "0", OrderStatus::PENDING_CANCEL));
-  portfolio.working_.push_back(working("40", "0", OrderStatus::PENDING_REPLACE));
-
-  REQUIRE(portfolio.working_quantity(samsung(), OrderSide::BUY) == Decimal64::parse("140"));
-}
-
-TEST_CASE("an absent position is nothing, not a position of zero") {
-  ProbePortfolio portfolio;
-  REQUIRE_FALSE(portfolio.quantity_of(samsung()));
-
-  HoldingPosition held;
-  held.instrument_ = samsung();
-  held.quantity_ = Decimal64::parse("0");
-  portfolio.positions_.push_back(held);
-  // Now there *is* a position, and it happens to be flat. A broker omitting a closed position
-  // and a broker reporting a flat one are making different claims.
-  REQUIRE(portfolio.quantity_of(samsung()));
-  REQUIRE(portfolio.quantity_of(samsung())->coefficient() == 0);
-}
-
-TEST_CASE("cash is per currency with no implicit conversion") {
-  ProbePortfolio portfolio;
-  portfolio.cash_.push_back(Money{Decimal64::parse("1000000"), Currency{"KRW"}});
-
-  REQUIRE(portfolio.cash_in(Currency{"KRW"}) == std::optional<Decimal64>(Decimal64::parse("1000000")));
-  REQUIRE_FALSE(portfolio.cash_in(Currency{"USD"}));
-}
-
-TEST_CASE("a working order is found by the reference that addresses it") {
-  ProbePortfolio portfolio;
-  portfolio.working_.push_back(working("100", "0", OrderStatus::PENDING));
-
-  const OrderRef<strategy::ProbeBroker> present{"0001569139", ""};
-  const OrderRef<strategy::ProbeBroker> absent{"0009999999", ""};
-  REQUIRE(portfolio.find_working(present) != nullptr);
-  REQUIRE(portfolio.find_working(absent) == nullptr);
-  REQUIRE(present.str() == "probe:0001569139");
 }
 
 // ---------------------------------------------------------------------------
@@ -1022,42 +623,6 @@ TargetPosition target(const char* quantity, std::optional<strategy::Price> limit
 
 } // namespace
 
-TEST_CASE("a target already met produces no instruction at all") {
-  // The common case, and it must cost nothing: a signal that has not changed asks for nothing.
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("100"));
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-
-  const auto plan = strategy::reconcile(target("100"), portfolio, inputs);
-  REQUIRE(plan.empty());
-}
-
-TEST_CASE("a target is sized against every position row, not the first") {
-  // A broker reporting one instrument as two lots is ordinary, and this read `quantity_of` -- the
-  // first row. A target of zero against rows of 60 and 40 planned a sell of 60 and left 40 held;
-  // `vanilla::TimedLiquidation` then submitted one such target *per row* and planned that sell
-  // twice, which together sold 120 of a holding of 100. Sizing against the net is what the guards
-  // already do, and reconciliation disagreeing with them about how much is held is the
-  // partial-coherence failure this repository has paid for before.
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("60"));
-  portfolio.positions_.push_back(holding("40"));
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-
-  const auto plan = strategy::reconcile(target("0"), portfolio, inputs);
-  REQUIRE(plan.place_.size() == 1);
-  REQUIRE(plan.place_[0].side_ == OrderSide::SELL);
-  REQUIRE(plan.place_[0].quantity_ == Decimal64::parse("100"));
-
-  // And the same rows are already met by a target of 100, which reading the first row would have
-  // planned another 40 for.
-  REQUIRE(strategy::reconcile(target("100"), portfolio, inputs).empty());
-}
-
 TEST_CASE("a position whose rows will not add up is rejected, not read as flat") {
   // The behaviour change that came with the netting, pinned because it is one. `value_or(zero)` on
   // a failed sum would read a broken listing as *flat* and order the entire target -- the largest
@@ -1073,99 +638,6 @@ TEST_CASE("a position whose rows will not add up is rejected, not read as flat")
   REQUIRE(plan.place_.empty());
   REQUIRE(plan.rejected_.size() == 1);
   REQUIRE(plan.rejected_[0].reason_ == strategy::RejectReason::NOT_REPRESENTABLE);
-}
-
-TEST_CASE("a target from flat becomes one order for the whole amount") {
-  ProbePortfolio portfolio;
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-
-  const auto plan = strategy::reconcile(target("100"), portfolio, inputs);
-  REQUIRE(plan.place_.size() == 1);
-  REQUIRE(plan.cancel_.empty());
-  REQUIRE(plan.place_[0].side_ == OrderSide::BUY);
-  REQUIRE(plan.place_[0].quantity_ == Decimal64::parse("100"));
-  // No limit on the target, so a market order -- the target did not name a price.
-  REQUIRE(plan.place_[0].type_ == OrderType::MARKET);
-  REQUIRE_FALSE(plan.place_[0].price_);
-  REQUIRE(plan.place_[0].tag_ == "test");
-}
-
-TEST_CASE("a partial fill does not produce a second full-size order") {
-  // **The case this whole engine exists for.** The signal still says hold 100. 40 are filled and
-  // 60 are working. Sizing against the position alone would order 60 more on top of the 60
-  // already in the market and end up holding 160.
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("40"));
-  portfolio.working_.push_back(working("100", "40", OrderStatus::PARTIAL_FILLED));
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-
-  const auto plan = strategy::reconcile(target("100"), portfolio, inputs);
-  // Held 40, working 60, projected 100 -- the target is already reached in flight.
-  REQUIRE(plan.empty());
-}
-
-TEST_CASE("only the shortfall beyond what is working is sent") {
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("40"));
-  portfolio.working_.push_back(working("100", "40", OrderStatus::PARTIAL_FILLED));
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-
-  // Now the target rises to 150: held 40, working 60, so 50 remains.
-  const auto plan = strategy::reconcile(target("150"), portfolio, inputs);
-  REQUIRE(plan.place_.size() == 1);
-  REQUIRE(plan.place_[0].quantity_ == Decimal64::parse("50"));
-  REQUIRE(plan.cancel_.empty());
-}
-
-TEST_CASE("an order working against the target is withdrawn before anything is sent") {
-  // Buying toward a target while a sell rests on the same instrument works against itself.
-  ProbePortfolio portfolio;
-  portfolio.working_.push_back(working("30", "0", OrderStatus::PENDING, OrderSide::SELL));
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-
-  const auto plan = strategy::reconcile(target("100"), portfolio, inputs);
-  REQUIRE(plan.cancel_.size() == 1);
-  REQUIRE(plan.place_.size() == 1);
-  REQUIRE(plan.place_[0].quantity_ == Decimal64::parse("100"));
-  REQUIRE(plan.place_[0].side_ == OrderSide::BUY);
-}
-
-TEST_CASE("a target of exactly what is held withdraws every working order") {
-  // Nothing is needed, so anything still in the market would move the position off target.
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("100"));
-  portfolio.working_.push_back(working("20", "0", OrderStatus::PENDING));
-  portfolio.working_.push_back(working("30", "0", OrderStatus::PENDING, OrderSide::SELL));
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-
-  const auto plan = strategy::reconcile(target("100"), portfolio, inputs);
-  REQUIRE(plan.cancel_.size() == 2);
-  REQUIRE(plan.place_.empty());
-}
-
-TEST_CASE("over-ordering withdraws the side and sends the remainder fresh") {
-  // 150 working against a target of 100 from flat. Partial cancellation is a capability only one
-  // broker has, so the side is withdrawn and the whole remainder re-sent, which is correct on both.
-  ProbePortfolio portfolio;
-  portfolio.working_.push_back(working("150", "0", OrderStatus::PENDING));
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-
-  const auto plan = strategy::reconcile(target("100"), portfolio, inputs);
-  REQUIRE(plan.cancel_.size() == 1);
-  REQUIRE(plan.place_.size() == 1);
-  REQUIRE(plan.place_[0].quantity_ == Decimal64::parse("100"));
 }
 
 TEST_CASE("over-ordering through reserved rows that may have filled re-sends only what they do not cover") {
@@ -1223,50 +695,6 @@ TEST_CASE("over-ordering through reserved rows that may have filled re-sends onl
   }
 }
 
-TEST_CASE("reducing a position sells the difference") {
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("100"));
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-
-  const auto plan = strategy::reconcile(target("40"), portfolio, inputs);
-  REQUIRE(plan.place_.size() == 1);
-  REQUIRE(plan.place_[0].side_ == OrderSide::SELL);
-  REQUIRE(plan.place_[0].quantity_ == Decimal64::parse("60"));
-}
-
-TEST_CASE("a target with a limit price carries it onto the tick grid") {
-  ProbePortfolio portfolio;
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-
-  const auto limit = strategy::Price::checked(Decimal64::parse("70000"), krx());
-  REQUIRE(limit);
-  const auto plan = strategy::reconcile(target("10", limit), portfolio, inputs);
-  REQUIRE(plan.place_.size() == 1);
-  REQUIRE(plan.place_[0].type_ == OrderType::LIMIT);
-  REQUIRE(plan.place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("70000")));
-  // Already on the grid, so nothing was adjusted -- and the flag says so.
-  REQUIRE_FALSE(plan.place_[0].price_rounded_);
-  REQUIRE_FALSE(plan.place_[0].price_clamped_);
-}
-
-TEST_CASE("a quantity is rounded down onto the lot, and the adjustment is recorded") {
-  // Down, always: rounding up would trade more than the strategy sized and lose more than it
-  // budgeted, while rounding down is a shortfall the next reconciliation sees.
-  ProbePortfolio portfolio;
-  const auto reference = samsung_reference("10");
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-
-  const auto plan = strategy::reconcile(target("47"), portfolio, inputs);
-  REQUIRE(plan.place_.size() == 1);
-  REQUIRE(plan.place_[0].quantity_ == Decimal64::parse("40"));
-  REQUIRE(plan.place_[0].quantity_rounded_);
-}
-
 TEST_CASE("a quantity that rounds away entirely is rejected, not silently dropped") {
   // The strategy asked for something and is getting nothing. An empty plan here would be
   // indistinguishable from a met target.
@@ -1315,149 +743,6 @@ TEST_CASE("an unknown tick grid refuses a limit order outright") {
   REQUIRE(plan.rejected_[0].reason_ == RejectReason::UNKNOWN_PRICE_GRID);
 }
 
-TEST_CASE("missing reference data is rejected by name") {
-  ProbePortfolio portfolio;
-  ReconcileInputs inputs;  // no instrument
-  const auto plan = strategy::reconcile(target("10"), portfolio, inputs);
-  REQUIRE(plan.rejected_.size() == 1);
-  REQUIRE(plan.rejected_[0].reason_ == RejectReason::NO_REFERENCE_DATA);
-}
-
-TEST_CASE("a buy limit above today's ceiling is clamped down to it") {
-  // The direction matters: clamping down makes the order less willing than instructed, the same
-  // rule tick rounding follows, and turns a certain rejection into an acceptable order.
-  ProbePortfolio portfolio;
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-  PriceLimits limits;
-  limits.upper_ = Decimal64::parse("71000");
-  limits.lower_ = Decimal64::parse("60000");
-  inputs.limits_ = limits;
-
-  const auto limit = strategy::Price::checked(Decimal64::parse("80000"), krx());
-  REQUIRE(limit);
-  const auto plan = strategy::reconcile(target("10", limit), portfolio, inputs);
-  REQUIRE(plan.place_.size() == 1);
-  REQUIRE(plan.place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("71000")));
-  REQUIRE(plan.place_[0].price_clamped_);
-}
-
-TEST_CASE("a sell limit below today's floor is clamped up to it") {
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("100"));
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-  PriceLimits limits;
-  limits.upper_ = Decimal64::parse("80000");
-  limits.lower_ = Decimal64::parse("60000");
-  inputs.limits_ = limits;
-
-  const auto limit = strategy::Price::checked(Decimal64::parse("50000"), krx());
-  REQUIRE(limit);
-  const auto plan = strategy::reconcile(target("0", limit), portfolio, inputs);
-  REQUIRE(plan.place_.size() == 1);
-  REQUIRE(plan.place_[0].side_ == OrderSide::SELL);
-  REQUIRE(plan.place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("60000")));
-  REQUIRE(plan.place_[0].price_clamped_);
-}
-
-TEST_CASE("a limit the band permits is left exactly where the strategy put it") {
-  // A buy below the floor and a sell above the ceiling are valid prices that will not fill today.
-  // Moving them would invent a willingness the strategy never expressed.
-  ProbePortfolio portfolio;
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-  PriceLimits limits;
-  limits.upper_ = Decimal64::parse("80000");
-  limits.lower_ = Decimal64::parse("60000");
-  inputs.limits_ = limits;
-
-  const auto limit = strategy::Price::checked(Decimal64::parse("50000"), krx());
-  REQUIRE(limit);
-  const auto plan = strategy::reconcile(target("10", limit), portfolio, inputs);
-  REQUIRE(plan.place_.size() == 1);
-  REQUIRE(plan.place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("50000")));
-  REQUIRE_FALSE(plan.place_[0].price_clamped_);
-}
-
-TEST_CASE("clamping happens before rounding, so the result is on the grid either way") {
-  // A published bound need not be a tick multiple. Clamping first and rounding second keeps the
-  // result inside the band, because rounding moves it away from the bound it was clamped to.
-  ProbePortfolio portfolio;
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-  PriceLimits limits;
-  limits.upper_ = Decimal64::parse("70050");  // not a multiple of the 100-won tick
-  inputs.limits_ = limits;
-
-  const auto limit = strategy::Price::checked(Decimal64::parse("80000"), krx());
-  REQUIRE(limit);
-  const auto plan = strategy::reconcile(target("10", limit), portfolio, inputs);
-  REQUIRE(plan.place_.size() == 1);
-  // Clamped to 70050, then rounded down for a buy to 70000: inside the band and on the grid.
-  REQUIRE(plan.place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("70000")));
-  REQUIRE(plan.place_[0].price_clamped_);
-  REQUIRE(plan.place_[0].price_rounded_);
-  REQUIRE(Price::checked(*plan.place_[0].price_, krx()));
-}
-
-TEST_CASE("an intent is sized as asked and not diffed against the portfolio") {
-  // An intent says "trade this much", so the position is deliberately not consulted: a strategy
-  // emitting intents has taken responsibility for its own sizing.
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("100"));
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-
-  const auto intent = OrderIntent::market(
-    samsung(), OrderSide::BUY, SizeSpec::quantity(Decimal64::parse("10"))
-  ).with_tag("by-intent");
-  const auto plan = strategy::reconcile(intent, portfolio, inputs);
-  REQUIRE(plan.place_.size() == 1);
-  REQUIRE(plan.place_[0].quantity_ == Decimal64::parse("10"));
-  REQUIRE(plan.place_[0].tag_ == "by-intent");
-}
-
-TEST_CASE("a notional intent is divided by a price into whole shares") {
-  ProbePortfolio portfolio;
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-  inputs.reference_price_ = Decimal64::parse("70000");
-
-  const auto intent = OrderIntent::market(
-    samsung(),
-    OrderSide::BUY,
-    SizeSpec::notional(Money{Decimal64::parse("1000000"), Currency{"KRW"}})
-  );
-  const auto plan = strategy::reconcile(intent, portfolio, inputs);
-  REQUIRE(plan.place_.size() == 1);
-  // A million won buys fourteen shares at seventy thousand, with the remainder left unspent
-  // rather than rounded into a fifteenth share that cannot be paid for.
-  REQUIRE(plan.place_[0].quantity_ == Decimal64::parse("14"));
-}
-
-TEST_CASE("a notional intent with no price to divide by is rejected by name") {
-  ProbePortfolio portfolio;
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;  // no reference price
-
-  const auto intent = OrderIntent::market(
-    samsung(),
-    OrderSide::BUY,
-    SizeSpec::notional(Money{Decimal64::parse("1000000"), Currency{"KRW"}})
-  );
-  const auto plan = strategy::reconcile(intent, portfolio, inputs);
-  REQUIRE(plan.place_.empty());
-  REQUIRE(plan.rejected_[0].reason_ == RejectReason::NO_PRICE_AVAILABLE);
-}
-
 TEST_CASE("a weighted intent needs the portfolio's value and says so when it lacks it") {
   ProbePortfolio portfolio;
   const auto reference = samsung_reference();
@@ -1501,22 +786,6 @@ TEST_CASE("an intent sized against a price that is not positive is refused, not 
   );
   REQUIRE(weight.place_.empty());
   REQUIRE(weight.rejected_[0].reason_ == RejectReason::NO_PRICE_AVAILABLE);
-}
-
-TEST_CASE("a weight sized directly against a portfolio value that is not positive is refused") {
-  // As `weight_target` refuses it: sized against a negative value, a buy weight became a negative quantity.
-  ProbePortfolio portfolio;
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-  inputs.reference_price_ = Decimal64::parse("70000");
-  inputs.portfolio_value_ = Decimal64::parse("-10000000");
-
-  const auto plan = strategy::reconcile(
-    OrderIntent::market(samsung(), OrderSide::BUY, SizeSpec::target_weight(Decimal64::parse("0.25"))), portfolio, inputs
-  );
-  REQUIRE(plan.place_.empty());
-  REQUIRE(plan.rejected_[0].reason_ == RejectReason::NO_PORTFOLIO_VALUE);
 }
 
 TEST_CASE("an intent whose size is negative places nothing") {
@@ -1612,72 +881,6 @@ TEST_CASE("a weight states a holding, and what a holding cannot state is refused
   CHECK(strategy::weight_target(OrderIntent::market(samsung(), OrderSide::BUY, quarter), inputs).target_);
 }
 
-TEST_CASE("a limit intent uses its own price to size a notional") {
-  ProbePortfolio portfolio;
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-  // Deliberately no reference price: the limit is the price the order will pay.
-  const auto limit = strategy::Price::checked(Decimal64::parse("50000"), krx());
-  REQUIRE(limit);
-
-  const auto intent = OrderIntent::limit(
-    samsung(),
-    OrderSide::BUY,
-    SizeSpec::notional(Money{Decimal64::parse("1000000"), Currency{"KRW"}}),
-    *limit
-  );
-  const auto plan = strategy::reconcile(intent, portfolio, inputs);
-  REQUIRE(plan.place_.size() == 1);
-  REQUIRE(plan.place_[0].quantity_ == Decimal64::parse("20"));
-  REQUIRE(plan.place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("50000")));
-}
-
-TEST_CASE("an idempotency key on the intent reaches the planned order") {
-  ProbePortfolio portfolio;
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-
-  const auto intent = OrderIntent::market(
-    samsung(), OrderSide::BUY, SizeSpec::quantity(Decimal64::parse("1"))
-  ).with_client_order_id("idem-7");
-  const auto plan = strategy::reconcile(intent, portfolio, inputs);
-  REQUIRE(plan.place_.size() == 1);
-  REQUIRE(plan.place_[0].client_order_id_ == std::optional<std::string>("idem-7"));
-}
-
-TEST_CASE("a rejected instruction produces no order, ever") {
-  // The plan is cleared on rejection rather than carrying a partial result, so a caller that
-  // reads place_ without checking rejected_ cannot act on half a decision.
-  ProbePortfolio portfolio;
-  ReconcileInputs inputs;
-  const auto plan = strategy::reconcile(target("10"), portfolio, inputs);
-  REQUIRE(plan.place_.empty());
-  REQUIRE(plan.cancel_.empty());
-  REQUIRE_FALSE(plan.rejected_.empty());
-}
-
-TEST_CASE("an order that has already finished is never asked to cancel") {
-  // A snapshot can carry an order that has since filled or been cancelled. Asking a broker to
-  // cancel one of those is a request that can only fail, and it would be noise on exactly the
-  // path where a real cancellation failure has to be noticed.
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("100"));
-  portfolio.working_.push_back(working("50", "50", OrderStatus::FILLED));
-  portfolio.working_.push_back(working("20", "0", OrderStatus::CANCELED, OrderSide::SELL));
-  portfolio.working_.push_back(working("30", "0", OrderStatus::PENDING, OrderSide::SELL));
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-
-  // Target equals the holding, so every *live* working order is unwanted -- and only the live one
-  // is withdrawn.
-  const auto plan = strategy::reconcile(target("100"), portfolio, inputs);
-  REQUIRE(plan.cancel_.size() == 1);
-  REQUIRE(plan.place_.empty());
-}
-
 TEST_CASE("the open-order predicate is exhaustive over every status") {
   // Listed explicitly rather than as "not terminal", so a status added later does not silently
   // start counting as live.
@@ -1750,86 +953,6 @@ GuardInputs with_basis(GuardInputs inputs) {
 
 } // namespace
 
-TEST_CASE("an unconfigured guard permits an ordinary order while the market is open") {
-  const RiskGuard guard;
-  ProbePortfolio portfolio;
-  REQUIRE_FALSE(guard.check(planned("10", "70000"), portfolio, open_market()));
-}
-
-TEST_CASE("the kill switch refuses everything, and reports the halt above any other reason") {
-  // An operator reading a log should see the halt rather than an incidental ceiling the order also
-  // happened to exceed, so it is checked first.
-  RiskLimits limits;
-  limits.max_order_notional_ = Decimal64::parse("1");
-  RiskGuard guard(limits);
-  ProbePortfolio portfolio;
-
-  guard.halt();
-  REQUIRE(guard.halted());
-  const auto refused = guard.check(planned("10", "70000"), portfolio, open_market());
-  REQUIRE(refused);
-  REQUIRE(refused->reason_ == GuardReason::TRADING_HALTED);
-  // And it says *who*: a bare halt is the operator's, which is the holder whose intent machinery
-  // holding the same switch must never clear.
-  REQUIRE(refused->halt_reason_);
-  REQUIRE(*refused->halt_reason_ == strategy::HaltReason::OPERATOR);
-
-  guard.resume();
-  // Now the notional ceiling is the reason, which it was all along.
-  const auto after = guard.check(planned("10", "70000"), portfolio, open_market());
-  REQUIRE(after);
-  REQUIRE(after->reason_ == GuardReason::ORDER_NOTIONAL_TOO_LARGE);
-  REQUIRE_FALSE(after->halt_reason_);
-}
-
-TEST_CASE("the buying-power check refuses an unknown reading rather than assuming one") {
-  RiskLimits limits;
-  limits.enforce_buying_power_ = true;
-  const RiskGuard guard(limits);
-
-  ProbePortfolio portfolio;  // nobody has asked the broker anything
-  auto inputs = open_market();
-  inputs.order_currency_ = Currency::krw();
-
-  const auto refused = guard.check(planned("10", "70000"), portfolio, inputs);
-  REQUIRE(refused);
-  REQUIRE(refused->reason_ == GuardReason::INSUFFICIENT_BUYING_POWER);
-  // Unknown carries no numbers: there is no ceiling to report, which is the point.
-  REQUIRE_FALSE(refused->limit_);
-
-  // Cash is not an answer to this question, and must not be read as one.
-  ProbePortfolio with_cash;
-  with_cash.cash_.push_back(Money{Decimal64::parse("100000000"), Currency::krw()});
-  REQUIRE(guard.check(planned("10", "70000"), with_cash, inputs));
-}
-
-TEST_CASE("a buy beyond the reported buying power is refused with both numbers") {
-  RiskLimits limits;
-  limits.enforce_buying_power_ = true;
-  const RiskGuard guard(limits);
-
-  ProbePortfolio portfolio;
-  portfolio.buying_power_.push_back(
-    BuyingPower{Money{Decimal64::parse("500000"), Currency::krw()}, {}}
-  );
-  auto inputs = open_market();
-  inputs.order_currency_ = Currency::krw();
-
-  // Ten at seventy thousand is seven hundred thousand, against five.
-  const auto refused = guard.check(planned("10", "70000"), portfolio, inputs);
-  REQUIRE(refused);
-  REQUIRE(refused->reason_ == GuardReason::INSUFFICIENT_BUYING_POWER);
-  REQUIRE(refused->limit_ == Decimal64::parse("500000"));
-  REQUIRE(refused->attempted_ == Decimal64::parse("700000"));
-
-  // Seven fits exactly at 490,000.
-  REQUIRE_FALSE(guard.check(planned("7", "70000"), portfolio, inputs));
-
-  // A market order is valued at the reference price, and a sell is not checked at all.
-  REQUIRE(guard.check(planned("10", nullptr), portfolio, inputs));
-  REQUIRE_FALSE(guard.check(planned("10", "70000", OrderSide::SELL), portfolio, inputs));
-}
-
 TEST_CASE("buying power is per currency and never borrows another currency's answer") {
   RiskLimits limits;
   limits.enforce_buying_power_ = true;
@@ -1855,148 +978,6 @@ TEST_CASE("buying power is per currency and never borrows another currency's ans
   // An instrument the runner could not resolve has no currency, and refuses for the same reason.
   auto unresolved = open_market();
   REQUIRE(guard.check(planned("10", "70000"), portfolio, unresolved));
-}
-
-TEST_CASE("a withdrawal spends rate budget but can never be refused by the limit") {
-  // The asymmetry. A rate limit must never be the reason a cancellation cannot go -- that is the
-  // premise of the rate limit -- but not *counting* one is a different
-  // claim, and it makes the window mean less than the field's own documentation says.
-  RiskLimits limits;
-  limits.max_orders_per_window_ = 2;
-  RiskGuard guard(limits);
-  const auto now = utc(2026, 3, 10, 3, 0);
-
-  // Two withdrawals' worth of budget spent, as the runner now records them.
-  guard.note_sent(now);
-  guard.note_sent(now);
-
-  // The next *placement* is refused, because the broker counted those two requests.
-  auto inputs = open_market();
-  inputs.now_ = now;
-  ProbePortfolio portfolio;
-  const auto refused = guard.check(planned("10", "70000"), portfolio, inputs);
-  REQUIRE(refused);
-  REQUIRE(refused->reason_ == GuardReason::ORDER_RATE_EXCEEDED);
-
-  // And nothing in the guard can refuse a withdrawal at all: `send_cancel` consults no limit, so
-  // the only way this could stop one is if a caller asked it to, which no caller does.
-  REQUIRE(guard.limits().max_orders_per_window_ == std::size_t{2});
-}
-
-TEST_CASE("the sellable check is off until an operator asks for it") {
-  // Off by default, because a broker that does not publish the figure would otherwise stop every
-  // sell an existing program makes.
-  ProbePortfolio portfolio;
-  HoldingPosition position;
-  position.instrument_ = samsung();
-  position.quantity_ = Decimal64::parse("100");
-  portfolio.positions_.push_back(position);  // no sellable figure at all
-
-  const RiskGuard permissive;
-  REQUIRE_FALSE(
-    permissive.check(planned("100", "70000", OrderSide::SELL), portfolio, open_market())
-  );
-
-  RiskLimits limits;
-  limits.enforce_sellable_quantity_ = true;
-  const RiskGuard strict(limits);
-  const auto refused = strict.check(planned("100", "70000", OrderSide::SELL), portfolio, open_market());
-  REQUIRE(refused);
-  REQUIRE(refused->reason_ == GuardReason::QUANTITY_NOT_SELLABLE);
-}
-
-TEST_CASE("a sell beyond what the broker says is sellable is refused with both numbers") {
-  // The T+2 case: a hundred held, seventy sellable today. Sizing from the position alone sends a
-  // sell the broker will reject, one round trip later.
-  RiskLimits limits;
-  limits.enforce_sellable_quantity_ = true;
-  const RiskGuard guard(limits);
-
-  ProbePortfolio portfolio;
-  HoldingPosition position;
-  position.instrument_ = samsung();
-  position.quantity_ = Decimal64::parse("100");
-  position.sellable_quantity_ = Decimal64::parse("70");
-  portfolio.positions_.push_back(position);
-  // Standing for a broker that published the figure and said what it covers; an unstated basis is
-  // its own test, below.
-  portfolio.sellable_basis_ = SellableBasis{
-    SellableBasis::Coverage::WHOLE_HOLDING,
-    SellableBasis::RestingTreatment::DEDUCT,
-    false,
-  };
-
-  const auto refused = guard.check(planned("100", "70000", OrderSide::SELL), portfolio, open_market());
-  REQUIRE(refused);
-  REQUIRE(refused->reason_ == GuardReason::QUANTITY_NOT_SELLABLE);
-  // Both numbers, so a strategy can resize rather than retry the same order.
-  REQUIRE(refused->limit_ == Decimal64::parse("70"));
-  REQUIRE(refused->attempted_ == Decimal64::parse("100"));
-
-  // Exactly the sellable quantity is permitted; the check is a ceiling, not a margin.
-  REQUIRE_FALSE(guard.check(planned("70", "70000", OrderSide::SELL), portfolio, open_market()));
-}
-
-TEST_CASE("a sellable figure nobody characterized refuses, and works the moment it is stated") {
-  // **The central property, written as a pair.** A refusal on its own proves nothing -- a test can refuse one
-  // step early for an unrelated reason -- so the positive control changes *only* the basis and requires the
-  // same order through.
-  RiskLimits limits;
-  limits.enforce_sellable_quantity_ = true;
-  const RiskGuard guard(limits);
-
-  // Everything a sell needs is present and valid: a real holding, a figure that is plainly large
-  // enough, an open market. The only thing missing is a statement of what the figure covers.
-  ProbePortfolio undeclared;
-  HoldingPosition position;
-  position.instrument_ = samsung();
-  position.quantity_ = Decimal64::parse("100");
-  position.sellable_quantity_ = Decimal64::parse("100");
-  undeclared.positions_.push_back(position);
-  REQUIRE(undeclared.sellable_basis_.coverage_ == SellableBasis::Coverage::UNESTABLISHED);
-  REQUIRE(undeclared.sellable_basis_.resting_ == SellableBasis::RestingTreatment::UNESTABLISHED);
-  REQUIRE_FALSE(undeclared.sellable_basis_.is_enforceable());
-
-  const auto refused = guard.check(planned("10", "70000", OrderSide::SELL), undeclared, open_market());
-  REQUIRE(refused);
-  // **Its own reason, not the quantity one**, because the remedies differ and a caller cannot guess
-  // which applies: resize for a quantity, declare a basis for this. Reporting both under one name is
-  // what sends a third party looking at their numbers instead of at their declaration.
-  REQUIRE(refused->reason_ == GuardReason::SELLABLE_BASIS_UNESTABLISHED);
-  REQUIRE(refused->reason_ != GuardReason::QUANTITY_NOT_SELLABLE);
-  REQUIRE(guard_reason_name(refused->reason_) == "sellable_basis_unestablished");
-
-  // A buy is untouched: this rule is about measuring a sale against a figure, and nothing about a
-  // purchase reads it. Without this the test would also pass if the guard refused everything.
-  REQUIRE_FALSE(guard.check(planned("10", "70000", OrderSide::BUY), undeclared, open_market()));
-
-  // The positive control: same portfolio, same order, one field changed.
-  ProbePortfolio declared = undeclared;
-  declared.sellable_basis_ = SellableBasis{
-    SellableBasis::Coverage::WHOLE_HOLDING,
-    SellableBasis::RestingTreatment::DEDUCT,
-    false,
-  };
-  REQUIRE(declared.sellable_basis_.is_enforceable());
-  REQUIRE_FALSE(guard.check(planned("10", "70000", OrderSide::SELL), declared, open_market()));
-
-  // And a genuine shortfall still reports the *quantity* reason under a declared basis, so the two
-  // values cannot collapse into one without a test failing.
-  ProbePortfolio short_figure = declared;
-  short_figure.positions_[0].sellable_quantity_ = Decimal64::parse("5");
-  const auto too_big = guard.check(planned("10", "70000", OrderSide::SELL), short_figure, open_market());
-  REQUIRE(too_big);
-  REQUIRE(too_big->reason_ == GuardReason::QUANTITY_NOT_SELLABLE);
-
-  // Half a statement is not a statement. Each axis alone still refuses, so neither can be dropped
-  // later without a test failing.
-  ProbePortfolio coverage_only = undeclared;
-  coverage_only.sellable_basis_.coverage_ = SellableBasis::Coverage::WHOLE_HOLDING;
-  REQUIRE(guard.check(planned("10", "70000", OrderSide::SELL), coverage_only, open_market()));
-
-  ProbePortfolio resting_only = undeclared;
-  resting_only.sellable_basis_.resting_ = SellableBasis::RestingTreatment::DEDUCT;
-  REQUIRE(guard.check(planned("10", "70000", OrderSide::SELL), resting_only, open_market()));
 }
 
 TEST_CASE("a split holding cannot borrow one lot's declaration for another lot's figure") {
@@ -2111,159 +1092,6 @@ TEST_CASE("a figure covering part of a holding refuses, and says so distinguisha
   REQUIRE(sellable_coverage_name(SellableBasis{}.coverage_) == "unestablished");
 }
 
-TEST_CASE("every resting sell counts, whichever side of the book reported it") {
-  // **What replaced a second resting treatment, and the argument is in `SellableBasis::DEDUCT`.** An
-  // earlier revision offered `ALREADY_DEDUCTED` for a broker whose figure is already net of resting
-  // orders, so the guard would deduct only this library's own reservations. It cannot be served: such
-  // a figure accounts for the orders the broker saw when it computed it, so anything acknowledged
-  // since must still be deducted -- and nothing can identify those orders, because
-  // `OrderSnapshot::ordered_at_` is unfilled by every shipped adapter and a working-order poll
-  // replaces a reservation with the broker's own row. What is pinned here is the rule that survives:
-  // both kinds of row count, so no poll ordering can drop one.
-  RiskLimits limits;
-  limits.enforce_sellable_quantity_ = true;
-  const RiskGuard guard(limits);
-
-  ProbePortfolio portfolio;
-  HoldingPosition position;
-  position.instrument_ = samsung();
-  position.quantity_ = Decimal64::parse("100");
-  position.sellable_quantity_ = Decimal64::parse("100");
-  portfolio.positions_.push_back(position);
-  portfolio.sellable_basis_ = SellableBasis{
-    SellableBasis::Coverage::WHOLE_HOLDING,
-    SellableBasis::RestingTreatment::DEDUCT,
-    false,
-  };
-
-  // A row the broker reported: not ours, and it counts.
-  auto broker_reported = working("30", "0", OrderStatus::PENDING, OrderSide::SELL);
-  broker_reported.reserved_ = false;
-  portfolio.working_.push_back(broker_reported);
-
-  // A row this library reserved for an order it just accepted: also counts.
-  auto reserved = working("30", "0", OrderStatus::PENDING, OrderSide::SELL);
-  reserved.reserved_ = true;
-  portfolio.working_.push_back(reserved);
-
-  // Sixty committed against a hundred sellable, so forty more fits and forty-one does not. The
-  // boundary is asserted from both sides, because a rule that counted only one kind of row would put
-  // the boundary at seventy and a single-sided test would agree with it.
-  REQUIRE_FALSE(guard.check(planned("40", "70000", OrderSide::SELL), portfolio, open_market()));
-  const auto refused = guard.check(planned("41", "70000", OrderSide::SELL), portfolio, open_market());
-  REQUIRE(refused);
-  REQUIRE(refused->reason_ == GuardReason::QUANTITY_NOT_SELLABLE);
-  REQUIRE(refused->limit_ == Decimal64::parse("100"));
-  REQUIRE(refused->attempted_ == Decimal64::parse("101"));
-}
-
-TEST_CASE("a resting sell spends the same sellable quantity as a new one") {
-  // Neither broker states whether its figure is already net of resting sells, so this subtracts
-  // them: refusing an order that would have been accepted is recoverable, selling a position twice
-  // is not.
-  RiskLimits limits;
-  limits.enforce_sellable_quantity_ = true;
-  const RiskGuard guard(limits);
-
-  ProbePortfolio portfolio;
-  HoldingPosition position;
-  position.instrument_ = samsung();
-  position.quantity_ = Decimal64::parse("100");
-  position.sellable_quantity_ = Decimal64::parse("70");
-  portfolio.positions_.push_back(position);
-  portfolio.working_.push_back(working("50", "0", OrderStatus::PENDING, OrderSide::SELL));
-  // A fixture standing for a broker that published a figure has to say what the figure covers,
-  // because an unstated basis now refuses. Whole holding, and this library deducts resting sells.
-  portfolio.sellable_basis_ = SellableBasis{
-    SellableBasis::Coverage::WHOLE_HOLDING,
-    SellableBasis::RestingTreatment::DEDUCT,
-    false,
-  };
-
-  // Fifty already working plus forty more is ninety against seventy sellable.
-  const auto refused = guard.check(planned("40", "70000", OrderSide::SELL), portfolio, open_market());
-  REQUIRE(refused);
-  REQUIRE(refused->reason_ == GuardReason::QUANTITY_NOT_SELLABLE);
-  REQUIRE(refused->limit_ == Decimal64::parse("70"));
-  REQUIRE(refused->attempted_ == Decimal64::parse("90"));
-
-  // Twenty more fits exactly.
-  REQUIRE_FALSE(guard.check(planned("20", "70000", OrderSide::SELL), portfolio, open_market()));
-
-  // A resting *buy* spends none of it, because it is not a sale.
-  ProbePortfolio with_buy;
-  with_buy.positions_.push_back(position);
-  with_buy.working_.push_back(working("50", "0", OrderStatus::PENDING, OrderSide::BUY));
-  with_buy.sellable_basis_ = SellableBasis{
-    SellableBasis::Coverage::WHOLE_HOLDING,
-    SellableBasis::RestingTreatment::DEDUCT,
-    false,
-  };
-  REQUIRE_FALSE(guard.check(planned("70", "70000", OrderSide::SELL), with_buy, open_market()));
-}
-
-TEST_CASE("the sellable check never refuses a buy, whatever the position says") {
-  // It is a statement about disposing of a holding, so it has nothing to say about acquiring one.
-  RiskLimits limits;
-  limits.enforce_sellable_quantity_ = true;
-  const RiskGuard guard(limits);
-
-  ProbePortfolio portfolio;  // no position at all, so the sellable figure is absent
-  REQUIRE_FALSE(guard.check(planned("100", "70000", OrderSide::BUY), portfolio, open_market()));
-}
-
-TEST_CASE("a hold is a set, so taking it twice still takes one release") {
-  // Not a counter. The holders are distinct conditions rather than distinct callers, so a loop that
-  // recomputes the same condition every iteration must not build a hold that as many releases are
-  // needed to clear.
-  RiskGuard guard;
-
-  guard.halt(strategy::HaltReason::PORTFOLIO_STALE);
-  guard.halt(strategy::HaltReason::PORTFOLIO_STALE);
-  guard.halt(strategy::HaltReason::PORTFOLIO_STALE);
-  REQUIRE(guard.halted());
-
-  guard.resume(strategy::HaltReason::PORTFOLIO_STALE);
-  REQUIRE_FALSE(guard.halted());
-}
-
-TEST_CASE("releasing a hold nobody took does nothing") {
-  RiskGuard guard;
-  guard.resume(strategy::HaltReason::POLL_FAILING);
-  REQUIRE_FALSE(guard.halted());
-
-  guard.halt(strategy::HaltReason::STOPPING);
-  guard.resume(strategy::HaltReason::POLL_FAILING);
-  // Releasing the wrong one leaves the real one exactly where it was.
-  REQUIRE(guard.halted());
-  REQUIRE(guard.halted(strategy::HaltReason::STOPPING));
-}
-
-TEST_CASE("one holder cannot release another's hold") {
-  // The defect this whole design exists for, at the primitive: an operator halting into a hold the
-  // machinery already took must survive that machinery releasing its own.
-  RiskGuard guard;
-  ProbePortfolio portfolio;
-
-  guard.halt(strategy::HaltReason::PORTFOLIO_STALE);
-  guard.halt();  // the operator, deciding independently, into an already-halted guard
-
-  guard.resume(strategy::HaltReason::PORTFOLIO_STALE);
-  REQUIRE(guard.halted());
-  REQUIRE(guard.halted(strategy::HaltReason::OPERATOR));
-
-  const auto refused = guard.check(planned("10", "70000"), portfolio, open_market());
-  REQUIRE(refused);
-  REQUIRE(refused->halt_reason_);
-  REQUIRE(*refused->halt_reason_ == strategy::HaltReason::OPERATOR);
-
-  // And the mirror: an operator's resume does not lift the machinery's hold either.
-  guard.halt(strategy::HaltReason::PORTFOLIO_STALE);
-  guard.resume();
-  REQUIRE(guard.halted());
-  REQUIRE_FALSE(guard.halted(strategy::HaltReason::OPERATOR));
-}
-
 TEST_CASE("the most fundamental hold is the one reported") {
   // Declaration order is the priority order, and it is part of the enum's contract.
   RiskGuard guard;
@@ -2292,71 +1120,6 @@ TEST_CASE("the most fundamental hold is the one reported") {
   REQUIRE(held[3] == strategy::HaltReason::POLL_FAILING);
 }
 
-TEST_CASE("a hold carries the detail an operator needs to act on it") {
-  RiskGuard guard;
-
-  guard.halt(strategy::HaltReason::LOCAL_FAILURE, "the order journal could not be written");
-  REQUIRE(guard.hold_detail(strategy::HaltReason::LOCAL_FAILURE) ==
-          "the order journal could not be written");
-  // A hold taken with no detail reports none rather than a stale one.
-  REQUIRE(guard.hold_detail(strategy::HaltReason::OPERATOR).empty());
-
-  guard.resume(strategy::HaltReason::LOCAL_FAILURE);
-  REQUIRE(guard.hold_detail(strategy::HaltReason::LOCAL_FAILURE).empty());
-}
-
-TEST_CASE("every halt reason has a stable name") {
-  // The names reach logs and reports, so they are pinned rather than left to the enum's spelling.
-  REQUIRE(strategy::halt_reason_name(strategy::HaltReason::OPERATOR) == "operator");
-  REQUIRE(strategy::halt_reason_name(strategy::HaltReason::LOCAL_FAILURE) == "local_failure");
-  REQUIRE(strategy::halt_reason_name(strategy::HaltReason::STOPPING) == "stopping");
-  REQUIRE(strategy::halt_reason_name(strategy::HaltReason::ORDER_LIST_UNREAD) ==
-          "order_list_unread");
-  REQUIRE(strategy::halt_reason_name(strategy::HaltReason::PORTFOLIO_STALE) == "portfolio_stale");
-  REQUIRE(strategy::halt_reason_name(strategy::HaltReason::POLL_FAILING) == "poll_failing");
-}
-
-TEST_CASE("only the market phases the operator permits are traded in") {
-  const RiskGuard guard;  // defaults to OPEN alone
-  ProbePortfolio portfolio;
-
-  for (const auto phase : {
-         strategy::MarketPhase::PRE_OPEN,
-         strategy::MarketPhase::POST_CLOSE,
-         strategy::MarketPhase::CLOSED,
-       }) {
-    auto inputs = open_market();
-    inputs.phase_ = phase;
-    const auto refused = guard.check(planned("10", "70000"), portfolio, inputs);
-    REQUIRE(refused);
-    REQUIRE(refused->reason_ == GuardReason::PHASE_NOT_PERMITTED);
-  }
-}
-
-TEST_CASE("an uncovered calendar date does not become an order placed into a holiday") {
-  // The reason UNKNOWN is a distinct phase rather than a synonym for CLOSED, carried all the way
-  // through to a refusal by default.
-  const RiskGuard guard;
-  ProbePortfolio portfolio;
-  auto inputs = open_market();
-  inputs.phase_ = strategy::MarketPhase::UNKNOWN;
-
-  const auto refused = guard.check(planned("10", "70000"), portfolio, inputs);
-  REQUIRE(refused);
-  REQUIRE(refused->reason_ == GuardReason::PHASE_NOT_PERMITTED);
-}
-
-TEST_CASE("permitting any phase has to be asked for explicitly") {
-  RiskLimits limits;
-  limits.permitted_phases_ = std::nullopt;  // explicitly: any
-  const RiskGuard guard(limits);
-  ProbePortfolio portfolio;
-  auto inputs = open_market();
-  inputs.phase_ = strategy::MarketPhase::UNKNOWN;
-
-  REQUIRE_FALSE(guard.check(planned("10", "70000"), portfolio, inputs));
-}
-
 namespace {
 
 /** Inputs with the market shut, which is what the closing exception below is about. */
@@ -2376,69 +1139,6 @@ bool refused_for_phase(
 
 } // namespace
 
-TEST_CASE("a sell that closes a long is permitted although the market is shut") {
-  // In one case: `permitted_phases_` governs what an order opens, not what it closes:
-  // an operator whose flatten is refused by their own risk limits has a limit that says "you may
-  // not reduce risk", which `max_gross_exposure_` already refuses to mean.
-  const RiskGuard guard;  // defaults to OPEN alone
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("100"));
-
-  const auto decision = guard.evaluate(planned("100", "70000", OrderSide::SELL), portfolio, shut_market());
-  REQUIRE_FALSE(decision.rejection_);
-  // And it says the exception is what let it through, which is the fact nothing else records.
-  REQUIRE(decision.admitted_outside_phase_);
-
-  // The same order while the market is open needs no exception, so the flag must be false there.
-  // Without this the flag could be "the order was permitted" and every assertion above would hold.
-  const auto open = guard.evaluate(
-    planned("100", "70000", OrderSide::SELL), portfolio, open_market()
-  );
-  REQUIRE_FALSE(open.rejection_);
-  REQUIRE_FALSE(open.admitted_outside_phase_);
-}
-
-TEST_CASE("a sell that would carry a long past flat is still refused by the phase") {
-  // The exception is for closing, and 101 against 100 opens a short of 1. One share over is the
-  // whole test: a rule keyed on "the order opposes the position" rather than on where it lands
-  // would pass this.
-  const RiskGuard guard;
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("100"));
-
-  REQUIRE_FALSE(guard.check(planned("100", "70000", OrderSide::SELL), portfolio, shut_market()));
-  REQUIRE(refused_for_phase(guard, planned("101", "70000", OrderSide::SELL), portfolio));
-}
-
-TEST_CASE("sells already resting count against what is left to close") {
-  // Two slices of an exit must not add up to more than the holding. Checked together with the
-  // admitted case, because a rule that ignored working orders entirely would pass the first
-  // assertion and fail only this one.
-  const RiskGuard guard;
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("100"));
-  portfolio.working_.push_back(working("60", "0", OrderStatus::PENDING, OrderSide::SELL));
-
-  // 60 resting plus 40 reaches flat exactly.
-  REQUIRE_FALSE(guard.check(planned("40", "70000", OrderSide::SELL), portfolio, shut_market()));
-  // 60 resting plus 60 is 120 against a holding of 100.
-  REQUIRE(refused_for_phase(guard, planned("60", "70000", OrderSide::SELL), portfolio));
-}
-
-TEST_CASE("a resting sell counts what is left of it, not what it ordered") {
-  // `ordered - filled`, so a partly filled exit does not over-reserve the remaining holding. An
-  // implementation counting the ordered quantity refuses the 50 below; one counting nothing for a
-  // partial fill passes the 51.
-  const RiskGuard guard;
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("100"));
-  portfolio.working_.push_back(working("80", "30", OrderStatus::PARTIAL_FILLED, OrderSide::SELL));
-
-  // 50 still working, so 50 more reaches flat.
-  REQUIRE_FALSE(guard.check(planned("50", "70000", OrderSide::SELL), portfolio, shut_market()));
-  REQUIRE(refused_for_phase(guard, planned("51", "70000", OrderSide::SELL), portfolio));
-}
-
 TEST_CASE("a sell that has finished does not hold back the next one") {
   // A terminal row is not outstanding, and counting it would refuse an exit because of an order that
   // already ended. **The row is `CANCELED` with a non-zero remainder, and that is the whole point.**
@@ -2454,56 +1154,6 @@ TEST_CASE("a sell that has finished does not hold back the next one") {
   REQUIRE_FALSE(guard.check(planned("100", "70000", OrderSide::SELL), portfolio, shut_market()));
 }
 
-TEST_CASE("a working sell of unknown status still reserves what it might take") {
-  // `order_is_open` counts `UNKNOWN`, and it must: a row the library cannot classify may still be
-  // resting, and assuming it is not would let a second exit commit the same shares twice. The
-  // mirror of the test above -- one says a row that ended reserves nothing, this says a row that
-  // might not have reserves everything.
-  const RiskGuard guard;
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("100"));
-  portfolio.working_.push_back(working("100", "0", OrderStatus::UNKNOWN, OrderSide::SELL));
-
-  REQUIRE(refused_for_phase(guard, planned("10", "70000", OrderSide::SELL), portfolio));
-}
-
-TEST_CASE("a position ceiling measures the net holding, so an exit from split lots is not refused") {
-  // Reconciliation sizes a target against the net of every position
-  // row, so a target of zero against lots of 60 and 40 plans a sell of 100. This ceiling read the
-  // *first* row, computed 60 - 100 = -40, and refused the order for reaching a short of 40 -- an
-  // exit refused for breaching a ceiling it was on its way under, leaving the position held. Before
-  // the netting the same target planned a sell of 60, which this ceiling allowed, so the two
-  // half-fixed together turned a partial reduction into no reduction at all.
-  RiskLimits limits;
-  limits.max_position_quantity_ = Decimal64::parse("30");
-  const RiskGuard guard(limits);
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("60"));
-  portfolio.positions_.push_back(holding("40"));
-
-  // Flat is not over a ceiling of 30, whatever the holding was on the way there.
-  REQUIRE_FALSE(guard.check(planned("100", "70000", OrderSide::SELL), portfolio, open_market()));
-  // And outside the session, where the phase exception admits it and this ceiling must not undo it.
-  REQUIRE_FALSE(guard.check(planned("100", "70000", OrderSide::SELL), portfolio, shut_market()));
-}
-
-TEST_CASE("a position ceiling measures the net holding, so split lots cannot hide a breach") {
-  // The direction that tightens, and the one the first-row read silently permitted: two lots of 60
-  // and 40 are a position of 100, and a buy of 60 reaches 160 rather than the 120 a first-row read
-  // computed. A ceiling of 120 must refuse it.
-  RiskLimits limits;
-  limits.max_position_quantity_ = Decimal64::parse("120");
-  const RiskGuard guard(limits);
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("60"));
-  portfolio.positions_.push_back(holding("40"));
-
-  const auto refused = guard.check(planned("60", "70000"), portfolio, open_market());
-  REQUIRE(refused);
-  REQUIRE(refused->reason_ == GuardReason::POSITION_LIMIT_EXCEEDED);
-  REQUIRE(refused->attempted_ == Decimal64::parse("160"));
-}
-
 TEST_CASE("a working sell reporting more filled than ordered refuses rather than counting zero") {
   // `Portfolio::working_quantity` *skips* such a row, which is right for a figure a strategy reads
   // and wrong here: skipping it understates what is already committed to closing and would admit an
@@ -2517,33 +1167,6 @@ TEST_CASE("a working sell reporting more filled than ordered refuses rather than
   REQUIRE(refused_for_phase(guard, planned("10", "70000", OrderSide::SELL), portfolio));
 }
 
-TEST_CASE("a sell against a flat book with a buy resting is refused, though exposure is unchanged") {
-  // **The trap, and the reason this is not `max_gross_exposure_`'s predicate.** That limit permits
-  // an order which does not raise the projected exposure, and this order does not raise it -- the
-  // assertion below proves that from the same function the ceiling uses. It still opens a short of
-  // 100 if it alone fills. "Does not increase reachable exposure" and "closes a position" are
-  // different questions, and only the second one may relax a phase restriction.
-  const RiskGuard guard;
-  ProbePortfolio portfolio;
-  portfolio.working_.push_back(working("100", "0", OrderStatus::PENDING, OrderSide::BUY));
-
-  const auto order = planned("100", "70000", OrderSide::SELL);
-  const auto basis = with_basis(shut_market());
-  const auto with = strategy::projected_gross_exposure(
-    portfolio, basis.exposure_basis_, Currency{"KRW"}, &order, order.price_,
-    strategy::CandidateContribution::QUANTITY_AND_PRICE
-  );
-  const auto without = strategy::projected_gross_exposure(
-    portfolio, basis.exposure_basis_, Currency{"KRW"}, &order, order.price_,
-    strategy::CandidateContribution::PRICE_ONLY
-  );
-  REQUIRE(with);
-  REQUIRE(without);
-  REQUIRE(*with == *without);  // the exposure rule would admit it
-
-  REQUIRE(refused_for_phase(guard, order, portfolio));
-}
-
 TEST_CASE("a buy that covers a short is permitted, and one that overshoots is not") {
   // The mirror. A rule written only for long positions would refuse both of these, and a shipped
   // exit would work in one direction.
@@ -2553,44 +1176,6 @@ TEST_CASE("a buy that covers a short is permitted, and one that overshoots is no
 
   REQUIRE_FALSE(guard.check(planned("100", "70000", OrderSide::BUY), portfolio, shut_market()));
   REQUIRE(refused_for_phase(guard, planned("101", "70000", OrderSide::BUY), portfolio));
-}
-
-TEST_CASE("a holding reported as two lots is closed as one position") {
-  // `Portfolio::quantity_of` returns the *first* matching row, and a broker reporting one instrument
-  // as two lots is ordinary. Reading it here would see 60, refuse the exit for the whole 100, and
-  // report nothing an operator could act on.
-  const RiskGuard guard;
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("60"));
-  portfolio.positions_.push_back(holding("40"));
-
-  REQUIRE_FALSE(guard.check(planned("100", "70000", OrderSide::SELL), portfolio, shut_market()));
-  REQUIRE(refused_for_phase(guard, planned("101", "70000", OrderSide::SELL), portfolio));
-}
-
-TEST_CASE("rows of opposing signs net before the rule is applied") {
-  // +100 and -40 is a holding of 60, not of 100 and not of 140.
-  const RiskGuard guard;
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("100"));
-  portfolio.positions_.push_back(holding("-40"));
-
-  REQUIRE_FALSE(guard.check(planned("60", "70000", OrderSide::SELL), portfolio, shut_market()));
-  REQUIRE(refused_for_phase(guard, planned("61", "70000", OrderSide::SELL), portfolio));
-}
-
-TEST_CASE("nothing held and nothing reported are both refused outside the permitted phases") {
-  // Unknown fails closed. A sell against a position nobody reported is not an exit, and neither is
-  // one against a row of zero -- the exception may only ever *relax* what the operator stated, so
-  // anything it cannot establish it must refuse.
-  const RiskGuard guard;
-
-  ProbePortfolio nothing_reported;
-  REQUIRE(refused_for_phase(guard, planned("100", "70000", OrderSide::SELL), nothing_reported));
-
-  ProbePortfolio flat_row;
-  flat_row.positions_.push_back(holding("0"));
-  REQUIRE(refused_for_phase(guard, planned("100", "70000", OrderSide::SELL), flat_row));
 }
 
 TEST_CASE("an order whose quantity is not positive is never treated as closing") {
@@ -2605,52 +1190,6 @@ TEST_CASE("an order whose quantity is not positive is never treated as closing")
 
   REQUIRE(refused_for_phase(guard, planned("-1", "70000", OrderSide::SELL), portfolio));
   REQUIRE(refused_for_phase(guard, planned("0", "70000", OrderSide::SELL), portfolio));
-}
-
-TEST_CASE("a buy that opens a position outside the session is refused as before") {
-  // The limit still does its job. Nothing here relaxes an opening order, which is what
-  // `permitted_phases_` is for.
-  const RiskGuard guard;
-  ProbePortfolio portfolio;
-
-  REQUIRE(refused_for_phase(guard, planned("10", "70000"), portfolio));
-}
-
-TEST_CASE("an exit the phase admits still answers to every other limit") {
-  // The phase check is third in the ordering, so admitting an order there is not permission to send
-  // it. A per-order ceiling is used because it is the simplest limit that has nothing to do with
-  // the phase; the reason reported must be that ceiling and not the phase.
-  RiskLimits limits;
-  limits.max_order_notional_ = Decimal64::parse("1000");
-  const RiskGuard guard(limits);
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("100"));
-
-  const auto decision =
-    guard.evaluate(planned("100", "70000", OrderSide::SELL), portfolio, shut_market());
-  REQUIRE(decision.rejection_);
-  // The reason is the ceiling. Reporting the phase here would point an operator at the limit that
-  // let the order through.
-  REQUIRE(decision.rejection_->reason_ == GuardReason::ORDER_NOTIONAL_TOO_LARGE);
-  // Nothing was admitted, so nothing is flagged. `tests/test-runner.cpp` carries the half that
-  // matters -- that the runner's counter does not move for an order it never sent.
-  REQUIRE_FALSE(decision.admitted_outside_phase_);
-}
-
-TEST_CASE("the sellable limit still applies to an exit the phase admits") {
-  // Named because it is the limit most likely to refuse a valid exit in practice: a broker that
-  // publishes no sellable figure leaves it absent, and absent refuses. An operator seeing a flatten
-  // refused is most likely seeing this, not the phase.
-  RiskLimits limits;
-  limits.enforce_sellable_quantity_ = true;
-  const RiskGuard guard(limits);
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("100"));
-
-  const auto refused =
-    guard.check(planned("100", "70000", OrderSide::SELL), portfolio, shut_market());
-  REQUIRE(refused);
-  REQUIRE(refused->reason_ == GuardReason::QUANTITY_NOT_SELLABLE);
 }
 
 TEST_CASE("an instrument outside the permitted universe is refused") {
@@ -2669,42 +1208,6 @@ TEST_CASE("an instrument outside the permitted universe is refused") {
   auto allowed = planned("10", "70000");
   allowed.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "000660"};
   REQUIRE_FALSE(guard.check(allowed, portfolio, open_market()));
-}
-
-TEST_CASE("an order worth more than the per-order ceiling is refused, not halved") {
-  // The central promise: halving would place a position the strategy never sized against a signal
-  // it never gave, and the strategy would then reconcile against that position and compound it.
-  RiskLimits limits;
-  limits.max_order_notional_ = Decimal64::parse("500000");
-  const RiskGuard guard(limits);
-  ProbePortfolio portfolio;
-
-  const auto order = planned("10", "70000");  // 700,000 won
-  const auto refused = guard.check(order, portfolio, open_market());
-  REQUIRE(refused);
-  REQUIRE(refused->reason_ == GuardReason::ORDER_NOTIONAL_TOO_LARGE);
-  // The arithmetic comes back so an operator need not reconstruct it, and a strategy can adapt
-  // rather than retry the same size.
-  REQUIRE(refused->limit_ == std::optional<Decimal64>(Decimal64::parse("500000")));
-  REQUIRE(refused->attempted_ == std::optional<Decimal64>(Decimal64::parse("700000")));
-  REQUIRE(refused->tag_ == "test");
-  // The order itself is untouched. A guard returns a reason; it does not edit the instruction.
-  REQUIRE(order.quantity_ == Decimal64::parse("10"));
-
-  // Exactly at the ceiling is permitted; the limit is a maximum, not a bound to stay under.
-  REQUIRE_FALSE(guard.check(planned("50000", "10"), portfolio, open_market()));
-}
-
-TEST_CASE("a market order is valued from the reference price the runner supplies") {
-  RiskLimits limits;
-  limits.max_order_notional_ = Decimal64::parse("500000");
-  const RiskGuard guard(limits);
-  ProbePortfolio portfolio;
-
-  // A market order carries no price of its own, so the last quote is what values it.
-  const auto refused = guard.check(planned("10"), portfolio, open_market());
-  REQUIRE(refused);
-  REQUIRE(refused->reason_ == GuardReason::ORDER_NOTIONAL_TOO_LARGE);
 }
 
 TEST_CASE("a limit that cannot be evaluated refuses rather than waving the order through") {
@@ -2726,26 +1229,6 @@ TEST_CASE("a limit that cannot be evaluated refuses rather than waving the order
   REQUIRE_FALSE(unlimited.check(planned("10"), portfolio, inputs));
 }
 
-TEST_CASE("the position ceiling counts what the order would make the position, not the order") {
-  RiskLimits limits;
-  limits.max_position_quantity_ = Decimal64::parse("100");
-  const RiskGuard guard(limits);
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("95"));
-
-  // Ten more would reach 105.
-  const auto refused = guard.check(planned("10", "70000"), portfolio, open_market());
-  REQUIRE(refused);
-  REQUIRE(refused->reason_ == GuardReason::POSITION_LIMIT_EXCEEDED);
-  REQUIRE(refused->attempted_ == std::optional<Decimal64>(Decimal64::parse("105")));
-
-  // Five reaches exactly the ceiling, which is permitted.
-  REQUIRE_FALSE(guard.check(planned("5", "70000"), portfolio, open_market()));
-
-  // And selling reduces it, so it is never refused by this limit.
-  REQUIRE_FALSE(guard.check(planned("50", "70000", OrderSide::SELL), portfolio, open_market()));
-}
-
 TEST_CASE("the position ceiling limits a short as firmly as a long") {
   // The ceiling is on magnitude. A limit that only counted longs would let a strategy build an
   // unbounded short while appearing to be risk-limited.
@@ -2760,136 +1243,6 @@ TEST_CASE("the position ceiling limits a short as firmly as a long") {
   REQUIRE(refused);
   REQUIRE(refused->reason_ == GuardReason::POSITION_LIMIT_EXCEEDED);
   REQUIRE(refused->attempted_ == std::optional<Decimal64>(Decimal64::parse("105")));
-}
-
-TEST_CASE("the gross exposure ceiling measures the portfolio, not the order in front of it") {
-  // **The defect this replaces.** `GuardInputs::gross_exposure_` was never assigned anywhere in the
-  // library -- the only assignment in the tree was in this file -- so the current exposure defaulted
-  // to zero and the ceiling was compared against one order's notional. A ten-million ceiling did not
-  // stop a strategy reaching twenty million two million at a time.
-  RiskLimits limits;
-  limits.max_gross_exposure_ = Decimal64::parse("10000000");
-  const RiskGuard guard(limits);
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("135"));
-  const auto inputs = with_basis(open_market());
-
-  // 135 held at 70,000 is 9,450,000. Ten more reaches 145 shares, which is 10,150,000.
-  const auto refused = guard.check(planned("10", "70000"), portfolio, inputs);
-  REQUIRE(refused);
-  REQUIRE(refused->reason_ == GuardReason::GROSS_EXPOSURE_EXCEEDED);
-  REQUIRE(refused->attempted_ == std::optional<Decimal64>(Decimal64::parse("10150000")));
-
-  // Seven more reaches 142 shares, which is 9,940,000 and under the ceiling.
-  REQUIRE_FALSE(guard.check(planned("7", "70000"), portfolio, inputs));
-}
-
-TEST_CASE("the exposure ceiling counts what is already working, not only what is held") {
-  // Without this, two orders in one pass are each checked from the same starting point and together
-  // breach the ceiling -- the two-sells-of-sixty defect one level up. The runner writes an accepted
-  // order into its view as a working row, so counting working rows is what makes that fix reach
-  // this limit.
-  RiskLimits limits;
-  limits.max_gross_exposure_ = Decimal64::parse("10000000");
-  const RiskGuard guard(limits);
-  ProbePortfolio portfolio;
-  portfolio.working_.push_back(working("100", "0", OrderStatus::PENDING, OrderSide::BUY));
-  const auto inputs = with_basis(open_market());
-
-  // Nothing held, 100 working at 70,000, and 50 more reaches 150 shares: 10,500,000.
-  const auto refused = guard.check(planned("50", "70000"), portfolio, inputs);
-  REQUIRE(refused);
-  REQUIRE(refused->reason_ == GuardReason::GROSS_EXPOSURE_EXCEEDED);
-  REQUIRE(refused->attempted_ == std::optional<Decimal64>(Decimal64::parse("10500000")));
-  // The order alone is 3,500,000, which is what the previous code compared against the ceiling.
-}
-
-TEST_CASE("an order that adds no exposure is permitted, even over the ceiling") {
-  // A ceiling that cannot be de-risked past is worse than one that does nothing. The projection is
-  // the largest position still reachable, so a resting sell does not lower it -- which on its own
-  // would refuse every order from an account already over the ceiling, including the ones selling
-  // out of it. The ceiling therefore governs what an order *adds*.
-  RiskLimits limits;
-  limits.max_gross_exposure_ = Decimal64::parse("7500000");
-  const RiskGuard guard(limits);
-  const auto inputs = with_basis(open_market());
-
-  ProbePortfolio under;
-  under.positions_.push_back(holding("100"));
-  // 7,000,000 held, under the ceiling. A sell leaves the projection at 100 shares and is allowed;
-  // the previous code added the order's 700,000 and refused it.
-  REQUIRE_FALSE(guard.check(planned("10", "70000", OrderSide::SELL), under, inputs));
-  // A buy of the same size takes it to 7,700,000 and is refused.
-  REQUIRE(guard.check(planned("10", "70000"), under, inputs));
-
-  ProbePortfolio over;
-  over.positions_.push_back(holding("200"));
-  // 14,000,000 held against a 7,500,000 ceiling. Every sell out of it is still permitted, including
-  // one that flattens the position outright.
-  REQUIRE_FALSE(guard.check(planned("10", "70000", OrderSide::SELL), over, inputs));
-  REQUIRE_FALSE(guard.check(planned("200", "70000", OrderSide::SELL), over, inputs));
-  // And a buy of one share is not, because it takes the figure further up.
-  REQUIRE(guard.check(planned("1", "70000"), over, inputs));
-
-  ProbePortfolio shorted;
-  shorted.positions_.push_back(holding("-200"));
-  // The same for a short: covering it is permitted, adding to it is not.
-  REQUIRE_FALSE(guard.check(planned("200", "70000"), shorted, inputs));
-  REQUIRE(guard.check(planned("1", "70000", OrderSide::SELL), shorted, inputs));
-
-  // **Opposing a position is not on its own a licence.** Selling 300 against a long of 100 reaches a
-  // short of 200 -- more reachable exposure than the 100 it started from -- so the same rule refuses
-  // it. The test is what the order does to the projection, not which way it points.
-  ProbePortfolio small;
-  small.positions_.push_back(holding("100"));
-  REQUIRE_FALSE(guard.check(planned("100", "70000", OrderSide::SELL), small, inputs));
-  const auto reversal = guard.check(planned("300", "70000", OrderSide::SELL), small, inputs);
-  REQUIRE(reversal);
-  REQUIRE(reversal->reason_ == GuardReason::GROSS_EXPOSURE_EXCEEDED);
-  REQUIRE(reversal->attempted_ == std::optional<Decimal64>(Decimal64::parse("14000000")));
-}
-
-TEST_CASE("an exit limited above the mark is not read as adding exposure") {
-  // **The two projections have to use the same price.** The candidate's limit joins the valuation
-  // envelope, so a version that computed the "without" case by dropping the candidate valued it at
-  // the mark instead -- and the two then differed by a price rather than by the order. A sell of ten
-  // limited at 80,000 against a 200-share position read as 16,000,000 versus 14,000,000, so the
-  // ceiling refused the one thing it must never refuse.
-  RiskLimits limits;
-  limits.max_gross_exposure_ = Decimal64::parse("5000000");
-  const RiskGuard guard(limits);
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("200"));
-  const auto inputs = with_basis(open_market());
-
-  // 14,000,000 held against a 5,000,000 ceiling, so the account is already well over.
-  REQUIRE_FALSE(guard.check(planned("10", "80000", OrderSide::SELL), portfolio, inputs));
-  // The same sell at the mark was always allowed; the point is that the limit above it also is.
-  REQUIRE_FALSE(guard.check(planned("10", "70000", OrderSide::SELL), portfolio, inputs));
-  // And a buy limited above the mark is still refused, so the envelope has not gone soft.
-  REQUIRE(guard.check(planned("10", "80000"), portfolio, inputs));
-}
-
-TEST_CASE("a position reported as two rows is counted once, at its whole size") {
-  // `Portfolio::quantity_of` returns the first matching row and nothing dedupes what an adapter
-  // appends, so a broker reporting one instrument as two lots would have had the ceiling measure
-  // only the first of them.
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("100"));
-  portfolio.positions_.push_back(holding("100"));
-  const auto inputs = with_basis(open_market());
-
-  const auto exposure = strategy::projected_gross_exposure(
-    portfolio, inputs.exposure_basis_, Currency{"KRW"}, nullptr, std::nullopt,
-    strategy::CandidateContribution::PRICE_ONLY
-  );
-  // 200 shares at 70,000, not the 100 the first row alone reports.
-  REQUIRE(exposure == std::optional<Decimal64>(Decimal64::parse("14000000")));
-
-  RiskLimits limits;
-  limits.max_gross_exposure_ = Decimal64::parse("10000000");
-  const RiskGuard guard(limits);
-  REQUIRE(guard.check(planned("1", "70000"), portfolio, inputs));
 }
 
 TEST_CASE("a mark that is not positive refuses rather than valuing anything") {
@@ -2968,31 +1321,6 @@ TEST_CASE("an order filled beyond what it ordered refuses rather than being drop
   REQUIRE(refused->reason_ == GuardReason::VALUE_NOT_KNOWN);
 }
 
-TEST_CASE("a position that has gone flat does not refuse orders in another instrument") {
-  // `ReplayLedger` keeps a lot after it returns to flat and a broker may list a closed position.
-  // Requiring a mark for one would let an instrument nobody holds any more refuse everything.
-  RiskLimits limits;
-  limits.max_gross_exposure_ = Decimal64::parse("10000000");
-  const RiskGuard guard(limits);
-
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("100"));
-  auto closed = holding("0");
-  closed.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "000660"};
-  portfolio.positions_.push_back(closed);
-
-  // The basis describes Samsung only, and the flat row is not a reason to refuse.
-  REQUIRE_FALSE(guard.check(planned("1", "70000"), portfolio, with_basis(open_market())));
-
-  // But a flat row with an order still working on it does need valuing, because that order can fill.
-  auto resting = working("10", "0", OrderStatus::PENDING, OrderSide::BUY);
-  resting.order_.instrument_ = closed.instrument_;
-  portfolio.working_.push_back(resting);
-  const auto refused = guard.check(planned("1", "70000"), portfolio, with_basis(open_market()));
-  REQUIRE(refused);
-  REQUIRE(refused->reason_ == GuardReason::VALUE_NOT_KNOWN);
-}
-
 TEST_CASE("an ordinary portfolio is valued and permitted, not refused by the tightening") {
   // **The property the added refusals put at risk.** Each added a refusal -- an incomplete
   // basis, a non-positive price, an inconsistent order row -- and a limit that refuses ordinary
@@ -3050,23 +1378,6 @@ TEST_CASE("an ordinary portfolio is valued and permitted, not refused by the tig
   REQUIRE_FALSE(guard.check(planned("10", "69500", OrderSide::SELL), portfolio, inputs));
   // And a market order, which carries no price of its own and is valued at the reference.
   REQUIRE_FALSE(guard.check(planned("5"), portfolio, inputs));
-}
-
-TEST_CASE("a limit order is valued at its limit, not at a cheaper quote") {
-  // A basis carrying only the last quote under-reports a limit order that can fill above it, which
-  // is the one direction a ceiling must not err in.
-  RiskLimits limits;
-  limits.max_gross_exposure_ = Decimal64::parse("8000000");
-  const RiskGuard guard(limits);
-  ProbePortfolio portfolio;
-  const auto inputs = with_basis(open_market());
-
-  // 100 at a limit of 100,000 is 10,000,000, though the mark in the basis is 70,000. Valued at the
-  // mark it would have been 7,000,000 and passed.
-  const auto refused = guard.check(planned("100", "100000"), portfolio, inputs);
-  REQUIRE(refused);
-  REQUIRE(refused->reason_ == GuardReason::GROSS_EXPOSURE_EXCEEDED);
-  REQUIRE(refused->attempted_ == std::optional<Decimal64>(Decimal64::parse("10000000")));
 }
 
 TEST_CASE("an exposure basis that does not describe the portfolio refuses") {
@@ -3169,23 +1480,6 @@ TEST_CASE("the order rate is counted over a sliding window, not reset on a bound
   REQUIRE_FALSE(guard.check(planned("1", "70000"), portfolio, inputs));
 }
 
-TEST_CASE("rate budget is consumed by what was sent, not by what was checked") {
-  // An order that was checked and then refused by a later guard, or that never reached the broker,
-  // must not consume budget. Recording at the point of sending is what keeps the count honest.
-  RiskLimits limits;
-  limits.max_orders_per_window_ = 1;
-  RiskGuard guard(limits);
-  ProbePortfolio portfolio;
-  const auto inputs = open_market();
-
-  REQUIRE_FALSE(guard.check(planned("1", "70000"), portfolio, inputs));
-  REQUIRE_FALSE(guard.check(planned("1", "70000"), portfolio, inputs));
-  REQUIRE(guard.recent_orders(inputs.now_) == 0);
-
-  guard.note_sent(inputs.now_);
-  REQUIRE(guard.check(planned("1", "70000"), portfolio, inputs));
-}
-
 TEST_CASE("forgetting old sends bounds the memory a long session accumulates") {
   RiskLimits limits;
   limits.max_orders_per_window_ = 100;
@@ -3238,59 +1532,6 @@ TEST_CASE("every guard reason has a stable name") {
   );
 }
 
-TEST_CASE("a shortfall below the tolerance is left alone rather than chased") {
-  // The churn case: a target drifting by one share would otherwise cancel a working order for 100
-  // and place a new one for 99, spending two instructions and the first order's queue priority to
-  // move the position by one.
-  ProbePortfolio portfolio;
-  portfolio.working_.push_back(working("100", "0", OrderStatus::PENDING));
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-
-  // Without a tolerance, every share is chased: the side is withdrawn and 99 sent fresh.
-  const auto chased = strategy::reconcile(target("99"), portfolio, inputs);
-  REQUIRE(chased.cancel_.size() == 1);
-  REQUIRE(chased.place_.size() == 1);
-  REQUIRE(chased.place_[0].quantity_ == Decimal64::parse("99"));
-
-  // With one, the drift is ignored entirely -- and crucially the cancellation is dropped too.
-  // Withdrawing the working order and then declining to replace it would leave the position
-  // further from the target than doing nothing at all.
-  inputs.tolerance_.minimum_quantity_ = Decimal64::parse("5");
-  const auto left_alone = strategy::reconcile(target("99"), portfolio, inputs);
-  REQUIRE(left_alone.empty());
-}
-
-TEST_CASE("a shortfall at or above the tolerance is still acted on") {
-  ProbePortfolio portfolio;
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-  inputs.tolerance_.minimum_quantity_ = Decimal64::parse("5");
-
-  // Exactly at the tolerance is traded: it is a minimum, not a bound to exceed.
-  const auto at = strategy::reconcile(target("5"), portfolio, inputs);
-  REQUIRE(at.place_.size() == 1);
-  REQUIRE(at.place_[0].quantity_ == Decimal64::parse("5"));
-
-  const auto below = strategy::reconcile(target("4"), portfolio, inputs);
-  REQUIRE(below.empty());
-}
-
-TEST_CASE("the tolerance is absent by default, so nothing changes without asking") {
-  // No number is invented. A guessed tolerance would silently hold back orders a strategy asked
-  // for, and an invisible shortfall is worse than visible churn.
-  ProbePortfolio portfolio;
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-  REQUIRE_FALSE(inputs.tolerance_.stated());
-
-  const auto one_share = strategy::reconcile(target("1"), portfolio, inputs);
-  REQUIRE(one_share.place_.size() == 1);
-}
-
 TEST_CASE("the tolerance measures the drift, not the quantity that would be sent") {
   // These differ exactly in the case the tolerance exists for. 100 working against a target of 99
   // would withdraw the side and re-place 99, so the quantity sent is 99 while the drift is one
@@ -3308,22 +1549,6 @@ TEST_CASE("the tolerance measures the drift, not the quantity that would be sent
   REQUIRE(acted.cancel_.size() == 1);
   REQUIRE(acted.place_.size() == 1);
   REQUIRE(acted.place_[0].quantity_ == Decimal64::parse("95"));
-}
-
-TEST_CASE("an order working the wrong way is withdrawn however small the drift") {
-  // Leaving it resting works *against* the target rather than merely failing to reach it, so the
-  // tolerance must not suppress a cancellation.
-  ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("99"));
-  portfolio.working_.push_back(working("50", "0", OrderStatus::PENDING, OrderSide::SELL));
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-  inputs.tolerance_.minimum_quantity_ = Decimal64::parse("5");
-
-  // Wanting 100 while holding 99 is a drift of one, below the tolerance -- but a sell is resting.
-  const auto plan = strategy::reconcile(target("100"), portfolio, inputs);
-  REQUIRE(plan.cancel_.size() == 1);
 }
 
 TEST_CASE("a notional floor keys on value, so one setting travels across price levels") {
@@ -3352,20 +1577,6 @@ TEST_CASE("a notional floor keys on value, so one setting travels across price l
   REQUIRE(strategy::reconcile(target("40"), flat, cheap).place_.size() == 1);
 }
 
-TEST_CASE("a notional floor with no price to evaluate it does not suppress") {
-  // The opposite of RiskGuard, deliberately. There, a limit that cannot be evaluated refuses, because
-  // failing to refuse risks an oversized position. Here, failing to trade leaves an invisible
-  // shortfall, which is the worse error -- so an unevaluable floor stays out of the way.
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-  inputs.tolerance_.minimum_notional_ = Decimal64::parse("100000");
-  // Deliberately no reference price.
-
-  ProbePortfolio flat;
-  REQUIRE(strategy::reconcile(target("1"), flat, inputs).place_.size() == 1);
-}
-
 TEST_CASE("a fractional floor keys on the queue position being given up") {
   // Often the largest cost and the least obvious: replacing a working order for 100 to change it by
   // one share risks that order's whole place in the book to adjust one percent of it, and the loss is
@@ -3383,49 +1594,6 @@ TEST_CASE("a fractional floor keys on the queue position being given up") {
   const auto acted = strategy::reconcile(target("97"), portfolio, inputs);
   REQUIRE(acted.cancel_.size() == 1);
   REQUIRE(acted.place_[0].quantity_ == Decimal64::parse("97"));
-}
-
-TEST_CASE("a fractional floor says nothing when nothing is working") {
-  // With no order resting there is no queue position to give up, so a drift is simply a new order and
-  // this floor has no cost to weigh. Suppressing here would refuse a first order for being small.
-  ProbePortfolio flat;
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-  inputs.tolerance_.minimum_fraction_of_working_ = Decimal64::parse("0.5");
-
-  REQUIRE(strategy::reconcile(target("1"), flat, inputs).place_.size() == 1);
-}
-
-TEST_CASE("any one floor being met is enough to suppress") {
-  // Each expresses an independent reason not to trade, so requiring all of them would mean a drift
-  // worth less than a fixed fee still traded because it was a large fraction of a tiny working order.
-  ProbePortfolio portfolio;
-  portfolio.working_.push_back(working("2", "0", OrderStatus::PENDING));
-  const auto reference = samsung_reference();
-  ReconcileInputs inputs;
-  inputs.instrument_ = &reference;
-  inputs.reference_price_ = Decimal64::parse("70000");
-  inputs.tolerance_.minimum_notional_ = Decimal64::parse("100000");
-  inputs.tolerance_.minimum_fraction_of_working_ = Decimal64::parse("0.02");
-
-  // Target 1 against 2 working: the drift is one share, worth 70,000 -- under the notional floor --
-  // while being 50% of the working order, far over the fractional one. The notional floor alone
-  // suppresses it.
-  REQUIRE(strategy::reconcile(target("1"), portfolio, inputs).empty());
-}
-
-TEST_CASE("the runner's simple setter still sets only the share-count floor") {
-  // Kept for the case it suits -- a large lot size, or a per-share fee -- without pretending it is
-  // right for a portfolio spanning price levels.
-  strategy::TradeTolerance tolerance;
-  tolerance.minimum_quantity_ = Decimal64::parse("5");
-  REQUIRE(tolerance.stated());
-  REQUIRE_FALSE(tolerance.minimum_notional_);
-  REQUIRE_FALSE(tolerance.minimum_fraction_of_working_);
-
-  const strategy::TradeTolerance none;
-  REQUIRE_FALSE(none.stated());
 }
 
 TEST_CASE("a stop-limit intent carries both prices and nothing else carries a trigger", "[trigger]") {

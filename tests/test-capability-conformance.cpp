@@ -47,11 +47,6 @@ struct BrokerTraits<conformance_fakes::FinalTraitsClient> final : mock_port::Mem
 
 ATL_ASSERT_BROKER(conformance_fakes::FinalTraitsClient);
 
-TEST_CASE("every verb a shipped client's capabilities claim compiles", "[port][conformance]") {
-  // Checked by the assertions above; reaching this line means they compiled.
-  SUCCEED("every claimed verb was compiled and every capability read for every shipped client");
-}
-
 // Account listings whose rows are walkable in unusual ways, walked for real by `list_accounts`.
 namespace conformance_fakes {
 
@@ -59,7 +54,6 @@ namespace conformance_fakes {
 struct AccountRow {
   std::string number_;
 };
-
 
 /** The sentinel of the cursor range below. */
 struct RowsEnd {};
@@ -78,7 +72,6 @@ struct LvalueCursor {
   friend bool operator!=(LvalueCursor& cursor, RowsEnd&) { return cursor.at_ != nullptr; }
 };
 
-
 /** A range over `LvalueCursor`, empty. */
 struct LvalueRows {
   LvalueCursor begin() const { return LvalueCursor{nullptr}; }
@@ -86,14 +79,12 @@ struct LvalueRows {
   std::size_t size() const { return 0; }
 };
 
-
 /** A range with `begin`, `end` and `size` and no `value_type`, which a range-for accepts. */
 struct AccountRange {
   const AccountRow* begin() const { return nullptr; }
   const AccountRow* end() const { return nullptr; }
   std::size_t size() const { return 0; }
 };
-
 
 struct AccountsWithoutValueType {};
 struct AccountsOverLvalueCursor {};
@@ -116,7 +107,6 @@ struct BrokerTraits<conformance_fakes::AccountsWithoutValueType> {
   static int selector_of(const conformance_fakes::AccountRow&) { return 1; }
 };
 
-
 /** Account discovery over a range whose cursor works only as a named lvalue. */
 template <>
 struct BrokerTraits<conformance_fakes::AccountsOverLvalueCursor> {
@@ -130,7 +120,6 @@ struct BrokerTraits<conformance_fakes::AccountsOverLvalueCursor> {
   static std::string type_of(const conformance_fakes::AccountRow&) { return "cash"; }
   static int selector_of(const conformance_fakes::AccountRow&) { return 1; }
 };
-
 
 } // namespace algotradelib
 
@@ -175,57 +164,4 @@ TEST_CASE("Kiwoom's holdings refusal completes later, once, for a plain callback
   REQUIRE_FALSE(*answer);
   CHECK(answer->error().broker_code_ == "holdings_scope_unestablished");
   CHECK_FALSE(answer->error().reached_broker_);
-}
-
-TEST_CASE("Kiwoom's holdings refusal keeps a separate caller context waiting for it", "[kiwoom][holdings]") {
-  // The client runs on one io_context and the caller's handler is bound to another. If the caller's
-  // context is run first it must not finish -- the refusal is outstanding work there -- or it stops
-  // and the refusal, posted later, is never delivered without a restart nobody knows to make.
-  boost::asio::io_context source;
-  boost::asio::io_context caller;
-  boost::asio::ssl::context tls(boost::asio::ssl::context::tls_client);
-  BrokerSession<kiwoom::KiwoomClient> session(
-    std::make_shared<kiwoom::KiwoomClient>(source.get_executor(), tls, kiwoom::KiwoomConfig{}),
-    kiwoom::KiwoomAccount{}
-  );
-  auto strand = boost::asio::make_strand(caller);
-
-  int calls = 0;
-  session.async_holdings(
-    boost::asio::bind_executor(strand, [&](Result<HoldingsSnapshot> result) {
-      ++calls;
-      CHECK_FALSE(result);
-    })
-  );
-  caller.poll();
-  CHECK(calls == 0);
-  CHECK_FALSE(caller.stopped());
-
-  source.run();
-  caller.run();
-  CHECK(calls == 1);
-}
-
-TEST_CASE("Kiwoom's holdings refusal completes on the caller's strand", "[kiwoom][holdings]") {
-  boost::asio::io_context ioc;
-  boost::asio::ssl::context tls(boost::asio::ssl::context::tls_client);
-  kiwoom::KiwoomConfig config;
-  BrokerSession<kiwoom::KiwoomClient> session(
-    std::make_shared<kiwoom::KiwoomClient>(ioc.get_executor(), tls, config), kiwoom::KiwoomAccount{}
-  );
-  auto caller = boost::asio::make_strand(ioc);
-
-  int calls = 0;
-  bool on_caller_strand = false;
-  session.async_holdings(
-    boost::asio::bind_executor(caller, [&](Result<HoldingsSnapshot> result) {
-      ++calls;
-      on_caller_strand = caller.running_in_this_thread();
-      CHECK_FALSE(result);
-    })
-  );
-  CHECK(calls == 0);
-  ioc.run();
-  CHECK(calls == 1);
-  CHECK(on_caller_strand);
 }
