@@ -1,9 +1,8 @@
-# algotradelib
+> **AI-GENERATED DOCUMENTATION**
+> 
+> This documentation was generated with the assistance of AI and may contain inaccuracies.
 
-<!-- badges: start -->
-![License](https://img.shields.io/badge/license-MIT-blue.svg?style=plastic)
-[![Lifecycle: experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg?style=plastic)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
-<!-- badges: end -->
+## Overview
 
 A C++ library for algorithmic trading through Korean broker APIs — currently Korea Investment &
 Securities (KIS), Kiwoom Securities and Toss Securities.
