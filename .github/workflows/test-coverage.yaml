@@ -41,9 +41,12 @@ jobs:
       - name: Install OpenSSL
         run: sudo apt-get update && sudo apt-get install -y libssl-dev
 
+      # Two compile jobs: one GCC Debug --coverage test file peaks at up to 6.4 GB, and Ninja's default (CPUs + 2)
+      # ran six of them at once on the 16 GB runner.
       - uses: threeal/cmake-action@v2.1.0
         with:
           run-build: true
+          build-args: --parallel 2
           generator: Ninja
           options: |
             CMAKE_BUILD_TYPE=Debug
