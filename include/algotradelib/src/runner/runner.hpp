@@ -898,13 +898,12 @@ public:
       if (!(entry.instrument_ == instrument)) {
         continue;
       }
-      if (entry.operator_only_) {
-        return ObligationState::OPERATOR;
+      const auto owed = state_of(entry);
+      if (owed == ObligationState::OPERATOR) {
+        return owed;
       }
-      if (entry.ref_.primary_.empty()) {
-        state = ObligationState::UNNAMED;
-      } else if (state == ObligationState::NONE) {
-        state = ObligationState::NAMED;
+      if (owed == ObligationState::UNNAMED || state == ObligationState::NONE) {
+        state = owed;
       }
     }
     return state;
@@ -930,9 +929,7 @@ public:
       obligation.side_ = entry.side_;
       obligation.quantity_ = entry.expected_;
       obligation.sent_at_ = entry.sent_at_;
-      obligation.state_ = entry.operator_only_  ? ObligationState::OPERATOR :
-                          entry.ref_.primary_.empty() ? ObligationState::UNNAMED :
-                                                        ObligationState::NAMED;
+      obligation.state_ = state_of(entry);
       owed.push_back(std::move(obligation));
     }
     return owed;
@@ -2190,11 +2187,14 @@ private:
       if (!(entry.instrument_ == instrument)) {
         continue;
       }
-      if (entry.operator_only_) {
-        return "an order on this instrument" + named(entry) + " is held for an operator (release_obligations)";
-      }
-      if (entry.ref_.primary_.empty()) {
-        return std::string("an order on this instrument has an unknown outcome and no sweep has named it");
+      switch (state_of(entry)) {
+        case ObligationState::OPERATOR:
+          return "an order on this instrument" + named(entry) + " is held for an operator (release_obligations)";
+        case ObligationState::UNNAMED:
+          return std::string("an order on this instrument has an unknown outcome and no sweep has named it");
+        case ObligationState::NAMED:
+        case ObligationState::NONE:
+          break;
       }
       return "an order on this instrument" + named(entry) + " is not yet accounted for by holdings";
     }
@@ -2248,16 +2248,42 @@ private:
     return found;
   }
 
-  // Whether the listing installed now shows `entry`'s order open (the broker's own row, not a reservation).
-  bool listed_open(const Unconfirmed& entry) const {
-    for (const auto& working : context_.portfolio().working_) {
+  // The broker's own open row for `entry`'s order in `portfolio` (never a reservation), or none.
+  static const WorkingOrder<Tag>* broker_row_for(const strategy::Portfolio<Tag>& portfolio, const Unconfirmed& entry) {
+    if (entry.ref_.primary_.empty()) {
+      return nullptr;
+    }
+    for (const auto& working : portfolio.working_) {
       if (!working.reserved_ && working.ref_.primary_ == entry.ref_.primary_ &&
           working.order_.instrument_ == entry.instrument_ && working.order_.side_ == entry.side_ &&
           strategy::order_is_open(working.order_.status_)) {
-        return true;
+        return &working;
       }
     }
-    return false;
+    return nullptr;
+  }
+
+  // What a serialized order owes: held for an operator, unknown, or named and waiting.
+  static ObligationState state_of(const Unconfirmed& entry) noexcept {
+    return entry.operator_only_          ? ObligationState::OPERATOR :
+           entry.ref_.primary_.empty() ? ObligationState::UNNAMED :
+                                         ObligationState::NAMED;
+  }
+
+  // Puts `entry`'s reserved row back into `portfolio` for the quantity nothing explains yet.
+  static void rebuild_residual_row(strategy::Portfolio<Tag>& portfolio, const Unconfirmed& entry, const Decimal64& residual) {
+    auto row = entry.row_;
+    row.order_.quantity_ = residual;
+    row.amendable_quantity_ = residual;
+    portfolio.working_.push_back(std::move(row));
+  }
+
+  // Marks `entry` fully explained by holdings and listing; a later gap starts over, with a fresh timeout and
+  // a fresh history read.
+  static void mark_explained(Unconfirmed& entry) {
+    entry.residual_ = Decimal64::parse("0");
+    entry.unexplained_since_.reset();
+    entry.history_missed_ = false;
   }
 
   // Takes in everything history rows say about each named order, before anything can account for it,
@@ -2297,7 +2323,7 @@ private:
         hold_for_operator(entry, "an order this runner sent" + named(entry) + ": " + *contradiction);
         continue;
       }
-      if (entry.settled_ || listed_open(entry)) {
+      if (entry.settled_ || broker_row_for(context_.portfolio(), entry) != nullptr) {
         continue;
       }
       if (const auto* row = ended_row_for(evidence, entry)) {
@@ -2822,16 +2848,11 @@ private:
       for (std::size_t at = 0; at < group.size(); ++at) {
         auto& entry = unconfirmed_[group[at]];
         entry.listed_now_ = false;
-        for (const auto& working : portfolio.working_) {
-          if (!working.reserved_ && !entry.ref_.primary_.empty() && working.ref_.primary_ == entry.ref_.primary_ &&
-              working.order_.instrument_ == entry.instrument_ && working.order_.side_ == entry.side_ &&
-              strategy::order_is_open(working.order_.status_)) {
-            entry.listed_ = true;
-            entry.listed_now_ = true;
-            listed[at] = decimal_subtract(working.order_.quantity_, working.order_.execution_.filled_quantity_)
-                           .value_or(zero);
-            break;
-          }
+        if (const auto* working = broker_row_for(portfolio, entry)) {
+          entry.listed_ = true;
+          entry.listed_now_ = true;
+          listed[at] = decimal_subtract(working->order_.quantity_, working->order_.execution_.filled_quantity_)
+                         .value_or(zero);
         }
         const auto left = decimal_subtract(entry.expected_, listed[at]).value_or(zero);
         fillable[at] = decimal_less(zero, left) ? left : zero;
@@ -2891,10 +2912,7 @@ private:
         auto residual = decimal_subtract(entry.expected_, covered[at]).value_or(zero);
         residual = decimal_subtract(residual, listed[at]).value_or(zero);
         if (!decimal_less(zero, residual)) {
-          entry.residual_ = zero;
-          entry.unexplained_since_.reset();
-          // Explained again, so a later gap starts over: a fresh timeout and a fresh history read.
-          entry.history_missed_ = false;
+          mark_explained(entry);
           continue;
         }
         entry.residual_ = residual;
@@ -2936,10 +2954,7 @@ private:
         if (entry.ref_.primary_.empty() && ledger_.requires_reconcile(entry.instrument_)) {
           continue;
         }
-        auto row = entry.row_;
-        row.order_.quantity_ = residual;
-        row.amendable_quantity_ = residual;
-        portfolio.working_.push_back(std::move(row));
+        rebuild_residual_row(portfolio, entry, residual);
       }
       for (const auto at : group) {
         if (!retire[at] && advanced) {
@@ -2975,16 +2990,11 @@ private:
       Decimal64 listed = zero;
       entry.listed_now_ = false;
       std::optional<Decimal64> listed_filled;
-      for (const auto& working : portfolio.working_) {
-        if (!working.reserved_ && !entry.ref_.primary_.empty() && working.ref_.primary_ == entry.ref_.primary_ &&
-            working.order_.instrument_ == entry.instrument_ && working.order_.side_ == entry.side_ &&
-            strategy::order_is_open(working.order_.status_)) {
-          entry.listed_ = true;
-          entry.listed_now_ = true;
-          listed = decimal_subtract(working.order_.quantity_, working.order_.execution_.filled_quantity_).value_or(zero);
-          listed_filled = working.order_.execution_.filled_quantity_;
-          break;
-        }
+      if (const auto* working = broker_row_for(portfolio, entry)) {
+        entry.listed_ = true;
+        entry.listed_now_ = true;
+        listed = decimal_subtract(working->order_.quantity_, working->order_.execution_.filled_quantity_).value_or(zero);
+        listed_filled = working->order_.execution_.filled_quantity_;
       }
       // A listing of its own reporting more filled than it was for, or than its history said it ended with,
       // contradicts what is known: held for an operator before the listing can move on and the contradiction
@@ -3038,9 +3048,7 @@ private:
       }
       auto residual = decimal_subtract(fillable, covered).value_or(entry.expected_);
       if (!decimal_less(zero, residual)) {
-        entry.residual_ = zero;
-        entry.unexplained_since_.reset();
-        entry.history_missed_ = false;
+        mark_explained(entry);
         ++at;
         continue;
       }
@@ -3066,10 +3074,7 @@ private:
         ++at;
         continue;
       }
-      auto row = entry.row_;
-      row.order_.quantity_ = residual;
-      row.amendable_quantity_ = residual;
-      portfolio.working_.push_back(std::move(row));
+      rebuild_residual_row(portfolio, entry, residual);
       ++at;
     }
   }
