@@ -847,7 +847,8 @@ public:
    *   its send confirms the name. Holdings that move past what an order can explain, or a history row of
    *   its own reporting more filled than it was for, hold it for an operator (`JournalOutcome::HELD`);
    *   see `release_obligations`. A holdings read older than the one an order was decided against says
-   *   nothing about it. A timeout marks the ledger but releases nothing;
+   *   nothing about it. A timeout is counted (`orders_unconfirmed_timed_out`) but releases nothing, and the
+   *   order still withholds its instrument until it is accounted for; only one never named marks the ledger;
    * - `runner::recover_runner` restores every order a previous process left unaccounted for, so a
    *   restart cannot send it again, and nothing is placed before it has run. Orders from an overlapping
    *   or older journal, or two on one instrument, are restored for an operator to release.
@@ -1025,17 +1026,19 @@ public:
    *   withheld (ten minutes by default).
    *
    * When it passes, the broker's history is read once more; if that does not settle it, or holdings
-   * still do not show the filled quantity one more timeout later, the instrument is marked in the
-   * indeterminacy ledger for an operator to clear. Too short a timeout costs trading on that
-   * instrument, never a duplicate order. It needs a source that advances `Portfolio::as_of_` on each
-   * holdings read.
+   * still do not show the filled quantity one more timeout later, the order is counted
+   * (`orders_unconfirmed_timed_out`). A runner that is not serialized then forgets it and marks the
+   * instrument in the indeterminacy ledger for an operator to clear, so too short a timeout costs trading on
+   * that instrument, never a duplicate order. A serialized runner keeps it owed, so the instrument trades
+   * again once evidence accounts for it; only an order never named marks the ledger. It needs a source that
+   * advances `Portfolio::as_of_` on each holdings read.
    *
    * @param timeout The timeout.
    */
   void set_confirmation_timeout(std::chrono::nanoseconds timeout) { confirmation_timeout_ = timeout; }
 
   /**
-   * @brief Returns how many sent orders timed out unconfirmed, each withholding its instrument.
+   * @brief Returns how many sent orders timed out unconfirmed; see `set_confirmation_timeout`.
    * @return The count over the runner's life.
    */
   std::size_t orders_unconfirmed_timed_out() const noexcept { return orders_unconfirmed_timed_out_; }
@@ -2257,14 +2260,18 @@ private:
       if (!entry.noticed_ && !entry.operator_only_ && (entry.settled_ || entry.history_missed_ || !is_named) &&
           timed_out(entry, now) && portfolio.as_of_ - *entry.unexplained_since_ > confirmation_timeout_) {
         // A notice, not a release: the order still holds its instrument, and later evidence can still
-        // account for it.
+        // account for it. A named one marks no ledger: the gate already withholds the instrument while it
+        // is owed, and a mark would outlive the holdings that account for it. An unnamed one is accounted
+        // for only by an operator.
         entry.noticed_ = true;
         ++orders_unconfirmed_timed_out_;
-        ledger_.mark(
-          entry.instrument_,
-          "an order this runner sent" + named(entry) +
-            " was not accounted for by holdings within the confirmation timeout; it still holds the instrument"
-        );
+        if (!is_named) {
+          ledger_.mark(
+            entry.instrument_,
+            "an order this runner sent" + named(entry) +
+              " was not accounted for by holdings within the confirmation timeout; it still holds the instrument"
+          );
+        }
       }
       // Not shown while the ledger holds an order not yet named; see the overlapping branch.
       if (!is_named && ledger_.requires_reconcile(entry.instrument_)) {
