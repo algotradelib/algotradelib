@@ -1022,8 +1022,8 @@ public:
   }
 
   /**
-   * @brief Sets how long a sent order's quantity may stay unexplained before its instrument is
-   *   withheld (ten minutes by default).
+   * @brief Sets how long a sent order's quantity may stay unexplained before it is counted as timed out
+   *   (ten minutes by default).
    *
    * When it passes, the broker's history is read once more; if that does not settle it, or holdings
    * still do not show the filled quantity one more timeout later, the order is counted
@@ -2110,7 +2110,7 @@ private:
     bool restored_{false};
     // Only an operator may account for it (`release_obligations`).
     bool operator_only_{false};
-    // Whether its timeout has marked the ledger, which happens once.
+    // Whether its timeout was counted, which happens once (and, for one not yet named, marked the ledger).
     bool noticed_{false};
     // Whether its name is the broker's own: given at acceptance, or confirmed by a dated history row of
     // its send. A name a sweep gave from a listing may belong to another day's order.
@@ -2175,8 +2175,8 @@ private:
   // Each order is accounted for, with a `CONFIRMED` line written first, when it is named, no listing
   // shows it open, and either its history capped what it filled at zero, or a holdings read shows
   // exactly its baseline plus what it filled. Holdings past that hold it for an operator. Anything else
-  // rebuilds its reserved row from what nothing explains yet; a timeout marks the ledger once and
-  // releases nothing.
+  // rebuilds its reserved row from what nothing explains yet; a timeout is counted once and releases
+  // nothing (only an order not yet named marks the ledger).
   void confirm_serialized(strategy::Portfolio<Tag>& portfolio, std::chrono::system_clock::time_point now) {
     const auto zero = Decimal64::parse("0");
     const auto epoch = std::chrono::system_clock::time_point{};
