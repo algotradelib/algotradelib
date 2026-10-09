@@ -23,6 +23,13 @@
  *  5. **State every age the loop asks about.** A run that states none holds; a run that says
  *     "unbounded" sizes against a portfolio nobody bounded.
  *  6. **Stop by signal or by control file**, and read `closing_complete()` at the end.
+ *  7. **Unattended, alert on what only a person can settle.** An instrument can stay withheld with
+ *     nothing in the indeterminacy ledger: a serialized order holdings have not shown within the
+ *     confirmation timeout is only counted (`LoopReport::orders_unconfirmed_timed_out_`) and keeps its
+ *     instrument until evidence accounts for it. Alert on that count, on `Runner::obligation_state`
+ *     reading `OPERATOR`, on a non-empty `Runner::ledger`, and on `closing_complete()` being false. A
+ *     run that never stops can be called in chunks (`PollingLoop::run` with `max_iterations`), each
+ *     returning its own report.
  */
 
 #include <algotradelib/live>

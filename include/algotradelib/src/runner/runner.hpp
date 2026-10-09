@@ -1030,8 +1030,9 @@ public:
    * (`orders_unconfirmed_timed_out`). A runner that is not serialized then forgets it and marks the
    * instrument in the indeterminacy ledger for an operator to clear, so too short a timeout costs trading on
    * that instrument, never a duplicate order. A serialized runner keeps it owed, so the instrument trades
-   * again once evidence accounts for it; only an order never named marks the ledger. It needs a source that
-   * advances `Portfolio::as_of_` on each holdings read.
+   * again once evidence accounts for it; only an order never named marks the ledger, so an unattended run
+   * watches the count, not only the ledger. It needs a source that advances `Portfolio::as_of_` on each
+   * holdings read.
    *
    * @param timeout The timeout.
    */
