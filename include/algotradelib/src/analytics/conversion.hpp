@@ -25,10 +25,10 @@ namespace analytics {
  * @brief Converts an exact decimal to the nearest `Scalar`.
  *
  * The coefficient is divided once by `10^scale`. Within 53 bits of coefficient (every price and
- * quantity the bundled brokers quote) and 22 decimal places, both operands are exact, so with IEEE
- * double arithmetic the result is the nearest `double`: the same value `std::strtod` or Python's
- * `float` gives for the decimal's text (`Decimal64(7, 2)` gives `0.07`). Beyond either bound it is an
- * approximation.
+ * quantity the bundled brokers quote) and 22 decimal places, both operands are exact, so in IEEE
+ * double arithmetic's default round-to-nearest mode the result is the nearest `double`: the same
+ * value `std::strtod` or Python's `float` gives for the decimal's text (`Decimal64(7, 2)` gives
+ * `0.07`). Beyond either bound it is an approximation.
  *
  * @param value The decimal to convert.
  * @return The nearest `Scalar` to `value`, within the bounds above.

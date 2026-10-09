@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <initializer_list>
 #include <limits>
@@ -46,6 +47,13 @@ TEST_CASE("a decimal converts to the nearest double, as its text parses") {
   for (const char* text : {"0.07", "0.29", "185.71", "16896.7559", "98765.43219", "1234567.891234",
                            "-0.1", "70000.5", "70000", "0.000001", "9007199254740.991"}) {
     REQUIRE(to_scalar(Decimal64::parse(text)) == std::strtod(text, nullptr));
+  }
+  // The edges of the promise: 53 bits of coefficient, either sign, and 22 places.
+  const std::int64_t widest = (std::int64_t{1} << 53) - 1;
+  for (const auto& value : {Decimal64(1, 22), Decimal64(-1, 22), Decimal64(widest, 22),
+                            Decimal64(-widest, 22), Decimal64(7612685828371001, 15), Decimal64(widest, 0),
+                            Decimal64(std::numeric_limits<std::int64_t>::min(), 0)}) {
+    REQUIRE(to_scalar(value) == std::strtod(value.str().c_str(), nullptr));
   }
 }
 
