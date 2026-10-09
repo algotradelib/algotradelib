@@ -2930,6 +2930,7 @@ private:
       // What a listing still shows of it: that part cannot have reached holdings.
       Decimal64 listed = zero;
       entry.listed_now_ = false;
+      std::optional<Decimal64> listed_filled;
       for (const auto& working : portfolio.working_) {
         if (!working.reserved_ && !entry.ref_.primary_.empty() && working.ref_.primary_ == entry.ref_.primary_ &&
             working.order_.instrument_ == entry.instrument_ && working.order_.side_ == entry.side_ &&
@@ -2937,8 +2938,21 @@ private:
           entry.listed_ = true;
           entry.listed_now_ = true;
           listed = decimal_subtract(working.order_.quantity_, working.order_.execution_.filled_quantity_).value_or(zero);
+          listed_filled = working.order_.execution_.filled_quantity_;
           break;
         }
+      }
+      // A listing of its own reporting more filled than it was for, or than its history said it ended with,
+      // contradicts what is known: held for an operator before the listing can move on and the contradiction
+      // be forgotten. (Holding is the safe direction, so an undated row may prove it.)
+      if (listed_filled && !entry.operator_only_ &&
+          (decimal_less(entry.row_.order_.quantity_, *listed_filled) ||
+           (entry.settled_ && decimal_less(entry.expected_, *listed_filled)))) {
+        hold_for_operator(
+          entry, "an order this runner sent" + named(entry) + " is listed with " + listed_filled->str() +
+                   " filled, more than " + (entry.settled_ ? "its history said it ended with (" + entry.expected_.str() + ")" :
+                                                             "it was for")
+        );
       }
       // The holding, and its movement in the order's direction since the baseline, from an actual read.
       std::optional<Decimal64> held;

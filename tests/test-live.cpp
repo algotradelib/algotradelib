@@ -5798,3 +5798,37 @@ TEST_CASE("a final fill the history supplies is taken in before holdings can acc
     CHECK(rig.owed() == runner::ObligationState::NONE);
   }
 }
+
+TEST_CASE("a listing reporting more filled than an order's history said it ended with holds it", "[serialized]") {
+  // Codex round 3 C8: the listing only delayed the discharge, and once it moved on the old cap accounted
+  // for the order and a target bought six more.
+  using runner::JournalOutcome;
+  SerialRig rig({serial_line("p-1", JournalOutcome::PENDING), serial_line("p-1", JournalOutcome::ACCEPTED, "B")});
+  rig.runner_instance.confirm_from_history({dated_row("B", at_hour(-1), "4")});
+  REQUIRE(rig.owed() == runner::ObligationState::NAMED);
+
+  rig.session.set_working_orders(WorkingOrders<FakeBroker>{});
+  live::SessionSource<SerialSession, SwitchableJournal> source(rig.session, {samsung()});
+  source.set_journal(rig.journal);
+  rig.show(polled(1, "4", {}));
+  auto listed = listed_row("B", OrderSide::BUY, "10", "5");
+  listed.order_.ordered_at_ = at_hour(-1);
+  WorkingOrders<FakeBroker> orders;
+  orders.orders_.push_back(listed);
+  rig.session.set_working_orders(orders);
+  REQUIRE(source.poll(runner::PollKind::WORKING_ORDERS, rig.runner_instance) == runner::PollOutcome::UPDATED);
+  // Within the poll itself, before anything else runs.
+  CHECK(rig.owed() == runner::ObligationState::OPERATOR);
+  CHECK(rig.lines(JournalOutcome::HELD).size() == 1);
+
+  // Gone from the listing, holdings still four: no account, no second buy, across a restart too.
+  rig.session.set_working_orders(WorkingOrders<FakeBroker>{});
+  REQUIRE(source.poll(runner::PollKind::WORKING_ORDERS, rig.runner_instance) == runner::PollOutcome::UPDATED);
+  rig.runner_instance.ledger().resolve_after_reading_orders(samsung());
+  rig.show(polled(2, "4", {}));
+  rig.bar(3, {target_of("10")});
+  CHECK(rig.session.placed().empty());
+  CHECK(rig.lines(JournalOutcome::CONFIRMED).empty());
+  SerialRig restarted(rig.journal.records());
+  CHECK(restarted.owed() == runner::ObligationState::OPERATOR);
+}
