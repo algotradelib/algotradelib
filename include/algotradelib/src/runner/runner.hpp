@@ -866,15 +866,18 @@ public:
    *   holds its instrument until it has filled or been withdrawn and is accounted for, and a target cannot
    *   reprice its own order: cancel it with a `CancelIntent` and state the target again. A withheld target
    *   is kept and planned again after a newer holdings read; an order intent is reported, not kept. A
-   *   target waiting for its stop's withdrawal (`deferred_targets`) waits for the stop to be accounted
-   *   for too;
+   *   target that would withdraw a resting stop and wait for it (`deferred_targets`) is withheld the same
+   *   way while the stop is this runner's unaccounted order: withdraw the stop with a `CancelIntent`
+   *   first;
    * - an order is accounted for when a holdings read shows exactly the holding it was decided against
    *   plus what it filled (all of it, or what its own dated, ended history row says), or that row shows it
    *   ended with nothing filled. The journal records it (`JournalOutcome::CONFIRMED`) before the
    *   instrument is free again, and only a holdings read received after it sizes the next order;
-   * - an order whose reply was lost is accounted for only once a sweep names it, and holdings that move
-   *   past what an order can explain hold it for an operator (`JournalOutcome::HELD`); see
-   *   `release_obligations`. A timeout marks the ledger but releases nothing;
+   * - an order whose reply was lost is accounted for only once a sweep names it and a dated history row of
+   *   its send confirms the name. Holdings that move past what an order can explain, or a history row of
+   *   its own reporting more filled than it was for, hold it for an operator (`JournalOutcome::HELD`);
+   *   see `release_obligations`. A holdings read older than the one an order was decided against says
+   *   nothing about it. A timeout marks the ledger but releases nothing;
    * - `runner::recover_runner` restores every order a previous process left unaccounted for, so a
    *   restart cannot send it again, and nothing is placed before it has run. Orders from an overlapping
    *   or older journal, or two on one instrument, are restored for an operator to release.
@@ -933,6 +936,34 @@ public:
       }
     }
     return state;
+  }
+
+  /**
+   * @brief Lists the orders a serialized runner still owes on an instrument, for an operator.
+   * @param instrument The instrument.
+   * @return One entry per order, in the order sent; empty if none or the runner is not serialized.
+   */
+  std::vector<Obligation> obligations(const InstrumentId& instrument) const {
+    std::vector<Obligation> owed;
+    if (!serialized()) {
+      return owed;
+    }
+    for (const auto& entry : unconfirmed_) {
+      if (!(entry.instrument_ == instrument)) {
+        continue;
+      }
+      Obligation obligation;
+      obligation.journal_id_ = entry.journal_ ? entry.journal_->id_ : std::string();
+      obligation.order_id_ = entry.ref_.primary_;
+      obligation.side_ = entry.side_;
+      obligation.quantity_ = entry.expected_;
+      obligation.sent_at_ = entry.sent_at_;
+      obligation.state_ = entry.operator_only_  ? ObligationState::OPERATOR :
+                          entry.ref_.primary_.empty() ? ObligationState::UNNAMED :
+                                                        ObligationState::NAMED;
+      owed.push_back(std::move(obligation));
+    }
+    return owed;
   }
 
   /**
@@ -1088,6 +1119,11 @@ public:
    * @param evidence History rows covering the instants `unconfirmed_awaiting_evidence` asked for.
    */
   void confirm_from_history(const std::vector<OrderSnapshot>& evidence) {
+    // Serialized: what the evidence says against an order, or for the name a sweep gave it, is taken in
+    // before anything can account for the order (the refresh below may).
+    if (serialized()) {
+      examine_evidence(evidence);
+    }
     confirm_reservations();
     const auto now = freshness_instant();
     for (auto& entry : unconfirmed_) {
@@ -1099,18 +1135,15 @@ public:
       if (entry.ref_.primary_.empty()) {
         continue;
       }
-      const auto* row = history_row_for(
-        evidence, entry.ref_.primary_, entry.instrument_, entry.side_,
-        entry.sent_at_ - order_time_tolerance_, entry.sent_at_ + order_time_tolerance_
-      );
-      // Serialized: only a dated row that ended the order and filled no more than it, and none while a
-      // listing still shows the order open, since one of the two is wrong. A row an undated read
-      // returned, or a session's close, says nothing: holdings can still show the whole quantity.
-      if (row != nullptr && serialized() &&
-          (!row->ordered_at_ || entry.listed_now_ || !ends_the_order(row->status_) ||
-           decimal_less(entry.row_.order_.quantity_, row->execution_.filled_quantity_))) {
-        row = nullptr;
-      }
+      // Serialized: only rows that all say the order ended, dated and filling the same, and none while a
+      // listing still shows it open, since one of the two is wrong. An undated row, or a session's close,
+      // says nothing: holdings can still show the whole quantity.
+      const auto* row = !serialized() ?
+        history_row_for(
+          evidence, entry.ref_.primary_, entry.instrument_, entry.side_,
+          entry.sent_at_ - order_time_tolerance_, entry.sent_at_ + order_time_tolerance_
+        ) :
+        entry.listed_now_ || entry.operator_only_ ? nullptr : ended_row_for(evidence, entry);
       if (row != nullptr && ((entry.session_ended_ && !serialized()) || !strategy::order_is_open(row->status_))) {
         if (decimal_less(row->execution_.filled_quantity_, entry.expected_)) {
           entry.expected_ = row->execution_.filled_quantity_;
@@ -1666,15 +1699,23 @@ private:
       // **Serialized: decided on the plan, before any of its withdrawals go.** A plan whose placement will
       // be withheld must not withdraw first: a reprice would become a bare withdrawal, and a protective
       // order could be withdrawn with its replacement left waiting. A plan that only withdraws is not
-      // held; one that withdraws a stop and defers its target waits for the stop to be accounted for in
-      // `release_deferred` instead.
-      if (serialized() && !planned.place_.empty()) {
+      // held.
+      // A target behind a resting stop places later: its plan withdraws the stop and waits
+      // (`STOP_ORDER_RESTING`), so it is decided here too, or the stop could go with nothing to follow it.
+      const bool defers = !planned.cancel_.empty() &&
+        std::any_of(planned.rejected_.begin(), planned.rejected_.end(), [](const strategy::Rejection& rejection) {
+          return rejection.reason_ == strategy::RejectReason::STOP_ORDER_RESTING;
+        });
+      if (serialized() && (!planned.place_.empty() || defers)) {
         std::optional<std::string> hold;
         for (const auto& order : planned.place_) {
           hold = serial_hold(order.instrument_, claimed);
           if (hold) {
             break;
           }
+        }
+        if (!hold && defers) {
+          hold = serial_hold(instruction_instrument(instruction), claimed);
         }
         if (hold) {
           ++plans_withheld_;
@@ -1693,6 +1734,9 @@ private:
         }
         for (const auto& order : planned.place_) {
           claimed.push_back(order.instrument_);
+        }
+        if (defers) {
+          claimed.push_back(instruction_instrument(instruction));
         }
       }
       for (const auto& ref : planned.cancel_) {
@@ -2109,6 +2153,11 @@ private:
     bool operator_only_{false};
     // Whether its timeout has marked the ledger, which happens once.
     bool noticed_{false};
+    // Whether its name is the broker's own: given at acceptance, or confirmed by a dated history row of
+    // its send. A name a sweep gave from a listing may belong to another day's order.
+    bool identified_{false};
+    // The holdings read it was decided against; an older one says nothing about it.
+    std::chrono::system_clock::time_point baseline_at_{};
   };
 
   // The instant after which a holdings read may size the next order on an instrument (serialized
@@ -2197,6 +2246,62 @@ private:
     return status == OrderStatus::FILLED || status == OrderStatus::CANCELED || status == OrderStatus::REJECTED;
   }
 
+  // The rows that are `entry`'s own order: its number, instrument and side, dated within the tolerance of
+  // its send. An undated row is nobody's in particular.
+  bool own_row(const OrderSnapshot& row, const Unconfirmed& entry) const {
+    return row.order_id_ == entry.ref_.primary_ && row.instrument_ == entry.instrument_ && row.side_ == entry.side_ &&
+      row.ordered_at_ && !(*row.ordered_at_ < entry.sent_at_ - order_time_tolerance_) &&
+      !(entry.sent_at_ + order_time_tolerance_ < *row.ordered_at_);
+  }
+
+  // The history row that settles a serialized order: every row with its number, instrument and side (and,
+  // where dated, inside its window) is dated, ended it, and filled the same, no more than it was for.
+  // Otherwise none: an undated row may be another day's order, and `CANCEL_REJECTED` beside `CANCELED`
+  // means the pages disagree about whether it ended.
+  const OrderSnapshot* ended_row_for(const std::vector<OrderSnapshot>& evidence, const Unconfirmed& entry) const {
+    const OrderSnapshot* found = nullptr;
+    for (const auto& row : evidence) {
+      if (row.order_id_ != entry.ref_.primary_ || !(row.instrument_ == entry.instrument_) || row.side_ != entry.side_) {
+        continue;
+      }
+      if (row.ordered_at_ && !own_row(row, entry)) {
+        continue;
+      }
+      if (!row.ordered_at_ || !ends_the_order(row.status_) ||
+          decimal_less(entry.row_.order_.quantity_, row.execution_.filled_quantity_) ||
+          (found != nullptr && (decimal_less(found->execution_.filled_quantity_, row.execution_.filled_quantity_) ||
+                                decimal_less(row.execution_.filled_quantity_, found->execution_.filled_quantity_)))) {
+        return nullptr;
+      }
+      found = &row;
+    }
+    return found;
+  }
+
+  // Takes in what history rows say about each named order, before anything accounts for it: a row of its
+  // own reporting more filled than it was for holds it for an operator, and any row of its own confirms a
+  // name a sweep gave it.
+  void examine_evidence(const std::vector<OrderSnapshot>& evidence) {
+    for (auto& entry : unconfirmed_) {
+      if (entry.operator_only_ || entry.ref_.primary_.empty()) {
+        continue;
+      }
+      for (const auto& row : evidence) {
+        if (!own_row(row, entry)) {
+          continue;
+        }
+        if (decimal_less(entry.row_.order_.quantity_, row.execution_.filled_quantity_)) {
+          hold_for_operator(
+            entry, "its history row reports " + row.execution_.filled_quantity_.str() + " filled, more than the " +
+                     entry.row_.order_.quantity_.str() + " an order this runner sent" + named(entry) + " was for"
+          );
+          break;
+        }
+        entry.identified_ = true;
+      }
+    }
+  }
+
   // The line that accounts for, or holds, an order (serialized mode).
   static JournalEntry closing_line(
     const Unconfirmed& entry, JournalOutcome outcome, std::optional<Decimal64> holding, std::string detail
@@ -2271,6 +2376,8 @@ private:
       JournalEntry line_;
       std::chrono::system_clock::time_point sent_at_{};
       std::string name_;
+      // Whether the name came with the broker's acceptance rather than from a sweep.
+      bool accepted_{false};
       bool done_{false};
       bool operator_only_{false};
       std::string why_;
@@ -2287,7 +2394,7 @@ private:
       auto fold = known == fold_of.end() ? folds.end() : folds.begin() + static_cast<std::ptrdiff_t>(known->second);
       if (fold == folds.end()) {
         fold_of.emplace(line.id_, folds.size());
-        folds.push_back(Fold{line, line.recorded_at_, {}, false, false, {}});
+        folds.push_back(Fold{line, line.recorded_at_, {}, false, false, false, {}});
         fold = std::prev(folds.end());
         if (closing) {
           fold->line_.baseline_.reset();
@@ -2310,6 +2417,7 @@ private:
         case JournalOutcome::RESOLVED:
           if (!line.order_id_.empty()) {
             fold->name_ = line.order_id_;
+            fold->accepted_ = line.outcome_ == JournalOutcome::ACCEPTED;
           }
           break;
         case JournalOutcome::CONFIRMED:
@@ -2344,6 +2452,9 @@ private:
       entry.expected_ = fold.line_.quantity_;
       entry.baseline_ = fold.line_.baseline_.value_or(Decimal64::parse("0"));
       entry.sent_at_ = fold.sent_at_;
+      // On the shared clock (`serialized`): a holdings read older than the order's own line says nothing.
+      entry.baseline_at_ = fold.sent_at_;
+      entry.identified_ = fold.accepted_;
       entry.residual_ = fold.line_.quantity_;
       entry.restored_ = true;
       entry.operator_only_ = fold.operator_only_ || !fold.line_.baseline_;
@@ -2417,7 +2528,9 @@ private:
           if (ref && !indeterminate) {
             entry.ref_ = *ref;
             entry.broker_ref_ = !ref->primary_.empty();
+            entry.identified_ = entry.broker_ref_;
           }
+          entry.baseline_at_ = portfolio.as_of_;
           entry.instrument_ = order.instrument_;
           entry.side_ = order.side_;
           entry.expected_ = order.quantity_;
@@ -2533,6 +2646,11 @@ private:
     // hold -- an operator clearing an `ambiguous` sweep by hand -- it is an ordinary entry again: its
     // history read finds no row, and a holdings read a timeout on withholds the instrument, counted,
     // rather than leaving an order that may never have existed reserved for the rest of the run.
+    // Serialized, a name a sweep gave needs a row of the order's own day before it counts, however much of
+    // the order holdings already show.
+    if (serialized() && !entry.operator_only_ && !entry.ref_.primary_.empty() && !entry.identified_) {
+      return true;
+    }
     // Serialized, an order nobody named waits for a sweep or an operator, and one held for an operator
     // waits for the operator: no history row can be matched to the first or account for the second.
     if (entry.residual_.coefficient() == 0 || entry.settled_ || entry.history_missed_ || entry.operator_only_ ||
@@ -2770,10 +2888,11 @@ private:
   void confirm_serialized(strategy::Portfolio<Tag>& portfolio, std::chrono::system_clock::time_point now) {
     const auto zero = Decimal64::parse("0");
     const auto epoch = std::chrono::system_clock::time_point{};
-    const bool read = portfolio.as_of_ != epoch;
     const auto equal = [](const Decimal64& a, const Decimal64& b) { return !decimal_less(a, b) && !decimal_less(b, a); };
     for (auto at = unconfirmed_.begin(); at != unconfirmed_.end();) {
       auto& entry = *at;
+      // An actual read, and not one older than the read the order was decided against.
+      const bool read = portfolio.as_of_ != epoch && !(portfolio.as_of_ < entry.baseline_at_);
       // What a listing still shows of it: that part cannot have reached holdings.
       Decimal64 listed = zero;
       entry.listed_now_ = false;
@@ -2798,7 +2917,7 @@ private:
         }
       }
       const bool is_named = !entry.ref_.primary_.empty();
-      if (!entry.operator_only_ && is_named && !entry.listed_now_) {
+      if (!entry.operator_only_ && is_named && entry.identified_ && !entry.listed_now_) {
         if (entry.expected_.coefficient() == 0) {
           if (discharge(entry, std::nullopt, "its own history row shows it ended with nothing filled")) {
             at = unconfirmed_.erase(at);

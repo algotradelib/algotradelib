@@ -4,6 +4,7 @@
 
 #include <algotradelib/core>
 
+#include <chrono>
 #include <string>
 #include <type_traits>
 #include <string_view>
@@ -309,6 +310,22 @@ enum class ObligationState {
   UNNAMED,
   /** @brief An order only an operator may account for (`Runner::release_obligations`). */
   OPERATOR,
+};
+
+/** @brief One order a serialized runner still owes (`Runner::obligations`). */
+struct Obligation {
+  /** @brief The id of the order's journal lines. */
+  std::string journal_id_;
+  /** @brief The broker's order id; empty while unnamed. */
+  std::string order_id_;
+  /** @brief The side. */
+  OrderSide side_{OrderSide::BUY};
+  /** @brief The quantity holdings must still account for. */
+  Decimal64 quantity_;
+  /** @brief When it was sent, on the journal's clock. */
+  std::chrono::system_clock::time_point sent_at_{};
+  /** @brief Its state: `NAMED`, `UNNAMED` or `OPERATOR`. */
+  ObligationState state_{ObligationState::NAMED};
 };
 
 /**
