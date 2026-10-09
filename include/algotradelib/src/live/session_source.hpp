@@ -1071,7 +1071,8 @@ private:
         runner_instance.resolve_indeterminate_placement(
           instruction.entry_.instrument_, instruction.entry_.side_,
           match.verdict_ == runner::MatchVerdict::MATCHED ? std::optional<std::string>(match.order_id_) :
-                                                            std::nullopt
+                                                            std::nullopt,
+          instruction.entry_.id_
         );
         break;
       }
@@ -1144,7 +1145,7 @@ private:
       for (const auto& row : page) {
         bool copy = false;
         for (const auto& held : into) {
-          if (runner::exact_copy(held, row)) {
+          if (same_history_row(held, row)) {
             copy = true;
             break;
           }
@@ -1210,12 +1211,12 @@ private:
         last_error_ = result.error();
         return false;
       }
-      // A row already read is dropped only as an exact copy (`runner::exact_copy`): a range spans days,
+      // A row already read is dropped only as an exact copy (`same_history_row`): a range spans days,
       // and two days' orders can share a number.
       for (const auto& row : result.value().orders_) {
         bool copy = false;
         for (const auto& held : into) {
-          if (runner::exact_copy(held, row)) {
+          if (same_history_row(held, row)) {
             copy = true;
             break;
           }
@@ -1240,6 +1241,15 @@ private:
     // Every `false` carries an error about this read: a caller reports `*last_error_`.
     last_error_ = history_page_limit(maximum_history_pages_);
     return false;
+  }
+
+  // Whether two history rows are the same report of one order: `runner::exact_copy`, and the same status
+  // and filled quantity. Two reads that disagree about an order are both kept, so whoever reads them
+  // sees the disagreement rather than whichever came first.
+  static bool same_history_row(const OrderSnapshot& a, const OrderSnapshot& b) {
+    return runner::exact_copy(a, b) && a.status_ == b.status_ &&
+      !decimal_less(a.execution_.filled_quantity_, b.execution_.filled_quantity_) &&
+      !decimal_less(b.execution_.filled_quantity_, a.execution_.filled_quantity_);
   }
 
   Session* session_;

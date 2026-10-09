@@ -556,7 +556,7 @@ inline bool known_entry_key(std::string_view key) {
   static constexpr std::string_view known[] = {
     "id", "action", "outcome", "symbol", "country", "venue", "side", "type", "time_in_force",
     "session", "route", "quantity", "price", "trigger", "at", "at_text", "order_id", "detail",
-    "requires_operator", "scope", "crc",
+    "requires_operator", "scope", "crc", "baseline",
   };
   for (const auto candidate : known) {
     if (candidate == key) {
@@ -675,6 +675,10 @@ inline std::string journal_entry_to_line(const JournalEntry& entry) {
   // what an earlier writer produced.)
   if (entry.trigger_price_) {
     row["trigger"] = entry.trigger_price_->str();
+  }
+  // Only on a serialized runner's lines, so an overlapping runner's journal reads as before.
+  if (entry.baseline_) {
+    row["baseline"] = entry.baseline_->str();
   }
   // The authoritative instant, exact on every platform. `at_text` beside it is for the operator
   // reading the file with `tail`, is only second-resolution, and is never read back: one field is
@@ -828,6 +832,7 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
   const auto quantity = parsed("quantity", journal_detail::known_decimal_from);
   const auto price = parsed("price", journal_detail::known_decimal_from);
   const auto trigger = parsed("trigger", journal_detail::known_decimal_from);
+  const auto baseline = parsed("baseline", journal_detail::known_decimal_from);
 
   const bool damaged =
     // Identity and the fields every complete line carries: required outright.
@@ -845,6 +850,7 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
     // The same rule for a stop's trigger: absent on every other order and on every line written
     // before the field existed, and a present value that does not parse is damage.
     unusable("trigger", trigger.has_value()) ||
+    unusable("baseline", baseline.has_value()) ||
     // Checked above, where a changed line becomes unreadable rather than damaged; restated so the
     // condition reads whole.
     !checksum_holds ||
@@ -910,6 +916,7 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
   if (trigger) {
     entry.trigger_price_ = *trigger;
   }
+  entry.baseline_ = baseline;
   entry.recorded_at_ = journal_detail::instant_from(at->as_int64());
   entry.order_id_ = journal_detail::string_field(row, "order_id");
   entry.detail_ = journal_detail::string_field(row, "detail");

@@ -15,7 +15,9 @@
  *  2. **Bind through the journal** (`live::bind_journaled`). `live::bind` has no journal, so an order in
  *     flight when the process dies leaves no trace, and the next start may send it again.
  *  3. **Recover before the loop starts** (`runner::recover_runner`), so whatever a previous process
- *     left owed is withheld until the broker's own lists resolve it.
+ *     left owed is withheld until the broker's own lists resolve it. The runner is serialized
+ *     (`Runner::serialized`): it places nothing before recovery, and each order owns its instrument
+ *     until holdings account for it, across restarts too.
  *  4. **Let the source resolve the journal** (`SessionSource::set_journal`). Without it every
  *     recovered instrument stays withheld forever.
  *  5. **State every age the loop asks about.** A run that states none holds; a run that says

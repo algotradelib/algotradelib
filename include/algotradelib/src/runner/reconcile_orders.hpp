@@ -968,7 +968,8 @@ RecoveryReport recover_into(const Journal& journal, IndeterminacyLedger& ledger)
 }
 
 /**
- * @brief Recovers a journal into a runner at startup: marks each instrument left owed, and halts the
+ * @brief Recovers a journal into a runner at startup: marks each instrument left owed, restores a
+ *   serialized runner's orders not yet accounted for (`Runner::restore_obligations`), and halts the
  *   runner when damage names no instrument.
  *
  * The runner is halted (`LOCAL_FAILURE`) when a torn line names no instrument, a complete line does
@@ -983,7 +984,11 @@ RecoveryReport recover_into(const Journal& journal, IndeterminacyLedger& ledger)
  */
 template <typename Runner, typename Journal>
 RecoveryReport recover_runner(Runner& runner_instance, const Journal& journal) {
-  auto report = recover_into(journal.replay(), runner_instance.ledger());
+  const auto replay = journal.replay();
+  auto report = recover_into(replay, runner_instance.ledger());
+  // A serialized runner also gets back every order it may still owe (`Runner::restore_obligations`),
+  // and places nothing until this has run.
+  runner_instance.restore_obligations(replay);
   if (report.unattributable_) {
     runner_instance.halt_locally(
       report.detail_.empty() ?
