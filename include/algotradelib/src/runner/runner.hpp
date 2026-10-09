@@ -758,9 +758,8 @@ public:
    * An accepted order not tracked (no reference, or sent before holdings were read, as
    * `allow_absent_portfolio` permits) has no such protection: its reservation lasts only until the
    * next listing. An order of unknown outcome not tracked (an executor without `last_ref()`) gets no
-   * reservation at all once the ledger entry is resolved. Without serialization only orders sent in
-   * this process are tracked, and a restart starts with none; a serialized runner tracks every order it
-   * sends and restores the ones still owed (`serialized`).
+   * reservation at all once the ledger entry is resolved. Only orders sent in this process are tracked,
+   * and a restart starts with none, unless the runner is serialized (`serialized`).
    *
    * @return The number of such orders.
    */
@@ -782,9 +781,8 @@ public:
    * operator clearing the ledger by hand, should too, or the order's instrument is withheld again
    * after the confirmation timeout.
    *
-   * A serialized runner (`serialized`) names only the order whose journal line is `journal_id`, and
-   * forgets nothing: absence from a listing is not proof that the order was never placed, so the order
-   * stays until holdings or an operator account for it (`release_obligations`).
+   * A serialized runner names only the order whose journal line is `journal_id`, and forgets nothing
+   * (`serialized`).
    *
    * @param instrument The instrument.
    * @param side The order's side.
@@ -950,7 +948,7 @@ public:
    * @param reason Why, for the journal.
    * @return `false` if any line could not be written.
    */
-  bool release_obligations(const InstrumentId& instrument, const std::string& reason) {
+  bool release_obligations([[maybe_unused]] const InstrumentId& instrument, [[maybe_unused]] const std::string& reason) {
     bool written = true;
     if constexpr (can_serialize) {
       for (auto at = unconfirmed_.begin(); at != unconfirmed_.end();) {
@@ -970,9 +968,6 @@ public:
         at = unconfirmed_.erase(at);
       }
       confirm_reservations();
-    } else {
-      (void)instrument;
-      (void)reason;
     }
     return written;
   }
@@ -990,15 +985,13 @@ public:
    *
    * @param replay The journal's contents.
    */
-  void restore_obligations(const JournalReplay& replay) {
+  void restore_obligations([[maybe_unused]] const JournalReplay& replay) {
     recovered_ = true;
     if constexpr (can_serialize) {
       if (!serialized()) {
         return;
       }
       restore_from(replay);
-    } else {
-      (void)replay;
     }
   }
 
@@ -1081,9 +1074,8 @@ public:
    * A terminal row for an order caps the quantity holdings must still show at its filled quantity;
    * an order that ended with nothing filled is forgotten at once. After the runner has seen the phase
    * `CLOSED` or `POST_CLOSE` since the order was sent, an open row of a `DAY` order counts as
-   * terminal (its filled quantity is final). A serialized runner (`serialized`) infers nothing from the
-   * phase: it caps only from dated rows that agree the order ended, and holds the order for an operator
-   * when the rows contradict it. An order the history settled, or had no answer for
+   * terminal (its filled quantity is final); not for a serialized runner, whose rules are under
+   * `serialized`. An order the history settled, or had no answer for
    * after the timeout, withholds its instrument (`orders_unconfirmed_timed_out`) if a holdings read
    * a timeout later still does not show it; see `set_confirmation_timeout`.
    *
@@ -2045,13 +2037,12 @@ private:
   }
 
   // Sends one order, stating the baseline to the journal in serialized mode.
-  SendOutcome place_order(const strategy::PlannedOrder& order, const std::optional<Decimal64>& baseline) {
+  SendOutcome place_order(const strategy::PlannedOrder& order, [[maybe_unused]] const std::optional<Decimal64>& baseline) {
     if constexpr (can_serialize) {
       if (serialized()) {
         return executor_.place(order, baseline);
       }
     }
-    (void)baseline;
     return executor_.place(order);
   }
 
@@ -2126,6 +2117,162 @@ private:
     // Why it is held for an operator, while that hold's `HELD` line is not yet written.
     std::string unwritten_hold_;
   };
+
+  // ---------------------------------------------------------------------------------------------------
+  // Serialized mode (`serialized`): one order per instrument until holdings or its own history account
+  // for it. In order: the gate (`serial_hold`), evidence (`examine_evidence`), discharge and hold
+  // (`confirm_serialized`), restore (`restore_from`). Everything here runs only when `serialized()`.
+  // ---------------------------------------------------------------------------------------------------
+
+  // `track_unconfirmed` for a serialized runner: every order, named or not, with the baseline the send
+  // stated and the journal line it wrote. The gate guaranteed the holdings.
+  void track_serialized(
+    const strategy::PlannedOrder& order, const std::optional<OrderRef<Tag>>& ref, bool indeterminate,
+    const Decimal64& baseline
+  ) {
+    const auto& portfolio = context_.portfolio();
+    Unconfirmed entry;
+    if (ref && !indeterminate) {
+      entry.ref_ = *ref;
+      entry.broker_ref_ = !ref->primary_.empty();
+      entry.identified_ = entry.broker_ref_;
+    }
+    entry.baseline_at_ = portfolio.as_of_;
+    entry.instrument_ = order.instrument_;
+    entry.side_ = order.side_;
+    entry.expected_ = order.quantity_;
+    entry.baseline_ = baseline;
+    entry.row_ = portfolio.working_.back();
+    entry.sent_at_ = freshness_instant();
+    entry.residual_ = order.quantity_;
+    entry.journal_ = executor_.last_entry();
+    if (entry.sent_at_ != std::chrono::system_clock::time_point{}) {
+      entry.unexplained_since_ = entry.sent_at_;
+    }
+    unconfirmed_.push_back(std::move(entry));
+  }
+
+  // Whether a reserved row carries the reference the broker gave when it accepted the order.
+  bool cancellable_reservation(const WorkingOrder<Tag>& working) const {
+    if (working.ref_.primary_.empty()) {
+      return false;
+    }
+    for (const auto& entry : unconfirmed_) {
+      if (is_reserved_row_of(working, entry)) {
+        return entry.broker_ref_;
+      }
+    }
+    return true;
+  }
+
+  // The serialized half of `confirm_reservations`: one order per instrument, so no group arithmetic.
+  //
+  // Each order is accounted for, with a `CONFIRMED` line written first, when it is named, no listing
+  // shows it open, and either its history capped what it filled at zero, or a holdings read shows
+  // exactly its baseline plus what it filled. Holdings past that hold it for an operator. Anything else
+  // rebuilds its reserved row from what nothing explains yet; a timeout marks the ledger once and
+  // releases nothing.
+  void confirm_serialized(strategy::Portfolio<Tag>& portfolio, std::chrono::system_clock::time_point now) {
+    const auto zero = Decimal64::parse("0");
+    const auto epoch = std::chrono::system_clock::time_point{};
+    const auto equal = [](const Decimal64& a, const Decimal64& b) { return !decimal_less(a, b) && !decimal_less(b, a); };
+    for (auto at = unconfirmed_.begin(); at != unconfirmed_.end();) {
+      auto& entry = *at;
+      persist_hold(entry);
+      // An actual read, and not one older than the read the order was decided against.
+      const bool read = portfolio.as_of_ != epoch && !(portfolio.as_of_ < entry.baseline_at_);
+      // What a listing still shows of it: that part cannot have reached holdings.
+      Decimal64 listed = zero;
+      entry.listed_now_ = false;
+      std::optional<Decimal64> listed_filled;
+      if (const auto* working = broker_row_for(portfolio, entry)) {
+        entry.listed_ = true;
+        entry.listed_now_ = true;
+        listed = decimal_subtract(working->order_.quantity_, working->order_.execution_.filled_quantity_).value_or(zero);
+        listed_filled = working->order_.execution_.filled_quantity_;
+      }
+      // A listing of its own reporting more filled than it was for, or than its history said it ended with,
+      // contradicts what is known: held for an operator before the listing can move on and the contradiction
+      // be forgotten. (Holding is the safe direction, so an undated row may prove it.)
+      if (listed_filled && !entry.operator_only_ &&
+          (decimal_less(entry.row_.order_.quantity_, *listed_filled) ||
+           (entry.settled_ && decimal_less(entry.expected_, *listed_filled)))) {
+        hold_for_operator(
+          entry, "an order this runner sent" + named(entry) + " is listed with " + listed_filled->str() +
+                   " filled, more than " + (entry.settled_ ? "its history said it ended with (" + entry.expected_.str() + ")" :
+                                                             "it was for")
+        );
+      }
+      // The holding, and its movement in the order's direction since the baseline, from an actual read.
+      std::optional<Decimal64> held;
+      std::optional<Decimal64> moved;
+      if (read) {
+        held = portfolio.net_quantity_of(entry.instrument_);
+        if (held) {
+          moved = entry.side_ == OrderSide::BUY ? decimal_subtract(*held, entry.baseline_) :
+                                                  decimal_subtract(entry.baseline_, *held);
+        }
+      }
+      const bool is_named = !entry.ref_.primary_.empty();
+      if (!entry.operator_only_ && is_named && entry.identified_ && !entry.listed_now_) {
+        if (entry.expected_.coefficient() == 0) {
+          if (discharge(entry, std::nullopt, "its own history row shows it ended with nothing filled")) {
+            at = unconfirmed_.erase(at);
+            continue;
+          }
+        } else if (moved && equal(*moved, entry.expected_)) {
+          if (discharge(entry, held, "holdings show " + held->str() + ": its baseline " + entry.baseline_.str() +
+                                       " and the " + entry.expected_.str() + " it filled")) {
+            set_boundary(entry.instrument_, portfolio.as_of_, /*strict=*/false);
+            at = unconfirmed_.erase(at);
+            continue;
+          }
+        } else if (moved && decimal_less(entry.expected_, *moved)) {
+          hold_for_operator(
+            entry, "holdings moved " + moved->str() + " from the baseline " + entry.baseline_.str() + ", more than the " +
+                     entry.expected_.str() + " an order this runner sent" + named(entry) + " can explain"
+          );
+        }
+      }
+
+      // What nothing explains yet: what it expects, less what holdings show of it, less what is listed.
+      Decimal64 covered = zero;
+      const auto fillable = decimal_subtract(entry.expected_, listed).value_or(zero);
+      if (!entry.operator_only_ && moved && decimal_less(zero, *moved) && decimal_less(zero, fillable)) {
+        covered = decimal_less(*moved, fillable) ? *moved : fillable;
+      }
+      auto residual = decimal_subtract(fillable, covered).value_or(entry.expected_);
+      if (!decimal_less(zero, residual)) {
+        mark_explained(entry);
+        ++at;
+        continue;
+      }
+      entry.residual_ = residual;
+      // Not from the epoch: a restored order's clock starts with the first real instant.
+      if (!entry.unexplained_since_ && now != epoch) {
+        entry.unexplained_since_ = now;
+      }
+      if (!entry.noticed_ && !entry.operator_only_ && (entry.settled_ || entry.history_missed_ || !is_named) &&
+          timed_out(entry, now) && portfolio.as_of_ - *entry.unexplained_since_ > confirmation_timeout_) {
+        // A notice, not a release: the order still holds its instrument, and later evidence can still
+        // account for it.
+        entry.noticed_ = true;
+        ++orders_unconfirmed_timed_out_;
+        ledger_.mark(
+          entry.instrument_,
+          "an order this runner sent" + named(entry) +
+            " was not accounted for by holdings within the confirmation timeout; it still holds the instrument"
+        );
+      }
+      // Not shown while the ledger holds an order not yet named; see the overlapping branch.
+      if (!is_named && ledger_.requires_reconcile(entry.instrument_)) {
+        ++at;
+        continue;
+      }
+      rebuild_residual_row(portfolio, entry, residual);
+      ++at;
+    }
+  }
 
   // The instant after which a holdings read may size the next order on an instrument (serialized
   // mode): the read that accounted for its last order (that read itself qualifies), or the instant an
@@ -2248,42 +2395,11 @@ private:
     return found;
   }
 
-  // The broker's own open row for `entry`'s order in `portfolio` (never a reservation), or none.
-  static const WorkingOrder<Tag>* broker_row_for(const strategy::Portfolio<Tag>& portfolio, const Unconfirmed& entry) {
-    if (entry.ref_.primary_.empty()) {
-      return nullptr;
-    }
-    for (const auto& working : portfolio.working_) {
-      if (!working.reserved_ && working.ref_.primary_ == entry.ref_.primary_ &&
-          working.order_.instrument_ == entry.instrument_ && working.order_.side_ == entry.side_ &&
-          strategy::order_is_open(working.order_.status_)) {
-        return &working;
-      }
-    }
-    return nullptr;
-  }
-
   // What a serialized order owes: held for an operator, unknown, or named and waiting.
   static ObligationState state_of(const Unconfirmed& entry) noexcept {
     return entry.operator_only_          ? ObligationState::OPERATOR :
            entry.ref_.primary_.empty() ? ObligationState::UNNAMED :
                                          ObligationState::NAMED;
-  }
-
-  // Puts `entry`'s reserved row back into `portfolio` for the quantity nothing explains yet.
-  static void rebuild_residual_row(strategy::Portfolio<Tag>& portfolio, const Unconfirmed& entry, const Decimal64& residual) {
-    auto row = entry.row_;
-    row.order_.quantity_ = residual;
-    row.amendable_quantity_ = residual;
-    portfolio.working_.push_back(std::move(row));
-  }
-
-  // Marks `entry` fully explained by holdings and listing; a later gap starts over, with a fresh timeout and
-  // a fresh history read.
-  static void mark_explained(Unconfirmed& entry) {
-    entry.residual_ = Decimal64::parse("0");
-    entry.unexplained_since_.reset();
-    entry.history_missed_ = false;
   }
 
   // Takes in everything history rows say about each named order, before anything can account for it,
@@ -2386,17 +2502,14 @@ private:
   }
 
   // Writes the line accounting for `entry`; on failure the runner stops sending and `entry` stays.
-  bool discharge(const Unconfirmed& entry, std::optional<Decimal64> holding, std::string detail) {
+  bool discharge([[maybe_unused]] const Unconfirmed& entry, [[maybe_unused]] std::optional<Decimal64> holding,
+                 [[maybe_unused]] std::string detail) {
     if constexpr (can_serialize) {
       auto line = closing_line(entry, JournalOutcome::CONFIRMED, std::move(holding), std::move(detail));
       if (executor_.record(line)) {
         return true;
       }
       note_executor_failure(false);
-    } else {
-      (void)entry;
-      (void)holding;
-      (void)detail;
     }
     return false;
   }
@@ -2412,7 +2525,7 @@ private:
   }
 
   // Writes the `HELD` line of a hold not yet in the journal; on failure the runner stops sending.
-  void persist_hold(Unconfirmed& entry) {
+  void persist_hold([[maybe_unused]] Unconfirmed& entry) {
     if constexpr (can_serialize) {
       if (entry.unwritten_hold_.empty()) {
         return;
@@ -2423,8 +2536,6 @@ private:
       } else {
         note_executor_failure(false);
       }
-    } else {
-      (void)entry;
     }
   }
 
@@ -2434,28 +2545,6 @@ private:
     return std::find_if(unconfirmed_.begin(), unconfirmed_.end(), [&](const Unconfirmed& entry) {
       return !journal_id.empty() && entry.journal_ && entry.journal_->id_ == journal_id && entry.ref_.primary_.empty();
     });
-  }
-
-  // The newest unnamed order on `instrument` and `side`: the sweep answers the order just sent, and an
-  // older one still unnamed is left over from a hold cleared by hand without naming it.
-  typename std::vector<Unconfirmed>::iterator newest_unnamed(const InstrumentId& instrument, OrderSide side) {
-    const auto newest = std::find_if(unconfirmed_.rbegin(), unconfirmed_.rend(), [&](const Unconfirmed& entry) {
-      return entry.ref_.primary_.empty() && entry.instrument_ == instrument && entry.side_ == side;
-    });
-    return newest == unconfirmed_.rend() ? unconfirmed_.end() : std::prev(newest.base());
-  }
-
-  // Removes `entry`'s reserved row from the context portfolio.
-  void drop_reserved_row(const Unconfirmed& entry) {
-    auto portfolio = context_.portfolio();
-    portfolio.working_.erase(
-      std::remove_if(
-        portfolio.working_.begin(), portfolio.working_.end(),
-        [&](const WorkingOrder<Tag>& working) { return is_reserved_row_of(working, entry); }
-      ),
-      portfolio.working_.end()
-    );
-    context_.set_portfolio(std::move(portfolio));
   }
 
   // Restores what a journal left unaccounted for; see `restore_obligations`.
@@ -2650,47 +2739,6 @@ private:
     unconfirmed_.push_back(std::move(entry));
   }
 
-  // `track_unconfirmed` for a serialized runner: every order, named or not, with the baseline the send
-  // stated and the journal line it wrote. The gate guaranteed the holdings.
-  void track_serialized(
-    const strategy::PlannedOrder& order, const std::optional<OrderRef<Tag>>& ref, bool indeterminate,
-    const Decimal64& baseline
-  ) {
-    const auto& portfolio = context_.portfolio();
-    Unconfirmed entry;
-    if (ref && !indeterminate) {
-      entry.ref_ = *ref;
-      entry.broker_ref_ = !ref->primary_.empty();
-      entry.identified_ = entry.broker_ref_;
-    }
-    entry.baseline_at_ = portfolio.as_of_;
-    entry.instrument_ = order.instrument_;
-    entry.side_ = order.side_;
-    entry.expected_ = order.quantity_;
-    entry.baseline_ = baseline;
-    entry.row_ = portfolio.working_.back();
-    entry.sent_at_ = freshness_instant();
-    entry.residual_ = order.quantity_;
-    entry.journal_ = executor_.last_entry();
-    if (entry.sent_at_ != std::chrono::system_clock::time_point{}) {
-      entry.unexplained_since_ = entry.sent_at_;
-    }
-    unconfirmed_.push_back(std::move(entry));
-  }
-
-  // Whether a reserved row carries the reference the broker gave when it accepted the order.
-  bool cancellable_reservation(const WorkingOrder<Tag>& working) const {
-    if (working.ref_.primary_.empty()) {
-      return false;
-    }
-    for (const auto& entry : unconfirmed_) {
-      if (is_reserved_row_of(working, entry)) {
-        return entry.broker_ref_;
-      }
-    }
-    return true;
-  }
-
   // Records that the broker accepted this runner's withdrawal of `ref`, if it is a sent order still counted.
   void note_withdrawal_accepted(const OrderRef<Tag>& ref) {
     for (auto& entry : unconfirmed_) {
@@ -2767,6 +2815,59 @@ private:
   static bool is_reserved_row_of(const WorkingOrder<Tag>& working, const Unconfirmed& entry) {
     return working.reserved_ && working.ref_.primary_ == entry.ref_.primary_ &&
       working.order_.instrument_ == entry.instrument_ && working.order_.side_ == entry.side_;
+  }
+
+  // The broker's own open row for `entry`'s order in `portfolio` (never a reservation), or none.
+  static const WorkingOrder<Tag>* broker_row_for(const strategy::Portfolio<Tag>& portfolio, const Unconfirmed& entry) {
+    if (entry.ref_.primary_.empty()) {
+      return nullptr;
+    }
+    for (const auto& working : portfolio.working_) {
+      if (!working.reserved_ && working.ref_.primary_ == entry.ref_.primary_ &&
+          working.order_.instrument_ == entry.instrument_ && working.order_.side_ == entry.side_ &&
+          strategy::order_is_open(working.order_.status_)) {
+        return &working;
+      }
+    }
+    return nullptr;
+  }
+
+  // Puts `entry`'s reserved row back into `portfolio` for the quantity nothing explains yet.
+  static void rebuild_residual_row(strategy::Portfolio<Tag>& portfolio, const Unconfirmed& entry, const Decimal64& residual) {
+    auto row = entry.row_;
+    row.order_.quantity_ = residual;
+    row.amendable_quantity_ = residual;
+    portfolio.working_.push_back(std::move(row));
+  }
+
+  // Marks `entry` fully explained by holdings and listing; a later gap starts over, with a fresh timeout and
+  // a fresh history read.
+  static void mark_explained(Unconfirmed& entry) {
+    entry.residual_ = Decimal64::parse("0");
+    entry.unexplained_since_.reset();
+    entry.history_missed_ = false;
+  }
+
+  // The newest unnamed order on `instrument` and `side`: the sweep answers the order just sent, and an
+  // older one still unnamed is left over from a hold cleared by hand without naming it.
+  typename std::vector<Unconfirmed>::iterator newest_unnamed(const InstrumentId& instrument, OrderSide side) {
+    const auto newest = std::find_if(unconfirmed_.rbegin(), unconfirmed_.rend(), [&](const Unconfirmed& entry) {
+      return entry.ref_.primary_.empty() && entry.instrument_ == instrument && entry.side_ == side;
+    });
+    return newest == unconfirmed_.rend() ? unconfirmed_.end() : std::prev(newest.base());
+  }
+
+  // Removes `entry`'s reserved row from the context portfolio.
+  void drop_reserved_row(const Unconfirmed& entry) {
+    auto portfolio = context_.portfolio();
+    portfolio.working_.erase(
+      std::remove_if(
+        portfolio.working_.begin(), portfolio.working_.end(),
+        [&](const WorkingOrder<Tag>& working) { return is_reserved_row_of(working, entry); }
+      ),
+      portfolio.working_.end()
+    );
+    context_.set_portfolio(std::move(portfolio));
   }
 
   // Rebuilds the reserved row of every sent order still counted, and forgets those holdings confirm.
@@ -2967,115 +3068,6 @@ private:
       if (retire[at] || expired[at]) {
         unconfirmed_.erase(unconfirmed_.begin() + static_cast<std::ptrdiff_t>(at));
       }
-    }
-  }
-
-  // The serialized half of `confirm_reservations`: one order per instrument, so no group arithmetic.
-  //
-  // Each order is accounted for, with a `CONFIRMED` line written first, when it is named, no listing
-  // shows it open, and either its history capped what it filled at zero, or a holdings read shows
-  // exactly its baseline plus what it filled. Holdings past that hold it for an operator. Anything else
-  // rebuilds its reserved row from what nothing explains yet; a timeout marks the ledger once and
-  // releases nothing.
-  void confirm_serialized(strategy::Portfolio<Tag>& portfolio, std::chrono::system_clock::time_point now) {
-    const auto zero = Decimal64::parse("0");
-    const auto epoch = std::chrono::system_clock::time_point{};
-    const auto equal = [](const Decimal64& a, const Decimal64& b) { return !decimal_less(a, b) && !decimal_less(b, a); };
-    for (auto at = unconfirmed_.begin(); at != unconfirmed_.end();) {
-      auto& entry = *at;
-      persist_hold(entry);
-      // An actual read, and not one older than the read the order was decided against.
-      const bool read = portfolio.as_of_ != epoch && !(portfolio.as_of_ < entry.baseline_at_);
-      // What a listing still shows of it: that part cannot have reached holdings.
-      Decimal64 listed = zero;
-      entry.listed_now_ = false;
-      std::optional<Decimal64> listed_filled;
-      if (const auto* working = broker_row_for(portfolio, entry)) {
-        entry.listed_ = true;
-        entry.listed_now_ = true;
-        listed = decimal_subtract(working->order_.quantity_, working->order_.execution_.filled_quantity_).value_or(zero);
-        listed_filled = working->order_.execution_.filled_quantity_;
-      }
-      // A listing of its own reporting more filled than it was for, or than its history said it ended with,
-      // contradicts what is known: held for an operator before the listing can move on and the contradiction
-      // be forgotten. (Holding is the safe direction, so an undated row may prove it.)
-      if (listed_filled && !entry.operator_only_ &&
-          (decimal_less(entry.row_.order_.quantity_, *listed_filled) ||
-           (entry.settled_ && decimal_less(entry.expected_, *listed_filled)))) {
-        hold_for_operator(
-          entry, "an order this runner sent" + named(entry) + " is listed with " + listed_filled->str() +
-                   " filled, more than " + (entry.settled_ ? "its history said it ended with (" + entry.expected_.str() + ")" :
-                                                             "it was for")
-        );
-      }
-      // The holding, and its movement in the order's direction since the baseline, from an actual read.
-      std::optional<Decimal64> held;
-      std::optional<Decimal64> moved;
-      if (read) {
-        held = portfolio.net_quantity_of(entry.instrument_);
-        if (held) {
-          moved = entry.side_ == OrderSide::BUY ? decimal_subtract(*held, entry.baseline_) :
-                                                  decimal_subtract(entry.baseline_, *held);
-        }
-      }
-      const bool is_named = !entry.ref_.primary_.empty();
-      if (!entry.operator_only_ && is_named && entry.identified_ && !entry.listed_now_) {
-        if (entry.expected_.coefficient() == 0) {
-          if (discharge(entry, std::nullopt, "its own history row shows it ended with nothing filled")) {
-            at = unconfirmed_.erase(at);
-            continue;
-          }
-        } else if (moved && equal(*moved, entry.expected_)) {
-          if (discharge(entry, held, "holdings show " + held->str() + ": its baseline " + entry.baseline_.str() +
-                                       " and the " + entry.expected_.str() + " it filled")) {
-            set_boundary(entry.instrument_, portfolio.as_of_, /*strict=*/false);
-            at = unconfirmed_.erase(at);
-            continue;
-          }
-        } else if (moved && decimal_less(entry.expected_, *moved)) {
-          hold_for_operator(
-            entry, "holdings moved " + moved->str() + " from the baseline " + entry.baseline_.str() + ", more than the " +
-                     entry.expected_.str() + " an order this runner sent" + named(entry) + " can explain"
-          );
-        }
-      }
-
-      // What nothing explains yet: what it expects, less what holdings show of it, less what is listed.
-      Decimal64 covered = zero;
-      const auto fillable = decimal_subtract(entry.expected_, listed).value_or(zero);
-      if (!entry.operator_only_ && moved && decimal_less(zero, *moved) && decimal_less(zero, fillable)) {
-        covered = decimal_less(*moved, fillable) ? *moved : fillable;
-      }
-      auto residual = decimal_subtract(fillable, covered).value_or(entry.expected_);
-      if (!decimal_less(zero, residual)) {
-        mark_explained(entry);
-        ++at;
-        continue;
-      }
-      entry.residual_ = residual;
-      // Not from the epoch: a restored order's clock starts with the first real instant.
-      if (!entry.unexplained_since_ && now != epoch) {
-        entry.unexplained_since_ = now;
-      }
-      if (!entry.noticed_ && !entry.operator_only_ && (entry.settled_ || entry.history_missed_ || !is_named) &&
-          timed_out(entry, now) && portfolio.as_of_ - *entry.unexplained_since_ > confirmation_timeout_) {
-        // A notice, not a release: the order still holds its instrument, and later evidence can still
-        // account for it.
-        entry.noticed_ = true;
-        ++orders_unconfirmed_timed_out_;
-        ledger_.mark(
-          entry.instrument_,
-          "an order this runner sent" + named(entry) +
-            " was not accounted for by holdings within the confirmation timeout; it still holds the instrument"
-        );
-      }
-      // Not shown while the ledger holds an order not yet named; see the overlapping branch.
-      if (!is_named && ledger_.requires_reconcile(entry.instrument_)) {
-        ++at;
-        continue;
-      }
-      rebuild_residual_row(portfolio, entry, residual);
-      ++at;
     }
   }
 
