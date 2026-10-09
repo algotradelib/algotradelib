@@ -18,6 +18,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <variant>
 #include <utility>
 #include <vector>
@@ -2275,13 +2276,17 @@ private:
       std::string why_;
     };
     std::vector<Fold> folds;
+    // Each id's fold, so a long journal is read in one pass.
+    std::unordered_map<std::string, std::size_t> fold_of;
     for (const auto& line : replay.entries_) {
       if (line.action_ != JournalAction::PLACE || line.instrument_.symbol_.empty()) {
         continue;
       }
       const bool closing = line.outcome_ == JournalOutcome::CONFIRMED || line.outcome_ == JournalOutcome::HELD;
-      auto fold = std::find_if(folds.begin(), folds.end(), [&](const Fold& seen) { return seen.line_.id_ == line.id_; });
+      const auto known = fold_of.find(line.id_);
+      auto fold = known == fold_of.end() ? folds.end() : folds.begin() + static_cast<std::ptrdiff_t>(known->second);
       if (fold == folds.end()) {
+        fold_of.emplace(line.id_, folds.size());
         folds.push_back(Fold{line, line.recorded_at_, {}, false, false, {}});
         fold = std::prev(folds.end());
         if (closing) {

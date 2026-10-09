@@ -580,7 +580,6 @@ public:
     entry.price_ = order.price_;
     entry.trigger_price_ = order.trigger_price_;
     entry.baseline_ = std::move(baseline);
-    last_entry_ = entry;
     if (!journal_->append(entry)) {
       return refuse_unjournaled();
     }
@@ -601,8 +600,8 @@ public:
   }
 
   /**
-   * @brief Returns the last line written (or attempted) for a placement.
-   * @return The line, or `std::nullopt` before any placement.
+   * @brief Returns the answering line last written (or attempted) for a placement that was sent.
+   * @return The line, or `std::nullopt` before any placement was sent.
    */
   const std::optional<JournalEntry>& last_entry() const noexcept { return last_entry_; }
 
