@@ -3962,9 +3962,9 @@ std::chrono::system_clock::time_point live_hour(int hours) {
 }
 
 /** Polls a working-order listing received at `hour`. */
-template <typename Source, typename Runner>
+template <typename Source, typename Runner, typename Session>
 void poll_listing_at(
-  Source& source, Runner& bound, WorkingSession& session,
+  Source& source, Runner& bound, Session& session,
   std::vector<WorkingOrder<FakeBroker>> rows, int hour
 ) {
   WorkingOrders<FakeBroker> listing;
@@ -3975,8 +3975,8 @@ void poll_listing_at(
 }
 
 /** Polls holdings of `held` received at `hour`. */
-template <typename Source, typename Runner>
-void poll_holdings_at(Source& source, Runner& bound, WorkingSession& session, const char* held, int hour) {
+template <typename Source, typename Runner, typename Session>
+void poll_holdings_at(Source& source, Runner& bound, Session& session, const char* held, int hour) {
   HoldingsSnapshot snapshot;
   HoldingPosition position;
   position.instrument_ = samsung();
@@ -4001,12 +4001,12 @@ WorkingOrder<FakeBroker> resting_stop() {
 }
 
 /** Binds the strategy, holds ten behind a resting stop, and leaves the session. */
-template <typename Bound>
-void leave_behind_a_stop(Bound& bound, WorkingSession& session) {
+template <typename Bound, typename Session>
+void leave_behind_a_stop(Bound& bound, Session& session, const WorkingOrder<FakeBroker>& stop = resting_stop()) {
   bound.context().set_instrument(samsung_reference());
   bound.context().set_last_price(samsung(), Decimal64::parse("70000"));
   auto portfolio = held_position<WithWorkingOrders>("10", nullptr);
-  portfolio.working_.push_back(resting_stop());
+  portfolio.working_.push_back(stop);
   bound.context().set_portfolio(portfolio);
   bound.feed(strategy::MarketPhase::POST_CLOSE);
   CHECK(session.canceled().size() == 1);
@@ -4072,6 +4072,81 @@ TEST_CASE("a deferred flatten is not released by another day's order under the s
   poll_listing_at(source, bound, session, {}, 1);
   CHECK(session.placed().empty());
   CHECK(bound.deferred_targets().size() == 1);
+}
+
+namespace {
+/** A broker whose history takes a date range, as KIS's does; `WorkingSession`'s is read a day at a time. */
+struct RangedWorkingOrders : strategy::NoCaps {
+  static constexpr bool has_working_orders = true;
+  static constexpr bool history_requires_range = true;
+};
+
+/** The stop's own history row, ordered at `at`. */
+OrderSnapshot stop_row(OrderStatus status, const char* filled, std::chrono::system_clock::time_point at) {
+  OrderSnapshot row;
+  row.order_id_ = "STOP-1";
+  row.instrument_ = samsung();
+  row.side_ = OrderSide::SELL;
+  row.type_ = OrderType::STOP_LIMIT;
+  row.status_ = status;
+  row.quantity_ = Decimal64::parse("10");
+  row.execution_.filled_quantity_ = Decimal64::parse(filled);
+  row.ordered_at_ = at;
+  return row;
+}
+
+/**
+ * A stop listed with its order time, and yesterday's order under the same number in the history, cancelled
+ * with nothing filled. The flatten waits for today's row, whatever the decision clock says.
+ */
+template <typename Caps>
+void a_dated_stop_is_decided_by_its_own_row() {
+  FakeSession<Caps> session;
+  auto bound = live::bind(session, FlattensOnPhase{}, {});
+  live::SessionSource<FakeSession<Caps>> source(session, {samsung()});
+  const auto placed_at = live_hour(0) - std::chrono::minutes(10);
+  auto stop = resting_stop();
+  stop.order_.ordered_at_ = placed_at;
+  // The loop's clock half a day past the decision instant the flatten is deferred at.
+  bound.set_observed_at(live_hour(12));
+  leave_behind_a_stop(bound, session, stop);
+  poll_holdings_at(source, bound, session, "10", 2);
+  const auto yesterday = stop_row(OrderStatus::CANCELED, "0", placed_at - std::chrono::hours(24));
+
+  // Today's row has not reached the history yet: yesterday's does not answer for it.
+  OrderPage lagging;
+  lagging.orders_ = {yesterday};
+  session.set_history(std::move(lagging));
+  poll_listing_at(source, bound, session, {}, 1);
+  CHECK(session.placed().empty());
+  REQUIRE(bound.deferred_targets().size() == 1);
+
+  SECTION("today's stop filled: no second sale") {
+    OrderPage page;
+    page.orders_ = {yesterday, stop_row(OrderStatus::FILLED, "10", placed_at)};
+    session.set_history(std::move(page));
+    poll_listing_at(source, bound, session, {}, 2);
+    CHECK(session.placed().empty());
+    CHECK(bound.deferred_targets().empty());
+    CHECK(bound.deferred_dropped_after_fill() == 1);
+  }
+  SECTION("today's stop cancelled with nothing filled: the flatten goes") {
+    OrderPage page;
+    page.orders_ = {yesterday, stop_row(OrderStatus::CANCELED, "0", placed_at)};
+    session.set_history(std::move(page));
+    poll_listing_at(source, bound, session, {}, 2);
+    CHECK(session.placed().size() == 1);
+    CHECK(bound.deferred_targets().empty());
+  }
+}
+} // namespace
+
+TEST_CASE("a deferred flatten is decided by its stop's own row, read a day at a time", "[trigger]") {
+  a_dated_stop_is_decided_by_its_own_row<WithWorkingOrders>();
+}
+
+TEST_CASE("a deferred flatten is decided by its stop's own row, read over a range", "[trigger]") {
+  a_dated_stop_is_decided_by_its_own_row<RangedWorkingOrders>();
 }
 
 TEST_CASE("a deferred flatten waits while the stop's record is not terminal, or cannot be read", "[trigger]") {

@@ -2451,10 +2451,17 @@ private:
         bool decided = true;
         bool filled = false;
         for (const auto& stop : at->stops_) {
-          // Listed when the target was deferred, so placed before then.
+          // Matched to the order time its listing showed, where it showed one. Without it (KIS lists no
+          // time), a row of another day under the same number cannot be told apart unless two rows
+          // disagree.
+          std::optional<std::chrono::system_clock::time_point> earliest;
+          std::optional<std::chrono::system_clock::time_point> latest;
+          if (stop.ordered_at_) {
+            earliest = *stop.ordered_at_ - order_time_tolerance_;
+            latest = *stop.ordered_at_ + order_time_tolerance_;
+          }
           const auto* row = history_row_for(
-            *evidence, stop.primary_, at->target_.instrument_, std::nullopt, std::nullopt,
-            at->deferred_at_ + order_time_tolerance_
+            *evidence, stop.ref_.primary_, at->target_.instrument_, std::nullopt, earliest, latest
           );
           if (row == nullptr) {
             decided = false;
@@ -2665,7 +2672,7 @@ private:
         if (working.order_.instrument_ == target->instrument_ &&
             strategy::order_is_open(working.order_.status_) &&
             strategy::is_stop_order(working.order_)) {
-          deferred.stops_.push_back(working.ref_);
+          deferred.stops_.push_back({working.ref_, working.order_.ordered_at_});
         }
       }
       for (auto& kept : deferred_targets_) {
@@ -3192,8 +3199,13 @@ private:
   struct DeferredTarget {
     // The target, exactly as the strategy stated it.
     strategy::TargetPosition target_;
-    // The stops it waits on, whose own history rows decide its release.
-    std::vector<OrderRef<Tag>> stops_;
+    // The stops it waits on, whose own history rows decide its release, with the order time their
+    // listing showed (if any) to tell them from another day's order under the same number.
+    struct Stop {
+      OrderRef<Tag> ref_;
+      std::optional<std::chrono::system_clock::time_point> ordered_at_;
+    };
+    std::vector<Stop> stops_;
     // When it was deferred, which bounds the history that can hold those rows.
     std::chrono::system_clock::time_point deferred_at_{};
   };
