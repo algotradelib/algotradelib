@@ -1135,15 +1135,12 @@ public:
       if (entry.ref_.primary_.empty()) {
         continue;
       }
-      // Serialized: only rows that all say the order ended, dated and filling the same, and none while a
-      // listing still shows it open, since one of the two is wrong. An undated row, or a session's close,
-      // says nothing: holdings can still show the whole quantity.
-      const auto* row = !serialized() ?
+      // Serialized, `examine_evidence` already took in what the rows say.
+      const auto* row = serialized() ? nullptr :
         history_row_for(
           evidence, entry.ref_.primary_, entry.instrument_, entry.side_,
           entry.sent_at_ - order_time_tolerance_, entry.sent_at_ + order_time_tolerance_
-        ) :
-        entry.listed_now_ || entry.operator_only_ ? nullptr : ended_row_for(evidence, entry);
+        );
       if (row != nullptr && ((entry.session_ended_ && !serialized()) || !strategy::order_is_open(row->status_))) {
         if (decimal_less(row->execution_.filled_quantity_, entry.expected_)) {
           entry.expected_ = row->execution_.filled_quantity_;
@@ -2278,26 +2275,63 @@ private:
     return found;
   }
 
-  // Takes in what history rows say about each named order, before anything accounts for it: a row of its
-  // own reporting more filled than it was for holds it for an operator, and any row of its own confirms a
-  // name a sweep gave it.
+  // Whether the listing installed now shows `entry`'s order open (the broker's own row, not a reservation).
+  bool listed_open(const Unconfirmed& entry) const {
+    for (const auto& working : context_.portfolio().working_) {
+      if (!working.reserved_ && working.ref_.primary_ == entry.ref_.primary_ &&
+          working.order_.instrument_ == entry.instrument_ && working.order_.side_ == entry.side_ &&
+          strategy::order_is_open(working.order_.status_)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Takes in everything history rows say about each named order, before anything can account for it,
+  // whether or not this read was scheduled for it:
+  // - a row of its own confirms a name a sweep gave it;
+  // - a row of its own reporting more filled than it was for, or, once its final quantity is known, a
+  //   different final quantity or more filled than it, holds it for an operator;
+  // - rows that all say it ended (`ended_row_for`) cap what holdings must show, unless a listing still
+  //   shows it open.
   void examine_evidence(const std::vector<OrderSnapshot>& evidence) {
+    const auto now = freshness_instant();
+    const auto differ = [](const Decimal64& a, const Decimal64& b) { return decimal_less(a, b) || decimal_less(b, a); };
     for (auto& entry : unconfirmed_) {
       if (entry.operator_only_ || entry.ref_.primary_.empty()) {
         continue;
       }
+      std::optional<std::string> contradiction;
       for (const auto& row : evidence) {
         if (!own_row(row, entry)) {
           continue;
         }
-        if (decimal_less(entry.row_.order_.quantity_, row.execution_.filled_quantity_)) {
-          hold_for_operator(
-            entry, "its history row reports " + row.execution_.filled_quantity_.str() + " filled, more than the " +
-                     entry.row_.order_.quantity_.str() + " an order this runner sent" + named(entry) + " was for"
-          );
+        entry.identified_ = true;
+        const auto& filled = row.execution_.filled_quantity_;
+        if (decimal_less(entry.row_.order_.quantity_, filled)) {
+          contradiction = "its history row reports " + filled.str() + " filled, more than the " +
+            entry.row_.order_.quantity_.str() + " it was for";
+        } else if (entry.settled_ && (decimal_less(entry.expected_, filled) ||
+                                      (ends_the_order(row.status_) && differ(entry.expected_, filled)))) {
+          contradiction = "its history rows report " + filled.str() + " filled after reporting it ended with " +
+            entry.expected_.str();
+        }
+        if (contradiction) {
           break;
         }
-        entry.identified_ = true;
+      }
+      if (contradiction) {
+        hold_for_operator(entry, "an order this runner sent" + named(entry) + ": " + *contradiction);
+        continue;
+      }
+      if (entry.settled_ || listed_open(entry)) {
+        continue;
+      }
+      if (const auto* row = ended_row_for(evidence, entry)) {
+        entry.expected_ = row->execution_.filled_quantity_;
+        entry.settled_ = true;
+        // Holdings get a full timeout from here to show it (`confirm_serialized`).
+        entry.unexplained_since_ = now;
       }
     }
   }

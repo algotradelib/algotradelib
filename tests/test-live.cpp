@@ -5760,3 +5760,41 @@ TEST_CASE("an order accounted for just before a restart needs a holdings read ma
   restarted.bar(7, {target_of("20")});
   CHECK(restarted.session.placed().size() == 1);
 }
+
+TEST_CASE("a final fill the history supplies is taken in before holdings can account for the order", "[serialized]") {
+  // Codex round 2 C6: the preliminary refresh accounted for the order from holdings, or from an earlier
+  // cap, before the rows just supplied were read.
+  using runner::JournalOutcome;
+  const std::vector<runner::JournalEntry> accepted{
+    serial_line("p-1", JournalOutcome::PENDING), serial_line("p-1", JournalOutcome::ACCEPTED, "B")
+  };
+
+  SECTION("four filled, and holdings show ten: held, not accounted for") {
+    SerialRig rig(accepted);
+    rig.show(polled(1, "10", {}));
+    rig.runner_instance.confirm_from_history({dated_row("B", at_hour(-1), "4")});
+    CHECK(rig.owed() == runner::ObligationState::OPERATOR);
+    CHECK(rig.lines(JournalOutcome::CONFIRMED).empty());
+  }
+
+  SECTION("four filled, then ten: held, and no second buy") {
+    SerialRig rig(accepted);
+    rig.runner_instance.confirm_from_history({dated_row("B", at_hour(-1), "4")});
+    REQUIRE(rig.owed() == runner::ObligationState::NAMED);
+    rig.show(polled(1, "4", {}));
+    rig.runner_instance.confirm_from_history({dated_row("B", at_hour(-1), "10", OrderStatus::FILLED)});
+    CHECK(rig.owed() == runner::ObligationState::OPERATOR);
+    CHECK(rig.lines(JournalOutcome::CONFIRMED).empty());
+    rig.show(polled(2, "4", {}));
+    rig.bar(3, {target_of("10")});
+    CHECK(rig.session.placed().empty());
+  }
+
+  SECTION("the same final fill again is no contradiction") {
+    SerialRig rig(accepted);
+    rig.runner_instance.confirm_from_history({dated_row("B", at_hour(-1), "4")});
+    rig.show(polled(1, "4", {}));
+    rig.runner_instance.confirm_from_history({dated_row("B", at_hour(-1), "4")});
+    CHECK(rig.owed() == runner::ObligationState::NONE);
+  }
+}
