@@ -862,18 +862,21 @@ public:
       if (!entry.consulted_) {
         continue;
       }
-      for (const auto& row : evidence) {
-        // An entry not yet named matches no row: a row whose number is missing would read as equal.
-        if (!entry.ref_.primary_.empty() && row.order_id_ == entry.ref_.primary_ && row.instrument_ == entry.instrument_ &&
-            row.side_ == entry.side_ && (entry.session_ended_ || !strategy::order_is_open(row.status_))) {
-          if (decimal_less(row.execution_.filled_quantity_, entry.expected_)) {
-            entry.expected_ = row.execution_.filled_quantity_;
-          }
-          entry.settled_ = true;
-          // Holdings get a full timeout from here to show it (`confirm_reservations`).
-          entry.unexplained_since_ = now;
-          break;
+      // An entry not yet named matches no row: a row whose number is missing would read as equal.
+      if (entry.ref_.primary_.empty()) {
+        continue;
+      }
+      const auto* row = history_row_for(
+        evidence, entry.ref_.primary_, entry.instrument_, entry.side_,
+        entry.sent_at_ - order_time_tolerance_, entry.sent_at_ + order_time_tolerance_
+      );
+      if (row != nullptr && (entry.session_ended_ || !strategy::order_is_open(row->status_))) {
+        if (decimal_less(row->execution_.filled_quantity_, entry.expected_)) {
+          entry.expected_ = row->execution_.filled_quantity_;
         }
+        entry.settled_ = true;
+        // Holdings get a full timeout from here to show it (`confirm_reservations`).
+        entry.unexplained_since_ = now;
       }
     }
     // Past the timeout and the history had no answer: noted, and judged by `confirm_reservations` against
@@ -1848,6 +1851,40 @@ private:
     return entry.unexplained_since_ && now - *entry.unexplained_since_ > confirmation_timeout_;
   }
 
+  // How far a broker's order time may stand from this runner's own record of the order. Order numbers
+  // repeat only across days, so an hour tells two orders apart and
+  // still allows for a clock that is off.
+  static constexpr std::chrono::hours order_time_tolerance_{1};
+
+  // The history row that answers for an order: a row with its number and instrument (and side, if
+  // given) whose order time, where stated, is within `[earliest, latest]`. Null if there is none, or if
+  // two such rows disagree on what filled or on whether the order is still open: a number reused on
+  // another day must not answer for this order, and when the rows cannot tell which is which, neither
+  // does. Rows that agree are one answer (a dated read can return an undated row once per day).
+  static const OrderSnapshot* history_row_for(
+    const std::vector<OrderSnapshot>& evidence, const std::string& order_id, const InstrumentId& instrument,
+    std::optional<OrderSide> side, std::optional<std::chrono::system_clock::time_point> earliest,
+    std::optional<std::chrono::system_clock::time_point> latest
+  ) {
+    const OrderSnapshot* found = nullptr;
+    for (const auto& row : evidence) {
+      if (row.order_id_ != order_id || !(row.instrument_ == instrument) || (side && row.side_ != *side)) {
+        continue;
+      }
+      if (row.ordered_at_ && ((earliest && *row.ordered_at_ < *earliest) || (latest && *latest < *row.ordered_at_))) {
+        continue;
+      }
+      if (found == nullptr) {
+        found = &row;
+      } else if (decimal_less(found->execution_.filled_quantity_, row.execution_.filled_quantity_) ||
+                 decimal_less(row.execution_.filled_quantity_, found->execution_.filled_quantity_) ||
+                 strategy::order_is_open(found->status_) != strategy::order_is_open(row.status_)) {
+        return nullptr;
+      }
+    }
+    return found;
+  }
+
   // Whether only the broker's history can settle `entry` now; see `unconfirmed_awaiting_evidence`.
   bool awaits_evidence(const Unconfirmed& entry, std::chrono::system_clock::time_point now) const {
     // A settled entry has had its answer: what it filled is known, and only holdings remain to show it.
@@ -2414,13 +2451,11 @@ private:
         bool decided = true;
         bool filled = false;
         for (const auto& stop : at->stops_) {
-          const OrderSnapshot* row = nullptr;
-          for (const auto& candidate : *evidence) {
-            if (candidate.order_id_ == stop.primary_) {
-              row = &candidate;
-              break;
-            }
-          }
+          // Listed when the target was deferred, so placed before then.
+          const auto* row = history_row_for(
+            *evidence, stop.primary_, at->target_.instrument_, std::nullopt, std::nullopt,
+            at->deferred_at_ + order_time_tolerance_
+          );
           if (row == nullptr) {
             decided = false;
             continue;

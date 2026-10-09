@@ -1210,7 +1210,20 @@ private:
         last_error_ = result.error();
         return false;
       }
-      runner::merge_rows(into, result.value().orders_);
+      // A row already read is dropped only as an exact copy (`runner::exact_copy`): a range spans days,
+      // and two days' orders can share a number.
+      for (const auto& row : result.value().orders_) {
+        bool copy = false;
+        for (const auto& held : into) {
+          if (runner::exact_copy(held, row)) {
+            copy = true;
+            break;
+          }
+        }
+        if (!copy) {
+          into.push_back(row);
+        }
+      }
       const bool more = result.value().next_cursor_ && !result.value().next_cursor_->empty();
       if (!more) {
         return true;

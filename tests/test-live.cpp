@@ -925,6 +925,37 @@ TEST_CASE("an order that left the listing is settled by its history", "[confirm]
     CHECK(rig.runner_instance.unconfirmed_orders() == 1);
     CHECK(rig.working_buys() == Decimal64::parse("10"));
   }
+
+  // Order numbers repeat across days, and the history is read from the day before. Yesterday's order
+  // under today's number, cancelled with nothing filled, used to settle today's filled order at zero.
+  const auto sent = bar_at(1, "70000").bar_.timestamp_;
+  auto yesterday = ended_row("0001569139", OrderSide::BUY, "10", "0");
+  yesterday.ordered_at_ = sent - std::chrono::hours(24);
+  auto today = ended_row("0001569139", OrderSide::BUY, "10", "10");
+  today.status_ = OrderStatus::FILLED;
+  today.ordered_at_ = sent;
+
+  SECTION("a same-numbered order from another day does not answer for it") {
+    rig.runner_instance.confirm_from_history({yesterday, today});
+    CHECK(rig.runner_instance.unconfirmed_orders() == 1);
+    CHECK(rig.working_buys() == Decimal64::parse("10"));
+    rig.runner_instance.feed(bar_at(3, "70000"));
+    CHECK(rig.session.placed().size() == 1);
+
+    rig.runner_instance.confirm_from_history({yesterday});
+    CHECK(rig.working_buys() == Decimal64::parse("10"));
+  }
+
+  SECTION("undated rows that disagree answer nothing; undated rows that agree are one answer") {
+    yesterday.ordered_at_.reset();
+    today.ordered_at_.reset();
+    rig.runner_instance.confirm_from_history({yesterday, today});
+    CHECK(rig.runner_instance.unconfirmed_orders() == 1);
+    CHECK(rig.working_buys() == Decimal64::parse("10"));
+
+    rig.runner_instance.confirm_from_history({yesterday, yesterday});
+    CHECK(rig.runner_instance.unconfirmed_orders() == 0);
+  }
 }
 
 namespace {
@@ -4014,6 +4045,33 @@ TEST_CASE("a deferred flatten does not sell again after the stop filled", "[trig
   CHECK(session.placed().empty());
   CHECK(bound.deferred_targets().empty());
   CHECK(bound.deferred_dropped_after_fill() == 1);
+}
+
+TEST_CASE("a deferred flatten is not released by another day's order under the stop's number", "[trigger]") {
+  // The history reads from the day before. Yesterday's STOP-1, cancelled with nothing filled, came first and
+  // released the flatten although today's STOP-1 filled: a second sale of the ten.
+  WorkingSession session;
+  auto bound = live::bind(session, FlattensOnPhase{}, {});
+  live::SessionSource<WorkingSession> source(session, {samsung()});
+  leave_behind_a_stop(bound, session);
+  poll_holdings_at(source, bound, session, "10", 2);
+
+  OrderSnapshot yesterday;
+  yesterday.order_id_ = "STOP-1";
+  yesterday.instrument_ = samsung();
+  yesterday.side_ = OrderSide::SELL;
+  yesterday.type_ = OrderType::STOP_LIMIT;
+  yesterday.status_ = OrderStatus::CANCELED;
+  yesterday.quantity_ = Decimal64::parse("10");
+  auto today = yesterday;
+  today.status_ = OrderStatus::FILLED;
+  today.execution_.filled_quantity_ = Decimal64::parse("10");
+  OrderPage page;
+  page.orders_ = {yesterday, today};
+  session.set_history(std::move(page));
+  poll_listing_at(source, bound, session, {}, 1);
+  CHECK(session.placed().empty());
+  CHECK(bound.deferred_targets().size() == 1);
 }
 
 TEST_CASE("a deferred flatten waits while the stop's record is not terminal, or cannot be read", "[trigger]") {
