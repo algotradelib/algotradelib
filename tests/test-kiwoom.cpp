@@ -87,6 +87,19 @@ struct KiwoomClientTestAccess {
     return KiwoomClient::parse_history_row(row, date);
   }
 
+  // A day's history as the completed listing returns it.
+  static std::vector<OrderSnapshot> history_rows(const std::vector<std::string>& rows, const Date& date, bool demo) {
+    std::vector<OrderSnapshot> orders;
+    std::vector<KiwoomClient::HistoryLink> links;
+    for (const auto& row : rows) {
+      const auto object = json::parse(row).as_object();
+      orders.push_back(KiwoomClient::parse_history_row(object, date));
+      links.push_back(KiwoomClient::history_link(object, demo));
+    }
+    KiwoomClient::close_cancelled_originals(orders, links);
+    return orders;
+  }
+
   static void holdings_page(HoldingsSnapshot& snapshot, bool& totals_seen, const json::object& p) {
     KiwoomClient::append_holdings_page(snapshot, totals_seen, p);
   }
@@ -1052,6 +1065,70 @@ TEST_CASE("a history row's state comes from two columns, not one", "[kiwoom][his
   CHECK(pending.type_ == OrderType::LIMIT);
   CHECK(pending.time_in_force_ == TimeInForce::DAY);
   REQUIRE(pending.ordered_at_);
+}
+
+TEST_CASE("a cancelled order's own history row ends once its cancellation names it", "[kiwoom][history]") {
+  const auto date = Date{2026, 10, 6};
+  // The demo server's rows for a far limit buy of 1 and its cancel (2026-10-06, F45).
+  const auto row = [](
+    const std::string& number, const std::string& original, const std::string& amendment,
+    const std::string& filled, const std::string& remaining, const std::string& side = "현금매수"
+  ) {
+    auto text = std::string(R"({"ord_no":")") + number + R"(","ori_ord":")" + original +
+      R"(","stk_cd":"A005930","stk_nm":"삼성전자","io_tp_nm":")" + side +
+      R"(","trde_tp":"보통가","acpt_tp":"주문완료","mdfy_cncl":")" + amendment +
+      R"(","ord_qty":"10","ord_uv":"221000","cntr_qty":")" + filled + R"(","dmst_stex_tp":"KRX","ord_tm":"09:01:12")";
+    if (!remaining.empty()) {
+      text += R"(,"ord_remnq":")" + remaining + "\"";
+    }
+    return text + "}";
+  };
+  const auto original = row("0013356", "0000000", "일반", "0", "0");
+  const auto cancel = row("0013459", "0013356", "취소", "0", "0");
+  const auto confirmed = row("0013459", "0013356", "취소확인", "0", "0");
+  using Access = kiwoom::KiwoomClientTestAccess;
+
+  SECTION("the demo's words close the original, with nothing filled") {
+    const auto orders = Access::history_rows({original, cancel}, date, true);
+    CHECK(orders[0].status_ == OrderStatus::CANCELED);
+    CHECK(orders[0].execution_.filled_quantity_.coefficient() == 0);
+    // The cancellation row is not an order, and keeps what it read before.
+    CHECK(orders[1].status_ == OrderStatus::UNKNOWN);
+  }
+  SECTION("a bare 취소 on a real account is not a completed cancellation") {
+    const auto orders = Access::history_rows({original, cancel}, date, false);
+    CHECK(orders[0].status_ == OrderStatus::UNKNOWN);
+  }
+  SECTION("the documented 취소확인 closes it on either server, from a later page too") {
+    CHECK(Access::history_rows({original, confirmed}, date, false)[0].status_ == OrderStatus::CANCELED);
+    CHECK(Access::history_rows({confirmed, original}, date, true)[1].status_ == OrderStatus::CANCELED);
+  }
+  SECTION("a partial fill stays the filled quantity") {
+    const auto orders = Access::history_rows({row("0013356", "0000000", "일반", "3", "0"), confirmed}, date, false);
+    CHECK(orders[0].status_ == OrderStatus::CANCELED);
+    CHECK(orders[0].execution_.filled_quantity_ == Decimal64(3, 0));
+  }
+  SECTION("a cancel that lost to a full fill leaves it filled") {
+    const auto orders = Access::history_rows({row("0013356", "0000000", "일반", "10", "0"), confirmed}, date, false);
+    CHECK(orders[0].status_ == OrderStatus::FILLED);
+  }
+  SECTION("a remainder, or none stated, keeps it open") {
+    CHECK(
+      Access::history_rows({row("0013356", "0000000", "일반", "0", "10"), confirmed}, date, false)[0].status_ !=
+      OrderStatus::CANCELED
+    );
+    CHECK(
+      Access::history_rows({row("0013356", "0000000", "일반", "0", ""), confirmed}, date, false)[0].status_ !=
+      OrderStatus::CANCELED
+    );
+  }
+  SECTION("an ambiguous or mismatched original is left alone") {
+    const auto twice = Access::history_rows({original, original, confirmed}, date, false);
+    CHECK(twice[0].status_ != OrderStatus::CANCELED);
+    CHECK(twice[1].status_ != OrderStatus::CANCELED);
+    const auto sell = Access::history_rows({row("0013356", "0000000", "일반", "0", "0", "현금매도"), confirmed}, date, false);
+    CHECK(sell[0].status_ != OrderStatus::CANCELED);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
