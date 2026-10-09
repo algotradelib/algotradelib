@@ -2155,6 +2155,8 @@ private:
     bool identified_{false};
     // The holdings read it was decided against; an older one says nothing about it.
     std::chrono::system_clock::time_point baseline_at_{};
+    // Why it is held for an operator, while that hold's `HELD` line is not yet written.
+    std::string unwritten_hold_;
   };
 
   // The instant after which a holdings read may size the next order on an instrument (serialized
@@ -2365,19 +2367,30 @@ private:
     return false;
   }
 
-  // Holds `entry` for an operator, durably; on failure the runner stops sending and `entry` is unchanged.
+  // Holds `entry` for an operator. In memory at once, whatever the journal does: a contradiction is never
+  // forgotten. Durably as soon as the `HELD` line is written; until then the runner stops sending, and every
+  // refresh writes it again (`persist_hold`).
   void hold_for_operator(Unconfirmed& entry, const std::string& detail) {
+    entry.operator_only_ = true;
+    entry.unwritten_hold_ = detail;
+    ledger_.mark(entry.instrument_, detail + "; an operator must account for it (release_obligations)");
+    persist_hold(entry);
+  }
+
+  // Writes the `HELD` line of a hold not yet in the journal; on failure the runner stops sending.
+  void persist_hold(Unconfirmed& entry) {
     if constexpr (can_serialize) {
-      auto line = closing_line(entry, JournalOutcome::HELD, std::nullopt, detail);
-      if (!executor_.record(line)) {
-        note_executor_failure(false);
+      if (entry.unwritten_hold_.empty()) {
         return;
       }
-      entry.operator_only_ = true;
-      ledger_.mark(entry.instrument_, detail + "; an operator must account for it (release_obligations)");
+      auto line = closing_line(entry, JournalOutcome::HELD, std::nullopt, entry.unwritten_hold_);
+      if (executor_.record(line)) {
+        entry.unwritten_hold_.clear();
+      } else {
+        note_executor_failure(false);
+      }
     } else {
       (void)entry;
-      (void)detail;
     }
   }
 
@@ -2925,6 +2938,7 @@ private:
     const auto equal = [](const Decimal64& a, const Decimal64& b) { return !decimal_less(a, b) && !decimal_less(b, a); };
     for (auto at = unconfirmed_.begin(); at != unconfirmed_.end();) {
       auto& entry = *at;
+      persist_hold(entry);
       // An actual read, and not one older than the read the order was decided against.
       const bool read = portfolio.as_of_ != epoch && !(portfolio.as_of_ < entry.baseline_at_);
       // What a listing still shows of it: that part cannot have reached holdings.

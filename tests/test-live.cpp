@@ -5832,3 +5832,32 @@ TEST_CASE("a listing reporting more filled than an order's history said it ended
   SerialRig restarted(rig.journal.records());
   CHECK(restarted.owed() == runner::ObligationState::OPERATOR);
 }
+
+TEST_CASE("a hold the journal could not record is kept, written later, and never turned into an account",
+          "[serialized]") {
+  // Astra's merge-readiness AM1: the failed HELD write left the order an ordinary one, a later refresh
+  // accounted for it from its old cap, and after a restart a target bought six more.
+  using runner::JournalOutcome;
+  SerialRig rig({serial_line("p-1", JournalOutcome::PENDING), serial_line("p-1", JournalOutcome::ACCEPTED, "B")});
+  rig.runner_instance.confirm_from_history({dated_row("B", at_hour(-1), "4")});
+  rig.show(polled(1, "4", {}));
+  rig.journal.fail_ = true;
+  rig.runner_instance.confirm_from_history({dated_row("B", at_hour(-1), "10", OrderStatus::FILLED)});
+  CHECK(rig.runner_instance.local_failure().has_value());
+  CHECK(rig.owed() == runner::ObligationState::OPERATOR);
+  CHECK(rig.lines(JournalOutcome::HELD).empty());
+
+  // The journal works again: the hold is written, nothing is accounted for, and the halt stays.
+  rig.journal.fail_ = false;
+  rig.runner_instance.refresh_unconfirmed();
+  CHECK(rig.lines(JournalOutcome::HELD).size() == 1);
+  CHECK(rig.lines(JournalOutcome::CONFIRMED).empty());
+  CHECK(rig.owed() == runner::ObligationState::OPERATOR);
+  CHECK(rig.runner_instance.local_failure().has_value());
+
+  SerialRig restarted(rig.journal.records());
+  CHECK(restarted.owed() == runner::ObligationState::OPERATOR);
+  restarted.show(polled(2, "4", {}));
+  restarted.bar(3, {target_of("10")});
+  CHECK(restarted.session.placed().empty());
+}
