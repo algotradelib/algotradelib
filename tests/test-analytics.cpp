@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <initializer_list>
 #include <limits>
 #include <optional>
@@ -36,6 +37,15 @@ TEST_CASE("a value too large for an exact decimal is refused, not wrapped") {
   // 2^63 is the double `INT64_MAX` converts to, and does not fit.
   REQUIRE_FALSE(to_decimal(9223372036854775808.0, 0).has_value());
   REQUIRE(to_decimal(-9223372036854775808.0, 0).has_value());
+}
+
+TEST_CASE("a decimal converts to the nearest double, as its text parses") {
+  // pandas and NumPy read prices with strtod; analytics on the same prices must start from the same
+  // doubles. 16896.7559 is a split-adjusted close that ten successive divisions put an ulp low.
+  for (const char* text : {"0.07", "0.29", "185.71", "16896.7559", "98765.43219", "1234567.891234",
+                           "-0.1", "70000.5", "70000", "0.000001", "9007199254740.991"}) {
+    REQUIRE(to_scalar(Decimal64::parse(text)) == std::strtod(text, nullptr));
+  }
 }
 
 TEST_CASE("the route from a computed value to an order price is narrow") {

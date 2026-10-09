@@ -22,23 +22,24 @@ namespace analytics {
  */
 
 /**
- * @brief Converts an exact decimal to a floating-point approximation.
+ * @brief Converts an exact decimal to the nearest `Scalar`.
  *
- * The coefficient is cast to `Scalar` (exact up to 53 bits, which covers every KRW price and order
- * quantity) and then divided by ten once per decimal place; each division can round, so a value
- * with a fractional part may not be the nearest `double` (`Decimal64(7, 2)` gives
- * `0.069999999999999993`). A scale-zero value within 53 bits converts exactly.
+ * The coefficient is divided once by `10^scale`. Within 53 bits of coefficient (every price and
+ * order quantity) and 22 decimal places, both operands are exact, so the result is the nearest
+ * `double`: the same value `std::strtod` gives for the decimal's text, and so pandas and NumPy
+ * (`Decimal64(7, 2)` gives `0.07`). Beyond either bound it is an approximation.
  *
  * @param value The decimal to convert.
- * @return A floating-point approximation of `value`.
+ * @return The nearest `Scalar` to `value`, within the bounds above.
  * @warning Do not send the result back to a broker as is; use `round_scalar_to_tick`.
  */
 inline Scalar to_scalar(const Decimal64& value) {
-  Scalar result = static_cast<Scalar>(value.coefficient());
+  // Every power of ten up to 10^22 is a double, so this product is exact over that range.
+  Scalar divisor{1};
   for (std::uint8_t step = 0; step < value.scale(); ++step) {
-    result /= Scalar(10);
+    divisor *= Scalar(10);
   }
-  return result;
+  return static_cast<Scalar>(value.coefficient()) / divisor;
 }
 
 /**
@@ -108,8 +109,8 @@ inline std::optional<Decimal64> round_scalar_to_tick(
   for (std::uint8_t step = 0; step < scale; ++step) {
     scaled *= Scalar(10);
   }
-  // Each of the `scale` multiplications here, and the divisions of a `to_scalar` before them, can
-  // add half a unit in the last place.
+  // Each of the `scale` multiplications here can add half a unit in the last place, and a value that
+  // came through `to_scalar` carries one more from its division.
   const Scalar noise = std::max(
     Scalar(1e-9),
     std::abs(scaled) * Scalar(2 * scale + 4) * std::numeric_limits<Scalar>::epsilon()
