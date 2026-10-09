@@ -5861,3 +5861,70 @@ TEST_CASE("a hold the journal could not record is kept, written later, and never
   restarted.bar(3, {target_of("10")});
   CHECK(restarted.session.placed().empty());
 }
+
+TEST_CASE("a serialized order past the timeout is counted, and its instrument trades once holdings show it",
+          "[serialized]") {
+  // A timeout mark outlived the holdings that accounted for the order, and only an operator could lift it.
+  SerialRig rig;
+  rig.session.order_ids_ = {"B", "C"};
+  rig.runner_instance.set_confirmation_timeout(std::chrono::minutes(1));
+  rig.bar(1, {target_of("10")});
+  REQUIRE(rig.session.placed().size() == 1);
+  const auto read = [&](int hour, strategy::Portfolio<FakeBroker> portfolio) {
+    rig.runner_instance.set_observed_at(at_hour(hour));
+    rig.show(std::move(portfolio));
+    rig.runner_instance.refresh_unconfirmed();
+  };
+  read(2, polled(2, "0", {listed_row("B", OrderSide::BUY, "10", "0")}));
+  read(3, polled(3, "0", {}));
+  read(4, polled(4, "0", {}));
+  rig.runner_instance.confirm_from_history({});
+  read(5, polled(5, "0", {}));
+  CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 1);
+  CHECK(rig.owed() == runner::ObligationState::NAMED);
+  CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+
+  SECTION("still owed, it withholds the instrument") {
+    const auto report = rig.bar(6, {target_of("20")});
+    CHECK(rig.session.placed().size() == 1);
+    REQUIRE(report.withheld_plans_.size() == 1);
+    CHECK(report.withheld_plans_.front().reason_ == runner::WithheldPlanReason::AWAITING_CONFIRMATION);
+  }
+
+  SECTION("holdings that show it free the instrument") {
+    read(6, polled(6, "10", {}));
+    CHECK(rig.owed() == runner::ObligationState::NONE);
+    CHECK(rig.lines(runner::JournalOutcome::CONFIRMED).size() == 1);
+    rig.runner_instance.set_observed_at(at_hour(7));
+    rig.bar(7, {target_of("20")});
+    REQUIRE(rig.session.placed().size() == 2);
+    CHECK(rig.session.placed()[1].quantity_ == Decimal64::parse("10"));
+    CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 1);
+  }
+
+  SECTION("a mark from another cause outlives the confirmation") {
+    rig.runner_instance.ledger().mark(samsung(), "a withdrawal request has an unknown outcome");
+    read(6, polled(6, "10", {}));
+    CHECK(rig.owed() == runner::ObligationState::NONE);
+    CHECK(rig.runner_instance.ledger().requires_reconcile(samsung()));
+  }
+}
+
+TEST_CASE("a serialized order never named still marks the ledger past the timeout", "[serialized]") {
+  SerialRig rig;
+  rig.session.fail_place_with(reply_lost());
+  rig.runner_instance.set_confirmation_timeout(std::chrono::minutes(1));
+  rig.bar(1, {target_of("10")});
+  rig.session.heal_place();
+  REQUIRE(rig.owed() == runner::ObligationState::UNNAMED);
+  // A sweep found nothing and lifted its hold; the order stays owed, unnamed.
+  rig.runner_instance.ledger().resolve_after_reading_orders(samsung());
+  for (const int hour : {2, 3}) {
+    rig.runner_instance.set_observed_at(at_hour(hour));
+    rig.show(polled(hour, "0", {}));
+    rig.runner_instance.refresh_unconfirmed();
+  }
+  CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 1);
+  CHECK(rig.owed() == runner::ObligationState::UNNAMED);
+  CHECK(rig.runner_instance.ledger().requires_reconcile(samsung()));
+}
