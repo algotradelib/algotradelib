@@ -2120,8 +2120,10 @@ private:
 
   // ---------------------------------------------------------------------------------------------------
   // Serialized mode (`serialized`): one order per instrument until holdings or its own history account
-  // for it. In order: the gate (`serial_hold`), evidence (`examine_evidence`), discharge and hold
-  // (`confirm_serialized`), restore (`restore_from`). Everything here runs only when `serialized()`.
+  // for it. In file order: tracking (`track_serialized`), confirmation (`confirm_serialized`), the gate
+  // (`serial_hold`), evidence (`examine_evidence`), the journal writes (`discharge`, `persist_hold`) and
+  // restore (`restore_from`). Confirmation and the gate use these only when `serialized()`;
+  // `release_obligations` uses some whenever `can_serialize`.
   // ---------------------------------------------------------------------------------------------------
 
   // `track_unconfirmed` for a serialized runner: every order, named or not, with the baseline the send
@@ -2873,16 +2875,8 @@ private:
   // Rebuilds the reserved row of every sent order still counted, and forgets those holdings confirm.
   //
   // Run before every handler and every pass, so whatever replaced `working_` since -- a listing, or a
-  // source of the caller's own -- the strategy and the guard see each order's unexplained quantity:
-  //
-  // - **covered**: holdings movement since the first unconfirmed order's baseline on the instrument, in
-  //   the orders' direction, credited in the order they were sent, each up to what it expects. Orders
-  //   on both sides of one instrument are credited only when holdings equal the baseline plus all of
-  //   them, since a movement could be either side's;
-  // - **listed**: what a listing still shows remaining for the same reference, instrument and side;
-  // - the row is put back with `expected - covered - listed`, when that is positive, and **never
-  //   spends buying power again** -- the pass that sent the order already did;
-  // - the entry ends once `covered` reaches what it expects.
+  // source of the caller's own -- the strategy and the guard see each order's unexplained quantity.
+  // `confirm_serialized` and `confirm_overlapping` say when an order counts as confirmed.
   void confirm_reservations() {
     if constexpr (keeps_sent_orders_until_listed) {
       if (unconfirmed_.empty()) {
@@ -2916,6 +2910,15 @@ private:
 
   // The overlapping half of `confirm_reservations`: orders grouped per instrument, credited in the order
   // they were sent.
+  //
+  // - **covered**: holdings movement since the first unconfirmed order's baseline on the instrument, in
+  //   the orders' direction, credited in the order they were sent, each up to what it expects. Orders
+  //   on both sides of one instrument are credited only when holdings equal the baseline plus all of
+  //   them, since a movement could be either side's;
+  // - **listed**: what a listing still shows remaining for the same reference, instrument and side;
+  // - the row is put back with `expected - covered - listed`, when that is positive, and **never
+  //   spends buying power again** -- the pass that sent the order already did;
+  // - the entry ends once `covered` reaches what it expects.
   void confirm_overlapping(strategy::Portfolio<Tag>& portfolio, std::chrono::system_clock::time_point now) {
     const auto zero = Decimal64::parse("0");
     std::vector<bool> retire(unconfirmed_.size(), false);
