@@ -758,8 +758,9 @@ public:
    * An accepted order not tracked (no reference, or sent before holdings were read, as
    * `allow_absent_portfolio` permits) has no such protection: its reservation lasts only until the
    * next listing. An order of unknown outcome not tracked (an executor without `last_ref()`) gets no
-   * reservation at all once the ledger entry is resolved. Only orders sent in this process are
-   * tracked; a restart starts with none.
+   * reservation at all once the ledger entry is resolved. Without serialization only orders sent in
+   * this process are tracked, and a restart starts with none; a serialized runner tracks every order it
+   * sends and restores the ones still owed (`serialized`).
    *
    * @return The number of such orders.
    */
@@ -872,7 +873,8 @@ public:
    * - an order is accounted for when a holdings read shows exactly the holding it was decided against
    *   plus what it filled (all of it, or what its own dated, ended history row says), or that row shows it
    *   ended with nothing filled. The journal records it (`JournalOutcome::CONFIRMED`) before the
-   *   instrument is free again, and only a holdings read received after it sizes the next order;
+   *   instrument is free again. The read that accounted for it may size the next order, an older one may
+   *   not; after a restart or an operator's release, only a read received later may;
    * - an order whose reply was lost is accounted for only once a sweep names it and a dated history row of
    *   its send confirms the name. Holdings that move past what an order can explain, or a history row of
    *   its own reporting more filled than it was for, hold it for an operator (`JournalOutcome::HELD`);
@@ -1045,7 +1047,7 @@ public:
    * @brief Returns how many orders a serialized runner owes that nothing yet explains: no listing shows
    *   them resting and holdings do not show them, or only an operator may account for them.
    *
-   * `PollingLoop` reports these after a closing pass, which cannot see them.
+   * `PollingLoop` counts these as a closing pass begins and reports them, since the pass cannot see them.
    *
    * @return The count; zero for a runner that is not serialized.
    */
@@ -1112,7 +1114,9 @@ public:
    * A terminal row for an order caps the quantity holdings must still show at its filled quantity;
    * an order that ended with nothing filled is forgotten at once. After the runner has seen the phase
    * `CLOSED` or `POST_CLOSE` since the order was sent, an open row of a `DAY` order counts as
-   * terminal (its filled quantity is final). An order the history settled, or had no answer for
+   * terminal (its filled quantity is final). A serialized runner (`serialized`) infers nothing from the
+   * phase: it caps only from dated rows that agree the order ended, and holds the order for an operator
+   * when the rows contradict it. An order the history settled, or had no answer for
    * after the timeout, withholds its instrument (`orders_unconfirmed_timed_out`) if a holdings read
    * a timeout later still does not show it; see `set_confirmation_timeout`.
    *
