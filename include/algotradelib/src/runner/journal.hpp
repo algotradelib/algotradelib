@@ -93,6 +93,19 @@ enum class JournalOutcome {
    * that listing held working orders alone); it does not mean the cancellation completed.
    */
   RESOLVED,
+  /**
+   * @brief A serialized runner accounted for the placement: holdings showed what it filled, its
+   *   history showed it ended with nothing filled, or an operator released it.
+   *
+   * `baseline_` is the instrument's holding afterwards, where holdings showed it; `detail_` says which.
+   * See `Runner::allow_overlapping_orders`.
+   */
+  CONFIRMED,
+  /**
+   * @brief Evidence contradicted the placement (holdings moved past what it can explain), so only an
+   *   operator may account for it (`Runner::release_obligations`). Written with `requires_operator_`.
+   */
+  HELD,
 };
 
 /**
@@ -112,6 +125,10 @@ inline constexpr std::string_view journal_outcome_name(JournalOutcome outcome) n
       return "indeterminate";
     case JournalOutcome::RESOLVED:
       return "resolved";
+    case JournalOutcome::CONFIRMED:
+      return "confirmed";
+    case JournalOutcome::HELD:
+      return "held";
   }
   return "unknown";
 }
@@ -136,6 +153,12 @@ inline std::optional<JournalOutcome> journal_outcome_from(std::string_view text)
   }
   if (text == "resolved") {
     return JournalOutcome::RESOLVED;
+  }
+  if (text == "confirmed") {
+    return JournalOutcome::CONFIRMED;
+  }
+  if (text == "held") {
+    return JournalOutcome::HELD;
   }
   return std::nullopt;
 }
@@ -219,6 +242,13 @@ struct JournalEntry {
   std::optional<Decimal64> price_;
   /** @brief The trigger price of a stop-limit order; empty otherwise (and on lines that predate it). */
   std::optional<Decimal64> trigger_price_;
+  /**
+   * @brief On a serialized runner's placement, the instrument's net holding the order was decided
+   *   against; on a `CONFIRMED` line, the holding afterwards, where holdings showed it.
+   *
+   * Empty on every line of an overlapping (or older) runner, which is how recovery tells them apart.
+   */
+  std::optional<Decimal64> baseline_;
   /**
    * @brief The broker's order id, if known: from the start on a `CANCEL` line, and only on an
    *   answering line for a `PLACE`.
@@ -523,7 +553,16 @@ public:
    * @param order The order.
    * @return The wrapped executor's outcome, or `UNAVAILABLE` if the `PENDING` line could not be written.
    */
-  SendOutcome place(const strategy::PlannedOrder& order) {
+  SendOutcome place(const strategy::PlannedOrder& order) { return place(order, std::nullopt); }
+
+  /**
+   * @brief Records and places one order, stating the holding it was decided against (a serialized
+   *   `Runner` calls this).
+   * @param order The order.
+   * @param baseline The instrument's net holding, written on every line for the order.
+   * @return The wrapped executor's outcome, or `UNAVAILABLE` if the `PENDING` line could not be written.
+   */
+  SendOutcome place(const strategy::PlannedOrder& order, std::optional<Decimal64> baseline) {
     JournalEntry entry;
     entry.id_ = next_id();
     entry.action_ = JournalAction::PLACE;
@@ -540,6 +579,8 @@ public:
     entry.quantity_ = order.quantity_;
     entry.price_ = order.price_;
     entry.trigger_price_ = order.trigger_price_;
+    entry.baseline_ = std::move(baseline);
+    last_entry_ = entry;
     if (!journal_->append(entry)) {
       return refuse_unjournaled();
     }
@@ -550,12 +591,37 @@ public:
     entry.recorded_at_ = clock_.now();
     entry.order_id_ = accepted_order_id(outcome);
     entry.detail_ = failure_detail(outcome);
+    last_entry_ = entry;
     if (!journal_->append(entry)) {
       // The send happened; only its answer is lost, so recovery will see it unresolved. Recorded so
       // the runner stops.
       note_failure("the order journal could not record an instruction's outcome");
     }
     return outcome;
+  }
+
+  /**
+   * @brief Returns the last line written (or attempted) for a placement.
+   * @return The line, or `std::nullopt` before any placement.
+   */
+  const std::optional<JournalEntry>& last_entry() const noexcept { return last_entry_; }
+
+  /**
+   * @brief Appends a line the caller built, such as a serialized `Runner`'s `CONFIRMED` line.
+   *
+   * A failure is counted like any other journal failure (`journal_failures`).
+   *
+   * @param entry The line. It is stamped here with this executor's clock (`recorded_at_`), and its
+   *   scope by the journal.
+   * @return Whether it was written.
+   */
+  bool record(JournalEntry& entry) {
+    entry.recorded_at_ = clock_.now();
+    if (journal_->append(entry)) {
+      return true;
+    }
+    note_failure("the order journal could not record that a placement was accounted for");
+    return false;
   }
 
   /**
@@ -732,6 +798,7 @@ private:
   Inner inner_;
   Journal* journal_;
   Clock clock_;
+  std::optional<JournalEntry> last_entry_;
   std::string prefix_;
   std::string journal_error_;
   std::size_t refusals_{0};

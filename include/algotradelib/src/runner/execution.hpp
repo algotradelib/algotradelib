@@ -197,6 +197,11 @@ enum class WithheldReason {
   RECONCILE_REQUIRED,
   /** @brief Local machinery cannot send (see `SendOutcome::UNAVAILABLE`). */
   LOCAL_FAILURE,
+  /**
+   * @brief A serialized runner already has an order on this instrument that holdings have not yet
+   *   accounted for (see `Runner::allow_overlapping_orders`).
+   */
+  AWAITING_CONFIRMATION,
 };
 
 /**
@@ -210,6 +215,8 @@ inline constexpr std::string_view withheld_reason_name(WithheldReason reason) no
       return "reconcile_required";
     case WithheldReason::LOCAL_FAILURE:
       return "local_failure";
+    case WithheldReason::AWAITING_CONFIRMATION:
+      return "awaiting_confirmation";
   }
   return "unknown";
 }
@@ -239,6 +246,13 @@ enum class WithheldPlanReason {
    * holdings arrive (`Runner::retry_retained_targets`); an `OrderIntent` is not.
    */
   PORTFOLIO_SUPERSEDED,
+  /**
+   * @brief A serialized runner may not place on the instrument yet, so the plan's cancellations are
+   *   held too: an order there is not yet accounted for, the runner was not recovered, or holdings
+   *   cannot serve as the next order's baseline. The detail says which; a `TargetPosition` is kept
+   *   and planned again after a newer holdings read. See `Runner::allow_overlapping_orders`.
+   */
+  AWAITING_CONFIRMATION,
 };
 
 /**
@@ -256,6 +270,8 @@ inline constexpr std::string_view withheld_plan_reason_name(WithheldPlanReason r
       return "portfolio_superseded";
     case WithheldPlanReason::PLACEMENT_HELD:
       return "placement_held";
+    case WithheldPlanReason::AWAITING_CONFIRMATION:
+      return "awaiting_confirmation";
   }
   return "unknown";
 }
@@ -280,6 +296,39 @@ struct WithheldPlan {
   /** @brief A description of why, naming the hold if there was one. */
   std::string detail_;
 };
+
+/**
+ * @brief What a serialized runner still owes on an instrument (`Runner::obligation_state`).
+ */
+enum class ObligationState {
+  /** @brief Nothing: an order may be placed. */
+  NONE,
+  /** @brief An order the broker named, waiting for its history and holdings to account for it. */
+  NAMED,
+  /** @brief An order whose existence is unknown (its reply was lost and no sweep named it). */
+  UNNAMED,
+  /** @brief An order only an operator may account for (`Runner::release_obligations`). */
+  OPERATOR,
+};
+
+/**
+ * @brief Returns a lowercase name for a state, such as `"named"`, for logs.
+ * @param state The state.
+ * @return The name.
+ */
+inline constexpr std::string_view obligation_state_name(ObligationState state) noexcept {
+  switch (state) {
+    case ObligationState::NONE:
+      return "none";
+    case ObligationState::NAMED:
+      return "named";
+    case ObligationState::UNNAMED:
+      return "unnamed";
+    case ObligationState::OPERATOR:
+      return "operator";
+  }
+  return "unknown";
+}
 
 /**
  * @brief The broker's own code and message for a refusal, kept for diagnosis.

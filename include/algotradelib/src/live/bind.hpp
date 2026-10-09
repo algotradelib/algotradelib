@@ -111,8 +111,10 @@ using JournaledRunner = runner::Runner<
  * executor, so a journaling executor built beside it would never be used, and nothing would report
  * it.
  *
- * After a restart, call `runner::recover_runner` with the journal **before** the loop starts, so
- * instruments a previous process left unresolved are held.
+ * The runner is serialized (`runner::Runner::serialized`): one order per instrument until holdings
+ * account for it. Call `runner::recover_runner` with the journal **before** trading, on every start:
+ * it restores what a previous process left owed, and the runner places nothing until it has run. To
+ * keep several orders on one instrument outstanding instead, call `allow_overlapping_orders` first.
  *
  * @tparam Strategy The strategy type.
  * @tparam Session The broker session type.

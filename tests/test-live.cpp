@@ -5064,3 +5064,517 @@ TEST_CASE("a deferred stop's evidence that runs past the page limit releases not
   CHECK(session.placed().empty());
   CHECK(bound.deferred_targets().size() == 1);
 }
+
+// ---------------------------------------------------------------------------------------------------
+// Serialized mode (`Runner::serialized`): a journaled runner owns one order per instrument until
+// holdings, or the order's own ended history row, account for it.
+
+namespace {
+
+using Instruction = std::variant<strategy::TargetPosition, strategy::OrderIntent>;
+
+/** States every instruction of one batch per bar, then nothing. */
+struct Batched {
+  std::deque<std::vector<Instruction>>* next_{nullptr};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent&) {
+    if (next_ == nullptr || next_->empty()) {
+      return;
+    }
+    for (const auto& instruction : next_->front()) {
+      std::visit([&](const auto& stated) { ctx.submit(stated); }, instruction);
+    }
+    next_->pop_front();
+  }
+};
+
+/** A journal whose writes can be made to fail from a chosen moment. */
+struct SwitchableJournal : runner::MemoryJournal {
+  using runner::MemoryJournal::MemoryJournal;
+  bool fail_{false};
+  bool append(const runner::JournalEntry& entry) { return !fail_ && runner::MemoryJournal::append(entry); }
+};
+
+using SerialSession = FakeSession<WithWorkingOrders>;
+using SerialExecutor =
+  runner::JournalingExecutor<live::SessionExecutor<SerialSession>, SwitchableJournal, runner::ManualClock>;
+using SerialRunner = runner::Runner<Batched, WithWorkingOrders, FakeBroker, SerialExecutor>;
+
+/** The instant `polled(hour, ...)` and `bar_at(hour, ...)` stand for. */
+std::chrono::system_clock::time_point at_hour(int hour) {
+  return std::chrono::system_clock::time_point{} + std::chrono::hours(500000 + hour);
+}
+
+/** A journal line a serialized runner writes for a market buy of ten, decided against `baseline`. */
+runner::JournalEntry serial_line(
+  const char* id, runner::JournalOutcome outcome, const char* order_id = "", const char* baseline = "0",
+  const char* quantity = "10"
+) {
+  runner::JournalEntry entry;
+  entry.id_ = id;
+  entry.action_ = runner::JournalAction::PLACE;
+  entry.outcome_ = outcome;
+  entry.recorded_at_ = at_hour(-1);
+  entry.instrument_ = samsung();
+  entry.side_ = OrderSide::BUY;
+  entry.type_ = OrderType::MARKET;
+  entry.quantity_ = Decimal64::parse(quantity);
+  entry.order_id_ = order_id;
+  if (baseline != nullptr) {
+    entry.baseline_ = Decimal64::parse(baseline);
+  }
+  return entry;
+}
+
+/** A dated history row for order `id`, ended as `status` with `filled` executed. */
+OrderSnapshot dated_row(
+  const char* id, std::chrono::system_clock::time_point ordered_at, const char* filled,
+  OrderStatus status = OrderStatus::CANCELED
+) {
+  auto row = ended_row(id, OrderSide::BUY, "10", filled);
+  row.status_ = status;
+  row.ordered_at_ = ordered_at;
+  return row;
+}
+
+/** A serialized runner over a broker that lists working orders, recovered from the lines given. */
+struct SerialRig {
+  SerialSession session;
+  SwitchableJournal journal{"test:account"};
+  std::deque<std::vector<Instruction>> script;
+  SerialRunner runner_instance;
+
+  explicit SerialRig(const std::vector<runner::JournalEntry>& lines = {}, bool recover = true)
+  : runner_instance(
+      Batched{&script}, {}, 512,
+      SerialExecutor(live::SessionExecutor<SerialSession>(session), journal, runner::ManualClock(at_hour(0)))
+    ) {
+    for (const auto& line : lines) {
+      journal.append(line);
+    }
+    runner_instance.set_confirmation_timeout(std::chrono::hours(24));
+    runner_instance.context().set_instrument(samsung_reference());
+    runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+    runner_instance.context().set_last_price(samsung(), Decimal64::parse("70000"));
+    if (recover) {
+      runner::recover_runner(runner_instance, journal);
+    }
+    show(polled(0, "0", {}));
+  }
+
+  void show(strategy::Portfolio<FakeBroker> portfolio) { runner_instance.context().set_portfolio(std::move(portfolio)); }
+
+  /** Feeds bar `hour` with one batch of instructions. */
+  SerialRunner::Report bar(int hour, std::vector<Instruction> batch) {
+    script.push_back(std::move(batch));
+    return runner_instance.feed(bar_at(hour, "70000"));
+  }
+
+  /** The journal lines with `outcome`. */
+  std::vector<runner::JournalEntry> lines(runner::JournalOutcome outcome) const {
+    std::vector<runner::JournalEntry> found;
+    for (const auto& entry : journal.records()) {
+      if (entry.outcome_ == outcome) {
+        found.push_back(entry);
+      }
+    }
+    return found;
+  }
+
+  runner::ObligationState owed() const { return runner_instance.obligation_state(samsung()); }
+};
+
+strategy::OrderIntent buy(const char* quantity) {
+  return strategy::OrderIntent::market(samsung(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse(quantity)));
+}
+
+strategy::OrderIntent sell(const char* quantity) {
+  return strategy::OrderIntent::market(samsung(), OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse(quantity)));
+}
+
+strategy::TargetPosition limit_target(const char* quantity, const char* limit) {
+  auto target = target_of(quantity);
+  target.limit_ = strategy::Price::checked(Decimal64::parse(limit), PriceRule::krx_equity());
+  return target;
+}
+
+} // namespace
+
+TEST_CASE("a journaled runner is serialized unless told to overlap", "[serialized]") {
+  SerialRig rig;
+  CHECK(SerialRunner::journals_to_a_broker);
+  CHECK(rig.runner_instance.serialized());
+  // Chosen before recovery and trading, or not at all.
+  CHECK_THROWS_AS(rig.runner_instance.allow_overlapping_orders(), std::logic_error);
+
+  SerialRig overlapping({}, /*recover=*/false);
+  overlapping.runner_instance.allow_overlapping_orders();
+  CHECK_FALSE(overlapping.runner_instance.serialized());
+  // An unjournaled runner never is.
+  CHECK_FALSE(ScriptedRunner::journals_to_a_broker);
+}
+
+TEST_CASE("a serialized runner places nothing before recovery", "[serialized]") {
+  SerialRig rig({}, /*recover=*/false);
+  const auto report = rig.bar(1, {target_of("10")});
+  CHECK(rig.session.placed().empty());
+  REQUIRE(report.withheld_plans_.size() == 1);
+  CHECK(report.withheld_plans_.front().reason_ == runner::WithheldPlanReason::AWAITING_CONFIRMATION);
+  CHECK(report.withheld_plans_.front().detail_.find("recover_runner") != std::string::npos);
+}
+
+TEST_CASE("a journaled runner over a broker listing no working orders places nothing unless told to overlap",
+          "[serialized]") {
+  FakeSession<WithKey> session;
+  runner::MemoryJournal journal("test:account");
+  auto bound = live::bind_journaled(session, journal, HoldTen{}, {});
+  runner::recover_runner(bound, journal);
+  CHECK(bound.serialized());
+  bound.context().set_instrument(samsung_reference());
+  bound.context().set_phase(strategy::MarketPhase::OPEN);
+  bound.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  bound.context().set_portfolio(held_position<WithKey>("0", nullptr));
+  const auto report = bound.feed(bar_at(0, "70000"));
+  CHECK(session.placed().empty());
+  REQUIRE(report.withheld_plans_.size() == 1);
+  CHECK(report.withheld_plans_.front().detail_.find("cannot serialize") != std::string::npos);
+}
+
+TEST_CASE("a buy and a sell on one instrument never overlap, so no fill is credited to the wrong order",
+          "[serialized]") {
+  // The serialized counterpart of the lab's mixed-pair reproduction (`labs/FINDINGS.md` F48): there, a
+  // buy and a sell of 100 both filled before holdings moved, both were retired by unchanged holdings,
+  // and a later buy was confirmed by the first one's fill. Here the sell waits for the buy.
+  SerialRig rig;
+  rig.show(polled(0, "100", {}));
+  rig.session.order_ids_ = {"B", "C", "D"};
+
+  rig.bar(1, {buy("100")});
+  const auto held_back = rig.bar(2, {sell("100")});
+  REQUIRE(rig.session.placed().size() == 1);
+  REQUIRE(held_back.withheld_plans_.size() == 1);
+  CHECK(held_back.withheld_plans_.front().reason_ == runner::WithheldPlanReason::AWAITING_CONFIRMATION);
+  CHECK(rig.owed() == runner::ObligationState::NAMED);
+  REQUIRE(rig.lines(runner::JournalOutcome::PENDING).size() == 1);
+  CHECK(rig.lines(runner::JournalOutcome::PENDING).front().baseline_ == Decimal64::parse("100"));
+
+  // Holdings lag the buy: unchanged, nothing is accounted for, and a target of 200 is held back too.
+  rig.show(polled(3, "100", {}));
+  rig.bar(4, {target_of("200")});
+  CHECK(rig.session.placed().size() == 1);
+
+  // Holdings show the buy: accounted for, in the journal first, and the target is met by it.
+  rig.show(polled(5, "200", {}));
+  rig.runner_instance.refresh_unconfirmed();
+  REQUIRE(rig.lines(runner::JournalOutcome::CONFIRMED).size() == 1);
+  CHECK(rig.lines(runner::JournalOutcome::CONFIRMED).front().baseline_ == Decimal64::parse("200"));
+  CHECK(rig.owed() == runner::ObligationState::NONE);
+  rig.bar(6, {target_of("200")});
+  CHECK(rig.session.placed().size() == 1);
+
+  // The sell, stated again, goes now, measured from 200.
+  rig.bar(7, {sell("100")});
+  REQUIRE(rig.session.placed().size() == 2);
+  CHECK(rig.session.placed().back().side_ == OrderSide::SELL);
+  CHECK(rig.lines(runner::JournalOutcome::PENDING).back().baseline_ == Decimal64::parse("200"));
+}
+
+TEST_CASE("a second order for one instrument in one pass waits, and another instrument trades", "[serialized]") {
+  // An entry and its exit stated together: the exit waits for the entry, which is the protective-order
+  // restriction serialized mode documents. Another instrument is not held by it.
+  SerialRig rig;
+  const InstrumentId hynix{Country::KR, Venue::COMBINED, "000660"};
+  auto hynix_reference = samsung_reference();
+  hynix_reference.id_ = hynix;
+  rig.runner_instance.context().set_instrument(hynix_reference);
+  rig.runner_instance.context().set_last_price(hynix, Decimal64::parse("100000"));
+  auto other = target_of("5");
+  other.instrument_ = hynix;
+
+  const auto report = rig.bar(1, {buy("10"), sell("10"), other});
+  REQUIRE(rig.session.placed().size() == 2);
+  CHECK(rig.session.placed()[0].instrument_ == samsung());
+  CHECK(rig.session.placed()[1].instrument_ == hynix);
+  REQUIRE(report.withheld_plans_.size() == 1);
+  CHECK(report.withheld_plans_.front().detail_.find("earlier instruction in this pass") != std::string::npos);
+}
+
+TEST_CASE("a plan that would withdraw and place behind an unaccounted order is withheld whole", "[serialized]") {
+  // A reversal would otherwise withdraw the resting order and leave its replacement waiting.
+  SerialRig rig;
+  rig.show(polled(0, "10", {}));
+  rig.session.order_ids_ = {"S1", "B2"};
+  rig.bar(1, {limit_target("0", "70000")});
+  REQUIRE(rig.session.placed().size() == 1);
+  rig.show(polled(2, "10", {listed_row("S1", OrderSide::SELL, "10", "0", OrderType::LIMIT)}));
+
+  const auto report = rig.bar(3, {limit_target("20", "70000")});
+  CHECK(rig.session.canceled().empty());
+  CHECK(rig.session.placed().size() == 1);
+  REQUIRE(report.withheld_plans_.size() == 1);
+  CHECK_FALSE(report.withheld_plans_.front().not_canceled_.empty());
+  CHECK(rig.runner_instance.targets_retained() == 1);
+
+  // An explicit withdrawal still goes.
+  rig.runner_instance.context().cancel(OrderRef<FakeBroker>{"S1", ""}, "operator");
+  rig.runner_instance.settle_closing();
+  CHECK(rig.session.canceled().size() == 1);
+}
+
+TEST_CASE("a serialized order is accounted for only by exact holdings or its own dated ended row", "[serialized]") {
+  SerialRig rig;
+  rig.session.order_ids_ = {"B"};
+  rig.bar(1, {target_of("10")});
+  REQUIRE(rig.session.placed().size() == 1);
+  const auto sent = rig.runner_instance.context().now();
+  // Listed resting, then gone, so its history is asked for.
+  rig.show(polled(2, "0", {listed_row("B", OrderSide::BUY, "10", "0")}));
+  rig.runner_instance.refresh_unconfirmed();
+  rig.show(polled(3, "0", {}));
+
+  SECTION("holdings show exactly what it filled") {
+    rig.show(polled(4, "10", {}));
+    rig.runner_instance.refresh_unconfirmed();
+    CHECK(rig.owed() == runner::ObligationState::NONE);
+    REQUIRE(rig.lines(runner::JournalOutcome::CONFIRMED).size() == 1);
+    CHECK(rig.lines(runner::JournalOutcome::CONFIRMED).front().order_id_ == "B");
+  }
+
+  SECTION("holdings past it hold it for an operator, durably") {
+    rig.show(polled(4, "15", {}));
+    rig.runner_instance.refresh_unconfirmed();
+    CHECK(rig.owed() == runner::ObligationState::OPERATOR);
+    REQUIRE(rig.lines(runner::JournalOutcome::HELD).size() == 1);
+    CHECK(rig.lines(runner::JournalOutcome::HELD).front().requires_operator_);
+    CHECK(rig.runner_instance.ledger().requires_reconcile(samsung()));
+    // Holdings that later look exact do not undo it.
+    rig.show(polled(5, "10", {}));
+    rig.runner_instance.refresh_unconfirmed();
+    CHECK(rig.owed() == runner::ObligationState::OPERATOR);
+    CHECK(rig.lines(runner::JournalOutcome::CONFIRMED).empty());
+  }
+
+  SECTION("its dated row ended with nothing filled: no holdings read needed") {
+    rig.runner_instance.confirm_from_history({dated_row("B", sent, "0")});
+    CHECK(rig.owed() == runner::ObligationState::NONE);
+    CHECK(rig.lines(runner::JournalOutcome::CONFIRMED).size() == 1);
+  }
+
+  SECTION("a partial fill before the cancel is accounted for once holdings show it") {
+    rig.runner_instance.confirm_from_history({dated_row("B", sent, "4")});
+    CHECK(rig.owed() == runner::ObligationState::NAMED);
+    rig.show(polled(4, "4", {}));
+    rig.runner_instance.refresh_unconfirmed();
+    CHECK(rig.owed() == runner::ObligationState::NONE);
+  }
+
+  SECTION("an undated row, a refused cancel, or another day's row says nothing") {
+    auto undated = dated_row("B", sent, "0");
+    undated.ordered_at_.reset();
+    rig.runner_instance.confirm_from_history({undated});
+    rig.runner_instance.confirm_from_history({dated_row("B", sent, "0", OrderStatus::CANCEL_REJECTED)});
+    rig.runner_instance.confirm_from_history({dated_row("B", sent - std::chrono::hours(24), "0")});
+    CHECK(rig.owed() == runner::ObligationState::NAMED);
+    CHECK(rig.lines(runner::JournalOutcome::CONFIRMED).empty());
+  }
+
+  SECTION("a row saying it ended is not believed while a listing shows it open") {
+    rig.show(polled(4, "0", {listed_row("B", OrderSide::BUY, "10", "0")}));
+    rig.runner_instance.confirm_from_history({dated_row("B", sent, "0")});
+    CHECK(rig.owed() == runner::ObligationState::NAMED);
+  }
+
+  SECTION("a line that cannot be written stops the runner and keeps the order") {
+    rig.journal.fail_ = true;
+    rig.show(polled(4, "10", {}));
+    rig.runner_instance.refresh_unconfirmed();
+    CHECK(rig.owed() == runner::ObligationState::NAMED);
+    CHECK(rig.runner_instance.local_failure().has_value());
+  }
+}
+
+TEST_CASE("a holdings read older than the last accounted order cannot size the next one", "[serialized]") {
+  SerialRig rig;
+  rig.bar(1, {target_of("10")});
+  rig.show(polled(4, "10", {}));
+  rig.runner_instance.refresh_unconfirmed();
+  REQUIRE(rig.owed() == runner::ObligationState::NONE);
+
+  rig.show(polled(3, "0", {}));
+  const auto report = rig.bar(5, {target_of("10")});
+  CHECK(rig.session.placed().size() == 1);
+  REQUIRE(report.withheld_plans_.size() == 1);
+  CHECK(report.withheld_plans_.front().detail_.find("newer read") != std::string::npos);
+}
+
+TEST_CASE("an order whose reply was lost is named only by the sweep that matched its own line", "[serialized]") {
+  SerialRig rig;
+  rig.session.fail_place_with(reply_lost());
+  rig.bar(1, {target_of("10")});
+  rig.session.heal_place();
+  REQUIRE(rig.owed() == runner::ObligationState::UNNAMED);
+  const auto line = rig.lines(runner::JournalOutcome::PENDING).front().id_;
+
+  // Holdings alone are not identity, ledger cleared or not.
+  rig.runner_instance.ledger().resolve_after_reading_orders(samsung());
+  rig.show(polled(2, "10", {}));
+  rig.runner_instance.refresh_unconfirmed();
+  CHECK(rig.owed() == runner::ObligationState::UNNAMED);
+
+  // Absence is not proof it was never placed, and another line's answer names nothing.
+  rig.runner_instance.resolve_indeterminate_placement(samsung(), OrderSide::BUY, std::nullopt, line);
+  rig.runner_instance.resolve_indeterminate_placement(samsung(), OrderSide::BUY, std::string("X"), "another-line");
+  rig.runner_instance.resolve_indeterminate_placement(samsung(), OrderSide::BUY, std::string("X"));
+  CHECK(rig.owed() == runner::ObligationState::UNNAMED);
+
+  // Named by its own line, and the holdings already in hand account for it at once.
+  rig.runner_instance.resolve_indeterminate_placement(samsung(), OrderSide::BUY, std::string("B"), line);
+  CHECK(rig.owed() == runner::ObligationState::NONE);
+  REQUIRE(rig.lines(runner::JournalOutcome::CONFIRMED).size() == 1);
+  CHECK(rig.lines(runner::JournalOutcome::CONFIRMED).front().order_id_ == "B");
+  // A late answer to an order already accounted for changes nothing.
+  rig.runner_instance.resolve_indeterminate_placement(samsung(), OrderSide::BUY, std::string("B"), line);
+  CHECK(rig.runner_instance.unconfirmed_orders() == 0);
+}
+
+TEST_CASE("a restart restores every order the journal leaves unaccounted for", "[serialized]") {
+  using runner::JournalOutcome;
+  const auto pending = serial_line("p-1", JournalOutcome::PENDING);
+
+  SECTION("sent with no answer: unknown, withheld") {
+    SerialRig rig({pending});
+    CHECK(rig.owed() == runner::ObligationState::UNNAMED);
+    CHECK(rig.runner_instance.ledger().requires_reconcile(samsung()));
+    rig.bar(1, {target_of("10")});
+    CHECK(rig.session.placed().empty());
+  }
+
+  SECTION("accepted: owed until its history and holdings account for it") {
+    SerialRig rig({pending, serial_line("p-1", JournalOutcome::ACCEPTED, "B")});
+    CHECK(rig.owed() == runner::ObligationState::NAMED);
+    CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+    rig.bar(1, {target_of("10")});
+    CHECK(rig.session.placed().empty());
+    // No listing ever carried it in this process, and its history is asked for all the same.
+    CHECK(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
+    rig.runner_instance.confirm_from_history({dated_row("B", at_hour(-1), "10", OrderStatus::FILLED)});
+    rig.show(polled(2, "10", {}));
+    rig.runner_instance.refresh_unconfirmed();
+    CHECK(rig.owed() == runner::ObligationState::NONE);
+    rig.bar(3, {target_of("10")});
+    CHECK(rig.session.placed().empty());
+  }
+
+  SECTION("a cancelled reservation can only be withdrawn by the broker's own row") {
+    SerialRig rig({pending, serial_line("p-1", JournalOutcome::ACCEPTED, "B")});
+    rig.runner_instance.context().cancel(OrderRef<FakeBroker>{"B", ""}, "operator");
+    const auto refused = rig.runner_instance.settle_closing();
+    CHECK(rig.session.canceled().empty());
+    REQUIRE(refused.rejected_cancel_.size() == 1);
+    CHECK_FALSE(refused.rejected_cancel_.front().by_broker_);
+
+    rig.show(polled(1, "0", {listed_row("B", OrderSide::BUY, "10", "0")}));
+    rig.runner_instance.context().cancel(OrderRef<FakeBroker>{"B", ""}, "operator");
+    rig.runner_instance.settle_closing();
+    CHECK(rig.session.canceled().size() == 1);
+  }
+
+  SECTION("accounted for: nothing owed, and only a holdings read after it sizes the next order") {
+    auto confirmed = serial_line("p-1", JournalOutcome::CONFIRMED, "B", "10");
+    confirmed.recorded_at_ = at_hour(0);
+    SerialRig rig({pending, serial_line("p-1", JournalOutcome::ACCEPTED, "B"), confirmed});
+    CHECK(rig.owed() == runner::ObligationState::NONE);
+    rig.show(polled(0, "0", {}));
+    rig.bar(1, {target_of("10")});
+    CHECK(rig.session.placed().empty());
+    rig.show(polled(1, "10", {}));
+    rig.bar(2, {target_of("20")});
+    CHECK(rig.session.placed().size() == 1);
+  }
+
+  SECTION("found absent by a sweep: still owed, and unknown") {
+    SerialRig rig({pending, serial_line("p-1", JournalOutcome::RESOLVED)});
+    CHECK(rig.owed() == runner::ObligationState::UNNAMED);
+    CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+  }
+
+  SECTION("held, written without a baseline, inconsistent or doubled: for an operator") {
+    auto legacy = serial_line("old-1", JournalOutcome::ACCEPTED, "A", nullptr);
+    auto held = serial_line("p-1", JournalOutcome::HELD, "B");
+    held.requires_operator_ = true;
+    auto other_quantity = serial_line("p-1", JournalOutcome::ACCEPTED, "B", "0", "20");
+    for (const auto& lines : std::vector<std::vector<runner::JournalEntry>>{
+           {legacy},
+           {pending, serial_line("p-1", JournalOutcome::ACCEPTED, "B"), held},
+           {pending, other_quantity},
+           {pending, serial_line("p-2", JournalOutcome::PENDING)},
+         }) {
+      SerialRig rig(lines);
+      CHECK(rig.owed() == runner::ObligationState::OPERATOR);
+      CHECK(rig.runner_instance.ledger().requires_reconcile(samsung()));
+    }
+  }
+
+  SECTION("an operator's release accounts for it; the next order needs a later holdings read") {
+    SerialRig rig({serial_line("old-1", JournalOutcome::ACCEPTED, "A", nullptr)});
+    rig.runner_instance.ledger().resolve_after_reading_orders(samsung());
+    REQUIRE(rig.runner_instance.release_obligations(samsung(), "read the order list"));
+    CHECK(rig.owed() == runner::ObligationState::NONE);
+    REQUIRE(rig.lines(JournalOutcome::CONFIRMED).size() == 1);
+    CHECK(rig.lines(JournalOutcome::CONFIRMED).front().detail_.find("released by an operator") == 0);
+    rig.bar(1, {target_of("10")});
+    CHECK(rig.session.placed().empty());
+    rig.show(polled(1, "0", {}));
+    rig.bar(2, {target_of("10")});
+    CHECK(rig.session.placed().size() == 1);
+  }
+
+  SECTION("a release that cannot be written keeps the order and stops the runner") {
+    SerialRig rig({serial_line("old-1", JournalOutcome::ACCEPTED, "A", nullptr)});
+    rig.journal.fail_ = true;
+    CHECK_FALSE(rig.runner_instance.release_obligations(samsung(), "read the order list"));
+    CHECK(rig.owed() == runner::ObligationState::OPERATOR);
+    CHECK(rig.runner_instance.local_failure().has_value());
+  }
+
+  SECTION("a restored order's timeout starts with the first real clock reading") {
+    SerialRig rig({pending, serial_line("p-1", JournalOutcome::ACCEPTED, "B")});
+    rig.runner_instance.set_confirmation_timeout(std::chrono::minutes(10));
+    rig.runner_instance.set_observed_at(at_hour(1));
+    rig.show(polled(1, "0", {}));
+    rig.runner_instance.refresh_unconfirmed();
+    rig.runner_instance.confirm_from_history({});
+    rig.show(polled(1, "0", {}));
+    rig.runner_instance.refresh_unconfirmed();
+    CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+    CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 0);
+  }
+}
+
+TEST_CASE("a restored order is settled through the source's own history read", "[serialized]") {
+  SerialRig rig({serial_line("p-1", runner::JournalOutcome::PENDING), serial_line("p-1", runner::JournalOutcome::ACCEPTED, "B")});
+  OrderPage page;
+  page.orders_.push_back(dated_row("B", at_hour(-1), "10", OrderStatus::FILLED));
+  rig.session.set_history(page);
+  rig.session.set_working_orders(WorkingOrders<FakeBroker>{});
+  live::SessionSource<SerialSession, SwitchableJournal> source(rig.session, {samsung()});
+  source.set_journal(rig.journal);
+  rig.runner_instance.set_observed_at(at_hour(1));
+  REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
+  CHECK(rig.session.history_calls() > 0);
+  CHECK(rig.owed() == runner::ObligationState::NAMED);
+  rig.show(polled(2, "10", {}));
+  rig.runner_instance.refresh_unconfirmed();
+  CHECK(rig.owed() == runner::ObligationState::NONE);
+}
+
+TEST_CASE("orders a serialized runner owes and cannot see are counted for a closing pass", "[serialized]") {
+  SerialRig rig({serial_line("p-1", runner::JournalOutcome::PENDING), serial_line("p-1", runner::JournalOutcome::ACCEPTED, "B")});
+  rig.runner_instance.refresh_unconfirmed();
+  CHECK(rig.runner_instance.obligations_unexplained() == 1);
+  // Listed resting in full: the closing pass sees and withdraws it, so it is not counted.
+  rig.show(polled(1, "0", {listed_row("B", OrderSide::BUY, "10", "0")}));
+  rig.runner_instance.refresh_unconfirmed();
+  CHECK(rig.runner_instance.obligations_unexplained() == 0);
+}
