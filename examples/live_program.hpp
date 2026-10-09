@@ -23,13 +23,14 @@
  *  5. **State every age the loop asks about.** A run that states none holds; a run that says
  *     "unbounded" sizes against a portfolio nobody bounded.
  *  6. **Stop by signal or by control file**, and read `closing_complete()` at the end.
- *  7. **Unattended, alert on what only a person can settle.** An instrument can stay withheld with
- *     nothing in the indeterminacy ledger: a serialized order holdings have not shown within the
- *     confirmation timeout is only counted (`LoopReport::orders_unconfirmed_timed_out_`) and keeps its
- *     instrument until evidence accounts for it. Alert on that count, on `Runner::obligation_state`
- *     reading `OPERATOR`, on a non-empty `Runner::ledger`, and on `closing_complete()` being false. A
- *     run that never stops can be called in chunks (`PollingLoop::run` with `max_iterations`), each
- *     returning its own report.
+ *  7. **Unattended, watch for orders that stay owed.** A serialized order keeps its instrument until
+ *     holdings or its own history account for it, and the indeterminacy ledger need not say so: an order
+ *     counted as timed out (`Runner::orders_unconfirmed_timed_out`) marks it only if it was never named,
+ *     and one whose history reads keep failing is not counted at all. Watch how long each order has been
+ *     owed (`Runner::obligations`, its `sent_at_`), an `OPERATOR` state (`Runner::obligation_state`) and
+ *     a non-empty `Runner::ledger`. `PollingLoop::run` reports only when it returns and has no hook inside
+ *     a run; calling it in short chunks is no substitute, since each call starts its failure budget and
+ *     poll schedule afresh.
  */
 
 #include <algotradelib/live>
@@ -211,7 +212,8 @@ inline void print_loop(const runner::LoopReport& report, std::ostream& out) {
       << "refused by broker: " << report.orders_broker_refused_ << '\n'
       << "unknown outcome : " << report.orders_indeterminate_ << " (read the broker's order list)\n"
       << "unconfirmed     : " << report.orders_unconfirmed_timed_out_
-      << " (sent, and not confirmed in time: the instrument is withheld until you clear it)\n";
+      << " (sent, and not confirmed in time: its instrument waits for holdings or its history, or for you if "
+         "it was never named or the runner overlaps orders)\n";
   if (report.last_unbuildable_) {
     out << "last unbuildable: " << strategy::reject_reason_name(report.last_unbuildable_->reason_) << " for "
         << report.last_unbuildable_->instrument_.symbol_

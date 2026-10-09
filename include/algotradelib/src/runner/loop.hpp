@@ -616,7 +616,8 @@ struct LoopReport {
   std::size_t orders_indeterminate_{0};
   /**
    * @brief Sent orders that timed out unconfirmed; see `Runner::set_confirmation_timeout` for what each mode then
-   *   withholds. A serialized order counted here may mark no ledger, so an unattended run alerts on this count.
+   *   withholds. Counted in the run that noticed it, not while it stays owed (`Runner::obligations`); a named
+   *   serialized order counted here marks no ledger.
    */
   std::size_t orders_unconfirmed_timed_out_{0};
   /** @brief Whole plans held back (any `WithheldPlanReason`); see `Runner::plans_withheld`. */
