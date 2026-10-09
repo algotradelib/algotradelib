@@ -793,46 +793,21 @@ public:
    *   and any other runner names its newest unnamed order on the instrument and side.
    */
   void resolve_indeterminate_placement(
-    const InstrumentId& instrument, OrderSide side, const std::optional<std::string>& order_id,
-    const std::string& journal_id = {}
+    [[maybe_unused]] const InstrumentId& instrument, [[maybe_unused]] OrderSide side,
+    [[maybe_unused]] const std::optional<std::string>& order_id, [[maybe_unused]] const std::string& journal_id = {}
   ) {
     if constexpr (keeps_sent_orders_until_listed) {
       if (order_id && order_id->empty()) {
         return;
       }
-      auto found = unconfirmed_.end();
-      if (serialized()) {
-        // The exact order the sweep answered, or none: a guess could name another order, and a late
-        // answer to one already accounted for finds nothing to change.
-        found = std::find_if(unconfirmed_.begin(), unconfirmed_.end(), [&](const Unconfirmed& entry) {
-          return !journal_id.empty() && entry.journal_ && entry.journal_->id_ == journal_id &&
-            entry.ref_.primary_.empty();
-        });
-        if (found == unconfirmed_.end() || !order_id) {
-          return;
-        }
-      } else {
-        // The newest: the sweep answers the order just sent, and an older one still unnamed is left over
-        // from a hold cleared by hand without naming it.
-        const auto newest = std::find_if(unconfirmed_.rbegin(), unconfirmed_.rend(), [&](const Unconfirmed& entry) {
-          return entry.ref_.primary_.empty() && entry.instrument_ == instrument && entry.side_ == side;
-        });
-        if (newest == unconfirmed_.rend()) {
-          return;
-        }
-        found = std::prev(newest.base());
+      const auto found = serialized() ? unnamed_by_journal_id(journal_id) : newest_unnamed(instrument, side);
+      // Serialized, a sweep only names: absence from a listing is not proof the order was never placed.
+      if (found == unconfirmed_.end() || (serialized() && !order_id)) {
+        return;
       }
       // The row first: it is recognized by the reference about to change, and left behind it would be
       // counted beside the rebuilt one.
-      auto portfolio = context_.portfolio();
-      portfolio.working_.erase(
-        std::remove_if(
-          portfolio.working_.begin(), portfolio.working_.end(),
-          [&](const WorkingOrder<Tag>& working) { return is_reserved_row_of(working, *found); }
-        ),
-        portfolio.working_.end()
-      );
-      context_.set_portfolio(std::move(portfolio));
+      drop_reserved_row(*found);
       if (order_id) {
         // The primary part only: a broker's row is matched on it everywhere, and the listing that
         // carries the order supplies the rest of the reference.
@@ -847,11 +822,6 @@ public:
         unconfirmed_.erase(found);
       }
       confirm_reservations();
-    } else {
-      (void)instrument;
-      (void)side;
-      (void)order_id;
-      (void)journal_id;
     }
   }
 
@@ -1123,10 +1093,9 @@ public:
    * @param evidence History rows covering the instants `unconfirmed_awaiting_evidence` asked for.
    */
   void confirm_from_history(const std::vector<OrderSnapshot>& evidence) {
-    // Serialized: what the evidence says against an order, or for the name a sweep gave it, is taken in
-    // before anything can account for the order (the refresh below may).
     if (serialized()) {
-      examine_evidence(evidence);
+      confirm_serialized_from_history(evidence);
+      return;
     }
     confirm_reservations();
     const auto now = freshness_instant();
@@ -1139,13 +1108,11 @@ public:
       if (entry.ref_.primary_.empty()) {
         continue;
       }
-      // Serialized, `examine_evidence` already took in what the rows say.
-      const auto* row = serialized() ? nullptr :
-        history_row_for(
-          evidence, entry.ref_.primary_, entry.instrument_, entry.side_,
-          entry.sent_at_ - order_time_tolerance_, entry.sent_at_ + order_time_tolerance_
-        );
-      if (row != nullptr && ((entry.session_ended_ && !serialized()) || !strategy::order_is_open(row->status_))) {
+      const auto* row = history_row_for(
+        evidence, entry.ref_.primary_, entry.instrument_, entry.side_,
+        entry.sent_at_ - order_time_tolerance_, entry.sent_at_ + order_time_tolerance_
+      );
+      if (row != nullptr && (entry.session_ended_ || !strategy::order_is_open(row->status_))) {
         if (decimal_less(row->execution_.filled_quantity_, entry.expected_)) {
           entry.expected_ = row->execution_.filled_quantity_;
         }
@@ -2342,6 +2309,43 @@ private:
     }
   }
 
+  // `confirm_from_history` for a serialized runner: what the rows say is taken in before anything can
+  // account for an order (`examine_evidence`); then, as for an overlapping runner, an order consulted past
+  // the timeout with no answer is noted for the next holdings read.
+  void confirm_serialized_from_history(const std::vector<OrderSnapshot>& evidence) {
+    examine_evidence(evidence);
+    confirm_reservations();
+    const auto now = freshness_instant();
+    for (auto& entry : unconfirmed_) {
+      entry.consulted_ = awaits_evidence(entry, now);
+      if (entry.consulted_ && !entry.settled_ && timed_out(entry, now)) {
+        entry.history_missed_ = true;
+      }
+    }
+    confirm_reservations();
+  }
+
+  // `awaits_evidence` for a serialized runner.
+  bool awaits_evidence_serialized(const Unconfirmed& entry, std::chrono::system_clock::time_point now) const {
+    // An unnamed order waits for a sweep or an operator, and a held one for the operator: no history row
+    // can be matched to the first or account for the second.
+    if (entry.operator_only_ || entry.ref_.primary_.empty()) {
+      return false;
+    }
+    // A name a sweep gave needs a row of the order's own day, however much of it holdings already show.
+    if (!entry.identified_) {
+      return true;
+    }
+    if (entry.residual_.coefficient() == 0 || entry.settled_ || entry.history_missed_) {
+      return false;
+    }
+    if (timed_out(entry, now)) {
+      return true;
+    }
+    // A restored order may have left every listing while no process was running.
+    return !entry.listed_now_ && (entry.listed_ || entry.withdrawn_ || entry.restored_);
+  }
+
   // The line that accounts for, or holds, an order (serialized mode).
   static JournalEntry closing_line(
     const Unconfirmed& entry, JournalOutcome outcome, std::optional<Decimal64> holding, std::string detail
@@ -2396,6 +2400,23 @@ private:
     } else {
       (void)entry;
     }
+  }
+
+  // The unnamed order a serialized sweep answered: the one whose journal line is `journal_id`, or none. A
+  // guess could name another order, and a late answer to one already accounted for finds nothing.
+  typename std::vector<Unconfirmed>::iterator unnamed_by_journal_id(const std::string& journal_id) {
+    return std::find_if(unconfirmed_.begin(), unconfirmed_.end(), [&](const Unconfirmed& entry) {
+      return !journal_id.empty() && entry.journal_ && entry.journal_->id_ == journal_id && entry.ref_.primary_.empty();
+    });
+  }
+
+  // The newest unnamed order on `instrument` and `side`: the sweep answers the order just sent, and an
+  // older one still unnamed is left over from a hold cleared by hand without naming it.
+  typename std::vector<Unconfirmed>::iterator newest_unnamed(const InstrumentId& instrument, OrderSide side) {
+    const auto newest = std::find_if(unconfirmed_.rbegin(), unconfirmed_.rend(), [&](const Unconfirmed& entry) {
+      return entry.ref_.primary_.empty() && entry.instrument_ == instrument && entry.side_ == side;
+    });
+    return newest == unconfirmed_.rend() ? unconfirmed_.end() : std::prev(newest.base());
   }
 
   // Removes `entry`'s reserved row from the context portfolio.
@@ -2554,76 +2575,81 @@ private:
   // Remembers an order the broker just accepted, so a listing that lacks it cannot retire its
   // reservation; see `unconfirmed_orders`. Called right after `persist_reservation` wrote its row.
   //
-  // Only for a runner that keeps sent orders until listed, an order with a broker reference, and a
-  // portfolio that has been read: without a reference no listing or history row can be matched to it,
-  // and without a read portfolio there is no baseline. Those keep the old behaviour, where the next
-  // listing retires the row.
-  //
   // `indeterminate`: an order whose request failed in transit, tracked with no reference until a sweep
-  // names it (`resolve_indeterminate_placement`). While the indeterminacy ledger withholds its instrument
-  // it shows no row (nothing can be placed there anyway, and a resting order's own listed row would be
-  // counted twice) and does not time out; only holdings can cover it.
-  //
-  // Serialized, every such order is recorded, named or not, with the baseline the send stated and the
-  // journal line it wrote: the gate guaranteed the holdings, and the order owns its instrument until
-  // accounted for.
+  // names it (`resolve_indeterminate_placement`).
   void track_unconfirmed(
-    const strategy::PlannedOrder& order, const std::optional<OrderRef<Tag>>& ref, bool indeterminate = false,
-    const std::optional<Decimal64>& baseline = std::nullopt
+    [[maybe_unused]] const strategy::PlannedOrder& order, [[maybe_unused]] const std::optional<OrderRef<Tag>>& ref,
+    [[maybe_unused]] bool indeterminate = false, [[maybe_unused]] const std::optional<Decimal64>& baseline = std::nullopt
   ) {
     if constexpr (keeps_sent_orders_until_listed) {
-      const auto& portfolio = context_.portfolio();
       if constexpr (can_serialize) {
-        if (serialized() && baseline && !portfolio.working_.empty()) {
-          Unconfirmed entry;
-          if (ref && !indeterminate) {
-            entry.ref_ = *ref;
-            entry.broker_ref_ = !ref->primary_.empty();
-            entry.identified_ = entry.broker_ref_;
-          }
-          entry.baseline_at_ = portfolio.as_of_;
-          entry.instrument_ = order.instrument_;
-          entry.side_ = order.side_;
-          entry.expected_ = order.quantity_;
-          entry.baseline_ = *baseline;
-          entry.row_ = portfolio.working_.back();
-          entry.sent_at_ = freshness_instant();
-          entry.residual_ = order.quantity_;
-          entry.journal_ = executor_.last_entry();
-          if (entry.sent_at_ != std::chrono::system_clock::time_point{}) {
-            entry.unexplained_since_ = entry.sent_at_;
-          }
-          unconfirmed_.push_back(std::move(entry));
+        if (serialized() && baseline && !context_.portfolio().working_.empty()) {
+          track_serialized(order, ref, indeterminate, *baseline);
           return;
         }
       }
-      (void)baseline;
-      if ((!indeterminate && (!ref || ref->primary_.empty())) ||
-          portfolio.as_of_ == std::chrono::system_clock::time_point{} || portfolio.working_.empty()) {
-        return;
-      }
-      const auto held = portfolio.net_quantity_of(order.instrument_);
-      if (!held) {
-        return;
-      }
-      Unconfirmed entry;
-      if (ref) {
-        entry.ref_ = *ref;
-      }
-      entry.instrument_ = order.instrument_;
-      entry.side_ = order.side_;
-      entry.expected_ = order.quantity_;
-      entry.baseline_ = *held;
-      entry.row_ = portfolio.working_.back();
-      entry.sent_at_ = freshness_instant();
-      entry.residual_ = order.quantity_;
-      entry.unexplained_since_ = entry.sent_at_;
-      unconfirmed_.push_back(std::move(entry));
-    } else {
-      (void)order;
-      (void)ref;
-      (void)indeterminate;
+      track_overlapping(order, ref, indeterminate);
     }
+  }
+
+  // `track_unconfirmed` without serialization.
+  //
+  // Only an order with a broker reference and a portfolio that has been read: without a reference no
+  // listing or history row can be matched to it, and without a read portfolio there is no baseline. Those
+  // keep the old behaviour, where the next listing retires the row. An order of unknown outcome shows no
+  // row while the indeterminacy ledger withholds its instrument (nothing can be placed there anyway, and a
+  // resting order's own listed row would be counted twice) and does not time out; only holdings can cover it.
+  void track_overlapping(const strategy::PlannedOrder& order, const std::optional<OrderRef<Tag>>& ref, bool indeterminate) {
+    const auto& portfolio = context_.portfolio();
+    if ((!indeterminate && (!ref || ref->primary_.empty())) ||
+        portfolio.as_of_ == std::chrono::system_clock::time_point{} || portfolio.working_.empty()) {
+      return;
+    }
+    const auto held = portfolio.net_quantity_of(order.instrument_);
+    if (!held) {
+      return;
+    }
+    Unconfirmed entry;
+    if (ref) {
+      entry.ref_ = *ref;
+    }
+    entry.instrument_ = order.instrument_;
+    entry.side_ = order.side_;
+    entry.expected_ = order.quantity_;
+    entry.baseline_ = *held;
+    entry.row_ = portfolio.working_.back();
+    entry.sent_at_ = freshness_instant();
+    entry.residual_ = order.quantity_;
+    entry.unexplained_since_ = entry.sent_at_;
+    unconfirmed_.push_back(std::move(entry));
+  }
+
+  // `track_unconfirmed` for a serialized runner: every order, named or not, with the baseline the send
+  // stated and the journal line it wrote. The gate guaranteed the holdings.
+  void track_serialized(
+    const strategy::PlannedOrder& order, const std::optional<OrderRef<Tag>>& ref, bool indeterminate,
+    const Decimal64& baseline
+  ) {
+    const auto& portfolio = context_.portfolio();
+    Unconfirmed entry;
+    if (ref && !indeterminate) {
+      entry.ref_ = *ref;
+      entry.broker_ref_ = !ref->primary_.empty();
+      entry.identified_ = entry.broker_ref_;
+    }
+    entry.baseline_at_ = portfolio.as_of_;
+    entry.instrument_ = order.instrument_;
+    entry.side_ = order.side_;
+    entry.expected_ = order.quantity_;
+    entry.baseline_ = baseline;
+    entry.row_ = portfolio.working_.back();
+    entry.sent_at_ = freshness_instant();
+    entry.residual_ = order.quantity_;
+    entry.journal_ = executor_.last_entry();
+    if (entry.sent_at_ != std::chrono::system_clock::time_point{}) {
+      entry.unexplained_since_ = entry.sent_at_;
+    }
+    unconfirmed_.push_back(std::move(entry));
   }
 
   // Whether a reserved row carries the reference the broker gave when it accepted the order.
@@ -2690,6 +2716,10 @@ private:
 
   // Whether only the broker's history can settle `entry` now; see `unconfirmed_awaiting_evidence`.
   bool awaits_evidence(const Unconfirmed& entry, std::chrono::system_clock::time_point now) const {
+    return serialized() ? awaits_evidence_serialized(entry, now) : awaits_evidence_overlapping(entry, now);
+  }
+
+  bool awaits_evidence_overlapping(const Unconfirmed& entry, std::chrono::system_clock::time_point now) const {
     // A settled entry has had its answer: what it filled is known, and only holdings remain to show it.
     // One the history had no answer for past the timeout waits on holdings too, without a read per poll.
     // One with no reference yet never times out *while the ledger holds its instrument*: a sweep will
@@ -2697,21 +2727,13 @@ private:
     // hold -- an operator clearing an `ambiguous` sweep by hand -- it is an ordinary entry again: its
     // history read finds no row, and a holdings read a timeout on withholds the instrument, counted,
     // rather than leaving an order that may never have existed reserved for the rest of the run.
-    // Serialized, a name a sweep gave needs a row of the order's own day before it counts, however much of
-    // the order holdings already show.
-    if (serialized() && !entry.operator_only_ && !entry.ref_.primary_.empty() && !entry.identified_) {
-      return true;
-    }
-    // Serialized, an order nobody named waits for a sweep or an operator, and one held for an operator
-    // waits for the operator: no history row can be matched to the first or account for the second.
     if (entry.residual_.coefficient() == 0 || entry.settled_ || entry.history_missed_ || entry.operator_only_ ||
-        (entry.ref_.primary_.empty() && (serialized() || ledger_.requires_reconcile(entry.instrument_)))) {
+        (entry.ref_.primary_.empty() && ledger_.requires_reconcile(entry.instrument_))) {
       return false;
     }
     if (timed_out(entry, now)) {
       return true;
     }
-    // A restored order may have left every listing while no process was running.
     return !entry.listed_now_ && (entry.listed_ || entry.withdrawn_ || entry.restored_);
   }
 
@@ -2739,7 +2761,6 @@ private:
       if (unconfirmed_.empty()) {
         return;
       }
-      const auto zero = Decimal64::parse("0");
       const auto now = freshness_instant();
       auto portfolio = context_.portfolio();
       // Every row this list owns comes out first, and the residual goes back in below.
@@ -2759,173 +2780,178 @@ private:
       );
       if (serialized()) {
         confirm_serialized(portfolio, now);
-        context_.set_portfolio(std::move(portfolio));
-        return;
-      }
-
-      std::vector<bool> retire(unconfirmed_.size(), false);
-      // Settled by history, or past the timeout with no history answer, and still not in a holdings
-      // read taken a full timeout later: withheld, with what holdings did show credited to it.
-      std::vector<bool> expired(unconfirmed_.size(), false);
-      std::vector<bool> done(unconfirmed_.size(), false);
-      for (std::size_t first = 0; first < unconfirmed_.size(); ++first) {
-        if (done[first]) {
-          continue;
-        }
-        const auto& instrument = unconfirmed_[first].instrument_;
-        const auto direction = unconfirmed_[first].side_;
-        std::vector<std::size_t> group;
-        bool mixed = false;
-        for (std::size_t at = first; at < unconfirmed_.size(); ++at) {
-          if (unconfirmed_[at].instrument_ == instrument) {
-            group.push_back(at);
-            done[at] = true;
-            mixed = mixed || unconfirmed_[at].side_ != direction;
-          }
-        }
-        // `a` signed in the group's direction: what a buy adds to a long holding, a sell takes away.
-        const auto signed_in = [&](const Unconfirmed& entry, const Decimal64& quantity) {
-          return entry.side_ == direction ? quantity : decimal_subtract(zero, quantity).value_or(zero);
-        };
-
-        // What a listing still shows of each order: that part cannot have reached holdings.
-        std::vector<Decimal64> listed(group.size(), zero);
-        std::vector<Decimal64> fillable(group.size(), zero);
-        for (std::size_t at = 0; at < group.size(); ++at) {
-          auto& entry = unconfirmed_[group[at]];
-          entry.listed_now_ = false;
-          for (const auto& working : portfolio.working_) {
-            if (!working.reserved_ && !entry.ref_.primary_.empty() && working.ref_.primary_ == entry.ref_.primary_ &&
-                working.order_.instrument_ == entry.instrument_ && working.order_.side_ == entry.side_ &&
-                strategy::order_is_open(working.order_.status_)) {
-              entry.listed_ = true;
-              entry.listed_now_ = true;
-              listed[at] = decimal_subtract(working.order_.quantity_, working.order_.execution_.filled_quantity_)
-                             .value_or(zero);
-              break;
-            }
-          }
-          const auto left = decimal_subtract(entry.expected_, listed[at]).value_or(zero);
-          fillable[at] = decimal_less(zero, left) ? left : zero;
-        }
-
-        // The holdings movement since the group's baseline -- the first entry's, which a retirement
-        // below advances -- in the group's direction.
-        std::optional<Decimal64> moved;
-        if (const auto held = portfolio.net_quantity_of(instrument)) {
-          moved = direction == OrderSide::BUY ? decimal_subtract(*held, unconfirmed_[first].baseline_) :
-                                                decimal_subtract(unconfirmed_[first].baseline_, *held);
-        }
-        std::vector<Decimal64> covered(group.size(), zero);
-        if (moved && !mixed) {
-          // Credited in the order they were sent, each up to the part no listing still shows.
-          auto left = *moved;
-          for (std::size_t at = 0; at < group.size() && decimal_less(zero, left); ++at) {
-            covered[at] = decimal_less(left, fillable[at]) ? left : fillable[at];
-            left = decimal_subtract(left, covered[at]).value_or(zero);
-          }
-        } else if (moved) {
-          // Both sides: a movement could be either side's, so it counts only when it is exactly what
-          // all of them would make. A resting order a listing shows in full adds nothing, so a
-          // protective stop does not hold up the buy beside it.
-          std::optional<Decimal64> total = zero;
-          for (std::size_t at = 0; at < group.size() && total; ++at) {
-            total = decimal_add(*total, signed_in(unconfirmed_[group[at]], fillable[at]));
-          }
-          // A sum of zero is no evidence: two opposite orders that have not filled at all look like
-          // two that both have. They wait for their history, and once it has said what each one
-          // filled, holdings that did not move are evidence after all. That includes the resting order
-          // above, which waits for no history (it once held them up until they timed out).
-          bool all_settled = true;
-          for (std::size_t at = 0; at < group.size(); ++at) {
-            all_settled = all_settled && (unconfirmed_[group[at]].settled_ || fillable[at].coefficient() == 0);
-          }
-          if (total && (total->coefficient() != 0 || all_settled) && !decimal_less(*total, *moved) &&
-              !decimal_less(*moved, *total)) {
-            covered = fillable;
-          }
-        }
-
-        // Retired entries advance the baseline the rest are measured from, so the movement that
-        // confirmed one is never counted again for the next.
-        std::optional<Decimal64> advanced = unconfirmed_[first].baseline_;
-        for (std::size_t at = 0; at < group.size(); ++at) {
-          auto& entry = unconfirmed_[group[at]];
-          if (!decimal_less(covered[at], entry.expected_)) {
-            retire[group[at]] = true;
-            if (advanced) {
-              advanced = direction == OrderSide::BUY ?
-                decimal_add(*advanced, signed_in(entry, entry.expected_)) :
-                decimal_subtract(*advanced, signed_in(entry, entry.expected_));
-            }
-            continue;
-          }
-          auto residual = decimal_subtract(entry.expected_, covered[at]).value_or(zero);
-          residual = decimal_subtract(residual, listed[at]).value_or(zero);
-          if (!decimal_less(zero, residual)) {
-            entry.residual_ = zero;
-            entry.unexplained_since_.reset();
-            // Explained again, so a later gap starts over: a fresh timeout and a fresh history read.
-            entry.history_missed_ = false;
-            continue;
-          }
-          entry.residual_ = residual;
-          if (!entry.unexplained_since_) {
-            entry.unexplained_since_ = now;
-          }
-          // Judged by the holdings read, not the clock: the listing (and so the history) is polled
-          // before holdings in each iteration, and on a loop polling slower than the timeout the
-          // clock alone marked a fill one holdings read before it would have shown.
-          if ((entry.settled_ || entry.history_missed_) && timed_out(entry, now) &&
-              portfolio.as_of_ - *entry.unexplained_since_ > confirmation_timeout_) {
-            // A holdings answer read a whole timeout after the quantity became unexplained (or after the
-            // history settled it) does not show it, and the history either said what it filled or had
-            // nothing to say: an outside trade, a disagreement or an order nobody here can account for.
-            // Withheld for the operator.
-            ++orders_unconfirmed_timed_out_;
-            ledger_.mark(
-              entry.instrument_,
-              entry.settled_ ?
-                "an order this runner sent (" + entry.ref_.primary_ +
-                  ") filled by the order history, and holdings did not show it within the confirmation "
-                  "timeout" :
-                std::string("an order this runner sent") +
-                  (entry.ref_.primary_.empty() ? " (its reply lost, never named by a sweep)" :
-                                                 " (" + entry.ref_.primary_ + ")") +
-                  " was not confirmed by holdings, the order list or the order history in time"
-            );
-            expired[group[at]] = true;
-            // What holdings did show of it stays credited to it, not to the next order.
-            if (advanced) {
-              advanced = direction == OrderSide::BUY ? decimal_add(*advanced, signed_in(entry, covered[at])) :
-                                                       decimal_subtract(*advanced, signed_in(entry, covered[at]));
-            }
-            continue;
-          }
-          // Not shown while the ledger holds an order not yet named: no placement on the instrument can
-          // go out then, and beside the broker's own row for the same order a resting one would count
-          // twice, so a target would withdraw the real one. The sweep that lifts the hold names it.
-          if (entry.ref_.primary_.empty() && ledger_.requires_reconcile(entry.instrument_)) {
-            continue;
-          }
-          auto row = entry.row_;
-          row.order_.quantity_ = residual;
-          row.amendable_quantity_ = residual;
-          portfolio.working_.push_back(std::move(row));
-        }
-        for (const auto at : group) {
-          if (!retire[at] && advanced) {
-            unconfirmed_[at].baseline_ = *advanced;
-          }
-        }
-      }
-
-      for (std::size_t at = unconfirmed_.size(); at-- > 0;) {
-        if (retire[at] || expired[at]) {
-          unconfirmed_.erase(unconfirmed_.begin() + static_cast<std::ptrdiff_t>(at));
-        }
+      } else {
+        confirm_overlapping(portfolio, now);
       }
       context_.set_portfolio(std::move(portfolio));
+    }
+  }
+
+  // The overlapping half of `confirm_reservations`: orders grouped per instrument, credited in the order
+  // they were sent.
+  void confirm_overlapping(strategy::Portfolio<Tag>& portfolio, std::chrono::system_clock::time_point now) {
+    const auto zero = Decimal64::parse("0");
+    std::vector<bool> retire(unconfirmed_.size(), false);
+    // Settled by history, or past the timeout with no history answer, and still not in a holdings
+    // read taken a full timeout later: withheld, with what holdings did show credited to it.
+    std::vector<bool> expired(unconfirmed_.size(), false);
+    std::vector<bool> done(unconfirmed_.size(), false);
+    for (std::size_t first = 0; first < unconfirmed_.size(); ++first) {
+      if (done[first]) {
+        continue;
+      }
+      const auto& instrument = unconfirmed_[first].instrument_;
+      const auto direction = unconfirmed_[first].side_;
+      std::vector<std::size_t> group;
+      bool mixed = false;
+      for (std::size_t at = first; at < unconfirmed_.size(); ++at) {
+        if (unconfirmed_[at].instrument_ == instrument) {
+          group.push_back(at);
+          done[at] = true;
+          mixed = mixed || unconfirmed_[at].side_ != direction;
+        }
+      }
+      // `a` signed in the group's direction: what a buy adds to a long holding, a sell takes away.
+      const auto signed_in = [&](const Unconfirmed& entry, const Decimal64& quantity) {
+        return entry.side_ == direction ? quantity : decimal_subtract(zero, quantity).value_or(zero);
+      };
+
+      // What a listing still shows of each order: that part cannot have reached holdings.
+      std::vector<Decimal64> listed(group.size(), zero);
+      std::vector<Decimal64> fillable(group.size(), zero);
+      for (std::size_t at = 0; at < group.size(); ++at) {
+        auto& entry = unconfirmed_[group[at]];
+        entry.listed_now_ = false;
+        for (const auto& working : portfolio.working_) {
+          if (!working.reserved_ && !entry.ref_.primary_.empty() && working.ref_.primary_ == entry.ref_.primary_ &&
+              working.order_.instrument_ == entry.instrument_ && working.order_.side_ == entry.side_ &&
+              strategy::order_is_open(working.order_.status_)) {
+            entry.listed_ = true;
+            entry.listed_now_ = true;
+            listed[at] = decimal_subtract(working.order_.quantity_, working.order_.execution_.filled_quantity_)
+                           .value_or(zero);
+            break;
+          }
+        }
+        const auto left = decimal_subtract(entry.expected_, listed[at]).value_or(zero);
+        fillable[at] = decimal_less(zero, left) ? left : zero;
+      }
+
+      // The holdings movement since the group's baseline -- the first entry's, which a retirement
+      // below advances -- in the group's direction.
+      std::optional<Decimal64> moved;
+      if (const auto held = portfolio.net_quantity_of(instrument)) {
+        moved = direction == OrderSide::BUY ? decimal_subtract(*held, unconfirmed_[first].baseline_) :
+                                              decimal_subtract(unconfirmed_[first].baseline_, *held);
+      }
+      std::vector<Decimal64> covered(group.size(), zero);
+      if (moved && !mixed) {
+        // Credited in the order they were sent, each up to the part no listing still shows.
+        auto left = *moved;
+        for (std::size_t at = 0; at < group.size() && decimal_less(zero, left); ++at) {
+          covered[at] = decimal_less(left, fillable[at]) ? left : fillable[at];
+          left = decimal_subtract(left, covered[at]).value_or(zero);
+        }
+      } else if (moved) {
+        // Both sides: a movement could be either side's, so it counts only when it is exactly what
+        // all of them would make. A resting order a listing shows in full adds nothing, so a
+        // protective stop does not hold up the buy beside it.
+        std::optional<Decimal64> total = zero;
+        for (std::size_t at = 0; at < group.size() && total; ++at) {
+          total = decimal_add(*total, signed_in(unconfirmed_[group[at]], fillable[at]));
+        }
+        // A sum of zero is no evidence: two opposite orders that have not filled at all look like
+        // two that both have. They wait for their history, and once it has said what each one
+        // filled, holdings that did not move are evidence after all. That includes the resting order
+        // above, which waits for no history (it once held them up until they timed out).
+        bool all_settled = true;
+        for (std::size_t at = 0; at < group.size(); ++at) {
+          all_settled = all_settled && (unconfirmed_[group[at]].settled_ || fillable[at].coefficient() == 0);
+        }
+        if (total && (total->coefficient() != 0 || all_settled) && !decimal_less(*total, *moved) &&
+            !decimal_less(*moved, *total)) {
+          covered = fillable;
+        }
+      }
+
+      // Retired entries advance the baseline the rest are measured from, so the movement that
+      // confirmed one is never counted again for the next.
+      std::optional<Decimal64> advanced = unconfirmed_[first].baseline_;
+      for (std::size_t at = 0; at < group.size(); ++at) {
+        auto& entry = unconfirmed_[group[at]];
+        if (!decimal_less(covered[at], entry.expected_)) {
+          retire[group[at]] = true;
+          if (advanced) {
+            advanced = direction == OrderSide::BUY ?
+              decimal_add(*advanced, signed_in(entry, entry.expected_)) :
+              decimal_subtract(*advanced, signed_in(entry, entry.expected_));
+          }
+          continue;
+        }
+        auto residual = decimal_subtract(entry.expected_, covered[at]).value_or(zero);
+        residual = decimal_subtract(residual, listed[at]).value_or(zero);
+        if (!decimal_less(zero, residual)) {
+          entry.residual_ = zero;
+          entry.unexplained_since_.reset();
+          // Explained again, so a later gap starts over: a fresh timeout and a fresh history read.
+          entry.history_missed_ = false;
+          continue;
+        }
+        entry.residual_ = residual;
+        if (!entry.unexplained_since_) {
+          entry.unexplained_since_ = now;
+        }
+        // Judged by the holdings read, not the clock: the listing (and so the history) is polled
+        // before holdings in each iteration, and on a loop polling slower than the timeout the
+        // clock alone marked a fill one holdings read before it would have shown.
+        if ((entry.settled_ || entry.history_missed_) && timed_out(entry, now) &&
+            portfolio.as_of_ - *entry.unexplained_since_ > confirmation_timeout_) {
+          // A holdings answer read a whole timeout after the quantity became unexplained (or after the
+          // history settled it) does not show it, and the history either said what it filled or had
+          // nothing to say: an outside trade, a disagreement or an order nobody here can account for.
+          // Withheld for the operator.
+          ++orders_unconfirmed_timed_out_;
+          ledger_.mark(
+            entry.instrument_,
+            entry.settled_ ?
+              "an order this runner sent (" + entry.ref_.primary_ +
+                ") filled by the order history, and holdings did not show it within the confirmation "
+                "timeout" :
+              std::string("an order this runner sent") +
+                (entry.ref_.primary_.empty() ? " (its reply lost, never named by a sweep)" :
+                                               " (" + entry.ref_.primary_ + ")") +
+                " was not confirmed by holdings, the order list or the order history in time"
+          );
+          expired[group[at]] = true;
+          // What holdings did show of it stays credited to it, not to the next order.
+          if (advanced) {
+            advanced = direction == OrderSide::BUY ? decimal_add(*advanced, signed_in(entry, covered[at])) :
+                                                     decimal_subtract(*advanced, signed_in(entry, covered[at]));
+          }
+          continue;
+        }
+        // Not shown while the ledger holds an order not yet named: no placement on the instrument can
+        // go out then, and beside the broker's own row for the same order a resting one would count
+        // twice, so a target would withdraw the real one. The sweep that lifts the hold names it.
+        if (entry.ref_.primary_.empty() && ledger_.requires_reconcile(entry.instrument_)) {
+          continue;
+        }
+        auto row = entry.row_;
+        row.order_.quantity_ = residual;
+        row.amendable_quantity_ = residual;
+        portfolio.working_.push_back(std::move(row));
+      }
+      for (const auto at : group) {
+        if (!retire[at] && advanced) {
+          unconfirmed_[at].baseline_ = *advanced;
+        }
+      }
+    }
+
+    for (std::size_t at = unconfirmed_.size(); at-- > 0;) {
+      if (retire[at] || expired[at]) {
+        unconfirmed_.erase(unconfirmed_.begin() + static_cast<std::ptrdiff_t>(at));
+      }
     }
   }
 
