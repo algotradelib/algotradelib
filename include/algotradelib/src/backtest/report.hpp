@@ -6,7 +6,6 @@
 #include <algotradelib/core>
 
 #include <cstddef>
-#include <cstdint>
 #include <chrono>
 #include <optional>
 #include <string>
@@ -302,19 +301,6 @@ struct Report {
   std::vector<Money> tax_by_currency_;
 };
 
-namespace report_detail {
-
-/** Returns a decimal as the scalar the metrics compute in. */
-inline math::Scalar to_scalar(const Decimal64& value) {
-  auto scaled = static_cast<math::Scalar>(value.coefficient());
-  for (std::uint8_t at = 0; at < value.scale(); ++at) {
-    scaled /= math::Scalar{10};
-  }
-  return scaled;
-}
-
-} // namespace report_detail
-
 /**
  * @brief Summarizes a replay into a `Report`.
  *
@@ -481,15 +467,15 @@ inline Report summarize(
   math::Vector levels(static_cast<math::Index>(result.equity_.size()));
   for (std::size_t at = 0; at < result.equity_.size(); ++at) {
     returns[static_cast<math::Index>(at)] = result.equity_[at].period_return_;
-    levels[static_cast<math::Index>(at)] = report_detail::to_scalar(result.equity_[at].equity_);
+    levels[static_cast<math::Index>(at)] = analytics::to_scalar(result.equity_[at].equity_);
   }
 
   // From a negative opening the ratio's sign reverses (a replay may start with negative cash), so a
   // non-positive opening has no return and no turnover, as a zero one has none.
-  const auto opening = report_detail::to_scalar(report.opening_equity_);
+  const auto opening = analytics::to_scalar(report.opening_equity_);
   report.total_return_ = !(opening > math::Scalar{0}) ?
     math::undefined() :
-    report_detail::to_scalar(report.closing_equity_) / opening - math::Scalar{1};
+    analytics::to_scalar(report.closing_equity_) / opening - math::Scalar{1};
 
   report.sharpe_ = analytics::sharpe(returns, risk_free);
   report.sortino_ = analytics::sortino(returns, risk_free);
@@ -527,7 +513,7 @@ inline Report summarize(
     for (const auto& execution : result.executions_) {
       const auto traded = decimal_multiply(execution.fill_.quantity_, execution.fill_.price_);
       if (traded) {
-        report.total_turnover_ += report_detail::to_scalar(*traded) / opening;
+        report.total_turnover_ += analytics::to_scalar(*traded) / opening;
       }
     }
   }

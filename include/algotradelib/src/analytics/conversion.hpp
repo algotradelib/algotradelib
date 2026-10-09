@@ -25,9 +25,10 @@ namespace analytics {
  * @brief Converts an exact decimal to the nearest `Scalar`.
  *
  * The coefficient is divided once by `10^scale`. Within 53 bits of coefficient (every price and
- * order quantity) and 22 decimal places, both operands are exact, so the result is the nearest
- * `double`: the same value `std::strtod` gives for the decimal's text, and so pandas and NumPy
- * (`Decimal64(7, 2)` gives `0.07`). Beyond either bound it is an approximation.
+ * quantity the bundled brokers quote) and 22 decimal places, both operands are exact, so with IEEE
+ * double arithmetic the result is the nearest `double`: the same value `std::strtod` or Python's
+ * `float` gives for the decimal's text (`Decimal64(7, 2)` gives `0.07`). Beyond either bound it is an
+ * approximation.
  *
  * @param value The decimal to convert.
  * @return The nearest `Scalar` to `value`, within the bounds above.
@@ -110,7 +111,8 @@ inline std::optional<Decimal64> round_scalar_to_tick(
     scaled *= Scalar(10);
   }
   // Each of the `scale` multiplications here can add half a unit in the last place, and a value that
-  // came through `to_scalar` carries one more from its division.
+  // came through `to_scalar` carries one more half unit from its division. The tolerance is wider than
+  // that sum: it also absorbs values computed from such inputs.
   const Scalar noise = std::max(
     Scalar(1e-9),
     std::abs(scaled) * Scalar(2 * scale + 4) * std::numeric_limits<Scalar>::epsilon()

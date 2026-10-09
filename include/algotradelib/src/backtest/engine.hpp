@@ -1017,13 +1017,15 @@ private:
   //
   // The one crossing of the decimal boundary in this engine, and it goes outward: a return is an input
   // to `sharpe` and the rest, which are defined on `Scalar`. Nothing converts back, because no figure
-  // a report produces is ever sent to a broker.
+  // a report produces is ever sent to a broker. The same conversion as `analytics::to_scalar` (one
+  // division by an exact power of ten, so the nearest double), written out because this header does
+  // not include the analytics layer; keep the two alike.
   static math::Scalar analytics_to_scalar(const Decimal64& value) {
-    auto scaled = static_cast<math::Scalar>(value.coefficient());
+    math::Scalar divisor{1};
     for (std::uint8_t at = 0; at < value.scale(); ++at) {
-      scaled /= math::Scalar{10};
+      divisor *= math::Scalar{10};
     }
-    return scaled;
+    return static_cast<math::Scalar>(value.coefficient()) / divisor;
   }
 
   // Returns the grid for `instrument`, unknown when no reference data was supplied.
