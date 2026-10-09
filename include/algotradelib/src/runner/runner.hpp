@@ -3961,17 +3961,18 @@ private:
   // Plans held back whole, for any of three reasons; see `plans_withheld`.
   std::size_t plans_withheld_{0};
   std::size_t warmup_instructions_discarded_{0};
+  // A stop a deferred target waits on, with the order time its listing showed (if any) to tell it from
+  // another day's order under the same number.
+  struct DeferredStop {
+    OrderRef<Tag> ref_;
+    std::optional<std::chrono::system_clock::time_point> ordered_at_;
+  };
   // One target waiting for a stop's withdrawal, and when a listing first showed the stop gone.
   struct DeferredTarget {
     // The target, exactly as the strategy stated it.
     strategy::TargetPosition target_;
-    // The stops it waits on, whose own history rows decide its release, with the order time their
-    // listing showed (if any) to tell them from another day's order under the same number.
-    struct Stop {
-      OrderRef<Tag> ref_;
-      std::optional<std::chrono::system_clock::time_point> ordered_at_;
-    };
-    std::vector<Stop> stops_;
+    // The stops it waits on, whose own history rows decide its release.
+    std::vector<DeferredStop> stops_;
     // When it was deferred, which bounds the history that can hold those rows.
     std::chrono::system_clock::time_point deferred_at_{};
   };
