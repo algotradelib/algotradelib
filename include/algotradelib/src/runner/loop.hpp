@@ -614,7 +614,11 @@ struct LoopReport {
    *   Kiwoom refusals).
    */
   std::size_t orders_indeterminate_{0};
-  /** @brief Sent orders that timed out unconfirmed, each withholding its instrument; see `Runner::set_confirmation_timeout`. */
+  /**
+   * @brief Sent orders that timed out unconfirmed; see `Runner::set_confirmation_timeout` for what each mode then
+   *   withholds. Counted in the run that noticed it, not while it stays owed (`Runner::obligations`); a named
+   *   serialized order counted here marks no ledger.
+   */
   std::size_t orders_unconfirmed_timed_out_{0};
   /** @brief Whole plans held back (any `WithheldPlanReason`); see `Runner::plans_withheld`. */
   std::size_t plans_withheld_{0};
@@ -655,7 +659,10 @@ struct LoopReport {
   std::size_t closing_rejected_{0};
   /** @brief Closing instructions the risk guard refused. */
   std::size_t closing_refused_{0};
-  /** @brief Closing instructions held back because the instrument has an order of unknown outcome. */
+  /**
+   * @brief Closing instructions held back because the instrument has an order of unknown outcome, or (a
+   *   serialized runner) an order not yet accounted for; whole withheld plans count once each.
+   */
   std::size_t closing_withheld_{0};
   /** @brief Closing instructions (cancellations included) with an unknown outcome. */
   std::size_t closing_indeterminate_{0};
@@ -663,6 +670,12 @@ struct LoopReport {
   std::size_t closing_unavailable_{0};
   /** @brief Closing cancellations naming an order the portfolio does not list; read the broker's list rather than retry. */
   std::size_t closing_unresolved_{0};
+  /**
+   * @brief Orders a serialized runner still owed when the closing pass began that neither holdings nor a
+   *   listing explained (`Runner::obligations_unexplained`), so the pass could neither withdraw nor size
+   *   around them. Makes `closing_complete()` false.
+   */
+  std::size_t closing_unconfirmed_{0};
 
   /**
    * @brief Positions whose closing order was sized down, or not sent, because another order could
@@ -709,12 +722,13 @@ struct LoopReport {
    *
    * @return `false` if any closing instruction was rejected, refused, withheld, of unknown outcome,
    *   unavailable or unresolved, or any position was contended or unsizable, or the source was
-   *   unverified.
+   *   unverified, or an order nothing explained was still owed.
    */
   bool closing_complete() const noexcept {
     return closing_rejected_ == 0 && closing_refused_ == 0 && closing_withheld_ == 0 &&
       closing_indeterminate_ == 0 && closing_unavailable_ == 0 && closing_unresolved_ == 0 &&
-      closing_contended_ == 0 && closing_unsizable_ == 0 && !closing_source_unverified_;
+      closing_contended_ == 0 && closing_unsizable_ == 0 && !closing_source_unverified_ &&
+      closing_unconfirmed_ == 0;
   }
   /** @brief Instructions the strategy's `on_stop` asked for during a stop, refused as intended (the operator's orders go instead). */
   std::size_t stop_handler_refused_{0};
@@ -2016,6 +2030,9 @@ private:
     // Sized from what is working, which counts an order this runner sent and holdings do not show yet
     // only once that row is rebuilt: a sell that filled while holdings lag is otherwise sold again.
     runner_->refresh_unconfirmed();
+    // Counted before the pass, so its own new orders are not: what a serialized runner owes that no
+    // listing or holdings explain is exposure this pass cannot withdraw or size around.
+    report.closing_unconfirmed_ = runner_->obligations_unexplained();
     const auto& portfolio = runner_->context().portfolio();
     if (intent == StopIntent::WITHDRAW) {
       for (const auto& working : portfolio.working_) {
@@ -2172,7 +2189,8 @@ private:
     // nothing reported itself complete.
     report.closing_rejected_ = closing.rejected_.size() + closing.rejected_cancel_.size();
     report.closing_refused_ = closing.refused_.size() + closing.refused_cancel_.size();
-    report.closing_withheld_ = closing.withheld_.size();
+    // Whole plans too: a serialized runner withholds a closing order's plan while the instrument owes one.
+    report.closing_withheld_ = closing.withheld_.size() + closing.withheld_plans_.size();
     report.closing_indeterminate_ =
       closing.indeterminate_.size() + closing.indeterminate_cancel_.size();
     report.closing_unavailable_ = closing.unavailable_.size() + closing.unavailable_cancel_.size();
@@ -2203,7 +2221,14 @@ private:
     if (report.closing_withheld_ != 0) {
       report.notes_.push_back(
         "withheld " + std::to_string(report.closing_withheld_) +
-        " closing instruction(s) pending reconciliation; read the broker's order list");
+        " closing instruction(s) pending reconciliation, or until an earlier order is accounted for;"
+        " read the broker's order list");
+    }
+    if (report.closing_unconfirmed_ != 0) {
+      report.notes_.push_back(
+        std::to_string(report.closing_unconfirmed_) +
+        " order(s) this runner sent were not yet accounted for by holdings or a listing, so the closing pass"
+        " could not withdraw or size around them; read the broker's order list and holdings");
     }
     if (report.closing_indeterminate_ != 0) {
       report.notes_.push_back(

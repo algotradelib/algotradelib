@@ -3452,10 +3452,22 @@ private:
     order.session_ = row->session_;
   }
 
+  // What `close_cancelled_originals` needs of a `kt00007` row beyond its normalized snapshot.
+  struct HistoryLink {
+    // The order a completed cancellation row names in `ori_ord`; empty for any other row.
+    std::string cancels_;
+    // Whether the row is an ordinary order (`mdfy_cncl` empty or 일반), not a cancel or a modification.
+    bool plain_{false};
+    // `ord_remnq`, or nothing if absent or unreadable.
+    std::optional<Decimal64> remaining_;
+  };
+
   // One order-history listing spanning however many `kt00007` pages it needs.
   struct HistoryOperation {
     KiwoomHistoryQuery query_;
     OrderPage page_;
+    // One per row of `page_.orders_`, for `close_cancelled_originals`.
+    std::vector<HistoryLink> links_;
     std::string next_key_;
     int pages_{0};
     OrderPageHandler completion_;
@@ -3547,6 +3559,7 @@ private:
           operation->page_.orders_.push_back(
             parse_history_row(value.as_object(), operation->query_.date_)
           );
+          operation->links_.push_back(history_link(value.as_object(), config_.is_demo_));
         }
       }
     } catch (const std::exception& exception) {
@@ -3563,6 +3576,8 @@ private:
         // Every page has been walked, so there is no cursor for a caller to continue from.
         // `has_history_cursor` says the same thing at compile time.
         operation->page_.next_cursor_.reset();
+        // After the last page: a cancellation and its original may be on different pages.
+        close_cancelled_originals(operation->page_.orders_, operation->links_);
         deliver(std::move(operation->completion_), Result<OrderPage>(std::move(operation->page_)));
         return;
       case PageStep::INCOMPLETE:
@@ -3574,6 +3589,63 @@ private:
       case PageStep::CONTINUE:
         request_order_history(operation);
         return;
+    }
+  }
+
+  // Reads a `kt00007` row's link to the order it cancels.
+  //
+  // A cancellation row is `mdfy_cncl` 취소확인, the documented word. The demo server writes 취소 with
+  // `acpt_tp` 주문완료 instead (observed 2026-10-06 and 2026-10-08); that tuple counts on the demo only,
+  // since a bare 취소 names the kind of amendment, not a completed one.
+  static HistoryLink history_link(const json::object& row, bool demo) {
+    HistoryLink link;
+    const auto amendment = detail::text_field(row, "mdfy_cncl");
+    link.plain_ = amendment.empty() || amendment == "일반";
+    link.remaining_ = detail::magnitude(row, "ord_remnq");
+    const bool cancellation = amendment == "취소확인" ||
+      (demo && amendment == "취소" && detail::text_field(row, "acpt_tp") == "주문완료");
+    if (cancellation) {
+      const auto original = detail::text_field(row, "ori_ord");
+      if (original.find_first_not_of('0') != std::string::npos) {
+        link.cancels_ = original;
+      }
+    }
+    return link;
+  }
+
+  // Marks an original order `CANCELED` when a cancellation row names it and nothing of it remains.
+  //
+  // `kt00007` keeps the original's own row as an ordinary order with no state word for the
+  // cancellation (`acpt_tp` 주문완료 on the demo), so without this it reads `UNKNOWN` and never ends.
+  // The original must be the only row with that number, plain, of the same symbol and side, with
+  // `ord_remnq` present and zero (a refused or pending cancel leaves a remainder) and less filled than
+  // ordered (a cancel that lost to a full fill stays `FILLED`). Its `cntr_qty` stays the filled quantity.
+  static void close_cancelled_originals(std::vector<OrderSnapshot>& orders, const std::vector<HistoryLink>& links) {
+    for (std::size_t cancel = 0; cancel < orders.size() && cancel < links.size(); ++cancel) {
+      if (links[cancel].cancels_.empty()) {
+        continue;
+      }
+      std::optional<std::size_t> found;
+      bool ambiguous = false;
+      for (std::size_t at = 0; at < orders.size() && at < links.size(); ++at) {
+        if (orders[at].order_id_ != links[cancel].cancels_) {
+          continue;
+        }
+        ambiguous = ambiguous || found.has_value();
+        found = at;
+      }
+      if (!found || ambiguous) {
+        continue;
+      }
+      auto& original = orders[*found];
+      const auto& link = links[*found];
+      if (!link.plain_ || !link.remaining_ || link.remaining_->coefficient() != 0 ||
+          original.instrument_.symbol_ != orders[cancel].instrument_.symbol_ ||
+          original.side_ != orders[cancel].side_ ||
+          !decimal_less(original.execution_.filled_quantity_, original.quantity_)) {
+        continue;
+      }
+      original.status_ = OrderStatus::CANCELED;
     }
   }
 

@@ -5,6 +5,8 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstdlib>
 #include <initializer_list>
 #include <limits>
 #include <optional>
@@ -36,6 +38,23 @@ TEST_CASE("a value too large for an exact decimal is refused, not wrapped") {
   // 2^63 is the double `INT64_MAX` converts to, and does not fit.
   REQUIRE_FALSE(to_decimal(9223372036854775808.0, 0).has_value());
   REQUIRE(to_decimal(-9223372036854775808.0, 0).has_value());
+}
+
+TEST_CASE("a decimal converts to the nearest double, as its text parses") {
+  // Python's float and strtod give the nearest double; analytics on the same prices must start from
+  // the same doubles. 16896.7559 is a split-adjusted close that four successive divisions put an ulp
+  // low.
+  for (const char* text : {"0.07", "0.29", "185.71", "16896.7559", "98765.43219", "1234567.891234",
+                           "-0.1", "70000.5", "70000", "0.000001", "9007199254740.991"}) {
+    REQUIRE(to_scalar(Decimal64::parse(text)) == std::strtod(text, nullptr));
+  }
+  // The edges of the promise: 53 bits of coefficient, either sign, and 22 places.
+  const std::int64_t widest = (std::int64_t{1} << 53) - 1;
+  for (const auto& value : {Decimal64(1, 22), Decimal64(-1, 22), Decimal64(widest, 22),
+                            Decimal64(-widest, 22), Decimal64(7612685828371001, 15), Decimal64(widest, 0),
+                            Decimal64(std::numeric_limits<std::int64_t>::min(), 0)}) {
+    REQUIRE(to_scalar(value) == std::strtod(value.str().c_str(), nullptr));
+  }
 }
 
 TEST_CASE("the route from a computed value to an order price is narrow") {
