@@ -111,8 +111,8 @@ inline std::optional<Decimal64> round_scalar_to_tick(
     scaled *= Scalar(10);
   }
   // Each of the `scale` multiplications here can add half a unit in the last place, and a value that
-  // came through `to_scalar` carries one more half unit from its division. The tolerance is wider than
-  // that sum: it also absorbs values computed from such inputs.
+  // came through `to_scalar` within its bounds carries one more half unit from its division. The
+  // tolerance is wider than that sum: it also absorbs values computed from such inputs.
   const Scalar noise = std::max(
     Scalar(1e-9),
     std::abs(scaled) * Scalar(2 * scale + 4) * std::numeric_limits<Scalar>::epsilon()
