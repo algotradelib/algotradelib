@@ -61,10 +61,12 @@ So the library uses both, and the discipline is that **they meet in exactly one 
 
 Every conversion lives in `analytics/conversion.hpp`:
 
-- `to_scalar(Decimal64)` is total, and an approximation: the coefficient converts exactly
-  when it fits in 53 bits (broker prices and quantities do), but each decimal place is a
-  division by ten that can round, so `to_scalar(Decimal64(7, 2))` is `0.069999999999999993`,
-  not the nearest double to 0.07. Compare computed values with a tolerance.
+- `to_scalar(Decimal64)` is total. Within 53 bits of coefficient (every price and quantity
+  the bundled brokers quote) and 22 decimal places, in the default round-to-nearest mode, it
+  gives the nearest double, the value `std::strtod` or Python's `float` gives for the
+  decimal's text: `to_scalar(Decimal64(7, 2))` is `0.07`.
+  Beyond those bounds it is an approximation. Arithmetic on the result still rounds, so
+  compare computed values with a tolerance.
 - `to_decimal(Scalar, scale)` returns `std::optional`. It refuses a non-finite value and a
   value that would overflow the coefficient, and it rounds half away from zero at the scale
   it was asked for. It honours that scale literally: `to_decimal(1.5, 3)` is `1.500`, which
