@@ -733,8 +733,9 @@ instrument is accounted for, and planned again against holdings that show what t
 placed, or nothing if the target is already met. A reversal is the plainest case. Flat, stated right after
 a buy that holdings do not show yet, withdraws the buy (refused, if it has filled), waits, and sells what
 was bought once holdings show it; a strategy that states a change once does not lose it.
-The withdrawal is not repeated while the target waits: a second one is refused, and at KIS, Kiwoom and
-Toss a refusal reads as an unknown outcome that holds the instrument. So if the first withdrawal failed
+The withdrawal is attempted once and not repeated while the target waits: on the KIS and Kiwoom demo
+servers a second one was refused, and such a refusal reads as an unknown outcome that holds the
+instrument. So if the first withdrawal failed
 or could not be sent (an order restored after a restart has no reference to withdraw by until a listing
 shows it) and the order is really resting, the kept target does nothing more by itself; a target stated
 again withdraws again. A target whose order the ledger withholds (`orders_reconcile_withheld_`) is kept

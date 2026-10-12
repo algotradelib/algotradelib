@@ -1138,8 +1138,8 @@ public:
    * - a target or order intent the broker could not be reached for, or refused for its rate limit,
    *   until a holdings read newer than the failure arrives;
    * - in a serialized runner, a target whose plan could only withdraw an order the runner still owes,
-   *   until every order on its instrument is accounted for (the withdrawal is sent once, and not again
-   *   while the target waits);
+   *   until every order on its instrument is accounted for (the withdrawal is attempted once, and not
+   *   again while the target waits);
    * - in a serialized runner, a target whose order was withheld as `RECONCILE_REQUIRED`, planned again
    *   at each later holdings read and withheld again while the instrument is unresolved.
    *
