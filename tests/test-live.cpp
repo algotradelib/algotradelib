@@ -6602,6 +6602,8 @@ struct QuietSource {
   std::size_t act_on_working_poll_{0};
   std::function<void()> act_;
   bool holdings_fail_{false};
+  std::size_t holdings_polls_{0};
+  std::size_t act_on_holdings_poll_{0};
   runner::ManualClock* clock_{nullptr};
   /** When the working-order endpoint was polled, on `clock_`. */
   std::vector<std::chrono::system_clock::time_point> working_asked_;
@@ -6620,6 +6622,9 @@ struct QuietSource {
       working_asked_.push_back(clock_->now());
     }
     if (kind == runner::PollKind::WORKING_ORDERS && ++working_polls_ == act_on_working_poll_ && act_) {
+      act_();
+    }
+    if (kind == runner::PollKind::HOLDINGS && ++holdings_polls_ == act_on_holdings_poll_ && act_) {
       act_();
     }
     if (kind == runner::PollKind::HOLDINGS && holdings_fail_) {
@@ -6860,6 +6865,62 @@ TEST_CASE("a flatten arriving a second after the account was read still makes th
     CHECK(source.working_polls_ == 2);
     CHECK(rig.session.placed().size() == 1);
   }
+}
+
+namespace {
+
+/** A loop clock that does something after its nth wait: between two iterations, where a signal lands. */
+struct BetweenIterations {
+  runner::ManualClock* clock_{nullptr};
+  std::size_t* waits_{nullptr};
+  std::size_t act_after_wait_{0};
+  std::function<void()> act_;
+  std::chrono::system_clock::time_point now() const noexcept { return clock_->now(); }
+  std::chrono::steady_clock::time_point monotonic_now() const noexcept { return clock_->monotonic_now(); }
+  void wait_for(std::chrono::nanoseconds duration) {
+    clock_->wait_for(duration);
+    if (++*waits_ == act_after_wait_ && act_) {
+      act_();
+    }
+  }
+};
+
+} // namespace
+
+TEST_CASE("a holdings read held back by itself is waited for", "[serialized][closing-wait]") {
+  // Working orders once a minute, holdings every second, one run. The flatten arrives between two
+  // iterations, a second after holdings were read: only the holdings read is due and held back, and it
+  // is the one that shows the fill.
+  SerialRig rig;
+  rig.session.order_ids_ = {"B", "S"};
+  rig.bar(1, {limit_target("10", "69000")});
+  auto resting = listed_row("B", OrderSide::BUY, "10", "0", OrderType::LIMIT);
+  resting.order_.ordered_at_ = rig.runner_instance.context().now();
+  rig.show(polled(2, "0", {resting}));
+
+  QuietSource source;
+  runner::PollSchedule schedule;
+  schedule.bars_.reset();
+  schedule.holdings_ = std::chrono::seconds(1);
+  schedule.working_orders_ = std::chrono::seconds(60);
+  schedule.tick_ = std::chrono::seconds(1);
+  runner::ManualClock clock{polled(2, "0", {}).as_of_};
+  runner::StopSource stop;
+  std::size_t waits = 0;
+  BetweenIterations between{&clock, &waits, 2, [&] { stop.request(runner::StopIntent::FLATTEN); }};
+  runner::PollingLoop<SerialRunner, QuietSource, BetweenIterations> loop(rig.runner_instance, source, schedule, between);
+  loop.allow_unbounded_portfolio_age();
+  // The third holdings read, whenever the loop makes it, shows the ten.
+  source.act_on_holdings_poll_ = 3;
+  source.act_ = [&] { rig.show(polled(3, "10", {})); };
+
+  const auto report = loop.run(stop, 0);
+  CHECK(source.working_polls_ >= 1);
+  CHECK_FALSE(report.closing_wait_expired_);
+  CHECK(rig.session.canceled().empty());
+  REQUIRE(rig.session.placed().size() == 2);
+  CHECK(rig.session.placed().back().side_ == OrderSide::SELL);
+  CHECK(rig.session.placed().back().quantity_ == Decimal64::parse("10"));
 }
 
 TEST_CASE("a flatten does not wait for a mark on an instrument with nothing held", "[serialized][closing-wait]") {
