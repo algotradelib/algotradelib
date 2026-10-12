@@ -2532,9 +2532,13 @@ private:
       return true;
     }
     // A read its cadence asked for in this iteration and the floor held back: the picture in hand is
-    // older than the one a pass built at once would have had, however complete it looks.
+    // older than the one a pass built at once would have had, however complete it looks. Not one that
+    // was made: with a zero interval a kind is due again the moment it has been read.
     for (const auto kind : {PollKind::WORKING_ORDERS, PollKind::HOLDINGS}) {
-      if (cadence_due(kind, last_.at_)) {
+      const bool polled = std::any_of(last_.polls_.begin(), last_.polls_.end(), [kind](const auto& poll) {
+        return poll.first == kind;
+      });
+      if (!polled && cadence_due(kind, last_.at_)) {
         return true;
       }
     }
@@ -2694,8 +2698,7 @@ private:
     return cadence_due(kind, at);
   }
 
-  // Returns whether `kind`'s own cadence makes it due at `at`. A poll moves it on, so at the end of an
-  // iteration this is true only of a kind that was due in it and not read.
+  // Returns whether `kind`'s own cadence makes it due at `at`.
   bool cadence_due(PollKind kind, std::chrono::system_clock::time_point at) const {
     const auto interval = schedule_.interval_for(kind);
     if (!interval) {

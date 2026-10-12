@@ -2243,6 +2243,33 @@ TEST_CASE("with no wait set, a flatten reads the order list at once whenever it 
   CHECK(report.order_list_read_);
 }
 
+TEST_CASE("account reads on a zero interval, made in the stop's iteration, are not waited for again",
+          "[loop][stop][closing-wait]") {
+  // A zero interval leaves a kind due the moment it has been read. Read as "held back", every stop
+  // waited its whole limit for reads it had already made.
+  SellingRunner runner_instance;
+  hold_ten(runner_instance);
+  AccountingSource source;
+  auto schedule = bars_each_iteration();
+  schedule.holdings_ = std::chrono::seconds(0);
+  schedule.working_orders_ = std::chrono::seconds(0);
+  AccountingLoop loop(runner_instance, source, schedule, test_clock());
+  source.clock_ = &loop.clock();
+  not_about_the_portfolio(loop);
+  StopSource stop;
+  // No bar sells first: the stop arrives in the first bars poll, after this iteration's account reads.
+  source.held_ = "0";
+  source.stop_ = &stop;
+  source.stop_after_bar_ = 1;
+  source.held_after_stop_ = "0";
+
+  const auto report = loop.run(stop, 0);
+  CHECK(report.iterations_ == 1);
+  CHECK_FALSE(report.closing_wait_expired_);
+  CHECK(source.holdings_polls_ == 1);
+  CHECK(source.working_polls_ == 1);
+}
+
 TEST_CASE("a waiting stop keeps its own time: the tick, the wall clock and a second word do not move it",
           "[loop][stop][closing-wait]") {
   SellingRunner runner_instance;
