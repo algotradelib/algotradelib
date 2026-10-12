@@ -206,7 +206,10 @@ prove it from the events it was handed.
   data behind it.
 - **Queue position.** The largest hidden cost in real execution, and invisible to bar data.
 - **Market impact.** Your order is assumed not to move the price.
-- **Borrow availability.** A short is assumed possible.
+- **Borrow availability.** With the default limits a replay refuses a sale of shares it does not
+  hold (`quantity_not_sellable`), as a cash account would. Set
+  `config.limits_.enforce_sellable_quantity_ = false` to simulate shorts: a short is then assumed
+  possible, with no borrow fee, recall, collateral or margin call, and its proceeds count as cash.
 - **Settlement.** A sale's proceeds are credited on the fill and the whole holding is reported as
   sellable, so a replay trades in a T+0 world. `ReportCaveats::sellable_is_whole_holding` and
   `buying_power_is_ledger_cash` are both always true and present for the same reason as
@@ -270,7 +273,7 @@ The consequence worth keeping in mind: **a strategy sized against the sellable c
 easily in a replay than live**, because the whole holding is an upper bound on what a broker will
 let you sell. For buying power there is no such direction — ledger cash may be above or below what a
 broker would answer — so the difference is real but not one you can lean on either way. Either way,
-if you enable `enforce_buying_power_` or `enforce_sellable_quantity_`, a clean backtest is not
+with `enforce_sellable_quantity_` on (the default) or `enforce_buying_power_` enabled, a clean backtest is not
 evidence the live account will accept the same orders; a settlement model in the replay would close
 the sellable half, and the library does not have one yet.
 

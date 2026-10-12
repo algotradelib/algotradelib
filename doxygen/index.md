@@ -261,9 +261,9 @@ or Toss) or from `Bar` values you construct yourself. This library reads no file
 somebody's CSV is not a thing it can do honestly for everyone, and it belongs in your project where
 its assumptions are yours.
 
-Seven of the programs in `examples/` need no credentials, no network and no broker at all, and are
+Eight of the programs in `examples/` need no credentials, no network and no broker at all, and are
 the fastest way to see each layer work: `example-strategy-dryrun`, `example-backtest-offline`,
-`example-backtest-compare`, `example-live-loop`, `example-order-journal`,
+`example-backtest-compare`, `example-inverse-fund`, `example-live-loop`, `example-order-journal`,
 `example-analytics-offline` and `example-rate-limit-stats`. `example-kis-place-order` is offline too
 — it constructs and prints an `OrderRequest` and can send nothing. The rest read credentials from
 the environment, and the KIS and Kiwoom ones also from a credentials directory; the

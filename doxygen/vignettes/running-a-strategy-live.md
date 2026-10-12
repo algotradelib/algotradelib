@@ -184,15 +184,15 @@ against an account that merely *looks* flat would withdraw the orders protecting
 such a plan is withheld whole and reported in `withheld_plans_` rather than half-sent.
 
 **A checked sell also needs to know what the broker's figure means.** With
-`enforce_sellable_quantity_` on, the guard measures a sale against the quantity the broker said may be
+`enforce_sellable_quantity_` on, as it is by default, the guard measures a sale against the quantity the broker said may be
 sold — and it refuses, with `sellable_basis_unestablished`, when nobody has established what that
 quantity *covers*. That is a different refusal from `quantity_not_sellable`, deliberately: one means
 resize the order, this one means declare a basis.
 
 KIS and Toss declare one, so you will not meet this there. **Kiwoom does not by default** — its
 coverage is something *you* assert, because Kiwoom's own specification does not say whether
-`dmst_stex_tp` filters the positions or only values them, so a Kiwoom run with this limit on refuses
-every sell until you set `KiwoomConfig::holdings_sellable_scope_`. You will also meet it if you write
+`dmst_stex_tp` filters the positions or only values them, so a Kiwoom run refuses
+every sell, a flatten's included, until you set `KiwoomConfig::holdings_sellable_scope_`. You will also meet it if you write
 your own source or your own adapter: fill `HoldingsSnapshot::sellable_basis_` (or, for a figure that
 arrived per instrument, that row's `HoldingPosition::sellable_basis_`) with the coverage and the
 resting treatment your broker actually supports, and the guard enforces. Leave it unstated and the
@@ -655,19 +655,31 @@ already holds capacity back from polling so that an order is never the request t
 
 ## Asking the broker what the account can do
 
-Two checks, both off by default, because turning either on changes what an existing program does and
-because each is the broker's answer rather than a limit you chose.
+Two checks, each the broker's answer rather than a limit you chose. The sellable check is on by
+default; the buying-power check is off until you turn it on.
 
 ```cpp
-strategy::RiskLimits limits;
+strategy::RiskLimits limits;                // enforce_sellable_quantity_ is true: refuse a sell of
+                                            // shares the broker has not said may be sold
 limits.enforce_buying_power_ = true;        // refuse a buy the broker cannot fund
-limits.enforce_sellable_quantity_ = true;   // refuse a sell of shares it will not release
 ```
+
+The sellable check is on because the alternative is worse than a refusal. A sale the account cannot
+make is refused by the broker in its reply, which at KIS, Kiwoom and Toss reads as an unknown outcome:
+a serialized runner then owes an order nobody can find, and the instrument stays withheld until you
+release it (`Runner::release_obligations`). Refused by the guard instead, nothing is sent, journaled
+or owed. Turning the check off is for an account that can borrow, or for a simulation; it borrows
+nothing by itself.
 
 **What they cost differs by broker, and `BrokerCaps::sellable_source` says which you have.** At KIS
 the sellable figure arrives on every holdings row, so the check costs nothing at all. At Toss it
 takes a request per instrument you actually sell, spent at the moment the sell is planned and kept
 with the position until the next holdings poll replaces it.
+
+**The observer at Toss cannot ask.** `live::bind_observer` records and sends nothing, and it cannot
+make Toss's per-instrument inquiry, so it reports a sell as refused where a live run would ask and
+could send it. At KIS, and at Kiwoom once the scope is set, the figure is on the holdings and the
+observer sees what a live run sees.
 
 **Absent is not zero.** A figure the broker has not stated is unknown, and unknown refuses. Neither
 check falls back to what you hold or to `cash_in()` — a position is not evidence of a *sellable*
@@ -762,6 +774,38 @@ was observed and is read as ended.
 **Passing is not a promise.** These are readings, and a fill against a resting order moves them
 without telling anyone. The check is the difference between sizing against the broker's last answer
 and sizing against nothing.
+
+## Short positions
+
+A `TargetPosition` is signed, and a replay will short if you let it. Live, **no adapter this library
+ships can open a short**: KIS, Kiwoom and Toss are bound to their cash orders. A target below zero
+becomes a sale of shares the account does not hold, and the sellable check refuses it
+(`quantity_not_sellable`). A target that crosses zero, from five held to minus one, is refused whole:
+the runner does not sell the five and call it done, because turning a reversal into an exit is your
+strategy's decision. State flat if flat is what you want on a cash account.
+
+The refusal is of the order, not of everything the target implied. A target's withdrawals go out
+before the guard sees its orders, so a target below zero behind a resting protective stop withdraws
+the stop, waits for it, and is then refused: the holding is left long and unprotected. "A refused
+short sends nothing" is true only where no working order stood in the target's way.
+
+What a cash account can do is buy a fund that moves against an index.
+[`examples/example-inverse-fund.cpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/example-inverse-fund.cpp)
+is a strategy that reads one instrument for its signal and states an ordinary long target for an
+inverse fund, by the fund's own name, with the fund's own prices, lot and bars. The library does not
+translate a negative target into such a purchase, and should not be asked to: the two are different
+positions.
+
+- An inverse fund targets the opposite of its benchmark's **daily** return and resets every day. Over
+  weeks its value parts from what a short opened at the start would be worth, in either direction. A
+  benchmark that goes 100, 110, 100 is flat; a perfect daily inverse of it goes 100, 90, 98.2.
+- It is an index product. It is not a short of a stock, and it does not hedge one.
+- It spends cash; a short credits cash and owes shares, with a borrow fee, a recall risk and margin.
+- It has its own costs and tracking difference, and its benchmark is usually a futures index.
+- Whether an account may buy a given fund is the broker's to say. Nothing here has observed one bought.
+
+Korean brokers do offer real shorts through other doors (a stock loan order at KIS, futures), on
+real accounts and with agreements this library knows nothing about. Neither is implemented.
 
 ## What the broker says it charged you
 
