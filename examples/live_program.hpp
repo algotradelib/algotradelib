@@ -211,6 +211,10 @@ inline void print_loop(const runner::LoopReport& report, std::ostream& out) {
       << "refused locally : " << report.orders_binding_refused_ << " (by the adapter, before sending)\n"
       << "refused by broker: " << report.orders_broker_refused_ << '\n'
       << "unknown outcome : " << report.orders_indeterminate_ << " (read the broker's order list)\n"
+      // Cancellations that did not go through, which no line above counts. Accepted ones are not here.
+      << "cancels         : " << report.cancels_rejected_ << " rejected (by the broker or the adapter), "
+      << report.cancels_indeterminate_ << " of unknown outcome, " << report.cancels_refused_
+      << " refused by a hold, " << report.cancels_unresolved_ << " for an order not in the picture\n"
       << "unconfirmed     : " << report.orders_unconfirmed_timed_out_
       << " (sent, and not confirmed in time: its instrument waits for holdings or its history, or for you if "
          "it was never named or the runner overlaps orders)\n";
