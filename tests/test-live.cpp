@@ -6276,5 +6276,14 @@ TEST_CASE("a short target behind a resting stop withdraws the stop before the gu
   CHECK(rig.session.canceled().size() == 1);
   CHECK(rig.session.placed().empty());
   CHECK(report.refused_.empty());
-  CHECK(rig.runner_instance.deferred_targets().size() == 1);
+  REQUIRE(rig.runner_instance.deferred_targets().size() == 1);
+
+  // The stop is gone from the listing and holdings are read again: the target is released, and the sell
+  // of fifteen it needs is refused. The ten are still held, and the stop is not.
+  rig.show(polled(2, "10", {}));
+  const auto released = rig.runner_instance.retry_deferred_on_one_snapshot();
+  CHECK(rig.runner_instance.deferred_targets().empty());
+  CHECK(rig.session.placed().empty());
+  REQUIRE(released.refused_.size() == 1);
+  CHECK(released.refused_.front().reason_ == strategy::GuardReason::QUANTITY_NOT_SELLABLE);
 }

@@ -21,10 +21,13 @@
 //  - Whether an account may buy a given fund (some need an agreement or a deposit) is the broker's to
 //    say. This replay proves nothing about that.
 //
-// No credentials and no network. The two series below are a sample of daily opens and closes of an
-// index fund and of an inverse fund on the same forty days; replace them with your own history. A
-// replay of this strategy must use the fund's real bars: negating the index's returns to invent the
-// fund's would hide exactly the difference this file is warning about.
+// No credentials and no network. The two series below are a sample: the daily closes of 069500 and the
+// daily opens and closes of 114800 on the same forty trading days, 2026-08-11 to 2026-10-12, as a
+// public chart service reported them, unadjusted. They are here to make the example run, not as data
+// to rely on, and the replay stamps them one calendar day apart from an arbitrary start, not with
+// their real dates: replace them with your own history. A replay of this strategy must use the
+// fund's real bars: negating the index's returns to invent the fund's would hide exactly the
+// difference this file is warning about.
 //
 // Run it as:
 //
@@ -135,7 +138,7 @@ struct Day {
   int fund_close_;
 };
 
-/** @brief Forty consecutive trading days of a KOSPI 200 fund and of an inverse fund. A sample. */
+/** @brief Forty consecutive trading days (2026-08-11 to 2026-10-12) of the two funds. A sample. */
 const std::vector<Day>& sample() {
   static const std::vector<Day> days = {
     {99265, 1147, 1126},  {103250, 1113, 1080}, {107270, 1043, 1039}, {110060, 1008, 1011},

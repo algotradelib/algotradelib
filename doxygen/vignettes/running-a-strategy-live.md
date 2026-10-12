@@ -189,7 +189,16 @@ sold — and it refuses, with `sellable_basis_unestablished`, when nobody has es
 quantity *covers*. That is a different refusal from `quantity_not_sellable`, deliberately: one means
 resize the order, this one means declare a basis.
 
-KIS and Toss declare one, so you will not meet this there. **Kiwoom does not by default** — its
+KIS and Toss declare one, so an ordinary cash holding there passes. **A declared basis is not the same
+as a coherent reading, though.** KIS can report one instrument as several rows (its pages can repeat a
+code), and when those rows state different sellable figures, or
+different bases, the guard cannot tell which lot a sale draws from: it refuses **every** sell of that
+instrument, a one-share reduction and a flatten's closing sell alike (`sellable_basis_unestablished`).
+The library does not add the rows' figures up and does not pick a lot, and a smaller order does not
+help. With the check on by default this now applies to every KIS program, not only to those that asked
+for it: if your account holds an instrument in more than one row, read its holdings
+(`example-kis-account`) before relying on the runner to exit it, and sell such a holding yourself, or
+turn the check off knowing what that gives up. **Kiwoom does not by default** — its
 coverage is something *you* assert, because Kiwoom's own specification does not say whether
 `dmst_stex_tp` filters the positions or only values them, so a Kiwoom run refuses
 every sell, a flatten's included, until you set `KiwoomConfig::holdings_sellable_scope_`. You will also meet it if you write
@@ -667,8 +676,9 @@ limits.enforce_buying_power_ = true;        // refuse a buy the broker cannot fu
 The sellable check is on because the alternative is worse than a refusal. A sale the account cannot
 make is refused by the broker in its reply, which at KIS, Kiwoom and Toss reads as an unknown outcome:
 a serialized runner then owes an order nobody can find, and the instrument stays withheld until you
-release it (`Runner::release_obligations`). Refused by the guard instead, nothing is sent, journaled
-or owed. Turning the check off is for an account that can borrow, or for a simulation; it borrows
+release it (`Runner::release_obligations`). Refused by the guard instead, no placement is sent or
+journaled and no new obligation is created (at Toss the read-only sellable inquiry may still have been
+made, and an order owed from earlier stays owed). Turning the check off is for an account that can borrow, or for a simulation; it borrows
 nothing by itself.
 
 **What they cost differs by broker, and `BrokerCaps::sellable_source` says which you have.** At KIS
@@ -787,7 +797,8 @@ strategy's decision. State flat if flat is what you want on a cash account.
 The refusal is of the order, not of everything the target implied. A target's withdrawals go out
 before the guard sees its orders, so a target below zero behind a resting protective stop withdraws
 the stop, waits for it, and is then refused: the holding is left long and unprotected. "A refused
-short sends nothing" is true only where no working order stood in the target's way.
+short sends no placement" is always true; "it sends nothing" only where no working order stood in the
+target's way.
 
 What a cash account can do is buy a fund that moves against an index.
 [`examples/example-inverse-fund.cpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/example-inverse-fund.cpp)
