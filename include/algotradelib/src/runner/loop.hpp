@@ -2513,6 +2513,10 @@ private:
     report.closing_waited_ = std::chrono::duration_cast<std::chrono::nanoseconds>(monotonic - closing_->began_);
     // As the pass does before it counts: an order holdings now show is no longer owed.
     runner_->refresh_unconfirmed();
+    for (const auto& poll : last_.polls_) {
+      closing_->read_working_ = closing_->read_working_ || poll.first == PollKind::WORKING_ORDERS;
+      closing_->read_holdings_ = closing_->read_holdings_ || poll.first == PollKind::HOLDINGS;
+    }
     closing_->reads_wanted_ = closing_needs_evidence(clock_.now());
     if (!closing_->reads_wanted_) {
       return false;
@@ -2531,16 +2535,15 @@ private:
     if (!closing_source_verified(at) || runner_->obligations_awaiting_account() != 0) {
       return true;
     }
-    // A read its cadence asked for in this iteration and the floor held back: the picture in hand is
-    // older than the one a pass built at once would have had, however complete it looks. Not one that
-    // was made: with a zero interval a kind is due again the moment it has been read.
-    for (const auto kind : {PollKind::WORKING_ORDERS, PollKind::HOLDINGS}) {
-      const bool polled = std::any_of(last_.polls_.begin(), last_.polls_.end(), [kind](const auto& poll) {
-        return poll.first == kind;
-      });
-      if (!polled && cadence_due(kind, last_.at_)) {
-        return true;
-      }
+    // A read its cadence asked for and the floor has held back since the stop was seen: the picture in
+    // hand is older than the one a pass built at once would have had, however complete it looks. Once
+    // made, in whichever iteration, it is not owed again: the two reads keep separate floors and need
+    // not fall in the same iteration, and with a zero interval a kind is due the moment it is read.
+    if (!closing_->read_working_ && cadence_due(PollKind::WORKING_ORDERS, last_.at_)) {
+      return true;
+    }
+    if (!closing_->read_holdings_ && cadence_due(PollKind::HOLDINGS, last_.at_)) {
+      return true;
     }
     // A mark on something held, unless only an operator can lift it. Held by the instrument's net, as the
     // pass sizes it; rows that cannot be netted count as held.
@@ -2765,6 +2768,9 @@ private:
     std::chrono::steady_clock::time_point began_{};
     std::chrono::steady_clock::time_point deadline_{};
     bool reads_wanted_{false};
+    // Whether each account read has been made since the stop was seen (its first iteration included).
+    bool read_working_{false};
+    bool read_holdings_{false};
   };
   std::optional<ClosingWait> closing_;
   // Whether the iteration under way began with a `WITHDRAW` or `FLATTEN` requested that may wait: from

@@ -1957,6 +1957,9 @@ public:
    * holdings read is the first after the stop: the bars poll, after its feed.
    */
   bool queue_a_buy_after_stop_{false};
+  /** How long a holdings call takes, on `slow_clock_`. */
+  std::chrono::nanoseconds holdings_take_{0};
+  runner::ManualClock* slow_clock_{nullptr};
   bool queue_pending_{false};
   bool queued_a_buy_{false};
   std::deque<runner::PollOutcome> order_list_;
@@ -2008,6 +2011,10 @@ public:
     }
     if (kind == runner::PollKind::HOLDINGS) {
       ++holdings_polls_;
+      // A call that takes time: the reply, and its stamp, come that much later.
+      if (slow_clock_ != nullptr) {
+        slow_clock_->advance(holdings_take_);
+      }
       if (stopped_ && !after_stop_once_) {
         after_stop_once_ = true;
         if (jumping_clock_ != nullptr) {
@@ -2243,7 +2250,7 @@ TEST_CASE("with no wait set, a flatten reads the order list at once whenever it 
   CHECK(report.order_list_read_);
 }
 
-TEST_CASE("account reads on a zero interval, made in the stop's iteration, are not waited for again",
+TEST_CASE("account reads on a zero interval are waited for once if held back, and not again once made",
           "[loop][stop][closing-wait]") {
   // A zero interval leaves a kind due the moment it has been read. Read as "held back", every stop
   // waited its whole limit for reads it had already made.
@@ -2257,17 +2264,58 @@ TEST_CASE("account reads on a zero interval, made in the stop's iteration, are n
   source.clock_ = &loop.clock();
   not_about_the_portfolio(loop);
   StopSource stop;
-  // No bar sells first: the stop arrives in the first bars poll, after this iteration's account reads.
   source.held_ = "0";
-  source.stop_ = &stop;
-  source.stop_after_bar_ = 1;
   source.held_after_stop_ = "0";
 
+  SECTION("the stop arrives after this iteration's account reads: nothing is owed") {
+    source.stop_ = &stop;
+    source.stop_after_bar_ = 1;
+    const auto report = loop.run(stop, 0);
+    CHECK(report.iterations_ == 1);
+    CHECK_FALSE(report.closing_wait_expired_);
+    CHECK(source.holdings_polls_ == 1);
+    CHECK(source.working_polls_ == 1);
+  }
+
+  SECTION("the stop is pending at the start: the working-order read held back is made once, at the floor") {
+    stop.request(StopIntent::FLATTEN);
+    const auto report = loop.run(stop, 0);
+    CHECK_FALSE(report.closing_wait_expired_);
+    CHECK(report.closing_waited_ == std::chrono::seconds(5));
+    CHECK(source.working_polls_ == 1);
+    CHECK(source.shortest_gap() == std::chrono::seconds(5));
+  }
+}
+
+TEST_CASE("a slow holdings call does not make the wait take a read it has made for one it owes",
+          "[loop][stop][closing-wait]") {
+  // Each endpoint keeps its own five-second floor from when it last answered, so a holdings call that
+  // takes two seconds puts the two reads in different iterations. Judged one iteration at a time, the
+  // working-order read was "not made" in every iteration that read holdings, and the wait ran out.
+  for (const auto interval : {std::chrono::seconds(1), std::chrono::seconds(0)}) {
+  SellingRunner runner_instance;
+  hold_ten(runner_instance);
+  AccountingSource source;
+  auto schedule = bars_each_iteration();
+  schedule.holdings_ = interval;
+  schedule.working_orders_ = interval;
+  AccountingLoop loop(runner_instance, source, schedule, test_clock());
+  source.clock_ = &loop.clock();
+  source.held_ = "0";
+  source.held_after_stop_ = "0";
+  source.holdings_take_ = std::chrono::seconds(2);
+  source.slow_clock_ = &loop.clock();
+  not_about_the_portfolio(loop);
+  StopSource stop;
+  REQUIRE(loop.run(stop, 1).iterations_ == 1);
+
+  stop.request(StopIntent::FLATTEN);
   const auto report = loop.run(stop, 0);
-  CHECK(report.iterations_ == 1);
+  CAPTURE(interval.count(), source.holdings_polls_, source.working_polls_);
   CHECK_FALSE(report.closing_wait_expired_);
-  CHECK(source.holdings_polls_ == 1);
-  CHECK(source.working_polls_ == 1);
+  CHECK(report.closing_waited_ < std::chrono::seconds(15));
+  CHECK(report.closing_complete());
+  }
 }
 
 TEST_CASE("a waiting stop keeps its own time: the tick, the wall clock and a second word do not move it",
