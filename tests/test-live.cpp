@@ -6546,9 +6546,9 @@ TEST_CASE("a flatten that lands on an order holdings do not show yet waits for t
     CHECK(exit == live_program::Exit::CLOSING_INCOMPLETE);
     CHECK(session.placed().size() == 1);
     CHECK(out.str().find("the stop waited") != std::string::npos);
-    // Read on a five-second floor for thirty seconds, not once and not every tick.
-    CHECK(session.holdings_reads_ >= 6);
-    CHECK(session.holdings_reads_ <= 8);
+    // The read at the start, then one every five seconds while the wait lasts, and none at its limit:
+    // not once, and not every tick.
+    CHECK(session.holdings_reads_ == 6);
     CHECK(clock.now() - program_start() >= std::chrono::seconds(30));
     CHECK(clock.now() - program_start() < std::chrono::seconds(40));
   }
@@ -6630,27 +6630,30 @@ SerialLoop loop_over(SerialRig& rig, QuietSource& source, int hour) {
 TEST_CASE("a stop does not withdraw again an order whose withdrawal the broker already took", "[serialized][closing-wait]") {
   // Seen on Kiwoom's demo: a far limit withdrawn six seconds before a flatten was withdrawn again by the
   // closing pass, refused, and the refusal read as an unknown outcome.
-  SerialRig rig;
-  rig.session.order_ids_ = {"B"};
-  rig.bar(1, {limit_target("10", "69000")});
-  const auto resting = listed_row("B", OrderSide::BUY, "10", "0", OrderType::LIMIT);
-  rig.show(polled(2, "0", {resting}));
-  rig.runner_instance.context().cancel(resting.ref_, "strategy");
-  rig.runner_instance.settle_closing();
-  REQUIRE(rig.session.canceled().size() == 1);
+  for (const auto word : {runner::StopIntent::WITHDRAW, runner::StopIntent::FLATTEN}) {
+    SerialRig rig;
+    rig.session.order_ids_ = {"B"};
+    rig.bar(1, {limit_target("10", "69000")});
+    const auto resting = listed_row("B", OrderSide::BUY, "10", "0", OrderType::LIMIT);
+    rig.show(polled(2, "0", {resting}));
+    rig.runner_instance.context().cancel(resting.ref_, "strategy");
+    rig.runner_instance.settle_closing();
+    REQUIRE(rig.session.canceled().size() == 1);
 
-  QuietSource source;
-  auto loop = loop_over(rig, source, 2);
-  runner::StopSource stop;
-  stop.request(runner::StopIntent::FLATTEN);
-  const auto report = loop.run(stop, 0);
+    QuietSource source;
+    auto loop = loop_over(rig, source, 2);
+    runner::StopSource stop;
+    stop.request(word);
+    const auto report = loop.run(stop, 0);
 
-  // It waited for the order's history to account for it, which this source never brings, and then ran
-  // its pass with the row still listed: no second withdrawal.
-  CHECK(report.closing_wait_expired_);
-  CHECK(rig.session.canceled().size() == 1);
-  CHECK(report.withdrawn_ == 0);
-  CHECK(rig.session.placed().size() == 1);
+    // It waited for the order's history to account for it, which this source never brings, and then ran
+    // its pass with the row still listed: no second withdrawal, from either word.
+    CAPTURE(runner::stop_intent_name(word));
+    CHECK(report.closing_wait_expired_);
+    CHECK(rig.session.canceled().size() == 1);
+    CHECK(report.withdrawn_ == 0);
+    CHECK(rig.session.placed().size() == 1);
+  }
 }
 
 TEST_CASE("a stop discards a target waiting on a resting stop order", "[serialized][closing-wait]") {

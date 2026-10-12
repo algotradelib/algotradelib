@@ -2189,6 +2189,19 @@ TEST_CASE("a waiting stop keeps its own time: the tick, the wall clock and a sec
     CHECK(source.working_polls_ == source.holdings_polls_);
   }
 
+  SECTION("a limit between two reads ends the wait at the limit, not at the next read or tick") {
+    auto schedule = slow_account_reads();
+    schedule.bars_ = std::chrono::seconds(60);
+    schedule.tick_ = std::chrono::seconds(60);
+    AccountingLoop loop(runner_instance, source, schedule, test_clock());
+    source.clock_ = &loop.clock();
+    loop.set_closing_wait(std::chrono::seconds(12));
+    not_about_the_portfolio(loop);
+    const auto report = loop.run(stop, 0);
+    CHECK(report.closing_wait_expired_);
+    CHECK(report.closing_waited_ == std::chrono::seconds(12));
+  }
+
   SECTION("the wall clock set forward or back does not change how long it waits") {
     // Measured on the wall clock, a step forward would end the wait at once and a step back would
     // stretch it by the step.
