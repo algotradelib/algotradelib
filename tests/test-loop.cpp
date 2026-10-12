@@ -479,6 +479,13 @@ struct SellEverything {
     target.target_quantity_ = algotradelib::Decimal64{};
     ctx.submit(target);
   }
+
+  template <class Ctx>
+  void on_stop(Ctx&) {
+    ++stops_;
+  }
+
+  std::size_t stops_{0};
 };
 
 using SellingRunner = runner::DryRunner<SellEverything>;
@@ -1945,8 +1952,13 @@ public:
   /** The wall clock is set forward or back by this much at the first holdings poll after the stop. */
   runner::ManualClock* jumping_clock_{nullptr};
   std::chrono::nanoseconds jump_{0};
-  /** A target the source leaves queued on the context, unsettled, at the first holdings poll after the stop. */
+  /**
+   * A target the source leaves queued on the context, unsettled, by the last poll of the iteration whose
+   * holdings read is the first after the stop: the bars poll, after its feed.
+   */
   bool queue_a_buy_after_stop_{false};
+  bool queue_pending_{false};
+  bool queued_a_buy_{false};
   std::deque<runner::PollOutcome> order_list_;
   std::size_t holdings_polls_{0};
   std::size_t working_polls_{0};
@@ -1956,6 +1968,15 @@ public:
   runner::PollOutcome poll(runner::PollKind kind, Runner& runner_instance) {
     if (kind == runner::PollKind::BARS) {
       runner_instance.feed(bar_at(bars_++));
+      if (queue_pending_) {
+        // After the feed, which settles whatever is queued: this one is still there when the iteration ends.
+        queue_pending_ = false;
+        queued_a_buy_ = true;
+        strategy::TargetPosition target;
+        target.instrument_ = samsung();
+        target.target_quantity_ = algotradelib::Decimal64::parse("25");
+        runner_instance.context().submit(target);
+      }
       if (stop_ != nullptr && bars_ == stop_after_bar_) {
         stop_->request(stop_with_);
         stopped_ = true;
@@ -1980,12 +2001,7 @@ public:
         if (jumping_clock_ != nullptr) {
           jumping_clock_->jump(jump_);
         }
-        if (queue_a_buy_after_stop_) {
-          strategy::TargetPosition target;
-          target.instrument_ = samsung();
-          target.target_quantity_ = algotradelib::Decimal64::parse("25");
-          runner_instance.context().submit(target);
-        }
+        queue_pending_ = queue_a_buy_after_stop_;
       }
       if (stopped_ && holdings_fail_after_stop_) {
         return runner::PollOutcome::FAILED;
@@ -2200,6 +2216,9 @@ TEST_CASE("a waiting stop keeps its own time: the tick, the wall clock and a sec
     const auto report = loop.run(stop, 0);
     CHECK(report.closing_wait_expired_);
     CHECK(report.closing_waited_ == std::chrono::seconds(12));
+    // Told once, when the stop was taken up, however many iterations it then waited.
+    CHECK(report.iterations_ > 2);
+    CHECK(runner_instance.strategy().stops_ == 1);
   }
 
   SECTION("the wall clock set forward or back does not change how long it waits") {
@@ -2268,11 +2287,14 @@ TEST_CASE("a target left queued while a stop waits is not sent with the closing 
   not_about_the_portfolio(loop);
 
   const auto report = loop.run(stop, 0);
+  REQUIRE(source.queued_a_buy_);
   CHECK(report.closing_complete());
-  // The one sell the bar placed before the stop, and nothing since.
+  // The one sell the bar placed before the stop, and nothing since: the queued buy was settled under
+  // the hold and refused.
   REQUIRE(runner_instance.executor().placed().size() == 1);
   CHECK(runner_instance.executor().placed().front().side_ == algotradelib::OrderSide::SELL);
   CHECK(report.stop_handler_sent_ == 0);
+  CHECK(report.stop_handler_refused_ == 1);
 }
 
 TEST_CASE("a run abandoned while a stop waits leaves the stop's hold and reports the stop unfinished",

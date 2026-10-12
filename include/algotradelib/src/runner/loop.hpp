@@ -2124,6 +2124,8 @@ private:
         stale.rejected_.size() + stale.withheld_.size() + stale.withheld_plans_.size() + stale.unavailable_.size();
       report.stop_handler_sent_ += stale.would_place_.size() + stale.would_cancel_.size();
     }
+    // Nothing decided under the hold is kept, so this clears nothing today. It stands so that a change
+    // to that rule cannot let kept work out with the closing orders below.
     runner_->clear_retained_targets();
     runner_->clear_deferred_targets();
 
