@@ -6970,7 +6970,10 @@ TEST_CASE("a flatten does not wait for an order that is simply resting, and cann
   rig.show(polled(0, "10", {}));
   rig.bar(1, {limit_target("20", "69000")});
   REQUIRE(rig.session.placed().size() == 1);
-  rig.show(polled(2, "10", {listed_row("B", OrderSide::BUY, "10", "0", OrderType::LIMIT)}));
+  // Dated as the broker lists it: recognizably this runner's order, and not one it has withdrawn.
+  auto resting = listed_row("B", OrderSide::BUY, "10", "0", OrderType::LIMIT);
+  resting.order_.ordered_at_ = rig.runner_instance.context().now();
+  rig.show(polled(2, "10", {resting}));
 
   QuietSource source;
   auto loop = loop_over(rig, source, 2);
