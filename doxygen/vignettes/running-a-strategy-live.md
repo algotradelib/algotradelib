@@ -686,6 +686,11 @@ the sellable figure arrives on every holdings row, so the check costs nothing at
 takes a request per instrument you actually sell, spent at the moment the sell is planned and kept
 with the position until the next holdings poll replaces it.
 
+**At Toss the check is a request, and a request can fail.** If the inquiry is refused or does not answer
+(Toss rate-limits), the figure stays absent and that pass's sell is refused, a flatten's closing sell
+included; it goes out when a later pass asks again and is answered. This is the one network call the
+default adds to an exit.
+
 **The observer at Toss cannot ask.** `live::bind_observer` records and sends nothing, and it cannot
 make Toss's per-instrument inquiry, so it reports a sell as refused where a live run would ask and
 could send it. At KIS, and at Kiwoom once the scope is set, the figure is on the holdings and the
@@ -790,7 +795,7 @@ and sizing against nothing.
 A `TargetPosition` is signed, and a replay will short if you let it. Live, **no adapter this library
 ships can open a short**: KIS, Kiwoom and Toss are bound to their cash orders. A target below zero
 becomes a sale of shares the account does not hold, and the sellable check refuses it
-(`quantity_not_sellable`). A target that crosses zero, from five held to minus one, is refused whole:
+(`quantity_not_sellable`; at Kiwoom with no sellable scope set, `sellable_basis_unestablished`, as for any sell). A target that crosses zero, from five held to minus one, is refused whole:
 the runner does not sell the five and call it done, because turning a reversal into an exit is your
 strategy's decision. State flat if flat is what you want on a cash account.
 
