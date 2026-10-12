@@ -7,12 +7,14 @@ namespace algotradelib {
 namespace runner {
 
 /**
- * @brief The real clock a live loop uses: wall-clock time to stamp events, monotonic time to wait.
+ * @brief The real clock a live loop uses: wall-clock time to stamp events, monotonic time to wait
+ *   and to measure how long something took.
  *
  * `now()` is wall-clock time (it can jump when NTP or an operator sets the clock), because events
  * are stamped with it and must agree with brokers' timestamps. `wait_for()` is measured on
- * `steady_clock`, so a poll cadence is unaffected by such jumps. A custom clock for a loop needs
- * the same two calls; `ManualClock` is the test version.
+ * `steady_clock`, so a poll cadence is unaffected by such jumps, and `monotonic_now()` reads that
+ * clock, which is what a bounded wait is measured on (`PollingLoop::set_closing_wait`). A custom clock
+ * for a loop needs the same three calls; `ManualClock` is the test version.
  */
 class SteadyClock {
 public:
@@ -22,6 +24,14 @@ public:
    */
   std::chrono::system_clock::time_point now() const noexcept {
     return std::chrono::system_clock::now();
+  }
+
+  /**
+   * @brief Returns a reading that only moves forward, for measuring elapsed time.
+   * @return `std::chrono::steady_clock::now()`.
+   */
+  std::chrono::steady_clock::time_point monotonic_now() const noexcept {
+    return std::chrono::steady_clock::now();
   }
 
   /**
@@ -57,6 +67,12 @@ public:
   std::chrono::system_clock::time_point now() const noexcept { return now_; }
 
   /**
+   * @brief Returns the monotonic reading: how far `wait_for` and `advance` have moved the clock.
+   * @return The reading; `jump` does not move it.
+   */
+  std::chrono::steady_clock::time_point monotonic_now() const noexcept { return monotonic_; }
+
+  /**
    * @brief Advances the clock by a duration instead of waiting, and counts the wait.
    * @param duration The duration; zero or negative counts the wait without advancing.
    */
@@ -64,15 +80,27 @@ public:
     ++waits_;
     if (duration > std::chrono::nanoseconds::zero()) {
       now_ += std::chrono::duration_cast<std::chrono::system_clock::duration>(duration);
+      monotonic_ += std::chrono::duration_cast<std::chrono::steady_clock::duration>(duration);
       waited_ += duration;
     }
   }
 
   /**
-   * @brief Advances the clock without counting a wait.
-   * @param duration The duration.
+   * @brief Advances the clock without counting a wait: time that passed, as inside a slow call.
+   * @param duration The duration; zero or negative does nothing to the monotonic reading.
    */
   void advance(std::chrono::nanoseconds duration) noexcept {
+    now_ += std::chrono::duration_cast<std::chrono::system_clock::duration>(duration);
+    if (duration > std::chrono::nanoseconds::zero()) {
+      monotonic_ += std::chrono::duration_cast<std::chrono::steady_clock::duration>(duration);
+    }
+  }
+
+  /**
+   * @brief Moves the wall-clock reading alone, forward or back, as an operator or NTP setting the clock does.
+   * @param duration The jump.
+   */
+  void jump(std::chrono::nanoseconds duration) noexcept {
     now_ += std::chrono::duration_cast<std::chrono::system_clock::duration>(duration);
   }
 
@@ -90,6 +118,7 @@ public:
 
 private:
   std::chrono::system_clock::time_point now_;
+  std::chrono::steady_clock::time_point monotonic_{};
   std::size_t waits_{0};
   std::chrono::nanoseconds waited_{std::chrono::nanoseconds::zero()};
 };
