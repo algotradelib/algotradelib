@@ -294,7 +294,8 @@ int run_kiwoom(ssl::context& tls, const Arguments& arguments) {
   // only values them, so the adapter refuses holdings until you state both. Until then the loop has
   // no portfolio and holds: this program runs and places nothing. Measure what your account returns
   // (run `example-kiwoom-account`, then set its `holdings_venue_` to NXT, rebuild and run it again),
-  // then assert what you measured:
+  // then assert what you measured. The sellable scope is the third thing to state: without it the
+  // guard refuses every sell, a flatten's closing sell included.
   config.holdings_venue_ = atl::Venue::KRX;
   // config.holdings_position_scope_ = kiwoom::KiwoomPositionScope::WHOLE_HOLDING;
   // config.holdings_sellable_scope_ = kiwoom::KiwoomSellableScope::WHOLE_HOLDING;

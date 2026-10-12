@@ -612,6 +612,18 @@ HoldingPosition holding(const char* quantity) {
   return position;
 }
 
+/** A holding the broker states as sellable in full, which the guard checks a sell against by default. */
+HoldingPosition sellable_holding(const char* quantity) {
+  auto position = holding(quantity);
+  position.sellable_quantity_ = position.quantity_;
+  return position;
+}
+
+/** The basis every shipped adapter declares: the whole holding, resting sells deducted by this library. */
+SellableBasis whole_holding_basis() {
+  return SellableBasis{SellableBasis::Coverage::WHOLE_HOLDING, SellableBasis::RestingTreatment::DEDUCT, false};
+}
+
 TargetPosition target(const char* quantity, std::optional<strategy::Price> limit = std::nullopt) {
   TargetPosition wanted;
   wanted.instrument_ = samsung();
@@ -1148,7 +1160,8 @@ TEST_CASE("a sell that has finished does not hold back the next one") {
   // 100 remaining, so counting it would take the whole holding and refuse the exit.
   const RiskGuard guard;
   ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("100"));
+  portfolio.sellable_basis_ = whole_holding_basis();
+  portfolio.positions_.push_back(sellable_holding("100"));
   portfolio.working_.push_back(working("100", "0", OrderStatus::CANCELED, OrderSide::SELL));
 
   REQUIRE_FALSE(guard.check(planned("100", "70000", OrderSide::SELL), portfolio, shut_market()));
@@ -1234,6 +1247,8 @@ TEST_CASE("the position ceiling limits a short as firmly as a long") {
   // unbounded short while appearing to be risk-limited.
   RiskLimits limits;
   limits.max_position_quantity_ = Decimal64::parse("100");
+  // A short book: the sellable check is off, as an account that can borrow (or a short replay) sets it.
+  limits.enforce_sellable_quantity_ = false;
   const RiskGuard guard(limits);
   ProbePortfolio portfolio;
   portfolio.positions_.push_back(holding("-95"));
@@ -1332,7 +1347,8 @@ TEST_CASE("an ordinary portfolio is valued and permitted, not refused by the tig
   const auto closed = InstrumentId{Country::KR, Venue::COMBINED, "051910"};
 
   ProbePortfolio portfolio;
-  portfolio.positions_.push_back(holding("100"));
+  portfolio.sellable_basis_ = whole_holding_basis();
+  portfolio.positions_.push_back(sellable_holding("100"));
   auto second = holding("250");
   second.instrument_ = hynix;
   second.last_price_ = Decimal64::parse("180000");
@@ -1744,4 +1760,27 @@ TEST_CASE("a target that needs a trade withdraws a resting stop first", "[trigge
     REQUIRE(plan.place_.size() == 1);
     CHECK(plan.place_[0].side_ == OrderSide::SELL);
   }
+}
+
+TEST_CASE("the default limits refuse a sell the account has not been shown to hold", "[short]") {
+  // On by default, so that a runner bound to a cash account cannot send a sale of shares it does not hold:
+  // a target below zero, or one that crosses zero. Turning the check off is the explicit choice.
+  const RiskGuard guard;
+  ProbePortfolio flat;
+  flat.sellable_basis_ = whole_holding_basis();
+  const auto from_flat = guard.check(planned("1", "70000", OrderSide::SELL), flat, open_market());
+  REQUIRE(from_flat);
+  CHECK(from_flat->reason_ == GuardReason::QUANTITY_NOT_SELLABLE);
+
+  ProbePortfolio long_five;
+  long_five.sellable_basis_ = whole_holding_basis();
+  long_five.positions_.push_back(sellable_holding("5"));
+  const auto through_zero = guard.check(planned("6", "70000", OrderSide::SELL), long_five, open_market());
+  REQUIRE(through_zero);
+  CHECK(through_zero->reason_ == GuardReason::QUANTITY_NOT_SELLABLE);
+  CHECK_FALSE(guard.check(planned("5", "70000", OrderSide::SELL), long_five, open_market()));
+
+  RiskLimits borrowing;
+  borrowing.enforce_sellable_quantity_ = false;
+  CHECK_FALSE(RiskGuard(borrowing).check(planned("1", "70000", OrderSide::SELL), flat, open_market()));
 }

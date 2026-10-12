@@ -677,6 +677,19 @@ using FlipRunner = runner::Runner<
   FlipTarget, CapsType, FakeBroker, live::SessionExecutor<FakeSession<CapsType>>
 >;
 
+/**
+ * States each position's whole quantity as sellable, as a broker's holdings rows do: the guard checks a sell
+ * against the figure by default, so a fixture standing for an answered holdings read has to carry one.
+ */
+void state_sellable(HoldingsSnapshot& snapshot) {
+  snapshot.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING, SellableBasis::RestingTreatment::DEDUCT, false,
+  };
+  for (auto& position : snapshot.positions_) {
+    position.sellable_quantity_ = position.quantity_;
+  }
+}
+
 /** A portfolio holding `held`, with `sellable` stated only when the broker publishes it. */
 template <typename CapsType>
 strategy::Portfolio<FakeBroker> held_position(const char* held, const char* sellable) {
@@ -797,7 +810,8 @@ OrderSnapshot ended_row(const char* id, OrderSide side, const char* quantity, co
 
 /** What a holdings read and a listing read answered, both at hour `hour`. */
 strategy::Portfolio<FakeBroker> polled(int hour, const char* held, std::vector<WorkingOrder<FakeBroker>> rows) {
-  auto portfolio = held_position<WithWorkingOrders>(held, nullptr);
+  // Sellable as held, as a broker's holdings row states it (the guard checks a sell against it by default).
+  auto portfolio = held_position<WithWorkingOrders>(held, held);
   portfolio.as_of_ = std::chrono::system_clock::time_point{} + std::chrono::hours(500000 + hour);
   portfolio.working_as_of_ = portfolio.as_of_;
   portfolio.working_ = std::move(rows);
@@ -1826,7 +1840,7 @@ TEST_CASE("an exit priced below a withheld floor is refused rather than lifted o
   live_runner.context().set_instrument(samsung_reference());
   live_runner.context().set_phase(strategy::MarketPhase::OPEN);
   live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
-  live_runner.context().set_portfolio(held_position<WithKey>("10", nullptr));
+  live_runner.context().set_portfolio(held_position<WithKey>("10", "10"));
   PriceLimits band;
   band.lower_ = Decimal64::parse("65000");
   live_runner.set_price_limits(samsung(), band);
@@ -1990,6 +2004,7 @@ public:
         position.quantity_ = *held_;
         snapshot.positions_.push_back(position);
       }
+      state_sellable(snapshot);
       session_->set_holdings(snapshot);
     }
     if (kind == runner::PollKind::WORKING_ORDERS && listing_fails_) {
@@ -2891,7 +2906,7 @@ TEST_CASE("a closing refusal does not relabel the polling refusal the report cou
   );
   live_runner.context().set_instrument(samsung_reference());
   live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
-  live_runner.context().set_portfolio(held_position<WithKey>("10", nullptr));
+  live_runner.context().set_portfolio(held_position<WithKey>("10", "10"));
 
   runner::StopSource stop;
   StoppingSource<FakeSession<WithKey>> source(session, {samsung()}, stop);
@@ -3983,9 +3998,7 @@ void poll_holdings_at(Source& source, Runner& bound, Session& session, const cha
   position.quantity_ = Decimal64::parse(held);
   snapshot.positions_.push_back(position);
   snapshot.received_at_ = live_hour(hour);
-  snapshot.sellable_basis_ = SellableBasis{
-    SellableBasis::Coverage::WHOLE_HOLDING, SellableBasis::RestingTreatment::DEDUCT, false,
-  };
+  state_sellable(snapshot);
   session.set_holdings(snapshot);
   REQUIRE(source.poll(runner::PollKind::HOLDINGS, bound) == runner::PollOutcome::UPDATED);
 }
@@ -6211,4 +6224,66 @@ TEST_CASE("a statement queued before a retry replaces what was retained for its 
     CHECK(rig.session.placed().size() == 1);
     CHECK(rig.runner_instance.targets_retained() == 0);
   }
+}
+
+TEST_CASE("a target below zero on a cash account is refused before anything is sent", "[serialized][short]") {
+  // What a short target becomes at a broker that takes cash orders only: a sell of shares the account does
+  // not hold. Sent, the broker refuses it in its reply, which reads as an unknown outcome and leaves the
+  // order owed until an operator releases it. The guard's sellable check, on by default, refuses it here.
+  SerialRig rig;
+  rig.session.order_ids_ = {"A", "B"};
+
+  SECTION("from flat: nothing is sent, journaled or owed, and the instrument still trades") {
+    const auto report = rig.bar(1, {target_of("-1")});
+    CHECK(rig.session.placed().empty());
+    REQUIRE(report.refused_.size() == 1);
+    CHECK(report.refused_.front().reason_ == strategy::GuardReason::QUANTITY_NOT_SELLABLE);
+    CHECK(rig.journal.records().empty());
+    CHECK(rig.owed() == runner::ObligationState::NONE);
+    CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+
+    rig.bar(2, {target_of("10")});
+    REQUIRE(rig.session.placed().size() == 1);
+    CHECK(rig.session.placed().front().side_ == OrderSide::BUY);
+  }
+
+  SECTION("through zero: refused whole rather than clipped to the holding, and flat is still allowed") {
+    rig.show(polled(0, "5", {}));
+    const auto report = rig.bar(1, {target_of("-1")});
+    CHECK(rig.session.placed().empty());
+    REQUIRE(report.refused_.size() == 1);
+    CHECK(report.refused_.front().reason_ == strategy::GuardReason::QUANTITY_NOT_SELLABLE);
+
+    rig.bar(2, {target_of("0")});
+    REQUIRE(rig.session.placed().size() == 1);
+    CHECK(rig.session.placed().front().side_ == OrderSide::SELL);
+    CHECK(rig.session.placed().front().quantity_ == Decimal64::parse("5"));
+  }
+}
+
+TEST_CASE("a short target behind a resting stop withdraws the stop before the guard can refuse its sell",
+          "[serialized][short]") {
+  // The guard refuses placements, and a target's withdrawals go out before the guard sees its orders. So a
+  // target below zero behind a protective stop withdraws the stop and waits for it; the sell it then needs
+  // would be refused. Pinned as what happens: a refused short is not always "nothing was sent".
+  auto resting = listed_row("STOP-1", OrderSide::SELL, "10", "0", OrderType::STOP_LIMIT);
+  resting.order_.price_ = Decimal64::parse("69000");
+  resting.order_.trigger_price_ = Decimal64::parse("69500");
+
+  SerialRig rig;
+  rig.show(polled(0, "10", {resting}));
+  const auto report = rig.bar(1, {target_of("-5")});
+  CHECK(rig.session.canceled().size() == 1);
+  CHECK(rig.session.placed().empty());
+  CHECK(report.refused_.empty());
+  REQUIRE(rig.runner_instance.deferred_targets().size() == 1);
+
+  // The stop is gone from the listing and holdings are read again: the target is released, and the sell
+  // of fifteen it needs is refused. The ten are still held, and the stop is not.
+  rig.show(polled(2, "10", {}));
+  const auto released = rig.runner_instance.retry_deferred_on_one_snapshot();
+  CHECK(rig.runner_instance.deferred_targets().empty());
+  CHECK(rig.session.placed().empty());
+  REQUIRE(released.refused_.size() == 1);
+  CHECK(released.refused_.front().reason_ == strategy::GuardReason::QUANTITY_NOT_SELLABLE);
 }

@@ -130,6 +130,25 @@ algotradelib::Instrument samsung_reference() {
 }
 
 /**
+ * States each position's whole quantity as sellable, as a broker's holdings rows do: the guard checks a
+ * sell against the figure by default, a closing sell included.
+ */
+template <typename Tag>
+void state_sellable(strategy::Portfolio<Tag>& portfolio) {
+  portfolio.sellable_basis_ = algotradelib::SellableBasis{
+    algotradelib::SellableBasis::Coverage::WHOLE_HOLDING,
+    algotradelib::SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
+  // The instrument's whole holding on each of its rows: rows of one instrument are never summed.
+  for (auto& position : portfolio.positions_) {
+    if (const auto net = portfolio.net_quantity_of(position.instrument_)) {
+      position.sellable_quantity_ = *net;
+    }
+  }
+}
+
+/**
  * A portfolio holding `held` shares with `resting` shares working, stamped now.
  *
  * Built at namespace scope so the withdraw and flatten tests read as assertions about the loop
@@ -157,6 +176,7 @@ strategy::Portfolio<InertRunner::Tag> portfolio_with(const char* held, const cha
     working.ref_ = algotradelib::OrderRef<Tag>{"0001", ""};
     portfolio.working_.push_back(working);
   }
+  state_sellable(portfolio);
   return portfolio;
 }
 
@@ -1106,6 +1126,7 @@ TEST_CASE("a stop counts a working close once for the instrument, not once per l
   working.order_.execution_.filled_quantity_ = algotradelib::Decimal64::parse("0");
   working.ref_ = algotradelib::OrderRef<InertRunner::Tag>{"0001", ""};
   portfolio.working_.push_back(working);
+  state_sellable(portfolio);
   runner_instance.context().set_portfolio(portfolio);
 
   InertSource source;
@@ -1657,6 +1678,7 @@ TEST_CASE("a flatten sends no close when a sell it cannot see may already be wor
   position.quantity_ = algotradelib::Decimal64::parse("10");
   position.average_purchase_price_ = algotradelib::Decimal64::parse("70000");
   portfolio.positions_.push_back(position);
+  state_sellable(portfolio);
   runner_instance.context().set_portfolio(portfolio);
 
   SellingLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
