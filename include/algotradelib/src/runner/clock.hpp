@@ -12,9 +12,10 @@ namespace runner {
  *
  * `now()` is wall-clock time (it can jump when NTP or an operator sets the clock), because events
  * are stamped with it and must agree with brokers' timestamps. `wait_for()` is measured on
- * `steady_clock`, so a poll cadence is unaffected by such jumps, and `monotonic_now()` reads that
- * clock, which is what a bounded wait is measured on (`PollingLoop::set_closing_wait`). A custom clock
- * for a loop needs the same three calls; `ManualClock` is the test version.
+ * `steady_clock`, so a sleep is as long as it was asked to be whatever happens to the wall clock, and
+ * `monotonic_now()` reads that clock, which is what a bounded wait is measured on
+ * (`PollingLoop::set_closing_wait`). When a poll is next due is still a wall-clock time. A custom
+ * clock for a loop needs the same three calls; `ManualClock` is the test version.
  */
 class SteadyClock {
 public:

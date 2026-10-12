@@ -385,8 +385,9 @@ to the operator; an order the strategy adds in that window would be planned agai
 as the loop's own closing orders and could close the same position twice.
 
 **A `flatten` states its instructions directly** rather than expressing them as a target position.
-It withdraws every listed working order once — including one on the same side as the close, which
-ordinary reconciliation would keep as progress toward the target — and then sends a market order for
+It asks once for the withdrawal of every listed working order — including one on the same side as the
+close, which ordinary reconciliation would keep as progress toward the target, and except an order of
+this runner whose withdrawal the broker has already accepted — and then sends a market order for
 the position. An order the broker does not list cannot be withdrawn or sized around: at Toss, an order
 of a type the API does not list (such as an after-hours closing-price order placed in the app).
 
