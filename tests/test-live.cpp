@@ -3270,6 +3270,115 @@ TEST_CASE("a sweep before any bar stamps its resolution with the loop's clock", 
   }
 }
 
+TEST_CASE("a sweep counts time on the later of the decision instant and the loop's reading", "[confirm]") {
+  // The decision instant moves with bars, quotes and phase changes only. On daily bars, or with a stop
+  // pending, it stands still while the wall clock runs, and an order absent from every listing stayed
+  // too recent to conclude from until the next bar.
+  WorkingSession session;
+  session.set_working_orders(WorkingOrders<FakeBroker>{});
+  session.set_history(OrderPage{});
+
+  const auto sweep = [&session](
+                       std::chrono::system_clock::time_point decided, std::chrono::system_clock::time_point observed
+                     ) {
+    runner::MemoryJournal journal;
+    journal.append(journaled_placement());
+    auto live_runner = live::bind_observer(session, CountEvents{});
+    live_runner.context().set_now(decided);
+    live_runner.set_observed_at(observed);
+    live_runner.ledger().mark(samsung(), "an order request failed in transit");
+    live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
+    source.set_journal(journal);
+    source.poll(runner::PollKind::WORKING_ORDERS, live_runner);
+    REQUIRE(source.last_reconcile().matches_.size() == 1);
+    return std::pair(source.last_reconcile().matches_.front().verdict_, live_runner.ledger().requires_reconcile(samsung()));
+  };
+  const auto just_after = journaled_at() + std::chrono::seconds(5);
+
+  SECTION("the decision instant stood still and the loop's reading moved on: the absence is concluded") {
+    const auto [verdict, marked] = sweep(just_after, swept_at());
+    CHECK(verdict == runner::MatchVerdict::NOT_PLACED);
+    CHECK_FALSE(marked);
+  }
+
+  SECTION("the decision instant is the later one: as before") {
+    const auto [verdict, marked] = sweep(swept_at(), just_after);
+    CHECK(verdict == runner::MatchVerdict::NOT_PLACED);
+    CHECK_FALSE(marked);
+  }
+
+  SECTION("neither is far enough on: nothing is concluded and the hold stands") {
+    const auto [verdict, marked] = sweep(just_after, just_after + std::chrono::seconds(20));
+    CHECK(verdict == runner::MatchVerdict::UNDECIDED);
+    CHECK(marked);
+  }
+
+  SECTION("the boundary is the window's, on the later reading") {
+    const runner::MatchWindow window;
+    const auto boundary = journaled_at() + window.maximum_request_ + window.clock_skew_ + window.listing_delay_;
+    CHECK(sweep(just_after, boundary - std::chrono::seconds(1)).first == runner::MatchVerdict::UNDECIDED);
+    CHECK(sweep(just_after, boundary).first == runner::MatchVerdict::NOT_PLACED);
+  }
+}
+
+TEST_CASE("a loop's sweep resolves a mark while the decision instant stands still", "[confirm][loop]") {
+  // No bar arrives, as between two daily bars or under a stop, so the decision instant stays where the
+  // last one left it. The loop reports its own reading each iteration, and the sweep counts on that.
+  const auto started = journaled_at() + std::chrono::seconds(5);
+  WorkingSession session;
+  WorkingOrders<FakeBroker> listing;
+  listing.received_at_ = started;
+  session.set_working_orders(listing);
+  session.set_history(OrderPage{});
+  HoldingsSnapshot held;
+  held.received_at_ = started;
+  HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = Decimal64::parse("10");
+  held.positions_.push_back(position);
+  session.set_holdings(held);
+
+  runner::MemoryJournal journal;
+  journal.append(journaled_placement());
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live_runner.context().set_now(started);
+  live_runner.ledger().mark(samsung(), "an order request failed in transit");
+  using Source = live::SessionSource<WorkingSession, runner::MemoryJournal>;
+  Source source(session, {samsung()});
+  source.set_journal(journal);
+
+  runner::PollSchedule schedule;
+  schedule.bars_.reset();
+  schedule.calendar_.reset();
+  schedule.holdings_ = std::chrono::seconds(10);
+  schedule.working_orders_ = std::chrono::seconds(10);
+  schedule.tick_ = std::chrono::seconds(10);
+  runner::PollingLoop<decltype(live_runner), Source, runner::ManualClock> loop(
+    live_runner, source, schedule, runner::ManualClock{started}
+  );
+  loop.allow_unbounded_portfolio_age();
+  runner::StopSource stop;
+
+  SECTION("running: the mark is gone once the window has passed on the loop's clock, and not before") {
+    loop.run(stop, 11);
+    CHECK(live_runner.context().now() == started);
+    CHECK(live_runner.ledger().requires_reconcile(samsung()));
+    loop.run(stop, 4);
+    CHECK(live_runner.context().now() == started);
+    CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
+  }
+
+  SECTION("stopping: a wait longer than the window ends when the mark does") {
+    loop.set_closing_wait(std::chrono::seconds(300));
+    stop.request(runner::StopIntent::WITHDRAW);
+    const auto report = loop.run(stop, 0);
+    CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
+    CHECK_FALSE(report.closing_wait_expired_);
+    CHECK(report.closing_waited_ >= std::chrono::seconds(110));
+    CHECK(report.closing_waited_ < std::chrono::seconds(130));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // The journal has to be in the runner's own send path, not beside it
 // ---------------------------------------------------------------------------
@@ -6311,8 +6420,18 @@ struct LaggingAccount : ProgramSession {
   runner::StopIntent word_{runner::StopIntent::FLATTEN};
   std::chrono::seconds lag_{3};
   Decimal64 held_at_start_{Decimal64::parse("0")};
+  bool lose_first_reply_{false};
+  bool lost_{false};
 
   Result<Placed> place(OrderRequest order) {
+    if (lose_first_reply_ && !lost_) {
+      // Never reached the broker; this machine cannot know that.
+      lost_ = true;
+      stop_->request(word_);
+      BrokerError error;
+      error.category_ = ErrorCategory::TRANSPORT;
+      return Result<Placed>(error);
+    }
     auto placed = ProgramSession::place(order);
     if (placed) {
       fills_.push_back(Fill{clock_->now(), order.side_, order.quantity_});
@@ -6441,6 +6560,21 @@ TEST_CASE("a flatten that lands on an order holdings do not show yet waits for t
     CHECK(exit == live_program::Exit::CLOSING_INCOMPLETE);
     CHECK(session.placed().size() == 1);
     CHECK(session.holdings_reads_ == 1);
+  }
+
+  SECTION("an order whose reply was lost stays owed through empty listings and the whole wait") {
+    // Serialized, a sweep only names an order: absence from a listing is not proof it was never placed.
+    // The program's journal stamps its lines on the machine's clock, so the loop's starts there too.
+    clock.jump(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now() - program_start()));
+    session.lose_first_reply_ = true;
+    session.set_history(OrderPage{});
+    settings.closing_wait_ = std::chrono::seconds(200);
+    const auto exit = live_program::trade(session, holds("1"), settings, stop, out, SharedLoopClock{&clock});
+    INFO(out.str());
+    CHECK(exit == live_program::Exit::CLOSING_INCOMPLETE);
+    CHECK(session.placed().empty());
+    CHECK(session.canceled().empty());
+    CHECK(out.str().find("the stop waited 200 s") != std::string::npos);
   }
 
   SECTION("a withdraw waits the same way and then has nothing to withdraw") {
