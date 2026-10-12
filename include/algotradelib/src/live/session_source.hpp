@@ -1031,14 +1031,20 @@ private:
       }
     }
 
-    // The decision instant, as always -- except before anything was fed, as at the startup read after
-    // a restart, when it is still the epoch. A resolution stamped there reads back as damage and halts
-    // the next start, so the loop's last reading stands in, or the wall clock without a loop.
-    auto now = runner_instance.context().now();
+    // The later of the decision instant and the loop's last reading of the wall clock. The decision
+    // instant alone moves only with bars, quotes and phase changes: on daily bars, or with a stop
+    // pending, an order that is plainly absent from every listing stayed "not enough time has passed"
+    // until the next bar, and its instrument stayed withheld. Both have to be wall time on the journal's
+    // clock: the decision instant comes from a bar's or quote's own time or from the caller, the other
+    // from whoever drives the runner. One that runs ahead of the journal, or a wall clock set forward,
+    // shortens the window; nothing here makes the sweep safe against a clock that is wrong.
+    //
+    // Before anything was fed and without a loop both are the epoch, as at the startup read after a
+    // restart. A resolution stamped there reads back as damage and halts the next start, so the wall
+    // clock stands in.
+    auto now = std::max(runner_instance.context().now(), runner_instance.observed_at());
     if (now == std::chrono::system_clock::time_point{}) {
-      now = runner_instance.observed_at() != std::chrono::system_clock::time_point{} ?
-        runner_instance.observed_at() :
-        std::chrono::system_clock::now();
+      now = std::chrono::system_clock::now();
     }
     reconcile_ = runner::reconcile_against(
       open,

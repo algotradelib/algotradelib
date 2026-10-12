@@ -479,6 +479,13 @@ struct SellEverything {
     target.target_quantity_ = algotradelib::Decimal64{};
     ctx.submit(target);
   }
+
+  template <class Ctx>
+  void on_stop(Ctx&) {
+    ++stops_;
+  }
+
+  std::size_t stops_{0};
 };
 
 using SellingRunner = runner::DryRunner<SellEverything>;
@@ -1658,6 +1665,36 @@ using HistoryOnlyLoop =
 
 } // namespace
 
+TEST_CASE("a stop that cannot wait reads the account at once, however recently it was read",
+          "[loop][stop][closing-wait]") {
+  // The reads' five-second floor belongs to the wait. A source with no working-order listing never
+  // waits, so a holdings read held back for it would be missing from the pass that sizes the close.
+  struct CountingHistoryOnly : HistoryOnlySource {
+    std::size_t holdings_polls_{0};
+    runner::PollOutcome poll(runner::PollKind kind, InertRunner& runner_instance) {
+      holdings_polls_ += kind == runner::PollKind::HOLDINGS ? 1 : 0;
+      return HistoryOnlySource::poll(kind, runner_instance);
+    }
+  };
+  InertRunner runner_instance;
+  CountingHistoryOnly source;
+  auto schedule = bars_each_iteration();
+  schedule.holdings_ = std::chrono::seconds(1);
+  runner::PollingLoop<InertRunner, CountingHistoryOnly, runner::ManualClock> loop(
+    runner_instance, source, schedule, test_clock()
+  );
+  not_about_the_portfolio(loop);
+  StopSource stop;
+  REQUIRE(loop.run(stop, 1).iterations_ == 1);
+  REQUIRE(source.holdings_polls_ == 1);
+
+  loop.clock().wait_for(std::chrono::seconds(1));
+  stop.request(StopIntent::FLATTEN);
+  const auto report = loop.run(stop, 0);
+  CHECK(report.iterations_ == 1);
+  CHECK(source.holdings_polls_ == 2);
+}
+
 TEST_CASE("a flatten sends no close when a sell it cannot see may already be working",
           "[loop][stop]") {
   // A double sell, reached through a listing that is *known* to be out of date.
@@ -1916,3 +1953,545 @@ TEST_CASE("a run that has never read its holdings does not size an entry against
   CHECK(report.final_gate_ == strategy::HaltReason::PORTFOLIO_ABSENT);
 }
 
+
+namespace {
+
+/**
+ * A source for the closing-wait cases. Bars feed the strategy as a real source does; a working-order poll
+ * answers; a holdings poll, when it answers, installs the holding the test scripted, stamped at the loop's
+ * clock; the order-list read returns scripted outcomes, then `UPDATED`.
+ */
+class AccountingSource {
+public:
+  static constexpr bool provides_working_orders = true;
+
+  const runner::ManualClock* clock_{nullptr};
+  /** What a holdings poll shows, or nothing for a poll that reports no new answer. */
+  std::optional<std::string> held_{"10"};
+  /** What it shows once the stop has been requested; nothing for no new answer. */
+  std::optional<std::string> held_after_stop_;
+  /** A stop this source requests itself, after feeding that many bars, as an operator's arrives mid-run. */
+  StopSource* stop_{nullptr};
+  std::size_t stop_after_bar_{0};
+  StopIntent stop_with_{StopIntent::FLATTEN};
+  /** A second word, after that many bars (zero for none). */
+  std::size_t second_word_after_bar_{0};
+  StopIntent second_word_{StopIntent::FLATTEN};
+  /** Holdings polls fail once the stop has been requested. */
+  bool holdings_fail_after_stop_{false};
+  /** The wall clock is set forward or back by this much at the first holdings poll after the stop. */
+  runner::ManualClock* jumping_clock_{nullptr};
+  std::chrono::nanoseconds jump_{0};
+  /**
+   * A target the source leaves queued on the context, unsettled, by the last poll of the iteration whose
+   * holdings read is the first after the stop: the bars poll, after its feed.
+   */
+  bool queue_a_buy_after_stop_{false};
+  /** How long a holdings call takes, on `slow_clock_`. */
+  std::chrono::nanoseconds holdings_take_{0};
+  runner::ManualClock* slow_clock_{nullptr};
+  bool queue_pending_{false};
+  bool queued_a_buy_{false};
+  std::deque<runner::PollOutcome> order_list_;
+  std::size_t holdings_polls_{0};
+  std::size_t working_polls_{0};
+  std::size_t order_list_reads_{0};
+  /** When the working-order endpoint was asked, by the startup read or a poll. */
+  std::vector<std::chrono::system_clock::time_point> working_endpoint_asked_;
+
+  /**
+   * The shortest time between two consecutive asks of the working-order endpoint, from the ask at index
+   * `from` on: the iteration that takes a stop up reads as any other, and the wait paces what follows.
+   */
+  std::chrono::nanoseconds shortest_gap(std::size_t from = 1) const {
+    auto shortest = std::chrono::nanoseconds::max();
+    for (std::size_t i = from; i < working_endpoint_asked_.size(); ++i) {
+      shortest = std::min<std::chrono::nanoseconds>(shortest, working_endpoint_asked_[i] - working_endpoint_asked_[i - 1]);
+    }
+    return shortest;
+  }
+
+  template <typename Runner>
+  runner::PollOutcome poll(runner::PollKind kind, Runner& runner_instance) {
+    if (kind == runner::PollKind::BARS) {
+      runner_instance.feed(bar_at(bars_++));
+      if (queue_pending_) {
+        // After the feed, which settles whatever is queued: this one is still there when the iteration ends.
+        queue_pending_ = false;
+        queued_a_buy_ = true;
+        strategy::TargetPosition target;
+        target.instrument_ = samsung();
+        target.target_quantity_ = algotradelib::Decimal64::parse("25");
+        runner_instance.context().submit(target);
+      }
+      if (stop_ != nullptr && bars_ == stop_after_bar_) {
+        stop_->request(stop_with_);
+        stopped_ = true;
+      }
+      if (stop_ != nullptr && second_word_after_bar_ != 0 && bars_ == second_word_after_bar_) {
+        stop_->request(second_word_);
+      }
+      return runner::PollOutcome::UPDATED;
+    }
+    if (kind == runner::PollKind::WORKING_ORDERS) {
+      ++working_polls_;
+      working_endpoint_asked_.push_back(clock_->now());
+      // Stamped as a real source stamps a listing, so holdings read before it are known to be older.
+      auto portfolio = runner_instance.context().portfolio();
+      portfolio.working_as_of_ = clock_->now();
+      runner_instance.context().set_portfolio(portfolio);
+      return runner::PollOutcome::UPDATED;
+    }
+    if (kind == runner::PollKind::HOLDINGS) {
+      ++holdings_polls_;
+      // A call that takes time: the reply, and its stamp, come that much later.
+      if (slow_clock_ != nullptr) {
+        slow_clock_->advance(holdings_take_);
+      }
+      if (stopped_ && !after_stop_once_) {
+        after_stop_once_ = true;
+        if (jumping_clock_ != nullptr) {
+          jumping_clock_->jump(jump_);
+        }
+        queue_pending_ = queue_a_buy_after_stop_;
+      }
+      if (stopped_ && holdings_fail_after_stop_) {
+        return runner::PollOutcome::FAILED;
+      }
+      const auto& shown = stopped_ ? held_after_stop_ : held_;
+      if (!shown) {
+        return runner::PollOutcome::UNCHANGED;
+      }
+      auto portfolio = ten_held();
+      portfolio.positions_.front().quantity_ = algotradelib::Decimal64::parse(*shown);
+      portfolio.as_of_ = clock_->now();
+      portfolio.working_as_of_ = runner_instance.context().portfolio().working_as_of_;
+      portfolio.working_ = runner_instance.context().portfolio().working_;
+      state_sellable(portfolio);
+      runner_instance.context().set_portfolio(portfolio);
+      return runner::PollOutcome::UPDATED;
+    }
+    return runner::PollOutcome::UNCHANGED;
+  }
+
+  template <typename Runner>
+  runner::PollOutcome read_order_list(Runner&) {
+    ++order_list_reads_;
+    working_endpoint_asked_.push_back(clock_->now());
+    if (order_list_.empty()) {
+      return runner::PollOutcome::UPDATED;
+    }
+    const auto outcome = order_list_.front();
+    order_list_.pop_front();
+    return outcome;
+  }
+
+private:
+  std::size_t bars_{0};
+  bool stopped_{false};
+  bool after_stop_once_{false};
+};
+
+using AccountingLoop = runner::PollingLoop<SellingRunner, AccountingSource, runner::ManualClock>;
+
+/** Bars every second; holdings and the order list once a minute, so only a forced read is soon. */
+runner::PollSchedule slow_account_reads() {
+  auto schedule = bars_each_iteration();
+  schedule.holdings_ = std::chrono::seconds(60);
+  schedule.working_orders_ = std::chrono::seconds(60);
+  return schedule;
+}
+
+/** Ten held, and a runner whose strategy sells whatever it is shown. */
+void hold_ten(SellingRunner& runner_instance) {
+  runner_instance.context().set_instrument(samsung_reference());
+  serve_calendar(runner_instance);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  auto portfolio = ten_held();
+  state_sellable(portfolio);
+  runner_instance.context().set_portfolio(portfolio);
+}
+
+} // namespace
+
+TEST_CASE("a flatten waits for the reads that account for this runner's last order", "[loop][stop][closing-wait]") {
+  // Ten held, a bar that sells all ten, and a flatten before the order list or holdings are read again. Built
+  // at once, the closing pass cannot tell whether the ten are still there and closes nothing. It waits instead.
+  SellingRunner runner_instance;
+  hold_ten(runner_instance);
+  AccountingSource source;
+  AccountingLoop loop(runner_instance, source, slow_account_reads(), test_clock());
+  source.clock_ = &loop.clock();
+  not_about_the_portfolio(loop);
+  StopSource stop;
+  // The stop arrives in the iteration whose bar sold: after that iteration's listing and holdings reads.
+  source.stop_ = &stop;
+  source.stop_after_bar_ = 1;
+
+  SECTION("the next reads show the sale: the pass is verified and has nothing left to close") {
+    source.held_after_stop_ = "0";
+    const auto report = loop.run(stop, 0);
+    CHECK(report.stopped_by_ == std::optional<StopIntent>(StopIntent::FLATTEN));
+    // Both reads were made due at once, not at their one-minute cadence: one more of each.
+    CHECK(source.holdings_polls_ == 2);
+    CHECK(source.working_polls_ == 2);
+    CHECK(report.closing_waited_ > std::chrono::nanoseconds::zero());
+    CHECK(report.closing_waited_ < std::chrono::seconds(10));
+    CHECK_FALSE(report.closing_wait_expired_);
+    CHECK_FALSE(report.closing_source_unverified_);
+    CHECK(report.closing_complete());
+    // Nothing the strategy asked for while the stop waited went out, and no second sell.
+    CHECK(runner_instance.executor().placed().size() == 1);
+  }
+
+  SECTION("holdings never answer: the wait ends at its limit and the pass is what it was") {
+    const auto report = loop.run(stop, 0);
+    CHECK(report.closing_wait_expired_);
+    CHECK(report.closing_waited_ >= std::chrono::seconds(30));
+    CHECK(report.closing_waited_ < std::chrono::seconds(40));
+    CHECK(report.closing_source_unverified_);
+    CHECK(report.flattened_ == 0);
+    CHECK_FALSE(report.closing_complete());
+    CHECK(runner_instance.executor().placed().size() == 1);
+    // Read again every few seconds while it waited, not once.
+    CHECK(source.holdings_polls_ >= 6);
+    bool said = false;
+    for (const auto& note : report.notes_) {
+      said = said || note.find("the stop waited") != std::string::npos;
+    }
+    CHECK(said);
+  }
+
+  SECTION("a wait of zero is the old behaviour") {
+    loop.set_closing_wait(std::chrono::nanoseconds::zero());
+    source.held_after_stop_ = "0";
+    const auto report = loop.run(stop, 0);
+    CHECK(report.iterations_ == 1);
+    CHECK(report.closing_waited_ == std::chrono::nanoseconds::zero());
+    CHECK(report.closing_source_unverified_);
+    CHECK_FALSE(report.closing_complete());
+    CHECK(source.holdings_polls_ == 1);
+  }
+
+  SECTION("a quiesce never waits") {
+    source.stop_with_ = StopIntent::QUIESCE;
+    const auto report = loop.run(stop, 0);
+    CHECK(report.stopped_by_ == std::optional<StopIntent>(StopIntent::QUIESCE));
+    CHECK(report.iterations_ == 1);
+    CHECK(report.closing_waited_ == std::chrono::nanoseconds::zero());
+  }
+
+  SECTION("the run's last iteration honours the stop rather than leave it pending") {
+    const auto report = loop.run(stop, 1);
+    CHECK(report.stopped_by_ == std::optional<StopIntent>(StopIntent::FLATTEN));
+    CHECK(report.closing_waited_ == std::chrono::nanoseconds::zero());
+    CHECK(report.closing_source_unverified_);
+  }
+}
+
+TEST_CASE("a flatten whose picture is already verified does not wait", "[loop][stop][closing-wait]") {
+  InertRunner runner_instance;
+  InertSource source;
+  runner_instance.context().set_instrument(samsung_reference());
+  serve_calendar(runner_instance);
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner_instance.context().set_portfolio(portfolio_with("10", nullptr));
+  InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
+  not_about_the_portfolio(loop);
+  StopSource stop;
+
+  loop.run(stop, 1);
+  stop.request(StopIntent::FLATTEN);
+  const auto report = loop.run(stop, 0);
+  CHECK(report.iterations_ == 1);
+  CHECK(report.closing_waited_ == std::chrono::nanoseconds::zero());
+  CHECK(report.flattened_ == 1);
+}
+
+TEST_CASE("a flatten pending at start reads the order list again when the first read fails",
+          "[loop][stop][closing-wait]") {
+  // A process started with `flatten` in its control file made one attempt at the order list and, when that
+  // failed, ended with the position held. The wait gives it the iterations to try again.
+  SellingRunner runner_instance;
+  hold_ten(runner_instance);
+  AccountingSource source;
+  source.order_list_ = {runner::PollOutcome::RATE_LIMITED};
+  AccountingLoop loop(runner_instance, source, slow_account_reads(), test_clock());
+  source.clock_ = &loop.clock();
+  not_about_the_portfolio(loop);
+  StopSource stop;
+  stop.request(StopIntent::FLATTEN);
+
+  const auto report = loop.run(stop, 0);
+  CHECK(source.order_list_reads_ == 2);
+  // The first iteration reads as any other: the order list, refused, and the ordinary working-order
+  // poll beside it. The wait then asks the endpoint once more, five seconds later, and the read that
+  // succeeds is not followed by a poll of the same endpoint.
+  REQUIRE(source.working_endpoint_asked_.size() == 3);
+  CHECK(source.working_polls_ == 1);
+  CHECK(source.working_endpoint_asked_[1] == source.working_endpoint_asked_[0]);
+  CHECK(source.shortest_gap(2) == std::chrono::seconds(5));
+  CHECK(report.order_list_read_);
+  CHECK_FALSE(report.closing_wait_expired_);
+  CHECK(report.flattened_ == 1);
+  CHECK(report.closing_complete());
+  REQUIRE(runner_instance.executor().placed().size() == 1);
+  CHECK(runner_instance.executor().placed().front().side_ == algotradelib::OrderSide::SELL);
+}
+
+TEST_CASE("a flatten pending at start whose order list never arrives asks on the floor and ends incomplete",
+          "[loop][stop][closing-wait]") {
+  SellingRunner runner_instance;
+  hold_ten(runner_instance);
+  AccountingSource source;
+  source.order_list_.assign(100, runner::PollOutcome::RATE_LIMITED);
+  AccountingLoop loop(runner_instance, source, slow_account_reads(), test_clock());
+  source.clock_ = &loop.clock();
+  not_about_the_portfolio(loop);
+  StopSource stop;
+  stop.request(StopIntent::FLATTEN);
+
+  const auto report = loop.run(stop, 0);
+  // At the start, every five seconds while the wait lasts, and once more as its limit passes: a
+  // rate-limited read is not asked again at every one-second tick.
+  CHECK(source.order_list_reads_ == 7);
+  CHECK(source.shortest_gap(2) >= std::chrono::seconds(5));
+  CHECK_FALSE(report.order_list_read_);
+  CHECK(report.closing_wait_expired_);
+  CHECK(report.closing_source_unverified_);
+  CHECK_FALSE(report.closing_complete());
+}
+
+TEST_CASE("with no wait set, a flatten reads the order list at once whenever it was last asked",
+          "[loop][stop][closing-wait]") {
+  // The five-second floor belongs to the wait. Without one the pass is built in this iteration, so a
+  // read held back would simply be missing from it.
+  SellingRunner runner_instance;
+  hold_ten(runner_instance);
+  AccountingSource source;
+  source.order_list_ = {runner::PollOutcome::RATE_LIMITED};
+  AccountingLoop loop(runner_instance, source, slow_account_reads(), test_clock());
+  source.clock_ = &loop.clock();
+  not_about_the_portfolio(loop);
+  loop.set_closing_wait(std::chrono::seconds(0));
+  StopSource stop;
+  REQUIRE(loop.run(stop, 1).iterations_ == 1);
+  REQUIRE(source.order_list_reads_ == 1);
+
+  stop.request(StopIntent::FLATTEN);
+  const auto report = loop.run(stop, 0);
+  CHECK(report.iterations_ == 1);
+  CHECK(source.order_list_reads_ == 2);
+  CHECK(report.order_list_read_);
+}
+
+TEST_CASE("a stop whose account is read and coherent acts in the iteration that takes it up",
+          "[loop][stop][closing-wait]") {
+  // Whatever the cadences, a zero interval included, and whether the stop was pending when the
+  // iteration began or arrived after its reads: nothing is missing, so nothing is waited for.
+  for (const auto interval : {std::chrono::seconds(0), std::chrono::seconds(1), std::chrono::seconds(60)}) {
+    for (const bool pending_at_start : {false, true}) {
+      SellingRunner runner_instance;
+      hold_ten(runner_instance);
+      AccountingSource source;
+      auto schedule = bars_each_iteration();
+      schedule.holdings_ = interval;
+      schedule.working_orders_ = interval;
+      AccountingLoop loop(runner_instance, source, schedule, test_clock());
+      source.clock_ = &loop.clock();
+      not_about_the_portfolio(loop);
+      StopSource stop;
+      source.held_ = "0";
+      source.held_after_stop_ = "0";
+      if (pending_at_start) {
+        stop.request(StopIntent::FLATTEN);
+      } else {
+        source.stop_ = &stop;
+        source.stop_after_bar_ = 1;
+      }
+
+      const auto report = loop.run(stop, 0);
+      CAPTURE(interval.count(), pending_at_start);
+      CHECK(report.iterations_ == 1);
+      CHECK_FALSE(report.closing_wait_expired_);
+      CHECK(source.holdings_polls_ == 1);
+      CHECK(source.working_polls_ == 1);
+    }
+  }
+}
+
+TEST_CASE("a slow holdings call does not keep a stop whose account is coherent waiting",
+          "[loop][stop][closing-wait]") {
+  // A holdings call that takes two seconds, on cadences of a second or none: the reads of the stop's
+  // iteration are enough, and it does not wait for others.
+  for (const auto interval : {std::chrono::seconds(1), std::chrono::seconds(0)}) {
+  SellingRunner runner_instance;
+  hold_ten(runner_instance);
+  AccountingSource source;
+  auto schedule = bars_each_iteration();
+  schedule.holdings_ = interval;
+  schedule.working_orders_ = interval;
+  AccountingLoop loop(runner_instance, source, schedule, test_clock());
+  source.clock_ = &loop.clock();
+  source.held_ = "0";
+  source.held_after_stop_ = "0";
+  source.holdings_take_ = std::chrono::seconds(2);
+  source.slow_clock_ = &loop.clock();
+  not_about_the_portfolio(loop);
+  StopSource stop;
+  REQUIRE(loop.run(stop, 1).iterations_ == 1);
+
+  stop.request(StopIntent::FLATTEN);
+  const auto report = loop.run(stop, 0);
+  CAPTURE(interval.count(), source.holdings_polls_, source.working_polls_);
+  CHECK_FALSE(report.closing_wait_expired_);
+  CHECK(report.closing_waited_ < std::chrono::seconds(15));
+  CHECK(report.closing_complete());
+  }
+}
+
+TEST_CASE("a waiting stop keeps its own time: the tick, the wall clock and a second word do not move it",
+          "[loop][stop][closing-wait]") {
+  SellingRunner runner_instance;
+  hold_ten(runner_instance);
+  AccountingSource source;
+  StopSource stop;
+  source.stop_ = &stop;
+  source.stop_after_bar_ = 1;
+
+  SECTION("a one-minute tick does not stretch a thirty-second wait") {
+    auto schedule = slow_account_reads();
+    schedule.bars_ = std::chrono::seconds(60);
+    schedule.tick_ = std::chrono::seconds(60);
+    AccountingLoop loop(runner_instance, source, schedule, test_clock());
+    source.clock_ = &loop.clock();
+    not_about_the_portfolio(loop);
+    const auto report = loop.run(stop, 0);
+    CHECK(report.closing_wait_expired_);
+    CHECK(report.closing_waited_ >= std::chrono::seconds(30));
+    CHECK(report.closing_waited_ < std::chrono::seconds(36));
+    // On the five-second floor throughout: six or seven reads, not one a minute and not one a tick.
+    CHECK(source.holdings_polls_ >= 6);
+    CHECK(source.holdings_polls_ <= 8);
+    CHECK(source.working_polls_ == source.holdings_polls_);
+  }
+
+  SECTION("a limit between two reads ends the wait at the limit, not at the next read or tick") {
+    auto schedule = slow_account_reads();
+    schedule.bars_ = std::chrono::seconds(60);
+    schedule.tick_ = std::chrono::seconds(60);
+    AccountingLoop loop(runner_instance, source, schedule, test_clock());
+    source.clock_ = &loop.clock();
+    loop.set_closing_wait(std::chrono::seconds(12));
+    not_about_the_portfolio(loop);
+    const auto report = loop.run(stop, 0);
+    CHECK(report.closing_wait_expired_);
+    CHECK(report.closing_waited_ == std::chrono::seconds(12));
+    // Told once, when the stop was taken up, however many iterations it then waited.
+    CHECK(report.iterations_ > 2);
+    CHECK(runner_instance.strategy().stops_ == 1);
+  }
+
+  SECTION("the wall clock set forward or back does not change how long it waits") {
+    // Measured on the wall clock, a step forward would end the wait at once and a step back would
+    // stretch it by the step.
+    AccountingLoop loop(runner_instance, source, slow_account_reads(), test_clock());
+    source.clock_ = &loop.clock();
+    source.jumping_clock_ = &loop.clock();
+    not_about_the_portfolio(loop);
+    SECTION("forward") {
+      source.jump_ = std::chrono::hours(2);
+      const auto report = loop.run(stop, 0);
+      CHECK(report.closing_wait_expired_);
+      CHECK(report.closing_waited_ >= std::chrono::seconds(30));
+      CHECK(report.closing_waited_ < std::chrono::seconds(36));
+    }
+    SECTION("back") {
+      // The stamps the pass is verified by are wall-clock stamps, so a step back can also end the wait
+      // early (a listing read after the step looks older than the holdings read before it). What is
+      // asserted here is only that the wait does not outlast its limit.
+      source.jump_ = -std::chrono::hours(2);
+      const auto report = loop.run(stop, 0);
+      CHECK(report.closing_waited_ < std::chrono::seconds(36));
+      CHECK(loop.clock().waited() < std::chrono::minutes(2));
+    }
+  }
+
+  SECTION("a withdraw that becomes a flatten keeps the first deadline") {
+    source.stop_with_ = StopIntent::WITHDRAW;
+    source.second_word_after_bar_ = 20;
+    AccountingLoop loop(runner_instance, source, slow_account_reads(), test_clock());
+    source.clock_ = &loop.clock();
+    not_about_the_portfolio(loop);
+    const auto report = loop.run(stop, 0);
+    CHECK(report.stopped_by_ == std::optional<StopIntent>(StopIntent::FLATTEN));
+    CHECK(report.closing_waited_ >= std::chrono::seconds(30));
+    CHECK(report.closing_waited_ < std::chrono::seconds(36));
+  }
+
+  SECTION("a negative limit, or none, is no wait and reports none run out") {
+    for (const auto limit : {-std::chrono::seconds(5), std::chrono::seconds(0)}) {
+      AccountingLoop loop(runner_instance, source, slow_account_reads(), test_clock());
+      source.clock_ = &loop.clock();
+      loop.set_closing_wait(limit);
+      not_about_the_portfolio(loop);
+      const auto report = loop.run(stop, 0);
+      CHECK(report.iterations_ == 1);
+      CHECK_FALSE(report.closing_wait_expired_);
+    }
+  }
+}
+
+TEST_CASE("a target left queued while a stop waits is not sent with the closing orders", "[loop][stop][closing-wait]") {
+  // The closing instructions are settled with the loop's own hold lifted. A source that queued an
+  // instruction during a read, without settling it, would have it settled in that window.
+  SellingRunner runner_instance;
+  hold_ten(runner_instance);
+  AccountingSource source;
+  StopSource stop;
+  source.stop_ = &stop;
+  source.stop_after_bar_ = 1;
+  source.held_after_stop_ = "0";
+  source.queue_a_buy_after_stop_ = true;
+  AccountingLoop loop(runner_instance, source, slow_account_reads(), test_clock());
+  source.clock_ = &loop.clock();
+  not_about_the_portfolio(loop);
+
+  const auto report = loop.run(stop, 0);
+  REQUIRE(source.queued_a_buy_);
+  CHECK(report.closing_complete());
+  // The one sell the bar placed before the stop, and nothing since: the queued buy was settled under
+  // the hold and refused.
+  REQUIRE(runner_instance.executor().placed().size() == 1);
+  CHECK(runner_instance.executor().placed().front().side_ == algotradelib::OrderSide::SELL);
+  CHECK(report.stop_handler_sent_ == 0);
+  CHECK(report.stop_handler_refused_ == 1);
+}
+
+TEST_CASE("a run abandoned while a stop waits leaves the stop's hold and reports the stop unfinished",
+          "[loop][stop][closing-wait]") {
+  SellingRunner runner_instance;
+  hold_ten(runner_instance);
+  AccountingSource source;
+  StopSource stop;
+  source.stop_ = &stop;
+  source.stop_after_bar_ = 1;
+  source.holdings_fail_after_stop_ = true;
+  AccountingLoop loop(runner_instance, source, slow_account_reads(), test_clock());
+  source.clock_ = &loop.clock();
+  not_about_the_portfolio(loop);
+  runner::FailurePolicy policy;
+  policy.consecutive_limit_ = 3;
+  loop.set_failure_policy(policy);
+
+  const auto report = loop.run(stop, 0);
+  CHECK(report.abandoned_);
+  CHECK(report.stopped_by_ == std::optional<StopIntent>(StopIntent::FLATTEN));
+  CHECK(report.closing_interrupted_);
+  CHECK_FALSE(report.closing_complete());
+  CHECK(report.flattened_ == 0);
+  CHECK(report.withdrawn_ == 0);
+  // `POLL_FAILING` lets a named withdrawal through; the stop asked for more than that.
+  CHECK(runner_instance.guard().halted(strategy::HaltReason::STOPPING));
+  CHECK(runner_instance.executor().placed().size() == 1);
+}

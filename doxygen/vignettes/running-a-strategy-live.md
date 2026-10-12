@@ -66,6 +66,36 @@ turn routine maintenance into a liquidation.
 
 `SIGHUP` is ignored, so a dropped SSH connection cannot stop a process holding positions.
 
+**A `WITHDRAW` or a `FLATTEN` may wait before it acts.** Both are built from the holdings and the order
+list in hand, and right after one of your orders went out neither shows it yet: the order has filled and
+left the listing, and holdings still say what they said before. A flatten built at that moment withdraws
+an order that is gone and closes nothing. So when the account in hand does not account for what this
+runner sent, the loop reads both again, every five seconds, and acts as soon as they do, or after thirty
+seconds whichever comes first (`PollingLoop::set_closing_wait`; `Settings::closing_wait_` in the example
+program). Nothing a strategy asks for is sent while it waits.
+
+- It waits while the picture is unverified (below), an order of this runner is not yet in holdings or
+  its history, or an instrument that is held is marked in the indeterminacy ledger. With none of those,
+  it acts in the same iteration. It also acts at once under an `OPERATOR` or `LOCAL_FAILURE` hold, when
+  the pass can send nothing, and it does not wait for an order held for an operator.
+- The iteration that takes the stop up reads the account as any other iteration does. Only the wait's
+  further reads are paced: neither endpoint is asked again within five seconds of its last request,
+  whoever made it, and an order-list read that failed at the start is retried on the same footing.
+- When the limit ends the wait, the pass runs on what is in hand, as it did before there was a wait,
+  and the report says so (`closing_wait_expired_`, and a note). `closing_waited_` is how long it took.
+- The limit is counted on the clock's monotonic reading, so setting the machine's clock neither cuts it
+  short nor extends it. The reads themselves are stamped with wall time, so a clock step can still change
+  which of them looks fresh.
+- It cannot always tell that no read will help, and then it waits the whole limit. A mark made in the
+  last minute or two outlasts thirty seconds: an order whose reply was lost cannot be concluded absent
+  from a listing until the broker has had time to list it. So does a mark nothing sweeps (a source with
+  no journal), and a serialized runner's order whose reply was lost. Raise the limit if you would rather
+  wait for a recent mark than read the account yourself.
+- An order of yours that is simply resting is not waited for. The flatten withdraws it and leaves what
+  is held behind it; ask again once the withdrawal shows.
+- A second word in the control file does not restart the wait. `withdraw` may become `flatten`; nothing
+  becomes weaker, and a `SIGTERM` during a pending flatten does not turn it into a quiesce.
+
 ## How to stop one, from outside
 
 **Signals**, which already reach a detached process every way you would want:
@@ -125,6 +155,11 @@ with a ten-second default. If that grace period is shorter than *one loop iterat
 timeout*, then every clean shutdown you ever perform ends with a process killed mid-request — and you
 will believe you shut down cleanly, because you asked nicely and it exited.
 
+A signal quiesces, and a quiesce does not wait. But a supervisor that stops the process while a
+`withdraw` or `flatten` from the control file is pending has to outlast that stop: the closing wait
+(thirty seconds unless you set it), the reads in flight when it ends (a paginated order list, a paced
+request), and the closing orders themselves.
+
 So make the grace period generous:
 
 ```ini
@@ -136,7 +171,8 @@ TimeoutStopSec=120
 docker stop --time 120 trading
 ```
 
-And size it against your actual HTTP timeout, not against how long a shutdown usually takes.
+And size it against your actual HTTP timeout and your closing wait, not against how long a shutdown
+usually takes.
 
 ## The three gates that stop you trading, on purpose
 
@@ -455,9 +491,14 @@ instructions from the portfolio snapshot — working orders for a `withdraw`, po
   declare it is treated as one that does not, because the cost of guessing wrong is a stop that
   reports complete with an order still resting.
 
-The pass still sends what it can see, because withdrawing some beats withdrawing none, but it will
-not call the result complete, and the note says which of these it was. If you can, let the loop
-complete a working-order poll before stopping it.
+All but the last are what the closing wait reads for, and usually cures. When it
+cannot, the pass still sends what it can see, because withdrawing some beats withdrawing none, but it
+will not call the result complete, and the note says which of these it was.
+
+Two more keep `closing_complete()` false. `closing_unconfirmed_` counts orders this runner sent that
+neither holdings nor a listing accounted for when the pass ran: exposure it could not withdraw or size
+around. And `closing_interrupted_` says the run was abandoned for failing polls while a `withdraw` or
+`flatten` was pending: the pass did not run at all, and the runner is left unable to send.
 
 **It is not a confirmation of anything at the exchange.** `true` means every instruction the loop
 asked for was *accepted by the broker*, and that is where the library's knowledge stops. An accepted
@@ -826,7 +867,7 @@ positions.
 - It is an index product. It is not a short of a stock, and it does not hedge one.
 - It spends cash; a short credits cash and owes shares, with a borrow fee, a recall risk and margin.
 - It has its own costs and tracking difference, and its benchmark is usually a futures index.
-- Whether an account may buy a given fund is the broker's to say. Nothing here has observed one bought.
+- Whether an account may buy a given fund is the broker's to say.
 
 Korean brokers do offer real shorts through other doors (a stock loan order at KIS, futures), on
 real accounts and with agreements this library knows nothing about. Neither is implemented.

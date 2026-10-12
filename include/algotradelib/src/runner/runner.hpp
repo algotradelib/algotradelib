@@ -1277,6 +1277,55 @@ public:
   }
 
   /**
+   * @brief Discards every target waiting on a resting stop (`deferred_targets`). The orders this runner
+   *   owes are not touched. `PollingLoop` does this when stopping: nothing a strategy stated before a stop
+   *   is to be released after it.
+   */
+  void clear_deferred_targets() noexcept { deferred_targets_.clear(); }
+
+  /**
+   * @brief Returns how many orders a serialized runner owes that a later read could account for without
+   *   anything more being sent: not held for an operator, and either no longer listed (filled or gone,
+   *   awaiting holdings or history) or withdrawn with the withdrawal accepted.
+   *
+   * An order that is simply resting is not counted: only a withdrawal changes that. `PollingLoop` reads
+   * this to decide whether a stop that closes should read again before its pass.
+   *
+   * @return The count; zero for a runner that is not serialized.
+   */
+  std::size_t obligations_awaiting_account() const noexcept {
+    if (!serialized()) {
+      return 0;
+    }
+    return static_cast<std::size_t>(std::count_if(unconfirmed_.begin(), unconfirmed_.end(), [](const Unconfirmed& entry) {
+      return !entry.operator_only_ && (!entry.listed_now_ || entry.withdrawn_);
+    }));
+  }
+
+  /**
+   * @brief Tests whether `working` is a row of an order this runner sent whose withdrawal the broker has
+   *   already accepted. Such an order is not withdrawn again: a second withdrawal is refused.
+   *
+   * Acceptance is of the request, not of its result: the order may still fill. The row has to be dated
+   * within an hour of the order's send: brokers reuse order numbers from day to day, and an undated row,
+   * or one of another day, is not known to be that order.
+   *
+   * @param working A row of the portfolio's working orders.
+   * @return `true` if this runner's accepted withdrawal of that order is on record.
+   */
+  bool withdrawal_accepted_for(const WorkingOrder<Tag>& working) const {
+    if constexpr (keeps_sent_orders_until_listed) {
+      for (const auto& entry : unconfirmed_) {
+        if (entry.withdrawn_ && !entry.ref_.primary_.empty() && working.ref_.primary_ == entry.ref_.primary_ &&
+            working.order_.order_id_ == entry.ref_.primary_ && own_row(working.order_, entry)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
    * @brief Releases and settles every waiting target whose stops are no longer listed, without
    *   reading history.
    *
