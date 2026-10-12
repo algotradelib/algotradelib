@@ -688,8 +688,9 @@ with the position until the next holdings poll replaces it.
 
 **At Toss the check is a request, and a request can fail.** If the inquiry is refused or does not answer
 (Toss rate-limits), the figure stays absent and that pass's sell is refused, a flatten's closing sell
-included; it goes out when a later pass asks again and is answered. This is the one network call the
-default adds to an exit.
+included. Nothing retries it: the sell goes out when the strategy states its target again, or the
+flatten is asked again, and the inquiry answers. This is the one network call the default adds to an
+exit.
 
 **The observer at Toss cannot ask.** `live::bind_observer` records and sends nothing, and it cannot
 make Toss's per-instrument inquiry, so it reports a sell as refused where a live run would ask and
@@ -759,7 +760,11 @@ remainder sent beside it would buy again every bar while holdings lagged. A rese
 instrument is accounted for, and planned again against holdings that show what the order did: the rest is
 placed, or nothing if the target is already met. A reversal is the plainest case. Flat, stated right after
 a buy that holdings do not show yet, withdraws the buy (refused, if it has filled), waits, and sells what
-was bought once holdings show it; a strategy that states a change once does not lose it.
+was bought once holdings show it; a strategy that states a change once does not lose it to the
+unconfirmed order. A kept target passes every limit again when it is planned, though, and a guard's
+refusal then ends it as it ends any target (only a phase refusal is kept): if the sellable check
+refuses that sell, because the figure is absent, lower than the holding or unanswered at Toss, the exit
+is gone until the strategy states it again.
 The withdrawal is attempted once and not repeated while the target waits: on the KIS and Kiwoom demo
 servers a second one was refused, and such a refusal reads as an unknown outcome that holds the
 instrument. So if the first withdrawal failed
@@ -797,11 +802,14 @@ ships can open a short**: KIS, Kiwoom and Toss are bound to their cash orders. A
 becomes a sale of shares the account does not hold, and the sellable check refuses it
 (`quantity_not_sellable`; at Kiwoom with no sellable scope set, `sellable_basis_unestablished`, as for any sell). A target that crosses zero, from five held to minus one, is refused whole:
 the runner does not sell the five and call it done, because turning a reversal into an exit is your
-strategy's decision. State flat if flat is what you want on a cash account.
+strategy's decision. State flat if flat is what you want on a cash account. (Stated while the
+instrument still owes an order or is marked, such a target is first kept and counted withheld at each
+read, and refused once the instrument clears.)
 
 The refusal is of the order, not of everything the target implied. A target's withdrawals go out
 before the guard sees its orders, so a target below zero behind a resting protective stop withdraws
-the stop, waits for it, and is then refused: the holding is left long and unprotected. "A refused
+the stop, waits for it, and is then refused: the holding is left long and unprotected. The same holds
+for any target whose sell the check refuses, a flat target at Kiwoom with no sellable scope included. "A refused
 short sends no placement" is always true; "it sends nothing" only where no working order stood in the
 target's way.
 

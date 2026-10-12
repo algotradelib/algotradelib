@@ -1143,7 +1143,8 @@ public:
    * - in a serialized runner, a target whose order was withheld as `RECONCILE_REQUIRED`, planned again
    *   at each later holdings read and withheld again while the instrument is unresolved.
    *
-   * All but the first only in a runner that sends to a broker. Not kept: anything decided under the
+   * All but the first only in a runner that sends to a broker. A released target is planned under the
+   * limits then in force, and one the guard refuses for anything but the phase is not kept again. Not kept: anything decided under the
    * `STOPPING`, `OPERATOR` or `LOCAL_FAILURE` hold; an intent with a client order id the broker
    * answered; an intent whose instrument's net holding is unknown. So a protective stop with a client
    * order id, refused out of hours, is not installed at the open by itself (one without an id is).
