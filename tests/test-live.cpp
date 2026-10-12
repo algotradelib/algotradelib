@@ -6602,8 +6602,23 @@ struct QuietSource {
   std::size_t act_on_working_poll_{0};
   std::function<void()> act_;
   bool holdings_fail_{false};
+  runner::ManualClock* clock_{nullptr};
+  /** When the working-order endpoint was polled, on `clock_`. */
+  std::vector<std::chrono::system_clock::time_point> working_asked_;
+
+  /**
+   * Has the stop arrive during the first working-order poll: after the iteration began, so its reads are
+   * the ordinary ones and none is held back for a later iteration.
+   */
+  void stop_during_first_poll(runner::StopSource& stop, runner::StopIntent word) {
+    act_on_working_poll_ = 1;
+    act_ = [&stop, word] { stop.request(word); };
+  }
 
   runner::PollOutcome poll(runner::PollKind kind, SerialRunner&) {
+    if (kind == runner::PollKind::WORKING_ORDERS && clock_ != nullptr) {
+      working_asked_.push_back(clock_->now());
+    }
     if (kind == runner::PollKind::WORKING_ORDERS && ++working_polls_ == act_on_working_poll_ && act_) {
       act_();
     }
@@ -6770,12 +6785,70 @@ TEST_CASE("a flatten does not wait for a mark on rows that net to nothing", "[se
   QuietSource source;
   auto loop = loop_over(rig, source, 1);
   runner::StopSource stop;
-  stop.request(runner::StopIntent::FLATTEN);
+  source.stop_during_first_poll(stop, runner::StopIntent::FLATTEN);
 
   const auto report = loop.run(stop, 0);
   CHECK(report.iterations_ == 1);
   CHECK_FALSE(report.closing_wait_expired_);
   CHECK(rig.session.placed().empty());
+}
+
+TEST_CASE("a flatten arriving a second after the account was read still makes the read that was due",
+          "[serialized][closing-wait]") {
+  // A resting buy, read as resting; it fills; the flatten arrives one second after that read, with both
+  // account reads due again on their one-second cadence. Held back by the five-second floor and then
+  // forgotten, they left a picture that looked complete: the pass withdrew an order that had filled
+  // and sold nothing.
+  SerialRig rig;
+  rig.session.order_ids_ = {"B", "S"};
+  rig.bar(1, {limit_target("10", "69000")});
+  const auto sent = rig.runner_instance.context().now();
+  auto resting = listed_row("B", OrderSide::BUY, "10", "0", OrderType::LIMIT);
+  resting.order_.ordered_at_ = sent;
+  rig.show(polled(2, "0", {resting}));
+
+  QuietSource source;
+  auto loop = loop_over(rig, source, 2);
+  source.clock_ = &loop.clock();
+  runner::StopSource stop;
+  REQUIRE(loop.run(stop, 1).iterations_ == 1);
+  REQUIRE(source.working_polls_ == 1);
+
+  // The next read of the account, whenever the loop makes it, shows the fill.
+  source.act_on_working_poll_ = 2;
+  source.act_ = [&] { rig.show(polled(3, "10", {})); };
+  loop.clock().wait_for(std::chrono::seconds(1));
+  stop.request(runner::StopIntent::FLATTEN);
+
+  SECTION("with a wait: the read is made at the floor, and the ten are sold") {
+    const auto report = loop.run(stop, 0);
+    CHECK_FALSE(report.closing_wait_expired_);
+    CHECK(rig.session.canceled().empty());
+    REQUIRE(rig.session.placed().size() == 2);
+    CHECK(rig.session.placed().back().side_ == OrderSide::SELL);
+    CHECK(rig.session.placed().back().quantity_ == Decimal64::parse("10"));
+    // Five seconds after the read before the stop, not one.
+    REQUIRE(source.working_asked_.size() == 2);
+    CHECK(source.working_asked_[1] - source.working_asked_[0] == std::chrono::seconds(5));
+  }
+
+  SECTION("with no wait: the read is made at once, as it always was, and the ten are sold") {
+    loop.set_closing_wait(std::chrono::seconds(0));
+    const auto report = loop.run(stop, 0);
+    CHECK(report.iterations_ == 1);
+    CHECK(rig.session.canceled().empty());
+    REQUIRE(rig.session.placed().size() == 2);
+    CHECK(rig.session.placed().back().side_ == OrderSide::SELL);
+    REQUIRE(source.working_asked_.size() == 2);
+    CHECK(source.working_asked_[1] - source.working_asked_[0] < std::chrono::seconds(5));
+  }
+
+  SECTION("on the run's last iteration: the same") {
+    const auto report = loop.run(stop, 1);
+    CHECK(report.iterations_ == 1);
+    CHECK(rig.session.canceled().empty());
+    CHECK(rig.session.placed().size() == 2);
+  }
 }
 
 TEST_CASE("a flatten does not wait for a mark on an instrument with nothing held", "[serialized][closing-wait]") {
@@ -6787,7 +6860,7 @@ TEST_CASE("a flatten does not wait for a mark on an instrument with nothing held
   QuietSource source;
   auto loop = loop_over(rig, source, 1);
   runner::StopSource stop;
-  stop.request(runner::StopIntent::FLATTEN);
+  source.stop_during_first_poll(stop, runner::StopIntent::FLATTEN);
 
   const auto report = loop.run(stop, 0);
   CHECK(report.iterations_ == 1);
@@ -6812,7 +6885,7 @@ TEST_CASE("a flatten does not wait for an order held for an operator", "[seriali
     QuietSource source;
     auto loop = loop_over(rig, source, 3);
     runner::StopSource stop;
-    stop.request(runner::StopIntent::FLATTEN);
+    source.stop_during_first_poll(stop, runner::StopIntent::FLATTEN);
 
     const auto report = loop.run(stop, 0);
     CAPTURE(held);
@@ -6836,7 +6909,7 @@ TEST_CASE("a flatten does not wait for an order that is simply resting, and cann
   QuietSource source;
   auto loop = loop_over(rig, source, 2);
   runner::StopSource stop;
-  stop.request(runner::StopIntent::FLATTEN);
+  source.stop_during_first_poll(stop, runner::StopIntent::FLATTEN);
   const auto report = loop.run(stop, 0);
 
   CHECK(report.closing_waited_ == std::chrono::nanoseconds::zero());

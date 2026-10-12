@@ -78,6 +78,11 @@ program). Nothing a strategy asks for is sent while it waits.
   its history, or an instrument that is held is marked in the indeterminacy ledger. With none of those,
   it acts in the same iteration. It also acts at once under an `OPERATOR` or `LOCAL_FAILURE` hold, when
   the pass can send nothing, and it does not wait for an order held for an operator.
+- While a stop that may wait is pending, neither endpoint is asked again within five seconds of its last
+  request, whoever made it. A read that its cadence made due and those five seconds hold back is waited
+  for. So a stop that arrives just after the account was read, or is already in the control file at the
+  start, acts a few seconds later than one that arrives mid-iteration. With no wait set, the pass reads
+  and acts at once, as it always did.
 - When the limit ends the wait, the pass runs on what is in hand, as it did before there was a wait,
   and the report says so (`closing_wait_expired_`, and a note). `closing_waited_` is how long it took.
 - The limit is counted on the clock's monotonic reading, so setting the machine's clock neither cuts it

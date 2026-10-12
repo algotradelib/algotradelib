@@ -1070,11 +1070,13 @@ public:
    * A closing pass is built from the holdings and the order list in hand. Right after this runner sent an
    * order they do not show it yet, and a pass built then withdraws what it can see and closes nothing
    * (`LoopReport::closing_source_unverified_`, `closing_unconfirmed_`). So a stop that closes first lets
-   * the loop read both again -- working orders, then holdings, at once and then every five seconds --
-   * while it holds `STOPPING`, and runs its pass as soon as:
+   * the loop read both again -- working orders, then holdings, no sooner than five seconds after each was
+   * last asked, by anything -- while it holds `STOPPING`, and runs its pass as soon as:
    * - the picture is verified;
    * - no order of this runner awaits an account a read could give (`Runner::obligations_awaiting_account`);
-   * - and no instrument that is held is marked in the indeterminacy ledger;
+   * - no instrument that is held is marked in the indeterminacy ledger;
+   * - and no read its own cadence made due is still held back by those five seconds (so a stop arriving
+   *   just after a read, or pending at the start beside the order-list read, waits for the next one);
    *
    * or when this limit has passed, measured on the clock's monotonic reading. The pass then runs as it
    * always did and the report says the wait ran out (`closing_wait_expired_`). The limit bounds the wait,
@@ -1225,6 +1227,7 @@ public:
     }
 
     while (max_iterations == 0 || report.iterations_ < max_iterations) {
+      last_permitted_ = max_iterations != 0 && report.iterations_ + 1 >= max_iterations;
       const auto iteration = step(stop, report);
       ++report.iterations_;
       if (iteration.gate_) {
@@ -1486,8 +1489,11 @@ private:
     // before the first order-list read could place an order against a position a predecessor may
     // have left, which is the exact hazard the startup gate exists for.
     {
+      // Only where a wait can follow and read what the floor holds back: with no wait set, or on the
+      // run's last iteration, the pass is built at once and reads as it always did.
       const auto intent = stop.intent();
-      closing_pending_ = intent && *intent != StopIntent::QUIESCE;
+      closing_pending_ = intent && *intent != StopIntent::QUIESCE &&
+        closing_wait_ > std::chrono::nanoseconds::zero() && !last_permitted_;
     }
     hold(gate_for(stop, iteration.at_, report, /*may_read=*/true));
 
@@ -1847,7 +1853,7 @@ private:
       const auto intent = stop.intent();
       // On the stop's own floor, from its first iteration: a read that failed is not asked again at
       // every tick, nor right after an ordinary poll of the same endpoint.
-      const bool on_the_floor = !asked_within_floor(PollKind::WORKING_ORDERS);
+      const bool on_the_floor = !closing_pending_ || !asked_within_floor(PollKind::WORKING_ORDERS);
       if (intent && *intent != StopIntent::QUIESCE && !order_list_read_ && may_read && on_the_floor &&
           !runner_->guard().halted(strategy::HaltReason::LOCAL_FAILURE)) {
         hold(strategy::HaltReason::STOPPING);
@@ -2525,6 +2531,13 @@ private:
     if (!closing_source_verified(at) || runner_->obligations_awaiting_account() != 0) {
       return true;
     }
+    // A read its cadence asked for in this iteration and the floor held back: the picture in hand is
+    // older than the one a pass built at once would have had, however complete it looks.
+    for (const auto kind : {PollKind::WORKING_ORDERS, PollKind::HOLDINGS}) {
+      if (cadence_due(kind, last_.at_)) {
+        return true;
+      }
+    }
     // A mark on something held, unless only an operator can lift it. Held by the instrument's net, as the
     // pass sizes it; rows that cannot be netted count as held.
     const auto& portfolio = runner_->context().portfolio();
@@ -2678,6 +2691,12 @@ private:
         return false;
       }
     }
+    return cadence_due(kind, at);
+  }
+
+  // Returns whether `kind`'s own cadence makes it due at `at`. A poll moves it on, so at the end of an
+  // iteration this is true only of a kind that was due in it and not read.
+  bool cadence_due(PollKind kind, std::chrono::system_clock::time_point at) const {
     const auto interval = schedule_.interval_for(kind);
     if (!interval) {
       return false;
@@ -2745,8 +2764,11 @@ private:
     bool reads_wanted_{false};
   };
   std::optional<ClosingWait> closing_;
-  // Whether the iteration under way began with a `WITHDRAW` or `FLATTEN` requested.
+  // Whether the iteration under way began with a `WITHDRAW` or `FLATTEN` requested that may wait: from
+  // then on the two closing reads keep to the floor.
   bool closing_pending_{false};
+  // Whether the iteration under way is the last this run may make.
+  bool last_permitted_{false};
   // When each closing read's endpoint was last asked, on the monotonic reading: by its ordinary poll, by
   // the startup order-list read (the working-order endpoint), or by a closing wait.
   std::optional<std::chrono::steady_clock::time_point> working_asked_at_;
