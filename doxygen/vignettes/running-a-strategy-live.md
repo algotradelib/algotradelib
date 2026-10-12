@@ -281,7 +281,7 @@ refused flatten is reported once rather than twice.
 | Figure | What happened |
 | --- | --- |
 | `orders_unbuildable_` | reconciliation could not build the instruction: no reference data, no price, an unknown grid — **or a quantity that rounded to zero**, which is a deliberate drop rather than a fault, so a non-zero figure is not by itself a reason to go looking for missing data |
-| `orders_reconcile_withheld_` | the indeterminacy ledger is holding that instrument: until a listing settles an unknown outcome, or, after a confirmation timeout, until you clear it (or a restart, below) |
+| `orders_reconcile_withheld_` | the indeterminacy ledger is holding that instrument: until a listing settles an unknown outcome, or, after a confirmation timeout, until you clear it (or a restart, below). A serialized runner keeps the target and counts it again at each later holdings read |
 | `orders_unconfirmed_timed_out_` | an order this run sent was not confirmed by holdings, a listing or its history within the confirmation timeout, or, once its history settled it, a holdings read a timeout later did not show the fill; its instrument is now withheld until you clear it or the process restarts (below) |
 | `orders_guard_refused_` | `RiskGuard` refused it — **a hold as well as a limit**, since it checks the active holds first, so a halted run reports every order here. Nothing was sent |
 | `orders_binding_refused_` | the binding would not send it, or could not reach the broker (a DNS, connect or TLS failure; such an order is kept and retried, see the kept-instructions rules); no request went out |
@@ -726,9 +726,24 @@ for holdings, and past the confirmation timeout withholds its instrument again, 
 **A target never re-places what it only reserved.** A reserved row has often filled already,
 so when a target finds more working on its side than it wants, it still withdraws every row there, but
 sizes the replacement net of the reserved ones: withdrawing a finished order is refused, and a whole
-remainder sent beside it would buy again every bar while holdings lagged. A reserved order that was still resting is withdrawn all the same, and the rest is
-placed the next time the target is stated, once its history says what it filled or holdings show it. The
-cost is waiting, on exits as on entries: a sell target whose reserved sells exceed the need sends
+remainder sent beside it would buy again every bar while holdings lagged. A reserved order that was still resting is withdrawn all the same.
+
+**In serialized mode the target is then kept** (`Runner::targets_retained`) until every order on the
+instrument is accounted for, and planned again against holdings that show what the order did: the rest is
+placed, or nothing if the target is already met. A reversal is the plainest case. Flat, stated right after
+a buy that holdings do not show yet, withdraws the buy (refused, if it has filled), waits, and sells what
+was bought once holdings show it; a strategy that states a change once does not lose it.
+The withdrawal is not repeated while the target waits: a second one is refused, and at KIS, Kiwoom and
+Toss a refusal reads as an unknown outcome that holds the instrument. So if the first withdrawal failed
+or could not be sent (an order restored after a restart has no reference to withdraw by until a listing
+shows it) and the order is really resting, the kept target does nothing more by itself; a target stated
+again withdraws again. A target whose order the ledger withholds (`orders_reconcile_withheld_`) is kept
+the same way, and planned again at each later holdings read until a listing has settled the instrument.
+Keeping a target promises neither the withdrawal nor the position, and it does not survive a restart.
+In overlapping mode nothing is kept, and the rest is placed the next time the target is stated, once the
+order's history says what it filled or holdings show it.
+
+The cost is waiting, on exits as on entries: a sell target whose reserved sells exceed the need sends
 nothing until holdings credit them (or the confirmation timeout withholds the instrument), and at
 Kiwoom, whose cancelled-order rows are not yet verified, a withdrawn order may wait for that timeout. A
 replay or a dry run does not do this.
