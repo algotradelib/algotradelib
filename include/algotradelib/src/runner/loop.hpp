@@ -676,6 +676,14 @@ struct LoopReport {
    *   around them. Makes `closing_complete()` false.
    */
   std::size_t closing_unconfirmed_{0};
+  /**
+   * @brief How long a `WITHDRAW` or `FLATTEN` waited, before its closing pass, for holdings and the order
+   *   list to account for this runner's own orders (`PollingLoop::set_closing_wait`). Zero if it did not
+   *   have to.
+   */
+  std::chrono::nanoseconds closing_waited_{0};
+  /** @brief Whether that wait ended at its limit, with the closing pass still built from an unverified picture. */
+  bool closing_wait_expired_{false};
 
   /**
    * @brief Positions whose closing order was sized down, or not sent, because another order could
@@ -1050,6 +1058,23 @@ public:
   }
 
   /**
+   * @brief Sets how long a `WITHDRAW` or `FLATTEN` may wait before its closing pass (30 seconds by default).
+   *
+   * A closing pass is built from the holdings and the order list in hand. Right after this runner sent an
+   * order they do not show it yet, and a pass built then withdraws what it can see and closes nothing
+   * (`LoopReport::closing_source_unverified_`, `closing_unconfirmed_`). So a stop that closes first lets the
+   * loop read both again, at once and then every few seconds, sending nothing meanwhile, and runs its pass
+   * as soon as they account for this runner's orders, or when this limit passes, in which case the pass
+   * runs as before and the report says so (`closing_wait_expired_`). A `QUIESCE` never waits, and a stop
+   * whose picture is already verified does not either. Zero disables the wait.
+   *
+   * A supervisor's grace period has to cover this limit on top of one iteration and one request timeout.
+   *
+   * @param limit The longest wait.
+   */
+  void set_closing_wait(std::chrono::nanoseconds limit) { closing_wait_ = limit; }
+
+  /**
    * @brief Accepts holdings of any age, instead of stating a maximum.
    *
    * It does not lift the hold for holdings never read, nor the one for a runner whose working-order
@@ -1174,6 +1199,8 @@ public:
     for (auto& count : consecutive_failures_) {
       count = 0;
     }
+    closing_wait_began_.reset();
+    closing_reads_forced_.reset();
     warmup_discarded_at_start_ = warmup_discarded();
     if constexpr (runner_counts_kept_drops<Runner>::value) {
       kept_dropped_at_start_ = runner_->kept_intents_dropped();
@@ -1202,10 +1229,19 @@ public:
         break;
       }
       if (const auto intent = stop.intent()) {
-        // Sampled here, before the stop runs anything, for the reason stated where this began.
-        outcomes_after = instruction_outcomes();
-        refusal_at_boundary = runner_->last_broker_refusal();
-        unbuildable_at_boundary = runner_->last_unbuildable();
+        if (!closing_wait_began_) {
+          // Sampled here, before the stop runs anything, for the reason stated where this began. Once,
+          // when the stop is first seen: what a strategy asks for while the stop waits is refused by
+          // the hold, and those refusals describe the stop, not the polling path.
+          outcomes_after = instruction_outcomes();
+          refusal_at_boundary = runner_->last_broker_refusal();
+          unbuildable_at_boundary = runner_->last_unbuildable();
+        }
+        const bool last_iteration = max_iterations != 0 && report.iterations_ >= max_iterations;
+        if (!last_iteration && closing_must_wait(*intent, iteration.at_, report)) {
+          clock_.wait_for(until_next(iteration.at_));
+          continue;
+        }
         honour(*intent, report);
         report.stopped_by_ = intent;
         break;
@@ -2230,6 +2266,13 @@ private:
         " order(s) this runner sent were not yet accounted for by holdings or a listing, so the closing pass"
         " could not withdraw or size around them; read the broker's order list and holdings");
     }
+    if (report.closing_wait_expired_) {
+      report.notes_.push_back(
+        "the stop waited " +
+        std::to_string(std::chrono::duration_cast<std::chrono::seconds>(report.closing_waited_).count()) +
+        " s for holdings and the order list to account for this runner's orders and they did not; the"
+        " closing pass was built from what was in hand (set_closing_wait)");
+    }
     if (report.closing_indeterminate_ != 0) {
       report.notes_.push_back(
         std::to_string(report.closing_indeterminate_) +
@@ -2340,6 +2383,47 @@ private:
       }
       return std::nullopt;
     }
+  }
+
+  // Returns whether a stop that closes should let the loop read again before its pass is built.
+  //
+  // True while the pass would be built from a picture that does not account for this runner's own orders
+  // -- an order sent since the working orders were read, holdings older than the listing, an order no
+  // listing or holdings explain -- and the wait has not reached its limit. `STOPPING` is held throughout
+  // (`gate_for`), so the loop only reads: what a strategy asks for meanwhile is refused.
+  //
+  // The two reads the pass is built from are made due when the wait begins and again every few seconds,
+  // rather than at their cadence, which may be minutes: the wait is one read of each in the usual case.
+  bool closing_must_wait(StopIntent intent, std::chrono::system_clock::time_point at, LoopReport& report) {
+    if (intent == StopIntent::QUIESCE || closing_wait_ <= std::chrono::nanoseconds::zero()) {
+      return false;
+    }
+    // A source that lists no working orders can never verify the pass, however long the loop reads:
+    // waiting would only delay the same result.
+    if constexpr (!source_provides_working_orders<Source>::value) {
+      return false;
+    }
+    if (closing_wait_began_) {
+      report.closing_waited_ = std::chrono::duration_cast<std::chrono::nanoseconds>(at - *closing_wait_began_);
+    }
+    // As `honour` does before it counts: an order holdings now show is no longer owed.
+    runner_->refresh_unconfirmed();
+    if (closing_source_verified(at) && runner_->obligations_unexplained() == 0) {
+      return false;
+    }
+    if (!closing_wait_began_) {
+      closing_wait_began_ = at;
+    }
+    if (report.closing_waited_ >= closing_wait_) {
+      report.closing_wait_expired_ = true;
+      return false;
+    }
+    if (!closing_reads_forced_ || at - *closing_reads_forced_ >= closing_reread_) {
+      closing_reads_forced_ = at;
+      next_due_[static_cast<int>(PollKind::WORKING_ORDERS)].reset();
+      next_due_[static_cast<int>(PollKind::HOLDINGS)].reset();
+    }
+    return true;
   }
 
   // Returns whether the loop knows what a closing pass at `at` would have to send.
@@ -2484,6 +2568,12 @@ private:
   // Whether this loop has ever derived a phase that was not `UNKNOWN`, across every `run`.
   bool phase_ever_known_{false};
   std::optional<std::chrono::nanoseconds> maximum_portfolio_age_;
+  // How long a stop that closes may wait for the reads that account for this runner's orders, when the
+  // wait began, and when its two reads were last made due (again every `closing_reread_`).
+  std::chrono::nanoseconds closing_wait_{std::chrono::seconds(30)};
+  static constexpr std::chrono::seconds closing_reread_{5};
+  std::optional<std::chrono::system_clock::time_point> closing_wait_began_;
+  std::optional<std::chrono::system_clock::time_point> closing_reads_forced_;
   // Whether the missing-band-policy note has been said; it is said once per loop.
   bool said_no_band_age_policy_{false};
   // Whether the operator stated that any snapshot age is acceptable; see the setter.
