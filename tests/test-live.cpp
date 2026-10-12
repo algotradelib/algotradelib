@@ -6849,6 +6849,15 @@ TEST_CASE("a flatten arriving a second after the account was read still makes th
     CHECK(rig.session.canceled().empty());
     CHECK(rig.session.placed().size() == 2);
   }
+
+  SECTION("a quiesce paces nothing: its iteration reads as any other") {
+    runner::StopSource quiet;
+    quiet.request(runner::StopIntent::QUIESCE);
+    const auto report = loop.run(quiet, 0);
+    CHECK(report.iterations_ == 1);
+    CHECK(source.working_polls_ == 2);
+    CHECK(rig.session.placed().size() == 1);
+  }
 }
 
 TEST_CASE("a flatten does not wait for a mark on an instrument with nothing held", "[serialized][closing-wait]") {

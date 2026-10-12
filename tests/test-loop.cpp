@@ -2220,6 +2220,29 @@ TEST_CASE("a flatten pending at start whose order list never arrives asks on the
   CHECK_FALSE(report.closing_complete());
 }
 
+TEST_CASE("with no wait set, a flatten reads the order list at once whenever it was last asked",
+          "[loop][stop][closing-wait]") {
+  // The five-second floor belongs to the wait. Without one the pass is built in this iteration, so a
+  // read held back would simply be missing from it.
+  SellingRunner runner_instance;
+  hold_ten(runner_instance);
+  AccountingSource source;
+  source.order_list_ = {runner::PollOutcome::RATE_LIMITED};
+  AccountingLoop loop(runner_instance, source, slow_account_reads(), test_clock());
+  source.clock_ = &loop.clock();
+  not_about_the_portfolio(loop);
+  loop.set_closing_wait(std::chrono::seconds(0));
+  StopSource stop;
+  REQUIRE(loop.run(stop, 1).iterations_ == 1);
+  REQUIRE(source.order_list_reads_ == 1);
+
+  stop.request(StopIntent::FLATTEN);
+  const auto report = loop.run(stop, 0);
+  CHECK(report.iterations_ == 1);
+  CHECK(source.order_list_reads_ == 2);
+  CHECK(report.order_list_read_);
+}
+
 TEST_CASE("a waiting stop keeps its own time: the tick, the wall clock and a second word do not move it",
           "[loop][stop][closing-wait]") {
   SellingRunner runner_instance;
