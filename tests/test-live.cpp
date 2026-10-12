@@ -6146,3 +6146,69 @@ TEST_CASE("a target behind a restored order is kept whichever of its rows it wit
     CHECK(rig.runner_instance.targets_retained() == 1);
   }
 }
+
+TEST_CASE("a statement queued before a retry replaces what was retained for its instrument", "[serialized]") {
+  // `retry_retained_targets` appends what it releases to the context's queue. A caller driving the runner
+  // itself may have queued a newer statement there, and the older one must not be settled after it.
+  SerialRig rig;
+  rig.session.order_ids_ = {"B", "S"};
+
+  SECTION("a target kept for the ledger does not buy over a queued flat target") {
+    rig.runner_instance.ledger().mark(samsung(), "a cancellation request has an unknown outcome");
+    rig.bar(1, {target_of("10")});
+    REQUIRE(rig.runner_instance.targets_retained() == 1);
+    rig.runner_instance.ledger().resolve_after_reading_orders(samsung());
+    rig.show(polled(2, "0", {}));
+
+    SECTION("a queued target") {
+      rig.runner_instance.context().submit(target_of("0"));
+      rig.runner_instance.retry_retained_targets();
+      rig.runner_instance.settle_closing();
+      CHECK(rig.session.placed().empty());
+      CHECK(rig.runner_instance.targets_retained() == 0);
+    }
+    SECTION("a queued order is the only one sent") {
+      rig.runner_instance.context().submit(buy("3"));
+      rig.runner_instance.retry_retained_targets();
+      rig.runner_instance.settle_closing();
+      REQUIRE(rig.session.placed().size() == 1);
+      CHECK(rig.session.placed().front().quantity_ == Decimal64::parse("3"));
+    }
+    SECTION("a queued cancellation names an order, and the kept target still goes") {
+      rig.runner_instance.context().cancel(OrderRef<FakeBroker>{"X", ""}, "operator");
+      rig.runner_instance.retry_retained_targets();
+      REQUIRE(rig.session.placed().size() == 1);
+      CHECK(rig.session.placed().front().quantity_ == Decimal64::parse("10"));
+    }
+    SECTION("a queued target for another instrument leaves it") {
+      const InstrumentId hynix{Country::KR, Venue::COMBINED, "000660"};
+      auto hynix_reference = samsung_reference();
+      hynix_reference.id_ = hynix;
+      rig.runner_instance.context().set_instrument(hynix_reference);
+      rig.runner_instance.context().set_last_price(hynix, Decimal64::parse("100000"));
+      auto other = target_of("5");
+      other.instrument_ = hynix;
+      rig.runner_instance.context().submit(other);
+      rig.runner_instance.retry_retained_targets();
+      REQUIRE(rig.session.placed().size() == 2);
+      CHECK(rig.session.placed()[0].instrument_ == hynix);
+      CHECK(rig.session.placed()[1].instrument_ == samsung());
+    }
+  }
+
+  SECTION("an exit kept behind a filled buy does not sell under a queued target that wants the buy") {
+    rig.bar(1, {target_of("10")});
+    REQUIRE(rig.session.placed().size() == 1);
+    rig.show(polled(2, "0", {}));
+    rig.session.fail_cancel_with(already_finished());
+    rig.bar(2, {target_of("0")});
+    REQUIRE(rig.runner_instance.targets_retained() == 1);
+
+    rig.show(polled(3, "10", {}));
+    rig.runner_instance.context().submit(target_of("10"));
+    rig.runner_instance.retry_retained_targets();
+    rig.runner_instance.settle_closing();
+    CHECK(rig.session.placed().size() == 1);
+    CHECK(rig.runner_instance.targets_retained() == 0);
+  }
+}

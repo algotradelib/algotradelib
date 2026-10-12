@@ -1157,8 +1157,9 @@ public:
    * intent and every target kept for the phase or the broker (targets kept for the account stay).
    * Halting and resuming without calling it in between discards nothing, so the kept work can still
    * go out after the resume; call `clear_retained_targets` to drop it. A later target or intent for
-   * the instrument replaces a retained one. `PollingLoop` calls this once per iteration; a program
-   * driving a `Runner` itself must call it (or `clear_retained_targets`).
+   * the instrument replaces a retained one, one still queued on the context when this is called included.
+   * `PollingLoop` calls this once per iteration; a program driving a `Runner` itself must call it (or
+   * `clear_retained_targets`).
    *
    * @return The report of the settlement, empty if nothing was released.
    */
@@ -1176,6 +1177,13 @@ public:
         retained_targets_.end()
       );
       kept_intents_.clear();
+    }
+    // **A statement still queued is newer than anything retained.** Releasing retained work appends it to
+    // the queue, behind what a caller driving the runner itself has queued, where it would be settled as
+    // the latest word on its instrument. So what a queued target or order speaks about is forgotten first,
+    // as `settle` would forget it (a `CancelIntent` names an order, not an instrument, and forgets nothing).
+    for (const auto& queued : context_.queued()) {
+      forget_retained(instruction_instrument(queued));
     }
     if ((retained_targets_.empty() && kept_intents_.empty()) ||
         context_.portfolio().as_of_ == std::chrono::system_clock::time_point{} ||
