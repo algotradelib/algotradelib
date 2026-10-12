@@ -1136,9 +1136,14 @@ public:
    * - a target or order intent refused for the market phase (a daily strategy deciding while the
    *   market is shut), until `RiskLimits::permitted_phases_` admits the phase;
    * - a target or order intent the broker could not be reached for, or refused for its rate limit,
-   *   until a holdings read newer than the failure arrives.
+   *   until a holdings read newer than the failure arrives;
+   * - in a serialized runner, a target whose plan could only withdraw an order the runner still owes,
+   *   until every order on its instrument is accounted for (the withdrawal is sent once, and not again
+   *   while the target waits);
+   * - in a serialized runner, a target whose order was withheld as `RECONCILE_REQUIRED`, planned again
+   *   at each later holdings read and withheld again while the instrument is unresolved.
    *
-   * The last two only in a runner that sends to a broker. Not kept: anything decided under the
+   * All but the first only in a runner that sends to a broker. Not kept: anything decided under the
    * `STOPPING`, `OPERATOR` or `LOCAL_FAILURE` hold; an intent with a client order id the broker
    * answered; an intent whose instrument's net holding is unknown. So a protective stop with a client
    * order id, refused out of hours, is not installed at the open by itself (one without an id is).
@@ -1184,7 +1189,8 @@ public:
     // Kept because the broker could not be reached: not offered again until it has answered since.
     const auto awaiting_broker = [&](const auto& entry) { return entry.after_ && !(*entry.after_ < as_of); };
     for (auto& entry : retained_targets_) {
-      if ((entry.for_phase_ && !phase_permits) || awaiting_broker(entry)) {
+      if ((entry.for_phase_ && !phase_permits) || awaiting_broker(entry) ||
+          (entry.until_accounted_ && owes(entry.target_.instrument_))) {
         kept.push_back(std::move(entry));
         continue;
       }
@@ -1552,6 +1558,18 @@ private:
     // keep the target that produced it (`retain_for_phase`). Points into `instructions`, which lives
     // for the whole pass.
     std::vector<const Instruction<Tag>*> origin;
+    // Whether a later instruction of this pass speaks about `source`'s instrument (`source` is one of
+    // `instructions`): the latest statement wins.
+    const auto restated_later = [&instructions](const Instruction<Tag>& source) {
+      const auto instrument = instruction_instrument(source);
+      const auto* const end = instructions.data() + instructions.size();
+      for (const auto* later = &source + 1; later < end; ++later) {
+        if (instruction_instrument(*later) == instrument) {
+          return true;
+        }
+      }
+      return false;
+    };
 
     // **One withdrawal per order per pass.** A strategy that clears what is resting and then states
     // a target asks twice for the same order: the explicit `CancelIntent` goes out, and then
@@ -1700,6 +1718,11 @@ private:
           claimed.push_back(instruction_instrument(instruction));
         }
       }
+      // **Serialized: a target that could only withdraw an order this runner still owes is kept**, and its
+      // withdrawals go out all the same (`withdraws_owed`). Nothing is reported as withheld: nothing was.
+      if (serialized() && planned.place_.empty() && !defers && withdraws_owed(instruction, planned.cancel_)) {
+        retain_withheld(instruction, /*for_phase=*/false, context_.portfolio().as_of_, /*until_accounted=*/true);
+      }
       for (const auto& ref : planned.cancel_) {
         attempt_cancel(ref);
       }
@@ -1773,13 +1796,16 @@ private:
         // every other origin because the operator's response is to reconcile rather than to relax a
         // limit or fix a price.
         ++orders_reconcile_withheld_;
-        report.withheld_.push_back(
-          WithheldOrder{
-            WithheldReason::RECONCILE_REQUIRED,
-            order,
-            std::string(ledger_.detail(order.instrument_)),
-          }
-        );
+        std::string detail(ledger_.detail(order.instrument_));
+        // **Serialized: the target is kept**, as at the gate below, and planned again at a later holdings
+        // read: withheld again while the instrument is marked, sent once a listing has settled it. Not when
+        // a later instruction of this pass spoke about the instrument: every instruction is planned before
+        // any order is sent, so keeping this one here would undo the later one.
+        if (serialized() && !restated_later(source_instruction) &&
+            retain_withheld(source_instruction, /*for_phase=*/false, context_.portfolio().as_of_)) {
+          detail += "; retained for a later holdings read";
+        }
+        report.withheld_.push_back(WithheldOrder{WithheldReason::RECONCILE_REQUIRED, order, std::move(detail)});
         continue;
       }
 
@@ -3509,9 +3535,12 @@ private:
   //   `keep_intent_for_phase`, with its holding checked at release.)
   // - while a stop, an operator's halt or a local failure holds. What a strategy says then -- `on_stop`
   //   included -- must not be replayed once the hold lifts.
+  //
+  // `until_accounted` keeps it past later holdings reads too, until the instrument owes no order; see
+  // `withdraws_owed`.
   bool retain_withheld(
     const Instruction<Tag>& instruction, bool for_phase = false,
-    std::optional<std::chrono::system_clock::time_point> after = std::nullopt
+    std::optional<std::chrono::system_clock::time_point> after = std::nullopt, bool until_accounted = false
   ) {
     const auto* target = std::get_if<strategy::TargetPosition>(&instruction);
     if (target == nullptr) {
@@ -3525,12 +3554,52 @@ private:
     // restated and refused for the phase waits for the phase.
     for (auto& kept : retained_targets_) {
       if (kept.target_.instrument_ == target->instrument_) {
-        kept = RetainedTarget{*target, for_phase, after};
+        kept = RetainedTarget{*target, for_phase, after, until_accounted};
         return true;
       }
     }
-    retained_targets_.push_back(RetainedTarget{*target, for_phase, after});
+    retained_targets_.push_back(RetainedTarget{*target, for_phase, after, until_accounted});
     return true;
+  }
+
+  // Whether a serialized target's plan, which places nothing, withdraws an order this runner still owes on
+  // the target's instrument: its reserved row, or the broker's own row for it.
+  //
+  // Such an order has often filled already, so the withdrawal is refused and the picture the plan was made
+  // from is the stale one. The withdrawal is still sent (the order may be resting), and the target is kept
+  // until every order on the instrument is accounted for, then planned again against holdings that show
+  // what it did. Not planned again before that: a second withdrawal of a finished or already withdrawn
+  // order is refused, and a broker's refusal can read as an unknown outcome that holds the instrument.
+  //
+  // Compared by the order's id, instrument and side, as `is_reserved_row_of` and `broker_row_for` do: a
+  // restored order carries the id alone, while the row the broker lists carries its whole reference.
+  bool withdraws_owed(const Instruction<Tag>& instruction, const std::vector<OrderRef<Tag>>& cancel) const {
+    const auto* target = std::get_if<strategy::TargetPosition>(&instruction);
+    if (target == nullptr || cancel.empty() || unconfirmed_.empty()) {
+      return false;
+    }
+    for (const auto& working : context_.portfolio().working_) {
+      if (!(working.order_.instrument_ == target->instrument_) ||
+          std::find(cancel.begin(), cancel.end(), working.ref_) == cancel.end()) {
+        continue;
+      }
+      for (const auto& entry : unconfirmed_) {
+        const bool listed_row_of = !working.reserved_ && !entry.ref_.primary_.empty() &&
+          working.ref_.primary_ == entry.ref_.primary_ && working.order_.instrument_ == entry.instrument_ &&
+          working.order_.side_ == entry.side_;
+        if (listed_row_of || is_reserved_row_of(working, entry)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // Whether this runner owes an order on `instrument` (sent, and not yet accounted for).
+  bool owes(const InstrumentId& instrument) const {
+    return std::any_of(unconfirmed_.begin(), unconfirmed_.end(), [&](const Unconfirmed& entry) {
+      return entry.instrument_ == instrument;
+    });
   }
 
   // Keeps a target whose order the market phase stopped, for the first permitted phase.
@@ -4215,6 +4284,8 @@ private:
     bool for_phase_{false};
     // Kept because the broker could not be reached: planned again only after a later holdings read.
     std::optional<std::chrono::system_clock::time_point> after_;
+    // Kept behind an order it could only withdraw: planned again only once the instrument owes no order.
+    bool until_accounted_{false};
   };
   std::vector<RetainedTarget> retained_targets_;
   // An order intent kept for the phase, and the instrument's net holding when it was kept.

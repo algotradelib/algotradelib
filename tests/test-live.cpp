@@ -5928,3 +5928,221 @@ TEST_CASE("a serialized order never named still marks the ledger past the timeou
   CHECK(rig.owed() == runner::ObligationState::UNNAMED);
   CHECK(rig.runner_instance.ledger().requires_reconcile(samsung()));
 }
+
+namespace {
+/** A refusal as KIS, Kiwoom and Toss state one: in the reply's body, which their adapters classify `PROTOCOL`. */
+BrokerError declared_refusal() {
+  BrokerError error;
+  error.category_ = ErrorCategory::PROTOCOL;
+  error.reached_broker_ = true;
+  error.broker_code_ = "40330000";
+  error.message_ = "no quantity left to amend or cancel";
+  return error;
+}
+} // namespace
+
+TEST_CASE("a target that could only withdraw an order still owed is kept until the order is accounted for",
+          "[serialized]") {
+  // A buy fills at once and holdings lag it. The strategy says flat, once: the stale picture is met by
+  // withdrawing the buy alone, the broker refuses (the order is done), and the exit used to be forgotten.
+  SerialRig rig;
+  rig.session.order_ids_ = {"B", "S"};
+  rig.bar(1, {target_of("10")});
+  REQUIRE(rig.session.placed().size() == 1);
+  rig.show(polled(2, "0", {}));
+
+  SECTION("the broker rejects the withdrawal") {
+    rig.session.fail_cancel_with(already_finished());
+    const auto reversal = rig.bar(2, {target_of("0")});
+    CHECK(rig.session.canceled().size() == 1);
+    CHECK(reversal.withheld_plans_.empty());
+    CHECK(rig.session.placed().size() == 1);
+    CHECK(rig.runner_instance.targets_retained() == 1);
+    CHECK(rig.owed() == runner::ObligationState::NAMED);
+
+    // A newer read that still lags: the target waits for the order, so no second withdrawal goes.
+    rig.show(polled(3, "0", {}));
+    rig.runner_instance.retry_retained_targets();
+    CHECK(rig.session.canceled().size() == 1);
+    CHECK(rig.runner_instance.targets_retained() == 1);
+
+    // Holdings show the ten: accounted for, and the exit goes, once, as an order of its own.
+    rig.show(polled(4, "10", {}));
+    rig.runner_instance.retry_retained_targets();
+    REQUIRE(rig.session.placed().size() == 2);
+    CHECK(rig.session.placed().back().side_ == OrderSide::SELL);
+    CHECK(rig.session.placed().back().quantity_ == Decimal64::parse("10"));
+    CHECK(rig.runner_instance.targets_retained() == 0);
+    CHECK(rig.owed() == runner::ObligationState::NAMED);
+    rig.show(polled(5, "10", {}));
+    rig.runner_instance.retry_retained_targets();
+    CHECK(rig.session.placed().size() == 2);
+    CHECK(rig.session.canceled().size() == 1);
+  }
+
+  SECTION("the refusal reads as an unknown outcome, which marks the instrument") {
+    rig.session.fail_cancel_with(declared_refusal());
+    rig.bar(2, {target_of("0")});
+    CHECK(rig.runner_instance.cancels_indeterminate() == 1);
+    REQUIRE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+    CHECK(rig.runner_instance.targets_retained() == 1);
+
+    // Holdings show the ten before a listing has settled the withdrawal: the exit is planned, withheld for
+    // the mark and kept, read after read, with nothing sent.
+    for (const int hour : {3, 4}) {
+      rig.show(polled(hour, "10", {}));
+      const auto retried = rig.runner_instance.retry_retained_targets();
+      CHECK(rig.session.placed().size() == 1);
+      REQUIRE(retried.withheld_.size() == 1);
+      CHECK(retried.withheld_.front().reason_ == runner::WithheldReason::RECONCILE_REQUIRED);
+      CHECK(retried.withheld_.front().detail_.find("retained") != std::string::npos);
+      CHECK(rig.runner_instance.targets_retained() == 1);
+    }
+    CHECK(rig.session.canceled().size() == 1);
+
+    // A listing settles the withdrawal. The same holdings read sends nothing; the next one sends the exit.
+    rig.runner_instance.ledger().resolve_after_reading_orders(samsung());
+    rig.runner_instance.retry_retained_targets();
+    CHECK(rig.session.placed().size() == 1);
+    rig.show(polled(5, "10", {}));
+    rig.runner_instance.retry_retained_targets();
+    REQUIRE(rig.session.placed().size() == 2);
+    CHECK(rig.session.placed().back().side_ == OrderSide::SELL);
+    CHECK(rig.session.placed().back().quantity_ == Decimal64::parse("10"));
+    CHECK(rig.runner_instance.targets_retained() == 0);
+  }
+}
+
+TEST_CASE("a reduction behind an unconfirmed exit is bought back once holdings show the exit", "[serialized]") {
+  // The other branch of target reconciliation: twenty held, a sell of twenty fills, holdings still say
+  // twenty, and the strategy says ten. The sell side is withdrawn and the replacement, net of the reserved
+  // row, is nothing.
+  SerialRig rig;
+  rig.show(polled(0, "20", {}));
+  rig.session.order_ids_ = {"S", "B"};
+  rig.bar(1, {target_of("0")});
+  REQUIRE(rig.session.placed().size() == 1);
+
+  rig.show(polled(2, "20", {}));
+  rig.session.fail_cancel_with(already_finished());
+  rig.bar(2, {target_of("10")});
+  CHECK(rig.session.canceled().size() == 1);
+  CHECK(rig.session.placed().size() == 1);
+  CHECK(rig.runner_instance.targets_retained() == 1);
+
+  rig.show(polled(3, "0", {}));
+  rig.runner_instance.retry_retained_targets();
+  REQUIRE(rig.session.placed().size() == 2);
+  CHECK(rig.session.placed().back().side_ == OrderSide::BUY);
+  CHECK(rig.session.placed().back().quantity_ == Decimal64::parse("10"));
+}
+
+TEST_CASE("a target kept behind a resting order it withdrew sends nothing more when the order ends unfilled",
+          "[serialized]") {
+  SerialRig rig;
+  rig.session.order_ids_ = {"B"};
+  rig.bar(1, {limit_target("10", "69000")});
+  REQUIRE(rig.session.placed().size() == 1);
+  const auto sent = rig.runner_instance.context().now();
+  const auto resting = listed_row("B", OrderSide::BUY, "10", "0", OrderType::LIMIT);
+
+  // Flat, said once: the broker's own row for the owed order is withdrawn, and the target is kept.
+  rig.show(polled(2, "0", {resting}));
+  rig.bar(2, {target_of("0")});
+  CHECK(rig.session.canceled().size() == 1);
+  CHECK(rig.runner_instance.targets_retained() == 1);
+
+  // Still listed at a newer read: a second withdrawal would be refused, and none goes.
+  rig.show(polled(3, "0", {resting}));
+  rig.runner_instance.retry_retained_targets();
+  CHECK(rig.session.canceled().size() == 1);
+  CHECK(rig.runner_instance.targets_retained() == 1);
+
+  // Its own dated row says it ended with nothing filled: accounted for, and the target is already met.
+  rig.show(polled(4, "0", {}));
+  rig.runner_instance.confirm_from_history({dated_row("B", sent, "0")});
+  rig.runner_instance.retry_retained_targets();
+  CHECK(rig.owed() == runner::ObligationState::NONE);
+  CHECK(rig.runner_instance.targets_retained() == 0);
+  CHECK(rig.session.placed().size() == 1);
+  CHECK(rig.session.canceled().size() == 1);
+}
+
+TEST_CASE("a target withheld for an unresolved order is kept unless the same pass restated it", "[serialized]") {
+  SerialRig rig;
+  rig.session.order_ids_ = {"B"};
+  rig.runner_instance.ledger().mark(samsung(), "a cancellation request has an unknown outcome");
+  const auto settle_and_read = [&] {
+    rig.runner_instance.ledger().resolve_after_reading_orders(samsung());
+    rig.show(polled(2, "0", {}));
+    rig.runner_instance.retry_retained_targets();
+  };
+
+  SECTION("a later target that needs nothing still wins") {
+    // Every instruction is planned before any order is sent, so the buy is withheld after the flat target
+    // has spoken. Kept, it would be bought when the mark cleared.
+    const auto report = rig.bar(1, {target_of("10"), target_of("0")});
+    REQUIRE(report.withheld_.size() == 1);
+    CHECK(rig.runner_instance.targets_retained() == 0);
+    settle_and_read();
+    CHECK(rig.session.placed().empty());
+  }
+
+  SECTION("a later target is the one kept") {
+    rig.bar(1, {target_of("10"), target_of("20")});
+    CHECK(rig.runner_instance.targets_retained() == 1);
+    settle_and_read();
+    REQUIRE(rig.session.placed().size() == 1);
+    CHECK(rig.session.placed().front().quantity_ == Decimal64::parse("20"));
+  }
+
+  SECTION("a later order for the instrument is not undone either") {
+    rig.bar(1, {target_of("10"), buy("3")});
+    CHECK(rig.runner_instance.targets_retained() == 0);
+    settle_and_read();
+    CHECK(rig.session.placed().empty());
+  }
+}
+
+TEST_CASE("a target that withdraws an order this runner does not owe is not kept", "[serialized]") {
+  SerialRig rig;
+  rig.show(polled(1, "0", {listed_row("X", OrderSide::BUY, "10", "0", OrderType::LIMIT)}));
+  rig.bar(1, {target_of("0")});
+  CHECK(rig.session.canceled().size() == 1);
+  CHECK(rig.runner_instance.targets_retained() == 0);
+}
+
+TEST_CASE("a target behind a restored order is kept whichever of its rows it withdraws", "[serialized]") {
+  using runner::JournalOutcome;
+  SerialRig rig({serial_line("p-1", JournalOutcome::PENDING), serial_line("p-1", JournalOutcome::ACCEPTED, "B")});
+  REQUIRE(rig.owed() == runner::ObligationState::NAMED);
+
+  SECTION("its reserved row carries no reference to withdraw by: nothing is sent, the target waits") {
+    const auto report = rig.bar(1, {target_of("0")});
+    CHECK(rig.session.canceled().empty());
+    REQUIRE(report.rejected_cancel_.size() == 1);
+    CHECK_FALSE(report.rejected_cancel_.front().by_broker_);
+    CHECK(rig.runner_instance.targets_retained() == 1);
+
+    // The listing later supplies the whole reference. The kept target does not withdraw again by itself;
+    // stated again, it does.
+    auto listed = listed_row("B", OrderSide::BUY, "10", "0");
+    listed.ref_ = OrderRef<FakeBroker>{"B", "branch-7"};
+    rig.show(polled(2, "0", {listed}));
+    rig.runner_instance.retry_retained_targets();
+    CHECK(rig.session.canceled().empty());
+    CHECK(rig.runner_instance.targets_retained() == 1);
+    rig.bar(3, {target_of("0")});
+    CHECK(rig.session.canceled().size() == 1);
+    CHECK(rig.runner_instance.targets_retained() == 1);
+  }
+
+  SECTION("the broker's row carries more than the order's number, and is the same order") {
+    auto listed = listed_row("B", OrderSide::BUY, "10", "0");
+    listed.ref_ = OrderRef<FakeBroker>{"B", "branch-7"};
+    rig.show(polled(1, "0", {listed}));
+    rig.bar(1, {target_of("0")});
+    CHECK(rig.session.canceled().size() == 1);
+    CHECK(rig.runner_instance.targets_retained() == 1);
+  }
+}
