@@ -69,24 +69,23 @@ turn routine maintenance into a liquidation.
 **A `WITHDRAW` or a `FLATTEN` may wait before it acts.** Both are built from the holdings and the order
 list in hand, and right after one of your orders went out neither shows it yet: the order has filled and
 left the listing, and holdings still say what they said before. A flatten built at that moment withdraws
-an order that is gone and closes nothing. So the loop first reads both again, at once and then every
-five seconds, and acts as soon as they account for what this runner sent, or after thirty seconds
-whichever comes first (`PollingLoop::set_closing_wait`; `Settings::closing_wait_` in the example
+an order that is gone and closes nothing. So when the account in hand does not account for what this
+runner sent, the loop reads both again, every five seconds, and acts as soon as they do, or after thirty
+seconds whichever comes first (`PollingLoop::set_closing_wait`; `Settings::closing_wait_` in the example
 program). Nothing a strategy asks for is sent while it waits.
 
 - It waits while the picture is unverified (below), an order of this runner is not yet in holdings or
   its history, or an instrument that is held is marked in the indeterminacy ledger. With none of those,
   it acts in the same iteration. It also acts at once under an `OPERATOR` or `LOCAL_FAILURE` hold, when
   the pass can send nothing, and it does not wait for an order held for an operator.
-- While a stop that may wait is pending, neither endpoint is asked again within five seconds of its last
-  request, whoever made it. A read that its cadence made due and those five seconds hold back is waited
-  for. So a stop that arrives just after the account was read, or is already in the control file at the
-  start, acts a few seconds later than one that arrives mid-iteration. With no wait set, the pass reads
-  and acts at once, as it always did.
+- The iteration that takes the stop up reads the account as any other iteration does. Only the wait's
+  further reads are paced: neither endpoint is asked again within five seconds of its last request,
+  whoever made it, and an order-list read that failed at the start is retried on the same footing.
 - When the limit ends the wait, the pass runs on what is in hand, as it did before there was a wait,
   and the report says so (`closing_wait_expired_`, and a note). `closing_waited_` is how long it took.
 - The limit is counted on the clock's monotonic reading, so setting the machine's clock neither cuts it
-  short nor extends it.
+  short nor extends it. The reads themselves are stamped with wall time, so a clock step can still change
+  which of them looks fresh.
 - It cannot always tell that no read will help, and then it waits the whole limit. A mark made in the
   last minute or two outlasts thirty seconds: an order whose reply was lost cannot be concluded absent
   from a listing until the broker has had time to list it. So does a mark nothing sweeps (a source with

@@ -1999,10 +1999,13 @@ public:
   /** When the working-order endpoint was asked, by the startup read or a poll. */
   std::vector<std::chrono::system_clock::time_point> working_endpoint_asked_;
 
-  /** The shortest time between two consecutive asks of the working-order endpoint. */
-  std::chrono::nanoseconds shortest_gap() const {
+  /**
+   * The shortest time between two consecutive asks of the working-order endpoint, from the ask at index
+   * `from` on: the iteration that takes a stop up reads as any other, and the wait paces what follows.
+   */
+  std::chrono::nanoseconds shortest_gap(std::size_t from = 1) const {
     auto shortest = std::chrono::nanoseconds::max();
-    for (std::size_t i = 1; i < working_endpoint_asked_.size(); ++i) {
+    for (std::size_t i = from; i < working_endpoint_asked_.size(); ++i) {
       shortest = std::min<std::chrono::nanoseconds>(shortest, working_endpoint_asked_[i] - working_endpoint_asked_[i - 1]);
     }
     return shortest;
@@ -2221,11 +2224,13 @@ TEST_CASE("a flatten pending at start reads the order list again when the first 
 
   const auto report = loop.run(stop, 0);
   CHECK(source.order_list_reads_ == 2);
-  // The order list is the working-order endpoint: neither read is followed by a poll of the same
-  // endpoint in the same iteration, and the second comes five seconds after the first.
-  CAPTURE(source.working_polls_, source.working_endpoint_asked_.size());
-  REQUIRE(source.working_endpoint_asked_.size() >= 2);
-  CHECK(source.shortest_gap() >= std::chrono::seconds(5));
+  // The first iteration reads as any other: the order list, refused, and the ordinary working-order
+  // poll beside it. The wait then asks the endpoint once more, five seconds later, and the read that
+  // succeeds is not followed by a poll of the same endpoint.
+  REQUIRE(source.working_endpoint_asked_.size() == 3);
+  CHECK(source.working_polls_ == 1);
+  CHECK(source.working_endpoint_asked_[1] == source.working_endpoint_asked_[0]);
+  CHECK(source.shortest_gap(2) == std::chrono::seconds(5));
   CHECK(report.order_list_read_);
   CHECK_FALSE(report.closing_wait_expired_);
   CHECK(report.flattened_ == 1);
@@ -2250,7 +2255,7 @@ TEST_CASE("a flatten pending at start whose order list never arrives asks on the
   // At the start, every five seconds while the wait lasts, and once more as its limit passes: a
   // rate-limited read is not asked again at every one-second tick.
   CHECK(source.order_list_reads_ == 7);
-  CHECK(source.shortest_gap() >= std::chrono::seconds(5));
+  CHECK(source.shortest_gap(2) >= std::chrono::seconds(5));
   CHECK_FALSE(report.order_list_read_);
   CHECK(report.closing_wait_expired_);
   CHECK(report.closing_source_unverified_);
@@ -2280,48 +2285,45 @@ TEST_CASE("with no wait set, a flatten reads the order list at once whenever it 
   CHECK(report.order_list_read_);
 }
 
-TEST_CASE("account reads on a zero interval are waited for once if held back, and not again once made",
+TEST_CASE("a stop whose account is read and coherent acts in the iteration that takes it up",
           "[loop][stop][closing-wait]") {
-  // A zero interval leaves a kind due the moment it has been read. Read as "held back", every stop
-  // waited its whole limit for reads it had already made.
-  SellingRunner runner_instance;
-  hold_ten(runner_instance);
-  AccountingSource source;
-  auto schedule = bars_each_iteration();
-  schedule.holdings_ = std::chrono::seconds(0);
-  schedule.working_orders_ = std::chrono::seconds(0);
-  AccountingLoop loop(runner_instance, source, schedule, test_clock());
-  source.clock_ = &loop.clock();
-  not_about_the_portfolio(loop);
-  StopSource stop;
-  source.held_ = "0";
-  source.held_after_stop_ = "0";
+  // Whatever the cadences, a zero interval included, and whether the stop was pending when the
+  // iteration began or arrived after its reads: nothing is missing, so nothing is waited for.
+  for (const auto interval : {std::chrono::seconds(0), std::chrono::seconds(1), std::chrono::seconds(60)}) {
+    for (const bool pending_at_start : {false, true}) {
+      SellingRunner runner_instance;
+      hold_ten(runner_instance);
+      AccountingSource source;
+      auto schedule = bars_each_iteration();
+      schedule.holdings_ = interval;
+      schedule.working_orders_ = interval;
+      AccountingLoop loop(runner_instance, source, schedule, test_clock());
+      source.clock_ = &loop.clock();
+      not_about_the_portfolio(loop);
+      StopSource stop;
+      source.held_ = "0";
+      source.held_after_stop_ = "0";
+      if (pending_at_start) {
+        stop.request(StopIntent::FLATTEN);
+      } else {
+        source.stop_ = &stop;
+        source.stop_after_bar_ = 1;
+      }
 
-  SECTION("the stop arrives after this iteration's account reads: nothing is owed") {
-    source.stop_ = &stop;
-    source.stop_after_bar_ = 1;
-    const auto report = loop.run(stop, 0);
-    CHECK(report.iterations_ == 1);
-    CHECK_FALSE(report.closing_wait_expired_);
-    CHECK(source.holdings_polls_ == 1);
-    CHECK(source.working_polls_ == 1);
-  }
-
-  SECTION("the stop is pending at the start: the working-order read held back is made once, at the floor") {
-    stop.request(StopIntent::FLATTEN);
-    const auto report = loop.run(stop, 0);
-    CHECK_FALSE(report.closing_wait_expired_);
-    CHECK(report.closing_waited_ == std::chrono::seconds(5));
-    CHECK(source.working_polls_ == 1);
-    CHECK(source.shortest_gap() == std::chrono::seconds(5));
+      const auto report = loop.run(stop, 0);
+      CAPTURE(interval.count(), pending_at_start);
+      CHECK(report.iterations_ == 1);
+      CHECK_FALSE(report.closing_wait_expired_);
+      CHECK(source.holdings_polls_ == 1);
+      CHECK(source.working_polls_ == 1);
+    }
   }
 }
 
-TEST_CASE("a slow holdings call does not make the wait take a read it has made for one it owes",
+TEST_CASE("a slow holdings call does not keep a stop whose account is coherent waiting",
           "[loop][stop][closing-wait]") {
-  // Each endpoint keeps its own five-second floor from when it last answered, so a holdings call that
-  // takes two seconds puts the two reads in different iterations. Judged one iteration at a time, the
-  // working-order read was "not made" in every iteration that read holdings, and the wait ran out.
+  // A holdings call that takes two seconds, on cadences of a second or none: the reads of the stop's
+  // iteration are enough, and it does not wait for others.
   for (const auto interval : {std::chrono::seconds(1), std::chrono::seconds(0)}) {
   SellingRunner runner_instance;
   hold_ten(runner_instance);

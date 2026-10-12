@@ -1074,9 +1074,10 @@ public:
    * last asked, by anything -- while it holds `STOPPING`, and runs its pass as soon as:
    * - the picture is verified;
    * - no order of this runner awaits an account a read could give (`Runner::obligations_awaiting_account`);
-   * - no instrument that is held is marked in the indeterminacy ledger;
-   * - and no read its own cadence made due is still held back by those five seconds (so a stop arriving
-   *   just after a read, or pending at the start beside the order-list read, waits for the next one);
+   * - and no instrument that is held is marked in the indeterminacy ledger.
+   *
+   * The iteration that takes the stop up reads as any other; with none of those missing its pass runs in
+   * that iteration. Only the wait's further reads are paced.
    *
    * or when this limit has passed, measured on the clock's monotonic reading. The pass then runs as it
    * always did and the report says the wait ran out (`closing_wait_expired_`). The limit bounds the wait,
@@ -1227,7 +1228,6 @@ public:
     }
 
     while (max_iterations == 0 || report.iterations_ < max_iterations) {
-      last_permitted_ = max_iterations != 0 && report.iterations_ + 1 >= max_iterations;
       const auto iteration = step(stop, report);
       ++report.iterations_;
       if (iteration.gate_) {
@@ -1488,13 +1488,6 @@ private:
     // late, and on the very first iteration they would not be installed at all: a bar arriving
     // before the first order-list read could place an order against a position a predecessor may
     // have left, which is the exact hazard the startup gate exists for.
-    {
-      // Only where a wait can follow and read what the floor holds back: with no wait set, a source
-      // that lists no working orders, a hold the pass cannot send through, or the run's last
-      // iteration, the pass is built at once and reads as it always did.
-      const auto intent = stop.intent();
-      closing_pending_ = intent && closing_may_wait(*intent) && !last_permitted_;
-    }
     hold(gate_for(stop, iteration.at_, report, /*may_read=*/true));
 
     for (const auto kind : all_poll_kinds) {
@@ -1851,9 +1844,9 @@ private:
       // orders through (`halt_blocks`), and nothing but the stop's own may go out once one is pending.
       // Held before the read as well, because the source is a template parameter and may feed.
       const auto intent = stop.intent();
-      // On the stop's own floor, from its first iteration: a read that failed is not asked again at
-      // every tick, nor right after an ordinary poll of the same endpoint.
-      const bool on_the_floor = !closing_pending_ || !asked_within_floor(PollKind::WORKING_ORDERS);
+      // Once a stop is waiting, on the wait's own floor: a read that failed is not asked again at
+      // every tick. The iteration that takes the stop up reads as any other.
+      const bool on_the_floor = !closing_ || !asked_within_floor(PollKind::WORKING_ORDERS);
       if (intent && *intent != StopIntent::QUIESCE && !order_list_read_ && may_read && on_the_floor &&
           !runner_->guard().halted(strategy::HaltReason::LOCAL_FAILURE)) {
         hold(strategy::HaltReason::STOPPING);
@@ -2496,17 +2489,23 @@ private:
   // `STOPPING` is held throughout (`begin_stop`, `gate_for`), so the loop only reads meanwhile: what a
   // strategy asks for is refused. See `set_closing_wait` for what it waits for and what it does not.
   bool closing_should_wait(StopIntent intent, LoopReport& report) {
-    if (!closing_may_wait(intent)) {
+    if (intent == StopIntent::QUIESCE || closing_wait_ <= std::chrono::nanoseconds::zero()) {
+      return false;
+    }
+    // A source that lists no working orders can never verify the pass, however long the loop reads:
+    // waiting would only delay the same result.
+    if constexpr (!source_provides_working_orders<Source>::value) {
+      return false;
+    }
+    // Under a person's hold or the runner's own, the pass can send nothing whatever the reads show.
+    if (runner_->guard().halted(strategy::HaltReason::OPERATOR) ||
+        runner_->guard().halted(strategy::HaltReason::LOCAL_FAILURE)) {
       return false;
     }
     const auto monotonic = clock_.monotonic_now();
     report.closing_waited_ = std::chrono::duration_cast<std::chrono::nanoseconds>(monotonic - closing_->began_);
     // As the pass does before it counts: an order holdings now show is no longer owed.
     runner_->refresh_unconfirmed();
-    for (const auto& poll : last_.polls_) {
-      closing_->read_working_ = closing_->read_working_ || poll.first == PollKind::WORKING_ORDERS;
-      closing_->read_holdings_ = closing_->read_holdings_ || poll.first == PollKind::HOLDINGS;
-    }
     closing_->reads_wanted_ = closing_needs_evidence(clock_.now());
     if (!closing_->reads_wanted_) {
       return false;
@@ -2519,36 +2518,10 @@ private:
     return true;
   }
 
-  // Whether a stop with `intent` may wait at all. The reads' five-second floor applies only where this
-  // holds: a read held back with no wait to make it would simply be missing from the pass.
-  bool closing_may_wait(StopIntent intent) const {
-    if (intent == StopIntent::QUIESCE || closing_wait_ <= std::chrono::nanoseconds::zero()) {
-      return false;
-    }
-    // A source that lists no working orders can never verify the pass, however long the loop reads:
-    // waiting would only delay the same result.
-    if constexpr (!source_provides_working_orders<Source>::value) {
-      return false;
-    }
-    // Under a person's hold or the runner's own, the pass can send nothing whatever the reads show.
-    return !runner_->guard().halted(strategy::HaltReason::OPERATOR) &&
-      !runner_->guard().halted(strategy::HaltReason::LOCAL_FAILURE);
-  }
-
   // Whether a further read could change what the closing pass would do: the picture it is built from is
   // not verified, an order of this runner awaits an account, or an instrument that is held is marked.
   bool closing_needs_evidence(std::chrono::system_clock::time_point at) const {
     if (!closing_source_verified(at) || runner_->obligations_awaiting_account() != 0) {
-      return true;
-    }
-    // A read its cadence asked for and the floor has held back since the stop was seen: the picture in
-    // hand is older than the one a pass built at once would have had, however complete it looks. Once
-    // made, in whichever iteration, it is not owed again: the two reads keep separate floors and need
-    // not fall in the same iteration, and with a zero interval a kind is due the moment it is read.
-    if (!closing_->read_working_ && cadence_due(PollKind::WORKING_ORDERS, last_.at_)) {
-      return true;
-    }
-    if (!closing_->read_holdings_ && cadence_due(PollKind::HOLDINGS, last_.at_)) {
       return true;
     }
     // A mark on something held, unless only an operator can lift it. Held by the instrument's net, as the
@@ -2693,22 +2666,12 @@ private:
   // Returns whether `kind` is due at `at`.
   bool is_due(PollKind kind, std::chrono::system_clock::time_point at) const {
     // A waiting stop reads the two closing kinds on its own floor, whatever their cadence (a disabled
-    // one included), and nothing reads them faster than that meanwhile.
-    if (kind == PollKind::WORKING_ORDERS || kind == PollKind::HOLDINGS) {
-      if (closing_ && closing_->reads_wanted_) {
-        return closing_read_due(kind);
-      }
-      // The iteration that first sees the stop, before its wait exists: the startup read just asked the
-      // working-order endpoint, or an earlier iteration did.
-      if (closing_pending_ && asked_within_floor(kind)) {
-        return false;
-      }
+    // one included), and nothing reads them faster than that meanwhile. The iteration that takes the
+    // stop up is not waiting yet: it reads as any other.
+    if (closing_ && closing_->reads_wanted_ &&
+        (kind == PollKind::WORKING_ORDERS || kind == PollKind::HOLDINGS)) {
+      return closing_read_due(kind);
     }
-    return cadence_due(kind, at);
-  }
-
-  // Returns whether `kind`'s own cadence makes it due at `at`.
-  bool cadence_due(PollKind kind, std::chrono::system_clock::time_point at) const {
     const auto interval = schedule_.interval_for(kind);
     if (!interval) {
       return false;
@@ -2774,16 +2737,8 @@ private:
     std::chrono::steady_clock::time_point began_{};
     std::chrono::steady_clock::time_point deadline_{};
     bool reads_wanted_{false};
-    // Whether each account read has been made since the stop was seen (its first iteration included).
-    bool read_working_{false};
-    bool read_holdings_{false};
   };
   std::optional<ClosingWait> closing_;
-  // Whether the iteration under way began with a `WITHDRAW` or `FLATTEN` requested that may wait: from
-  // then on the two closing reads keep to the floor.
-  bool closing_pending_{false};
-  // Whether the iteration under way is the last this run may make.
-  bool last_permitted_{false};
   // When each closing read's endpoint was last asked, on the monotonic reading: by its ordinary poll, by
   // the startup order-list read (the working-order endpoint), or by a closing wait.
   std::optional<std::chrono::steady_clock::time_point> working_asked_at_;
