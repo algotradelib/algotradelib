@@ -1582,12 +1582,10 @@ private:
       // the same incoherence with the sign flipped. The skew is the broker's and is not this loop's
       // to quietly correct.
       //
-      // **What this does not fix**, stated because it is easy to read more into it: a bar fed earlier
-      // in this same iteration set `now_` to its own period end, which on a daily bar is yesterday's
-      // close. So that order is filed at the bar's instant and this one at the wall clock, and a rate
-      // window narrower than the gap sees them as unrelated. That is inherent to a bar's decision
-      // instant being its period end -- which the replay depends on -- and is not introduced here:
-      // before this, the phase order did not exist to be filed at all.
+      // A bar fed earlier in this same iteration set `now_` to its own period end, which on a daily bar
+      // is yesterday's close. Its order is still counted in the rate window at this iteration's
+      // reading, beside this one: the runner counts a send at the later of the decision instant and
+      // the reading this loop gave it.
       if (runner_->context().now() < iteration.at_) {
         runner_->context().set_now(iteration.at_);
       }

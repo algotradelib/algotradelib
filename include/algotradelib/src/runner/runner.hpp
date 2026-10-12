@@ -1801,10 +1801,10 @@ private:
     }
 
     strategy::GuardInputs inputs;
-    // The later of the decision instant and the loop's reading, which is when the order actually goes
-    // out: a target kept at a ledger mark, or one released at a holdings read, is sent between bars,
-    // and a send recorded at the bar that decided it would already look a window old to the next bar.
-    inputs.now_ = freshness_instant();
+    // When the order actually goes out (`send_instant`): a target kept at a ledger mark, or one
+    // released at a holdings read, is sent between bars, and a send recorded at the bar that decided it
+    // would already look a window old to the next bar.
+    inputs.now_ = send_instant();
     inputs.phase_ = context_.phase();
 
     // **Every order in this pass is checked against a view that already contains the orders this
@@ -3841,6 +3841,13 @@ private:
     return observed_at_ > context_.now() ? observed_at_ : context_.now();
   }
 
+  // Returns the instant a send is counted at in the order-rate window: the later of the decision
+  // instant and the loop's reading, or the decision instant alone where no loop has given a reading.
+  // A replay never does, and its decisions may all lie before the epoch an unset reading equals.
+  std::chrono::system_clock::time_point send_instant() const {
+    return observed_at_ == std::chrono::system_clock::time_point{} ? context_.now() : freshness_instant();
+  }
+
   // Returns the detail recorded with a withheld plan, naming the hold where there is one.
   std::string withhold_detail(WithheldPlanReason reason) const {
     if (reason != WithheldPlanReason::PLACEMENT_HELD) {
@@ -3945,7 +3952,7 @@ private:
         // blind to, and the next placement is then checked against a window it believes is empty.
         // It is still never *refused* by that limit: `send_cancel` calls no `check`, because a rate
         // limit must never be the reason an order cannot be withdrawn.
-        guard_.note_sent(freshness_instant());
+        guard_.note_sent(send_instant());
         // A sent order still counted may have filled before the withdrawal; its history decides.
         note_withdrawal_accepted(ref);
         report.would_cancel_.push_back(ref);
@@ -3954,7 +3961,7 @@ private:
         // The broker refused the request, which is an answer: nothing needs reconciling. It is not
         // a withdrawal that happened, and it is not proof the order is working either -- a fill is
         // one of the ordinary reasons a withdrawal is refused. It still spent a request.
-        guard_.note_sent(freshness_instant());
+        guard_.note_sent(send_instant());
         ++cancels_rejected_;
         report.rejected_cancel_.push_back(RejectedCancel<Tag>{ref, /*by_broker=*/true});
         return;
@@ -3965,7 +3972,7 @@ private:
         ledger_.mark(working->order_.instrument_, "a cancellation request has an unknown outcome");
         // Counted like an acceptance, for the same reason a placement is: the request may well have
         // reached the broker, and a window that assumes it did not is the one that under-counts.
-        guard_.note_sent(freshness_instant());
+        guard_.note_sent(send_instant());
         ++cancels_indeterminate_;
         report.indeterminate_cancel_.push_back(ref);
         return;

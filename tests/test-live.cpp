@@ -886,6 +886,42 @@ TEST_CASE("an order that goes out between bars is counted in the rate window whe
   CHECK(report.refused_.front().reason_ == strategy::GuardReason::ORDER_RATE_EXCEEDED);
 }
 
+TEST_CASE("with no loop reading, the rate window runs on decision time, before the epoch too", "[confirm][rate]") {
+  // A replay gives the runner no reading of any clock, and its history may predate 1970. An unset
+  // reading is the epoch: taken for a real one, it filed every earlier send at zero and refused the
+  // rest of the history.
+  FakeSession<WithWorkingOrders> session;
+  std::deque<std::variant<strategy::TargetPosition, strategy::OrderIntent>> script;
+  strategy::RiskLimits limits;
+  limits.max_orders_per_window_ = 1;
+  limits.rate_window_ = std::chrono::seconds(60);
+  ScriptedRunner runner_instance{
+    Scripted{&script}, limits, 512, live::SessionExecutor<FakeSession<WithWorkingOrders>>(session)
+  };
+  runner_instance.set_confirmation_timeout(std::chrono::hours(24));
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  auto portfolio = polled(0, "0", {});
+  const auto epoch = std::chrono::system_clock::time_point{};
+  portfolio.as_of_ = epoch - std::chrono::seconds(300);
+  portfolio.working_as_of_ = portfolio.as_of_;
+  install(runner_instance, portfolio);
+
+  runner_instance.context().set_now(epoch - std::chrono::seconds(120));
+  runner_instance.context().submit(target_of("10"));
+  runner_instance.settle_closing();
+  REQUIRE(session.placed().size() == 1);
+  CHECK(runner_instance.guard().recent_orders(epoch - std::chrono::seconds(100)) == 1);
+
+  // Sixty-one seconds later, still before the epoch: the first has left the window.
+  runner_instance.context().set_now(epoch - std::chrono::seconds(59));
+  runner_instance.context().submit(target_of("20"));
+  const auto report = runner_instance.settle_closing();
+  CHECK(report.refused_.empty());
+  CHECK(session.placed().size() == 2);
+}
+
 TEST_CASE("a withdrawal that goes out between bars is counted in the rate window when it goes out", "[confirm][rate]") {
   // Accepted, refused or of unknown outcome, it spent a request then, not at the last bar.
   for (const int outcome : {0, 1, 2}) {
