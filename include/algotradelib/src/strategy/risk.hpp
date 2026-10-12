@@ -274,10 +274,16 @@ struct RiskLimits {
   /**
    * @brief Whether to refuse a sell larger than the broker's sellable quantity.
    *
-   * Off by default. When on, a sell is refused if the broker gave no sellable figure (the held
-   * quantity is not assumed sellable) or the figure's basis is not established.
+   * On by default: a sell is refused if the broker gave no sellable figure (the held quantity is not
+   * assumed sellable) or the figure's basis is not established. So an account that cannot sell what
+   * it does not hold never sends a sale that would open a short: every shipped adapter places cash
+   * orders, and a target below zero is refused here before it is sent.
+   *
+   * Turn it off, where the replay or the dry run is configured, to simulate short positions; that
+   * models no borrow. Turning it off for a live account borrows nothing either: it only lets the sale
+   * reach the broker.
    */
-  bool enforce_sellable_quantity_{false};
+  bool enforce_sellable_quantity_{true};
   /**
    * @brief Whether to refuse a buy that costs more than the broker's buying power.
    *

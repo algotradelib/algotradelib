@@ -307,6 +307,16 @@ backtest::ReplayConfig replay_config() {
 }
 
 /**
+ * A replay that sells what it does not hold: the sellable check is turned off where the replay is configured,
+ * which is how a short is simulated (the ledger then assumes the borrow).
+ */
+backtest::ReplayConfig short_replay_config() {
+  auto config = replay_config();
+  config.limits_.enforce_sellable_quantity_ = false;
+  return config;
+}
+
+/**
  * The same replay, with `permitted_phases_` left at its default.
  *
  * Separate from `replay_config` because that one switches the limit off and every other test here
@@ -968,8 +978,33 @@ backtest::NextBarFillModel taxed(Country country) {
 
 } // namespace
 
+TEST_CASE("a replay refuses a short unless its configuration turns the sellable check off", "[short]") {
+  // The default limits check a sell against what is held, in a replay too: the ledger reports the whole
+  // holding as sellable, so an exit passes and a sale from nothing does not. Simulating a short is a
+  // choice made where the replay is configured (`short_replay_config`); the ledger then assumes the borrow.
+  const auto run = [](backtest::ReplayConfig config) {
+    backtest::Backtester<ShortsThenCovers> engine(ShortsThenCovers{}, std::move(config));
+    for (int day = 10; day < 16; ++day) {
+      engine.feed(moving_bar(utc(2026, 3, day, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+    }
+    engine.finish();
+    return engine.result();
+  };
+
+  const auto cash_account = run(replay_config());
+  CHECK(cash_account.executions_.empty());
+  REQUIRE_FALSE(cash_account.refused_.empty());
+  CHECK(cash_account.refused_.front().reason_ == strategy::GuardReason::QUANTITY_NOT_SELLABLE);
+
+  const auto shorting = run(short_replay_config());
+  REQUIRE(shorting.executions_.size() == 2);
+  CHECK(shorting.executions_[0].fill_.side_ == OrderSide::SELL);
+  CHECK(shorting.executions_[1].fill_.side_ == OrderSide::BUY);
+  CHECK(shorting.refused_.empty());
+}
+
 TEST_CASE("a sale opening a short pays the tax, and the buy covering it does not", "[sell-tax]") {
-  backtest::Backtester<ShortsThenCovers> engine(ShortsThenCovers{}, replay_config(), taxed(Country::KR));
+  backtest::Backtester<ShortsThenCovers> engine(ShortsThenCovers{}, short_replay_config(), taxed(Country::KR));
   for (int day = 10; day < 16; ++day) {
     engine.feed(moving_bar(utc(2026, 3, day, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
   }
@@ -2248,7 +2283,8 @@ struct PlacesAStop {
 TEST_CASE("a replay models the stop a strategy places", "[trigger]") {
   // Parity with a live run, where this order goes to the broker: the stop is queued, released by the
   // bar that falls through its trigger, filled at its limit, and counted as the intrabar assumption.
-  backtest::Backtester<PlacesAStop> engine(PlacesAStop{}, replay_config());
+  // The stop sells ten from a flat book, so this replay shorts.
+  backtest::Backtester<PlacesAStop> engine(PlacesAStop{}, short_replay_config());
   engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
   // A day that opens above the trigger and falls through it. (`moving_bar` makes its low the open,
   // which cannot describe a fall.)
@@ -2542,7 +2578,7 @@ strategy::BarEvent stop_bar(
 TEST_CASE("a stop released on a daily bar and not filled expires with that session", "[trigger]") {
   // The same bars as daily ones. Released on the 11th and unfilled at its close, the stop -- now a
   // limit -- expires with the session; the 12th's high would have filled it, and live it was gone.
-  backtest::Backtester<PlacesStopAt> engine(PlacesStopAt{"69500", "69800"}, replay_config());
+  backtest::Backtester<PlacesStopAt> engine(PlacesStopAt{"69500", "69800"}, short_replay_config());
   engine.feed(stop_bar(10, "70000", "70000", "70000", "70000"));
   engine.feed(stop_bar(11, "70000", "70500", "69000", "69200"));
   engine.feed(stop_bar(12, "69900", "70000", "69700", "69950"));

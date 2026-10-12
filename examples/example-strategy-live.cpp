@@ -147,8 +147,7 @@ int drive(
   // enforcing `enforce_sellable_quantity_` refuses a figure whose coverage nobody stated, so a hand-
   // built portfolio that copies the rows without this refuses every sell -- and one that invented an
   // enforceable basis would measure a sale against a number it had not characterized. Copy it; do not
-  // construct it. This example does not enable that limit, and the line is here because the example is
-  // a pattern people copy into programs that do.
+  // construct it. The limit is on by default, so without this line every sell here would be refused.
   portfolio.sellable_basis_ = state.holdings_.sellable_basis_;
   live_runner.context().set_portfolio(std::move(portfolio));
 

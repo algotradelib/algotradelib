@@ -150,7 +150,15 @@ void run(const char* title, Strategy instance, const strategy::RiskLimits& limit
     HoldingPosition position;
     position.instrument_ = samsung();
     position.quantity_ = held;
+    // What the account may sell, which a broker's holdings state and the guard checks a sell against by
+    // default: here the whole holding. Without it a dry run refuses every sell (`quantity_not_sellable`).
+    position.sellable_quantity_ = held;
     portfolio.positions_.push_back(position);
+    portfolio.sellable_basis_ = algotradelib::SellableBasis{
+      algotradelib::SellableBasis::Coverage::WHOLE_HOLDING,
+      algotradelib::SellableBasis::RestingTreatment::DEDUCT,
+      false,
+    };
     dry.context().set_portfolio(portfolio);
 
     const auto report = dry.feed(bar(day));

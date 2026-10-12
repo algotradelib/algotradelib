@@ -21,6 +21,22 @@ namespace vanilla = algotradelib::strategy::vanilla;
 
 namespace {
 
+/**
+ * States each instrument's whole holding as sellable, as a broker's holdings rows do: the guard checks a
+ * sell against the figure by default, in a dry run too.
+ */
+void state_sellable(strategy::Portfolio<runner::DryTag>& portfolio) {
+  portfolio.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING, SellableBasis::RestingTreatment::DEDUCT, false,
+  };
+  // The instrument's whole holding on each of its rows: rows of one instrument are never summed.
+  for (auto& position : portfolio.positions_) {
+    if (const auto net = portfolio.net_quantity_of(position.instrument_)) {
+      position.sellable_quantity_ = *net;
+    }
+  }
+}
+
 InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
 InstrumentId hynix() { return InstrumentId{Country::KR, Venue::COMBINED, "000660"}; }
 
@@ -98,6 +114,7 @@ TEST_CASE("buy and hold targets its quantity and then asks for nothing more") {
   position.instrument_ = samsung();
   position.quantity_ = Decimal64::parse("10");
   portfolio.positions_.push_back(position);
+  state_sellable(portfolio);
   dry.context().set_portfolio(portfolio);
 
   REQUIRE(dry.feed(bar(1, "71000")).quiet());
@@ -124,6 +141,7 @@ TEST_CASE("timed liquidation flattens a holding the broker reports as two lots")
     position.quantity_ = Decimal64::parse(lot);
     portfolio.positions_.push_back(position);
   }
+  state_sellable(portfolio);
   dry.context().set_portfolio(portfolio);
 
   const auto after = dry.feed(strategy::MarketPhase::POST_CLOSE);
@@ -302,6 +320,7 @@ strategy::Portfolio<runner::DryTag> holding(const char* held) {
   position.instrument_ = samsung();
   position.quantity_ = Decimal64::parse(held);
   portfolio.positions_.push_back(position);
+  state_sellable(portfolio);
   return portfolio;
 }
 
@@ -351,6 +370,7 @@ TEST_CASE("a weight with its buy already working places nothing more", "[weights
   working.order_.execution_.filled_quantity_ = Decimal64::parse("0");
   working.amendable_quantity_ = Decimal64::parse("714");
   portfolio.working_.push_back(working);
+  state_sellable(portfolio);
   dry.context().set_portfolio(portfolio);
   const auto report = dry.feed(strategy::MarketPhase::OPEN);
   for (const auto& order : report.would_place_) {
@@ -380,6 +400,7 @@ TEST_CASE("a weight on an instrument with a resting stop is refused, and the sto
   stop.order_.execution_.filled_quantity_ = Decimal64::parse("0");
   stop.amendable_quantity_ = Decimal64::parse("100");
   portfolio.working_.push_back(stop);
+  state_sellable(portfolio);
   dry.context().set_portfolio(portfolio);
   const auto report = dry.feed(strategy::MarketPhase::OPEN);
   CHECK(report.would_cancel_.empty());
@@ -426,6 +447,7 @@ TEST_CASE("a stop on a holding already at its weight is left alone, quietly", "[
   stop.order_.execution_.filled_quantity_ = Decimal64::parse("0");
   stop.amendable_quantity_ = Decimal64::parse("714");
   portfolio.working_.push_back(stop);
+  state_sellable(portfolio);
   dry.context().set_portfolio(portfolio);
   const auto report = dry.feed(strategy::MarketPhase::OPEN);
   CHECK(report.would_cancel_.empty());
@@ -532,6 +554,7 @@ strategy::Portfolio<runner::DryTag> stop_listing(
     stop.order_.execution_.filled_quantity_ = Decimal64::parse("0");
     portfolio.working_.push_back(stop);
   }
+  state_sellable(portfolio);
   return portfolio;
 }
 
