@@ -1963,6 +1963,17 @@ public:
   std::size_t holdings_polls_{0};
   std::size_t working_polls_{0};
   std::size_t order_list_reads_{0};
+  /** When the working-order endpoint was asked, by the startup read or a poll. */
+  std::vector<std::chrono::system_clock::time_point> working_endpoint_asked_;
+
+  /** The shortest time between two consecutive asks of the working-order endpoint. */
+  std::chrono::nanoseconds shortest_gap() const {
+    auto shortest = std::chrono::nanoseconds::max();
+    for (std::size_t i = 1; i < working_endpoint_asked_.size(); ++i) {
+      shortest = std::min<std::chrono::nanoseconds>(shortest, working_endpoint_asked_[i] - working_endpoint_asked_[i - 1]);
+    }
+    return shortest;
+  }
 
   template <typename Runner>
   runner::PollOutcome poll(runner::PollKind kind, Runner& runner_instance) {
@@ -1988,6 +1999,7 @@ public:
     }
     if (kind == runner::PollKind::WORKING_ORDERS) {
       ++working_polls_;
+      working_endpoint_asked_.push_back(clock_->now());
       // Stamped as a real source stamps a listing, so holdings read before it are known to be older.
       auto portfolio = runner_instance.context().portfolio();
       portfolio.working_as_of_ = clock_->now();
@@ -2025,6 +2037,7 @@ public:
   template <typename Runner>
   runner::PollOutcome read_order_list(Runner&) {
     ++order_list_reads_;
+    working_endpoint_asked_.push_back(clock_->now());
     if (order_list_.empty()) {
       return runner::PollOutcome::UPDATED;
     }
@@ -2171,9 +2184,11 @@ TEST_CASE("a flatten pending at start reads the order list again when the first 
 
   const auto report = loop.run(stop, 0);
   CHECK(source.order_list_reads_ == 2);
-  // The order list is the working-order endpoint: the read that succeeded is not followed by a poll of
-  // the same endpoint in the same iteration.
-  CHECK(source.working_polls_ == 1);
+  // The order list is the working-order endpoint: neither read is followed by a poll of the same
+  // endpoint in the same iteration, and the second comes five seconds after the first.
+  CAPTURE(source.working_polls_, source.working_endpoint_asked_.size());
+  REQUIRE(source.working_endpoint_asked_.size() >= 2);
+  CHECK(source.shortest_gap() >= std::chrono::seconds(5));
   CHECK(report.order_list_read_);
   CHECK_FALSE(report.closing_wait_expired_);
   CHECK(report.flattened_ == 1);
@@ -2198,6 +2213,7 @@ TEST_CASE("a flatten pending at start whose order list never arrives asks on the
   // At the start, every five seconds while the wait lasts, and once more as its limit passes: a
   // rate-limited read is not asked again at every one-second tick.
   CHECK(source.order_list_reads_ == 7);
+  CHECK(source.shortest_gap() >= std::chrono::seconds(5));
   CHECK_FALSE(report.order_list_read_);
   CHECK(report.closing_wait_expired_);
   CHECK(report.closing_source_unverified_);

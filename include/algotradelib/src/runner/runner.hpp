@@ -1306,7 +1306,9 @@ public:
    * @brief Tests whether `working` is a row of an order this runner sent whose withdrawal the broker has
    *   already accepted. Such an order is not withdrawn again: a second withdrawal is refused.
    *
-   * Acceptance is of the request, not of its result: the order may still fill.
+   * Acceptance is of the request, not of its result: the order may still fill. The row has to be dated
+   * within an hour of the order's send: brokers reuse order numbers from day to day, and an undated row,
+   * or one of another day, is not known to be that order.
    *
    * @param working A row of the portfolio's working orders.
    * @return `true` if this runner's accepted withdrawal of that order is on record.
@@ -1315,7 +1317,7 @@ public:
     if constexpr (keeps_sent_orders_until_listed) {
       for (const auto& entry : unconfirmed_) {
         if (entry.withdrawn_ && !entry.ref_.primary_.empty() && working.ref_.primary_ == entry.ref_.primary_ &&
-            working.order_.instrument_ == entry.instrument_ && working.order_.side_ == entry.side_) {
+            working.order_.order_id_ == entry.ref_.primary_ && own_row(working.order_, entry)) {
           return true;
         }
       }

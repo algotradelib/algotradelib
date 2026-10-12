@@ -6601,10 +6601,14 @@ struct QuietSource {
   std::size_t working_polls_{0};
   std::size_t act_on_working_poll_{0};
   std::function<void()> act_;
+  bool holdings_fail_{false};
 
   runner::PollOutcome poll(runner::PollKind kind, SerialRunner&) {
     if (kind == runner::PollKind::WORKING_ORDERS && ++working_polls_ == act_on_working_poll_ && act_) {
       act_();
+    }
+    if (kind == runner::PollKind::HOLDINGS && holdings_fail_) {
+      return runner::PollOutcome::FAILED;
     }
     return runner::PollOutcome::UNCHANGED;
   }
@@ -6630,29 +6634,48 @@ SerialLoop loop_over(SerialRig& rig, QuietSource& source, int hour) {
 TEST_CASE("a stop does not withdraw again an order whose withdrawal the broker already took", "[serialized][closing-wait]") {
   // Seen on Kiwoom's demo: a far limit withdrawn six seconds before a flatten was withdrawn again by the
   // closing pass, refused, and the refusal read as an unknown outcome.
+  enum class Row { SAME_ORDER, NEXT_DAY, UNDATED };
   for (const auto word : {runner::StopIntent::WITHDRAW, runner::StopIntent::FLATTEN}) {
-    SerialRig rig;
-    rig.session.order_ids_ = {"B"};
-    rig.bar(1, {limit_target("10", "69000")});
-    const auto resting = listed_row("B", OrderSide::BUY, "10", "0", OrderType::LIMIT);
-    rig.show(polled(2, "0", {resting}));
-    rig.runner_instance.context().cancel(resting.ref_, "strategy");
-    rig.runner_instance.settle_closing();
-    REQUIRE(rig.session.canceled().size() == 1);
+    for (const auto shown : {Row::SAME_ORDER, Row::NEXT_DAY, Row::UNDATED}) {
+      SerialRig rig;
+      rig.session.order_ids_ = {"B"};
+      rig.bar(1, {limit_target("10", "69000")});
+      const auto sent = rig.runner_instance.context().now();
+      auto resting = listed_row("B", OrderSide::BUY, "10", "0", OrderType::LIMIT);
+      resting.order_.ordered_at_ = sent;
+      rig.show(polled(2, "0", {resting}));
+      rig.runner_instance.context().cancel(resting.ref_, "strategy");
+      rig.runner_instance.settle_closing();
+      REQUIRE(rig.session.canceled().size() == 1);
+      // A broker reuses its order numbers from day to day: the same number a day later, or with no date
+      // at all, is not known to be the order that was withdrawn.
+      if (shown == Row::NEXT_DAY) {
+        resting.order_.ordered_at_ = sent + std::chrono::hours(24);
+        rig.show(polled(26, "0", {resting}));
+      } else if (shown == Row::UNDATED) {
+        resting.order_.ordered_at_.reset();
+        rig.show(polled(2, "0", {resting}));
+      }
 
-    QuietSource source;
-    auto loop = loop_over(rig, source, 2);
-    runner::StopSource stop;
-    stop.request(word);
-    const auto report = loop.run(stop, 0);
+      QuietSource source;
+      auto loop = loop_over(rig, source, shown == Row::NEXT_DAY ? 26 : 2);
+      runner::StopSource stop;
+      stop.request(word);
+      const auto report = loop.run(stop, 0);
 
-    // It waited for the order's history to account for it, which this source never brings, and then ran
-    // its pass with the row still listed: no second withdrawal, from either word.
-    CAPTURE(runner::stop_intent_name(word));
-    CHECK(report.closing_wait_expired_);
-    CHECK(rig.session.canceled().size() == 1);
-    CHECK(report.withdrawn_ == 0);
-    CHECK(rig.session.placed().size() == 1);
+      // It waited for the order's history to account for it, which this source never brings, and then ran
+      // its pass with the row still listed.
+      CAPTURE(runner::stop_intent_name(word), static_cast<int>(shown));
+      CHECK(report.closing_wait_expired_);
+      CHECK(rig.session.placed().size() == 1);
+      if (shown == Row::SAME_ORDER) {
+        CHECK(rig.session.canceled().size() == 1);
+        CHECK(report.withdrawn_ == 0);
+      } else {
+        CHECK(rig.session.canceled().size() == 2);
+        CHECK(report.withdrawn_ == 1);
+      }
+    }
   }
 }
 
@@ -6668,8 +6691,25 @@ TEST_CASE("a stop discards a target waiting on a resting stop order", "[serializ
   QuietSource source;
   auto loop = loop_over(rig, source, 0);
   runner::StopSource stop;
-  stop.request(runner::StopIntent::QUIESCE);
-  loop.run(stop, 0);
+
+  SECTION("when the stop is carried out") {
+    stop.request(runner::StopIntent::QUIESCE);
+    loop.run(stop, 0);
+  }
+
+  SECTION("when the run is abandoned in the iteration that first saw the stop") {
+    // Before the stop is taken up at all: the first poll fails and the run ends there.
+    source.holdings_fail_ = true;
+    runner::FailurePolicy policy;
+    policy.consecutive_limit_ = 1;
+    loop.set_failure_policy(policy);
+    stop.request(runner::StopIntent::WITHDRAW);
+    const auto report = loop.run(stop, 0);
+    REQUIRE(report.abandoned_);
+    CHECK(report.closing_interrupted_);
+    CHECK(rig.runner_instance.guard().halted(strategy::HaltReason::STOPPING));
+  }
+
   // Released after the stop, by a resumed runner, it would sell what the operator stopped to keep.
   CHECK(rig.runner_instance.deferred_targets().empty());
 }
@@ -6705,6 +6745,37 @@ TEST_CASE("a flatten waits for a mark on what it has to close", "[serialized][cl
     CHECK(report.closing_withheld_ == 1);
     CHECK_FALSE(report.closing_complete());
   }
+
+  SECTION("under an operator's hold or the runner's own, the pass can send nothing: no wait") {
+    SECTION("operator") { rig.runner_instance.guard().halt(strategy::HaltReason::OPERATOR); }
+    SECTION("local failure") { rig.runner_instance.halt_locally("a test's failure"); }
+    const auto report = loop.run(stop, 0);
+    CHECK(report.iterations_ == 1);
+    CHECK_FALSE(report.closing_wait_expired_);
+    CHECK(rig.session.placed().empty());
+    CHECK_FALSE(report.closing_complete());
+  }
+}
+
+TEST_CASE("a flatten does not wait for a mark on rows that net to nothing", "[serialized][closing-wait]") {
+  // The pass closes an instrument's net, and here there is none.
+  SerialRig rig;
+  auto portfolio = polled(1, "10", {});
+  auto against = portfolio.positions_.front();
+  against.quantity_ = Decimal64::parse("-10");
+  portfolio.positions_.push_back(against);
+  rig.show(portfolio);
+  REQUIRE(rig.runner_instance.context().portfolio().net_quantity_of(samsung()).value().coefficient() == 0);
+  rig.runner_instance.ledger().mark(samsung(), "a cancellation request has an unknown outcome");
+  QuietSource source;
+  auto loop = loop_over(rig, source, 1);
+  runner::StopSource stop;
+  stop.request(runner::StopIntent::FLATTEN);
+
+  const auto report = loop.run(stop, 0);
+  CHECK(report.iterations_ == 1);
+  CHECK_FALSE(report.closing_wait_expired_);
+  CHECK(rig.session.placed().empty());
 }
 
 TEST_CASE("a flatten does not wait for a mark on an instrument with nothing held", "[serialized][closing-wait]") {
@@ -6725,27 +6796,30 @@ TEST_CASE("a flatten does not wait for a mark on an instrument with nothing held
 }
 
 TEST_CASE("a flatten does not wait for an order held for an operator", "[serialized][closing-wait]") {
-  // No read gives an account of it: only `release_obligations` does.
-  SerialRig rig;
-  rig.session.order_ids_ = {"B"};
-  rig.bar(1, {target_of("10")});
-  REQUIRE(rig.session.placed().size() == 1);
-  // Fifteen where a buy of ten from none can explain ten, and then none at all.
-  rig.show(polled(2, "15", {}));
-  rig.runner_instance.refresh_unconfirmed();
-  REQUIRE(rig.owed() == runner::ObligationState::OPERATOR);
-  rig.show(polled(3, "0", {}));
-  rig.runner_instance.refresh_unconfirmed();
-  REQUIRE(rig.owed() == runner::ObligationState::OPERATOR);
-  QuietSource source;
-  auto loop = loop_over(rig, source, 3);
-  runner::StopSource stop;
-  stop.request(runner::StopIntent::FLATTEN);
+  // No read gives an account of it: only `release_obligations` does. Fifteen held where a buy of ten from
+  // none explains ten; then still held, and marked with it, or gone since.
+  for (const char* held : {"15", "0"}) {
+    SerialRig rig;
+    rig.session.order_ids_ = {"B"};
+    rig.bar(1, {target_of("10")});
+    REQUIRE(rig.session.placed().size() == 1);
+    rig.show(polled(2, "15", {}));
+    rig.runner_instance.refresh_unconfirmed();
+    rig.show(polled(3, held, {}));
+    rig.runner_instance.refresh_unconfirmed();
+    REQUIRE(rig.owed() == runner::ObligationState::OPERATOR);
+    REQUIRE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+    QuietSource source;
+    auto loop = loop_over(rig, source, 3);
+    runner::StopSource stop;
+    stop.request(runner::StopIntent::FLATTEN);
 
-  const auto report = loop.run(stop, 0);
-  CHECK(report.iterations_ == 1);
-  CHECK_FALSE(report.closing_wait_expired_);
-  CHECK(rig.session.placed().size() == 1);
+    const auto report = loop.run(stop, 0);
+    CAPTURE(held);
+    CHECK(report.iterations_ == 1);
+    CHECK_FALSE(report.closing_wait_expired_);
+    CHECK(rig.session.placed().size() == 1);
+  }
 }
 
 TEST_CASE("a flatten does not wait for an order that is simply resting, and cannot close behind it in one pass",

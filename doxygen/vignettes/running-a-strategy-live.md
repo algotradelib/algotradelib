@@ -74,16 +74,19 @@ five seconds, and acts as soon as they account for what this runner sent, or aft
 whichever comes first (`PollingLoop::set_closing_wait`; `Settings::closing_wait_` in the example
 program). Nothing a strategy asks for is sent while it waits.
 
-- It waits only when a read could change the result: the picture is unverified (below), an order of
-  this runner is not yet in holdings or its history, or an instrument that is held is marked in the
-  indeterminacy ledger. With none of those, it acts in the same iteration.
+- It waits while the picture is unverified (below), an order of this runner is not yet in holdings or
+  its history, or an instrument that is held is marked in the indeterminacy ledger. With none of those,
+  it acts in the same iteration. It also acts at once under an `OPERATOR` or `LOCAL_FAILURE` hold, when
+  the pass can send nothing, and it does not wait for an order held for an operator.
 - When the limit ends the wait, the pass runs on what is in hand, as it did before there was a wait,
   and the report says so (`closing_wait_expired_`, and a note). `closing_waited_` is how long it took.
 - The limit is counted on the clock's monotonic reading, so setting the machine's clock neither cuts it
   short nor extends it.
-- A mark made in the last minute or two usually outlasts thirty seconds: an order whose reply was lost
-  cannot be concluded absent from a listing until the broker has had time to list it. Raise the limit if
-  you would rather wait for that than read the account yourself.
+- It cannot always tell that no read will help, and then it waits the whole limit. A mark made in the
+  last minute or two outlasts thirty seconds: an order whose reply was lost cannot be concluded absent
+  from a listing until the broker has had time to list it. So does a mark nothing sweeps (a source with
+  no journal), and a serialized runner's order whose reply was lost. Raise the limit if you would rather
+  wait for a recent mark than read the account yourself.
 - An order of yours that is simply resting is not waited for. The flatten withdraws it and leaves what
   is held behind it; ask again once the withdrawal shows.
 - A second word in the control file does not restart the wait. `withdraw` may become `flatten`; nothing
@@ -484,7 +487,7 @@ instructions from the portfolio snapshot — working orders for a `withdraw`, po
   declare it is treated as one that does not, because the cost of guessing wrong is a stop that
   reports complete with an order still resting.
 
-The second, third and fifth of these are what the closing wait reads for, and usually cures. When it
+All but the last are what the closing wait reads for, and usually cures. When it
 cannot, the pass still sends what it can see, because withdrawing some beats withdrawing none, but it
 will not call the result complete, and the note says which of these it was.
 
