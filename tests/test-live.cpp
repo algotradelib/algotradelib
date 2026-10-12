@@ -6546,9 +6546,9 @@ TEST_CASE("a flatten that lands on an order holdings do not show yet waits for t
     CHECK(exit == live_program::Exit::CLOSING_INCOMPLETE);
     CHECK(session.placed().size() == 1);
     CHECK(out.str().find("the stop waited") != std::string::npos);
-    // The read at the start, then one every five seconds while the wait lasts, and none at its limit:
-    // not once, and not every tick.
-    CHECK(session.holdings_reads_ == 6);
+    // The read at the start, one every five seconds while the wait lasts, and a last one as its limit
+    // passes: not once, and not every tick.
+    CHECK(session.holdings_reads_ == 7);
     CHECK(clock.now() - program_start() >= std::chrono::seconds(30));
     CHECK(clock.now() - program_start() < std::chrono::seconds(40));
   }

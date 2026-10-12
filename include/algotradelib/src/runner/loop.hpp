@@ -2520,17 +2520,15 @@ private:
     return false;
   }
 
-  // Whether a closing wait may read `kind` (working orders or holdings) now: it wants the read, its limit
-  // has not passed, and that endpoint was last asked at least `closing_reread_` ago, whoever asked -- the
-  // ordinary cadence, the startup read, or this wait.
+  // Whether a closing wait may read `kind` (working orders or holdings) now: it wants the read, and that
+  // endpoint was last asked at least `closing_reread_` ago, whoever asked -- the ordinary cadence, the
+  // startup read, or this wait. The iteration in which the limit passes may still read, like the startup
+  // read: the pass that follows is built from it, and nothing reads after it.
   bool closing_read_due(PollKind kind) const {
     if (!closing_ || !closing_->reads_wanted_) {
       return false;
     }
     const auto monotonic = clock_.monotonic_now();
-    if (monotonic >= closing_->deadline_) {
-      return false;
-    }
     const auto& asked = kind == PollKind::WORKING_ORDERS ? working_asked_at_ : holdings_asked_at_;
     return !asked || monotonic - *asked >= closing_reread_;
   }

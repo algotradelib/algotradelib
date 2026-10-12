@@ -183,12 +183,15 @@ inline void print_how_to_stop(const Settings& settings, std::ostream& out) {
       << "  echo withdraw > " << settings.control_file_ << "   # cancel the account's working orders\n"
       << "  echo flatten  > " << settings.control_file_ << "   # withdraw, then close the account's positions\n"
       << "the file is not deleted: a word left in it is carried out at the next start; remove it\n"
-      << "before trading again\n"
-      << "a withdraw or a flatten may first wait up to "
-      << std::chrono::duration_cast<std::chrono::seconds>(settings.closing_wait_).count()
-      << " s for the order list and holdings to account for this\n"
-      << "program's own orders. A supervisor's grace period must cover that wait, the calls in flight\n"
-      << "(a paginated read, a paced request) and the closing orders themselves, with margin; a\n"
+      << "before trading again\n";
+  if (settings.closing_wait_ > std::chrono::nanoseconds::zero()) {
+    out << "a withdraw or a flatten may first wait up to "
+        << std::chrono::duration_cast<std::chrono::seconds>(settings.closing_wait_).count()
+        << " s for the order list and holdings to account for this\n"
+        << "program's own orders. ";
+  }
+  out << "A supervisor's grace period must cover that stop: the wait, the calls in\n"
+      << "flight (a paginated read, a paced request) and the closing orders themselves, with margin; a\n"
       << "SIGTERM does not turn a pending flatten into a quiesce\n";
 }
 

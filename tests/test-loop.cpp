@@ -2179,6 +2179,28 @@ TEST_CASE("a flatten pending at start reads the order list again when the first 
   CHECK(runner_instance.executor().placed().front().side_ == algotradelib::OrderSide::SELL);
 }
 
+TEST_CASE("a flatten pending at start whose order list never arrives asks on the floor and ends incomplete",
+          "[loop][stop][closing-wait]") {
+  SellingRunner runner_instance;
+  hold_ten(runner_instance);
+  AccountingSource source;
+  source.order_list_.assign(100, runner::PollOutcome::RATE_LIMITED);
+  AccountingLoop loop(runner_instance, source, slow_account_reads(), test_clock());
+  source.clock_ = &loop.clock();
+  not_about_the_portfolio(loop);
+  StopSource stop;
+  stop.request(StopIntent::FLATTEN);
+
+  const auto report = loop.run(stop, 0);
+  // At the start, every five seconds while the wait lasts, and once more as its limit passes: a
+  // rate-limited read is not asked again at every one-second tick.
+  CHECK(source.order_list_reads_ == 7);
+  CHECK_FALSE(report.order_list_read_);
+  CHECK(report.closing_wait_expired_);
+  CHECK(report.closing_source_unverified_);
+  CHECK_FALSE(report.closing_complete());
+}
+
 TEST_CASE("a waiting stop keeps its own time: the tick, the wall clock and a second word do not move it",
           "[loop][stop][closing-wait]") {
   SellingRunner runner_instance;
