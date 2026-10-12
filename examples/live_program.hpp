@@ -80,6 +80,12 @@ struct Settings {
   /** @brief Iterations before returning; 0 runs until a stop. */
   std::size_t max_iterations_{0};
   /**
+   * @brief How long a `withdraw` or `flatten` may wait for the order list and holdings to account for
+   *   this runner's own orders before its closing pass; zero is one immediate pass. See
+   *   `runner::PollingLoop::set_closing_wait`.
+   */
+  std::chrono::nanoseconds closing_wait_{std::chrono::seconds(30)};
+  /**
    * @brief The venue an order is sent to, since a strategy's orders name none; `UNSPECIFIED` takes the
    * broker's own default. Kiwoom has none, so a Kiwoom run must state one. See
    * `live::SessionExecutor::default_route`.
@@ -178,7 +184,12 @@ inline void print_how_to_stop(const Settings& settings, std::ostream& out) {
       << "  echo flatten  > " << settings.control_file_ << "   # withdraw, then close the account's positions\n"
       << "the file is not deleted: a word left in it is carried out at the next start; remove it\n"
       << "before trading again\n"
-      << "a supervisor's grace period must exceed one loop iteration plus one request timeout\n";
+      << "a withdraw or a flatten may first wait up to "
+      << std::chrono::duration_cast<std::chrono::seconds>(settings.closing_wait_).count()
+      << " s for the order list and holdings to account for this\n"
+      << "program's own orders. A supervisor's grace period must cover that wait, the calls in flight\n"
+      << "(a paginated read, a paced request) and the closing orders themselves, with margin; a\n"
+      << "SIGTERM does not turn a pending flatten into a quiesce\n";
 }
 
 /**
@@ -268,6 +279,7 @@ template <typename Loop>
 void configure(Loop& loop, const Settings& settings) {
   loop.set_maximum_portfolio_age(settings.maximum_portfolio_age_);
   loop.set_maximum_price_limits_age(settings.maximum_price_limits_age_);
+  loop.set_closing_wait(settings.closing_wait_);
   loop.set_control_file(runner::FileStopChannel(settings.control_file_));
 }
 

@@ -6287,3 +6287,308 @@ TEST_CASE("a short target behind a resting stop withdraws the stop before the gu
   REQUIRE(released.refused_.size() == 1);
   CHECK(released.refused_.front().reason_ == strategy::GuardReason::QUANTITY_NOT_SELLABLE);
 }
+
+namespace {
+
+/** A loop clock the test and its fake broker can both read: the program takes its clock by value. */
+struct SharedLoopClock {
+  runner::ManualClock* clock_{nullptr};
+  std::chrono::system_clock::time_point now() const noexcept { return clock_->now(); }
+  std::chrono::steady_clock::time_point monotonic_now() const noexcept { return clock_->monotonic_now(); }
+  void wait_for(std::chrono::nanoseconds duration) noexcept { clock_->wait_for(duration); }
+};
+
+/**
+ * A broker whose holdings show a fill only `lag_` after the order was taken, and whose operator asks for
+ * a stop the moment the program's first order is in.
+ *
+ * Every read is stamped at the loop's clock, as a real reply is at its arrival. The listing is always
+ * empty: a market order that fills at once is never in it.
+ */
+struct LaggingAccount : ProgramSession {
+  runner::ManualClock* clock_{nullptr};
+  runner::StopSource* stop_{nullptr};
+  runner::StopIntent word_{runner::StopIntent::FLATTEN};
+  std::chrono::seconds lag_{3};
+  Decimal64 held_at_start_{Decimal64::parse("0")};
+
+  Result<Placed> place(OrderRequest order) {
+    auto placed = ProgramSession::place(order);
+    if (placed) {
+      fills_.push_back(Fill{clock_->now(), order.side_, order.quantity_});
+      if (fills_.size() == 1 && stop_ != nullptr) {
+        stop_->request(word_);
+      }
+    }
+    return placed;
+  }
+
+  Result<HoldingsSnapshot> holdings() {
+    ++holdings_reads_;
+    auto held = held_at_start_;
+    for (const auto& fill : fills_) {
+      if (clock_->now() - fill.at_ >= lag_) {
+        held = fill.side_ == OrderSide::BUY ? *decimal_add(held, fill.quantity_) : *decimal_subtract(held, fill.quantity_);
+      }
+    }
+    HoldingsSnapshot snapshot;
+    snapshot.received_at_ = clock_->now();
+    if (held.coefficient() != 0) {
+      HoldingPosition position;
+      position.instrument_ = samsung();
+      position.quantity_ = held;
+      snapshot.positions_.push_back(position);
+    }
+    state_sellable(snapshot);
+    return Result<HoldingsSnapshot>(std::move(snapshot));
+  }
+
+  Result<WorkingOrders<FakeBroker>> working_orders() {
+    ++listing_reads_;
+    WorkingOrders<FakeBroker> listing;
+    listing.received_at_ = clock_->now();
+    return Result<WorkingOrders<FakeBroker>>(std::move(listing));
+  }
+
+  struct Fill {
+    std::chrono::system_clock::time_point at_;
+    OrderSide side_;
+    Decimal64 quantity_;
+  };
+  std::vector<Fill> fills_;
+  std::size_t holdings_reads_{0};
+  std::size_t listing_reads_{0};
+};
+
+/** The program's settings for a run that a stop ends: the account read once a minute, bars every second. */
+live_program::Settings slow_account_settings(const TempPath& journal, const TempPath& control) {
+  auto settings = program_settings(journal, control);
+  settings.schedule_.holdings_ = std::chrono::seconds(60);
+  settings.schedule_.working_orders_ = std::chrono::seconds(60);
+  settings.max_iterations_ = 0;
+  return settings;
+}
+
+/** Holds `quantity` shares: one to buy from flat, none to sell what is held. */
+strategy::vanilla::BuyAndHold holds(const char* quantity) {
+  auto holding = one_share();
+  holding.params_.quantity_ = Decimal64::parse(quantity);
+  return holding;
+}
+
+} // namespace
+
+TEST_CASE("a flatten that lands on an order holdings do not show yet waits for them and then closes",
+          "[live][program][closing-wait]") {
+  // The production program, journaled and serialized. The order fills at once; holdings show it three
+  // seconds later; the operator's flatten arrives in between. Built at once, the closing pass withdraws
+  // an order that has filled and closes nothing; `labs/FINDINGS.md` F52 saw it on both demo accounts.
+  const TempPath journal("atl-test-program-closing-wait.jsonl");
+  const TempPath control("atl-test-program-closing-wait.stop");
+  runner::ManualClock clock{program_start()};
+  runner::StopSource stop;
+  LaggingAccount session;
+  session.clock_ = &clock;
+  session.stop_ = &stop;
+  session.set_reference(samsung_reference());
+  session.set_bars(two_bars("70000", "71000"));
+  std::ostringstream out;
+  auto settings = slow_account_settings(journal, control);
+
+  SECTION("a buy: the wait reads again, the share is there, and it is sold, once") {
+    const auto exit = live_program::trade(session, holds("1"), settings, stop, out, SharedLoopClock{&clock});
+    INFO(out.str());
+    CHECK(exit == live_program::Exit::CLEAN);
+    REQUIRE(session.placed().size() == 2);
+    CHECK(session.placed()[0].side_ == OrderSide::BUY);
+    CHECK(session.placed()[1].side_ == OrderSide::SELL);
+    CHECK(session.placed()[1].quantity_ == Decimal64::parse("1"));
+    CHECK(session.canceled().empty());
+    CHECK(out.str().find("closing complete: yes") != std::string::npos);
+    // One more read of each, five seconds after the first, not at the one-minute cadence.
+    CHECK(session.holdings_reads_ == 2);
+    CHECK(clock.now() - program_start() < std::chrono::seconds(15));
+  }
+
+  SECTION("a sell: the wait reads again, nothing is held, and nothing more is sent") {
+    session.held_at_start_ = Decimal64::parse("1");
+    const auto exit = live_program::trade(session, holds("0"), settings, stop, out, SharedLoopClock{&clock});
+    INFO(out.str());
+    CHECK(exit == live_program::Exit::CLEAN);
+    REQUIRE(session.placed().size() == 1);
+    CHECK(session.placed()[0].side_ == OrderSide::SELL);
+    CHECK(session.canceled().empty());
+  }
+
+  SECTION("holdings that lag past the wait: the pass runs as it did, and says the wait ran out") {
+    session.lag_ = std::chrono::seconds(300);
+    const auto exit = live_program::trade(session, holds("1"), settings, stop, out, SharedLoopClock{&clock});
+    INFO(out.str());
+    CHECK(exit == live_program::Exit::CLOSING_INCOMPLETE);
+    CHECK(session.placed().size() == 1);
+    CHECK(out.str().find("the stop waited") != std::string::npos);
+    // Read on a five-second floor for thirty seconds, not once and not every tick.
+    CHECK(session.holdings_reads_ >= 6);
+    CHECK(session.holdings_reads_ <= 8);
+    CHECK(clock.now() - program_start() >= std::chrono::seconds(30));
+    CHECK(clock.now() - program_start() < std::chrono::seconds(40));
+  }
+
+  SECTION("with no wait, the pass is the old one") {
+    settings.closing_wait_ = std::chrono::seconds(0);
+    const auto exit = live_program::trade(session, holds("1"), settings, stop, out, SharedLoopClock{&clock});
+    INFO(out.str());
+    CHECK(exit == live_program::Exit::CLOSING_INCOMPLETE);
+    CHECK(session.placed().size() == 1);
+    CHECK(session.holdings_reads_ == 1);
+  }
+
+  SECTION("a withdraw waits the same way and then has nothing to withdraw") {
+    session.word_ = runner::StopIntent::WITHDRAW;
+    const auto exit = live_program::trade(session, holds("1"), settings, stop, out, SharedLoopClock{&clock});
+    INFO(out.str());
+    CHECK(exit == live_program::Exit::CLEAN);
+    CHECK(session.placed().size() == 1);
+    CHECK(session.canceled().empty());
+  }
+}
+
+namespace {
+
+using SerialRunner = SerialRunnerOf<WithWorkingOrders>;
+
+/**
+ * A source for a serialized rig under a loop: every poll reports no change (the rig installs the
+ * portfolio itself), and a test can have the working-order poll do something on its nth call.
+ */
+struct QuietSource {
+  static constexpr bool provides_working_orders = true;
+  std::size_t working_polls_{0};
+  std::size_t act_on_working_poll_{0};
+  std::function<void()> act_;
+
+  runner::PollOutcome poll(runner::PollKind kind, SerialRunner&) {
+    if (kind == runner::PollKind::WORKING_ORDERS && ++working_polls_ == act_on_working_poll_ && act_) {
+      act_();
+    }
+    return runner::PollOutcome::UNCHANGED;
+  }
+  runner::PollOutcome read_order_list(SerialRunner&) { return runner::PollOutcome::UPDATED; }
+};
+
+using SerialLoop = runner::PollingLoop<SerialRunner, QuietSource, runner::ManualClock>;
+
+/** A loop over a serialized rig whose account was last read at hour `hour`, polled every second. */
+SerialLoop loop_over(SerialRig& rig, QuietSource& source, int hour) {
+  runner::PollSchedule schedule;
+  schedule.bars_.reset();
+  schedule.holdings_ = std::chrono::seconds(1);
+  schedule.working_orders_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  SerialLoop loop(rig.runner_instance, source, schedule, runner::ManualClock{polled(hour, "0", {}).as_of_});
+  loop.allow_unbounded_portfolio_age();
+  return loop;
+}
+
+} // namespace
+
+TEST_CASE("a stop does not withdraw again an order whose withdrawal the broker already took", "[serialized][closing-wait]") {
+  // Seen on Kiwoom's demo: a far limit withdrawn six seconds before a flatten was withdrawn again by the
+  // closing pass, refused, and the refusal read as an unknown outcome.
+  SerialRig rig;
+  rig.session.order_ids_ = {"B"};
+  rig.bar(1, {limit_target("10", "69000")});
+  const auto resting = listed_row("B", OrderSide::BUY, "10", "0", OrderType::LIMIT);
+  rig.show(polled(2, "0", {resting}));
+  rig.runner_instance.context().cancel(resting.ref_, "strategy");
+  rig.runner_instance.settle_closing();
+  REQUIRE(rig.session.canceled().size() == 1);
+
+  QuietSource source;
+  auto loop = loop_over(rig, source, 2);
+  runner::StopSource stop;
+  stop.request(runner::StopIntent::FLATTEN);
+  const auto report = loop.run(stop, 0);
+
+  // It waited for the order's history to account for it, which this source never brings, and then ran
+  // its pass with the row still listed: no second withdrawal.
+  CHECK(report.closing_wait_expired_);
+  CHECK(rig.session.canceled().size() == 1);
+  CHECK(report.withdrawn_ == 0);
+  CHECK(rig.session.placed().size() == 1);
+}
+
+TEST_CASE("a stop discards a target waiting on a resting stop order", "[serialized][closing-wait]") {
+  auto resting = listed_row("STOP-1", OrderSide::SELL, "10", "0", OrderType::STOP_LIMIT);
+  resting.order_.price_ = Decimal64::parse("69000");
+  resting.order_.trigger_price_ = Decimal64::parse("69500");
+  SerialRig rig;
+  rig.show(polled(0, "10", {resting}));
+  rig.bar(1, {target_of("0")});
+  REQUIRE(rig.runner_instance.deferred_targets().size() == 1);
+
+  QuietSource source;
+  auto loop = loop_over(rig, source, 0);
+  runner::StopSource stop;
+  stop.request(runner::StopIntent::QUIESCE);
+  loop.run(stop, 0);
+  // Released after the stop, by a resumed runner, it would sell what the operator stopped to keep.
+  CHECK(rig.runner_instance.deferred_targets().empty());
+}
+
+TEST_CASE("a flatten waits for a mark on what it has to close", "[serialized][closing-wait]") {
+  // A cancel of unknown outcome marks its instrument, and a closing sell for a marked instrument is
+  // withheld. A listing read that settles the mark is worth waiting for.
+  SerialRig rig;
+  rig.session.order_ids_ = {"S"};
+  rig.show(polled(1, "10", {}));
+  rig.runner_instance.ledger().mark(samsung(), "a cancellation request has an unknown outcome");
+  QuietSource source;
+  auto loop = loop_over(rig, source, 1);
+  runner::StopSource stop;
+  stop.request(runner::StopIntent::FLATTEN);
+
+  SECTION("settled inside the wait: the ten are sold") {
+    source.act_on_working_poll_ = 3;
+    source.act_ = [&] { rig.runner_instance.ledger().resolve_after_reading_orders(samsung()); };
+    const auto report = loop.run(stop, 0);
+    CHECK_FALSE(report.closing_wait_expired_);
+    CHECK(report.closing_waited_ > std::chrono::nanoseconds::zero());
+    REQUIRE(rig.session.placed().size() == 1);
+    CHECK(rig.session.placed().front().side_ == OrderSide::SELL);
+    CHECK(rig.session.placed().front().quantity_ == Decimal64::parse("10"));
+    CHECK(report.closing_complete());
+  }
+
+  SECTION("not settled in time: the sell is withheld, as it was, and the report says so") {
+    const auto report = loop.run(stop, 0);
+    CHECK(report.closing_wait_expired_);
+    CHECK(rig.session.placed().empty());
+    CHECK(report.closing_withheld_ == 1);
+    CHECK_FALSE(report.closing_complete());
+  }
+}
+
+TEST_CASE("a flatten does not wait for an order that is simply resting, and cannot close behind it in one pass",
+          "[serialized][closing-wait]") {
+  // The limit of the wait, pinned: only the pass can withdraw a resting order, and a serialized runner
+  // then owes that order until it is accounted for, so the holding is not closed by this stop.
+  SerialRig rig;
+  rig.session.order_ids_ = {"B", "S"};
+  rig.show(polled(0, "10", {}));
+  rig.bar(1, {limit_target("20", "69000")});
+  REQUIRE(rig.session.placed().size() == 1);
+  rig.show(polled(2, "10", {listed_row("B", OrderSide::BUY, "10", "0", OrderType::LIMIT)}));
+
+  QuietSource source;
+  auto loop = loop_over(rig, source, 2);
+  runner::StopSource stop;
+  stop.request(runner::StopIntent::FLATTEN);
+  const auto report = loop.run(stop, 0);
+
+  CHECK(report.closing_waited_ == std::chrono::nanoseconds::zero());
+  CHECK(rig.session.canceled().size() == 1);
+  CHECK(rig.session.placed().size() == 1);
+  CHECK(report.closing_withheld_ == 1);
+  CHECK_FALSE(report.closing_complete());
+}
