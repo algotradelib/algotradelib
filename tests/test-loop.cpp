@@ -1665,6 +1665,36 @@ using HistoryOnlyLoop =
 
 } // namespace
 
+TEST_CASE("a stop that cannot wait reads the account at once, however recently it was read",
+          "[loop][stop][closing-wait]") {
+  // The reads' five-second floor belongs to the wait. A source with no working-order listing never
+  // waits, so a holdings read held back for it would be missing from the pass that sizes the close.
+  struct CountingHistoryOnly : HistoryOnlySource {
+    std::size_t holdings_polls_{0};
+    runner::PollOutcome poll(runner::PollKind kind, InertRunner& runner_instance) {
+      holdings_polls_ += kind == runner::PollKind::HOLDINGS ? 1 : 0;
+      return HistoryOnlySource::poll(kind, runner_instance);
+    }
+  };
+  InertRunner runner_instance;
+  CountingHistoryOnly source;
+  auto schedule = bars_each_iteration();
+  schedule.holdings_ = std::chrono::seconds(1);
+  runner::PollingLoop<InertRunner, CountingHistoryOnly, runner::ManualClock> loop(
+    runner_instance, source, schedule, test_clock()
+  );
+  not_about_the_portfolio(loop);
+  StopSource stop;
+  REQUIRE(loop.run(stop, 1).iterations_ == 1);
+  REQUIRE(source.holdings_polls_ == 1);
+
+  loop.clock().wait_for(std::chrono::seconds(1));
+  stop.request(StopIntent::FLATTEN);
+  const auto report = loop.run(stop, 0);
+  CHECK(report.iterations_ == 1);
+  CHECK(source.holdings_polls_ == 2);
+}
+
 TEST_CASE("a flatten sends no close when a sell it cannot see may already be working",
           "[loop][stop]") {
   // A double sell, reached through a listing that is *known* to be out of date.

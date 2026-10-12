@@ -1489,11 +1489,11 @@ private:
     // before the first order-list read could place an order against a position a predecessor may
     // have left, which is the exact hazard the startup gate exists for.
     {
-      // Only where a wait can follow and read what the floor holds back: with no wait set, or on the
-      // run's last iteration, the pass is built at once and reads as it always did.
+      // Only where a wait can follow and read what the floor holds back: with no wait set, a source
+      // that lists no working orders, a hold the pass cannot send through, or the run's last
+      // iteration, the pass is built at once and reads as it always did.
       const auto intent = stop.intent();
-      closing_pending_ = intent && *intent != StopIntent::QUIESCE &&
-        closing_wait_ > std::chrono::nanoseconds::zero() && !last_permitted_;
+      closing_pending_ = intent && closing_may_wait(*intent) && !last_permitted_;
     }
     hold(gate_for(stop, iteration.at_, report, /*may_read=*/true));
 
@@ -2496,17 +2496,7 @@ private:
   // `STOPPING` is held throughout (`begin_stop`, `gate_for`), so the loop only reads meanwhile: what a
   // strategy asks for is refused. See `set_closing_wait` for what it waits for and what it does not.
   bool closing_should_wait(StopIntent intent, LoopReport& report) {
-    if (intent == StopIntent::QUIESCE || closing_wait_ <= std::chrono::nanoseconds::zero()) {
-      return false;
-    }
-    // A source that lists no working orders can never verify the pass, however long the loop reads:
-    // waiting would only delay the same result.
-    if constexpr (!source_provides_working_orders<Source>::value) {
-      return false;
-    }
-    // Under a person's hold or the runner's own, the pass can send nothing whatever the reads show.
-    if (runner_->guard().halted(strategy::HaltReason::OPERATOR) ||
-        runner_->guard().halted(strategy::HaltReason::LOCAL_FAILURE)) {
+    if (!closing_may_wait(intent)) {
       return false;
     }
     const auto monotonic = clock_.monotonic_now();
@@ -2527,6 +2517,22 @@ private:
       return false;
     }
     return true;
+  }
+
+  // Whether a stop with `intent` may wait at all. The reads' five-second floor applies only where this
+  // holds: a read held back with no wait to make it would simply be missing from the pass.
+  bool closing_may_wait(StopIntent intent) const {
+    if (intent == StopIntent::QUIESCE || closing_wait_ <= std::chrono::nanoseconds::zero()) {
+      return false;
+    }
+    // A source that lists no working orders can never verify the pass, however long the loop reads:
+    // waiting would only delay the same result.
+    if constexpr (!source_provides_working_orders<Source>::value) {
+      return false;
+    }
+    // Under a person's hold or the runner's own, the pass can send nothing whatever the reads show.
+    return !runner_->guard().halted(strategy::HaltReason::OPERATOR) &&
+      !runner_->guard().halted(strategy::HaltReason::LOCAL_FAILURE);
   }
 
   // Whether a further read could change what the closing pass would do: the picture it is built from is

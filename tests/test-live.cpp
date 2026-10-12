@@ -6769,6 +6769,8 @@ TEST_CASE("a flatten waits for a mark on what it has to close", "[serialized][cl
     CHECK_FALSE(report.closing_wait_expired_);
     CHECK(rig.session.placed().empty());
     CHECK_FALSE(report.closing_complete());
+    // And nothing paced: the poll after the order-list read is made in this iteration, as without a wait.
+    CHECK(source.working_polls_ == 1);
   }
 }
 
