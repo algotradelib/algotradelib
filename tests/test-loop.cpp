@@ -2226,14 +2226,16 @@ TEST_CASE("a waiting stop keeps its own time: the tick, the wall clock and a sec
     CHECK(report.closing_waited_ < std::chrono::seconds(36));
   }
 
-  SECTION("a negative limit is no wait") {
-    AccountingLoop loop(runner_instance, source, slow_account_reads(), test_clock());
-    source.clock_ = &loop.clock();
-    loop.set_closing_wait(-std::chrono::seconds(5));
-    not_about_the_portfolio(loop);
-    const auto report = loop.run(stop, 0);
-    CHECK(report.iterations_ == 1);
-    CHECK_FALSE(report.closing_wait_expired_);
+  SECTION("a negative limit, or none, is no wait and reports none run out") {
+    for (const auto limit : {-std::chrono::seconds(5), std::chrono::seconds(0)}) {
+      AccountingLoop loop(runner_instance, source, slow_account_reads(), test_clock());
+      source.clock_ = &loop.clock();
+      loop.set_closing_wait(limit);
+      not_about_the_portfolio(loop);
+      const auto report = loop.run(stop, 0);
+      CHECK(report.iterations_ == 1);
+      CHECK_FALSE(report.closing_wait_expired_);
+    }
   }
 }
 

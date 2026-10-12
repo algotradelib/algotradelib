@@ -947,7 +947,9 @@ private:
  *
  * @tparam Runner The runner type (usually `runner::Runner`).
  * @tparam Source The source type (`live::SessionSource`, or `ManualSource` in tests).
- * @tparam Clock The clock (`SteadyClock`, or `ManualClock` in tests).
+ * @tparam Clock The clock (`SteadyClock`, or `ManualClock` in tests). One of your own provides `now()`
+ *   (wall-clock time), `monotonic_now()` (a `steady_clock` reading that only moves forward) and
+ *   `wait_for(std::chrono::nanoseconds)`.
  */
 template <typename Runner, typename Source, typename Clock = SteadyClock>
 class PollingLoop {

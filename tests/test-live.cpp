@@ -6560,6 +6560,7 @@ TEST_CASE("a flatten that lands on an order holdings do not show yet waits for t
     CHECK(exit == live_program::Exit::CLOSING_INCOMPLETE);
     CHECK(session.placed().size() == 1);
     CHECK(session.holdings_reads_ == 1);
+    CHECK(out.str().find("the stop waited") == std::string::npos);
   }
 
   SECTION("an order whose reply was lost stays owed through empty listings and the whole wait") {
@@ -6701,6 +6702,23 @@ TEST_CASE("a flatten waits for a mark on what it has to close", "[serialized][cl
     CHECK(report.closing_withheld_ == 1);
     CHECK_FALSE(report.closing_complete());
   }
+}
+
+TEST_CASE("a flatten does not wait for a mark on an instrument with nothing held", "[serialized][closing-wait]") {
+  // Nothing to close there, so no read changes what the pass sends.
+  SerialRig rig;
+  rig.show(polled(1, "0", {}));
+  REQUIRE(rig.runner_instance.context().portfolio().positions_.size() == 1);
+  rig.runner_instance.ledger().mark(samsung(), "a cancellation request has an unknown outcome");
+  QuietSource source;
+  auto loop = loop_over(rig, source, 1);
+  runner::StopSource stop;
+  stop.request(runner::StopIntent::FLATTEN);
+
+  const auto report = loop.run(stop, 0);
+  CHECK(report.iterations_ == 1);
+  CHECK_FALSE(report.closing_wait_expired_);
+  CHECK(rig.session.placed().empty());
 }
 
 TEST_CASE("a flatten does not wait for an order that is simply resting, and cannot close behind it in one pass",
