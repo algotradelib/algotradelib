@@ -1801,7 +1801,10 @@ private:
     }
 
     strategy::GuardInputs inputs;
-    inputs.now_ = context_.now();
+    // The later of the decision instant and the loop's reading, which is when the order actually goes
+    // out: a target kept at a ledger mark, or one released at a holdings read, is sent between bars,
+    // and a send recorded at the bar that decided it would already look a window old to the next bar.
+    inputs.now_ = freshness_instant();
     inputs.phase_ = context_.phase();
 
     // **Every order in this pass is checked against a view that already contains the orders this
@@ -3942,7 +3945,7 @@ private:
         // blind to, and the next placement is then checked against a window it believes is empty.
         // It is still never *refused* by that limit: `send_cancel` calls no `check`, because a rate
         // limit must never be the reason an order cannot be withdrawn.
-        guard_.note_sent(context_.now());
+        guard_.note_sent(freshness_instant());
         // A sent order still counted may have filled before the withdrawal; its history decides.
         note_withdrawal_accepted(ref);
         report.would_cancel_.push_back(ref);
@@ -3951,7 +3954,7 @@ private:
         // The broker refused the request, which is an answer: nothing needs reconciling. It is not
         // a withdrawal that happened, and it is not proof the order is working either -- a fill is
         // one of the ordinary reasons a withdrawal is refused. It still spent a request.
-        guard_.note_sent(context_.now());
+        guard_.note_sent(freshness_instant());
         ++cancels_rejected_;
         report.rejected_cancel_.push_back(RejectedCancel<Tag>{ref, /*by_broker=*/true});
         return;
@@ -3962,7 +3965,7 @@ private:
         ledger_.mark(working->order_.instrument_, "a cancellation request has an unknown outcome");
         // Counted like an acceptance, for the same reason a placement is: the request may well have
         // reached the broker, and a window that assumes it did not is the one that under-counts.
-        guard_.note_sent(context_.now());
+        guard_.note_sent(freshness_instant());
         ++cancels_indeterminate_;
         report.indeterminate_cancel_.push_back(ref);
         return;

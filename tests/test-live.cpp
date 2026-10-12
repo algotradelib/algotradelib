@@ -846,6 +846,77 @@ struct ConfirmRig {
 
 } // namespace
 
+TEST_CASE("an order that goes out between bars is counted in the rate window when it goes out", "[confirm][rate]") {
+  // The decision instant moves with bars; a loop's reading moves every iteration. A target the runner
+  // kept and released at a later read, or one whose mark a sweep settled between bars, is sent with the
+  // decision instant still at the last bar. Recorded there, the send already looked a window old to the
+  // next bar, which then sent a second order inside the limit.
+  FakeSession<WithWorkingOrders> session;
+  std::deque<std::variant<strategy::TargetPosition, strategy::OrderIntent>> script;
+  strategy::RiskLimits limits;
+  limits.max_orders_per_window_ = 1;
+  limits.rate_window_ = std::chrono::seconds(60);
+  ScriptedRunner runner_instance{
+    Scripted{&script}, limits, 512, live::SessionExecutor<FakeSession<WithWorkingOrders>>(session)
+  };
+  runner_instance.set_confirmation_timeout(std::chrono::hours(24));
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  runner_instance.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  install(runner_instance, polled(0, "0", {}));
+
+  // A bar that decides nothing, then two minutes with no bar: the loop's reading alone has moved.
+  runner_instance.feed(bar_at(1, "70000"));
+  const auto decided = runner_instance.context().now();
+  const auto sent_at = decided + std::chrono::seconds(120);
+  runner_instance.set_observed_at(sent_at);
+  runner_instance.context().submit(target_of("10"));
+  runner_instance.settle_closing();
+  REQUIRE(session.placed().size() == 1);
+  REQUIRE(runner_instance.context().now() == decided);
+  CHECK(runner_instance.guard().recent_orders(sent_at) == 1);
+
+  // A second later the next decision arrives. One order a minute: it is refused.
+  runner_instance.context().set_now(sent_at + std::chrono::seconds(1));
+  runner_instance.set_observed_at(sent_at + std::chrono::seconds(1));
+  runner_instance.context().submit(target_of("20"));
+  const auto report = runner_instance.settle_closing();
+  CHECK(session.placed().size() == 1);
+  REQUIRE(report.refused_.size() == 1);
+  CHECK(report.refused_.front().reason_ == strategy::GuardReason::ORDER_RATE_EXCEEDED);
+}
+
+TEST_CASE("a withdrawal that goes out between bars is counted in the rate window when it goes out", "[confirm][rate]") {
+  // Accepted, refused or of unknown outcome, it spent a request then, not at the last bar.
+  for (const int outcome : {0, 1, 2}) {
+    ConfirmRig rig;
+    const auto resting = listed_row("X", OrderSide::BUY, "10", "0", OrderType::LIMIT);
+    install(rig.runner_instance, polled(0, "0", {resting}));
+    rig.runner_instance.feed(bar_at(1, "70000"));
+    const auto decided = rig.runner_instance.context().now();
+    const auto sent_at = decided + std::chrono::seconds(120);
+    rig.runner_instance.set_observed_at(sent_at);
+    if (outcome == 1) {
+      BrokerError refused;
+      refused.category_ = ErrorCategory::INVALID_ARGUMENT;
+      refused.reached_broker_ = true;
+      refused.message_ = "the order has already been executed";
+      rig.session.fail_cancel_with(refused);
+    } else if (outcome == 2) {
+      BrokerError lost;
+      lost.category_ = ErrorCategory::TRANSPORT;
+      rig.session.fail_cancel_with(lost);
+    }
+    rig.runner_instance.context().cancel(resting.ref_, "between bars");
+    rig.runner_instance.settle_closing();
+    CAPTURE(outcome);
+    REQUIRE(rig.runner_instance.context().now() == decided);
+    CHECK(rig.runner_instance.guard().recent_orders(sent_at + std::chrono::seconds(61)) == 0);
+    CHECK(rig.runner_instance.guard().recent_orders(sent_at) == 1);
+    CHECK(rig.runner_instance.guard().recent_orders(decided + std::chrono::seconds(170)) == 1);
+  }
+}
+
 TEST_CASE("a filled market order no listing shows stays counted until holdings show it", "[confirm]") {
   // A market order that filled at once is in no listing, and holdings lag the fill. The
   // listing used to retire its reservation, and the next bar's target bought again.
