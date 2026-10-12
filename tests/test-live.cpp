@@ -6724,6 +6724,30 @@ TEST_CASE("a flatten does not wait for a mark on an instrument with nothing held
   CHECK(rig.session.placed().empty());
 }
 
+TEST_CASE("a flatten does not wait for an order held for an operator", "[serialized][closing-wait]") {
+  // No read gives an account of it: only `release_obligations` does.
+  SerialRig rig;
+  rig.session.order_ids_ = {"B"};
+  rig.bar(1, {target_of("10")});
+  REQUIRE(rig.session.placed().size() == 1);
+  // Fifteen where a buy of ten from none can explain ten, and then none at all.
+  rig.show(polled(2, "15", {}));
+  rig.runner_instance.refresh_unconfirmed();
+  REQUIRE(rig.owed() == runner::ObligationState::OPERATOR);
+  rig.show(polled(3, "0", {}));
+  rig.runner_instance.refresh_unconfirmed();
+  REQUIRE(rig.owed() == runner::ObligationState::OPERATOR);
+  QuietSource source;
+  auto loop = loop_over(rig, source, 3);
+  runner::StopSource stop;
+  stop.request(runner::StopIntent::FLATTEN);
+
+  const auto report = loop.run(stop, 0);
+  CHECK(report.iterations_ == 1);
+  CHECK_FALSE(report.closing_wait_expired_);
+  CHECK(rig.session.placed().size() == 1);
+}
+
 TEST_CASE("a flatten does not wait for an order that is simply resting, and cannot close behind it in one pass",
           "[serialized][closing-wait]") {
   // The limit of the wait, pinned: only the pass can withdraw a resting order, and a serialized runner

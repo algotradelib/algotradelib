@@ -2171,6 +2171,9 @@ TEST_CASE("a flatten pending at start reads the order list again when the first 
 
   const auto report = loop.run(stop, 0);
   CHECK(source.order_list_reads_ == 2);
+  // The order list is the working-order endpoint: the read that succeeded is not followed by a poll of
+  // the same endpoint in the same iteration.
+  CHECK(source.working_polls_ == 1);
   CHECK(report.order_list_read_);
   CHECK_FALSE(report.closing_wait_expired_);
   CHECK(report.flattened_ == 1);
