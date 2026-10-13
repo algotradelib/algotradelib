@@ -410,14 +410,19 @@ Exit trade(
           << '\n';
     }
     out << "this program has no command to release one order, and its only way on gives up the whole\n"
-        << "journal, so it needs all of them accounted for:\n"
+        << "journal. That is safe only once none of the orders above can execute any more:\n"
         << "  1. read the broker's order list, order history and holdings for every order above;\n"
-        << "  2. cancel what is resting or accept that it exists, and wait until holdings show every fill;\n"
-        << "  3. move the journal aside, keeping it:  mv " << settings.journal_path_ << ' '
+        << "  2. each must have ended: filled in full, or cancelled with its history row saying so. A\n"
+        << "     cancellation only requested, an order list that no longer shows it, and the close of the\n"
+        << "     session do not show that an order has ended;\n"
+        << "  3. holdings must show the final fills of each;\n"
+        << "  4. only then move the journal aside, keeping it:  mv " << settings.journal_path_ << ' '
         << settings.journal_path_ << ".owed-$(date +%Y%m%d)\n"
-        << "the next start then begins a new journal and sizes from the account as it is. A program of\n"
-        << "your own releases that instrument's obligations instead (Runner::release_obligations; see\n"
-        << "set_owed_order_limit).\n";
+        << "the next start then begins a new journal and sizes from the account as it is.\n"
+        << "Do NOT move the journal aside while an order it tracks is left working: a new journal does not\n"
+        << "know the order, and when it fills before holdings show it, the order is sent again. A program\n"
+        << "of your own releases that instrument's obligations instead (Runner::release_obligations; see\n"
+        << "set_owed_order_limit) and keeps the rest of the journal.\n";
     return Exit::OWED_ORDER;
   }
   return Exit::CLEAN;

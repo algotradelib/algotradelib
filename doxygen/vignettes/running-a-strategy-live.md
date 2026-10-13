@@ -859,8 +859,9 @@ order is accounted for.
 What it does not do:
 
 - **It does not repair anything.** An order lost beside another sent in the same pass leaves the account
-  as that pass left it: one leg of two, or three names where two were meant. The stop keeps it from
-  getting worse.
+  as that pass left it: one leg of two, or three names where two were meant. The stop prevents further
+  strategy submissions, and that is all: a resting order of the strategy's can still fill, and the
+  strategy can no longer withdraw it or close what it holds.
 - **It does not say the order failed.** An order the broker accepted, whose reply was lost and whose row
   no list showed within the limit, stops the run too.
 - **It does not watch an order the broker named.** Such an order waits for holdings or its history
@@ -875,10 +876,14 @@ read received after the release. Orders the journal owes on other instruments st
 
 `example-live-program` has no command for a release, and its only way on gives up the whole journal:
 moving it aside, keeping it, so that the next start begins a new one. That forgets **every** order the
-journal still owes, on every instrument, a named one waiting for its fill to reach holdings included,
-and a new journal would let such an order be sent again. The program lists them when it exits 8. Do
-it only once each is accounted for: read the broker's lists for all of them, cancel what rests or accept
-that it exists, and wait until holdings show every fill.
+journal still owes, on every instrument, and a new journal lets such an order be sent again: a resting
+order shows in the new run's order list, but once it fills and leaves the list before holdings show the
+fill, nothing remembers it. The program lists the orders when it exits 8. Move the journal aside only
+once **none of them can execute any more**: each has ended (filled in full, or cancelled with its
+history row saying so) and holdings show its final fills. A cancellation only requested, an order list
+that no longer shows the order, and the close of the session do not show that. An order you mean to
+leave working keeps its place in the journal; the example offers no safe way on in that case, and a
+program of your own releases the one instrument instead.
 `set_owed_order_limit(0)` turns the stop off, for a program that watches `Runner::obligations` itself.
 
 A serialized runner over a broker that lists no working orders places nothing (`Runner::serialized`), so the only such
