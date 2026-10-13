@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <optional>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "../core/types.hpp"
@@ -158,6 +160,10 @@ private:
   ) {
     std::vector<Tracked> next;
     next.reserve(rows.size());
+    // Where each reference of this listing sits in `next`. Looked up, never iterated: the order of
+    // `next`, and so of the updates, is the listing's.
+    std::unordered_map<OrderRef<Broker>, std::size_t> built;
+    built.reserve(rows.size());
 
     for (const auto& row : rows) {
       // This library's own arithmetic rather than something a broker stated, and the contract is
@@ -169,22 +175,25 @@ private:
         ++untracked_;
         continue;
       }
-      auto* already = seen(next, row.ref_);
-      if (already == nullptr) {
+      const auto [at, first] = built.try_emplace(row.ref_, next.size());
+      if (first) {
         next.push_back(Tracked{row.ref_, row.order_, false});
         continue;
       }
       // One reference, one entry: a duplicated row must not become two events (and two orders).
-      if (!order_update_detail::same_observable_state(already->last_, row.order_)) {
+      auto& already = next[at->second];
+      if (!order_update_detail::same_observable_state(already.last_, row.order_)) {
         // Two readings that disagree: report neither, and count it.
-        already->contradicted_ = true;
+        already.contradicted_ = true;
       }
     }
 
     std::vector<OrderSnapshot> updates;
+    bool contradiction = false;
     for (const auto& entry : next) {
       if (entry.contradicted_) {
         ++contradicted_;
+        contradiction = true;
         continue;
       }
       const auto* held = find(entry.ref_);
@@ -197,39 +206,35 @@ private:
 
     // A contradicted order keeps no baseline, because there is no reading of it this listing could
     // settle on. The next listing that states it once reports it afresh.
-    next.erase(
-      std::remove_if(
-        next.begin(),
-        next.end(),
-        [](const Tracked& entry) { return entry.contradicted_; }
-      ),
-      next.end()
-    );
-    tracked_ = std::move(next);
-    return updates;
-  }
-
-  // Returns the entry already built for `ref` in this listing, or `nullptr`.
-  static Tracked* seen(std::vector<Tracked>& built, const OrderRef<Broker>& ref) {
-    for (auto& entry : built) {
-      if (entry.ref_ == ref) {
-        return &entry;
+    if (contradiction) {
+      next.erase(
+        std::remove_if(
+          next.begin(),
+          next.end(),
+          [](const Tracked& entry) { return entry.contradicted_; }
+        ),
+        next.end()
+      );
+      // The positions moved, so the index is built again from what is kept.
+      built.clear();
+      for (std::size_t at = 0; at < next.size(); ++at) {
+        built.emplace(next[at].ref_, at);
       }
     }
-    return nullptr;
+    tracked_ = std::move(next);
+    index_ = std::move(built);
+    return updates;
   }
 
   // Returns the tracked entry for `ref`, or `nullptr`.
   const Tracked* find(const OrderRef<Broker>& ref) const {
-    for (const auto& entry : tracked_) {
-      if (entry.ref_ == ref) {
-        return &entry;
-      }
-    }
-    return nullptr;
+    const auto at = index_.find(ref);
+    return at == index_.end() ? nullptr : &tracked_[at->second];
   }
 
   std::vector<Tracked> tracked_;
+  // Where each tracked reference sits in `tracked_`: one entry per element, kept with it.
+  std::unordered_map<OrderRef<Broker>, std::size_t> index_;
   std::size_t untracked_{0};
   std::size_t contradicted_{0};
 };
